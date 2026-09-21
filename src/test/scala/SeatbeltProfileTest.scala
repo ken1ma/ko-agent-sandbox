@@ -35,11 +35,11 @@ class SeatbeltProfileTest extends munit.FunSuite:
   private val ivyHome = Paths.get(s"$home/.cache/ko-agent-sandbox/run-on-host/abc123/ivy-home")
 
   private def inputs(
-    runtime: RuntimeAuthority = RuntimeAuthority(Seq(Paths.get("/usr/lib")), Seq(Paths.get("/bin/sh"))),
+    systemPaths: SystemPaths = SystemPaths(Seq(Paths.get("/usr/lib")), Seq(Paths.get("/bin/sh"))),
     port: Int = 51234,
     tmp: Path = Paths.get("/private/tmp/ko-agent-command/abc/tmp"),
   ) = ProfileInputs(
-    prereqs, tmp, Some(distribution), Some(sbtGlobal), Some(ivyHome), None, None, port, runtime, Network.ProxyOnly,
+    prereqs, tmp, Some(distribution), Some(sbtGlobal), Some(ivyHome), None, None, port, systemPaths, Network.ProxyOnly,
   )
 
   private def rendered(in: ProfileInputs = inputs()): String =
@@ -61,8 +61,8 @@ class SeatbeltProfileTest extends munit.FunSuite:
       "Ivy home" -> (path => inputs().copy(ivyHome = Some(path))),
       "Gradle user home" -> (path => gradleInputs.copy(gradleUserHome = Some(path))),
       "Maven repository" -> (path => mvnInputs.copy(m2Repository = Some(path))),
-      "runtime read" -> (path => inputs(runtime = RuntimeAuthority(Seq(path), Seq.empty))),
-      "runtime executable" -> (path => inputs(runtime = RuntimeAuthority(Seq.empty, Seq(path)))),
+      "system-path read" -> (path => inputs(systemPaths = SystemPaths(Seq(path), Seq.empty))),
+      "system-path executable" -> (path => inputs(systemPaths = SystemPaths(Seq.empty, Seq(path)))),
       "server tmp" -> (path => inputs().copy(network = Network.SbtClient(path))),
     )
     for
@@ -286,14 +286,14 @@ class SeatbeltProfileTest extends munit.FunSuite:
   private def proxyInputs(
     executables: Seq[Path] = Seq(proxyJdk),
     reads: Seq[Path] = Seq(proxyJar),
-    runtime: RuntimeAuthority = RuntimeAuthority(
+    systemPaths: SystemPaths = SystemPaths(
       Seq(Paths.get("/System/Library/CoreServices/SystemVersion.plist")), Seq(Paths.get("/bin")),
     ),
-  ) = ProxyInputs(executables, reads, runtime)
+  ) = ProxyInputs(executables, reads, systemPaths)
   private def renderedProxy(in: ProxyInputs = proxyInputs()): String =
     renderProxy(in).fold(reason => fail(s"renderProxy refused: $reason"), identity)
 
-  test("the proxy profile grants its executable, what it loads, the runtime authority as reads, and no write"):
+  test("the proxy profile grants its executable, what it loads, the system paths as reads, and no write"):
     val text = renderedProxy()
     assert(text.linesIterator.contains("(deny default)"))
     val allows = text.linesIterator.filter(_.startsWith("(allow")).filterNot(_.startsWith("(allow network")).toSeq

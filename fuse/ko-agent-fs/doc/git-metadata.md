@@ -224,9 +224,9 @@ protected path or a protected destination:
 
 The last two are the exception, and listed anyway because this is the requirement rather than the
 implementation: `setxattr`/`removexattr` are unimplemented, so nothing reaches the backing store
-through them and no policy has to run (`fs.rs`'s deny-surface note has what a caller sees).
+through them and no policy has to run (`fs.rs`'s mutation-coverage note has what a caller sees).
 `policy::Mutation` deliberately has no xattr variant until that changes (`TODO.md`,
-"Non-TODOs"), and the gate arrives with the implementation.
+"Non-TODOs"); whoever implements them adds the variants and their policy checks in the same change.
 
 Rename and exchange are the double-sided cases: `rename evil → <gitdir>/hooks/pre-commit` is a
 destination-side violation even though `evil` is unprotected, and `RENAME_EXCHANGE` mutates both
@@ -371,7 +371,7 @@ project directory", has the security reason for each):
   agent-created directory is running the agent's output.
 - `git worktree add <path>` with `<path>` in the project — writes a `.git` **file** at the new
   worktree. Blocked.
-- Submodule checkout that would materialize a submodule's worktree `.git` file in the project —
+- Submodule checkout that would create a submodule's worktree `.git` file in the project —
   operational state in `.git/modules/<n>/` stays writable, while its protected entries stay frozen
   by the recursion in "The immutable set". The new `.git` pointer in the worktree is refused.
 - Editing `.git/config` (e.g. `git config --local core.hooksPath …`) — blocked; the whole point.
@@ -393,13 +393,14 @@ Git's security advisories are a direct catalog of how repository state becomes h
 The per-CVE verdicts, the watch-list and how to redo the research are `security-research.md`; the
 two conclusions this policy rests on are below.
 
-**The filter backstops a whole class.** The CVE-2024-32002 / CVE-2021-21300 / CVE-2014-9390 class
-all end the same way: git is tricked, via symlink + case-insensitivity + submodules, into a *write*
-whose path it believes is in a worktree but resolves into `.git/hooks`. Because the filter
-classifies the **resolved destination** of every mutation — following symlinks through its own
-resolver — the sandbox-side git performing that final write is denied at `open`/`create`, however
-clever the trick that produced the path. (Host-side git bypasses the filter by design; there the
-mitigation is a patched git, as for any untrusted clone.)
+**The filter denies the final write of a whole class.** The CVE-2024-32002 / CVE-2021-21300 /
+CVE-2014-9390 class all end the same way: git is tricked, via symlink + case-insensitivity +
+submodules, into a *write* whose path it believes is in a worktree but resolves into
+`.git/hooks`. Because the filter classifies the **resolved destination** of every mutation —
+following symlinks through its own resolver — the sandbox-side git performing that final write is
+denied at `open`/`create`, however clever the trick that produced the path. (Host-side git
+bypasses the filter by design; there the mitigation is a patched git, as for any untrusted
+clone.)
 
 **The `.gitmodules` residual.** Leaving `.gitmodules` writable rests on "Premises"'s P0 and
 P4, so it assumes git handles hostile `.gitmodules` correctly — and CVE-2018-11235, CVE-2024-32002
@@ -474,7 +475,8 @@ it has three blind spots worth knowing: it sees only state that *persists* after
 clean `git rebase` (which creates and deletes `rebase-merge/` in one command) never appears in a
 run, and neither does any `.lock`, which git renames away within the same command; and a path being
 written does not make it safe to allow. Only real git against a real mount exercises the locks, so
-`tests/mounted_git.rs` is the authority for the operational set — the script maps the layout.
+`tests/mounted_git.rs` is what establishes which git commands work through the filter — the script
+records the files each command leaves.
 
 - **P0 — command execution is configured only through the config files** (group 2 has the set and
   the argument). The whole design rests on it. Re-check on upgrade by scanning git's release notes

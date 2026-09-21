@@ -12,9 +12,9 @@ import RunOnHostPrereqs.Program
 
 class RunOnHostSandboxTest extends munit.FunSuite:
 
-  test("the measured runtime authority ships in the artifact, and parses"):
-    val authority = RunOnHostSandbox.bundledRuntimeAuthority()
-    assert(authority.executes.nonEmpty, "the bundled file grants no executable roots")
+  test("the measured system paths ship in the artifact, and parse"):
+    val systemPaths = RunOnHostSandbox.bundledSystemPaths()
+    assert(systemPaths.executes.nonEmpty, "the bundled file grants no executable roots")
 
   test("the command's environment is a closed set: the wrapper's settings, three pass-throughs, and --env"):
     val jdk = Path.of("/Users/u/Library/Caches/Coursier/v1/jvm/temurin")
@@ -406,7 +406,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     Files.createDirectories(memo.getParent)
     def written(paths: String*): Unit =
       Files.writeString(memo, paths.map(path => s"\"$path\"").mkString("[\"1.1.9 |\",[", ",", "]]"))
-    // The profile is the gate's to measure; here the read and the delete are the plain ones.
+    // The profile is the acceptance test's to measure; here the read and the delete are the plain ones.
     val direct = RunOnHostMillDaemons.Confined(
       read = file => Option.when(Files.isRegularFile(file))(Files.readString(file, UTF_8)),
       delete = file => Files.deleteIfExists(file),
@@ -548,7 +548,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assert(refused.swap.exists(_.contains("+junk")), refused.toString)
 
   test("the relaunch classpath walked from the loaders includes these classes and their deps"):
-    // What emit prints for the gate: inside sbt's layered loaders java.class.path is sbt's own,
+    // What emit prints for the acceptance test: inside sbt's layered loaders java.class.path is sbt's own,
     // so the walk is what has to find the test classes and munit.
     val classpath = EmitRunOnHostProfile.classpathForRelaunch.split(java.io.File.pathSeparator).toVector
     assert(classpath.exists(_.contains("munit")), classpath.take(5).toString)
@@ -575,29 +575,29 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     )
 
   test("the proxy profile's inputs on a JVM are the JDK to run and the class path to read"):
-    val authority = SeatbeltProfile.RuntimeAuthority(Seq(Path.of("/usr/lib")), Seq(Path.of("/bin")))
-    val inputs = proxyInputs(authority).fold(fail(_), identity)
+    val systemPaths = SeatbeltProfile.SystemPaths(Seq(Path.of("/usr/lib")), Seq(Path.of("/bin")))
+    val inputs = proxyInputs(systemPaths).fold(fail(_), identity)
     assertEquals(inputs.executables, Seq(Path.of(System.getProperty("java.home")).toRealPath()))
     assert(inputs.reads.nonEmpty)
     assert(inputs.reads.forall(entry => Files.exists(entry) && entry.isAbsolute), inputs.reads.take(8).toString)
-    assertEquals(inputs.runtime, authority)
+    assertEquals(inputs.systemPaths, systemPaths)
     // A class-path entry that does not exist is skipped; a relative one is absolute against this
     // JVM's working directory, and an empty one — a trailing separator included — is that
     // directory, as the JVM reads them; the proxy runs from / and needs the same entries there.
-    val missing = proxyInputs(authority, classPath = "/no/such/entry.jar").fold(fail(_), identity)
+    val missing = proxyInputs(systemPaths, classPath = "/no/such/entry.jar").fold(fail(_), identity)
     assertEquals(missing.reads, Seq.empty)
     val cwd = Path.of("").toRealPath()
-    val empty = proxyInputs(authority, classPath = "/no/such/entry.jar:").fold(fail(_), identity)
+    val empty = proxyInputs(systemPaths, classPath = "/no/such/entry.jar:").fold(fail(_), identity)
     assertEquals(empty.reads, Seq(cwd))
-    assertEquals(proxyInputs(authority, classPath = "").fold(fail(_), identity).reads, Seq(cwd))
-    assertEquals(proxyInputs(authority, classPath = "build.sbt").fold(fail(_), identity).reads,
+    assertEquals(proxyInputs(systemPaths, classPath = "").fold(fail(_), identity).reads, Seq(cwd))
+    assertEquals(proxyInputs(systemPaths, classPath = "build.sbt").fold(fail(_), identity).reads,
       Seq(cwd.resolve("build.sbt")))
     assertEquals(
       selfClassPath("target/dist/ko-agent-sandbox.jar:"),
       Seq(Path.of("").toAbsolutePath.resolve("target/dist/ko-agent-sandbox.jar").toString,
         Path.of("").toAbsolutePath.toString),
     )
-    assert(proxyInputs(authority, javaHome = "/no/such/jdk").isLeft)
+    assert(proxyInputs(systemPaths, javaHome = "/no/such/jdk").isLeft)
     // The launch entry is found by resolved path and kept as spelled (launchEntry has why):
     // launched through a symlink, the entry is the link; its removal is the refusal, naming
     // the link though its target stays, and a retargeted link is its new target.
@@ -610,7 +610,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(entry, Some(link))
     assertEquals(selfPresent(entry), Right(Some(real.toRealPath())))
     Files.delete(link)
-    val refused = proxyInputs(authority, self = entry)
+    val refused = proxyInputs(systemPaths, self = entry)
     assert(refused.swap.exists(_.contains(link.toString)), refused.toString)
     Files.createSymbolicLink(link, other)
     assertEquals(selfPresent(entry), Right(Some(other.toRealPath())))
@@ -623,8 +623,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val project = Files.createDirectory(root.resolve("project"))
     val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
     var proxies = 0
-    val authority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
-    val runtimes = BrokerRuntimes(session, project, _ => (), authority, Vector.empty)(
+    val systemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
+    val runtimes = BrokerRuntimes(session, project, _ => (), systemPaths, Vector.empty)(
       RunOnHostSession.HostProcesses,
       (_, _, _) => fail("assembled without an executable"),
       (_, _, _, _) => { proxies += 1; Right(1) },
@@ -706,9 +706,9 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       None, Path.of("/g"), Path.of("/i"), Path.of("/gradle"), Path.of("/m"), None, None,
     )
     val logged = scala.collection.mutable.ListBuffer[String]()
-    val authority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
+    val systemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
     // The daemon stand-in: a registered spawn of a sleep, the sleep itself standing for the
-    // daemon — the process a reuse proves by pid and start time — on a port of the seam's choosing.
+    // daemon — the process a reuse proves by pid and start time — on a port of the stand-in's choosing.
     val daemonStarts = scala.collection.mutable.ListBuffer[DaemonStart]()
     var daemonFails = false
     val daemon = (start: DaemonStart) =>
@@ -722,7 +722,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         val started = RunOnHostSession.HostProcesses.startOf(sleeper).get
         Right(RunOnHostMillDaemons.Daemon(sleeper, started, 40_000 + daemonStarts.size))
     var assemblies = 0
-    val runtimes = BrokerRuntimes(session, project, logged.append(_), authority, Vector.empty)(
+    val runtimes = BrokerRuntimes(session, project, logged.append(_), systemPaths, Vector.empty)(
       processes, (_, _, _) => { assemblies += 1; Right(assembled) }, proxy, server, daemon,
     )
     val dirA = Files.createDirectory(project.resolve("a"))
@@ -939,7 +939,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       // Last, since it discards dirA's server: a redirected socket directory is not reused as
       // this directory's own server. dirA's socket directory is replaced with a symlink to dirB's,
       // leaving dirA's portfile spelling unchanged but resolving to dirB. Reuse is refused — a
-      // replacement start is attempted (and here fails by the seam) — so the client never reaches
+      // replacement start is attempted (and here the stand-in start fails) — so the client never reaches
       // dirB's server. The socket check compares spellings; the symlink guard catches the
       // redirection the spelling hides.
       val aSock = RunOnHostSandbox.expectedServerSocket(session.tmp, dirA)
@@ -1002,13 +1002,13 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       started += start.buildDirectory
       recordOnly(start.record)
       Right(())
-    val emptyAuthority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
+    val emptySystemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
     val daemonStarts = scala.collection.mutable.ListBuffer[Path]()
     val daemon = (start: DaemonStart) =>
       daemonStarts += start.buildDirectory
       recordOnly(start.record)
       Right(RunOnHostMillDaemons.Daemon(1, "S", 40_001))
-    val runtimes = BrokerRuntimes(mine, project, _ => (), emptyAuthority, Vector.empty)(
+    val runtimes = BrokerRuntimes(mine, project, _ => (), emptySystemPaths, Vector.empty)(
       processes,
       (_, _, _) => Right(assembled),
       (_, _, record, _) =>
@@ -1104,8 +1104,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val server = (start: ServerStart) =>
       register(start.record)
       Right(())
-    val authority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
-    val runtimes = BrokerRuntimes(session, project, _ => (), authority, Vector.empty)(
+    val systemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
+    val runtimes = BrokerRuntimes(session, project, _ => (), systemPaths, Vector.empty)(
       Shared(pausing = true), (_, _, _) => Right(assembled), proxy, server, _ => fail("no daemon here"),
     )
     val dirA = Files.createDirectory(project.resolve("a"))
@@ -1185,7 +1185,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assert(table.alive.contains(leaderA), "one live server behind the record")
     finally session.close()
 
-  test("the gate's entry: its teardown waits on the lock its own preparation holds, and keeps the record"):
+  test("the acceptance test's entry: its teardown waits on the lock its own preparation holds, and keeps the record"):
     // One JVM, two threads and no shared monitor: prepare on the main thread, endSession from
     // the shutdown hook (ownRuntime). The teardown's bounded wait must neither signal nor
     // release the holder's lock; it keeps the session for the next collection.
@@ -1226,8 +1226,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val server = (start: ServerStart) =>
       register(start.record)
       Right(())
-    val authority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
-    val runtimes = BrokerRuntimes(session, project, _ => (), authority, Vector.empty)(
+    val systemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
+    val runtimes = BrokerRuntimes(session, project, _ => (), systemPaths, Vector.empty)(
       processes, (_, _, _) => Right(assembled), proxy, server, _ => fail("no daemon here"),
     )
     val recordName = s"server-sbt-${RunOnHostSession.buildHash(project)}"
@@ -1271,14 +1271,14 @@ class RunOnHostSandboxTest extends munit.FunSuite:
 
   /** Two brokers of one project in one JVM, over a shared process table and no real spawn: the
     * proxy and the server or daemon are records with table pids, the server's socket a listener
-    * under its session's `tmp/` named by the portfile. The sharer's server and daemon seams must
+    * under its session's `tmp/` named by the portfile. The sharer's server and daemon start functions must
     * never run. */
   /** Three launches' brokers on one project over one process table: `owner` starts the runtime
     * for `dir`, `sharer` would start it alike, `taker` forwards a value the others do not. A
     * stand-in's record names a fresh live leader; ending a group takes its leader from the table
     * and closes the server socket it held, and `leaves` are the groups whose KILL leaves a
     * member listed, the socket with it. `onEnd` runs between a group's proof and its signal,
-    * `onAssemble` at each assembly — the tests' seams for what another process does meanwhile. */
+    * `onAssemble` at each assembly — where a test runs what another process does meanwhile. */
   private class Brokers(program: Program):
     val root: Path =
       if program == Program.Sbt then RunOnHostSessionTest.socketSessionRoot("share")
@@ -1345,7 +1345,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         RunOnHostPrereqs.CommandPrereqs(project, Path.of(jdk), Path.of("/v1"), program, Path.of("/exe")),
         None, Path.of("/g"), Path.of("/i"), Path.of("/gradle"), Path.of("/m"), None, None,
       )
-    val authority: SeatbeltProfile.RuntimeAuthority = SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
+    val systemPaths: SeatbeltProfile.SystemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
     /** Every server and daemon start, by its record. */
     val started = scala.collection.mutable.ListBuffer[Path]()
     val serverArguments = scala.collection.mutable.ListBuffer[Seq[String]]()
@@ -1354,7 +1354,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       if session == owner then 7001 else if session == sharer then 7002 else 7003
     def broker(session: RunOnHostSession.Session, jdk: String = "/jdk"): BrokerRuntimes =
       val forwards = if session == taker then Vector("TOKEN" -> "t") else Vector.empty
-      BrokerRuntimes(session, project, _ => (), authority, forwards)(
+      BrokerRuntimes(session, project, _ => (), systemPaths, forwards)(
         processes,
         (_, _, _) =>
           onAssemble()
@@ -1625,7 +1625,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val observed = scala.collection.mutable.ListBuffer[Path]()
     val logged = scala.collection.mutable.ListBuffer[String]()
     val runtimes = BrokerRuntimes(
-      session, project, logged.append(_), SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty), Vector.empty,
+      session, project, logged.append(_), SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty), Vector.empty,
     )(
       processes = processes,
       gradleDaemons = base =>
@@ -1722,15 +1722,15 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assert(Files.isSymbolicLink(git.resolve("untouchable")))
 
   // --------------------------------------------------------------------------
-  // SeatbeltProfile.RuntimeAuthority.txt
+  // SeatbeltProfile.SystemPaths.txt
   // --------------------------------------------------------------------------
 
-  test("readRuntimeAuthority splits reads from executables and drops what does not resolve"):
-    val dir = Files.createTempDirectory("authority")
+  test("readSystemPaths splits reads from executables and drops what does not resolve"):
+    val dir = Files.createTempDirectory("systemPaths")
     val readable = Files.writeString(dir.resolve("readable"), "")
     val executable = Files.writeString(dir.resolve("executable"), "")
     val file = Files.writeString(
-      dir.resolve("authority.txt"),
+      dir.resolve("systemPaths.txt"),
       s"""# measured grants
          |$readable
          |x $executable
@@ -1738,10 +1738,10 @@ class RunOnHostSandboxTest extends munit.FunSuite:
          |""".stripMargin,
       UTF_8,
     )
-    val authority = readRuntimeAuthority(Some(file))
-    assertEquals(authority.reads.map(_.getFileName.toString), Seq("readable"))
-    assertEquals(authority.executes.map(_.getFileName.toString), Seq("executable"))
-    assertEquals(readRuntimeAuthority(None).reads, Seq.empty)
+    val systemPaths = readSystemPaths(Some(file))
+    assertEquals(systemPaths.reads.map(_.getFileName.toString), Seq("readable"))
+    assertEquals(systemPaths.executes.map(_.getFileName.toString), Seq("executable"))
+    assertEquals(readSystemPaths(None).reads, Seq.empty)
 
   // --------------------------------------------------------------------------
   // The foreign server: derived socket, consented shutdown

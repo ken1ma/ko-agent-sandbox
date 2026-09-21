@@ -60,7 +60,7 @@ WORKDIR /build/app
 
 RUN set -euxo pipefail; \
     sbt -batch dist; \
-    # -J-Xmx pins the builder, whose in-container default budgets 85% of the machine's *total* \
+    # -J-Xmx caps the builder's heap, whose in-container default is 85% of the machine's *total* \
     # memory — sized past what exists on a machine whose free memory running sandbox sessions \
     # hold, which every session then pays for. Deliberately tight over the measured heap peak \
     # (1.39 GiB, aarch64; x64 compiles different code and trips first if it grows): the context \

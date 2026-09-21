@@ -96,7 +96,7 @@ Attachment and list output show the representation version, pending path count a
 physical stored size, backing volume, attached-session count, lower path and last-use time. No
 pending stage is pruned automatically. Status also exposes `quiescing`, `sealed`, `applying` and
 `recovery-needed` states, with the controlling host process and start time. Stage storage has a
-distinct reserved resource-name pattern that neither reset action matches; tests bind the
+distinct reserved resource-name pattern that neither reset action matches; tests verify the
 preservation rule. Reset takes the same project lifecycle lock and refuses while an apply or
 recovery transition is active; it never tears down a stage underneath its control process.
 
@@ -201,7 +201,7 @@ rollback bundles and staged control journals (`TODO.md`).
 
 Live mode recursively validates nested repositories before mounting without following symlinks.
 It validates `.git` directories and pointer files, detects bare layouts outside recognized gitdirs,
-and gates create, write, rename, exchange, hardlink and symlink operations that could complete one.
+and checks create, write, rename, exchange, hardlink and symlink operations that could complete one.
 Complete full-tree validation is a launch-time cost; benchmark it on build-output-heavy projects on
 every platform. An acceleration must still validate the current complete tree; a skipped directory
 or stale result would reopen the gap.
@@ -232,8 +232,8 @@ its private Git metadata cannot be applied.
    an implemented representation.
 2. Close the nested-git and bare-layout gaps and add the live mutation journal.
 3. Implement and prove the staged `ko-agent-fs` engine, versioned storage, and shared per-project
-   lifecycle and visibility, with the in-situ suite, the launcher action and the stamp that gates
-   staged launch.
+   lifecycle and visibility, with the in-situ suite, the launcher action and the stamp a staged
+   launch requires.
 4. Implement handle-safe generation sealing, deterministic review, recursive Git classification,
    the durable apply state machine and conflict detection. Do not expose staged mode as complete
    until status, apply, recovery and discard are available.

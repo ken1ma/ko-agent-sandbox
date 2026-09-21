@@ -11,9 +11,8 @@
 
 /// A filesystem-mutating operation the filter may authorize. Reads are never routed here.
 ///
-/// Exactly the operations the FUSE layer passes, so that a test iterating this enum is iterating
-/// the real deny surface rather than a wish list. Everything that *creates* a name — `create`,
-/// `mkdir`, `mknod`, `symlink`, a rename's destination, a link's destination — goes through
+/// Exactly the operations the FUSE layer passes to [`authorize`]. Everything that *creates* a
+/// name — `create`, `mkdir`, `mknod`, `symlink`, a rename's destination, a link's destination — goes through
 /// [`authorize_create`] instead, because the `.git` name rule has to see the new name. A truncate
 /// arrives as `open(O_TRUNC)` or a `setattr` with a size, so it is `Write` or `SetAttr` by the
 /// time it reaches here. Xattr variants belong here the day `setxattr`/`removexattr` are
@@ -582,8 +581,8 @@ mod tests {
                 "protected-sandbox-config: refusing to remove the launcher's configuration"
             )
         );
-        // Every mutation the enum lists, so the deny surface is the type rather than the cases
-        // thought of here. A rename's destination is not among them: it creates a name, so it goes
+        // Every variant `Mutation` has, listed by hand: a new variant needs a row here. A
+        // rename's destination is not among them: it creates a name, so it goes
         // through authorize_create above.
         for op in [
             Mutation::Write,

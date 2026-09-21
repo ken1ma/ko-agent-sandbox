@@ -7,7 +7,7 @@
 // check is invisible in normal operation — the sandbox sees a valid leaf issued by this project's
 // CA whatever the origin presented — which is the classic TLS-interception failure.
 //
-// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the gate):
+// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the condition):
 //
 //     sbt "testWithPodman *EgressSessionTest"
 //

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The Maven project the security gate runs its mvn rows in: one module, one test, nothing to
+<!-- The Maven project the security acceptance test runs its mvn rows in: one module, one test, nothing to
      build but the contract. Its wrapper is the only-script type, and the build's mvn is the Maven
      that wrapper downloaded (RunOnHostPrereqs.mvnDistributionDir). -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"

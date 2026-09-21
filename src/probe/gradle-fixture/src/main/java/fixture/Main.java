@@ -5,7 +5,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 
-// The gate's `run` task: creates a temporary file, where the forked JVM's profile allows or not,
+// The acceptance test's `run` task: creates a temporary file, where the forked JVM's profile allows or not,
 // and prints where; with `sleep`, stays up for the cancel and teardown rows.
 public final class Main {
   private Main() {}

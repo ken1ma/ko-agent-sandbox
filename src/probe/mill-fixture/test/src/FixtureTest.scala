@@ -4,7 +4,7 @@ import java.nio.file.Files
 
 class FixtureTest extends munit.FunSuite:
   test("greets"):
-    assertEquals(Fixture.greeting("gate"), "hello, gate")
+    assertEquals(Fixture.greeting("acceptance"), "hello, acceptance")
 
   // The test JVM is the daemon's fork under the daemon's profile, with the command's environment:
   // a temporary file must be creatable where that environment says.

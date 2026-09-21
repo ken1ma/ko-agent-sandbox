@@ -148,7 +148,8 @@ fn symlinks_read_back_as_links() {
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn an_existing_repository_is_readable() {
-    // The filter hides nothing: a host repository reads normally, it is only writes that are gated.
+    // The filter hides nothing: a host repository reads normally, it is only writes that are
+    // checked.
     let mount = TestMount::new(tree);
     assert!(mount.at(".git").exists());
     assert_eq!(
@@ -330,7 +331,7 @@ fn fsync_and_fsyncdir_are_performed_rather_than_answered() {
     file.sync_data().unwrap();
 
     // A read-only handle syncs too: git opens a ref for reading and syncs the directory that holds
-    // it, so the write gate must not be what decides whether a sync is answered.
+    // it, so the write check must not be what decides whether a sync is answered.
     File::open(mount.at("src/main.rs"))
         .unwrap()
         .sync_all()

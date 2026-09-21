@@ -2,7 +2,7 @@
 //
 // - directly, as the Python script in this repository. It needs lychee on PATH (the version is the
 //   Containerfile's LYCHEE_VERSION), and a machine without it skips.
-// - in the image, under `sbt "testWithPodman *SandboxMarkdownLinkCheckTest"` (WithPodman has the gate).
+// - in the image, under `sbt "testWithPodman *SandboxMarkdownLinkCheckTest"` (WithPodman has the condition).
 //   Nothing there is assumed: an image without lychee or the script fails the run.
 //
 // Only the second run shows that the image's lychee and script work together.

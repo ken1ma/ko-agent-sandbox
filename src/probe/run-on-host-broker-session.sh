@@ -36,7 +36,7 @@
 # process's output, or on the behavior sbt documents for it, never on a bare failure.
 #
 # The confined rows use (allow default) profiles that deny network* and then allow one rule, so
-# each measures the network rule alone: the filesystem rules are the gate's to measure, and a
+# each measures the network rule alone: the filesystem rules are the acceptance test's to measure, and a
 # deny-default profile here would chase grants the question is not about.
 
 set -u
@@ -178,7 +178,7 @@ until_true() {
 gone() { ! kill -0 "$1" 2>/dev/null; }
 has_line() { grep -q -- "$1" "$2" 2>/dev/null; }
 
-# Processes by command-line pattern whose cwd is a directory or under it — the gate's own test,
+# Processes by command-line pattern whose cwd is a directory or under it — the acceptance test's own test,
 # with one lsof for every process rather than one per candidate.
 with_cwd() { # pattern dir
     lsof -d cwd -Fpn 2>/dev/null | awk -v dir="$2" '

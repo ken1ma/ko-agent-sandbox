@@ -185,8 +185,8 @@ Still to fold, to that same standard:
   folding, open-file holds — with the launcher in place of `lower-probe-host.py`; both probe
   halves are deleted when their rows are added. Their machine record adds the upper volume's
   filesystem, which is what the staged design needs the answers for (`plan-staged.md`).
-- [ ] The `--run-on-host`-gated row: a command through the channel, then `target/` read back from
-  the container — a host-native build turns host writes from an occasional human edit into
+- [ ] The row that needs `--run-on-host`: a command through the channel, then `target/` read back
+  from the container — a host-native build turns host writes from an occasional human edit into
   every build.
 
 ## Deferred — keep the host awake during long sandbox work (caffeinate)
@@ -301,7 +301,7 @@ replacement, each leaving one consistent runtime.
 
 Recorded macOS results (2026-09-18):
 
-- `MountPathTest`, `MountLifecycleTest` and the run-on-host gate pass.
+- `MountPathTest`, `MountLifecycleTest` and the run-on-host acceptance test pass.
 - `sbt testFull` inside a session passes in every suite except `ClipboardBrokerTest` and
   `SandboxLifecycleTest`; those two pass when run alone on Linux.
 - The four agents start without a trust prompt on fresh and used volumes.
@@ -343,14 +343,14 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
       which ends exactly the command's groups and directory;
     - a command's death, however it dies, is confined to its own process and never takes the
       broker and its warm servers with it;
-    - the gate drives one command's whole lifecycle as `RunOnHost` with no broker, which is how
-      the wrapper rows measure the profile.
+    - the acceptance test drives one command's whole lifecycle as `RunOnHost` with no broker, which
+      is how the wrapper rows measure the profile.
   - What it costs:
     - one more JVM start per command, about a third of a second in the jar form and tens of
       milliseconds as the native image;
     - a second code path for the command's runtime, the wrapper's own under Maven.
   - The alternative is the same work in a broker thread with cancellation done by hand; decide
-    with the measured cost per command and what the gate would drive instead.
+    with the measured cost per command and what the acceptance test would drive instead.
 
 ## Deferred — the native-image launcher
 
@@ -383,13 +383,13 @@ are the image's Mach services, which the same mode measures once it starts.
 
 There is no CI. [development.md](development.md#tests) gives the launcher, proxy and filter
 test commands. `--self-test` runs the filter suites on demand. A user's `--build` instead performs
-the gates whose answers belong to that artifact and machine: `cargo deny check licenses bans
+the checks whose results depend on that artifact and machine: `cargo deny check licenses bans
 sources`, compilation, binary identity, and the installed filter's mount self-test.
 
 - [ ] Add CI for the launcher's and proxy's `sbt testFull`, and the filter's pure and binary suites
   on both shipping architectures. Add `cargo deny check advisories` there: `deny.toml` records why
-  its moving external database must not gate installation.
-- [ ] Keep the artifact-local gates above in `--build`, and keep the mounted filter suites in
+  its moving external database must not block installation.
+- [ ] Keep the checks above in `--build`, and keep the mounted filter suites in
   `--self-test`; CI does not prove the filter on a user's own machine.
 
 ## Before the first release — the published identity

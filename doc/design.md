@@ -12,7 +12,7 @@ What remains to do is TODO.md; the security model is SECURITY.md.
 
 ## Terminology
 
-The words the documents share, each defined where it binds and listed here once:
+The words the documents share, each defined in the document its entry names and listed here once:
 
 - **sandbox** — the container the agent runs in, rootless, as `nonroot`; its boundary is the
   subject of SECURITY.md.
@@ -272,7 +272,7 @@ it is:
   formats have no standard password file or environment-variable name.
 
 Keep the rule procedural: a credential in the project directory violates the operating model, and
-it is the user's to keep out. A `deny` of the forge in `egress/rule` removes one way to spend a
+it is the user's to keep out. A `deny` of the forge in `egress/rule` removes one way to use a
 forge token left there, not the risk — every allowed host is a possible recipient of what the
 sandbox holds.
 

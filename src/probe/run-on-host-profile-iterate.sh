@@ -1,5 +1,5 @@
 #!/bin/sh
-# Discover the profile's runtime authority (run-on-host.md "The Seatbelt profile") the only way
+# Discover the profile's system paths (run-on-host.md "The Seatbelt profile") the only way
 # it allows — by running a real build and reading what it actually needs, never by listing what
 # the host happens to have. Run it when a command stops under the profile and nothing names the
 # missing grant.
@@ -22,24 +22,24 @@
 #   sh src/probe/run-on-host-profile-iterate.sh mach ["<sbt command>"]   # which Mach services does sbt fail without?
 #   sh src/probe/run-on-host-profile-iterate.sh mach-proxy [native-image]   # ... and the host proxy, in either form?
 #
-# Whether the current grant set builds is src/probe/run-on-host-profile-gate.sh's question, not this one's.
+# Whether the current grant set builds is src/probe/run-on-host-acceptance-test.sh's question, not this one's.
 #
-# Runtime authority accumulates in src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt,
+# System paths accumulate in src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt,
 # which you edit by hand: a line added because a command failed once is a grant that outlives every
 # later command, so each belongs there only if it is a stable runtime read and not a path into user
 # data.
 set -u
 if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
-. "$(dirname "$0")/run-on-host-gate-setup.sh"
-gate_require_idle "/private/tmp/ko-agent-$(id -u)" "$(pwd -P)" || exit 1
+. "$(dirname "$0")/run-on-host-acceptance-setup.sh"
+acceptance_require_idle "/private/tmp/ko-agent-$(id -u)" "$(pwd -P)" || exit 1
 
 mode=${1:-checks}
 command=${2:-"about"}
 work=${TMPDIR:-/tmp}/ko-agent-run-on-host-profile
-authority=src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt
+system_paths=src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt
 mkdir -p "$work"
-[ -f "$authority" ] ||
-    printf '# One absolute path per line. Prefix with "x " if it must also be executable.\n' > "$authority"
+[ -f "$system_paths" ] ||
+    printf '# One absolute path per line. Prefix with "x " if it must also be executable.\n' > "$system_paths"
 
 emit() {
     rm -f "$work/command.env"
@@ -55,7 +55,7 @@ emit() {
 # is "run sbtn, and fail if it cannot connect to a server", and sets that same flag. sbt 2 is
 # client/server by construction, so the server starts inside the sandbox and its state goes to the
 # command's temporary directory with everything else.
-# The environment is the command's contract (RunOnHostSandbox): COURSIER_CACHE routes to the
+# The command's environment is the wrapper's closed set (RunOnHostSandbox): COURSIER_CACHE routes to the
 # run-on-host cache, _JAVA_OPTIONS reaches the server the client forks where -D flags do not, and
 # the two socket directories keep sbt inside the command's temporary directory.
 # `run_bound` seconds, 0 for none: `mach` sets it, because an sbt client waits without end for a
@@ -228,7 +228,7 @@ EOF
     sed 's/^/  /' "$needed"
     echo
     echo "A name is listed because the measured command fails without it. A lookup whose denial the"
-    echo "command survives is not listed, so the gate decides whether a build under these names behaves."
+    echo "command survives is not listed, so the acceptance test decides whether a build under these names behaves."
 }
 
 case "$mode" in
@@ -360,7 +360,7 @@ paths)
         case "$line" in ''|\#*) continue ;; esac
         path=${line#x }
         granted="$granted (subpath \"$path\")"
-    done < "$authority"
+    done < "$system_paths"
     echo "measuring: $probe_command"
 
     root_grant=""
@@ -441,7 +441,7 @@ checks)
     # runs checks in order, from the smallest possible program to a real build, and stops at the
     # first that fails, so the missing grant is one that check already needs. Output is not redirected:
     # the reason usually goes to the terminal, and redirecting is how it was lost.
-    emit "$authority" || exit 1
+    emit "$system_paths" || exit 1
     . "$work/command.env"
     check() {
         printf '\n--- %s\n' "$1"; shift
@@ -461,18 +461,18 @@ checks)
     check "the JDK"                                       "$JAVA_HOME/bin/java" -version
     check "the sbt script, no build"                     sbt -java-home "$JAVA_HOME" --script-version
     echo
-    echo "every check passed; the gate is next: sh src/probe/run-on-host-profile-gate.sh quick"
+    echo "every check passed; the acceptance test is next: sh src/probe/run-on-host-acceptance-test.sh all quick"
     ;;
 narrow)
-    emit "$authority" || exit 1
+    emit "$system_paths" || exit 1
     if ! run_command "$work/base.log"; then
-        echo "the current grant set does not run the command; fix that with the gate before narrowing." >&2
+        echo "the current grant set does not run the command; fix that with the acceptance test before narrowing." >&2
         exit 1
     fi
     echo "the baseline runs the command. Removing one grant at a time."
     kept="$work/kept.txt"; : > "$kept"
-    grep -vE '^\s*(#|$)' "$authority" | while IFS= read -r line; do
-        grep -vE '^\s*(#|$)' "$authority" | grep -vxF "$line" > "$work/without.txt"
+    grep -vE '^\s*(#|$)' "$system_paths" | while IFS= read -r line; do
+        grep -vE '^\s*(#|$)' "$system_paths" | grep -vxF "$line" > "$work/without.txt"
         if emit "$work/without.txt" && run_command "$work/try.log"; then
             printf '  drop    %s\n' "$line"
         else
@@ -482,13 +482,13 @@ narrow)
     done
     echo
     echo "the grants that earned their place: $kept"
-    echo "review it, then replace the body of $authority with it."
+    echo "review it, then replace the body of $system_paths with it."
     ;;
 mach-route)
     # Whether a command, /usr/bin being executable, starts a program outside the profile through
     # LaunchServices. Each confined row has a control, the same `open` unconfined: a control that
     # starts nothing — an approval prompt, a changed default application — leaves its row undecided.
-    emit "$authority" || exit 1
+    emit "$system_paths" || exit 1
     . "$work/command.env"
     project=$(pwd -P)
     route=$project/target/mach-route
@@ -552,9 +552,9 @@ mach-route)
     rm -rf "$route" "$work"/mach-route-marker-*
     ;;
 mach)
-    emit "$authority" || exit 1
+    emit "$system_paths" || exit 1
     . "$work/command.env"
-    # emit's own sbt server holds this project's portfile (the gate ends it for the same reason).
+    # emit's own sbt server holds this project's portfile (the acceptance test ends it for the same reason).
     sbt --jvm-client -batch shutdown >/dev/null 2>&1
     run_bound=${MACH_BOUND:-600}
     # A build of its own inside the project the profile grants: this checkout's target/ links into
@@ -604,14 +604,14 @@ mach-proxy)
         # Absolute, since the proxy is started from /.
         image=$(cd "$(dirname "$image")" && pwd -P)/$(basename "$image")
         sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile \"$work/proxy.sb\" \
-                $authority proxy-image \"$image\"" >"$work/emit-proxy.log" 2>&1 ||
+                $system_paths proxy-image \"$image\"" >"$work/emit-proxy.log" 2>&1 ||
             { echo "emit failed for the proxy:"; tail -20 "$work/emit-proxy.log"; exit 1; }
     else
-        emit "$authority" || exit 1
+        emit "$system_paths" || exit 1
         proxy_cp=$(sed -n 's/^classpath: //p' "$work/emit.log")
         [ -n "$proxy_cp" ] || { echo "emit printed no classpath" >&2; exit 1; }
         sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile \"$work/proxy.sb\" \
-                $authority proxy \"$JAVA_HOME\" \"$proxy_cp\"" >"$work/emit-proxy.log" 2>&1 ||
+                $system_paths proxy \"$JAVA_HOME\" \"$proxy_cp\"" >"$work/emit-proxy.log" 2>&1 ||
             { echo "emit failed for the proxy:"; tail -20 "$work/emit-proxy.log"; exit 1; }
     fi
     sbt --jvm-client -batch shutdown >/dev/null 2>&1

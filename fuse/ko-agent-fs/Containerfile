@@ -35,7 +35,7 @@ RUN set -eux; \
 RUN set -eux; \
     rustup target add "$(uname -m)-unknown-linux-musl"
 
-# The licence gate (`deny.toml`).
+# The licence check (`deny.toml`).
 ARG CARGO_DENY_VERSION=0.20.2
 RUN set -eux; \
     cargo install cargo-deny --version "${CARGO_DENY_VERSION}" --locked
@@ -47,8 +47,8 @@ COPY . .
 ARG KO_AGENT_FS_SOURCE_ID=unstamped
 ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 
-# `cargo deny` runs here because a licence and sourcing gate binds where the
-# artifact is produced, and it costs seconds.
+# `cargo deny` runs here because its licence and source checks apply to the
+# artifact this step produces, and it costs seconds.
 #
 # `cargo test` deliberately does not. This step runs on every user's --build,
 # and a test proves a property of the source, which the developer establishes
@@ -57,9 +57,9 @@ ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 # compile the dependency tree a second time, in the test profile, and put test
 # output in front of a user who can do nothing about it. The suites run on the
 # developer's machine (`doc/testing.md`) and, on any machine with podman, in
-# the ko-agent-self-test image the launcher's `--self-test` builds. What is
-# per-machine has a per-machine gate: the filter binary's own `--self-test`,
-# at install and before every session that mounts it.
+# the ko-agent-self-test image the launcher's `--self-test` builds. What
+# differs per machine is checked on each machine: the filter binary's own
+# `--self-test`, at install and before every session that mounts it.
 #
 # The source id is compiled in (`option_env!`), so every change to it busts the
 # ENV layer and re-runs this step; without the mounts that means recompiling the

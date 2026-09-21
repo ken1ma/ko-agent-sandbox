@@ -1,5 +1,5 @@
-//! The deny surface, exercised through a real mount by an attacker who is *not* git: raw filesystem
-//! operations against every path that could make a later host `git` execute code.
+//! The mutation checks, exercised through a real mount by an attacker who is *not* git: raw
+//! filesystem operations against every path that could make a later host `git` execute code.
 //!
 //! Each refusal is asserted to be `EPERM` specifically — a policy denial, not merely "an error".
 //! The exception is the pair of stale-handle tests at the end, whose refusal comes from the

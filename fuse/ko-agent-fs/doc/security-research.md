@@ -19,8 +19,9 @@ A new git CVE is relevant to `ko-agent-fs` if it touches one of these:
 
 - **Hooks / `core.hooksPath` / a new config→command mechanism.** A brand-new config *source*, or a
   new worktree-data→command path, would undermine P0 (`git-metadata.md`). The highest-risk one.
-- **"Trick git into writing into `.git`"** (symlink + case-insensitivity + submodules). We backstop
-  this on the sandbox side because we classify the *resolved* destination; still worth tracking.
+- **"Trick git into writing into `.git`"** (symlink + case-insensitivity + submodules). We deny the
+  final write on the sandbox side because we classify the *resolved* destination; still worth
+  tracking.
 - **Hardlink handling.** Inode aliasing is the class the `link` source-side rule closes.
 - **`.gitmodules` / submodule name or path parsing.** `.gitmodules` is writable worktree data, so a
   git bug here is the accepted "hostile data + git bug" residual — but track it.
@@ -31,7 +32,7 @@ A new git CVE is relevant to `ko-agent-fs` if it touches one of these:
 
 ## Reviewed CVEs (snapshot 2026-08-13)
 
-Verdicts: *validated* = confirms a rule we already have; *backstopped* = we deny the final `.git`
+Verdicts: *validated* = confirms a rule we already have; *write denied* = we deny the final `.git`
 write on the sandbox side; *residual* = accepted hostile-data-plus-git-bug, mitigated by a patched
 host git; *test-vector* = a name spelling for the per-backing name-rule corpus.
 
@@ -39,10 +40,10 @@ host git; *test-vector* = a name spelling for the per-backing name-rule corpus.
   HFS+ ignorable codepoints and Windows 8.3 names. *Validated* (the case-fold name rule) and
   *test-vector* (`.gi<U+200C>t`, `GIT~1`); the short name of an existing `.git` is under
   "Windows 8.3 short names".
-- **CVE-2021-21300** — symlink + case-insensitive checkout writes into `.git`. *Backstopped* by the
-  resolved-destination gate.
+- **CVE-2021-21300** — symlink + case-insensitive checkout writes into `.git`. *Write denied* by
+  the resolved-destination check.
 - **CVE-2024-32002** — recursive clone: symlink + case-insensitivity + submodule writes a hook into
-  `.git`. *Backstopped* on the sandbox side; *residual* for a host-side clone.
+  `.git`. *Write denied* on the sandbox side; *residual* for a host-side clone.
 - **CVE-2024-32021** — git creates hardlinks during a local clone. *Validated* (the `link`
   source-side / inode-aliasing rule).
 - **CVE-2018-11235** — crafted `.gitmodules` name → traversal into `$GIT_DIR/modules`, hook runs.

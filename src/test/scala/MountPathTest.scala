@@ -4,7 +4,7 @@
 // before anything is created. What a session may write there is the other suites' — this one
 // asks where the session is.
 //
-// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the gate):
+// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the condition):
 //
 //     sbt "testWithPodman *MountPathTest"
 

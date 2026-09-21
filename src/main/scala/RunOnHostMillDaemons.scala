@@ -9,11 +9,11 @@
 // on which the next client ends the daemon. The connect is denied because the daemon inherits the
 // starter's profile (SeatbeltProfile.Network.MillDaemon has why no outbound is granted); the
 // starter is ended once its daemon is proved listening, so the denied connect's ten-second retry
-// is not paid. The helper would return for a Mill version whose daemon does not survive the
+// is not waited out. The helper would return for a Mill version whose daemon does not survive the
 // starter's end. Before the broker's starts, a daemon of the user's own for the build directory
 // is ended by proof once idle, as the user's sbt server is shut down by protocol.
 // macOS only, like the wrapper: the observations are ps, pgrep and lsof, so BrokerRuntimes takes
-// `start` as a seam and the profile gate measures it.
+// `start` as a parameter tests replace and the acceptance test measures it.
 
 package agentsandbox.launcher
 
@@ -64,7 +64,7 @@ object RunOnHostMillDaemons:
    */
   def start(
     session: Session,
-    authority: SeatbeltProfile.RuntimeAuthority,
+    systemPaths: SeatbeltProfile.SystemPaths,
     forwards: Vector[(String, String)],
     processes: Processes,
     log: String => Unit,
@@ -74,7 +74,7 @@ object RunOnHostMillDaemons:
     val prereqs = assembled.prereqs
     val output = starterLog(session, start.hash)
     val inputs = RunOnHostSandbox.runtimeInputs(
-      assembled, session.tmp, start.runtime.proxyPort, authority, forwards, SeatbeltProfile.Network.MillDaemon,
+      assembled, session.tmp, start.runtime.proxyPort, systemPaths, forwards, SeatbeltProfile.Network.MillDaemon,
     )
     def said =
       s"the starter's output:\n${RunOnHostSandbox.sessionLogTail(output, 4096).getOrElse("(nothing was written)\n")}"

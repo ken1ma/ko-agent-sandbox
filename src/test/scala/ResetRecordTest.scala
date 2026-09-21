@@ -5,7 +5,7 @@
 // common case, a reset with nothing kept, in every suite's teardown. The last test is the project
 // whose directory went before any reset: --stats can only name it by id, and --reset takes that.
 //
-// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the gate):
+// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the condition):
 //
 //     sbt "testWithPodman *ResetRecordTest"
 
@@ -59,7 +59,7 @@ class ResetRecordTest extends munit.FunSuite:
 
     // XDG_STATE_HOME can name a directory under the tree --reset-all removes whole; the reset must
     // refuse rather than take the images' cleanup journal and the project records with it. The
-    // podman it finds passes the gate every podman action runs first and fails every other
+    // podman it finds passes the check every podman action runs first and fails every other
     // command, and its home is a temporary one: a reset that did not refuse would otherwise sweep
     // the workstation's containers, volumes and networks, and on Linux unmount every project's
     // filter under the real home through /bin/sh, which no temporary root confines.

@@ -371,7 +371,7 @@ object KoAgentFs:
       s"""dir="$$HOME/${koAgentFsMountDir(projectId)}"
        |rm -f "$$dir/sessions/$sandboxContainer"
        |# The project lock (see above). A shell that cannot even open it exits here, which leaves
-       |# the mount up — the same direction every other open edge in this script fails toward.
+       |# the mount up — as every other failure in this script does.
        |mkdir -p "$$dir" 2>/dev/null || true
        |exec 9>"$$dir/lock"
        |flock 9 2>/dev/null || true
@@ -400,9 +400,9 @@ object KoAgentFs:
    * On native Linux the script runs on this host, and a host's podman need not
    * be in ScriptPath's system directories at all (/opt/podman/bin is a real
    * layout). The path findOnPath resolved is the one this run created those
-   * containers with, so it is the one that can answer for them; the reap's
-   * own exit-code gate (only podman's not-exists answer prunes) is the
-   * backstop for a podman that fails rather than answers.
+   * containers with, so it is the one that can answer for them; the reap
+   * prunes a marker only on podman's not-exists answer, so a podman that
+   * fails rather than answers prunes nothing.
    */
   def koAgentFsReapPodman(podman: String, os: Os): String =
     os match
@@ -482,7 +482,7 @@ object KoAgentFs:
     )
 
   /**
-   * The per-session gate, before anything of the run exists: prove the installed binary is this
+   * The checks before each session, before anything of the run exists: prove the installed binary is this
    * launcher's build, prove it can mount and the policy refuses (self-test), and make the
    * mountpoint one a `podman create` can bind (koAgentFsPrepareScript). Every failure aborts the
    * launch — there is no fallback to an unfiltered bind mount. The mount itself is

@@ -252,7 +252,7 @@ class KoAgentFsTest extends munit.FunSuite:
     assert(all.contains(s"""rm -rf "$$HOME/$KoAgentFsInstallDir/mounts""""))
 
   test("the bundled ko-agent-fs source id is computable from this classpath and well-formed"):
-    // The per-session gate compares the installed binary's --version against this digest; it must
+    // The per-session check compares the installed binary's --version against this digest; it must
     // agree with what --build stamps, which hashes the same entries under the same relative paths.
     val id = bundledKoAgentFsSourceId()
     assertEquals(id.length, 64)

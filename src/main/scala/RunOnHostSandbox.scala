@@ -301,32 +301,32 @@ object RunOnHostSandbox:
         catch case ex: IOException => Left(s"$file: ${ex.getMessage}")
 
   /**
-   * The grammar of SeatbeltProfile.RuntimeAuthority.txt: one absolute path per line, `#` comments,
-   * `x ` prefix for a path that must also be executable. A runtime path is allowed only where
-   * testing proves the read is stable; the resource agentsandbox/SeatbeltProfile.RuntimeAuthority.txt
+   * The grammar of SeatbeltProfile.SystemPaths.txt: one absolute path per line, `#` comments,
+   * `x ` prefix for a path that must also be executable. A system path is granted only where
+   * testing proves the read is stable; the resource agentsandbox/SeatbeltProfile.SystemPaths.txt
    * is the measured set, and src/probe/run-on-host-profile-iterate.sh is how candidate entries are
    * measured.
    */
-  def parseRuntimeAuthority(all: Seq[String]): SeatbeltProfile.RuntimeAuthority =
+  def parseSystemPaths(all: Seq[String]): SeatbeltProfile.SystemPaths =
     val lines = all.map(_.trim).filter(line => line.nonEmpty && !line.startsWith("#"))
     val executes = lines.filter(_.startsWith("x ")).map(line => Path.of(line.drop(2).trim))
     val reads = lines.filterNot(_.startsWith("x ")).map(Path.of(_))
-    SeatbeltProfile.RuntimeAuthority(reads.flatMap(realPath), executes.flatMap(realPath))
+    SeatbeltProfile.SystemPaths(reads.flatMap(realPath), executes.flatMap(realPath))
 
-  def readRuntimeAuthority(file: Option[Path]): SeatbeltProfile.RuntimeAuthority =
+  def readSystemPaths(file: Option[Path]): SeatbeltProfile.SystemPaths =
     file match
-      case None => SeatbeltProfile.RuntimeAuthority(Seq.empty, Seq.empty)
+      case None => SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
       case Some(path) =>
-        parseRuntimeAuthority(Files.readAllLines(path).toArray(Array.empty[String]).toSeq)
+        parseSystemPaths(Files.readAllLines(path).toArray(Array.empty[String]).toSeq)
 
-  def bundledRuntimeAuthority(): SeatbeltProfile.RuntimeAuthority =
-    val stream = getClass.getResourceAsStream("/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt")
+  def bundledSystemPaths(): SeatbeltProfile.SystemPaths =
+    val stream = getClass.getResourceAsStream("/agentsandbox/SeatbeltProfile.SystemPaths.txt")
     if stream == null then
-      throw IllegalStateException("this jar bundles no SeatbeltProfile.RuntimeAuthority.txt; rebuild it")
+      throw IllegalStateException("this jar bundles no SeatbeltProfile.SystemPaths.txt; rebuild it")
     val text =
       try String(stream.readAllBytes(), UTF_8)
       finally stream.close()
-    parseRuntimeAuthority(text.linesIterator.toSeq)
+    parseSystemPaths(text.linesIterator.toSeq)
 
   /** How the wrapper re-invokes its own executable — the running JVM and classpath, or the native
     * image binary itself — under one of the launcher's private actions. */
@@ -440,7 +440,7 @@ object RunOnHostSandbox:
       brokerGone.start()
       sys.exit(
         run(
-          Path.of(project), program, commandArgs, bundledRuntimeAuthority(), uid,
+          Path.of(project), program, commandArgs, bundledSystemPaths(), uid,
           Console.err.println, workingDirectory = Some(Path.of(workingDirectory)),
           forwarded = forwardedNames(options),
           channelLog = options.find(_.startsWith(ChannelLogOption))
@@ -763,7 +763,7 @@ object RunOnHostSandbox:
     projectArg: Path,
     program: Program,
     commandArgs: Seq[String],
-    authority: SeatbeltProfile.RuntimeAuthority,
+    systemPaths: SeatbeltProfile.SystemPaths,
     uid: Int,
     log: String => Unit,
     // The channel's validated WORKING_DIRECTORY: only the child's cwd, never a grant.
@@ -790,7 +790,7 @@ object RunOnHostSandbox:
         // when not dispatched by a broker: the broker owns scavenging (at its startup and before
         // each runtime it prepares), and a dispatched command scavenging the root could condemn
         // the live broker's own session. channelLog is set exactly when the broker dispatched
-        // this command; the gate's own entry, with none, still scavenges.
+        // this command; the acceptance test's own entry, with none, still scavenges.
         _ =
           if channelLog.isEmpty then
             RunOnHostSession
@@ -832,7 +832,7 @@ object RunOnHostSandbox:
                   case Left(refusal) => Left(wording(refusal))
                   case Right(_) =>
                     runInSession(
-                      session, assembled, commandArgs, authority, workingDirectory, log,
+                      session, assembled, commandArgs, systemPaths, workingDirectory, log,
                       forwarded.flatMap(name => env(carrierName(name)).map(name -> _)), runtime,
                     )
               finally
@@ -852,7 +852,7 @@ object RunOnHostSandbox:
     * Created with the program's rule file as read then, in the session whose records
     * name its groups — the broker's for its launch's sbt and mill commands, or another launch's
     * broker's when this launch attaches to its runtime (BrokerRuntimes), the command's own for
-    * Maven and for the gate's entry — and ended with that session. */
+    * Maven and for the acceptance test's entry — and ended with that session. */
   case class Runtime(session: Path, proxyPort: Int, proxyLog: Path, daemonPort: Option[Int] = None):
     def tmp: Path = session.resolve(RunOnHostSession.TmpDir)
 
@@ -867,7 +867,7 @@ object RunOnHostSandbox:
     assembled: Assembled,
     tmp: Path,
     proxyPort: Int,
-    authority: SeatbeltProfile.RuntimeAuthority,
+    systemPaths: SeatbeltProfile.SystemPaths,
     forwards: Vector[(String, String)],
     network: SeatbeltProfile.Network,
     host: String => Option[String] = name => Option(System.getenv(name)),
@@ -884,7 +884,7 @@ object RunOnHostSandbox:
         gradleUserHome = assembled.gradleUserHomeGranted,
         m2Repository = assembled.m2RepositoryGranted,
         proxyPort = proxyPort,
-        runtime = authority,
+        systemPaths = systemPaths,
         network = network,
       ),
       commandEnvironment(
@@ -894,10 +894,10 @@ object RunOnHostSandbox:
     )
 
   /** The proxy registered at `record`, logging to `proxyLog`: its bound port. */
-  private def createProxy(authority: SeatbeltProfile.RuntimeAuthority)(
+  private def createProxy(systemPaths: SeatbeltProfile.SystemPaths)(
     program: Program, fileHosts: Vector[String], record: Path, proxyLog: Path,
   ): Either[String, Int] =
-    startProxy(record, program, fileHosts, proxyLog, authority)
+    startProxy(record, program, fileHosts, proxyLog, systemPaths)
       .flatMap(_ => awaitProxyPort(proxyLog, deadlineMillis = 30_000))
 
   /** What one sbt server is started from: the runtime whose proxy it uses, the request whose
@@ -928,7 +928,7 @@ object RunOnHostSandbox:
    * starts and matches the daemon in the launch's own registry, inside the profile, and the
    * broker records the registry's daemons after each command and ends them with its session
    * (RunOnHostGradleDaemons). Maven is never here: it runs once and exits, its proxy with the command.
-   * The gate's entry holds one of these over the command's own session for its one command, so
+   * The acceptance test's entry holds one of these over the command's own session for its one command, so
    * the one lifecycle has two callers and no second owner.
    *
    * When another launch owns the build directory's server or daemon (SECURITY.md "Run on host"),
@@ -938,24 +938,24 @@ object RunOnHostSandbox:
    * a live launch's group not its own; a dead launch's the scavenger collects.
    * `scavenge` runs before each preparation so a dead owner is collected by the exclusive
    * scavenger before a fresh server or daemon starts; one dying after it is taken over. Preparation and
-   * the session's end share this object's monitor. The seams register a stand-in spawn where
-   * the proxy, server or daemon would be, and stub the scavenger.
+   * the session's end share this object's monitor. Tests replace the second parameter list: they
+   * register a stand-in spawn where the proxy, server or daemon would be, and stub the scavenger.
    */
   final class BrokerRuntimes(
     session: Session,
     project: Path,
     log: String => Unit,
-    authority: SeatbeltProfile.RuntimeAuthority,
+    systemPaths: SeatbeltProfile.SystemPaths,
     forwards: Vector[(String, String)],
   )(
     processes: RunOnHostSession.Processes = RunOnHostSession.HostProcesses,
     assemble: (Path, Program, Path) => Either[String, Assembled] =
       (project, program, buildDirectory) =>
         RunOnHostSandbox.assemble(project, program, name => Option(System.getenv(name)), buildDirectory),
-    proxy: (Program, Vector[String], Path, Path) => Either[String, Int] = createProxy(authority),
-    server: ServerStart => Either[String, Unit] = start => startSbtServer(session, authority, forwards, start),
+    proxy: (Program, Vector[String], Path, Path) => Either[String, Int] = createProxy(systemPaths),
+    server: ServerStart => Either[String, Unit] = start => startSbtServer(session, systemPaths, forwards, start),
     daemon: DaemonStart => Either[String, RunOnHostMillDaemons.Daemon] =
-      start => RunOnHostMillDaemons.start(session, authority, forwards, RunOnHostSession.HostProcesses, log, start),
+      start => RunOnHostMillDaemons.start(session, systemPaths, forwards, RunOnHostSession.HostProcesses, log, start),
     scavenge: () => Unit = () => (),
     // The daemons holding the launch's registry under the given tmp/ (RunOnHostGradleDaemons.daemons).
     gradleDaemons: Path => Vector[(Long, String)] = RunOnHostGradleDaemons.daemons(_, RunOnHostSession.HostProcesses),
@@ -1178,7 +1178,9 @@ object RunOnHostSandbox:
       for
         proxy <- read(proxyRecord(program, current.hash))
         group <- read(record)
-        inputs = runtimeInputs(current.assembled, session.tmp, current.runtime.proxyPort, authority, forwards, network)
+        inputs = runtimeInputs(
+          current.assembled, session.tmp, current.runtime.proxyPort, systemPaths, forwards, network,
+        )
         _ <- RunOnHostRuntimeDescriptor.publish(
           RunOnHostRuntimeDescriptor.file(session.directory, program, current.hash),
           RunOnHostRuntimeDescriptor(
@@ -1320,7 +1322,7 @@ object RunOnHostSandbox:
               hosts <- readProgramRules(project, program)
               config <- if program == Program.Mill then daemonConfig(buildDirectory).map(Some(_)) else Right(None)
             yield
-              val inputs = runtimeInputs(assembled, ownerTmp, descriptor.proxyPort, authority, forwards, network)
+              val inputs = runtimeInputs(assembled, ownerTmp, descriptor.proxyPort, systemPaths, forwards, network)
               val own = RunOnHostRuntimeDescriptor.fingerprint(inputs, egressRuleText(program, hosts))
               val checked =
                 for
@@ -1557,7 +1559,7 @@ object RunOnHostSandbox:
     * when the build directory's portfile names a connectable socket under that `tmp/`. */
   private def startSbtServer(
     session: Session,
-    authority: SeatbeltProfile.RuntimeAuthority,
+    systemPaths: SeatbeltProfile.SystemPaths,
     forwards: Vector[(String, String)],
     start: ServerStart,
   ): Either[String, Unit] =
@@ -1565,7 +1567,7 @@ object RunOnHostSandbox:
     val prereqs = assembled.prereqs
     val output = serverLog(session, start.hash)
     val inputs = runtimeInputs(
-      assembled, session.tmp, start.runtime.proxyPort, authority, forwards, SeatbeltProfile.Network.ProxyOnly,
+      assembled, session.tmp, start.runtime.proxyPort, systemPaths, forwards, SeatbeltProfile.Network.ProxyOnly,
     )
     for
       profile <- SeatbeltProfile.render(inputs.profile)
@@ -1635,7 +1637,7 @@ object RunOnHostSandbox:
     session: Session,
     assembled: Assembled,
     commandArgs: Seq[String],
-    authority: SeatbeltProfile.RuntimeAuthority,
+    systemPaths: SeatbeltProfile.SystemPaths,
     workingDirectory: Option[Path],
     log: String => Unit,
     forwards: Vector[(String, String)],
@@ -1645,7 +1647,7 @@ object RunOnHostSandbox:
     val buildDirectory = workingDirectory.getOrElse(assembled.prereqs.project)
     for
       runtime <- brokerRuntime.map(Right(_)).getOrElse(
-        ownRuntime(session, assembled, buildDirectory, commandArgs, authority, forwards, log),
+        ownRuntime(session, assembled, buildDirectory, commandArgs, systemPaths, forwards, log),
       )
       // The broker's log has served earlier commands: the report reads what this one adds.
       reportFrom = logLength(runtime.proxyLog)
@@ -1667,7 +1669,7 @@ object RunOnHostSandbox:
           gradleUserHome = assembled.gradleUserHomeGranted,
           m2Repository = assembled.m2RepositoryGranted,
           proxyPort = runtime.proxyPort,
-          runtime = authority,
+          systemPaths = systemPaths,
           network = network,
         ),
       )
@@ -1681,7 +1683,7 @@ object RunOnHostSandbox:
       reportDenied(runtime.proxyLog, reportFrom, program, log)
       exit
 
-  /** The runtime a command without the broker's runs against: the gate's entry, and Maven under
+  /** The runtime a command without the broker's runs against: the acceptance test's entry, and Maven under
     * the broker. Created in the command's own session — by the broker's functions for the
     * programs whose runtime the broker holds, and as the command's proxy alone for Maven — and
     * ended with the session. */
@@ -1690,12 +1692,12 @@ object RunOnHostSandbox:
     assembled: Assembled,
     buildDirectory: Path,
     commandArgs: Seq[String],
-    authority: SeatbeltProfile.RuntimeAuthority,
+    systemPaths: SeatbeltProfile.SystemPaths,
     forwards: Vector[(String, String)],
     log: String => Unit,
   ): Either[String, Runtime] =
     val program = assembled.prereqs.program
-    BrokerRuntimes(session, assembled.prereqs.project, log, authority, forwards)(
+    BrokerRuntimes(session, assembled.prereqs.project, log, systemPaths, forwards)(
       assemble = (_, _, _) => Right(assembled),
     )
       .prepare(program, buildDirectory, commandArgs)
@@ -1704,7 +1706,7 @@ object RunOnHostSandbox:
         case None =>
           val proxyLog = session.directory.resolve("proxy.log")
           readProgramRules(assembled.prereqs.project, program)
-            .flatMap(createProxy(authority)(program, _, session.records.resolve("proxy"), proxyLog))
+            .flatMap(createProxy(systemPaths)(program, _, session.records.resolve("proxy"), proxyLog))
             .map(Runtime(session.directory, _, proxyLog))
 
   private[launcher] def logLength(file: Path): Long =
@@ -1716,11 +1718,11 @@ object RunOnHostSandbox:
    * image alone, or the JDK and each class-path entry of the jar form — what selfInvocation
    * runs, the executable itself checked first (selfPresent, both forms). Any other entry that
    * does not exist is skipped, as the JVM skips it; a relative or empty one is resolved as
-   * selfClassPath spells it. The JDK and class path are parameters for the gate's emitter, which
+   * selfClassPath spells it. The JDK and class path are parameters for the acceptance test's emitter, which
    * renders the profile from inside sbt's JVM for the java it runs the rows with.
    */
   def proxyInputs(
-    authority: SeatbeltProfile.RuntimeAuthority,
+    systemPaths: SeatbeltProfile.SystemPaths,
     javaHome: String = System.getProperty("java.home"),
     classPath: String = System.getProperty("java.class.path"),
     self: Option[Path] = launchFile,
@@ -1728,10 +1730,10 @@ object RunOnHostSandbox:
     selfPresent(self).flatMap: executable =>
       if isNativeImage then
         executable.toRight("the native image cannot name itself")
-          .map(binary => SeatbeltProfile.ProxyInputs(Seq(binary), Seq.empty, authority))
+          .map(binary => SeatbeltProfile.ProxyInputs(Seq(binary), Seq.empty, systemPaths))
       else
         realPath(Path.of(javaHome)).toRight(s"the JDK $javaHome is not readable").map: jdk =>
-          SeatbeltProfile.ProxyInputs(Seq(jdk), selfClassPath(classPath).map(Path.of(_)).flatMap(realPath), authority)
+          SeatbeltProfile.ProxyInputs(Seq(jdk), selfClassPath(classPath).map(Path.of(_)).flatMap(realPath), systemPaths)
 
   /** The proxy's profile, beside its log. */
   private def proxyProfileFile(proxyLog: Path): Path =
@@ -1740,16 +1742,16 @@ object RunOnHostSandbox:
   /** The proxy under its profile (SeatbeltProfile.renderProxy), beside its log. */
   private def startProxy(
     record: Path, program: Program, fileHosts: Vector[String], proxyLog: Path,
-    authority: SeatbeltProfile.RuntimeAuthority,
+    systemPaths: SeatbeltProfile.SystemPaths,
   ): Either[String, Process] =
-    proxyInputs(authority).flatMap(SeatbeltProfile.renderProxy).flatMap: profile =>
+    proxyInputs(systemPaths).flatMap(SeatbeltProfile.renderProxy).flatMap: profile =>
       try
         val profileFile = proxyProfileFile(proxyLog)
         Files.writeString(profileFile, profile, UTF_8)
-        // The property the command's environment contract sets (commandEnvironment), on the
+        // The property the command's environment sets (commandEnvironment), on the
         // command line since the proxy's environment is closed: a dual-stack JVM binds
         // ::ffff:127.0.0.1, which the profile's "localhost" class does not cover (measured: the
-        // gate's proxy rows).
+        // acceptance test's proxy rows).
         val invocation = selfInvocation("--serve-proxy-on-host")
         val command = RunOnHostSession.registeredSpawn(
           record,
@@ -1961,8 +1963,8 @@ object RunOnHostSandbox:
       "-Djava.net.preferIPv4Stack=true",
     )).mkString(" ")
     val own = Map(
-      // The JDK, then the system directories the runtime authority lets a command execute from
-      // (SeatbeltProfile.RuntimeAuthority.txt) — never the host's PATH: an entry of it the confinement refuses,
+      // The JDK, then the system directories a command may execute from
+      // (SeatbeltProfile.SystemPaths.txt) — never the host's PATH: an entry of it the confinement refuses,
       // a version manager's shim or a Homebrew program ahead of the system one, fails the lookup
       // with EPERM at that entry, and the shell tries no further, so a command the system PATH
       // serves would break on the shell's.

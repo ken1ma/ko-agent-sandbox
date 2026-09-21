@@ -24,7 +24,7 @@ Test / parallelExecution := false
 
 // The container-launching suites run only under this command; `test` and `testFull` alone skip
 // them, so no ordinary build starts a session. The command sets a system property the suites'
-// gate reads (WithPodman.underTestWithPodman) for one run of testFull, or of testOnly with the
+// condition reads (WithPodman.underTestWithPodman) for one run of testFull, or of testOnly with the
 // patterns given, and clears it however the run ends. Not an environment variable: the tests run
 // in the sbt server's JVM, whose environment is the one it was started with, so a variable on a
 // thin client's command line never reaches them and the run passes with every session suite
@@ -134,7 +134,7 @@ Compile / resourceGenerators += Def.task {
 // (AgentSandboxLauncher.unpackBuildContext). INDEX lists every bundled path: a jar's resource tree cannot be enumerated
 // at runtime.
 // Native-image's resource discovery misses required files; the native-image command in doc/TODO.md must include
-// sandbox-build/ (build contexts), defaults/ (proxy rules) and agentsandbox/ (--help and Seatbelt runtime authority).
+// sandbox-build/ (build contexts), defaults/ (proxy rules) and agentsandbox/ (--help and Seatbelt system paths).
 Compile / resourceGenerators += Def.task {
   val log = streams.value.log
   val outputRoot = (Compile / resourceManaged).value / "sandbox-build"

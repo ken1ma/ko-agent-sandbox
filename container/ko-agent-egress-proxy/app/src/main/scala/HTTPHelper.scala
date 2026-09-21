@@ -322,7 +322,7 @@ object HTTPHelper:
    * The response head, parsed for status and framing only — just enough to tell a completed body
    * from a truncated one — and relayed with only its version and hop-by-hop headers replaced
    * (toClientBytes):
-   * this proxy verifies response framing and speaks its own hop; it never rewrites or filters
+   * this proxy verifies response framing and sets its own connection's headers; it never rewrites or filters
    * response content, because that would require the response-content rule language this proxy refuses to
    * have. Origin-side malformations are IOExceptions, never BadRequests: the origin failed, and
    * the 502 should say so.

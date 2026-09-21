@@ -30,7 +30,7 @@ object AgentEgressProxy:
 
   /** Printed after `bind` and before any ruleset line, so a reader that saw it has a proxy
     * accepting connections; every refusal made before then ends the process instead. The
-    * launcher gates the sandbox on this spelling, after the stamp every line here starts with
+    * launcher starts the sandbox only after this spelling, after the stamp every line here starts with
     * (AgentSandboxLauncher.isProxyReadyLine); ProxyContainerTest holds the two together.
     * The port printed is the bound one, so a caller that set EGRESS_BIND with port 0 reads
     * its ephemeral port from this line. */

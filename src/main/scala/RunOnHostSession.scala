@@ -257,7 +257,7 @@ object RunOnHostSession:
    * the whole process when any descriptor to the file is closed (scavenge has the same caveat for
    * the session lock), so a waiter's channel closed on its timeout, or a holder's channel still
    * open when the next thread has locked a fresh one, would end another thread's exclusion
-   * against other processes. Two threads do contend: the gate's entry prepares its runtime on the
+   * against other processes. Two threads do contend: the acceptance test's entry prepares its runtime on the
    * main thread and tears the session down from the shutdown hook (RunOnHostSandbox.ownRuntime),
    * and the broker's monitor covers neither the wrapper nor the tests.
    *
@@ -387,7 +387,7 @@ object RunOnHostSession:
    * carrying its records with it, and deletes the record last. So a session enumerated live but
    * renamed away before its record is looked up is already in `condemned/` when that later,
    * fresh enumeration runs, and one gone from both is a teardown that finished — its server
-   * ended before the record was deleted. `betweenScan` is the tests' seam for the instant
+   * ended before the record was deleted. Tests use `betweenScan` to act in the instant
    * between the live enumeration and its lookup, where that rename races; the caller holding
    * this hash's build lock keeps a new owner from appearing during the check.
    *
@@ -660,7 +660,8 @@ object RunOnHostSession:
    * session's *original* path is our server and no other. The socket moved with the
    * condemnation rename, so the portfile's spelling is remapped before the shutdown is sent to
    * it — and sent only to a pathname proven inside the condemned directory: the portfile is the
-   * command's to write, so its spelling is a claim, and canonicalization is the proof.
+   * command's to write, so the path it names is resolved and compared with the condemned directory
+   * (containedSocket).
    */
   def collectServers(root: Path, condemned: Path, shutdown: Path => ServerAnswer): Vector[Collected] =
     val builds = buildDirectories(condemned).map(_(1))

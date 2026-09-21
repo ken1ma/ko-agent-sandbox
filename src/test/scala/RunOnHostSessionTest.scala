@@ -12,7 +12,7 @@ import RunOnHostSession.*
 
 object RunOnHostSessionTest:
   /** The registration spawn is the wrapper's own process and runs outside the profile by
-    * construction; under it, perl dies before registering. True exactly where the gate runs the
+    * construction; under it, perl dies before registering. True exactly where the acceptance test runs the
     * suites as a confined command, whose tests spawning one skip. */
   val underRunOnHostProfile: Boolean =
     sys.env.get("SBT_GLOBAL_SERVER_DIR").exists(_.startsWith("/private/tmp/ko-agent-"))
@@ -118,7 +118,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     // would open and close a second descriptor to its lock file, and closing any descriptor
     // releases the process's POSIX fcntl lock, so probing would unlock a live session. In one JVM
     // the release is invisible (the lock reads as held either way), so this asserts only that the
-    // own session is left out of the scan and its results; the cross-process release is the gate's.
+    // own session is left out of the scan and its results; the cross-process release is the acceptance test's.
     val root = freshRoot()
     val own = publish(root, Path.of("/p"), Kind.Broker).toOption.get
     val other = die(publish(root, Path.of("/p")).toOption.get)
@@ -943,7 +943,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     said
 
   test("two threads of one process: the waiter's timeout leaves the holder's lock and signal intact"):
-    // The gate's entry prepares on its main thread and tears down from the shutdown hook, in one
+    // The acceptance test's entry prepares on its main thread and tears down from the shutdown hook, in one
     // JVM; the waiter must open no second descriptor to the lock file, whose close would drop the
     // holder's fcntl lock for the whole process — which only another process can observe.
     val root = freshRoot()

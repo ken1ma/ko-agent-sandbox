@@ -401,7 +401,7 @@ What an auditor trusts, and how each link is checked:
 - **The source.** No binary is shipped: the Rust source travels inside the launcher jar, readable
   in this repository, and `--build` compiles it in a pinned `rust:slim` container on the user's
   own machine.
-- **The dependency tree**, pinned by `Cargo.lock` (`--locked` at every cargo step) and gated by a
+- **The dependency tree**, pinned by `Cargo.lock` (`--locked` at every cargo step) and checked by a
   pinned `cargo-deny` — permissive licences only — before any binary exists.
 - **The installed binary's source version.** The launcher digests the bundled source, passes the
   digest into the image build, and checks the installed binary's `--version` against it. A mismatch
@@ -422,8 +422,8 @@ What is measured, each through the whole production stack
 The rest is what the README's status line means: on Linux the guarantees are reasoned rather than
 measured, while the filter is the enforcement of every `--write=live` session, on every platform.
 
-Every gate on the filtered path fails closed: a version mismatch, a failed self-test or a failed
-mount aborts the launch, never falling back to an unfiltered bind.
+A version mismatch, a failed self-test or a failed mount aborts the launch; none falls back to an
+unfiltered bind.
 
 Implementation, policy derivation and test evidence: `fuse/ko-agent-fs/doc/`.
 
@@ -580,7 +580,7 @@ timestamp, including startup lines; the examples below omit it.
 
 The stages emit the following kinds of events:
 
-    # the CONNECT gate — lifecycle steps 1 to 6
+    # the CONNECT checks — lifecycle steps 1 to 6
     deny - - GET non-CONNECT request
     deny example.com CONNECT port 8080
     deny 169.254.169.254 CONNECT IP-literal target
@@ -588,7 +588,7 @@ The stages emit the following kinds of events:
     deny telemetry.example CONNECT host denied (rule: deny https://**.example/)
     deny internal.corp CONNECT resolved to non-public address 10.0.0.5
 
-    # the TLS gate — steps 8 to 10, after the 200, before any tunnel
+    # the TLS checks — steps 8 to 10, after the 200, before any tunnel
     deny github.com CONNECT SNI evil.example differs from target
     deny github.com CONNECT encrypted ClientHello
 
@@ -805,8 +805,8 @@ above: a JVM consults a `cacerts` keystore and a `net.properties` file.
   - Every root the image shipped survives: dropping one would stay invisible until a TLS client
     reaches an origin signed by that public CA, so the mounted store test checks the complete root
     set.
-  - The store is prepared at launch rather than baked in, since the per-project CA postdates the
-    image.
+  - The store is prepared at launch rather than built into the image, since the per-project CA
+    postdates the image.
 
 Programs not covered by the launcher's prepared trust stores need separate handling:
 
@@ -1086,7 +1086,7 @@ provides the confinement for these commands; they execute outside the container.
     repository does not take effect unseen.
   - The proxy reads the file when it starts: a host removed from the file stays reachable from the
     broker's proxy until it is next created (`doc/run-on-host.md`, "The command's egress proxy").
-  - The proxy runs under a profile of its own, granting its executable, the runtime authority as
+  - The proxy runs under a profile of its own, granting its executable, the system paths as
     reads and the network, and nothing of the user's: no project, no cache, no write anywhere.
 - **The command's environment is a closed set, not the launcher's.** The wrapper constructs it from
   its own settings, three pass-through variables, and the variables named by `--env` at launch
