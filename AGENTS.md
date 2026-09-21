@@ -28,6 +28,10 @@ Correct a mistaken premise, plan or wording before working, with the reason. Onc
 is heard, do the work as asked. Disagreement is expected; do not silently conform to a guessed
 intent.
 
+Before changing these instructions because one was not followed, identify what was missing,
+ambiguous or conflicting, or what prevented you from following it. Prefer revising the existing
+rule to adding another, and keep these instructions short: every prompt includes them.
+
 
 # Writing style
 
@@ -48,13 +52,15 @@ documentation uses. Read each sentence alone: compared nouns must be the same ki
 
 Record a standing practice or fact once, where it binds — the document that made the decision or
 the code enforcing it — and reference it elsewhere. Record a deliberate absence and its reason
-once; the sites that omit it stay silent.
+once; do not repeat the explanation elsewhere.
 
 After inserting, trimming or rewriting, compare the old and new meanings, then re-read the whole
-passage. Account for removed expectations, reasons, conditions and actions in the working list:
-preserve them, link to where the reader needs them, or give a concrete reason they do not belong.
-Check for duplication and clauses more specific or general than their neighbors: those belong in
-a different document.
+passage and check each sentence against Writing style. Unless the user authorized the change, ask
+before removing a recorded reason or intent or changing its meaning; code alone cannot establish
+why a choice was made. Account for removed expectations, reasons, conditions and actions in the
+working list: preserve them, link to where the reader needs them, or, when the removal is allowed,
+give a concrete reason they do not belong. Check for duplication and clauses more specific or
+general than their neighbors: those belong in a different document.
 
 In a completeness checklist — a security boundary, deny surface or test checklist — each element
 states its contribution. Restatement there serves the audit.
@@ -74,13 +80,13 @@ Delete completed TODO rows once their facts are recorded at their canonical site
 Replies lead with the result and include only details affecting the reader's next action; narrate
 the process only when necessary. For a proposal, objection or decision, first say how far you agree.
 
-Do not assume the writer speaks English natively. Report unnatural English without playing
-schoolteacher.
+Do not assume the writer speaks English natively. Report unnatural English and suggest a
+correction; do not explain the grammar unless asked.
 
 
 # Coding style
 
-Documents are at most 100 characters wide; code 120, allowing for indentation. Never split a URL
+Documents are at most 100 characters wide; code 120, including indentation. Never split a URL
 or hide it behind a reference to fit; its line may run over.
 
 Use trailing comma where possible.
@@ -93,12 +99,12 @@ Do not use one-letter names, except for
 3. names established in the literature
 
 
+# Agent memory
+
+Report each memory change you make: its location and what changed. Rules and project facts other
+agents need belong in AGENTS.md or project documents; propose that edit to the user.
+
+
 # git
 
-Do not change the git state: no `add` / `commit` / `rebase` / `push` unless explicitly asked.
-
-
-# Memory
-
-Do not write to the agent memory directory. Put rules in these instructions or project documents,
-read every session; memory recall is uncertain. When an instruction was not followed, improve it.
+Run only read-only git commands unless explicitly asked.
