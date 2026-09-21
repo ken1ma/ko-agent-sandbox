@@ -363,7 +363,7 @@ The server's state follows `-Dsbt.global.base` into the project's run-on-host ca
   redirect keeps your servers and the launch's out of each other's registry.
 
 The Ivy home follows `-Dsbt.ivy.home` into the run-on-host cache the same way, and `~/.ivy2` is not
-granted. sbt uses that home for three things, read from the sources of sbt 1.13.0 and 2.0.8:
+granted. sbt uses that home for three things, read from the sources of sbt 1.13.0 and 2.0.9:
 
 - resolving a dependency between the projects of one build goes through Ivy
   (`projectDescriptors`), and Ivy takes the lock file `<ivy home>/.sbt.ivy.lock` first;
@@ -376,11 +376,21 @@ the profile while canonicalizing the denied `~/.ivy2` for that lock. This reposi
 has no such edge, so the gate's sbt rows never reach that path; `src/probe/ivy-fixture` is such a
 build, on sbt 1.
 
-sbt 2 releases after 2.0.8 have no Ivy library (sbt/sbt#9615, merged 2026-08-24) and take no
-lock, so the fixture is not duplicated for sbt 2; it retires when sbt 1 does. Those releases
-still take `local` and the excludes file from `sbt.ivy.home`, so the redirect and its grant stay
-after the lock is gone. Retire them only when a released sbt stops deriving those two paths, and
-check that by reading `Defaults.scala` again, not by a gate run.
+sbt 2.0.9 keeps the Ivy library and the lock. The fixture is not duplicated for sbt 2, because
+sbt 1.13.0 and 2.0.9 name the lock file by the same steps, so the sbt 1 row measures the redirect
+for both:
+
+1. `-Dsbt.ivy.home` sets `ivy-home` in the sbt launcher's `sbt.boot.properties`;
+1. `Defaults.bootIvyHome` reads it from the sbt launcher into `ivyPaths`;
+1. `IvySbt` passes `ivyPaths.ivyHome` to Ivy's `setDefaultIvyUserDir` and names
+   `.sbt.ivy.lock` under `getDefaultIvyUserDir` (`Ivy.scala`: sbt's own `lm-ivy` at v2.0.9,
+   librarymanagement-ivy 1.12.3 for sbt 1.13.0).
+
+sbt 2.1.0-M1 has no Ivy library (sbt/sbt#9615, merged into `develop` 2026-08-24) and takes no lock,
+so the fixture retires when sbt 1 and sbt 2.0 do. sbt 2.1.0-M1 still takes `local` and the excludes
+file from `sbt.ivy.home`, so the redirect and its grant stay after the lock is gone. Retire them
+only when a released sbt stops deriving those two paths, and check that by reading `Defaults.scala`
+again, not by a gate run.
 
 - The wrapper passes `--jvm-client`: sbt 2 defaults to `sbtn`, which under the profile prints
   that it is starting the server and returns with no build run — a gate row keeps measuring it,
@@ -1331,13 +1341,18 @@ How each program reaches its cache:
   - https://github.com/com-lihaoyi/mill/blob/1.1.9/runner/launcher/src/mill/launcher/MillServerLauncher.scala
 - sbt server — domain-socket and TCP modes, the port file, discovery and the token:
   - https://www.scala-sbt.org/1.x/docs/sbt-server.html
-- sbt 1.13.0 and 2.0.8 — the thin client's server fork and its denied-connect retry, the
+- sbt 1.13.0 and 2.0.9 — the thin client's server fork and its denied-connect retry, the
   disconnect cancelling the channel's exec, the `proc` registry and `notifyOtherServers`, the
   server's idle timeout, the boot socket's path (the same paths at v1.13.0):
-  - https://github.com/sbt/sbt/blob/v2.0.8/main-command/src/main/scala/sbt/internal/client/NetworkClient.scala
-  - https://github.com/sbt/sbt/blob/v2.0.8/main/src/main/scala/sbt/internal/CommandExchange.scala
-  - https://github.com/sbt/sbt/blob/v2.0.8/main/src/main/scala/sbt/Defaults.scala
-  - https://github.com/sbt/sbt/blob/v2.0.8/main-command/src/main/java/sbt/internal/BootServerSocket.java
+  - https://github.com/sbt/sbt/blob/v2.0.9/main-command/src/main/scala/sbt/internal/client/NetworkClient.scala
+  - https://github.com/sbt/sbt/blob/v2.0.9/main/src/main/scala/sbt/internal/CommandExchange.scala
+  - https://github.com/sbt/sbt/blob/v2.0.9/main/src/main/scala/sbt/Defaults.scala
+  - https://github.com/sbt/sbt/blob/v2.0.9/main-command/src/main/java/sbt/internal/BootServerSocket.java
+- sbt 1.13.0 and 2.0.9 — the Ivy home from `sbt.ivy.home` to the lock file; sbt 1.13.0 takes
+  `Ivy.scala` from librarymanagement-ivy 1.12.3, which has no tag, so its sources jar is the link:
+  - https://github.com/sbt/sbt/blob/v2.0.9/launch/src/main/input_resources/sbt/sbt.boot.properties
+  - https://github.com/sbt/sbt/blob/v2.0.9/lm-ivy/src/main/scala/sbt/internal/librarymanagement/Ivy.scala
+  - https://repo1.maven.org/maven2/org/scala-sbt/librarymanagement-ivy_2.12/1.12.3/librarymanagement-ivy_2.12-1.12.3-sources.jar
 - Gradle 9.7.1's wrapper — the distribution directory, the properties it reads, the user home:
   - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/PathAssembler.java
   - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/WrapperExecutor.java

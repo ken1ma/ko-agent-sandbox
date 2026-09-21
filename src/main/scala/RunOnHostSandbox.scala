@@ -1467,7 +1467,7 @@ object RunOnHostSandbox:
   def serverRecordName(hash: String): String = s"server-sbt-$hash"
   def daemonRecordName(hash: String): String = s"daemon-mill-$hash"
 
-  // The thin client's own classes of launcher flag (NetworkClient.parseArgs, v2.0.8): a value
+  // The thin client's own classes of launcher flag (NetworkClient.parseArgs, v2.0.9): a value
   // flag takes the next argument or an `=` value; a no-value flag and an `=`-prefixed one are
   // the client's own and reach no server; the empty-build flags are launcher flags even after
   // the first command.
@@ -1494,7 +1494,7 @@ object RunOnHostSandbox:
 
   /**
    * The server command line as sbt's thin client issues it when it starts a server
-   * (NetworkClient.serverCommand, v1.13.0 and v2.0.8): the request's launcher flags as the client
+   * (NetworkClient.serverCommand, v1.13.0 and v2.0.9): the request's launcher flags as the client
    * classifies them — its `-D` properties, its value flags with their values, the empty-build
    * flags wherever they stand, and any other flag the client does not keep for itself — before
    * `--detach-stdio --server`. As the client, it drops `-J`, which the runner applies to the JVM
@@ -1815,7 +1815,7 @@ object RunOnHostSandbox:
     val buildDirectory = workingDirectory.getOrElse(prereqs.project)
     val programCommand = prereqs.program match
       // With the portfile live the client connects and forks nothing
-      // (NetworkClient.connectOrStartServerAndConnect, v1.13.0 and v2.0.8).
+      // (NetworkClient.connectOrStartServerAndConnect, v1.13.0 and v2.0.9).
       case Program.Sbt =>
         sbtCommand(prereqs.executable, assembled.sbtGlobal) ++
           Seq("--jvm-client", "-batch", "-java-home", prereqs.jdkHome.toString) ++ commandArgs
@@ -1935,7 +1935,7 @@ object RunOnHostSandbox:
     // The settings must reach the JVMs the command forks — a forked test or `run` — and such a JVM
     // inherits the environment and nothing else: its options come from the build definition, so
     // SBT_OPTS and JAVA_OPTS, which the sbt script and the mill executable do read, would reach
-    // only the program's own JVMs. sbt 2.0.8 also copies JAVA_TOOL_OPTIONS and JDK_JAVA_OPTIONS
+    // only the program's own JVMs. sbt 2.0.9 also copies JAVA_TOOL_OPTIONS and JDK_JAVA_OPTIONS
     // into argv without unquoting them; _JAVA_OPTIONS reaches HotSpot unchanged. HotSpot applies
     // it after argv, so the wrapper's properties also win over command-line properties.
     // The shim handles the resulting startup banner.

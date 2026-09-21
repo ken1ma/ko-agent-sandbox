@@ -695,15 +695,33 @@ object AgentSandboxLauncher:
   private def imageChoice(variable: String, default: String): (String, Boolean) =
     env(variable).fold((default, false))(image => (image, true))
 
-  def bundleMismatch(image: String, expected: String, label: String): Option[String] =
+  def bundleMismatch(
+    image: String,
+    expected: String,
+    label: String,
+    labelName: String = BundleLabel,
+  ): Option[String] =
     Option.when(label.trim != expected)(
       s"container image $image was not built from the sources this launcher bundles" +
         (if label.trim.isEmpty then " (it has no bundle label)" else "") +
         "; rebuild with --build" +
         s"\n  launcher bundle digest: $expected" +
-        s"\n  image label $BundleLabel: " +
+        s"\n  image label $labelName: " +
         (if label.trim.isEmpty then "(none)" else label.trim),
     )
+
+  /**
+   * --update uses a base built from this jar's bundled base sources, or does not start. The
+   * identity is of the sources, not of the image's contents: the same sources install what the
+   * package repositories hold on the day of the build.
+   */
+  def requireBaseFromBundledSources(podman: String, baseImage: String, expected: String): Unit =
+    if !runOk(podman, "image", "exists", baseImage) then
+      fail(s"error: base container image not found: $baseImage\n\nBuild it first: run this launcher with --build.")
+    val inspected = run(podman, "image", "inspect", "--format", labelTemplate(BaseBundleLabel), baseImage)
+    if !inspected.ok then fail(s"error: could not inspect $baseImage\n${inspected.err}")
+    bundleMismatch(baseImage, expected, inspected.text, BaseBundleLabel).foreach: mismatch =>
+      fail(s"error: $mismatch")
 
   /**
    * Every launcher build passes this and reads its `FROM` images from local storage alone. The
@@ -734,10 +752,14 @@ object AgentSandboxLauncher:
    * value (buildah #5501, #5095), so a cached LABEL step can commit a stale
    * digest; a command-line --label is applied at commit, outside that cache.
    * --build still verifies the committed label (verifyBuiltBundleLabels).
+   *
+   * debian-coursier's BaseBundleLabel travels as `--label` alone: only the launcher reads it
+   * (requireBaseFromBundledSources), so a hand-run build has no use for the Containerfile LABEL.
    */
   def buildCommands(
     podman: String,
     version: String,
+    baseBundleId: String,
     fsSourceId: String,
     sandboxBundleId: String,
     proxyBundleId: String,
@@ -746,6 +768,7 @@ object AgentSandboxLauncher:
       Vector(podman, "build", NoRegistryLookup, "-t", s"debian-temurin:$version", "debian-temurin"),
       Vector(
         podman, "build", NoRegistryLookup, "--build-arg", s"IMG_TAG_VER=$version",
+        "--label", s"$BaseBundleLabel=$baseBundleId",
         "-t", s"debian-coursier:$version", "debian-coursier",
       ),
       Vector(
@@ -875,10 +898,10 @@ object AgentSandboxLauncher:
    * rather than assumed. A failure here is podman misbehaving, not a wrong
    * jar — the remediation is clearing the build cache, not --build again.
    */
-  def verifyBuiltBundleLabels(expected: Seq[(String, String)]): Unit =
+  def verifyBuiltBundleLabels(expected: Seq[(String, String)], labelName: String = BundleLabel): Unit =
     expected.foreach: (image, id) =>
       val inspected = run(
-        podman, "image", "inspect", "--format", BundleLabelTemplate, image,
+        podman, "image", "inspect", "--format", labelTemplate(labelName), image,
       )
       if !inspected.ok then
         fail(s"error: could not inspect the just-built image $image\n${inspected.err}")
@@ -886,7 +909,7 @@ object AgentSandboxLauncher:
         fail(
           s"""error: the image build committed $image with a stale bundle label
              |  launcher bundle digest: $id
-             |  image label $BundleLabel: ${
+             |  image label $labelName: ${
                 if inspected.text.trim.isEmpty then "(none)" else inspected.text.trim}
              |
              |podman's layer cache can serve a LABEL derived from a changed
@@ -2178,8 +2201,12 @@ object AgentSandboxLauncher:
           val sandboxBundleId = contextSourceId(context, "ko-agent-sandbox")
           val proxyBundleId = contextSourceId(context, "ko-agent-egress-proxy")
           val readContainerfile = buildContextReader(context)
+          val baseId = baseBundleId(
+            contextSourceId(context, "debian-temurin"),
+            contextSourceId(context, "debian-coursier"),
+          )
           val commands =
-            buildCommands(podman, ImgTagVersion, fsSourceId, sandboxBundleId, proxyBundleId)
+            buildCommands(podman, ImgTagVersion, baseId, fsSourceId, sandboxBundleId, proxyBundleId)
           val remoteImages =
             remoteImagesForBuildCommands(commands, readContainerfile, managedImageTags(ImgTagVersion).toSet)
           val images = buildOutputImages(commands)
@@ -2195,6 +2222,7 @@ object AgentSandboxLauncher:
             "ko-agent-sandbox:latest" -> sandboxBundleId,
             "ko-agent-egress-proxy:latest" -> proxyBundleId,
           ))
+          verifyBuiltBundleLabels(Seq(s"debian-coursier:$ImgTagVersion" -> baseId), BaseBundleLabel)
           installKoAgentFs(podman, currentOs, fsSourceId)
           val (candidates, staleTags) = includeStaleSelfTestCleanup(
             podman,
@@ -2219,6 +2247,13 @@ object AgentSandboxLauncher:
         requirePodman(currentOs, buildMemoryHeadroom)
         confirmMemoryForBuilds(currentOs)
         withImageBuildLock(currentOs): journal =>
+          // Under the lock, so no other launcher replaces the base between this check and the build;
+          // before the context is unpacked, so a refusal leaves nothing behind.
+          requireBaseFromBundledSources(
+            podman,
+            s"debian-coursier:$ImgTagVersion",
+            baseBundleId(bundledSourceId("debian-temurin"), bundledSourceId("debian-coursier")),
+          )
           val context = unpackBuildContext()
           val fsSourceId = koAgentFsSourceId(context)
           val selfTestSourceId = contextSourceId(context, "ko-agent-self-test")
