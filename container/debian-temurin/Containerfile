@@ -1,7 +1,8 @@
 # Debian 13 (trixie)
 #
 # This aligns with the distroless java25-debian13 runtime base.
-FROM docker.io/library/debian:13.6-slim
+ARG DEBIAN_VERSION=13.7
+FROM docker.io/library/debian:${DEBIAN_VERSION}-slim
 
 ARG TEMURIN_VERSION=25.0.4
 
@@ -77,3 +78,12 @@ RUN set -euxo pipefail; \
     apt-get install -y --no-install-recommends "$TEMURIN_DEB_PACKAGE=$TEMURIN_DEB_VERSION"; \
     rm -rf /var/lib/apt/lists/*; \
     test -x "$JAVA_HOME/bin/java"
+
+# The image's tag names the major versions alone (LauncherImages.ImgTagVersion), so these labels
+# are where an image shows the two versions above; the images built on this one inherit them.
+# They follow the last RUN because podman reuses a cached LABEL step whose ARG value changed
+# (buildah #5501). A changed DEBIAN_VERSION changes FROM, and a changed TEMURIN_VERSION changes the
+# RUN above; either misses the cache along with every step after it.
+ARG DEBIAN_VERSION
+LABEL debian-temurin.debian-version=${DEBIAN_VERSION}
+LABEL debian-temurin.temurin-version=${TEMURIN_VERSION}

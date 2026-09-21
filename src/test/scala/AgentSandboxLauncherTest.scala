@@ -479,7 +479,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(addressOn(output, "missing"), None)
 
   test("build commands run in dependency order with the pinned base tag"):
-    val commands = buildCommands("podman", "1.2-3", "sourceid", "sandboxid", "proxyid")
+    val commands = buildCommands("podman", "1.2-3", "baseid", "sourceid", "sandboxid", "proxyid")
     assertEquals(commands.map(_.last), Vector(
       "debian-temurin",
       "debian-coursier",
@@ -512,13 +512,17 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(commands(4).containsSlice(Seq("--label", s"$BundleLabel=proxyid")))
     (commands.take(2) ++ Vector(commands(3), commands(5), commands(6))).foreach: command =>
       assert(!command.exists(_.startsWith("BUNDLE_ID=")))
+      assert(!command.exists(_.startsWith(s"$BundleLabel=")))
+    // debian-coursier carries the bases' identity, which --update checks; it has no Containerfile LABEL.
+    assert(commands(1).containsSlice(Seq("--label", s"$BaseBundleLabel=baseid")))
+    (Vector(commands(0), commands(3), commands(5), commands(6))).foreach: command =>
       assert(!command.contains("--label"))
 
   test("--build and --update refresh exactly the remote sources their Containerfiles use"):
     val readContainerfile: String => String = BundledBuildContext.resource
     val localImages = managedImageTags("1.2-3").toSet
     val buildCommands = AgentSandboxLauncher.buildCommands(
-      "podman", "1.2-3", "sourceid", "sandboxid", "proxyid",
+      "podman", "1.2-3", "baseid", "sourceid", "sandboxid", "proxyid",
     )
     val buildImages = remoteImagesForBuildCommands(buildCommands, readContainerfile, localImages)
     def repository(image: String): String = image.take(image.lastIndexOf(':'))
@@ -559,7 +563,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     val rustVersion = pinnedRustVersion(context)
     val buildImages = remoteImagesForBuildCommands(
-      AgentSandboxLauncher.buildCommands("podman", "1.2-3", "sourceid", "sandboxid", "proxyid"),
+      AgentSandboxLauncher.buildCommands("podman", "1.2-3", "baseid", "sourceid", "sandboxid", "proxyid"),
       readContainerfile,
       localImages,
     )
@@ -920,7 +924,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assert(refused.swap.exists(_.contains(expected)), s"$text -> $refused")
 
   test("every generated build command uses only flags the remote-source scan reads"):
-    val generated = buildCommands("podman", "1.2-3", "sourceid", "sandboxid", "proxyid") ++
+    val generated = buildCommands("podman", "1.2-3", "baseid", "sourceid", "sandboxid", "proxyid") ++
       updateCommands("podman", "1.2-3", "sandboxid") ++
       selfTestBuildCommands("podman", "test-rust", "sourceid", "selftestid")
     generated.foreach: command =>
@@ -964,7 +968,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(commands.head.containsSlice(Seq("--label", s"$BundleLabel=sandboxid")))
 
   test("build cleanup removes replaced ids and launcher tags from older versions"):
-    val builds = buildCommands("podman", "1.2-3", "sourceid", "sandboxid", "proxyid")
+    val builds = buildCommands("podman", "1.2-3", "baseid", "sourceid", "sandboxid", "proxyid")
     assertEquals(
       buildOutputImages(builds),
       buildImageTags("1.2-3"),
@@ -1062,7 +1066,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
   test("every cleanup order is a reverse topological order of the Containerfiles' FROM graph"):
     val version = "1.2-3"
     val actions =
-      buildCommands("podman", version, "sourceid", "sandboxid", "proxyid") ++
+      buildCommands("podman", version, "baseid", "sourceid", "sandboxid", "proxyid") ++
         updateCommands("podman", version, "sandboxid") ++
         selfTestBuildCommands("podman", "1.2.3", "sourceid", "selftestid")
     val declared = managedImageTags(version)
@@ -1121,7 +1125,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       Files.readAllLines(path).asScala.count(_.startsWith("FROM ")) > 1
 
     val commands =
-      buildCommands("podman", "1.2-3", "sourceid", "sandboxid", "proxyid") ++
+      buildCommands("podman", "1.2-3", "baseid", "sourceid", "sandboxid", "proxyid") ++
         selfTestBuildCommands("podman", "1.2.3", "sourceid", "selftestid")
     val tracked = commands.filter(_.containsSlice(Seq("--target", "build"))).map: command =>
       val fileIndex = command.indexOf("-f")
@@ -1162,6 +1166,88 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(unlabeled.exists(_.contains("no bundle label")), unlabeled.toString)
     assert(unlabeled.exists(_.contains(s"$sandboxId")), unlabeled.toString)
     assert(unlabeled.exists(_.contains("(none)")), unlabeled.toString)
+
+  test("the bases have one identity over both directories, and --build labels debian-coursier with it"):
+    val temurinId = bundledSourceId("debian-temurin")
+    val coursierId = bundledSourceId("debian-coursier")
+    val baseId = baseBundleId(temurinId, coursierId)
+    // A change in either directory is a change of the one label --update reads.
+    assert(baseBundleId(temurinId.reverse, coursierId) != baseId)
+    assert(baseBundleId(temurinId, coursierId.reverse) != baseId)
+    assert(baseBundleId(coursierId, temurinId) != baseId)
+
+    // --build puts the label on the image --update checks, and on no other.
+    val commands = buildCommands("podman", "1.2-3", baseId, "sourceid", "sandboxid", "proxyid")
+    val labelled = commands.filter(_.containsSlice(Seq("--label", s"$BaseBundleLabel=$baseId")))
+    assertEquals(labelled.map(_.last), Vector("debian-coursier"))
+
+  test("--update starts no pull or build on a base this jar's bundled base sources did not build"):
+    assume(HostCommands.currentOs != Os.Windows, "the fake executable is a POSIX shell script")
+    val expected = baseBundleId(bundledSourceId("debian-temurin"), bundledSourceId("debian-coursier"))
+    val older = baseBundleId(bundledSourceId("debian-temurin").reverse, bundledSourceId("debian-coursier"))
+    val jvm = Paths.get(sys.props("java.home"), "bin", "java").toString
+
+    /** The launcher's real --update in a JVM of its own, since a refusal exits it: the exit code,
+      * stderr, and the podman calls. `label` is what the base's inspect prints; None is no image. */
+    def update(label: Option[String]): (Int, String, Vector[String]) =
+      val root = Files.createTempDirectory("update-base-check").toRealPath()
+      try
+        val bin = Files.createDirectory(root.resolve("bin"))
+        val podman = bin.resolve("podman")
+        Files.writeString(
+          podman,
+          s"""#!/bin/sh
+             |printf '%s\\n' "$$*" >> "$root/calls"
+             |case "$$1 $$2" in
+             |  "--version ") printf 'podman version 6.1.1\\n' ;;
+             |  "info --format") printf '68719476736\\n' ;;
+             |  "machine ssh") printf 'MemAvailable: 60000000 kB\\n' ;;
+             |  "image exists") ${if label.isDefined then "exit 0" else "exit 1"} ;;
+             |  "image inspect") case "$$*" in *debian-coursier:*) printf '%s\\n' '${label.getOrElse("")}' ;; esac ;;
+             |esac
+             |""".stripMargin,
+        )
+        podman.toFile.setExecutable(true)
+        // A matching base lets --update unpack its build context, into a directory removed with the rest.
+        val builder = ProcessBuilder(
+          jvm, s"-Djava.io.tmpdir=${Files.createDirectory(root.resolve("tmp"))}",
+          "-cp", EmitRunOnHostProfile.classpathForRelaunch,
+          "agentsandbox.launcher.AgentSandboxLauncher", "--update",
+        )
+        builder.directory(Files.createDirectory(root.resolve("cwd")).toFile)
+        builder.environment().clear()
+        builder.environment().put("PATH", bin.toString)
+        builder.environment().put("HOME", Files.createDirectory(root.resolve("home")).toString)
+        val process = builder.start()
+        process.getOutputStream.close()
+        process.getInputStream.readAllBytes()
+        val error = String(process.getErrorStream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)
+        (process.waitFor(), error, Files.readString(root.resolve("calls")).linesIterator.toVector)
+      finally FileHelper.deleteRecursively(root)
+
+    def startsImageWork(calls: Vector[String]): Boolean =
+      calls.exists(call => call.startsWith("pull ") || call.startsWith("build ") || call.startsWith("image ls"))
+
+    // The upgrade case: a base an older jar built, under the tag this jar also uses.
+    val (olderExit, olderError, olderCalls) = update(Some(older))
+    assertEquals(olderExit, 1, olderError)
+    assert(olderError.contains("rebuild with --build"), olderError)
+    assert(olderError.contains(s"image label $BaseBundleLabel: $older"), olderError)
+    assert(!startsImageWork(olderCalls), olderCalls.toString)
+
+    val (unlabeledExit, unlabeledError, unlabeledCalls) = update(Some(""))
+    assertEquals(unlabeledExit, 1, unlabeledError)
+    assert(unlabeledError.contains("it has no bundle label"), unlabeledError)
+    assert(!startsImageWork(unlabeledCalls), unlabeledCalls.toString)
+
+    val (absentExit, absentError, absentCalls) = update(None)
+    assertEquals(absentExit, 1, absentError)
+    assert(absentError.contains(s"base container image not found: debian-coursier:$ImgTagVersion"), absentError)
+    assert(!startsImageWork(absentCalls), absentCalls.toString)
+
+    // A base this jar's sources built: the update goes on to its build.
+    val (_, matchingError, matchingCalls) = update(Some(expected))
+    assert(matchingCalls.exists(_.startsWith("build ")), s"$matchingCalls\n$matchingError")
 
   test("the bundled build context includes every Containerfile and an INDEX"):
     // The resourceGenerators task in build.sbt put these in the jar; this checks that the launcher
@@ -1222,20 +1308,21 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     Vector("ko-agent-fs/doc/", "ko-agent-fs/probe/").foreach: prefix =>
       assert(!index.exists(_.startsWith(prefix)), s"$prefix leaked into the jar")
 
-  test("ImgTagVersion mirrors debian-temurin's Debian and Temurin pins"):
-    val tag = "([0-9.]+)-([0-9.]+)-[0-9]+".r
-    ImgTagVersion match
-      case tag(debian, temurin) =>
-        val lines = BundledBuildContext.resource("debian-temurin/Containerfile").linesIterator.toVector
-        assert(
-          lines.contains(s"FROM docker.io/library/debian:$debian-slim"),
-          s"debian-temurin does not pin debian:$debian-slim",
-        )
-        assert(
-          lines.contains(s"ARG TEMURIN_VERSION=$temurin"),
-          s"debian-temurin does not pin TEMURIN_VERSION=$temurin",
-        )
-      case _ => fail(s"ImgTagVersion '$ImgTagVersion' is not <debian>-<temurin>-<revision>")
+  test("ImgTagVersion names the Debian and Temurin major versions debian-temurin installs"):
+    val versionArg = "ARG (DEBIAN|TEMURIN)_VERSION=([0-9]+)\\.[0-9.]+".r
+    val majors = BundledBuildContext.resource("debian-temurin/Containerfile").linesIterator.collect:
+      case versionArg(name, major) => name -> major
+    .toMap
+    assertEquals(s"latest-${majors("DEBIAN")}-${majors("TEMURIN")}", ImgTagVersion)
+
+  test("debian-temurin labels its Debian and Temurin versions after its last RUN"):
+    // A LABEL before that RUN would keep the previous version after it changes (debian-temurin's
+    // Containerfile has the podman behavior).
+    val lines = BundledBuildContext.resource("debian-temurin/Containerfile").linesIterator.toVector
+    val lastRun = lines.lastIndexWhere(_.startsWith("RUN "))
+    Vector("debian-version=${DEBIAN_VERSION}", "temurin-version=${TEMURIN_VERSION}").foreach: label =>
+      val at = lines.indexOf(s"LABEL debian-temurin.$label")
+      assert(at > lastRun, s"LABEL debian-temurin.$label is absent or precedes the last RUN")
 
   test("SECURITY.md names exactly the git-fetch hosts the proxy ships"):
     // The git-host list has two homes: the git-fetch lines of the proxy's defaults/host and the

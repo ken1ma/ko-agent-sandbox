@@ -13,12 +13,14 @@ import KoAgentFs.bundleSourceId
 object LauncherImages:
 
   /**
-   * The Debian/Temurin base the launcher-owned base images pin, passed to every image
-   * as IMG_TAG_VER; leaf images stay on `latest` (buildCommands). Mirrors
-   * the pins in debian-temurin's Containerfile — a bump edits both files,
-   * and the "ImgTagVersion mirrors" test fails when they disagree.
+   * The tag of the launcher-owned base images, passed to the images built on them as IMG_TAG_VER;
+   * leaf images stay on `latest` (buildCommands). It names the Debian and Temurin major versions
+   * alone, so it changes when one of them does, and the next build removes the bases under the
+   * previous tag (staleVersionedBaseImageTags). The full versions are in debian-temurin's
+   * Containerfile alone, which sets them as image labels; the "ImgTagVersion names" test fails when
+   * a major version there differs from the tag's.
    */
-  val ImgTagVersion = "13.6-25.0.4-0"
+  val ImgTagVersion = "latest-13-25"
   val ProxyBuildImage = "ko-agent-egress-proxy-build:cache"
   val KoAgentFsBuildImage = "ko-agent-fs-build:cache"
   val SelfTestBuildImage = "ko-agent-self-test-build:cache"
@@ -50,13 +52,27 @@ object LauncherImages:
   val BundleLabel = "ko-agent-sandbox.bundle"
 
   /**
+   * On debian-coursier: one identity for both base directories (baseBundleId), because --update
+   * builds on that image without rebuilding either base, and ImgTagVersion stays the same across
+   * an update of a base's sources. The sandbox image inherits the label.
+   */
+  val BaseBundleLabel = "ko-agent-sandbox.base-bundle"
+
+  def baseBundleId(temurinSourceId: String, coursierSourceId: String): String =
+    bundleSourceId(Vector(
+      "debian-temurin" -> temurinSourceId.getBytes(StandardCharsets.UTF_8),
+      "debian-coursier" -> coursierSourceId.getBytes(StandardCharsets.UTF_8),
+    ))
+
+  /**
    * The label read back through Go's raw-string (backtick) quoting, because the argument must not
    * contain a double quote: on Windows, Java's argument encoding passes an embedded quote through
    * unescaped, and podman then parses a mangled template ("bad character U+002D"). Literal
    * newlines are avoided in the multi-line templates below for the same reason — `{{println}}`
    * emits them on the output side instead.
    */
-  val BundleLabelTemplate = s"{{with .Config.Labels}}{{index . `$BundleLabel`}}{{end}}"
+  def labelTemplate(label: String): String = s"{{with .Config.Labels}}{{index . `$label`}}{{end}}"
+  val BundleLabelTemplate = labelTemplate(BundleLabel)
 
   private def localImageTag(tag: String): String = tag.stripPrefix("localhost/")
 

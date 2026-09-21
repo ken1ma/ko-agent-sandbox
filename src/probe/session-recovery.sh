@@ -103,7 +103,7 @@ fi
 # --- one sbt server in a scratch project, its state under probe-owned directories -------------
 
 mkdir -p "$work/proj/project" "$work/srv"
-echo "sbt.version=2.0.8" > "$work/proj/project/build.properties"
+echo "sbt.version=2.0.9" > "$work/proj/project/build.properties"
 : > "$work/proj/build.sbt"
 
 echo "booting a scratch sbt server (can take a minute)"
