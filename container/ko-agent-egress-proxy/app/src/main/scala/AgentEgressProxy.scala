@@ -207,11 +207,23 @@ object AgentEgressProxy:
      * Everything reported goes to stderr and, with EGRESS_LOG_FILE set, to
      * that host file too. Set up first so the startup lines are written to it, and
      * failing loudly: an enforcement point whose audit trail cannot be
-     * written should not start.
+     * written should not start, and one whose log stops being written serves
+     * nothing more (Run.requireAuditLog). The log is the file where one is set;
+     * stderr is then a copy podman removes with the container, and its failed writes
+     * are not kept. Without a file stderr is the log: the run-on-host wrapper
+     * redirects it into a file. The descriptor, not System.err: that PrintStream
+     * catches the failure before keepingFirstFailure could keep it.
      */
+    val processStderr = FileOutputStream(java.io.FileDescriptor.err)
+    val firstLogFailure = java.util.concurrent.atomic.AtomicReference[IOException]()
+    def logFailure = Option(firstLogFailure.get)
     val sinks = Option(System.getenv(LogFileVariable)).filter(_.nonEmpty) match
-      case Some(path) => teeOutput(System.err, FileOutputStream(path, true))
-      case None       => System.err
+      case Some(path) =>
+        teeOutput(
+          keepingFirstFailure(processStderr, java.util.concurrent.atomic.AtomicReference[IOException]()),
+          keepingFirstFailure(FileOutputStream(path, true), firstLogFailure),
+        )
+      case None => keepingFirstFailure(processStderr, firstLogFailure)
     System.setErr(PrintStream(stampLines(sinks, () => Instant.now()), true))
 
     /*
@@ -233,7 +245,7 @@ object AgentEgressProxy:
             case ex: IOException =>
               System.err.println(ex.getMessage)
               sys.exit(2)
-        (Run(resolved, inspection, transport), parseBind(Option(System.getenv(BindVariable))))
+        (Run(resolved, inspection, transport, () => logFailure), parseBind(Option(System.getenv(BindVariable))))
       catch
         case ex: IllegalArgumentException =>
           System.err.println(ex.getMessage)
@@ -259,6 +271,10 @@ object AgentEgressProxy:
     metadataLines(run.resolved).foreach(System.err.println)
     run.resolved.warnings.foreach(warning => System.err.println(s"warning: $warning"))
     System.err.println(run.inspectionSummary)
+
+    logFailure.foreach: ex =>
+      System.err.println(s"${auditLogFailure(ex)}; not starting")
+      sys.exit(2)
 
     acceptForever(server, run)
 
@@ -327,11 +343,42 @@ object AgentEgressProxy:
       case _                            => ex.getMessage
     s"cannot load the TLS inspection material: $reason"
 
+  /** The RFC 9209 proxy error type of a failure on the origin leg of an inspected connection,
+    * after the origin's address accepted the connection. */
+  def originProxyError(ex: IOException): String =
+    def certificate(cause: Throwable): Boolean =
+      cause != null && (cause.isInstanceOf[java.security.cert.CertificateException] || certificate(cause.getCause))
+    ex match
+      case _: javax.net.ssl.SSLException if certificate(ex) => "tls_certificate_error"
+      case _: javax.net.ssl.SSLException                    => "tls_protocol_error"
+      case _: java.net.SocketTimeoutException               => "http_response_timeout"
+      case _: SocketException                               => "connection_terminated"
+      case _                                                => "http_protocol_error"
+
+  /** Starts the reason of every refusal after a failed log write; the run-on-host wrapper looks for it. */
+  val AuditLogUnwritable = "audit log cannot be written"
+
+  def auditLogFailure(ex: IOException): String = s"$AuditLogUnwritable: ${ex.getMessage}"
+
   case class Run(
     resolved: ResolvedEgress,
     inspection: Option[TlsInspection],
     transport: OriginTransport,
+    // serve()'s: the first write to the log that failed — the file where one is set, else stderr.
+    auditLogFailure: () => Option[IOException] = () => None,
   ):
+    /**
+     * Refuses once a line failed to be written to the log, for the rest of the run: a log that
+     * resumed would lack the lines between, and nothing in it would say so. Called before a
+     * connection is authorized, and again after its `allow` line and before its first relayed
+     * byte, so no connection is served whose line was not written. A connection already past
+     * that point writes at most an `error` line at its end, and continues (SECURITY.md,
+     * "Egress proxy").
+     */
+    def requireAuditLog(): Unit =
+      auditLogFailure().foreach: ex =>
+        throw Refusal(AgentEgressProxy.auditLogFailure(ex), RefusalAdvice.auditLog, "proxy_internal_error")
+
     def inspectionSummary: String =
       inspection match
         case Some(_) if resolved.publicDefault =>
@@ -362,7 +409,7 @@ object AgentEgressProxy:
 
   def dispatch(client: Socket, run: Run): Unit =
     if !connectionSlots.tryAcquire() then
-      try respondQuietly(client, 503, "Service Unavailable")
+      try respondQuietly(client, 503, "Service Unavailable", "connection_limit_reached")
       finally closeQuietly(client)
     else
       try
@@ -398,6 +445,8 @@ object AgentEgressProxy:
             throw BadRequest(s"unreadable CONNECT request: ${ex.getMessage}")
 
       host = request.host
+      // Before the ruleset: the reason every host is refused, whatever this one's rules are.
+      run.requireAuditLog()
       host = authorizeRequest(request, run.resolved)
       addresses = resolvePublic(host)
       val origin = run.transport.connect(addresses, request.port)
@@ -413,14 +462,24 @@ object AgentEgressProxy:
         // Parse failures keep `-` in the method field: it never holds a token the proxy did not
         // allow, so a refused method is named in the text, not promoted to the vocabulary.
         System.err.println(auditLine("deny", host, "-", "", ex.getMessage))
-        respondQuietly(client, 400, "Bad Request")
+        // After a failed log write every request is answered with that reason, this one included:
+        // the run-on-host wrapper asks with a request that is no CONNECT, so that a proxy still
+        // logging records no refused host for it (RunOnHostSandbox.unwritableProxyLog).
+        try
+          run.requireAuditLog()
+          respondQuietly(client, 400, "Bad Request", "http_request_error", Some(ex.getMessage), bodyless = true)
+        catch
+          case refusal: Refusal =>
+            respondQuietly(
+              client, 403, "Forbidden", refusal.proxyError, Some(refusal.getMessage), Some(refusal.advice),
+            )
 
       case ex: Refusal =>
         System.err.println(auditLine("deny", host, "CONNECT", "", ex.getMessage))
         // A failed CONNECT may carry a body (RFC 9110 §9.3.6 forbids one on a 2xx only). No client
         // shows it; the image's ko-sandbox-egress-check reads it, and is the only way this refusal's
         // reason reaches the sandbox.
-        respondQuietly(client, 403, "Forbidden", refusalBody(ex.getMessage, Some(ex.advice)))
+        respondQuietly(client, 403, "Forbidden", ex.proxyError, Some(ex.getMessage), Some(ex.advice))
 
       case ex: IOException =>
         val stage = ex match
@@ -430,13 +489,19 @@ object AgentEgressProxy:
         System.err.println(auditLine("error", host, "CONNECT", "", s"$stage ${ex.getMessage}"))
         // The stage in the body, as a refusal's reason is: the ruleset allowed this host, so the
         // agent's next step is to report what failed, and only ko-sandbox-egress-check shows it.
-        respondQuietly(client, 502, "Bad Gateway", refusalBody(s"$stage ${ex.getMessage}", None))
+        val proxyError = if stage == "resolution:" then "dns_error" else "destination_unavailable"
+        respondQuietly(client, 502, "Bad Gateway", proxyError, Some(s"$stage ${ex.getMessage}"))
 
       case NonFatal(ex) =>
         System.err.println(
           auditLine("error", host, "CONNECT", "", s"internal: ${ex.getClass.getSimpleName}: ${ex.getMessage}"),
         )
-        respondQuietly(client, 500, "Internal Server Error")
+        // The class alone: the message of an exception nobody planned for may hold what the
+        // sandbox should not read, and the log has it.
+        respondQuietly(
+          client, 500, "Internal Server Error", "proxy_internal_error",
+          Some(s"internal: ${ex.getClass.getSimpleName}"), bodyless = true,
+        )
 
     finally
       closeQuietly(client)
@@ -466,12 +531,14 @@ object AgentEgressProxy:
             client, origin, connectHost, hello, inspection,
             run.resolved.scopesOf(connectHost),
             run.resolved.allows,
+            run.requireAuditLog,
           )
 
         case None =>
           System.err.println(
             auditLine("allow", connectHost, "CONNECT", "", s"-> ${origin.address.getHostAddress}"),
           )
+          run.requireAuditLog()
 
           /*
            * TlsClientHello.read consumed the records needed to inspect the
@@ -528,6 +595,7 @@ object AgentEgressProxy:
     inspection: TlsInspection,
     hostScopes: Map[String, Set[String]],
     allowed: String => Boolean,
+    requireAuditLog: () => Unit,
   ): Unit =
     val clientTls = inspection.accept(client, hello.wireBytes, host)
 
@@ -554,6 +622,7 @@ object AgentEgressProxy:
           System.err.println(
             auditLine("allow", host, method, target, s"-> ${origin.address.getHostAddress}"),
           )
+          requireAuditLog()
 
           relayInspected(clientTls, originTls, origin.transport, head)
         finally closeTlsOutput(originTls, origin.transport)
@@ -572,15 +641,15 @@ object AgentEgressProxy:
 
         case ex: BadRequest =>
           System.err.println(auditLine("deny", host, method, target, ex.getMessage))
-          respondInsideTls(clientTls, 400, "Bad Request", ex.getMessage)
+          respondInsideTls(clientTls, 400, "Bad Request", "http_request_error", ex.getMessage)
 
         case ex: Refusal =>
           System.err.println(auditLine("deny", host, method, target, ex.getMessage))
-          respondInsideTls(clientTls, 403, "Forbidden", ex.getMessage, Some(ex.advice))
+          respondInsideTls(clientTls, 403, "Forbidden", ex.proxyError, ex.getMessage, Some(ex.advice))
 
         case ex: IOException =>
           System.err.println(auditLine("error", host, method, target, s"origin: ${ex.getMessage}"))
-          respondInsideTls(clientTls, 502, "Bad Gateway", ex.getMessage)
+          respondInsideTls(clientTls, 502, "Bad Gateway", originProxyError(ex), ex.getMessage)
 
     finally closeTlsOutput(clientTls, client)
 

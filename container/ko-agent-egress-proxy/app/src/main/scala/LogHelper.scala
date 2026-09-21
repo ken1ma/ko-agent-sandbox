@@ -3,8 +3,9 @@
 
 package agentsandbox.egress
 
-import java.io.OutputStream
+import java.io.{IOException, OutputStream}
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicReference
 import java.time.format.DateTimeFormatter
 
 object LogHelper:
@@ -59,6 +60,22 @@ object LogHelper:
     override def flush(): Unit =
       a.flush()
       b.flush()
+
+  /**
+   * `out`, keeping the first write or flush that failed in `first` instead of throwing it.
+   * The System.err these sinks are under is a PrintStream, which catches the IOException anyway
+   * and keeps a flag without the reason (checkError) — so `out` is never one. Thrown, it would
+   * also end the write of a stamped line halfway and keep the rest from the other sink of a tee,
+   * which is where the failure is then reported.
+   */
+  def keepingFirstFailure(out: OutputStream, first: AtomicReference[IOException]): OutputStream = new OutputStream:
+    require(!out.isInstanceOf[java.io.PrintStream], "a PrintStream throws no IOException to keep")
+    private def keeping(write: => Unit): Unit =
+      try write
+      catch case ex: IOException => first.compareAndSet(null, ex)
+    override def write(byte: Int): Unit = keeping(out.write(byte))
+    override def write(bytes: Array[Byte], offset: Int, length: Int): Unit = keeping(out.write(bytes, offset, length))
+    override def flush(): Unit = keeping(out.flush())
 
   def sha256Hex(text: String): String =
     java.security.MessageDigest

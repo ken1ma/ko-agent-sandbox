@@ -498,6 +498,24 @@ is a stronger isolation layer (gVisor, a microVM), at its compatibility cost, no
   under "Silent changes to what you own".
 - The audit log is appended through a bind mount to a per-run file in the launcher's host state
   directory and survives container removal.
+- Every line is written to that file and to the proxy's stderr, a copy podman removes with the
+  container. After the first write to the file that fails — a full disk, a file made
+  read-only — the proxy serves no new connection for the rest of the run, even if later writes
+  succeed: a log that resumed would lack the lines between, and nothing in it would say so. A
+  failed write to the stderr copy has no effect. A host-command proxy has no such file: its
+  stderr is its log ([doc/run-on-host.md](doc/run-on-host.md)), and a failed write to it has the
+  same effect as one to the file.
+  - A proxy whose startup lines fail to be written exits before it accepts a connection.
+  - Every later request, a `CONNECT` or not, receives `403` with the reason,
+    `audit log cannot be written: <the I/O error>`, in its body, which `ko-sandbox-egress-check`
+    prints, and in its `Proxy-Status` field, which the host-command wrapper reads. The
+    proxy stays up to give that answer: podman removes an exited `--rm` container with its
+    output, the reason included.
+  - A connection whose `allow` line was written before the failure continues to its end: the
+    line is written before the first relayed byte, and an inspected connection carries one
+    request. Its `error` line, if its relay later fails, may be missing from the file.
+  - The `deny` lines of the refused requests are still written to stderr, and to the file if it
+    accepts them again.
 
 Each connection passes these checks and transitions in order:
 
@@ -534,6 +552,10 @@ the same address. These checks follow the `200`, so a failure closes the connect
 - malformed or non-CONNECT requests receive `400`;
 - policy refusals receive `403` with the reason and suggested next step;
 - DNS or connection failures receive `502`.
+
+Each of these responses, and each the proxy generates inside an inspected connection, carries
+the reason in an RFC 9209 `Proxy-Status` field as well
+([doc/design.md](doc/design.md#proxy-status-on-the-proxys-own-responses)).
 
 Clients often hide failed-CONNECT response bodies, so the sandbox image provides
 `ko-sandbox-egress-check <host>` to read them ([README.md](README.md#reference), `--egress-check`).
@@ -587,6 +609,7 @@ The stages emit the following kinds of events:
     deny tracker.example CONNECT host not allowed
     deny telemetry.example CONNECT host denied (rule: deny https://**.example/)
     deny internal.corp CONNECT resolved to non-public address 10.0.0.5
+    deny github.com CONNECT audit log cannot be written: No space left on device
 
     # the TLS checks — steps 8 to 10, after the 200, before any tunnel
     deny github.com CONNECT SNI evil.example differs from target
@@ -1082,6 +1105,9 @@ provides the confinement for these commands; they execute outside the container.
   Maven Central.
   - The file takes `allow https://<host>/ read` lines only; unrecognized configuration entries are
     refused, as in the parent directory.
+  - The proxy has no TLS inspection material, so it enforces the host and port at `CONNECT` and
+    tunnels opaquely: the word `read` in the file is not enforced, and a host command can send any
+    request to a host the file names (`doc/run-on-host.md`, "The command's egress proxy").
   - A launch selecting the program prints the file's hosts, so a host that arrived with the
     repository does not take effect unseen.
   - The proxy reads the file when it starts: a host removed from the file stays reachable from the

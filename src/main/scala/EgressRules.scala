@@ -34,12 +34,13 @@ object EgressRules:
     normalized.linesIterator.mkString("; ")
 
   /**
-   * The rule lines the ruleset reports as granting beyond the defaults for their host —
-   * its `widening lines (N): ...` line, `; ` between lines — printed on a line of their own at
-   * launch, so that a file which only takes or narrows prints nothing extra and the line is a
-   * signal rather than a habit. The proxy classifies against the defaults it ships (resolveRuleset
-   * has the classes), so a custom image reports against its own; an image printing no such line
-   * reports nothing, never a classification against defaults it does not have.
+   * The rule lines the ruleset reports as granting beyond the defaults, read from its
+   * `widening lines (N): ...` line, `; ` between rule lines. The launch prints them as one
+   * `egress rules widen:` line, so that a file which only takes or narrows prints no such line
+   * and the line is a signal rather than a habit. The proxy classifies against the defaults it
+   * ships (resolveRuleset has the classes), so a custom image reports against its own; an image
+   * printing no such line reports nothing, never a classification against defaults it does not
+   * have.
    */
   def wideningLines(resolved: String): Vector[String] =
     resolved.linesIterator.find(_.startsWith("widening lines (")).toVector.flatMap: line =>

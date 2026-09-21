@@ -1681,6 +1681,7 @@ object RunOnHostSandbox:
         val found = RunOnHostGradleDaemons.daemons(runtime.tmp, processes)
         RunOnHostGradleDaemons.record(session.records, found, processes).foreach(log)
       reportDenied(runtime.proxyLog, reportFrom, program, log)
+      if exit != 0 then reportUnwritableProxyLog(runtime, log)
       exit
 
   /** The runtime a command without the broker's runs against: the acceptance test's entry, and Maven under
@@ -2050,6 +2051,36 @@ object RunOnHostSandbox:
       val bytes = Files.readAllBytes(proxyLog)
       String(bytes, math.min(from, bytes.length).toInt, bytes.length - math.min(from, bytes.length).toInt, UTF_8)
         .linesIterator.collect { case Deny(host) => host }.toVector.distinct
+
+  /**
+   * The reason the proxy on `port` serves nothing, when a write to its log failed: the `details`
+   * of its Proxy-Status field (HTTPHelper.proxyStatus). Asked of the proxy, since the log that
+   * would say so is what failed, and the programs need not print it (run-on-host.md has what
+   * sbt and mill print). `OPTIONS *` is HTTP's request about the server itself, and no
+   * CONNECT: a proxy still logging answers 400 and logs `deny - -`, which deniedHosts does not
+   * read as a refused host. `Max-Forwards: 0` is for a recipient that is not this proxy, should
+   * the proxy have died and another program taken its port: an HTTP proxy there must answer
+   * itself, not forward (RFC 9110, 7.6.2). This proxy forwards no OPTIONS and does not read it.
+   */
+  def unwritableProxyLog(port: Int): Option[String] =
+    try
+      scala.util.Using.resource(java.net.Socket()): socket =>
+        socket.connect(java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress, port), 2_000)
+        socket.setSoTimeout(2_000)
+        socket.getOutputStream.write("OPTIONS * HTTP/1.1\r\nHost: localhost\r\nMax-Forwards: 0\r\n\r\n".getBytes(UTF_8))
+        socket.getOutputStream.flush()
+        val Details = raw"""(?i)Proxy-Status:.*; details="((?:[^"\\]|\\.)*)".*""".r
+        String(socket.getInputStream.readNBytes(4096), UTF_8).linesIterator.takeWhile(_.nonEmpty)
+          .collectFirst { case Details(details) => details.replaceAll(raw"\\(.)", "$1") }
+          .filter(_.startsWith(agentsandbox.egress.AgentEgressProxy.AuditLogUnwritable))
+    catch case _: IOException => None
+
+  private def reportUnwritableProxyLog(runtime: Runtime, log: String => Unit): Unit =
+    unwritableProxyLog(runtime.proxyPort).foreach: reason =>
+      log(
+        s"The host command sandbox's proxy serves no new connection: $reason.\n" +
+          s"Tell the user: make ${runtime.proxyLog} writable again, then relaunch.",
+      )
 
   /** The denied-host report, once per refused host, after the command — never an automatic addition. */
   private def reportDenied(proxyLog: Path, from: Long, program: Program, log: String => Unit): Unit =

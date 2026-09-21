@@ -1644,6 +1644,31 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assertEquals(logged.toList, List("recorded the gradle daemon 4242"))
     finally session.close()
 
+  test("unwritableProxyLog is the proxy's own reason after a failed log write, and nothing from a proxy still logging"):
+    import agentsandbox.egress.{AgentEgressProxy, RulesetHelper, TransportHelper}
+    def asked(failure: Option[java.io.IOException]): Option[String] =
+      val resolved = RulesetHelper.resolveRuleset(Some("deny-unless-allowed"), None, None)
+      val run = AgentEgressProxy.Run(resolved, None, TransportHelper.Direct, () => failure)
+      val listening =
+        try Some(java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress))
+        catch case _: java.net.SocketException => None
+      assume(
+        listening.nonEmpty, "needs a TCP listener, which sbt run on the host is not granted; the container's sbt is",
+      )
+      scala.util.Using.resource(listening.get): server =>
+        val saved = System.err
+        System.setErr(java.io.PrintStream(java.io.OutputStream.nullOutputStream()))
+        val serving = Thread.startVirtualThread(() => AgentEgressProxy.handle(server.accept(), run))
+        try unwritableProxyLog(server.getLocalPort)
+        finally
+          serving.join()
+          System.setErr(saved)
+    assertEquals(
+      asked(Some(java.io.IOException("No space left on device"))),
+      Some("audit log cannot be written: No space left on device"),
+    )
+    assertEquals(asked(None), None)
+
   test("deniedHosts reads the audit log's deny lines, once per host"):
     val log = Files.createTempDirectory("proxy").resolve("proxy.log")
     Files.writeString(

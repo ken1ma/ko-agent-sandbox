@@ -17,8 +17,11 @@ case class TruncatedResponse(message: String) extends RuntimeException(message)
 
 /** A refusal the ruleset made, told to the refused party as a 403 body of two lines
   * (HTTPHelper.refusalBody): `message` is the audit line's `<why>`, `advice` the next step,
-  * RefusalAdvice's. Both are required, so no refusal site can ship without its step. */
-case class Refusal(message: String, advice: String) extends RuntimeException(message)
+  * RefusalAdvice's. Both are required, so no refusal site can ship without its step.
+  * `proxyError` is the response's RFC 9209 proxy error type (HTTPHelper.proxyStatus): the
+  * ruleset's refusal unless the site has a more specific registered type. */
+case class Refusal(message: String, advice: String, proxyError: String = "http_request_denied")
+    extends RuntimeException(message)
 
 /**
  * The next step each refusal names for the agent reading the 403 body inside the sandbox: a step it
@@ -53,6 +56,10 @@ object RefusalAdvice:
   val hostDenied = "Denied by this project's rules. Ask the user; do not look for another route."
 
   val port = "Only port 443 is reachable."
+
+  val auditLog =
+    "This proxy serves no new connection for the rest of the session. Tell the user: the launch's " +
+      "`egress log` line names the file; make it writable again, then relaunch."
 
   val ipLiteral = "Connect by hostname; addresses are refused."
 

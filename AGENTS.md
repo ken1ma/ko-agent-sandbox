@@ -21,8 +21,10 @@ For every reported or discovered problem:
 Preserve scope, ownership and how work is separated for review. Before crossing or changing a
 boundary, name it and its consequence and ask.
 
-Before reasoning, designing or experimenting, read the relevant official documentation, source,
-issues and workspace documents. Reason and experiment about what they leave open.
+Before reasoning, designing, experimenting or editing, read the relevant official documentation,
+source, issues and workspace documents, including earlier decisions on the subject. Reason and
+experiment about what they leave open. State as fact only what you read or measured; mark anything
+else as unverified in replies, and keep it out of persisted text.
 
 Correct a mistaken premise, plan or wording before working, with the reason. Once the disagreement
 is heard, do the work as asked. Disagreement is expected; do not silently conform to a guessed

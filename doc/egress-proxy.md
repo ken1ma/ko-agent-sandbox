@@ -228,10 +228,10 @@ Every start prints, in order:
 
 1. the rule file as written, one line;
 1. the launch banner — the profile and the counts, never a host name;
-1. when the file grants beyond the defaults for a host — a host the defaults lack, `tunnel`,
-   `method=` or `git-fetch` where they lack it, `deny defaults` — those lines once more on a line
-   of their own, `egress rules widen:`, so a file that only removes grants or narrows them prints
-   nothing extra.
+1. when the file grants beyond the defaults — a host the defaults lack, a grant the defaults lack
+   at the line's path, `deny defaults` — one more line: `egress rules widen:`, then those rule
+   lines with `; ` between them. A file that only removes grants or narrows them prints no such
+   line.
 
 The ruleset itself is what the proxy prints at its start and `--egress-effective` shows whole, in
 the rule grammar, hosts and paths sorted:
@@ -286,6 +286,11 @@ A refusal reads as
     2026-08-26T11:59:38Z deny github.com POST /owner/repo.git/git-receive-pack POST not granted
 
 SECURITY.md, "The audit line grammar", has every field and reason.
+
+If a log line cannot be written, the proxy refuses every new connection for the rest of the
+session, and `ko-sandbox-egress-check <host>` prints
+`audit log cannot be written: <the I/O error>`. Make the file on the launch's `egress log` line
+writable again — usually by freeing disk space — and relaunch (SECURITY.md, "Egress proxy").
 
 ## TLS inspection
 
