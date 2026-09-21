@@ -27,7 +27,7 @@ object FileHelper:
     val absolute = path.toAbsolutePath.normalize()
     // NOFOLLOW attributes, not Files.exists: exists follows links, so a dangling symlink would
     // read as absent and pass into the "future" tail unchecked — a concurrent writer could
-    // materialize its target after validation — and it folds every other I/O failure into false.
+    // create its target after validation — and it folds every other I/O failure into false.
     // Only NotFound means missing; anything else refuses.
     def presence(candidate: Path): Either[String, Boolean] =
       try

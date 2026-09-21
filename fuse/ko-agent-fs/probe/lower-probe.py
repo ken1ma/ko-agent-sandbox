@@ -232,8 +232,8 @@ def open_file_hold() -> None:
     path — and whether releasing it restores what was refused. Apply write-back depends on this.
 
     Each attempt gets its own file, and the released phase gets a third set. A shared target would
-    have the unlink attempt destroy what the next phase is about to hold, which is a probe measuring
-    its own footprints."""
+    have the unlink attempt destroy what the next phase is about to hold, so that phase would measure
+    the earlier unlink instead of the held descriptor."""
     outcomes = {}
     for label, flags in (("read", "rb"), ("write", "r+b"), ("released", None)):
         prefix = f"hold-{label}"

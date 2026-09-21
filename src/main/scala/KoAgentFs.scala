@@ -273,23 +273,32 @@ object KoAgentFs:
 
   /**
    * Start (or reuse) the project's filter daemon and leave the mountpoint
-   * serving. Fixed text except three safe-charset values: the project id
-   * (podman-safe by construction), the source id (hex), and the backing
-   * path — which is user-controlled and therefore travels base64-encoded,
-   * never spliced into shell text.
+   * serving. Fixed text except five values: the project id and the sandbox container's name
+   * (podman-safe by construction), the source id (hex), and the backing path and file rules —
+   * user-controlled, and therefore travelling base64-encoded, never spliced into shell text.
    *
    * Each step fails closed. The project lock is `lock` in koAgentFsReapScript. A non-empty
    * mountpoint is refused because a vanished mount must expose nothing. The `fuse*` match on
    * statfs is because fuse/fuseblk naming varies by stat version.
+   *
+   * The file rules (FileRules.daemonText) are the mount's, as its source id is: a launch joins a
+   * live mount only under the same rules, since every session on one mount runs under the set its
+   * first launch resolved. A launch after an edit passes the running mount's rules it was shown
+   * (joinUnderOtherRules), so a refusal here, naming the sessions holding the mount, means the
+   * running mount's rules changed after the start prompt. Either way the script ends with the resolved set after
+   * FileRules.ResolvedMarker.
    */
   def koAgentFsMountScript(
     backing: String,
     projectId: String,
     sourceId: String,
     sandboxContainer: String,
+    fileRules: String,
   ): String =
     val encoded =
       java.util.Base64.getEncoder.encodeToString(backing.getBytes(StandardCharsets.UTF_8))
+    val encodedRules =
+      java.util.Base64.getEncoder.encodeToString(fileRules.getBytes(StandardCharsets.UTF_8))
     withScriptPath(
       s"""set -eu
        |backing="$$(printf %s $encoded | base64 -d)"
@@ -299,10 +308,24 @@ object KoAgentFs:
        |: > "$$dir/sessions/$sandboxContainer"
        |exec 9>"$$dir/lock"
        |flock 9 2>/dev/null || true
+       |printf %s $encodedRules | base64 -d > "$$dir/file-rules.new"
        |if mountpoint -q "$$mnt"; then
        |  if [ "$$(cat "$$dir/source-id" 2>/dev/null || true)" = "$sourceId" ] \\
        |      && ls "$$mnt" >/dev/null 2>&1; then
+       |    if [ "$$(cat "$$dir/file-rules.new")" != "$$(cat "$$dir/file-rules" 2>/dev/null || true)" ]; then
+       |      rm -f "$$dir/file-rules.new"
+       |      others=""
+       |      for marker in "$$dir/sessions"/*; do
+       |        [ "$$(basename "$$marker")" = "$sandboxContainer" ] || others="$$others $$(basename "$$marker")"
+       |      done
+       |      echo "this project is mounted for sessions under other file rules:$$others" >&2
+       |      echo "launch again: the start prompt then shows the rules they run under" >&2
+       |      exit 1
+       |    fi
+       |    rm -f "$$dir/file-rules.new"
        |    echo "reusing the existing mount"
+       |    echo "${FileRules.ResolvedMarker}"
+       |    cat "$$dir/file-rules.resolved"
        |    exit 0
        |  fi
        |  fusermount3 -uz "$$mnt"
@@ -321,15 +344,21 @@ object KoAgentFs:
        |  *) echo "the installed ko-agent-fs is no longer this launcher's build; launch again" >&2; exit 1 ;;
        |esac
        |printf %s "$sourceId" > "$$dir/source-id"
+       |mv -f "$$dir/file-rules.new" "$$dir/file-rules"
+       |rm -f "$$dir/file-rules.resolved"
        |mv -f "$$dir/daemon.log" "$$dir/daemon.log.1" 2>/dev/null || true
        |# 9>&- so the daemon does not inherit the project lock and hold it for the session's
        |# whole life, which would block every later reap forever.
-       |nohup "$$HOME/$KoAgentFsBinary" --source "$$backing" --mount "$$mnt" --foreground \\
-       |  9>&- >>"$$dir/daemon.log" 2>&1 &
+       |nohup "$$HOME/$KoAgentFsBinary" --source "$$backing" --mount "$$mnt" \\
+       |  --file-rules "$$dir/file-rules" --foreground 9>&- >>"$$dir/daemon.log" 2>&1 &
        |i=0
        |while [ $$i -lt 100 ]; do
        |  case "$$(stat -f -c %T "$$mnt" 2>/dev/null || true)" in
-       |    fuse*) echo "mounted"; exit 0 ;;
+       |    fuse*)
+       |      echo "mounted"
+       |      echo "${FileRules.ResolvedMarker}"
+       |      cat "$$dir/file-rules.resolved"
+       |      exit 0 ;;
        |  esac
        |  i=$$((i+1))
        |  sleep 0.1
@@ -370,9 +399,11 @@ object KoAgentFs:
     withScriptPath(
       s"""dir="$$HOME/${koAgentFsMountDir(projectId)}"
        |rm -f "$$dir/sessions/$sandboxContainer"
+       |# A directory a reset removed took the markers and the mount with it, so there is nothing to
+       |# reap; recreated to take the lock in, it would name the project to the next reset again.
+       |[ -d "$$dir" ] || exit 0
        |# The project lock (see above). A shell that cannot even open it exits here, which leaves
-       |# the mount up — the same direction every other open edge in this script fails toward.
-       |mkdir -p "$$dir" 2>/dev/null || true
+       |# the mount up — as every other failure in this script does.
        |exec 9>"$$dir/lock"
        |flock 9 2>/dev/null || true
        |for marker in "$$dir/sessions"/*; do
@@ -400,9 +431,9 @@ object KoAgentFs:
    * On native Linux the script runs on this host, and a host's podman need not
    * be in ScriptPath's system directories at all (/opt/podman/bin is a real
    * layout). The path findOnPath resolved is the one this run created those
-   * containers with, so it is the one that can answer for them; the reap's
-   * own exit-code gate (only podman's not-exists answer prunes) is the
-   * backstop for a podman that fails rather than answers.
+   * containers with, so it is the one that can answer for them; the reap
+   * prunes a marker only on podman's not-exists answer, so a podman that
+   * fails rather than answers prunes nothing.
    */
   def koAgentFsReapPodman(podman: String, os: Os): String =
     os match
@@ -424,20 +455,27 @@ object KoAgentFs:
       case Os.Linux => "local"
       case Os.Mac | Os.Windows => "machine"
 
-  /** Unmount and remove one project's filter state; `-z` because a bind may still hold it. */
+  /** Unmount and remove one project's filter state; `-z` because a bind may still hold it. Prints a
+    * line for each unmount and removal it made, and nothing where there is no state. An unmount is
+    * reported only when fusermount3 made one: a resolve (koAgentFsResolveScript) leaves the state
+    * directory without a mount. */
   def koAgentFsUnmountScript(projectId: String): String =
     withScriptPath(
       s"""dir="$$HOME/${koAgentFsMountDir(projectId)}"
-       |fusermount3 -uz "$$dir/workspace" 2>/dev/null || true
-       |rm -rf "$$dir"""".stripMargin
+       |[ -e "$$dir" ] || [ -L "$$dir" ] || exit 0
+       |fusermount3 -uz "$$dir/workspace" 2>/dev/null && echo "unmounted $$dir/workspace"
+       |rm -rf "$$dir" && echo "removed $$dir"""".stripMargin
     )
 
+  /** [[koAgentFsUnmountScript]] for every project. */
   def koAgentFsUnmountAllScript: String =
     withScriptPath(
-      s"""for mnt in "$$HOME"/$KoAgentFsInstallDir/mounts/*/workspace; do
-       |  fusermount3 -uz "$$mnt" 2>/dev/null || true
+      s"""mounts="$$HOME/$KoAgentFsInstallDir/mounts"
+       |[ -e "$$mounts" ] || [ -L "$$mounts" ] || exit 0
+       |for mnt in "$$mounts"/*/workspace; do
+       |  fusermount3 -uz "$$mnt" 2>/dev/null && echo "unmounted $$mnt"
        |done
-       |rm -rf "$$HOME/$KoAgentFsInstallDir/mounts"""".stripMargin
+       |rm -rf "$$mounts" && echo "removed $$mounts"""".stripMargin
     )
 
   def koAgentFsScriptCommand(podman: String, os: Os, script: String): Vector[String] =
@@ -455,71 +493,175 @@ object KoAgentFs:
           java.util.Base64.getEncoder.encodeToString(script.getBytes(StandardCharsets.UTF_8))
         Vector(podman, "machine", "ssh", s"printf %s $encoded | base64 -d | sh")
 
-  /** The daemon user's home — the base every relative lifecycle path resolves against, and the
-    * prefix that turns the mountpoint into an absolute `--volume` source. */
-  def koAgentFsHome(podman: String, os: Os): String =
-    val home =
-      if os == Os.Linux then sys.props("user.home")
-      else run(podman, "machine", "ssh", "pwd").text
-    if home.isEmpty then fail("error: cannot determine the filter daemon's home directory")
-    home
-
   /**
    * The mountpoint made ready for a `podman create` that binds it: a directory, so podman's
    * statfs of every bind source at create finds one, and not a dead mount — a daemon gone
    * mid-session leaves a mountpoint every access of which fails ENOTCONN, statfs included, which
    * the mount script would repair too late, after the create. Under the project lock like every
-   * decision about the mount; a live mount answers `ls` and is left alone.
+   * decision about the mount; a live mount answers `ls` and is left alone. A live mount the
+   * mount script would join, one the build `sourceId` names serves, is described after
+   * RunningMountMarker: its sessions and its file rules (runningMountOf).
    */
-  def koAgentFsPrepareScript(projectId: String): String =
+  def koAgentFsPrepareScript(projectId: String, sourceId: String): String =
     withScriptPath(
       s"""dir="$$HOME/${koAgentFsMountDir(projectId)}"
        |mnt="$$dir/workspace"
        |mkdir -p "$$mnt" "$$dir/sessions"
        |exec 9>"$$dir/lock"
        |flock 9 2>/dev/null || true
-       |ls "$$mnt" >/dev/null 2>&1 || fusermount3 -uz "$$mnt" || true""".stripMargin
+       |ls "$$mnt" >/dev/null 2>&1 || fusermount3 -uz "$$mnt" || true
+       |if mountpoint -q "$$mnt" && [ "$$(cat "$$dir/source-id" 2>/dev/null || true)" = "$sourceId" ] \\
+       |    && [ -f "$$dir/file-rules" ]; then
+       |  echo "$RunningMountMarker"
+       |  for marker in "$$dir/sessions"/*; do
+       |    [ -e "$$marker" ] && echo "session $$(basename "$$marker")"
+       |  done
+       |  echo "$RunningRulesMarker"
+       |  cat "$$dir/file-rules"
+       |fi""".stripMargin
+    )
+
+  /** The lines before a running mount's sessions and before its file rules (koAgentFsPrepareScript). */
+  val RunningMountMarker = "running mount:"
+  val RunningRulesMarker = "running mount's file rules:"
+
+  /** A live mount of the project a launch would join: the sessions holding it, as their containers
+    * are named, and the file rules it serves, as FileRules.daemonText wrote them. */
+  final case class RunningMount(sessions: Vector[String], rules: String)
+
+  def runningMountOf(output: String): Option[RunningMount] =
+    val lines = output.linesIterator.toVector
+    val start = lines.indexOf(RunningMountMarker)
+    val rules = lines.indexOf(RunningRulesMarker)
+    Option.when(start >= 0 && rules > start)(
+      RunningMount(
+        lines.slice(start + 1, rules).collect { case s"session $name" => name },
+        lines.drop(rules + 1).map(_ + "\n").mkString,
+      ),
     )
 
   /**
-   * The per-session gate, before anything of the run exists: prove the installed binary is this
-   * launcher's build, prove it can mount and the policy refuses (self-test), and make the
-   * mountpoint one a `podman create` can bind (koAgentFsPrepareScript). Every failure aborts the
-   * launch — there is no fallback to an unfiltered bind mount. The mount itself is
-   * mountKoAgentFs, once the sandbox container exists; its script repeats the build check beside
-   * the daemon start, so this early one is the friendly refusal, not the binding one.
+   * The mount a launch whose file rules are `wanted` joins under rules other than its own, with
+   * the start prompt as the consent (doc/file-rules.md, "One mount per project"), or the refusal
+   * when no prompt will ask: the running rules may be weaker than the edit.
    */
-  def prepareKoAgentFs(podman: String, os: Os, projectId: String): KoAgentFsPrepared =
-    val home = koAgentFsHome(podman, os)
-    val expected = bundledKoAgentFsSourceId()
-    val version = run(koAgentFsVersionCommand(podman, os, home)*)
-    if !version.ok || !koAgentFsReportedSourceId(version.text).contains(expected) then
-      fail(
-        s"""error: the installed ko-agent-fs is not this launcher's build
-           |  (${if version.ok then version.text else version.err})
-           |
-           |Run --build first.""".stripMargin
-      )
-    val selfTest = run(koAgentFsSelfTestCommand(podman, os, home)*)
-    if !selfTest.ok then
-      fail(s"error: ko-agent-fs self-test failed; not launching:\n${selfTest.err}", selfTest.exit)
-    val prepared = run(koAgentFsScriptCommand(podman, os, koAgentFsPrepareScript(projectId))*)
-    if !prepared.ok then
-      fail(s"error: preparing the ${koAgentFsLabel(os)} mountpoint failed:\n${prepared.err}", prepared.exit)
-    KoAgentFsPrepared(expected, s"$home/${koAgentFsMountDir(projectId)}/workspace")
+  def joinUnderOtherRules(
+    running: Option[RunningMount],
+    wanted: String,
+    prompted: Boolean,
+  ): Either[String, Option[RunningMount]] =
+    running.filter(_.rules != wanted) match
+      case Some(other) if !prompted =>
+        Left(
+          s"error: this project's concurrent sessions (${other.sessions.mkString(", ")}) run under other " +
+            "file rules than .ko-agent-sandbox/file/rule gives, and joining them needs the start " +
+            "prompt's consent. Launch from a terminal with " +
+            s"${AgentSandboxLauncher.SessionStartVariable} unset or pause, or once they end.",
+        )
+      case joined => Right(joined)
 
-  /** What prepareKoAgentFs proved and where: the installed build's source id, and the absolute
-    * mountpoint to bind at the project's mount path. */
-  final case class KoAgentFsPrepared(sourceId: String, mountpoint: String)
+  /** The warning a joining launch prints, on one line the launcher does not wrap. */
+  def joinWarning(running: RunningMount): String =
+    "your edits to .ko-agent-sandbox/file/rule do not take effect until this project's concurrent sessions end " +
+      s"(${running.sessions.mkString(", ")}); this session runs under the file rules they started with"
 
   /**
-   * Mount the project, or join its mount, and say which: true when this session reused a mount
-   * another session holds. `backing` is the project as the daemon's filesystem spells it
-   * (SandboxProject.mountPathOf). Run once `sandboxContainer` exists, so the marker the script writes
-   * first is never found without its container (koAgentFsReapScript). Under the image-build lock,
-   * which installKoAgentFs holds while it replaces the binary: the script's build check and its
-   * daemon start are then one step against a concurrent --build, and a build in progress makes
-   * the mount wait for it.
+   * prepareKoAgentFs's read-only checks as one script: one `podman machine ssh` where the filter
+   * runs in the machine, and a step the launch can start before its own checks finish. It prints:
+   *
+   *   - the daemon user's home: the base every relative lifecycle path resolves against, and the
+   *     prefix that turns the mountpoint into an absolute `--volume` source. On native Linux it is
+   *     `home`, the JVM's `user.home` as installKoAgentFs uses it; the working directory there is
+   *     the project;
+   *   - the installed binary's `--version`;
+   *   - only when that names `sourceId`, ChecksSelfTestMarker and then the self-test, whose status
+   *     is the script's.
+   */
+  def koAgentFsChecksScript(home: Option[String], sourceId: String): String =
+    val homeLine = home match
+      case Some(path) =>
+        val encoded = java.util.Base64.getEncoder.encodeToString(path.getBytes(StandardCharsets.UTF_8))
+        s"""home="$$(printf %s $encoded | base64 -d)""""
+      case None => """home="$(pwd)""""
+    withScriptPath(
+      s"""set -u
+       |$homeLine
+       |printf '%s\\n' "$$home"
+       |version="$$("$$home/$KoAgentFsBinary" --version)"
+       |printf '%s\\n' "$$version"
+       |case "$$version" in
+       |  *" source $sourceId") ;;
+       |  *) exit 0 ;;
+       |esac
+       |echo "$ChecksSelfTestMarker"
+       |exec "$$home/$KoAgentFsBinary" --self-test""".stripMargin
+    )
+
+  /** The line koAgentFsChecksScript prints once the version matched, before the self-test runs. */
+  val ChecksSelfTestMarker = "self-test:"
+
+  /** Runs koAgentFsChecksScript where the filter runs; on native Linux, with the JVM's home. */
+  def koAgentFsChecks(podman: String, os: Os, sourceId: String): HostCommands.Run =
+    val home = Option.when(os == Os.Linux)(sys.props("user.home"))
+    run(koAgentFsScriptCommand(podman, os, koAgentFsChecksScript(home, sourceId))*)
+
+  /**
+   * The checks before each session, before anything of the run exists. Every failure aborts the
+   * launch — there is no fallback to an unfiltered bind mount.
+   *
+   *   - `checks`, koAgentFsChecks's answer, which the caller runs: the installed binary is this
+   *     launcher's build, and it can mount and the policy refuses (self-test).
+   *   - koAgentFsPrepareScript makes the mountpoint one a `podman create` can bind.
+   *
+   * The mount itself is mountKoAgentFs, once the sandbox container exists; its script repeats the
+   * build check beside the daemon start, so this early one is the friendly refusal, not the binding
+   * one.
+   */
+  def prepareKoAgentFs(
+    podman: String,
+    os: Os,
+    projectId: String,
+    expected: String,
+    checks: HostCommands.Run,
+  ): KoAgentFsPrepared =
+    val home = checkedKoAgentFsHome(checks, expected).fold(fail(_, _), identity)
+    val prepared = run(koAgentFsScriptCommand(podman, os, koAgentFsPrepareScript(projectId, expected))*)
+    if !prepared.ok then
+      fail(s"error: preparing the ${koAgentFsLabel(os)} mountpoint failed:\n${prepared.err}", prepared.exit)
+    KoAgentFsPrepared(expected, s"$home/${koAgentFsMountDir(projectId)}/workspace", runningMountOf(prepared.text))
+
+  /** The home a koAgentFsChecks answer reports, or the refusal and exit status the answer calls for. */
+  def checkedKoAgentFsHome(checks: HostCommands.Run, expected: String): Either[(String, Int), String] =
+    val lines = checks.text.linesIterator.toVector
+    val home = lines.headOption.getOrElse("")
+    val marker = lines.indexOf(ChecksSelfTestMarker)
+    val version = lines.slice(1, if marker < 0 then lines.length else marker).mkString("\n")
+    if home.isEmpty then Left(("error: cannot determine the filter daemon's home directory", 1))
+    else if marker < 0 || !koAgentFsReportedSourceId(version).contains(expected) then
+      Left(
+        (
+          s"""error: the installed ko-agent-fs is not this launcher's build
+             |  (${if version.nonEmpty then version else checks.err})
+             |
+             |Run --build first.""".stripMargin,
+          1,
+        ),
+      )
+    else if !checks.ok then Left((s"error: ko-agent-fs self-test failed; not launching:\n${checks.err}", checks.exit))
+    else Right(home)
+
+  /** What prepareKoAgentFs proved and where: the installed build's source id, the absolute
+    * mountpoint to bind at the project's mount path, and the live mount there a launch would join. */
+  final case class KoAgentFsPrepared(sourceId: String, mountpoint: String, running: Option[RunningMount])
+
+  /**
+   * Mount the project, or join its mount: whether this session reused a mount another session
+   * holds, and the resolved file rules the script printed. `backing` is the project as the
+   * daemon's filesystem spells it (SandboxProject.mountPathOf). Run once `sandboxContainer`
+   * exists, so the marker the script writes first is never found without its container
+   * (koAgentFsReapScript). Under the image-build lock, which installKoAgentFs holds while it
+   * replaces the binary: the script's build check and its daemon start are then one step against
+   * a concurrent --build, and a build in progress makes the mount wait for it.
    */
   def mountKoAgentFs(
     podman: String,
@@ -528,13 +670,68 @@ object KoAgentFs:
     projectId: String,
     backing: String,
     sandboxContainer: String,
-  ): Boolean =
-    val script = koAgentFsMountScript(backing, projectId, prepared.sourceId, sandboxContainer)
+    fileRules: String,
+  ): (Boolean, FileRules.Resolved) =
+    val script = koAgentFsMountScript(backing, projectId, prepared.sourceId, sandboxContainer, fileRules)
     val mount = withFileLock(AgentSandboxLauncher.imageBuildLockFile(os)):
       run(koAgentFsScriptCommand(podman, os, script)*)
     if !mount.ok then
       fail(s"error: mounting the ${koAgentFsLabel(os)} failed:\n${mount.err}", mount.exit)
-    mount.text.contains("reusing")
+    (mount.text.linesIterator.contains("reusing the existing mount"), resolvedAfterMarker(mount.text))
+
+  /** The resolved file rules a script printed after FileRules.ResolvedMarker. */
+  def resolvedAfterMarker(output: String): FileRules.Resolved =
+    val lines = output.linesIterator.toVector
+    lines.indexOf(FileRules.ResolvedMarker) match
+      case -1 =>
+        fail(
+          "error: the filter printed no resolved file rules; the installed ko-agent-fs is not this " +
+            "launcher's. Run --build.",
+        )
+      case at => FileRules.parseResolved(lines.drop(at + 1).mkString("\n")).fold(fail(_), identity)
+
+  /**
+   * The resolved file rules without a mount, for `--write=reject` with `--run-on-host`, where host
+   * commands write the project while no daemon runs: `ko-agent-fs --resolve` over the project as
+   * the daemon's filesystem spells it, through the channel the mount uses, under the same build
+   * check.
+   */
+  def koAgentFsResolveScript(backing: String, projectId: String, sourceId: String, fileRules: String): String =
+    val encoded =
+      java.util.Base64.getEncoder.encodeToString(backing.getBytes(StandardCharsets.UTF_8))
+    val encodedRules =
+      java.util.Base64.getEncoder.encodeToString(fileRules.getBytes(StandardCharsets.UTF_8))
+    withScriptPath(
+      s"""set -eu
+       |backing="$$(printf %s $encoded | base64 -d)"
+       |dir="$$HOME/${koAgentFsMountDir(projectId)}"
+       |mkdir -p "$$dir"
+       |rules="$$dir/file-rules.resolve.$$$$"
+       |printf %s $encodedRules | base64 -d > "$$rules"
+       |case "$$("$$HOME/$KoAgentFsBinary" --version 2>/dev/null || true)" in
+       |  *" source $sourceId") ;;
+       |  *) rm -f "$$rules"; echo "the installed ko-agent-fs is not this launcher's build; run --build" >&2; exit 1 ;;
+       |esac
+       |echo "${FileRules.ResolvedMarker}"
+       |status=0
+       |"$$HOME/$KoAgentFsBinary" --source "$$backing" --resolve --file-rules "$$rules" || status=$$?
+       |rm -f "$$rules"
+       |exit $$status""".stripMargin
+    )
+
+  def resolveFileRules(
+    podman: String,
+    os: Os,
+    projectId: String,
+    backing: String,
+    fileRules: String,
+  ): FileRules.Resolved =
+    val script = koAgentFsResolveScript(backing, projectId, bundledKoAgentFsSourceId(), fileRules)
+    val resolved = withFileLock(AgentSandboxLauncher.imageBuildLockFile(os)):
+      run(koAgentFsScriptCommand(podman, os, script)*)
+    if !resolved.ok then
+      fail(s"error: resolving the file rules with the ${koAgentFsLabel(os)} failed:\n${resolved.err}", resolved.exit)
+    resolvedAfterMarker(resolved.text)
 
   /** Both steps at once, for a mount no session's reap counts: the share self-test's scratch
     * project (SelfTestShare). The mountpoint to bind. */
@@ -545,6 +742,8 @@ object KoAgentFs:
     backing: String,
     sandboxContainer: String,
   ): String =
-    val prepared = prepareKoAgentFs(podman, os, projectId)
-    mountKoAgentFs(podman, os, prepared, projectId, backing, sandboxContainer)
+    val expected = bundledKoAgentFsSourceId()
+    val prepared = prepareKoAgentFs(podman, os, projectId, expected, koAgentFsChecks(podman, os, expected))
+    val noRules = FileRules.daemonText(Vector.empty, Vector("/"))
+    mountKoAgentFs(podman, os, prepared, projectId, backing, sandboxContainer, noRules)
     prepared.mountpoint

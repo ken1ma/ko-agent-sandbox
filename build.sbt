@@ -24,7 +24,7 @@ Test / parallelExecution := false
 
 // The container-launching suites run only under this command; `test` and `testFull` alone skip
 // them, so no ordinary build starts a session. The command sets a system property the suites'
-// gate reads (WithPodman.underTestWithPodman) for one run of testFull, or of testOnly with the
+// condition reads (WithPodman.underTestWithPodman) for one run of testFull, or of testOnly with the
 // patterns given, and clears it however the run ends. Not an environment variable: the tests run
 // in the sbt server's JVM, whose environment is the one it was started with, so a variable on a
 // thin client's command line never reaches them and the run passes with every session suite
@@ -98,8 +98,10 @@ Compile / unmanagedResourceDirectories +=
 
 // execvp is a restricted FFM method: without this, a warning per launch and refusal on a future JDK.
 // The exports open the JDK's internal certificate builder to X509Helper.scala, which has why; the
-// assembly manifest carries both for `java -jar`, the native-image command in doc/TODO.md for the
-// binary, and .jvmopts for the tests, which run in sbt's own JVM —
+// assembly manifest carries both for `java -jar`, the launcher's re-invocation of itself for the
+// broker, wrapper and proxy it starts as `java -cp` (RunOnHostSandbox.CertificateBuilderExports),
+// the native-image command in doc/TODO.md for the binary, and .jvmopts for the tests, which run in
+// sbt's own JVM —
 // a forked test JVM would need sbt's TCP listener to reach it, which the host command sandbox does
 // not grant (doc/run-on-host.md, "Network").
 Compile / run / javaOptions ++= Seq(
@@ -134,7 +136,7 @@ Compile / resourceGenerators += Def.task {
 // (AgentSandboxLauncher.unpackBuildContext). INDEX lists every bundled path: a jar's resource tree cannot be enumerated
 // at runtime.
 // Native-image's resource discovery misses required files; the native-image command in doc/TODO.md must include
-// sandbox-build/ (build contexts), defaults/ (proxy rules) and agentsandbox/ (--help and Seatbelt runtime authority).
+// sandbox-build/ (build contexts), defaults/ (proxy rules) and agentsandbox/ (--help and Seatbelt system paths).
 Compile / resourceGenerators += Def.task {
   val log = streams.value.log
   val outputRoot = (Compile / resourceManaged).value / "sandbox-build"

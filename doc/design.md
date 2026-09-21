@@ -12,7 +12,7 @@ What remains to do is TODO.md; the security model is SECURITY.md.
 
 ## Terminology
 
-The words the documents share, each defined where it binds and listed here once:
+The words the documents share, each defined in the document its entry names and listed here once:
 
 - **sandbox** — the container the agent runs in, rootless, as `nonroot`; its boundary is the
   subject of SECURITY.md.
@@ -24,13 +24,11 @@ The words the documents share, each defined where it binds and listed here once:
     (`run-on-host.md`, "The command's egress proxy").
   - **rule, ruleset, profile** — a rule is a line of the project's `.ko-agent-sandbox/egress/rule`;
     the ruleset is what a launch enforces, the defaults, the profile and the file resolved together
-    and printed at every start; a profile is one of the four `--egress=` treatments
+    and printed at every start; a profile is one of the three `--egress=` treatments
     (`egress-proxy.md`). Under `--run-on-host` a profile is also a Seatbelt profile, the generated
     sandbox a host command runs under; each document names which it means.
   - **grant word** — what a rule permits at its URL: `tunnel`, `read`, `git-fetch`, `method=`
     (`egress-proxy.md`, "The rule file").
-  - **listed host, unlisted host** — a host some rule names, and one none does; under
-    `allow-unless-denied` an unlisted host holds an inspected `read` and nothing else.
   - **tunnel, inspected** — an allowed host's two treatments: application traffic left opaque after
     the TLS identity check, or TLS terminated and each request decided against its grants
     (SECURITY.md, "Reading without being able to write").
@@ -163,6 +161,20 @@ Attested in:
 Do not add a wildcard on the granting side, a second precedence, a richer pattern language, or
 a grant word outside the closed set without a concrete need that outweighs the added attack surface.
 
+The file rules (`file-rules.md`) apply the same model to names: `readonly` and `writable` lines
+in order over the launcher's defaults, the last line naming an entry or an ancestor deciding.
+They carry no path pattern beyond `*` within a component:
+
+- A name matches at any depth, as `.git` does: a line anchored at the root would miss a nested
+  folder, which the programs read when you open or enter it.
+- The filter folds the name as it folds `.git`, and decides each entry from its parent's context
+  and its own name at lookup; a richer language would need a path, which no inode stores.
+- An outermost-wins or most-specific-wins order would be a second precedence; the ordered form
+  already makes `node_modules` the exception with its last line.
+- They differ from `egress/rule` in carrying one bit instead of grant words, and in letting
+  `readonly` name a path, since the filter, not an origin, decides how a name reads (SECURITY.md,
+  "Adding hosts, not patterns").
+
 ### No approve-on-miss prompt for a refused host
 
 Codex, Gemini CLI's "sandbox expansion" and Copilot's `allowBypass` answer a refused request with
@@ -201,7 +213,7 @@ launcher does not prevent that: instruction files change no enforcement.
 ### No following symlinks at sandbox setup
 
 A symlinked `.ko-agent-sandbox`, `egress` or a file inside them refuses the launch
-(`boundaryDirError`, `readRuleFiles`, tested). The workspace filter refuses to mount a project
+(`boundaryDirRefusal`, `readRuleFiles`, tested). The workspace filter refuses to mount a project
 whose `.git` is a symlink, or whose `.git/hooks` is a symlink to a directory inside the project
 (`../fuse/ko-agent-fs/doc/git-metadata.md`, "Relocated hook directories").
 
@@ -272,9 +284,29 @@ it is:
   formats have no standard password file or environment-variable name.
 
 Keep the rule procedural: a credential in the project directory violates the operating model, and
-it is the user's to keep out. A `deny` of the forge in `egress/rule` removes one way to spend a
+it is the user's to keep out. A `deny` of the forge in `egress/rule` removes one way to use a
 forge token left there, not the risk — every allowed host is a possible recipient of what the
 sandbox holds.
+
+### A `--run-on-host` limit, not a stricter form
+
+Every session gets the same file rules, `writable node_modules` among the defaults, and under
+`--run-on-host` a host command can carry a listed file out of `node_modules`: `file-rules.md`,
+"Under `--run-on-host`", states the limit. It is a cost of `--run-on-host`, like the project a host
+command writes under `--write=reject` (SECURITY.md, "Run on host").
+
+The alternative weighed, a strict form under `--run-on-host` in which a `writable` line only
+cancels an earlier `readonly` line of the same name, closes the limit and costs:
+
+- npm installing a package without a listed name it carries, with a warning: the measured ones
+  carry development leftovers (`file-rules.md`, "Measurements");
+- `writable` lines that hold in one kind of session and not the other, a second meaning of
+  `writable` for the reader to keep in mind;
+- a filter mount that a session with `--run-on-host` and one without cannot share, since their
+  rules differ.
+
+Revisit when `../src/probe/seatbelt-semantics.sh` E13-E16 find a rule refusing a move out of
+`node_modules` that leaves npm's renames and `rmdir` there, which would close the limit.
 
 ### No writable session without the workspace filter
 
@@ -316,23 +348,22 @@ It would be incomplete against encoding, timing, allowed-host selection, and pro
 channels while adding false positives and another complex policy engine. Destination restriction
 remains the primary exfiltration control.
 
-### No signing broker for the proxy's leaves, and no run intermediate
+### No profile that allows hosts no rule names
 
-Under `allow-unless-denied` the proxy issues a leaf per unlisted host from a CA created for the run
-(SECURITY.md, "Who holds the CA key"). Two designs that would keep the CA key on the host were
-rejected:
+Every profile reaches the hosts its ruleset lists and nothing else; a rule file cannot grant a
+pattern (SECURITY.md, "Adding hosts, not patterns"). A profile that reads every public host a line
+does not deny is rejected:
 
-- A signing broker — the proxy asking the launcher to sign each leaf — satisfies "the launcher
-  holds the key" literally but not its purpose: the broker is a signing oracle for whatever the
-  proxy asks, so the key's location no longer bounds what a compromised proxy can issue, only
-  where the bytes are stored, at the cost of a channel and a round trip per host.
-- A run intermediate signed by the project CA would keep the project-level trust store and JDK
-  keystore, and would let a leaf a compromised proxy issued chain to the project CA and be
-  honoured by every other session of the project, which is what the run scope exists to prevent.
-
-A launch-issued leaf beside the run CA proves nothing either: a missing or extra name, the two
-defects the "names exactly" check exists for, cannot happen when the proxy issues what it
-inspects.
+- Inspecting a host no rule names needs a leaf issued at its first connection, so a CA key inside
+  the proxy container, the process facing the internet. A compromised proxy could then issue a
+  certificate for an opaque tunnel host and intercept model traffic or provider tokens. With the
+  CA key on the host, the proxy holds one leaf naming the inspected set and can issue nothing.
+- Selected on the launch command line, such a profile leaves no trace in the repository: a
+  reviewer of `.ko-agent-sandbox/egress/rule` sees a narrower policy than the session runs.
+- Work whose hosts cannot be listed in advance has a form the rule file can list: a relay the
+  user runs, granted `read` by one line, fetching the URL its query names. The relay then holds
+  the policy the proxy cannot apply to the URL — the private-address refusal and any per-domain
+  denial — and the audit log records the relay's URL, its target in the query.
 
 ### No upstream-proxy discovery, exclusions, chaining or negotiated authentication
 
@@ -354,6 +385,29 @@ proxy"), and each of these stays out of it for a reason of its own:
   argument, banner, log line or error, and the proxy is its one reader; a second source would need
   a second reader.
 
+### No WebSocket in the inspected relay
+
+Considered: relaying a WebSocket on an inspected or mediated host after checking the upgrade
+request's headers, so that a mediated OpenAI host could carry the Codex CLI's first choice of
+transport. Rejected:
+
+- A WebSocket matters only on an inspected host; on a tunnel it passes as bytes. Every model host
+  is a tunnel under the default rules, so no installed agent meets the refusal today.
+- The one client known to open a WebSocket to its model host, the Codex CLI's built-in provider,
+  falls back to HTTP after the refusal (`doc/plan-credential-broker-proxy.md`, "Claude Code and
+  Codex logins: excluded", has the measurement). Its `supports_websockets = false` cannot be set
+  for that provider: codex-cli 0.155.1 refuses to load an override of a built-in provider.
+- The other installed agents' binaries hold no `wss://` literal for a model host; `claude` holds
+  one for its Remote Control bridge, `bridge.claudeusercontent.com`, which no default rule allows.
+  A URL built at run time escapes that search.
+- After the upgrade the proxy would relay decrypted bytes without applying HTTP method and path
+  grants: a third treatment beside inspected and tunnel. Supporting that stream requires reviewing
+  the one-request rule's protection against request smuggling (`SECURITY.md`, "Reading without
+  being able to write").
+
+Revisit if one Codex turn through a mediated relay fails on the HTTP fallback, or the provider
+drops the HTTP path.
+
 ### No HTTP query endpoint on the proxy
 
 Considered: the RFC 9110 request `OPTIONS * HTTP/1.1` with `Max-Forwards: 0` and a custom query
@@ -369,6 +423,40 @@ header, answering the ruleset in force from the live proxy. Rejected:
 `Max-Forwards` itself creates no obligation here: it binds a proxy that *forwards* OPTIONS/TRACE,
 and this one never does — non-CONNECT is refused at the proxy layer, both methods are refused
 inside inspected tunnels, and an opaque tunnel is not an HTTP hop at all.
+
+The run-on-host wrapper does send that request, and it is no query endpoint: the proxy parses
+nothing of it and refuses it as it refuses any request that is no CONNECT. What the wrapper reads
+is the refusal itself. After a write to the audit log failed, every refusal is a `403` whose
+`Proxy-Status` names that reason (`SECURITY.md`, "Egress proxy"); the log cannot, and a program
+need not print it (`run-on-host.md`, "Refusals"). The wrapper sends no CONNECT so
+that a proxy still logging records no refused host for it, and sends `Max-Forwards: 0` for a
+recipient that is not this proxy (`RunOnHostSandbox.unwritableProxyLog`).
+
+### Proxy-Status on the proxy's own responses
+
+RFC 9209's response field is on every response the proxy generates itself — a refusal, a
+malformed request, a failed origin leg, the connection limit — and on none it relays:
+`Proxy-Status: ko-agent-egress-proxy; error=<type>; details="<why>"`.
+
+- `error` is the registered proxy error type, and its presence tells a client that the origin
+  did not send this response. The ruleset's refusals are `http_request_denied`; a refusal or
+  failure with a more specific registered type uses it (`destination_ip_prohibited`,
+  `dns_error`, `tls_certificate_error`). The status codes stay the proxy's own where RFC 9209
+  recommends another: a refusal is a `403` whatever its type, which is what
+  `ko-sandbox-egress-check` exits 1 on.
+- `details` is the audit line's `<why>`, the body's first line where there is a body. The next
+  step stays in the body alone: it is a sentence for the agent, not a diagnostic.
+  - The `500` names the exception's class and leaves its message to the log: the message of an
+    exception nobody planned for may hold what the sandbox should not read.
+  - The `503` has none: `connection_limit_reached` is the whole reason.
+- A header as well as a body, because clients that discard a failed CONNECT's body still show its
+  header section (`curl -v`), and a program can read one field where the body is text for people.
+  `ko-sandbox-egress-check` prints the field before the body; for the responses without a body —
+  the `400` to a malformed CONNECT, the `500`, the `503`, any answer to a `HEAD` inside the tunnel
+  (RFC 9110 §9.3.2) — the field is all the client receives.
+- Unlike Via ("No Via header", below) it reaches the client alone, never an origin.
+- The member is the image's name, not a deployment's, against RFC 9209's advice: a session has
+  one proxy, and the refusal body already starts with that name.
 
 ### No Via header
 
@@ -421,16 +509,43 @@ system").
 
 ### No gVisor or microVM isolation layer
 
-Rootless podman is the chosen portability/security trade-off. Revisit only if
-host-kernel/container-runtime exploitation enters the threat model.
+Rootless podman is the chosen trade-off between portability and security. Revisit only if
+exploitation of the host kernel or the container runtime enters the threat model.
 
-The gVisor issue history also shows that stronger runtime isolation brings additional
-rootless/nesting/mount compatibility complexity — e.g. rootless uid mapping breaking same-uid host
-file access, the problem this launcher's `--userns=keep-id` solves. That does not make gVisor a bad
+The gVisor issue history also shows that a stronger isolation layer adds compatibility problems of
+its own with rootless operation, nesting and mounts: rootless uid mapping breaks same-uid host file
+access, the problem this launcher's `--userns=keep-id` solves. That does not make gVisor a bad
 design; it means the additional boundary is added only when the threat model requires it.
+
+Running more images inside the session is not a second revisit condition. A microVM's guest kernel
+would let an image that needs a second uid run unchanged; "Services run as processes, not as
+multi-uid nested containers" records what the session offers instead and which workflows it leaves
+out.
+
+A dedicated podman machine with narrower host shares, and a launch-time warning about broad shares,
+are excluded for the same reason: they address container escape, which is outside the threat model
+(SECURITY.md, "Container, runtime and kernel escape", has what an escape into the machine reaches).
 
 - https://gvisor.dev/
 - https://github.com/google/gvisor/issues/9918
+
+### Services run as processes, not as multi-uid nested containers
+
+Under `KO_AGENT_SANDBOX_NESTING=same-uid` a nested container maps one uid, because
+`no-new-privileges` denies `newuidmap` its setuid privilege (SECURITY.md, "No containers inside the
+sandbox by default"). Stock `postgres` and `nginx` switch to a second uid and fail. A session that
+needs such a service runs it as a process bound to 127.0.0.1 (AGENTS-SANDBOX.md, "Containers in
+here: only if this session opted in"). A second uid would need either that setuid privilege, which
+`no-new-privileges` withholds from every process in the session, or a guest kernel with its own uid
+range, the layer declined above. The process has two limits the design accepts:
+
+- It serves tests that connect to an address they are given. A test that creates its own container
+  through the Docker API, as Testcontainers does, cannot use it, and an image that needs a second
+  uid stays unsupported under `same-uid`.
+- The service runs under the session's uid, without the separate account PostgreSQL recommends so
+  that a compromised server cannot modify its executables. The design does not rely on isolation
+  between session processes: the boundary is the container, every process in it is untrusted, and
+  a compromised service reaches exactly what a hijacked agent already reaches.
 
 ### No test hook that pauses a launch mid-flight
 
@@ -459,6 +574,27 @@ Both act at the moment the answer matters rather than at some earlier one. Revis
 workflow needs a stale verification detected before its next attempted launch, rather than a
 failed launch being enforcement enough — a CI failure a person reads later is still that
 enforcement.
+
+### No Stop hook that gates on a ko-review approval
+
+A managed Stop hook could refuse to let Claude end its turn while the working tree differs from
+HEAD without a fresh approval or a recorded escalation from `/ko-review:codex` (`ko-review.md`).
+Rejected:
+
+- The only check a local hook can make cannot tell Claude's changes from the user's own uncommitted
+  edits, a one-line change the user asked for, or a turn that answered a question: each stop would
+  be blocked until Codex reviews, spending quota the user did not intend to spend.
+- Under `--egress=deny-unless-model claude`, or before Codex is signed in, the block can be passed
+  only by recording an escalation, which makes the gate a formality; letting the hook pass when
+  Codex is unreachable reopens the loophole it exists to close.
+- A managed hook applies to every project on the image; a per-project opt-in marker would add a
+  second mechanism for a workflow that starts only at the user's request.
+- Claude skipping a requested review is an instruction failure, fixed in the skill text or
+  `AGENTS.md`, not by a hook that runs on every stop.
+
+Revisit if, in use, Claude regularly ends a turn with unreviewed changes after being told to review
+and the instruction fix does not hold; then the shape is a managed hook with a per-project opt-in
+marker, still a local check that never runs Codex.
 
 ## The properties verification has to separate
 
@@ -549,6 +685,12 @@ Directory names follow the terse Unix tradition where the choice is free:
   `src/main/resources`, XDG's `~/.config`;
 - where a grammar spells it, that spelling is used: the proxy's `defaults/` is the `defaults` of
   `deny defaults`.
+
+Program, plugin and variable names say where they work: `ko-sandbox-*` and `KO_SANDBOX_*` name
+what works only inside the image (`ko-sandbox-entrypoint`, `ko-sandbox-egress-check`);
+`ko-agent-sandbox` and `KO_AGENT_SANDBOX_*` name the launcher and the project; what also runs on a
+host carries its own name, and that name is the workflow's, not a component's, so that another
+component can join: `ko-review` with the skill `codex`, not `ko-codex`, since `agy` may review too.
 
 The accepted costs of `doc` over `docs`:
 

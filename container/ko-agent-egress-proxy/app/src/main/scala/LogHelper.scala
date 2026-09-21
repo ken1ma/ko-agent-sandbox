@@ -3,8 +3,9 @@
 
 package agentsandbox.egress
 
-import java.io.OutputStream
+import java.io.{IOException, OutputStream}
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicReference
 import java.time.format.DateTimeFormatter
 
 object LogHelper:
@@ -13,9 +14,60 @@ object LogHelper:
    * SECURITY.md ("The audit line grammar") declares stable through field 3. A `-` fills a field
    * the connection ended before revealing; the target appears exactly when a parsed inspected
    * request exists; the tail is human text with no field structure.
+   *
+   * In every field these are written as a Java/Scala string literal spells them, since the target
+   * is the request's and the tail may quote the origin:
+   *   - C0 and C1 controls and DEL (`\t`, `\u001b`): a tab would break the field grammar tooling
+   *     greps, and on the terminal reading the log an escape sequence would let a request or an
+   *     origin choose how the record of itself reads;
+   *   - U+2028 and U+2029 (`\u2028`): tools that split lines on them would end the line early;
+   *   - format characters (`Character.FORMAT`: the bidi controls, zero-width characters, U+00AD,
+   *     the tag characters; `\u202e`, `\u200b`, `\udb40\udc41`): terminals and editors show them as
+   *     nothing or reorder the rest of the line by them, so the line would read other than what was
+   *     sent, and U+00AD is a byte any request target can carry;
+   *   - `"`, `\` and unpaired surrogates (`\"`, `\\`, `\ud800`): so a field reads back exactly as
+   *     the content of a string literal — a `\u001b` in the log is always an escape, and a lone
+   *     surrogate does not become the `?` UTF-8 encoding would write.
    */
   def auditLine(action: String, host: String, method: String, target: String, tail: String): String =
-    (Vector(action, host, method) ++ Vector(target, tail).filter(_.nonEmpty)).mkString(" ")
+    (Vector(action, host, method) ++ Vector(target, tail).filter(_.nonEmpty)).map(escapeForLogLine).mkString(" ")
+
+  /** @return the content between the quotes of a Java/Scala string literal whose value is `text`.
+    * Its `\u` escapes never stand for a quote, a backslash or a line break, which Java translates
+    * before it reads the literal. */
+  def escapeForLogLine(text: String): String =
+    def isControl(char: Char) = char < 0x20 || (char >= 0x7f && char <= 0x9f)
+    def unicodeEscape(char: Char) = f"\\u${char.toInt}%04x"
+
+    val result = StringBuilder(text.length)
+    var i = 0
+    while i < text.length do
+      text.charAt(i) match
+        case '"'                            => result ++= "\\\""
+        case '\\'                           => result ++= "\\\\"
+        case '\b'                           => result ++= "\\b"
+        case '\t'                           => result ++= "\\t"
+        case '\n'                           => result ++= "\\n"
+        case '\f'                           => result ++= "\\f"
+        case '\r'                           => result ++= "\\r"
+        case char @ ('\u2028' | '\u2029')   => result ++= unicodeEscape(char)
+        case char if isControl(char)        => result ++= unicodeEscape(char)
+        case char if Character.isHighSurrogate(char) =>
+          if i + 1 < text.length && Character.isLowSurrogate(text.charAt(i + 1)) then
+            val low = text.charAt(i + 1)
+            if Character.getType(Character.toCodePoint(char, low)) == Character.FORMAT then
+              result ++= unicodeEscape(char)
+              result ++= unicodeEscape(low)
+            else
+              result += char
+              result += low
+            i += 1
+          else result ++= unicodeEscape(char)
+        case char if Character.isLowSurrogate(char)              => result ++= unicodeEscape(char)
+        case char if Character.getType(char) == Character.FORMAT => result ++= unicodeEscape(char)
+        case char                                                => result += char
+      i += 1
+    result.result()
 
   /**
    * Every line the proxy reports, prefixed with the instant it was written, as
@@ -59,6 +111,22 @@ object LogHelper:
     override def flush(): Unit =
       a.flush()
       b.flush()
+
+  /**
+   * `out`, keeping the first write or flush that failed in `first` instead of throwing it.
+   * The System.err these sinks are under is a PrintStream, which catches the IOException anyway
+   * and keeps a flag without the reason (checkError) — so `out` is never one. Thrown, it would
+   * also end the write of a stamped line halfway and keep the rest from the other sink of a tee,
+   * which is where the failure is then reported.
+   */
+  def keepingFirstFailure(out: OutputStream, first: AtomicReference[IOException]): OutputStream = new OutputStream:
+    require(!out.isInstanceOf[java.io.PrintStream], "a PrintStream throws no IOException to keep")
+    private def keeping(write: => Unit): Unit =
+      try write
+      catch case ex: IOException => first.compareAndSet(null, ex)
+    override def write(byte: Int): Unit = keeping(out.write(byte))
+    override def write(bytes: Array[Byte], offset: Int, length: Int): Unit = keeping(out.write(bytes, offset, length))
+    override def flush(): Unit = keeping(out.flush())
 
   def sha256Hex(text: String): String =
     java.security.MessageDigest

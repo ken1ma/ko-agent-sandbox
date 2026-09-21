@@ -4,7 +4,7 @@ import java.io.{ByteArrayInputStream, ByteArrayOutputStream, EOFException, Input
 import java.net.Socket
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
-import java.security.{KeyFactory, KeyStore, PrivateKey, PublicKey, Signature}
+import java.security.{KeyFactory, KeyStore, PrivateKey}
 import java.security.cert.{CertificateFactory, X509Certificate}
 import java.security.spec.PKCS8EncodedKeySpec
 import java.util.{Base64, Locale}
@@ -39,23 +39,20 @@ object TLSHelper:
       throw Refusal(s"SNI $sni differs from target", RefusalAdvice.clientHello)
 
   /**
-   * The MITM, and the one place holding a private key. Under the finite profiles that is the
-   * leaf's only: the CA key never enters this container, so nothing in it can issue a
-   * certificate for a name the launcher did not already choose. Under allow-unless-denied it is
-   * the run CA's, and `contextFor` issues a host's leaf at its first CONNECT (SECURITY.md, "Who
-   * holds the CA key", has the trade).
+   * The MITM, and the one place holding a private key: the leaf's only. The CA key never enters
+   * this container, so nothing in it can issue a certificate for a name the launcher did not
+   * already choose (SECURITY.md, "Who holds the CA key").
    */
-  class TlsInspection private (val contextFor: String => SSLContext):
+  class TlsInspection private (val context: SSLContext):
 
     /**
-     * `consumed` replays the already-read ClientHello ahead of the socket; `host` is the CONNECT
-     * host, which validateTlsIdentity proved equal to the SNI the client will verify. ALPN is restricted
-     * to http/1.1: an h2-only client fails the handshake rather than establishing an HTTP/2
-     * connection this proxy cannot parse.
+     * `consumed` replays the already-read ClientHello ahead of the socket. ALPN is restricted to
+     * http/1.1: an h2-only client fails the handshake rather than establishing an HTTP/2 connection
+     * this proxy cannot parse.
      */
-    def accept(client: Socket, consumed: Array[Byte], host: String): SSLSocket =
+    def accept(client: Socket, consumed: Array[Byte]): SSLSocket =
       val socket =
-        contextFor(host).getSocketFactory
+        context.getSocketFactory
           .createSocket(client, ByteArrayInputStream(consumed), false)
           .asInstanceOf[SSLSocket]
 
@@ -106,61 +103,7 @@ object TLSHelper:
       inspectedNamesError(subjectAlternativeNames(chain.head), hosts).foreach: reason =>
         throw IllegalArgumentException(s"${AgentEgressProxy.CertificateVariable} $reason")
 
-      val context = contextOf(chain, key)
-      new TlsInspection(_ => context)
-
-    /**
-     * The run CA: a leaf per host, issued at its first CONNECT, its SSL context cached. The cache holds
-     * at most LeafCacheCapacity per-host SSL contexts and evicts the least recently used, because a
-     * wildcard DNS name would otherwise let the sandbox force issuance until the proxy's heap is gone,
-     * and the proxy's death is the session's egress; an evicted context stays valid for any handshake
-     * holding it, and the proxy issues another leaf on the host's next connection, which costs milliseconds. The
-     * material is checked as the launcher checks its own: a key beside a certificate it does not match, or a
-     * certificate no client would chain to, is a refused start here rather than a TLS error inside
-     * the sandbox.
-     */
-    val LeafCacheCapacity = 256
-
-    def issuing(certificate: Path, privateKey: Path): TlsInspection =
-      val ca = readCertificateChain(certificate).head
-      val key = readPrivateKey(privateKey)
-      if ca.getBasicConstraints < 0 then
-        throw IllegalArgumentException(
-          s"${AgentEgressProxy.CaCertificateVariable} is not a CA certificate; no client would chain to what it signs",
-        )
-      if key.getAlgorithm != "EC" then
-        throw IllegalArgumentException(
-          s"${AgentEgressProxy.CaPrivateKeyVariable} is a ${key.getAlgorithm} key; the run CA's is EC",
-        )
-      if !keyMatches(key, ca.getPublicKey) then
-        throw IllegalArgumentException(
-          s"${AgentEgressProxy.CaPrivateKeyVariable} does not match ${AgentEgressProxy.CaCertificateVariable}",
-        )
-      val contexts = new java.util.LinkedHashMap[String, SSLContext](16, 0.75f, true):
-        override def removeEldestEntry(eldest: java.util.Map.Entry[String, SSLContext]): Boolean =
-          size > LeafCacheCapacity
-      new TlsInspection(host =>
-        contexts.synchronized:
-          Option(contexts.get(host)).getOrElse:
-            val leaf = X509Helper.issueLeaf(Vector(host), ca, key)
-            val context = contextOf(Vector(leaf.certificate), leaf.privateKey)
-            contexts.put(host, context)
-            context,
-      )
-
-    /** Whether `key` signs what `publicKey` verifies; false on any doubt. */
-    def keyMatches(key: PrivateKey, publicKey: PublicKey): Boolean =
-      try
-        val probe = Array.tabulate[Byte](32)(_.toByte)
-        val signer = Signature.getInstance("SHA256withECDSA")
-        signer.initSign(key)
-        signer.update(probe)
-        val signature = signer.sign()
-        val verifier = Signature.getInstance("SHA256withECDSA")
-        verifier.initVerify(publicKey)
-        verifier.update(probe)
-        verifier.verify(signature)
-      catch case NonFatal(_) => false
+      new TlsInspection(contextOf(chain, key))
 
     private def contextOf(chain: Vector[X509Certificate], key: PrivateKey): SSLContext =
       val password = Array.emptyCharArray

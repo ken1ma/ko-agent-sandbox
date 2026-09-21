@@ -2,7 +2,7 @@ package fixture
 
 import java.nio.file.Files
 
-// The gate's `run` target: creates a temporary file, where the forked JVM's profile allows or not,
+// The acceptance test's `run` target: creates a temporary file, where the forked JVM's profile allows or not,
 // and prints where; with `sleep`, stays up for the cancel and foreign-daemon rows.
 object Main:
   def main(args: Array[String]): Unit =

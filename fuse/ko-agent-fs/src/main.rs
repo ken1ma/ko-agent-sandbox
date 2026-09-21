@@ -2,7 +2,8 @@
 //!
 //! The outer launcher owns the lifecycle (`doc/architecture.md`): this process does not daemonize —
 //! it runs `fuser::mount` until the filesystem is unmounted, then exits. Policy is built in, not read
-//! from a config file the sandbox could reach.
+//! from a config file the sandbox could reach; the file rules are the launcher's, in the daemon's
+//! own directory (`rulefile.rs`).
 
 use std::ffi::OsString;
 use std::os::fd::OwnedFd;
@@ -10,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use ko_agent_fs::fs::{KoAgentFs, mount_config};
+use ko_agent_fs::policy::FileRules;
+use ko_agent_fs::rulefile::{self, RuleFile};
 use nix::fcntl::{OFlag, open};
 use nix::sys::stat::Mode;
 
@@ -21,12 +24,16 @@ const SOURCE_ID: &str = match option_env!("KO_AGENT_FS_SOURCE_ID") {
 
 struct Args {
     source: PathBuf,
-    mount: PathBuf,
+    /// `None` for `--resolve`, which prints the resolved file rules and mounts nothing.
+    mount: Option<PathBuf>,
+    /// The launcher's resolved rule lines; a mount writes the full set beside them.
+    file_rules: Option<PathBuf>,
 }
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: ko-agent-fs --source <backing-dir> --mount <mountpoint> [--foreground]\n\
+        "usage: ko-agent-fs --source <backing-dir> --mount <mountpoint> [--file-rules <file>] [--foreground]\n\
+                ko-agent-fs --source <backing-dir> --resolve [--file-rules <file>]\n\
                 ko-agent-fs --self-test\n\
                 ko-agent-fs --version"
     );
@@ -36,10 +43,14 @@ fn usage() -> ExitCode {
 fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, ExitCode> {
     let mut source = None;
     let mut mount = None;
+    let mut file_rules = None;
+    let mut resolve = false;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--source") => source = args.next().map(PathBuf::from),
             Some("--mount") => mount = args.next().map(PathBuf::from),
+            Some("--file-rules") => file_rules = args.next().map(PathBuf::from),
+            Some("--resolve") => resolve = true,
             Some("--foreground") => {} // the only mode; accepted for the launcher's explicitness
             Some("--self-test") => return Err(self_test()),
             Some("--version") => {
@@ -52,10 +63,51 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, ExitCode> {
             _ => return Err(usage()),
         }
     }
-    match (source, mount) {
-        (Some(source), Some(mount)) => Ok(Args { source, mount }),
+    match (source, mount, resolve) {
+        (Some(source), Some(mount), false) => Ok(Args {
+            source,
+            mount: Some(mount),
+            file_rules,
+        }),
+        (Some(source), None, true) => Ok(Args {
+            source,
+            mount: None,
+            file_rules,
+        }),
         _ => Err(usage()),
     }
+}
+
+/// The file rules and the guard's additions to them, or why the tree is not served. When mounting
+/// with `--file-rules`, the full set is also written beside the input, `<file>.resolved`, where
+/// the launcher's mount script reads it.
+fn resolve_rules(args: &Args) -> Result<(FileRules, String), String> {
+    let rule_file = match &args.file_rules {
+        None => RuleFile::none(),
+        Some(path) => {
+            let text = std::fs::read_to_string(path).map_err(|err| {
+                format!("ko-agent-fs: cannot read the file rules {path:?}: {err}")
+            })?;
+            rulefile::parse(&text).map_err(|err| format!("ko-agent-fs: {err}"))?
+        }
+    };
+    let additions =
+        ko_agent_fs::guard::resolve(&args.source, &rule_file.rules, &rule_file.host_view).map_err(
+            |refusal| {
+                format!(
+                    "ko-agent-fs: refusing to serve {:?}\n{refusal}",
+                    args.source,
+                )
+            },
+        )?;
+    let (rules, text) = rule_file.with_additions(&additions.lines(), &additions.aliases);
+    if let (Some(path), Some(_)) = (&args.file_rules, &args.mount) {
+        let mut resolved = path.clone().into_os_string();
+        resolved.push(".resolved");
+        std::fs::write(&resolved, &text)
+            .map_err(|err| format!("ko-agent-fs: cannot write {resolved:?}: {err}"))?;
+    }
+    Ok((rules, text))
 }
 
 /// Which stage a self-test failure came from, because only this code knows. Everything up to and
@@ -137,16 +189,20 @@ fn self_test_mounted(backing: &PathBuf, mountpoint: &PathBuf) -> Result<(), Self
     )
     .map_err(|err| SelfTestFailure::Setup(format!("cannot open the scratch backing: {err}")))?;
 
-    let session =
-        fuser::spawn_mount(KoAgentFs::new(root), mountpoint, &mount_config()).map_err(|err| {
-            SelfTestFailure::Setup(format!(
-                "mount failed: {}\n\
+    let session = fuser::spawn_mount(
+        KoAgentFs::new(root, FileRules::default()),
+        mountpoint,
+        &mount_config(),
+    )
+    .map_err(|err| {
+        SelfTestFailure::Setup(format!(
+            "mount failed: {}\n\
                  Usual causes: no fusermount3 on PATH, or allow_other refused because\n\
                  /etc/fuse.conf lacks user_allow_other\n\
                  (fix: sudo sh -c 'echo user_allow_other >> /etc/fuse.conf')",
-                mount_error_text(&err),
-            ))
-        })?;
+            mount_error_text(&err),
+        ))
+    })?;
 
     // The mount is asynchronous; nothing below means anything until the mountpoint really is FUSE.
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -345,13 +401,17 @@ fn main() -> ExitCode {
         Err(code) => return code,
     };
 
-    if let Err(refusal) = ko_agent_fs::guard::check_hook_location(&args.source) {
-        eprintln!(
-            "ko-agent-fs: refusing to serve {:?}\n{refusal}",
-            args.source
-        );
-        return ExitCode::FAILURE;
-    }
+    let (rules, resolved) = match resolve_rules(&args) {
+        Ok(pair) => pair,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(mount) = args.mount else {
+        print!("{resolved}");
+        return ExitCode::SUCCESS;
+    };
 
     // O_PATH|O_DIRECTORY: a resolution base for openat2, not a readable handle.
     let root: OwnedFd = match open(
@@ -372,14 +432,15 @@ fn main() -> ExitCode {
     // The daemon's first log line: without it, an empty daemon.log cannot distinguish "healthy,
     // nothing denied" from "never started". Same stream as the DENY lines.
     eprintln!(
-        "ko-agent-fs {} source {SOURCE_ID} t={} serving {:?} at {:?}",
+        "ko-agent-fs {} source {SOURCE_ID} t={} serving {:?} at {:?} under {} file rule lines",
         env!("CARGO_PKG_VERSION"),
         ko_agent_fs::fs::unix_seconds(),
         args.source,
-        args.mount
+        mount,
+        rules.lines().len(),
     );
 
-    match fuser::mount(KoAgentFs::new(root), &args.mount, &mount_config()) {
+    match fuser::mount(KoAgentFs::new(root, rules), &mount, &mount_config()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("ko-agent-fs: mount failed: {}", mount_error_text(&err));

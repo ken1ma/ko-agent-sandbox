@@ -1,0 +1,8 @@
+{
+  "name": "ko-review",
+  "description": "Stateful Codex review of the working tree: one review cycle, one Codex thread, until approval or the user's decision",
+  "version": "0.1.0",
+  "author": {
+    "name": "ko-agent-sandbox"
+  }
+}

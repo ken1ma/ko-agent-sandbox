@@ -1,5 +1,5 @@
-# The security gate's Mill fixture has one module and one test class. Keep it limited to what
-# the gate exercises. `system` is the JVM the wrapper puts first on PATH;
+# The security acceptance test's Mill fixture has one module and one test class. Keep it limited to what
+# the acceptance test exercises. `system` is the JVM the wrapper puts first on PATH;
 # mill's default provisions its own through Coursier's index, which the profile denies.
 mill-jvm-version: system
 extends: ScalaModule

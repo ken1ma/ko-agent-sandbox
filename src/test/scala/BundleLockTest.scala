@@ -10,7 +10,7 @@
 // run that dies between the two leaves the original under ko-agent-sandbox:bundle-lock-backup —
 // `podman tag ko-agent-sandbox:bundle-lock-backup ko-agent-sandbox:latest` restores it by hand.
 //
-// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the gate):
+// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the condition):
 //
 //     sbt "testWithPodman *BundleLockTest"
 

@@ -22,7 +22,7 @@ import RunOnHostSession.{parseRecord, Record}
 /** One runtime as its owner describes it: `proxy` and `group` are the owner's `proxy-<program>-<hash>`
   * and `server-sbt-<hash>` or `daemon-mill-<hash>` records as they read at publication, so a
   * descriptor left from a replaced runtime fails against the successor's records; `daemon` and
-  * `daemonConfig` — the daemon proved at its start and `RunOnHostPrereqs.millDaemonConfig`
+  * `daemonConfig` — the daemon's pid and start time, taken at its start, and `RunOnHostPrereqs.millDaemonConfig`
   * digested — are a mill runtime's. */
 case class RunOnHostRuntimeDescriptor(
   fingerprint: String,
@@ -116,11 +116,11 @@ object RunOnHostRuntimeDescriptor:
     * fingerprinted. */
   def fingerprint(inputs: RunOnHostSandbox.RuntimeInputs, rules: String): String =
     val SeatbeltProfile.ProfileInputs(
-      prereqs, sessionTmp, distribution, sbtGlobal, ivyHome, gradleUserHome, m2Repository, proxyPort, authority,
-      network,
+      prereqs, sessionTmp, distribution, sbtGlobal, ivyHome, gradleUserHome, m2Repository, proxyPort, trust,
+      systemPaths, network, fileRules,
     ) = inputs.profile
     val RunOnHostPrereqs.CommandPrereqs(project, jdkHome, coursierV1, program, executable) = prereqs
-    val SeatbeltProfile.RuntimeAuthority(reads, executes) = authority
+    val SeatbeltProfile.SystemPaths(reads, executes) = systemPaths
     val networkName = network match
       case SeatbeltProfile.Network.ProxyOnly        => "proxy-only"
       case SeatbeltProfile.Network.SbtClient(tmp)   => s"sbt-client $tmp"
@@ -132,10 +132,10 @@ object RunOnHostRuntimeDescriptor:
         program.name, project.toString, jdkHome.toString, coursierV1.toString, executable.toString,
         distribution.fold("")(_.toString), sbtGlobal.fold("")(_.toString), ivyHome.fold("")(_.toString),
         gradleUserHome.fold("")(_.toString), m2Repository.fold("")(_.toString), sessionTmp.toString,
-        proxyPort.toString, networkName,
+        proxyPort.toString, trust.toString, networkName,
       ) ++ reads.map(_.toString) ++ Seq("executes") ++ executes.map(_.toString)
         ++ Seq("environment") ++ inputs.environment.toSeq.sorted.flatMap((name, value) => Seq(name, value))
-        ++ Seq("rules", rules)
+        ++ Seq("rules", rules, "file rules", fileRules.text)
     digest(fields.map(field => s"${field.length}:$field").mkString)
 
   def digest(text: String): String =

@@ -54,8 +54,8 @@ Run the rig in a POSIX shell on a host with podman to test edits without rebuild
 - Build output persists in the `ko-agent-fs-rig-target` volume, separate from the source tree's
   `target/`. The musl `rust-std` target is downloaded again for each container.
 
-  - For frequent runs, bake the apt packages and musl target into a rig image to avoid repeated
-    downloads.
+  - For frequent runs, build a rig image with the apt packages and musl target installed to avoid
+    repeated downloads.
 
 - The rig returns Cargo's exit status, so a deliberately failing control must fail the command.
 

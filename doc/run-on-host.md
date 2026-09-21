@@ -19,7 +19,7 @@ and Maven commands to the host, where each runs under a Seatbelt profile of its 
     │  │ sbt client → sbt server                  │    │ listens on 127.0.0.1         │  │
     │  │ mill or gradle client → its daemon       │    │ allows only listed hosts     │  │
     │  │ Maven starts a JVM for each command      │    │ on port 443                  │  │
-    │  │ dependency downloads                     ├───→│                              │  │
+    │  │ dependency downloads                     ├───→│ inspects: GET and HEAD only  │  │
     │  │ writes project files, except             │    │ cannot read project or cache │  │
     │  │ .git and .ko-agent-sandbox;              │    │ logs allowed/denied requests │  │
     │  │ also writes its caches and temp files    │    │                              │  │
@@ -38,7 +38,7 @@ and Maven commands to the host, where each runs under a Seatbelt profile of its 
 This document is the reference for how host commands work and what they require; the table names
 the code that enforces each part:
 
-| concern | binding site |
+| concern | specified or enforced in |
 | --- | --- |
 | the security properties and their costs | `SECURITY.md` "Run on host" |
 | option syntax and write access | [README.md](../README.md#reference), `--run-on-host` |
@@ -48,31 +48,45 @@ the code that enforces each part:
 | provisioning offered at the start prompt | `RunOnHostProvisioning.scala` |
 | the wrapper and the broker's runtimes: proxy, sbt server, environment | `RunOnHostSandbox.scala` |
 | the broker's mill daemon: its start, its port, a daemon of yours | `RunOnHostMillDaemons.scala` |
+| a proxy's CA and leaf, and what a command trusts | `RunOnHostInspection.scala` |
 | the generated profile | `SeatbeltProfile.scala` |
-| the exit criteria, measured | `src/probe/run-on-host-profile-gate.sh` |
+| the exit criteria, measured | `src/probe/run-on-host-acceptance-test.sh` |
 
-The full gate (`all`) reports **230 PASS, 0 FAIL, 0 SKIP** on macOS 26.4.1 arm64 with
-Temurin 25.0.4, sbt 2.0.8, Mill 1.1.9, Gradle 9.7.1 and Maven 3.9.16 (2026-09-15).
+The full acceptance test (`all`) reports **255 PASS, 0 FAIL, 0 SKIP** on macOS 26.4.1 arm64 with
+Temurin 25.0.4, sbt 2.0.9, Mill 1.1.9, Gradle 9.7.1 and Maven 3.9.16 (2026-09-21).
 
 The measurement behind the feature: an `sbt test` of this project takes about 2 GB inside the podman
-machine, whose total is fixed when the machine is created and shared with every other session on it
-— and whose resident memory, once grown to hold a build, macOS never gets back. On the host the
-same build runs on memory reclaimed when it exits, at host speed.
+machine, whose total is fixed when the machine is created and shared with every other session on it.
+podman's built-in default for a macOS machine is 2048 MiB, which containers.conf (`[machine]`
+`memory`) or `--memory` changes; a WSL machine has WSL's memory, half the host's by default. A
+session gets the machine's memory minus 1 GiB (README, `KO_AGENT_SANDBOX_MEMORY`): about 1 GiB on
+podman's default, 3 GiB on a 4 GiB machine, shared by the agent, the build and the session's other
+processes.
+Whether the machine gives memory back to macOS depends on libkrun: from 1.19.0 it frees the pages
+the guest reports free with MADV_FREE, which macOS reclaims under memory pressure
+(containers/libkrun pull 703). Measured with libkrun 1.19.0 (podman 6.1.2, macOS 26.4.1) on a
+freshly restarted 12 GiB machine, the build grew the machine's process by 6.8 GiB of resident
+memory, which stayed through the ten minutes after it; a minute of `memory_pressure -l warn` then
+compressed 6.6 GiB of the process's memory and dropped 1.7 GiB more without compressing it, with
+swap level throughout (`src/probe/machine-memory-return.sh`, 2026-09-22). So the process keeps
+what a build grew until macOS is short of memory; under pressure, most of its resident decrease
+was matched by growth in its compressed memory, and the remainder is consistent with discarded
+pages. On the host the same build runs on memory reclaimed when it exits, at host speed.
 
-A host command's recurring cost is startup. When a start is paid, per program:
+A host command's recurring cost is startup. When each program starts anew:
 
 - sbt and `mill`: the launch keeps one server or daemon warm across its commands from one build
-  directory ("Where a host command deviates from the stock program"), so a start is paid by the
+  directory ("Where a host command deviates from the stock program"), so a start happens at the
   first command from a directory, after `ko-sandbox-run-on-host <program> shutdown`, and after the
   program's own idle exit — sbt's seven days (`TODO.md`, "an idle bound for the sbt server"),
   Mill's thirty minutes.
   - An sbt server keeps the `sbt.version` and options it started with until `shutdown`, as in a
     terminal, and a cancelled sbt command leaves its server warm.
-  - A `mill` start is also paid after a cancel, which ends the daemon as stock Mill does, and
+  - A `mill` start also happens after a cancel, which ends the daemon as stock Mill does, and
     after an edit to what Mill restarts the daemon on — its version pin, `mill-jvm-opts`,
     `mill-repositories`, or anything in `build.mill.yaml`, the header Mill reads them from — and
     costs the daemon's own start: the starter is ended as soon as the daemon listens ("`mill`").
-- Gradle: the daemon is Gradle's own ("Gradle"): a start is paid by the first command and after
+- Gradle: the daemon is Gradle's own ("Gradle"): a start happens at the first command and after
   Gradle's idle exit, three hours, and a client attaches to a compatible daemon in the launch's
   own registry.
 - Maven runs once, so every invocation starts a JVM and loads the build, while the on-disk state
@@ -145,10 +159,34 @@ The filesystem rules define what a host command can access:
     (E5).
   - A `.GIT` the command creates where no `.git` exists is denied too (E9).
   - The volume resolves `.ko-agent-sandbox` spelled with U+212A KELVIN SIGN or U+017F LONG S to
-    the name (E11), and the lowercase pattern denies creating either (E12). The gate creates
-    those spellings, `.GIT` and `.KO-AGENT-SANDBOX` under each command profile, and each is
+    the name (E11), and the lowercase pattern denies creating either (E12). The acceptance test
+    creates those spellings, `.GIT` and `.KO-AGENT-SANDBOX` under each command profile, and each is
     denied.
   - A spelling the volume resolves to the name and no row creates is unmeasured.
+- **Writes to what the file rules protect are denied the same way, in the rules' order**
+  (`doc/file-rules.md`): each `readonly` line a deny and each `writable` line an allow, as a regex
+  anchored after the project's path; each directory a line passes through a deny on the entry
+  itself, at the line's position; what the filter's guard added by path, after the lines; and
+  below a directory a symlink makes part of a listed name, the rest of each `readonly` line.
+  - SBPL checks a rename's source as `file-write-unlink`, as it checks `rmdir` and `unlink`, and
+    its destination as `file-write-create`, as it checks `mkdir`; it has no operation of a
+    rename's own, and checks a `RENAME_SWAP` exchange as both, on either operand
+    (`src/probe/seatbelt-semantics.sh` E13-E17, macOS 26.4.1).
+  - So the deny on a directory a line passes through denies `file-write-create`,
+    `file-write-unlink` and `file-link` on the entry: it refuses renaming, exchanging and
+    replacing it, and leaves its contents, mode and attributes to the other rules, as the filter
+    does. The acceptance test's file-rule rows, a listed name created inside `node_modules` among
+    them, pass on macOS 26.4.1 (2026-09-27).
+  - And no rule refuses moving a directory out of one a `writable` line names while leaving
+    npm's renames and `rmdir` inside it: `doc/file-rules.md`, "Under `--run-on-host`", states the
+    limit.
+  - That deny is stricter than the filter in one respect: it also refuses the entry's `mkdir`,
+    and its `rmdir` once empty, which SBPL checks as a rename's two sides are checked.
+  - Below the target of a symlink the rules reach, `shared/claude` for
+    `.claude -> shared/claude`, the profile keeps denying what a `writable` line lifts under the
+    symlink's name, where the filter allows it. Rendered as a later allow, the lift would also
+    apply under the target's own name: with `.claude -> .vscode/claude`, it would lift part of
+    `readonly .vscode`.
 - **The `.git` and `.ko-agent-sandbox` denials cover link creation, not only writes.** Without them,
   a command could create `link(PROJECT/.git/config, PROJECT/x)` and write through `x` to modify
   `.git/config`.
@@ -196,8 +234,8 @@ Seven measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh
 - The proxy rule is `(remote ip "localhost:<port>")`: an ip-literal host is refused by the
   compiler ("host must be * or localhost").
 - The "localhost" class covers native `127.0.0.1` and `::1` but not a JVM's dual-stack connect,
-  which reaches `127.0.0.1` as v4-mapped `::ffff:127.0.0.1` and dies with `EPERM`; the environment
-  contract sets `-Djava.net.preferIPv4Stack=true` for exactly this.
+  which reaches `127.0.0.1` as v4-mapped `::ffff:127.0.0.1` and dies with `EPERM`; the command's
+  environment sets `-Djava.net.preferIPv4Stack=true` for exactly this.
 - Seatbelt counts a local socket as network: without `(local unix-socket (subpath SESSION_TMP))`
   sbt's server gets `EPERM` from `bind()` on its boot socket and its client waits for it forever
   ("The channel and the command" has the client's wait).
@@ -219,7 +257,7 @@ Seven measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh
   client takes that exit for a server still booting and waits without bound (S6).
 
 The proxy settings handed to the JVM are convenience, not the boundary: Seatbelt is what prevents
-bypass via direct sockets, and the gate's bypass rows measure it.
+bypass via direct sockets, and the acceptance test's bypass rows measure it.
 
 Every command's proxy allows one host on its own: the program's Maven Central
 (`RunOnHostPrereqs.centralHost`).
@@ -256,6 +294,25 @@ container — the same rule the egress refusal follows.
     the command ("Command requested network access to: …") — from the log's length at the
     command's start, so a shared proxy's earlier denials are not this command's. It never adds the
     host itself.
+  - a request the proxy refuses inside a tunnel — a `PUT`, a `POST`, a `GET` with a body — gets a
+    `403` whose body the programs need not print, so the wrapper reports it the same way
+    ("Command sent requests the host command sandbox refuses: …",
+    `RunOnHostSandbox.refusedRequests`), each request with the audit line's reason.
+    - A refusal the command answers by changing the request — a body framing header on a `GET`, a
+      `Host` header naming another host, `Upgrade`, an absolute target, a path spelled with
+      percent-encoding — also gets the step the `403` body had (`RefusalAdvice.requestStep`).
+    - A refusal for want of a grant gets the user's step, since the rule file takes no grant but
+      `read`: to run the command yourself, outside the sandbox.
+  - a proxy that serves nothing because a write to its log failed (`SECURITY.md`, "Egress proxy")
+    cannot say so in that log, and the programs need not print it. After a command that exits
+    non-zero the wrapper asks the proxy with `OPTIONS *` and `Max-Forwards: 0`
+    (`RunOnHostSandbox.unwritableProxyLog`), reads the reason from the response's `Proxy-Status`
+    field, and reports it with the log's path. A proxy still logging answers `400` and logs
+    `deny - - OPTIONS non-CONNECT request`.
+    - sbt 2.0.9 and mill 1.0.6 print the status line alone, measured against a proxy answering
+      `403` with a marked `Proxy-Status` and body; Gradle and Maven are not measured:
+
+          Unable to tunnel through proxy. Proxy returns "HTTP/1.1 403 Forbidden"
 
 ## Program prerequisites
 
@@ -373,8 +430,8 @@ granted. sbt uses that home for three things, read from the sources of sbt 1.13.
 
 Without the redirect, an sbt 1.12.13 `packageBin` of a build with a `dependsOn` edge dies under
 the profile while canonicalizing the denied `~/.ivy2` for that lock. This repository's own build
-has no such edge, so the gate's sbt rows never reach that path; `src/probe/ivy-fixture` is such a
-build, on sbt 1.
+has no such edge, so the acceptance test's sbt rows never reach that path; `src/probe/ivy-fixture`
+is such a build, on sbt 1.
 
 sbt 2.0.9 keeps the Ivy library and the lock. The fixture is not duplicated for sbt 2, because
 sbt 1.13.0 and 2.0.9 name the lock file by the same steps, so the sbt 1 row measures the redirect
@@ -390,11 +447,11 @@ sbt 2.1.0-M1 has no Ivy library (sbt/sbt#9615, merged into `develop` 2026-08-24)
 so the fixture retires when sbt 1 and sbt 2.0 do. sbt 2.1.0-M1 still takes `local` and the excludes
 file from `sbt.ivy.home`, so the redirect and its grant stay after the lock is gone. Retire them
 only when a released sbt stops deriving those two paths, and check that by reading `Defaults.scala`
-again, not by a gate run.
+again, not by an acceptance-test run.
 
 - The wrapper passes `--jvm-client`: sbt 2 defaults to `sbtn`, which under the profile prints
-  that it is starting the server and returns with no build run — a gate row keeps measuring it,
-  and if it starts passing, the wrapper can reconsider requiring `--jvm-client`.
+  that it is starting the server and returns with no build run — an acceptance-test row keeps
+  measuring it, and if it starts passing, the wrapper can reconsider requiring `--jvm-client`.
 - The distribution's `sbt` resolves `java` from `PATH`, so the environment puts the granted JDK's
   `bin` first: the broker starts the server by running the script, and `-java-home` reaches the
   client alone.
@@ -415,8 +472,8 @@ A project-local bootstrap script, the build directory's own `mill`; no globally 
 - A version the user never provisioned the JVM launcher for is a refusal naming the command to
   run.
 
-The launcher is the JVM one, not the native image the bootstrap runs for a bare pin, because the
-image takes no `_JAVA_OPTIONS`:
+The launcher is the JVM one, not the native image the bootstrap runs for a version with no suffix,
+because the image takes no `_JAVA_OPTIONS`:
 
 - the environment's `preferIPv4Stack` never reaches it;
 - its connect to the daemon is the dual-stack one the "localhost" class denies ("Network");
@@ -457,19 +514,19 @@ it (`RunOnHostMillDaemons.scala`, `RunOnHostSandbox.BrokerRuntimes`):
    - Once `lsof` shows the daemon listening on the port `socketPort` names, the broker ends the
      launcher — TERM to its pid alone, the daemon's parent in the group, behind its pid and start
      time.
-   - Without that proof the launcher retries for ten seconds and exits nonzero, and a launcher
+   - Without that observation the launcher retries for ten seconds and exits nonzero, and a launcher
      the TERM does not end reaches that bound too; either way the daemon stays in the spawn's
      group (measured, M1 for the exit, M8 for the TERM: the daemon is spawned with
      `destroyOnExit = false`).
    - The group is three processes — the leader, the launcher JVM as its child, since
      `sandbox-exec`, the bootstrap and the assembly's shell prefix each `exec`, and the daemon as
-     the launcher's — and after the TERM the daemon is reparented while the leader stays as the
-     group's proof (M8).
+     the launcher's — and after the TERM the daemon is reparented while the leader stays, its
+     start time checked before the group is ended (M8).
    - The starter's output goes to `daemon-mill-<hash>.log` in the session directory, the finding
      when a start fails; a starter that neither ends nor writes anything for two minutes, the
      proxy log not growing either, is a failed start.
 2. The **daemon** is the member of that group whose command line names
-   `mill.daemon.MillDaemonMain`, proved from then on by its pid and start time.
+   `mill.daemon.MillDaemonMain`, checked from then on by its pid and start time.
    - `socketPort` is read as a candidate — an integer in port range, nothing more — and granted
      only after `lsof` shows that pid listening on it.
    - The file is the build's to write and authorizes nothing, and a candidate the daemon does not
@@ -485,7 +542,7 @@ closed environment reaches the build per command; the daemon JVM's own options, 
 settings included, are the starter's, fixed at its start.
 
 The broker replaces the daemon under the same proxy before the next command — its starter's spawn
-staying as the group's provable leader and ended with the group first — when:
+staying as the group's leader and ended with the group first — when:
 
 - what Mill's launcher restarts the daemon on has changed: the launcher version, the resolved
   JVM, `mill-jvm-opts` and `mill-repositories`, each from the source Mill reads it from, the
@@ -538,7 +595,7 @@ before the broker's starts, as your sbt server is shut down, and the channel log
 - It is found in the process table by its command line and its working directory under
   `out/mill-daemon`, never through `processId`, and ended by TERM then KILL behind its pid and
   start time, once idle — no established connection on its port, observed through `lsof`, and the
-  proof repeated immediately before the signal.
+  start-time check repeated immediately before the signal.
 - A daemon busy past two minutes is a refusal naming it.
 - Between the observation and the signal a terminal `./mill` can still connect, and its command
   then dies with the daemon; no observation closes that window.
@@ -553,9 +610,9 @@ or ended by that record and replaced, as its sbt server is ("The channel and the
   settings attaches to it and runs your build under the profile and the launch's proxy, and one
   with different settings ends it, as Mill does on a fingerprint mismatch, after which the broker
   ends yours once idle and starts its own again.
-- A daemon whose registered leader was killed on its own — the spawn, not the broker — is no
-  group the scavenger can prove and nothing a portfile attributes; it exits on Mill's idle
-  timeout.
+- A daemon whose registered leader was killed on its own — the spawn, not the broker — remains
+  in a group whose leader the scavenger cannot check, and is nothing a portfile attributes; it
+  exits on Mill's idle timeout.
 
 ### Gradle
 
@@ -607,19 +664,19 @@ later commands attach to it through Gradle's own matching, inside the profile.
   stops itself (`DaemonStateCoordinator`, `WatchForDisconnection`).
 - The daemon detaches itself into a group of its own (`DaemonMain`, `setsid`), where its workers
   and test executors are forked, so ending the client's group leaves it alive; the broker ends it
-  by proof (`RunOnHostGradleDaemons.scala`).
+  by its recorded pid and start time (`RunOnHostGradleDaemons.scala`).
 - After each command, and once more at the launch's end, the broker records every daemon started
   with the launch's environment by pid and start time, `records/daemon-gradle-<pid>`, forgetting
   the record of one gone; the launch's end signals the group behind each record as it does every
   recorded group.
 
-The proof is the daemon's initial environment, which the client starts it with
+What identifies a daemon as the launch's is its initial environment, which the client starts it with
 (`DefaultProcessForkOptions`), read with `ps -E`: its `_JAVA_OPTIONS` names the broker's `tmp/`
 as `java.io.tmpdir`, a value no process outside this launch's commands was started with.
 
-- No path proves it: the build writes across `tmp/` and the project, and a file a daemon of yours
-  holds open, renamed into the registry under any name — the daemon log's included — is reported
-  by the kernel at that name.
+- No path identifies it: the build writes across `tmp/` and the project, and a file a daemon of
+  yours holds open, renamed into the registry under any name — the daemon log's included — is
+  reported by the kernel at that name.
 - `ps -E` reads the strings from the daemon's own memory (`sysctl_procargsx`), so build code in
   the daemon can rewrite them and hide the daemon from its own launch, and nothing else.
 - A daemon no observation reached — one started under a broker that died during the command, or
@@ -636,7 +693,7 @@ Gradle 9.7.1 is the release measured, the one `src/probe/gradle-fixture` pins; o
 out, since 8.14 does not run on the JDK 25 the launcher requires, and Gradle itself refuses a JDK
 it cannot run on.
 
-The gate's Gradle rows (`src/probe/run-on-host-profile-gate.sh`) measure:
+The acceptance test's Gradle rows (`src/probe/run-on-host-acceptance-test.sh`) measure:
 
 - the distribution's grant;
 - the build through the proxy;
@@ -690,9 +747,9 @@ An mvnd distribution is refused: mvnd is a daemon.
   `aether.connector.http.useSystemProperties` is set, and then warns at every download that it is
   using them. That property belongs to resolver 1.9, which Maven 3.9 ships.
 - Both properties are measured on Maven 3.9.16, the latest release, by building
-  `src/probe/mvn-fixture` through a proxy inside the container; the gate's mvn rows measure them
-  under the profile. Maven 4 is still a release candidate; it is provisioned the same way and is
-  unmeasured.
+  `src/probe/mvn-fixture` through a proxy inside the container; the acceptance test's mvn rows
+  measure them under the profile. Maven 4 is still a release candidate; it is provisioned the same
+  way and is unmeasured.
 - The user's `~/.m2/settings.xml` and `toolchains.xml` are denied, and Maven treats them as
   absent, so a mirror or credential there never reaches a confined command.
 - `.mvn/maven.config`, `jvm.config` and `extensions.xml` are project files the agent already
@@ -728,18 +785,18 @@ Two locks:
   waiting one says so on its stderr.
 - Ending a runtime's recorded group — the broker replacing or retiring its own, its teardown, the
   scavenger, another launch taking the runtime over — runs under a retirement lock,
-  `retire-lock/<program>-<hash>`, held across the leader's proof and the signal alone, so no two
-  processes signal one group; one not free within twenty seconds keeps the record for the next
-  collection (`RunOnHostSession.retirementLockFile` has the rules).
+  `retire-lock/<program>-<hash>`, held across the leader's start-time check and the signal
+  alone, so no two processes signal one group; one not free within twenty seconds keeps the
+  record for the next collection (`RunOnHostSession.retirementLockFile` has the rules).
 
 The wrapper root is `/private/tmp/ko-agent-<uid>`, short on purpose: sbt's boot socket path must
 fit a UNIX-domain socket's `sun_path` (`RunOnHostPrereqs.SessionTmpMaxLength`), and the broker's
 `tmp/` is under the same budget.
 
-The command's environment is the contract, not its command line: a closed set the wrapper supplies
-(`RunOnHostSandbox.commandEnvironment`), never the launcher's own; SECURITY.md, "Run on host", has
-why. The gate follows this closed environment contract; `command_env` documents its deviations
-for rows without a proxy and with one temporary directory for clients and servers.
+The wrapper constructs the command's environment from the variables listed below
+(`RunOnHostSandbox.commandEnvironment`), rather than inheriting the launcher's; SECURITY.md, "Run
+on host", has why. The acceptance test supplies the same closed environment; `command_env` documents
+its deviations for rows without a proxy and with one temporary directory for clients and servers.
 What the wrapper supplies:
 
 | Environment Variable | Value |
@@ -754,6 +811,7 @@ What the wrapper supplies:
 | `USER`, `LOGNAME` | the account's name, the JVM's `user.name` |
 | `HTTPS_PROXY`, `HTTP_PROXY` and their lowercase | `http://127.0.0.1:<port>`, the command's proxy |
 | `NO_PROXY` and its lowercase | `localhost,127.0.0.1` |
+| `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO` | the proxy's CA certificate, PEM (below) |
 | `MILL_FINAL_DOWNLOAD_FOLDER` | the launcher's, else `<cache home>/mill/download` |
 | `MILL_VERSION` | under `mill`, the JVM launcher of the pinned version, `<v>-jvm` |
 | a name `--env` gave | the value `--env` gave, unless a row above sets that name |
@@ -768,6 +826,8 @@ The `java -D` properties:
 | `https.proxyHost`, `http.proxyHost` | `127.0.0.1` |
 | `https.proxyPort`, `http.proxyPort` | `<port>` |
 | `java.net.preferIPv4Stack` | `true`: the loopback rule does not cover a v4-mapped IPv6 connect |
+| `javax.net.ssl.trustStore`, `javax.net.ssl.trustStoreType` | the proxy's CA certificate as a store, `PKCS12` |
+| `javax.net.ssl.trustStorePassword` | `changeit`, no secret: without it a JVM loads no certificate from a PKCS12 store |
 | `sbt.global.base` | `<run-on-host cache>/sbt-global` |
 | `sbt.ivy.home` | `<run-on-host cache>/ivy-home` |
 | `maven.repo.local` | `<run-on-host cache>/m2/repository` |
@@ -781,6 +841,37 @@ The `java -D` properties:
   reproducer.
 - Both sbt clients and servers also receive `sbt.global.base` as one argument for the script's
   preloaded-cache lookup (`RunOnHostSandbox.sbtCommand`).
+
+The proxy answers for every host it allows under a certificate of its own CA ("The command's
+egress proxy"), so a program verifies that host only if it trusts the CA. A JVM does through the
+store. The five variables name the same certificate for the programs `HTTPS_PROXY` serves, as the
+sandbox container's do (`SECURITY.md`, "Who holds the CA key"). By each program's documentation:
+
+| Environment Variable | Read by |
+|---|---|
+| `SSL_CERT_FILE` | OpenSSL's default verify file, so a program that loads OpenSSL's defaults; Node.js only under `--use-openssl-ca` |
+| `CURL_CA_BUNDLE` | `curl`, unless its TLS backend is Schannel; Python's `requests`, when `REQUESTS_CA_BUNDLE` is unset |
+| `REQUESTS_CA_BUNDLE` | Python's `requests` |
+| `NODE_EXTRA_CA_CERTS` | Node.js, read once at start, and not by a client that sets its own `ca` option |
+| `GIT_SSL_CAINFO` | `git`, over `http.sslCAInfo` |
+
+- A GraalVM native image, such as the `cs` and `scala` launchers, reads neither `_JAVA_OPTIONS`
+  nor the five variables, and takes the same three `javax.net.ssl.trustStore*` properties, and the
+  proxy's, as `-D` options on its own command line. A build that starts one passes them itself,
+  with the values `_JAVA_OPTIONS` has.
+- A program that reads none of these fails its certificate check on every host, and no setting
+  of the launcher's or the build's reaches it: a program verifying through the macOS keychain
+  alone, a binary with its roots compiled in, a JVM client whose code names its own trust store.
+- The `curl` and `git` that macOS ships fail under a command's profile before they verify any
+  certificate, whatever the variables (macOS 26.4.1, the acceptance test's "CA bundle variables"
+  rows). The table is for a program the build brings.
+  - `/usr/bin/curl` stops at LibreSSL's `fopen('/private/etc/ssl/openssl.cnf')`, `Operation not
+    permitted`, printed as `Auto configuration failed`: the file is not among the profile's
+    system paths (`SeatbeltProfile.SystemPaths.txt`; `doc/TODO.md`, "read grants a user adds").
+  - `/usr/bin/git`, Xcode's shim, ends with "See `man xcode-select` for more details".
+- The CA is the whole store and the whole PEM file. No public root is beside it, since the proxy
+  inspects every host it allows and no origin's own certificate reaches a command. A program
+  with roots of its own keeps them: `NODE_EXTRA_CA_CERTS` adds the CA to Node.js's.
 
 The placeholders:
 
@@ -860,13 +951,15 @@ Before starting a server the broker checks who holds the build directory's portf
 - the *user's own* server — from a terminal, outside any launch — is shut down by protocol at the
   socket the broker derives itself;
 - a server *another launch* still owns — its broker's session names the directory, and the
-  recorded group is not proved gone — the command attaches to when the server this launch would
-  start has the same confinement and environment, and otherwise ends by that record and replaces
-  with its own (below);
-- a live socket under this launch's own directory that no record proves is a refusal naming it.
+  recorded group is not known to be gone — the command attaches to when the server this launch
+  would start has the same confinement and environment, and otherwise ends by that record and
+  replaces with its own (below);
+- a live socket under this launch's own directory, while this launch has no record identifying
+  that server, is a refusal naming it.
 
 Before starting a daemon it checks the process table the same way ("`mill`"): the user's own
-daemon is ended by proof once idle, another launch's is attached to or taken over.
+daemon is ended once idle, after its start-time check, another launch's is attached to or taken
+over.
 
 Attaching is decided per command from the owner's descriptor, `runtime-<program>-<hash>` in its
 session directory (`RunOnHostRuntimeDescriptor.scala`). Two conditions:
@@ -905,8 +998,8 @@ A runtime the command cannot attach to is taken over. The reasons:
   the directory's present configuration.
 
 The takeover: under the build lock the command holds, the broker ends the group the owner's record
-names, under the retirement lock and by the same proof every ender uses, and starts its own server
-or daemon under its own proxy, as a first command does.
+names, under the retirement lock and after the same start-time check every ender makes, and
+starts its own server or daemon under its own proxy, as a first command does.
 
 - The owner's record stays the owner's, its proxy runs on, and its next command finds the group
   dead, replaces the runtime under that proxy, and decides the same way — attaching to this
@@ -918,7 +1011,7 @@ or daemon under its own proxy, as a first command does.
   another directory's server.
 - An owner tearing itself down holds the retirement lock through its own end of the group, so
   the command waits on the lock — twenty seconds at most — and then starts its own.
-- The command is refused, naming the record, when the group is not proved ended: a member still
+- The command is refused, naming the record, when the group is not observed ended: a member still
   listed after the KILL, a leaderless group, or the lock busy past its bound; retry once the
   group is gone, or use a different build directory.
 - Your own `./mill` attached to the daemon taken over dies with it, as it does when its owner
@@ -979,7 +1072,7 @@ where the caller is not interactive.
   unless its fingerprint differs; a client attached to one the broker did not start would run
   the build under that process's environment and confinement, or none.
   - The user's own terminal server the broker shuts down by protocol at the socket it derives,
-    and the user's own daemon it ends by proof once idle ("`mill`").
+    and the user's own daemon it ends once idle, after its start-time check ("`mill`").
   - A server or daemon another launch still owns it attaches to only when it would start one
     under the same confinement and environment, and otherwise ends by that launch's record, under
     the retirement lock, and replaces with its own ("The channel and the command").
@@ -988,6 +1081,12 @@ where the caller is not interactive.
   under it granted, `preferIPv4Stack` set for the loopback rule ("Network"), no destination off
   this host but the proxy, and the project writable even under `--write=reject` (`SECURITY.md`,
   "Run on host").
+- **A repository takes reads alone — confinement.** Stock sbt, Mill, Gradle and Maven publish
+  to a repository with a `PUT`. A host command's proxy refuses
+  every request but a `GET` or `HEAD` without a body ("The command's egress proxy"), and the rule
+  file takes no other grant, so publishing is yours, outside the sandbox; the wrapper names the
+  refused request ("Refusals"). The JVM's default trust is the proxy's CA alone, with no public
+  root ("The command's lifetime and environment").
 - **The wait for a start has a bound — operability.** sbt's thin client waits for a starting
   server with no deadline, which an interactive user can Ctrl-C; the agent cannot, so an
   unbounded wait would be an unrecoverable command.
@@ -1015,14 +1114,20 @@ where the caller is not interactive.
   command through its client; the broker has one path, a client to the server it starts, so
   `ko-sandbox-run-on-host sbt new` in an empty directory meets the runner's refusal of a directory
   with no build, and `--allow-empty` starts the server there as the stock client's flag would.
-  Whether `new` then writes its template through that server the gate does not measure.
+  Whether `new` then writes its template through that server the acceptance test does not measure.
 - **The JVM client, never `sbtn` — operability.** sbt 2 runs its native client by default, which
   under the profile prints that it is starting the server and returns with no build run; the
-  wrapper passes `--jvm-client`, and a gate row keeps measuring `sbtn` ("sbt").
+  wrapper passes `--jvm-client`, and an acceptance-test row keeps measuring `sbtn` ("sbt").
 - **`target/` links into a denied store are swept before a server starts — confinement.** A tree
   the user's unconfined sbt built links into a store the profile denies ("sbt").
 - **The global base and the Ivy home are the project's own — confinement.** Redirected into the
   run-on-host cache, where stock uses `~/.sbt` and `~/.ivy2` ("sbt", "The run-on-host cache").
+- **While the launch's server lives, your terminal's `sbt` in the build directory runs on it, and
+  `sbt shutdownall` does not end it — ownership.** Run `sbt shutdown` there first to end it.
+  - Stock sbt attaches to whatever server holds the portfile, so the command runs under the
+    profile and the launch's environment: a test that runs podman fails there.
+  - `sbt shutdownall` kills what `jps -v` lists as `sbt-launch`, which does not include a
+    launch's server (sbt 2.0.9, macOS 26.4.1, 2026-09-28). The server ends with the launch anyway.
 
 ### Under `mill`
 
@@ -1030,9 +1135,9 @@ where the caller is not interactive.
   ownership.** The starter's denied connect leaves the daemon in the broker's group, and the
   starter is ended once the daemon listens ("`mill`").
 - **The JVM launcher, never the native image — confinement.** The stock bootstrap runs the
-  native image for a bare pin; the wrapper sets `MILL_VERSION` to `<v>-jvm` so that the client
-  takes the environment's `preferIPv4Stack` and connects under the one-port rule, which the
-  image cannot ("`mill`"). The user provisions that launcher, and a `-native` pin is refused
+  native image for a version with no suffix; the wrapper sets `MILL_VERSION` to `<v>-jvm` so that
+  the client takes the environment's `preferIPv4Stack` and connects under the one-port rule, which
+  the image cannot ("`mill`"). The user provisions that launcher, and a `-native` pin is refused
   with the reason.
 - **A configuration edit replaces the daemon before the command — operability.** Stock Mill's
   client ends a daemon whose fingerprint differs and starts a replacement itself; from a
@@ -1130,8 +1235,8 @@ rest, measured:
     build could report.
   - `open` started nothing from under the command profile while `mach-lookup` was unfiltered
     (`mach-route`): `open -a` found no application, and a `.command` file the command wrote had
-    no application claiming it. Under the named service the gate has a row for `open -a`, and
-    one for a JVM asking the resolver.
+    no application claiming it. Under the named service the acceptance test has a row for `open -a`,
+    and one for a JVM asking the resolver.
 - What this toolchain needs, per layer: the JDK needs `sysctl-read`, its home, and
   `/System/Library/CoreServices/SystemVersion.plist` — without that one file `java` refuses to
   start with `os.version malformed: -1.0`. It does *not* need `file-map-executable`, which Apple's
@@ -1155,16 +1260,16 @@ exactly — and its generated profile is worth reading and worth *not* copying.
   unified log's redaction, and which `src/probe/run-on-host-profile-iterate.sh` puts at the top
   of every profile it iterates.
 
-**Runtime authority** — the loader, libc, the CA bundle and the rest a toolchain needs from the
+**System paths** — the loader, libc, the CA bundle and the rest a toolchain needs from the
 system:
 
 - It is discovered by running a real build under a deny-default profile and reading the denials,
   never by listing what a host happens to have, and never as a way to reach a user path.
   `src/probe/run-on-host-profile-iterate.sh` is how candidate entries are measured.
 - The measured set is one file, a resource of the launcher's own artifact
-  (`src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt`): what the production
-  wrapper grants is what the probes measured. The gate and host commands use that same set of
-  grants.
+  (`src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt`): what the production
+  wrapper grants is what the probes measured. The acceptance test and host commands use that same
+  set of grants.
 - Do not pre-authorize broad paths (`/System/**`, `/usr/**`, `/opt/homebrew/**`); add the
   narrowest rule testing justifies.
 
@@ -1179,7 +1284,7 @@ The proxy is a process from the same codebase as the container's.
 - A request from another build directory gets a proxy of its own, and both stay.
 - A proxy that is gone is replaced, with its server or daemon, before the next command.
 - Maven's is the command's, started by the wrapper in the command's session and ended with it, as
-  every program's is under the gate's test entry.
+  every program's is under the acceptance test's entry (`RunOnHost`).
 
 The sandbox session's proxy runs on a network created `--internal`, inside the podman machine.
 There is no host route to it, and making one would either publish the sandbox session's full
@@ -1221,21 +1326,22 @@ action.
   keep their inode, and the next re-invocation runs the new file.
 - It binds an ephemeral port on `127.0.0.1` (the codebase's wildcard `:3128` default is safe only
   in the container's own network namespace), with `preferIPv4Stack` on its command line as the
-  command's environment contract sets it, since the dual-stack bind is the v4-mapped one the
+  command's environment sets it, since the dual-stack bind is the v4-mapped one the
   `localhost` class denies ("Network"); its starter reads the port from the same ready line the
-  container launcher gates on.
+  container launcher waits for.
 
 It runs under a profile of its own (`SeatbeltProfile.renderProxy`), the same for every proxy the
 launcher starts on the host, since one `startProxy` starts them all. The profile grants:
 
 - its executable — the native image, or the JDK and each class-path entry of the jar form;
-- the runtime authority as reads, and the devices;
+- the system paths as reads, and the devices;
+- the directory holding its leaf certificate and that leaf's key, as reads;
 - the network: outbound to every remote, since which hosts a client may reach is the proxy's own
   decision, by name, and SBPL filters by address; the resolver's socket,
   `/private/var/run/mDNSResponder`, which `InetAddress.getAllByName` reaches, with the root link
   `/var` its client spells the path through (measured: without that one link every lookup fails);
   and a listener of the `localhost` class for its port;
-- nothing of the user's: no project, no cache, no write anywhere;
+- nothing else of the user's: no project, no cache, no write anywhere;
 - of the operation families, `sysctl-read` and `mach-lookup` of the resolver's service alone
   ("The Seatbelt profile", the measured findings), measured with
   `src/probe/run-on-host-profile-iterate.sh ops` and the proxy under its profile with each family
@@ -1248,10 +1354,56 @@ ready line is awaited. The proxy is the one launcher process that parses bytes t
 sends, as the user's uid; `HostileInputTest` covers the parser, and the profile is what a parse bug
 meets.
 
-It runs without inspection material: no-material mode enforces the destination host and port at
-CONNECT time and tunnels opaquely, so the command needs no extra trust material and the read-only
-JDK's own trust store suffices. If inspection is ever wanted, point the JVM at a wrapper-owned
-store with `-Djavax.net.ssl.trustStore` rather than touching the JDK.
+It inspects every host it allows, so `read` in its rules is enforced as the sandbox session's
+proxy enforces it (`SECURITY.md`, "Reading without being able to write"): a `GET` or `HEAD`
+without a body, one request per connection, each logged with its target. No host is tunnelled: the
+rule grammar has no other grant ("Configuration"), and a proxy without a leaf would forward its
+hosts uninspected, so its starter always supplies one (`RunOnHostInspection.create`, called at
+every proxy start):
+
+- It creates a CA for this proxy alone and signs one leaf naming the proxy's hosts, Maven
+  Central and the rule file's as read then. The proxy refuses to start unless the leaf names
+  exactly the hosts its rules inspect (`SECURITY.md`, "Who holds the CA key"), so the names are
+  the ones the proxy's own resolution of those rules gives (`RunOnHostInspection.leafNames`), as
+  the sandbox session's leaf takes its names: a rule spelling a host with a trailing dot,
+  capitals or Unicode is a host the certificate names in its resolved form.
+- The CA's key is never written, and is dropped once the leaf is signed.
+- The leaf and its key are in `<proxy log's name>.leaf/` beside the proxy's log, in the broker's
+  or the command's session directory, which is the user's alone and which no command's profile
+  grants. The proxy holds the key because it answers the TLS handshake as each host.
+- The CA certificate is in `<proxy log's name>.trust/`, as `ca.crt` and as `truststore.p12`. The
+  command's profile grants those two files as reads, not their directory, and the command's
+  environment names them ("The command's lifetime and environment"). They are outside `tmp/`, so
+  no command replaces what the next one trusts.
+- The sandbox container trusts none of these CAs, and a host command does not trust the
+  project's: a leaf's key serves one proxy's host commands and nothing else.
+- A launch attaching to another launch's runtime names that runtime's trust directory, as it
+  names its `tmp/` and proxy port, so its commands trust the proxy they use
+  (`BrokerRuntimes`, the attachment).
+
+Measured by the acceptance test (its recorded run is at the top of this document):
+
+- Its wrapper and channel rows start each proxy under a profile that reads the leaf's directory
+  and each command under one that reads the two trust files, and "fetch allowed Maven artifact
+  via proxy" passes only through both.
+- A `PUT` to `repo1.maven.org` gets `403`, and the wrapper names the request.
+
+Measured through a sandbox session's proxy, which inspects the same hosts with a handshake per
+request:
+
+| program | resolved | result |
+|---|---|---|
+| sbt 2.0.9 | `spark-sql` 3.5.1, `update`, empty Coursier cache | 1960 files, 240 MB, 36 s |
+| mill 1.0.6, JVM launcher | the same, `app.resolvedMvnDeps`, its own runtime included | 4040 files, 336 MB, 55 s |
+| Gradle 9.7.1 | `src/probe/gradle-fixture`, `test`, the distribution present | 32 files, 6 s |
+| Maven 3.9.16 | `src/probe/mvn-fixture`, `test`, the distribution's download included | 418 files, 14 MB, 37 s |
+
+- Gradle and Maven fail with `PKIX path building failed` under a `javax.net.ssl.trustStore`
+  naming a store without the CA, the wrapper's download and the resolver alike, so both read the
+  property.
+- A JVM given a `PKCS12` store holding the CA alone, and its password, fetches through that proxy;
+  given no password it loads no certificate (`the trustAnchors parameter must be non-empty`).
+- Not measured: a Gradle plugin applied by id, which resolves from `plugins.gradle.org`.
 
 It reads `HTTPS_PROXY` as the container's copy does (`egress-proxy.md`, "Through an upstream
 proxy"): on a host behind an upstream proxy the command's artifact fetches leave through it, and a
@@ -1270,11 +1422,11 @@ To allow artifact downloads beyond Maven Central, add repository hosts to this p
 - The grammar is its own, narrower than the proxy's: `allow https://<host>/ read` lines and
   comments, nothing else — no other grant, no path, no provider, no deny — refused at validation
   rather than passed through. The full grammar would let one `allow model-provider` line expand
-  into endpoints that are no artifact repository, and a `tunnel` word means nothing to a proxy
-  running without inspection.
-- A launch selecting the program prints the file's hosts on a line of their own,
-  `run-on-host egress rules (<file>) widen:`, and refuses a file outside the grammar, so a host
-  that arrived with the repository is seen by you before the agent's first command.
+  into endpoints that are no artifact repository, and a `tunnel` or `method=` word would let a
+  host command write to a host, which no host command may.
+- A launch selecting the program prints, per file, `run-on-host egress rules (<file>) widen:`
+  then each of the file's hosts as an indented rule line, and refuses a file outside the grammar,
+  so you see a host that arrived with the repository before the agent's first command.
 - The wrapper hands the proxy `deny defaults`, Maven Central, then the file's lines
   (`RunOnHostPrereqs.egressRuleText`), so the container's catalog contributes nothing.
 
@@ -1284,7 +1436,7 @@ The file inherits the directory's properties:
 - the launcher reads it on the host;
 - it is reviewed in a pull request like any other file;
 - `run-on-host/` accepts only recognized configuration entries, as does `.ko-agent-sandbox` — a
-  stray entry fails the launch instead of being ignored (`SandboxProject.boundaryDirError`,
+  stray entry fails the launch instead of being ignored (`SandboxProject.boundaryDirRefusal`,
   `RunOnHostSandbox.hostCommandStray`).
 
 No program needs a GitHub release CDN: the one download that would, the `mill` executable, is

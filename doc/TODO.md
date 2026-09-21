@@ -5,6 +5,19 @@ whose benefit is uncertain, each with the condition that decides whether to buil
 examined and found without benefit is recorded in design.md with its reason, so it is not proposed
 again.
 
+## Codex review plugin (`ko-review.md`)
+
+- [ ] A linked worktree whose main Git directory is mounted read-only: Codex's own `git` commands
+  and the helper's digest against that tree; unverified.
+- [ ] `--egress=deny-unless-model claude` fails the review with `CODEX_EGRESS_DENIED` before Codex
+  runs; unverified in a session.
+- A regression test for a fix in this plugin is run against the helper without the fix and shown
+  to fail before it counts: a fake reviewer that dies on its own once the helper exits lets a test
+  for an orphaned reviewer pass without the fix, and only that run shows it.
+- Watch openai/codex-plugin-cc (#557 persists review threads, open as of 2026-09-23) and
+  openai/codex #24833 (durable MCP resume). If OpenAI ships a stateful review, fix, re-review
+  primitive, delete the helper's orchestration rather than maintain a duplicate.
+
 ## Credential brokering — its two plans, in order
 
 - [ ] `plan-credential-broker-proxy.md` whole, through its acceptance checklist.
@@ -15,6 +28,125 @@ again.
   and none of it is needed for a per-run static value.
 - AWS is in neither: the broker plan's "Deliberate exclusions" has why, and what a session
   forwards instead.
+- [ ] Refuse a credential that is not the session's at a model host (SECURITY.md, "Exfiltration
+  through allowed network traffic", has the attack). An exception to the order above: its use
+  case came from a review of the documents, not from a session on the broker. A target of
+  a service definition gains a property, `require-placeholder`: on a mediated target carrying it,
+  a request is forwarded only if one authentication form the target declares holds this run's
+  placeholder and no other declared form is present; any other request is refused with a fixed
+  reason and a `deny` audit line, at every path.
+  - The target declares every form the provider accepts, not only the one the client sends: a
+    request without the client's header is not thereby unauthenticated. Anthropic accepts an API
+    key as `Authorization: Bearer` and as `x-api-key`
+    (https://platform.claude.com/docs/en/manage-claude/authentication), so checking one header
+    does not exclude a foreign key in the other. The tests send a foreign key in each declared form,
+    alone and beside the placeholder. A form the provider adds later reopens the attack until the
+    catalog declares it.
+  - It needs a selected service instance, so provider plan delivery steps 1, 2 and 5: the
+    catalog, storage with per-run generations for a static key, the mediated overlay and one
+    API-key client. It needs neither executable sources and refresh (step 4) nor OAuth (step 6).
+    An `--env=NAME@HOST` binding does not carry it: that plan keeps the binding separate from a
+    selected service, and a binding forwards a token that is not a placeholder and names one
+    header, so it cannot refuse the placeholder beside a foreign key in another declared form.
+  - It protects an API-key session only. A subscription login stays a tunnel until step 6.
+  - A project that tests against the provider with its own key selects no credential for that
+    host, or accepts the refusal; forwarding a token that is not a placeholder stays the rule at
+    every other host (broker plan, "Substitution").
+  - Measure first, with the model host inspected at the root: the hosts and paths the installed
+    `claude` calls, login and refresh included; that a long server-sent-event stream survives the
+    one-request-per-connection relay; that `claude` trusts `NODE_EXTRA_CA_CERTS` on every
+    connection to the provider.
+  - Rejected: exact-path grants on the model host without mediation (`/v1/messages` alone). The
+    path list is the per-release contract with the CLI the broker plan declines, and a
+    retrievable-storage behavior added at an allowed endpoint reopens the attack. Rejecting it
+    gives up path-based protection for a subscription session before step 6: exact-path grants
+    refuse the storage endpoints whatever credential is sent.
+  - Codex: taking this to the OpenAI hosts needs one `codex` turn to succeed with those hosts
+    inspected, read from `--proxy-log` (broker plan, "Claude Code and Codex logins: excluded",
+    has what is measured), and a second turn in the same session, to learn whether the refused
+    upgrades recur per turn. If they do, measure whether a custom `[model_providers.NAME]` with
+    `supports_websockets = false` accepts the ChatGPT login; the built-in provider cannot be
+    overridden (`doc/design.md`, "No WebSocket in the inspected relay").
+
+## IDE integration through VS Code's Agent Host
+
+- [ ] `plan-ide-integration.md`, in its steps: attach VS Code to a `code agent host` in the
+  sandbox, then the hostile-host test that decides where enforcement lives, then one harness,
+  then `--protocol=ahp`. ACP is deferred; the plan keeps its reviewed design and the conditions
+  that reopen it.
+
+## One list of launch refusals
+
+- [ ] Inventory every condition that stops a launch, in the launcher (`AgentSandboxLauncher.scala`,
+  `SandboxProject.scala`, `RunOnHostPrereqs.scala`, …) and in the filter's mount-time guard
+  (`fuse/ko-agent-fs/src/guard.rs`). No document lists them all: `SECURITY.md` has the guard's,
+  `fuse/ko-agent-fs/doc/troubleshooting.md` some filter messages, `run-on-host.md` its
+  prerequisites.
+- [ ] One list from it in `doc/launch-refusals.md`, linked from `README.md` and `SECURITY.md`:
+  each refusal's message, what the user does, and the document that records its reason, which
+  stays where it was decided.
+
+## Deferred — refuse user namespaces under `NESTING=none`
+
+- [ ] A launcher-owned seccomp profile for `NESTING=none` that refuses a user namespace, only if
+  a kernel vulnerability reachable from an unprivileged user namespace enters the threat model.
+  Measured in a default session (2026-09-22): `unshare -Ur true` returns 0, so the
+  containers-common default profile allows it; `io_uring_setup` returns `ENOSYS`, so that
+  interface needs no rule.
+  - Two rules, not one: `clone` and `unshare` carry their flags in a register, so the filter
+    refuses `CLONE_NEWUSER` and passes the rest. `clone3` carries them in a `struct clone_args`
+    the filter cannot read (a seccomp filter sees register values only,
+    https://www.kernel.org/doc/html/latest/userspace-api/seccomp_filter.html), and it reaches the
+    kernel here (`EINVAL` on a zero-size argument), so the profile answers every `clone3` with
+    `ENOSYS`. That refuses each caller without a fallback to `clone`; measure that the image's
+    libc, Node, the JVM, Python and each installed agent still spawn processes under the profile.
+  - SECURITY.md, "Container, runtime and kernel escape", answers a kernel exploit with a stronger
+    isolation layer, "not more flags here". This profile claims no containment of a running
+    exploit; it removes a kernel interface. Adopt it only after measurements confirm that no
+    installed agent, as the image configures it, creates a user namespace, and record that
+    distinction in that paragraph. `same-uid` keeps the default profile: rootless podman inside
+    the session creates user namespaces.
+  - Cost: every unprivileged `bwrap` call fails at its first step. In this image `bwrap`
+    (bubblewrap 0.12.0) with `--unshare-user`, bind mounts and a tmpfs works today; `--proc` and
+    `--dev` fail with `Permission denied` (a fresh `/proc` under podman's masked entries, and
+    devpts). Claude Code's Bash-command sandbox is off in the managed settings and Codex runs
+    `danger-full-access` (`container/ko-agent-sandbox/Containerfile` has the reasons), so
+    neither calls it as configured. `agy` 1.2.7 in print mode runs a shell command in the
+    session's own user, pid and mount namespaces (the command's `/proc/self/ns/*` inodes equal
+    the session shell's; measured 2026-09-22). Measure `kiro-cli`, `copilot` and `opencode` the
+    same way, and whether Chromium's own sandbox (Playwright) then needs `--no-sandbox`. A
+    project's own bubblewrap or `unshare -Ur` step fails with `Operation not permitted`, so the
+    container instructions name the refusal.
+  - Derive the profile from the installed containers-common default at `--build`, and test that
+    it differs only in the added rules; a copied profile drifts on a podman upgrade. The podman
+    server, not the launcher, reads the profile file, so on macOS and Windows it must sit under a
+    host share the machine mounts; the launcher's state root is under one today, since the
+    server resolves the audit log's bind at a path there. It joins the session's `createCommand`
+    beside `--cap-drop=ALL` on the branch that skips it for `same-uid` (`nestedArgs`), not the
+    proxy container's. Ship the loosening in the same change: a variable in the
+    `KO_AGENT_SANDBOX_NESTING` style, exported into the session and printed every session as the
+    nesting loosening is, so the first `Operation not permitted` has its switch. Measure the
+    `clone3` fallback before any of this: a runtime without one ends the item.
+
+## Deferred — executable agent configuration in the persistent volume
+
+- [ ] `plan-executable-agent-configuration.md`, in its two phases: reconciliation of the keys
+  that name a program a later session starts without a tool call, then unwritable code
+  directories. Phase 2 waits for each agent's measurement on a refused write, which the plan
+  names.
+
+## Deferred — a release-age window in the other package managers
+
+SECURITY.md, "The supply chain", has npm's seven-day window and why uv gets none.
+
+- [ ] The same window for `cs`, Maven, Gradle and Cargo, each only if the manager offers a
+  resolution-time setting that its lockfile does not record. Whether any of them does is not
+  yet looked up.
+- [ ] npm's `ignore-scripts`, only after measuring that the commands the image's agents and the
+  common `npx` targets install still work with lifecycle scripts skipped: installation can
+  succeed while leaving a package unusable because a required lifecycle script was skipped
+  (https://docs.npmjs.com/cli/v11/using-npm/config/#ignore-scripts). An explicit `npm run` still
+  runs its script.
 
 ## Deferred — GREASE ECH on inspected hosts
 
@@ -48,6 +180,49 @@ If `git lfs pull` becomes important:
 
 Do not blindly allow the batch `POST` endpoint merely because downloads use it.
 
+## Deferred — writable git from a linked worktree
+
+A launch from a linked worktree binds the main worktree's Git directory read-only
+(`SECURITY.md`, "The host's git executing what the sandbox wrote"). The writable form binds the
+`.git` of the main project's filter mount at the same target, so the filter's policy governs it:
+`worktrees/<name>` is a nested gitdir there, whose `config`, `hooks/`, `commondir` and `gitdir`
+stay frozen while its index and refs are written (`../fuse/ko-agent-fs/doc/git-metadata.md`, "The
+immutable set"). Only `.git` crosses; the main worktree's working files stay out of the session.
+
+- The linked session joins the main project's daemon as one of its sessions: its marker under the
+  main project's mount directory, so that the reap counts it, and the mount-time guard run on the
+  main root (`KoAgentFs`).
+- `--reset` in the main worktree unmounts that filter, and every linked session's git then fails
+  with `ENOTCONN`. Either record it beside the volume's behaviour (`SECURITY.md`, "What the
+  persistent volume holds") or refuse the reset while a linked session mounts it, as podman
+  refuses the volume.
+- Unverified: a bind of a subpath of the FUSE mount keeps the filter's positional classification.
+  Lookups name the parent inode, so it should; the mounted suite proves it before the bind is
+  offered.
+- The mount-path probe already asks about the target. The SELinux label question disappears: the
+  filter's mountpoint needs no relabel.
+
+## Deferred — a linked worktree's absolute pointer on Windows
+
+`git worktree add` writes the pointer as `C:/Users/<me>/repo/.git/worktrees/<name>`, which the
+container's git cannot follow at `/mnt/c/...`, so the read-only bind is skipped there
+(`SandboxProject.linkedGitdirBind`). Two routes:
+
+- A relative pointer resolves under `/mnt/c` as it does under `C:`, and the bind serves one. But
+  `git worktree add --relative-paths`, or `git worktree repair --relative-paths` for an existing
+  worktree (git 2.48 or later), also sets `extensions.relativeWorktrees`, and the image's git,
+  Debian trixie's 2.47.3, refuses a repository with an extension it does not know — in the main
+  worktree as in the linked one. The launch reads the extension from the common config and keeps
+  the no-git warning, with a note, rather than promise git (`SandboxProject.setsRelativeWorktrees`).
+  The route opens when the image's git is 2.48 or later, and that check goes with the upgrade;
+  until then only a hand-written relative pointer works, which `git worktree repair` rewrites
+  absolute. "The project mounted at its own path" has the measurement.
+- For an absolute pointer, bind a launcher-written pointer file naming the `/mnt/<drive>` spelling
+  over `<mountPath>/.git`, hiding the filter's protected pointer from the container alone. Setting
+  `GIT_DIR` and `GIT_WORK_TREE` instead would redirect git in every other repository the agent
+  uses, such as clones under `~`. `<main>/.git/worktrees/<name>/gitdir` keeps the `C:/` spelling
+  either way; `git worktree list` reads it, and nothing the read-only bind serves needs it.
+
 ## Deferred — LAN destinations, as a session option
 
 The proxy refuses every private, loopback, link-local and CGNAT address after resolution, and the
@@ -57,8 +232,7 @@ unreachable from a session. If that is ever needed, the design that keeps the se
 - [ ] A launch option naming exact addresses — never a range, never a line in
   `.ko-agent-sandbox/egress/`: an address is local to whoever runs the sandbox, so a committed
   line would name a different machine on every clone, and a reviewer could not say what it
-  reaches. Selected at launch, like `--egress=allow-unless-denied`, and tinted in the
-  banner the same way.
+  reaches. Selected at launch and tinted orange in the banner, as `--run-on-host` is.
 - [ ] The vetting allows those addresses and nothing else of the private space, and only when
   the CONNECT names the address itself: a public name resolving to a private address stays
   refused, or a name whose answer changes, or has one public and one private record, reaches
@@ -185,8 +359,8 @@ Still to fold, to that same standard:
   folding, open-file holds — with the launcher in place of `lower-probe-host.py`; both probe
   halves are deleted when their rows are added. Their machine record adds the upper volume's
   filesystem, which is what the staged design needs the answers for (`plan-staged.md`).
-- [ ] The `--run-on-host`-gated row: a command through the channel, then `target/` read back from
-  the container — a host-native build turns host writes from an occasional human edit into
+- [ ] The row that needs `--run-on-host`: a command through the channel, then `target/` read back
+  from the container — a host-native build turns host writes from an occasional human edit into
   every build.
 
 ## Deferred — keep the host awake during long sandbox work (caffeinate)
@@ -227,6 +401,58 @@ launcher execs away on POSIX, so neither side has an obvious place to run it.
 channel — however narrow — should exist for a convenience. One constraint on any implementation:
 command builders must take the podman path as a parameter, never read the global, which fails fast
 on podman-less machines and kills the test JVM.
+
+## Deferred — read grants a user adds to a host command's profile
+
+The `curl` that macOS ships does not run under a command's profile: LibreSSL stops at
+`fopen('/private/etc/ssl/openssl.cnf')`, `Operation not permitted` (`run-on-host.md`, "The
+command's lifetime and environment"). The launcher grants a system path only where a build
+measurably needs it (`SeatbeltProfile.SystemPaths.txt`), and no build here runs `curl`.
+
+- [ ] A way for a user to add a read grant, only once a build of theirs needs such a program:
+  `/private/etc/ssl/openssl.cnf` is the first case.
+  - Where the grant is stated decides who can widen a profile. A file under
+    `.ko-agent-sandbox/run-on-host/` arrives with the repository, as the program's rule file does,
+    so the launch prints it as it prints that file's hosts; a launch option is the user's alone.
+  - Reads of single files, never a write, an exec or a directory, and refused for a path under
+    the user's home: what a host command cannot read there is its confinement.
+  - Measure, before the form is chosen, that `curl` fetches from an allowed host with that one
+    file granted: the acceptance test's "CA bundle variables" rows print what it does, and
+    whether it then reads `CURL_CA_BUNDLE` or `SSL_CERT_FILE`.
+
+## Deferred — Node for ScalablyTyped and scalajs-bundler under `--run-on-host`
+
+Both plugins run `npm install` from the sbt JVM, which a host command cannot do (read from the
+code, not measured):
+
+- The command's `PATH` is the JDK's `bin` and the system directories, and the profile executes
+  nothing else, so no Homebrew, nvm or asdf `node` or `npm` is found or run
+  (`RunOnHostSandbox.scala`, the command's environment; `SeatbeltProfile.SystemPaths.txt`).
+- `HOME` passes through, so npm's cache is `~/.npm`, which the profile does not grant.
+- The plugins, read at scalajs-bundler `2d9cbce` and ScalablyTyped Converter `c2c414f`:
+  - scalajs-bundler runs `npm install` (or `yarn`) by name in its install directory under the
+    target (`ExternalCommand.scala`), and `node` for bundling (`JSBundler.scala`) and for tests
+    under jsdom (`JSDOMNodeJSEnv.scala`), so it needs Node at every build, not only at install;
+  - ScalablyTyped runs `npm install` (or `yarn`) by name in `<crossTarget>/scalablytyped-npm`
+    (`NpmInstall.scala`), or, under its external-npm plugin, calls the project's own
+    `externalNpm` task, which returns a directory holding `package.json` and `node_modules`
+    (`docs/plugin-no-bundler.md`). It publishes what it converts to the Ivy home's `local`
+    (`Utils.IvyLocal`), which the run-on-host cache holds.
+
+- [ ] Measure the workaround that needs no change here: ScalablyTyped's external-npm plugin with
+  `externalNpm` returning a directory the session ran `npm install` in, in the container. Record
+  whether the conversion then runs on the host without Node.
+- [ ] A Node a host command may run, only once a build needs it on the host, in the shape of the
+  mill launcher's grant:
+  - a Node distribution the user provisions, read-only and executable, on the command's `PATH`,
+    never the host's `PATH`;
+  - npm's cache in the project's run-on-host cache (`npm_config_cache`), not `~/.npm`;
+  - the registry allowed in the sbt program's egress rule; `HTTPS_PROXY` and
+    `NODE_EXTRA_CA_CERTS` already reach Node (`run-on-host.md`, the CA variables' table), and
+    npm's proxy and HTTP/1.1 use through the inspecting proxy is to be measured;
+  - what `npm install` then runs on the host: the lifecycle scripts of every package, under the
+    command's profile, which SECURITY.md's "Run on host" should state beside the limit
+    `node_modules` already has there.
 
 ## Deferred — a bound on a silent host command
 
@@ -298,10 +524,13 @@ replacement, each leaving one consistent runtime.
 - [ ] On Windows, run the launcher inside a WSL distribution — as a Linux program, with Java and
   rootless podman installed there — from `/mnt/c/Users/<me>/src/app`: `bash -c pwd` must print
   that path, the one a PowerShell launch of the same directory prints.
+- [ ] On Windows, from a linked worktree whose `.git` holds a relative pointer (hand-written until
+  the image's git reads `extensions.relativeWorktrees`): the launch must print `git is read-only
+  in this session`, `git status` must work in the session, and `git add` must fail.
 
 Recorded macOS results (2026-09-18):
 
-- `MountPathTest`, `MountLifecycleTest` and the run-on-host gate pass.
+- `MountPathTest`, `MountLifecycleTest` and the run-on-host acceptance test pass.
 - `sbt testFull` inside a session passes in every suite except `ClipboardBrokerTest` and
   `SandboxLifecycleTest`; those two pass when run alone on Linux.
 - The four agents start without a trust prompt on fresh and used volumes.
@@ -343,14 +572,14 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
       which ends exactly the command's groups and directory;
     - a command's death, however it dies, is confined to its own process and never takes the
       broker and its warm servers with it;
-    - the gate drives one command's whole lifecycle as `RunOnHost` with no broker, which is how
-      the wrapper rows measure the profile.
+    - the acceptance test drives one command's whole lifecycle as `RunOnHost` with no broker, which
+      is how the wrapper rows measure the profile.
   - What it costs:
     - one more JVM start per command, about a third of a second in the jar form and tens of
       milliseconds as the native image;
     - a second code path for the command's runtime, the wrapper's own under Maven.
   - The alternative is the same work in a broker thread with cancellation done by hand; decide
-    with the measured cost per command and what the gate would drive instead.
+    with the measured cost per command and what the acceptance test would drive instead.
 
 ## Deferred — the native-image launcher
 
@@ -376,6 +605,13 @@ are the image's Mach services, which the same mode measures once it starts.
 - [ ] Build the binary in CI and run the launcher suite as the binary, on both shipping
   architectures; only then does the README offer it. build.sbt's comments explain the two exports
   and the resource includes the command carries.
+- [ ] Compute the bundle digests (`KoAgentFs.bundledSourceId`) while `native-image` builds the
+  binary, with build-time initialization: the binary then hashes nothing at launch, and
+  `bundleSourceId` stays the one implementation. Check first that the bundled resources are
+  readable at that point.
+  - The jar hashes its three bundles in about 30 ms (a fresh JVM in a Linux container,
+    2026-09-28), too little to justify an sbt step that precomputes them with the launcher's own
+    classes.
 - [ ] Decide it together with the published identity: whether the binary is a release artifact at
   all, or `java -jar` and a Coursier command are the two forms.
 
@@ -383,13 +619,13 @@ are the image's Mach services, which the same mode measures once it starts.
 
 There is no CI. [development.md](development.md#tests) gives the launcher, proxy and filter
 test commands. `--self-test` runs the filter suites on demand. A user's `--build` instead performs
-the gates whose answers belong to that artifact and machine: `cargo deny check licenses bans
+the checks whose results depend on that artifact and machine: `cargo deny check licenses bans
 sources`, compilation, binary identity, and the installed filter's mount self-test.
 
 - [ ] Add CI for the launcher's and proxy's `sbt testFull`, and the filter's pure and binary suites
   on both shipping architectures. Add `cargo deny check advisories` there: `deny.toml` records why
-  its moving external database must not gate installation.
-- [ ] Keep the artifact-local gates above in `--build`, and keep the mounted filter suites in
+  its moving external database must not block installation.
+- [ ] Keep the checks above in `--build`, and keep the mounted filter suites in
   `--self-test`; CI does not prove the filter on a user's own machine.
 
 ## Before the first release — the published identity

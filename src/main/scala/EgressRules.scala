@@ -34,12 +34,13 @@ object EgressRules:
     normalized.linesIterator.mkString("; ")
 
   /**
-   * The rule lines the ruleset reports as granting beyond the defaults for their host —
-   * its `widening lines (N): ...` line, `; ` between lines — printed on a line of their own at
-   * launch, so that a file which only takes or narrows prints nothing extra and the line is a
-   * signal rather than a habit. The proxy classifies against the defaults it ships (resolveRuleset
-   * has the classes), so a custom image reports against its own; an image printing no such line
-   * reports nothing, never a classification against defaults it does not have.
+   * The rule lines the ruleset reports as granting beyond the defaults, read from its
+   * `widening lines (N): ...` line, `; ` between rule lines. The launch prints them under an
+   * `egress rules widen:` heading, so that a file which only removes or narrows grants prints no
+   * such report and the report is a signal rather than a habit. The proxy classifies against the
+   * defaults it ships (resolveRuleset has the classes), so a custom image reports against its
+   * own; an image printing no such line reports nothing, never a classification against defaults
+   * it does not have.
    */
   def wideningLines(resolved: String): Vector[String] =
     resolved.linesIterator.find(_.startsWith("widening lines (")).toVector.flatMap: line =>
@@ -63,8 +64,7 @@ object EgressRules:
    * a line people learn to skip, and skipping it is how a ruleset nobody expected goes unnoticed.
    * On parse failure, show only the first line to avoid dumping the resolved host list.
    *
-   * @param color tints the profile, except under the permissive one, whose line is tinted whole
-   *              (HostCommands.weakenedByUser).
+   * @param color tints the profile (HostCommands.chosen).
    */
   def egressBanner(resolved: String, color: Boolean = colorStderr): String =
     val lines = resolved.linesIterator.toVector
@@ -83,14 +83,9 @@ object EgressRules:
         head <- lines.headOption.filter(_.startsWith("egress profile: "))
         inspected <- counts.get("inspected hosts")
         tunnel <- counts.get("tunnel hosts")
-        denied <- counts.get("denial patterns")
       yield
         val profile = head.stripPrefix("egress profile: ").takeWhile(_ != ';')
         profile match
-          case "allow-unless-denied" =>
-            // The tunnel hosts are the exception set; the inspected count says nothing where
-            // every unlisted host is inspected too.
-            weakenedByUser(s"egress: $profile; public HTTPS read; $tunnel tunnel, $denied denied", color)
           case "deny-unless-model" =>
             val provider = head
               .split("model provider: ", 2)
@@ -107,11 +102,6 @@ object EgressRules:
             s"egress: ${chosen(profile, color)}; $inspected inspected, $tunnel tunnel"
 
     parsed.getOrElse(s"egress: ${lines.headOption.getOrElse("(empty resolution)")}")
-
-  /** The one profile weaker than the launcher's default — public HTTPS to whatever is not
-    * denied. */
-  def permissiveProfile(resolved: String): Boolean =
-    resolved.linesIterator.nextOption().exists(_.startsWith("egress profile: allow-unless-denied"))
 
   /**
    * Everything but the newest retain-1, so the new file makes retain; names
@@ -134,55 +124,11 @@ object EgressRules:
   val RuleFiles: Vector[(String, String)] = Vector("rule" -> "EGRESS_RULE")
 
   /**
-   * Present egress rule files as (name, normalized text). Refuse forms that could hide or
-   * misread configuration:
-   * - A file at egress/ would leave its rules unread because the reader expects a directory.
-   * - An unknown filename could be a typo that leaves intended rules unread.
-   * - A symlink at egress/ or a rule file could redirect the host read. Podman resolves mount
-   *   sources on the host, so this read must see the bytes the mounted directory would show.
-   * - An entry with a rule filename that is not a regular file would be skipped by the reader.
-   * - A present but empty rule file is more likely a forgotten edit than a deliberate no-op;
-   *   an intentionally empty rule file is absent.
-   * Entries inside egress/ follow SandboxProject.isMetadataEntry's metadata exemption.
+   * Present egress rule files as (name, normalized text), under the refusals
+   * SandboxProject.readBoundaryRuleFiles lists.
    */
   def readRuleFiles(egressDir: Path): Either[String, Vector[(String, String)]] =
-    def symlinkRefusal(path: Path): String =
-      s"error: $path must not be a symlink\nRefusing to read this project's egress rules through one."
-
-    if Files.isSymbolicLink(egressDir) then Left(symlinkRefusal(egressDir))
-    else if !Files.exists(egressDir) then Right(Vector.empty)
-    else if !Files.isDirectory(egressDir) then
-      Left(
-        s"""error: $egressDir is a file
-           |egress is a directory holding the rule file ${RuleFiles.map(_(0)).mkString(", ")}. Move the
-           |lines there and remove the file; doc/egress-proxy.md has the grammar.""".stripMargin
-      )
-    else
-      val entries = directoryEntries(egressDir)
-        .filterNot(entry => SandboxProject.isMetadataEntry(entry.getFileName.toString))
-        .sortBy(_.getFileName.toString)
-
-      val refusal = entries
-        .collectFirst:
-          case entry if !RuleFiles.exists(_(0) == entry.getFileName.toString) =>
-            s"error: $entry is not a rule file\negress/ holds only " +
-              s"${RuleFiles.map(_(0)).mkString(", ")}; a stray name would be ignored config."
-          case entry if Files.isSymbolicLink(entry) => symlinkRefusal(entry)
-          case entry if !Files.isRegularFile(entry) =>
-            s"error: $entry is not a regular file\negress/ holds a text file per rule file; " +
-              "anything else would leave this file silently unread."
-        .orElse:
-          RuleFiles
-            .map(_(0))
-            .collectFirst:
-              case name if readIfPresent(egressDir.resolve(name)).map(normalizeRuleText).contains("") =>
-                s"error: ${egressDir.resolve(name)} lists no lines\n" +
-                  "Delete the file; an intentionally empty rule file is an absent file."
-
-      refusal.toLeft(
-        RuleFiles.flatMap: (name, _) =>
-          readIfPresent(egressDir.resolve(name)).map(normalizeRuleText).map(name -> _),
-      )
+    SandboxProject.readBoundaryRuleFiles(egressDir, RuleFiles.map(_(0)), "doc/egress-proxy.md", normalizeRuleText)
 
   /**
    * Only the basename of the directly launched command is classified; the launcher does not inspect
@@ -208,8 +154,8 @@ object EgressRules:
   /**
    * A --print-ruleset dry run of the proxy image (--rm, --network=none,
    * nothing mounted): the ruleset, or the reason it is invalid. The
-   * proxy owns the defaults and the profile arithmetic; this one dry run is
-   * the authority both --egress-effective and every launch consult — for
+   * proxy combines its defaults, the profile and the project's rules; both
+   * --egress-effective and every launch use this one dry run's result — for
    * the banner and for the leaf certificate's names alike. `provenance`
    * additionally reports every line's sources (--egress-effective's view).
    */
@@ -276,7 +222,6 @@ object EgressRules:
    * answer under this project's rules, so no second copy of any list exists to drift, and a proxy
    * image or rules of the user's choosing get a matching leaf too. Empty means the ruleset
    * inspects nothing; the launcher then issues no leaf and hands the proxy no inspection material.
-   * Under allow-unless-denied no leaf is issued at all: the proxy issues its own from the run CA.
    * A resolution without its profile line is another launcher version's format, refused.
    */
   def inspectedHostsOf(dryRunOutput: String): Either[String, Vector[String]] =

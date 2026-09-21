@@ -4,7 +4,7 @@
 
 package agentsandbox.launcher
 
-import java.nio.file.{Path, Paths}
+import java.nio.file.{Files, Path, Paths}
 
 import RunOnHostPrereqs.{CommandPrereqs, Program}
 import SeatbeltProfile.*
@@ -35,15 +35,26 @@ class SeatbeltProfileTest extends munit.FunSuite:
   private val ivyHome = Paths.get(s"$home/.cache/ko-agent-sandbox/run-on-host/abc123/ivy-home")
 
   private def inputs(
-    runtime: RuntimeAuthority = RuntimeAuthority(Seq(Paths.get("/usr/lib")), Seq(Paths.get("/bin/sh"))),
+    systemPaths: SystemPaths = SystemPaths(Seq(Paths.get("/usr/lib")), Seq(Paths.get("/bin/sh"))),
     port: Int = 51234,
     tmp: Path = Paths.get("/private/tmp/ko-agent-command/abc/tmp"),
+    fileRules: FileRules.Resolved = FileRules.Resolved.Empty,
   ) = ProfileInputs(
-    prereqs, tmp, Some(distribution), Some(sbtGlobal), Some(ivyHome), None, None, port, runtime, Network.ProxyOnly,
+    prereqs, tmp, Some(distribution), Some(sbtGlobal), Some(ivyHome), None, None, port, trust, systemPaths,
+    Network.ProxyOnly, fileRules,
   )
+
+  private val trust = Paths.get("/private/tmp/ko-agent-command/abc/proxy.trust")
 
   private def rendered(in: ProfileInputs = inputs()): String =
     render(in).fold(reason => fail(s"render refused: $reason"), identity)
+
+  test("the proxy's CA certificate is granted as its two files, read-only, never as their directory"):
+    val profile = rendered()
+    Seq("ca.crt", "truststore.p12").foreach: name =>
+      assert(profile.contains(s"""(allow file-read* (literal "$trust/$name"))"""), profile)
+    assert(!profile.contains(s"""(subpath "$trust"""), profile)
+    assert(profile.contains(s"""(allow file-read-metadata file-test-existence (literal "$trust"))"""), profile)
 
   // --------------------------------------------------------------------------
   // Absolute, normalized paths
@@ -56,13 +67,14 @@ class SeatbeltProfileTest extends munit.FunSuite:
       "executable" -> (path => inputs().copy(prereqs = prereqs.copy(executable = path))),
       "Coursier cache" -> (path => inputs().copy(prereqs = prereqs.copy(coursierV1 = path))),
       "temporary directory" -> (path => inputs(tmp = path)),
+      "trust directory" -> (path => inputs().copy(trust = path)),
       "distribution" -> (path => inputs().copy(distribution = Some(path))),
       "sbt global base" -> (path => inputs().copy(sbtGlobal = Some(path))),
       "Ivy home" -> (path => inputs().copy(ivyHome = Some(path))),
       "Gradle user home" -> (path => gradleInputs.copy(gradleUserHome = Some(path))),
       "Maven repository" -> (path => mvnInputs.copy(m2Repository = Some(path))),
-      "runtime read" -> (path => inputs(runtime = RuntimeAuthority(Seq(path), Seq.empty))),
-      "runtime executable" -> (path => inputs(runtime = RuntimeAuthority(Seq.empty, Seq(path)))),
+      "system-path read" -> (path => inputs(systemPaths = SystemPaths(Seq(path), Seq.empty))),
+      "system-path executable" -> (path => inputs(systemPaths = SystemPaths(Seq.empty, Seq(path)))),
       "server tmp" -> (path => inputs().copy(network = Network.SbtClient(path))),
     )
     for
@@ -190,7 +202,9 @@ class SeatbeltProfileTest extends munit.FunSuite:
     for ancestor <- Seq("/Users", "/Users/kenichi", "/Users/kenichi/Library/Caches") do
       assert(clue(text).contains(s"""(allow file-read-metadata file-test-existence (literal "$ancestor"))"""), ancestor)
     val literalReads = text.linesIterator.filter(line => line.contains("(literal") && line.contains("file-read*")).toSeq
-    assertEquals(literalReads, RootComponent +: Devices.linesIterator.toSeq)
+    // A file granted alone — a device, the proxy's CA certificate — is a literal read; no directory is.
+    val trustReads = Seq("ca.crt", "truststore.p12").map(name => s"""(allow file-read* (literal "$trust/$name"))""")
+    assertEquals(literalReads, (RootComponent +: Devices.linesIterator.toSeq) ++ trustReads)
     // The root is its own line and not repeated in the chain.
     assertEquals(text.linesIterator.count(_.contains("""(literal "/")""")), 1)
 
@@ -245,7 +259,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(render(inputs().copy(prereqs = millPrereqs, distribution = None, sbtGlobal = None, ivyHome = None,
       network = Network.SbtClient(brokerTmp))).isLeft)
 
-  test("the mill daemon binds listeners on any port, and its client reaches the one port it was proved on"):
+  test("the mill daemon binds listeners on any port, and its client reaches the one port it was observed listening on"):
     val daemonRules = render(millInputs.copy(network = Network.MillDaemon)).fold(fail(_), identity)
       .linesIterator.filter(_.startsWith("(allow network")).toSeq
     assertEquals(
@@ -286,14 +300,14 @@ class SeatbeltProfileTest extends munit.FunSuite:
   private def proxyInputs(
     executables: Seq[Path] = Seq(proxyJdk),
     reads: Seq[Path] = Seq(proxyJar),
-    runtime: RuntimeAuthority = RuntimeAuthority(
+    systemPaths: SystemPaths = SystemPaths(
       Seq(Paths.get("/System/Library/CoreServices/SystemVersion.plist")), Seq(Paths.get("/bin")),
     ),
-  ) = ProxyInputs(executables, reads, runtime)
+  ) = ProxyInputs(executables, reads, systemPaths)
   private def renderedProxy(in: ProxyInputs = proxyInputs()): String =
     renderProxy(in).fold(reason => fail(s"renderProxy refused: $reason"), identity)
 
-  test("the proxy profile grants its executable, what it loads, the runtime authority as reads, and no write"):
+  test("the proxy profile grants its executable, what it loads, the system paths as reads, and no write"):
     val text = renderedProxy()
     assert(text.linesIterator.contains("(deny default)"))
     val allows = text.linesIterator.filter(_.startsWith("(allow")).filterNot(_.startsWith("(allow network")).toSeq
@@ -464,3 +478,156 @@ class SeatbeltProfileTest extends munit.FunSuite:
     val text = millText
     assert(!clue(text).contains(project.resolve("mill").toString))
     assert(text.contains(s"""(allow file-read* file-write* process-exec* (subpath "$project"))"""))
+
+  // --------------------------------------------------------------------------
+  // File rules
+  // --------------------------------------------------------------------------
+
+  private val fileRules = FileRules.Resolved(
+    Vector(
+      FileRules.Line(FileRules.Word.ReadOnly, ".vscode"),
+      FileRules.Line(FileRules.Word.ReadOnly, ".kiro/settings/mcp.json"),
+      FileRules.Line(FileRules.Word.ReadOnly, "*.code-workspace"),
+      FileRules.Line(FileRules.Word.Writable, "node_modules"),
+    ),
+    Vector(".husky/_"),
+    Vector("tools"),
+  )
+
+  test("the file rules render in their order between the other allows and the guard, anchored below the project"):
+    val text = rendered(inputs(fileRules = fileRules))
+    val escaped = project.toString.replace(".", "\\.")
+    val rules = Seq(
+      s"""(deny file-write* file-link (regex #"^$escaped/(.*/)?\\.vscode(/|$$)"))""",
+      s"""(deny file-write-create file-write-unlink file-link (regex #"^$escaped/(.*/)?\\.kiro$$"))""",
+      s"""(deny file-write-create file-write-unlink file-link (regex #"^$escaped/(.*/)?\\.kiro/settings$$"))""",
+      s"""(deny file-write* file-link (regex #"^$escaped/(.*/)?\\.kiro/settings/mcp\\.json(/|$$)"))""",
+      s"""(deny file-write* file-link (regex #"^$escaped/(.*/)?[^/]*\\.code-workspace(/|$$)"))""",
+      s"""(allow file-write* (regex #"^$escaped/(.*/)?node_modules(/|$$)"))""",
+      s"""(deny file-write* file-link (subpath "$project/.husky/_"))""",
+      s"""(deny file-write-create file-write-unlink file-link (literal "$project/.husky"))""",
+      s"""(deny file-write-create file-write-unlink file-link (literal "$project/tools"))""",
+    )
+    val textLines = text.linesIterator.toVector
+    val positions = rules.map(rule => textLines.indexOf(rule))
+    rules.zip(positions).foreach((rule, position) => assert(position >= 0, s"$rule\n$text"))
+    // SBPL's last matching filter decides, as the filter's last matching line does, so the order is the lines' own.
+    assertEquals(positions, positions.sorted)
+    val lastOtherAllow = textLines.lastIndexWhere(line => line.startsWith("(allow") && !line.contains("node_modules"))
+    val guard = textLines.indexWhere(_.contains("\\.git(/|$)"))
+    assert(lastOtherAllow < positions.head && positions.last < guard, text)
+
+  test("a writable line after a readonly one lifts its deny, and an equal filter keeps its last position"):
+    val lifted = FileRules.Resolved(
+      Vector(
+        FileRules.Line(FileRules.Word.ReadOnly, ".claude/settings.json"),
+        FileRules.Line(FileRules.Word.Writable, ".claude"),
+        FileRules.Line(FileRules.Word.ReadOnly, ".claude/settings.json"),
+      ),
+      Vector.empty,
+      Vector.empty,
+    )
+    val filters = fileRuleFilters(project, lifted).fold(reason => fail(reason), identity)
+    assertEquals(filters.map(_(0)), Vector(Protection.Writable, Protection.Pinned, Protection.ReadOnly))
+    assertEquals(conformanceAnswer(filters, s"$project/.claude"), "pinned")
+    assertEquals(conformanceAnswer(filters, s"$project/.claude/settings.json"), "readonly")
+    assertEquals(conformanceAnswer(filters, s"$project/.claude/notes.md"), "free")
+
+  test("a readonly-under rest renders last, anchored at its directory, its interiors pinned"):
+    val under = FileRules.Resolved(
+      Vector(
+        FileRules.Line(FileRules.Word.ReadOnly, ".claude/skills/*.md"),
+        FileRules.Line(FileRules.Word.Writable, "shared"),
+      ),
+      Vector.empty,
+      Vector("shared/claude"),
+      Vector("shared/claude" -> "skills/*.md"),
+    )
+    val filters = fileRuleFilters(project, under).fold(reason => fail(reason), identity)
+    assertEquals(conformanceAnswer(filters, s"$project/shared/claude/skills/new.md"), "readonly")
+    assertEquals(conformanceAnswer(filters, s"$project/shared/claude/skills"), "pinned")
+    assertEquals(conformanceAnswer(filters, s"$project/shared/claude"), "pinned")
+    assertEquals(conformanceAnswer(filters, s"$project/shared"), "pinned")
+    assertEquals(conformanceAnswer(filters, s"$project/shared/claude/notes.md"), "free")
+    assertEquals(conformanceAnswer(filters, s"$project/shared/other/skills/new.md"), "free")
+    for directory <- Vector("../x", "", "/etc", "a\"b") do
+      assert(fileRuleFilters(project, under.copy(readOnlyUnder = Vector(directory -> "a"))).isLeft, directory)
+    val odd = under.copy(pinnedPaths = Vector.empty, readOnlyUnder = Vector("c++ (x)/claude" -> "skills/*.md"))
+    val oddFilters = fileRuleFilters(project, odd).fold(reason => fail(reason), identity)
+    assertEquals(conformanceAnswer(oddFilters, s"$project/c++ (x)/claude/skills/new.md"), "readonly")
+    assertEquals(conformanceAnswer(oddFilters, s"$project/cxx (x)/claude/skills/new.md"), "free")
+
+  test("what the filter prints for a symlinked directory renders as the filter decides it"):
+    // rulefile.rs, an_alias_prints_the_read_only_rests_it_carries_and_decides_below_its_path.
+    val printed = "readonly .claude/settings.json\nreadonly .claude/skills\npinned-path Shared/claude\n" +
+      "readonly-under Shared/claude settings.json\nreadonly-under Shared/claude skills\n"
+    val resolved = FileRules.parseResolved(printed).fold(reason => fail(reason), identity)
+    val filters = fileRuleFilters(project, resolved).fold(reason => fail(reason), identity)
+    assertEquals(conformanceAnswer(filters, s"$project/Shared/claude/skills/new.md"), "readonly")
+    assertEquals(conformanceAnswer(filters, s"$project/Shared/claude/settings.json"), "readonly")
+    assertEquals(conformanceAnswer(filters, s"$project/Shared/claude/notes.md"), "free")
+
+  test("a project path SBPL cannot spell, and a guard path leaving the project, are refused"):
+    assert(fileRuleFilters(Paths.get("/Users/a\"b/p"), fileRules).isLeft)
+    assert(fileRuleFilters(project, fileRules.copy(readOnlyPaths = Vector("../outside"))).isLeft)
+    assert(fileRuleFilters(project, fileRules.copy(pinnedPaths = Vector(""))).isLeft)
+    assert(render(inputs(fileRules = fileRules.copy(readOnlyPaths = Vector("a/../../b")))).isLeft)
+
+  test("regex metacharacters in the project's own path are literal"):
+    val odd = Paths.get("/Users/u/c++ (work)/p.1")
+    val filters = fileRuleFilters(odd, fileRules).fold(reason => fail(reason), identity)
+    val vscode = filters.collectFirst { case (Protection.ReadOnly, filter) if filter.contains("vscode") => filter }.get
+    assert(clue(vscode).startsWith("""(regex #"^/Users/u/c\+\+ \(work\)/p\.1/(.*/)?"""))
+    assert(conformanceAnswer(filters, "/Users/u/c++ (work)/p.1/src/.vscode/tasks.json") == "readonly")
+    assert(conformanceAnswer(filters, "/Users/u/cxx (work)/p.1/src/.vscode/tasks.json") == "free")
+
+  /** How SBPL decides a path against the file-rule filters alone: the last filter matching it.
+    * An allow, or no match, leaves it free; a deny keeps it read-only when the last read-only or
+    * writable filter matching it is read-only, since that one's subtree is what a child sees, and
+    * pinned otherwise. The regexes use no syntax where Java's and SBPL's differ: anchors, groups,
+    * alternation, `.*`, `[^/]` and backslash escapes. */
+  private def conformanceAnswer(filters: Vector[(Protection, String)], path: String): String =
+    val Regex = """\(regex #"(.*)"\)""".r
+    val Subpath = """\(subpath "(.*)"\)""".r
+    val Literal = """\(literal "(.*)"\)""".r
+    def matches(filter: String): Boolean = filter match
+      case Regex(pattern)   => java.util.regex.Pattern.compile(pattern).matcher(path).find()
+      case Subpath(root)    => path == root || path.startsWith(root + "/")
+      case Literal(literal) => path == literal
+      case other            => fail(s"no conformance reading of $other")
+    val matching = filters.filter((_, filter) => matches(filter)).map(_(0))
+    matching.lastOption match
+      case None | Some(Protection.Writable) => "free"
+      case _ if matching.filterNot(_ == Protection.Pinned).lastOption.contains(Protection.ReadOnly) => "readonly"
+      case _ => "pinned"
+
+  test("the profile answers the file rules' conformance table as the filter does"):
+    // The table the filter's own test reads (fuse/ko-agent-fs/tests/file_rules.rs): one contract,
+    // both enforcement points. `folded` rows are the filter's alone.
+    val text = Files.readString(Paths.get("fuse/ko-agent-fs/tests/data/file-rules.conformance"))
+    case class Case(name: String, lines: Vector[(String, String)], rows: Vector[(String, String)])
+    val cases = text.linesIterator.foldLeft(Vector.empty[Case]): (cases, line) =>
+      line.split(" ").toVector match
+        case Vector("") => cases
+        case first +: _ if first.startsWith("#") => cases
+        case "case" +: name => cases :+ Case(name.mkString(" "), Vector.empty, Vector.empty)
+        case Vector("line", word, name) => cases.init :+ cases.last.copy(lines = cases.last.lines :+ (word -> name))
+        case Vector("path", path, expected) =>
+          cases.init :+ cases.last.copy(rows = cases.last.rows :+ (path -> expected))
+        case Vector("folded", _, _) => cases
+        case _ => fail(s"not a conformance line: $line")
+    assert(cases.size >= 10, "the table did not parse into its cases")
+    val failures = cases.flatMap: testCase =>
+      val ruleLines = testCase.lines.collect:
+        case ("readonly", name) => FileRules.Line(FileRules.Word.ReadOnly, name)
+        case ("writable", name) => FileRules.Line(FileRules.Word.Writable, name)
+      val resolved = FileRules.Resolved(
+        ruleLines,
+        testCase.lines.collect { case ("readonly-path", path) => path },
+        testCase.lines.collect { case ("pinned-path", path) => path },
+      )
+      val filters = fileRuleFilters(project, resolved).fold(reason => fail(reason), identity)
+      testCase.rows.flatMap: (path, expected) =>
+        val got = conformanceAnswer(filters, s"$project/$path")
+        Option.when(got != expected)(s"${testCase.name}: $path: expected $expected, got $got")
+    assert(failures.isEmpty, failures.mkString("\n"))

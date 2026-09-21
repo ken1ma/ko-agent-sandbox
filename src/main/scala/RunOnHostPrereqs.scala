@@ -430,8 +430,8 @@ object RunOnHostPrereqs:
 
   /**
    * The launcher the wrapper runs for a pinned version: the JVM launcher, `<v>-jvm` as the
-   * bootstrap spells it, for a bare `<v>` and a `<v>-jvm` pin alike. The bootstrap would run the
-   * native image for a bare pin, and that image cannot be the launch's client: it takes no
+   * bootstrap spells it, for a `<v>` with no suffix and a `<v>-jvm` pin alike. The bootstrap would run the
+   * native image for `<v>`, and that image cannot be the launch's client: it takes no
    * `_JAVA_OPTIONS`, so the environment's `preferIPv4Stack` never reaches it, its connect
    * is the dual-stack one the "localhost" class denies (run-on-host.md "Network"), and
    * `-Djava.net.preferIPv4Stack=true` on its command line changes nothing (measured,
@@ -799,7 +799,7 @@ object RunOnHostPrereqs:
    * The program's rule file grammar: `allow https://<host>/ read` lines and `#` comments, nothing
    * else — no other grant, no path, no provider, no deny. The proxy's full grammar would let one
    * `allow model-provider` line expand into endpoints that are no artifact repository, and a
-   * `tunnel` word means nothing to a proxy running without inspection; anything outside the subset
+   * `tunnel` or `method=` word would let a host command write to a host; anything outside the subset
    * is refused here, never passed through for the proxy to interpret. Tokenization mirrors the
    * proxy's — split on whitespace, a comment from the first token starting with `#`, and a `#`
    * inside a token refused — so a line read here is the line the proxy would read, and

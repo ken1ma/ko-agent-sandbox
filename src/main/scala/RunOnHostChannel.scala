@@ -162,7 +162,7 @@ object RunOnHostChannel:
   // ---------------------------------------------------------------------------
 
   /**
-   * How the broker reaches the sandbox, as data so the gate and the tests can substitute a local
+   * How the broker reaches the sandbox, as data so the acceptance test and the tests can substitute a local
    * shell for `podman exec -i <container>`: the transport is what they stub, never the protocol.
    */
   final case class Transport(
@@ -497,7 +497,7 @@ object RunOnHostChannel:
     thread
 
   /** The channel's boundary work: the program must be among those `--run-on-host` named, and the working
-    * directory — the one value arriving from inside the sandbox — is translated and proven inside the
+    * directory — the one value arriving from inside the sandbox — is translated and checked to resolve inside the
     * project before anything is derived from it. */
   def validated(service: Service, request: Request): Either[String, Path] =
     if !service.programs(request.program) then
@@ -539,6 +539,9 @@ object RunOnHostChannel:
     // helper. A name-only forward's own variable is in this environment regardless, inherited as
     // the launcher's whole environment is.
     forwards: Vector[AgentSandboxLauncher.EnvForward] = Vector.empty,
+    // The launch's resolved file rules, which every profile the broker and its commands render
+    // denies writes to (RunOnHostSandbox.fileRulesOf).
+    fileRules: Option[Path] = None,
   ): Boolean =
     try
       val builder = ProcessBuilder(
@@ -547,7 +550,8 @@ object RunOnHostChannel:
             (Seq(
               "--serve-run-on-host", podman, container, project.toString,
               programs.mkString(","), logFile.toString,
-            ) ++ forwards.map(forward => RunOnHostSandbox.EnvOption + forward.name) :+ mount)*,
+            ) ++ forwards.map(forward => RunOnHostSandbox.EnvOption + forward.name)
+              ++ fileRules.map(file => RunOnHostSandbox.FileRulesOption + file) :+ mount)*,
           ))*,
       )
       forwards.foreach: forward =>
@@ -561,11 +565,12 @@ object RunOnHostChannel:
     catch case _: IOException => false
 
   /** `--serve-run-on-host <podman> <container> <project> <programs-csv> <log-file>
-    * [--env=<name>...] <mount>`: spawned by the launcher before it hands over to podman, detached
-    * like the reaper. The trailing mount is what the project is mounted at inside the container;
-    * the gate's shim passes the project's path too. */
+    * [--env=<name>...] [--file-rules=<file>] <mount>`: spawned by the launcher before it hands
+    * over to podman, detached like the reaper. The trailing mount is what the project is mounted
+    * at inside the container; the acceptance test's shim passes the project's path too. */
   def serveMain(args: Seq[String]): Unit =
-    def isOption(arg: String) = arg.startsWith(RunOnHostSandbox.EnvOption)
+    def isOption(arg: String) =
+      arg.startsWith(RunOnHostSandbox.EnvOption) || arg.startsWith(RunOnHostSandbox.FileRulesOption)
     args match
       case Seq(podman, container, projectArg, programsCsv, logFile, rest*) if rest.filterNot(isOption).sizeIs == 1 =>
         val forwardedNames = RunOnHostSandbox.forwardedNames(rest)
@@ -606,11 +611,18 @@ object RunOnHostChannel:
               sys.exit(1)
         try java.nio.file.Files.writeString(session.directory.resolve(RunOnHostSession.RunFile), container + "\n")
         catch case ex: IOException => log(s"the broker's run file: ${ex.getMessage}")
+        val fileRulesOption = rest.filter(_.startsWith(RunOnHostSandbox.FileRulesOption))
+        val fileRules = RunOnHostSandbox.fileRulesOf(fileRulesOption, project) match
+          case Right(resolved) => resolved
+          case Left(reason) =>
+            log(s"the file rules: $reason")
+            sys.exit(1)
         // The forwarded values, from this process's environment under their carrier names, as
-        // the wrapper reads them; the runtime authority the artifact bundles, as the wrapper's.
+        // the wrapper reads them; the system paths the artifact bundles, as the wrapper's.
         val runtimes = RunOnHostSandbox.BrokerRuntimes(
-          session, project, log, RunOnHostSandbox.bundledRuntimeAuthority(),
+          session, project, log, RunOnHostSandbox.bundledSystemPaths(),
           forwardedNames.flatMap(name => Option(System.getenv(RunOnHostSandbox.carrierName(name))).map(name -> _)),
+          fileRules,
         )(scavenge = () =>
           RunOnHostSession
             .scavenge(
@@ -652,7 +664,7 @@ object RunOnHostChannel:
               lockFile,
               RunOnHostSandbox.selfInvocation(
                 (Seq("--run-command-on-host", program, project.toString, workingDirectory.toString)
-                  ++ forwardedNames.map(RunOnHostSandbox.EnvOption + _)
+                  ++ forwardedNames.map(RunOnHostSandbox.EnvOption + _) ++ fileRulesOption
                   ++ Seq(RunOnHostSandbox.ChannelLogOption + logPath, "--"))*,
               ) ++ arguments,
               underBroker = true,

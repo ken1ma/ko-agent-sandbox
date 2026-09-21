@@ -184,6 +184,18 @@ class SandboxAptGetTest extends munit.FunSuite:
       assertEquals(f.sandboxAptGet("install", "demo"), 0)
       assert(!Files.exists(f.usrBin.resolve("old-only")), "the re-run kept old-only gone")
 
+  test("a command of the same name another installer put in ~/.local/bin is left alone"):
+    fixture: f =>
+      val own = f.localBin.resolve("taken")
+      executable(own, "#!/bin/sh\necho uv tool\n")
+      f.place("demo", "1.0", "usr/bin/taken", "usr/bin/demo-unclaimed")
+      val (status, output) = f.sandboxAptGetOutput("install", "demo")
+      assertEquals(status, 0, output)
+      assertEquals(run(own), "uv tool\n", "the other installer's command is untouched")
+      assert(output.contains("left alone: taken"), output)
+      val unclaimed = run(f.localBin.resolve("demo-unclaimed"))
+      assertEquals(unclaimed, "demo demo-unclaimed 1.0\n", "an unclaimed name is wrapped")
+
   test("a file that moved to another package survives the upgrade that stopped shipping it"):
     fixture: f =>
       f.install("demo", "1.0", "usr/bin/moved")

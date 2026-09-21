@@ -1,0 +1,4 @@
+allow https://www.jetbrains.com/ read
+allow https://cursor.com/ read
+allow https://docs.windsurf.com/ read
+allow https://docs.devin.ai/ read      # docs.windsurf.com redirects here

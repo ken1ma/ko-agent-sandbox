@@ -1,6 +1,7 @@
-// The image's ENTRYPOINT, run as the shell script it is: what it seeds into a persistent volume
-// that is fresh, that predates an agent, or that two sessions open at once, and the trust entry it
-// records for the project — the working directory — in each agent's own file.
+// The image's ENTRYPOINT, run as the shell script it is: the confinement a session does not start
+// without, what it seeds into a persistent volume that is fresh, that predates an agent, or that
+// two sessions open at once, and the trust entry it records for the project — the working
+// directory — in each agent's own file.
 
 package agentsandbox.launcher
 
@@ -42,8 +43,9 @@ class SandboxEntrypointTest extends munit.FunSuite:
 
   /**
    * Starts the entrypoint with the fixture's seed and HOME; the command it execs prints its
-   * arguments. `/proc` is the healthy fixture unless a test hands over its own, so the machine
-   * this suite runs on never decides whether a warning prints.
+   * arguments. `/proc` is the healthy, confined fixture and the nesting mode `none` unless a test
+   * hands over its own, so the machine this suite runs on never decides whether a warning prints
+   * or the session starts.
    */
   private def start(
     seed: Path,
@@ -53,6 +55,8 @@ class SandboxEntrypointTest extends munit.FunSuite:
     // The project, where the launcher starts the session (--workdir); the entrypoint reads it
     // from its working directory.
     project: Path = Project,
+    // KO_AGENT_SANDBOX_NESTING as the launcher sets it; None for a container run by hand.
+    nesting: Option[String] = Some("none"),
   ): Process =
     val builder =
       ProcessBuilder(sh.toString, script.toString, "sh", "-c", "printf '%s ' \"$0\" \"$@\"", "a", "b c")
@@ -60,18 +64,33 @@ class SandboxEntrypointTest extends munit.FunSuite:
     builder.environment.put("KO_SANDBOX_VOLUME_SEED", seed.toString)
     builder.environment.put("HOME", home.toString)
     builder.environment.put("KO_SANDBOX_PROC", proc.toString)
+    nesting.fold(builder.environment.remove("KO_AGENT_SANDBOX_NESTING"))(
+      builder.environment.put("KO_AGENT_SANDBOX_NESTING", _),
+    )
     path.foreach(dir => builder.environment.put("PATH", dir.toString + ":" + System.getenv("PATH")))
     builder.redirectErrorStream(true)
     builder.start()
 
-  /** A `/proc` in kB, as the kernel writes it, with the pressure file present or absent. */
+  /** `/proc/self/status` fields of a session with nesting `none`: a seccomp filter,
+    * no-new-privileges and no capabilities. */
+  private val ConfinedStatus = Map("Seccomp" -> "2", "NoNewPrivs" -> "1", "CapEff" -> "0000000000000000")
+
+  /** A `/proc` in kB, as the kernel writes it, with the pressure file present or absent, and
+    * `self/status` holding `status`'s fields between lines the entrypoint does not read. */
   private def proc(
     available: Long,
     total: Long = 16L << 20,
     swapUsed: Long = 0,
     pressure: Option[String] = None,
+    status: Map[String, String] = ConfinedStatus,
   ): Path =
     val root = Files.createTempDirectory("ko-sandbox-entrypoint-proc")
+    Files.createDirectory(root.resolve("self"))
+    Files.writeString(
+      root.resolve("self").resolve("status"),
+      ("Name:\tsh" +: status.toVector.map((name, value) => s"$name:\t$value") :+ "Seccomp_filters:\t1")
+        .mkString("", "\n", "\n"),
+    )
     Files.writeString(
       root.resolve("meminfo"),
       s"""MemTotal:       $total kB
@@ -215,6 +234,34 @@ class SandboxEntrypointTest extends munit.FunSuite:
     assertEquals(status, 0, output)
     assertEquals(output, "a b c ")
     assert(!Files.exists(home.resolve("persistent-volume")))
+
+  test("a session without its seccomp filter, no-new-privileges or exact capabilities does not start"):
+    val (seed, home) = fixture()
+    val sameUid = ConfinedStatus.updated("CapEff", "0000000000040000")
+    val started = Vector(
+      (ConfinedStatus, Some("none")),
+      (sameUid, Some("same-uid")),
+      // A container run by hand is not a session, whatever it runs with.
+      (Map("Seccomp" -> "0", "NoNewPrivs" -> "0", "CapEff" -> "00000000a80425fb"), None),
+    )
+    started.foreach: (status, nesting) =>
+      val (code, output) = finish(start(seed, home, proc(8L << 20, status = status), nesting = nesting))
+      assertEquals((code, output), (0, "a b c "), s"$status under $nesting")
+    val refused = Vector(
+      (ConfinedStatus.updated("Seccomp", "0"), Some("none")),
+      (ConfinedStatus - "Seccomp", Some("none")), // a kernel without seccomp
+      (ConfinedStatus.updated("NoNewPrivs", "0"), Some("none")),
+      (sameUid, Some("none")),
+      (ConfinedStatus, Some("same-uid")),
+      (ConfinedStatus, Some("other")),
+    )
+    refused.foreach: (status, nesting) =>
+      val (seed, home) = fixture()
+      val (code, output) = finish(start(seed, home, proc(8L << 20, status = status), nesting = nesting))
+      assertEquals(code, 1, s"$status under $nesting: $output")
+      assert(output.startsWith("error: this session's container runs with Seccomp "), output)
+      assert(!output.contains("a b c"), output)
+      assert(!Files.exists(home.resolve("persistent-volume").resolve("claude")), "seeded before refusing")
 
   test("a healthy machine prints nothing before the command"):
     val (seed, home) = fixture()

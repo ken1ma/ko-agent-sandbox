@@ -56,9 +56,17 @@ object HostCommands:
     os: Os = currentOs,
     environment: String => Option[String] = env,
     separator: String = ": ",
+    tint: String => String = identity,
   ): String =
-    val shell = if os == Os.Windows && needsPowerShellLiteral(path.toString) then " (PowerShell)" else ""
-    s"$label$shell$separator${displayPath(path, os, environment)}"
+    s"$label${shellLabel(path, os)}$separator${tint(displayPath(path, os, environment))}"
+
+  /** A path inside a sentence, with the shell label pathLine puts on the line's label following it
+    * instead: the sentence names a directory to act in, and cmd.exe cannot take the PowerShell form. */
+  def pathInline(path: Path, os: Os = currentOs, environment: String => Option[String] = env): String =
+    s"${displayPath(path, os, environment)}${shellLabel(path, os)}"
+
+  private def shellLabel(path: Path, os: Os): String =
+    if os == Os.Windows && needsPowerShellLiteral(path.toString) then " (PowerShell)" else ""
 
   def displayPath(
     path: Path,
@@ -107,14 +115,17 @@ object HostCommands:
    * alike, and the reader is not shouted at for the mode they selected. Colour is the emphasis, and
    * each hue has one meaning:
    *
-   *   - red: what the user did not ask for. On the `error:` label, the launch stopped (stopped);
-   *     on a whole line, a file of the project directory widens a boundary (weakenedByProject) —
-   *     a file that arrives with the repository, written by whoever can write there.
+   *   - red: the launch stopped. On the `error:` label only (stopped).
    *   - orange: the launch goes on, and there is something to know. On the `warning:` label
-   *     (caution); on a whole line, an option or environment variable of this launch weakens a
-   *     boundary (weakenedByUser) — the user's own, so a reminder and not an alarm.
-   *   - purple: what the user chose where it weakens nothing — the workspace mode, the egress
-   *     profile, an upstream proxy (chosen) — a hue of its own so it is never read as a severity.
+   *     (caution); on a whole line, a boundary is weaker than the default (weakened), by an option
+   *     or environment variable of this launch or by a rule file of the project directory — a
+   *     reminder and not an alarm, and the line or the one before it says what weakened it.
+   *   - purple: what the user chose where it weakens nothing — the project directory, the
+   *     workspace mode, the egress profile, an upstream proxy (chosen) — a hue of its own so it
+   *     is never read as a severity.
+   *   - gray: what is there to look up, not to read — the egress log's long path (lookedUp).
+   *     Text that is skipped on every ordinary launch, tinted so the reader learns to skip it
+   *     without learning to skip the lines around it.
    *   - green, orange and red on a headroom figure: a measurement's scale, outside this ranking
    *     (Headroom).
    *
@@ -130,14 +141,21 @@ object HostCommands:
 
   def stopped(text: String, color: Boolean = colorStderr): String = tinted(Red, text, color)
 
-  def weakenedByUser(text: String, color: Boolean = colorStderr): String = tinted(Orange, text, color)
+  def weakened(text: String, color: Boolean = colorStderr): String = tinted(Orange, text, color)
 
-  def weakenedByProject(text: String, color: Boolean = colorStderr): String = tinted(Red, text, color)
+  /** A heading ending in `widen:`, then one indented line per rule, each tinted on its own so a
+    * line filtered out of a saved log still opens and closes its colour. */
+  def wideningReport(heading: String, rules: Seq[String], color: Boolean = colorStderr): Vector[String] =
+    (s"$heading widen:" +: rules.map(rule => s"  $rule")).toVector.map(weakened(_, color))
 
   /** What the user chose, as the line stating it says it — `live`, `deny-unless-allowed`.
     * Purple and orange are not among the theme's sixteen — its magenta is as often pink, its
     * yellow as often olive — so both are the 256-colour cube's. */
   def chosen(text: String, color: Boolean = colorStderr): String = tinted("38;5;207", text, color)
+
+  /** What is there to look up, not to read. Mid-gray from the cube, legible on a light and a dark
+    * background alike, where the theme's bright black is either. */
+  def lookedUp(text: String, color: Boolean = colorStderr): String = tinted("38;5;245", text, color)
 
   /** The scale of a headroom figure: green while what the action is about fits, orange where it is
     * warned, red where it is short (AgentSandboxLauncher.launchMemoryHeadroom and
@@ -263,30 +281,19 @@ object HostCommands:
     val wrapper = "IFS=; set -f; script=$(printf %s $1 | base64 -d); shift; eval $script"
     Vector("sh", "-c", wrapper, "sh", encoded) ++ arguments
 
-  /** How many containers read one bind-mounted file, which decides its SELinux relabel option. */
-  enum FileBindReaders:
-    case OneContainer, SeveralContainers
-
   /**
    * The `--volume` argument for a file under the launcher's state root. On an SELinux-enforcing
    * host a container reads a bind-mounted file only once it is relabeled: podman mounts an
    * unlabeled one without complaint, and the container's own read fails with EACCES. `Z` gives
    * the file the one container's private MCS categories, which keep a key from every other
-   * container that runs under SELinux separation — not from one with `label=disable`. `z` gives
-   * it none, for a file a second container mounts, whose `Z` would take it from the first. Never
-   * for the project tree: SECURITY.md ("the project tree's SELinux labels").
+   * container that runs under SELinux separation — not from one with `label=disable`. No file is
+   * mounted into two containers — the proxy and the sandbox mount this run's copies (the launch's
+   * `carried`), the throwaway JDK container the project's CA certificate — so `Z` never takes a
+   * file from another container. Never for the project tree: SECURITY.md ("the project tree's
+   * SELinux labels").
    */
-  def fileBind(
-    source: Path,
-    containerPath: String,
-    access: String,
-    selinuxEnforcing: Boolean,
-    readers: FileBindReaders = FileBindReaders.OneContainer,
-  ): String =
-    val relabel =
-      if !selinuxEnforcing then ""
-      else if readers == FileBindReaders.OneContainer then ",Z"
-      else ",z"
+  def fileBind(source: Path, containerPath: String, access: String, selinuxEnforcing: Boolean): String =
+    val relabel = if selinuxEnforcing then ",Z" else ""
     s"--volume=$source:$containerPath:$access$relabel"
 
   def run(command: String*): Run =
@@ -301,6 +308,51 @@ object HostCommands:
     val out = process.getInputStream.readAllBytes()
     errThread.join()
     Run(process.waitFor(), out, String(err, StandardCharsets.UTF_8).stripLineEnd)
+
+  /**
+   * `body` on its own thread, for a launch step that overlaps the steps after it; the function
+   * returned waits for it and gives its result, or throws what it threw.
+   *
+   *   - `body` must not call `fail` or print: the caller does both with the result, in the launch's
+   *     own order.
+   *   - An exit waits for a started step, through a shutdown hook. Without it, a refusal on the main
+   *     thread would leave the step's child with nobody reading its pipes, and its next write would
+   *     kill it with SIGPIPE: the filter's self-test could stop between its mount and its unmount.
+   *   - A step a shutdown overtakes does not start, since the JVM ends once the hooks finish,
+   *     wherever the step is. A shutdown under way refuses the hook; a hook run before the start
+   *     closes `gate`. The function returned then blocks until the JVM ends, as `fail` does during
+   *     shutdown.
+   *   - `register` adds the hook; a test passes its own to run the hook between the registration
+   *     and the start.
+   */
+  def inBackground[A](
+    name: String,
+    register: Thread => Unit = Runtime.getRuntime.addShutdownHook(_),
+  )(body: => A): () => A =
+    var outcome: Option[scala.util.Try[A]] = None
+    val worker = Thread(() => outcome = Some(scala.util.Try(body)), name)
+    val gate = Object()
+    var closed = false
+    val settle = Thread: () =>
+      gate.synchronized { closed = true }
+      worker.join()
+    val started =
+      try
+        register(settle)
+        gate.synchronized:
+          if !closed then worker.start()
+          !closed
+      catch case _: IllegalStateException => false
+    () =>
+      if !started then untilTheJvmEnds()
+      worker.join()
+      try Runtime.getRuntime.removeShutdownHook(settle)
+      catch case _: IllegalStateException => ()
+      outcome.getOrElse(throw IllegalStateException(s"$name ended without a result")).get
+
+  private def untilTheJvmEnds(): Nothing =
+    while true do Thread.sleep(Long.MaxValue)
+    throw IllegalStateException("the JVM outlived its shutdown")
 
   def runOk(command: String*): Boolean =
     try run(command*).ok

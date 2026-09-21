@@ -55,6 +55,59 @@ class KoAgentFsTest extends munit.FunSuite:
       Vector("podman", "machine", "ssh", s"./$KoAgentFsBinary --self-test"),
     )
 
+  test("a launch's filter checks are one script: home, version, and the self-test only for this build"):
+    assume(!isWindows, "the stub ko-agent-fs is a /bin/sh script")
+    val home = Files.createTempDirectory("ko-agent-fs-checks").toRealPath()
+    try
+      val selfTested = home.resolve("self-tested")
+      Files.createDirectories(home.resolve(KoAgentFsBinary).getParent)
+      def stub(reported: String, selfTestExit: Int): Unit =
+        val binary = Files.writeString(
+          home.resolve(KoAgentFsBinary),
+          s"""#!/bin/sh
+             |case "$$1" in
+             |  --version) echo '$reported' ;;
+             |  --self-test) touch '$selfTested'; echo 'self-test failed: no fusermount3' >&2; exit $selfTestExit ;;
+             |esac
+             |""".stripMargin,
+        )
+        binary.toFile.setExecutable(true)
+      // The machine's form finds the home as its working directory; native Linux is given it.
+      def checks(knownHome: Option[String]): HostCommands.Run =
+        val script = koAgentFsChecksScript(knownHome, "abc")
+        val process = ProcessBuilder(koAgentFsScriptCommand("podman", Os.Linux, script)*)
+          .directory(home.toFile)
+          .start()
+        val out = process.getInputStream.readAllBytes()
+        val err = String(process.getErrorStream.readAllBytes()).stripLineEnd
+        HostCommands.Run(process.waitFor(), out, err)
+
+      stub("ko-agent-fs 0.1.0 source abc", selfTestExit = 0)
+      for knownHome <- Vector(None, Some(home.toString)) do
+        assertEquals(checkedKoAgentFsHome(checks(knownHome), "abc"), Right(home.toString))
+
+      stub("ko-agent-fs 0.1.0 source abc", selfTestExit = 3)
+      assertEquals(
+        checkedKoAgentFsHome(checks(Some(home.toString)), "abc"),
+        Left(("error: ko-agent-fs self-test failed; not launching:\nself-test failed: no fusermount3", 3)),
+      )
+
+      Files.delete(selfTested)
+      stub("ko-agent-fs 0.1.0 source other", selfTestExit = 0)
+      val foreign = checkedKoAgentFsHome(checks(Some(home.toString)), "abc")
+      val named = "not this launcher's build\n  (ko-agent-fs 0.1.0 source other)"
+      assert(foreign.swap.exists(_._1.contains(named)), foreign)
+      assert(!Files.exists(selfTested), "another build's self-test must not run")
+
+      Files.delete(home.resolve(KoAgentFsBinary))
+      val missing = checkedKoAgentFsHome(checks(Some(home.toString)), "abc")
+      assert(missing.swap.exists(_._1.contains(KoAgentFsBinary)), missing)
+      assert(!Files.exists(selfTested))
+    finally deleteRecursively(home)
+
+    val unanswered = checkedKoAgentFsHome(HostCommands.Run(255, Array.emptyByteArray, "ssh: connect refused"), "abc")
+    assertEquals(unanswered, Left(("error: cannot determine the filter daemon's home directory", 1)))
+
   test("the fuse.conf consent check is idempotent and enables exactly what it describes"):
     assertEquals(
       koAgentFsFuseConfCheckCommand("podman"),
@@ -73,7 +126,7 @@ class KoAgentFsTest extends munit.FunSuite:
 
   test("the mount script has the backing path only base64-encoded, and every lifecycle step"):
     val backing = "/Users/some one's ~dir/proj; rm -rf $HOME"
-    val script = koAgentFsMountScript(backing, "app-abc123def456", "d" * 64, "run-container-1")
+    val script = koAgentFsMountScript(backing, "app-abc123def456", "d" * 64, "run-container-1", "host-view /\n")
     // The build check runs under the project lock and right before the daemon start; the
     // image-build lock mountKoAgentFs holds around the whole script is what keeps a --build out.
     val check = script.indexOf(s"""*" source ${"d" * 64}") ;;""")
@@ -89,8 +142,9 @@ class KoAgentFsTest extends munit.FunSuite:
       "mountpoint -q",
       "fusermount3 -uz",
       "is not empty; refusing",
-      "--source \"$backing\" --mount \"$mnt\" --foreground",
-      "fuse*) echo \"mounted\"; exit 0",
+      "--source \"$backing\" --mount \"$mnt\"",
+      "--file-rules \"$dir/file-rules\" --foreground",
+      "echo \"mounted\"",
       "mounts/app-abc123def456",
       "d" * 64,
       // The user must not have to infer "reused" from silence.
@@ -107,6 +161,75 @@ class KoAgentFsTest extends munit.FunSuite:
     assert(script.contains("9>&- >>\"$dir/daemon.log\""), script)
     // PATH first (see below), then fail-fast before anything that can fail.
     assertEquals(script.linesIterator.drop(1).next(), "set -eu")
+
+  test("the mount script joins a live mount only under the same file rules, and prints the resolved set"):
+    val rules = "host-view /Users /private /var/folders\nreadonly .vscode\n"
+    val script = koAgentFsMountScript("/Users/u/proj", "app-abc123def456", "d" * 64, "run-container-1", rules)
+    val encoded = java.util.Base64.getEncoder.encodeToString(rules.getBytes("UTF-8"))
+    // User-controlled, like the backing path: base64 only.
+    assert(!script.contains("readonly .vscode"), script)
+    assert(script.contains(s"printf %s $encoded | base64 -d > \"$$dir/file-rules.new\""), script)
+    // Compared under the project lock, inside the reuse branch, before the launch joins.
+    val compare = script.indexOf("\"$(cat \"$dir/file-rules.new\")\" != \"$(cat \"$dir/file-rules\"")
+    assert(compare > script.indexOf("flock 9"), script)
+    assert(compare < script.indexOf("echo \"reusing the existing mount\""), script)
+    assert(script.contains("mounted for sessions under other file rules"), script)
+    // The refusal names the other sessions, never this launch's own marker.
+    assert(script.contains("[ \"$(basename \"$marker\")\" = \"run-container-1\" ] ||"), script)
+    // A fresh mount's rules are this launch's; the daemon writes the resolved set beside them.
+    assert(script.indexOf("mv -f \"$dir/file-rules.new\" \"$dir/file-rules\"") < script.indexOf("nohup"), script)
+    assert(script.indexOf("rm -f \"$dir/file-rules.resolved\"") < script.indexOf("nohup"), script)
+    // Both branches end with the marker and the set.
+    assertEquals(script.split(s"echo \"${FileRules.ResolvedMarker}\"", -1).length, 3, script)
+
+  test("the prepare step describes a live mount of this build, its sessions and its rules, under the lock"):
+    val script = koAgentFsPrepareScript("app-abc123def456", "d" * 64)
+    val running = script.indexOf(s"echo \"$RunningMountMarker\"")
+    assert(script.indexOf("flock 9") < running, script)
+    assert(script.contains("[ \"$(cat \"$dir/source-id\" 2>/dev/null || true)\" = \"" + "d" * 64 + "\" ]"), script)
+    assert(script.indexOf(s"echo \"$RunningRulesMarker\"") < script.indexOf("cat \"$dir/file-rules\""), script)
+    val rules = "host-view /\nreadonly .vscode\n"
+    assertEquals(
+      runningMountOf(s"$RunningMountMarker\nsession run-a\nsession run-b\n$RunningRulesMarker\n$rules"),
+      Some(RunningMount(Vector("run-a", "run-b"), rules)),
+    )
+    assertEquals(runningMountOf(""), None)
+
+  test("a launch under other rules joins a running mount only when the start prompt asks, and says so on one line"):
+    val running = RunningMount(Vector("run-a", "run-b"), "host-view /\nreadonly .vscode\n")
+    assertEquals(joinUnderOtherRules(None, "host-view /\n", prompted = false), Right(None))
+    assertEquals(joinUnderOtherRules(Some(running), running.rules, prompted = false), Right(None))
+    assertEquals(joinUnderOtherRules(Some(running), "host-view /\n", prompted = true), Right(Some(running)))
+    val refusal = joinUnderOtherRules(Some(running), "host-view /\n", prompted = false).swap.getOrElse(fail("joined"))
+    assert(refusal.contains("run-a, run-b") && refusal.contains("KO_AGENT_SANDBOX_SESSION_START"), refusal)
+    val warning = joinWarning(running)
+    assert(!warning.contains("\n"), warning)
+    assert(warning.indexOf("do not take effect") < warning.indexOf("until"), warning)
+
+  test("the resolved set is read after the marker, and a filter of another format is refused"):
+    val output = s"reusing the existing mount\n${FileRules.ResolvedMarker}\nreadonly .vscode\nreadonly-path .husky/_\n"
+    assertEquals(
+      resolvedAfterMarker(output),
+      FileRules.Resolved(Vector(FileRules.Line(FileRules.Word.ReadOnly, ".vscode")), Vector(".husky/_"), Vector.empty),
+    )
+    assert(FileRules.parseResolved("readonly .vscode\nignore x\n").isLeft)
+    // What the profile writes into its regexes stays in the grammar, whatever the filter answers.
+    for line <- Vector(
+        "readonly ../x",
+        "writable a//b",
+        "readonly-under shared/claude",
+        "readonly-under shared/claude a b",
+        "readonly-under shared/claude ../x",
+        "readonly-under shared/claude a\"b",
+      )
+    do assert(FileRules.parseResolved(s"$line\n").isLeft, line)
+
+  test("--resolve runs the build check before the filter, and removes its rule file either way"):
+    val script = koAgentFsResolveScript("/Users/u/proj", "app-abc123def456", "d" * 64, "host-view /\n")
+    val check = script.indexOf(s"""*" source ${"d" * 64}") ;;""")
+    assert(check >= 0 && check < script.indexOf("--resolve"), script)
+    assert(script.contains("--source \"$backing\" --resolve --file-rules \"$rules\" || status=$?"), script)
+    assert(script.indexOf("rm -f \"$rules\"\nexit $status") > script.indexOf("--resolve"), script)
 
   test("lifecycle scripts run in the VM on podman machine and locally on Linux"):
     val script = "if mountpoint -q \"$mnt\"; then exit 0; fi"
@@ -176,6 +299,18 @@ class KoAgentFsTest extends munit.FunSuite:
       Set("live"),
     )
 
+  test("a reap after a reset leaves the project's filter directory gone"):
+    // The reaper of a session that has just ended can run after a --reset removed the directory.
+    assume(!isWindows, "the reap script runs under /bin/sh")
+    val home = Files.createTempDirectory("ko-agent-fs-reap-reset")
+    try
+      val builder = ProcessBuilder("/bin/sh", "-c", koAgentFsReapScript("podman-unused", "app-abc123def456", "run-1"))
+      builder.environment().put("HOME", home.toString)
+      builder.redirectErrorStream(true)
+      assertEquals(builder.start().waitFor(), 0, "the reap script failed")
+      assert(!Files.exists(home.resolve(koAgentFsMountDir("app-abc123def456"))), "the reap recreated the directory")
+    finally deleteRecursively(home)
+
   test("a reap prunes only on podman's own not-exists answer, never on a broken podman"):
     assume(!isWindows, "the stub podman is a /bin/sh script")
     assertEquals(
@@ -242,17 +377,46 @@ class KoAgentFsTest extends munit.FunSuite:
       s"a bare podman invocation crept in:\n$onHost",
     )
 
-  test("the unmount scripts release the mount lazily and remove only launcher-owned state"):
+  test("the unmount scripts release the mount lazily"):
     val one = koAgentFsUnmountScript("app-abc123def456")
     assert(one.contains("fusermount3 -uz"))
-    assert(one.contains("mounts/app-abc123def456"))
-    assert(!one.contains("rm -rf /"), one)
-    val all = koAgentFsUnmountAllScript
-    assert(all.contains("fusermount3 -uz"))
-    assert(all.contains(s"""rm -rf "$$HOME/$KoAgentFsInstallDir/mounts""""))
+    assert(koAgentFsUnmountAllScript.contains("fusermount3 -uz"))
+
+  test("the unmount scripts remove only their own state, print what they removed, and nothing else"):
+    // A reset relays these lines. Nothing is mounted here, so fusermount3 fails for every directory
+    // and no "unmounted" line may appear: the state directory a resolve leaves is not a mount.
+    assume(!isWindows, "the scripts run under /bin/sh")
+    val home = Files.createTempDirectory("ko-agent-fs-unmount")
+    def unmount(script: String): (Int, String) =
+      val builder = ProcessBuilder("/bin/sh", "-c", script)
+      builder.environment().put("HOME", home.toString)
+      val process = builder.start()
+      val out = String(process.getInputStream.readAllBytes()).trim
+      (process.waitFor(), out)
+    try
+      val one = koAgentFsUnmountScript("app-abc123def456")
+      val all = koAgentFsUnmountAllScript
+      assertEquals(unmount(one), (0, ""))
+      assertEquals(unmount(all), (0, ""))
+
+      val mounts = home.resolve(KoAgentFsInstallDir).resolve("mounts")
+      val kept = Files.createDirectories(mounts.resolve("other-abc123def456/workspace"))
+      val state = Files.createDirectories(home.resolve(koAgentFsMountDir("app-abc123def456")).resolve("workspace"))
+      assertEquals(unmount(one), (0, s"removed ${state.getParent}"))
+      assert(!Files.exists(state.getParent) && Files.exists(kept))
+      assertEquals(unmount(one), (0, ""))
+
+      // A dangling link is state too, and goes as a link.
+      val link = Files.createSymbolicLink(state.getParent, home.resolve("gone"))
+      assertEquals(unmount(one), (0, s"removed $link"))
+      assert(!Files.exists(link, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+
+      assertEquals(unmount(all), (0, s"removed $mounts"))
+      assert(!Files.exists(mounts))
+    finally deleteRecursively(home)
 
   test("the bundled ko-agent-fs source id is computable from this classpath and well-formed"):
-    // The per-session gate compares the installed binary's --version against this digest; it must
+    // The per-session check compares the installed binary's --version against this digest; it must
     // agree with what --build stamps, which hashes the same entries under the same relative paths.
     val id = bundledKoAgentFsSourceId()
     assertEquals(id.length, 64)

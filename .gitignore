@@ -29,6 +29,11 @@ node_modules/
 # AI agents would use python frequently
 __pycache__/
 
+# VS Code
+.vscode/
+.metals/
+metals.sbt
+
 # macOS
 .DS_Store
 

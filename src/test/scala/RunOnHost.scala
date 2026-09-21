@@ -1,13 +1,13 @@
-// The gate's wrapper driver, EmitRunOnHostProfile's sibling: the RunOnHostSandbox wrapper with the authority file
-// as an argument, where the durable front-end — the launcher's --run-command-on-host action, behind
-// the channel — reads the bundled copy. src/probe/run-on-host-profile-gate.sh is its caller.
+// The acceptance test's wrapper driver, EmitRunOnHostProfile's sibling: the RunOnHostSandbox wrapper with the
+// system-paths file as an argument, where the durable front-end — the launcher's --run-command-on-host action, behind
+// the channel — reads the bundled copy. src/probe/run-on-host-acceptance-test.sh is its caller.
 //
 //   java -cp <the classpath EmitRunOnHostProfile prints> \
-//     agentsandbox.launcher.RunOnHost <program> <project> [authority-file] -- <args...>
+//     agentsandbox.launcher.RunOnHost <program> <project> [system-paths-file] -- <args...>
 //
-// The gate runs that under the build lock the broker's spawn takes (RunOnHostSession.lockedSpawn),
+// The acceptance test runs that under the build lock the broker's spawn takes (RunOnHostSession.lockedSpawn),
 // through perl's exec, so the pid its kill rows signal is the wrapper's: `--lock-script` prints
-// the perl script and `--build-lock <program> <project>` the lock file, for the gate to compose.
+// the perl script and `--build-lock <program> <project>` the lock file, for the acceptance test to compose.
 //
 // Plain java, never `sbt Test/runMain`: runMain would host this in the build's own JVM, whose
 // server holds the target project's portfile — the wrapper would end it (one server per build
@@ -28,7 +28,7 @@ object RunOnHost:
       case (before, _)            => (before, Nil)
 
     val usage =
-      s"usage: RunOnHost <${Program.values.map(_.name).mkString("|")}> <project> [authority-file] -- <args...>"
+      s"usage: RunOnHost <${Program.values.map(_.name).mkString("|")}> <project> [system-paths-file] -- <args...>"
     front match
       case "--lock-script" :: Nil => print(RunOnHostSession.LockScript)
       case "--build-lock" :: programName :: projectName :: Nil =>
@@ -41,10 +41,10 @@ object RunOnHost:
         val program = Program.values.find(_.name == programName.toLowerCase).getOrElse:
           Console.err.println(s"unknown program $programName\n$usage")
           sys.exit(2)
-        val authority = RunOnHostSandbox.readRuntimeAuthority(rest.headOption.map(Paths.get(_)))
+        val systemPaths = RunOnHostSandbox.readSystemPaths(rest.headOption.map(Paths.get(_)))
         val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
         sys.exit(
-          RunOnHostSandbox.run(Paths.get(projectName), program, commandArgs, authority, uid, Console.err.println),
+          RunOnHostSandbox.run(Paths.get(projectName), program, commandArgs, systemPaths, uid, Console.err.println),
         )
       case _ =>
         Console.err.println(usage)

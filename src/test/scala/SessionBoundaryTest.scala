@@ -2,7 +2,7 @@
 //
 // It runs itself: `sbt testFull` from inside a session executes it, and `assume` skips it
 // everywhere else, so there is no separate command to remember. KO_AGENT_SANDBOX_EGRESS_RULESET is
-// the gate because the launcher sets it for every session and nothing else does. The project is
+// the condition because the launcher sets it for every session and nothing else does. The project is
 // the working directory: the launcher starts the session there, at the project's own path.
 //
 // The network checks drive `curl` and `getent` as processes rather than Java's own HTTP and TLS:
@@ -45,7 +45,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     run((Vector("curl", "-sS", "--max-time", "25") ++ args)*)
 
   /** The HTTP status, or "000" when the connection never became one — which is what a refusal at
-    * the CONNECT gate looks like, as opposed to a 403 handed back inside a tunnel. */
+    * the CONNECT checks looks like, as opposed to a 403 handed back inside a tunnel. */
   private def status(args: String*): String =
     curl((Vector("-o", "/dev/null", "-w", "%{http_code}") ++ args)*).text.trim
 
@@ -82,16 +82,17 @@ class SessionBoundaryTest extends munit.FunSuite:
     assertEquals(run("id", "-u").text, "65532")
     assertEquals(run("id", "-g").text, "65532")
     assertEquals(field("/proc/self/status", "NoNewPrivs"), "1")
+    assertEquals(field("/proc/self/status", "Seccomp"), "2")
 
-    // "All capabilities dropped" is the wrong assertion: the nesting opt-in prices exactly one, so
+    // "All capabilities dropped" is the wrong assertion: the nesting opt-in grants exactly one, so
     // demanding an empty set fails a correctly configured nested session while missing the failure
-    // that matters — a capability arriving without the variable that pays for it.
+    // that matters — a capability arriving without the variable that grants it.
     val nesting = env(AgentSandboxLauncher.NestingVariable).getOrElse("none")
-    val priced = nesting match
+    val expectedCapabilities = nesting match
       case "none"     => "0000000000000000"
       case "same-uid" => "0000000000040000" // cap_sys_chroot, and only that
       case other      => fail(s"unknown nesting mode $other")
-    assertEquals(field("/proc/self/status", "CapEff"), priced, s"nesting=$nesting")
+    assertEquals(field("/proc/self/status", "CapEff"), expectedCapabilities, s"nesting=$nesting")
 
     assert(mountOptions("/").exists(_.startsWith("ro")), "the root filesystem is writable")
     assertEquals(Files.readString(Paths.get("/sys/fs/cgroup/pids.max")).trim, "2048")
@@ -143,7 +144,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     Vector("example.com", "secret-payload.attacker.example").foreach: name =>
       assert(!run("getent", "hosts", name).ok, s"$name resolved; a resolver is reachable")
 
-  test("the CONNECT gate refuses everything but a listed host on 443"):
+  test("the CONNECT checks refuse everything but a listed host on 443"):
     inSession()
     // A refusal here fails the CONNECT rather than answering inside a tunnel, so curl reports it
     // as an error with the proxy's status instead of as an HTTP code.
@@ -233,6 +234,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     val refused = run("ko-sandbox-egress-check", "unlisted.invalid")
     assertEquals(refused.exit, 1, refused.err)
     assert(refused.text.contains("403"), refused.text)
+    assert(refused.text.contains("Proxy-Status: ko-agent-egress-proxy; error=http_request_denied"), refused.text)
     assert(
       refused.text.contains(
         RefusalAdvice.hostNotAllowed("unlisted.invalid", agentsandbox.egress.RulesetHelper.DefaultProfile),
@@ -242,6 +244,17 @@ class SessionBoundaryTest extends munit.FunSuite:
     val allowed = run("ko-sandbox-egress-check", "api.github.com")
     assertEquals(allowed.exit, 0, allowed.err)
     assert(allowed.text.contains("HEAD / -> HTTP/1.1 "), allowed.text)
+    // A host granted below / alone, when the session's providers list one: the proxy refuses the
+    // HEAD / inside the tunnel, and the check reports that as the refusal it is.
+    val grants = raw"allow https://([^/\s]+)(/\S*)".r
+      .findAllMatchIn(env("KO_AGENT_SANDBOX_EGRESS_RULESET").getOrElse(""))
+      .map(found => found.group(1) -> found.group(2))
+      .toVector
+    grants.map(_._1).distinct.find(host => !grants.contains(host -> "/")).foreach: host =>
+      val inner = run("ko-sandbox-egress-check", host)
+      assertEquals(inner.exit, 1, inner.text)
+      assert(inner.text.contains(s"CONNECT $host:443: 200; HEAD /: HTTP/1.1 403"), inner.text)
+      assert(inner.text.contains("Proxy-Status: ko-agent-egress-proxy; error=http_request_denied"), inner.text)
 
   test("a JVM reaches an allowed host with no proxy variable of its own"):
     inSession()
@@ -286,6 +299,16 @@ class SessionBoundaryTest extends munit.FunSuite:
     assert(aliases.contains("ko-agent-sandbox-egress"), "this project's CA is not in the store")
     assert(aliases.exists(_.contains("isrgrootx1")), s"a shipped root is gone: ${aliases.take(5)}")
     assert(aliases.size > 100, s"the store holds ${aliases.size} roots, not the image's set")
+
+  test("npm refuses package versions younger than seven days, and uv has no window"):
+    inSession()
+    // SECURITY.md, "The supply chain". This project has no `.npmrc` and no `[tool.uv]` table, so
+    // the image's layer is what each reads.
+    assertEquals(run("npm", "config", "get", "min-release-age").text, "7")
+    // uv logs the cutoff it solves with at -vv; an empty requirement list on stdin needs no index.
+    val solve = run("uv", "-vv", "--offline", "pip", "compile", "--no-cache", "-")
+    assert(solve.ok, s"uv could not solve an empty requirement list: ${solve.err}")
+    assert(!solve.err.contains("Solving with exclude-newer"), s"uv solves under a window:\n${solve.err}")
 
   test("a git host serves an anonymous clone"):
     inSession()

@@ -21,8 +21,10 @@ For every reported or discovered problem:
 Preserve scope, ownership and how work is separated for review. Before crossing or changing a
 boundary, name it and its consequence and ask.
 
-Before reasoning, designing or experimenting, read the relevant official documentation, source,
-issues and workspace documents. Reason and experiment about what they leave open.
+Before reasoning, designing, experimenting or editing, read the relevant official documentation,
+source, issues and workspace documents, including earlier decisions on the subject. Reason and
+experiment about what they leave open. State as fact only what you read or measured; mark anything
+else as unverified in replies, and keep it out of persisted text.
 
 Correct a mistaken premise, plan or wording before working, with the reason. Once the disagreement
 is heard, do the work as asked. Disagreement is expected; do not silently conform to a guessed
@@ -40,47 +42,54 @@ does belong, even if documented upstream: a reader who does not expect it never 
 Use names to say what methods, parameters and values are before adding comments. Replace
 comments that only do this with better names.
 
-Use concrete subject–verb–object wording. Use abstractions or metaphors ("invariant", "venue",
-"prose", the verb "mint") only when concrete wording loses meaning or precision; name what they
-stand for in the same sentence. For what a tool or service does, use the verb its own
-documentation uses. Read each sentence alone: compared nouns must be the same kind, and `only` or
-`every` must match behavior. Rewrite the sentence rather than mechanically replacing words.
+Use concrete subject–verb–object wording. Use abstractions or metaphors (such as "invariant",
+"venue", "prose", the verb "mint") only when concrete wording loses meaning or precision; name
+what they stand for in the same sentence. Report existing names and wording that fail this. For
+what a tool or service does, use the verb its own documentation uses. Read each sentence alone:
+compared nouns must be the same kind, and `only` or `every` must match behavior. Rewrite the
+sentence rather than mechanically replacing words.
 
-Record a standing practice or fact once, where it binds — the document that made the decision or
-the code enforcing it — and reference it elsewhere. Record a deliberate absence and its reason
-once; the sites that omit it stay silent.
+Record a standing practice or fact once, in the document that made the decision or the code
+enforcing it, and reference it elsewhere. Record a deliberate absence and its reason once; do not
+repeat the explanation elsewhere.
 
 After inserting, trimming or rewriting, compare the old and new meanings, then re-read the whole
-passage. Account for removed expectations, reasons, conditions and actions in the working list:
-preserve them, link to where the reader needs them, or give a concrete reason they do not belong.
-Check for duplication and clauses more specific or general than their neighbors: those belong in
-a different document.
+passage and check each sentence against Writing style. Unless the user authorized the change, ask
+before removing a recorded reason or intent or changing its meaning; code alone cannot establish
+why a choice was made. Account for removed expectations, reasons, conditions and actions in the
+working list: preserve them, link to where the reader needs them, or, when the removal is allowed,
+give a concrete reason they do not belong. Check for duplication and clauses more specific or
+general than their neighbors: those belong in a different document.
 
-In a completeness checklist — a security boundary, deny surface or test checklist — each element
-states its contribution. Restatement there serves the audit.
+In a completeness checklist — a security boundary, list of refused operations or test checklist —
+each element states its contribution. Restatement there serves the audit.
 
 For a reader about to act, say what to do and expect; explain mechanisms only when the why is the
 shorter instruction. Test each sentence by what the reader does differently in the task described.
-Put supporting details in subitems when they interrupt an action or choice; keep conditions inline.
 For a reader seeking understanding, explain mechanisms; test what the reader understands
-differently. The reader's state determines the mode, not the filename; a document can hold both.
+differently. The reader's state determines the mode, not the filename; a document holds both in
+separate sections, the acting reader's first. A list item or paragraph states one claim in one or
+two lines, with the condition it depends on in the same line; its mechanism, edge cases and
+evidence go one level down, or into the understanding section. An addition that would push an
+item or paragraph past five lines restructures it into items instead of appending to it.
 Errors, refusals and prompts say what to do next when naming what failed does not.
 
 Until the first release, persisted text describes the current design: readers have no before-state.
 Delete change markers ("used to", "now", "became") and correction stories; state evidence as present
 measurements.
-Delete completed TODO rows once their facts are recorded at their canonical sites.
+Delete completed TODO rows once the document or code their facts belong in records them.
 
 Replies lead with the result and include only details affecting the reader's next action; narrate
-the process only when necessary. For a proposal, objection or decision, first say how far you agree.
+the process only when necessary, and report a check only when it fails. For a proposal, objection
+or decision, first say how far you agree.
 
-Do not assume the writer speaks English natively. Report unnatural English without playing
-schoolteacher.
+Do not assume the writer speaks English natively. Report unnatural English and suggest a
+correction; do not explain the grammar unless asked.
 
 
 # Coding style
 
-Documents are at most 100 characters wide; code 120, allowing for indentation. Never split a URL
+Documents are at most 100 characters wide; code 120, including indentation. Never split a URL
 or hide it behind a reference to fit; its line may run over.
 
 Use trailing comma where possible.
@@ -93,12 +102,16 @@ Do not use one-letter names, except for
 3. names established in the literature
 
 
+# What helps other agents
+
+Record what helps other agents, as a rule for a class of cases, in a project document,
+`container/ko-agent-sandbox/AGENTS-SANDBOX.md` or this file. Both prompt files are in every
+prompt: add a sentence only when most agents reading it act differently because of it, and defend
+every word; a sentence only some of them act on belongs in the document those readers open. When
+a rule was not followed, identify what was missing, ambiguous or conflicting, or what prevented
+following it, and revise it; add a rule only when none covers the case.
+
+
 # git
 
-Do not change the git state: no `add` / `commit` / `rebase` / `push` unless explicitly asked.
-
-
-# Memory
-
-Do not write to the agent memory directory. Put rules in these instructions or project documents,
-read every session; memory recall is uncertain. When an instruction was not followed, improve it.
+Run only read-only git commands unless explicitly asked.

@@ -6,12 +6,6 @@ FROM debian-coursier:${IMG_TAG_VER}
 ARG IMG_TAG_VER
 LABEL org.opencontainers.image.base.name="debian-coursier:${IMG_TAG_VER}"
 
-# The digest of this directory as the launcher bundled it (KoAgentFs.contextSourceId). A launch
-# recomputes it from its own jar and refuses a default-named image another jar built — the
-# version lock between launcher and image (AgentSandboxLauncher.bundleMismatch).
-ARG BUNDLE_ID
-LABEL ko-agent-sandbox.bundle=${BUNDLE_ID}
-
 ARG UV_VERSION=0.12.17
 ARG PYTHON_VERSION=3.14
 ARG WCWIDTH_VERSION=0.8.4
@@ -127,6 +121,13 @@ ENV PATH="/opt/node/bin:$PATH"
 # intent: an npx run in one repository must not leave code behind for the
 # next.
 ENV npm_config_prefix=/home/nonroot/.local
+
+# The builtin config file is npm's lowest-precedence layer, so a project's `.npmrc` overrides
+# it. SECURITY.md, "The supply chain", has what the seven days defend against, what they leave
+# through, and why uv gets no counterpart. An unpinned request refused reads as `ENOVERSIONS`
+# with no cause, in the log too; a pinned one names its date cutoff, and `npm config ls` prints
+# the setting under this file.
+RUN printf 'min-release-age=7\n' > /opt/node/lib/node_modules/npm/npmrc
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +390,31 @@ COPY --chmod=0644 codex/bash-env /etc/codex/bash-env
 
 
 # ---------------------------------------------------------------------------
+# VS Code CLI
+# ---------------------------------------------------------------------------
+#
+# `code agent host` is what an IDE attaches to over the Agent Host Protocol.
+# Microsoft publishes the CLI through its update service, not GitHub: one
+# call names the latest release, a second gives that release's download URL
+# and SHA-256, which the CDN itself does not publish. The server release the
+# host runs is not bundled: it updates independently of the CLI, through the
+# host's own update loop, so the CLI downloads it on the host's first start,
+# through the proxy's default rules.
+RUN set -euxo pipefail; \
+    case "$(uname -m)" in aarch64) VSCODE_ARCH=arm64;; x86_64) VSCODE_ARCH=x64;; esac; \
+    VSCODE_UPDATE=https://update.code.visualstudio.com/api; \
+    VSCODE_VERSION="$(curl -fsSL "${VSCODE_UPDATE}/latest/cli-linux-${VSCODE_ARCH}/stable" \
+        | jq -re .productVersion)"; \
+    VSCODE_RELEASE="$(curl -fsSL "${VSCODE_UPDATE}/versions/${VSCODE_VERSION}/cli-linux-${VSCODE_ARCH}/stable")"; \
+    curl -fsSL "$(printf '%s' "$VSCODE_RELEASE" | jq -re .url)" -o /tmp/vscode-cli.tar.gz; \
+    printf '%s  /tmp/vscode-cli.tar.gz\n' "$(printf '%s' "$VSCODE_RELEASE" | jq -re .sha256hash)" \
+        | sha256sum -c -; \
+    tar -xzf /tmp/vscode-cli.tar.gz -C /tmp code; \
+    install -m 0755 /tmp/code /usr/local/bin/code; \
+    rm -f /tmp/vscode-cli.tar.gz /tmp/code
+
+
+# ---------------------------------------------------------------------------
 # Antigravity CLI
 # ---------------------------------------------------------------------------
 #
@@ -576,6 +602,25 @@ RUN set -euxo pipefail; \
 
 
 # ---------------------------------------------------------------------------
+# Claude Code plugins
+# ---------------------------------------------------------------------------
+#
+# Image-owned plugins, loaded beside whatever the user installs: nothing in the
+# persistent volume can drop or replace them. A plugin's bin/ joins the Bash
+# tool's PATH. The Codex CLI above is what ko-review calls (doc/ko-review.md).
+# Copied after the agent downloads, so that a plugin edit leaves their layers
+# cached. The modes are set after the copy: COPY --chmod gives the copied
+# subdirectories the file mode too, ko-review/ comes out `drw-r--r--`, and
+# Claude Code cannot read the manifest (EACCES).
+COPY claude-code/plugins/ /etc/claude-code/plugins/
+RUN set -eu; \
+    find /etc/claude-code/plugins -type d -exec chmod 0755 {} +; \
+    find /etc/claude-code/plugins -type f -exec chmod 0644 {} +; \
+    chmod 0755 /etc/claude-code/plugins/ko-review/bin/ko-review
+ENV CLAUDE_CODE_PLUGIN_DIRS=/etc/claude-code/plugins
+
+
+# ---------------------------------------------------------------------------
 # Environment documentation for the agents
 # ---------------------------------------------------------------------------
 #
@@ -649,3 +694,11 @@ USER nonroot
 
 ENTRYPOINT ["ko-sandbox-entrypoint"]
 CMD ["bash"]
+
+# The digest of this directory as the launcher bundled it (KoAgentFs.contextSourceId). A launch
+# recomputes it from its own jar and refuses a default-named image another jar built — the
+# version lock between launcher and image (AgentSandboxLauncher.bundleMismatch).
+# Last: every RUN after an ARG is keyed on its value, and this one changes whenever a file in
+# this directory does, so declared any earlier it would rerun every RUN after it.
+ARG BUNDLE_ID
+LABEL ko-agent-sandbox.bundle=${BUNDLE_ID}

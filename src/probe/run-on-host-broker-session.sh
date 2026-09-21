@@ -28,7 +28,7 @@
 # user — and confines only the rows. About ten minutes on a warm cache. On any FAIL the scratch
 # tree under /private/tmp is kept and named; INFO rows are measurements with no expected answer.
 #
-# Every process it starts runs in a group whose leader stays alive as the group's proof, the
+# Every process it starts runs in a group whose leader stays alive, its start time recorded, the
 # wrapper's own registration (RunOnHostSession.registeredSpawn): the leader installs the closed
 # environment, publishes the child's exit status beside its record, and stays; every wait has a
 # deadline, a deadline passed is a FAIL that ends the group, and cleanup signals only groups whose
@@ -36,7 +36,7 @@
 # process's output, or on the behavior sbt documents for it, never on a bare failure.
 #
 # The confined rows use (allow default) profiles that deny network* and then allow one rule, so
-# each measures the network rule alone: the filesystem rules are the gate's to measure, and a
+# each measures the network rule alone: the filesystem rules are the acceptance test's to measure, and a
 # deny-default profile here would chase grants the question is not about.
 
 set -u
@@ -116,7 +116,7 @@ status_of() {
     else cat "$1.exit" 2>/dev/null || echo none; fi
 }
 # End a group behind its recorded leader only — alive, with the start time recorded when it
-# was made, as the wrapper proves a group before signalling it — and retire the record: a pgid
+# was made, as the wrapper checks a group's leader before signalling it — and retire the record: a pgid
 # whose leader died may be someone else's by now.
 end_group() { # leader
     recorded=$(sed -n "s/^$1 //p" "$leaders" | head -1)
@@ -178,7 +178,7 @@ until_true() {
 gone() { ! kill -0 "$1" 2>/dev/null; }
 has_line() { grep -q -- "$1" "$2" 2>/dev/null; }
 
-# Processes by command-line pattern whose cwd is a directory or under it — the gate's own test,
+# Processes by command-line pattern whose cwd is a directory or under it — the acceptance test's own test,
 # with one lsof for every process rather than one per candidate.
 with_cwd() { # pattern dir
     lsof -d cwd -Fpn 2>/dev/null | awk -v dir="$2" '
@@ -795,7 +795,7 @@ SCALA
 s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(1); print("bound", flush=True)
 time.sleep(60)' "$d/unrelated.sock" >"$d/unrelated.log" 2>&1
         unrelated_leader=$leader
-        # The fixture proves its own setup by its own markers, never by the detector under test:
+        # The fixture confirms its own setup by its own markers, never by the detector under test:
         # the listener says `bound`, the eval says `probe-connected` once connected, and only then
         # is the table captured — whatever the detector counts in it.
         if ! until_true 5 has_line bound "$d/unrelated.log"; then

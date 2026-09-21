@@ -71,16 +71,25 @@ fn incomplete_arguments_are_refused_with_usage() {
     );
 }
 
+fn resolve(source: &Path, file_rules: Option<&Path>) -> Output {
+    let mut command = Command::new(binary());
+    command.arg("--source").arg(source).arg("--resolve");
+    if let Some(file_rules) = file_rules {
+        command.arg("--file-rules").arg(file_rules);
+    }
+    command.output().expect("run ko-agent-fs --resolve")
+}
+
 #[test]
-fn a_workspace_whose_hooks_live_inside_it_is_refused_before_mounting() {
-    // The startup guard, end to end through the binary: a repository whose hook directory the host
-    // relocated into the worktree is refused, because no amount of per-operation filtering can
-    // protect files at an ordinary worktree path (`doc/git-metadata.md`).
-    let source = scratch("relocated-source");
-    let mount = scratch("relocated-mount");
+fn a_workspace_whose_config_is_aliased_into_it_is_refused_before_mounting() {
+    // The startup guard, end to end through the binary: Git configuration reachable through an
+    // ordinary worktree path would be writable by the sandbox and read by the host's git, and no
+    // per-operation filtering protects it there (`doc/git-metadata.md`, "The binding rule").
+    let source = scratch("aliased-source");
+    let mount = scratch("aliased-mount");
     fs::create_dir_all(source.join(".git")).unwrap();
-    fs::create_dir_all(source.join("shared-hooks")).unwrap();
-    std::os::unix::fs::symlink("../shared-hooks", source.join(".git/hooks")).unwrap();
+    fs::write(source.join("cfg"), b"[core]\n").unwrap();
+    std::os::unix::fs::symlink("../cfg", source.join(".git/config")).unwrap();
 
     let output = run(&source, &mount);
 
@@ -104,34 +113,98 @@ fn a_workspace_whose_hooks_live_inside_it_is_refused_before_mounting() {
 }
 
 #[test]
-fn a_hooks_path_inside_the_workspace_is_refused_before_mounting() {
-    let source = scratch("hookspath-source");
-    let mount = scratch("hookspath-mount");
+fn a_workspace_whose_hooks_live_inside_it_is_resolved_with_them_read_only() {
+    // A hook directory the host relocated into the worktree — husky's `.husky/_`, a symlinked
+    // `.git/hooks` — is served read-only, and `--resolve` prints it after the rule lines, which is
+    // what the launcher builds the `--run-on-host` profile from.
+    let source = scratch("relocated-source");
     fs::create_dir_all(source.join(".git")).unwrap();
-    fs::create_dir_all(source.join("githooks")).unwrap();
+    fs::create_dir_all(source.join("shared-hooks")).unwrap();
+    std::os::unix::fs::symlink("../shared-hooks", source.join(".git/hooks")).unwrap();
+    fs::create_dir_all(source.join("tools/githooks")).unwrap();
     fs::write(
         source.join(".git/config"),
-        b"[core]\n\tbare = false\n\thooksPath = ./githooks\n",
+        b"[core]\n\tbare = false\n\thooksPath = ./tools/githooks\n",
+    )
+    .unwrap();
+    let rules = scratch("relocated-rules").join("file-rules");
+    fs::write(&rules, b"host-view /\nreadonly .vscode\n").unwrap();
+
+    let output = resolve(&source, Some(&rules));
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "readonly .vscode\nreadonly-path shared-hooks\nreadonly-path tools/githooks\n\
+         pinned-path tools\n",
+    );
+
+    let _ = fs::remove_dir_all(&source);
+    let _ = fs::remove_dir_all(rules.parent().unwrap());
+}
+
+#[test]
+fn the_ends_of_symlinks_the_rules_reach_are_printed_as_the_profile_reads_them() {
+    // A read-only entry's target as a read-only path; a directory a line passes through, reached
+    // by a symlink, as the rest of the line below it.
+    let source = scratch("alias-source");
+    fs::create_dir_all(source.join(".vscode")).unwrap();
+    fs::create_dir_all(source.join("shared/claude")).unwrap();
+    fs::write(source.join("tasks-data.json"), b"{}").unwrap();
+    std::os::unix::fs::symlink("../tasks-data.json", source.join(".vscode/tasks.json")).unwrap();
+    std::os::unix::fs::symlink("shared/claude", source.join(".claude")).unwrap();
+    let rules = scratch("alias-rules").join("file-rules");
+    fs::write(
+        &rules,
+        b"host-view /\nreadonly .vscode\nreadonly .claude/settings.json\n",
     )
     .unwrap();
 
-    let output = run(&source, &mount);
+    let output = resolve(&source, Some(&rules));
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "readonly .vscode\nreadonly .claude/settings.json\nreadonly-path tasks-data.json\n\
+         pinned-path shared\npinned-path shared/claude\nreadonly-under shared/claude settings.json\n",
+    );
+
+    let _ = fs::remove_dir_all(&source);
+    let _ = fs::remove_dir_all(rules.parent().unwrap());
+}
+
+#[test]
+fn file_rules_the_launcher_did_not_resolve_are_refused_before_mounting() {
+    // The launcher owns the grammar; a line it would never write means another version wrote it.
+    let source = scratch("bad-rules-source");
+    let rules = scratch("bad-rules").join("file-rules");
+    fs::write(&rules, b"readonly .VSCODE\n").unwrap();
+
+    let output = resolve(&source, Some(&rules));
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // "hooksPath", not "core.hooksPath": the scanner reads no section headers, so the refusal names
-    // what it saw rather than the key it cannot confirm (`guard.rs`, `scan_hooks_path`).
-    assert!(stderr.contains("hooksPath"), "unexpected refusal: {stderr}");
-    assert!(stderr.contains("githooks"), "unexpected refusal: {stderr}");
+    assert!(
+        stderr.contains("file rules line 1"),
+        "unexpected refusal: {stderr}",
+    );
 
     let _ = fs::remove_dir_all(&source);
-    let _ = fs::remove_dir_all(&mount);
+    let _ = fs::remove_dir_all(rules.parent().unwrap());
 }
 
 #[test]
 #[ignore = "needs a FUSE-capable environment; run in the privileged dev rig"]
 fn the_self_test_passes_where_fuse_is_available() {
-    // The launcher's pre-session gate, end to end: mounts a scratch tree with the real mount
+    // The launcher's pre-session check, end to end: mounts a scratch tree with the real mount
     // options and proves the policy refuses before any workspace is served.
     let output = Command::new(binary())
         .arg("--self-test")

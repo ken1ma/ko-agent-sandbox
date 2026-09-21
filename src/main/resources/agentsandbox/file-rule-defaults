@@ -1,0 +1,84 @@
+# The launcher's default file rules: project files a program on your host runs a command from
+# when you start an agent in the project, commit, open it in an editor, enter its directory, or
+# reopen it in a Dev Container, and the file git-lfs on your host takes its server from when you
+# check out or push. A session cannot change them at any depth, except inside node_modules (the
+# last line). Build files, scripts and package.json stay writable, because you run those yourself.
+#
+# - A file is listed unless a command you run for another purpose rewrites it, the way
+#   `npm install` rewrites package-lock.json, or its program asks you again when it changes, as
+#   direnv does for .envrc (doc/file-rule-example/direnv/rule lists it).
+# - A command meant to change a listed file, such as `pre-commit autoupdate`, `mise use` or
+#   `claude mcp add --scope project`, runs on the host, as `--update` does for the agents.
+# - Editors are assumed to run on the host. A project whose editor or agent maintains a listed
+#   file in the sandbox adds a `writable` line for it to .ko-agent-sandbox/file/rule.
+#
+# The reasons, source by source: doc/file-rules.md, "Why these files".
+
+# Agents on the host: hooks, helper commands and the MCP servers their project files name.
+readonly .claude/settings.json          # Claude Code, Copilot CLI
+readonly .claude/settings.local.json
+readonly .claude/skills                 # Claude Code: hooks and !`command` lines
+readonly .claude/agents                 # Claude Code, Copilot CLI
+readonly .claude/commands
+readonly .mcp.json                      # Claude Code, Copilot CLI
+readonly .codex/config.toml             # Codex
+readonly .gemini/settings.json          # Gemini CLI
+readonly .github/hooks                  # Copilot CLI
+readonly .github/copilot/settings.json
+readonly .github/copilot/settings.local.json
+readonly .github/mcp.json
+readonly .github/lsp.json
+readonly .github/extensions
+readonly .github/agents
+readonly .agents/hooks.json             # Antigravity
+readonly .agents/mcp_config.json
+readonly .agents/plugins
+readonly .kiro/hooks                    # Kiro
+readonly .kiro/agents
+readonly .kiro/settings/mcp.json
+readonly .opencode                      # OpenCode: plugins, tools and commands it loads
+readonly opencode.json
+readonly opencode.jsonc
+
+# Git hook managers: the hook installed in .git runs what these name at each commit.
+readonly .husky
+readonly .pre-commit-config.yaml
+readonly lefthook.*                     # .config/lefthook.* too: a name matches at any depth
+readonly .lefthook.*
+readonly lefthook-local.*
+readonly .lefthook-local.*
+
+# Editors: configuration a trusted folder runs.
+readonly .vscode                        # VS Code, and Zed for its tasks and launch files
+readonly *.code-workspace
+readonly .vs                            # Visual Studio
+readonly tasks.vs.json
+readonly launch.vs.json
+readonly .idea                          # IntelliJ IDEA
+readonly .cursor/hooks.json             # Cursor
+readonly .cursor/mcp.json
+readonly .windsurf/hooks.json           # Windsurf
+readonly .devin/hooks.json
+readonly .zed                           # Zed
+
+# Dev Containers: initializeCommand runs on the host.
+readonly .devcontainer
+readonly .devcontainer.json
+
+# mise: [hooks] enter runs when you enter the directory, and a file stays trusted by path.
+readonly mise.toml                      # .config/mise.toml too: a name matches at any depth
+readonly .mise.toml
+readonly mise.*.toml
+readonly .mise.*.toml
+readonly mise
+readonly .mise
+readonly .tool-versions                 # its templates can run commands
+readonly .miserc.toml                   # which configuration files load
+readonly .miserc.*.toml
+readonly miserc.toml                    # .config/miserc.toml, without pinning every .config
+
+# Git LFS: the server a checkout downloads from and a push uploads to.
+readonly .lfsconfig
+
+# Last, so it decides inside node_modules: npm installs packages that carry listed names.
+writable node_modules

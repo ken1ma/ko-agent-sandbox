@@ -5,7 +5,7 @@
 // streamed output carried whole with the command's own exit code, and teardown by descriptor
 // lifetime — a dead shim ends the running command, a handshake whose requester died expires
 // with no command started, and a competing shim waits its turn rather than attaching to a
-// predecessor's streams. The macOS gate re-runs the protocol against real sbt; these rows hold
+// predecessor's streams. The acceptance test re-runs the protocol against real sbt; these rows hold
 // everywhere.
 
 package agentsandbox.launcher
@@ -125,7 +125,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       mount = project.toString, requestDeadlineMillis = deadline,
     )
 
-  test("the working directory is translated, and proven inside the project"):
+  test("the working directory is translated, and checked to resolve inside the project"):
     val project = Files.createTempDirectory("channel-project").toRealPath()
     val sub = Files.createDirectory(project.resolve("sub"))
     val outside = Files.createTempDirectory("channel-outside").toRealPath()

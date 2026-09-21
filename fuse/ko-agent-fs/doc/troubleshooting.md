@@ -42,6 +42,9 @@ The matching `DENY` line in `daemon.log` names the operation, the target and the
   (`git-metadata.md`, "The name rule") refused a legitimate name. Report the exact bytes.
 - `reason=protected-sandbox-config` — edit `.ko-agent-sandbox` on the host. If the refused name
   merely resembles `.ko-agent-sandbox`, report its exact bytes.
+- `reason=protected-file-rule`, `pinned-file-rule-component` or `file-rule-region` — the file
+  rules refused it: `../../../doc/file-rules.md` says how to change a listed file on the host or
+  add a `writable` line.
 - `reason=nonportable-target-syntax` on a `symlink` — use a relative target that stays inside the
   workspace, or put the program's cache inside the project.
 
@@ -89,10 +92,23 @@ keeps the previous log as `daemon.log.1`.
   latter in a recreated machine. To reproduce:
   `podman machine ssh .local/share/ko-agent-sandbox/ko-agent-fs --self-test`.
   If setup succeeds but a check fails, report that failure; more mount privileges will not fix it.
-- `refusing to serve ...` naming a path `inside the workspace`, or a `bare repository` — follow
-  the message's remedy on the host. A protected Git path resolves through writable project
-  files, or the project root has a bare-repository layout that the filter cannot protect
-  (`guard.rs`).
+- `refusing to serve ...` — follow the message's remedy on the host. Naming a path `inside the
+  workspace`, or saying a symlink `leads into the workspace`, a protected Git path resolves through
+  writable project files; naming a `bare repository`, the project root has a layout the filter
+  cannot protect (`guard.rs`).
+- `refusing to serve ...` naming a path `outside the directories the podman machine shares` — a
+  Git setting or a symlink below a listed entry leads where the machine does not see the host's
+  files, on Windows to another drive than the project's. Replace the link or setting with a real
+  file or directory inside the project or under a shared directory.
+- `refusing to serve ...` saying something `resolves to the workspace root itself` or to a
+  directory that `holds the workspace` — a hook setting such as `core.hooksPath = .`, or a listed
+  entry's symlink such as `.vscode -> ..`, points at the project's top level or above it, which the
+  filter cannot hold read-only. Point it at a directory of its own.
+- `this project's concurrent sessions (...) run under other file rules` —
+  `.ko-agent-sandbox/file/rule` was edited while the named sessions run, and no start prompt asked
+  to join them under their rules. Launch from a terminal with the prompt, or once they end.
+- `this project is mounted for sessions under other file rules` — the running mount's rules
+  changed between the start prompt and the mount. Launch again.
 - `mountpoint ... is not empty; refusing` — an entry was created in the mountpoint directory while
   no filter was mounted. Inspect it in the machine before deleting; nothing legitimate writes there.
 

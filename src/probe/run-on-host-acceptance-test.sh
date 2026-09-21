@@ -1,12 +1,13 @@
 #!/bin/sh
-# The security gate, run by hand on macOS before each release, and when the profile generator,
+# The security acceptance test, run by hand on macOS before each release, and when the profile generator,
 # the wrapper or the channel changes. One row per contract claim, each run under the generated
 # profile, each reporting PASS, FAIL or SKIP with what it observed. Everything else in src/probe/
-# finds out what a profile needs; this one finds out whether the profile that resulted enforces
+# finds out what a profile needs, except machine-memory-return.sh, which measures the podman
+# machine; this one finds out whether the profile that resulted enforces
 # what the contract claims — and, in the channel rows, whether the channel carries a command and
 # tears down with its requester.
 #
-#   sh src/probe/run-on-host-profile-gate.sh [sbt|mill|gradle|mvn|all] [quick]
+#   sh src/probe/run-on-host-acceptance-test.sh [sbt|mill|gradle|mvn|all] [quick]
 #
 # The program selects the positive rows; the negative matrix and the network rows run under every
 # selected profile. `quick` leaves the test rows and the lifecycle rows out. Profiles for the
@@ -33,7 +34,7 @@
 # cleanup removes, and the row reports FAIL. The `open` row, wrongly permitted, starts Calculator,
 # which the row ends unless it was running before.
 set -u
-. "$(dirname "$0")/run-on-host-gate-setup.sh"
+. "$(dirname "$0")/run-on-host-acceptance-setup.sh"
 if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
 program=${1:-all}
 case "$program" in sbt|mill|gradle|mvn|all) ;; *) echo "usage: $0 [sbt|mill|gradle|mvn|all] [quick]" >&2; exit 2 ;; esac
@@ -57,15 +58,15 @@ safe_path "the checkout path" "$project"
 safe_path "HOME" "$HOME"
 safe_path "JAVA_HOME" "${JAVA_HOME:-}"
 safe_path "TMPDIR" "${TMPDIR:-}"
-# Every path this run creates is unique to it — mktemp, not a pid, which is reused — so two gates
+# Every path this run creates is unique to it — mktemp, not a pid, which is reused — so two acceptance runs
 # do not share logs, and the cleanup removes only what this run made and never a project's file.
-# The logs are under the project's target/gate/, git-ignored and, unlike $TMPDIR, shared with a
+# The logs are under the project's target/acceptance/, git-ignored and, unlike $TMPDIR, shared with a
 # sandbox session reading them. The project scratch tree is made after preflight, so an early
 # exit leaves nothing there.
-mkdir -p "$project/target/gate" && work=$(mktemp -d "$project/target/gate/run.XXXXXX") || exit 1
+mkdir -p "$project/target/acceptance" && work=$(mktemp -d "$project/target/acceptance/run.XXXXXX") || exit 1
 pass=0; fail=0; skip=0
 # Only this run's sleeping fixtures may be collected after a cancellation.
-fixture_tag=$(printf 'gate-%s' "${work##*/}" | tr '.' '-')
+fixture_tag=$(printf 'acceptance-%s' "${work##*/}" | tr '.' '-')
 fixture_sleep="fixture[.]Main sleep $fixture_tag([[:space:]]|$)"
 
 report() { # status label detail
@@ -106,21 +107,21 @@ then provider=$(podman machine info --format '{{.Host.VMType}}' 2>/dev/null || e
     machine "$(podman --version), machine provider: $provider"
 else machine "podman: absent"; fi
 # The .GIT probe reaches the existing .git only on a case-insensitive volume.
-case_probe=$(mktemp -d "$project/target/gate/case.XXXXXX")
+case_probe=$(mktemp -d "$project/target/acceptance/case.XXXXXX")
 : > "$case_probe/a"
 if [ -e "$case_probe/A" ]; then machine "project filesystem: case-insensitive"; folding=1
 else machine "project filesystem: case-sensitive"; folding=0; fi
 rm -rf "$case_probe"
 
 emit() { # program
-    rm -f "$work/gate-$1.env"
+    rm -f "$work/acceptance-$1.env"
     # Each path quoted for sbt's own command parser: a checkout with a space in its path would
     # otherwise split into two arguments.
-    args="\"$work/gate-$1.sb\" src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt $1"
+    args="\"$work/acceptance-$1.sb\" src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt $1"
     args="$args \"$(project_of "$1")\""
     sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile $args" >"$work/emit-$1.log" 2>&1 \
         || { echo "emit failed for $1:"; tail -20 "$work/emit-$1.log"; return 1; }
-    mv "$work/gate-$1.sb.env" "$work/gate-$1.env"
+    mv "$work/acceptance-$1.sb.env" "$work/acceptance-$1.env"
 }
 
 # --- the environment contract (RunOnHostSandbox) ------------------------------------------------
@@ -164,8 +165,8 @@ with_timeout() { # seconds command...
 }
 # Under a profile, through the contract, with the timeout. $1 is the profile's program.
 sandboxed() { # program command...
-    profile=$work/gate-$1.sb; shift
-    with_timeout "${GATE_ROW_TIMEOUT:-600}" command_env "$cache_v1" /usr/bin/sandbox-exec -f "$profile" "$@"
+    profile=$work/acceptance-$1.sb; shift
+    with_timeout "${ACCEPTANCE_ROW_TIMEOUT:-600}" command_env "$cache_v1" /usr/bin/sandbox-exec -f "$profile" "$@"
 }
 run_sbt() { # client command...: the executable the wrapper runs; the profile PATH holds no sbt
     client=$1; shift
@@ -180,6 +181,10 @@ run_sbt() { # client command...: the executable the wrapper runs; the profile PA
 # are captured from emit and RunOnHost; the command runs under the build lock the broker's spawn
 # takes (locked_wrapper).
 build_lock() { "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost --build-lock "$1" "$2"; }
+# The wrapper issues its proxy's certificates, which needs the exports the launcher's own
+# re-invocation passes (RunOnHostSandbox.CertificateBuilderExports).
+certificate_exports="--add-exports=java.base/sun.security.x509=ALL-UNNAMED
+--add-exports=java.base/sun.security.util=ALL-UNNAMED"
 # The hash that names a build directory's lock and the broker's records for it (RunOnHostSession.buildHash).
 build_hash() { lock=$(build_lock sbt "$1") && printf '%s\n' "${lock##*-}"; }
 locked_wrapper() { # program project command...
@@ -187,20 +192,21 @@ locked_wrapper() { # program project command...
     lock=$(build_lock "$lw_program" "$lw_project") || return 2
     # exec, so the with_timeout background pid is this perl and then the wrapper JVM, not a
     # subshell whose kill would miss them (victim_wrapper's own reason).
-    exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" -cp "$test_cp" \
+    # shellcheck disable=SC2086 # two options, split on purpose
+    exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" $certificate_exports -cp "$test_cp" \
         agentsandbox.launcher.RunOnHost "$lw_program" "$lw_project" \
-        src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt -- "$@"
+        src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt -- "$@"
 }
 wrapper() { # program project command...
     wrapper_program=$1; wrapper_project=$2; shift 2
-    with_timeout "${GATE_ROW_TIMEOUT:-900}" locked_wrapper "$wrapper_program" "$wrapper_project" "$@"
+    with_timeout "${ACCEPTANCE_ROW_TIMEOUT:-900}" locked_wrapper "$wrapper_program" "$wrapper_project" "$@"
 }
 deny_project=$project/src/probe/deny-fixture
 ivy_project=$project/src/probe/ivy-fixture
 command_root=/private/tmp/ko-agent-$(id -u)
 
 # A shell command under a profile, so a row runs exactly what a build's script would.
-sb() { /usr/bin/sandbox-exec -f "$work/gate-$1.sb" /bin/sh -c "$2" >/dev/null 2>"$work/row.err"; }
+sb() { /usr/bin/sandbox-exec -f "$work/acceptance-$1.sb" /bin/sh -c "$2" >/dev/null 2>"$work/row.err"; }
 
 first_error() { head -1 "$work/row.err" | cut -c1-70; }
 expect_denied() { # program label command
@@ -220,7 +226,7 @@ present_or_skip() { # label path
 
 # --- servers and daemons ------------------------------------------------------------------------
 
-# Processes whose working directory is this project: the gate never learns the pid of a server
+# Processes whose working directory is this project: the acceptance test never learns the pid of a server
 # sbt's client forks or the daemon mill executable starts, but each belongs to the project it
 # runs in.
 with_cwd() { # pattern dir exact|under
@@ -237,7 +243,7 @@ ivy_servers() { with_cwd '-Dsbt.script=' "$ivy_project" exact; }
 mill_daemons() { with_cwd 'mill.daemon.MillDaemonMain' "$mill_project/out/mill-daemon" under; }
 # A launch's gradle daemons carry the launch's tmp/ as java.io.tmpdir in their initial
 # environment, the client's own (RunOnHostGradleDaemons): those of every session under the root here,
-# this gate's own included. The "yours" row's daemon, unconfined in a registry under $work, is
+# this acceptance run's own included. The "yours" row's daemon, unconfined in a registry under $work, is
 # found by its log open there (DaemonMain).
 gradle_daemons() {
     for pid in $(pgrep -f -- 'org.gradle.launcher.daemon.bootstrap.GradleDaemon' 2>/dev/null); do
@@ -245,7 +251,7 @@ gradle_daemons() {
             | grep -qF -- "=-Djava.io.tmpdir=\"$command_root/" && printf '%s\n' "$pid"
     done
 }
-gate_gradle_daemons() {
+acceptance_gradle_daemons() {
     for pid in $(pgrep -f -- 'org.gradle.launcher.daemon.bootstrap.GradleDaemon' 2>/dev/null); do
         lsof -a -p "$pid" -Fn 2>/dev/null | sed -n 's/^n//p' \
             | awk -v d="$work/your-registry/" 'index($0, d) == 1 { found = 1 } END { exit !found }' \
@@ -253,10 +259,10 @@ gate_gradle_daemons() {
     done
 }
 # This run's proxies: a command's, and under the channel rows the broker's. A timed-out or killed
-# wrapper's, and a killed broker's, is ended by the next start's scavenge, but the gate must not
+# wrapper's, and a killed broker's, is ended by the next start's scavenge, but the acceptance test must not
 # leave one when it exits before running a start. Only this run's: its wrappers run on the run's
-# scratch classpath, which the proxy re-invokes on its own command line — a concurrent gate's or
-# a real command's proxy carries a different path and is not this gate's to end.
+# scratch classpath, which the proxy re-invokes on its own command line — a concurrent acceptance run's or
+# a real command's proxy carries a different path and is not this acceptance run's to end.
 stray_proxies() {
     for pid in $(pgrep -f -- '--serve-proxy-on-host' 2>/dev/null); do
         ps -o command= -p "$pid" 2>/dev/null | grep -qF -- "$work" && printf '%s\n' "$pid"
@@ -297,7 +303,7 @@ daemon_in_group() { # record-line
 broker_session_of() { # build-directory
     ls -d "$command_root"/b*/records/proxy-sbt-"$(build_hash "$1")" 2>/dev/null | head -1 | sed 's|/records/.*||'
 }
-# The sbt servers no broker's session records: a command's own — the gate's entry starts one in the
+# The sbt servers no broker's session records: a command's own — the acceptance test's entry starts one in the
 # command's session — where the broker's server outlives each command.
 command_servers() {
     recorded=$(cat "$command_root"/b*/records/server-sbt-* 2>/dev/null | awk '{print $1}')
@@ -312,7 +318,7 @@ record_alive() { # record-line
     [ "$(ps -o lstart= -p "$ra_pgid" 2>/dev/null | sed 's/^ *//;s/ *$//')" = "$ra_start" ]
 }
 # The emitter always uses this checkout, even when only another program's rows are selected.
-gate_require_idle "$command_root" "$project" "$mill_project" "$gradle_project" "$mvn_project" || exit 1
+acceptance_require_idle "$command_root" "$project" "$mill_project" "$gradle_project" "$mvn_project" || exit 1
 
 # One sbt server per project at a time (SECURITY.md "Run on host"). A thin client attaches to whatever server the
 # project's portfile names and runs with that server's environment, and one that cannot connect
@@ -341,13 +347,13 @@ fi
 # finds and cannot connect to, so it is ended before the rows too.
 end_project_servers() {
     for pid in $(project_servers) $(deny_servers) $(ivy_servers) $(mill_daemons) \
-        $(gradle_daemons) $(gate_gradle_daemons) $(stray_proxies); do
-        gate_end_unclaimed_process "$command_root" "$pid" && echo "ended gate process $pid"
+        $(gradle_daemons) $(acceptance_gradle_daemons) $(stray_proxies); do
+        acceptance_end_unclaimed_process "$command_root" "$pid" && echo "ended acceptance-test process $pid"
     done
 }
 trap end_project_servers EXIT
 # Through `exit`, so Ctrl-C still runs the EXIT trap: an untrapped INT ends the shell without
-# it, and a gate interrupted after `emit` would leave emit's server holding the portfile.
+# it, and a run interrupted after `emit` would leave emit's server holding the portfile.
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -380,18 +386,18 @@ test_cp=$(sed -n 's/^classpath: //p' "$work/emit-$first.log")
 [ -n "$test_cp" ] || { echo "emit printed no classpath; the wrapper rows cannot run" >&2; exit 1; }
 # The proxy's own profile, for the java and classpath the wrapper rows run their proxies with.
 echo "emitting the proxy profile"
-sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile \"$work/gate-proxy.sb\" \
-        src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt proxy \"$JAVA_HOME\" \"$test_cp\"" \
+sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile \"$work/acceptance-proxy.sb\" \
+        src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt proxy \"$JAVA_HOME\" \"$test_cp\"" \
         >"$work/emit-proxy.log" 2>&1 || { echo "emit failed for the proxy:"; tail -20 "$work/emit-proxy.log"; exit 1; }
 # `emit`'s own sbt server goes before any wrapper or command_env client runs, for the one-server reason
 # above: the wrapper would find it holding this project's portfile and refuse.
 sbt --jvm-client -batch shutdown >/dev/null 2>&1
-gate_require_idle "$command_root" "$project" "$mill_project" "$gradle_project" "$mvn_project" || exit 1
+acceptance_require_idle "$command_root" "$project" "$mill_project" "$gradle_project" "$mvn_project" || exit 1
 lock_script=$("$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost --lock-script)
 # Each profile has its own command's temporary directory and run-on-host cache — the fixture is another project, so
 # another cache — and the contract's environment follows the profile in force.
 use_profile() { # program
-    . "$work/gate-$1.env"
+    . "$work/acceptance-$1.env"
     cache_v1=$(sed -n 's/^run-on-host cache: //p' "$work/emit-$1.log")
     sbt_global=$(sed -n 's/^sbt global base: //p' "$work/emit-$1.log")
     ivy_home=$(sed -n 's/^ivy home: //p' "$work/emit-$1.log")
@@ -433,13 +439,13 @@ mvn_home=$(sed -n 's|^executable: \(.*\)/bin/mvn$|\1|p' "$work/emit-mvn.log" 2>/
 # split mid-path. Registered before the first tree exists, so a failed second mktemp leaves
 # nothing.
 scratch_sbt=""; scratch_mill=""; scratch_gradle=""; scratch_mvn=""; sibling_repo=""; pin_saved=""
-gate_opts_file=""; port_saved=""; redirect_saved=""; unrelated_listener=""
-marker=gate-marker.${work##*.}
+acceptance_opts_file=""; port_saved=""; redirect_saved=""; unrelated_listener=""
+marker=acceptance-marker.${work##*.}
 cleanup() {
     # The ivy fixture's pin, edited under the sbt.version row: restored on any exit.
     [ -n "$pin_saved" ] && printf '%s\n' "$pin_saved" > "$ivy_project/project/build.properties"
     # The fixture's option file the mill rows add, and its socketPort the planted row overwrites.
-    [ -n "$gate_opts_file" ] && rm -f "$gate_opts_file"
+    [ -n "$acceptance_opts_file" ] && rm -f "$acceptance_opts_file"
     [ -n "$port_saved" ] && printf '%s' "$port_saved" > "$mill_project/out/mill-daemon/socketPort"
     if [ -n "$redirect_saved" ] && [ -d "$redirect_saved" ]; then
         rm -f "$mill_project/out/mill-daemon"; mv "$redirect_saved" "$mill_project/out/mill-daemon"
@@ -455,9 +461,9 @@ cleanup() {
     done
     rm -f "$project/.git/$marker" "$HOME/.sbt/boot/$marker" "$user_v1/$marker" "$mill_downloads/$marker" \
         "$HOME/.gradle/$marker" "$HOME/.m2/repository/$marker" 2>/dev/null
-    # The unrelated-service row's listener is this gate's.
+    # The unrelated-service row's listener is this acceptance run's.
     [ -n "$unrelated_listener" ] && kill "$unrelated_listener" 2>/dev/null
-    # The channel rows' broker and stubbed execs; their FIFOs are this gate's alone — a real
+    # The channel rows' broker and stubbed execs; their FIFOs are this acceptance run's alone — a real
     # session's live inside its container.
     if [ -n "${channel_broker:-}" ]; then
         kill "$channel_broker" 2>/dev/null
@@ -478,11 +484,11 @@ scratch_of() {
     esac
 }
 # An unrelated repository outside the project, target of the symlink-escape rows.
-sibling_repo=$(mktemp -d "${TMPDIR:-/tmp}/gate-sibling.XXXXXX") || exit 1
+sibling_repo=$(mktemp -d "${TMPDIR:-/tmp}/acceptance-sibling.XXXXXX") || exit 1
 mkdir "$sibling_repo/.git"
 printf 'fixture\n' > "$sibling_repo/.git/config"
 for p in $profiles; do
-    scratch=$(mktemp -d "$(project_of "$p")/gate-scratch.XXXXXX") || exit 1
+    scratch=$(mktemp -d "$(project_of "$p")/acceptance-scratch.XXXXXX") || exit 1
     case "$p" in
         mill) scratch_mill=$scratch ;; gradle) scratch_gradle=$scratch ;; mvn) scratch_mvn=$scratch ;;
         *) scratch_sbt=$scratch ;;
@@ -507,7 +513,8 @@ echo
 echo "positive rows"
 # From the profile's own project: the JVM reads its working directory at start, and the first
 # profile grants its program's project, the fixture's under mill, gradle or mvn.
-if ( cd "$(project_of "$first")" && /usr/bin/sandbox-exec -f "$work/gate-$first.sb" "$JAVA_HOME/bin/java" -version ) \
+if ( cd "$(project_of "$first")" &&
+     /usr/bin/sandbox-exec -f "$work/acceptance-$first.sb" "$JAVA_HOME/bin/java" -version ) \
     >"$work/java.log" 2>&1
 then report PASS "java -version" "$(grep -m1 version "$work/java.log")"
 else report FAIL "java -version" "$(tail -1 "$work/java.log")"; fi
@@ -710,6 +717,21 @@ for p in $profiles; do
     expect_denied "$p" "link PROJECT/x -> PROJECT/.git/config" "ln '$scratch/sub/nested/.git/config' '$scratch/x'"
     expect_denied "$p" "write via PROJECT/link -> PROJECT/.git" ": >> '$scratch/link/config'"
     expect_denied "$p" "write PROJECT/.ko-agent-sandbox/..." ": >> '$scratch/.ko-agent-sandbox/egress/rule'"
+    # The file rules' defaults (doc/file-rules.md), laid out on the host. The rename rows measure
+    # which operations SBPL checks for a rename.
+    mkdir -p "$scratch/rules/.vscode" "$scratch/rules/.claude" "$scratch/rules/sub" \
+        "$scratch/rules/node_modules/p"
+    printf '{}\n' > "$scratch/rules/.vscode/tasks.json"
+    printf '{}\n' > "$scratch/rules/.claude/settings.json"
+    expect_denied "$p" "write a listed file" ": >> '$scratch/rules/.vscode/tasks.json'"
+    expect_denied "$p" "create a listed name deeper" "mkdir '$scratch/rules/sub/.vscode'"
+    expect_denied "$p" "rename a directory a listed name passes through" \
+        "mv '$scratch/rules/.claude' '$scratch/rules/saved'"
+    expect_denied "$p" "rename a staged directory onto a name a listed name passes through" \
+        "mkdir -p '$scratch/rules/staged' && mv '$scratch/rules/staged' '$scratch/rules/sub/.claude'"
+    expect_allowed "$p" "create a listed name inside node_modules, which a later writable line lifts" \
+        "mkdir '$scratch/rules/node_modules/p/.vscode'"
+    expect_allowed "$p" "write beside a listed file" ": > '$scratch/rules/.claude/notes.md'"
     expect_denied "$p" "write the user's Coursier v1" ": > '$user_v1/$marker'"
     present_or_skip "write the user's mill download folder" "$mill_downloads" \
         && expect_denied "$p" "write the user's mill download folder" ": > '$mill_downloads/$marker'"
@@ -758,7 +780,7 @@ class Resolve {
 }
 EOF
     # From the profile's own project: a JVM asks for its working directory at start, and the
-    # gate's is the sbt profile's project alone.
+    # acceptance test's is the sbt profile's project alone.
     expect_allowed "$p" "a JVM resolving a name survives it" \
         "cd '$(project_of "$p")' && '$JAVA_HOME/bin/java' '$SESSION_TMP/Resolve.java'"
 
@@ -776,7 +798,7 @@ EOF
     echo
     echo "network, under the $p profile"
     # /bin/bash's /dev/tcp is a connect(2) with no program to grant; an IP literal keeps DNS out.
-    if /usr/bin/sandbox-exec -f "$work/gate-$p.sb" /bin/bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>"$work/row.err"
+    if /usr/bin/sandbox-exec -f "$work/acceptance-$p.sb" /bin/bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>"$work/row.err"
     then report FAIL "connect directly to arbitrary Internet host" "connected"
     else report PASS "connect directly to arbitrary Internet host" "denied: $(head -1 "$work/row.err" | cut -c1-50)"; fi
     # `sb` exports no proxy variables, so curl here is the command that ignores them; either the
@@ -786,9 +808,9 @@ EOF
     expect_denied "$p" "DNS resolution (direct socket)" "/usr/bin/nslookup -timeout=3 example.com"
     # An unrelated service of this host: what a Gradle process may reach — its daemon, workers
     # and file-lock socket connect to each other's ports of the kernel's choosing — and no other
-    # program's process may (SECURITY.md "Run on host", the table). The listener is the gate's.
+    # program's process may (SECURITY.md "Run on host", the table). The listener is the acceptance test's.
     unrelated_row="connect to an unrelated service of this host"
-    if [ -z "$unrelated_port" ]; then report SKIP "$unrelated_row" "the gate's listener did not bind"
+    if [ -z "$unrelated_port" ]; then report SKIP "$unrelated_row" "the acceptance test's listener did not bind"
     elif [ "$p" = gradle ]
     then expect_allowed "$p" "$unrelated_row" "/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/$unrelated_port'"
     else expect_denied "$p" "$unrelated_row" "/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/$unrelated_port'"; fi
@@ -800,6 +822,8 @@ echo "the command's proxy"
 if ! want sbt; then
     report SKIP "fetch allowed Maven artifact via proxy" "sbt rows not selected"
     report SKIP "fetch unlisted host via proxy" "sbt rows not selected"
+    report SKIP "a PUT to an allowed host is refused, and the wrapper names it" "sbt rows not selected"
+    report SKIP "CA bundle variables" "sbt rows not selected"
 else
     use_profile sbt
     # Made cold on purpose: with the artifact gone from the run-on-host cache, a successful compile can
@@ -820,6 +844,63 @@ else
     then report PASS "fetch unlisted host via proxy" "refused; wrapper named denied.example.com"
     else report FAIL "fetch unlisted host via proxy" \
         "failed without the wrapper's diagnostic: $(tail -1 "$work/deny.log" | cut -c1-50)"; fi
+
+    # `read` is enforced: the proxy answers a PUT to the host it allows with 403 inside the tunnel,
+    # and the wrapper names the request after the command. One expression without `;`, which
+    # sbt's command splitter would cut at (the cancel row has the same constraint); the client
+    # is the JDK's, which takes the proxy and the trust store from _JAVA_OPTIONS.
+    put_url=https://repo1.maven.org/maven2/ko-agent-sandbox-acceptance-put
+    put_request="java.net.http.HttpRequest.newBuilder(java.net.URI.create(\"$put_url\"))"
+    put_request="$put_request.PUT(java.net.http.HttpRequest.BodyPublishers.noBody()).build()"
+    put_eval="eval java.net.http.HttpClient.newHttpClient().send($put_request,"
+    put_eval="$put_eval java.net.http.HttpResponse.BodyHandlers.discarding()).statusCode"
+    wrapper sbt "$project" "$put_eval" >"$work/put.log" 2>&1
+    if grep -q 'Int = 403' "$work/put.log" \
+        && grep -q 'Command sent requests the host command sandbox refuses' "$work/put.log" \
+        && grep -qF "PUT $put_url" "$work/put.log"
+    then report PASS "a PUT to an allowed host is refused, and the wrapper names it" "403; PUT $put_url"
+    else report FAIL "a PUT to an allowed host is refused, and the wrapper names it" \
+        "$(grep -m1 'Int = \|^\[error\]\|^refused\|Exception' "$work/put.log" | cut -c1-70); $work/put.log"; fi
+
+    # Which CA bundle variables the curl and git this macOS ships read (run-on-host.md, "The
+    # command's lifetime and environment"): each fetches from the allowed host under the command's
+    # profile and environment, whole and then without one variable. curl prints the status, 200
+    # when it verified the proxy's leaf. git asks a path that is no repository, so "error: 403" is a
+    # verified handshake — the proxy refuses the discovery, having no git-fetch grant — and an SSL
+    # error an unverified one. The script is the project's, which the profile lets the command run.
+    cat > "$work/ca-probe.sh" <<CA_PROBE
+#!/bin/sh
+exec > "$work/ca-probe.out" 2>&1
+curl_row() { # label env-arguments...
+    label=\$1; shift
+    printf 'curl, %s: ' "\$label"
+    /usr/bin/env "\$@" /usr/bin/curl --max-time 30 -sS -o /dev/null -w '%{http_code}' \\
+        https://repo1.maven.org/maven2/ 2>&1 | tr '\n' ' '
+    echo
+}
+git_row() { # label env-arguments...
+    label=\$1; shift
+    printf 'git, %s: ' "\$label"
+    /usr/bin/env "\$@" GIT_TERMINAL_PROMPT=0 /usr/bin/git ls-remote \\
+        https://repo1.maven.org/maven2/ko-agent-sandbox-acceptance.git 2>&1 | tail -1 \\
+        | sed "s/^fatal: unable to access '[^']*': //"
+}
+curl_row "every variable"
+curl_row "no CURL_CA_BUNDLE" -u CURL_CA_BUNDLE
+curl_row "no SSL_CERT_FILE" -u SSL_CERT_FILE
+curl_row "neither" -u CURL_CA_BUNDLE -u SSL_CERT_FILE
+git_row "every variable"
+git_row "no GIT_SSL_CAINFO" -u GIT_SSL_CAINFO
+git_row "no GIT_SSL_CAINFO, no CURL_CA_BUNDLE" -u GIT_SSL_CAINFO -u CURL_CA_BUNDLE
+git_row "none of the three" -u GIT_SSL_CAINFO -u CURL_CA_BUNDLE -u SSL_CERT_FILE
+CA_PROBE
+    rm -f "$work/ca-probe.out"
+    wrapper sbt "$project" "eval scala.sys.process.Process(Seq(\"/bin/sh\", \"$work/ca-probe.sh\")).!" \
+        >"$work/ca-probe.log" 2>&1
+    if [ -s "$work/ca-probe.out" ]
+    then while IFS= read -r line; do report INFO "CA bundle variables" "$(printf '%s' "$line" | cut -c1-90)"; done \
+        < "$work/ca-probe.out"
+    else report INFO "CA bundle variables" "the probe wrote nothing; see $work/ca-probe.log"; fi
 fi
 
 # --- the proxy's own profile ----------------------------------------------------------------------
@@ -835,7 +916,7 @@ echo "the proxy's own profile"
 # From /, as the wrapper runs its proxy: the JVM asks for its working directory at start. Both
 # streams, since the JVM reports a log file it cannot open on stdout.
 proxy_java() {
-    (cd / && /usr/bin/sandbox-exec -f "$work/gate-proxy.sb" "$JAVA_HOME/bin/java" "$@") >"$work/row.err" 2>&1
+    (cd / && /usr/bin/sandbox-exec -f "$work/acceptance-proxy.sb" "$JAVA_HOME/bin/java" "$@") >"$work/row.err" 2>&1
 }
 if proxy_java -version
 then report PASS "the proxy's java starts under its profile"
@@ -848,7 +929,7 @@ then report FAIL "the proxy cannot read ~" "allowed"
 elif grep -q 'could not open' "$work/row.err"
 then report PASS "the proxy cannot read ~" "denied: $(first_error)"
 else report FAIL "the proxy cannot read ~" "$(first_error)"; fi
-write_probe=$work/gate-proxy-write.log
+write_probe=$work/acceptance-proxy-write.log
 if ! "$JAVA_HOME/bin/java" -Xlog:gc:file="$write_probe" -version >/dev/null 2>"$work/row.err" \
     || [ ! -e "$write_probe" ]
 then report FAIL "the proxy cannot write a file" "control: $(first_error)"
@@ -871,7 +952,7 @@ commands_now() {
 }
 lifecycle_rows="two concurrent commands
 SIGTERM: the wrapper cleans up behind itself
-SIGKILL mid-command: the running group is ended provably
+SIGKILL mid-command: the running group is ended while its leader is alive
 SIGKILL: next start condemns and collects
 leaderless server ended by portfile attribution"
 # A here-doc, not a pipe: report counts, and a pipeline would count in a subshell.
@@ -882,7 +963,7 @@ EOF
 }
 # The victim's own client record, bound to it directly: the recorded spawn is started by the
 # wrapper, so its parent pid is the victim's, and the recorded start time must match the live
-# process — the same pid-plus-start proof the wrapper's own scavenger uses, so a stale record
+# process — the same pid-plus-start check the wrapper's own scavenger uses, so a stale record
 # whose pid was reused by another child of the victim never passes. Empty when the wrapper ends
 # first.
 await_client_record() { # victim-pid
@@ -904,9 +985,10 @@ await_client_record() { # victim-pid
 # parent-pid check above — would signal or look at the wrong process.
 victim_wrapper() { # log-name
     lock=$(build_lock sbt "$project") || exit 2
-    exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" -cp "$test_cp" \
+    # shellcheck disable=SC2086 # two options, split on purpose
+    exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" $certificate_exports -cp "$test_cp" \
         agentsandbox.launcher.RunOnHost \
-        sbt "$project" src/main/resources/agentsandbox/SeatbeltProfile.RuntimeAuthority.txt -- compile >"$work/$1" 2>&1
+        sbt "$project" src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt -- compile >"$work/$1" 2>&1
 }
 if [ "$quick" = 1 ]; then
     skip_lifecycle "quick mode"
@@ -951,19 +1033,19 @@ $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
     fi
 
     # SIGKILL mid-command: the spawn, the leader, survives the wrapper, so the next start ends the whole
-    # running group provably instead of refusing a leaderless one.
+    # running group while its leader is alive instead of refusing a leaderless one.
     victim_wrapper killed-mid.log & victim=$!
     client_record=$(await_client_record "$victim")
     if [ -z "$client_record" ]; then
-        report FAIL "SIGKILL mid-command: the running group is ended provably" \
+        report FAIL "SIGKILL mid-command: the running group is ended while its leader is alive" \
             "no client record appeared: $(tail -1 "$work/killed-mid.log" | cut -c1-50)"
     else
         kill -9 "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
         wrapper sbt "$project" --version >"$work/recover-mid.log" 2>&1
         if grep -q 'GroupEnded' "$work/recover-mid.log"
-        then report PASS "SIGKILL mid-command: the running group is ended provably" \
+        then report PASS "SIGKILL mid-command: the running group is ended while its leader is alive" \
             "$(grep -m1 'scavenged' "$work/recover-mid.log" | cut -c1-70)"
-        else report FAIL "SIGKILL mid-command: the running group is ended provably" \
+        else report FAIL "SIGKILL mid-command: the running group is ended while its leader is alive" \
             "$(tail -1 "$work/recover-mid.log" | cut -c1-70)"; fi
     fi
 
@@ -1052,8 +1134,8 @@ channel: a redirected out/mill-daemon is refused before Mill's launcher acts on 
 channel: a planted socketPort reaches no daemon: the client is denied, the daemon untouched
 channel: after a cancelled mill command, the next command runs
 channel: a mill option-file edit replaces the daemon, and the next command runs under it
-channel: a mill daemon of yours, mismatched, is ended by proof before the broker's starts
-channel: a mill daemon of yours, matching, is ended by proof before the broker's starts
+channel: a mill daemon of yours, mismatched, is ended once idle before the broker's starts
+channel: a mill daemon of yours, matching, is ended once idle before the broker's starts
 channel: a mill daemon of yours mid-command is left until its client disconnects
 channel: a mill daemon of yours busy past the bound is refused, and left alive
 channel: a new launch adopts nothing planted in out/mill-daemon"
@@ -1079,12 +1161,12 @@ skip_gradle_channel() {
 $gradle_channel_rows
 EOF
 }
-# Only processes the stub podman recorded, proven by the same pid-plus-start identity the
+# Only processes the stub podman recorded, checked by the same pid-plus-start identity the
 # wrapper's scavenger uses — never a pattern kill, which would match a real session's own
 # `podman exec` command lines, and never by pid alone, which a recycled pid defeats. Each owned
 # tree goes descendants-first, while the parent still holds them: the shell behind an exec may
 # have forked its command, and a surviving orphan keeps the FIFO and pipe open (the measured
-# behavior RunOnHostChannel.end answers on the broker's side). Every signal is proved
+# behavior RunOnHostChannel.end answers on the broker's side). Every signal is checked
 # immediately before it fires — a descendant by its link to the live, owned parent, which is
 # killed after its children and spawns nothing new, so a recycled pid cannot re-enter the tree;
 # the recorded root by its start time once more.
@@ -1137,9 +1219,9 @@ else
     mkdir -p "$work/bin"
     printf '#!/bin/sh\nexit 0\n' > "$work/bin/flock"; chmod +x "$work/bin/flock"
     printf '#!/bin/sh\nshift\nexec "$@"\n' > "$work/bin/timeout"; chmod +x "$work/bin/timeout"
-    # `podman exec -i C sh -c S` runs S here, and container liveness is a file this gate flips.
+    # `podman exec -i C sh -c S` runs S here, and container liveness is a file this script flips.
     # Each exec records its pid — which survives the exec — so "the container died, taking every
-    # exec with it" can be staged, and cleaned up, against exactly this gate's processes: a
+    # exec with it" can be staged, and cleaned up, against exactly this acceptance run's processes: a
     # pattern kill would match every live session's own `podman exec` command lines too.
     cat > "$work/podman" <<EOF
 #!/bin/sh
@@ -1154,7 +1236,8 @@ EOF
     start_channel_broker() { # false when it made no FIFO
         echo true > "$work/running"
         rm -rf "$channel_dir"
-        "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.AgentSandboxLauncher \
+        # shellcheck disable=SC2086 # two options, split on purpose
+        "$JAVA_HOME/bin/java" $certificate_exports -cp "$test_cp" agentsandbox.launcher.AgentSandboxLauncher \
             --serve-run-on-host "$work/podman" C "$project" sbt,mill,gradle "$work/channel.log" "$project" \
             >/dev/null 2>&1 & channel_broker=$!
         tries=0
@@ -1202,10 +1285,10 @@ command proxies: $(command_proxies | tr '\n' ' ')"; fi
 
         # The request that starts a server gives it its -D (RunOnHostSandbox.serverCommand).
         # `shutdown` ends the server the test row started, and the next request starts one.
-        probe='eval sys.props.getOrElse("gate.probe", "unset")'
+        probe='eval sys.props.getOrElse("acceptance.probe", "unset")'
         with_timeout 300 channel_shim chan-shutdown.log "$project" sbt shutdown
         channel_settled
-        with_timeout 600 channel_shim chan-probe.log "$project" sbt -Dgate.probe=probe-set "$probe"
+        with_timeout 600 channel_shim chan-probe.log "$project" sbt -Dacceptance.probe=probe-set "$probe"
         channel_settled
         if grep -q 'probe-set' "$work/chan-probe.log"
         then report PASS "channel: the starting request's -D reaches the build"
@@ -1218,21 +1301,21 @@ command proxies: $(command_proxies | tr '\n' ' ')"; fi
         # its record unchanged, serves the next command once the task finishes. The task runs on
         # the task engine — not `eval`, which runs on the command thread — and writes a marker so
         # the disconnect lands while it is still running. The sleep is short, so the next command
-        # waits it out rather than the gate.
+        # waits it out rather than the acceptance test.
         #
         # The wrapper hands sbt all of its arguments as one command, so the `set` and the task
         # invocation ride one string joined by `;`; the task body is a single expression — the
         # marker written inside the sleep's argument — so no inner `;` or newline meets sbt's
         # command splitter. Def.uncached makes the marker and sleep run on every invocation:
         # sbt 2 otherwise reuses the Unit result without running either side effect.
-        cancel_marker=$project/target/gate-cancel-started
+        cancel_marker=$project/target/acceptance-cancel-started
         rm -f "$cancel_marker"
-        gate_task='set TaskKey[Unit]("koGateSleep") := Def.uncached(java.lang.Thread.sleep('
-        gate_task="${gate_task}if (java.nio.file.Files.writeString("
-        gate_task="${gate_task}java.nio.file.Paths.get(\"$cancel_marker\"), \"started\")"
-        gate_task="${gate_task}.toString.nonEmpty) 20000L else 20000L))"
-        channel_shim chan-cancel.log "$project" sbt "$gate_task; koGateSleep" & shim=$!
-        if ! gate_wait_started "$shim" 1200 test -f "$cancel_marker"; then
+        acceptance_task='set TaskKey[Unit]("koAcceptanceSleep") := Def.uncached(java.lang.Thread.sleep('
+        acceptance_task="${acceptance_task}if (java.nio.file.Files.writeString("
+        acceptance_task="${acceptance_task}java.nio.file.Paths.get(\"$cancel_marker\"), \"started\")"
+        acceptance_task="${acceptance_task}.toString.nonEmpty) 20000L else 20000L))"
+        channel_shim chan-cancel.log "$project" sbt "$acceptance_task; koAcceptanceSleep" & shim=$!
+        if ! acceptance_wait_started "$shim" 1200 test -f "$cancel_marker"; then
             report FAIL "channel: a cancelled command's warm server survives, and the next command reuses it" \
                 "no running task to cancel; see $work/chan-cancel.log{,.err}"
             kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
@@ -1331,7 +1414,7 @@ deny alive after root: $deny_after_root, deny reused: $deny_reused"; fi
         # directories. The directory is this run's own under /tmp, its name safe for the
         # rewrites and the shim's unquoted uses, where the checkout's path may carry a space or a
         # sed delimiter; the cleanup removes it.
-        channel_dir2=$(mktemp -d /tmp/ko-agent-gate-channel.XXXXXX) || exit 1
+        channel_dir2=$(mktemp -d /tmp/ko-agent-acceptance-channel.XXXXXX) || exit 1
         sed "s|^dir=/tmp/ko-agent-sandbox/run-on-host\$|dir=$channel_dir2|" \
             "$project/container/ko-agent-sandbox/ko-sandbox-run-on-host" > "$work/shim2"
         chmod +x "$work/shim2"
@@ -1347,9 +1430,9 @@ esac
 EOF
         chmod +x "$work/podman2"
         # A name-only forward's value travels under its carrier name in the broker's own
-        # environment (RunOnHostChannel.spawnBroker), which the launcher sets: this gate sets it.
+        # environment (RunOnHostChannel.spawnBroker), which the launcher sets: this script sets it.
         # The broker sessions under the root — `b` and digits, as commands_now tells them from
-        # `build-lock/` — are not the gate's alone: a launch on this project from another
+        # `build-lock/` — are not the acceptance test's alone: a launch on this project from another
         # terminal, an agent session's included, keeps its own broker session there. So the
         # second broker's session is the one that appears when it starts, and the first's the
         # one whose server record for the project is alive.
@@ -1363,7 +1446,8 @@ EOF
             echo true > "$work/running2"
             rm -rf "$channel_dir2"
             broker_sessions > "$work/sessions-before"
-            KO_AGENT_RUN_ON_HOST_ENV_GATE_SHARE=1 "$JAVA_HOME/bin/java" -cp "$test_cp" \
+            # shellcheck disable=SC2086 # two options, split on purpose
+            KO_AGENT_RUN_ON_HOST_ENV_ACCEPTANCE_SHARE=1 "$JAVA_HOME/bin/java" $certificate_exports -cp "$test_cp" \
                 agentsandbox.launcher.AgentSandboxLauncher --serve-run-on-host "$work/podman2" C2 "$project" \
                 sbt,mill,gradle "$work/channel2.log" "$@" "$project" >/dev/null 2>&1 & second_broker=$!
             tries=0
@@ -1459,7 +1543,7 @@ $(tail -1 "$work/chan-share-mill.log.err" | cut -c1-50)"; fi
             # the retirement lock, and starts its own; the first's record stays, its group gone.
             # The first launch's next command finds its group dead and takes the server back
             # the same way: two launches whose runtimes differ alternate restarts.
-            if ! start_second_broker --env=GATE_SHARE; then
+            if ! start_second_broker --env=ACCEPTANCE_SHARE; then
                 report FAIL "$takeover_row" \
                     "the second broker made no FIFOs: $(tail -1 "$work/channel2.log" | cut -c1-50)"
                 report SKIP "$takeback_row" "no second broker"
@@ -1628,7 +1712,7 @@ $(grep -m1 -h 'Exception\|refused' "$work/chan-mill-planted-port.log.err" | cut 
         cancel_row="channel: after a cancelled mill command, the next command runs"
         channel_shim chan-mill-cancel.log "$mill_project" mill run sleep "$fixture_tag" & shim=$!
         cancel_ready=no
-        gate_wait_started "$shim" 600 grep -q 'fixture-main' "$work/chan-mill-cancel.log" 2>/dev/null \
+        acceptance_wait_started "$shim" 600 grep -q 'fixture-main' "$work/chan-mill-cancel.log" 2>/dev/null \
             && cancel_ready=yes
         cancel_record=$(broker_daemon_record "$mill_project")
         cancel_daemon=$(daemon_in_group "$cancel_record")
@@ -1654,15 +1738,15 @@ $(kill -0 "$cancel_daemon" 2>/dev/null && echo alive || echo gone), after ${new_
 
         # What Mill's launcher restarts the daemon on (RunOnHostPrereqs.millDaemonConfig) replaces
         # the daemon before the command, and removing the file replaces it again. The file is
-        # this gate's, removed by the cleanup too.
+        # this acceptance run's, removed by the cleanup too.
         opts_row="channel: a mill option-file edit replaces the daemon, and the next command runs under it"
         opts_record=$(broker_daemon_record "$mill_project")
-        gate_opts_file=$mill_project/.mill-jvm-opts
-        printf -- '-Dko.gate.opts=1\n' > "$gate_opts_file"
+        acceptance_opts_file=$mill_project/.mill-jvm-opts
+        printf -- '-Dko.acceptance.opts=1\n' > "$acceptance_opts_file"
         with_timeout 600 channel_shim chan-mill-opts1.log "$mill_project" mill version; opts1_status=$?
         channel_settled
         edited_record=$(broker_daemon_record "$mill_project")
-        rm -f "$gate_opts_file"; gate_opts_file=""
+        rm -f "$acceptance_opts_file"; acceptance_opts_file=""
         with_timeout 600 channel_shim chan-mill-opts2.log "$mill_project" mill version; opts2_status=$?
         channel_settled
         if [ "$opts1_status" -eq 0 ] && [ "$opts2_status" -eq 0 ] && [ -n "$edited_record" ] \
@@ -1681,7 +1765,7 @@ ${edited_record:-none} -> $(broker_daemon_record "$mill_project")"; fi
         redirect_row="channel: a redirected out/mill-daemon is refused before Mill's launcher acts on it"
         with_timeout 300 channel_shim chan-mill-shutdown0.log "$mill_project" mill shutdown
         channel_settled
-        redirect_saved=$mill_project/out/mill-daemon.gate
+        redirect_saved=$mill_project/out/mill-daemon.acceptance
         mv "$mill_project/out/mill-daemon" "$redirect_saved"
         ln -s "$scratch_mill" "$mill_project/out/mill-daemon"
         with_timeout 300 channel_shim chan-mill-redirect.log "$mill_project" mill version; redirect_status=$?
@@ -1695,7 +1779,7 @@ ${edited_record:-none} -> $(broker_daemon_record "$mill_project")"; fi
         else report FAIL "$redirect_row" "exit $redirect_status, daemons: $(mill_daemons | tr '\n' ' '); \
 $(tail -1 "$work/chan-mill-redirect.log.err" | cut -c1-60)"; fi
 
-        # A daemon of yours — from a terminal, outside any launch — is ended by proof, once idle,
+        # A daemon of yours — from a terminal, outside any launch — is ended after its start-time check, once idle,
         # before the broker's starts, and the channel log says so. The broker's own is shut down
         # first, through Mill's own command, since only a start meets a foreign daemon; then an
         # unconfined ./mill leaves one — once with a JAVA_OPTS the closed environment lacks, so
@@ -1723,9 +1807,9 @@ $(tail -1 "$work/chan-mill-redirect.log.err" | cut -c1-60)"; fi
 $(kill -0 "${foreign:-0}" 2>/dev/null && echo alive || echo gone), exit $foreign_status, ours ${ours:-none}, \
 log lines: $(grep -c 'ended the mill daemon' "$work/channel.log") (before $ended_before)"; fi
         }
-        foreign_row "channel: a mill daemon of yours, mismatched, is ended by proof before the broker's starts" \
-            JAVA_OPTS=-Dko.gate.foreign=1
-        foreign_row "channel: a mill daemon of yours, matching, is ended by proof before the broker's starts"
+        foreign_row "channel: a mill daemon of yours, mismatched, is ended once idle before the broker's starts" \
+            JAVA_OPTS=-Dko.acceptance.foreign=1
+        foreign_row "channel: a mill daemon of yours, matching, is ended once idle before the broker's starts"
 
         # A daemon of yours running a command — an established connection on its port — is left
         # until its client disconnects: the channel command waits, and completes once the daemon
@@ -1828,7 +1912,7 @@ $(broker_gradle_records | tr '\n' ' '), all: $(gradle_daemons | tr '\n' ' ')"; f
             | sed -n 's/^ *java.specification.version = //p')
         other=$([ "$granted" = 21 ] && echo 17 || echo 21)
         with_timeout 600 channel_shim chan-gradle-toolchain.log "$gradle_project" gradle compileJava \
-            "-PgateToolchain=$other"; toolchain_status=$?
+            "-PacceptanceToolchain=$other"; toolchain_status=$?
         channel_settled
         toolchain_logs="$work/chan-gradle-toolchain.log $work/chan-gradle-toolchain.log.err"
         toolchain_said=$(grep -m1 -hi 'toolchain' $toolchain_logs)
@@ -1841,7 +1925,7 @@ $(broker_gradle_records | tr '\n' ' '), all: $(gradle_daemons | tr '\n' ' ')"; f
         # A daemon of yours: one in a registry the launch does not name, so the launch's
         # commands neither attach to it nor end it. Started and stopped unconfined by the
         # fixture's own gradlew, with the JDK the profile grants first on its PATH, in a registry
-        # of this gate's under $work — not your home's, where `--stop` would stop every daemon of
+        # of this acceptance run's under $work — not your home's, where `--stop` would stop every daemon of
         # yours of that version (DaemonStopClient), unrelated builds' included.
         foreign_gradle() { # in the fixture, unconfined: command...
             ( cd "$gradle_project" \
@@ -1850,7 +1934,7 @@ $(broker_gradle_records | tr '\n' ' '), all: $(gradle_daemons | tr '\n' ' ')"; f
         }
         own_row="channel: a gradle daemon of yours, in a registry of your own, is neither attached to nor ended"
         foreign_gradle ./gradlew help >"$work/foreign-gradle.log" 2>&1
-        foreign=$(gate_gradle_daemons | head -1)
+        foreign=$(acceptance_gradle_daemons | head -1)
         with_timeout 300 channel_shim chan-gradle-own.log "$gradle_project" gradle help; own_status=$?
         channel_settled
         foreign_alive=$(kill -0 "${foreign:-0}" 2>/dev/null && echo yes || echo no)
@@ -1869,7 +1953,7 @@ the launch's: ${ours:-none}; $(tail -1 "$work/foreign-gradle.log" | cut -c1-50)"
         cancel_row="channel: after a cancelled gradle command, the next command runs, the records following the daemons"
         channel_shim chan-gradle-cancel.log "$gradle_project" gradle run --args="sleep $fixture_tag" & shim=$!
         cancel_ready=no
-        gate_wait_started "$shim" 600 grep -q 'fixture-main' "$work/chan-gradle-cancel.log" 2>/dev/null \
+        acceptance_wait_started "$shim" 600 grep -q 'fixture-main' "$work/chan-gradle-cancel.log" 2>/dev/null \
             && cancel_ready=yes
         cancel_daemon=$(gradle_daemons | head -1)
         kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
@@ -1974,7 +2058,7 @@ forked: ${forked:-none}"; pkill -f "$fixture_sleep" 2>/dev/null; fi
         # moment the broker is gone the command's directory, the server and every proxy are gone
         # too. KILL: nothing waits, but the wrapper's stdin is the broker's pipe, and its EOF ends
         # the command by the same teardown; the broker's server and proxy stay, recorded in its
-        # session, until the next start scavenges them by proof — the wrapper's recovery run
+        # session, until the next start scavenges them by their records — the wrapper's recovery run
         # here. The shim is left blocked on its exit read (no timeout(1) here) and killed after.
         broker_end_row() { # row signal
             before=$(grep -c 'ended by signal' "$work/channel.log")
@@ -2033,7 +2117,7 @@ logs kept: $(grep -c 'ended by signal' "$work/channel.log") (before: $before)"; 
         # A new launch adopts nothing a portfile nominates: the fixture's portfile names a live
         # socket that is not sbt's derivation for the directory, so the request is refused and
         # the listener hears the liveness probe's connect and no byte — the shutdown protocol is
-        # never spoken to it. The listener is the gate's, recording what reaches it.
+        # never spoken to it. The listener is the acceptance test's, recording what reaches it.
         planted_row="channel: a planted portfile nominates nothing: refused, no shutdown spoken"
         planted_mill_row="channel: a new launch adopts nothing planted in out/mill-daemon"
         cat > "$work/planted.py" <<'PY'
@@ -2057,7 +2141,7 @@ PY
         while ! grep -q bound "$work/planted.log" && [ "$tries" -lt 50 ]; do tries=$((tries + 1)); sleep 0.1; done
         mkdir -p "$deny_project/project/target"
         printf '{"uri":"local://%s"}' "$planted_sock" > "$deny_project/project/target/active.json"
-        # The mill rendezvous files name a gate listener's TCP port and a gate sleep's pid: the
+        # The mill rendezvous files name this script's listener's TCP port and its sleep's pid: the
         # new broker connects to nothing they name and signals nothing, and the client reaches
         # the broker's own daemon.
         cat > "$work/planted-tcp.py" <<'PY'

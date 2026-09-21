@@ -1,22 +1,22 @@
 #!/bin/sh
 # Does a JVM under the generated profile reach the build proxy through the standard proxy
-# properties? Three rows split the failure the gate cannot: with props and a live proxy (must
+# properties? Three rows split the failure the acceptance test cannot: with props and a live proxy (must
 # fetch), without props (must be denied — the direct path), with props and no proxy (must be
 # refused by connect, proving the profile allows the port and nothing listened).
 #
-#   sh src/probe/jvm-proxy-rule.sh <emitted gate-sbt.sb from a gate run>
+#   sh src/probe/jvm-proxy-rule.sh <emitted acceptance-sbt.sb from an acceptance-test run>
 #
 # The emitted profile grants port 51234 (EmitRunOnHostProfile's constant), so the proxy is bound
 # there. Run it on macOS from the repository root, on each new macOS or JDK release: the JVM's
 # path to the proxy under the profile is what either can move.
 set -u
-profile=${1:?usage: sh src/probe/jvm-proxy-rule.sh <gate-sbt.sb>}
+profile=${1:?usage: sh src/probe/jvm-proxy-rule.sh <acceptance-sbt.sb>}
 [ -f "$profile" ] || { echo "$profile does not exist" >&2; exit 2; }
 JAVA="${JAVA_HOME:?JAVA_HOME must name the granted JDK}/bin/java"
 
 # Under the project, not /tmp: the profile grants reads here, and the JVM must read F.java
 # through it (an unreadable path silently degrades to class-name interpretation).
-mkdir -p target/gate && work=$(mktemp -d target/gate/jvm-proxy.XXXXXX)
+mkdir -p target/acceptance && work=$(mktemp -d target/acceptance/jvm-proxy.XXXXXX)
 cat > "$work/F.java" <<'EOF'
 public class F {
     public static void main(String[] args) throws Exception {

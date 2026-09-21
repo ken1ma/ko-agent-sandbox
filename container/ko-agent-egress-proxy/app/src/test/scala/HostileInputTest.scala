@@ -261,7 +261,7 @@ class HostileInputTest extends munit.FunSuite:
     assert(framed > 0, "every header set was refused; the table asserts nothing about framing")
 
   test("no control character survives into a forwarded request or an audit line"):
-    // The request head's two halves. The parser is the single gate for both sinks: what is
+    // The request head's two halves. The parser is the only check before both destinations: what is
     // forwarded to an origin, and what is written to a log the operator later reads on a terminal —
     // where a tab breaks the audit grammar's own fields and an escape sequence rewrites the line
     // around it. CR and LF are tested elsewhere, as smuggling; these are the ones a whitespace test
@@ -361,8 +361,8 @@ class HostileInputTest extends munit.FunSuite:
   // scope, property-tested against the ruleset's authorization over a drawn domain that
   // names every equation: each profile, the provider selected and not, files with `deny defaults`
   // and without, providers allowed and denied, `tunnel` taken and re-granted, hosts the defaults lack
-  // and hosts they tunnel, and requests to unlisted hosts, to inspected ones under a denied subtree,
-  // and at both sides of a boundary.
+  // and hosts they tunnel, and requests to hosts no line names, to inspected ones under a denied
+  // subtree, and at both sides of a boundary.
   // ---------------------------------------------------------------------------
 
   /** A line in structured form: rendered to text for the proxy, applied as is by the evaluator. */
@@ -444,52 +444,37 @@ class HostileInputTest extends munit.FunSuite:
   ): String =
     import Drawn.*
     val clears = lines.headOption.contains(DenyDefaults)
-    val publicDefault = profile == "allow-unless-denied"
     if profile == "deny-all" then return "refused"
     var contributions: Vector[Given] = profile match
       case "deny-unless-model" =>
         provider.fold(Vector.empty): selected =>
           (if selected == AllProviders then ModelProviders else Vector(selected)).flatMap(providerGiven)
       case _                   => if clears then Vector.empty else defaultsGiven
-    var patterns = Vector.empty[(String, Boolean)]
-    var touched = contributions.map(_.host).toSet
     def consult(line: Drawn): Boolean = (profile, line) match
       case ("deny-unless-model", Deny(_, _, _) | DenyProvider(_)) => true
       case ("deny-unless-model", _)                            => false
       case _                                                   => true
-    def add(entry: Given): Unit =
-      contributions :+= entry
-      touched += entry.host
     lines.filter(consult).foreach:
       case DenyDefaults => ()
-      case Allow(h, p, g) => add(Given(h, p, g))
+      case Allow(h, p, g) => contributions :+= Given(h, p, g)
       case AllowProvider(name) =>
-        providerGiven(
-          name,
-        ).filter(g => consult(Allow(g.host, g.path, g.grants))).foreach(add)
+        contributions ++= providerGiven(name).filter(g => consult(Allow(g.host, g.path, g.grants)))
       case Deny(h, subtree, g) =>
         contributions = contributions.map: entry =>
           if !hostMatches(h, subtree, entry.host) then entry
           else entry.copy(grants = if g.isEmpty then Set.empty else entry.grants -- g)
-        // An unlisted host holds `read` and nothing else, so those are the denies that reach it.
-        if g.isEmpty || g("read") then patterns :+= (h, subtree)
       case DenyProvider(name) =>
         val deniedHosts = providerGiven(name).map(_.host).toSet
         contributions = contributions.map: entry =>
           if deniedHosts(entry.host) then entry.copy(grants = Set.empty) else entry
-        patterns ++= deniedHosts.toVector.map(_ -> false)
-    val listed = contributions.filter(entry => entry.host == host && entry.grants.nonEmpty)
-    if listed.exists(_.grants("tunnel")) then return "tunnel"
-    // An unlisted host under the public default holds `read` at the root and nothing else.
-    val open = publicDefault && !touched(host) && !patterns.exists((p, s) => hostMatches(p, s, host))
-    val active =
-      if listed.nonEmpty then listed else if open then Vector(Given(host, "/", Set("read"))) else Vector()
+    val active = contributions.filter(entry => entry.host == host && entry.grants.nonEmpty)
+    if active.exists(_.grants("tunnel")) then return "tunnel"
     if active.isEmpty then return "refused"
     val path = request.target.takeWhile(_ != '?')
     val covering = active.filter(entry => pathContains(entry.path, path))
     if covering.isEmpty then return "refused"
     val grants = covering.flatMap(_.grants).toSet
-    val longest = (contributions ++ active).filter(
+    val longest = contributions.filter(
       entry => entry.host == host && pathContains(entry.path, path),
     ).map(_.path).maxBy(_.length)
     if longest != "/" && request.ambiguous then return "refused"

@@ -1,12 +1,13 @@
 //! The FUSE filesystem (the path inode model — `doc/architecture.md`): a coherent passthrough of the
-//! backing tree, with every mutation gated through the policy core. Reads (`lookup`/`getattr`/`read`/
+//! backing tree, with every mutation checked by the policy core. Reads (`lookup`/`getattr`/`read`/
 //! `readdir`/`readlink`) pass through; creations and mutations (`create`/`mkdir`/`mknod`/`symlink`/
 //! `link`/`unlink`/`rmdir`/`rename`/`setattr`/write-`open`) first ask `policy` and return `EPERM`
 //! on a denial, with structured `DENY` log lines capped by `log_deny`.
 //!
-//! Resolution: `doc/architecture.md`, "Inode model". The deny surface, xattrs included: the note above
-//! `impl Filesystem`.
+//! Resolution: `doc/architecture.md`, "Inode model". Mutation coverage, xattrs included: the note
+//! above `impl Filesystem`.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::{CString, OsStr, OsString};
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -37,7 +38,9 @@ use nix::unistd::{
 
 use crate::inode::{InodeTable, ROOT_INO};
 use crate::policy::{
-    Decision, GUARDED_NAMES, GitContext, Mutation, authorize, authorize_create, child_context,
+    Decision, FileRules, GUARDED_NAMES, GitContext, Mutation, authorize, authorize_create,
+    authorize_region_move, authorize_rule, authorize_rule_create, authorize_symlink_target,
+    child_context, enters_gitdir, rule_context_of_path, symlink_target_paths,
 };
 
 /// Entry/attribute TTL. Zero, always: the host writes the backing tree concurrently, so the kernel
@@ -122,11 +125,13 @@ pub struct KoAgentFs {
 }
 
 impl KoAgentFs {
-    pub fn new(root: OwnedFd) -> Self {
+    /// `rules` are the file rules with the guard's additions (`rulefile.rs`); none for a mount
+    /// that protects only the guarded names.
+    pub fn new(root: OwnedFd, rules: FileRules) -> Self {
         KoAgentFs {
             root,
             inner: Mutex::new(Inner {
-                table: InodeTable::new(),
+                table: InodeTable::with_rules(rules),
                 handles: HashMap::new(),
                 dirs: HashMap::new(),
                 next_fh: 1,
@@ -259,23 +264,27 @@ impl KoAgentFs {
     }
 
     /// The name the policy classifies the entry `name` under `parentfd` by: `name` itself, or the
-    /// guarded name that resolves to the same backing object `st`. NTFS gives `.git` the 8.3 short
-    /// name `GIT~1`, `GIT~2` or a hashed `GI1234~1`, and WSL's drive mount resolves it, so no rule
-    /// over spellings can list a guarded entry's other names
+    /// guarded or listed name that resolves to the same backing object `st`. NTFS gives `.git` the
+    /// 8.3 short name `GIT~1`, `GIT~2` or a hashed `GI1234~1`, and WSL's drive mount resolves it, so
+    /// no rule over spellings can list a guarded entry's other names
     /// (`doc/security-research.md`, "Windows 8.3 short names"); a host hard link to a `.git`
     /// pointer file is the same case. Only an ordinary directory's children are asked: elsewhere
     /// [`child_context`] does not read the name for a guarded one.
+    ///
+    /// The file rules name patterns, which no stat can try, so a name with a `~` — every 8.3 short
+    /// name has one — is compared with its siblings instead, and takes the name of the one without
+    /// a `~` that is the same object.
     fn policy_name<'a>(
         &self,
         parent_context: &GitContext,
         parentfd: &OwnedFd,
         name: &'a OsStr,
         st: &FileStat,
-    ) -> &'a OsStr {
+    ) -> Cow<'a, OsStr> {
         if *parent_context != GitContext::NotGit
             || child_context(parent_context, name.as_bytes()) != GitContext::NotGit
         {
-            return name;
+            return Cow::Borrowed(name);
         }
         for guarded in GUARDED_NAMES {
             let Ok(guarded_cname) = CString::new(guarded) else {
@@ -288,31 +297,53 @@ impl KoAgentFs {
             )
             .is_ok_and(|guarded_st| identity(&guarded_st) == identity(st))
             {
-                return OsStr::from_bytes(guarded);
+                return Cow::Borrowed(OsStr::from_bytes(guarded));
             }
         }
-        name
+        if has_short_name_shape(name.as_bytes())
+            && !self.inner.lock().unwrap().table.rules().lines().is_empty()
+            && let Some(long) = long_name_sibling(parentfd, name, st)
+        {
+            return Cow::Owned(long);
+        }
+        Cow::Borrowed(name)
     }
 
     /// [`Self::policy_name`] for an operation that holds only `(parent, name)`. A name with nothing
     /// behind it is its own policy name.
-    fn existing_policy_name<'a>(&self, parent: u64, name: &'a OsStr) -> Result<&'a OsStr, Errno> {
+    fn existing_policy_name<'a>(
+        &self,
+        parent: u64,
+        name: &'a OsStr,
+    ) -> Result<Cow<'a, OsStr>, Errno> {
         let parent_context = self.context(parent);
         if parent_context != GitContext::NotGit {
-            return Ok(name);
+            return Ok(Cow::Borrowed(name));
         }
         let (cname, parentfd) = self.child_target(parent, name)?;
         match fstatat(&parentfd, cname.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
             Ok(st) => Ok(self.policy_name(&parent_context, &parentfd, name, &st)),
-            Err(NixErrno::ENOENT) => Ok(name),
+            Err(NixErrno::ENOENT) => Ok(Cow::Borrowed(name)),
             Err(err) => Err(to_errno(err)),
         }
     }
 
+    /// `op` is also how the policy tells `mkdir`, the one way a pinned name may be created, by a
+    /// file rule or in a gitdir.
     fn allow_create(&self, parent: u64, name: &OsStr, op: &str) -> Result<(), Errno> {
+        let is_mkdir = op == "mkdir";
         // An existing entry too: `rename` replaces one.
         let policy_name = self.existing_policy_name(parent, name)?;
-        match authorize_create(&self.context(parent), policy_name.as_bytes()) {
+        let decision =
+            match authorize_create(&self.context(parent), policy_name.as_bytes(), is_mkdir) {
+                Decision::Allow => {
+                    let inner = self.inner.lock().unwrap();
+                    let (_, rule) = inner.table.child_contexts(parent, &policy_name);
+                    authorize_rule_create(inner.table.rules(), &rule, is_mkdir)
+                }
+                deny => deny,
+            };
+        match decision {
             Decision::Allow => Ok(()),
             Decision::Deny(reason) => Err(deny(op, &format!("{name:?}"), reason)),
         }
@@ -326,18 +357,125 @@ impl KoAgentFs {
         op: &str,
     ) -> Result<(), Errno> {
         let policy_name = self.existing_policy_name(parent, name)?;
-        let child = child_context(&self.context(parent), policy_name.as_bytes());
-        match authorize(&child, mutation) {
+        let inner = self.inner.lock().unwrap();
+        let (git, rule) = inner.table.child_contexts(parent, &policy_name);
+        let decision = match authorize(&git, mutation) {
+            Decision::Allow => authorize_rule(inner.table.rules(), &rule, mutation),
+            deny => deny,
+        };
+        match decision {
             Decision::Allow => Ok(()),
             Decision::Deny(reason) => Err(deny(op, &format!("{name:?}"), reason)),
         }
     }
 
     fn allow_ino(&self, ino: u64, mutation: Mutation, op: &str) -> Result<(), Errno> {
-        match authorize(&self.context(ino), mutation) {
+        let inner = self.inner.lock().unwrap();
+        let decision = match inner.table.get(ino) {
+            None => authorize(&GitContext::NotGit, mutation),
+            Some(node) => match authorize(&node.git, mutation) {
+                Decision::Allow => authorize_rule(inner.table.rules(), &node.rule, mutation),
+                deny => deny,
+            },
+        };
+        match decision {
             Decision::Allow => Ok(()),
             Decision::Deny(reason) => Err(deny(op, &format!("ino={ino}"), reason)),
         }
+    }
+
+    /// A directory or symlink `(parent, name)` taking the place of `(newparent, newname)`: refused
+    /// when it leaves a writable region or a gitdir ([`authorize_region_move`]). Other types carry
+    /// nothing below them, and their new name is judged as a creation.
+    fn allow_region_move(
+        &self,
+        parent: u64,
+        name: &OsStr,
+        newparent: u64,
+        newname: &OsStr,
+        op: &str,
+    ) -> Result<(), Errno> {
+        let (cname, parentfd) = self.child_target(parent, name)?;
+        let st = match fstatat(&parentfd, cname.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
+            Ok(st) => st,
+            Err(NixErrno::ENOENT) => return Ok(()),
+            Err(err) => return Err(to_errno(err)),
+        };
+        let kind = st.st_mode & libc::S_IFMT;
+        if kind != libc::S_IFDIR && kind != libc::S_IFLNK {
+            return Ok(());
+        }
+        let from_name = self.policy_name(&self.context(parent), &parentfd, name, &st);
+        let to_name = self.existing_policy_name(newparent, newname)?;
+        let inner = self.inner.lock().unwrap();
+        let (from_git, from) = inner.table.child_contexts(parent, &from_name);
+        let (to_git, to) = inner.table.child_contexts(newparent, &to_name);
+        match authorize_region_move(inner.table.rules(), (&from_git, &from), (&to_git, &to)) {
+            Decision::Allow => Ok(()),
+            Decision::Deny(reason) => Err(deny(op, &format!("{name:?}"), reason)),
+        }
+    }
+
+    /// A symlink `link_name` in `parent` whose portable `target` would lead into a writable region
+    /// from outside it ([`authorize_symlink_target`]) or into a gitdir ([`enters_gitdir`]), at any
+    /// path it passes ([`symlink_target_paths`]), or spells an NTFS 8.3 short name
+    /// ([`has_short_name_shape`]) anywhere on the way. WSL writes the sandbox's symlink as a Windows
+    /// one, and the host resolves `GIT~1` in its target as whatever NTFS gives that name when it
+    /// reads the link, not when the link is made: an ordinary `pivot/GIT~1` at creation, removed and
+    /// replaced by `pivot -> .`, aims the link at `.git`. No entry can vouch for the spelling, so the
+    /// spelling itself is refused.
+    ///
+    /// Without file rules every target is allowed: a link into a gitdir is refused only because the
+    /// host would read through it, under a name a rule makes read-only, what the session wrote in
+    /// the gitdir, where no rule applies.
+    fn allow_symlink_target(
+        &self,
+        parent: u64,
+        link_name: &OsStr,
+        target: &Path,
+    ) -> Result<(), Errno> {
+        let (from, link) = {
+            let inner = self.inner.lock().unwrap();
+            if inner.table.rules().lines().is_empty() {
+                return Ok(());
+            }
+            let Some(from) = inner.table.components(parent) else {
+                return Err(Errno::ESTALE);
+            };
+            let (link_git, link) = inner.table.child_contexts(parent, link_name);
+            if link_git != GitContext::NotGit {
+                return Ok(());
+            }
+            (from, link)
+        };
+        for path in symlink_target_paths(&from, target) {
+            let parts: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+            if parts.last().is_some_and(|name| has_short_name_shape(name)) {
+                return Err(deny(
+                    "symlink",
+                    &format!("{link_name:?}"),
+                    "file-rule-region: refusing a symlink target that spells an NTFS 8.3 short name; \
+                     spell the long name",
+                ));
+            }
+            let inner = self.inner.lock().unwrap();
+            let Some(context) = rule_context_of_path(inner.table.rules(), &parts) else {
+                if enters_gitdir(&parts) {
+                    return Err(deny(
+                        "symlink",
+                        &format!("{link_name:?}"),
+                        "file-rule-region: refusing a symlink into a Git directory from the project",
+                    ));
+                }
+                continue;
+            };
+            if let Decision::Deny(reason) =
+                authorize_symlink_target(inner.table.rules(), &link, &context)
+            {
+                return Err(deny("symlink", &format!("{link_name:?}"), reason));
+            }
+        }
+        Ok(())
     }
 
     fn child_target(&self, parent: u64, name: &OsStr) -> Result<(CString, OwnedFd), Errno> {
@@ -492,6 +630,56 @@ impl KoAgentFs {
 /// Resolving it reaches the descriptor's object whatever its names lead to by now.
 fn proc_fd_path(fd: &OwnedFd) -> CString {
     CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())).expect("digits hold no NUL")
+}
+
+/// Whether `name` has the shape of an NTFS 8.3 short name, `VSCODE~1` or `NODE_M~1.JSO`: a base
+/// of at most eight bytes ending in `~` and digits, and an extension of at most three. Only such a
+/// name stands for a long one, so an editor's backup `notes.md~` costs no directory scan.
+fn has_short_name_shape(name: &[u8]) -> bool {
+    let (base, extension) = match name.iter().rposition(|&byte| byte == b'.') {
+        Some(dot) => (&name[..dot], &name[dot + 1..]),
+        None => (name, &name[..0]),
+    };
+    let digits = base
+        .iter()
+        .rev()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    digits > 0
+        && base.len() > digits
+        && base[base.len() - digits - 1] == b'~'
+        && base.len() <= 8
+        && extension.len() <= 3
+}
+
+/// The sibling of `name` in `parentfd` without a `~` that is the backing object `st`, if any: the
+/// long name an 8.3 short name stands for ([`KoAgentFs::policy_name`]). An unreadable directory has
+/// none to offer, and the name stays its own.
+fn long_name_sibling(parentfd: &OwnedFd, name: &OsStr, st: &FileStat) -> Option<OsString> {
+    let mut dir = Dir::openat(
+        parentfd,
+        c".",
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )
+    .ok()?;
+    let candidates: Vec<OsString> = dir
+        .iter()
+        .filter_map(Result::ok)
+        .map(|entry| OsStr::from_bytes(entry.file_name().to_bytes()).to_os_string())
+        .filter(|sibling| {
+            sibling.as_os_str() != name
+                && !sibling.as_bytes().contains(&b'~')
+                && sibling.as_bytes() != b"."
+                && sibling.as_bytes() != b".."
+        })
+        .collect();
+    candidates.into_iter().find(|sibling| {
+        cstr(sibling).is_ok_and(|csibling| {
+            fstatat(&dir, csibling.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW)
+                .is_ok_and(|sibling_st| identity(&sibling_st) == identity(st))
+        })
+    })
 }
 
 /// The `open`/`create` flags this filter carries through to the backing store, out of whatever the
@@ -761,17 +949,17 @@ fn entry_kind(
     }
 }
 
-// Mutation coverage — the deny surface. Every FUSE operation that can change the filesystem is
+// Mutation coverage. Every FUSE operation that can change the filesystem is
 // accounted for one of two ways:
 //
-//   - implemented below and gated through `policy` before it touches the backing store, or
+//   - implemented below and checked by `policy` before it touches the backing store, or
 //   - left unimplemented, so it fails closed with ENOSYS — setxattr, removexattr, fallocate,
 //     copy_file_range, ioctl. (fuser's default for an unimplemented op is an error, not success,
 //     so an op we forgot cannot silently succeed. For the xattr family the kernel rewrites that
 //     ENOSYS to ENOTSUP and stops sending the op, which changes what a caller sees but not what
 //     reaches the backing store: nothing.)
 //
-// The gated ops and what each checks:
+// The implemented ops and what each checks:
 //
 //   create, mkdir, mknod, symlink  the `.git` name rule + destination classification (allow_create)
 //   link                           source (refuse aliasing a protected inode out) AND destination
@@ -780,10 +968,14 @@ fn entry_kind(
 //   setattr (chmod/chown/truncate) the target inode's classification
 //   open (write intent)            classification; write() then uses the already-authorized handle
 //
-// So the deny surface is closed by construction: unimplemented ops fail, and every implemented op is
-// gated on *all* of its targets. Reads (lookup/getattr/read/readdir/readlink) are never gated. This
-// is the deny side only; whether the *policy* is complete is `doc/git-metadata.md`, resting on the
-// git-behavior premises `doc/git-metadata.md` records under "Premises".
+// Each check covers the file rules too, at the same targets: a read-only name refuses every one, a
+// pinned name refuses its rename, its unlink and every creation but `mkdir`; `rename` and `link` also refuse
+// moving a directory or symlink out of a writable region, and `symlink` a target into one.
+//
+// So no mutation skips the policy: unimplemented ops fail, and every implemented op is checked on
+// *all* of its targets. Reads (lookup/getattr/read/readdir/readlink) are never checked. This shows
+// only that mutations reach the policy; whether the *policy* is complete is
+// `doc/git-metadata.md`, resting on the git-behavior premises it records under "Premises".
 impl Filesystem for KoAgentFs {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> std::io::Result<()> {
         // Refused rather than degraded: `doc/architecture.md`, "Coherency". Why this rather than
@@ -817,12 +1009,14 @@ impl Filesystem for KoAgentFs {
         let root = self.is_gitdir_root(parent.0, &dirfd, name, &st);
         let policy_name = self.policy_name(&self.context(parent.0), &dirfd, name, &st);
         let (dev, ino_id) = identity(&st);
-        let ino =
-            self.inner
-                .lock()
-                .unwrap()
-                .table
-                .lookup(parent.0, name, policy_name, root, dev, ino_id);
+        let ino = self.inner.lock().unwrap().table.lookup(
+            parent.0,
+            name,
+            &policy_name,
+            root,
+            dev,
+            ino_id,
+        );
         reply.entry(&TTL, &to_file_attr(ino, &st), Generation(0));
     }
 
@@ -880,8 +1074,8 @@ impl Filesystem for KoAgentFs {
         let wants_write =
             accmode == libc::O_WRONLY || accmode == libc::O_RDWR || (flags.0 & libc::O_TRUNC) != 0;
 
-        // The write gate: opening a protected target for writing is where mutation is refused, so a
-        // subsequent write() on the returned handle never needs re-checking.
+        // The write check: opening a protected target for writing is where mutation is refused, so
+        // a subsequent write() on the returned handle never needs re-checking.
         if wants_write && let Err(err) = self.allow_ino(ino.0, Mutation::Write, "open-write") {
             return reply.error(err);
         }
@@ -1176,8 +1370,8 @@ impl Filesystem for KoAgentFs {
         // `target_has_portable_syntax` has the syntax this accepts and how far that syntax is only
         // an approximation; SECURITY.md, "The project directory", has the threat.
         //
-        // The population is programs that cache outside the project and link into it, and sbt 2 is the
-        // measured case. Unrefused, it materializes a build-cache hit as links into its own store,
+        // This affects programs that cache outside the project and link into it, and sbt 2 is the
+        // measured case. Unrefused, it writes a build-cache hit as links into its own store,
         // the class files included — `~/.cache/sbt/v2/cas` in here, `~/Library/Caches/sbt/v2/cas`
         // on the host — and neither side has the other's. Measured in the direction the refusal
         // leaves possible: over the host's links a compile in a session dies with
@@ -1199,6 +1393,9 @@ impl Filesystem for KoAgentFs {
                 "nonportable-target-syntax: refusing a target that is absolute or climbs above \
                  the workspace root",
             ));
+        }
+        if let Err(err) = self.allow_symlink_target(parent.0, link_name, target) {
+            return reply.error(err);
         }
         let (cname, parentfd) = match self.child_target(parent.0, link_name) {
             Ok(pair) => pair,
@@ -1236,6 +1433,22 @@ impl Filesystem for KoAgentFs {
             Ok(fd) => fd,
             Err(err) => return reply.error(to_errno(err)),
         };
+        // A hard link of a symlink is a second copy of its relative target, read from wherever the
+        // new name is: the region check a rename gets (`allow_region_move`).
+        if fstat(&source).is_ok_and(|st| st.st_mode & libc::S_IFMT == libc::S_IFLNK) {
+            let inner = self.inner.lock().unwrap();
+            let from = inner
+                .table
+                .get(ino.0)
+                .map(|node| (node.git.clone(), node.rule.clone()));
+            let (to_git, to) = inner.table.child_contexts(newparent.0, newname);
+            if let Some((from_git, from)) = from
+                && let Decision::Deny(reason) =
+                    authorize_region_move(inner.table.rules(), (&from_git, &from), (&to_git, &to))
+            {
+                return reply.error(deny("link", &format!("{newname:?}"), reason));
+            }
+        }
         if let Err(err) = linkat(
             AT_FDCWD,
             proc_fd_path(&source).as_c_str(),
@@ -1279,6 +1492,11 @@ impl Filesystem for KoAgentFs {
         if let Err(err) = self.allow_create(newparent.0, newname, "rename-to") {
             return reply.error(err);
         }
+        if let Err(err) =
+            self.allow_region_move(parent.0, name, newparent.0, newname, "rename-from")
+        {
+            return reply.error(err);
+        }
         if exchange {
             if let Err(err) =
                 self.allow_child(newparent.0, newname, Mutation::RenameFrom, "rename-from")
@@ -1286,6 +1504,11 @@ impl Filesystem for KoAgentFs {
                 return reply.error(err);
             }
             if let Err(err) = self.allow_create(parent.0, name, "rename-to") {
+                return reply.error(err);
+            }
+            if let Err(err) =
+                self.allow_region_move(newparent.0, newname, parent.0, name, "rename-from")
+            {
                 return reply.error(err);
             }
         }
@@ -1297,7 +1520,7 @@ impl Filesystem for KoAgentFs {
             Ok(pair) => pair,
             Err(err) => return reply.error(err),
         };
-        // The raw syscall, not a libc wrapper. nix gates its `renameat2` behind glibc, and the
+        // The raw syscall, not a libc wrapper. nix compiles its `renameat2` only for glibc, and the
         // static-musl release links Rust's *bundled* musl libc.a, which lacks the wrapper — the
         // symbol is absent at link time even though the libc crate declares it. The syscall itself
         // is in every kernel since 3.15, which is the actual dependency. The kernel rejects flags it
@@ -1337,7 +1560,7 @@ impl Filesystem for KoAgentFs {
         _flags: Option<BsdFileFlags>,
         reply: ReplyAttr,
     ) {
-        // The gate classifies the *inode* (`allow_ino`, name-derived and stable), so it holds
+        // The check classifies the *inode* (`allow_ino`, name-derived and stable), so it holds
         // whether or not a handle accompanies this call. A write handle was already authorized at
         // `open`; this covers the rest — a `chmod`/`chown`/`touch` on a read handle, and every
         // path-based change.
@@ -1549,6 +1772,51 @@ mod tests {
 
         drop(dir);
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn only_a_name_shaped_like_an_8_3_short_name_is_looked_up_by_its_siblings() {
+        for short in ["VSCODE~1", "NODE_M~1", "CLAUDE~1.JSO", "AB12CD~1", "X~12"] {
+            assert!(has_short_name_shape(short.as_bytes()), "{short}");
+        }
+        for other in [
+            "notes.md~",
+            "foo~",
+            "~",
+            "a~b",
+            "VSCODE~1.JSON",
+            "TOOLONGNM~1",
+            ".vscode",
+        ] {
+            assert!(!has_short_name_shape(other.as_bytes()), "{other}");
+        }
+    }
+
+    #[test]
+    fn a_long_name_sibling_is_the_same_object_under_a_name_without_a_tilde() {
+        let dir = std::env::temp_dir().join(format!("ko-agent-fs-sibling-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".envrc"), b"x").unwrap();
+        std::fs::write(dir.join("LONE~1"), b"x").unwrap();
+        std::fs::hard_link(dir.join(".envrc"), dir.join("ENVRC~1")).unwrap();
+        let parentfd: OwnedFd = nix::fcntl::open(
+            &dir,
+            OFlag::O_PATH | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        let st = fstatat(&parentfd, c"ENVRC~1", AtFlags::AT_SYMLINK_NOFOLLOW).unwrap();
+        assert_eq!(
+            long_name_sibling(&parentfd, OsStr::new("ENVRC~1"), &st),
+            Some(OsString::from(".envrc")),
+        );
+        let lone = fstatat(&parentfd, c"LONE~1", AtFlags::AT_SYMLINK_NOFOLLOW).unwrap();
+        assert_eq!(
+            long_name_sibling(&parentfd, OsStr::new("LONE~1"), &lone),
+            None,
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

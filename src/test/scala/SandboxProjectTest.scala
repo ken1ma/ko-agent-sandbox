@@ -418,6 +418,262 @@ class SandboxProjectTest extends munit.FunSuite:
     assertEquals(noGit(plain), None)
     assertEquals(noGit(Files.createDirectories(root.resolve("none"))), None)
 
+
+  test("the bare scan reads git's config forms and leaves every doubt open"):
+    for text <- Seq(
+        "[core]\n\tbare = true\n",
+        "[core]\n\tbare = \"true\"\n",
+        "[core]\n\tbare = true # a comment\n",
+        "[core]\n\tbare = yes ; a comment\n",
+        "[core] bare = on\n",
+        "[core]\n\tBare = 1\n",
+        "[core]\n\tbare\n",
+        "[core \"sub]section\"] bare = true\n",
+        "[core \"a\\\"]b\"] bare = true\n",
+        "[core]\n\tbare = true # \\\" a comment\n",
+        "\uFEFF[core] bare = true\n",
+        "[unused][core] bare = true\n",
+      )
+    do assertEquals(scanBare(text), Some(true), text)
+    for text <- Seq(
+        "",
+        "[core]\n\tbare = false\n",
+        "[core]\n\tbare = \"no\"\n",
+        "[core]\n\tbare = off # not true\n",
+        "[core]\n\tbare = 0\n",
+        "[core]\n\tbare =\n",
+        "[core]\n\t# bare = true\n",
+        "[core]\n\thooksPath = \"#bare\"\n",
+      )
+    do assertEquals(scanBare(text), Some(false), text)
+    for text <- Seq(
+        "[include]\n\tpath = ../other\n",
+        "[includeIf \"gitdir:/x/\"]\n\tpath = ../other\n",
+        "[includeIf \"gitdir:a]b\"] path = ../other\n",
+        "[includeIf \"gitdir:/repos/a\\\"[0-9]\\\"/\"] path = ../other\n",
+        "[core]\n\tbare = \"true\\\"\n",
+        "[core]\n\t= true\n",
+        "[core]\n\tbare bare = true\n",
+        "[core\n",
+        "[core]\n\tbare = \"true\n",
+        "[core]\n\tbare = maybe\n",
+        "[core\n\tbare = false\n",
+      )
+    do assertEquals(scanBare(text), None, text)
+
+  test("a linked worktree names the main worktree whose volume it may share, from its own commondir"):
+    val root = Files.createTempDirectory("main-worktree").toRealPath()
+    val home = Files.createTempDirectory("main-worktree-home").toRealPath()
+    val homes = protectedHomes(Os.Linux, Map("HOME" -> home.toString))
+    // The config as `git init` writes it, with `core.bare` stated.
+    def gitdirAt(path: Path, bare: Boolean = false): Path =
+      Files.createDirectories(path)
+      Files.writeString(path.resolve("HEAD"), "ref: refs/heads/main\n")
+      Files.writeString(path.resolve("config"), s"[core]\n\trepositoryformatversion = 0\n\tbare = $bare\n")
+      path
+    // A linked worktree as `git worktree add` lays it out: the pointer absolute, the gitdir one
+    // component under the common gitdir's `worktrees`, and the commondir as given.
+    def linkedAt(name: String, gitdir: Path, commondir: Option[String]): Path =
+      gitdirAt(gitdir)
+      commondir.foreach(text => Files.writeString(gitdir.resolve("commondir"), text))
+      val linked = Files.createDirectories(root.resolve(name))
+      Files.writeString(linked.resolve(".git"), s"gitdir: $gitdir\n")
+      linked
+    val main = Files.createDirectories(root.resolve("main"))
+    val mainGitdir = gitdirAt(main.resolve(".git"))
+    def underMain(name: String, commondir: Option[String] = Some("../..\n")): Path =
+      linkedAt(name, mainGitdir.resolve("worktrees").resolve(name), commondir)
+    val linked = underMain("feature")
+    assertEquals(mainWorktreeOf(linked, homes, Os.Linux), Some(main))
+    // On Windows too: the volume is named from host paths, which the container's spelling of the
+    // project does not enter.
+    assertEquals(mainWorktreeOf(linked, homes, Os.Windows), Some(main))
+    // The main worktree itself has none; an absolute commondir names the same directory.
+    assertEquals(mainWorktreeOf(main, homes, Os.Linux), None)
+    assertEquals(mainWorktreeOf(underMain("absolute", Some(s"$mainGitdir\n")), homes, Os.Linux), Some(main))
+    // Spelled as a launch from the main worktree spells it: a pointer through a symlink to the
+    // main worktree still names the real path, and so the same project id.
+    val alias = root.resolve("alias")
+    Files.createSymbolicLink(alias, main)
+    val viaAlias = Files.createDirectories(root.resolve("via-alias"))
+    Files.writeString(viaAlias.resolve(".git"), s"gitdir: ${alias.resolve(".git/worktrees/feature")}\n")
+    assertEquals(mainWorktreeOf(viaAlias, homes, Os.Linux), Some(main))
+    assertEquals(
+      mainWorktreeOf(viaAlias, homes, Os.Linux).map(projectIdOf(_, Os.Linux)),
+      Some(projectIdOf(main, Os.Linux)),
+    )
+    // A commondir that is missing, names nothing, or names a `.git` that does not hold this
+    // gitdir: no main worktree can be named from it.
+    assertEquals(mainWorktreeOf(underMain("no-commondir", None), homes, Os.Linux), None)
+    assertEquals(mainWorktreeOf(underMain("dangling", Some("../../gone\n")), homes, Os.Linux), None)
+    // A NUL between path characters: trim would take one at the end away with the newline.
+    assertEquals(mainWorktreeOf(underMain("malformed", Some("../" + 0.toChar + "..\n")), homes, Os.Linux), None)
+    val other = gitdirAt(root.resolve("other/.git"))
+    assertEquals(mainWorktreeOf(underMain("elsewhere", Some(s"$other\n")), homes, Os.Linux), None)
+    // A gitdir the common gitdir holds other than under `worktrees` is not a linked worktree's.
+    assertEquals(
+      mainWorktreeOf(linkedAt("module", mainGitdir.resolve("modules/x"), Some("..\n")), homes, Os.Linux),
+      None,
+    )
+    // A bare repository's worktrees, and those of a main worktree with a separate git dir: the
+    // common gitdir is not a `.git` directory, so the main checkout is not named by it.
+    val bare = gitdirAt(root.resolve("bare.git"))
+    assertEquals(
+      mainWorktreeOf(linkedAt("of-bare", bare.resolve("worktrees/of-bare"), Some("../..\n")), homes, Os.Linux),
+      None,
+    )
+    val separate = gitdirAt(root.resolve("separate"))
+    val separateMain = Files.createDirectories(root.resolve("separate-main"))
+    Files.writeString(separateMain.resolve(".git"), s"gitdir: $separate\n")
+    assertEquals(
+      mainWorktreeOf(
+        linkedAt("of-separate", separate.resolve("worktrees/of-separate"), Some("../..\n")), homes, Os.Linux,
+      ),
+      None,
+    )
+    // git's `get_main_worktree`, like the name check, takes a bare repository whose directory is
+    // called `.git` for a main worktree; `core.bare` marks it bare — in the common config, or in
+    // the linked gitdir's `config.worktree`, where `git config --worktree` in the linked worktree
+    // writes it. A config that cannot be read decides nothing, so it names no main worktree either.
+    val bareDotGit = gitdirAt(root.resolve("bare-dot/.git"), bare = true)
+    assertEquals(
+      mainWorktreeOf(
+        linkedAt("of-bare-dot", bareDotGit.resolve("worktrees/of-bare-dot"), Some("../..\n")), homes, Os.Linux,
+      ),
+      None,
+    )
+    val bareByWorktreeConfig = underMain("of-bare-wt")
+    Files.writeString(mainGitdir.resolve("worktrees/of-bare-wt/config.worktree"), "[core]\n\tbare\n")
+    assertEquals(mainWorktreeOf(bareByWorktreeConfig, homes, Os.Linux), None)
+    val noConfig = gitdirAt(root.resolve("no-config/.git"))
+    Files.delete(noConfig.resolve("config"))
+    assertEquals(
+      mainWorktreeOf(
+        linkedAt("of-no-config", noConfig.resolve("worktrees/of-no-config"), Some("../..\n")), homes, Os.Linux,
+      ),
+      None,
+    )
+    // A `config.worktree` that exists but exceeds what is read is unknown content, not absence.
+    val withHugeWorktreeConfig = underMain("of-huge-wt")
+    Files.write(mainGitdir.resolve("worktrees/of-huge-wt/config.worktree"), new Array[Byte]((1 << 20) + 1))
+    assertEquals(mainWorktreeOf(withHugeWorktreeConfig, homes, Os.Linux), None)
+    // Git in a linked worktree does not read the main worktree's own `config.worktree`, so a
+    // `bare` there does not stop the main worktree from being named.
+    val mainBareToItself = gitdirAt(root.resolve("main-wt/.git"))
+    Files.writeString(mainBareToItself.resolve("config.worktree"), "[core]\n\tbare\n")
+    assertEquals(
+      mainWorktreeOf(
+        linkedAt("of-main-wt", mainBareToItself.resolve("worktrees/of-main-wt"), Some("../..\n")), homes, Os.Linux,
+      ),
+      Some(root.resolve("main-wt")),
+    )
+    // A main worktree the launcher refuses as a project — the home directory — is no volume
+    // owner, whether the pointer spells it directly or through a symlink that hides it.
+    val homeGitdir = gitdirAt(home.resolve(".git"))
+    assertEquals(
+      mainWorktreeOf(linkedAt("of-home", homeGitdir.resolve("worktrees/of-home"), Some("../..\n")), homes, Os.Linux),
+      None,
+    )
+    val homeAlias = root.resolve("home-alias")
+    Files.createSymbolicLink(homeAlias, home)
+    assertEquals(
+      mainWorktreeOf(
+        linkedAt("of-home-alias", homeAlias.resolve(".git/worktrees/of-home-alias"), Some("../..\n")), homes, Os.Linux,
+      ),
+      None,
+    )
+  test("a linked worktree's main Git directory is bound read-only where the container can follow the pointer"):
+    val root = Files.createTempDirectory("gitdir-bind").toRealPath()
+    def gitdirAt(path: Path): Path =
+      Files.createDirectories(path)
+      Files.writeString(path.resolve("HEAD"), "ref: refs/heads/main\n")
+      path
+    def linkedAt(name: String, pointer: String): Path =
+      val linked = Files.createDirectories(root.resolve(name))
+      Files.writeString(linked.resolve(".git"), s"gitdir: $pointer\n")
+      linked
+    val main = Files.createDirectories(root.resolve("main"))
+    val mainGitdir = gitdirAt(main.resolve(".git"))
+    def worktreeAt(name: String, commondir: String = "../..\n"): Path =
+      val gitdir = gitdirAt(mainGitdir.resolve("worktrees").resolve(name))
+      Files.writeString(gitdir.resolve("commondir"), commondir)
+      gitdir
+    val bind = GitdirBind(mainGitdir, mainGitdir.toString)
+    // The pointer as `git worktree add` writes it, absolute: followed where the container spells
+    // the project as the host does, and not on Windows, whose drives it has under /mnt.
+    val absolute = linkedAt("absolute", worktreeAt("absolute").toString)
+    assertEquals(linkedGitdirBind(absolute, main, Os.Linux), Some(bind))
+    assertEquals(linkedGitdirBind(absolute, main, Os.Mac), Some(bind))
+    assertEquals(linkedGitdirBind(absolute, main, Os.Windows), None)
+    // A relative pointer, as `--relative-paths` writes it, resolves the same way from either
+    // spelling of the project, so it is followed everywhere; this fixture's host spelling has no
+    // drive, which is what mountPathOf refuses on Windows.
+    worktreeAt("relative")
+    val relative = linkedAt("relative", "../main/.git/worktrees/relative")
+    assertEquals(linkedGitdirBind(relative, main, Os.Linux), Some(bind))
+    assertEquals(linkedGitdirBind(relative, main, Os.Windows), None)
+    // Through a symlink alias of the main worktree: the target is the alias's spelling, where the
+    // container's git looks, and the source the real directory.
+    val alias = root.resolve("alias")
+    Files.createSymbolicLink(alias, main)
+    worktreeAt("via-alias")
+    val viaAlias = linkedAt("via-alias", alias.resolve(".git/worktrees/via-alias").toString)
+    assertEquals(
+      linkedGitdirBind(viaAlias, main, Os.Linux),
+      Some(GitdirBind(mainGitdir, alias.resolve(".git").toString)),
+    )
+    // The commondir is git's second step, used as written: absolute in the target's spelling it
+    // lands on the bind, absolute in the real spelling behind an alias it names a path the
+    // container lacks, and relative it climbs within the bind or not at all.
+    val absoluteCommon = linkedAt("absolute-common", worktreeAt("absolute-common", s"$mainGitdir\n").toString)
+    assertEquals(linkedGitdirBind(absoluteCommon, main, Os.Linux), Some(bind))
+    assertEquals(linkedGitdirBind(absoluteCommon, main, Os.Windows), None)
+    val realBehindAlias =
+      linkedAt("real-behind-alias", alias.resolve(".git/worktrees/real-behind-alias").toString)
+    worktreeAt("real-behind-alias", s"$mainGitdir\n")
+    assertEquals(linkedGitdirBind(realBehindAlias, main, Os.Linux), None)
+    val climbingCommon = linkedAt("climbing-common", worktreeAt("climbing-common", "../../../.git\n").toString)
+    assertEquals(linkedGitdirBind(climbingCommon, main, Os.Linux), Some(bind))
+    val noCommon = linkedAt("no-common", worktreeAt("no-common").toString)
+    Files.delete(mainGitdir.resolve("worktrees/no-common/commondir"))
+    assertEquals(linkedGitdirBind(noCommon, main, Os.Linux), None)
+    // Not followed: a `.git` symlink, a pointer into another repository's worktrees, a relative
+    // pointer climbing past the root, and a common gitdir inside the project.
+    val symlinked = Files.createDirectories(root.resolve("symlinked"))
+    Files.createSymbolicLink(symlinked.resolve(".git"), worktreeAt("symlinked"))
+    assertEquals(linkedGitdirBind(symlinked, main, Os.Linux), None)
+    val other = gitdirAt(root.resolve("other/.git"))
+    val ofOther = linkedAt("of-other", gitdirAt(other.resolve("worktrees/of-other")).toString)
+    assertEquals(linkedGitdirBind(ofOther, main, Os.Linux), None)
+    worktreeAt("climbing")
+    val climbing =
+      linkedAt("climbing", "../" * (root.getNameCount + 2) + s"${root.toString.drop(1)}/main/.git/worktrees/climbing")
+    assertEquals(linkedGitdirBind(climbing, main, Os.Linux), None)
+    val holding = Files.createDirectories(root.resolve("holding"))
+    val inner = Files.createDirectories(holding.resolve("inner"))
+    val innerWorktree = gitdirAt(inner.resolve(".git/worktrees/holding"))
+    Files.writeString(holding.resolve(".git"), s"gitdir: $innerWorktree\n")
+    assertEquals(linkedGitdirBind(holding, inner, Os.Linux), None)
+    // The extension `--relative-paths` sets, which the image's git refuses: read from the common
+    // config in any section, an unreadable config counting as set.
+    Files.writeString(mainGitdir.resolve("config"), "[core]\n\tbare = false\n")
+    assert(!setsRelativeWorktrees(mainGitdir))
+    Files.writeString(mainGitdir.resolve("config"), "[extensions]\n\trelativeWorktrees = true\n")
+    assert(setsRelativeWorktrees(mainGitdir))
+    Files.writeString(mainGitdir.resolve("config"), "[other] RelativeWorktrees\n")
+    assert(setsRelativeWorktrees(mainGitdir))
+    Files.writeString(mainGitdir.resolve("config"), "[core]\n\tbare = \"unclosed\n")
+    assert(setsRelativeWorktrees(mainGitdir))
+    Files.delete(mainGitdir.resolve("config"))
+    assert(setsRelativeWorktrees(mainGitdir))
+    // The warning names the directory as every host path is named; the agent's sentence names
+    // the path git reads inside and what fails there.
+    val warning = readOnlyGitWarning(bind, Os.Linux)
+    assert(warning.contains(mainGitdir.toString) && warning.contains("stay on the host"), warning)
+    val instruction = readOnlyGitInstruction(bind, Mount)
+    assert(instruction.contains(s"`$Mount/.git`") && instruction.contains(s"`$mainGitdir`"), instruction)
+    assert(instruction.contains("`commit`") && instruction.contains("`clean`"), instruction)
+
   test("a refused symlink form leaves no artifact through the link"):
     // bazelbuild/bazel#28515: setup must not write through a pre-seeded symlink, so the refusal comes before any
     // creation.
@@ -426,18 +682,18 @@ class SandboxProjectTest extends munit.FunSuite:
 
     val linkedBoundary =
       Files.createSymbolicLink(project.resolve(".ko-agent-sandbox"), target)
-    assert(boundaryDirError(linkedBoundary).isDefined)
+    assert(boundaryDirRefusal(linkedBoundary).isDefined)
     assert(FileHelper.directoryEntries(target).isEmpty, "wrote through the boundary link")
 
   test("an absent boundary directory is empty configuration, never a directory to materialize"):
     val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")
-    assertEquals(boundaryDirError(dir), None)
+    assertEquals(boundaryDirRefusal(dir), None)
     assert(!Files.exists(dir))
 
   test("a file where the boundary directory belongs refuses the launch"):
     val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")
     Files.createFile(dir)
-    assert(boundaryDirError(dir).isDefined)
+    assert(boundaryDirRefusal(dir).isDefined)
     // Refused, not replaced: whatever is there is the user's to remove.
     assert(Files.isRegularFile(dir))
 
@@ -446,19 +702,19 @@ class SandboxProjectTest extends munit.FunSuite:
     Files.createDirectory(dir)
     Files.createDirectory(dir.resolve("egress"))
     Files.createFile(dir.resolve(".DS_Store"))
-    assertEquals(boundaryDirError(dir), None)
+    assertEquals(boundaryDirRefusal(dir), None)
 
     Files.createDirectory(dir.resolve("egres"))
-    val refused = boundaryDirError(dir)
+    val refused = boundaryDirRefusal(dir)
     assert(refused.exists(_.contains("egres")), refused.toString)
     Files.delete(dir.resolve("egres"))
 
     // The other entry is allowed by name, and a symlink of it refused like egress.
     Files.createDirectory(dir.resolve("run-on-host"))
-    assertEquals(boundaryDirError(dir), None)
+    assertEquals(boundaryDirRefusal(dir), None)
     Files.delete(dir.resolve("run-on-host"))
     Files.createSymbolicLink(dir.resolve("run-on-host"), dir.resolve("egress"))
-    val linked = boundaryDirError(dir)
+    val linked = boundaryDirRefusal(dir)
     assert(linked.exists(_.contains("run-on-host")), linked.toString)
 
   test("doc/egress-proxy.md names the boundary directory's accepted entries"):
@@ -471,7 +727,7 @@ class SandboxProjectTest extends munit.FunSuite:
     val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")
     Files.createDirectory(dir)
     Files.createDirectory(dir.resolve("future-config"))
-    val refused = boundaryDirError(dir)
+    val refused = boundaryDirRefusal(dir)
     assert(refused.exists(_.contains("update the launcher")), refused.toString)
 
   test("a symlinked boundary directory or egress refuses the launch"):
@@ -479,11 +735,11 @@ class SandboxProjectTest extends munit.FunSuite:
     val target = Files.createDirectory(project.resolve("target"))
 
     val linked = Files.createSymbolicLink(project.resolve(".ko-agent-sandbox"), target)
-    assert(boundaryDirError(linked).isDefined)
+    assert(boundaryDirRefusal(linked).isDefined)
 
     val dir = Files.createDirectory(project.resolve("real.ko-agent-sandbox"))
     Files.createSymbolicLink(dir.resolve("egress"), project.resolve("secret"))
-    val refused = boundaryDirError(dir)
+    val refused = boundaryDirRefusal(dir)
     assert(refused.isDefined)
     // The refusal names the symlink itself, not merely the boundary directory around it.
     assert(refused.exists(_.contains("egress")), refused.toString)

@@ -27,9 +27,8 @@ When `$KO_AGENT_SANDBOX_CLIPBOARD` is `paste`, read a copied image with Ctrl-V i
 stdin. Without clipboard access, paste reports no image; tell the user to save it under the
 project and pass its path instead.
 
-With the default `ko-agent-fs` guard, new symlinks in the project must have relative targets
-staying inside it; even absolute targets inside it fail. The appended section identifies
-unfiltered direct bind mounts.
+New symlinks in the project must have relative targets staying inside it; even absolute targets
+inside it fail.
 
 Build output:
 
@@ -51,9 +50,9 @@ Build output:
 
 ## Use what is already installed
 
-Java 25, Scala (`sbt`, `cs`, `scalafmt`, and `scala`, which is Scala CLI), Python 3.14 (`uv`,
-`uvx`), Node 24, Rust stable (`clippy`, `rustfmt`, and the static musl target), plus `rg`, `jq`,
-`patch`, `zstd`, `openssl`, binutils, and the usual GNU text and process commands.
+VS Code CLI (`code`), Java 25, Scala (`sbt`, `cs`, `scalafmt`, and `scala`, which is Scala CLI),
+Python 3.14 (`uv`, `uvx`), Node 24, Rust stable (`clippy`, `rustfmt`, and the static musl target),
+plus `rg`, `jq`, `patch`, `zstd`, `openssl`, binutils, and the usual GNU text and process commands.
 
 Absent: `make`, `g++`, `mvn`, `gradle`, `ssh`, `rsync`, `wget`, `zip`, `shellcheck`, and the
 `sqlite3` CLI — use `python3 -c "import sqlite3; ..."`.
@@ -66,13 +65,21 @@ After renaming a heading or moving a file, run `ko-sandbox-markdown-link-check` 
 local links across the repository's Markdown files.
 
 
+## Codex review
+
+In Claude Code, after completing a non-trivial change, offer `/ko-review:codex`, which has Codex
+review the working tree and debate the findings with you.
+
 ## git
 
 Read history freely. `add`, `commit`, `checkout`, `switch`, `fetch` and `merge` work.
 
-The default `ko-agent-fs` guard refuses these operations. Report refusals; do not work around them.
+The `ko-agent-fs` filter refuses these operations. Report refusals; do not work around them.
 
-- Writing `config`, `hooks/` or rebase state in any repository under the project.
+- Writing `config`, `hooks/`, rebase or bisect state in any repository under the project.
+  - `git remote add`, `branch -m` and `--set-upstream-to` write `config`; `branch -m` renames the
+    branch, then fails.
+  - `git bisect` fails: bisect on the host, or on a clone under `~`.
 - `git init` and `git clone` under the project. Clone under `~`; the unblocked bare forms
   (`--bare`, `--mirror`) belong there too.
 - `git rebase` in any form, `git am`, and a ranged or conflicted `cherry-pick`/`revert`. One
@@ -81,11 +88,10 @@ The default `ko-agent-fs` guard refuses these operations. Report refusals; do no
 - `git submodule update --init` on a submodule not yet checked out, even a public one.
   Host-initialized submodules work normally.
 - Creating or editing `.ko-agent-sandbox` at any depth. Ask the user to change it on the host.
-
-Without the filter, the appended section names the workspace-root paths mounted read-only. Do not
-bypass restrictions through writable Git configuration, hooks or other Git entries in nested
-repositories, symlinks with absolute targets, or symlinks that can resolve outside the project on
-the host. Make those changes on the host.
+- Changing what `$KO_AGENT_SANDBOX_FILE_RULES` makes read-only. A command meant to change such a
+  file, such as `pre-commit autoupdate`, is the user's to run on the host.
+  - A `switch`, `checkout` or `pull` that must change one prints `unable to unlink old` and
+    leaves the old content showing as modified: leave it out of commits and tell the user.
 
 Leave `git push` to the user on the host. The default egress rules refuse it.
 

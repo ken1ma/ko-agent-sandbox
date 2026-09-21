@@ -1,5 +1,6 @@
-//! The deny surface, exercised through a real mount by an attacker who is *not* git: raw filesystem
-//! operations against every path that could make a later host `git` execute code.
+//! The mutation checks, exercised through a real mount by an attacker who is *not* git: raw
+//! filesystem operations against every path that could make a later host `git` execute code or
+//! open a path the sandbox chose.
 //!
 //! Each refusal is asserted to be `EPERM` specifically — a policy denial, not merely "an error".
 //! The exception is the pair of stale-handle tests at the end, whose refusal comes from the
@@ -11,9 +12,11 @@ use std::ffi::CString;
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::{PermissionsExt, symlink};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use common::{TestMount, allowed, denied, denied_nix};
+use ko_agent_fs::policy::FileRules;
+use ko_agent_fs::rulefile;
 use nix::errno::Errno;
 use nix::sys::stat::{Mode, SFlag, mknodat};
 
@@ -534,6 +537,102 @@ fn rebase_and_sequencer_todo_state_is_immutable() {
 
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn alternates_cannot_be_written_or_moved_into_place() {
+    // Host git opens each object directory `objects/info/alternates` names, by any path.
+    let mount = TestMount::new(repository);
+    allowed(
+        "mkdir objects/info",
+        fs::create_dir(mount.at(".git/objects/info")),
+    );
+    allowed(
+        "write the commit-graph",
+        fs::write(mount.at(".git/objects/info/commit-graph"), b"graph\n"),
+    );
+    denied(
+        "create alternates",
+        fs::write(
+            mount.at(".git/objects/info/alternates"),
+            b"/elsewhere/objects\n",
+        ),
+    );
+    denied(
+        "create http-alternates",
+        fs::write(
+            mount.at(".git/objects/info/http-alternates"),
+            b"https://elsewhere.example/objects\n",
+        ),
+    );
+    denied(
+        "symlink alternates",
+        symlink("../pack", mount.at(".git/objects/info/alternates")),
+    );
+    denied(
+        "rename objects/info",
+        fs::rename(
+            mount.at(".git/objects/info"),
+            mount.at(".git/objects/moved"),
+        ),
+    );
+    denied(
+        "rename objects",
+        fs::rename(mount.at(".git/objects"), mount.at(".git/refs/objects")),
+    );
+
+    // Written in another directory, it cannot be moved into place.
+    allowed(
+        "empty objects/info",
+        fs::remove_file(mount.at(".git/objects/info/commit-graph")),
+    );
+    allowed(
+        "rmdir the empty objects/info",
+        fs::remove_dir(mount.at(".git/objects/info")),
+    );
+    allowed(
+        "mkdir objects/staged",
+        fs::create_dir(mount.at(".git/objects/staged")),
+    );
+    allowed(
+        "write alternates in objects/staged",
+        fs::write(
+            mount.at(".git/objects/staged/alternates"),
+            b"/elsewhere/objects\n",
+        ),
+    );
+    denied(
+        "rename a directory onto objects/info",
+        fs::rename(
+            mount.at(".git/objects/staged"),
+            mount.at(".git/objects/info"),
+        ),
+    );
+    denied(
+        "symlink objects/info",
+        symlink("staged", mount.at(".git/objects/info")),
+    );
+
+    // Re-rooting applies the same protection to the nested gitdir.
+    allowed(
+        "mkdir a submodule's objects/info",
+        fs::create_dir_all(mount.at(".git/modules/sub/objects/info")),
+    );
+    denied(
+        "create a submodule's alternates",
+        fs::write(
+            mount.at(".git/modules/sub/objects/info/alternates"),
+            b"/elsewhere/objects\n",
+        ),
+    );
+
+    assert!(!mount.backing_at(".git/objects/info").exists());
+    assert!(
+        !mount
+            .backing_at(".git/modules/sub/objects/info/alternates")
+            .exists()
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn hardlink_aliasing_cannot_smuggle_protected_entries_out() {
     // A hardlink shares the inode, so aliasing a hook to a writable name would let a write through
     // the alias mutate the frozen inode. Refused on the source side as well as the destination.
@@ -944,33 +1043,341 @@ fn a_symlinked_hooks_entry_cannot_be_re_aimed() {
 
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
-fn relocated_hooks_are_refused_at_mount_because_the_filter_cannot_protect_them() {
-    // Both halves are asserted here: that the guard refuses such a tree (`doc/git-metadata.md`,
-    // "Relocated hook directories"), and — mounting past the guard, which only the harness can do —
-    // *why* it must, since the FUSE layer alone would let the write through.
-    let mount = TestMount::new(relocated_hooks);
+fn relocated_hooks_are_served_read_only() {
+    // The guard resolves the relocated directory (`doc/git-metadata.md`, "Relocated hook
+    // directories") and the mount serves it as a read-only root, where the name-based rules alone
+    // would leave its target ordinary writable data.
+    let mount = mount_with_rules("", relocated_hooks);
 
-    let refusal = ko_agent_fs::guard::check_hook_location(&mount.backing)
-        .expect_err("the guard must refuse a workspace whose hooks are inside it");
-    assert!(
-        refusal.reason.contains("inside the workspace"),
-        "unexpected refusal: {refusal}"
+    allowed(
+        "read the host's hook",
+        fs::read_to_string(mount.at("shared-hooks/pre-commit")).map(|_| ()),
     );
-
-    // Why the guard is the only workable answer: past it, the target is ordinary writable data.
-    assert!(
-        fs::write(mount.at("shared-hooks/pre-commit"), b"#!/bin/sh\nevil\n").is_ok(),
-        "the classifier now protects the relocated target; the guard may no longer be needed — \
-         revisit `doc/git-metadata.md`, \"Relocated hook directories\""
+    denied(
+        "rewrite the host's hook at its own name",
+        fs::write(mount.at("shared-hooks/pre-commit"), b"#!/bin/sh\nevil\n"),
+    );
+    denied(
+        "add a hook beside it",
+        File::create(mount.at("shared-hooks/post-checkout")),
+    );
+    denied(
+        "rename the directory away",
+        fs::rename(mount.at("shared-hooks"), mount.at("hooks-old")),
     );
 }
 
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn an_ordinary_repository_passes_the_startup_guard() {
-    // The refusal must stay narrow: a repository with hooks in the default place is served.
+    // The refusal must stay narrow: a repository with hooks in the default place is served, and
+    // needs nothing beyond the names.
     let mount = TestMount::new(repository);
-    assert!(ko_agent_fs::guard::check_hook_location(&mount.backing).is_ok());
+    assert_eq!(
+        ko_agent_fs::guard::resolve(&mount.backing, &FileRules::default(), &[PathBuf::from("/")]),
+        Ok(ko_agent_fs::guard::Additions::default()),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The file rules: project files a host program executes on an event
+// ---------------------------------------------------------------------------
+
+/// A mount serving `rule_lines` — resolved lines, as the launcher writes them — with the guard's
+/// additions over the tree `setup` lays out, as the daemon serves them.
+fn mount_with_rules(rule_lines: &str, setup: impl FnOnce(&Path)) -> TestMount {
+    let file = rulefile::parse(rule_lines).expect("resolved rule lines");
+    TestMount::with_rules(setup, |backing| {
+        let additions = ko_agent_fs::guard::resolve(backing, &file.rules, &file.host_view)
+            .expect("the guard serves the tree");
+        file.with_additions(&additions.lines(), &additions.aliases)
+            .0
+    })
+}
+
+const DEFAULTS_LIKE: &str = "readonly .vscode\nreadonly .claude/settings.json\n\
+                             writable node_modules\n";
+
+fn listed_files(backing: &Path) {
+    repository(backing);
+    fs::create_dir_all(backing.join(".vscode")).unwrap();
+    fs::write(backing.join(".vscode/tasks.json"), b"{}\n").unwrap();
+    fs::create_dir_all(backing.join(".claude")).unwrap();
+    fs::write(backing.join(".claude/settings.json"), b"{}\n").unwrap();
+    fs::create_dir_all(backing.join("node_modules")).unwrap();
+    fs::create_dir_all(backing.join("apps")).unwrap();
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_listed_file_cannot_be_written_created_or_replaced() {
+    let mount = mount_with_rules(DEFAULTS_LIKE, listed_files);
+
+    allowed(
+        "read a listed file",
+        fs::read_to_string(mount.at(".vscode/tasks.json")).map(|_| ()),
+    );
+    denied(
+        "rewrite a listed file",
+        fs::write(
+            mount.at(".vscode/tasks.json"),
+            b"{\"runOn\": \"folderOpen\"}\n",
+        ),
+    );
+    denied(
+        "add a file below a listed directory",
+        File::create(mount.at(".vscode/launch.json")),
+    );
+    denied(
+        "remove a listed file",
+        fs::remove_file(mount.at(".vscode/tasks.json")),
+    );
+    denied(
+        "rename a listed directory away",
+        fs::rename(mount.at(".vscode"), mount.at("vscode-old")),
+    );
+    denied(
+        "create a listed name deeper",
+        fs::create_dir(mount.at("apps/.vscode")),
+    );
+    denied(
+        "create a folded spelling",
+        fs::create_dir(mount.at("apps/.VSCODE")),
+    );
+    denied(
+        "symlink at a listed name",
+        symlink("../src", mount.at("apps/.vscode")),
+    );
+    allowed(
+        "stage an ordinary file",
+        fs::write(mount.at("apps/decoy"), b"x"),
+    );
+    denied(
+        "rename a file onto a listed name",
+        fs::rename(mount.at("apps/decoy"), mount.at("apps/.vscode")),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_directory_a_line_names_through_cannot_be_swapped() {
+    let mount = mount_with_rules(DEFAULTS_LIKE, listed_files);
+
+    allowed(
+        "write beside the listed file",
+        fs::write(mount.at(".claude/notes.md"), b"x"),
+    );
+    denied(
+        "rename the pinned directory away",
+        fs::rename(mount.at(".claude"), mount.at("saved")),
+    );
+    allowed("stage a directory", fs::create_dir(mount.at("staged")));
+    allowed(
+        "fill it",
+        fs::write(mount.at("staged/settings.json"), b"{\"hooks\": {}}\n"),
+    );
+    let root = mount.mount_dirfd();
+    denied_nix(
+        "exchange the staged directory with the pinned one",
+        rename_exchange(&root, "staged", ".claude"),
+    );
+    denied(
+        "rename the staged directory onto a fresh pinned name",
+        fs::rename(mount.at("staged"), mount.at("apps/.claude")),
+    );
+    allowed(
+        "mkdir a pinned name",
+        fs::create_dir(mount.at("apps/.claude")),
+    );
+    denied(
+        "create the listed file below it",
+        File::create(mount.at("apps/.claude/settings.json")),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_writable_region_keeps_the_listed_names_it_holds() {
+    let mount = mount_with_rules(DEFAULTS_LIKE, listed_files);
+
+    // What `npm install` does with pino-abstract-transport's `.husky` and inflection's `.vscode`.
+    allowed(
+        "create a listed name inside the region",
+        fs::create_dir_all(mount.at("node_modules/p/.vscode")),
+    );
+    allowed(
+        "write it",
+        fs::write(mount.at("node_modules/p/.vscode/tasks.json"), b"{}\n"),
+    );
+    allowed(
+        "rename a package within the region",
+        fs::rename(
+            mount.at("node_modules/p"),
+            mount.at("node_modules/.p-retired"),
+        ),
+    );
+    allowed(
+        "link within the region",
+        fs::create_dir(mount.at("node_modules/.bin"))
+            .and_then(|()| symlink("../.p-retired/tsc", mount.at("node_modules/.bin/tsc"))),
+    );
+    denied(
+        "move the package out of the region",
+        fs::rename(mount.at("node_modules/.p-retired"), mount.at("apps/p")),
+    );
+    denied(
+        "rename the region's root",
+        fs::rename(mount.at("node_modules"), mount.at("nm")),
+    );
+    denied(
+        "link into the region from outside it",
+        symlink("../node_modules/.p-retired", mount.at("apps/p")),
+    );
+    denied(
+        "hard-link the region's symlink out of it",
+        fs::hard_link(mount.at("node_modules/.bin/tsc"), mount.at("apps/tsc")),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_directory_a_symlinked_interior_reaches_keeps_the_line_s_rest() {
+    let mount = mount_with_rules(DEFAULTS_LIKE, |backing| {
+        repository(backing);
+        fs::create_dir_all(backing.join("shared/claude")).unwrap();
+        std::os::unix::fs::symlink("shared/claude", backing.join(".claude")).unwrap();
+    });
+
+    denied(
+        "create the listed file under the target's own name",
+        File::create(mount.at("shared/claude/settings.json")),
+    );
+    denied(
+        "create it through the symlink",
+        File::create(mount.at(".claude/settings.json")),
+    );
+    allowed(
+        "write beside it",
+        fs::write(mount.at("shared/claude/notes.md"), b"x"),
+    );
+    denied(
+        "rename the target away",
+        fs::rename(mount.at("shared/claude"), mount.at("shared/saved")),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_gitdir_keeps_the_listed_names_it_holds() {
+    let mount = mount_with_rules(DEFAULTS_LIKE, listed_files);
+
+    allowed(
+        "create a listed name in Git's operational state",
+        fs::create_dir_all(mount.at(".git/objects/x/.vscode")),
+    );
+    allowed(
+        "write it",
+        fs::write(mount.at(".git/objects/x/.vscode/tasks.json"), b"{}\n"),
+    );
+    allowed(
+        "link to it there",
+        symlink("x/.vscode", mount.at(".git/objects/l")),
+    );
+    denied(
+        "move the directory into the project",
+        fs::rename(mount.at(".git/objects/x"), mount.at("apps/x")),
+    );
+    allowed("stage a directory", fs::create_dir(mount.at("apps/y")));
+    let root = mount.mount_dirfd();
+    denied_nix(
+        "exchange it with the directory in the gitdir",
+        rename_exchange(&root, "apps/y", ".git/objects/x"),
+    );
+    denied(
+        "move the symlink into the project",
+        fs::rename(mount.at(".git/objects/l"), mount.at("apps/l")),
+    );
+    denied(
+        "hard-link the symlink into the project",
+        fs::hard_link(mount.at(".git/objects/l"), mount.at("apps/l")),
+    );
+    denied(
+        "link to it from the project",
+        symlink("../.git/objects/x", mount.at("apps/web")),
+    );
+    denied(
+        "link to the gitdir itself",
+        symlink("../.git", mount.at("apps/gitdir")),
+    );
+    denied(
+        "link to it past a protected directory",
+        symlink("../.git/hooks/..", mount.at("apps/gitdir")),
+    );
+    // A later `apps/web -> hooks/../objects/x` would reach the gitdir's state through it.
+    denied(
+        "link to a protected Git directory",
+        symlink("../.git/hooks", mount.at("apps/hooks")),
+    );
+    denied(
+        "link to a protected Git file",
+        symlink("../.git/config", mount.at("apps/config")),
+    );
+    allowed(
+        "move a directory into the gitdir",
+        fs::rename(mount.at("apps/y"), mount.at(".git/objects/y")),
+    );
+
+    // A target spelling an NTFS 8.3 short name is refused whatever the name holds when the link is
+    // made: a Windows host resolves it in the symlink WSL writes when it reads the link, so an
+    // ordinary `pivot/GIT~1`, removed and replaced by `pivot -> .`, would aim the link at `.git`.
+    denied(
+        "link to the gitdir's state by its short name",
+        symlink("../GIT~1/objects/x", mount.at("apps/short-web")),
+    );
+    denied(
+        "link into the region by its short name",
+        symlink("../NODE_M~1", mount.at("apps/short-nm")),
+    );
+    allowed(
+        "create an ordinary directory spelled like a short name",
+        fs::create_dir_all(mount.at("pivot/GIT~1")),
+    );
+    denied(
+        "link through it",
+        symlink("../pivot/GIT~1/objects/x", mount.at("apps/short-pivot")),
+    );
+    allowed(
+        "link past it by long names",
+        symlink("../pivot/apps", mount.at("apps/long-pivot")),
+    );
+    allowed(
+        "link by long names into a directory that does not exist yet",
+        symlink("../later/objects/x", mount.at("apps/long-later")),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_writable_line_frees_one_file_below_a_read_only_directory() {
+    let mount = mount_with_rules(
+        "readonly .vscode\nwritable .vscode/settings.json\n",
+        |backing| {
+            listed_files(backing);
+            fs::write(backing.join(".vscode/settings.json"), b"{}\n").unwrap();
+        },
+    );
+
+    allowed(
+        "write the freed file",
+        fs::write(
+            mount.at(".vscode/settings.json"),
+            b"{\"editor.tabSize\": 2}\n",
+        ),
+    );
+    denied(
+        "write its read-only sibling",
+        fs::write(mount.at(".vscode/tasks.json"), b"{}\n"),
+    );
 }
 
 // ---------------------------------------------------------------------------
