@@ -90,7 +90,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
   // --------------------------------------------------------------------------
 
   def freshRoot(): Path =
-    // Canonical, so the moved-socket pathnames the tests predict match what containment proves.
+    // Canonical, so the moved-socket pathnames the tests predict match what containedSocket resolves.
     val root = Files.createTempDirectory("command-session").toRealPath().resolve("root")
     ensureRoot(root, uid).toOption.get
 
@@ -320,7 +320,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
     )
     assert(Files.exists(condemned.resolve(RecordsDir).resolve("client")), "the record is kept")
 
-    // Its leader still proven, the next collection signals again; this time the group empties.
+    // Its leader still alive with the recorded start time, the next collection signals again; this
+    // time the group empties.
     val fakes = processes(7L -> "START-A")
     val second = scavenge(root, fakes, _ => ServerAnswer.ShutDown)
     assertEquals(fakes.ended.toList, List(7L))
@@ -350,7 +351,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val dead = die(session)
     val condemned = root.resolve(CondemnedDir).resolve(dead.getFileName)
 
-    // The KILL took the leader and left a member: the pgid is no longer provable, so nothing is
+    // The KILL took the leader and left a member: no start time is left to check the pgid against, so nothing is
     // signalled, and the member may still be the record's, so nothing is deleted.
     class Orphaned extends FakeProcesses(Map.empty):
       override def groupEmpty(pgid: Long): Boolean = false
@@ -368,7 +369,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(second.flatMap(_(1)).collect { case Collected.GroupSkipped(g, _) => g }, Vector(7L))
     assert(!Files.exists(condemned))
 
-  test("a ps listing proves itself by this process; without it nothing is observed"):
+  test("a ps listing must list this process; without it nothing is observed"):
     import HostProcesses.{groupEmptyFrom, startFrom}
     val start = "Mon Sep 14 10:00:00 2026"
     assertEquals(startFrom(Vector(s"41 $start", "40 Sun Sep 13 09:00:00 2026"), 40, 41), Some(start))
@@ -707,7 +708,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     @volatile var alive: Map[Long, String] = initial
     val ended = ListBuffer[Long]()
 
-  /** A view of the table; with `pause`, the end waits between the leader's proof and the signal
+  /** A view of the table; with `pause`, the end waits between the leader's start-time check and the signal
     * — `reached` counted down, `proceed` awaited — so a second ender can be started in between. */
   class SharedProcesses(
     groups: Groups,
@@ -762,7 +763,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
 
   def proxyRecordName = s"proxy-sbt-$Hash"
 
-  /** Another holder of the sbt retirement lock of Hash, paused between its proof and its signal
+  /** Another holder of the sbt retirement lock of Hash, paused between its start-time check and its signal
     * on `record` — a `proxy-sbt-<Hash>` record, which shares the lock with the server's — until
     * the returned latch is released; the pgid it ends. */
   def holdingRetirementLock(
@@ -779,7 +780,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     endRecordedGroup(root, record, SharedProcesses(groups))
 
   /** What a waiter finds once the holder that ended the group released: the record deleted with
-    * its session, or — the lock is released before the deletion — the record of a group proved
+    * its session, or — the lock is released before the deletion — the record of a group observed
     * gone, skipped. Never a signal: that is the holder's, counted by the caller. */
   def foundEnded(outcome: Option[Collected], pgid: Long): Unit =
     outcome match
@@ -795,8 +796,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val teardown =
       started(endSession(root, owner, SharedProcesses(groups, Some((reached, proceed))), _ => ServerAnswer.ShutDown))
     reached.await()
-    // The teardown has proved the leader and holds the lock: the taker, on the condemned record,
-    // waits rather than prove and signal the same group.
+    // The teardown has checked the leader's start time and holds the lock: the taker, on the
+    // condemned record, waits rather than check and signal the same group.
     val condemned = root.resolve(CondemnedDir).resolve(owner.directory.getFileName)
     val taking = started(taker(root, condemned.resolve(RecordsDir).resolve(serverRecordName), groups))
     assert(!doneWithin(taking, 300), "the taker waits on the lock")
@@ -847,7 +848,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
 
   test("a retirement interrupted before its TERM is resumed by a successor that ends the group"):
     // The holder died holding the lock and having signalled nothing: the lock is released with
-    // it, the group is not, and the successor proves the leader as any holder does.
+    // it, the group is not, and the successor checks the leader's start time as any holder does.
     val root = freshRoot()
     val dead = die(publish(root, Path.of("/p"), Kind.Broker).toOption.get)
     val record = dead.resolve(RecordsDir).resolve(serverRecordName)
@@ -867,8 +868,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
   test("interrupted between TERM and KILL, the successor retains a blocked group or deletes an ended one"):
     val root = freshRoot()
     val mine = publish(root, Path.of("/p"), Kind.Broker).toOption.get
-    // The TERM took the leader and left a member: the successor signals nothing — the number is
-    // no longer provable — keeps the record, and the record still blocks admission. Whether the
+    // The TERM took the leader and left a member: the successor signals nothing — no start time
+    // is left to check the number against — keeps the record, and the record still blocks admission. Whether the
     // member ends is the member's; the test requires no termination.
     val blocked = die(publish(root, Path.of("/p"), Kind.Broker).toOption.get)
     val blockedRecord = blocked.resolve(RecordsDir).resolve(serverRecordName)
@@ -894,7 +895,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val skipped = scavenge(root, orphaned, _ => ServerAnswer.ShutDown)
     assertEquals(
       skipped.find(_(0) == root.resolve(CondemnedDir).resolve(ended.getFileName)).map(pair => groupsOf(pair(1))),
-      Some(Vector(Collected.GroupSkipped(8L, "leader gone: pgid no longer provable"))),
+      Some(Vector(Collected.GroupSkipped(8L, "leader gone: no member listed"))),
     )
     assertEquals(orphaned.ended.toList, Nil)
     assert(!Files.exists(root.resolve(CondemnedDir).resolve(ended.getFileName)))
@@ -925,7 +926,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(holding.get, Some(Collected.GroupEnded(9L)))
     val freed = groupsOf(scavenge(root, scavenger, _ => ServerAnswer.ShutDown).flatMap(_(1)))
     assertEquals(
-      freed.toSet, Set(Collected.GroupEnded(7L), Collected.GroupSkipped(9L, "leader gone: pgid no longer provable")),
+      freed.toSet, Set(Collected.GroupEnded(7L), Collected.GroupSkipped(9L, "leader gone: no member listed")),
     )
     assertEquals(groups.ended.toList, List(9L, 7L))
     assert(!Files.exists(condemned))
@@ -966,7 +967,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(probedByAnotherProcess(lockFile), "taken", "released with the holder")
     assertEquals(
       endRecordedGroup(root, record, SharedProcesses(groups)),
-      Some(Collected.GroupSkipped(7L, "leader gone: pgid no longer provable")),
+      Some(Collected.GroupSkipped(7L, "leader gone: no member listed")),
     )
     assertEquals(groups.ended.toList, List(7L))
 
@@ -1001,7 +1002,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(holding.get, Some(Collected.GroupEnded(9L)))
     assertEquals(
       groupsOf(scavenging.get.flatMap(_(1))).toSet,
-      Set(Collected.GroupEnded(7L), Collected.GroupSkipped(9L, "leader gone: pgid no longer provable")),
+      Set(Collected.GroupEnded(7L), Collected.GroupSkipped(9L, "leader gone: no member listed")),
     )
     assertEquals(groupsOf(teardown.get), Vector(Collected.GroupEnded(8L)))
     assertEquals(groups.ended.toList.sorted, List(7L, 8L, 9L))
@@ -1047,7 +1048,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
       java.lang.ProcessBuilder(registeredSpawn(record, Seq("/bin/sh", "-c", "exit 7"))*).start()
     try
       assertEquals(awaitExit(exitRecord(record), process), Right(7))
-      assert(process.isAlive, "the leader outlives its command, keeping the group provable")
+      assert(process.isAlive, "the leader outlives its command, keeping its start time checkable")
     finally process.destroyForcibly().waitFor()
 
   test("a command's signal death is published as the shell's 128+signal"):

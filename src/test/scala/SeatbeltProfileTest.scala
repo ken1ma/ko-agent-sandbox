@@ -245,7 +245,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(render(inputs().copy(prereqs = millPrereqs, distribution = None, sbtGlobal = None, ivyHome = None,
       network = Network.SbtClient(brokerTmp))).isLeft)
 
-  test("the mill daemon binds listeners on any port, and its client reaches the one port it was proved on"):
+  test("the mill daemon binds listeners on any port, and its client reaches the one port it was observed listening on"):
     val daemonRules = render(millInputs.copy(network = Network.MillDaemon)).fold(fail(_), identity)
       .linesIterator.filter(_.startsWith("(allow network")).toSeq
     assertEquals(

@@ -23,7 +23,7 @@ class RunOnHostGradleDaemonsTest extends munit.FunSuite:
     assertEquals(RunOnHostGradleDaemons.registryBase(Path.of("/b/tmp")), Path.of("/b/tmp/gradle-daemon"))
     assertEquals(RunOnHostGradleDaemons.recordName(4242), "daemon-gradle-4242")
 
-  test("a daemon observed is recorded once, a gone one forgotten, a recycled pid re-proved; a record ends its group"):
+  test("a daemon observed is recorded once, a gone one forgotten, a recycled pid re-recorded; a record ends its group"):
     val records = Files.createTempDirectory("gradle-records")
     val processes = FakeProcesses(Map(100L -> "A", 200L -> "B"))
     // Two daemons after the first command: a record each, pid and start time.
@@ -43,7 +43,7 @@ class RunOnHostGradleDaemonsTest extends munit.FunSuite:
     assertEquals(recordOf(records, 200), None)
     assertEquals(recordOf(records, 100), Some(Record(100, "A")))
     // Its pid recycled by a fresh daemon of the launch: the stale record goes, and the fresh
-    // daemon is recorded with the start time that proves it.
+    // daemon is recorded with its own start time.
     processes.alive = Map(100L -> "A", 200L -> "C")
     Files.writeString(
       records.resolve(RunOnHostGradleDaemons.recordName(200)), RunOnHostSession.renderRecord(Record(200, "B")), UTF_8,
@@ -57,7 +57,7 @@ class RunOnHostGradleDaemonsTest extends munit.FunSuite:
     Files.writeString(records.resolve("proxy-gradle-0"), RunOnHostSession.renderRecord(Record(300, "D")))
     assertEquals(RunOnHostGradleDaemons.record(records, Vector(100L -> "A", 200L -> "C"), processes), Vector.empty)
     assert(Files.exists(records.resolve("proxy-gradle-0")))
-    // The record is one the session's end reads like any other: the group behind the proved pid
+    // The record is one the session's end reads like any other: the group behind the pid with the recorded start time
     // is ended; a mismatched one is skipped.
     processes.alive = Map(100L -> "A", 200L -> "E", 300L -> "D")
     val collected = RunOnHostSession.endRecordedGroups(records.getParent, records, processes)

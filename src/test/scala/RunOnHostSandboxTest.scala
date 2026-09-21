@@ -45,7 +45,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     // Passed through as they are.
     assertEquals(environment("HOME"), "/Users/u")
     assertEquals(environment("LANG"), "en_US.UTF-8")
-    // Set by the wrapper, from what it proved or made, never from the shell.
+    // Set by the wrapper, from what it checked or made, never from the shell.
     assertEquals(environment("JAVA_HOME"), jdk.toString)
     assertEquals(environment("PATH"), s"$jdk/bin:/usr/bin:/bin:/usr/sbin:/sbin")
     assertEquals(environment("TMPDIR"), "/private/tmp/ko-agent-501/s")
@@ -343,7 +343,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(RunOnHostMillDaemons.parseMembers(rows.drop(1), leader), Vector.empty)
     val perl = group(0)
     val launcher = group(1)
-    // The daemon's parent is the leader: the group's proof is never signalled.
+    // The daemon's parent is the leader: the process whose start time is checked before the group is ended
+    // is never signalled.
     assertEquals(starterOf(Vector(perl, Member(502, 500, "D", daemonMain)), leader.pgid), None)
     // The daemon's parent is outside the group: a daemon the launcher attached to, not spawned.
     assertEquals(starterOf(Vector(perl, launcher, Member(502, 77, "D", daemonMain)), leader.pgid), None)
@@ -708,7 +709,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val logged = scala.collection.mutable.ListBuffer[String]()
     val systemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
     // The daemon stand-in: a registered spawn of a sleep, the sleep itself standing for the
-    // daemon — the process a reuse proves by pid and start time — on a port of the stand-in's choosing.
+    // daemon — the process a reuse checks by pid and start time — on a port of the stand-in's choosing.
     val daemonStarts = scala.collection.mutable.ListBuffer[DaemonStart]()
     var daemonFails = false
     val daemon = (start: DaemonStart) =>
@@ -803,7 +804,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assertEquals(second, current(dirA))
       assert(second != first, "a new proxy")
       assertEquals(endedGroups.takeRight(2).toList, List(sixthServer, firstProxy))
-      // The group killed whole: no exit is published, the leader is gone, and the record proves
+      // The group killed whole: no exit is published, the leader is gone, and the record names
       // nothing to end — replaced all the same.
       val leader = ProcessHandle.of(pgidOf(recordOf(dirA))).get
       val children = leader.children().toList
@@ -1051,7 +1052,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
 
   test("the broker retires its own server under the retirement lock, below its monitor, and signals once"):
     // The process table the broker and a taker share; an ended group leaves it. The end pauses
-    // between the proof and the signal while `pause` is set.
+    // between the leader's start-time check and the signal while `pause` is set.
     class Table:
       @volatile var alive = Map.empty[Long, String]
       val ended = scala.collection.mutable.ListBuffer[Long]()
@@ -1117,7 +1118,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assert(runtimes.prepare(Program.Sbt, dirA, Seq("compile")).isRight)
       val first = leaderA
       // Another holder has the retirement lock — a taker on a crashed launch's record of the same
-      // hash, paused between its proof and its signal: the replacement waits for it under the
+      // hash, paused between its start-time check and its signal: the replacement waits for it under the
       // monitor — a second command, for a directory with nothing to retire, waits behind it — and
       // signals nothing until it is free. Monitor first, retirement lock last.
       val crashed = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
@@ -1139,7 +1140,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assert(replacing.get.isRight && other.get.isRight)
       assertEquals(table.ended.toList, List(crashedLeader, first))
       val second = leaderA
-      // The taker first, paused between its proof and its signal: the broker's replacement waits,
+      // The taker first, paused between its start-time check and its signal: the broker's replacement waits,
       // then finds the leader gone and the group empty — skipped, not signalled — and starts a
       // successor. One signal, one runtime.
       val (takerReached, takerProceed) = latches()
@@ -1277,7 +1278,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     * for `dir`, `sharer` would start it alike, `taker` forwards a value the others do not. A
     * stand-in's record names a fresh live leader; ending a group takes its leader from the table
     * and closes the server socket it held, and `leaves` are the groups whose KILL leaves a
-    * member listed, the socket with it. `onEnd` runs between a group's proof and its signal,
+    * member listed, the socket with it. `onEnd` runs between a group's start-time check and its signal,
     * `onAssemble` at each assembly — where a test runs what another process does meanwhile. */
   private class Brokers(program: Program):
     val root: Path =
@@ -1524,8 +1525,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         RunOnHostSession.endSession(root, owner, processes, _ => RunOnHostSession.ServerAnswer.ShutDown),
       )
       reached.await()
-      // The teardown has proved the leader and holds the lock: the taker, finding the owner in
-      // condemned/, waits rather than prove and signal the same group.
+      // The teardown has checked the leader's start time and holds the lock: the taker, finding the
+      // owner in condemned/, waits rather than check and signal the same group.
       val taking = inThread(broker(taker).prepare(Program.Sbt, dir, Seq("compile")))
       assert(!doneWithin(taking, 300), "the taker waits on the lock")
       proceed.countDown()
@@ -1638,7 +1639,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       runtimes.commandEnded(Program.Mvn)
       assert(observed.isEmpty, "only a gradle command has daemons to observe")
       runtimes.commandEnded(Program.Gradle)
-      // The registry observed is the launch's, under this session's tmp; the record proves the pid.
+      // The registry observed is the launch's, under this session's tmp; the record holds the pid's start time.
       assertEquals(observed.toList, List(session.tmp))
       assertEquals(Files.readString(record, UTF_8), "4242 S\n")
       assertEquals(logged.toList, List("recorded the gradle daemon 4242"))

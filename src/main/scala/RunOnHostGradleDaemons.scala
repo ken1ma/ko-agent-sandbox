@@ -3,11 +3,11 @@
 // and detached by the daemon itself into a group of its own (`DaemonMain`, `setsid`), where its
 // workers and test executors are forked. The broker records each after every command, and once
 // more at the launch's end, by pid and start time, as `records/daemon-gradle-<pid>`, and the
-// launch's end signals the group behind each record as it does every recorded group. What proves
-// a daemon the launch's is its initial environment: the client starts it with its own
+// launch's end signals the group behind each record as it does every recorded group. What identifies
+// a daemon as the launch's is its initial environment: the client starts it with its own
 // (`DefaultProcessForkOptions.getInheritableEnvironment`), whose `_JAVA_OPTIONS` names the
 // broker's `tmp/` as `java.io.tmpdir`, a value no process outside this launch's commands was
-// started with. No path proves it: the build writes across `tmp/` and the project, and a file a
+// started with. No path identifies it: the build writes across `tmp/` and the project, and a file a
 // daemon of yours holds open, renamed into the registry under any name, is reported by the kernel
 // at that name. `ps -E` reads the strings from the daemon's own memory (`KERN_PROCARGS2`,
 // `sysctl_procargsx`), so build code in the daemon can rewrite them and hide the daemon from its
@@ -53,7 +53,7 @@ object RunOnHostGradleDaemons:
   /**
    * The daemons on the host started with the launch's environment, with their start times; the
    * pid is the process table's, never a registry file's. The start time is read before the
-   * attribution and proved again after it, so a pid recycled between the two observations
+   * attribution and checked again after it, so a pid recycled between the two observations
    * records no stranger.
    */
   def daemons(tmp: Path, processes: Processes): Vector[(Long, String)] =
@@ -76,14 +76,14 @@ object RunOnHostGradleDaemons:
       try
         FileHelper.directoryEntries(records).filter(_.getFileName.toString.startsWith(RecordPrefix))
       catch case _: IOException => Vector.empty
-    val (proved, stale) = existing.partition: file =>
+    val (alive, stale) = existing.partition: file =>
       parsed(file).exists(record => processes.startOf(record.pgid).contains(record.leaderStart))
     val deleted = stale.flatMap: file =>
       try
         Files.deleteIfExists(file)
         Some(s"forgot ${file.getFileName}: its daemon is gone")
       catch case _: IOException => None
-    val recorded = proved.flatMap(parsed).map(record => record.pgid -> record.leaderStart).toSet
+    val recorded = alive.flatMap(parsed).map(record => record.pgid -> record.leaderStart).toSet
     val added = found.filterNot(recorded).flatMap: (pid, start) =>
       val file = records.resolve(recordName(pid))
       try

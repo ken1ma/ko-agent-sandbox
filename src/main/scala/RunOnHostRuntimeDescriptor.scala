@@ -22,7 +22,7 @@ import RunOnHostSession.{parseRecord, Record}
 /** One runtime as its owner describes it: `proxy` and `group` are the owner's `proxy-<program>-<hash>`
   * and `server-sbt-<hash>` or `daemon-mill-<hash>` records as they read at publication, so a
   * descriptor left from a replaced runtime fails against the successor's records; `daemon` and
-  * `daemonConfig` — the daemon proved at its start and `RunOnHostPrereqs.millDaemonConfig`
+  * `daemonConfig` — the daemon's pid and start time, taken at its start, and `RunOnHostPrereqs.millDaemonConfig`
   * digested — are a mill runtime's. */
 case class RunOnHostRuntimeDescriptor(
   fingerprint: String,
