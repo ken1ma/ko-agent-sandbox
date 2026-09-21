@@ -40,7 +40,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       gradleUserHome = Path.of("/cache/gradle"), m2Repository = Path.of("/cache/m2"),
       millDownloads = Some(Path.of("/Users/u/.cache/mill/download")), millVersion = Some("1.1.9-jvm"),
       sessionTmp = Path.of("/private/tmp/ko-agent-501/s"), socketDir = Path.of("/private/tmp/ko-agent-501/b/tmp"),
-      proxyPort = 4711, userName = "u",
+      proxyPort = 4711, trust = Path.of("/private/tmp/ko-agent-501/b/proxy-sbt-0.trust"), userName = "u",
     )
     // Passed through as they are.
     assertEquals(environment("HOME"), "/Users/u")
@@ -66,6 +66,14 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     // A forward reaches the command; one naming a variable the wrapper sets loses to the wrapper.
     assertEquals(environment("TOKEN"), "t0ken")
     assertEquals(environment("HTTPS_PROXY"), "http://127.0.0.1:4711")
+    // The proxy's CA, to the JVMs as a store and to the programs HTTPS_PROXY serves as a PEM file.
+    assert(environment("_JAVA_OPTIONS").contains(
+      "-Djavax.net.ssl.trustStore=\"/private/tmp/ko-agent-501/b/proxy-sbt-0.trust/truststore.p12\"",
+    ))
+    assert(environment("_JAVA_OPTIONS").contains("-Djavax.net.ssl.trustStoreType=PKCS12"))
+    assert(environment("_JAVA_OPTIONS").contains("-Djavax.net.ssl.trustStorePassword=changeit"))
+    RunOnHostInspection.CaBundleVariables.foreach: name =>
+      assertEquals(environment(name), "/private/tmp/ko-agent-501/b/proxy-sbt-0.trust/ca.crt")
     assert(!environment("_JAVA_OPTIONS").contains("javaagent"))
     assertEquals(environment("JAVA_TOOL_OPTIONS"), "-Duser.option=value")
     // And nothing else of the shell: not the secret, not the upstream proxy's credential, not the
@@ -81,14 +89,14 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         "HOME", "LANG", "TOKEN", "PATH", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "TMPDIR", "XDG_RUNTIME_DIR",
         "SBT_GLOBAL_SERVER_DIR", "COURSIER_CACHE", "GRADLE_USER_HOME", "USER", "LOGNAME", "MILL_FINAL_DOWNLOAD_FOLDER",
         "MILL_VERSION",
-      ) ++ commandProxyVariables(4711).keySet,
+      ) ++ commandProxyVariables(4711).keySet ++ RunOnHostInspection.CaBundleVariables,
     )
     // Without a derivable download folder the variable is absent, and so is the launcher
     // version for a program that is not mill — a forwarded one included.
     val noFolder =
       commandEnvironment(
         host.get, Vector("MILL_VERSION" -> "1.0.0"), prereqs, Path.of("/s"), Path.of("/i"), Path.of("/g"),
-        Path.of("/m"), None, None, Path.of("/t"), Path.of("/t"), 1, "u",
+        Path.of("/m"), None, None, Path.of("/t"), Path.of("/t"), 1, Path.of("/trust"), "u",
       )
     assert(!noFolder.contains("MILL_FINAL_DOWNLOAD_FOLDER"))
     assert(!noFolder.contains("MILL_VERSION"))
@@ -104,7 +112,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         commandEnvironment(
           optIn.toMap.get, forwards, prereqs.copy(program = program),
           Path.of("/s"), Path.of("/i"), Path.of("/g"), Path.of("/m"), None, None,
-          Path.of("/t"), Path.of("/t"), 1, "u",
+          Path.of("/t"), Path.of("/t"), 1, Path.of("/trust"), "u",
         )
       val inherited = withForwards(Vector.empty)
       val explicit = withForwards(optIn)
@@ -146,7 +154,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
           "_JAVA_OPTIONS" -> "-Djava.io.tmpdir=/forward",
         ),
         prereqs, root.resolve("sbt"), root.resolve("ivy"), root.resolve("gradle"),
-        root.resolve("m2"), None, None, root.resolve("tmp"), root.resolve("sockets"), 4711, "u",
+        root.resolve("m2"), None, None, root.resolve("tmp"), root.resolve("sockets"), 4711, root.resolve("trust"),
+        "u",
       )
       val expected = Map(
         "java.io.tmpdir" -> root.resolve("tmp"), "java.util.prefs.userRoot" -> root.resolve("tmp"),
@@ -570,6 +579,9 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(command.last, "--serve-proxy-on-host")
     assert(command.contains("-cp"), command.toString)
     assert(command.contains("agentsandbox.launcher.AgentSandboxLauncher"), command.toString)
+    // JVM options, so before the main class: the broker and the wrapper issue certificates.
+    assert(command.containsSlice(CertificateBuilderExports), command.toString)
+    assert(command.indexOfSlice(CertificateBuilderExports) < command.indexOf("-cp"), command.toString)
     assertEquals(
       selfInvocation("--run-command-on-host", "sbt", "/p", "/p/sub", "--").takeRight(5),
       Seq("--run-command-on-host", "sbt", "/p", "/p/sub", "--"),
@@ -1690,6 +1702,37 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       java.nio.file.StandardOpenOption.APPEND)
     assertEquals(deniedHosts(log, before), Vector("other.example"))
     assertEquals(deniedHosts(log, before + 1_000_000), Vector.empty)
+
+  test("refusedRequests reads the requests denied inside a tunnel, once each"):
+    val log = Files.createTempDirectory("proxy").resolve("proxy.log")
+    Files.writeString(
+      log,
+      """2026-08-31T01:08:25Z deny example.com CONNECT host not allowed
+        |2026-08-31T01:08:26Z allow repo1.maven.org GET /maven2/a.pom -> 151.101.0.209
+        |2026-08-31T01:08:27Z deny repo1.maven.org PUT /maven2/a.pom PUT not granted
+        |2026-08-31T01:08:28Z deny repo1.maven.org PUT /maven2/a.pom PUT not granted
+        |2026-08-31T01:08:29Z deny repo1.maven.org - - malformed request line
+        |2026-08-31T01:08:30Z deny repo1.maven.org GET /maven2/b.pom request body framing header
+        |2026-08-31T01:08:31Z deny r.example GET https://r.example/x only origin-form request targets are allowed
+        |""".stripMargin,
+      UTF_8,
+    )
+    val put = RefusedRequest("PUT", "repo1.maven.org", "/maven2/a.pom", "PUT not granted")
+    val framed = RefusedRequest("GET", "repo1.maven.org", "/maven2/b.pom", "request body framing header")
+    val absolute =
+      RefusedRequest("GET", "r.example", "https://r.example/x", "only origin-form request targets are allowed")
+    // A refused CONNECT has no target, and its reason's first word is none.
+    assertEquals(refusedRequests(log), Vector(put, framed, absolute))
+    assertEquals(put.spelled, "PUT https://repo1.maven.org/maven2/a.pom")
+    assertEquals(absolute.spelled, "GET https://r.example/x (r.example)")
+    assertEquals(deniedHosts(log), Vector("example.com"))
+    assertEquals(refusedRequests(log, Files.size(log)), Vector.empty)
+    // The report's two kinds: the framing refusal is the command's to correct, the PUT the user's.
+    import agentsandbox.egress.RefusalAdvice
+    assertEquals(RefusalAdvice.requestStep(framed.reason), Some(RefusalAdvice.bodyFramingHeader))
+    assertEquals(RefusalAdvice.requestStep(absolute.reason), Some(RefusalAdvice.originForm))
+    assertEquals(RefusalAdvice.requestStep(put.reason), None)
+    assert(RefusalAdvice.grantRefused(put.reason) && !RefusalAdvice.grantRefused(framed.reason))
 
   // --------------------------------------------------------------------------
   // The live server a portfile names

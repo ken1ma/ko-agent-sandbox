@@ -39,11 +39,21 @@ class SeatbeltProfileTest extends munit.FunSuite:
     port: Int = 51234,
     tmp: Path = Paths.get("/private/tmp/ko-agent-command/abc/tmp"),
   ) = ProfileInputs(
-    prereqs, tmp, Some(distribution), Some(sbtGlobal), Some(ivyHome), None, None, port, systemPaths, Network.ProxyOnly,
+    prereqs, tmp, Some(distribution), Some(sbtGlobal), Some(ivyHome), None, None, port, trust, systemPaths,
+    Network.ProxyOnly,
   )
+
+  private val trust = Paths.get("/private/tmp/ko-agent-command/abc/proxy.trust")
 
   private def rendered(in: ProfileInputs = inputs()): String =
     render(in).fold(reason => fail(s"render refused: $reason"), identity)
+
+  test("the proxy's CA certificate is granted as its two files, read-only, never as their directory"):
+    val profile = rendered()
+    Seq("ca.crt", "truststore.p12").foreach: name =>
+      assert(profile.contains(s"""(allow file-read* (literal "$trust/$name"))"""), profile)
+    assert(!profile.contains(s"""(subpath "$trust"""), profile)
+    assert(profile.contains(s"""(allow file-read-metadata file-test-existence (literal "$trust"))"""), profile)
 
   // --------------------------------------------------------------------------
   // Absolute, normalized paths
@@ -56,6 +66,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
       "executable" -> (path => inputs().copy(prereqs = prereqs.copy(executable = path))),
       "Coursier cache" -> (path => inputs().copy(prereqs = prereqs.copy(coursierV1 = path))),
       "temporary directory" -> (path => inputs(tmp = path)),
+      "trust directory" -> (path => inputs().copy(trust = path)),
       "distribution" -> (path => inputs().copy(distribution = Some(path))),
       "sbt global base" -> (path => inputs().copy(sbtGlobal = Some(path))),
       "Ivy home" -> (path => inputs().copy(ivyHome = Some(path))),
@@ -190,7 +201,9 @@ class SeatbeltProfileTest extends munit.FunSuite:
     for ancestor <- Seq("/Users", "/Users/kenichi", "/Users/kenichi/Library/Caches") do
       assert(clue(text).contains(s"""(allow file-read-metadata file-test-existence (literal "$ancestor"))"""), ancestor)
     val literalReads = text.linesIterator.filter(line => line.contains("(literal") && line.contains("file-read*")).toSeq
-    assertEquals(literalReads, RootComponent +: Devices.linesIterator.toSeq)
+    // A file granted alone — a device, the proxy's CA certificate — is a literal read; no directory is.
+    val trustReads = Seq("ca.crt", "truststore.p12").map(name => s"""(allow file-read* (literal "$trust/$name"))""")
+    assertEquals(literalReads, (RootComponent +: Devices.linesIterator.toSeq) ++ trustReads)
     // The root is its own line and not repeated in the chain.
     assertEquals(text.linesIterator.count(_.contains("""(literal "/")""")), 1)
 

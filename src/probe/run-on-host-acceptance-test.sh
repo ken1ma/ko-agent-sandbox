@@ -180,6 +180,10 @@ run_sbt() { # client command...: the executable the wrapper runs; the profile PA
 # are captured from emit and RunOnHost; the command runs under the build lock the broker's spawn
 # takes (locked_wrapper).
 build_lock() { "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost --build-lock "$1" "$2"; }
+# The wrapper issues its proxy's certificates, which needs the exports the launcher's own
+# re-invocation passes (RunOnHostSandbox.CertificateBuilderExports).
+certificate_exports="--add-exports=java.base/sun.security.x509=ALL-UNNAMED
+--add-exports=java.base/sun.security.util=ALL-UNNAMED"
 # The hash that names a build directory's lock and the broker's records for it (RunOnHostSession.buildHash).
 build_hash() { lock=$(build_lock sbt "$1") && printf '%s\n' "${lock##*-}"; }
 locked_wrapper() { # program project command...
@@ -187,7 +191,8 @@ locked_wrapper() { # program project command...
     lock=$(build_lock "$lw_program" "$lw_project") || return 2
     # exec, so the with_timeout background pid is this perl and then the wrapper JVM, not a
     # subshell whose kill would miss them (victim_wrapper's own reason).
-    exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" -cp "$test_cp" \
+    # shellcheck disable=SC2086 # two options, split on purpose
+    exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" $certificate_exports -cp "$test_cp" \
         agentsandbox.launcher.RunOnHost "$lw_program" "$lw_project" \
         src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt -- "$@"
 }
@@ -801,6 +806,8 @@ echo "the command's proxy"
 if ! want sbt; then
     report SKIP "fetch allowed Maven artifact via proxy" "sbt rows not selected"
     report SKIP "fetch unlisted host via proxy" "sbt rows not selected"
+    report SKIP "a PUT to an allowed host is refused, and the wrapper names it" "sbt rows not selected"
+    report SKIP "CA bundle variables" "sbt rows not selected"
 else
     use_profile sbt
     # Made cold on purpose: with the artifact gone from the run-on-host cache, a successful compile can
@@ -821,6 +828,63 @@ else
     then report PASS "fetch unlisted host via proxy" "refused; wrapper named denied.example.com"
     else report FAIL "fetch unlisted host via proxy" \
         "failed without the wrapper's diagnostic: $(tail -1 "$work/deny.log" | cut -c1-50)"; fi
+
+    # `read` is enforced: the proxy answers a PUT to the host it allows with 403 inside the tunnel,
+    # and the wrapper names the request after the command. One expression without `;`, which
+    # sbt's command splitter would cut at (the cancel row has the same constraint); the client
+    # is the JDK's, which takes the proxy and the trust store from _JAVA_OPTIONS.
+    put_url=https://repo1.maven.org/maven2/ko-agent-sandbox-acceptance-put
+    put_request="java.net.http.HttpRequest.newBuilder(java.net.URI.create(\"$put_url\"))"
+    put_request="$put_request.PUT(java.net.http.HttpRequest.BodyPublishers.noBody()).build()"
+    put_eval="eval java.net.http.HttpClient.newHttpClient().send($put_request,"
+    put_eval="$put_eval java.net.http.HttpResponse.BodyHandlers.discarding()).statusCode"
+    wrapper sbt "$project" "$put_eval" >"$work/put.log" 2>&1
+    if grep -q 'Int = 403' "$work/put.log" \
+        && grep -q 'Command sent requests the host command sandbox refuses' "$work/put.log" \
+        && grep -qF "PUT $put_url" "$work/put.log"
+    then report PASS "a PUT to an allowed host is refused, and the wrapper names it" "403; PUT $put_url"
+    else report FAIL "a PUT to an allowed host is refused, and the wrapper names it" \
+        "$(grep -m1 'Int = \|^\[error\]\|^refused\|Exception' "$work/put.log" | cut -c1-70); $work/put.log"; fi
+
+    # Which CA bundle variables the curl and git this macOS ships read (run-on-host.md, "The
+    # command's lifetime and environment"): each fetches from the allowed host under the command's
+    # profile and environment, whole and then without one variable. curl prints the status, 200
+    # when it verified the proxy's leaf. git asks a path that is no repository, so "error: 403" is a
+    # verified handshake — the proxy refuses the discovery, having no git-fetch grant — and an SSL
+    # error an unverified one. The script is the project's, which the profile lets the command run.
+    cat > "$work/ca-probe.sh" <<CA_PROBE
+#!/bin/sh
+exec > "$work/ca-probe.out" 2>&1
+curl_row() { # label env-arguments...
+    label=\$1; shift
+    printf 'curl, %s: ' "\$label"
+    /usr/bin/env "\$@" /usr/bin/curl --max-time 30 -sS -o /dev/null -w '%{http_code}' \\
+        https://repo1.maven.org/maven2/ 2>&1 | tr '\n' ' '
+    echo
+}
+git_row() { # label env-arguments...
+    label=\$1; shift
+    printf 'git, %s: ' "\$label"
+    /usr/bin/env "\$@" GIT_TERMINAL_PROMPT=0 /usr/bin/git ls-remote \\
+        https://repo1.maven.org/maven2/ko-agent-sandbox-acceptance.git 2>&1 | tail -1 \\
+        | sed "s/^fatal: unable to access '[^']*': //"
+}
+curl_row "every variable"
+curl_row "no CURL_CA_BUNDLE" -u CURL_CA_BUNDLE
+curl_row "no SSL_CERT_FILE" -u SSL_CERT_FILE
+curl_row "neither" -u CURL_CA_BUNDLE -u SSL_CERT_FILE
+git_row "every variable"
+git_row "no GIT_SSL_CAINFO" -u GIT_SSL_CAINFO
+git_row "no GIT_SSL_CAINFO, no CURL_CA_BUNDLE" -u GIT_SSL_CAINFO -u CURL_CA_BUNDLE
+git_row "none of the three" -u GIT_SSL_CAINFO -u CURL_CA_BUNDLE -u SSL_CERT_FILE
+CA_PROBE
+    rm -f "$work/ca-probe.out"
+    wrapper sbt "$project" "eval scala.sys.process.Process(Seq(\"/bin/sh\", \"$work/ca-probe.sh\")).!" \
+        >"$work/ca-probe.log" 2>&1
+    if [ -s "$work/ca-probe.out" ]
+    then while IFS= read -r line; do report INFO "CA bundle variables" "$(printf '%s' "$line" | cut -c1-90)"; done \
+        < "$work/ca-probe.out"
+    else report INFO "CA bundle variables" "the probe wrote nothing; see $work/ca-probe.log"; fi
 fi
 
 # --- the proxy's own profile ----------------------------------------------------------------------
@@ -905,7 +969,8 @@ await_client_record() { # victim-pid
 # parent-pid check above — would signal or look at the wrong process.
 victim_wrapper() { # log-name
     lock=$(build_lock sbt "$project") || exit 2
-    exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" -cp "$test_cp" \
+    # shellcheck disable=SC2086 # two options, split on purpose
+    exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" $certificate_exports -cp "$test_cp" \
         agentsandbox.launcher.RunOnHost \
         sbt "$project" src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt -- compile >"$work/$1" 2>&1
 }
@@ -1155,7 +1220,8 @@ EOF
     start_channel_broker() { # false when it made no FIFO
         echo true > "$work/running"
         rm -rf "$channel_dir"
-        "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.AgentSandboxLauncher \
+        # shellcheck disable=SC2086 # two options, split on purpose
+        "$JAVA_HOME/bin/java" $certificate_exports -cp "$test_cp" agentsandbox.launcher.AgentSandboxLauncher \
             --serve-run-on-host "$work/podman" C "$project" sbt,mill,gradle "$work/channel.log" "$project" \
             >/dev/null 2>&1 & channel_broker=$!
         tries=0
@@ -1364,7 +1430,8 @@ EOF
             echo true > "$work/running2"
             rm -rf "$channel_dir2"
             broker_sessions > "$work/sessions-before"
-            KO_AGENT_RUN_ON_HOST_ENV_ACCEPTANCE_SHARE=1 "$JAVA_HOME/bin/java" -cp "$test_cp" \
+            # shellcheck disable=SC2086 # two options, split on purpose
+            KO_AGENT_RUN_ON_HOST_ENV_ACCEPTANCE_SHARE=1 "$JAVA_HOME/bin/java" $certificate_exports -cp "$test_cp" \
                 agentsandbox.launcher.AgentSandboxLauncher --serve-run-on-host "$work/podman2" C2 "$project" \
                 sbt,mill,gradle "$work/channel2.log" "$@" "$project" >/dev/null 2>&1 & second_broker=$!
             tries=0
