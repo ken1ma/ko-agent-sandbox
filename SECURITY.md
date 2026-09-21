@@ -770,6 +770,7 @@ response, then closes:
 
 - The launcher keeps the CA private key on the host under every profile except
   `allow-unless-denied`. That profile uses a separate per-run CA, described below.
+- A host command's proxy has a CA of its own, whose key is never written ("Run on host", below).
 - Each project gets its own CA, created under `~/.local/state/ko-agent-sandbox/tls/<project>`
   (`%LOCALAPPDATA%` on Windows) — outside the project, so the agent can neither read the key that
   signs what it is shown nor replace it for the next session. A CA created for one project cannot
@@ -1082,7 +1083,8 @@ provides the confinement for these commands; they execute outside the container.
   - under sbt, the sockets of the launch's sbt server under the broker's own directory; under
     `mill`, the one port of the launch's mill daemon;
   - the port of one egress proxy: the broker's for that program under sbt, `mill` and `gradle`,
-    kept across the launch's commands of one build directory, or the command's own under Maven.
+    kept across the launch's commands of one build directory, or the command's own under Maven;
+  - that proxy's CA certificate, read-only.
 
   Everything else user-owned is invisible — the launcher state root and the rest of the user's
   caches included.
@@ -1105,15 +1107,31 @@ provides the confinement for these commands; they execute outside the container.
   Maven Central.
   - The file takes `allow https://<host>/ read` lines only; unrecognized configuration entries are
     refused, as in the parent directory.
-  - The proxy has no TLS inspection material, so it enforces the host and port at `CONNECT` and
-    tunnels opaquely: the word `read` in the file is not enforced, and a host command can send any
-    request to a host the file names (`doc/run-on-host.md`, "The command's egress proxy").
+  - The proxy inspects every host it allows, so `read` is enforced as under "Reading without being
+    able to write", above: to a host the file names, a host command sends a `GET` or `HEAD`
+    without a body and nothing else, and each request is logged with its target. No host command
+    gets a tunnel.
+    - Each proxy's starter creates a CA for that proxy alone and signs one leaf naming the
+      proxy's hosts. It never writes the CA's key and drops it once the leaf is signed, so
+      nothing signs a second certificate under it.
+    - The proxy holds the leaf's key, in its starter's session directory, which no command's
+      profile grants. The trust store and the PEM file the command is given hold the CA's
+      certificate and no public root; a program with roots of its own keeps them, as Node.js does
+      under `NODE_EXTRA_CA_CERTS`.
+    - The sandbox container trusts none of these CAs, and no host command trusts the project's
+      ("Who holds the CA key", above), so whoever holds a leaf's key can answer as its hosts to
+      one proxy's host commands and to nothing else.
+    - A program a build starts verifies the proxy only if it reads the JVM's trust store property
+      or one of five CA bundle variables; any other fails its certificate check on every host
+      (`doc/run-on-host.md`, "The command's lifetime and environment", lists the variables and
+      their readers, and "The command's egress proxy" the certificates).
   - A launch selecting the program prints the file's hosts, so a host that arrived with the
     repository does not take effect unseen.
   - The proxy reads the file when it starts: a host removed from the file stays reachable from the
     broker's proxy until it is next created (`doc/run-on-host.md`, "The command's egress proxy").
-  - The proxy runs under a profile of its own, granting its executable, the system paths as
-    reads and the network, and nothing of the user's: no project, no cache, no write anywhere.
+  - The proxy runs under a profile of its own, granting its executable, the system paths and its
+    leaf's directory as reads, and the network, and nothing else of the user's: no project, no
+    cache, no write anywhere.
 - **The command's environment is a closed set, not the launcher's.** The wrapper constructs it from
   its own settings, three pass-through variables, and the variables named by `--env` at launch
   (`doc/run-on-host.md`, "The command's lifetime and environment", lists them). The same forwarded

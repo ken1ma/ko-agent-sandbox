@@ -799,7 +799,7 @@ object RunOnHostPrereqs:
    * The program's rule file grammar: `allow https://<host>/ read` lines and `#` comments, nothing
    * else — no other grant, no path, no provider, no deny. The proxy's full grammar would let one
    * `allow model-provider` line expand into endpoints that are no artifact repository, and a
-   * `tunnel` word means nothing to a proxy running without inspection; anything outside the subset
+   * `tunnel` or `method=` word would let a host command write to a host; anything outside the subset
    * is refused here, never passed through for the proxy to interpret. Tokenization mirrors the
    * proxy's — split on whitespace, a comment from the first token starting with `#`, and a `#`
    * inside a token refused — so a line read here is the line the proxy would read, and

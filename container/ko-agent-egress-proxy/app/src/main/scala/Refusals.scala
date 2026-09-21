@@ -26,7 +26,9 @@ case class Refusal(message: String, advice: String, proxyError: String = "http_r
 /**
  * The next step each refusal names for the agent reading the 403 body inside the sandbox: a step it
  * can take there, or the one instruction to pass to the user. Never a way around the ruleset, and never a
- * host this session's ruleset does not allow — forRefusedPost checks before naming one. Fixed text
+ * host this session's ruleset does not allow — forRefusedPost checks before naming one. A host command's
+ * proxy sends these bodies too (run-on-host.md, "The command's egress proxy"), so a step that is the
+ * user's says "outside the sandbox": a refused host command already runs on the host. Fixed text
  * plus what the request itself named, so a body never carries project data or a credential. This
  * object is the whole table, one member per refusal; the audit line keeps the short reason alone.
  */
@@ -65,7 +67,7 @@ object RefusalAdvice:
 
   val nonPublicAddress = "This name resolves to an address the sandbox never reaches. Ask the user."
 
-  val gitPush = "Push is refused in the sandbox. Leave the commits; the user pushes on the host."
+  val gitPush = "Push is refused in the sandbox. Leave the commits; the user pushes outside the sandbox."
 
   val gitFetch = "Clone and fetch are refused here: no git-fetch grant. Ask the user; do not look for another route."
 
@@ -80,9 +82,10 @@ object RefusalAdvice:
   val lfsBatchGithub =
     s"LFS batch is refused. Read one file from https://$LfsContentHost/media/<owner>/<repo>/<ref>/<path>."
 
-  val lfsBatch = "LFS batch is refused. Ask the user to fetch the content on the host."
+  val lfsBatch = "LFS batch is refused. Ask the user to fetch the content outside the sandbox."
 
-  val methodNotGranted = "This HTTP method is not granted here. Ask the user to run the command on the host."
+  val methodNotGranted =
+    "This HTTP method is not granted here. Ask the user to run the command themselves, outside the sandbox."
 
   val bodyFramingHeader = "GET and HEAD must omit Content-Length and Transfer-Encoding here. Remove those headers."
 
@@ -102,6 +105,24 @@ object RefusalAdvice:
   /** The ClientHello stage answers after the 200, so this reaches no client; the agent
     * instructions have the sentence. Given all the same: the constructor requires a step. */
   val clientHello = "Send SNI naming the CONNECT host, without Encrypted ClientHello."
+
+  /**
+   * For a reader of the audit log, who has the line's `<why>` and no 403 body — the run-on-host wrapper,
+   * reporting for a program that printed none: the step of a refusal the requester answers by changing
+   * the request, else None. Matched on the reasons authorizeInspectedRequest and GitHelper throw with;
+   * the refusal table's test holds the two together.
+   */
+  def requestStep(reason: String): Option[String] =
+    if reason == "only origin-form request targets are allowed" then Some(originForm)
+    else if reason == "HTTP Upgrade is not allowed" then Some(upgrade)
+    else if reason.startsWith("Host header ") then Some(hostHeader)
+    else if reason == "request body framing header" then Some(bodyFramingHeader)
+    else if reason.endsWith(" in the path") then Some(ambiguousPath)
+    else None
+
+  /** Whether `reason` is a refusal for want of a grant, which no change to the request answers. */
+  def grantRefused(reason: String): Boolean =
+    reason.endsWith(" not granted") || reason == "path under no line" || reason.endsWith(" ref discovery")
 
   /** Chosen by the path the request named — parsed by this proxy, never read from a body — so the
     * two POSTs whose refusal costs a read get the read's other route: GraphQL (`/graphql` on

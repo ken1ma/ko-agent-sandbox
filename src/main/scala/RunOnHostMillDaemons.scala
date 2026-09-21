@@ -74,7 +74,8 @@ object RunOnHostMillDaemons:
     val prereqs = assembled.prereqs
     val output = starterLog(session, start.hash)
     val inputs = RunOnHostSandbox.runtimeInputs(
-      assembled, session.tmp, start.runtime.proxyPort, systemPaths, forwards, SeatbeltProfile.Network.MillDaemon,
+      assembled, session.tmp, start.runtime.proxyPort, start.runtime.trust, systemPaths, forwards,
+      SeatbeltProfile.Network.MillDaemon,
     )
     def said =
       s"the starter's output:\n${RunOnHostSandbox.sessionLogTail(output, 4096).getOrElse("(nothing was written)\n")}"

@@ -19,7 +19,7 @@ and Maven commands to the host, where each runs under a Seatbelt profile of its 
     │  │ sbt client → sbt server                  │    │ listens on 127.0.0.1         │  │
     │  │ mill or gradle client → its daemon       │    │ allows only listed hosts     │  │
     │  │ Maven starts a JVM for each command      │    │ on port 443                  │  │
-    │  │ dependency downloads                     ├───→│                              │  │
+    │  │ dependency downloads                     ├───→│ inspects: GET and HEAD only  │  │
     │  │ writes project files, except             │    │ cannot read project or cache │  │
     │  │ .git and .ko-agent-sandbox;              │    │ logs allowed/denied requests │  │
     │  │ also writes its caches and temp files    │    │                              │  │
@@ -48,11 +48,12 @@ the code that enforces each part:
 | provisioning offered at the start prompt | `RunOnHostProvisioning.scala` |
 | the wrapper and the broker's runtimes: proxy, sbt server, environment | `RunOnHostSandbox.scala` |
 | the broker's mill daemon: its start, its port, a daemon of yours | `RunOnHostMillDaemons.scala` |
+| a proxy's CA and leaf, and what a command trusts | `RunOnHostInspection.scala` |
 | the generated profile | `SeatbeltProfile.scala` |
 | the exit criteria, measured | `src/probe/run-on-host-acceptance-test.sh` |
 
-The full acceptance test (`all`) reports **230 PASS, 0 FAIL, 0 SKIP** on macOS 26.4.1 arm64 with
-Temurin 25.0.4, sbt 2.0.8, Mill 1.1.9, Gradle 9.7.1 and Maven 3.9.16 (2026-09-15).
+The full acceptance test (`all`) reports **255 PASS, 0 FAIL, 0 SKIP** on macOS 26.4.1 arm64 with
+Temurin 25.0.4, sbt 2.0.9, Mill 1.1.9, Gradle 9.7.1 and Maven 3.9.16 (2026-09-21).
 
 The measurement behind the feature: an `sbt test` of this project takes about 2 GB inside the podman
 machine, whose total is fixed when the machine is created and shared with every other session on it
@@ -256,6 +257,15 @@ container — the same rule the egress refusal follows.
     the command ("Command requested network access to: …") — from the log's length at the
     command's start, so a shared proxy's earlier denials are not this command's. It never adds the
     host itself.
+  - a request the proxy refuses inside a tunnel — a `PUT`, a `POST`, a `GET` with a body — gets a
+    `403` whose body the programs need not print, so the wrapper reports it the same way
+    ("Command sent requests the host command sandbox refuses: …",
+    `RunOnHostSandbox.refusedRequests`), each request with the audit line's reason.
+    - A refusal the command answers by changing the request — a body framing header on a `GET`, a
+      `Host` header naming another host, `Upgrade`, an absolute target, a path spelled with
+      percent-encoding — also gets the step the `403` body had (`RefusalAdvice.requestStep`).
+    - A refusal for want of a grant gets the user's step, since the rule file takes no grant but
+      `read`: to run the command yourself, outside the sandbox.
   - a proxy that serves nothing because a write to its log failed (`SECURITY.md`, "Egress proxy")
     cannot say so in that log, and the programs need not print it. After a command that exits
     non-zero the wrapper asks the proxy with `OPTIONS *` and `Max-Forwards: 0`
@@ -764,6 +774,7 @@ What the wrapper supplies:
 | `USER`, `LOGNAME` | the account's name, the JVM's `user.name` |
 | `HTTPS_PROXY`, `HTTP_PROXY` and their lowercase | `http://127.0.0.1:<port>`, the command's proxy |
 | `NO_PROXY` and its lowercase | `localhost,127.0.0.1` |
+| `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO` | the proxy's CA certificate, PEM (below) |
 | `MILL_FINAL_DOWNLOAD_FOLDER` | the launcher's, else `<cache home>/mill/download` |
 | `MILL_VERSION` | under `mill`, the JVM launcher of the pinned version, `<v>-jvm` |
 | a name `--env` gave | the value `--env` gave, unless a row above sets that name |
@@ -778,6 +789,8 @@ The `java -D` properties:
 | `https.proxyHost`, `http.proxyHost` | `127.0.0.1` |
 | `https.proxyPort`, `http.proxyPort` | `<port>` |
 | `java.net.preferIPv4Stack` | `true`: the loopback rule does not cover a v4-mapped IPv6 connect |
+| `javax.net.ssl.trustStore`, `javax.net.ssl.trustStoreType` | the proxy's CA certificate as a store, `PKCS12` |
+| `javax.net.ssl.trustStorePassword` | `changeit`, no secret: without it a JVM loads no certificate from a PKCS12 store |
 | `sbt.global.base` | `<run-on-host cache>/sbt-global` |
 | `sbt.ivy.home` | `<run-on-host cache>/ivy-home` |
 | `maven.repo.local` | `<run-on-host cache>/m2/repository` |
@@ -791,6 +804,37 @@ The `java -D` properties:
   reproducer.
 - Both sbt clients and servers also receive `sbt.global.base` as one argument for the script's
   preloaded-cache lookup (`RunOnHostSandbox.sbtCommand`).
+
+The proxy answers for every host it allows under a certificate of its own CA ("The command's
+egress proxy"), so a program verifies that host only if it trusts the CA. A JVM does through the
+store. The five variables name the same certificate for the programs `HTTPS_PROXY` serves, as the
+sandbox container's do (`SECURITY.md`, "Who holds the CA key"). By each program's documentation:
+
+| Environment Variable | Read by |
+|---|---|
+| `SSL_CERT_FILE` | OpenSSL's default verify file, so a program that loads OpenSSL's defaults; Node.js only under `--use-openssl-ca` |
+| `CURL_CA_BUNDLE` | `curl`, unless its TLS backend is Schannel; Python's `requests`, when `REQUESTS_CA_BUNDLE` is unset |
+| `REQUESTS_CA_BUNDLE` | Python's `requests` |
+| `NODE_EXTRA_CA_CERTS` | Node.js, read once at start, and not by a client that sets its own `ca` option |
+| `GIT_SSL_CAINFO` | `git`, over `http.sslCAInfo` |
+
+- A GraalVM native image, such as the `cs` and `scala` launchers, reads neither `_JAVA_OPTIONS`
+  nor the five variables, and takes the same three `javax.net.ssl.trustStore*` properties, and the
+  proxy's, as `-D` options on its own command line. A build that starts one passes them itself,
+  with the values `_JAVA_OPTIONS` has.
+- A program that reads none of these fails its certificate check on every host, and no setting
+  of the launcher's or the build's reaches it: a program verifying through the macOS keychain
+  alone, a binary with its roots compiled in, a JVM client whose code names its own trust store.
+- The `curl` and `git` that macOS ships fail under a command's profile before they verify any
+  certificate, whatever the variables (macOS 26.4.1, the acceptance test's "CA bundle variables"
+  rows). The table is for a program the build brings.
+  - `/usr/bin/curl` stops at LibreSSL's `fopen('/private/etc/ssl/openssl.cnf')`, `Operation not
+    permitted`, printed as `Auto configuration failed`: the file is not among the profile's
+    system paths (`SeatbeltProfile.SystemPaths.txt`; `doc/TODO.md`, "read grants a user adds").
+  - `/usr/bin/git`, Xcode's shim, ends with "See `man xcode-select` for more details".
+- The CA is the whole store and the whole PEM file. No public root is beside it, since the proxy
+  inspects every host it allows and no origin's own certificate reaches a command. A program
+  with roots of its own keeps them: `NODE_EXTRA_CA_CERTS` adds the CA to Node.js's.
 
 The placeholders:
 
@@ -1000,6 +1044,12 @@ where the caller is not interactive.
   under it granted, `preferIPv4Stack` set for the loopback rule ("Network"), no destination off
   this host but the proxy, and the project writable even under `--write=reject` (`SECURITY.md`,
   "Run on host").
+- **A repository takes reads alone — confinement.** Stock sbt, Mill, Gradle and Maven publish
+  to a repository with a `PUT`. A host command's proxy refuses
+  every request but a `GET` or `HEAD` without a body ("The command's egress proxy"), and the rule
+  file takes no other grant, so publishing is yours, outside the sandbox; the wrapper names the
+  refused request ("Refusals"). The JVM's default trust is the proxy's CA alone, with no public
+  root ("The command's lifetime and environment").
 - **The wait for a start has a bound — operability.** sbt's thin client waits for a starting
   server with no deadline, which an interactive user can Ctrl-C; the agent cannot, so an
   unbounded wait would be an unrecoverable command.
@@ -1242,12 +1292,13 @@ launcher starts on the host, since one `startProxy` starts them all. The profile
 
 - its executable — the native image, or the JDK and each class-path entry of the jar form;
 - the system paths as reads, and the devices;
+- the directory holding its leaf certificate and that leaf's key, as reads;
 - the network: outbound to every remote, since which hosts a client may reach is the proxy's own
   decision, by name, and SBPL filters by address; the resolver's socket,
   `/private/var/run/mDNSResponder`, which `InetAddress.getAllByName` reaches, with the root link
   `/var` its client spells the path through (measured: without that one link every lookup fails);
   and a listener of the `localhost` class for its port;
-- nothing of the user's: no project, no cache, no write anywhere;
+- nothing else of the user's: no project, no cache, no write anywhere;
 - of the operation families, `sysctl-read` and `mach-lookup` of the resolver's service alone
   ("The Seatbelt profile", the measured findings), measured with
   `src/probe/run-on-host-profile-iterate.sh ops` and the proxy under its profile with each family
@@ -1260,10 +1311,56 @@ ready line is awaited. The proxy is the one launcher process that parses bytes t
 sends, as the user's uid; `HostileInputTest` covers the parser, and the profile is what a parse bug
 meets.
 
-It runs without inspection material: no-material mode enforces the destination host and port at
-CONNECT time and tunnels opaquely, so the command needs no extra trust material and the read-only
-JDK's own trust store suffices. If inspection is ever wanted, point the JVM at a wrapper-owned
-store with `-Djavax.net.ssl.trustStore` rather than touching the JDK.
+It inspects every host it allows, so `read` in its rules is enforced as the sandbox session's
+proxy enforces it (`SECURITY.md`, "Reading without being able to write"): a `GET` or `HEAD`
+without a body, one request per connection, each logged with its target. No host is tunnelled: the
+rule grammar has no other grant ("Configuration"), and a proxy without a leaf would forward its
+hosts uninspected, so its starter always supplies one (`RunOnHostInspection.create`, called at
+every proxy start):
+
+- It creates a CA for this proxy alone and signs one leaf naming the proxy's hosts, Maven
+  Central and the rule file's as read then. The proxy refuses to start unless the leaf names
+  exactly the hosts its rules inspect (`SECURITY.md`, "Who holds the CA key"), so the names are
+  the ones the proxy's own resolution of those rules gives (`RunOnHostInspection.leafNames`), as
+  the sandbox session's leaf takes its names: a rule spelling a host with a trailing dot,
+  capitals or Unicode is a host the certificate names in its resolved form.
+- The CA's key is never written, and is dropped once the leaf is signed.
+- The leaf and its key are in `<proxy log's name>.leaf/` beside the proxy's log, in the broker's
+  or the command's session directory, which is the user's alone and which no command's profile
+  grants. The proxy holds the key because it answers the TLS handshake as each host.
+- The CA certificate is in `<proxy log's name>.trust/`, as `ca.crt` and as `truststore.p12`. The
+  command's profile grants those two files as reads, not their directory, and the command's
+  environment names them ("The command's lifetime and environment"). They are outside `tmp/`, so
+  no command replaces what the next one trusts.
+- The sandbox container trusts none of these CAs, and a host command does not trust the
+  project's: a leaf's key serves one proxy's host commands and nothing else.
+- A launch attaching to another launch's runtime names that runtime's trust directory, as it
+  names its `tmp/` and proxy port, so its commands trust the proxy they use
+  (`BrokerRuntimes`, the attachment).
+
+Measured by the acceptance test (its recorded run is at the top of this document):
+
+- Its wrapper and channel rows start each proxy under a profile that reads the leaf's directory
+  and each command under one that reads the two trust files, and "fetch allowed Maven artifact
+  via proxy" passes only through both.
+- A `PUT` to `repo1.maven.org` gets `403`, and the wrapper names the request.
+
+Measured through a sandbox session's proxy, which inspects the same hosts with a handshake per
+request:
+
+| program | resolved | result |
+|---|---|---|
+| sbt 2.0.9 | `spark-sql` 3.5.1, `update`, empty Coursier cache | 1960 files, 240 MB, 36 s |
+| mill 1.0.6, JVM launcher | the same, `app.resolvedMvnDeps`, its own runtime included | 4040 files, 336 MB, 55 s |
+| Gradle 9.7.1 | `src/probe/gradle-fixture`, `test`, the distribution present | 32 files, 6 s |
+| Maven 3.9.16 | `src/probe/mvn-fixture`, `test`, the distribution's download included | 418 files, 14 MB, 37 s |
+
+- Gradle and Maven fail with `PKIX path building failed` under a `javax.net.ssl.trustStore`
+  naming a store without the CA, the wrapper's download and the resolver alike, so both read the
+  property.
+- A JVM given a `PKCS12` store holding the CA alone, and its password, fetches through that proxy;
+  given no password it loads no certificate (`the trustAnchors parameter must be non-empty`).
+- Not measured: a Gradle plugin applied by id, which resolves from `plugins.gradle.org`.
 
 It reads `HTTPS_PROXY` as the container's copy does (`egress-proxy.md`, "Through an upstream
 proxy"): on a host behind an upstream proxy the command's artifact fetches leave through it, and a
@@ -1282,8 +1379,8 @@ To allow artifact downloads beyond Maven Central, add repository hosts to this p
 - The grammar is its own, narrower than the proxy's: `allow https://<host>/ read` lines and
   comments, nothing else — no other grant, no path, no provider, no deny — refused at validation
   rather than passed through. The full grammar would let one `allow model-provider` line expand
-  into endpoints that are no artifact repository, and a `tunnel` word means nothing to a proxy
-  running without inspection.
+  into endpoints that are no artifact repository, and a `tunnel` or `method=` word would let a
+  host command write to a host, which no host command may.
 - A launch selecting the program prints one line per file,
   `run-on-host egress rules (<file>) widen:` then the file's hosts as rule lines, and refuses a
   file outside the grammar, so a host that arrived with the repository is seen by you before the

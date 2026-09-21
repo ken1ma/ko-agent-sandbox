@@ -37,10 +37,10 @@ class RunOnHostRuntimeDescriptorTest extends munit.FunSuite:
     def inputs(
       jdk: String = "/jdk", tmp: String = "/t", port: Int = 7001, forwards: Vector[(String, String)] = Vector.empty,
       reads: Seq[Path] = systemPaths.reads, network: SeatbeltProfile.Network = SeatbeltProfile.Network.ProxyOnly,
-      home: String = "/home/u",
+      home: String = "/home/u", trust: String = "/b/proxy.trust",
     ) =
       RunOnHostSandbox.runtimeInputs(
-        assembled(jdk), Path.of(tmp), port, systemPaths.copy(reads = reads), forwards, network,
+        assembled(jdk), Path.of(tmp), port, Path.of(trust), systemPaths.copy(reads = reads), forwards, network,
         host = name => Option.when(name == "HOME")(home), userName = "u",
       )
     def fingerprint(in: RunOnHostSandbox.RuntimeInputs, rules: String = "deny defaults") =
@@ -56,6 +56,7 @@ class RunOnHostRuntimeDescriptorTest extends munit.FunSuite:
       "jdk" -> fingerprint(inputs(jdk = "/jdk2")),
       "tmp" -> fingerprint(inputs(tmp = "/t2")),
       "port" -> fingerprint(inputs(port = 7002)),
+      "trust" -> fingerprint(inputs(trust = "/b/proxy2.trust")),
       "forward" -> fingerprint(inputs(forwards = Vector("TOKEN" -> "t"))),
       "forwarded value" -> fingerprint(inputs(forwards = Vector("TOKEN" -> "u"))),
       "systemPaths" -> fingerprint(inputs(reads = Seq.empty)),

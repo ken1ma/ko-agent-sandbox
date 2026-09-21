@@ -328,6 +328,15 @@ object RunOnHostSandbox:
       finally stream.close()
     parseSystemPaths(text.linesIterator.toSeq)
 
+  /** What opens the JDK's internal certificate builder to X509Helper, which has why. The jar's
+    * manifest carries the same two for `java -jar` (build.sbt), and a manifest is read for `-jar`
+    * alone: a re-invocation is `java -cp`, and the broker and the wrapper it starts issue each
+    * proxy's certificates (RunOnHostInspection), which without these dies of IllegalAccessError. */
+  val CertificateBuilderExports: Seq[String] = Seq(
+    "--add-exports=java.base/sun.security.x509=ALL-UNNAMED",
+    "--add-exports=java.base/sun.security.util=ALL-UNNAMED",
+  )
+
   /** How the wrapper re-invokes its own executable — the running JVM and classpath, or the native
     * image binary itself — under one of the launcher's private actions. */
   def selfInvocation(actionAndArguments: String*): Seq[String] =
@@ -335,8 +344,8 @@ object RunOnHostSandbox:
       launchFile.getOrElse(throw IllegalStateException("the native image cannot name itself")).toString
         +: actionAndArguments
     else
-      Seq(
-        Path.of(System.getProperty("java.home")).resolve("bin").resolve("java").toString,
+      val javaExecutable = Path.of(System.getProperty("java.home")).resolve("bin").resolve("java").toString
+      (javaExecutable +: CertificateBuilderExports) ++ Seq(
         "-cp", selfClassPath().mkString(java.io.File.pathSeparator),
         "agentsandbox.launcher.AgentSandboxLauncher",
       ) ++ actionAndArguments
@@ -848,13 +857,15 @@ object RunOnHostSandbox:
   /** One program's runtime, as a command runs against it: the session holding its records —
     * whose `tmp/` an sbt client reaches its server's socket under — the port of its proxy, which
     * the profile and the environment name, the proxy's log, which the denied-host report
-    * reads, and for mill the one port of its daemon, the port a client's profile admits.
+    * reads and whose name the proxy's trust directory has (RunOnHostInspection), and for mill the
+    * one port of its daemon, the port a client's profile admits.
     * Created with the program's rule file as read then, in the session whose records
     * name its groups — the broker's for its launch's sbt and mill commands, or another launch's
     * broker's when this launch attaches to its runtime (BrokerRuntimes), the command's own for
     * Maven and for the acceptance test's entry — and ended with that session. */
   case class Runtime(session: Path, proxyPort: Int, proxyLog: Path, daemonPort: Option[Int] = None):
     def tmp: Path = session.resolve(RunOnHostSession.TmpDir)
+    def trust: Path = RunOnHostInspection.trustDirectory(proxyLog)
 
   /** What a runtime's server or daemon is started with: its profile's inputs and its
     * environment, derived from the assembly, the runtime's `tmp/` and proxy port, and the
@@ -867,6 +878,7 @@ object RunOnHostSandbox:
     assembled: Assembled,
     tmp: Path,
     proxyPort: Int,
+    trust: Path,
     systemPaths: SeatbeltProfile.SystemPaths,
     forwards: Vector[(String, String)],
     network: SeatbeltProfile.Network,
@@ -884,12 +896,14 @@ object RunOnHostSandbox:
         gradleUserHome = assembled.gradleUserHomeGranted,
         m2Repository = assembled.m2RepositoryGranted,
         proxyPort = proxyPort,
+        trust = trust,
         systemPaths = systemPaths,
         network = network,
       ),
       commandEnvironment(
         host, forwards, prereqs, assembled.sbtGlobal, assembled.ivyHome, assembled.gradleUserHome,
-        assembled.m2Repository, assembled.millDownloads, assembled.millLauncherVersion, tmp, tmp, proxyPort, userName,
+        assembled.m2Repository, assembled.millDownloads, assembled.millLauncherVersion, tmp, tmp, proxyPort, trust,
+        userName,
       ),
     )
 
@@ -1180,7 +1194,8 @@ object RunOnHostSandbox:
         proxy <- read(proxyRecord(program, current.hash))
         group <- read(record)
         inputs = runtimeInputs(
-          current.assembled, session.tmp, current.runtime.proxyPort, systemPaths, forwards, network,
+          current.assembled, session.tmp, current.runtime.proxyPort, current.runtime.trust, systemPaths, forwards,
+          network,
         )
         _ <- RunOnHostRuntimeDescriptor.publish(
           RunOnHostRuntimeDescriptor.file(session.directory, program, current.hash),
@@ -1324,7 +1339,11 @@ object RunOnHostSandbox:
               hosts <- readProgramRules(project, program)
               config <- if program == Program.Mill then daemonConfig(buildDirectory).map(Some(_)) else Right(None)
             yield
-              val inputs = runtimeInputs(assembled, ownerTmp, descriptor.proxyPort, systemPaths, forwards, network)
+              val ownerProxyLog = owner.resolve(s"$proxyName.log")
+              val inputs = runtimeInputs(
+                assembled, ownerTmp, descriptor.proxyPort, RunOnHostInspection.trustDirectory(ownerProxyLog),
+                systemPaths, forwards, network,
+              )
               val own = RunOnHostRuntimeDescriptor.fingerprint(inputs, egressRuleText(program, hosts))
               val checked =
                 for
@@ -1347,9 +1366,7 @@ object RunOnHostSandbox:
                       else if !namesDerivedSocket(buildDirectory, ownerTmp) then
                         Left("the portfile does not name its server's socket, or the socket is redirected")
                       else Right(())
-                yield Runtime(
-                  owner, descriptor.proxyPort, owner.resolve(s"$proxyName.log"), descriptor.daemon.map(_.port),
-                )
+                yield Runtime(owner, descriptor.proxyPort, ownerProxyLog, descriptor.daemon.map(_.port))
               checked.fold(Attachment.Unattachable(_), Attachment.Attached(_))
 
     /**
@@ -1569,7 +1586,8 @@ object RunOnHostSandbox:
     val prereqs = assembled.prereqs
     val output = serverLog(session, start.hash)
     val inputs = runtimeInputs(
-      assembled, session.tmp, start.runtime.proxyPort, systemPaths, forwards, SeatbeltProfile.Network.ProxyOnly,
+      assembled, session.tmp, start.runtime.proxyPort, start.runtime.trust, systemPaths, forwards,
+      SeatbeltProfile.Network.ProxyOnly,
     )
     for
       profile <- SeatbeltProfile.render(inputs.profile)
@@ -1671,6 +1689,7 @@ object RunOnHostSandbox:
           gradleUserHome = assembled.gradleUserHomeGranted,
           m2Repository = assembled.m2RepositoryGranted,
           proxyPort = runtime.proxyPort,
+          trust = runtime.trust,
           systemPaths = systemPaths,
           network = network,
         ),
@@ -1747,39 +1766,61 @@ object RunOnHostSandbox:
     record: Path, program: Program, fileHosts: Vector[String], proxyLog: Path,
     systemPaths: SeatbeltProfile.SystemPaths,
   ): Either[String, Process] =
-    proxyInputs(systemPaths).flatMap(SeatbeltProfile.renderProxy).flatMap: profile =>
-      try
-        val profileFile = proxyProfileFile(proxyLog)
-        Files.writeString(profileFile, profile, UTF_8)
-        // The property the command's environment sets (commandEnvironment), on the
-        // command line since the proxy's environment is closed: a dual-stack JVM binds
-        // ::ffff:127.0.0.1, which the profile's "localhost" class does not cover (measured: the
-        // acceptance test's proxy rows).
-        val invocation = selfInvocation("--serve-proxy-on-host")
-        val command = RunOnHostSession.registeredSpawn(
-          record,
-          Seq("/usr/bin/sandbox-exec", "-f", profileFile.toString)
-            ++ (invocation.head +: "-Djava.net.preferIPv4Stack=true" +: invocation.tail),
-        )
-        val builder = ProcessBuilder(command*)
-        // The JVM asks for its working directory at start (SystemProps), and the profile grants
-        // no directory of the starter's; the root it does grant.
-        builder.directory(java.io.File("/"))
-        // Closed like the command's: the proxy needs its own settings and, to leave through an
-        // upstream proxy as the container's copy does, the one selected variable. Nothing else of
-        // the launcher's environment has a reader here.
-        builder.environment.clear()
-        upstreamProxyVariable(name => Option(System.getenv(name))).foreach(builder.environment.put(_, _))
-        builder.environment.put("EGRESS_PROFILE", "deny-unless-allowed")
-        builder.environment.put("EGRESS_RULE", egressRuleText(program, fileHosts))
-        builder.environment.put("EGRESS_BIND", "127.0.0.1:0")
-        builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
-        // Its stderr is its log, opened here and inherited: the profile grants no write
-        // (serverLog), and what sandbox-exec or the JVM says before the proxy prints anything
-        // lands where the ready line is awaited.
-        builder.redirectError(ProcessBuilder.Redirect.appendTo(proxyLog.toFile))
-        Right(builder.start())
-      catch case ex: IOException => Left(s"starting the proxy: ${ex.getMessage}")
+    for
+      names <- RunOnHostInspection.leafNames(egressRuleText(program, fileHosts))
+      _ <- RunOnHostInspection.create(proxyLog, names)
+      inputs <- proxyInputs(systemPaths)
+      profile <- SeatbeltProfile.renderProxy(
+        inputs.copy(reads = inputs.reads :+ RunOnHostInspection.leafDirectory(proxyLog)),
+      )
+      started <- startProxyUnder(profile, record, program, fileHosts, proxyLog)
+    yield started
+
+  private def startProxyUnder(
+    profile: String, record: Path, program: Program, fileHosts: Vector[String], proxyLog: Path,
+  ): Either[String, Process] =
+    try
+      val profileFile = proxyProfileFile(proxyLog)
+      Files.writeString(profileFile, profile, UTF_8)
+      // The property the command's environment sets (commandEnvironment), on the
+      // command line since the proxy's environment is closed: a dual-stack JVM binds
+      // ::ffff:127.0.0.1, which the profile's "localhost" class does not cover (measured: the
+      // acceptance test's proxy rows).
+      val invocation = selfInvocation("--serve-proxy-on-host")
+      val command = RunOnHostSession.registeredSpawn(
+        record,
+        Seq("/usr/bin/sandbox-exec", "-f", profileFile.toString)
+          ++ (invocation.head +: "-Djava.net.preferIPv4Stack=true" +: invocation.tail),
+      )
+      val builder = ProcessBuilder(command*)
+      // The JVM asks for its working directory at start (SystemProps), and the profile grants
+      // no directory of the starter's; the root it does grant.
+      builder.directory(java.io.File("/"))
+      // Closed like the command's: the proxy needs its own settings and, to leave through an
+      // upstream proxy as the container's copy does, the one selected variable. Nothing else of
+      // the launcher's environment has a reader here.
+      builder.environment.clear()
+      upstreamProxyVariable(name => Option(System.getenv(name))).foreach(builder.environment.put(_, _))
+      import agentsandbox.egress.RulesetHelper
+      builder.environment.put(RulesetHelper.ProfileVariable, RulesetHelper.DefaultProfile)
+      builder.environment.put(RulesetHelper.RuleVariable, egressRuleText(program, fileHosts))
+      builder.environment.put("EGRESS_BIND", "127.0.0.1:0")
+      // The leaf is why `read` in the rules is enforced: a proxy given none tunnels its hosts
+      // without inspecting them.
+      builder.environment.put(
+        agentsandbox.egress.AgentEgressProxy.CertificateVariable,
+        RunOnHostInspection.leafCertificate(proxyLog).toString,
+      )
+      builder.environment.put(
+        agentsandbox.egress.AgentEgressProxy.PrivateKeyVariable, RunOnHostInspection.leafKey(proxyLog).toString,
+      )
+      builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
+      // Its stderr is its log, opened here and inherited: the profile grants no write
+      // (serverLog), and what sandbox-exec or the JVM says before the proxy prints anything
+      // lands where the ready line is awaited.
+      builder.redirectError(ProcessBuilder.Redirect.appendTo(proxyLog.toFile))
+      Right(builder.start())
+    catch case ex: IOException => Left(s"starting the proxy: ${ex.getMessage}")
 
   /**
    * Where a command's processes keep temporary files, and where sbt's sockets are: `(tmp,
@@ -1850,7 +1891,7 @@ object RunOnHostSandbox:
       commandEnvironment(
         name => Option(System.getenv(name)), forwards, prereqs, assembled.sbtGlobal, assembled.ivyHome,
         assembled.gradleUserHome, assembled.m2Repository, assembled.millDownloads, assembled.millLauncherVersion,
-        tmp, socketDir, runtime.proxyPort, System.getProperty("user.name"),
+        tmp, socketDir, runtime.proxyPort, runtime.trust, System.getProperty("user.name"),
       ).asJava,
     )
 
@@ -1934,6 +1975,8 @@ object RunOnHostSandbox:
     // sbt, the command's own for the other programs.
     socketDir: Path,
     proxyPort: Int,
+    // The runtime's proxy's CA certificate, in both formats (RunOnHostInspection).
+    trust: Path,
     userName: String,
   ): Map[String, String] =
     val passed = PassedThrough.flatMap(name => host(name).map(name -> _)).toMap
@@ -1960,6 +2003,11 @@ object RunOnHostSandbox:
       "-Daether.connector.http.useSystemProperties=true",
       "-Dhttps.proxyHost=127.0.0.1", s"-Dhttps.proxyPort=$proxyPort",
       "-Dhttp.proxyHost=127.0.0.1", s"-Dhttp.proxyPort=$proxyPort",
+      // The proxy answers for every host it allows under a leaf of its own CA, so that CA is the
+      // whole store: the JDK's own roots would verify nothing the command can reach.
+      jvmProperty("javax.net.ssl.trustStore", RunOnHostInspection.trustStore(trust).toString),
+      "-Djavax.net.ssl.trustStoreType=PKCS12",
+      s"-Djavax.net.ssl.trustStorePassword=${RunOnHostInspection.TrustStorePassword}",
       // Without this a JVM reaches 127.0.0.1 through a dual-stack AF_INET6 socket as v4-mapped
       // ::ffff:127.0.0.1, which the profile's "localhost" class does not cover: the connect to
       // the proxy dies with EPERM (measured, src/probe/jvm-proxy-rule.sh).
@@ -1990,7 +2038,9 @@ object RunOnHostSandbox:
       // The bootstrap's own override, set to the JVM launcher of the pinned version: the
       // bootstrap would run the native image for a bare pin (RunOnHostPrereqs.millLauncherVersion).
       millVersion.map("MILL_VERSION" -> _) ++
-      commandProxyVariables(proxyPort)
+      commandProxyVariables(proxyPort) ++
+      // For the programs HTTPS_PROXY serves, which read no JVM property.
+      RunOnHostInspection.CaBundleVariables.map(_ -> RunOnHostInspection.caBundle(trust).toString)
     passed ++ (forwards.toMap -- MillOverrides) ++ own
 
   /**
@@ -2048,11 +2098,29 @@ object RunOnHostSandbox:
     * offset `from` and after. */
   def deniedHosts(proxyLog: Path, from: Long = 0): Vector[String] =
     val Deny = raw""".*\bdeny (\S+) CONNECT.*""".r
+    proxyLogLines(proxyLog, from).collect { case Deny(host) => host }.distinct
+
+  /** A request the proxy refused inside a tunnel, and the audit line's reason. */
+  case class RefusedRequest(method: String, host: String, target: String, reason: String):
+    /** An origin-form target is a path; any other form is refused for being one, and shown as sent. */
+    def spelled: String =
+      if target.startsWith("/") then s"$method https://$host$target" else s"$method $target ($host)"
+
+  /** The requests the proxy refused inside a tunnel, once each (SECURITY.md, "The audit line
+    * grammar"): a line with a method and a target, where a refused CONNECT has an empty target. */
+  def refusedRequests(proxyLog: Path, from: Long = 0): Vector[RefusedRequest] =
+    val Deny = raw""".*\bdeny (\S+) ([A-Z]+) (\S+) (.*)""".r
+    proxyLogLines(proxyLog, from)
+      .collect { case Deny(host, method, target, reason) if method != "CONNECT" =>
+        RefusedRequest(method, host, target, reason.trim)
+      }.distinct
+
+  private def proxyLogLines(proxyLog: Path, from: Long): Vector[String] =
     if !Files.exists(proxyLog) then Vector.empty
     else
       val bytes = Files.readAllBytes(proxyLog)
       String(bytes, math.min(from, bytes.length).toInt, bytes.length - math.min(from, bytes.length).toInt, UTF_8)
-        .linesIterator.collect { case Deny(host) => host }.toVector.distinct
+        .linesIterator.toVector
 
   /**
    * The reason the proxy on `port` serves nothing, when a write to its log failed: the `details`
@@ -2084,7 +2152,11 @@ object RunOnHostSandbox:
           s"Tell the user: make ${runtime.proxyLog} writable again, then relaunch.",
       )
 
-  /** The denied-host report, once per refused host, after the command — never an automatic addition. */
+  /** The denied-host report, once per refused host, and the refused requests, after the command — never an
+    * automatic addition. A program need not print a 403's body, so each request carries what that body
+    * said: the reason, and for a refusal the command answers by changing the request, that step
+    * (RefusalAdvice.requestStep). The user's step follows only a refusal of a grant, which the
+    * rule file cannot give. */
   private def reportDenied(proxyLog: Path, from: Long, program: Program, log: String => Unit): Unit =
     val hosts = deniedHosts(proxyLog, from)
     if hosts.nonEmpty then
@@ -2092,3 +2164,13 @@ object RunOnHostSandbox:
         ("Not permitted by the host command sandbox. If the command should reach it, add an" +
           s" `$ProgramRuleForm` line to .ko-agent-sandbox/run-on-host/${program.name}/egress/rule."))
         .mkString("\n"))
+    val requests = refusedRequests(proxyLog, from)
+    if requests.nonEmpty then
+      import agentsandbox.egress.RefusalAdvice
+      val listed = requests.map: request =>
+        val step = RefusalAdvice.requestStep(request.reason).fold("")(text => s". $text")
+        s"  ${request.spelled}: ${request.reason}$step"
+      val ungranted = Option.when(requests.exists(request => RefusalAdvice.grantRefused(request.reason))):
+        "Its rules grant `read`, a GET or HEAD without a body, and its rule file takes no other grant. If the" +
+          " command should send the requests no grant covers, ask the user to run it themselves, outside the sandbox."
+      log((("Command sent requests the host command sandbox refuses:" +: listed) ++ ungranted).mkString("\n"))

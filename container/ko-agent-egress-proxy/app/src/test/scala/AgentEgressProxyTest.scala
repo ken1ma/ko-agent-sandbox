@@ -2943,6 +2943,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
       assert(refusalBody(refusal.getMessage, Some(advice)).length <= 512, s"${row.site}: body over 512 bytes")
       HostToken.findAllIn(advice).foreach: named =>
         assert(named == row.host || defaultsRuleset.hosts.contains(named), s"${row.site} names $named")
+      // An inspected request's refusal is of the request's form or of a grant, and the audit
+      // line's reason alone says which (RefusalAdvice.requestStep).
+      if row.site.startsWith("authorizeInspectedRequest") || row.site == "requireSpelledPlainly" then
+        import RefusalAdvice.*
+        val requestSteps = Set(originForm, upgrade, hostHeader, bodyFramingHeader, ambiguousPath)
+        assertEquals(requestStep(refusal.getMessage), Option.when(requestSteps(advice))(advice), row.site)
+        assertEquals(grantRefused(refusal.getMessage), !requestSteps(advice), s"${row.site}: ${refusal.getMessage}")
 
   test("the host-not-allowed step names a configuration that can allow the host, or none"):
     // The named line, in a clean project file, allows the host; a defaults host is refused under the

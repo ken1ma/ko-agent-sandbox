@@ -129,6 +129,9 @@ object SeatbeltProfile:
     gradleUserHome: Option[Path],
     m2Repository: Option[Path],
     proxyPort: Int,
+    // The directory of the proxy's CA certificate; the two files in it that the command's
+    // environment names are what is granted (RunOnHostInspection).
+    trust: Path,
     systemPaths: SystemPaths,
     network: Network,
   )
@@ -156,8 +159,10 @@ object SeatbeltProfile:
     val daemonPort = inputs.network match
       case Network.MillClient(port) => Some(port)
       case _                        => None
+    val trustFiles = Seq(RunOnHostInspection.caBundle(inputs.trust), RunOnHostInspection.trustStore(inputs.trust))
     val everyPath =
       readOnly ++ readWriteExec ++ readWrite ++ inputs.systemPaths.reads ++ inputs.systemPaths.executes ++ serverTmp
+        :+ inputs.trust
 
     val program = prereqs.program
     everyPath.find(path => !isAbsoluteNormalized(path)) match
@@ -210,7 +215,7 @@ object SeatbeltProfile:
         // available", which names the algorithm rather than the path.
         (ancestorLiterals(
           readOnly ++ readWriteExec ++ readWrite ++ inputs.systemPaths.reads ++ inputs.systemPaths.executes
-            ++ DevicePaths ++ serverTmp,
+            ++ DevicePaths ++ serverTmp ++ trustFiles,
         ))
           .foreach(path => lines += s"(allow file-read-metadata file-test-existence ${literal(path)})")
         lines += ""
@@ -231,6 +236,9 @@ object SeatbeltProfile:
         readWriteExec.foreach(path => lines += s"(allow file-read* file-write* process-exec* ${subpath(path)})")
         lines += ";; Caches: reads and writes, but no direct process execution; the JVM can load their code."
         readWrite.foreach(path => lines += s"(allow file-read* file-write* ${subpath(path)})")
+        lines += ""
+        lines += ";; The CA of the command's proxy: outside tmp/, so no command replaces what the next one trusts."
+        trustFiles.foreach(path => lines += s"(allow file-read* ${literal(path)})")
         lines += ""
         lines += ";; The command's own proxy, and no other destination."
         // Bazel's loopback spelling (DarwinSandboxedSpawnRunner, bazel#14828). "localhost" is the

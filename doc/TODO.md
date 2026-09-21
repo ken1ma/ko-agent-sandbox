@@ -16,38 +16,6 @@ again.
 - AWS is in neither: the broker plan's "Deliberate exclusions" has why, and what a session
   forwards instead.
 
-## `read` enforced for host commands
-
-- [ ] Give each host-command proxy a leaf certificate, so it inspects the hosts of
-  `.ko-agent-sandbox/run-on-host/<program>/egress/rule` and Maven Central and refuses what `read`
-  does not grant. It has no TLS material and tunnels them opaquely (`SECURITY.md`, "Run on
-  host"), while the file's lines and the launch's `widen:` line say `read`.
-  - The launch issues the leaves, one per selected program, naming that program's Maven Central
-    host and the file's hosts it already reads for the `widen:` line. The CA key stays with the
-    launch (`SECURITY.md`, "Who holds the CA key"); the broker receives each leaf, its key and the
-    CA certificate, and hands the proxy the hosts the leaf names.
-    - The file is then read at launch alone, as the session's rules are. The broker's own read
-      when it creates a proxy (`RunOnHostSandbox.readProgramRules`) goes: if the file changed
-      after launch, the ruleset's inspected hosts would differ from the names in the leaf, and
-      the proxy refuses to start with such a leaf.
-  - The command's JVMs trust the CA through a wrapper-owned store, the JDK's `cacerts` plus the CA
-    certificate, named by `-Djavax.net.ssl.trustStore` in `_JAVA_OPTIONS`, which carries the proxy
-    address to every JVM a command starts (`RunOnHostSandbox.commandEnvironment`). No host
-    setting changes.
-  - The proxy's Seatbelt profile gains reads of the leaf and its key.
-  - Measured, sbt and mill: resolving `spark-sql` 3.5.1 into an empty Coursier cache through a
-    session's proxy, which inspects `repo1.maven.org` with a handshake per request and is trusted
-    through a store other than the JDK's own.
-    - sbt 2.0.9, `update`: 1960 files and 240 MB in 36 s.
-    - mill 1.0.6 with its JVM launcher, `app.resolvedMvnDeps`, its own runtime included: 4040
-      files and 336 MB in 55 s.
-  - Not measured, Gradle and Maven: their HTTP clients through an inspecting proxy. A host probe
-    under `src/probe/` decides them, since the proxy resolves names itself and a sandbox has no
-    DNS.
-  - This replaces the reason `run-on-host.md`, "The command's egress proxy", gives for running
-    without inspection material, and removes the `SECURITY.md` bullet saying `read` is not
-    enforced.
-
 ## Deferred — GREASE ECH on inspected hosts
 
 - [ ] Allow an ECH extension on an inspected host, only if a client that sends GREASE ECH —
@@ -259,6 +227,24 @@ launcher execs away on POSIX, so neither side has an obvious place to run it.
 channel — however narrow — should exist for a convenience. One constraint on any implementation:
 command builders must take the podman path as a parameter, never read the global, which fails fast
 on podman-less machines and kills the test JVM.
+
+## Deferred — read grants a user adds to a host command's profile
+
+The `curl` that macOS ships does not run under a command's profile: LibreSSL stops at
+`fopen('/private/etc/ssl/openssl.cnf')`, `Operation not permitted` (`run-on-host.md`, "The
+command's lifetime and environment"). The launcher grants a system path only where a build
+measurably needs it (`SeatbeltProfile.SystemPaths.txt`), and no build here runs `curl`.
+
+- [ ] A way for a user to add a read grant, only once a build of theirs needs such a program:
+  `/private/etc/ssl/openssl.cnf` is the first case.
+  - Where the grant is stated decides who can widen a profile. A file under
+    `.ko-agent-sandbox/run-on-host/` arrives with the repository, as the program's rule file does,
+    so the launch prints it as it prints that file's hosts; a launch option is the user's alone.
+  - Reads of single files, never a write, an exec or a directory, and refused for a path under
+    the user's home: what a host command cannot read there is its confinement.
+  - Measure, before the form is chosen, that `curl` fetches from an allowed host with that one
+    file granted: the acceptance test's "CA bundle variables" rows print what it does, and
+    whether it then reads `CURL_CA_BUNDLE` or `SSL_CERT_FILE`.
 
 ## Deferred — a bound on a silent host command
 

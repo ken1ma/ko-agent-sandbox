@@ -74,6 +74,8 @@ object EmitRunOnHostProfile:
       gradleUserHome = assembled.gradleUserHomeGranted,
       m2Repository = assembled.m2RepositoryGranted,
       proxyPort = 51234,
+      // No proxy runs under the emitted profile, so nothing is here: the wrapper rows have the real one.
+      trust = RunOnHostInspection.trustDirectory(sessionTmp.resolveSibling("proxy.log")),
       systemPaths = systemPaths,
       network = program match
         case Program.Gradle => SeatbeltProfile.Network.Gradle
