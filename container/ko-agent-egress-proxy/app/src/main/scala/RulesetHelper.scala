@@ -65,6 +65,10 @@ object RulesetHelper:
     def contains(path: String, request: String): Boolean =
       if path.endsWith("/") then request.startsWith(path) else request == path
 
+    /** The longest of `scopes` containing `path`, a request's or a rule's. */
+    def longestMatch(scopes: Iterable[String], path: String): Option[String] =
+      scopes.filter(scope => contains(scope, path)).maxByOption(_.length)
+
   /** What a `deny` names: an exact host, or the apex and everything under it. */
   enum HostPattern:
     case Exact(host: String)
@@ -496,9 +500,9 @@ object RulesetHelper:
    * Kept beside the ruleset, never in it: what the structure's equality must not see. `scopes` per
    * inspected scope; `patterns` per whole-host or `tunnel` deny and per host a deny emptied, under
    * every profile, so a refusal can say `host denied (<line>)` where a file line matched the host;
-   * `widening`, the project lines granting beyond the defaults for their host — a host the
-   * defaults lack, `tunnel`, `method=` and `git-fetch` where they lack them, `deny defaults` —
-   * for the summary line's count and `--egress-effective`'s listing.
+   * `widening`, the project lines granting beyond the defaults — a host the defaults lack, a
+   * grant the defaults lack at the line's path, `deny defaults` — for the summary line's count
+   * and `--egress-effective`'s listing.
    */
   case class Provenance(
     scopes: Map[(String, String), ScopeProvenance],
@@ -652,13 +656,14 @@ object RulesetHelper:
         lines.filter: line =>
           line.rule match
             case Rule.DenyDefaults => true
-            case Rule.Allow(host, _, grants) =>
+            case Rule.Allow(host, path, grants) =>
               DefaultHosts.get(host) match
-                case None                             => true
-                case Some(Treatment.Tunnel)     => false
+                case None                   => true
+                case Some(Treatment.Tunnel) => false
                 case Some(Treatment.Inspected(scopes)) =>
-                  val held = scopes.values.flatten.toSet
-                  grants.exists(grant => grant != Grant.Read && !held(grant))
+                  // Scopes are cumulative, so a grant held at the line's path is held under all of it.
+                  val held = RulePath.longestMatch(scopes.keys, path).fold(Set.empty[String])(scopes)
+                  !grants.subsetOf(held)
             case _ => false
 
     val reachability =
@@ -815,7 +820,7 @@ object RulesetHelper:
     head.bodyFraming // throws when ambiguous
 
     val path = head.path
-    val matched = scopes.keys.filter(scope => RulePath.contains(scope, path)).maxByOption(_.length)
+    val matched = RulePath.longestMatch(scopes.keys, path)
     val grants = matched match
       case Some(scope) => scopes(scope)
       case None        => throw Refusal("path under no line", RefusalAdvice.pathOutside(scopes.keySet))

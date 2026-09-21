@@ -233,6 +233,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     val refused = run("ko-sandbox-egress-check", "unlisted.invalid")
     assertEquals(refused.exit, 1, refused.err)
     assert(refused.text.contains("403"), refused.text)
+    assert(refused.text.contains("Proxy-Status: ko-agent-egress-proxy; error=http_request_denied"), refused.text)
     assert(
       refused.text.contains(
         RefusalAdvice.hostNotAllowed("unlisted.invalid", agentsandbox.egress.RulesetHelper.DefaultProfile),

@@ -644,25 +644,53 @@ object HTTPHelper:
     socket: Socket,
     status: Int,
     reason: String,
+    proxyError: String,
     detail: String,
     advice: Option[String] = None,
   ): Unit =
-    respondQuietly(socket, status, reason, refusalBody(detail, advice))
+    respondQuietly(socket, status, reason, proxyError, Some(detail), advice)
 
+  /** `detail` is the Proxy-Status `details` and, unless `bodyless`, the body's first line
+    * (refusalBody). */
   def respondQuietly(
     client: Socket,
     status: Int,
     reason: String,
-    body: Array[Byte] = Array.emptyByteArray,
+    proxyError: String,
+    detail: Option[String] = None,
+    advice: Option[String] = None,
+    bodyless: Boolean = false,
   ): Unit =
-    try respond(client, status, reason, body)
+    try respond(client, status, reason, proxyError, detail, advice, bodyless)
     catch case _: IOException => ()
 
-  def respond(client: Socket, status: Int, reason: String, body: Array[Byte]): Unit =
+  /** This proxy's member of the Proxy-Status field. */
+  val ProxyStatusMember = "ko-agent-egress-proxy"
+
+  /**
+   * RFC 9209's response field, on every response this proxy generates itself and on none it
+   * relays: `error` is the registered proxy error type, which also tells a client the origin did
+   * not send this response, and `details` the audit line's `<why>`. A header, because clients
+   * that discard a failed CONNECT's body still show its header section (`curl -v`), and the
+   * run-on-host wrapper reads it (RunOnHostSandbox.unwritableProxyLog). A Structured Fields
+   * String holds printable ASCII alone, so any other character is sent as `?`.
+   */
+  def proxyStatus(proxyError: String, detail: Option[String]): String =
+    val details = detail.map: text =>
+      val printable = text.map(char => if char >= ' ' && char <= '~' then char else '?')
+      "; details=\"" + printable.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+    s"$ProxyStatusMember; error=$proxyError${details.getOrElse("")}"
+
+  def respond(
+    client: Socket, status: Int, reason: String, proxyError: String, detail: Option[String], advice: Option[String],
+    bodyless: Boolean,
+  ): Unit =
+    val body = detail.filterNot(_ => bodyless).fold(Array.emptyByteArray)(refusalBody(_, advice))
     val out = client.getOutputStream
     writeAscii(
       out,
       s"HTTP/1.1 $status $reason\r\n" +
+        s"Proxy-Status: ${proxyStatus(proxyError, detail)}\r\n" +
         (if body.isEmpty then "" else "Content-Type: text/plain; charset=utf-8\r\n") +
         s"Content-Length: ${body.length}\r\n" +
         "Connection: close\r\n\r\n",

@@ -67,6 +67,7 @@ object IPAddrHelper:
         throw Refusal(
           s"resolved to non-public address ${rejected.head.getHostAddress}",
           RefusalAdvice.nonPublicAddress,
+          "destination_ip_prohibited",
         )
 
   /**

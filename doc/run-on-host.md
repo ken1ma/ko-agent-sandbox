@@ -256,6 +256,16 @@ container — the same rule the egress refusal follows.
     the command ("Command requested network access to: …") — from the log's length at the
     command's start, so a shared proxy's earlier denials are not this command's. It never adds the
     host itself.
+  - a proxy that serves nothing because a write to its log failed (`SECURITY.md`, "Egress proxy")
+    cannot say so in that log, and the programs need not print it. After a command that exits
+    non-zero the wrapper asks the proxy with `OPTIONS *` and `Max-Forwards: 0`
+    (`RunOnHostSandbox.unwritableProxyLog`), reads the reason from the response's `Proxy-Status`
+    field, and reports it with the log's path. A proxy still logging answers `400` and logs
+    `deny - - OPTIONS non-CONNECT request`.
+    - sbt 2.0.9 and mill 1.0.6 print the status line alone, measured against a proxy answering
+      `403` with a marked `Proxy-Status` and body; Gradle and Maven are not measured:
+
+          Unable to tunnel through proxy. Proxy returns "HTTP/1.1 403 Forbidden"
 
 ## Program prerequisites
 
@@ -1272,9 +1282,10 @@ To allow artifact downloads beyond Maven Central, add repository hosts to this p
   rather than passed through. The full grammar would let one `allow model-provider` line expand
   into endpoints that are no artifact repository, and a `tunnel` word means nothing to a proxy
   running without inspection.
-- A launch selecting the program prints the file's hosts on a line of their own,
-  `run-on-host egress rules (<file>) widen:`, and refuses a file outside the grammar, so a host
-  that arrived with the repository is seen by you before the agent's first command.
+- A launch selecting the program prints one line per file,
+  `run-on-host egress rules (<file>) widen:` then the file's hosts as rule lines, and refuses a
+  file outside the grammar, so a host that arrived with the repository is seen by you before the
+  agent's first command.
 - The wrapper hands the proxy `deny defaults`, Maven Central, then the file's lines
   (`RunOnHostPrereqs.egressRuleText`), so the container's catalog contributes nothing.
 

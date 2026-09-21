@@ -370,6 +370,39 @@ header, answering the ruleset in force from the live proxy. Rejected:
 and this one never does — non-CONNECT is refused at the proxy layer, both methods are refused
 inside inspected tunnels, and an opaque tunnel is not an HTTP hop at all.
 
+The run-on-host wrapper does send that request, and it is no query endpoint: the proxy parses
+nothing of it and refuses it as it refuses any request that is no CONNECT. What the wrapper reads
+is the refusal itself. After a write to the audit log failed, every refusal is a `403` whose
+`Proxy-Status` names that reason (`SECURITY.md`, "Egress proxy"); the log cannot, and a program
+need not print it (`run-on-host.md`, "Refusals"). The wrapper sends no CONNECT so
+that a proxy still logging records no refused host for it, and sends `Max-Forwards: 0` for a
+recipient that is not this proxy (`RunOnHostSandbox.unwritableProxyLog`).
+
+### Proxy-Status on the proxy's own responses
+
+RFC 9209's response field is on every response the proxy generates itself — a refusal, a
+malformed request, a failed origin leg, the connection limit — and on none it relays:
+`Proxy-Status: ko-agent-egress-proxy; error=<type>; details="<why>"`.
+
+- `error` is the registered proxy error type, and its presence tells a client that the origin
+  did not send this response. The ruleset's refusals are `http_request_denied`; a refusal or
+  failure with a more specific registered type uses it (`destination_ip_prohibited`,
+  `dns_error`, `tls_certificate_error`). The status codes stay the proxy's own where RFC 9209
+  recommends another: a refusal is a `403` whatever its type, which is what
+  `ko-sandbox-egress-check` exits 1 on.
+- `details` is the audit line's `<why>`, the body's first line where there is a body. The next
+  step stays in the body alone: it is a sentence for the agent, not a diagnostic.
+  - The `500` names the exception's class and leaves its message to the log: the message of an
+    exception nobody planned for may hold what the sandbox should not read.
+  - The `503` has none: `connection_limit_reached` is the whole reason.
+- A header as well as a body, because clients that discard a failed CONNECT's body still show its
+  header section (`curl -v`), and a program can read one field where the body is text for people.
+  `ko-sandbox-egress-check` prints the field before the body; for the responses without a body —
+  the `400` to a malformed CONNECT, the `500`, the `503` — the field is all the client receives.
+- Unlike Via ("No Via header", below) it reaches the client alone, never an origin.
+- The member is the image's name, not a deployment's, against RFC 9209's advice: a session has
+  one proxy, and the refusal body already starts with that name.
+
 ### No Via header
 
 A standards deviation, knowingly: RFC 9110 §7.6.3 makes Via a MUST for an intermediary, and the

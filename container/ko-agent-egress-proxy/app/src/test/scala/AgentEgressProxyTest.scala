@@ -898,7 +898,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(texts.distinct.size, 3)
     assertEquals(texts.map(sha256Hex).distinct.size, 3)
 
-  test("the widening line names the project lines granting beyond the defaults for their host, and only those"):
+  test("the widening line names the project lines granting beyond the defaults at their path, and only those"):
     val resolved = rulesetOf(
       rule =
         "allow https://html.spec.whatwg.org/ read      # a host the defaults lack: a new recipient\n" +
@@ -906,6 +906,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
           "allow https://pypi.org/ git-fetch              # a grant the defaults lack\n" +
           "allow https://github.com/ read git-fetch       # the defaults' own line, restated\n" +
           "allow https://registry.npmjs.org/-/npm/v1/security/advisories/bulk method=POST\n" +
+          "allow https://github.com/login/device/code method=POST  # the defaults' own line, restated\n" +
+          "allow https://github.com/login/ method=POST    # the defaults grant it on two paths below\n" +
+          "allow https://www.googleapis.com/oauth2/v2/userinfo read  # the defaults' own line, restated\n" +
+          "allow https://www.googleapis.com/oauth2/ read  # the defaults grant it on one path below\n" +
           "allow https://api.anthropic.com/ tunnel        # the defaults' own tunnel, restated\n" +
           "deny https://gitlab.com/\ndeny model-provider google\nallow model-provider anthropic\n" +
           "deny https://claude.ai/ tunnel\nallow https://claude.ai/ read  # a tunnel narrowed to inspected reads\n" +
@@ -916,9 +920,11 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "allow https://storage.googleapis.com/b/ read",
       "allow https://pypi.org/ git-fetch",
       "allow https://registry.npmjs.org/-/npm/v1/security/advisories/bulk method=POST",
+      "allow https://github.com/login/ method=POST",
+      "allow https://www.googleapis.com/oauth2/ read",
     )
     assertEquals(resolved.provenance.widening.map(_.text), widening)
-    assertEquals(wideningLine(resolved), Some(s"widening lines (4): ${widening.mkString("; ")}"))
+    assertEquals(wideningLine(resolved), Some(s"widening lines (6): ${widening.mkString("; ")}"))
     // Printed after the ruleset lines and outside their digest: metadata about the file, not the ruleset.
     assert(!rulesetLines(resolved).exists(_.startsWith("widening")), rulesetLines(resolved).toString)
     assertEquals(metadataLines(resolved)(1), wideningLine(resolved).get)
@@ -2646,6 +2652,38 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(a.toByteArray.toVector, b.toByteArray.toVector)
     assert(String(a.toByteArray, StandardCharsets.US_ASCII).startsWith("allow github.com"))
 
+  test("a failing sink keeps no byte of a stamped line from the other, and its first failure is kept"):
+    def failing(reason: String) = new java.io.OutputStream:
+      override def write(byte: Int): Unit = throw java.io.IOException(reason)
+      override def flush(): Unit = throw java.io.IOException(reason)
+    for failsFirst <- Seq(true, false) do
+      val written = java.io.ByteArrayOutputStream()
+      val first = java.util.concurrent.atomic.AtomicReference[java.io.IOException]()
+      val refusing = keepingFirstFailure(failing("No space left on device"), first)
+      val accepting = keepingFirstFailure(written, first)
+      val sinks = if failsFirst then teeOutput(refusing, accepting) else teeOutput(accepting, refusing)
+      assertEquals(first.get, null)
+      val stream = java.io.PrintStream(stampLines(sinks, () => java.time.Instant.parse("2026-08-26T11:59:38Z")), true)
+      stream.println("allow github.com")
+      stream.println("deny x.example")
+      assertEquals(
+        String(written.toByteArray, StandardCharsets.US_ASCII),
+        "2026-08-26T11:59:38Z allow github.com\n2026-08-26T11:59:38Z deny x.example\n",
+      )
+      assertEquals(first.get.getMessage, "No space left on device")
+
+    // A PrintStream between this and stderr's descriptor would hide write failures, and the proxy
+    // would continue serving without an audit log.
+    intercept[IllegalArgumentException](keepingFirstFailure(java.io.PrintStream(failing("x")), first = null))
+
+    // serve() with a log file: the stderr copy keeps its failures apart, so they refuse nothing.
+    val log = java.io.ByteArrayOutputStream()
+    val logFailure = java.util.concurrent.atomic.AtomicReference[java.io.IOException]()
+    val copy = keepingFirstFailure(failing("Broken pipe"), java.util.concurrent.atomic.AtomicReference())
+    java.io.PrintStream(teeOutput(copy, keepingFirstFailure(log, logFailure)), true).println("allow github.com")
+    assertEquals(String(log.toByteArray, StandardCharsets.US_ASCII), "allow github.com\n")
+    assertEquals(logFailure.get, null)
+
   test("EGRESS_BIND unset or empty is the wildcard on the fixed port"):
     for value <- Seq(None, Some("")) do
       val bind = parseBind(value)
@@ -2861,6 +2899,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
           ),
       ),
       RefusalRow(
+        "Run.requireAuditLog", github, auditLog,
+        () =>
+          Run(defaultsRuleset, None, Direct, () => Some(java.io.IOException("No space left on device")))
+            .requireAuditLog(),
+      ),
+      RefusalRow(
         "validateTlsIdentity ECH", github, RefusalAdvice.clientHello,
         () => validateTlsIdentity(github, hello(Some(github), ech = true)),
       ),
@@ -2924,7 +2968,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("a refusal inside the tunnel is the reason and the step, framed as text/plain"):
     val (client, server) = socketPair()
-    respondInsideTls(server, 403, "Forbidden", "POST not granted", Some(RefusalAdvice.methodNotGranted))
+    respondInsideTls(
+      server, 403, "Forbidden", "http_request_denied", "POST not granted", Some(RefusalAdvice.methodNotGranted),
+    )
     server.close()
     val received = String(client.getInputStream.readAllBytes(), StandardCharsets.UTF_8)
     client.close()
@@ -2932,7 +2978,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val body = s"ko-agent-egress-proxy: POST not granted\n${RefusalAdvice.methodNotGranted}\n"
     assertEquals(
       received,
-      "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\n" +
+      "HTTP/1.1 403 Forbidden\r\n" +
+        "Proxy-Status: ko-agent-egress-proxy; error=http_request_denied; details=\"POST not granted\"\r\n" +
+        "Content-Type: text/plain; charset=utf-8\r\n" +
         s"Content-Length: ${body.getBytes(StandardCharsets.UTF_8).length}\r\nConnection: close\r\n\r\n" + body,
     )
     // A 400 or 502 has no step to name, and keeps the one-line body.
@@ -2942,13 +2990,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
     )
 
   test("a refused CONNECT answers 403 with the same body, and the audit line is the reason alone"):
-    def exchange(request: String): (String, String) =
+    def exchange(request: String, run: Run = Run(defaultsRuleset, None, Direct)): (String, String) =
       val (client, server) = socketPair()
       val log = java.io.ByteArrayOutputStream()
       val saved = System.err
       System.setErr(java.io.PrintStream(log, true))
       try
-        val handling = Thread.startVirtualThread(() => handle(server, Run(defaultsRuleset, None, Direct)))
+        val handling = Thread.startVirtualThread(() => handle(server, run))
         client.getOutputStream.write(ascii(request))
         client.getOutputStream.flush()
         val received = String(client.getInputStream.readAllBytes(), StandardCharsets.UTF_8)
@@ -2963,19 +3011,70 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(
       exchange("CONNECT tracker.example:443 HTTP/1.1\r\nHost: tracker.example:443\r\n\r\n"),
       (
-        "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\n" +
+        "HTTP/1.1 403 Forbidden\r\n" +
+          "Proxy-Status: ko-agent-egress-proxy; error=http_request_denied; details=\"host not allowed\"\r\n" +
+          "Content-Type: text/plain; charset=utf-8\r\n" +
           s"Content-Length: ${body.getBytes(StandardCharsets.UTF_8).length}\r\nConnection: close\r\n\r\n" + body,
         "deny tracker.example CONNECT host not allowed",
+      ),
+    )
+    // Once a log line failed to be written, a host the ruleset allows is refused like any other,
+    // before the ruleset is asked and before anything is dialled, and the body carries the reason.
+    val unwritable = "audit log cannot be written: No space left on device"
+    val unwritableStatus = s"Proxy-Status: ko-agent-egress-proxy; error=proxy_internal_error; details=\"$unwritable\""
+    val unwritableBody = s"ko-agent-egress-proxy: $unwritable\n${RefusalAdvice.auditLog}\n"
+    val failed = Run(defaultsRuleset, None, Direct, () => Some(java.io.IOException("No space left on device")))
+    for host <- Seq("github.com", "tracker.example") do
+      assertEquals(
+        exchange(s"CONNECT $host:443 HTTP/1.1\r\nHost: $host:443\r\n\r\n", failed),
+        (
+          s"HTTP/1.1 403 Forbidden\r\n$unwritableStatus\r\nContent-Type: text/plain; charset=utf-8\r\n" +
+            s"Content-Length: ${unwritableBody.getBytes(StandardCharsets.UTF_8).length}\r\n" +
+            "Connection: close\r\n\r\n" + unwritableBody,
+          s"deny $host CONNECT $unwritable",
+        ),
+      )
+    // A request that is no CONNECT gets the reason too: what the run-on-host wrapper asks with.
+    assertEquals(
+      exchange("OPTIONS * HTTP/1.1\r\nHost: localhost\r\nMax-Forwards: 0\r\n\r\n", failed),
+      (
+        s"HTTP/1.1 403 Forbidden\r\n$unwritableStatus\r\nContent-Type: text/plain; charset=utf-8\r\n" +
+          s"Content-Length: ${unwritableBody.getBytes(StandardCharsets.UTF_8).length}\r\n" +
+          "Connection: close\r\n\r\n" + unwritableBody,
+        "deny - - OPTIONS non-CONNECT request",
       ),
     )
     // A malformed request is the client's defect, answered with no body as before.
     assertEquals(
       exchange("GET / HTTP/1.1\r\nHost: tracker.example\r\n\r\n"),
       (
-        "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 400 Bad Request\r\n" +
+          "Proxy-Status: ko-agent-egress-proxy; error=http_request_error; details=\"GET non-CONNECT request\"\r\n" +
+          "Content-Length: 0\r\nConnection: close\r\n\r\n",
         "deny - - GET non-CONNECT request",
       ),
     )
+
+  test("Proxy-Status carries the error type and the reason as a Structured Fields String"):
+    assertEquals(proxyStatus("connection_limit_reached", None), "ko-agent-egress-proxy; error=connection_limit_reached")
+    // Printable ASCII alone, with the quote and the backslash escaped: RFC 8941, 3.3.3.
+    assertEquals(
+      proxyStatus("dns_error", Some("resolution: \"caf\u00e9\\x\" \u540d")),
+      "ko-agent-egress-proxy; error=dns_error; details=\"resolution: \\\"caf?\\\\x\\\" ?\"",
+    )
+    // The type is the most specific registered one a site can name; the ruleset's refusal otherwise.
+    assertEquals(intercept[Refusal](authorize("github.com", 8443)).proxyError, "http_request_denied")
+    assertEquals(
+      intercept[Refusal](IPAddrHelper.requirePublic(Vector(InetAddress.getByName("10.0.0.5")))).proxyError,
+      "destination_ip_prohibited",
+    )
+    assertEquals(originProxyError(javax.net.ssl.SSLHandshakeException("no_application_protocol")), "tls_protocol_error")
+    val untrusted = javax.net.ssl.SSLHandshakeException("PKIX path building failed")
+    untrusted.initCause(java.security.cert.CertificateException("expired"))
+    assertEquals(originProxyError(untrusted), "tls_certificate_error")
+    assertEquals(originProxyError(java.net.SocketTimeoutException("Read timed out")), "http_response_timeout")
+    assertEquals(originProxyError(java.net.SocketException("Connection reset")), "connection_terminated")
+    assertEquals(originProxyError(java.io.IOException("origin sent an invalid Content-Length")), "http_protocol_error")
 
   private def head(value: String): HttpRequestHead =
     HttpRequestHead.parse(ascii(value))
