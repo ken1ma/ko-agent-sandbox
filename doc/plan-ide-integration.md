@@ -13,8 +13,8 @@ sandbox side honors: a host that ignores its configuration still sends protocol 
 
 ## What is read and measured
 
-Read and measured on 2026-09-22. The VS Code documents carry an approval date of 2026-09-16; the
-VS Code source is release 1.138.0.
+Read and measured on 2026-09-22 and 2026-09-23. The VS Code documents carry an approval date of
+2026-09-16; the VS Code source is release 1.138.0.
 
 VS Code and AHP:
 
@@ -59,7 +59,7 @@ VS Code and AHP:
   inside it.
 - The Copilot harness uses VS Code's GitHub session. The Claude harness alternatively reads
   `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`. Codex on the Agent Host is experimental.
-- The image has no `code` CLI.
+- The image installs the `code` CLI at `/usr/local/bin/code` (Containerfile, "VS Code CLI").
 
 ACP, for the deferred track:
 
@@ -147,6 +147,58 @@ the forwarding the investigation exists to prevent. Where a token is needed, it 
 driver's `chat.agentHost.unsafeTestToken` on the routes that honor it and a throwaway account
 created for the test on the others, never the user's session.
 
+Measured on 2026-09-23: VS Code 1.138.0 on macOS attached to the host in a sandbox launched on the
+default egress profile. The step's last item, the session on the project, is pending: it needs an
+agent with credentials in the host, which step 3 provides, so it is measured with that harness.
+
+- Downloads. The CLI, installed under `~/.local/bin` for this measurement, comes from
+  `https://update.code.visualstudio.com/latest/cli-linux-arm64/stable`; the host's server
+  download from the same host's `/commit:<commit>/server-linux-arm64/stable`. Both answer with a
+  redirect to `vscode.download.prss.microsoft.com`, so the feature "VS Code CLI and server
+  download" needs `read` rules for both hosts. The server archive is 210 MB; the host is ready
+  51 s after start when it downloads and 14 s when the server is cached. The image installs the CLI
+  (Containerfile, "VS Code CLI"); the server is downloaded at first start through the proxy's
+  default rules (`defaults/host`, "VS Code").
+- Writes, discarded with the session: the server under `~/.vscode/cli/servers/`, server data,
+  extensions and the supervisor log under `~/.vscode-server/`, the endpoint registry under
+  `~/.config/Code/agent-host/`, a cache under `~/.cache/Microsoft/`, and three sockets in `/tmp`.
+- Other destinations: the host POSTs telemetry to `mobile.events.data.microsoft.com`; the proxy
+  refuses it and the host continues, so no rule admits it. The host also streams its log records
+  to the client over the protocol (`otlp/exportLogs`).
+- Listener: `127.0.0.1:31546` only, the port given with `--port`. The supervisor checks the
+  connection token at the WebSocket handshake: `101` with `?tkn=<token>`, `403 Forbidden: missing
+  or invalid connection token` without.
+- Transport: the exec relay works with no launcher change. On the host, a loopback listener runs
+  one relay per connection:
+
+  ```sh
+  socat TCP-LISTEN:31546,bind=127.0.0.1,reuseaddr,fork \
+    EXEC:"podman exec -i <container> /home/nonroot/.local/bin/code agent relay \
+      --user-data-dir /home/nonroot/.config/Code <instance-id>"
+  ```
+
+  The command above is tested with the CLI installed under `~/.local/bin`; with the image's CLI
+  the path is `/usr/local/bin/code`, untested, as is the form without absolute paths.
+  `code agent endpoints` in the sandbox prints the instance id and the token. The listener
+  accepts any local process; the connection token is what refuses them, and VS Code keeps it in
+  the profile's settings under `chat.remoteAgentHosts`. The published-port candidate is untried.
+- Attachment: the Agents window opened with a fresh `--user-data-dir` and `--extensions-dir`,
+  signed out, with `chat.agentHost.allowSignedOutWhenUsable` set beforehand; whether the window
+  needs it is not measured. The command is a Command Palette entry of the Agents window, listed as
+  "Agents: Add Remote Agent Host..."; it takes the `ws://` URL, then a display name, and connects
+  at once. The workspace dropdown's Remote tab and "Agents: Manage Remote Agent Hosts..." list the
+  host as Online, with a folder picker on the host.
+- The protocol log under `~/.vscode-server/data/logs/<start>/ahp/` records the exchange. Over two
+  and a half hours the client, `vscode-agents-window` on protocol 0.9.0, sent `initialize`,
+  `listSessions`, two `subscribe` calls for the host's log channel and its automations, nine
+  `dispatchAction` calls that push 35 VS Code settings as host configuration, among them the
+  terminal auto-approve rules, workspace trust, the telemetry level and a `sandbox` block set to
+  off with network allowed, and a ping every five seconds. That `sandbox` block is the Agent Host
+  setting step 2 names. The host advertises `protectedResources` for both of its agents, GitHub
+  required for Copilot and optional for Claude. The log holds no `authenticate` request, no
+  `auth/required` notification and no `AuthRequired` error: no bearer token crossed in this
+  signed-out attachment. No message carries the project path, and no session exists.
+
 ## Step 2: enforcement outside the sandbox
 
 The deciding test. A hostile host, a script speaking AHP in place of `code agent host`, stands in
@@ -224,7 +276,8 @@ and AHP versions tested are recorded in the documentation.
 
 ## Phases
 
-0. Step 1, and the hostile host of step 2 written against the spec's channels.
+0. Step 1 up to its session item, measured above, and the hostile host of step 2 written against
+   the spec's channels.
 1. Step 2's measurements; the filtering relay's design if they call for one.
 2. Step 3.
 3. Step 4, with the documentation: a usage section in the README, the refused operations under a

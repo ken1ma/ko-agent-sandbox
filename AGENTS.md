@@ -30,11 +30,6 @@ Correct a mistaken premise, plan or wording before working, with the reason. Onc
 is heard, do the work as asked. Disagreement is expected; do not silently conform to a guessed
 intent.
 
-Never write unasked to this file or `container/ko-agent-sandbox/AGENTS-SANDBOX.md`, which every
-prompt includes: propose the sentence with what an agent does differently because of it. Before
-changing this file because an instruction was not followed, identify what was missing, ambiguous or
-conflicting, or what prevented following it, and revise the existing rule rather than adding one.
-
 
 # Writing style
 
@@ -103,11 +98,13 @@ Do not use one-letter names, except for
 3. names established in the literature
 
 
-# Agent memory
+# What helps other agents
 
-Report each memory change you make as "Agent memory: <what changed>". What would help other
-agents belongs in AGENTS.md or a project document: propose that edit to the user, as a rule for a
-class of cases, not one case.
+Record what helps other agents, as a rule for a class of cases, in a project document,
+`container/ko-agent-sandbox/AGENTS-SANDBOX.md` or this file. Both prompt files are in every
+prompt: add a sentence only when an agent acts differently because of it, and defend every word.
+When a rule was not followed, identify what was missing, ambiguous or conflicting, or what
+prevented following it, and revise it; add a rule only when none covers the case.
 
 
 # git

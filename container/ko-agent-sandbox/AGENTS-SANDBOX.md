@@ -51,9 +51,9 @@ Build output:
 
 ## Use what is already installed
 
-Java 25, Scala (`sbt`, `cs`, `scalafmt`, and `scala`, which is Scala CLI), Python 3.14 (`uv`,
-`uvx`), Node 24, Rust stable (`clippy`, `rustfmt`, and the static musl target), plus `rg`, `jq`,
-`patch`, `zstd`, `openssl`, binutils, and the usual GNU text and process commands.
+VS Code CLI (`code`), Java 25, Scala (`sbt`, `cs`, `scalafmt`, and `scala`, which is Scala CLI),
+Python 3.14 (`uv`, `uvx`), Node 24, Rust stable (`clippy`, `rustfmt`, and the static musl target),
+plus `rg`, `jq`, `patch`, `zstd`, `openssl`, binutils, and the usual GNU text and process commands.
 
 Absent: `make`, `g++`, `mvn`, `gradle`, `ssh`, `rsync`, `wget`, `zip`, `shellcheck`, and the
 `sqlite3` CLI — use `python3 -c "import sqlite3; ..."`.
