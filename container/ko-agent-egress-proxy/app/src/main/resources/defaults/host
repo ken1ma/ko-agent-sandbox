@@ -40,6 +40,12 @@ allow https://docs.github.com/        read  # copilot
 allow https://opencode.ai/            read
 allow https://models.opencode.ai/     read
 
+# VS Code: the image's `code` CLI fetches the server release for `code agent host`, at first start
+# and on updates: a GET of the update service's /commit:<commit>/server-linux-<arch>/stable,
+# redirected to the CDN. Two more `read` recipients.
+allow https://update.code.visualstudio.com/       read  # update service
+allow https://vscode.download.prss.microsoft.com/ read  # CDN
+
 # public documents / repositories
 allow https://www.rfc-editor.org/   read  # published RFCs
 allow https://datatracker.ietf.org/ read  # Internet-Drafts / RFC status / history / IETF process

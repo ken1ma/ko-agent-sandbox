@@ -396,6 +396,31 @@ COPY --chmod=0644 codex/bash-env /etc/codex/bash-env
 
 
 # ---------------------------------------------------------------------------
+# VS Code CLI
+# ---------------------------------------------------------------------------
+#
+# `code agent host` is what an IDE attaches to over the Agent Host Protocol.
+# Microsoft publishes the CLI through its update service, not GitHub: one
+# call names the latest release, a second gives that release's download URL
+# and SHA-256, which the CDN itself does not publish. The server release the
+# host runs is not bundled: it updates independently of the CLI, through the
+# host's own update loop, so the CLI downloads it on the host's first start,
+# through the proxy's default rules.
+RUN set -euxo pipefail; \
+    case "$(uname -m)" in aarch64) VSCODE_ARCH=arm64;; x86_64) VSCODE_ARCH=x64;; esac; \
+    VSCODE_UPDATE=https://update.code.visualstudio.com/api; \
+    VSCODE_VERSION="$(curl -fsSL "${VSCODE_UPDATE}/latest/cli-linux-${VSCODE_ARCH}/stable" \
+        | jq -re .productVersion)"; \
+    VSCODE_RELEASE="$(curl -fsSL "${VSCODE_UPDATE}/versions/${VSCODE_VERSION}/cli-linux-${VSCODE_ARCH}/stable")"; \
+    curl -fsSL "$(printf '%s' "$VSCODE_RELEASE" | jq -re .url)" -o /tmp/vscode-cli.tar.gz; \
+    printf '%s  /tmp/vscode-cli.tar.gz\n' "$(printf '%s' "$VSCODE_RELEASE" | jq -re .sha256hash)" \
+        | sha256sum -c -; \
+    tar -xzf /tmp/vscode-cli.tar.gz -C /tmp code; \
+    install -m 0755 /tmp/code /usr/local/bin/code; \
+    rm -f /tmp/vscode-cli.tar.gz /tmp/code
+
+
+# ---------------------------------------------------------------------------
 # Antigravity CLI
 # ---------------------------------------------------------------------------
 #
