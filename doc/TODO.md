@@ -51,6 +51,48 @@ again.
     `supports_websockets = false` accepts the ChatGPT login; the built-in provider cannot be
     overridden (`doc/design.md`, "No WebSocket in the inspected relay").
 
+## Deferred — refuse user namespaces under `NESTING=none`
+
+- [ ] A launcher-owned seccomp profile for `NESTING=none` that refuses a user namespace, only if
+  a kernel vulnerability reachable from an unprivileged user namespace enters the threat model.
+  Measured in a default session (2026-09-22): `unshare -Ur true` returns 0, so the
+  containers-common default profile allows it; `io_uring_setup` returns `ENOSYS`, so that
+  interface needs no rule.
+  - Two rules, not one: `clone` and `unshare` carry their flags in a register, so the filter
+    refuses `CLONE_NEWUSER` and passes the rest. `clone3` carries them in a `struct clone_args`
+    the filter cannot read (a seccomp filter sees register values only,
+    https://www.kernel.org/doc/html/latest/userspace-api/seccomp_filter.html), and it reaches the
+    kernel here (`EINVAL` on a zero-size argument), so the profile answers every `clone3` with
+    `ENOSYS`. That refuses each caller without a fallback to `clone`; measure that the image's
+    libc, Node, the JVM, Python and each installed agent still spawn processes under the profile.
+  - SECURITY.md, "Container, runtime and kernel escape", answers a kernel exploit with a stronger
+    isolation layer, "not more flags here". This profile claims no containment of a running
+    exploit; it removes a kernel interface. Adopt it only after measurements confirm that no
+    installed agent, as the image configures it, creates a user namespace, and record that
+    distinction in that paragraph. `same-uid` keeps the default profile: rootless podman inside
+    the session creates user namespaces.
+  - Cost: every unprivileged `bwrap` call fails at its first step. In this image `bwrap`
+    (bubblewrap 0.12.0) with `--unshare-user`, bind mounts and a tmpfs works today; `--proc` and
+    `--dev` fail with `Permission denied` (a fresh `/proc` under podman's masked entries, and
+    devpts). Claude Code's Bash-command sandbox is off in the managed settings and Codex runs
+    `danger-full-access` (`container/ko-agent-sandbox/Containerfile` has the reasons), so
+    neither calls it as configured. `agy` 1.2.7 in print mode runs a shell command in the
+    session's own user, pid and mount namespaces (the command's `/proc/self/ns/*` inodes equal
+    the session shell's; measured 2026-09-22). Measure `kiro-cli`, `copilot` and `opencode` the
+    same way, and whether Chromium's own sandbox (Playwright) then needs `--no-sandbox`. A
+    project's own bubblewrap or `unshare -Ur` step fails with `Operation not permitted`, so the
+    container instructions name the refusal.
+  - Derive the profile from the installed containers-common default at `--build`, and test that
+    it differs only in the added rules; a copied profile drifts on a podman upgrade. The podman
+    server, not the launcher, reads the profile file, so on macOS and Windows it must sit under a
+    host share the machine mounts; the launcher's state root is under one today, since the
+    server resolves the audit log's bind at a path there. It joins the session's `createCommand`
+    beside `--cap-drop=ALL` on the branch that skips it for `same-uid` (`nestedArgs`), not the
+    proxy container's. Ship the loosening in the same change: a variable in the
+    `KO_AGENT_SANDBOX_NESTING` style, exported into the session and printed every session as the
+    nesting loosening is, so the first `Operation not permitted` has its switch. Measure the
+    `clone3` fallback before any of this: a runtime without one ends the item.
+
 ## Deferred — GREASE ECH on inspected hosts
 
 - [ ] Allow an ECH extension on an inspected host, only if a client that sends GREASE ECH —
