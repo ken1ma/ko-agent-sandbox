@@ -55,6 +55,13 @@ again.
     `supports_websockets = false` accepts the ChatGPT login; the built-in provider cannot be
     overridden (`doc/design.md`, "No WebSocket in the inspected relay").
 
+## IDE integration through VS Code's Agent Host
+
+- [ ] `plan-ide-integration.md`, in its steps: attach VS Code to a `code agent host` in the
+  sandbox, then the hostile-host test that decides where enforcement lives, then one harness,
+  then `--protocol=ahp`. ACP is deferred; the plan keeps its reviewed design and the conditions
+  that reopen it.
+
 ## Deferred — refuse user namespaces under `NESTING=none`
 
 - [ ] A launcher-owned seccomp profile for `NESTING=none` that refuses a user namespace, only if
