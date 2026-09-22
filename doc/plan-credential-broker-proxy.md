@@ -220,18 +220,25 @@ with the one measurement that design must settle first.
 
 ## Claude Code and Codex logins: excluded
 
-Not brokered, for reasons that hold independently of effort:
+Not brokered:
 
-- The Codex CLI is a statically linked binary with compiled-in roots ("Who holds the CA key").
-  It cannot be shown the project CA, so nothing between it and `chatgpt.com` /
-  `api.openai.com` can be inspected, and there is no substitution point.
+- The Codex CLI trusts the CA in `SSL_CERT_FILE` ("Who holds the CA key"). Its built-in
+  provider opens a websocket first; the inspected relay refuses the `Upgrade`, and Codex then
+  falls back to HTTP. Measured with codex-cli 0.155.1 signed in with an API key, against a local
+  server that answers the upgrade with an error (2026-09-22): seven `GET /v1/responses` with
+  `Upgrade: websocket` over about seven seconds, then `POST /v1/responses`. It is not brokered
+  until one turn succeeds through the inspected relay; that, and the ChatGPT login, are not
+  measured.
 - Claude Code is a Node program and could be inspected, but its endpoints are tunnels by
-  design: model traffic has to write, and there are no rules to apply inside it beyond the swap.
-  Its login is an OAuth pair with local expiry bookkeeping and a refresh exchange on the
-  provider's hosts; the proxy would have to mirror that lifecycle per release, at every refresh,
-  for a token that "can only spend model quota". A stolen model token is a nuisance to the
-  account holder; a stolen forge token is every private repository. The gain does not pay for
-  a per-release contract with the CLI.
+  design: model traffic has to write. Its login is an OAuth pair with local expiry bookkeeping
+  and a refresh exchange on the provider's hosts; the proxy would have to mirror that lifecycle
+  per release, at every refresh. A stolen model token is a nuisance to the account holder; a
+  stolen forge token is every private repository. The gain from hiding the token does not pay
+  for a per-release contract with the CLI.
+- Hiding the token is not the only rule an inspected model host could apply: which credential
+  may reach the host is another, and a tunnel cannot apply it (SECURITY.md, "Exfiltration
+  through allowed network traffic"). `doc/TODO.md`, "Credential brokering", has that item; it
+  needs no mirror of the login's lifecycle for an API key.
 - `--env=ANTHROPIC_API_KEY@api.anthropic.com` is the one Claude case the mechanism would fit —
   API-key mode, a fixed header, no lifecycle — and it is refused by guarantee 2 because the host
   is a tunnel. `AWS_BEARER_TOKEN_BEDROCK` at a project's `bedrock-runtime.<region>.amazonaws.com`

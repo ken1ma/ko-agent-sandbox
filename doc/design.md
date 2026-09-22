@@ -354,6 +354,29 @@ proxy"), and each of these stays out of it for a reason of its own:
   argument, banner, log line or error, and the proxy is its one reader; a second source would need
   a second reader.
 
+### No WebSocket in the inspected relay
+
+Considered: relaying a WebSocket on an inspected or mediated host after checking the upgrade
+request's headers, so that a mediated OpenAI host could carry the Codex CLI's first choice of
+transport. Rejected:
+
+- A WebSocket matters only on an inspected host; on a tunnel it passes as bytes. Every model host
+  is a tunnel under the default rules, so no installed agent meets the refusal today.
+- The one client known to open a WebSocket to its model host, the Codex CLI's built-in provider,
+  falls back to HTTP after the refusal (`doc/plan-credential-broker-proxy.md`, "Claude Code and
+  Codex logins: excluded", has the measurement). Its `supports_websockets = false` cannot be set
+  for that provider: codex-cli 0.155.1 refuses to load an override of a built-in provider.
+- The other installed agents' binaries hold no `wss://` literal for a model host; `claude` holds
+  one for its Remote Control bridge, `bridge.claudeusercontent.com`, which no default rule allows.
+  A URL built at run time escapes that search.
+- After the upgrade the proxy would relay decrypted bytes without applying HTTP method and path
+  grants: a third treatment beside inspected and tunnel. Supporting that stream requires reviewing
+  the one-request rule's protection against request smuggling (`SECURITY.md`, "Reading without
+  being able to write").
+
+Revisit if one Codex turn through a mediated relay fails on the HTTP fallback, or the provider
+drops the HTTP path.
+
 ### No HTTP query endpoint on the proxy
 
 Considered: the RFC 9110 request `OPTIONS * HTTP/1.1` with `Max-Forwards: 0` and a custom query
