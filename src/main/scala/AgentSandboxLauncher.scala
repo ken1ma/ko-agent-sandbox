@@ -387,11 +387,11 @@ object AgentSandboxLauncher:
 
   /**
    * Warn before the image builds when the machine has less than this available. The threshold
-   * is below the cold-build peak the warning quotes on purpose: a default 4 GiB machine idles
-   * near 3.3–3.6 GiB available, and a threshold the supported default trips at idle is a
-   * warning users learn to ignore. 3 GiB tells the two machine states apart — quiet on an idle
-   * default machine, loud once running sessions hold real memory, the state in which a build
-   * degrades every session on the machine. The answer is the user's, not the launcher's — a
+   * is below the cold-build peak the warning quotes on purpose: a 4 GiB machine, the size the
+   * threshold was chosen on, idles near 3.3–3.6 GiB available, and a threshold that size trips
+   * at idle is a warning users learn to ignore. 3 GiB tells the two machine states apart — quiet
+   * on an idle 4 GiB machine, loud once running sessions hold real memory, the state in which a
+   * build degrades every session on the machine. The answer is the user's, not the launcher's — a
    * `[y/N]` prompt, not a refusal: the builder's own heap is limited (the proxy Containerfile),
    * so proceeding risks a slow or OOM-killed build rather than a frozen machine, a price the
    * one at the console may accept; No stays the default because the sessions at stake may not
