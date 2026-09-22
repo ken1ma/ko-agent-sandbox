@@ -477,16 +477,39 @@ system").
 
 ### No gVisor or microVM isolation layer
 
-Rootless podman is the chosen portability/security trade-off. Revisit only if
-host-kernel/container-runtime exploitation enters the threat model.
+Rootless podman is the chosen trade-off between portability and security. Revisit only if
+exploitation of the host kernel or the container runtime enters the threat model.
 
-The gVisor issue history also shows that stronger runtime isolation brings additional
-rootless/nesting/mount compatibility complexity — e.g. rootless uid mapping breaking same-uid host
-file access, the problem this launcher's `--userns=keep-id` solves. That does not make gVisor a bad
+The gVisor issue history also shows that a stronger isolation layer adds compatibility problems of
+its own with rootless operation, nesting and mounts: rootless uid mapping breaks same-uid host file
+access, the problem this launcher's `--userns=keep-id` solves. That does not make gVisor a bad
 design; it means the additional boundary is added only when the threat model requires it.
+
+Running more images inside the session is not a second revisit condition. A microVM's guest kernel
+would let an image that needs a second uid run unchanged; "Services run as processes, not as
+multi-uid nested containers" records what the session offers instead and which workflows it leaves
+out.
 
 - https://gvisor.dev/
 - https://github.com/google/gvisor/issues/9918
+
+### Services run as processes, not as multi-uid nested containers
+
+Under `KO_AGENT_SANDBOX_NESTING=same-uid` a nested container maps one uid, because
+`no-new-privileges` denies `newuidmap` its setuid privilege (SECURITY.md, "No containers inside the
+sandbox by default"). Stock `postgres` and `nginx` switch to a second uid and fail. A session that
+needs such a service runs it as a process bound to 127.0.0.1 (AGENTS-SANDBOX.md, "Containers in
+here: only if this session opted in"). A second uid would need either that setuid privilege, which
+`no-new-privileges` withholds from every process in the session, or a guest kernel with its own uid
+range, the layer declined above. The process has two limits the design accepts:
+
+- It serves tests that connect to an address they are given. A test that creates its own container
+  through the Docker API, as Testcontainers does, cannot use it, and an image that needs a second
+  uid stays unsupported under `same-uid`.
+- The service runs under the session's uid, without the separate account PostgreSQL recommends so
+  that a compromised server cannot modify its executables. The design does not rely on isolation
+  between session processes: the boundary is the container, every process in it is untrusted, and
+  a compromised service reaches exactly what a hijacked agent already reaches.
 
 ### No test hook that pauses a launch mid-flight
 
