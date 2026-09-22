@@ -93,6 +93,13 @@ again.
     nesting loosening is, so the first `Operation not permitted` has its switch. Measure the
     `clone3` fallback before any of this: a runtime without one ends the item.
 
+## Deferred — executable agent configuration in the persistent volume
+
+- [ ] `plan-executable-agent-configuration.md`, in its two phases: reconciliation of the keys
+  that name a program a later session starts without a tool call, then unwritable code
+  directories. Phase 2 waits for each agent's measurement on a refused write, which the plan
+  names.
+
 ## Deferred — GREASE ECH on inspected hosts
 
 - [ ] Allow an ECH extension on an inspected host, only if a client that sends GREASE ECH —
