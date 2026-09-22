@@ -16,23 +16,25 @@ again.
 - AWS is in neither: the broker plan's "Deliberate exclusions" has why, and what a session
   forwards instead.
 - [ ] Refuse a credential that is not the session's at a model host (SECURITY.md, "Exfiltration
-  through allowed network traffic", has the attack). A target of a service definition gains a
-  property, `require-placeholder`: on a mediated target carrying it, a request is forwarded only
-  if one authentication form the target declares holds this run's placeholder and no other
-  declared form is present; any other request is refused with a fixed reason and a `deny` audit
-  line, at every path.
+  through allowed network traffic", has the attack). An exception to the order above: its use
+  case came from a review of the documents, not from a session on the broker. A target of
+  a service definition gains a property, `require-placeholder`: on a mediated target carrying it,
+  a request is forwarded only if one authentication form the target declares holds this run's
+  placeholder and no other declared form is present; any other request is refused with a fixed
+  reason and a `deny` audit line, at every path.
   - The target declares every form the provider accepts, not only the one the client sends: a
     request without the client's header is not thereby unauthenticated. Anthropic accepts an API
     key as `Authorization: Bearer` and as `x-api-key`
-    (https://platform.claude.com/docs/en/manage-claude/authentication), so a rule on one header
-    lets a foreign key through in the other. The tests send a foreign key in each declared form,
+    (https://platform.claude.com/docs/en/manage-claude/authentication), so checking one header
+    does not exclude a foreign key in the other. The tests send a foreign key in each declared form,
     alone and beside the placeholder. A form the provider adds later reopens the attack until the
     catalog declares it.
   - It needs a selected service instance, so provider plan delivery steps 1, 2 and 5: the
     catalog, storage with per-run generations for a static key, the mediated overlay and one
     API-key client. It needs neither executable sources and refresh (step 4) nor OAuth (step 6).
     An `--env=NAME@HOST` binding does not carry it: that plan keeps the binding separate from a
-    selected service, and a binding forwards a token that is not a placeholder.
+    selected service, and a binding forwards a token that is not a placeholder and names one
+    header, so it cannot refuse the placeholder beside a foreign key in another declared form.
   - It protects an API-key session only. A subscription login stays a tunnel until step 6.
   - A project that tests against the provider with its own key selects no credential for that
     host, or accepts the refusal; forwarding a token that is not a placeholder stays the rule at
@@ -42,8 +44,10 @@ again.
     one-request-per-connection relay; that `claude` trusts `NODE_EXTRA_CA_CERTS` on every
     connection to the provider.
   - Rejected: exact-path grants on the model host without mediation (`/v1/messages` alone). The
-    path list is the per-release contract with the CLI the broker plan declines, and a storage
-    endpoint added under an allowed path reopens the attack.
+    path list is the per-release contract with the CLI the broker plan declines, and a
+    retrievable-storage behavior added at an allowed endpoint reopens the attack. Rejecting it
+    gives up path-based protection for a subscription session before step 6: exact-path grants
+    refuse the storage endpoints whatever credential is sent.
   - Codex: taking this to the OpenAI hosts needs one `codex` turn to succeed with those hosts
     inspected, read from `--proxy-log` (broker plan, "Claude Code and Codex logins: excluded",
     has what is measured), and a second turn in the same session, to learn whether the refused
@@ -99,6 +103,19 @@ again.
   that name a program a later session starts without a tool call, then unwritable code
   directories. Phase 2 waits for each agent's measurement on a refused write, which the plan
   names.
+
+## Deferred — a release-age window in the other package managers
+
+SECURITY.md, "The supply chain", has npm's seven-day window and why uv gets none.
+
+- [ ] The same window for `cs`, Maven, Gradle and Cargo, each only if the manager offers a
+  resolution-time setting that its lockfile does not record. Whether any of them does is not
+  yet looked up.
+- [ ] npm's `ignore-scripts`, only after measuring that the commands the image's agents and the
+  common `npx` targets install still work with lifecycle scripts skipped: installation can
+  succeed while leaving a package unusable because a required lifecycle script was skipped
+  (https://docs.npmjs.com/cli/v11/using-npm/config/#ignore-scripts). An explicit `npm run` still
+  runs its script.
 
 ## Deferred — GREASE ECH on inspected hosts
 

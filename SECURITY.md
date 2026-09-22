@@ -251,7 +251,9 @@ instructions. It limits the actions available to the compromised agent.
 - The proxy does not see which credential a tunnel carries, so the account written to need not be
   the user's. An injected instruction can supply the attacker's own API key; any process in the
   session can then send project files under that key to whatever the provider's API stores for the
-  key's owner to retrieve later.
+  key's owner to retrieve later. Reported demonstrations: against Anthropic's Files API
+  (https://embracethered.com/blog/posts/2025/claude-abusing-network-access-and-anthropic-api-for-data-exfiltration/)
+  and against Cowork (https://www.promptarmor.com/resources/claude-cowork-exfiltrates-files).
   - `--egress=deny-unless-model` does not help: the model host is the receiving host.
   - A project that uses one provider can close the other providers' tunnels with
     `deny model-provider NAME` lines.
