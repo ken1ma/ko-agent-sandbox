@@ -248,6 +248,15 @@ instructions. It limits the actions available to the compromised agent.
 
 - An opaque tunnel allows writes wherever the endpoint offers a write API; `api.anthropic.com`
   receives the conversation by design.
+- The proxy does not see which credential a tunnel carries, so the account written to need not be
+  the user's. An injected instruction can supply the attacker's own API key; any process in the
+  session can then send project files under that key to whatever the provider's API stores for the
+  key's owner to retrieve later.
+  - `--egress=deny-unless-model` does not help: the model host is the receiving host.
+  - A project that uses one provider can close the other providers' tunnels with
+    `deny model-provider NAME` lines.
+  - Refusing a credential that is not the session's needs the proxy to terminate TLS at the model
+    host (`doc/TODO.md`, "Credential brokering").
 - At inspected hosts, the proxy constrains methods, paths and HTTP framing, but does not validate
   application payloads. An allowed `GET` carries its URL; a path grant narrows the recipient, but
   the path suffix and query can still encode data. Forwarded headers and allowed request bodies can
@@ -816,6 +825,11 @@ The sandbox trusts that CA — the project's, or under `allow-unless-denied` the
 - for the programs with a trust store of their own rather than the system's, variables pointing at
   the same file: `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and
   `GIT_SSL_CAINFO`.
+  - The Codex CLI, a statically linked binary, reads `SSL_CERT_FILE` (or its own
+    `CODEX_CA_CERTIFICATE`). Measured with codex-cli 0.155.1 signed in with an API key, against a
+    local server whose CA is in that file alone (2026-09-22): its HTTPS requests and its websocket
+    connection both complete the TLS handshake, and both fail with `UnknownIssuer` without it.
+    Under the default rules its OpenAI hosts are tunnels, so it meets no leaf of this CA.
 
 The image's JDK is covered by the same technique one layer over, because it reads none of the
 above: a JVM consults a `cacerts` keystore and a `net.properties` file.
@@ -846,8 +860,6 @@ Programs not covered by the launcher's prepared trust stores need separate handl
 - A GraalVM native image — the `cs` and `scala` launchers — has no `conf/` and reads no variable,
   so the proxy and CA settings travel as `-D` options in `KO_AGENT_SANDBOX_JAVA_OPTS`, which the
   agent passes by hand.
-- A statically linked binary keeps its compiled-in roots — the Codex CLI, which talks only to
-  uninspected OpenAI.
 
 ### Why the rules are per project, in the project, and read-only
 

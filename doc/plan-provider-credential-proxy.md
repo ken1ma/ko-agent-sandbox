@@ -364,10 +364,11 @@ Advertise only HTTP/1.1 initially. Server-sent events and bounded streaming bodi
 existing relay. Mediation does not support WebSocket upgrade, HTTP/2-only clients or
 certificate-pinned clients; they do not regain a real credential inside the sandbox.
 
-The Codex client remains excluded from OpenAI mediation until its compiled-in trust behavior can
-be made to accept the per-run CA without weakening certificate validation. Each other installed
-agent's TLS and HTTP compatibility is measured the same way before its service is listed as
-supported.
+The Codex client accepts the per-run CA and falls back from a refused websocket upgrade to HTTP
+requests (`plan-credential-broker-proxy.md`, "Claude Code and Codex logins: excluded", has the
+measurement). It remains excluded from OpenAI mediation until one turn succeeds through the
+inspected relay. Each other installed agent's TLS and HTTP compatibility is measured the same way
+before its service is listed as supported.
 
 ## Failure and audit contract
 
