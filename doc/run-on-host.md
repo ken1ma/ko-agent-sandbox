@@ -56,9 +56,22 @@ The full acceptance test (`all`) reports **255 PASS, 0 FAIL, 0 SKIP** on macOS 2
 Temurin 25.0.4, sbt 2.0.9, Mill 1.1.9, Gradle 9.7.1 and Maven 3.9.16 (2026-09-21).
 
 The measurement behind the feature: an `sbt test` of this project takes about 2 GB inside the podman
-machine, whose total is fixed when the machine is created and shared with every other session on it
-— and whose resident memory, once grown to hold a build, macOS never gets back. On the host the
-same build runs on memory reclaimed when it exits, at host speed.
+machine, whose total is fixed when the machine is created and shared with every other session on it.
+podman's built-in default for a macOS machine is 2048 MiB, which containers.conf (`[machine]`
+`memory`) or `--memory` changes; a WSL machine has WSL's memory, half the host's by default. A
+session gets the machine's memory minus 1 GiB (README, `KO_AGENT_SANDBOX_MEMORY`): about 1 GiB on
+podman's default, 3 GiB on a 4 GiB machine, shared by the agent, the build and the session's other
+processes.
+Whether the machine gives memory back to macOS depends on libkrun: from 1.19.0 it frees the pages
+the guest reports free with MADV_FREE, which macOS reclaims under memory pressure
+(containers/libkrun pull 703). Measured with libkrun 1.19.0 (podman 6.1.2, macOS 26.4.1) on a
+freshly restarted 12 GiB machine, the build grew the machine's process by 6.8 GiB of resident
+memory, which stayed through the ten minutes after it; a minute of `memory_pressure -l warn` then
+compressed 6.6 GiB of the process's memory and dropped 1.7 GiB more without compressing it, with
+swap level throughout (`src/probe/machine-memory-return.sh`, 2026-09-22). So the process keeps
+what a build grew until macOS is short of memory; under pressure, most of its resident decrease
+was matched by growth in its compressed memory, and the remainder is consistent with discarded
+pages. On the host the same build runs on memory reclaimed when it exits, at host speed.
 
 A host command's recurring cost is startup. When each program starts anew:
 

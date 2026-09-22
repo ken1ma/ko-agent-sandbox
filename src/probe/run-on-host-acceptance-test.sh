@@ -2,7 +2,8 @@
 # The security acceptance test, run by hand on macOS before each release, and when the profile generator,
 # the wrapper or the channel changes. One row per contract claim, each run under the generated
 # profile, each reporting PASS, FAIL or SKIP with what it observed. Everything else in src/probe/
-# finds out what a profile needs; this one finds out whether the profile that resulted enforces
+# finds out what a profile needs, except machine-memory-return.sh, which measures the podman
+# machine; this one finds out whether the profile that resulted enforces
 # what the contract claims — and, in the channel rows, whether the channel carries a command and
 # tears down with its requester.
 #
