@@ -128,6 +128,13 @@ ENV PATH="/opt/node/bin:$PATH"
 # next.
 ENV npm_config_prefix=/home/nonroot/.local
 
+# The builtin config file is npm's lowest-precedence layer, so a project's `.npmrc` overrides
+# it. SECURITY.md, "The supply chain", has what the seven days defend against, what they leave
+# through, and why uv gets no counterpart. An unpinned request refused reads as `ENOVERSIONS`
+# with no cause, in the log too; a pinned one names its date cutoff, and `npm config ls` prints
+# the setting under this file.
+RUN printf 'min-release-age=7\n' > /opt/node/lib/node_modules/npm/npmrc
+
 
 # ---------------------------------------------------------------------------
 # Rust
