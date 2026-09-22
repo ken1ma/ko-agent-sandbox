@@ -491,6 +491,12 @@ an unfamiliar project, as you would its build scripts.
 podman, the OCI runtime, namespaces, seccomp and the host kernel. This design is not built to
 contain a working kernel or container-runtime exploit; if that enters the threat model, the answer
 is a stronger isolation layer (gVisor, a microVM), at its compatibility cost, not more flags here.
+The podman machine on macOS and Windows is not that layer: a process that escapes the container
+into the podman machine reaches every host directory it shares: `/Users`, `/private` and
+`/var/folders` on macOS, the `C:` drive at `/mnt/c` on Windows
+(`fuse/ko-agent-fs/doc/verification-log.md` records these observed mounts). On macOS the podman
+machine's user also runs `sudo` without a password (Fedora CoreOS 44.20260817.3.1, over
+`podman machine ssh`, 2026-09-22).
 
 **Resource exhaustion.**
 
