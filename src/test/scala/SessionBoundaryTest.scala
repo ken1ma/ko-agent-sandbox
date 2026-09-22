@@ -288,6 +288,16 @@ class SessionBoundaryTest extends munit.FunSuite:
     assert(aliases.exists(_.contains("isrgrootx1")), s"a shipped root is gone: ${aliases.take(5)}")
     assert(aliases.size > 100, s"the store holds ${aliases.size} roots, not the image's set")
 
+  test("npm refuses package versions younger than seven days, and uv has no window"):
+    inSession()
+    // SECURITY.md, "The supply chain". This project has no `.npmrc` and no `[tool.uv]` table, so
+    // the image's layer is what each reads.
+    assertEquals(run("npm", "config", "get", "min-release-age").text, "7")
+    // uv logs the cutoff it solves with at -vv; an empty requirement list on stdin needs no index.
+    val solve = run("uv", "-vv", "--offline", "pip", "compile", "--no-cache", "-")
+    assert(solve.ok, s"uv could not solve an empty requirement list: ${solve.err}")
+    assert(!solve.err.contains("Solving with exclude-newer"), s"uv solves under a window:\n${solve.err}")
+
   test("a git host serves an anonymous clone"):
     inSession()
     // Under /tmp, never the project: cloning into the workspace is refused by the filter itself,

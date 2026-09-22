@@ -483,6 +483,18 @@ an unfamiliar project, as you would its build scripts.
 
 - Base images, the JDK, and whatever `cs`, `uvx` or `npx` fetches at the agent's request are
   trusted as they arrive.
+- When npm resolves a version from the registry, it refuses one published in the last seven days,
+  an exact pin included (`min-release-age` in npm's builtin config file, which
+  `container/ko-agent-sandbox/Containerfile` writes). The window exists because an agent chooses
+  to run `npx`; it costs a locked install nothing: `npm ci`, and an argument-free
+  `npm install` with an up-to-date lockfile, install its resolved versions, young ones included,
+  without resolving. So a lockfile written outside the sandbox brings in what it names. A
+  project's `.npmrc` shortens the window; `npm install -g` does not read that file, so a global
+  install shortens it on the command line.
+- uv gets no counterpart: it records `exclude-newer` in `uv.lock`, so an image-level window makes
+  a lock written on the host fail `uv sync --locked` in a session, and one written in a session
+  fail it on the host. A project that wants the window sets `exclude-newer` under `[tool.uv]`,
+  and its lock carries it everywhere.
 - npm's install-time audit is off by default (the audit line of
   `doc/egress-rule-example/npm-audit/rule`, "Reading without being able to write" below); where a
   project enables it, its warnings do not stop installation.
