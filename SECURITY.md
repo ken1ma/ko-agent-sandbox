@@ -460,7 +460,8 @@ Implementation, policy derivation and test evidence: `fuse/ko-agent-fs/doc/`.
   executable, is the isolation boundary.
 - Later sessions read the volume as trusted input. Some stored state, especially MCP server
   definitions, names commands to execute. `--reset` removes the project's default agent-state
-  volume; use it if that state is suspect.
+  volume; use it if that state is suspect. Nothing signals when it is;
+  `doc/plan-executable-agent-configuration.md` closes that in two phases.
 - `KO_AGENT_SANDBOX_PERSISTENT_VOLUME` lets projects share a named volume: state written by one
   project becomes input to every other project using that volume. `--reset` deliberately preserves
   this explicitly shared volume, so it does not remove credentials or suspect state stored there.
