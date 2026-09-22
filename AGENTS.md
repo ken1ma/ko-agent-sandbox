@@ -30,9 +30,10 @@ Correct a mistaken premise, plan or wording before working, with the reason. Onc
 is heard, do the work as asked. Disagreement is expected; do not silently conform to a guessed
 intent.
 
-Before changing these instructions because one was not followed, identify what was missing,
-ambiguous or conflicting, or what prevented you from following it. Prefer revising the existing
-rule to adding another, and keep these instructions short: every prompt includes them.
+Never write unasked to this file or `container/ko-agent-sandbox/AGENTS-SANDBOX.md`, which every
+prompt includes: propose the sentence with what an agent does differently because of it. Before
+changing this file because an instruction was not followed, identify what was missing, ambiguous or
+conflicting, or what prevented following it, and revise the existing rule rather than adding one.
 
 
 # Writing style

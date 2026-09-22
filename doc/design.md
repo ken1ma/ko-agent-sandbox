@@ -490,6 +490,10 @@ would let an image that needs a second uid run unchanged; "Services run as proce
 multi-uid nested containers" records what the session offers instead and which workflows it leaves
 out.
 
+A dedicated podman machine with narrower host shares, and a launch-time warning about broad shares,
+are excluded for the same reason: they address container escape, which is outside the threat model
+(SECURITY.md, "Container, runtime and kernel escape", has what an escape into the machine reaches).
+
 - https://gvisor.dev/
 - https://github.com/google/gvisor/issues/9918
 
