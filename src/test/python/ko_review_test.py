@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
@@ -25,10 +26,15 @@ if sys.argv[1:] == ["debug", "models"]:
     if os.environ.get("FAKE_CODEX_NO_CATALOG"):
         sys.exit(1)
     print(json.dumps({"models": [
-        {"slug": "gpt-hidden", "visibility": "hide", "default_reasoning_level": "low",
+        {"slug": "gpt-second", "visibility": "list", "priority": 3, "description": "Second model.",
+         "default_reasoning_level": "high", "supported_reasoning_levels": [{"effort": "high"}],
+         "upgrade": {"model": "gpt-test", "migration_markdown": "Second retires.", "retirement_at": "2026-10-14"}},
+        {"slug": "gpt-hidden", "visibility": "hide", "priority": 1, "default_reasoning_level": "low",
          "supported_reasoning_levels": [{"effort": "low"}]},
-        {"slug": "gpt-test", "visibility": "list", "description": "Test model.", "default_reasoning_level": "medium",
-         "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}]},
+        {"slug": "gpt-internal", "visibility": "none", "priority": 1, "default_reasoning_level": "low",
+         "supported_reasoning_levels": [{"effort": "low"}]},
+        {"slug": "gpt-test", "visibility": "list", "priority": 2, "description": "Test model.",
+         "default_reasoning_level": "medium", "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}]},
     ]}))
     sys.exit(0)
 if sys.argv[1:] == ["login", "status"]:
@@ -436,17 +442,28 @@ class HelperTest(unittest.TestCase):
         self.environment = {"CODEX_HOME": str(home)}
         found = self.helper("defaults", "codex")
         self.assertEqual((found["model"], found["partial"]), (None, True))
-        self.assertEqual(found["catalog"], [
+        self.assertEqual(found["catalog"], [  # the picker's models, in the order of their priority
             {"model": "gpt-test", "description": "Test model.", "defaultEffort": "medium", "efforts": ["low", "high"]},
+            {"model": "gpt-second", "description": "Second model.", "defaultEffort": "high", "efforts": ["high"]},
         ])
-        self.assertEqual(found["recommended"], {"model": None, "effort": None, "efforts": None})
+        # unconfigured: Codex's default, the first model its picker lists, at that model's default effort
+        self.assertEqual(found["recommended"],
+                         {"model": "gpt-test", "effort": "medium", "efforts": ["low", "high"], "upgrade": None})
+        (home / "config.toml").write_text('model_reasoning_effort = "low"\n')
+        self.assertEqual(self.helper("defaults", "codex")["recommended"],
+                         {"model": "gpt-test", "effort": "low", "efforts": ["low", "high"], "upgrade": None})
+        (home / "config.toml").write_text('model = "gpt-second"\n')  # a retiring model names its upgrade
+        self.assertEqual(self.helper("defaults", "codex")["recommended"], {
+            "model": "gpt-second", "effort": "high", "efforts": ["high"],
+            "upgrade": {"model": "gpt-test", "migrationMarkdown": "Second retires."},
+        })
         (home / "config.toml").write_text('model = "gpt-test"\n')  # effort from the catalog's default
         self.assertEqual(self.helper("defaults", "codex")["recommended"],
-                         {"model": "gpt-test", "effort": "medium", "efforts": ["low", "high"]})
+                         {"model": "gpt-test", "effort": "medium", "efforts": ["low", "high"], "upgrade": None})
         self.environment = {"CODEX_HOME": str(home), "FAKE_CODEX_NO_CATALOG": "1"}
         found = self.helper("defaults", "codex")
         self.assertIsNone(found["catalog"])
-        self.assertEqual(found["recommended"], {"model": "gpt-test", "effort": None, "efforts": None})
+        self.assertEqual(found["recommended"], {"model": "gpt-test", "effort": None, "efforts": None, "upgrade": None})
         self.environment = {"CODEX_HOME": str(home)}
         (home / "config.toml").write_text('model = "gpt-user"\nmodel_reasoning_effort = "high"\n[tui]\nx = 1\n')
         self.write(".codex/config.toml", 'model = "gpt-project"\n')
@@ -461,6 +478,50 @@ class HelperTest(unittest.TestCase):
         self.assertEqual((found["model"], found["effort"]), ("gpt-project", "high"))
         self.assertEqual(found["source"],
                          {"model": str(self.repo / ".codex/config.toml"), "effort": str(home / "config.toml")})
+        # a linked worktree without its own entry takes its main checkout's trust, as Codex does
+        worktree = self.root / "worktree"
+        self.git("worktree", "add", "-q", str(worktree))
+        (worktree / ".codex").mkdir()
+        (worktree / ".codex/config.toml").write_text('model = "gpt-worktree"\nmodel_reasoning_effort = "low"\n')
+        found = self.helper("defaults", "codex", cwd=worktree)
+        self.assertEqual((found["model"], found["effort"]), ("gpt-worktree", "low"))
+        copy = self.root / "worktree-copy"  # its .git names the worktree's registration, which names the original
+        shutil.copytree(worktree, copy)
+        found = self.helper("defaults", "codex", cwd=copy)
+        self.assertEqual((found["model"], found["effort"]), ("gpt-user", "high"))
+        # Git follows these, Codex refuses them: a symlinked .git, an oversized one, a symlinked registration
+        dot_git = worktree / ".git"
+        pointer = dot_git.read_text()
+        registration = Path(pointer.removeprefix("gitdir:").strip()) / "gitdir"
+        registered = registration.read_text()
+
+        def assert_refused():
+            found = self.helper("defaults", "codex", cwd=worktree)
+            self.assertEqual((found["model"], found["effort"]), ("gpt-user", "high"))
+
+        dot_git.unlink()
+        (worktree / ".git-pointer").write_text(pointer)
+        dot_git.symlink_to(".git-pointer")
+        assert_refused()
+        dot_git.unlink()
+        dot_git.write_text(pointer + "\n" * 70_000)
+        assert_refused()
+        dot_git.write_text(pointer)
+        registration.unlink()
+        registration.with_name("gitdir-target").write_text(registered)
+        registration.symlink_to("gitdir-target")
+        assert_refused()
+        registration.unlink()
+        registration.write_text(registered)
+        found = self.helper("defaults", "codex", cwd=worktree)
+        self.assertEqual((found["model"], found["effort"]), ("gpt-worktree", "low"))
+        (home / "config.toml").write_text(
+            'model = "gpt-user"\n'
+            f'[projects."{self.repo.resolve()}"]\ntrust_level = "trusted"\n'
+            f'[projects."{worktree.resolve()}"]\ntrust_level = "untrusted"\n'
+        )
+        found = self.helper("defaults", "codex", cwd=worktree)  # the worktree's own entry wins
+        self.assertEqual((found["model"], found["effort"]), ("gpt-user", None))
         (home / "config.toml").write_text("model = [not toml\n")
         self.assertEqual(self.helper("defaults", "codex", expect=1)["error"]["code"], "CODEX_CONFIG_UNREADABLE")
         self.environment = {}

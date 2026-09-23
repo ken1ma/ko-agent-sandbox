@@ -56,10 +56,11 @@ how an independent audit of an approved tree is obtained.
 5. Before reporting consensus, Claude runs `ko-review verify REVIEW_ID`, which succeeds only when
    the approval covers the current working tree.
 
-The skill has Claude show each round's text in its reply, and, when the review ends, the `inspect`
-lines: the commands with which the user sees how the review went, lists the checkout's reviews and
-deletes this one. Claude's own model and effort are the session's, set with `/model` or the launch
-options; the skill runs in that session.
+The skill has Claude report each round's outcome in a line or two, and, when the review ends, a
+table of every round and the `inspect` lines: the commands with which the user sees how the review
+went, lists the checkout's reviews and deletes this one. The table comes from `ko-review export`,
+since the session's context may have been summarized by then. Claude's own model and effort are
+the session's, set with `/model` or the launch options; the skill runs in that session.
 
 
 ## Commands
@@ -82,8 +83,8 @@ exists, carries the review id, `snapshots` and `inspect`.
   tree objects nothing else points to become eligible for a later garbage collection, which by
   default keeps recent unreachable objects for two weeks.
 - `defaults codex`: the model and effort Codex's local configuration selects for this repository,
-  the models Codex's `/model` picker offers with each one's efforts, and a `recommended` pair
-  ("Defaults", below).
+  the models Codex's `/model` picker offers with each one's efforts, and the `recommended` pair
+  Codex would use ("Defaults", below).
 
 The helper never commits, stages or moves HEAD: Claude's fixes during a review are working-tree
 edits like any other, and the user commits them when and as they choose.
@@ -230,14 +231,29 @@ transcript and tree, which `delete` removes with the directory above.
 - `defaults codex` reads Codex's local configuration in Codex's precedence: the project's
   `.codex/config.toml` when the user configuration trusts the project, then the user's, then the
   image's system layer; the catalog comes from `codex debug models`.
-- The catalog leaves out the models `codex debug models` marks `"visibility": "hide"`, which
-  Codex's `/model` picker omits too; a configured hidden model still gets its efforts in
-  `recommended`. The catalog keeps Codex's order, which is its `/model` picker's order.
-- Its `recommended` fills a missing effort from the catalog's default for the model; a value still
-  null is Codex's built-in default, which the skill leaves to Codex by passing no option.
-- It is marked `partial`: a cloud-managed layer, which Codex ranks above the user's file, is not on
-  disk, so the skill passes each chosen value explicitly rather than relying on the default it
-  displayed.
+  - A linked worktree without its own trust entry takes its main checkout's, as Codex does,
+    unless Codex refuses its Git metadata: a copy the registration does not name, a symlink, or
+    a metadata file over 64 KiB, all of which Git itself follows.
+- The catalog holds the models Codex's `/model` picker offers, those `codex debug models` marks
+  `"visibility": "list"`, sorted by their `priority`, as Codex sorts the list its picker shows
+  and takes its default model from. A configured model the picker omits still gets its efforts in
+  `recommended`.
+- `recommended` is the pair Codex would use: the configured model, else the catalog's first,
+  which Codex takes as its default, and the configured effort, else that model's default in the
+  catalog. A value the catalog cannot fill stays null: Codex's built-in default, which the skill
+  leaves to Codex by passing no option.
+  - With an API key rather than a ChatGPT sign-in, Codex also leaves out the models not
+    `supported_in_api`, and the catalog does not. In the catalog measured with codex-cli 0.156.1,
+    every model is supported.
+- The skill offers `recommended` first, labeled as the picker labels it: "(current)" when the
+  configuration set it, "(default)" otherwise.
+- For a retiring model, `recommended.upgrade` names the model its catalog `upgrade` field
+  recommends, which the skill offers second.
+- Claude recommends no model or effort: nothing measured shows which one finds more in a change,
+  and a guess toward higher effort spends more of Codex's usage limit.
+- `defaults` is marked `partial`: a cloud-managed layer, which Codex ranks above the user's file,
+  is not on disk, so the skill passes each chosen value explicitly rather than relying on the
+  default it displayed.
 
 ### The reviewer prompt
 
