@@ -26,40 +26,45 @@ session's.
 - With a review id as the argument, the continued review keeps the scope it recorded.
 - Otherwise, without a base and with a clean `git status`, tell the user there is nothing to
   review and that a base in the argument brings committed work into scope, and stop.
-- With a base, the step 1 summary still reports only what this session did, and says so.
+- With a base, the step 2 summary still reports only what this session did, and says so.
 
 ## Steps
 
-1. Write a Markdown file in your scratchpad with these sections: `## Task` (what was requested),
+1. If the skill's argument is a review id, skip to step 5 with it: a continuation keeps the
+   review's model and effort. Otherwise, without a base, run `git status --porcelain` and stop on
+   an empty output as above. Then, before reading the change, run `ko-review defaults codex` and
+   ask the user for the Codex model and its reasoning effort in one AskUserQuestion call holding
+   both questions, unless the argument names them. The user can type a value no option offers.
+   - Each question's first option is `recommended`'s value, labeled "(current)" when the
+     configuration set it (`model` or `effort` is not null) and "(default)" otherwise, as Codex's
+     `/model` picker labels them. A null value is a first option reading "Codex's default".
+   - Model options: after the first, the catalog's other models in its order, up to four
+     options, each with its `description`.
+   - A non-null `recommended.upgrade` names the model Codex recommends over a retiring one: offer
+     it second, labeled "(recommended upgrade)", with its `migrationMarkdown` as the description.
+   - With a null `catalog` or fewer than two models in it, AskUserQuestion, which needs two
+     options, cannot ask: leave the model question out, take `recommended.model`, and say so.
+   - Effort options: after the first, the other `recommended.efforts` in their order, up to four
+     options; without `efforts`, `low`, `medium` and `high`.
+   - For a model other than `recommended.model`, a "(default)" effort means that model's
+     `defaultEffort`. When its `efforts` in the catalog lack the chosen effort, ask again for the
+     effort alone, from those efforts, its `defaultEffort` first.
+   - Where you cannot ask, as in a non-interactive session, take `recommended` and say so.
+2. Write a Markdown file in your scratchpad with these sections: `## Task` (what was requested),
    `## Changes` (what you changed), `## Verification` (checks run and their results), `## Notes`
    (ambiguities and known tradeoffs).
-2. If the skill's argument is a review id, skip to step 5 with it: a continuation keeps the
-   review's model and effort. Otherwise run `ko-review defaults codex` and ask the user with the
-   AskUserQuestion tool for the Codex model, then, in a second question, for its reasoning
-   effort, unless the argument names them. The user can type a value no option offers.
-   - Model options: the first four models of `catalog`, in its order, each with its
-     `description`; `recommended.model`, marked recommended, replaces the fourth if it is not
-     among them. A null `recommended.model` is a first option reading "Codex's default", followed
-     by the catalog's first three.
-   - When `catalog` is null or offers fewer than two models, AskUserQuestion, which needs two
-     options, cannot ask: skip the model question, take `recommended.model`, and say so.
-   - Effort options: the first four of the chosen model's `efforts`, in their order; its
-     recommended effort, marked recommended, replaces the fourth if it is not among them. That is
-     `recommended.effort` for the recommended model and the catalog's `defaultEffort` for another.
-     Without `efforts`, offer `low`, `medium` and `high`.
-   - Where you cannot ask, as in a non-interactive session, take `recommended` and say so.
 3. Run `ko-review start codex --message-file FILE` from inside the repository, and note
    `reviewId` from the output.
-   - Add `--model NAME` and `--effort LEVEL` from step 2, each only when it is not null:
+   - Add `--model NAME` and `--effort LEVEL` from step 1, each only when it is not null:
      `defaults` reads the local configuration only, so the choice counts once passed explicitly,
      and a null is Codex's to fill.
    - If the argument holds instructions for Codex, write them verbatim, without the base, model
      and effort it names, to a second file and add `--instructions-file FILE`; Codex reads them
      every round, ahead of your messages.
    - If the argument names a base, add `--base REF` with it.
-4. Show the user the round: put the output of `ko-review export REVIEW_ID --round N`, with N the
-   output's `round`, in your reply verbatim, then say in one or two lines what you do next. Do the
-   same after `escalate`.
+4. Tell the user in one or two lines how the round went: the disposition, the open findings, each
+   id with a few words, and what you do next. `ko-review export REVIEW_ID --round N` prints the
+   round's full text for the user who asks.
 5. Evaluate every finding independently: fix the ones you accept, rebut the ones you reject with
    concrete evidence (file and line, a test result, a specification). Do not accept a finding to
    end the review, and do not reject one without evidence.
@@ -82,10 +87,17 @@ session's.
 
 ## When the review ends
 
-However it ends, report which findings were fixed, which were rebutted and why, the review id, and
-the `inspect` lines of the last output as a code block: the commands with which the user sees how
-the review went, lists the checkout's reviews and deletes this one. A failure's JSON carries them
-too once a review exists.
+However it ends, report:
+
+- every round, as a table from `ko-review export REVIEW_ID` with a row per round: Codex's
+  disposition, or the error that ended the round; the findings it raised, each id with a few
+  words; and what your next message did about each, fixed or rebutted;
+- for each rebutted finding, the evidence you gave;
+- the review id, and the `inspect` lines of the last output as a code block: the commands with
+  which the user sees how the review went, lists the checkout's reviews and deletes this one. A
+  failure's JSON carries them too once a review exists.
+
+What the `inspect` lines use:
 
 - Each round's transcript and tree are on `refs/ko-review/REVIEW_ID/round-NNN`, for `git diff`
   between rounds.

@@ -12,6 +12,7 @@ import datetime
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -1205,26 +1206,85 @@ def command_delete(args):
     return {"reviewId": review.id, "removedRefs": refs, "removedDirectory": str(review.dir)}
 
 
+GIT_METADATA_LIMIT = 64 * 1024  # Codex's MAX_GIT_METADATA_FILE_BYTES
+
+
+def git_metadata(path):
+    """The stripped content of a Git metadata file as Codex reads one: a regular file, not a symlink, of at
+    most GIT_METADATA_LIMIT bytes; None otherwise."""
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > GIT_METADATA_LIMIT:
+            return None
+        return path.read_bytes().strip()
+    except OSError:
+        return None
+
+
+def gitdir_pointer(dot_git):
+    """The directory a `.git` file's `gitdir:` line names, as Codex reads it; None otherwise."""
+    content = git_metadata(dot_git)
+    if content is None or not content.startswith(b"gitdir:"):
+        return None
+    target = content.removeprefix(b"gitdir:").strip()
+    return dot_git.parent / os.fsdecode(target) if target else None
+
+
+def main_checkout(root):
+    """The main checkout of the linked worktree `root`, whose trust entry Codex applies to the worktree when
+    the worktree has none of its own; None otherwise. The checks are Codex's own, in
+    `resolve_root_git_project_for_trust` (codex-rs/git-utils/src/trust.rs): Git follows symlinks and
+    registrations Codex refuses, and a trust Git's view granted here would offer project settings Codex
+    skips."""
+    git_dir = gitdir_pointer(root / ".git")
+    if git_dir is None or git_dir.is_symlink() or not git_dir.is_dir():
+        return None
+    canonical_git_dir = git_dir.resolve()
+    if canonical_git_dir.parent.name != "worktrees":
+        return None
+    common_dir = canonical_git_dir.parent.parent
+    registered = git_metadata(canonical_git_dir / "gitdir")
+    linked_common_dir = git_metadata(canonical_git_dir / "commondir")
+    if not registered or not linked_common_dir:
+        return None
+    registered = canonical_git_dir / os.fsdecode(registered)
+    if registered.name != ".git" or registered.parent.resolve() != root.resolve():
+        return None
+    if (canonical_git_dir / os.fsdecode(linked_common_dir)).resolve() != common_dir:
+        return None
+    main = git_dir.parent.parent.parent
+    main_git_dir = main / ".git" if (main / ".git").is_dir() else gitdir_pointer(main / ".git")
+    return main if main_git_dir is not None and main_git_dir.resolve() == common_dir else None
+
+
 def codex_config_layers(root):
     """The local configuration files Codex reads for this repository, highest precedence first:
-    the project's `.codex/config.toml` when the user configuration trusts the project, the user
-    configuration, the image's system layer. Codex's cloud-managed layer is not on disk."""
+    the project's `.codex/config.toml` when the user configuration trusts the project or its main checkout,
+    the user configuration, the image's system layer. Codex's cloud-managed layer is not on disk."""
     user = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml"
     layers = [user, Path("/etc/codex/config.toml")]
     project = root / ".codex/config.toml"
     if project.is_file() and user.is_file():
         try:
-            trust = tomllib.loads(user.read_text()).get("projects", {}).get(str(root), {}).get("trust_level")
+            projects = tomllib.loads(user.read_text()).get("projects", {})
         except tomllib.TOMLDecodeError:
-            trust = None
+            projects = {}
+        main = main_checkout(root)
+        # Codex looks a checkout up by its canonical path, then by the path as found
+        keys = [str(root)] + ([str(main.resolve()), str(main)] if main else [])
+        trust = next((
+            projects[key]["trust_level"] for key in keys
+            if isinstance(projects.get(key), dict) and "trust_level" in projects[key]
+        ), None)
         if trust == "trusted":
             layers.insert(0, project)
     return layers
 
 
 def codex_catalog():
-    """Codex's model catalog in its own order, with each model's efforts lowest first; None when Codex
-    cannot render it. `hidden` marks the models Codex's `/model` picker leaves out."""
+    """Codex's model catalog sorted by `priority`, as Codex sorts the list its `/model` picker shows and takes its
+    default model from, with each model's efforts lowest first; None when Codex cannot render it. `hidden`
+    marks the models the picker leaves out."""
     try:
         rendered = subprocess.run(["codex", "debug", "models"], capture_output=True, text=True, check=True, timeout=60)
         models = json.loads(rendered.stdout)["models"]
@@ -1236,9 +1296,13 @@ def codex_catalog():
             "description": model.get("description"),
             "defaultEffort": model.get("default_reasoning_level"),
             "efforts": [level.get("effort") for level in model.get("supported_reasoning_levels", [])],
-            "hidden": model.get("visibility") == "hide",
+            "hidden": model.get("visibility") != "list",
+            "upgrade": model.get("upgrade") if isinstance(model.get("upgrade"), dict) else None,
         }
-        for model in models if isinstance(model, dict) and model.get("slug")
+        for model in sorted(
+            (model for model in models if isinstance(model, dict) and model.get("slug")),
+            key=lambda model: model["priority"] if isinstance(model.get("priority"), int) else math.inf,
+        )
     ]
 
 
@@ -1246,10 +1310,11 @@ def command_defaults(args):
     """The model and reasoning effort Codex's local configuration selects for this repository, for the
     skill to offer first. `partial` says that a cloud-managed layer, which Codex ranks above the
     user's file, could still name others; an explicit `--model` or `--effort` removes the doubt.
-    `recommended` fills a missing effort from the catalog's default for the model; a value still
-    null there is Codex's built-in default, which the skill leaves to Codex by passing no option.
-    `catalog` lists the models Codex's `/model` picker offers; a configured hidden model still gets
-    its efforts in `recommended`."""
+    `recommended` is the pair Codex would use: the configured model, else Codex's default, the first model
+    its picker lists, and the configured effort, else the catalog's default for that model. A value the
+    catalog cannot fill stays null: Codex's built-in default, which the skill leaves to Codex by passing no
+    option. `catalog` lists the models Codex's `/model` picker offers; a configured hidden model still gets
+    its efforts in `recommended`, and a retiring one the model Codex recommends upgrading to."""
     root = repository_root(args.repository)
     found = {"model": None, "effort": None, "source": {"model": None, "effort": None}, "partial": True}
     for layer in codex_config_layers(root):
@@ -1264,14 +1329,20 @@ def command_defaults(args):
                 found[name] = config[key]
                 found["source"][name] = str(layer)
     catalog = codex_catalog()
-    entry = next((model for model in catalog or [] if model["model"] == found["model"]), None)
-    found["catalog"] = None if catalog is None else [
-        {key: value for key, value in model.items() if key != "hidden"} for model in catalog if not model["hidden"]
+    listed = None if catalog is None else [model for model in catalog if not model["hidden"]]
+    recommended_model = found["model"] or (listed[0]["model"] if listed else None)
+    entry = next((model for model in catalog or [] if model["model"] == recommended_model), None)
+    found["catalog"] = None if listed is None else [
+        {key: value for key, value in model.items() if key not in ("hidden", "upgrade")} for model in listed
     ]
+    upgrade = entry["upgrade"] if entry else None
     found["recommended"] = {
-        "model": found["model"],
+        "model": recommended_model,
         "effort": found["effort"] or (entry["defaultEffort"] if entry else None),
         "efforts": entry["efforts"] if entry else None,
+        "upgrade": {
+            "model": upgrade.get("model"), "migrationMarkdown": upgrade.get("migration_markdown"),
+        } if upgrade else None,
     }
     return found
 
@@ -1334,7 +1405,10 @@ def build_parser():
     add("verify", command_verify, "succeed only if the approval covers the current working tree", review_id=True)
     add("show", command_show, "print the review's state", review_id=True)
     add("list", command_list, "list this checkout's reviews, one short entry each; `show` prints one in full")
-    add("defaults", command_defaults, "print the reviewer's configured model and reasoning effort", reviewer=True)
+    add(
+        "defaults", command_defaults,
+        "print the model and reasoning effort the reviewer would use, and the models it offers", reviewer=True,
+    )
     add("digest", command_digest, "print the working-tree digest")
     return parser
 

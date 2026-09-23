@@ -6,12 +6,6 @@ FROM debian-coursier:${IMG_TAG_VER}
 ARG IMG_TAG_VER
 LABEL org.opencontainers.image.base.name="debian-coursier:${IMG_TAG_VER}"
 
-# The digest of this directory as the launcher bundled it (KoAgentFs.contextSourceId). A launch
-# recomputes it from its own jar and refuses a default-named image another jar built — the
-# version lock between launcher and image (AgentSandboxLauncher.bundleMismatch).
-ARG BUNDLE_ID
-LABEL ko-agent-sandbox.bundle=${BUNDLE_ID}
-
 ARG UV_VERSION=0.12.17
 ARG PYTHON_VERSION=3.14
 ARG WCWIDTH_VERSION=0.8.4
@@ -353,19 +347,6 @@ RUN set -euxo pipefail; \
 COPY --chmod=0644 claude-code/command/ /etc/claude-code/command/
 COPY --chmod=0644 claude-code/managed-settings.d/ /etc/claude-code/managed-settings.d/
 
-# Image-owned plugins, loaded beside whatever the user installs: nothing in the
-# persistent volume can drop or replace them. A plugin's bin/ joins the Bash
-# tool's PATH. The Codex CLI below is what ko-review calls (doc/ko-review.md).
-# The modes are set after the copy: COPY --chmod gives the copied
-# subdirectories the file mode too, ko-review/ comes out `drw-r--r--`, and
-# Claude Code cannot read the manifest (EACCES).
-COPY claude-code/plugins/ /etc/claude-code/plugins/
-RUN set -eu; \
-    find /etc/claude-code/plugins -type d -exec chmod 0755 {} +; \
-    find /etc/claude-code/plugins -type f -exec chmod 0644 {} +; \
-    chmod 0755 /etc/claude-code/plugins/ko-review/bin/ko-review
-ENV CLAUDE_CODE_PLUGIN_DIRS=/etc/claude-code/plugins
-
 
 # ---------------------------------------------------------------------------
 # Codex CLI
@@ -621,6 +602,25 @@ RUN set -euxo pipefail; \
 
 
 # ---------------------------------------------------------------------------
+# Claude Code plugins
+# ---------------------------------------------------------------------------
+#
+# Image-owned plugins, loaded beside whatever the user installs: nothing in the
+# persistent volume can drop or replace them. A plugin's bin/ joins the Bash
+# tool's PATH. The Codex CLI above is what ko-review calls (doc/ko-review.md).
+# Copied after the agent downloads, so that a plugin edit leaves their layers
+# cached. The modes are set after the copy: COPY --chmod gives the copied
+# subdirectories the file mode too, ko-review/ comes out `drw-r--r--`, and
+# Claude Code cannot read the manifest (EACCES).
+COPY claude-code/plugins/ /etc/claude-code/plugins/
+RUN set -eu; \
+    find /etc/claude-code/plugins -type d -exec chmod 0755 {} +; \
+    find /etc/claude-code/plugins -type f -exec chmod 0644 {} +; \
+    chmod 0755 /etc/claude-code/plugins/ko-review/bin/ko-review
+ENV CLAUDE_CODE_PLUGIN_DIRS=/etc/claude-code/plugins
+
+
+# ---------------------------------------------------------------------------
 # Environment documentation for the agents
 # ---------------------------------------------------------------------------
 #
@@ -694,3 +694,11 @@ USER nonroot
 
 ENTRYPOINT ["ko-sandbox-entrypoint"]
 CMD ["bash"]
+
+# The digest of this directory as the launcher bundled it (KoAgentFs.contextSourceId). A launch
+# recomputes it from its own jar and refuses a default-named image another jar built — the
+# version lock between launcher and image (AgentSandboxLauncher.bundleMismatch).
+# Last: every RUN after an ARG is keyed on its value, and this one changes whenever a file in
+# this directory does, so declared any earlier it would rerun every RUN after it.
+ARG BUNDLE_ID
+LABEL ko-agent-sandbox.bundle=${BUNDLE_ID}
