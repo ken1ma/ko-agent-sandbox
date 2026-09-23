@@ -1831,11 +1831,15 @@ object AgentSandboxLauncher:
   val RefusedForwardPrefix = LauncherVariablePrefix
 
   /**
-   * The `--env=NAME=VALUE` arguments for the forwards, or why one cannot be made. A name unset
-   * on the host is an error, not an empty variable: a forward that configures nothing is the
-   * silent failure the KO_AGENT_SANDBOX_* typo warning exists for. Values never reach a log or
-   * the screen — a forward is how a secret gets in, and SECURITY.md ("Credential theft") is what
-   * that costs.
+   * The `--env` arguments for the forwards, or why one cannot be made. A name unset on the host
+   * is an error, not an empty variable: a forward that configures nothing is the silent failure
+   * the KO_AGENT_SANDBOX_* typo warning exists for. A forward is how a secret gets in (SECURITY.md,
+   * "Credential theft"), so a value the host holds travels as `--env=NAME`, which podman fills from
+   * this process's environment: the value is in no podman argument and not in the create command
+   * podman records for the container. An explicit value is on the launch command line already, so
+   * its argument carries `NAME=VALUE`. An empty host value uses `--env=NAME=` because it contains
+   * no secret and avoids relying on podman's handling of empty host variables. The launcher's own
+   * output carries names alone.
    */
   def forwardedEnvironment(
     forwards: Vector[EnvForward],
@@ -1848,8 +1852,11 @@ object AgentSandboxLauncher:
 
   private def resolve(forwards: Vector[EnvForward], hostEnv: String => Option[String]): Either[String, Vector[String]] =
     val resolved = forwards.map: forward =>
-      forward.value.orElse(hostEnv(forward.name)).toRight(forward.name)
-        .map(value => s"--env=${forward.name}=$value")
+      forward.value match
+        case Some(value) => Right(s"--env=${forward.name}=$value")
+        case None =>
+          hostEnv(forward.name).toRight(forward.name).map: value =>
+            if value.isEmpty then s"--env=${forward.name}=" else s"--env=${forward.name}"
     resolved.collectFirst { case Left(name) => name } match
       case Some(name) =>
         Left(s"error: --env=$name; the variable is not set on the host, so there is nothing to forward")

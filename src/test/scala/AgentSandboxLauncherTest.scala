@@ -1625,11 +1625,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("a forward reads the host at launch, fails on an unset name, and never replaces a boundary variable"):
     val host = Map("SBT_OPTS" -> "-Xmx2g", "EMPTY" -> "")
+    // A host value travels by name, so podman's argument carries no secret; an explicit value is
+    // on the launch command line already, so its argument carries it too.
     assertEquals(
       forwardedEnvironment(Vector(EnvForward("SBT_OPTS", None), EnvForward("FOO", Some("v=1"))), host.get),
-      Right(Vector("--env=SBT_OPTS=-Xmx2g", "--env=FOO=v=1")),
+      Right(Vector("--env=SBT_OPTS", "--env=FOO=v=1")),
     )
-    // Set but empty is a value; a name the host lacks is not.
+    // Set but empty is a value, carried in the argument (forwardedEnvironment has why); a name the
+    // host lacks is not a value.
     assertEquals(forwardedEnvironment(Vector(EnvForward("EMPTY", None)), host.get), Right(Vector("--env=EMPTY=")))
     assert(forwardedEnvironment(Vector(EnvForward("MISSING", None)), host.get).swap.exists(_.contains("not set")))
     // An explicit value never consults the host, so it need not be exported there.

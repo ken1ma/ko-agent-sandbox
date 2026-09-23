@@ -37,6 +37,11 @@ costs are described below.
   - Only the launch command line can specify `--env`; a project file cannot choose which host
     variables it receives. The launcher refuses `KO_AGENT_SANDBOX_*`, which describe its
     enforcement settings, and prints every forwarded name.
+  - A value the host holds reaches the sandbox container by name: podman copies a value-less
+    `--env` from the launcher's process, so the value is in no podman argument and not in the
+    create command podman records for the container. `podman inspect` shows it in the container's
+    environment, as it shows every variable. An explicit `--env=NAME=VALUE` is on the launch
+    command line already and stays in the create command.
 
 **Project data reaching a destination nobody chose.**
 
@@ -597,9 +602,9 @@ step 6 connects through the upstream proxy with a `CONNECT` naming the validated
   hostname. The returned tunnel carries the same steps 8 to 11. The upstream proxy cannot override
   a local refusal.
 - An upstream refusal or connection failure produces `502`, with no direct-connect fallback.
-- The variable reaches the proxy container's environment by name — podman copies a value-less
-  `--env` from the launcher's process — so its userinfo is in no argument, and the proxy keeps the
-  credential in memory and prints the endpoint alone.
+- The variable reaches the proxy container's environment by name, as a forwarded host value
+  reaches the sandbox ("Credential theft", above), so its userinfo is in no argument, and the
+  proxy keeps the credential in memory and prints the endpoint alone.
 - The sandbox never sees the variable: its own proxy variables name the per-run proxy, as
   `SessionBoundaryTest` asserts.
 
