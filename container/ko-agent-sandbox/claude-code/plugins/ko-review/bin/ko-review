@@ -262,7 +262,7 @@ def snapshot(review, round_number, observation):
 
 def attach_transcript(review, taken, text):
     """The round's transcript as a tag object on the round's ref, which then peels to the tree:
-    `git show <ref>` prints the transcript, `git diff` between refs still compares trees, and
+    the ref's `%(contents)` is the transcript, `git diff` between refs still compares trees, and
     `git tag` lists none of it. The tagger is the helper, since neither the user nor Codex wrote the
     whole message. Without a snapshot there is no ref to carry it. A failure leaves the ref on the
     tree and its diagnostic in the snapshot's `transcriptError`, which the JSON output carries."""
@@ -519,12 +519,17 @@ class Review:
         lines = [f"ko-review export {self.id}  # the transcript, one section per round"]
         snapshots = [entry for entry in self.state.get("snapshots", []) if entry.get("ref")]
         if snapshots and snapshots[-1].get("tag"):
-            lines.append(f"git show {snapshots[-1]['ref']}  # the last round's transcript, then its tree")
+            last = snapshots[-1]["ref"]
+            lines.append(f"git for-each-ref --format='%(contents)' {last}  # the last round's transcript")
         if len(snapshots) >= 2:
             lines.append(f"git diff {snapshots[0]['ref']} {snapshots[-1]['ref']}  # what changed during the review")
         approved = self.state.get("approved")
         if approved and approved.get("ref"):
             lines.append(f"ko-review diff {self.id}  # your tree against the approved one")
+        lines += [
+            "ko-review list  # this checkout's reviews, by id",
+            f"ko-review delete {self.id}  # the review's state and refs, once you no longer need them",
+        ]
         return lines
 
     def summary(self, observation=None):
@@ -649,6 +654,24 @@ def validate_result(result):
     return None
 
 
+def codex_said(stderr, events):
+    """Codex's own words on its failure, such as a usage limit and when it resets: its last failure
+    event's message, else the last line of its stderr."""
+    for event in reversed(events):
+        if event.get("type") in ("turn.failed", "error"):
+            error = event.get("error", event.get("message"))
+            text = error.get("message") if isinstance(error, dict) else error
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    return lines[-1] if lines else None
+
+
+def codex_failed(summary, stderr, events, /, **detail):
+    said = codex_said(stderr, events)
+    return ReviewError("CODEX_FAILED", f"{summary}: {said}" if said else summary, **detail)
+
+
 def classify_failure(returncode, stderr, events):
     failures = [event for event in events if event.get("type") in ("turn.failed", "error")]
     messages = [json.dumps(event.get("error", event.get("message"))) for event in failures]
@@ -672,7 +695,7 @@ def classify_failure(returncode, stderr, events):
             "codex could not reach its provider; the diagnostics show what the proxy answered",
             egressCheck=egress_diagnostics(), **detail,
         )
-    return ReviewError("CODEX_FAILED", "codex failed", **detail)
+    return codex_failed("codex failed", stderr, events, **detail)
 
 
 def stream_events(review, process, prompt, resume_id, timeout, events_path):
@@ -776,7 +799,7 @@ def run_codex(review, round_number, prompt, resume_id, timeout):
     if bad_line is not None:
         raise ReviewError("INVALID_RESULT", "codex printed a line that is not JSON", line=bad_line)
     if started is None:
-        raise ReviewError("CODEX_FAILED", "codex ended without a thread.started event", stderr=stderr[-2000:])
+        raise codex_failed("codex ended without a thread.started event", stderr, events, stderr=stderr[-2000:])
     if resume_id is not None and started != resume_id:
         raise ReviewError(
             "CODEX_RESUME_MISMATCH", "codex resumed a different thread than this review's",
@@ -805,10 +828,13 @@ def review_turn(review, message):
     first = state["lastReviewed"] is None
     if state["status"] in TERMINAL:
         raise ReviewError("REVIEW_CLOSED", f"review {review.id} is {state['status']}; start a new review")
-    if state["round"] >= state["maxRounds"]:
+    entries = review.journal_entries()
+    answered = [entry["round"] for entry in entries if entry["actor"] == "codex"]
+    # Failed rounds do not count, so retries after a usage limit do not use up the review.
+    if len(answered) >= state["maxRounds"]:
         state["status"] = "LOOP_LIMIT_REACHED"
         review.save()
-        raise ReviewError("LOOP_LIMIT_REACHED", f"review {review.id} reached {state['maxRounds']} rounds")
+        raise ReviewError("LOOP_LIMIT_REACHED", f"review {review.id} reached {state['maxRounds']} answered rounds")
     check_codex_available()
     check_egress()
     round_number = state["round"] + 1
@@ -830,6 +856,19 @@ def review_turn(review, message):
         "Review the working tree's changes against HEAD: `git diff HEAD` plus untracked files."
     )
     prompt += "\n---\n\n# Scope\n\n" + scope + "\n"
+    # A failed turn may or may not have left the author's message in Codex's thread, and the author
+    # writes the next message as a sequel, so the next turn sends the unanswered ones again.
+    unanswered = [
+        entry for entry in entries
+        if entry["actor"] == "author" and entry["kind"] in ("review-request", "review-response")
+        and entry["round"] > max(answered, default=0)
+    ]
+    for entry in unanswered:  # as written, like the latest message: Codex reads code in them
+        prompt += (
+            f"\n---\n\n# The author's message of round {entry['round']}, which you did not answer\n\n"
+            "Your turn on it ended in an error before you answered. The author's latest message follows the"
+            " unanswered ones.\n\n" + entry["text"].rstrip("\n") + "\n"
+        )
     prompt += "\n---\n\n" + heading + "\n\n" + message.rstrip("\n") + "\n"
     previous_status = state["status"]
     state["status"] = "REVIEWING"
@@ -1012,22 +1051,63 @@ def command_show(args):
     return Review(root, args.review_id).load().summary()
 
 
+LIST_FIELDS = ("reviewId", "reviewer", "effectiveStatus", "round", "approvalFresh", "createdAt", "updatedAt")
+
+
 def command_list(args):
     root = repository_root(args.repository)
     reviews_dir = repository_dir(root) / "reviews"
-    summaries = []
+    rows = []
     if reviews_dir.exists():
         observation = observe(root)  # one scan for every review's freshness
         for entry in reviews_dir.iterdir():
             if (entry / "state.json").exists():
-                summaries.append(Review(root, entry.name).load().summary(observation))
-    summaries.sort(key=lambda summary: summary["createdAt"])
-    return {"repository": str(root), "reviews": summaries}
+                summary = Review(root, entry.name).load().summary(observation)
+                rows.append({key: summary[key] for key in LIST_FIELDS})
+    rows.sort(key=lambda row: row["createdAt"])
+    return {"repository": str(root), "reviews": rows}
+
+
+# A fence run after any list and block quote markers, which group 1 holds, and any indentation.
+FENCE_OPENING = re.compile(r"((?:[ \t]*(?:[-+*]|\d{1,9}[.)])[ \t]+|[ \t]*>[ \t]?)*)[ \t]*(`{3,}|~{3,})")
+LIST_MARKER = re.compile(r"[-+*]|\d{1,9}[.)]")
+ATX_HEADING = re.compile(r"( {0,3})(#{1,6})(?=[ \t]|$)")
 
 
 def shifted(markdown):
-    """The message's headings one level down, so that the transcript's own structure holds."""
-    return "\n".join("#" + line if line.startswith("#") else line for line in markdown.rstrip("\n").splitlines())
+    """The message's ATX headings two levels down, at most to level 6, under the `###` heading that
+    names who wrote it, for the export and the transcript on a round's ref.
+
+    Where a line may be code, it stays as written, so a misreading can leave a heading unshifted
+    but never change code: any line that could open a fence opens one, and only a line that
+    certainly closes it does. That line repeats the opening line's containers, its list markers
+    as spaces, then has at most three spaces, a run of the fence's character at least as long, and
+    nothing else."""
+    lines = []
+    fence = None  # (containers a closing line repeats, character, length) of the open fence
+    for line in markdown.rstrip("\n").splitlines():
+        if fence is None:
+            opening = FENCE_OPENING.match(line)
+            if opening:
+                containers = LIST_MARKER.sub(lambda marker: " " * len(marker.group()), opening.group(1))
+                fence = (containers, opening.group(2)[0], len(opening.group(2)))
+                lines.append(line)
+                continue
+        else:
+            containers, character, length = fence
+            closing = re.fullmatch(
+                " {0,3}(" + re.escape(character) + "{" + str(length) + ",})[ \t]*", line[len(containers):],
+            )
+            if line.startswith(containers) and closing:
+                fence = None
+            lines.append(line)
+            continue
+        heading = ATX_HEADING.match(line)
+        if heading:
+            level = min(len(heading.group(2)) + 2, 6)
+            line = heading.group(1) + "#" * level + line[heading.end():]
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def render_entries(entries, with_round_headings=True):
@@ -1074,6 +1154,11 @@ def render_entries(entries, with_round_headings=True):
 def command_export(args):
     root = repository_root(args.repository)
     review = Review(root, args.review_id).load()
+    if args.round is not None:
+        if not any(entry.get("round") == args.round for entry in review.journal_entries()):
+            raise ReviewError("UNKNOWN_ROUND", f"review {review.id} has no round {args.round}")
+        sys.stdout.write(review.round_transcript(args.round) + "\n")
+        return None
     state = review.state
     lines = [f"# Codex review {review.id}", ""]
     lines += [f"- Repository: {state['repository']}", f"- Status: {review.freshness()[2]}"]
@@ -1138,7 +1223,8 @@ def codex_config_layers(root):
 
 
 def codex_catalog():
-    """Codex's model catalog with each model's efforts; None when Codex cannot render it."""
+    """Codex's model catalog in its own order, with each model's efforts lowest first; None when Codex
+    cannot render it. `hidden` marks the models Codex's `/model` picker leaves out."""
     try:
         rendered = subprocess.run(["codex", "debug", "models"], capture_output=True, text=True, check=True, timeout=60)
         models = json.loads(rendered.stdout)["models"]
@@ -1147,8 +1233,10 @@ def codex_catalog():
     return [
         {
             "model": model.get("slug"),
+            "description": model.get("description"),
             "defaultEffort": model.get("default_reasoning_level"),
             "efforts": [level.get("effort") for level in model.get("supported_reasoning_levels", [])],
+            "hidden": model.get("visibility") == "hide",
         }
         for model in models if isinstance(model, dict) and model.get("slug")
     ]
@@ -1159,7 +1247,9 @@ def command_defaults(args):
     skill to offer first. `partial` says that a cloud-managed layer, which Codex ranks above the
     user's file, could still name others; an explicit `--model` or `--effort` removes the doubt.
     `recommended` fills a missing effort from the catalog's default for the model; a value still
-    null there is Codex's built-in default, which the skill leaves to Codex by passing no option."""
+    null there is Codex's built-in default, which the skill leaves to Codex by passing no option.
+    `catalog` lists the models Codex's `/model` picker offers; a configured hidden model still gets
+    its efforts in `recommended`."""
     root = repository_root(args.repository)
     found = {"model": None, "effort": None, "source": {"model": None, "effort": None}, "partial": True}
     for layer in codex_config_layers(root):
@@ -1173,8 +1263,11 @@ def command_defaults(args):
             if found[name] is None and isinstance(config.get(key), str):
                 found[name] = config[key]
                 found["source"][name] = str(layer)
-    found["catalog"] = codex_catalog()
-    entry = next((model for model in found["catalog"] or [] if model["model"] == found["model"]), None)
+    catalog = codex_catalog()
+    entry = next((model for model in catalog or [] if model["model"] == found["model"]), None)
+    found["catalog"] = None if catalog is None else [
+        {key: value for key, value in model.items() if key != "hidden"} for model in catalog if not model["hidden"]
+    ]
     found["recommended"] = {
         "model": found["model"],
         "effort": found["effort"] or (entry["defaultEffort"] if entry else None),
@@ -1211,7 +1304,9 @@ def build_parser():
         return sub
 
     start = add("start", command_start, "review the working tree on a new reviewer thread", message=True, reviewer=True)
-    start.add_argument("--max-rounds", type=int, default=DEFAULT_MAX_ROUNDS)
+    start.add_argument(
+        "--max-rounds", type=int, default=DEFAULT_MAX_ROUNDS, help="rounds the reviewer answers before the review ends",
+    )
     start.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS, help="seconds per Codex turn")
     start.add_argument(
         "--instructions-file", help="the user's instructions to Codex, added to every round of this review",
@@ -1219,7 +1314,8 @@ def build_parser():
     start.add_argument("--base", help="review the changes since this commit or branch, not only the uncommitted ones")
     start.add_argument("--model", help="the Codex model for every round (default: Codex's configured model)")
     start.add_argument("--effort", help="Codex's reasoning effort for every round (default: its configured one)")
-    add("export", command_export, "print the review's transcript as Markdown", review_id=True)
+    export = add("export", command_export, "print the review's transcript as Markdown", review_id=True)
+    export.add_argument("--round", type=int, help="print only this round: the author's message and the reviewer's")
     diff = add("diff", command_diff, "git diff of a round's snapshot against the working tree", review_id=True)
     diff.add_argument("--round", type=int, help="the round to compare with (default: the approved one, else the last)")
     diff.add_argument("git_args", nargs="*", help="options for git diff after `--`, such as `-- --stat`")
@@ -1237,7 +1333,7 @@ def build_parser():
     )
     add("verify", command_verify, "succeed only if the approval covers the current working tree", review_id=True)
     add("show", command_show, "print the review's state", review_id=True)
-    add("list", command_list, "list this checkout's reviews")
+    add("list", command_list, "list this checkout's reviews, one short entry each; `show` prints one in full")
     add("defaults", command_defaults, "print the reviewer's configured model and reasoning effort", reviewer=True)
     add("digest", command_digest, "print the working-tree digest")
     return parser

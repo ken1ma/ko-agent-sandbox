@@ -7,13 +7,13 @@ again.
 
 ## Codex review plugin (`ko-review.md`)
 
-- [ ] In a session of the image, Claude drives one review, fix and re-review through
-  `/ko-review:codex`, and a second invocation starts a new Codex thread. The helper alone has done
-  the review, fix and re-review sequence against the real Codex, and the session lists the skill.
 - [ ] A linked worktree whose main Git directory is mounted read-only: Codex's own `git` commands
   and the helper's digest against that tree; unverified.
 - [ ] `--egress=deny-unless-model claude` fails the review with `CODEX_EGRESS_DENIED` before Codex
   runs; unverified in a session.
+- [ ] The skill's step 4 puts every round's full text in Claude's reply until the user has seen
+  that Claude and Codex exchange what the user intends; then it returns to a one- or two-line
+  report of the disposition and open findings, with `export --round` for the full text.
 - A regression test for a fix in this plugin is run against the helper without the fix and shown
   to fail before it counts: a fake reviewer that dies on its own once the helper exits lets a test
   for an orphaned reviewer pass without the fix, and only that run shows it.
