@@ -18,6 +18,14 @@ Codex reads the repository itself; your messages are context for it, not evidenc
   the prompt Codex received, and `export` renders the text per round, so the scratchpad copy need
   not outlive the session.
 
+A new review's scope is this session's change: the uncommitted tree, plus the commits the session
+made when `--base` names where they started.
+
+- With a review id as the argument, the continued review keeps the scope it recorded.
+- Otherwise, when the session changed nothing and `git status` is clean, tell the user there is
+  nothing to review and stop: a base taken from history would review work the session does not
+  know, and the step 1 summary would be reconstructed, not reported.
+
 ## Steps
 
 1. Write a Markdown file in your scratchpad with these sections: `## Task` (what was requested),
@@ -40,8 +48,9 @@ Codex reads the repository itself; your messages are context for it, not evidenc
    - If the user gave instructions for Codex as the skill's argument, write them verbatim to a
      second file and add `--instructions-file FILE`; Codex reads them every round, ahead of your
      messages.
-   - If the work includes commits, add `--base REF` with the branch or commit the work started
-     from, so Codex reviews the whole range rather than the uncommitted part.
+   - If the session committed part of its work, add `--base REF` with the commit the work
+     started from, taken from the conversation, so Codex reviews the whole range rather than the
+     uncommitted part.
 4. Tell the user in one or two lines how the round went: the disposition, how many findings are
    open, and what you do next.
 5. Evaluate every finding independently: fix the ones you accept, rebut the ones you reject with
@@ -82,8 +91,9 @@ An `error` is an operational failure, never a review outcome.
 
 - `NOT_A_GIT_REPOSITORY`, `CODEX_AUTH_FAILED`, `CODEX_EGRESS_DENIED`: they say what the user
   must do. Stop, and put the message in your reply verbatim.
-- `NOTHING_TO_REVIEW`: the tree equals HEAD. If the work was committed, `start` again with
-  `--base REF`; otherwise tell the user there is nothing to review.
+- `NOTHING_TO_REVIEW`: the tree equals HEAD, or the commit `--base` named. If the session
+  committed its work, `start` again with `--base REF` as in step 3; otherwise tell the user there
+  is nothing to review.
 - `REVIEW_BUSY`: another session runs a command on the same review.
 - `WORKTREE_CHANGED_DURING_REVIEW`: the tree changed while Codex read it, possibly from the
   host. Check the tree and `continue` again.
