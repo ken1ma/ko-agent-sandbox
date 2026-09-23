@@ -11,6 +11,7 @@ import java.time.ZoneId
 
 import AgentSandboxLauncher.*
 import HostCommands.Os
+import SandboxProject.projectIdOf
 import ContainerfileSources.*
 import LauncherImages.*
 import KoAgentFs.bundledSourceId
@@ -285,7 +286,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       val prompts = Vector.newBuilder[String]
       val remaining = answers.iterator
       val reader = Reader(prompts += _, () => if remaining.hasNext then remaining.next() else None)
-      (holdForReader(mode, Vector("claude", "--resume"), Some(reader)), prompts.result())
+      (confirmStart(mode, Vector("claude", "--resume"), Some(reader)), prompts.result())
     assertEquals(hold("pause", Some("")), (true, Vector("\nstart: claude --resume [Y/n] ")))
     Vector("y", "Y", "yes", " YES ").foreach(answer => assertEquals(hold("pause", Some(answer))._1, true, answer))
     Vector("n", "N", "no", " No ").foreach(answer => assertEquals(hold("pause", Some(answer))._1, false, answer))
@@ -298,12 +299,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assertEquals(hold("pause", Some("maybe"))._1, false)
     assertEquals(hold("immediate", Some("n")), (true, Vector()))
-    assertEquals(holdForReader("pause", Vector("claude"), None), true)
+    assertEquals(confirmStart("pause", Vector("claude"), None), true)
 
   test("the hold renders each argument unambiguously"):
     def rendered(command: String*): String =
       val prompts = Vector.newBuilder[String]
-      holdForReader("pause", command, Some(Reader(prompts += _, () => Some("n"))))
+      confirmStart("pause", command, Some(Reader(prompts += _, () => Some("n"))))
       prompts.result().mkString
     assertNotEquals(rendered("program", "a b"), rendered("program", "a", "b"))
     assertEquals(rendered("program", "a b"), "\nstart: program 'a b' [Y/n] ")
@@ -327,6 +328,29 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       val out = renderArgument(new String(Character.toChars(cp)) + " ")
       out.codePoints().forEach: rendered =>
         assert(!InvisibleTypes.contains(Character.getType(rendered)), f"U+$cp%04X rendered as $out")
+
+  test("a linked worktree's sharing is agreed to as the hold is, and not asked where nothing holds"):
+    def share(mode: String, answers: Option[String]*): (Option[Boolean], Vector[String]) =
+      val prompts = Vector.newBuilder[String]
+      val remaining = answers.iterator
+      val reader = Reader(prompts += _, () => if remaining.hasNext then remaining.next() else None)
+      (confirmSharedVolume(mode, Some(reader)), prompts.result())
+    val prompt = "\nReuse persistent volume? [Y/n] "
+    assertEquals(share("pause", Some("")), (Some(true), Vector(SharedVolumeExplained, prompt)))
+    assertEquals(share("pause", Some("y"))._1, Some(true))
+    assertEquals(share("pause", Some("n"))._1, Some(false))
+    // EOF declines, as at the hold: nothing was agreed to, so the worktree keeps its own volume.
+    assertEquals(share("pause")._1, Some(false))
+    assertEquals(share("pause", Some("?"), Some("y")), (Some(true), Vector(SharedVolumeExplained, prompt, prompt)))
+    // Where nothing holds, nothing is asked, and the caller says so rather than deciding.
+    assertEquals(share("immediate", Some("y")), (None, Vector()))
+    assertEquals(confirmSharedVolume("pause", None), None)
+    // The volume agreed to is the one a launch from the main worktree mounts, and a linked
+    // worktree's reset names it with the directory whose reset removes it.
+    val main = Paths.get("/src/app")
+    assertEquals(mainWorktreeVolume(main, Os.Linux), s"ko-agent-sandbox-persistent-${projectIdOf(main, Os.Linux)}")
+    assert(mainWorktreeVolumeNote(main, Os.Linux).contains(mainWorktreeVolume(main, Os.Linux)))
+    assert(mainWorktreeVolumeNote(main, Os.Linux).contains("run --reset in /src/app"))
 
   test("the clipboard defaults to off and fails closed on anything else"):
     assertEquals(clipboardMode(None), Right("off"))

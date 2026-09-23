@@ -257,22 +257,43 @@ object AgentSandboxLauncher:
    * than pause — there is nothing to hold. When the hold returns, its line is closed: by the
    * reader's Enter, or by the hold itself at EOF, which echoes nothing.
    */
-  def holdForReader(mode: String, command: Seq[String], reader: Option[Reader]): Boolean =
+  def confirmStart(mode: String, command: Seq[String], reader: Option[Reader]): Boolean =
     reader.filter(_ => mode == "pause") match
-      case None => true
-      case Some(reader) =>
-        def ask(): Boolean =
-          reader.prompt(s"\nstart: ${command.map(renderArgument).mkString(" ")} [Y/n] ")
-          reader.readLine() match
-            case None =>
-              reader.prompt("\n")
-              false
-            case Some(answer) =>
-              answer.trim.toLowerCase(java.util.Locale.ROOT) match
-                case "" | "y" | "yes" => true
-                case "n" | "no"       => false
-                case _                => ask()
-        ask()
+      case None         => true
+      case Some(reader) => agreed(reader, s"\nstart: ${command.map(renderArgument).mkString(" ")} [Y/n] ")
+
+  /**
+   * Whether a launch from a linked worktree shares its main worktree's agent-state volume: the
+   * reader's answer, taken as confirmStart takes its own, or None where the launch holds nothing
+   * and so is asked nothing (RunOnHostProvisioning follows the same rule). Asked under the lines
+   * naming the two directories, before anything else is printed or created. Yes by default, unlike
+   * the provisioning prompt's unconfined host run: the launch is from the repository the main
+   * worktree checks out, and what is shared is the same user's logins for it.
+   */
+  def confirmSharedVolume(mode: String, reader: Option[Reader]): Option[Boolean] =
+    reader.filter(_ => mode == "pause").map: reader =>
+      reader.prompt(SharedVolumeExplained)
+      agreed(reader, "\nReuse persistent volume? [Y/n] ")
+
+  /** Said once before the question, not with each repeat of it; one line, as every launcher
+    * message is, wrapped by the terminal. */
+  val SharedVolumeExplained: String =
+    "\nDetected a linked worktree. Reusing the main worktree's persistent volume shares agent " +
+      "credentials, history, configuration and MCP state.\n"
+
+  /** One yes-or-no question whose default is yes: Enter or y agrees, n declines, EOF declines
+    * and closes the line, and any other answer asks again. */
+  private def agreed(reader: Reader, prompt: String): Boolean =
+    reader.prompt(prompt)
+    reader.readLine() match
+      case None =>
+        reader.prompt("\n")
+        false
+      case Some(answer) =>
+        answer.trim.toLowerCase(java.util.Locale.ROOT) match
+          case "" | "y" | "yes" => true
+          case "n" | "no"       => false
+          case _                => agreed(reader, prompt)
 
   /** What a hold prompts on and reads from; readLine answers None at EOF. */
   final case class Reader(prompt: String => Unit, readLine: () => Option[String])
@@ -1000,7 +1021,9 @@ object AgentSandboxLauncher:
    * pattern is `--reset-all`'s to remove by name, so adopting a user-supplied name inside it
    * would hand that sweep a volume it must not own — including another project's real volume,
    * spelled out to alias its sign-ins. Refused at launch, where the volume would be created and
-   * used, rather than discovered at the reset that deletes it.
+   * used, rather than discovered at the reset that deletes it. The one name inside the pattern a
+   * launch adopts is its main worktree's (mainWorktreeVolume): named by the worktree's own Git
+   * metadata rather than by the user, and agreed to at the prompt.
    */
   def sharedVolumeNameError(name: String): Option[String] =
     Option.when(name.matches(s"ko-agent-sandbox-persistent-$ProjectIdPattern"))(
@@ -1008,6 +1031,15 @@ object AgentSandboxLauncher:
         "volume-name pattern, and --reset-all removes every volume matching it\n\n" +
         "Choose a name outside ko-agent-sandbox-persistent-<slug>-<12 hex>.",
     )
+
+  /** The volume a launch from `main` itself mounts (SandboxProject.mainWorktreeOf has the spelling). */
+  def mainWorktreeVolume(main: Path, os: Os): String =
+    s"ko-agent-sandbox-persistent-${projectIdOf(main, os)}"
+
+  /** What a linked worktree's `--reset` says of the volume it leaves in place. */
+  def mainWorktreeVolumeNote(main: Path, os: Os): String =
+    s"note: leaving the main worktree's volume ${mainWorktreeVolume(main, os)} in place; " +
+      s"run --reset in ${pathInline(main, os)} to remove it"
 
   def proxyContainers(names: Seq[String]): Seq[String] =
     names.filter(_.matches(s"ko-agent-egress-proxy-$RunPattern"))
@@ -1334,10 +1366,14 @@ object AgentSandboxLauncher:
     // not aim `rm -rf` at it.
     requireStateRootOutside(os, projectDir)
     val ids = if givenIds.isEmpty then Vector(projectIdOf(projectDir, os)) else givenIds
+    // Read only for the directory's own reset: a named id's directory is gone, with its metadata.
+    val mainWorktree =
+      if givenIds.nonEmpty then None
+      else SandboxProject.mainWorktreeOf(projectDir, protectedHomeDirectories(os, env).fold(fail(_), identity), os)
     val outcomes = ids.map: id =>
       // A podman that stopped answering mid-way is one failed step of this id, not the run's end.
       id -> (
-        try resetOne(os, projectDir, id, named = givenIds.nonEmpty)
+        try resetOne(os, projectDir, id, named = givenIds.nonEmpty, mainWorktree)
         catch
           case ex: IOException =>
             System.err.println(s"$id: $ex")
@@ -1357,7 +1393,7 @@ object AgentSandboxLauncher:
   /** `named`: the id came from the command line rather than from `projectDir`, the directory the
     * reset runs in. Every failure is a counted step, never an exception, so the ids after this one
     * are still reset. */
-  private def resetOne(os: Os, projectDir: Path, id: String, named: Boolean): Reset =
+  private def resetOne(os: Os, projectDir: Path, id: String, named: Boolean, mainWorktree: Option[Path]): Reset =
     var failures = 0
     var found = false
     def remove(command: String*): Unit = if !stepOk(command*) then failures += 1
@@ -1404,6 +1440,14 @@ object AgentSandboxLauncher:
           found = true
           remove(podman, "volume", "rm", volume)
         false
+    // The main worktree's volume, which this directory's launches may have shared, is named for
+    // that project and left in place like a configured shared one: removing it would sign the
+    // main worktree and every other linked worktree out. Said where it exists, so the reader knows
+    // what this reset did not remove and where the reset that does runs.
+    mainWorktree.foreach: main =>
+      val mainVolume = mainWorktreeVolume(main, os)
+      if volumeExistsAnswer(run(podman, "volume", "exists", mainVolume).exit).contains(true) then
+        System.err.println(mainWorktreeVolumeNote(main, os))
 
     // This project's per-run networks. Containers went first above, so nothing still holds them.
     val networks = run(podman, "network", "ls", "--format", "{{.Name}}")
@@ -2496,8 +2540,46 @@ object AgentSandboxLauncher:
     val homeProtection = protectedHomeDirectories(os, env).fold(fail(_), identity)
     homeProtection.warnings.foreach(warn)
     forbiddenProjectDirReason(projectDir, homeProtection).foreach: reason =>
-      fail(s"error: refusing to mount $projectDir\n\n$reason")
+      fail(s"error: refusing to mount ${pathInline(projectDir, os)}\n\n$reason")
     forbiddenStateRootReason(os, stateRoot(os), projectDir).foreach(fail(_))
+
+    // -----------------------------------------------------------------------
+    // Shared agent state
+    // -----------------------------------------------------------------------
+    //
+    // Separate volumes keep settings and MCP commands written by one project out of another project's sessions
+    // (SECURITY.md, "What the persistent volume holds"). This requires signing in separately for each project.
+    // KO_AGENT_SANDBOX_PERSISTENT_VOLUME opts into sharing that state across projects using the named volume.
+    // A linked worktree may instead share its main worktree's volume, which the reader agrees to
+    // right here, under the two lines naming both directories and before podman announces
+    // itself: the question is about those two lines and nothing that follows. A launch that
+    // holds nothing keeps this worktree's own volume and says so, naming the variable a launch
+    // without the prompt shares through: after a launch that agreed, a scripted one would
+    // otherwise seem to have lost the main worktree's logins.
+    val sharedVolume = env("KO_AGENT_SANDBOX_PERSISTENT_VOLUME").map: shared =>
+      sharedVolumeNameError(shared).foreach(reason => fail(s"error: $reason"))
+      shared
+    val mainWorktree =
+      if sharedVolume.isDefined then None else SandboxProject.mainWorktreeOf(projectDir, homeProtection, os)
+    System.err.println(pathLine("project directory", projectDir, os, tint = chosen(_)))
+    mainWorktree.foreach(main => System.err.println(pathLine("main git worktree", main, os)))
+    // The answer said back as the workspace and egress lines say their modes: an answer is a
+    // choice, and either continues the launch.
+    val sharedWithMain: Option[Path] = mainWorktree.filter: _ =>
+      confirmSharedVolume(sessionStartMode, terminalReader) match
+        case Some(true) =>
+          System.err.println(s"agent state: ${chosen("shared")} with the main git worktree")
+          true
+        case Some(false) =>
+          System.err.println(s"agent state: this worktree's ${chosen("own")}")
+          false
+        case None =>
+          System.err.println(
+            "agent state: this worktree's own; a launch without the prompt shares agent state " +
+              "through KO_AGENT_SANDBOX_PERSISTENT_VOLUME",
+          )
+          false
+
     // Where the container has the project: the same path, so nothing on either side translates
     // (SandboxProject.mountPathOf). What the image has there is asked once the image is known,
     // below, still before any per-project resource exists.
@@ -2535,17 +2617,13 @@ object AgentSandboxLauncher:
     val projectSlug = slugOf(projectDir.getFileName.toString)
     val projectId = projectIdOf(projectDir, os)
     // -----------------------------------------------------------------------
-    // Per-project persistent volume
+    // Persistent volume
     // -----------------------------------------------------------------------
     //
-    // Separate volumes keep settings and MCP commands written by one project out of another project's sessions
-    // (SECURITY.md, "What the persistent volume holds"). This requires signing in separately for each project.
-    // KO_AGENT_SANDBOX_PERSISTENT_VOLUME opts into sharing that state across projects using the named volume.
-    val persistentVolume = env("KO_AGENT_SANDBOX_PERSISTENT_VOLUME") match
-      case Some(shared) =>
-        sharedVolumeNameError(shared).foreach(reason => fail(s"error: $reason"))
-        shared
-      case None => s"ko-agent-sandbox-persistent-$projectId"
+    // The volume this session mounts ("Shared agent state", above).
+    val persistentVolume = sharedVolume
+      .orElse(sharedWithMain.map(mainWorktreeVolume(_, os)))
+      .getOrElse(s"ko-agent-sandbox-persistent-$projectId")
 
     requirePodman(os)
 
@@ -2735,7 +2813,7 @@ object AgentSandboxLauncher:
     // The notice opens on a fresh line unless the line is known closed. The terminal echoes a
     // Ctrl-C as `^C` and stops there, a signal leaves the cursor wherever it was, a child may end
     // mid-line, and the hook cannot see any of it; the one line the launcher knows closed is the
-    // hold's, ended by the reader's Enter or by the hold itself (holdForReader). Elsewhere an
+    // hold's, ended by the reader's Enter or by the hold itself (confirmStart). Elsewhere an
     // empty line is the price, a refusal's among them.
     var heldLineClosed = false
     val removeWhatThisRunCreated = () =>
@@ -3097,14 +3175,15 @@ object AgentSandboxLauncher:
     // the dry run's counts, the proxy's own answers to exactly what is enforced. Each line tints
     // the mode it states; a line stating a boundary weaker than the default is tinted whole
     // instead, by who weakened it (HostCommands.weakenedByUser, weakenedByProject).
-    // The path is said on every line: on Windows this is where the user learns the /mnt/<drive>
-    // spelling the agent will print.
+    // The mount path is said on Windows only, where it is not the project directory line's
+    // spelling but the /mnt/<drive> one the agent will print.
+    val mountedAt = if os == Os.Windows then s" at $mountPath" else ""
     System.err.println(filteredWorkspace match
-      case Some(_) => s"workspace: ${chosen("live")}; ${koAgentFsLabel(os)} at $mountPath"
-      case None    => s"workspace: ${chosen("reject")}; $mountPath is read-only this session")
+      case Some(_) => s"workspace: ${chosen("live")}; ${koAgentFsLabel(os)}$mountedAt"
+      case None    => s"workspace: ${chosen("reject")}; read-only this session$mountedAt")
     // Qualifies the line above: the mount is sound, and git is not there. Every mode, since what
     // git needs is absent from the container under each.
-    noGit.foreach(cause => warn(noGitWarning(cause)))
+    noGit.foreach(cause => warn(noGitWarning(cause, os)))
     if ruleFiles.nonEmpty then printRuleFiles(ruleFiles)
     printWidening(rulesetText)
     System.err.println(egressBanner(rulesetText))
@@ -3122,7 +3201,7 @@ object AgentSandboxLauncher:
     if rulesetWarnings.nonEmpty then System.err.println(emphasized(rulesetWarnings))
     if inspectedHosts.isEmpty && !publicDefault then
       System.err.println("egress tls inspection: this ruleset inspects no hosts; no leaf issued")
-    System.err.println(pathLine("egress log", hostLogFile, os))
+    System.err.println(pathLine("egress log", hostLogFile, os, tint = lookedUp(_)))
     // Names only: a forwarded value may be a secret, and this line is the one place the forward
     // is said aloud, since the variable is otherwise indistinguishable from the image's own.
     if parsed.env.nonEmpty then
@@ -3161,7 +3240,7 @@ object AgentSandboxLauncher:
       s"--env=KO_AGENT_SANDBOX_EGRESS_RULESET=${rulesetLinesOf(rulesetText)}",
 
       // The entrypoint holds its machine-health warning on screen under the same setting as
-      // holdForReader, for the same reason: the TUI clears it otherwise.
+      // confirmStart, for the same reason: the TUI clears it otherwise.
       s"--env=$SessionStartVariable=$sessionStartMode",
     ) ++ sandboxFiles
 
@@ -3307,7 +3386,7 @@ object AgentSandboxLauncher:
     // that dies during the mount leaves the marker to the reap that follows the reaper's removal
     // of the container. The cost is that the notes below — the reaper could not be spawned, which
     // branch the mount took — print after the release, and the TUI then clears them with the rest.
-    if !holdForReader(sessionStartMode, if command.isEmpty then Vector("bash") else command, terminalReader) then
+    if !confirmStart(sessionStartMode, if command.isEmpty then Vector("bash") else command, terminalReader) then
       heldLineClosed = true
       sys.exit(0)
 

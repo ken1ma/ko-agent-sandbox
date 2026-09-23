@@ -261,13 +261,14 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     assertEquals(
       reports.result(),
       Vector(
-        "run-on-host mill in /Users/u/project/a\\x1b[2Kb\\rc: mill executable: 1.1.9\\x1b[2K-jvm is not provisioned",
+        // The directory quoted as displayPath quotes a path the shell would misread, then spelled out.
+        "run-on-host mill in '/Users/u/project/a\\x1b[2Kb\\rc': mill executable: 1.1.9\\x1b[2K-jvm is not provisioned",
       ),
     )
     assertEquals(
       prompts.result(),
       Vector(
-        "run `MILL_VERSION=$'1.1.9\\x1b[2K-jvm' ./mill version` in /Users/u/project/a\\x1b[2Kb\\rc now, " +
+        "run `MILL_VERSION=$'1.1.9\\x1b[2K-jvm' ./mill version` in '/Users/u/project/a\\x1b[2Kb\\rc' now, " +
           "unconfined on the host? [y/N] ",
       ),
     )

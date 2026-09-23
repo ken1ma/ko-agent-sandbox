@@ -472,6 +472,16 @@ Implementation, policy derivation and test evidence: `fuse/ko-agent-fs/doc/`.
 - `KO_AGENT_SANDBOX_PERSISTENT_VOLUME` lets projects share a named volume: state written by one
   project becomes input to every other project using that volume. `--reset` deliberately preserves
   this explicitly shared volume, so it does not remove credentials or suspect state stored there.
+- A launch from a Git linked worktree may, at its prompt, share the main worktree's volume: the
+  worktree's own `.git` metadata names that checkout, and the launch shows it before asking.
+  State a session in either checkout writes — provider credentials, history, configuration and
+  MCP definitions included — is input to every later session of both. `--reset` in the linked
+  worktree removes only that worktree's own volume and names the one it left. `--reset` in the
+  main worktree removes the shared volume and signs every worktree out; while a linked
+  worktree's session still mounts it, podman refuses the removal, the reset reports that failed
+  step, and the reset is run again after that session ends. A launch that holds no prompt
+  (`KO_AGENT_SANDBOX_SESSION_START=immediate`, or no terminal) mounts the worktree's own volume
+  and says so.
 - Removing a stored credential does not revoke copies already held elsewhere; revocation remains the
   provider's operation.
 - Concurrent sessions of a project mount the volume read-write. Writes to the same state file can
