@@ -158,7 +158,7 @@ class ProxyContainerTest extends munit.FunSuite:
       server.close()
       accepting.join()
 
-  test("HTTPS_PROXY reaches the proxy container by name, and every origin connection leaves through it"):
+  test("HTTPS_PROXY and a forward reach their containers by name; origin connections go through the upstream proxy"):
     requireTestWithPodman()
 
     val upstream = HostProxy()
@@ -168,7 +168,11 @@ class ProxyContainerTest extends munit.FunSuite:
       val endpoint = s"http://host.containers.internal:${upstream.port}"
       val value = s"http://alice:s3cret@host.containers.internal:${upstream.port}"
       val basic = "Basic " + Base64.getEncoder.encodeToString("alice:s3cret".getBytes(StandardCharsets.UTF_8))
-      val live = launch(project, project.resolve("session.log"), "HTTPS_PROXY" -> value)
+      val live = launchWith(
+        project, project.resolve("session.log"),
+        Vector("--egress=deny-unless-allowed", "--env=FORWARDED_TOKEN"),
+        "HTTPS_PROXY" -> value, "FORWARDED_TOKEN" -> "f0rwarded-s3cret",
+      )
       session = Some(live)
 
       // The value-less pass-through resolved on this platform: the variable is in the proxy's
@@ -177,6 +181,16 @@ class ProxyContainerTest extends munit.FunSuite:
       assert(environment.linesIterator.contains(s"HTTPS_PROXY=$value"), environment)
       val created = inspect(live.proxy, "{{json .Config.CreateCommand}}")
       assert(created.contains("\"--env=HTTPS_PROXY\"") && !created.contains("s3cret"), created)
+
+      // A host value forwarded with --env reaches the sandbox the same way (SECURITY.md,
+      // "Credential theft"): in its environment, and in its create command by name alone.
+      val sandboxEnvironment = inspect(live.container, "{{range .Config.Env}}{{println .}}{{end}}")
+      assert(sandboxEnvironment.linesIterator.contains("FORWARDED_TOKEN=f0rwarded-s3cret"), sandboxEnvironment)
+      val sandboxCreated = inspect(live.container, "{{json .Config.CreateCommand}}")
+      assert(
+        sandboxCreated.contains("\"--env=FORWARDED_TOKEN\"") && !sandboxCreated.contains("f0rwarded-s3cret"),
+        sandboxCreated,
+      )
 
       // The banner names the endpoint, from the proxy's own parse, and never the credential.
       val banner = live.output
