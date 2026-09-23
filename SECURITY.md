@@ -153,7 +153,15 @@ hooks are also unreachable through writable workspace paths:
 Git cannot work in those sessions: the container has the project directory and nothing above or
 beside it. The launcher and agent instructions report this limitation as a warning, because a
 session that only edits files can still be useful without exposing the host's Git configuration or
-hooks.
+hooks. A launch from a linked worktree is the exception: it mounts the main worktree's Git
+directory read-only, at the path the worktree's `.git` names, when the container resolves that
+path as the host does — a relative pointer anywhere, an absolute one on macOS and Linux. Git
+there reads the repository (`status`, `log`, `diff`); every write to that directory fails, while
+`git clean` and a plain `git apply`, which write only the working tree, run where the workspace is
+writable. The session reads that directory's configuration and hooks as a launch from the main
+worktree does, and can change nothing in it. `doc/TODO.md` holds the writable form ("writable git
+from a linked worktree") and why a relative pointer is not yet a route ("a linked worktree's
+absolute pointer on Windows").
 
 These are the default protections, with qualifications under "Not defended":
 

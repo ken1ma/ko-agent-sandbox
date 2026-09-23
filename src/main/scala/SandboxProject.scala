@@ -331,9 +331,10 @@ object SandboxProject:
    * submodule checkout (`gitdir: ../.git/modules/<name>`), a linked worktree, a
    * `--separate-git-dir` repository, an absolute pointer or symlink wherever it leads, a launch
    * from a subdirectory of the repository — and every git command fails with `not a git
-   * repository`, which an agent reads as breakage. Lack of Git access alone does not require
-   * refusal; the mount-time guard still checks whether the host's configuration or hooks are
-   * exposed.
+   * repository`, which an agent reads as breakage. A linked worktree is the one form the launch
+   * can serve, read-only, by binding its main worktree's Git directory beside the project
+   * (linkedGitdirBind). Lack of Git access alone does not require refusal; the mount-time guard
+   * still checks whether the host's configuration or hooks are exposed.
    *
    * Said at launch and in the agent's instructions — a warning, never a refusal: the host's git is
    * untouched, and a session that only edits files is a legitimate one.
@@ -521,25 +522,42 @@ object SandboxProject:
    * value git would not read as a boolean are.
    */
   def scanBare(config: String): Option[Boolean] =
+    scanSettings(config).flatMap: settings =>
+      val bare = settings.collect { case ("bare", value) => value }.map:
+        case None => Some(true)
+        case Some(text) =>
+          text.stripPrefix("\"").stripSuffix("\"").toLowerCase(java.util.Locale.ROOT) match
+            case word if BareTrue(word)  => Some(true)
+            case word if BareFalse(word) => Some(false)
+            case _                       => None
+      if bare.contains(None) then None else Some(bare.flatten.contains(true))
+
+  /** Every variable a config file states, its key lowercased and its value as written, or None
+    * on the doubts scanBare lists that concern the file rather than one value. */
+  private def scanSettings(config: String): Option[Seq[(String, Option[String])]] =
     val settings = config.stripPrefix("\uFEFF").linesIterator.map(withoutComment).toSeq
     if settings.contains(None) then None
     else
       val lines = settings.flatten.map(_.trim).map(afterSectionHeaders)
       if lines.contains(None) then None
       else
-        val values = lines.flatten.filter(_.nonEmpty).flatMap: line =>
+        val parsed = lines.flatten.filter(_.nonEmpty).map: line =>
           val (key, value) = line.split("=", 2) match
             case Array(key, value) => (key.trim.toLowerCase(java.util.Locale.ROOT), Some(value.trim))
             case Array(key)        => (key.trim.toLowerCase(java.util.Locale.ROOT), None)
-          if !VariableName.matches(key) || key == "path" then Some(None)
-          else if key != "bare" then None
-          else
-            value.map(_.stripPrefix("\"").stripSuffix("\"").toLowerCase(java.util.Locale.ROOT)) match
-              case None                               => Some(Some(true))
-              case Some(text) if BareTrue(text)       => Some(Some(true))
-              case Some(text) if BareFalse(text)      => Some(Some(false))
-              case Some(_)                            => Some(None)
-        if values.contains(None) then None else Some(values.flatten.contains(true))
+          Option.when(VariableName.matches(key) && key != "path")((key, value))
+        if parsed.contains(None) then None else Some(parsed.flatten)
+
+  /**
+   * Whether the common gitdir's config names `relativeWorktrees` — the extension `git worktree
+   * add --relative-paths` sets (git 2.48 or later) — or cannot be read. The image's git does not
+   * know the extension and refuses the whole repository over it, so a bind would promise git the
+   * session does not have. Read as scanBare reads `bare`, in any section, and a doubt counts as
+   * set. Goes with the image's git upgrade (doc/TODO.md, "a linked worktree's absolute pointer
+   * on Windows").
+   */
+  def setsRelativeWorktrees(commonGitdir: Path): Boolean =
+    boundedText(commonGitdir.resolve("config")).flatMap(scanSettings).forall(_.exists(_._1 == "relativeworktrees"))
 
   /** The line past every section header it begins with, as git reads `[a][b] key = value`, or
     * None when a header is left open. */
@@ -638,11 +656,73 @@ object SandboxProject:
       )
 
   /** The same fact in the container's words, for the agent's instructions. */
-  def noGitInstruction(noGit: NoGit, mountPath: String): String = noGit match
-    case NoGit.Gitdir(named, _, _) =>
-      s"`$mountPath/.git` names `$named`, a gitdir the sandbox does not have"
-    case NoGit.Above(_, _) =>
-      "the repository's `.git` lies above the project directory, which is all the sandbox has"
+  def noGitInstruction(noGit: NoGit, mountPath: String): String =
+    val cause = noGit match
+      case NoGit.Gitdir(named, _, _) =>
+        s"`$mountPath/.git` names `$named`, a gitdir the sandbox does not have"
+      case NoGit.Above(_, _) =>
+        "the repository's `.git` lies above the project directory, which is all the sandbox has"
+    s"""Git does not work in this session: $cause. Do not `git init` or clone in place; leave
+       |the work as uncommitted changes and tell the user, whose git runs on the host.""".stripMargin
+
+  /**
+   * The main worktree's Git directory a launch from a linked worktree binds read-only into the
+   * container, at the path the container resolves the worktree's `.git` pointer to, so that git
+   * there reads the repository: `status`, `log` and `diff` work, and every write to the directory
+   * fails on the lock file it cannot create. None where the container could not follow the two
+   * steps git takes, the pointer and then the gitdir's `commondir`, to the target: a `.git`
+   * symlink, a form the filter's guard refuses at mount (guard.rs) and this bind does not serve;
+   * a pointer whose common gitdir is not `main`'s `.git`, checked rather than taken from the
+   * caller, since source and target must be one directory; an absolute step on Windows, where
+   * the container spells drives under /mnt; a relative step climbing past the drive root, which
+   * the two spellings resolve differently; an absolute `commondir` in another spelling than the
+   * pointer's, which the container has nothing at (git uses it as written, `get_common_dir_noenv`
+   * in setup.c); and a target inside the project mount, or holding it, which the bind would cover.
+   *
+   * The target is the pointer's own spelling of the common gitdir — through a symlink alias of the
+   * main worktree, the alias's — and the source the real directory, so the bind is where git
+   * looks and holds what it looks for.
+   */
+  final case class GitdirBind(source: Path, target: String)
+
+  def linkedGitdirBind(projectDir: Path, main: Path, os: Os): Option[GitdirBind] =
+    val dotGit = projectDir.resolve(".git")
+    val project = projectDir.toAbsolutePath.normalize
+    for
+      _ <- Option.when(Files.isRegularFile(dotGit) && !Files.isSymbolicLink(dotGit))(())
+      gitdir <- repositoryAt(projectDir, os)
+      pointer <- try Some(projectDir.getFileSystem.getPath(gitdir.named)) catch case _: InvalidPathException => None
+      common <- Option(gitdir.resolved.getParent).flatMap(worktrees => Option(worktrees.getParent))
+      if realized(common) == realized(main.resolve(".git"))
+      if !common.startsWith(project) && !project.startsWith(common)
+      if followable(pointer, from = project, os)
+      commondir <- boundedText(gitdir.resolved.resolve("commondir")).flatMap: text =>
+        try Some(gitdir.resolved.getFileSystem.getPath(text.trim)) catch case _: InvalidPathException => None
+      if followable(commondir, from = gitdir.resolved, os) && gitdir.resolved.resolve(commondir).normalize == common
+      target <- mountPathOf(os, common).toOption
+    yield GitdirBind(main.resolve(".git"), target)
+
+  /** Whether the container, resolving `step` from its own spelling of `from`, lands where the host
+    * does: an absolute step only where the container spells host paths as the host does, a relative
+    * one only while its `..` steps stay under the root, since a drive's root and `/mnt/<drive>` part
+    * above it. */
+  private def followable(step: Path, from: Path, os: Os): Boolean =
+    if step.isAbsolute then mountPathOf(os, from).contains(from.toString)
+    else step.getRoot == null && step.normalize.iterator.asScala.takeWhile(_.toString == "..").size <= from.getNameCount
+
+  /** The launch's warning where the main worktree's Git directory is mounted read-only. */
+  def readOnlyGitWarning(bind: GitdirBind, os: Os = currentOs): String =
+    s"git is read-only in this session: the main worktree's Git directory ${pathInline(bind.source, os)} is " +
+      "mounted read-only. status, log and diff work; add, commit and switch stay on the host."
+
+  /** The same fact in the container's words, for the agent's instructions. */
+  def readOnlyGitInstruction(bind: GitdirBind, mountPath: String): String =
+    s"""Git is read-only in this session: `$mountPath/.git` names a gitdir under `${bind.target}`, the
+       |main worktree's Git directory, which is mounted read-only. `status`, `log`, `diff` and `blame`
+       |work; `add`, `commit`, `switch` and every other write to that directory fail, while `clean`
+       |and a plain `apply`, which write only the working tree, run where the workspace is writable.
+       |Do not `git init` or clone in place; leave the work as uncommitted changes and tell the
+       |user, whose git runs on the host.""".stripMargin
 
   /**
    * Why .ko-agent-sandbox cannot serve as this project's boundary directory, or None. Checked in

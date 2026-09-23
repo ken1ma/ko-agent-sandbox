@@ -582,6 +582,98 @@ class SandboxProjectTest extends munit.FunSuite:
       ),
       None,
     )
+  test("a linked worktree's main Git directory is bound read-only where the container can follow the pointer"):
+    val root = Files.createTempDirectory("gitdir-bind").toRealPath()
+    def gitdirAt(path: Path): Path =
+      Files.createDirectories(path)
+      Files.writeString(path.resolve("HEAD"), "ref: refs/heads/main\n")
+      path
+    def linkedAt(name: String, pointer: String): Path =
+      val linked = Files.createDirectories(root.resolve(name))
+      Files.writeString(linked.resolve(".git"), s"gitdir: $pointer\n")
+      linked
+    val main = Files.createDirectories(root.resolve("main"))
+    val mainGitdir = gitdirAt(main.resolve(".git"))
+    def worktreeAt(name: String, commondir: String = "../..\n"): Path =
+      val gitdir = gitdirAt(mainGitdir.resolve("worktrees").resolve(name))
+      Files.writeString(gitdir.resolve("commondir"), commondir)
+      gitdir
+    val bind = GitdirBind(mainGitdir, mainGitdir.toString)
+    // The pointer as `git worktree add` writes it, absolute: followed where the container spells
+    // the project as the host does, and not on Windows, whose drives it has under /mnt.
+    val absolute = linkedAt("absolute", worktreeAt("absolute").toString)
+    assertEquals(linkedGitdirBind(absolute, main, Os.Linux), Some(bind))
+    assertEquals(linkedGitdirBind(absolute, main, Os.Mac), Some(bind))
+    assertEquals(linkedGitdirBind(absolute, main, Os.Windows), None)
+    // A relative pointer, as `--relative-paths` writes it, resolves the same way from either
+    // spelling of the project, so it is followed everywhere; this fixture's host spelling has no
+    // drive, which is what mountPathOf refuses on Windows.
+    worktreeAt("relative")
+    val relative = linkedAt("relative", "../main/.git/worktrees/relative")
+    assertEquals(linkedGitdirBind(relative, main, Os.Linux), Some(bind))
+    assertEquals(linkedGitdirBind(relative, main, Os.Windows), None)
+    // Through a symlink alias of the main worktree: the target is the alias's spelling, where the
+    // container's git looks, and the source the real directory.
+    val alias = root.resolve("alias")
+    Files.createSymbolicLink(alias, main)
+    worktreeAt("via-alias")
+    val viaAlias = linkedAt("via-alias", alias.resolve(".git/worktrees/via-alias").toString)
+    assertEquals(
+      linkedGitdirBind(viaAlias, main, Os.Linux),
+      Some(GitdirBind(mainGitdir, alias.resolve(".git").toString)),
+    )
+    // The commondir is git's second step, used as written: absolute in the target's spelling it
+    // lands on the bind, absolute in the real spelling behind an alias it names a path the
+    // container lacks, and relative it climbs within the bind or not at all.
+    val absoluteCommon = linkedAt("absolute-common", worktreeAt("absolute-common", s"$mainGitdir\n").toString)
+    assertEquals(linkedGitdirBind(absoluteCommon, main, Os.Linux), Some(bind))
+    assertEquals(linkedGitdirBind(absoluteCommon, main, Os.Windows), None)
+    val realBehindAlias =
+      linkedAt("real-behind-alias", alias.resolve(".git/worktrees/real-behind-alias").toString)
+    worktreeAt("real-behind-alias", s"$mainGitdir\n")
+    assertEquals(linkedGitdirBind(realBehindAlias, main, Os.Linux), None)
+    val climbingCommon = linkedAt("climbing-common", worktreeAt("climbing-common", "../../../.git\n").toString)
+    assertEquals(linkedGitdirBind(climbingCommon, main, Os.Linux), Some(bind))
+    val noCommon = linkedAt("no-common", worktreeAt("no-common").toString)
+    Files.delete(mainGitdir.resolve("worktrees/no-common/commondir"))
+    assertEquals(linkedGitdirBind(noCommon, main, Os.Linux), None)
+    // Not followed: a `.git` symlink, a pointer into another repository's worktrees, a relative
+    // pointer climbing past the root, and a common gitdir inside the project.
+    val symlinked = Files.createDirectories(root.resolve("symlinked"))
+    Files.createSymbolicLink(symlinked.resolve(".git"), worktreeAt("symlinked"))
+    assertEquals(linkedGitdirBind(symlinked, main, Os.Linux), None)
+    val other = gitdirAt(root.resolve("other/.git"))
+    val ofOther = linkedAt("of-other", gitdirAt(other.resolve("worktrees/of-other")).toString)
+    assertEquals(linkedGitdirBind(ofOther, main, Os.Linux), None)
+    worktreeAt("climbing")
+    val climbing =
+      linkedAt("climbing", "../" * (root.getNameCount + 2) + s"${root.toString.drop(1)}/main/.git/worktrees/climbing")
+    assertEquals(linkedGitdirBind(climbing, main, Os.Linux), None)
+    val holding = Files.createDirectories(root.resolve("holding"))
+    val inner = Files.createDirectories(holding.resolve("inner"))
+    val innerWorktree = gitdirAt(inner.resolve(".git/worktrees/holding"))
+    Files.writeString(holding.resolve(".git"), s"gitdir: $innerWorktree\n")
+    assertEquals(linkedGitdirBind(holding, inner, Os.Linux), None)
+    // The extension `--relative-paths` sets, which the image's git refuses: read from the common
+    // config in any section, an unreadable config counting as set.
+    Files.writeString(mainGitdir.resolve("config"), "[core]\n\tbare = false\n")
+    assert(!setsRelativeWorktrees(mainGitdir))
+    Files.writeString(mainGitdir.resolve("config"), "[extensions]\n\trelativeWorktrees = true\n")
+    assert(setsRelativeWorktrees(mainGitdir))
+    Files.writeString(mainGitdir.resolve("config"), "[other] RelativeWorktrees\n")
+    assert(setsRelativeWorktrees(mainGitdir))
+    Files.writeString(mainGitdir.resolve("config"), "[core]\n\tbare = \"unclosed\n")
+    assert(setsRelativeWorktrees(mainGitdir))
+    Files.delete(mainGitdir.resolve("config"))
+    assert(setsRelativeWorktrees(mainGitdir))
+    // The warning names the directory as every host path is named; the agent's sentence names
+    // the path git reads inside and what fails there.
+    val warning = readOnlyGitWarning(bind, Os.Linux)
+    assert(warning.contains(mainGitdir.toString) && warning.contains("stay on the host"), warning)
+    val instruction = readOnlyGitInstruction(bind, Mount)
+    assert(instruction.contains(s"`$Mount/.git`") && instruction.contains(s"`$mainGitdir`"), instruction)
+    assert(instruction.contains("`commit`") && instruction.contains("`clean`"), instruction)
+
   test("a refused symlink form leaves no artifact through the link"):
     // bazelbuild/bazel#28515: setup must not write through a pre-seeded symlink, so the refusal comes before any
     // creation.
