@@ -94,6 +94,9 @@ class HostCommandsTest extends munit.FunSuite:
       assertEquals(displayPath(path, Os.Windows), expected)
       assertEquals(pathLine(label, path, Os.Windows), s"$label (PowerShell): $expected")
       assertEquals(pathLine("==>", path, Os.Windows, separator = " "), s"==> (PowerShell) $expected")
+      // Inside a sentence the label follows the path, and a tint covers the path alone.
+      assertEquals(pathInline(path, Os.Windows), s"$expected (PowerShell)")
+      assertEquals(pathLine(label, path, Os.Windows, tint = text => s"<$text>"), s"$label (PowerShell): <$expected>")
 
   test("the Podman announcement includes the client version without depending on a running service"):
     for

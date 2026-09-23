@@ -56,9 +56,17 @@ object HostCommands:
     os: Os = currentOs,
     environment: String => Option[String] = env,
     separator: String = ": ",
+    tint: String => String = identity,
   ): String =
-    val shell = if os == Os.Windows && needsPowerShellLiteral(path.toString) then " (PowerShell)" else ""
-    s"$label$shell$separator${displayPath(path, os, environment)}"
+    s"$label${shellLabel(path, os)}$separator${tint(displayPath(path, os, environment))}"
+
+  /** A path inside a sentence, with the shell label pathLine puts on the line's label following it
+    * instead: the sentence names a directory to act in, and cmd.exe cannot take the PowerShell form. */
+  def pathInline(path: Path, os: Os = currentOs, environment: String => Option[String] = env): String =
+    s"${displayPath(path, os, environment)}${shellLabel(path, os)}"
+
+  private def shellLabel(path: Path, os: Os): String =
+    if os == Os.Windows && needsPowerShellLiteral(path.toString) then " (PowerShell)" else ""
 
   def displayPath(
     path: Path,
@@ -113,8 +121,12 @@ object HostCommands:
    *   - orange: the launch goes on, and there is something to know. On the `warning:` label
    *     (caution); on a whole line, an option or environment variable of this launch weakens a
    *     boundary (weakenedByUser) — the user's own, so a reminder and not an alarm.
-   *   - purple: what the user chose where it weakens nothing — the workspace mode, the egress
-   *     profile, an upstream proxy (chosen) — a hue of its own so it is never read as a severity.
+   *   - purple: what the user chose where it weakens nothing — the project directory, the
+   *     workspace mode, the egress profile, an upstream proxy (chosen) — a hue of its own so it
+   *     is never read as a severity.
+   *   - gray: what is there to look up, not to read — the egress log's long path (lookedUp).
+   *     Text that is skipped on every ordinary launch, tinted so the reader learns to skip it
+   *     without learning to skip the lines around it.
    *   - green, orange and red on a headroom figure: a measurement's scale, outside this ranking
    *     (Headroom).
    *
@@ -138,6 +150,10 @@ object HostCommands:
     * Purple and orange are not among the theme's sixteen — its magenta is as often pink, its
     * yellow as often olive — so both are the 256-colour cube's. */
   def chosen(text: String, color: Boolean = colorStderr): String = tinted("38;5;207", text, color)
+
+  /** What is there to look up, not to read. Mid-gray from the cube, legible on a light and a dark
+    * background alike, where the theme's bright black is either. */
+  def lookedUp(text: String, color: Boolean = colorStderr): String = tinted("38;5;245", text, color)
 
   /** The scale of a headroom figure: green while what the action is about fits, orange where it is
     * warned, red where it is short (AgentSandboxLauncher.launchMemoryHeadroom and

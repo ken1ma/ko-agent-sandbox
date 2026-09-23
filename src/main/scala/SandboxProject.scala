@@ -434,22 +434,155 @@ object SandboxProject:
 
   /** git's `read_gitfile_gently` (setup.c): a file of at most 1 MiB that begins `gitdir: ` — that
     * spelling, at its start — and the rest of it, less trailing CR and LF, is the path. A file of
-    * another form is no pointer to git, and a later line naming a gitdir is not one either. The
-    * bound is the read itself, one byte past it and no more, so a `.git` of any size — or one
-    * growing while it is read — costs the launcher nothing. */
+    * another form is no pointer to git, and a later line naming a gitdir is not one either. */
   private def gitfileTarget(gitfile: Path): Option[String] =
+    boundedText(gitfile).flatMap: text =>
+      Option
+        .when(text.startsWith("gitdir: ")):
+          val body = text.substring("gitdir: ".length)
+          body.substring(0, body.lastIndexWhere(char => char != '\n' && char != '\r') + 1)
+        .filter(_.nonEmpty)
+
+  /** A metadata file of at most 1 MiB, or None for a larger or unreadable one. The bound is the
+    * read itself, one byte past it and no more, so a file of any size — or one growing while it is
+    * read — costs the launcher nothing. */
+  private def boundedText(file: Path): Option[String] =
     val bound = 1 << 20
     try
-      val bytes = Using.resource(Files.newInputStream(gitfile))(_.readNBytes(bound + 1))
-      if bytes.length > bound then None
-      else
-        val text = String(bytes, StandardCharsets.UTF_8)
-        Option
-          .when(text.startsWith("gitdir: ")):
-            val body = text.substring("gitdir: ".length)
-            body.substring(0, body.lastIndexWhere(char => char != '\n' && char != '\r') + 1)
-          .filter(_.nonEmpty)
+      val bytes = Using.resource(Files.newInputStream(file))(_.readNBytes(bound + 1))
+      Option.when(bytes.length <= bound)(String(bytes, StandardCharsets.UTF_8))
     catch case _: IOException => None
+
+  /**
+   * The main worktree whose agent-state volume a launch from this linked worktree may share, or
+   * None. Read from the worktree's own Git metadata, never from a remote URL, as git's
+   * `get_main_worktree` (worktree.c) names it. Four conditions, each of which the metadata of a
+   * linked worktree of a main checkout meets:
+   *
+   *   - the gitdir its `.git` names holds a `commondir`, whose content, trimmed, resolves against
+   *     the gitdir (`git worktree add` writes `../..`; the filter's guard, `common_of` in guard.rs,
+   *     reads it the same way);
+   *   - what it names is a directory called `.git`, and the gitdir is one component under that
+   *     directory's `worktrees` (fuse/ko-agent-fs/doc/git-metadata.md, P1);
+   *   - that directory's `config` is readable, and neither it nor its `config.worktree` — the two
+   *     files git consults for `core.bare` from a linked worktree — sets `bare` true or leaves the
+   *     question open (scanBare);
+   *   - the directory holding that `.git`, resolved as a launch from it resolves it, is one the
+   *     launcher accepts as a project.
+   *
+   * A bare common gitdir, a main worktree with `--separate-git-dir`, and a missing, unreadable or
+   * malformed `commondir` name no main worktree: the linked worktree's metadata does not say
+   * where the main checkout is.
+   *
+   * Spelled as resolveProjectDir spells a launch from it, so that projectIdOf names the volume
+   * that launch uses: any other spelling hashes to a different id and silently creates an empty
+   * volume under the main worktree's slug.
+   */
+  def mainWorktreeOf(projectDir: Path, homes: HomeProtection, os: Os): Option[Path] =
+    for
+      gitdir <- repositoryAt(projectDir, os).map(_.resolved)
+      commondir <- boundedText(gitdir.resolve("commondir")).flatMap: text =>
+        try Some(gitdir.resolve(text.trim).normalize)
+        catch case _: InvalidPathException => None
+      if Option(commondir.getFileName).exists(_.toString == ".git") && Files.isDirectory(commondir)
+      worktrees <- Option(gitdir.getParent)
+      if Option(worktrees.getFileName).exists(_.toString == "worktrees")
+      common <- Option(worktrees.getParent)
+      if realized(common) == realized(commondir)
+      config <- boundedText(commondir.resolve("config"))
+      configWorktree <- optionalText(commondir.resolve("config.worktree"))
+      if (config +: configWorktree.toSeq).forall(text => scanBare(text).contains(false))
+      main <- Option(commondir.getParent)
+      canonical <-
+        try Some(canonicalProjectDir(main.toRealPath(), os))
+        catch case _: IOException => None
+      if forbiddenProjectDirReason(canonical, homes).isEmpty
+    yield canonical
+
+  /** A metadata file that may be absent: Some(None) when it is, Some(text) when read, and None
+    * when it exists but cannot be read within boundedText's limit — a file whose content is
+    * unknown, which is not one that says nothing. */
+  private def optionalText(file: Path): Option[Option[String]] =
+    if !Files.exists(file) then Some(None) else boundedText(file).map(Some(_))
+
+  /**
+   * Whether a config file sets `bare` true — Some(true) — or does not — Some(false) — or leaves
+   * the question open — None. A scanner in the manner of the guard's `scan_hooks_path`, not a git
+   * config parser, and conservative in the same direction: every doubt resolves to None, and the
+   * caller then names no main worktree. It reads git's syntax as git's `git_parse_source` does
+   * where the forms occur in a repository's own config: a leading BOM is skipped; `#` and `;`
+   * begin a comment outside double quotes; a backslash escapes the character after it; a
+   * variable may follow one or more section headers on its line (`[core] bare = true`), whose
+   * quoted subsection may hold `]`; a quoted value is read without its quotes; a key without `=`
+   * is true, and one with an empty value is false (`git_parse_maybe_bool_text`, parse.c).
+   * Sections are otherwise not tracked, so any section's `bare` counts. A `path` key — which
+   * under `include` or `includeIf` names a file this scanner does not follow — is a doubt, as an
+   * unclosed quote, an unclosed section header, a key that is no git variable name and a `bare`
+   * value git would not read as a boolean are.
+   */
+  def scanBare(config: String): Option[Boolean] =
+    val settings = config.stripPrefix("\uFEFF").linesIterator.map(withoutComment).toSeq
+    if settings.contains(None) then None
+    else
+      val lines = settings.flatten.map(_.trim).map(afterSectionHeaders)
+      if lines.contains(None) then None
+      else
+        val values = lines.flatten.filter(_.nonEmpty).flatMap: line =>
+          val (key, value) = line.split("=", 2) match
+            case Array(key, value) => (key.trim.toLowerCase(java.util.Locale.ROOT), Some(value.trim))
+            case Array(key)        => (key.trim.toLowerCase(java.util.Locale.ROOT), None)
+          if !VariableName.matches(key) || key == "path" then Some(None)
+          else if key != "bare" then None
+          else
+            value.map(_.stripPrefix("\"").stripSuffix("\"").toLowerCase(java.util.Locale.ROOT)) match
+              case None                               => Some(Some(true))
+              case Some(text) if BareTrue(text)       => Some(Some(true))
+              case Some(text) if BareFalse(text)      => Some(Some(false))
+              case Some(_)                            => Some(None)
+        if values.contains(None) then None else Some(values.flatten.contains(true))
+
+  /** The line past every section header it begins with, as git reads `[a][b] key = value`, or
+    * None when a header is left open. */
+  private def afterSectionHeaders(line: String): Option[String] =
+    if !line.startsWith("[") then Some(line)
+    else sectionEnd(line).flatMap(end => afterSectionHeaders(line.substring(end + 1).trim))
+
+  /** git's variable names (`git-config`, "Syntax"): alphanumeric and `-`, starting with a letter. */
+  private val VariableName = "[a-z][a-z0-9-]*".r
+
+  /** Where a section header's `]` is, outside its double-quoted subsection, or None. */
+  private def sectionEnd(line: String): Option[Int] =
+    var quoted = false
+    var at = 0
+    var found = -1
+    while found < 0 && at < line.length do
+      line.charAt(at) match
+        case '\\'            => at += 1
+        case '"'             => quoted = !quoted
+        case ']' if !quoted  => found = at
+        case _               => ()
+      at += 1
+    Option.when(found >= 0)(found)
+
+  /** The line without a comment begun outside double quotes, or None when a quote is left open. A
+    * backslash escapes the character after it, inside quotes and out, as git reads both. */
+  private def withoutComment(line: String): Option[String] =
+    var quoted = false
+    var end = line.length
+    var at = 0
+    while at < end do
+      line.charAt(at) match
+        case '\\'                     => at += 1
+        case '"'                     => quoted = !quoted
+        case '#' | ';' if !quoted    => end = at
+        case _                       => ()
+      at += 1
+    Option.when(!quoted)(line.substring(0, end))
+
+  /** git's boolean spellings, lowercased: the words `git_parse_maybe_bool_text` reads, the empty
+    * value it reads as false, and the two integers whose reading needs no arithmetic. */
+  private val BareTrue = Set("true", "yes", "on", "1")
+  private val BareFalse = Set("false", "no", "off", "0", "")
 
   /** The nearest directory holding the project from which the repository git uses there is
     * reachable — judged on that repository's own `.git` chain, never on the candidate's: a parent
@@ -485,16 +618,23 @@ object SandboxProject:
       case None => absolute
 
   /** The launch's warning: what is wrong, and the launch that would have git. */
-  def noGitWarning(noGit: NoGit): String =
+  def noGitWarning(noGit: NoGit, os: Os = currentOs): String =
     val (cause, launchFrom) = noGit match
       case NoGit.Gitdir(named, resolved, launchFrom) =>
-        (s".git names $named ($resolved), a gitdir the container does not have", launchFrom)
+        // A relative pointer or a symlink is quoted as written, with where it leads; an absolute
+        // pointer is the path itself, shown as every other host path is.
+        val isThePath =
+          try Paths.get(named).isAbsolute && Paths.get(named).normalize == resolved
+          catch case _: InvalidPathException => false
+        val gitdir = if isThePath then pathInline(resolved, os) else s"$named (${pathInline(resolved, os)})"
+        (s".git names $gitdir, a gitdir the container does not have", launchFrom)
       case NoGit.Above(repository, launchFrom) =>
-        (s"the repository at $repository is above the project directory, which is all the " +
+        (s"the repository at ${pathInline(repository, os)} is above the project directory, which is all the " +
           "container has", launchFrom)
     s"git will not work in this session: $cause." +
       launchFrom.fold(" Git operations stay on the host.")(path =>
-        s" To have git, launch from $path, which holds this directory; that whole tree is then the project.",
+        s" To have git, launch from ${pathInline(path, os)}, which holds this directory; " +
+          "that whole tree is then the project.",
       )
 
   /** The same fact in the container's words, for the agent's instructions. */

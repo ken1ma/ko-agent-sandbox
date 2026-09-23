@@ -304,7 +304,9 @@ restore permission prompts and set the Claude Code status line.
                          containers (ending any live session), volume (signing its
                          agents out), networks, TLS inspection CA, cached ruleset
                          resolution, logs and workspace-filter mount;
-                         images and any shared volume are left untouched.
+                         images and any shared volume are left untouched. From a
+                         linked worktree, the main worktree's volume is left
+                         untouched too.
                          Ids, as --stats prints them, name projects whose
                          directories are gone instead of the current one
       --reset-all        the same as --reset, for every project
@@ -350,7 +352,9 @@ restore permission prompts and set the Claude Code status line.
       KO_AGENT_SANDBOX_SESSION_START      "pause" (default) holds a launch's startup lines on
                                           screen, because the agent TUIs clear it: Enter or y
                                           starts, n or EOF at the prompt exits without starting;
-                                          "immediate" starts the agent at once
+                                          from a Git linked worktree, it first asks whether to
+                                          share the main worktree's agent state. "immediate"
+                                          starts the agent at once
       KO_AGENT_SANDBOX_MEMORY             container memory limit, e.g. 8g. Default: the podman
                                           machine's memory (on Linux, the host's) minus 1 GiB,
                                           and on Linux no more than was available at launch;

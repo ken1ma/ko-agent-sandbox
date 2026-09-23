@@ -13,7 +13,7 @@ import scala.jdk.CollectionConverters.*
 
 import AgentSandboxLauncher.{renderArgument, shown, Reader}
 import FileHelper.directoryEntries
-import HostCommands.{consented, warn}
+import HostCommands.{consented, pathInline, warn}
 import RunOnHostPrereqs.{Program, Refusal}
 import RunOnHostSandbox.StepRefusal
 
@@ -115,20 +115,24 @@ object RunOnHostProvisioning:
     def say(line: String): Unit = report(shown(line))
     builds.foreach: build =>
       finding(build).foreach: found =>
-        say(s"run-on-host ${found.program.name} in ${found.buildDirectory}: ${found.wording}")
+        say(s"run-on-host ${found.program.name} in ${pathInline(found.buildDirectory)}: ${found.wording}")
         (found, reader) match
           case (provisionable: Finding.Provisionable, Some(reader)) =>
             val command = rendered(provisionable)
             reader.prompt(
-              shown(s"run `$command` in ${provisionable.buildDirectory} now, unconfined on the host? [y/N] "),
+              shown(
+                s"run `$command` in ${pathInline(provisionable.buildDirectory)} now, unconfined on the host? [y/N] ",
+              ),
             )
             if consented(reader.readLine()) then
               run(provisionable) match
                 case Left(reason) => say(s"`$command` could not start: $reason")
                 case Right(0) =>
                   finding(build).foreach: still =>
-                    say(s"after the run, ${still.program.name} in ${still.buildDirectory}: ${still.wording}")
-                case Right(code) => say(s"`$command` in ${provisionable.buildDirectory} exited $code")
+                    say(
+                      s"after the run, ${still.program.name} in ${pathInline(still.buildDirectory)}: ${still.wording}",
+                    )
+                case Right(code) => say(s"`$command` in ${pathInline(provisionable.buildDirectory)} exited $code")
           case _ => ()
 
   /** The run itself: the command in its build directory, its output on this terminal. */
