@@ -66,9 +66,12 @@ each element states its contribution. Restatement there serves the audit.
 
 For a reader about to act, say what to do and expect; explain mechanisms only when the why is the
 shorter instruction. Test each sentence by what the reader does differently in the task described.
-Put supporting details in subitems when they interrupt an action or choice; keep conditions inline.
 For a reader seeking understanding, explain mechanisms; test what the reader understands
-differently. The reader's state determines the mode, not the filename; a document can hold both.
+differently. The reader's state determines the mode, not the filename; a document holds both in
+separate sections, the acting reader's first. A list item or paragraph states one claim in one or
+two lines, with the condition it depends on in the same line; its mechanism, edge cases and
+evidence go one level down, or into the understanding section. An addition that would push an
+item or paragraph past five lines restructures it into items instead of appending to it.
 Errors, refusals and prompts say what to do next when naming what failed does not.
 
 Until the first release, persisted text describes the current design: readers have no before-state.

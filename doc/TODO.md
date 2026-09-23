@@ -5,6 +5,22 @@ whose benefit is uncertain, each with the condition that decides whether to buil
 examined and found without benefit is recorded in design.md with its reason, so it is not proposed
 again.
 
+## Codex review plugin (`ko-review.md`)
+
+- [ ] In a session of the image, Claude drives one review, fix and re-review through
+  `/ko-review:codex`, and a second invocation starts a new Codex thread. The helper alone has done
+  the review, fix and re-review sequence against the real Codex, and the session lists the skill.
+- [ ] A linked worktree whose main Git directory is mounted read-only: Codex's own `git` commands
+  and the helper's digest against that tree; unverified.
+- [ ] `--egress=deny-unless-model claude` fails the review with `CODEX_EGRESS_DENIED` before Codex
+  runs; unverified in a session.
+- A regression test for a fix in this plugin is run against the helper without the fix and shown
+  to fail before it counts: a fake reviewer that dies on its own once the helper exits lets a test
+  for an orphaned reviewer pass without the fix, and only that run shows it.
+- Watch openai/codex-plugin-cc (#557 persists review threads, open as of 2026-09-23) and
+  openai/codex #24833 (durable MCP resume). If OpenAI ships a stateful review, fix, re-review
+  primitive, delete the helper's orchestration rather than maintain a duplicate.
+
 ## Credential brokering — its two plans, in order
 
 - [ ] `plan-credential-broker-proxy.md` whole, through its acceptance checklist.

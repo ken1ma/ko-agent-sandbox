@@ -1,0 +1,43 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["disposition", "summary", "findings", "userDecision"],
+  "properties": {
+    "disposition": {
+      "type": "string",
+      "enum": ["APPROVED", "CHANGES_REQUESTED", "USER_DECISION_REQUIRED"]
+    },
+    "summary": {"type": "string"},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "severity", "location", "description", "evidence"],
+        "properties": {
+          "id": {"type": "string"},
+          "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+          "location": {"type": ["string", "null"]},
+          "description": {"type": "string"},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "userDecision": {
+      "anyOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["issue", "codexPosition", "whyTechnicalEvidenceCannotDecide", "decisionRequested"],
+          "properties": {
+            "issue": {"type": "string"},
+            "codexPosition": {"type": "string"},
+            "whyTechnicalEvidenceCannotDecide": {"type": "string"},
+            "decisionRequested": {"type": "string"}
+          }
+        }
+      ]
+    }
+  }
+}
