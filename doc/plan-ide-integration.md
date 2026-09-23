@@ -63,7 +63,7 @@ VS Code and AHP:
 
 ACP, for the deferred track:
 
-- The stable protocol version is 1. The changelog's release 1.9.1 of 2026-09-18 still carries
+- The stable protocol version is 1. The changelog's release 1.9.1 of 2026-09-18 carries
   `unstable-v2` entries, so v2 is a draft.
 - Over the stdio transport the agent reads JSON-RPC from stdin and writes it to stdout, writes
   logs to stderr, and must write nothing else to stdout.
@@ -219,11 +219,83 @@ setting prevents, and what remains:
 - every other client-executed operation the spec's channels define; the list above is what the
   source read so far shows, not the whole surface.
 
-If VS Code's own controls leave any of these open, the remainder needs a launcher-owned filtering
-relay: it interprets the WebSocket frames, forwards state and chat, and refuses the named
-operations. For credentials the enforcement is on the `authenticate` messages themselves: every
-one refused, whatever the resource, because a resource name such as `https://api.github.com`
-says nothing about which account, credential or scopes the user authorized. An exception is a
+The hostile host is `src/probe/ahp-hostile-host.py`, run with `uv run --with websockets` and
+attached through "Add Remote Agent Host...". It advertises two agents with protected resources.
+After `initialize` it sends an `auth/required` notification and the reverse `resource*` requests
+(`resourceResolve`, `resourceList`, `resourceRead`, `resourceWrite`, `resourceMkdir`,
+`resourceDelete`, `createResourceWatch`) for host paths; write, mkdir and delete act only on a
+probe file under the host's `/tmp`. It answers `createSession` for Copilot with `AuthRequired`.
+It then broadcasts its agent list with one resource added, and with `--grant-path` it follows a
+refused read with `resourceRequest` and reads again. When the operator starts a turn it sends a
+client-contributed tool call naming a tool the client offered, and a URL-mode elicitation. It
+serves the container's own files read-only for the Remote tab's folder picker, and records every
+frame to a JSONL log.
+
+Measured on 2026-09-23: VS Code 1.138.0 on macOS attached to the hostile host, signed out except
+where the test token is named. Sessions were opened from the workspace dropdown's Remote tab on the
+container's `/home/nonroot`; sessions on a Local folder sent the hostile host nothing.
+
+- Reverse file operations returned `PermissionDenied` (-32009) carrying the grant request, with no
+  content, for `/etc/passwd`, `/home/nonroot` (absent on macOS) and a `/tmp` file.
+  `createResourceWatch` from the host is unhandled (-32000). When the host follows a refused read
+  with `resourceRequest`, VS Code shows a banner naming the host and the full path, with Deny,
+  Allow and the highlighted Always Allow. After the user chose Allow, the request returned `{}`.
+  On the next connection to the same address in the same window, the same request returned `{}`
+  within 4 ms with no banner, and a read then returned the file's bytes. The source says Allow
+  lasts "for the lifetime of the connection"; what that covers is unverified.
+- `createSession` for Copilot reached the host, which answered `AuthRequired`; nothing followed.
+- `createSession` carried 15 client tools, the integrated-browser and automation set, and a synced
+  customization that names a GitHub MCP server without its command, URL, environment or headers.
+  Opening the session raised VS Code's workspace-trust prompt for the host folder.
+- A `chat/inputRequested` with a `url` rendered an "Authorization Required" card showing the full
+  URL with Open and Cancel. VS Code opened nothing; the user's Cancel reached the host as
+  `chat/inputCompleted` with `decline`.
+- A client-contributed tool call naming `toolSearch` rendered as a card; VS Code ran nothing and
+  returned no result. The host sent only the call's start and ready actions.
+- Signed out, no token crossed on the three token routes exercised: resources advertised at
+  connect, the `auth/required` notification, and `AuthRequired` on `createSession`.
+- With `--enable-smoke-test-driver` and `chat.agentHost.unsafeTestToken` set, VS Code pushed that
+  token within 0.5 s of each `initialize` to both advertised resources, including the one marked
+  optional, before any session and without a prompt. This held on four connections; on two,
+  VS Code first sent `reconnect`, which the hostile host refuses, then a fresh `initialize`. It
+  pushed for a new resource 3 ms after the host added one to its agent list
+  (`root/agentsChanged`). This is the driver's test-token path; that a signed-in session's token is
+  forwarded the same way is read from source (`agentHostAuth.ts`), not measured.
+
+Not measured: a positive control for the `auth/required` notification and for `AuthRequired` on
+`createSession`; whether Always Allow persists a grant into the profile; a push after a
+`reconnect` the host accepts; a client tool call within a turn the host completes; the
+`authRequired` MCP server and tool-call route; a forwarded MCP server with a tool call routed to
+it; a real signed-in session's token.
+
+VS Code settings that bear on these operations, read in the 1.138.0 source. A setting counts only
+if VS Code itself checks it; one it mirrors into the host's config, a hostile host ignores.
+
+- Token push: no setting. `_authenticateWithConnection` (`remoteAgentHost.contribution.ts`) pushes
+  the sessions it resolves for every advertised resource, checking only for the test token. VS
+  Code sends nothing for a resource it resolves no session for, and `chat.remoteAgentHostsEnabled`
+  off disables remote hosts altogether.
+- Reverse file operations: `chat.agentHost.localFilePermissions` lists granted URIs per host, `r`
+  or `rw`, each covering descendants; it has no deny entry. Outside a grant VS Code refuses, and the
+  host can ask for the banner.
+- Client tools: the list VS Code sends is filtered by a per-session-type tool enablement kept in
+  profile storage and edited in the Tools section of Chat Customizations; every tool is on by
+  default (`agentHostActiveClientService.ts`). The source comment names the Copilot CLI session
+  type as that section's only target; whether it applies to a remote host's sessions is unverified.
+- MCP: `chat.agentHost.githubMcpServer.enabled` is mirrored into the host's config, so the host
+  decides. No setting gates the synced customizations.
+- URL elicitation: no setting; VS Code opens the URL only on Open, with commands disallowed.
+
+Decision: VS Code's own controls leave the credential route open, with no setting that closes it
+short of disabling remote hosts, so the launcher-owned filtering relay below is needed. ACP stays
+deferred provisionally: the operations the relay must refuse are ones this step names, but whether
+sessions stay usable with them refused, without further protocol handling, is for the relay's
+design and tests to establish. The operations under "Not measured" stay open as verification.
+
+The relay interprets the WebSocket frames, forwards state and chat, and refuses the named
+operations. For credentials the enforcement is on the `authenticate` messages themselves: every one
+refused, whatever the resource, because a resource name such as `https://api.github.com` says
+nothing about which account, credential or scopes the user authorized. An exception is a
 credential-selection decision of its own, outside this plan; the harness of step 3 authenticates
 from the volume. Stripping `protectedResources` from the root state removes one of the four
 asking routes, so it spares VS Code a refused push and enforces nothing. The relay gets a design
@@ -278,7 +350,7 @@ and AHP versions tested are recorded in the documentation.
 
 0. Step 1 up to its session item, measured above, and the hostile host of step 2 written against
    the spec's channels.
-1. Step 2's measurements; the filtering relay's design if they call for one.
+1. Step 2's measurements, recorded above, and the filtering relay's design, which they call for.
 2. Step 3.
 3. Step 4, with the documentation: a usage section in the README, the refused operations under a
    heading of their own in SECURITY.md, and `doc/vscode.md` for the setup.
