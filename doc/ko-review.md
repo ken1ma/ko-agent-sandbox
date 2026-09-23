@@ -27,6 +27,9 @@ how an independent audit of an approved tree is obtained.
      or not, by the commit id the ref resolved to at `start`, so a branch that moves during the
      review does not move the scope. Without it Codex reviews the working tree against HEAD, so
      work committed during the session is out of scope.
+     - The skill passes a base only from its argument, for the reason its scope paragraph gives.
+     - Codex compares the working tree with the base's tree, so commits merged or pulled since
+       the base are in scope too.
    - An empty scope is refused with `NOTHING_TO_REVIEW` before a review exists: the working tree
      equals the base commit, HEAD without `--base`, and no file is untracked. A dirty checkout
      whose edits restore the base's content counts as empty. A Codex turn on nothing would yield
@@ -45,18 +48,18 @@ how an independent audit of an approved tree is obtained.
    - `--instructions-file FILE` on `continue` replaces the standing instructions from that round
      on, which is how an instruction the user gives mid-review reaches Codex. It voids the
      current approval, since Codex never approved the tree under the new instructions.
-4. This repeats until `APPROVED`, or until `maxRounds` turns (12 unless `start codex --max-rounds`
-   says otherwise) end the review with `LOOP_LIMIT_REACHED`.
+4. This repeats until `APPROVED`, or until `maxRounds` rounds Codex answered (12 unless
+   `start codex --max-rounds` says otherwise) end the review with `LOOP_LIMIT_REACHED`.
    - A user decision Codex proposes becomes terminal only when Claude agrees and runs
      `ko-review escalate REVIEW_ID --message-file FILE`; otherwise Claude argues the point on the
      same thread.
 5. Before reporting consensus, Claude runs `ko-review verify REVIEW_ID`, which succeeds only when
    the approval covers the current working tree.
 
-The skill has Claude report each round's outcome in a line or two, and, when the review ends,
-the `inspect` lines: the commands with which the user sees how the review went. Claude's own
-model and effort are the session's, set with `/model` or the launch options; the skill runs in
-that session.
+The skill has Claude show each round's text in its reply, and, when the review ends, the `inspect`
+lines: the commands with which the user sees how the review went, lists the checkout's reviews and
+deletes this one. Claude's own model and effort are the session's, set with `/model` or the launch
+options; the skill runs in that session.
 
 
 ## Commands
@@ -65,18 +68,22 @@ Every command but `export`, which prints Markdown, and `diff`, which prints git'
 one JSON object and exits 1 when it holds `error`. Each summary, and each failure once a review
 exists, carries the review id, `snapshots` and `inspect`.
 
-- `show REVIEW_ID`, `list`, `digest`: read state. For a round in progress, `show` adds
+- `list`: one short entry per review of this checkout, oldest first, for the id the other
+  commands take.
+- `show REVIEW_ID`, `digest`: read state. For a round in progress, `show` adds
   `activity`: the event log's path, known as soon as the round starts, the time elapsed, and the
   type and time of the last event received, which says when Codex last wrote, not that it is
   still working.
-- `export REVIEW_ID`: the transcript as Markdown, one section per round.
+- `export REVIEW_ID [--round N]`: the transcript as Markdown, one section per round, or that
+  round's alone.
 - `diff REVIEW_ID [--round N] [-- git options]`: the working tree, untracked files included,
   against a round's snapshot; the approved round unless one is named.
 - `delete REVIEW_ID`: the review's state and its refs, on the user's request only. The tag and
   tree objects nothing else points to become eligible for a later garbage collection, which by
   default keeps recent unreachable objects for two weeks.
 - `defaults codex`: the model and effort Codex's local configuration selects for this repository,
-  the model catalog with each model's efforts, and a `recommended` pair ("Defaults", below).
+  the models Codex's `/model` picker offers with each one's efforts, and a `recommended` pair
+  ("Defaults", below).
 
 The helper never commits, stages or moves HEAD: Claude's fixes during a review are working-tree
 edits like any other, and the user commits them when and as they choose.
@@ -102,13 +109,23 @@ edits like any other, and the user commits them when and as they choose.
 - **Each round's tree and transcript are kept in Git**, under
   `refs/ko-review/<review id>/round-NNN`, without touching the user's index, HEAD or files.
   - The ref points at a tag object whose message is the round's transcript, the author's message
-    and Codex's result or the error; the tag points at the tree of the working tree as reviewed.
-    `git show <ref>` prints the transcript, then the tree; `git diff` between two rounds' refs
-    shows what Claude changed in response to a finding.
+    and Codex's result or the error; the tag object points at the tree of the working tree as
+    reviewed.
+  - `git for-each-ref --format='%(contents)' <ref>` prints the transcript alone, since `git show`
+    follows it with a listing of the tree's top level.
+  - `git diff` between two rounds' refs shows what Claude changed in response to a finding.
   - `ko-review diff` compares the current tree with a round, because `git diff <tree>` alone reads
     the user's index and reports every untracked file as deleted.
-  - The ref shows in `git tag`, `git branch` and `git log` not at all, and a clone or push leaves
-    it behind unless named.
+  - `git tag` and `git branch` do not list the refs, since they read only `refs/tags/` and
+    `refs/heads/`, and `git log` does not reach them. `git for-each-ref` lists them:
+
+    ```sh
+    git for-each-ref --format='%(objecttype) %(objectname:short) %(refname)' refs/ko-review/
+    ```
+
+  - A clone or push leaves the refs and their objects behind unless it names them. `--mirror`
+    names every ref: `git push --mirror` sends them to the remote, and `git clone --mirror` copies
+    them.
   - A tree holds a submodule or nested repository as a commit id, not its working tree; the
     snapshot names those paths in `excludes`, and the digest alone covers their contents.
   - In a linked worktree, whose Git directory is read-only, the round records no snapshot and the
@@ -123,17 +140,27 @@ edits like any other, and the user commits them when and as they choose.
   once Codex has named one, and opens a thread when the failure came before `thread.started`.
   - The thread id is persisted the moment `thread.started` arrives, so whatever ends the turn
     after that, a timeout, an interrupt or termination signal, unparsable later output or a helper
-    bug (`HELPER_FAILED`), the thread holds the request; before any round has completed, the retry
-    re-sends the review request.
+    bug (`HELPER_FAILED`), the retry resumes that thread.
+  - The retry's prompt carries again every author message since the last round Codex answered,
+    oldest first and as written, since a failed turn may not have left its message in the thread.
+    Before any round has completed, the retry sends the reviewer prompt again.
+  - A round that ends in an error does not count toward `maxRounds`, so retries after a usage
+    limit do not use up the review.
   - Whatever ends the turn, the helper kills Codex's process group and waits for it before it
     returns, so no Codex turn runs on past the lock that serialized it.
   - `CODEX_AUTH_FAILED`: `codex login status` reports no sign-in, whichever credential store Codex
-    uses; sign in to `codex` in this project's sandbox. `CODEX_EGRESS_DENIED`: the ruleset in
-    `KO_AGENT_SANDBOX_EGRESS_RULESET` allows neither `api.openai.com` nor `chatgpt.com`, as under
-    `--egress=deny-unless-model claude`; relaunch under the default profile. `INVALID_RESULT`:
-    Codex's final message does not follow the schema exactly; the helper validates it before
-    touching state, `--output-schema` only asks. Also `CODEX_FAILED`, `TURN_INTERRUPTED`,
-    `REVIEW_BUSY`. The helper never edits the egress rules or Codex's configuration.
+    uses; sign in to `codex` in this project's sandbox.
+  - `CODEX_EGRESS_DENIED`: the ruleset in `KO_AGENT_SANDBOX_EGRESS_RULESET` allows neither
+    `api.openai.com` nor `chatgpt.com`, as under `--egress=deny-unless-model claude`; relaunch
+    under the default profile.
+  - `CODEX_FAILED`: any other failure of Codex. When Codex said why, `message` ends with its words,
+    such as a usage limit and when it resets, from its last failure event, else its last line of
+    stderr. A thread Codex no longer has is also `CODEX_FAILED`, and its message says to start a new
+    review.
+  - `INVALID_RESULT`: Codex's final message does not follow the schema exactly; the helper
+    validates it before touching state, `--output-schema` only asks.
+  - Also `TURN_INTERRUPTED` and `REVIEW_BUSY`. The helper never edits the egress rules or Codex's
+    configuration.
 - **One mutation per review at a time.** `start`, `continue` and `escalate` take `flock` on the
   review's lock file before reading the state they act on; a second one fails at once with
   `REVIEW_BUSY` instead of waiting behind a Codex turn. `state.json` is replaced atomically, so
@@ -187,12 +214,13 @@ transcript and tree, which `delete` removes with the directory above.
 ### The snapshot
 
 - The tree and its ref are written before Codex runs, so the ref names what Codex reviewed; the
-  transcript tag replaces the tree on the ref when the round ends, with a result or with an error.
+  transcript's tag object replaces the tree on the ref when the round ends, with a result or with
+  an error.
 - The scratch index starts as a copy of the entries of the user's index, so the tracked paths are
   the checkout's, staged additions and removals included, whatever the ignore rules say of them;
   `git add -A` then adds untracked files and leaves ignored ones out. Each `diff` invocation
   writes its own scratch index, so overlapping ones do not disturb each other.
-- The transcript is a tag object rather than a commit: a tag on a tree contributes nothing to
+- The transcript is a tag object rather than a commit: a tag object on a tree contributes nothing to
   `git log --all`, and each round gets a distinct object even when two rounds' trees are equal,
   which git notes, keyed by the tree id, would merge. The tagger is `ko-review`, since neither the
   user nor Codex wrote the whole message.
@@ -202,6 +230,9 @@ transcript and tree, which `delete` removes with the directory above.
 - `defaults codex` reads Codex's local configuration in Codex's precedence: the project's
   `.codex/config.toml` when the user configuration trusts the project, then the user's, then the
   image's system layer; the catalog comes from `codex debug models`.
+- The catalog leaves out the models `codex debug models` marks `"visibility": "hide"`, which
+  Codex's `/model` picker omits too; a configured hidden model still gets its efforts in
+  `recommended`. The catalog keeps Codex's order, which is its `/model` picker's order.
 - Its `recommended` fills a missing effort from the catalog's default for the model; a value still
   null is Codex's built-in default, which the skill leaves to Codex by passing no option.
 - It is marked `partial`: a cloud-managed layer, which Codex ranks above the user's file, is not on
@@ -232,6 +263,9 @@ Instruction changes are journaled in the round they take effect, and the export 
   `--output-schema` and `--output-last-message`; the resumed turn emits the persisted id and
   answers from the earlier turn's context; a made-up id fails with `no rollout found for thread id`
   rather than opening a new thread (openai/codex #15539, closed).
+- Measured with codex-cli 0.156.1 on a real usage limit: `codex exec resume` emits an `error` event
+  whose `message` and a `turn.failed` event whose `error.message` both hold Codex's text, "You’ve
+  hit your usage limit. … try again at" and the reset time, and exits with status 1.
 
 
 ## Tests
@@ -239,7 +273,10 @@ Instruction changes are journaled in the round they take effect, and the export 
 `src/test/python/ko_review_test.py`, run by `KoReviewTest` on Linux, drives the helper against a
 fake `codex` on `PATH`: thread continuity and mismatch, every failure class, the digest over each
 kind of change, the snapshot refs and their absence under a read-only Git directory, the base
-range, the export, the lock, the round limit, escalation, and state namespacing. The same suite
-runs `claude plugin validate` on the plugin when `claude` is on `PATH`. A run against the real
-Codex takes one `start` in a scratch repository, an edit, one `continue` and `verify`; it spends
-model quota, so it is done by hand.
+range, the export, the lock, the round limit, escalation, and state namespacing. `KoReviewTest`
+also runs `claude plugin validate` on the plugin when `claude` is on `PATH`, and inside the image
+checks that the installed copy is readable. A run against the real Codex spends model quota, so it
+is done by hand.
+- Measured with codex-cli 0.156.1 in a session of the image: `/ko-review:codex` drove a review
+  through fixes, re-reviews and a retry after a usage limit to an approval on one thread, and a
+  second invocation opened a new thread.

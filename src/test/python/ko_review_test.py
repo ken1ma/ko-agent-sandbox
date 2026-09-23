@@ -24,8 +24,12 @@ if sys.argv[1:] == ["--version"]:
 if sys.argv[1:] == ["debug", "models"]:
     if os.environ.get("FAKE_CODEX_NO_CATALOG"):
         sys.exit(1)
-    print(json.dumps({"models": [{"slug": "gpt-test", "default_reasoning_level": "medium",
-                                  "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}]}]}))
+    print(json.dumps({"models": [
+        {"slug": "gpt-hidden", "visibility": "hide", "default_reasoning_level": "low",
+         "supported_reasoning_levels": [{"effort": "low"}]},
+        {"slug": "gpt-test", "visibility": "list", "description": "Test model.", "default_reasoning_level": "medium",
+         "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}]},
+    ]}))
     sys.exit(0)
 if sys.argv[1:] == ["login", "status"]:
     if os.environ.get("FAKE_CODEX_SIGNED_OUT"):
@@ -153,6 +157,10 @@ class HelperTest(unittest.TestCase):
             },
         )
 
+    def reviews(self):
+        """Every review of the checkout in full: `list` gives each one's id, `show` its state."""
+        return [self.helper("show", row["reviewId"]) for row in self.helper("list")["reviews"]]
+
     def calls(self):
         return [json.loads(line) for line in self.log.read_text().splitlines() if line.strip()]
 
@@ -193,7 +201,10 @@ class HelperTest(unittest.TestCase):
         kinds = [(entry["seq"], entry["actor"], entry["kind"]) for entry in self.journal_of(output["reviewId"])]
         self.assertEqual(kinds, [(1, "author", "review-request"), (2, "codex", "review-result")])
         listed = self.helper("list")["reviews"]
-        self.assertEqual([review["reviewId"] for review in listed], [output["reviewId"]])
+        self.assertEqual(listed, [{
+            "reviewId": output["reviewId"], "reviewer": "codex", "effectiveStatus": "CHANGES_REQUESTED", "round": 1,
+            "approvalFresh": False, "createdAt": output["createdAt"], "updatedAt": output["updatedAt"],
+        }])
         repository = json.loads(next(self.state.glob("repositories/*/repository.json")).read_text())
         self.assertEqual(Path(repository["repository"]).resolve(), self.repo.resolve())
 
@@ -281,7 +292,7 @@ class HelperTest(unittest.TestCase):
                 self.plan(step)
                 error = self.helper("start", "codex", "--message-file", self.message(), expect=1)["error"]
                 self.assertEqual(error["code"], code, error)
-        for review in self.helper("list")["reviews"]:
+        for review in self.reviews():
             self.assertEqual(review["status"], "NEW")
             self.assertIsNone(review["approved"])
             self.assertEqual(review["lastError"]["round"], 1)
@@ -293,7 +304,7 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(error["code"], "WORKTREE_CHANGED_DURING_REVIEW")
         self.assertNotEqual(error["before"], error["after"])
         self.assertEqual(error["paths"], ["app.py"])
-        review = self.helper("list")["reviews"][0]
+        review = self.reviews()[0]
         self.assertEqual(review["status"], "NEW")
         self.assertIsNone(review["approved"])
         self.assertEqual(review["codexThreadId"], "thread-1")
@@ -317,7 +328,7 @@ class HelperTest(unittest.TestCase):
                 self.plan(step, {"result": APPROVED})
                 error = self.helper("start", "codex", *options, "--message-file", self.message(), expect=1)["error"]
                 self.assertEqual(error["code"], code, error)
-                review = self.helper("list")["reviews"][-1]
+                review = self.reviews()[-1]
                 self.assertEqual(review["status"], "NEW")
                 self.assertEqual(review["codexThreadId"], "kept" if label != "timeout" else "thread-1")
                 retried = self.helper("continue", review["reviewId"], "--message-file", self.message())
@@ -352,7 +363,7 @@ class HelperTest(unittest.TestCase):
         process = self.spawn("start", "codex", "--message-file", self.message())
         self.environment = {}
         for _ in range(100):  # until the fake has named its thread
-            reviews = self.helper("list")["reviews"]
+            reviews = self.reviews()
             if reviews and reviews[0]["codexThreadId"]:
                 break
             threading.Event().wait(0.1)
@@ -363,7 +374,7 @@ class HelperTest(unittest.TestCase):
         self.assertEqual((error["code"], error["message"]), ("TURN_INTERRUPTED", "terminated by SIGTERM"))
         threading.Event().wait(5)  # past the fake's sleep: an orphaned Codex would have written the marker
         self.assertFalse(done.exists(), "codex outlived the helper")
-        review = self.helper("list")["reviews"][0]
+        review = self.reviews()[0]
         self.assertEqual((review["status"], review["codexThreadId"]), ("NEW", "thread-1"))
         self.assertEqual(review["lastError"]["code"], "TURN_INTERRUPTED")
         retried = self.helper("continue", review["reviewId"], "--message-file", self.message())
@@ -425,8 +436,9 @@ class HelperTest(unittest.TestCase):
         self.environment = {"CODEX_HOME": str(home)}
         found = self.helper("defaults", "codex")
         self.assertEqual((found["model"], found["partial"]), (None, True))
-        self.assertEqual(found["catalog"],
-                         [{"model": "gpt-test", "defaultEffort": "medium", "efforts": ["low", "high"]}])
+        self.assertEqual(found["catalog"], [
+            {"model": "gpt-test", "description": "Test model.", "defaultEffort": "medium", "efforts": ["low", "high"]},
+        ])
         self.assertEqual(found["recommended"], {"model": None, "effort": None, "efforts": None})
         (home / "config.toml").write_text('model = "gpt-test"\n')  # effort from the catalog's default
         self.assertEqual(self.helper("defaults", "codex")["recommended"],
@@ -505,13 +517,44 @@ class HelperTest(unittest.TestCase):
         self.write("gone.txt", "back\n")
         self.assertEqual(self.helper("verify", review_id, expect=1)["error"]["effectiveStatus"], "STALE_APPROVAL")
 
+    def test_a_usage_limit_names_codex_s_words_and_the_retry_resends_the_lost_message(self):
+        limit = "You've hit your usage limit. Try again at 3:05 PM."
+        self.plan(
+            {"result": CHANGES},
+            {"exit": 1, "events": [{"type": "error", "message": limit},
+                                   {"type": "turn.failed", "error": {"message": limit}}]},
+            {"exit": 1, "stderr": "Reading prompt from stdin...\nQuota exceeded\n"},
+            {"result": CHANGES},
+        )
+        review_id = self.helper("start", "codex", "--max-rounds", "2", "--message-file", self.message())["reviewId"]
+        lost = self.message("## Rebutted findings\n\nF1 is fine\n\n```c\n#include <stdio.h>\n```\n")
+        error = self.helper("continue", review_id, "--message-file", lost, expect=1)["error"]
+        self.assertEqual((error["code"], error["message"]), ("CODEX_FAILED", f"codex failed: {limit}"))
+        error = self.helper("continue", review_id, "--message-file", self.message("nothing changed\n"), expect=1)
+        self.assertEqual(error["error"]["message"], "codex failed: Quota exceeded")
+        retried = self.helper("continue", review_id, "--message-file", self.message("still nothing\n"))
+        self.assertEqual((retried["status"], retried["round"]), ("CHANGES_REQUESTED", 4))  # failed rounds uncounted
+        prompt = self.calls()[-1]["prompt"]
+        self.assertLess(prompt.index("# The author's message of round 2, which you did not answer"),
+                        prompt.index("# The author's message of round 3, which you did not answer"))
+        self.assertLess(prompt.index("\n\n## Rebutted findings\n\nF1 is fine"), prompt.index("\n\nnothing changed"))
+        self.assertLess(prompt.index("nothing changed"), prompt.index("# The author's response, round 4"))
+        self.assertIn("F1 is fine\n\n```c\n#include <stdio.h>\n```\n", prompt)  # as written
+        self.assertNotIn("review me", prompt)  # round 1 had its answer
+        self.plan({"result": APPROVED})
+        closed = self.helper("continue", review_id, "--message-file", self.message(), expect=1)["error"]
+        self.assertEqual(closed["code"], "LOOP_LIMIT_REACHED")
+        self.assertEqual(len(self.calls()), 4)  # the limit refuses before Codex runs
+
     def test_a_first_turn_that_dies_before_a_thread_is_retried_on_a_new_thread(self):
         self.plan({"exit": 1, "emit_thread_started": False, "stderr": "boom"}, {"result": APPROVED})
         review_id = self.helper("start", "codex", "--message-file", self.message(), expect=1)["error"] and \
             self.helper("list")["reviews"][0]["reviewId"]
         self.assertIsNone(self.helper("show", review_id)["codexThreadId"])
-        retried = self.helper("continue", review_id, "--message-file", self.message())
+        retried = self.helper("continue", review_id, "--message-file", self.message("the retry\n"))
         self.assertEqual((retried["status"], retried["codexThreadId"]), ("APPROVED", "thread-2"))
+        self.assertIn("did not answer\n\nYour turn on it ended in an error before you answered. The author's latest"
+                      " message follows the unanswered ones.\n\n## Task\n\nreview me\n", self.calls()[1]["prompt"])
         self.assertNotIn("resume", self.calls()[1]["argv"])
 
     def test_concurrent_commands_on_one_review_are_refused(self):
@@ -793,11 +836,15 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(self.git_out("diff", "--stat", ref, second).split("\n")[0].split()[0], "app.py")
         self.assertEqual(approved["inspect"], [
             f"ko-review export {review_id}  # the transcript, one section per round",
-            f"git show {second}  # the last round's transcript, then its tree",
+            f"git for-each-ref --format='%(contents)' {second}  # the last round's transcript",
             f"git diff {ref} {second}  # what changed during the review",
             f"ko-review diff {review_id}  # your tree against the approved one",
+            "ko-review list  # this checkout's reviews, by id",
+            f"ko-review delete {review_id}  # the review's state and refs, once you no longer need them",
         ])
-        self.assertIn("### Codex: APPROVED", self.git_out("show", second))
+        transcript = self.git_out("for-each-ref", "--format=%(contents)", second)
+        self.assertIn("### Codex: APPROVED", transcript)
+        self.assertNotIn("app.py", transcript.split("### Codex: APPROVED")[1])  # no listing of the tree
         self.write("created-later.txt", "new\n")
         (self.repo / "app.py").write_text("print('edited after approval')\n")
         processes = [self.spawn("diff", review_id, "--", "--stat") for _ in range(3)]  # overlapping invocations
@@ -833,8 +880,9 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(output["status"], "APPROVED")
         self.assertIsNone(output["snapshots"][0]["ref"])
         self.assertIn("error", output["snapshots"][0])
-        self.assertEqual(len(output["inspect"]), 1)
-        self.assertTrue(output["inspect"][0].startswith(f"ko-review export {output['reviewId']}"))
+        self.assertEqual([line.split("  #")[0] for line in output["inspect"]], [
+            f"ko-review export {output['reviewId']}", "ko-review list", f"ko-review delete {output['reviewId']}",
+        ])
         self.assertEqual(self.helper("verify", output["reviewId"])["approvalFresh"], True)
 
     def test_a_failed_round_still_carries_its_transcript_on_the_ref(self):
@@ -844,7 +892,7 @@ class HelperTest(unittest.TestCase):
         shown = self.git_out("show", ref)
         self.assertIn("my request", shown)
         self.assertIn("### Error: CODEX_FAILED", shown)
-        tag = self.helper("list")["reviews"][0]["snapshots"][0]["tag"]
+        tag = self.reviews()[0]["snapshots"][0]["tag"]
         self.assertEqual(tag, self.git_out("rev-parse", ref).strip())
 
     def test_a_transcript_write_failure_is_reported_and_leaves_the_tree_on_the_ref(self):
@@ -874,7 +922,7 @@ class HelperTest(unittest.TestCase):
                 self.assertIsNone(taken["tag"])
                 self.assertIn(diagnostic, taken["transcriptError"])
                 self.assertEqual(self.git_out("cat-file", "-t", taken["ref"]).strip(), "tree")
-                self.assertNotIn("git show", " ".join(output["inspect"]))
+                self.assertNotIn("for-each-ref", " ".join(output["inspect"]))
                 self.plan({"exit": 1, "stderr": "boom"})  # a failed turn reports both failures
                 failed = self.helper("start", "codex", "--message-file", self.message(), expect=1)
                 self.environment = {}
@@ -1027,11 +1075,21 @@ class HelperTest(unittest.TestCase):
         self.assertTrue(error["inspect"][0].startswith(f"ko-review export {review_id}"))
         self.assertNotIn("reviewId", self.helper("show", "no-such-review", expect=1))
 
+    # Fenced code the export must leave as written: fences in a list item and in a block quote; lines
+    # that do not close a fence: a delimiter indented four columns (CommonMark example 137), also
+    # after an opener indented one, and a list item holding a delimiter.
+    QUOTED_CODE = (
+        "~~~sh\n# a comment\n~~~\n\n- ```c\n  # include <stdio.h>\n  ```\n\n> ```\n> # quoted\n> ```\n\n"
+        "```\n    ```\n# still code\n```\n\n ```\n    ```\n# still code\n ```\n\n"
+        "```text\n- ```\n# literal content\n```\n"
+    )
+
     def test_export_renders_the_transcript(self):
         instructions = self.message("Be strict.\n")
         self.plan({"result": CHANGES}, {"result": USER_DECIDES})
         review_id = self.helper("start", "codex", "--instructions-file", instructions,
-                                "--message-file", self.message("## Task\n\nthe task\n"))["reviewId"]
+                                "--message-file", self.message(
+                                    "## Task\n\nthe task\n\n" + self.QUOTED_CODE + "\n###### Deep\n"))["reviewId"]
         self.helper("continue", review_id, "--instructions-file", self.message("Be lenient.\n"),
                     "--message-file", self.message("## Rebutted findings\n\nF1 is fine\n"))
         self.assertIn("Be lenient.", self.calls()[1]["prompt"])
@@ -1040,16 +1098,26 @@ class HelperTest(unittest.TestCase):
         markdown, stderr = process.communicate(timeout=60)
         self.assertEqual(process.returncode, 0, stderr)
         self.assertLess(markdown.index("## Round 1"), markdown.index("Be strict."))
-        self.assertLess(markdown.index("Be strict."), markdown.index("### Task"))
+        self.assertLess(markdown.index("Be strict."), markdown.index("#### Task"))
         self.assertLess(markdown.index("## Round 2"), markdown.index("Be lenient."))
         for text in (f"# Codex review {review_id}", "- Status: USER_DECISION_REQUIRED",
                      "### Instructions from the user, from this round on",
                      "Be lenient.", "## Round 1", f"Snapshot: `refs/ko-review/{review_id}/round-001`", "### The author",
-                     "### Task", "### Codex: CHANGES_REQUESTED", "- **F1** (high) `app.py:1`: d", "Evidence: e",
+                     "#### Task", "### Codex: CHANGES_REQUESTED", "- **F1** (high) `app.py:1`: d", "Evidence: e",
                      "## Round 2", "### Codex: USER_DECISION_REQUIRED", "- Decision requested: d",
                      "### The author agreed that the user must decide", "## How to see how it went",
                      f"ko-review export {review_id}"):
             self.assertIn(text, markdown)
+        self.assertIn(self.QUOTED_CODE + "\n###### Deep\n", markdown)  # code as written, level 6 at most
+        process = self.spawn("export", review_id, "--round", "2")
+        second, stderr = process.communicate(timeout=60)
+        self.assertEqual(process.returncode, 0, stderr)
+        self.assertTrue(second.startswith(f"# Review {review_id}, round 2\n"), second)
+        for text in ("F1 is fine", "### Codex: USER_DECISION_REQUIRED",
+                     "### The author agreed that the user must decide"):
+            self.assertIn(text, second)
+        self.assertNotIn("the task", second)
+        self.assertEqual(self.helper("export", review_id, "--round", "3", expect=1)["error"]["code"], "UNKNOWN_ROUND")
 
     def test_start_names_the_reviewer_and_continue_reads_it_from_the_review(self):
         review_id = self.start()["reviewId"]
