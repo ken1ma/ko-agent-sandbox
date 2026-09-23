@@ -2087,9 +2087,9 @@ object AgentSandboxLauncher:
     // (doc/run-on-host.md, "The channel and the command"). Constant per machine, so the agents.md
     // stamp needs no part of it.
     hostCommandsAvailable: Boolean = false,
-    // Why the session has no git, in the container's words (SandboxProject.noGitInstruction):
-    // the agent hears it before its first command.
-    noGit: Option[String] = None,
+    // What git cannot do in this session, in the container's words (SandboxProject.noGitInstruction
+    // and readOnlyGitInstruction): the agent hears it before its first command.
+    git: Option[String] = None,
   ): String =
     val profileLine = resolved.linesIterator.next()
     val workspace = writeMode match
@@ -2111,12 +2111,7 @@ object AgentSandboxLauncher:
           |symlink targets must be relative and remain inside the workspace.""".stripMargin
       case _ =>
         throw IllegalArgumentException(s"unknown write mode: $writeMode")
-    val git = noGit.fold("")(cause =>
-      s"""
-         |
-         |Git does not work in this session: $cause. Do not `git init` or clone in place; leave
-         |the work as uncommitted changes and tell the user, whose git runs on the host.""".stripMargin,
-    )
+    val gitParagraph = git.fold("")(paragraph => s"\n\n$paragraph")
     val runOnHostSection =
       if runOnHost.nonEmpty then
         val names = runOnHost.mkString(", ")
@@ -2175,7 +2170,7 @@ object AgentSandboxLauncher:
        |
        |# What this session may do
        |
-       |$workspace$git
+       |$workspace$gitParagraph
        |$runOnHostSection
        |## Egress
        |
@@ -2199,11 +2194,11 @@ object AgentSandboxLauncher:
     writeMode: String,
     rulesetText: String,
     runOnHost: Vector[String] = Vector.empty,
-    noGit: Option[String] = None,
+    git: Option[String] = None,
   ): String =
     s"$imageId $writeMode ${sha256Hex(rulesetText)}"
       + (if runOnHost.isEmpty then "" else s" ${runOnHost.mkString(",")}")
-      + noGit.fold("")(cause => s" no-git:${sha256Hex(cause)}")
+      + git.fold("")(paragraph => s" git:${sha256Hex(paragraph)}")
 
   def main(args: Array[String]): Unit =
     // The private actions, before the ordinary parse and in no usage text: they are not launch
@@ -2559,13 +2554,13 @@ object AgentSandboxLauncher:
     val sharedVolume = env("KO_AGENT_SANDBOX_PERSISTENT_VOLUME").map: shared =>
       sharedVolumeNameError(shared).foreach(reason => fail(s"error: $reason"))
       shared
-    val mainWorktree =
-      if sharedVolume.isDefined then None else SandboxProject.mainWorktreeOf(projectDir, homeProtection, os)
+    // Named under the variable too, where nothing is asked: the read-only git mount reads it.
+    val mainWorktree = SandboxProject.mainWorktreeOf(projectDir, homeProtection, os)
     System.err.println(pathLine("project directory", projectDir, os, tint = chosen(_)))
     mainWorktree.foreach(main => System.err.println(pathLine("main git worktree", main, os)))
     // The answer said back as the workspace and egress lines say their modes: an answer is a
     // choice, and either continues the launch.
-    val sharedWithMain: Option[Path] = mainWorktree.filter: _ =>
+    val sharedWithMain: Option[Path] = mainWorktree.filter(_ => sharedVolume.isEmpty).filter: _ =>
       confirmSharedVolume(sessionStartMode, terminalReader) match
         case Some(true) =>
           System.err.println(s"agent state: ${chosen("shared")} with the main git worktree")
@@ -2914,7 +2909,35 @@ object AgentSandboxLauncher:
     // The profile and provider need no stamp input of their own — the resolved text's first line
     // names both.
     val noGit = SandboxProject.noGit(projectDir, homeProtection, os)
-    val gitInstruction = noGit.map(SandboxProject.noGitInstruction(_, mountPath))
+    // A linked worktree's main Git directory, bound read-only where the container can follow the
+    // pointer there (SandboxProject.linkedGitdirBind) and can read it once bound: the image must
+    // have nothing at the target (the project's probe, asked again of this path); on an
+    // SELinux-enforcing host, the directory must carry a container-readable label, which the
+    // launcher never gives a project tree (SECURITY.md, "the project tree's SELinux labels"); and
+    // the repository must not set the extension the image's git refuses
+    // (SandboxProject.setsRelativeWorktrees). Each refusal is said with the git warning, since
+    // the warning alone would read as a linked worktree this launcher does not recognize.
+    val gitdirBind = noGit.collect { case NoGit.Gitdir(_, _, _) => () }
+      .flatMap(_ => mainWorktree.flatMap(main => SandboxProject.linkedGitdirBind(projectDir, main, os)))
+    val gitdirBindRefusal: Option[String] = gitdirBind.flatMap: bind =>
+      if SandboxProject.setsRelativeWorktrees(bind.source) then
+        Some(
+          "the repository sets extensions.relativeWorktrees, which the sandbox image's git does not know; " +
+            "git there would refuse the repository",
+        )
+      else if selinuxEnforcing && !selinuxContainerReadable(bind.source) then
+        Some(
+          s"${pathInline(bind.source, os)} has no container-readable SELinux label; " +
+            s"chcon -R -t container_file_t -l s0 ${pathInline(bind.source, os)} gives it one for the next launch",
+        )
+      else
+        val probe = run(mountPathProbeCommand(podman, image, bind.target)*)
+        Option.when(!probe.ok || probe.text.trim != "absent"):
+          s"the sandbox image cannot take a mount at ${bind.target}"
+    val mountedGitdir = gitdirBind.filter(_ => gitdirBindRefusal.isEmpty)
+    val gitInstruction = mountedGitdir
+      .map(SandboxProject.readOnlyGitInstruction(_, mountPath))
+      .orElse(noGit.map(SandboxProject.noGitInstruction(_, mountPath)))
     val agentDocStamp = agentDocumentStamp(
       imageId, writeMode, rulesetText, runOnHost, gitInstruction,
     )
@@ -3181,9 +3204,14 @@ object AgentSandboxLauncher:
     System.err.println(filteredWorkspace match
       case Some(_) => s"workspace: ${chosen("live")}; ${koAgentFsLabel(os)}$mountedAt"
       case None    => s"workspace: ${chosen("reject")}; read-only this session$mountedAt")
-    // Qualifies the line above: the mount is sound, and git is not there. Every mode, since what
-    // git needs is absent from the container under each.
-    noGit.foreach(cause => warn(noGitWarning(cause, os)))
+    // Qualifies the line above: the mount is sound, and git is not there, or reads the main
+    // worktree's Git directory and writes nothing. Every mode, since what git needs is absent from
+    // the container under each.
+    mountedGitdir match
+      case Some(bind) => warn(readOnlyGitWarning(bind, os))
+      case None       => noGit.foreach(cause => warn(noGitWarning(cause, os)))
+    gitdirBindRefusal.foreach: reason =>
+      System.err.println(s"note: the main worktree's Git directory is not mounted; $reason")
     if ruleFiles.nonEmpty then printRuleFiles(ruleFiles)
     printWidening(rulesetText)
     System.err.println(egressBanner(rulesetText))
@@ -3344,6 +3372,7 @@ object AgentSandboxLauncher:
       // The deliberate host exposure; what the agent writes here is untrusted input to host programs (SECURITY.md, "The
       // project directory").
       "--volume", projectVolume,
+    ) ++ mountedGitdir.toVector.flatMap(bind => Vector("--volume", s"${bind.source}:${bind.target}:ro")) ++ Vector(
 
       // Anonymous, removed on exit: caches work without becoming cross-session attack state.
       "--mount", s"type=volume,dst=$ContainerHome",

@@ -1507,11 +1507,11 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(!publicDefault.contains("adds `allow https://<host>/ read`"), publicDefault)
     assert(filtered.contains("Anything not allowed by the ruleset is refused"), filtered)
     assert(filtered.contains("adds `allow https://<host>/ read`"), filtered)
-    // A session without git: the agent hears it before its first command, in the words naming
-    // what the container lacks (SandboxProject.noGitInstruction).
-    val cause = s"`$Mount/.git` names `../.git/modules/lib`, a gitdir the sandbox does not have"
-    val noGit = appendedSection(Mount, "live", resolution, noGit = Some(cause))
-    assert(noGit.contains(s"Git does not work in this session: $cause."), noGit)
+    // A session without git, or with read-only git: the agent hears it before its first command,
+    // in the paragraph SandboxProject composes (noGitInstruction, readOnlyGitInstruction).
+    val paragraph = "Git does not work in this session: `.git` names a gitdir the sandbox does not have."
+    val noGit = appendedSection(Mount, "live", resolution, git = Some(paragraph))
+    assert(noGit.contains(s"\n\n$paragraph\n"), noGit)
     assert(!filtered.contains("Git does not work"), filtered)
 
   test("the mount-path probe tells an image entry, an unreachable ancestor and a free path apart"):
@@ -1572,8 +1572,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       writeMode: String = "live",
       ruleset: String = "ruleset-a",
       runOnHost: Vector[String] = Vector.empty,
-      noGit: Option[String] = None,
-    ) = agentDocumentStamp(imageId, writeMode, ruleset, runOnHost, noGit)
+      git: Option[String] = None,
+    ) = agentDocumentStamp(imageId, writeMode, ruleset, runOnHost, git)
 
     val variants = Vector(
       stamp(),
@@ -1582,7 +1582,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       stamp(ruleset = "ruleset-b"),
       stamp(runOnHost = Vector("sbt")),
       stamp(runOnHost = Vector("sbt", "mill")),
-      stamp(noGit = Some("no git in this session")),
+      stamp(git = Some("no git in this session")),
+      stamp(git = Some("read-only git in this session")),
     )
     assertEquals(variants.distinct.size, variants.size)
 

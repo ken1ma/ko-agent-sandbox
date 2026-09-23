@@ -156,6 +156,49 @@ If `git lfs pull` becomes important:
 
 Do not blindly allow the batch `POST` endpoint merely because downloads use it.
 
+## Deferred — writable git from a linked worktree
+
+A launch from a linked worktree binds the main worktree's Git directory read-only
+(`SECURITY.md`, "The host's git executing what the sandbox wrote"). The writable form binds the
+`.git` of the main project's filter mount at the same target, so the filter's policy governs it:
+`worktrees/<name>` is a nested gitdir there, whose `config`, `hooks/`, `commondir` and `gitdir`
+stay frozen while its index and refs are written (`../fuse/ko-agent-fs/doc/git-metadata.md`, "The
+immutable set"). Only `.git` crosses; the main worktree's working files stay out of the session.
+
+- The linked session joins the main project's daemon as one of its sessions: its marker under the
+  main project's mount directory, so that the reap counts it, and the mount-time guard run on the
+  main root (`KoAgentFs`).
+- `--reset` in the main worktree unmounts that filter, and every linked session's git then fails
+  with `ENOTCONN`. Either record it beside the volume's behaviour (`SECURITY.md`, "What the
+  persistent volume holds") or refuse the reset while a linked session mounts it, as podman
+  refuses the volume.
+- Unverified: a bind of a subpath of the FUSE mount keeps the filter's positional classification.
+  Lookups name the parent inode, so it should; the mounted suite proves it before the bind is
+  offered.
+- The mount-path probe already asks about the target. The SELinux label question disappears: the
+  filter's mountpoint needs no relabel.
+
+## Deferred — a linked worktree's absolute pointer on Windows
+
+`git worktree add` writes the pointer as `C:/Users/<me>/repo/.git/worktrees/<name>`, which the
+container's git cannot follow at `/mnt/c/...`, so the read-only bind is skipped there
+(`SandboxProject.linkedGitdirBind`). Two routes:
+
+- A relative pointer resolves under `/mnt/c` as it does under `C:`, and the bind serves one. But
+  `git worktree add --relative-paths`, or `git worktree repair --relative-paths` for an existing
+  worktree (git 2.48 or later), also sets `extensions.relativeWorktrees`, and the image's git,
+  Debian trixie's 2.47.3, refuses a repository with an extension it does not know — in the main
+  worktree as in the linked one. The launch reads the extension from the common config and keeps
+  the no-git warning, with a note, rather than promise git (`SandboxProject.setsRelativeWorktrees`).
+  The route opens when the image's git is 2.48 or later, and that check goes with the upgrade;
+  until then only a hand-written relative pointer works, which `git worktree repair` rewrites
+  absolute. "The project mounted at its own path" has the measurement.
+- For an absolute pointer, bind a launcher-written pointer file naming the `/mnt/<drive>` spelling
+  over `<mountPath>/.git`, hiding the filter's protected pointer from the container alone. Setting
+  `GIT_DIR` and `GIT_WORK_TREE` instead would redirect git in every other repository the agent
+  uses, such as clones under `~`. `<main>/.git/worktrees/<name>/gitdir` keeps the `C:/` spelling
+  either way; `git worktree list` reads it, and nothing the read-only bind serves needs it.
+
 ## Deferred — LAN destinations, as a session option
 
 The proxy refuses every private, loopback, link-local and CGNAT address after resolution, and the
@@ -424,6 +467,9 @@ replacement, each leaving one consistent runtime.
 - [ ] On Windows, run the launcher inside a WSL distribution — as a Linux program, with Java and
   rootless podman installed there — from `/mnt/c/Users/<me>/src/app`: `bash -c pwd` must print
   that path, the one a PowerShell launch of the same directory prints.
+- [ ] On Windows, from a linked worktree whose `.git` holds a relative pointer (hand-written until
+  the image's git reads `extensions.relativeWorktrees`): the launch must print `git is read-only
+  in this session`, `git status` must work in the session, and `git add` must fail.
 
 Recorded macOS results (2026-09-18):
 
