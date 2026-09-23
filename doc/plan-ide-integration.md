@@ -138,18 +138,18 @@ What to run and record, on VS Code 1.138.0 or the release current at the time:
   connection through `podman exec code agent relay <instance-id>`. Neither transport is
   implemented. Record which works and what it exposes to other local users; the launcher
   generates the connection token per run.
-- "Add Remote Agent Host..." against that endpoint, with the token, and the session it opens on
-  the project.
+- "Add Remote Agent Host..." against that endpoint, with the token.
 
 The VS Code that attaches runs with a fresh `--user-data-dir`, no account signed in and no
-extension installed, until step 2 has shown what stops a token push: an attachment before that is
-the forwarding the investigation exists to prevent. Where a token is needed, it is the smoke-test
-driver's `chat.agentHost.unsafeTestToken` on the routes that honor it and a throwaway account
-created for the test on the others, never the user's session.
+extension installed, until the filtering relay of step 2 stands between them: step 2's source
+pass finds no setting that stops a token push while keeping remote hosts, so an attachment with
+an account before the relay is the forwarding the investigation exists to prevent. Where a token
+is needed, in any step, it is the smoke-test driver's `chat.agentHost.unsafeTestToken` on the
+routes that honor it and a throwaway account created for the test on the others, never the
+user's session.
 
 Measured on 2026-09-23: VS Code 1.138.0 on macOS attached to the host in a sandbox launched on the
-default egress profile. The step's last item, the session on the project, is pending: it needs an
-agent with credentials in the host, which step 3 provides, so it is measured with that harness.
+default egress profile.
 
 - Downloads. The CLI, installed under `~/.local/bin` for this measurement, comes from
   `https://update.code.visualstudio.com/latest/cli-linux-arm64/stable`; the host's server
@@ -210,9 +210,12 @@ setting prevents, and what remains:
   agent list before any session is selected and again after one is, an `AuthRequired` error on
   an ordinary command, an `auth/required` notification, an `authRequired` MCP server and tool
   call, each also after a root-state update and after a reconnection, since the notification is
-  not replayed and VS Code re-checks on reconnect. Each route has a positive control first: the
-  hostile host records a token arriving without enforcement, so that a signed-out client sending
-  nothing cannot pass as enforcement;
+  not replayed and VS Code re-checks on reconnect. Each route needs a positive control, so that a
+  signed-out client sending nothing cannot pass as enforcement. The decision rests on the
+  connect-time route's control, the hostile host recording the test token without enforcement.
+  The routes whose control needs an account are delivered in step 4's acceptance, behind the
+  relay, where the evidence is the relay's report of the `authenticate` it refused on the client
+  side and the hostile host's log holding no token;
 - a client tool call, VS Code's own and an extension's;
 - `browseDirectory` and `fetchContent` on host paths outside the project;
 - a forwarded MCP server, and a tool call routed to it;
@@ -243,7 +246,12 @@ container's `/home/nonroot`; sessions on a Local folder sent the hostile host no
   On the next connection to the same address in the same window, the same request returned `{}`
   within 4 ms with no banner, and a read then returned the file's bytes. The source says Allow
   lasts "for the lifetime of the connection"; what that covers is unverified.
-- `createSession` for Copilot reached the host, which answered `AuthRequired`; nothing followed.
+- `createSession` for Copilot reached the host, which answered `AuthRequired`; no `authenticate`
+  and no second `createSession` followed, in the signed-out runs and in the test-token runs. The
+  request followed `resolveSessionConfig` and carries the argument set of the sessions provider's
+  eager creation (`baseAgentHostSessionsProvider.ts`), which on an error logs a warning and stops.
+  The chat handler's path, which resolves authentication and retries `createSession` once
+  (`agentHostSessionHandler.ts`), was not reached, so these runs say nothing about it.
 - `createSession` carried 15 client tools, the integrated-browser and automation set, and a synced
   customization that names a GitHub MCP server without its command, URL, environment or headers.
   Opening the session raised VS Code's workspace-trust prompt for the host folder.
@@ -262,11 +270,21 @@ container's `/home/nonroot`; sessions on a Local folder sent the hostile host no
   (`root/agentsChanged`). This is the driver's test-token path; that a signed-in session's token is
   forwarded the same way is read from source (`agentHostAuth.ts`), not measured.
 
-Not measured: a positive control for the `auth/required` notification and for `AuthRequired` on
-`createSession`; whether Always Allow persists a grant into the profile; a push after a
-`reconnect` the host accepts; a client tool call within a turn the host completes; the
-`authRequired` MCP server and tool-call route; a forwarded MCP server with a tool call routed to
-it; a real signed-in session's token.
+Not measured, assigned by the evidence each gives. The relay's design needs these first, since
+what VS Code runs on a channel decides what the relay refuses there, and each is measured with
+the hostile host and no account: a client tool call within a turn the host completes; a forwarded
+MCP server with a tool call routed to it; the messages VS Code sends for an `authRequired` MCP
+server, up to the sign-in it asks for; whether Always Allow persists a grant into the profile,
+moot if the design refuses the reverse `resource*` requests; and a push after a `reconnect` the
+host accepts, with the test token, since the connect-time route honors it. These are step 4's
+acceptance stages, each with its credential: the `auth/required` notification, whose handler
+resolves a real session, so a throwaway account; `AuthRequired` on `createSession` on the chat
+handler's retry path, where interactive resolution takes the test token for the agent's advertised
+resources, which the connect-time route has pushed and the token cache does not forward twice
+(`AgentHostAuthTokenCache`), so a distinct push there needs a stage design of its own; the
+`authRequired` MCP route's token,
+which `resolveMcpServerAuthentication` takes from a real session, so a throwaway account; and a
+real signed-in session's token on the connect-time route, so a throwaway account.
 
 VS Code settings that bear on these operations, read in the 1.138.0 source. A setting counts only
 if VS Code itself checks it; one it mirrors into the host's config, a hostile host ignores.
@@ -290,7 +308,8 @@ Decision: VS Code's own controls leave the credential route open, with no settin
 short of disabling remote hosts, so the launcher-owned filtering relay below is needed. ACP stays
 deferred provisionally: the operations the relay must refuse are ones this step names, but whether
 sessions stay usable with them refused, without further protocol handling, is for the relay's
-design and tests to establish. The operations under "Not measured" stay open as verification.
+design and tests to establish. The operations under "Not measured" stay open where that list
+assigns them.
 
 The relay interprets the WebSocket frames, forwards state and chat, and refuses the named
 operations. For credentials the enforcement is on the `authenticate` messages themselves: every one
@@ -310,6 +329,8 @@ it.
 For a harness with a credential the sandbox owns, the Claude harness on
 `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`:
 
+- the session "Add Remote Agent Host..." opens on the project, measured here rather than in
+  step 1 because a session needs an agent with credentials in the host;
 - authentication: the credential's source and place in the volume, whether the CLI's login there
   is reused, and what VS Code pushes although the credential is in the volume;
 - which tools run inside the host process, and that none runs on the host;
@@ -343,13 +364,19 @@ listener or the filter.
 
 Acceptance: the hostile host of step 2 obtains nothing on the host through VS Code, in the
 launch matrix of `--write=reject` and `live`, `--egress=deny-unless-model`, the protected `.git`
-entries and `.ko-agent-sandbox`, `--run-on-host` and every ending of step 3. The exact VS Code
-and AHP versions tested are recorded in the documentation.
+entries and `.ko-agent-sandbox`, `--run-on-host` and every ending of step 3. The token routes step 2
+leaves without a positive control get one stage each, on a fresh connection, with the credential
+step 2 names for it: a connection made while a throwaway account is signed in, for the
+connect-time route; then one challenge per remaining route, fired alone, against a resource the
+connection has not pushed, so that the relay's timestamped report of the `authenticate` it refused
+belongs to that challenge. In every stage the hostile host's log holds no token. The stage for
+`AuthRequired`, which must reach the chat handler's retry path and draw a push the token cache
+does not suppress, is settled in the relay's tests. The exact VS Code and AHP versions tested are
+recorded in the documentation.
 
 ## Phases
 
-0. Step 1 up to its session item, measured above, and the hostile host of step 2 written against
-   the spec's channels.
+0. Step 1, measured above, and the hostile host of step 2 written against the spec's channels.
 1. Step 2's measurements, recorded above, and the filtering relay's design, which they call for.
 2. Step 3.
 3. Step 4, with the documentation: a usage section in the README, the refused operations under a
