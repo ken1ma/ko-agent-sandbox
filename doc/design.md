@@ -543,6 +543,27 @@ workflow needs a stale verification detected before its next attempted launch, r
 failed launch being enforcement enough — a CI failure a person reads later is still that
 enforcement.
 
+### No Stop hook that gates on a ko-review approval
+
+A managed Stop hook could refuse to let Claude end its turn while the working tree differs from
+HEAD without a fresh approval or a recorded escalation from `/ko-review:codex` (`ko-review.md`).
+Rejected:
+
+- The only check a local hook can make cannot tell Claude's changes from the user's own uncommitted
+  edits, a one-line change the user asked for, or a turn that answered a question: each stop would
+  be blocked until Codex reviews, spending quota the user did not intend to spend.
+- Under `--egress=deny-unless-model claude`, or before Codex is signed in, the block can be passed
+  only by recording an escalation, which makes the gate a formality; letting the hook pass when
+  Codex is unreachable reopens the loophole it exists to close.
+- A managed hook applies to every project on the image; a per-project opt-in marker would add a
+  second mechanism for a workflow the user invokes by hand.
+- Claude skipping a requested review is an instruction failure, fixed in the skill text or
+  `AGENTS.md`, not by a hook that runs on every stop.
+
+Revisit if, in use, Claude regularly ends a turn with unreviewed changes after being told to review
+and the instruction fix does not hold; then the shape is a managed hook with a per-project opt-in
+marker, still a local check that never runs Codex.
+
 ## The properties verification has to separate
 
 Conflating them is what makes verification look larger than it is.
@@ -632,6 +653,12 @@ Directory names follow the terse Unix tradition where the choice is free:
   `src/main/resources`, XDG's `~/.config`;
 - where a grammar spells it, that spelling is used: the proxy's `defaults/` is the `defaults` of
   `deny defaults`.
+
+Program, plugin and variable names say where they work: `ko-sandbox-*` and `KO_SANDBOX_*` name
+what works only inside the image (`ko-sandbox-entrypoint`, `ko-sandbox-egress-check`);
+`ko-agent-sandbox` and `KO_AGENT_SANDBOX_*` name the launcher and the project; what also runs on a
+host carries its own name, and that name is the workflow's, not a component's, so that another
+component can join: `ko-review` with the skill `codex`, not `ko-codex`, since `agy` may review too.
 
 The accepted costs of `doc` over `docs`:
 

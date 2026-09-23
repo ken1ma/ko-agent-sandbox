@@ -1,0 +1,1273 @@
+#!/usr/bin/env -S python3 -I
+"""Runs one stateful Codex review cycle for the author of a change, the agent that made it.
+
+A cycle is one Codex thread: `start` opens it with a fresh review, `continue` sends the author's
+fixes or rebuttals to the same thread, and `verify` confirms the approval covers the current working tree.
+State lives in the project's persistent volume; doc/ko-review.md is the
+design. Every command prints one JSON object; exit status 1 means the JSON carries `error`.
+"""
+
+import argparse
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import threading
+import tomllib
+import secrets
+from pathlib import Path
+
+
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+SCHEMA_VERSION = 1
+PLUGIN_VERSION = json.loads((PLUGIN_ROOT / ".claude-plugin/plugin.json").read_text())["version"]
+RESULT_SCHEMA = PLUGIN_ROOT / "schemas/review-result.schema.json"
+DISPOSITIONS = {"APPROVED", "CHANGES_REQUESTED", "USER_DECISION_REQUIRED"}
+SEVERITIES = {"critical", "high", "medium", "low"}
+TERMINAL = {"USER_DECISION_REQUIRED", "LOOP_LIMIT_REACHED"}
+DEFAULT_MAX_ROUNDS = 12
+REVIEWERS = ("codex",)
+DEFAULT_TIMEOUT_SECONDS = 3600
+# Python turns only SIGINT into an exception; these are raised as one below so that a terminated
+# helper still kills Codex and reverts the review's state.
+TERMINATING_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+# Both hosts: a ChatGPT login talks to chatgpt.com, an API key to api.openai.com.
+OPENAI_HOSTS = ("api.openai.com", "chatgpt.com")
+
+
+class ReviewError(Exception):
+    def __init__(self, code, message, **detail):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.detail = detail
+
+    def to_json(self):
+        return {"code": self.code, "message": self.message, **self.detail}
+
+
+class GitFailure(ReviewError):
+    """A Git command failed: recoverable where a snapshot is optional, unlike an interruption."""
+
+    def __init__(self, message, **detail):
+        super().__init__("GIT_FAILED", message, **detail)
+
+
+CURRENT_REVIEW = None  # the review a command has created or opened, named in its failures
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def git(root, *args, check=True):
+    completed = subprocess.run(
+        ["git", *args], cwd=root, capture_output=True, check=False,
+    )
+    if check and completed.returncode != 0:
+        raise GitFailure("git " + " ".join(args) + " failed", stderr=completed.stderr.decode(errors="replace"))
+    return completed
+
+
+def repository_root(directory):
+    completed = git(directory, "rev-parse", "--show-toplevel", check=False)
+    if completed.returncode != 0:
+        raise ReviewError(
+            "NOT_A_GIT_REPOSITORY",
+            f"{directory} is not a Git working tree, and a review keeps each round's tree and its approval in"
+            " Git. Make it one, then retry:\n\n"
+            "git init\n"
+            "git commit --allow-empty -m \"Start of the review\"\n\n"
+            "The files stay uncommitted, so the review covers them all; a .gitignore keeps build outputs and"
+            " secrets out of it. The .git directory can be removed after the review; the review's record under"
+            " it goes with it.",
+        )
+    return Path(completed.stdout.decode().rstrip("\n")).resolve()
+
+
+def file_digest(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest().encode()
+
+
+def worktree_entry(root, path):
+    absolute = root / path.decode("utf-8", "surrogateescape")
+    try:
+        status = os.lstat(absolute)
+    except FileNotFoundError:
+        return b"missing"
+    if stat.S_ISLNK(status.st_mode):
+        return b"link\0" + os.readlink(absolute).encode("utf-8", "surrogateescape")
+    if stat.S_ISDIR(status.st_mode):
+        if (absolute / ".git").exists():
+            # A submodule's status record carries dirty flags, not what changed; a nested
+            # repository is one untracked directory. Each is digested as a tree of its own.
+            return b"repository\0" + observe(absolute)["digest"].encode()
+        return b"dir"
+    if stat.S_ISREG(status.st_mode):
+        # git's status record carries no mode for an untracked file
+        executable = b"x" if status.st_mode & 0o111 else b"-"
+        return b"file\0" + executable + b"\0" + file_digest(absolute)
+    return b"other"
+
+
+def status_records(root):
+    """Every path whose working tree or index differs from HEAD, as `git status` reports it.
+
+    Renames are off so a moved file appears as its deletion and addition. Each record carries
+    the index and HEAD object ids and the modes, so staged content is part of the digest without
+    reading the index."""
+    output = git(
+        root, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames",
+        "--ignore-submodules=none",
+    ).stdout
+    records = []
+    fields = [field for field in output.split(b"\0") if field]
+    index = 0
+    while index < len(fields):
+        record = fields[index]
+        index += 1
+        kind = record[:1]
+        if kind == b"1":
+            path = record.split(b" ", 8)[8]
+        elif kind == b"2":
+            path = record.split(b" ", 9)[9]
+            index += 1  # the rename's original path, a record of its own
+        elif kind == b"u":
+            path = record.split(b" ", 10)[10]
+        elif kind in (b"?", b"!"):
+            path = record[2:]
+        else:
+            raise GitFailure("unrecognized git status record", record=record.decode(errors="replace"))
+        records.append((path, record))
+    records.sort()
+    return records
+
+
+def observe(root):
+    """One scan of the checkout: HEAD, the status records, and every reviewable file's raw entry.
+
+    The status records carry the index's and HEAD's object ids and modes per changed path. The
+    manifest maps every file Git would review, tracked or untracked and not ignored, nested
+    repositories recursively, to a hash of its raw working-tree content with its executable bit,
+    or of its symlink target; an absent path is left out, so staging a deletion or a rename changes
+    nothing there. Raw content, because `git status` calls a file clean when its content after the
+    clean filter matches the index, so the records alone would miss a change a filter strips. The
+    content digest is the manifest's; the digest is HEAD, the records and the content together."""
+    head = git(root, "rev-parse", "--verify", "--quiet", "HEAD", check=False)
+    head_id = head.stdout.decode().strip() if head.returncode == 0 else "unborn"
+    listed = git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard").stdout
+    manifest = {}
+    repositories = []  # submodules, listed by the index as gitlinks, and untracked nested repositories
+    content = hashlib.sha256()
+    # An untracked nested repository is listed as `dir/`, a gitlink as `dir`: one path either way.
+    for path in sorted(set(field.rstrip(b"/") for field in listed.split(b"\0") if field)):
+        entry = worktree_entry(root, path)
+        if entry != b"missing":
+            entry_hash = hashlib.sha256(entry).hexdigest()
+            manifest[path.decode("utf-8", "surrogateescape")] = entry_hash
+            content.update(path + b"\0" + entry_hash.encode() + b"\0")
+            if entry.startswith(b"repository\0"):
+                repositories.append(path.decode("utf-8", "surrogateescape"))
+    content_digest = "sha256:" + content.hexdigest()
+    digest = hashlib.sha256()
+    digest.update(b"HEAD " + head_id.encode() + b"\n")
+    for path, record in status_records(root):
+        digest.update(record + b"\0")
+    digest.update(content_digest.encode() + b"\n")
+    return {
+        "head": head_id, "digest": "sha256:" + digest.hexdigest(), "contentDigest": content_digest,
+        "manifest": manifest, "repositories": repositories,
+    }
+
+
+def manifest_changes(before, after):
+    """The paths whose entry differs between two manifests, sorted."""
+    return sorted(
+        path for path in set(before) | set(after) if before.get(path) != after.get(path)
+    )
+
+
+def tree_of_worktree(root, index):
+    """The working tree written as a Git tree object through the scratch index `index`.
+
+    The scratch index starts as a copy of the user's index entries, so the tracked paths are the
+    checkout's, staged additions and removals included, whatever the ignore rules say of them;
+    `git add -A` then applies the ignore rules to untracked files only. The user's index, HEAD
+    and files are untouched."""
+    env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+    index.unlink(missing_ok=True)  # git refuses an empty index file; it accepts an absent one
+    try:
+        entries = git(root, "ls-files", "-z", "--stage").stdout
+        for command, stdin in (
+            (["git", "update-index", "-z", "--index-info"], entries),
+            (["git", "add", "-A", "--", "."], None),
+            (["git", "write-tree"], None),
+        ):
+            completed = subprocess.run(command, cwd=root, env=env, input=stdin, capture_output=True, check=False)
+            if completed.returncode != 0:
+                raise GitFailure(
+                    " ".join(command) + " failed while writing the working tree as a Git tree",
+                    stderr=completed.stderr.decode(errors="replace")[-500:],
+                )
+        return completed.stdout.decode().strip()
+    finally:
+        index.unlink(missing_ok=True)
+
+
+def tree_of_index(root, index):
+    """The user's index written as a Git tree object through a scratch copy, the index untouched."""
+    env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+    index.unlink(missing_ok=True)
+    try:
+        entries = git(root, "ls-files", "-z", "--stage").stdout
+        for command, stdin in ((["git", "update-index", "-z", "--index-info"], entries), (["git", "write-tree"], None)):
+            completed = subprocess.run(command, cwd=root, env=env, input=stdin, capture_output=True, check=False)
+            if completed.returncode != 0:
+                raise GitFailure(
+                    " ".join(command) + " failed while writing the index as a Git tree",
+                    stderr=completed.stderr.decode(errors="replace")[-500:],
+                )
+        return completed.stdout.decode().strip()
+    finally:
+        index.unlink(missing_ok=True)
+
+
+def snapshot(review, round_number, observation):
+    """The working tree as a Git tree object, held by refs/ko-review/<review>/round-NNN.
+
+    A read-only Git directory, a linked worktree's, refuses the writes; the round then has no
+    snapshot and the digest alone binds it. `excludes` names the nested repositories, found by the
+    observation, whose contents a tree cannot hold; the digest covers them."""
+    ref = f"refs/ko-review/{review.id}/round-{round_number:03d}"
+    taken = {"round": round_number, "ref": None, "tree": None, "excludes": observation["repositories"]}
+    try:
+        tree = tree_of_worktree(review.root, review.round_path(round_number, "index"))
+        git(review.root, "update-ref", ref, tree)
+    except GitFailure as ex:
+        return {**taken, "error": (ex.message + " " + str(ex.detail.get("stderr", "")))[-300:]}
+    return {**taken, "ref": ref, "tree": tree}
+
+
+def attach_transcript(review, taken, text):
+    """The round's transcript as a tag object on the round's ref, which then peels to the tree:
+    `git show <ref>` prints the transcript, `git diff` between refs still compares trees, and
+    `git tag` lists none of it. The tagger is the helper, since neither the user nor Codex wrote the
+    whole message. Without a snapshot there is no ref to carry it. A failure leaves the ref on the
+    tree and its diagnostic in the snapshot's `transcriptError`, which the JSON output carries."""
+    if not taken.get("ref"):
+        return None
+    tagged = datetime.datetime.now().astimezone()
+    header = (
+        f"object {taken['tree']}\ntype tree\ntag round-{taken['round']:03d}\n"
+        f"tagger ko-review <ko-review@ko-agent-sandbox> {int(tagged.timestamp())} {tagged.strftime('%z')}\n\n"
+    )
+    try:
+        written = subprocess.run(
+            ["git", "mktag"], cwd=review.root, input=(header + text.rstrip("\n") + "\n").encode(),
+            capture_output=True, check=False,
+        )
+        if written.returncode != 0:
+            raise GitFailure("git mktag failed", stderr=written.stderr.decode(errors="replace")[-300:])
+        tag = written.stdout.decode().strip()
+        git(review.root, "update-ref", taken["ref"], tag)
+    except GitFailure as ex:
+        taken["transcriptError"] = (ex.message + " " + str(ex.detail.get("stderr", ""))).strip()[-300:]
+        return None
+    return tag
+
+
+def snapshot_refs(review):
+    completed = git(review.root, "for-each-ref", "--format=%(refname)", f"refs/ko-review/{review.id}/", check=False)
+    return completed.stdout.decode().split() if completed.returncode == 0 else []
+
+
+def resolve_base(root, ref):
+    completed = git(root, "rev-parse", "--verify", "--quiet", ref + "^{commit}", check=False)
+    if completed.returncode != 0:
+        raise ReviewError("BASE_UNKNOWN", f"{ref} is not a commit in this repository")
+    return {"ref": ref, "commit": completed.stdout.decode().strip()}
+
+
+def state_root():
+    """Inside ko-agent-sandbox the project's persistent volume; elsewhere the user's state directory."""
+    override = os.environ.get("KO_REVIEW_STATE")
+    if override:
+        return Path(override)
+    volume = Path.home() / "persistent-volume"
+    if volume.is_dir():
+        return volume / "ko-review"
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "ko-review"
+
+
+def repository_dir(root):
+    directory = state_root() / "repositories" / hashlib.sha256(str(root).encode()).hexdigest()
+    directory.mkdir(parents=True, exist_ok=True)
+    marker = directory / "repository.json"
+    if not marker.exists():
+        write_json_atomically(marker, {"repository": str(root)})
+    return directory
+
+
+def write_json_atomically(path, data):
+    descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(descriptor, "w") as stream:
+            json.dump(data, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        os.unlink(temporary)
+        raise
+
+
+class Review:
+    def __init__(self, root, review_id):
+        self.root = root
+        self.id = review_id
+        self.dir = repository_dir(root) / "reviews" / review_id
+        self.rounds = self.dir / "rounds"
+        self.state_path = self.dir / "state.json"
+        self.journal_path = self.dir / "journal.jsonl"
+        self.lock_path = self.dir / "review.lock"
+        self.state = None
+        self.lock_file = None
+
+    @staticmethod
+    def open(root, review_id):
+        """The review locked, then loaded: what it says is what the command acts on."""
+        review = Review(root, review_id)
+        if not review.state_path.exists():
+            raise ReviewError("UNKNOWN_REVIEW", f"no review {review_id} for {root}")
+        review.lock()
+        return review.load()
+
+    @staticmethod
+    def create(root, max_rounds, reviewer):
+        """A review named by its local start time, so refs and directories list in order, plus a
+        random suffix; a name already taken, within one minute, is drawn again."""
+        global CURRENT_REVIEW
+        while True:
+            started = datetime.datetime.now().astimezone().strftime("%Y-%m-%d-%H%M")
+            review = Review(root, f"{started}-{secrets.token_hex(4)}")
+            try:
+                review.rounds.mkdir(parents=True)
+                break
+            except FileExistsError:
+                continue
+        CURRENT_REVIEW = review
+        review.state = {
+            "schemaVersion": SCHEMA_VERSION,
+            "reviewId": review.id,
+            "repository": str(root),
+            "reviewer": reviewer,
+            "status": "NEW",
+            "round": 0,
+            "maxRounds": max_rounds,
+            "codexThreadId": None,
+            "codexVersion": codex_version(),
+            "pluginVersion": PLUGIN_VERSION,
+            "claudeSessionId": os.environ.get("CLAUDE_SESSION_ID"),
+            "createdAt": now(),
+            "updatedAt": None,
+            "base": None,
+            "instructions": None,
+            "codexModel": None,
+            "codexEffort": None,
+            "snapshots": [],
+            "lastReviewed": None,
+            "approved": None,
+            "lastError": None,
+        }
+        review.save()
+        return review
+
+    def load(self):
+        global CURRENT_REVIEW
+        if not self.state_path.exists():
+            raise ReviewError("UNKNOWN_REVIEW", f"no review {self.id} for {self.root}")
+        self.state = json.loads(self.state_path.read_text())
+        CURRENT_REVIEW = self
+        if self.state.get("schemaVersion") != SCHEMA_VERSION:
+            raise ReviewError("STATE_IO_FAILED", f"{self.state_path} has an unsupported schemaVersion")
+        return self
+
+    def save(self):
+        self.state["updatedAt"] = now()
+        write_json_atomically(self.state_path, self.state)
+
+    def lock(self):
+        self.lock_file = open(self.lock_path, "a")
+        try:
+            fcntl.flock(self.lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ReviewError("REVIEW_BUSY", f"another command holds review {self.id}; retry when it finishes")
+
+    def journal(self, entry):
+        entry = {"seq": self.journal_length() + 1, "at": now(), **entry}
+        with open(self.journal_path, "a") as stream:
+            stream.write(json.dumps(entry) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+
+    def journal_entries(self):
+        if not self.journal_path.exists():
+            return []
+        return [json.loads(line) for line in self.journal_path.read_text().splitlines() if line.strip()]
+
+    def round_transcript(self, round_number):
+        """The round's journal entries as Markdown, headed by the review and the round."""
+        entries = [entry for entry in self.journal_entries() if entry.get("round") == round_number]
+        return "\n".join([f"# Review {self.id}, round {round_number}", "", *render_entries(entries, False)])
+
+    def journal_length(self):
+        if not self.journal_path.exists():
+            return 0
+        with open(self.journal_path, "rb") as stream:
+            return sum(1 for line in stream if line.strip())
+
+    def round_path(self, round_number, suffix):
+        return self.rounds / f"{round_number:03d}-{suffix}"
+
+    def manifest_of(self, round_number):
+        path = self.round_path(round_number, "manifest.json")
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def freshness(self, observation=None):
+        """Whether the approval covers the current tree, and if not, why not.
+
+        By digest first. When the digest moved with HEAD or the index, as after the user stages or
+        commits the reviewed changes, the approval holds if the files' raw content is still the
+        approved one and the index, written as a tree, equals the approved snapshot's tree, so that
+        nothing unreviewed is staged. A changed HEAD alone is therefore never a reason."""
+        observation = observation or observe(self.root)
+        approved = self.state.get("approved")
+        fresh = approved is not None and approved["worktreeDigest"] == observation["digest"]
+        reasons = []
+        if not fresh and approved:
+            manifest = self.manifest_of(approved["round"])
+            if approved.get("contentDigest") != observation["contentDigest"]:
+                paths = manifest_changes(manifest, observation["manifest"]) if manifest is not None else []
+                reasons.append({"reason": "working files changed", "paths": paths})
+            elif approved.get("tree"):
+                try:
+                    index_tree = tree_of_index(self.root, self.dir / f"verify-index.{os.getpid()}")
+                    if index_tree == approved["tree"]:
+                        fresh = True
+                    else:
+                        staged = git(self.root, "diff-tree", "-r", "-z", "--name-only", approved["tree"], index_tree)
+                        paths = sorted(
+                            field.decode("utf-8", "surrogateescape") for field in staged.stdout.split(b"\0") if field
+                        )
+                        reasons.append({"reason": "unreviewed content staged", "paths": paths})
+                except GitFailure as ex:
+                    reasons.append({"reason": "the index could not be compared: " + ex.message, "paths": []})
+            else:
+                reasons.append({
+                    "reason": "HEAD or the index changed, and the round has no snapshot tree to compare with",
+                    "paths": [],
+                })
+        if approved is None and self.state.get("approvalCleared"):
+            reasons.append({"reason": self.state["approvalCleared"]["reason"], "paths": []})
+        status = self.state["status"]
+        if status == "APPROVED" and not fresh:
+            status = "STALE_APPROVAL"
+        return observation, fresh, status, reasons
+
+    def activity(self):
+        """What a round in progress shows: where its events land, and when the last one was
+        received, which is not proof that Codex is still working."""
+        if self.state["status"] != "REVIEWING":
+            return None
+        events = self.round_path(self.state["round"], "codex.jsonl")
+        last = None
+        if events.exists():
+            lines = [line for line in events.read_bytes().split(b"\n") if line.strip()]
+            if lines:
+                try:
+                    event = json.loads(lines[-1])
+                except ValueError:
+                    event = None
+                kind = event.get("type") if isinstance(event, dict) else None
+                received = datetime.datetime.fromtimestamp(events.stat().st_mtime, datetime.timezone.utc)
+                last = {"type": kind, "receivedAt": received.isoformat(timespec="seconds")}
+        started = self.state.get("turnStartedAt")
+        elapsed = None
+        if started:
+            since = datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(started)
+            elapsed = int(since.total_seconds())
+        return {
+            "round": self.state["round"], "eventsPath": str(events), "turnStartedAt": started,
+            "elapsedSeconds": elapsed, "lastEventReceived": last,
+        }
+
+    def inspect_lines(self):
+        """Command lines for the user to see how the review went; the skill relays them at the end."""
+        lines = [f"ko-review export {self.id}  # the transcript, one section per round"]
+        snapshots = [entry for entry in self.state.get("snapshots", []) if entry.get("ref")]
+        if snapshots and snapshots[-1].get("tag"):
+            lines.append(f"git show {snapshots[-1]['ref']}  # the last round's transcript, then its tree")
+        if len(snapshots) >= 2:
+            lines.append(f"git diff {snapshots[0]['ref']} {snapshots[-1]['ref']}  # what changed during the review")
+        approved = self.state.get("approved")
+        if approved and approved.get("ref"):
+            lines.append(f"ko-review diff {self.id}  # your tree against the approved one")
+        return lines
+
+    def summary(self, observation=None):
+        observation, fresh, status, reasons = self.freshness(observation)
+        return {
+            "reviewId": self.id,
+            "repository": str(self.root),
+            "reviewer": self.state.get("reviewer", "codex"),
+            "status": self.state["status"],
+            "effectiveStatus": status,
+            "round": self.state["round"],
+            "maxRounds": self.state["maxRounds"],
+            "instructions": self.state.get("instructions"),
+            "base": self.state.get("base"),
+            "codexModel": self.state.get("codexModel"),
+            "codexEffort": self.state.get("codexEffort"),
+            "snapshots": self.state.get("snapshots", []),
+            "codexThreadId": self.state["codexThreadId"],
+            "lastReviewed": self.state["lastReviewed"],
+            "approved": self.state["approved"],
+            "approvalFresh": fresh,
+            "staleReasons": reasons if status == "STALE_APPROVAL" else [],
+            "activity": self.activity(),
+            "currentHead": observation["head"],
+            "currentWorktreeDigest": observation["digest"],
+            "lastError": self.state["lastError"],
+            "createdAt": self.state["createdAt"],
+            "updatedAt": self.state["updatedAt"],
+            "statePath": str(self.state_path),
+            "journalPath": str(self.journal_path),
+            "inspect": self.inspect_lines(),
+        }
+
+
+def codex_version():
+    try:
+        return subprocess.run(["codex", "--version"], capture_output=True, text=True, check=False).stdout.strip()
+    except FileNotFoundError:
+        return None
+
+
+def check_codex_available():
+    if shutil.which("codex") is None:
+        raise ReviewError("CODEX_FAILED", "codex is not on PATH")
+    # Codex knows its credential stores (auth.json or the OS keyring); the helper does not.
+    status = subprocess.run(["codex", "login", "status"], capture_output=True, text=True, check=False, timeout=60)
+    if status.returncode != 0:
+        raise ReviewError(
+            "CODEX_AUTH_FAILED", "codex is not signed in: run `codex` in this project's sandbox, sign in, and retry",
+            loginStatus=(status.stdout + status.stderr).strip()[-500:],
+        )
+
+
+def openai_hosts_allowed():
+    """None outside the sandbox; otherwise whether the ruleset the launcher exports allows an OpenAI host."""
+    ruleset = os.environ.get("KO_AGENT_SANDBOX_EGRESS_RULESET")
+    if not ruleset:
+        return None
+    return any(f"allow https://{host}/" in ruleset for host in OPENAI_HOSTS)
+
+
+def check_egress():
+    if openai_hosts_allowed() is False:
+        raise ReviewError(
+            "CODEX_EGRESS_DENIED",
+            "the egress ruleset allows no OpenAI host: relaunch the session under an egress profile that allows both"
+            " providers, normally the default, and retry",
+            profile=os.environ["KO_AGENT_SANDBOX_EGRESS_RULESET"].splitlines()[0],
+        )
+
+
+def egress_diagnostics():
+    checker = shutil.which("ko-sandbox-egress-check")
+    if checker is None:
+        return None
+    lines = []
+    for host in OPENAI_HOSTS:
+        completed = subprocess.run([checker, host], capture_output=True, text=True, check=False, timeout=60)
+        lines.extend((completed.stdout + completed.stderr).splitlines())
+    return lines
+
+
+RESULT_KEYS = {"disposition", "summary", "findings", "userDecision"}
+FINDING_KEYS = {"id", "severity", "location", "description", "evidence"}
+USER_DECISION_KEYS = {"issue", "codexPosition", "whyTechnicalEvidenceCannotDecide", "decisionRequested"}
+
+
+def validate_result(result):
+    """The checks the schema states, applied to what Codex returned: `--output-schema` asks the
+    model for the shape but the helper decides."""
+    if not isinstance(result, dict):
+        return "result is not an object"
+    if set(result) != RESULT_KEYS:
+        return "result keys are not exactly " + ", ".join(sorted(RESULT_KEYS))
+    if not isinstance(result["disposition"], str) or result["disposition"] not in DISPOSITIONS:
+        return "disposition is not one of " + ", ".join(sorted(DISPOSITIONS))
+    if not isinstance(result["summary"], str):
+        return "summary is not a string"
+    findings = result["findings"]
+    if not isinstance(findings, list):
+        return "findings is not an array"
+    for finding in findings:
+        if not isinstance(finding, dict) or set(finding) != FINDING_KEYS:
+            return "a finding's keys are not exactly " + ", ".join(sorted(FINDING_KEYS))
+        if not isinstance(finding["id"], str):
+            return "a finding's id is not a string"
+        if not isinstance(finding["severity"], str) or finding["severity"] not in SEVERITIES:
+            return f"finding {finding['id']} has no severity"
+        if finding["location"] is not None and not isinstance(finding["location"], str):
+            return f"finding {finding['id']}: location is neither a string nor null"
+        if not all(isinstance(finding[key], str) for key in ("description", "evidence")):
+            return f"finding {finding['id']}: description and evidence must be strings"
+    decision = result["userDecision"]
+    if result["disposition"] == "USER_DECISION_REQUIRED":
+        if not isinstance(decision, dict) or set(decision) != USER_DECISION_KEYS \
+                or not all(isinstance(value, str) for value in decision.values()):
+            return "USER_DECISION_REQUIRED without a complete userDecision"
+    elif decision is not None:
+        return "userDecision given without USER_DECISION_REQUIRED"
+    if result["disposition"] == "APPROVED" and findings:
+        return "APPROVED with findings"
+    return None
+
+
+def classify_failure(returncode, stderr, events):
+    failures = [event for event in events if event.get("type") in ("turn.failed", "error")]
+    messages = [json.dumps(event.get("error", event.get("message"))) for event in failures]
+    text = stderr + "\n" + "\n".join(messages)
+    lowered = text.lower()
+    detail = {"exitStatus": returncode, "stderr": stderr[-2000:], "events": messages[-5:]}
+    if returncode < 0:
+        return ReviewError("TURN_INTERRUPTED", f"codex ended by signal {-returncode}", **detail)
+    if "no rollout found" in lowered:
+        return ReviewError(
+            "CODEX_FAILED", "codex no longer has this review's thread; start a new review", **detail,
+        )
+    if re.search(r"not logged in|login required|unauthorized|401|refresh token|reauthenticate", lowered):
+        return ReviewError(
+            "CODEX_AUTH_FAILED", "codex is not signed in: run `codex` in this project's sandbox, sign in, and retry",
+            **detail,
+        )
+    if re.search(r"403|proxy|connect tunnel|tls|network|dns|connection refused|timed out", lowered):
+        return ReviewError(
+            "CODEX_EGRESS_DENIED",
+            "codex could not reach its provider; the diagnostics show what the proxy answered",
+            egressCheck=egress_diagnostics(), **detail,
+        )
+    return ReviewError("CODEX_FAILED", "codex failed", **detail)
+
+
+def stream_events(review, process, prompt, resume_id, timeout, events_path):
+    """Feeds the prompt, copies Codex's JSONL to the round's file and parses it as it arrives.
+
+    The thread id is persisted the moment `thread.started` arrives: whatever ends the turn after
+    that, a timeout, an interrupt or unparsable later output, the thread holds the request and a
+    retry resumes it. Any exception kills Codex and waits for it before propagating, so no turn
+    outlives the lock that serialized it. Returns the events, the first thread id or None, the
+    first line that is not JSON or None, and whether the timeout killed Codex."""
+    def feed():
+        try:
+            process.stdin.write(prompt.encode())
+            process.stdin.close()
+        except BrokenPipeError:
+            pass
+
+    def kill():
+        timed_out.append(True)
+        os.killpg(process.pid, signal.SIGKILL)
+
+    timed_out = []
+    timer = None
+    events = []
+    started = None
+    bad_line = None
+    try:
+        threading.Thread(target=feed, daemon=True).start()
+        timer = threading.Timer(timeout, kill)
+        timer.start()
+        with open(events_path, "wb") as events_stream:
+            for line in process.stdout:
+                events_stream.write(line)
+                events_stream.flush()
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    event = json.loads(stripped)
+                except ValueError:
+                    if bad_line is None:
+                        bad_line = stripped[:200].decode(errors="replace")
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                events.append(event)
+                if started is None and event.get("type") == "thread.started" \
+                        and isinstance(event.get("thread_id"), str):
+                    started = event["thread_id"]
+                    if resume_id is None:
+                        review.state["codexThreadId"] = started
+                        review.save()
+        process.wait()
+    except BaseException as raised:
+        # A second signal here would abandon the child again.
+        for signum in TERMINATING_SIGNALS:
+            signal.signal(signum, signal.SIG_IGN)
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+        if isinstance(raised, KeyboardInterrupt):
+            raise ReviewError("TURN_INTERRUPTED", "interrupted while codex ran")
+        raise
+    finally:
+        if timer is not None:
+            timer.cancel()
+    return events, started, bad_line, bool(timed_out)
+
+
+def run_codex(review, round_number, prompt, resume_id, timeout):
+    input_path = review.round_path(round_number, "input.md")
+    input_path.write_text(prompt)
+    events_path = review.round_path(round_number, "codex.jsonl")
+    stderr_path = review.round_path(round_number, "codex.stderr")
+    result_path = review.round_path(round_number, "result.json")
+    command = ["codex", "exec"]
+    if resume_id is not None:
+        command += ["resume", resume_id]
+    if review.state.get("codexModel"):
+        command += ["--model", review.state["codexModel"]]
+    if review.state.get("codexEffort"):
+        command += ["-c", "model_reasoning_effort=" + json.dumps(review.state["codexEffort"])]
+    command += [
+        "--json", "--output-schema", str(RESULT_SCHEMA), "--output-last-message", str(result_path), "-",
+    ]
+    with open(stderr_path, "wb") as stderr_stream:
+        # cwd, not `-C`: `codex exec resume` has no `-C`, and both forms refuse a cwd outside a
+        # trusted directory.
+        process = subprocess.Popen(
+            command, cwd=review.root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr_stream,
+            start_new_session=True,
+        )
+        events, started, bad_line, timed_out = stream_events(review, process, prompt, resume_id, timeout, events_path)
+    stderr = stderr_path.read_bytes().decode(errors="replace")
+    if timed_out:
+        raise ReviewError("TURN_INTERRUPTED", f"codex exceeded {timeout} seconds and was killed")
+    if process.returncode != 0 or any(event.get("type") in ("turn.failed", "error") for event in events):
+        raise classify_failure(process.returncode, stderr, events)
+    if bad_line is not None:
+        raise ReviewError("INVALID_RESULT", "codex printed a line that is not JSON", line=bad_line)
+    if started is None:
+        raise ReviewError("CODEX_FAILED", "codex ended without a thread.started event", stderr=stderr[-2000:])
+    if resume_id is not None and started != resume_id:
+        raise ReviewError(
+            "CODEX_RESUME_MISMATCH", "codex resumed a different thread than this review's",
+            expected=resume_id, actual=started,
+        )
+    if not result_path.exists():
+        raise ReviewError("INVALID_RESULT", "codex wrote no final message")
+    try:
+        result = json.loads(result_path.read_text())
+    except ValueError as ex:
+        raise ReviewError("INVALID_RESULT", f"codex's final message is not JSON: {ex}")
+    problem = validate_result(result)
+    if problem is not None:
+        raise ReviewError(
+            "INVALID_RESULT", "codex's final message does not follow the schema: " + problem, result=result,
+        )
+    return result
+
+
+def review_turn(review, message):
+    """One Codex turn under the review's lock: the state machine's REVIEWING edge and its exits.
+
+    Until a round has completed, the turn is the review request, on the thread an earlier failed
+    attempt opened if there is one."""
+    state = review.state
+    first = state["lastReviewed"] is None
+    if state["status"] in TERMINAL:
+        raise ReviewError("REVIEW_CLOSED", f"review {review.id} is {state['status']}; start a new review")
+    if state["round"] >= state["maxRounds"]:
+        state["status"] = "LOOP_LIMIT_REACHED"
+        review.save()
+        raise ReviewError("LOOP_LIMIT_REACHED", f"review {review.id} reached {state['maxRounds']} rounds")
+    check_codex_available()
+    check_egress()
+    round_number = state["round"] + 1
+    before = observe(review.root)
+    prompt_file = "reviewer.md" if first else "continue.md"
+    heading = "# Review request from the author" if first else f"# The author's response, round {round_number}"
+    prompt = (PLUGIN_ROOT / "prompts" / prompt_file).read_text()
+    if state.get("instructions"):
+        # Every round, so that they stay in force however long the thread grows.
+        prompt += (
+            "\n---\n\n# Instructions from the user\n\nThese take precedence over the reviewer instructions"
+            " above.\n\n" + state["instructions"].rstrip("\n") + "\n"
+        )
+    base = state.get("base")
+    scope = (
+        f"Review the changes since `{base['ref']}`, commit {base['commit']}: `git diff {base['commit']}` shows"
+        " them, committed since then or not, plus untracked files."
+        if base else
+        "Review the working tree's changes against HEAD: `git diff HEAD` plus untracked files."
+    )
+    prompt += "\n---\n\n# Scope\n\n" + scope + "\n"
+    prompt += "\n---\n\n" + heading + "\n\n" + message.rstrip("\n") + "\n"
+    previous_status = state["status"]
+    state["status"] = "REVIEWING"
+    state["round"] = round_number
+    state["lastError"] = None
+    state["turnStartedAt"] = now()
+    review.save()
+    try:
+        write_json_atomically(review.round_path(round_number, "manifest.json"), before["manifest"])
+        taken = snapshot(review, round_number, before)
+        state.setdefault("snapshots", []).append(taken)
+        review.journal({
+            "round": round_number, "actor": "author", "kind": "review-request" if first else "review-response",
+            "text": message, "head": before["head"], "worktreeDigest": before["digest"], "snapshot": taken,
+        })
+        result = run_codex(review, round_number, prompt, state["codexThreadId"], state["timeoutSeconds"])
+        after = observe(review.root)  # a second observation: what Codex reviewed must be what is still there
+        if after["digest"] != before["digest"]:
+            raise ReviewError(
+                "WORKTREE_CHANGED_DURING_REVIEW",
+                "the working tree changed while codex reviewed it; the result is discarded, review again",
+                before=before["digest"], after=after["digest"],
+                paths=manifest_changes(before["manifest"], after["manifest"]),
+            )
+    except BaseException as raised:
+        ex = raised if isinstance(raised, ReviewError) else ReviewError("HELPER_FAILED", repr(raised))
+        state["status"] = previous_status
+        state["lastError"] = {"round": round_number, "at": now(), **ex.to_json()}
+        review.save()
+        review.journal({"round": round_number, "actor": "helper", "kind": "error", **ex.to_json()})
+        if state.get("snapshots") and state["snapshots"][-1]["round"] == round_number:
+            state["snapshots"][-1]["tag"] = attach_transcript(
+                review, state["snapshots"][-1], review.round_transcript(round_number),
+            )
+            review.save()
+        raise ex
+    state["status"] = {"USER_DECISION_REQUIRED": "USER_PROPOSED"}.get(result["disposition"], result["disposition"])
+    reviewed = {
+        "head": before["head"], "worktreeDigest": before["digest"], "contentDigest": before["contentDigest"],
+        "round": round_number, "ref": taken["ref"], "tree": taken["tree"], "excludes": taken["excludes"],
+    }
+    state["lastReviewed"] = reviewed
+    state["approvalCleared"] = None
+    if result["disposition"] == "APPROVED":
+        state["approved"] = {**reviewed, "at": now()}
+    else:
+        state["approved"] = None
+    review.save()
+    review.journal({
+        "round": round_number, "actor": "codex", "kind": "review-result", "disposition": result["disposition"],
+        "result": result,
+    })
+    taken["tag"] = attach_transcript(review, taken, review.round_transcript(round_number))
+    review.save()
+    return {
+        **review.summary(after),
+        "disposition": result["disposition"],
+        "summary": result["summary"],
+        "findings": result["findings"],
+        "userDecision": result["userDecision"],
+    }
+
+
+def check_scope(root, base):
+    """Refuse a review of nothing: a Codex turn on an empty scope yields an approval that looks like
+    one of the session's committed work, which only `--base` brings into scope.
+
+    The scope is what Codex is told to look at, the working tree against the base commit, HEAD
+    without `--base`, plus untracked files; a dirty checkout whose edits restore the base's
+    content is empty too. External diff drivers and submodule settings could hide a change, so
+    the comparison runs without them."""
+    if any(record[:1] == b"?" for path, record in status_records(root)):
+        return
+    if base is None and git(root, "rev-parse", "--verify", "--quiet", "HEAD", check=False).returncode != 0:
+        # Unborn HEAD: the whole working tree is the scope. The index lists a staged file after its
+        # deletion from disk, so what counts is a listed file that is still there.
+        listed = git(root, "ls-files", "-z").stdout.split(b"\0")
+        if any(path and worktree_entry(root, path) != b"missing" for path in listed):
+            return
+        raise ReviewError("NOTHING_TO_REVIEW", "the repository has no files, so nothing is in the review's scope")
+    against = base["commit"] if base else "HEAD"
+    compared = git(
+        root, "diff", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", against, check=False,
+    )
+    if compared.returncode == 1:
+        return
+    if compared.returncode != 0:
+        raise GitFailure(f"git diff --quiet {against} failed", stderr=compared.stderr.decode(errors="replace")[-500:])
+    raise ReviewError(
+        "NOTHING_TO_REVIEW",
+        f"the working tree equals {base['ref'] if base else 'HEAD'}, so nothing is in the review's scope"
+        + ("" if base else "; to review commits made since a branch or commit, pass `--base REF`"),
+    )
+
+
+def read_message(path):
+    try:
+        message = Path(path).read_text()
+    except OSError as ex:
+        raise ReviewError("MESSAGE_UNREADABLE", f"cannot read {path}: {ex}")
+    if not message.strip():
+        raise ReviewError("MESSAGE_UNREADABLE", f"{path} is empty")
+    return message
+
+
+def command_start(args):
+    root = repository_root(args.repository)
+    message = read_message(args.message_file)
+    instructions = read_message(args.instructions_file) if args.instructions_file else None
+    base = resolve_base(root, args.base) if args.base else None
+    check_scope(root, base)
+    review = Review.create(root, args.max_rounds, args.reviewer)
+    review.state["timeoutSeconds"] = args.timeout
+    review.state["instructions"] = instructions
+    review.state["base"] = base
+    review.state["codexModel"] = args.model
+    review.state["codexEffort"] = args.effort
+    review.save()
+    review.lock()
+    if instructions is not None:
+        review.journal({"round": 1, "actor": "user", "kind": "instructions", "text": instructions})
+    return review_turn(review, message)
+
+
+def command_continue(args):
+    root = repository_root(args.repository)
+    message = read_message(args.message_file)
+    instructions = read_message(args.instructions_file) if args.instructions_file else None
+    review = Review.open(root, args.review_id)
+    if review.state.get("reviewer", "codex") not in REVIEWERS:
+        raise ReviewError(
+            "REVIEWER_UNSUPPORTED", f"review {review.id} is a {review.state['reviewer']} review; this helper runs "
+            + ", ".join(REVIEWERS),
+        )
+    if instructions is not None:
+        # Codex never approved the tree under these instructions.
+        review.state["instructions"] = instructions
+        if review.state.get("approved"):
+            review.state["approvalCleared"] = {
+                "reason": "the review instructions changed after the approval", "round": review.state["round"] + 1,
+                "at": now(),
+            }
+        review.state["approved"] = None
+        review.save()
+        review.journal({
+            "round": review.state["round"] + 1, "actor": "user", "kind": "instructions", "text": instructions,
+        })
+    return review_turn(review, message)
+
+
+def command_escalate(args):
+    root = repository_root(args.repository)
+    message = read_message(args.message_file)
+    review = Review.open(root, args.review_id)
+    if review.state["status"] != "USER_PROPOSED":
+        raise ReviewError(
+            "ESCALATION_NOT_PROPOSED",
+            f"review {review.id} is {review.state['status']}: escalate only after codex asked for the user's decision",
+        )
+    review.state["status"] = "USER_DECISION_REQUIRED"
+    review.save()
+    review.journal({"round": review.state["round"], "actor": "author", "kind": "escalation", "text": message})
+    return review.summary()
+
+
+def command_verify(args):
+    root = repository_root(args.repository)
+    review = Review(root, args.review_id).load()
+    summary = review.summary()
+    if summary["effectiveStatus"] != "APPROVED":
+        raise ReviewError(
+            "NOT_APPROVED", f"review {review.id} is {summary['effectiveStatus']}, not an approval of the current tree",
+            **summary,
+        )
+    return summary
+
+
+def command_show(args):
+    root = repository_root(args.repository)
+    return Review(root, args.review_id).load().summary()
+
+
+def command_list(args):
+    root = repository_root(args.repository)
+    reviews_dir = repository_dir(root) / "reviews"
+    summaries = []
+    if reviews_dir.exists():
+        observation = observe(root)  # one scan for every review's freshness
+        for entry in reviews_dir.iterdir():
+            if (entry / "state.json").exists():
+                summaries.append(Review(root, entry.name).load().summary(observation))
+    summaries.sort(key=lambda summary: summary["createdAt"])
+    return {"repository": str(root), "reviews": summaries}
+
+
+def shifted(markdown):
+    """The message's headings one level down, so that the transcript's own structure holds."""
+    return "\n".join("#" + line if line.startswith("#") else line for line in markdown.rstrip("\n").splitlines())
+
+
+def render_entries(entries, with_round_headings=True):
+    """The journal entries as Markdown: the export's body, and a round's transcript on its ref."""
+    lines = []
+    current_round = None
+    for entry in entries:
+        if with_round_headings and entry.get("round") != current_round:
+            current_round = entry.get("round")
+            lines += [f"## Round {current_round}", ""]
+        taken = entry.get("snapshot")
+        if taken and taken.get("ref"):
+            lines.append(f"Snapshot: `{taken['ref']}` (tree {taken['tree']})")
+            if taken.get("excludes"):
+                lines.append("The snapshot holds only the commit ids of: " + ", ".join(taken["excludes"]))
+            lines.append("")
+        if entry["actor"] == "user":
+            lines += ["### Instructions from the user, from this round on", "", shifted(entry["text"]), ""]
+        elif entry["actor"] == "author" and entry["kind"] in ("review-request", "review-response"):
+            lines += ["### The author", "", shifted(entry["text"]), ""]
+        elif entry["actor"] == "author":
+            lines += ["### The author agreed that the user must decide", "", shifted(entry["text"]), ""]
+        elif entry["actor"] == "codex":
+            result = entry["result"]
+            lines += [f"### Codex: {result['disposition']}", "", result["summary"], ""]
+            for finding in result["findings"]:
+                where = f" `{finding['location']}`" if finding.get("location") else ""
+                lines.append(f"- **{finding['id']}** ({finding['severity']}){where}: {finding['description']}")
+                lines.append(f"  Evidence: {finding['evidence']}")
+            if result["findings"]:
+                lines.append("")
+            if result.get("userDecision"):
+                decision = result["userDecision"]
+                lines += [
+                    f"- Issue: {decision['issue']}", f"- Codex's position: {decision['codexPosition']}",
+                    f"- Why evidence cannot decide: {decision['whyTechnicalEvidenceCannotDecide']}",
+                    f"- Decision requested: {decision['decisionRequested']}", "",
+                ]
+        else:
+            lines += [f"### Error: {entry.get('code')}", "", entry.get("message", ""), ""]
+    return lines
+
+
+def command_export(args):
+    root = repository_root(args.repository)
+    review = Review(root, args.review_id).load()
+    state = review.state
+    lines = [f"# Codex review {review.id}", ""]
+    lines += [f"- Repository: {state['repository']}", f"- Status: {review.freshness()[2]}"]
+    if state.get("base"):
+        lines.append(f"- Base: {state['base']['ref']} ({state['base']['commit']})")
+    lines += [f"- Codex thread: {state['codexThreadId']}", f"- Started: {state['createdAt']}", ""]
+    lines += render_entries(review.journal_entries())
+    lines += ["## How to see how it went", "", "```sh", *review.inspect_lines(), "```", ""]
+    sys.stdout.write("\n".join(lines))
+    return None
+
+
+def command_diff(args):
+    """The working tree against a round's snapshot, untracked files included: `git diff <tree>`
+    alone reads the user's index and reports an untracked file as deleted."""
+    root = repository_root(args.repository)
+    review = Review(root, args.review_id).load()
+    snapshots = [entry for entry in review.state.get("snapshots", []) if entry.get("ref")]
+    if args.round is not None:
+        chosen = [entry for entry in snapshots if entry["round"] == args.round]
+    elif review.state.get("approved") and review.state["approved"].get("ref"):
+        chosen = [review.state["approved"]]
+    else:
+        chosen = snapshots[-1:]
+    if not chosen:
+        raise ReviewError("NO_SNAPSHOT", f"review {review.id} has no snapshot for that round")
+    descriptor, scratch = tempfile.mkstemp(dir=review.dir, prefix="diff-index.")  # one per invocation
+    os.close(descriptor)
+    current = tree_of_worktree(root, Path(scratch))
+    sys.stdout.flush()
+    completed = subprocess.run(["git", "diff", *args.git_args, chosen[0]["tree"], current], cwd=root, check=False)
+    if completed.returncode != 0:
+        raise ReviewError("GIT_FAILED", "git diff failed")
+    return None
+
+
+def command_delete(args):
+    root = repository_root(args.repository)
+    review = Review.open(root, args.review_id)
+    refs = snapshot_refs(review)
+    for ref in refs:
+        git(root, "update-ref", "-d", ref)
+    shutil.rmtree(review.dir)
+    return {"reviewId": review.id, "removedRefs": refs, "removedDirectory": str(review.dir)}
+
+
+def codex_config_layers(root):
+    """The local configuration files Codex reads for this repository, highest precedence first:
+    the project's `.codex/config.toml` when the user configuration trusts the project, the user
+    configuration, the image's system layer. Codex's cloud-managed layer is not on disk."""
+    user = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml"
+    layers = [user, Path("/etc/codex/config.toml")]
+    project = root / ".codex/config.toml"
+    if project.is_file() and user.is_file():
+        try:
+            trust = tomllib.loads(user.read_text()).get("projects", {}).get(str(root), {}).get("trust_level")
+        except tomllib.TOMLDecodeError:
+            trust = None
+        if trust == "trusted":
+            layers.insert(0, project)
+    return layers
+
+
+def codex_catalog():
+    """Codex's model catalog with each model's efforts; None when Codex cannot render it."""
+    try:
+        rendered = subprocess.run(["codex", "debug", "models"], capture_output=True, text=True, check=True, timeout=60)
+        models = json.loads(rendered.stdout)["models"]
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+        return None
+    return [
+        {
+            "model": model.get("slug"),
+            "defaultEffort": model.get("default_reasoning_level"),
+            "efforts": [level.get("effort") for level in model.get("supported_reasoning_levels", [])],
+        }
+        for model in models if isinstance(model, dict) and model.get("slug")
+    ]
+
+
+def command_defaults(args):
+    """The model and reasoning effort Codex's local configuration selects for this repository, for the
+    skill to offer first. `partial` says that a cloud-managed layer, which Codex ranks above the
+    user's file, could still name others; an explicit `--model` or `--effort` removes the doubt.
+    `recommended` fills a missing effort from the catalog's default for the model; a value still
+    null there is Codex's built-in default, which the skill leaves to Codex by passing no option."""
+    root = repository_root(args.repository)
+    found = {"model": None, "effort": None, "source": {"model": None, "effort": None}, "partial": True}
+    for layer in codex_config_layers(root):
+        if not layer.is_file():
+            continue
+        try:
+            config = tomllib.loads(layer.read_text())
+        except (tomllib.TOMLDecodeError, OSError) as ex:
+            raise ReviewError("CODEX_CONFIG_UNREADABLE", f"{layer}: {ex}")
+        for key, name in (("model", "model"), ("model_reasoning_effort", "effort")):
+            if found[name] is None and isinstance(config.get(key), str):
+                found[name] = config[key]
+                found["source"][name] = str(layer)
+    found["catalog"] = codex_catalog()
+    entry = next((model for model in found["catalog"] or [] if model["model"] == found["model"]), None)
+    found["recommended"] = {
+        "model": found["model"],
+        "effort": found["effort"] or (entry["defaultEffort"] if entry else None),
+        "efforts": entry["efforts"] if entry else None,
+    }
+    return found
+
+
+def command_digest(args):
+    root = repository_root(args.repository)
+    observation = observe(root)
+    return {
+        "repository": str(root), "head": observation["head"], "worktreeDigest": observation["digest"],
+        "contentDigest": observation["contentDigest"], "files": len(observation["manifest"]),
+    }
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--repository", default=os.getcwd(), help="a directory inside the working tree (default: cwd)")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    def add(name, handler, help_text, review_id=False, message=False, reviewer=False):
+        sub = commands.add_parser(name, help=help_text)
+        if reviewer:
+            # `start codex`: the review records its reviewer, and `continue` reads it from there, so
+            # that another reviewer can be added beside Codex.
+            sub.add_argument("reviewer", choices=REVIEWERS)
+        if review_id:
+            sub.add_argument("review_id")
+        if message:
+            sub.add_argument("--message-file", required=True)
+        sub.set_defaults(handler=handler)
+        return sub
+
+    start = add("start", command_start, "review the working tree on a new reviewer thread", message=True, reviewer=True)
+    start.add_argument("--max-rounds", type=int, default=DEFAULT_MAX_ROUNDS)
+    start.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS, help="seconds per Codex turn")
+    start.add_argument(
+        "--instructions-file", help="the user's instructions to Codex, added to every round of this review",
+    )
+    start.add_argument("--base", help="review the changes since this commit or branch, not only the uncommitted ones")
+    start.add_argument("--model", help="the Codex model for every round (default: Codex's configured model)")
+    start.add_argument("--effort", help="Codex's reasoning effort for every round (default: its configured one)")
+    add("export", command_export, "print the review's transcript as Markdown", review_id=True)
+    diff = add("diff", command_diff, "git diff of a round's snapshot against the working tree", review_id=True)
+    diff.add_argument("--round", type=int, help="the round to compare with (default: the approved one, else the last)")
+    diff.add_argument("git_args", nargs="*", help="options for git diff after `--`, such as `-- --stat`")
+    add(
+        "delete", command_delete,
+        "delete the review's state and its refs; the objects become eligible for a later git gc", review_id=True,
+    )
+    add(
+        "continue", command_continue, "send the author's response to the review's reviewer thread",
+        review_id=True, message=True,
+    ).add_argument("--instructions-file", help="replaces the user's standing instructions from this round on")
+    add(
+        "escalate", command_escalate, "record the author's agreement that the user must decide",
+        review_id=True, message=True,
+    )
+    add("verify", command_verify, "succeed only if the approval covers the current working tree", review_id=True)
+    add("show", command_show, "print the review's state", review_id=True)
+    add("list", command_list, "list this checkout's reviews")
+    add("defaults", command_defaults, "print the reviewer's configured model and reasoning effort", reviewer=True)
+    add("digest", command_digest, "print the working-tree digest")
+    return parser
+
+
+def raise_terminated(signum, frame):
+    raise ReviewError("TURN_INTERRUPTED", f"terminated by {signal.Signals(signum).name}")
+
+
+def main(argv):
+    args = build_parser().parse_args(argv)
+    for signum in TERMINATING_SIGNALS:
+        signal.signal(signum, raise_terminated)
+    try:
+        output = args.handler(args)
+        status = 0
+    except ReviewError as ex:
+        output = {"error": ex.to_json()}
+        if CURRENT_REVIEW is not None and CURRENT_REVIEW.state is not None and CURRENT_REVIEW.state_path.exists():
+            output.update({
+                "reviewId": CURRENT_REVIEW.id, "status": CURRENT_REVIEW.state["status"],
+                "statePath": str(CURRENT_REVIEW.state_path), "inspect": CURRENT_REVIEW.inspect_lines(),
+                "snapshots": CURRENT_REVIEW.state.get("snapshots", []),  # a transcriptError travels here
+            })
+        status = 1
+    if output is not None:  # export wrote its Markdown itself
+        json.dump(output, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

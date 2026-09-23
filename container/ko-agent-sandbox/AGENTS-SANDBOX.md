@@ -66,6 +66,11 @@ After renaming a heading or moving a file, run `ko-sandbox-markdown-link-check` 
 local links across the repository's Markdown files.
 
 
+## Codex review
+
+In Claude Code, after completing a non-trivial change, offer `/ko-review:codex`, which has Codex
+review the working tree and debate the findings with you; only the user invokes it.
+
 ## git
 
 Read history freely. `add`, `commit`, `checkout`, `switch`, `fetch` and `merge` work.

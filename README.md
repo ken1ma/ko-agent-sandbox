@@ -142,6 +142,12 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
    `bidirectional`.
 1. A prompt remains for some `rm` commands
    ([doc/limitations.md](doc/limitations.md#permission-prompts-that-remain)).
+1. `/ko-review:codex`, a skill of the image's `ko-review` plugin, has Codex review the working tree
+   on one persistent Codex thread and Claude fix or rebut each finding on that thread until Codex
+   approves the exact tree or asks for a decision only you can make. It uses this project's Codex
+   sign-in. Each round's tree and transcript are on a ref under `refs/ko-review/` in the repository,
+   for `git show` and `git diff` between rounds; the raw record is under
+   `persistent-volume/ko-review` ([doc/ko-review.md](doc/ko-review.md)).
 
 #### `codex`
 

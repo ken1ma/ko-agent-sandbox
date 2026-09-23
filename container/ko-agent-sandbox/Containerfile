@@ -353,6 +353,19 @@ RUN set -euxo pipefail; \
 COPY --chmod=0644 claude-code/command/ /etc/claude-code/command/
 COPY --chmod=0644 claude-code/managed-settings.d/ /etc/claude-code/managed-settings.d/
 
+# Image-owned plugins, loaded beside whatever the user installs: nothing in the
+# persistent volume can drop or replace them. A plugin's bin/ joins the Bash
+# tool's PATH. The Codex CLI below is what ko-review calls (doc/ko-review.md).
+# The modes are set after the copy: COPY --chmod gives the copied
+# subdirectories the file mode too, ko-review/ comes out `drw-r--r--`, and
+# Claude Code cannot read the manifest (EACCES).
+COPY claude-code/plugins/ /etc/claude-code/plugins/
+RUN set -eu; \
+    find /etc/claude-code/plugins -type d -exec chmod 0755 {} +; \
+    find /etc/claude-code/plugins -type f -exec chmod 0644 {} +; \
+    chmod 0755 /etc/claude-code/plugins/ko-review/bin/ko-review
+ENV CLAUDE_CODE_PLUGIN_DIRS=/etc/claude-code/plugins
+
 
 # ---------------------------------------------------------------------------
 # Codex CLI
