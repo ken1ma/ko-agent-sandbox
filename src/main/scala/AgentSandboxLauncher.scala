@@ -1012,7 +1012,7 @@ object AgentSandboxLauncher:
    * are a reserved namespace, stated as such in SECURITY.md ("Silent changes to what you own"):
    * an object hand-named inside one is removed like the launcher's own, and the one
    * launcher-adopted name — the shared volume — is refused when it strays into it
-   * (sharedVolumeNameError).
+   * (sharedVolumeNameRefusal).
    */
   private val RunPattern = s"$ProjectIdPattern-[0-9a-f]{8}"
 
@@ -1025,7 +1025,7 @@ object AgentSandboxLauncher:
    * launch adopts is its main worktree's (mainWorktreeVolume): named by the worktree's own Git
    * metadata rather than by the user, and agreed to at the prompt.
    */
-  def sharedVolumeNameError(name: String): Option[String] =
+  def sharedVolumeNameRefusal(name: String): Option[String] =
     Option.when(name.matches(s"ko-agent-sandbox-persistent-$ProjectIdPattern"))(
       s"KO_AGENT_SANDBOX_PERSISTENT_VOLUME is '$name', which has the launcher's generated " +
         "volume-name pattern, and --reset-all removes every volume matching it\n\n" +
@@ -1064,7 +1064,7 @@ object AgentSandboxLauncher:
 
   /**
    * Volumes named through KO_AGENT_SANDBOX_PERSISTENT_VOLUME are deliberately left alone — and
-   * cannot match this pattern, because such a value refuses the launch (sharedVolumeNameError).
+   * cannot match this pattern, because such a value refuses the launch (sharedVolumeNameRefusal).
    */
   def persistentVolumes(names: Seq[String]): Seq[String] =
     names.filter(_.matches(s"ko-agent-sandbox-persistent-$ProjectIdPattern"))
@@ -1266,7 +1266,7 @@ object AgentSandboxLauncher:
       )
 
     val boundaryDir = projectDir.resolve(".ko-agent-sandbox")
-    boundaryDirError(boundaryDir).foreach(fail(_))
+    boundaryDirRefusal(boundaryDir).foreach(fail(_))
     val ruleFiles = readRuleFiles(boundaryDir.resolve("egress")).fold(fail(_), identity)
 
     val provider = commandProvider(command.headOption)
@@ -1478,10 +1478,10 @@ object AgentSandboxLauncher:
     match
       case Right(caches) => deleteTree(caches)
       case Left(refusal @ RunOnHostPrereqs.Refusal.CacheRootInsideProject(_, _)) if !named =>
-        System.err.println(s"note: run-on-host cache not removed; ${cacheRootError(refusal)}")
+        System.err.println(s"note: run-on-host cache not removed; ${cacheRootRefusalLine(refusal)}")
       case Left(refusal) =>
         failures += 1
-        System.err.println(cacheRootError(refusal))
+        System.err.println(cacheRootRefusalLine(refusal))
         if named then System.err.println(s"Run --reset $id from a directory the cache root is not inside.")
 
     // The project's filter daemon and mountpoint, where the feature has been used. Best effort by
@@ -1527,7 +1527,7 @@ object AgentSandboxLauncher:
     // only the directory records follow them.
     val caches = runOnHostCacheRoot(os, project)
       .flatMap(root => runOnHostRemoval(os, project, RunOnHostPrereqs.runOnHostCachesOf(root)))
-      .fold(refusal => fail(cacheRootError(refusal)), identity)
+      .fold(refusal => fail(cacheRootRefusalLine(refusal)), identity)
     val imageState = stateRoot(os).resolve("image-build")
     val cleanupJournal = imageState.resolve("cleanup.ids")
     if Files.exists(cleanupJournal) then
@@ -1618,7 +1618,7 @@ object AgentSandboxLauncher:
       _ <- RunOnHostPrereqs.cachePathClearOfStateRoot(canonical, stateRoot(os), os)
     yield target
 
-  private def cacheRootError(refusal: RunOnHostPrereqs.Refusal): String =
+  private def cacheRootRefusalLine(refusal: RunOnHostPrereqs.Refusal): String =
     s"error: ${RunOnHostPrereqs.wording(refusal)}"
 
   /**
@@ -1632,7 +1632,7 @@ object AgentSandboxLauncher:
     val id = projectIdOf(project, os)
     val caches = runOnHostCacheRoot(os, project)
       .flatMap(root => runOnHostRemoval(os, project, RunOnHostPrereqs.runOnHostCacheDir(root, id)))
-      .fold(refusal => fail(cacheRootError(refusal)), identity)
+      .fold(refusal => fail(cacheRootRefusalLine(refusal)), identity)
     echoCommand(Vector("rm", "-rf", caches.toString))
     deleteRecursively(caches)
     // The generated volume is asked for as well: a shared volume or a failed step leaves it behind
@@ -2552,7 +2552,7 @@ object AgentSandboxLauncher:
     // without the prompt shares through: after a launch that agreed, a scripted one would
     // otherwise seem to have lost the main worktree's logins.
     val sharedVolume = env("KO_AGENT_SANDBOX_PERSISTENT_VOLUME").map: shared =>
-      sharedVolumeNameError(shared).foreach(reason => fail(s"error: $reason"))
+      sharedVolumeNameRefusal(shared).foreach(reason => fail(s"error: $reason"))
       shared
     // Named under the variable too, where nothing is asked: the read-only git mount reads it.
     val mainWorktree = SandboxProject.mainWorktreeOf(projectDir, homeProtection, os)
@@ -2710,11 +2710,11 @@ object AgentSandboxLauncher:
     // -----------------------------------------------------------------------
     //
     // The project's egress/ is read here on the host and handed to the proxy at startup.
-    // boundaryDirError and readRuleFiles have the forms, SECURITY.md the why. What keeps a
+    // boundaryDirRefusal and readRuleFiles have the forms, SECURITY.md the why. What keeps a
     // session from writing the next one's rules is the write mode itself: reject's read-only
     // tree, or live's FUSE reserved-name rule.
     val boundaryDir = projectDir.resolve(".ko-agent-sandbox")
-    boundaryDirError(boundaryDir).foreach(fail(_))
+    boundaryDirRefusal(boundaryDir).foreach(fail(_))
 
     val ruleFiles = readRuleFiles(boundaryDir.resolve("egress")).fold(fail(_), identity)
 

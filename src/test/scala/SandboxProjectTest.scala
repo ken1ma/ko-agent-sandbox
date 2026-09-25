@@ -682,18 +682,18 @@ class SandboxProjectTest extends munit.FunSuite:
 
     val linkedBoundary =
       Files.createSymbolicLink(project.resolve(".ko-agent-sandbox"), target)
-    assert(boundaryDirError(linkedBoundary).isDefined)
+    assert(boundaryDirRefusal(linkedBoundary).isDefined)
     assert(FileHelper.directoryEntries(target).isEmpty, "wrote through the boundary link")
 
   test("an absent boundary directory is empty configuration, never a directory to materialize"):
     val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")
-    assertEquals(boundaryDirError(dir), None)
+    assertEquals(boundaryDirRefusal(dir), None)
     assert(!Files.exists(dir))
 
   test("a file where the boundary directory belongs refuses the launch"):
     val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")
     Files.createFile(dir)
-    assert(boundaryDirError(dir).isDefined)
+    assert(boundaryDirRefusal(dir).isDefined)
     // Refused, not replaced: whatever is there is the user's to remove.
     assert(Files.isRegularFile(dir))
 
@@ -702,19 +702,19 @@ class SandboxProjectTest extends munit.FunSuite:
     Files.createDirectory(dir)
     Files.createDirectory(dir.resolve("egress"))
     Files.createFile(dir.resolve(".DS_Store"))
-    assertEquals(boundaryDirError(dir), None)
+    assertEquals(boundaryDirRefusal(dir), None)
 
     Files.createDirectory(dir.resolve("egres"))
-    val refused = boundaryDirError(dir)
+    val refused = boundaryDirRefusal(dir)
     assert(refused.exists(_.contains("egres")), refused.toString)
     Files.delete(dir.resolve("egres"))
 
     // The other entry is allowed by name, and a symlink of it refused like egress.
     Files.createDirectory(dir.resolve("run-on-host"))
-    assertEquals(boundaryDirError(dir), None)
+    assertEquals(boundaryDirRefusal(dir), None)
     Files.delete(dir.resolve("run-on-host"))
     Files.createSymbolicLink(dir.resolve("run-on-host"), dir.resolve("egress"))
-    val linked = boundaryDirError(dir)
+    val linked = boundaryDirRefusal(dir)
     assert(linked.exists(_.contains("run-on-host")), linked.toString)
 
   test("doc/egress-proxy.md names the boundary directory's accepted entries"):
@@ -727,7 +727,7 @@ class SandboxProjectTest extends munit.FunSuite:
     val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")
     Files.createDirectory(dir)
     Files.createDirectory(dir.resolve("future-config"))
-    val refused = boundaryDirError(dir)
+    val refused = boundaryDirRefusal(dir)
     assert(refused.exists(_.contains("update the launcher")), refused.toString)
 
   test("a symlinked boundary directory or egress refuses the launch"):
@@ -735,11 +735,11 @@ class SandboxProjectTest extends munit.FunSuite:
     val target = Files.createDirectory(project.resolve("target"))
 
     val linked = Files.createSymbolicLink(project.resolve(".ko-agent-sandbox"), target)
-    assert(boundaryDirError(linked).isDefined)
+    assert(boundaryDirRefusal(linked).isDefined)
 
     val dir = Files.createDirectory(project.resolve("real.ko-agent-sandbox"))
     Files.createSymbolicLink(dir.resolve("egress"), project.resolve("secret"))
-    val refused = boundaryDirError(dir)
+    val refused = boundaryDirRefusal(dir)
     assert(refused.isDefined)
     // The refusal names the symlink itself, not merely the boundary directory around it.
     assert(refused.exists(_.contains("egress")), refused.toString)

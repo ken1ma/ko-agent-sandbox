@@ -201,7 +201,7 @@ launcher does not prevent that: instruction files change no enforcement.
 ### No following symlinks at sandbox setup
 
 A symlinked `.ko-agent-sandbox`, `egress` or a file inside them refuses the launch
-(`boundaryDirError`, `readRuleFiles`, tested). The workspace filter refuses to mount a project
+(`boundaryDirRefusal`, `readRuleFiles`, tested). The workspace filter refuses to mount a project
 whose `.git` is a symlink, or whose `.git/hooks` is a symlink to a directory inside the project
 (`../fuse/ko-agent-fs/doc/git-metadata.md`, "Relocated hook directories").
 
