@@ -1910,9 +1910,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
 
   test("a shared volume name inside the reserved pattern is refused, ordinary names are not"):
-    assertEquals(sharedVolumeNameError("my-shared-volume"), None)
-    assertEquals(sharedVolumeNameError("ko-agent-sandbox-persistent-backup"), None)
-    val reserved = sharedVolumeNameError("ko-agent-sandbox-persistent-app-0123456789ab")
+    assertEquals(sharedVolumeNameRefusal("my-shared-volume"), None)
+    assertEquals(sharedVolumeNameRefusal("ko-agent-sandbox-persistent-backup"), None)
+    val reserved = sharedVolumeNameRefusal("ko-agent-sandbox-persistent-app-0123456789ab")
     assert(reserved.exists(_.contains("--reset-all")), reserved.toString)
     assert(reserved.exists(_.contains("Choose a name")), reserved.toString)
 

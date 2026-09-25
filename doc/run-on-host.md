@@ -1407,7 +1407,7 @@ The file inherits the directory's properties:
 - the launcher reads it on the host;
 - it is reviewed in a pull request like any other file;
 - `run-on-host/` accepts only recognized configuration entries, as does `.ko-agent-sandbox` — a
-  stray entry fails the launch instead of being ignored (`SandboxProject.boundaryDirError`,
+  stray entry fails the launch instead of being ignored (`SandboxProject.boundaryDirRefusal`,
   `RunOnHostSandbox.hostCommandStray`).
 
 No program needs a GitHub release CDN: the one download that would, the `mill` executable, is

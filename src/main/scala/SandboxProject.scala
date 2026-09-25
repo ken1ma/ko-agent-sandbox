@@ -736,7 +736,7 @@ object SandboxProject:
    * wrapper reads it (RunOnHostPrereqs.programRuleHosts). An absent directory is empty
    * configuration, never a directory to create.
    */
-  def boundaryDirError(boundaryDir: Path): Option[String] =
+  def boundaryDirRefusal(boundaryDir: Path): Option[String] =
     def symlinkRefusal(path: Path): String =
       s"error: $path must not be a symlink\nRefusing to read this project's egress rules through one."
 

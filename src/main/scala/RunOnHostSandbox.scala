@@ -252,7 +252,7 @@ object RunOnHostSandbox:
 
   /**
    * run-on-host/ accepts only recognized configuration entries, as does its parent directory
-   * (SandboxProject.boundaryDirError): the programs this wrapper serves, egress/ inside each, rule
+   * (SandboxProject.boundaryDirRefusal): the programs this wrapper serves, egress/ inside each, rule
    * inside that — a stray name, a symlinked component, or a component of the wrong type refuses the
    * command, never remains as ignored config. The type rule prevents real failures: a file where a
    * directory belongs would read as absent configuration, and a FIFO where the file belongs would

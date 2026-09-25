@@ -124,6 +124,16 @@ again.
   directories. Phase 2 waits for each agent's measurement on a refused write, which the plan
   names.
 
+## Deferred — host command injection through project files
+
+- [ ] `plan-host-command-injection.md`, as one change: a `.ko-agent-sandbox/file/rule` naming
+  the project files a host program executes on an event that is not a run of the project,
+  read-only in the filter and the `--run-on-host` profile.
+  - The defaults: editor configuration, hook managers' configuration, devcontainer, mise, the
+    agents' project hooks, skills and servers.
+  - Husky-style relocated hook directories are served read-only instead of refused; husky's
+    `npm install` under the read-only set waits for the measurement the plan names.
+
 ## Deferred — a release-age window in the other package managers
 
 SECURITY.md, "The supply chain", has npm's seven-day window and why uv gets none.

@@ -101,7 +101,7 @@ costs are described below.
 
 **The host's git executing what the sandbox wrote.** Host `git` runs what `.git` configures:
 hooks, and commands named in `.git/config` — `core.hooksPath`, `core.fsmonitor`, filters, the
-pager. By default the workspace FUSE filter prevents a session from planting commands for the
+pager. By default the workspace FUSE filter prevents a session from injecting commands into the
 user's next host `git` invocation:
 
 - It refuses a new entry named `.git` at any depth, under any spelling a case-insensitive host
