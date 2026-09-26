@@ -478,7 +478,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(
       KnownSandboxVariables -- documented,
       Set(
-        "KO_AGENT_SANDBOX_EGRESS_RULESET", "KO_AGENT_SANDBOX_JAVA_OPTS",
+        "KO_AGENT_SANDBOX_EGRESS_RULESET", "KO_AGENT_SANDBOX_FILE_RULES", "KO_AGENT_SANDBOX_JAVA_OPTS",
         RunOnHostChannel.RunOnHostVariable,
       ),
     )
@@ -1453,7 +1453,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val filtered = appendedSection(Mount, "live", resolution)
     assert(filtered.contains("ko-agent-fs"), filtered)
     assert(filtered.contains("at any depth"), filtered)
-    assert(filtered.contains("symlink targets"), filtered)
+    assert(filtered.contains("Symlink targets"), filtered)
     // Both name the relaunch path for a host the ruleset does not allow.
     Vector(readOnly, filtered).foreach: section =>
       assert(section.contains(".ko-agent-sandbox/egress/rule"), section)
@@ -1682,7 +1682,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // `name` is upstreamProxyArgs's HTTPS_PROXY pass-through to the proxy container: a name with
     // no value, which no sandbox receives.
     assertEquals(interpolated, Set("SessionStartVariable", "NestingVariable", "ClipboardVariable", "variable", "name"))
-    Vector(SessionStartVariable, NestingVariable, ClipboardVariable, "KO_AGENT_SANDBOX_EGRESS_RULESET").foreach: name =>
+    Vector(
+      SessionStartVariable, NestingVariable, ClipboardVariable, "KO_AGENT_SANDBOX_EGRESS_RULESET",
+      "KO_AGENT_SANDBOX_FILE_RULES",
+    ).foreach: name =>
       assert(name.startsWith(RefusedForwardPrefix), name)
     // The variable holds the ruleset lines alone: the dry run's metadata after them describes the
     // project's file, and stays with the terminal (EgressRules.rulesetLinesOf).

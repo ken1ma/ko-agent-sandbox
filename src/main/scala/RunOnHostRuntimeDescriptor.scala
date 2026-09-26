@@ -117,7 +117,7 @@ object RunOnHostRuntimeDescriptor:
   def fingerprint(inputs: RunOnHostSandbox.RuntimeInputs, rules: String): String =
     val SeatbeltProfile.ProfileInputs(
       prereqs, sessionTmp, distribution, sbtGlobal, ivyHome, gradleUserHome, m2Repository, proxyPort, trust,
-      systemPaths, network,
+      systemPaths, network, fileRules,
     ) = inputs.profile
     val RunOnHostPrereqs.CommandPrereqs(project, jdkHome, coursierV1, program, executable) = prereqs
     val SeatbeltProfile.SystemPaths(reads, executes) = systemPaths
@@ -135,7 +135,7 @@ object RunOnHostRuntimeDescriptor:
         proxyPort.toString, trust.toString, networkName,
       ) ++ reads.map(_.toString) ++ Seq("executes") ++ executes.map(_.toString)
         ++ Seq("environment") ++ inputs.environment.toSeq.sorted.flatMap((name, value) => Seq(name, value))
-        ++ Seq("rules", rules)
+        ++ Seq("rules", rules, "file rules", fileRules.text)
     digest(fields.map(field => s"${field.length}:$field").mkString)
 
   def digest(text: String): String =

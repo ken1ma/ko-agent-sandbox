@@ -16,6 +16,16 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val systemPaths = RunOnHostSandbox.bundledSystemPaths()
     assert(systemPaths.executes.nonEmpty, "the bundled file grants no executable roots")
 
+  test("a command's file rules are the launch's set when the broker hands one on, else the project's lines"):
+    val project = Files.createTempDirectory("file-rules-of")
+    try
+      val resolved = FileRules.Resolved(FileRules.Defaults, Vector(".husky/_"), Vector.empty)
+      val file = project.resolve("file-rules.resolved")
+      Files.writeString(file, resolved.text)
+      assertEquals(fileRulesOf(Seq(s"$FileRulesOption$file", "--other"), project), Right(resolved))
+      assertEquals(fileRulesOf(Seq("--other"), project), FileRules.ofProject(project))
+    finally FileHelper.deleteRecursively(project)
+
   test("the command's environment is a closed set: the wrapper's settings, three pass-throughs, and --env"):
     val jdk = Path.of("/Users/u/Library/Caches/Coursier/v1/jvm/temurin")
     val prereqs = RunOnHostPrereqs.CommandPrereqs(
@@ -637,7 +647,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
     var proxies = 0
     val systemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
-    val runtimes = BrokerRuntimes(session, project, _ => (), systemPaths, Vector.empty)(
+    val runtimes = BrokerRuntimes(session, project, _ => (), systemPaths, Vector.empty, FileRules.Resolved.Empty)(
       RunOnHostSession.HostProcesses,
       (_, _, _) => fail("assembled without an executable"),
       (_, _, _, _) => { proxies += 1; Right(1) },
@@ -735,9 +745,10 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         val started = RunOnHostSession.HostProcesses.startOf(sleeper).get
         Right(RunOnHostMillDaemons.Daemon(sleeper, started, 40_000 + daemonStarts.size))
     var assemblies = 0
-    val runtimes = BrokerRuntimes(session, project, logged.append(_), systemPaths, Vector.empty)(
-      processes, (_, _, _) => { assemblies += 1; Right(assembled) }, proxy, server, daemon,
-    )
+    val runtimes =
+      BrokerRuntimes(session, project, logged.append(_), systemPaths, Vector.empty, FileRules.Resolved.Empty)(
+        processes, (_, _, _) => { assemblies += 1; Right(assembled) }, proxy, server, daemon,
+      )
     val dirA = Files.createDirectory(project.resolve("a"))
     val dirB = Files.createDirectory(project.resolve("b"))
     def hashOf(dir: Path) = RunOnHostSession.buildHash(dir)
@@ -1021,7 +1032,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       daemonStarts += start.buildDirectory
       recordOnly(start.record)
       Right(RunOnHostMillDaemons.Daemon(1, "S", 40_001))
-    val runtimes = BrokerRuntimes(mine, project, _ => (), emptySystemPaths, Vector.empty)(
+    val runtimes = BrokerRuntimes(mine, project, _ => (), emptySystemPaths, Vector.empty, FileRules.Resolved.Empty)(
       processes,
       (_, _, _) => Right(assembled),
       (_, _, record, _) =>
@@ -1118,7 +1129,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       register(start.record)
       Right(())
     val systemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
-    val runtimes = BrokerRuntimes(session, project, _ => (), systemPaths, Vector.empty)(
+    val runtimes = BrokerRuntimes(session, project, _ => (), systemPaths, Vector.empty, FileRules.Resolved.Empty)(
       Shared(pausing = true), (_, _, _) => Right(assembled), proxy, server, _ => fail("no daemon here"),
     )
     val dirA = Files.createDirectory(project.resolve("a"))
@@ -1240,7 +1251,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       register(start.record)
       Right(())
     val systemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
-    val runtimes = BrokerRuntimes(session, project, _ => (), systemPaths, Vector.empty)(
+    val runtimes = BrokerRuntimes(session, project, _ => (), systemPaths, Vector.empty, FileRules.Resolved.Empty)(
       processes, (_, _, _) => Right(assembled), proxy, server, _ => fail("no daemon here"),
     )
     val recordName = s"server-sbt-${RunOnHostSession.buildHash(project)}"
@@ -1367,7 +1378,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       if session == owner then 7001 else if session == sharer then 7002 else 7003
     def broker(session: RunOnHostSession.Session, jdk: String = "/jdk"): BrokerRuntimes =
       val forwards = if session == taker then Vector("TOKEN" -> "t") else Vector.empty
-      BrokerRuntimes(session, project, _ => (), systemPaths, forwards)(
+      BrokerRuntimes(session, project, _ => (), systemPaths, forwards, FileRules.Resolved.Empty)(
         processes,
         (_, _, _) =>
           onAssemble()
@@ -1639,6 +1650,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val logged = scala.collection.mutable.ListBuffer[String]()
     val runtimes = BrokerRuntimes(
       session, project, logged.append(_), SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty), Vector.empty,
+      FileRules.Resolved.Empty,
     )(
       processes = processes,
       gradleDaemons = base =>

@@ -80,6 +80,8 @@ object EmitRunOnHostProfile:
       network = program match
         case Program.Gradle => SeatbeltProfile.Network.Gradle
         case _              => SeatbeltProfile.Network.ProxyOnly,
+      // The project's lines, as a command the acceptance test starts without a launch gets.
+      fileRules = FileRules.ofProject(project).fold(fail, identity),
     )
 
     val profile = SeatbeltProfile.render(inputs).fold(fail, identity)

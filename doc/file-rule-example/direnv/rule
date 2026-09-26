@@ -1,0 +1,7 @@
+# direnv loads the shell environment a project's .envrc defines whenever you enter the
+# directory, once you have allowed that file.
+#
+# - direnv blocks a changed .envrc until `direnv allow`, so the defaults leave it writable.
+# - This .ko-agent-sandbox/file/rule is for a project whose users approve a changed .envrc by
+#   reflex: the line makes the sandbox unable to change it at all.
+readonly .envrc

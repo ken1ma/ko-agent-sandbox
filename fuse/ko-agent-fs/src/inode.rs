@@ -1,6 +1,7 @@
 //! The inode table of the path inode model (`doc/architecture.md`). FUSE addresses objects by inode
 //! number and `(parent, name)`, so this maps those to a position in the backing tree: each entry keeps its
-//! parent, basename, kernel lookup count, cached [`GitContext`], and the backing object's identity.
+//! parent, basename, kernel lookup count, cached [`GitContext`] and [`RuleContext`], and the backing
+//! object's identity.
 //! A path is reconstructed by walking parents to the root only when an operation needs one; nothing
 //! here caches attributes or opens backing fds (that is the resolver's job, per operation).
 //!
@@ -11,7 +12,9 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 
-use crate::policy::{GitContext, child_context, gitdir_root};
+use crate::policy::{
+    FileRules, GitContext, RuleContext, child_context, child_rule_context, gitdir_root,
+};
 
 pub const ROOT_INO: u64 = 1;
 
@@ -23,6 +26,9 @@ pub struct Inode {
     /// Outstanding kernel references (sum of `lookup`/`entry` replies minus `forget`s).
     pub nlookup: u64,
     pub git: GitContext,
+    /// The file rules' position; the root's for any entry the rules do not decide, one whose
+    /// `git` is not [`GitContext::NotGit`].
+    pub rule: RuleContext,
     /// The backing object this position named when the entry was allocated, as `(st_dev, st_ino)`.
     /// `lookup` compares it against a fresh `stat` so a host replacement — a different object at the
     /// same name — takes a fresh number rather than reusing this entry's (`lookup` has the why and
@@ -39,10 +45,15 @@ pub struct InodeTable {
     by_ino: HashMap<u64, Inode>,
     by_name: HashMap<(u64, OsString), u64>,
     next_ino: u64,
+    rules: FileRules,
 }
 
 impl InodeTable {
     pub fn new() -> Self {
+        Self::with_rules(FileRules::default())
+    }
+
+    pub fn with_rules(rules: FileRules) -> Self {
         let mut by_ino = HashMap::new();
         by_ino.insert(
             ROOT_INO,
@@ -51,6 +62,7 @@ impl InodeTable {
                 name: OsString::new(),
                 nlookup: 1,
                 git: GitContext::root(),
+                rule: RuleContext::root(),
                 dev: 0,
                 ino_id: 0,
             },
@@ -59,7 +71,36 @@ impl InodeTable {
             by_ino,
             by_name: HashMap::new(),
             next_ino: ROOT_INO + 1,
+            rules,
         }
+    }
+
+    pub fn rules(&self) -> &FileRules {
+        &self.rules
+    }
+
+    /// The contexts a child named `policy_name` has under `parent`: [`child_context`], and
+    /// [`child_rule_context`] where that leaves the child ordinary. An unknown parent's contexts are
+    /// the root's, except that anchored lines do not start below it.
+    pub fn child_contexts(&self, parent: u64, policy_name: &OsStr) -> (GitContext, RuleContext) {
+        let (parent_git, parent_rule) = self
+            .by_ino
+            .get(&parent)
+            .map_or((GitContext::NotGit, RuleContext::root()), |node| {
+                (node.git.clone(), node.rule.clone())
+            });
+        let git = child_context(&parent_git, policy_name.as_bytes());
+        let rule = if git == GitContext::NotGit {
+            child_rule_context(
+                &self.rules,
+                &parent_rule,
+                parent == ROOT_INO,
+                policy_name.as_bytes(),
+            )
+        } else {
+            RuleContext::root()
+        };
+        (git, rule)
     }
 
     pub fn get(&self, ino: u64) -> Option<&Inode> {
@@ -96,10 +137,10 @@ impl InodeTable {
     /// lookup stays a namespace — protected — until the kernel forgets it. Both drift directions
     /// give the stricter answer.
     ///
-    /// `policy_name` is the name the context is computed from: `name`, or the guarded name `name`
-    /// is an alias of (`fs.rs`, `policy_name`). An entry whose context differs from the one
-    /// `policy_name` gives is not reused, so a name that becomes an alias after its first lookup —
-    /// a host hard link — does not keep its ordinary context.
+    /// `policy_name` is the name the contexts are computed from: `name`, or the guarded or listed
+    /// name `name` is an alias of (`fs.rs`, `policy_name`). An entry whose contexts differ from
+    /// the ones `policy_name` gives is not reused, so a name that becomes an alias after its first
+    /// lookup — a host hard link — does not keep its ordinary contexts.
     ///
     /// `(dev, ino_id)` is the freshly-stat'd backing identity of what the name resolves to now. An
     /// existing entry is reused only when it matches: a host replacement leaves size and mtime free
@@ -125,14 +166,11 @@ impl InodeTable {
         dev: u64,
         ino_id: u64,
     ) -> u64 {
-        let context = |table: &Self| {
-            let parent_git = table
-                .by_ino
-                .get(&parent)
-                .map_or(GitContext::NotGit, |node| node.git.clone());
-            match child_context(&parent_git, policy_name.as_bytes()) {
-                GitContext::ModuleNamespace if is_gitdir_root => gitdir_root(),
-                other => other,
+        let contexts = |table: &Self| {
+            let (git, rule) = table.child_contexts(parent, policy_name);
+            match git {
+                GitContext::ModuleNamespace if is_gitdir_root => (gitdir_root(), rule),
+                other => (other, rule),
             }
         };
         let is_alias = policy_name != name;
@@ -140,7 +178,9 @@ impl InodeTable {
         let key = (parent, name.to_os_string());
         if let Some(&ino) = self.by_name.get(&key)
             && self.by_ino.get(&ino).is_some_and(|node| {
-                node.dev == dev && node.ino_id == ino_id && (!is_alias || node.git == context(self))
+                node.dev == dev
+                    && node.ino_id == ino_id
+                    && (!is_alias || (node.git.clone(), node.rule.clone()) == contexts(self))
             })
         {
             if let Some(node) = self.by_ino.get_mut(&ino) {
@@ -148,7 +188,7 @@ impl InodeTable {
             }
             return ino;
         }
-        let git = context(self);
+        let (git, rule) = contexts(self);
 
         let ino = self.next_ino;
         self.next_ino += 1;
@@ -159,6 +199,7 @@ impl InodeTable {
                 name: name.to_os_string(),
                 nlookup: 1,
                 git,
+                rule,
                 dev,
                 ino_id,
             },

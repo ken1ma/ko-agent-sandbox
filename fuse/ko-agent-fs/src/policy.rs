@@ -1,7 +1,8 @@
 //! The policy core: position and raw bytes in, a decision out. No syscalls, no FUSE, no `String`
 //! (Linux names are byte sequences). Every per-operation FUSE authorization rule is here, the part worth
 //! auditing closely; `doc/git-metadata.md` is the reasoning it transcribes, save for the one rule that protects the
-//! launcher's own `.ko-agent-sandbox` ([`is_sandbox_config_name`]).
+//! launcher's own `.ko-agent-sandbox` ([`is_sandbox_config_name`]) and the file rules ([`FileRules`]), whose
+//! reasoning is `../../doc/file-rules.md`, "Why these files", and `../../SECURITY.md`.
 //!
 //! The FUSE layer never re-derives protection from a path string. It caches one
 //! [`GitContext`] per inode, computed once at lookup from the parent's context plus the child's
@@ -130,8 +131,14 @@ pub fn is_sandbox_config_name(name: &[u8]) -> bool {
 pub const GUARDED_NAMES: [&[u8]; 2] = [b".git", b".ko-agent-sandbox"];
 
 /// The single fold behind every reserved-name rule, so no two of them can disagree about what a
-/// backing filesystem might treat as the same name. `target` is ASCII.
+/// backing filesystem might treat as the same name. `target` is lowercase ASCII.
 fn folds_to(name: &[u8], target: &[u8]) -> bool {
+    fold(name) == target
+}
+
+/// `name` as a backing filesystem might compare it: `IGNORABLE` dropped, `FOLDS_TO_ASCII`
+/// folded, trailing `.` and space stripped, ASCII lowercased. Byte-safe on non-UTF-8.
+pub fn fold(name: &[u8]) -> Vec<u8> {
     let mut folded: Vec<u8> = Vec::with_capacity(name.len());
     let mut i = 0;
     'outer: while i < name.len() {
@@ -156,8 +163,9 @@ fn folds_to(name: &[u8], target: &[u8]) -> bool {
     while end > 0 && (folded[end - 1] == b'.' || folded[end - 1] == b' ') {
         end -= 1;
     }
-
-    folded[..end].eq_ignore_ascii_case(target)
+    folded.truncate(end);
+    folded.make_ascii_lowercase();
+    folded
 }
 
 /// The context of a directory the FUSE layer has identified as a gitdir root in its own right. The
@@ -229,6 +237,12 @@ pub fn classify(context: &GitContext) -> GitPathClass {
 /// ([`GitContext::ModuleNamespace`]). A caller that names none is saying there are none, and every
 /// directory under `modules/` then reads as a namespace — protected, the stricter answer.
 pub fn classify_relative_path(rel: &[u8], gitdir_roots: &[&[u8]]) -> GitPathClass {
+    classify(&context_of_relative_path(rel, gitdir_roots))
+}
+
+/// [`classify_relative_path`]'s walk, returning the context itself: the guard tells ordinary
+/// project data ([`GitContext::NotGit`]) from a gitdir's writable state by it.
+pub fn context_of_relative_path(rel: &[u8], gitdir_roots: &[&[u8]]) -> GitContext {
     let mut context = GitContext::root();
     let mut walked: Vec<u8> = Vec::new();
     for component in rel.split(|&byte| byte == b'/') {
@@ -244,7 +258,7 @@ pub fn classify_relative_path(rel: &[u8], gitdir_roots: &[&[u8]]) -> GitPathClas
             context = gitdir_root();
         }
     }
-    classify(&context)
+    context
 }
 
 /// Classify a path by its components *relative to the enclosing gitdir root*. Empty `components`
@@ -368,6 +382,404 @@ pub fn authorize(ctx: &GitContext, op: Mutation) -> Decision {
         }
         (_, _) => "protected-git-control: refusing to modify a protected Git entry",
     })
+}
+
+// --- File rules ---------------------------------------------------------------
+//
+// The project files a host program executes on an event, not when the user builds or runs the project
+// (`.ko-agent-sandbox/file/rule` over the launcher's defaults), decided for ordinary entries only:
+// under a `.git` or `.ko-agent-sandbox` entry the rules above decide alone.
+
+/// What a line does to the entry it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleWord {
+    /// The entry and everything below it are read-only.
+    ReadOnly,
+    /// The entry and everything below it are writable: a writable region.
+    Writable,
+    /// The entry itself is pinned ([`RuleContext::pinned`]); the guard's traversed components.
+    Pinned,
+}
+
+/// One resolved line. The launcher writes the rule lines, `readonly` and `writable`; the guard adds
+/// the anchored ones, `readonly-path` and `pinned-path`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleLine {
+    pub word: RuleWord,
+    /// Folded components. In a floating line a `*` matches any run of bytes within one name; an
+    /// anchored line's components are the names the guard found, matched exactly.
+    pub components: Vec<Vec<u8>>,
+    /// Matched from the workspace root only, where a floating line matches at any depth.
+    pub anchored: bool,
+}
+
+/// The ordered lines, the defaults first, the project's next and the guard's last, so a line the
+/// guard found decides over every rule line.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileRules {
+    lines: Vec<RuleLine>,
+    /// `(line, context)`: an anchored `pinned-path` line naming the end of a symlink the guard
+    /// followed, and the symlink's context, which that end and every entry below it get as well
+    /// (`RuleContext::also`).
+    aliases: Vec<(u32, RuleContext)>,
+}
+
+impl FileRules {
+    pub fn new(lines: Vec<RuleLine>) -> FileRules {
+        FileRules {
+            lines,
+            aliases: Vec::new(),
+        }
+    }
+
+    /// Add an anchored `pinned-path` line for `path`, which, with every entry below it, also stands
+    /// where `context` says: the directory `shared/claude` that `.claude -> shared/claude` makes
+    /// `.claude`.
+    pub fn push_alias(&mut self, path: &str, context: RuleContext) {
+        self.aliases.push((self.lines.len() as u32, context));
+        self.lines.push(RuleLine {
+            word: RuleWord::Pinned,
+            components: path
+                .split('/')
+                .map(|component| fold(component.as_bytes()))
+                .collect(),
+            anchored: true,
+        });
+    }
+
+    pub fn lines(&self) -> &[RuleLine] {
+        &self.lines
+    }
+
+    fn alias(&self, line: u32) -> Option<&RuleContext> {
+        self.aliases
+            .iter()
+            .find(|(alias, _)| *alias == line)
+            .map(|(_, context)| context)
+    }
+
+    fn word(&self, line: u32) -> RuleWord {
+        self.lines[line as usize].word
+    }
+}
+
+/// Where an ordinary entry stands under the file rules. Computed once per lookup from the
+/// parent's and the folded name ([`child_rule_context`]) and cached on the inode, as
+/// [`GitContext`] is; no inode stores a path.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct RuleContext {
+    /// `(line, matched)`: lines whose first `matched` components the entry and its nearest
+    /// ancestors match, short of the whole line, and which could still decide or pin an entry
+    /// below.
+    partial: Vec<(u32, u32)>,
+    /// The last line whose name matches the entry or one of its ancestors.
+    deciding: Option<u32>,
+    /// A `pinned-path` line names this entry.
+    pinned_path: bool,
+    /// The contexts of the other names a symlink gives the entry ([`FileRules::push_alias`]):
+    /// `shared/claude/settings.json` is also `.claude/settings.json`. The entry is read-only or
+    /// pinned when it is under any of its names.
+    also: Vec<RuleContext>,
+}
+
+impl RuleContext {
+    /// The workspace root's: no line names the root.
+    pub fn root() -> RuleContext {
+        RuleContext::default()
+    }
+
+    /// Whether the deciding line is `readonly` or a guard's `readonly-path`, under any of the
+    /// entry's names (`also`).
+    pub fn read_only(&self, rules: &FileRules) -> bool {
+        self.deciding
+            .is_some_and(|line| rules.word(line) == RuleWord::ReadOnly)
+            || self.also.iter().any(|name| name.read_only(rules))
+    }
+
+    /// The `writable` line whose region the entry is in, if any.
+    pub fn region(&self, rules: &FileRules) -> Option<u32> {
+        self.deciding
+            .filter(|&line| rules.word(line) == RuleWord::Writable)
+    }
+
+    /// Whether renaming, replacing or unlinking the entry could change what a line decides below
+    /// it: the entry is an interior component of a line later than its own deciding line, a
+    /// guard's traversed component, or either under another of its names (`also`). Renaming
+    /// `.claude` to `saved`, writing `saved/settings.json` and renaming it back would otherwise
+    /// defeat `readonly .claude/settings.json`.
+    pub fn pinned(&self) -> bool {
+        self.pinned_path || !self.partial.is_empty() || self.also.iter().any(RuleContext::pinned)
+    }
+
+    /// Whether the context can still make the entry or one below it read-only or pinned.
+    fn decides_anything(&self, rules: &FileRules) -> bool {
+        self.read_only(rules) || self.pinned()
+    }
+
+    /// The rests of the `readonly` lines the entry is an interior component of, under any of its
+    /// names, as `/`-joined folded patterns: what a directory a symlink reaches under this name
+    /// protects below it. A `writable` line lifting part of a rest is ignored, which is stricter.
+    pub fn read_only_rests(&self, rules: &FileRules) -> Vec<String> {
+        let mut rests: Vec<String> = self
+            .partial
+            .iter()
+            .filter(|&&(line, _)| rules.word(line) == RuleWord::ReadOnly)
+            .map(|&(line, matched)| {
+                rules.lines[line as usize].components[matched as usize..]
+                    .iter()
+                    .map(|component| String::from_utf8_lossy(component).into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .collect();
+        for name in &self.also {
+            rests.extend(name.read_only_rests(rules));
+        }
+        rests.sort();
+        rests.dedup();
+        rests
+    }
+}
+
+/// Whether the folded `name` matches one folded pattern component, where `*` matches any run of
+/// bytes. Iterative, with one backtrack point, so a pattern of many stars stays polynomial, never
+/// exponential.
+fn component_matches(pattern: &[u8], name: &[u8]) -> bool {
+    let (mut p, mut n) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while n < name.len() {
+        if p < pattern.len() && pattern[p] == b'*' {
+            star = Some((p, n));
+            p += 1;
+        } else if p < pattern.len() && pattern[p] == name[n] {
+            p += 1;
+            n += 1;
+        } else if let Some((star_p, star_n)) = star {
+            p = star_p + 1;
+            n = star_n + 1;
+            star = Some((star_p, star_n + 1));
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|&byte| byte == b'*')
+}
+
+/// A child's rule context from its parent's and its raw name. `parent_is_root` starts the
+/// anchored lines, which match from the workspace root only. Called only for a child whose
+/// [`child_context`] is [`GitContext::NotGit`].
+pub fn child_rule_context(
+    rules: &FileRules,
+    parent: &RuleContext,
+    parent_is_root: bool,
+    name: &[u8],
+) -> RuleContext {
+    let mut child = RuleContext {
+        partial: Vec::new(),
+        deciding: parent.deciding,
+        pinned_path: false,
+        also: Vec::new(),
+    };
+    if rules.lines.is_empty() {
+        return child;
+    }
+    for other in &parent.also {
+        let below = child_rule_context(rules, other, false, name);
+        if below.decides_anything(rules) && !child.also.contains(&below) {
+            child.also.push(below);
+        }
+    }
+    let folded = fold(name);
+    let matches = |line: &RuleLine, component: usize| {
+        let pattern = &line.components[component];
+        if line.anchored {
+            *pattern == folded
+        } else {
+            component_matches(pattern, &folded)
+        }
+    };
+    let mut reached: Vec<(u32, u32)> = Vec::new();
+    for &(line, matched) in &parent.partial {
+        if matches(&rules.lines[line as usize], matched as usize) {
+            reached.push((line, matched + 1));
+        }
+    }
+    for (index, line) in rules.lines.iter().enumerate() {
+        if (!line.anchored || parent_is_root) && matches(line, 0) {
+            reached.push((index as u32, 1));
+        }
+    }
+    for (line, matched) in reached {
+        let rule = &rules.lines[line as usize];
+        if matched as usize == rule.components.len() {
+            match rule.word {
+                RuleWord::Pinned => {
+                    child.pinned_path = true;
+                    if let Some(other) = rules.alias(line)
+                        && !child.also.contains(other)
+                    {
+                        child.also.push(other.clone());
+                    }
+                }
+                RuleWord::ReadOnly | RuleWord::Writable => {
+                    child.deciding = child.deciding.max(Some(line));
+                }
+            }
+        } else {
+            child.partial.push((line, matched));
+        }
+    }
+    // A line earlier than the deciding one decides nothing below it; a `pinned-path` line pins
+    // regardless of what decides.
+    let deciding = child.deciding;
+    child.partial.retain(|&(line, _)| {
+        rules.word(line) == RuleWord::Pinned || deciding.is_none_or(|decided| line > decided)
+    });
+    child.partial.sort_unstable();
+    child.partial.dedup();
+    child
+}
+
+/// The rule context of a workspace-relative path, walked from the root as lookups would, or
+/// `None` where the path enters a `.git` or `.ko-agent-sandbox` entry, which the rules do not
+/// decide. For a symlink's target ([`authorize_symlink_target`]) and for tests.
+pub fn rule_context_of_path(rules: &FileRules, components: &[&[u8]]) -> Option<RuleContext> {
+    let mut rule = RuleContext::root();
+    for (depth, component) in components.iter().enumerate() {
+        if child_context(&GitContext::NotGit, component) != GitContext::NotGit {
+            return None;
+        }
+        rule = child_rule_context(rules, &rule, depth == 0, component);
+    }
+    Some(rule)
+}
+
+/// The rule decision for a mutation of an existing ordinary entry. Creation — a rename's
+/// destination included — goes through [`authorize_rule_create`].
+pub fn authorize_rule(rules: &FileRules, ctx: &RuleContext, op: Mutation) -> Decision {
+    if ctx.read_only(rules) {
+        return Decision::Deny(match op {
+            Mutation::Unlink | Mutation::Rmdir => {
+                "protected-file-rule: refusing to remove a file a host program executes"
+            }
+            Mutation::RenameFrom => {
+                "protected-file-rule: refusing to rename a file a host program executes"
+            }
+            _ => "protected-file-rule: refusing to modify a file a host program executes",
+        });
+    }
+    // `rmdir` stays allowed: it removes only an empty directory, and a later `mkdir` restores
+    // the name with nothing below it.
+    if ctx.pinned() && matches!(op, Mutation::Unlink | Mutation::RenameFrom) {
+        return Decision::Deny(
+            "pinned-file-rule-component: refusing to rename or unlink a component a file rule names",
+        );
+    }
+    Decision::Allow
+}
+
+/// The rule decision for creating an ordinary entry whose context would be `child`. A read-only
+/// name is refused whatever creates it, since a symlink or directory planted at the name would be
+/// what the host program reads next; a pinned name only by `mkdir`, which starts it empty.
+pub fn authorize_rule_create(rules: &FileRules, child: &RuleContext, is_mkdir: bool) -> Decision {
+    if child.read_only(rules) {
+        return Decision::Deny(
+            "protected-file-rule: refusing to create a name a host program executes",
+        );
+    }
+    if child.pinned() && !is_mkdir {
+        return Decision::Deny(
+            "pinned-file-rule-component: refusing to create a component a file rule names, \
+             except by mkdir",
+        );
+    }
+    Decision::Allow
+}
+
+/// A directory or symlink moving from `from` to `to`, by rename, exchange or a hard link of a
+/// symlink. A writable region holds names the other lines protect, so what leaves it would carry
+/// them to where those lines decide: moving `node_modules/x`, whose `.vscode/tasks.json` the
+/// session wrote, to `apps/x`. A gitdir's operational state, where no line decides, holds such
+/// names too: `.git/objects/x` moved to `apps/x` would carry the same file. Git itself never moves
+/// an entry out of a gitdir into the worktree.
+pub fn authorize_region_move(
+    rules: &FileRules,
+    (from_git, from): (&GitContext, &RuleContext),
+    (to_git, to): (&GitContext, &RuleContext),
+) -> Decision {
+    if *to_git != GitContext::NotGit {
+        return Decision::Allow;
+    }
+    if *from_git != GitContext::NotGit {
+        return if rules.lines.is_empty() {
+            Decision::Allow
+        } else {
+            Decision::Deny(
+                "file-rule-region: refusing to move a directory or symlink out of a Git \
+                 directory into the project",
+            )
+        };
+    }
+    match from.region(rules) {
+        Some(line) if to.deciding != Some(line) => Decision::Deny(
+            "file-rule-region: refusing to move a directory or symlink out of a writable region",
+        ),
+        _ => Decision::Allow,
+    }
+}
+
+/// The workspace-relative paths a symlink `target` passes through, resolved lexically from the
+/// link's directory `from`: one after each component that names an entry, the end included. The
+/// host resolves a symlink met on the way, so a `..` after it leaves from wherever that symlink
+/// leads: `../node_modules/s/../../x` ends lexically at `x`, while through `node_modules/s ->
+/// pkg/sub` it reaches `node_modules/x`. Each of these paths is checked, not the end alone.
+pub fn symlink_target_paths(from: &[Vec<u8>], target: &std::path::Path) -> Vec<Vec<Vec<u8>>> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Component;
+    let mut resolved = from.to_vec();
+    let mut paths = Vec::new();
+    for component in target.components() {
+        match component {
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::Normal(part) => {
+                resolved.push(part.as_bytes().to_vec());
+                paths.push(resolved.clone());
+            }
+            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    paths
+}
+
+/// Whether a path a symlink target passes enters a gitdir: its first `.git` or `.ko-agent-sandbox`
+/// component is a `.git` one. `apps/x -> ../.git/objects/x` would show what the session wrote
+/// there, `.vscode/tasks.json` among it, under an ordinary name. A link to a protected gitdir entry
+/// counts too: `apps/hooks -> ../.git/hooks` would let `apps/web -> hooks/../objects/x` reach
+/// `.git/objects/x`.
+pub fn enters_gitdir(components: &[&[u8]]) -> bool {
+    components
+        .iter()
+        .find(|component| child_context(&GitContext::NotGit, component) != GitContext::NotGit)
+        .is_some_and(|component| is_dotgit_name(component))
+}
+
+/// A symlink at `link` whose target, resolved lexically, has the context `target`. The same route
+/// as [`authorize_region_move`] without a move: `apps/x -> ../node_modules/x` makes the region's
+/// content readable as `apps/x`. A link inside the region to the region, npm's
+/// `node_modules/.bin`, stays allowed.
+pub fn authorize_symlink_target(
+    rules: &FileRules,
+    link: &RuleContext,
+    target: &RuleContext,
+) -> Decision {
+    match target.region(rules) {
+        Some(line) if link.deciding != Some(line) => Decision::Deny(
+            "file-rule-region: refusing a symlink into a writable region from outside it",
+        ),
+        _ => Decision::Allow,
+    }
 }
 
 #[cfg(test)]
@@ -946,6 +1358,280 @@ mod tests {
         assert_eq!(
             authorize(&GitContext::NotGit, Mutation::Unlink),
             Decision::Allow
+        );
+    }
+
+    // --- File rules ---------------------------------------------------------
+    //
+    // What each context means is the conformance table's (`tests/file_rules.rs`); these hold what
+    // the FUSE layer asks of a context.
+
+    fn floating(word: RuleWord, name: &str) -> RuleLine {
+        RuleLine {
+            word,
+            components: name.split('/').map(|c| c.as_bytes().to_vec()).collect(),
+            anchored: false,
+        }
+    }
+
+    fn defaults_like() -> FileRules {
+        FileRules::new(vec![
+            floating(RuleWord::ReadOnly, ".vscode"),
+            floating(RuleWord::ReadOnly, ".claude/settings.json"),
+            floating(RuleWord::Writable, "node_modules"),
+        ])
+    }
+
+    fn at(rules: &FileRules, path: &str) -> RuleContext {
+        let components: Vec<&[u8]> = path.split('/').map(str::as_bytes).collect();
+        rule_context_of_path(rules, &components).expect("an ordinary path")
+    }
+
+    #[test]
+    fn a_star_matches_any_run_within_one_component_and_nothing_else_is_a_wildcard() {
+        assert!(component_matches(b"*.code-workspace", b"a.code-workspace"));
+        assert!(component_matches(b"*.code-workspace", b".code-workspace"));
+        assert!(component_matches(b"mise.*.toml", b"mise.local.toml"));
+        assert!(component_matches(b"mise.*.toml", b"mise.a.b.toml"));
+        assert!(!component_matches(b"mise.*.toml", b"mise.toml"));
+        assert!(component_matches(b"*", b""));
+        assert!(component_matches(b"a**b", b"ab"));
+        assert!(!component_matches(b"lefthook.*", b"lefthook"));
+        assert!(!component_matches(b".vscode", b".vscodex"));
+        assert!(!component_matches(b"a?c", b"abc"));
+        assert!(!component_matches(b"[ab]", b"a"));
+    }
+
+    #[test]
+    fn a_read_only_entry_refuses_every_mutation_and_its_creation_by_any_means() {
+        let rules = defaults_like();
+        let tasks = at(&rules, ".vscode/tasks.json");
+        for op in [
+            Mutation::Write,
+            Mutation::SetAttr,
+            Mutation::Unlink,
+            Mutation::Rmdir,
+            Mutation::RenameFrom,
+            Mutation::Link,
+        ] {
+            assert!(
+                matches!(authorize_rule(&rules, &tasks, op), Decision::Deny(_)),
+                "{op:?}",
+            );
+        }
+        let fresh = at(&rules, "apps/.vscode");
+        assert!(matches!(
+            authorize_rule_create(&rules, &fresh, true),
+            Decision::Deny(_),
+        ));
+        assert!(matches!(
+            authorize_rule_create(&rules, &fresh, false),
+            Decision::Deny(_),
+        ));
+    }
+
+    #[test]
+    fn a_pinned_entry_is_created_only_by_mkdir_and_never_renamed_or_unlinked() {
+        let rules = defaults_like();
+        let claude = at(&rules, ".claude");
+        assert!(claude.pinned() && !claude.read_only(&rules));
+        assert_eq!(
+            authorize_rule_create(&rules, &claude, true),
+            Decision::Allow,
+        );
+        assert!(matches!(
+            authorize_rule_create(&rules, &claude, false),
+            Decision::Deny(_),
+        ));
+        for op in [Mutation::RenameFrom, Mutation::Unlink] {
+            assert!(
+                matches!(authorize_rule(&rules, &claude, op), Decision::Deny(_)),
+                "{op:?}",
+            );
+        }
+        // Emptied, it may go: `mkdir` brings the name back with nothing below it.
+        for op in [Mutation::Rmdir, Mutation::Write, Mutation::SetAttr] {
+            assert_eq!(
+                authorize_rule(&rules, &claude, op),
+                Decision::Allow,
+                "{op:?}",
+            );
+        }
+        // Its other children are ordinary.
+        let notes = at(&rules, ".claude/notes.md");
+        assert_eq!(
+            authorize_rule(&rules, &notes, Mutation::Write),
+            Decision::Allow,
+        );
+    }
+
+    #[test]
+    fn a_directory_a_symlink_reaches_under_a_line_s_name_stands_under_both_names() {
+        // `.claude -> shared/claude` and `.vscode/claude` reached as `.claude` too.
+        let mut rules = FileRules::new(vec![
+            floating(RuleWord::ReadOnly, ".vscode"),
+            floating(RuleWord::ReadOnly, ".claude/*.json"),
+            floating(RuleWord::Writable, ".claude/x.json"),
+        ]);
+        let claude = at(&rules, ".claude");
+        rules.push_alias("shared/claude", claude.clone());
+        rules.push_alias(".vscode/claude", claude.clone());
+        // What the session would create there is what the host reads as `.claude/y.json`.
+        assert!(at(&rules, "shared/claude/y.json").read_only(&rules));
+        assert!(at(&rules, "shared/claude").pinned());
+        // The name's own later line lifts under that name, and nothing else is protected.
+        assert!(!at(&rules, "shared/claude/x.json").read_only(&rules));
+        assert!(!at(&rules, "shared/claude/notes.md").read_only(&rules));
+        assert!(!at(&rules, "shared/other/y.json").read_only(&rules));
+        // A lift under one name does not lift what the other name protects.
+        assert!(at(&rules, ".vscode/claude/x.json").read_only(&rules));
+        assert_eq!(claude.read_only_rests(&rules), vec!["*.json".to_string()]);
+    }
+
+    #[test]
+    fn a_directory_or_symlink_does_not_leave_a_writable_region() {
+        let rules = defaults_like();
+        let ordinary = GitContext::NotGit;
+        let inside = at(&rules, "node_modules/inflection");
+        let also_inside = at(&rules, "node_modules/.inflection-retired");
+        let outside = at(&rules, "apps/inflection");
+        assert_eq!(inside.region(&rules), Some(2));
+        assert!(matches!(
+            authorize_region_move(&rules, (&ordinary, &inside), (&ordinary, &outside)),
+            Decision::Deny(_),
+        ));
+        // npm's own renames stay inside the one region.
+        assert_eq!(
+            authorize_region_move(&rules, (&ordinary, &inside), (&ordinary, &also_inside)),
+            Decision::Allow,
+        );
+        // Moving in carries nothing a line protects out of anywhere.
+        assert_eq!(
+            authorize_region_move(&rules, (&ordinary, &outside), (&ordinary, &inside)),
+            Decision::Allow,
+        );
+        // The region's root itself: renamed, it would take the region's content with it.
+        let root_entry = at(&rules, "node_modules");
+        let renamed = at(&rules, "node_modules.bak");
+        assert!(matches!(
+            authorize_region_move(&rules, (&ordinary, &root_entry), (&ordinary, &renamed)),
+            Decision::Deny(_),
+        ));
+    }
+
+    #[test]
+    fn a_symlink_target_path_entering_a_gitdir_is_told_from_one_that_does_not() {
+        let path = |text: &'static str| -> Vec<&'static [u8]> {
+            text.split('/').map(str::as_bytes).collect()
+        };
+        for entering in [
+            ".git",
+            ".GIT",
+            ".git/config",
+            ".git/objects/x",
+            "sub/.git/hooks",
+        ] {
+            assert!(enters_gitdir(&path(entering)), "{entering}");
+        }
+        for other in [
+            "apps/x",
+            ".gitignore",
+            ".ko-agent-sandbox",
+            ".ko-agent-sandbox/file",
+        ] {
+            assert!(!enters_gitdir(&path(other)), "{other}");
+        }
+    }
+
+    #[test]
+    fn a_directory_or_symlink_does_not_leave_a_gitdir_for_the_project_under_file_rules() {
+        let staged = GitContext::InGit(vec![b"objects".to_vec(), b"x".to_vec()]);
+        let packed = GitContext::InGit(vec![b"objects".to_vec(), b"pack".to_vec()]);
+        let ordinary = GitContext::NotGit;
+        let root = RuleContext::root();
+        let rules = defaults_like();
+        let apps = at(&rules, "apps/x");
+        assert!(matches!(
+            authorize_region_move(&rules, (&staged, &root), (&ordinary, &apps)),
+            Decision::Deny(_),
+        ));
+        // Git's own renames stay inside the gitdir; moving in carries nothing out.
+        assert_eq!(
+            authorize_region_move(&rules, (&staged, &root), (&packed, &root)),
+            Decision::Allow,
+        );
+        assert_eq!(
+            authorize_region_move(&rules, (&ordinary, &apps), (&staged, &root)),
+            Decision::Allow,
+        );
+        // Without lines there is nothing to carry past.
+        assert_eq!(
+            authorize_region_move(&FileRules::default(), (&staged, &root), (&ordinary, &root)),
+            Decision::Allow,
+        );
+    }
+
+    #[test]
+    fn a_symlink_into_a_writable_region_is_refused_from_outside_it_only() {
+        let rules = defaults_like();
+        let target = at(&rules, "node_modules/typescript/bin/tsc");
+        let bin_link = at(&rules, "node_modules/.bin/tsc");
+        let apps_link = at(&rules, "apps/x");
+        assert_eq!(
+            authorize_symlink_target(&rules, &bin_link, &target),
+            Decision::Allow,
+        );
+        assert!(matches!(
+            authorize_symlink_target(&rules, &apps_link, &target),
+            Decision::Deny(_),
+        ));
+        let plain = at(&rules, "src/lib");
+        assert_eq!(
+            authorize_symlink_target(&rules, &apps_link, &plain),
+            Decision::Allow,
+        );
+    }
+
+    #[test]
+    fn a_symlink_target_is_checked_at_every_path_it_passes_not_its_lexical_end_alone() {
+        let from = vec![b"apps".to_vec()];
+        let paths = symlink_target_paths(&from, std::path::Path::new("../node_modules/s/../../x"));
+        let spelled: Vec<String> = paths
+            .iter()
+            .map(|path| String::from_utf8(path.join(&b'/')).unwrap())
+            .collect();
+        assert_eq!(spelled, ["node_modules", "node_modules/s", "x"]);
+        // `node_modules/s` may be a symlink inside the region; the path through it is refused.
+        let rules = defaults_like();
+        let apps_link = at(&rules, "apps/x");
+        assert!(matches!(
+            authorize_symlink_target(&rules, &apps_link, &at(&rules, "node_modules/s")),
+            Decision::Deny(_),
+        ));
+    }
+
+    #[test]
+    fn the_rules_do_not_reach_into_git_or_launcher_configuration() {
+        let rules = FileRules::new(vec![floating(RuleWord::Writable, "*")]);
+        assert_eq!(rule_context_of_path(&rules, &[b".git", b"config"]), None);
+        assert_eq!(
+            rule_context_of_path(&rules, &[b"apps", b".ko-agent-sandbox"]),
+            None,
+        );
+    }
+
+    #[test]
+    fn without_rules_nothing_is_decided() {
+        let rules = FileRules::default();
+        let context = at(&rules, ".vscode/tasks.json");
+        assert_eq!(context, RuleContext::root());
+        assert_eq!(
+            authorize_rule(&rules, &context, Mutation::Write),
+            Decision::Allow,
+        );
+        assert_eq!(
+            authorize_rule_create(&rules, &context, false),
+            Decision::Allow,
         );
     }
 }

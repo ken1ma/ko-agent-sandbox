@@ -19,8 +19,7 @@ class SelfTestShareTest extends FunSuite:
     assert(command.contains("--userns=keep-id:uid=65532,gid=65532"))
     assert(command.contains("--user=65532:65532"))
     assert(command.contains(s"--volume=$mountpoint:$ProbeMount:rw"))
-    assert(PosixSessionProbe.contains(s"os.chdir(\"$ProbeMount\")"))
-    assert(WindowsSessionProbe.contains(s"os.chdir(\"$ProbeMount\")"))
+    assert(SessionProbe.contains(s"os.chdir(\"$ProbeMount\")"))
     // No image build and no volume creation: the probe reuses the sandbox image as it is, so
     // a second run rebuilds nothing and leaves no second container or volume behind.
     assertEquals(command.takeRight(3), Vector("ko-agent-sandbox:latest", "python3", "-"))
@@ -36,7 +35,7 @@ class SelfTestShareTest extends FunSuite:
     // The generated name itself, so the sweep and the builder cannot drift apart.
     assert(probeContainers(Seq(probeContainerName(AgentSandboxLauncher.newRunSuffix()))).nonEmpty)
 
-  test("the probe programs speak exactly the protocol the orchestrator reads"):
+  test("the probe program speaks exactly the protocol the orchestrator reads"):
     assertEquals(interpret("stack filtered"), ProbeEvent.Stack(true))
     assertEquals(interpret("stack unfiltered"), ProbeEvent.Stack(false))
     assertEquals(interpret("READY"), ProbeEvent.ReadySeen)
@@ -45,18 +44,12 @@ class SelfTestShareTest extends FunSuite:
     assertEquals(interpret("mmap-visible 42"), ProbeEvent.MmapSeen(Some(42L)))
     assertEquals(interpret("mmap-visible never"), ProbeEvent.MmapSeen(None))
     assertEquals(interpret("mmap-visible ??"), ProbeEvent.Noise("mmap-visible ??"))
-    assertEquals(interpret("HELD"), ProbeEvent.HeldSeen)
     assertEquals(interpret("abort: the seed reads b'CCCC'"), ProbeEvent.Aborted("the seed reads b'CCCC'"))
     assertEquals(interpret("WARNING: something"), ProbeEvent.Noise("WARNING: something"))
-    // The programs interpolate the same constants interpret reads; their presence is the drift
+    // The program interpolates the same constants interpret reads; their presence is the drift
     // guard for the python side.
     for marker <- Seq("READY", "read-visible", "mmap-visible", "stack ", SeedName, OldBytes, NewBytes) do
-      assert(PosixSessionProbe.contains(marker), marker)
-    for marker <- Seq("READY", "read-visible", "HELD", "stack ", SeedName, OldBytes, NewBytes, ReleaseName) do
-      assert(WindowsSessionProbe.contains(marker), marker)
-    // No mmap row on Windows: the write it measures is refused while the mapping holds
-    // (verification-log.md, "coherency on Windows"); the HELD refusal row checks that behavior instead.
-    assert(!WindowsSessionProbe.contains("mmap-visible"))
+      assert(SessionProbe.contains(marker), marker)
 
   test("the machine view script asks about the backing path without splicing it"):
     val script = machineViewScript("/Users/x/proj/self-test-share.1")

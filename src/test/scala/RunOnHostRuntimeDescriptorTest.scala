@@ -38,10 +38,11 @@ class RunOnHostRuntimeDescriptorTest extends munit.FunSuite:
       jdk: String = "/jdk", tmp: String = "/t", port: Int = 7001, forwards: Vector[(String, String)] = Vector.empty,
       reads: Seq[Path] = systemPaths.reads, network: SeatbeltProfile.Network = SeatbeltProfile.Network.ProxyOnly,
       home: String = "/home/u", trust: String = "/b/proxy.trust",
+      fileRules: FileRules.Resolved = FileRules.Resolved.Empty,
     ) =
       RunOnHostSandbox.runtimeInputs(
         assembled(jdk), Path.of(tmp), port, Path.of(trust), systemPaths.copy(reads = reads), forwards, network,
-        host = name => Option.when(name == "HOME")(home), userName = "u",
+        fileRules, host = name => Option.when(name == "HOME")(home), userName = "u",
       )
     def fingerprint(in: RunOnHostSandbox.RuntimeInputs, rules: String = "deny defaults") =
       RunOnHostRuntimeDescriptor.fingerprint(in, rules)
@@ -63,6 +64,9 @@ class RunOnHostRuntimeDescriptorTest extends munit.FunSuite:
       "network" -> fingerprint(inputs(network = SeatbeltProfile.Network.MillDaemon)),
       "passed-through HOME" -> fingerprint(inputs(home = "/home/v")),
       "rules" -> fingerprint(inputs(), rules = "deny defaults\nallow https://example.org/ read"),
+      "file rules" -> fingerprint(
+        inputs(fileRules = FileRules.Resolved(Vector.empty, Vector(".husky/_"), Vector.empty)),
+      ),
     )
     differing.foreach((what, other) => assertNotEquals(other, base, what))
     assertEquals(differing.values.toSet.size, differing.size, "each difference its own fingerprint")

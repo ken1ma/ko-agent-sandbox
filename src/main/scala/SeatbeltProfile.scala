@@ -134,6 +134,9 @@ object SeatbeltProfile:
     trust: Path,
     systemPaths: SystemPaths,
     network: Network,
+    // The file rules and the filter guard's paths (FileRules.Resolved): the project files a host
+    // program executes on an event, which the command must not write either.
+    fileRules: FileRules.Resolved,
   )
 
   /**
@@ -165,6 +168,7 @@ object SeatbeltProfile:
         :+ inputs.trust
 
     val program = prereqs.program
+    val fileRuleFilters = SeatbeltProfile.fileRuleFilters(prereqs.project, inputs.fileRules)
     everyPath.find(path => !isAbsoluteNormalized(path)) match
       case _ if program == Program.Sbt && inputs.distribution.isEmpty =>
         Left(
@@ -200,6 +204,7 @@ object SeatbeltProfile:
       case Some(bad) => Left(invalidPathReason(bad))
       case None if inputs.proxyPort < 1 || inputs.proxyPort > 65535 =>
         Left(s"the proxy port ${inputs.proxyPort} is not a port")
+      case None if fileRuleFilters.isLeft => Left(fileRuleFilters.swap.getOrElse(""))
       case None =>
         val lines = Seq.newBuilder[String]
         lines += "(version 1)"
@@ -284,6 +289,15 @@ object SeatbeltProfile:
             lines += """(allow network-bind network-inbound (local ip "localhost:*"))"""
             lines += """(allow network-outbound (remote ip "localhost:*"))"""
           case Network.ProxyOnly | Network.SbtClient(_) => ()
+        lines += ""
+        lines += ";; Project files a host program executes on an event, and the components their names"
+        lines += ";; pass through: the file rules in order, then the filter guard's paths and the rules' rests"
+        lines += ";; below where symlinks lead. Reads stay allowed."
+        for (protection, filter) <- fileRuleFilters.getOrElse(Vector.empty) do
+          protection match
+            case Protection.Writable => lines += s"(allow file-write* $filter)"
+            case Protection.ReadOnly => lines += s"(deny file-write* file-link $filter)"
+            case Protection.Pinned   => lines += s"(deny file-write-create file-write-unlink file-link $filter)"
         lines += ""
         lines += ";; The guard, last: repository state a later host git command would execute,"
         lines += ";; and the boundary configuration a later launch would read. Scoped to the project:"
@@ -410,6 +424,95 @@ object SeatbeltProfile:
   private def subpath(path: Path): String = s"(subpath ${sbpl(path.toString)})"
 
   private def literal(path: Path): String = s"(literal ${sbpl(path.toString)})"
+
+  /**
+   * What a file-rule filter does to writes: denies them to the entry and everything below it, or
+   * denies creating and removing the entry alone, or allows them again to the entry and everything
+   * below it.
+   */
+  enum Protection:
+    case ReadOnly, Pinned, Writable
+
+  /**
+   * The file rules as SBPL filters in the order they render, each with what it does, or the
+   * reason they cannot be written. SBPL's last matching filter decides, as the filter's last
+   * matching line does:
+   *
+   *   - each line as a regex anchored after the project's own path, so a directory above the
+   *     project bearing a listed name — a checkout named `mise` — cannot match, with `*` as any
+   *     run within one component: a `readonly` line a deny, a `writable` line an allow;
+   *   - before it, each interior component of the line as a deny on the entry alone, which a later
+   *     line matching the entry or an ancestor overrides as the filter's pruning does. It denies
+   *     `file-write-create` and `file-write-unlink`, which a rename's two sides and both sides of a
+   *     `RENAME_SWAP` exchange are checked as (`src/probe/seatbelt-semantics.sh` E13, E14, E17),
+   *     and `file-link`; so it also denies the component's `mkdir` and `rmdir`, which the filter
+   *     allows, and leaves the entry's contents, mode and attributes to the other rules;
+   *   - after every line, the guard's `readonly-path` entries by `subpath`, and its `pinned-path`
+   *     entries and the interior components of both by `literal`;
+   *   - last, each `readonly-under` rest as a regex anchored at its directory, its interior
+   *     components pinned. A `writable` line lifting part of a rest under the symlink's name
+   *     stays unlifted here, although the filter lifts it (doc/run-on-host.md).
+   *
+   * An allow grants `file-write*` alone, the project's own grant, so it never widens the profile;
+   * a hard link to a file a `writable` line lifts inside a read-only directory stays denied.
+   */
+  def fileRuleFilters(project: Path, resolved: FileRules.Resolved): Either[String, Vector[(Protection, String)]] =
+    val root = project.toString
+    if root.contains('"') then Left(s"$project holds a double quote, which no SBPL regex can spell")
+    else
+      val prefix = "^" + escapeRegex(root) + "/(.*/)?"
+      val lineFilters = resolved.lines.flatMap: line =>
+        val components = line.name.split("/").toVector.map(globToRegex)
+        val interiors = (1 until components.size).map: count =>
+          Protection.Pinned -> s"""(regex #"$prefix${components.take(count).mkString("/")}$$")"""
+        // After its interiors: an entry the line names whole at one alignment and as an interior
+        // at another, `ax/ab` under `a*/a*`, is the line's to decide, as in the filter.
+        val protection = line.word match
+          case FileRules.Word.ReadOnly => Protection.ReadOnly
+          case FileRules.Word.Writable => Protection.Writable
+        interiors :+ (protection -> s"""(regex #"$prefix${components.mkString("/")}(/|$$)")""")
+      // An anchored path's interior components are pinned, as the filter pins an anchored line's.
+      val interiors = (resolved.readOnlyPaths ++ resolved.pinnedPaths).flatMap: path =>
+        val components = path.split("/").toVector
+        (1 until components.size).map(count => components.take(count).mkString("/"))
+      val paths =
+        resolved.readOnlyPaths.map(Protection.ReadOnly -> _) ++
+          (interiors ++ resolved.pinnedPaths).map(Protection.Pinned -> _)
+      val underDirectories = resolved.readOnlyUnder.map(_(0))
+      (paths.map(_(1)) ++ underDirectories)
+        .map(relative => (relative, project.resolve(relative)))
+        .find((relative, path) => relative.isEmpty || !isAbsoluteNormalized(path) || !path.startsWith(project)) match
+        case Some((relative, _)) => Left(s"the filter's guard named '$relative', which is no path below $project")
+        case None =>
+          underDirectories.find(_.contains('"')) match
+            case Some(relative) =>
+              Left(
+                s"the filter's guard named '$relative', whose double quote no SBPL regex can spell; rename it " +
+                  "on the host, then relaunch",
+              )
+            case None =>
+              val pathFilters = paths.map: (protection, relative) =>
+                protection match
+                  case Protection.ReadOnly => protection -> subpath(project.resolve(relative))
+                  case _                   => protection -> literal(project.resolve(relative))
+              val underFilters = resolved.readOnlyUnder.flatMap: (relative, rest) =>
+                val under = "^" + escapeRegex(project.resolve(relative).toString) + "/"
+                val components = rest.split("/").toVector.map(globToRegex)
+                val restInteriors = (1 until components.size).map: count =>
+                  Protection.Pinned -> s"""(regex #"$under${components.take(count).mkString("/")}$$")"""
+                restInteriors :+ (Protection.ReadOnly -> s"""(regex #"$under${components.mkString("/")}(/|$$)")""")
+              // Of two equal filters the later one is kept: dropping an earlier copy changes no last match.
+              Right((lineFilters ++ pathFilters ++ underFilters).reverse.distinct.reverse)
+
+  private def escapeRegex(text: String): String =
+    text.flatMap(ch => if "\\^$.|?*+()[]{}".contains(ch) then s"\\$ch" else ch.toString)
+
+  /** A rule component, whose characters are a-z, 0-9, `.`, `_`, `-` and `*` (FileRules.parse). */
+  private def globToRegex(component: String): String =
+    component.flatMap:
+      case '*' => "[^/]*"
+      case '.' => "\\."
+      case ch  => ch.toString
 
   /** The name at any depth, anchored so `.gitignore` and `.github` do not match. */
   private def anyDepth(name: String): String =

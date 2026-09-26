@@ -70,11 +70,11 @@ once; that the filter can still mount here now is the filter's own `--self-test`
 session.
 
 Windows has one measured hazard to settle before the apply state machine is built rather than
-during it: a host write to a file a live session holds open is refused with a sharing violation
-(SECURITY.md, "The project directory"; `../fuse/ko-agent-fs/doc/verification-log.md` has the
-measurement). Apply writes to the host while sessions are
-attached, and sealing rebinds write authority without necessarily closing the lower descriptor, so
-apply's atomic replacement can be refused on exactly the paths it is applying.
+during it: a file a live session holds open refuses some host writers with a sharing violation,
+PowerShell's `Set-Content` among them (SECURITY.md, "The project directory";
+`../fuse/ko-agent-fs/doc/verification-log.md` has the measurement). Apply writes to the host while
+sessions are attached, and sealing rebinds write authority without necessarily closing the lower
+descriptor, so apply's atomic replacement can be refused on exactly the paths it is applying.
 
 ## Stage management and visibility
 

@@ -127,8 +127,11 @@ From the three groups, the state that must be immutable to the sandbox:
    - and, by recursion, the same classes inside every nested gitdir: `worktrees/<name>/**`
      and `modules/<name>/**` are themselves gitdirs, so their `config`, `hooks/**`, `commondir` and
      `gitdir` are immutable while their operational state is not.
+4. **A hook directory the host relocated into the worktree**, read-only as a root, with the
+   components its chain traverses pinned ("Relocated hook directories", below).
 
-Everything else stays writable — see the classifier.
+Everything else stays writable — see the classifier — except what the file rules list
+(`../../../doc/file-rules.md`).
 
 
 ## The classifier: writable vs immutable *inside* a gitdir
@@ -273,7 +276,8 @@ Rename and exchange are the double-sided cases:
   by then (`fs.rs`, `link`).
 - Symlinks need no such rule: they redirect by *path*, and the target path is re-classified
   through the resolver's own walk, so a symlink into `hooks/` is caught when the resolved target
-  is opened for write.
+  is opened for write. The file rules refuse a symlink whose target names a `.git` entry for
+  their own reason (`../../../doc/file-rules.md`).
 
 Residual: a hardlink the *host* already created between a protected inode and a worktree path lets
 a write to the worktree path reach the frozen inode.
@@ -285,43 +289,49 @@ a write to the worktree path reach the frozen inode.
   aliasing.
 
 
-## Relocated hook directories — closed by refusing to serve
+## Relocated hook directories — served read-only
 
 Everything above assumes hooks are where git puts them: `$GIT_DIR/hooks`. A host can relocate them
 into the **worktree**, two ways:
 
 - `.git/hooks` is a symlink to a worktree directory (`../shared-hooks`), a pattern for keeping hooks
   under version control;
-- `core.hooksPath` in the host's config already names a worktree directory (`./githooks`).
+- `core.hooksPath` in the host's config already names a worktree directory (`./githooks`); husky
+  sets `.husky/_` in every repository it installs into.
 
-In both cases the files host `git` executes are stored at an ordinary worktree path, which this
-filter classifies as writable project data — so no per-operation rule can protect them.
+In both cases the files host `git` executes are stored at an ordinary worktree path, which the
+`.git` name rule classifies as ordinary project data.
 
-- **The filter therefore refuses to serve such a tree at all** (`guard::check_hook_location`, run
-  before the mount).
-- The mounted suite verifies both the refusal and its necessity
-  (`relocated_hooks_are_refused_at_mount_because_the_filter_cannot_protect_them`).
+- **The guard therefore resolves each such directory before the mount** (`guard::resolve`) and the
+  filter serves it as a read-only root, with every ordinary component its chain traverses pinned
+  against rename and replacement — a `readonly-path` line of the resolved file rules
+  (`../../../doc/file-rules.md`).
+- The mounted suite's `relocated_hooks_are_served_read_only` checks that the served directory
+  refuses writes at its own name.
+- A chain through a gitdir's writable state (`.git/objects/...`) refuses the mount: git
+  rewrites that state, so no read-only root can hold it.
+- So does a hook directory that is the workspace root itself (`core.hooksPath = .`): its hooks
+  are top-level files, and only the whole tree read-only could hold them.
 
-What the per-operation rules do hold is narrower than it looks, and worth stating exactly: the
-sandbox cannot *re-aim* hook resolution.
+What the per-operation rules hold on their own is narrower, and worth stating exactly: the sandbox
+cannot *re-aim* hook resolution.
 
 - `.git/config` is frozen, so it cannot introduce or change `core.hooksPath`.
 - The `.git/hooks` symlink node is protected, so it cannot be deleted or replaced.
 - What they cannot cover is a target the **host** already points hooks at, which is what the
-  refusal is for.
+  read-only root is for.
 - Blocking the write *through* `.git/hooks/` would protect nothing: the same bytes are reachable
   under the target's own ordinary name (`shared-hooks/pre-commit`), so a rule about the symlink
   path closes nothing. Any real fix has to protect the *target*.
 
-**Why refusing rather than resolving.**
+**Why resolving rather than refusing.**
 
-- Resolving the hook location and classifying that subtree as protected would keep those
-  repositories working, but buys a conditional guarantee with a git-config parser and a second
-  protected root in the audited core, and the snapshot it rests on is one the host can
-  invalidate mid-session.
-- Refusing is the same answer the launcher gives a symlinked `.ko-agent-sandbox`
-  (`SandboxProject.boundaryDirRefusal`), and it is accurate: the filter declines to imply cover it
-  cannot deliver.
+- Resolving costs a git-config scan, which a refusal needs too, and a second protected root in the
+  audited core, which the file rules bring anyway: a guard-found path is one more anchored line of
+  the same kind (`policy.rs`, `RuleLine`).
+- Refusing would leave every husky repository without a writable session.
+- The snapshot the root rests on is one the host can invalidate mid-session, as a refusal's check
+  would be; the window is recorded below.
 
 **The binding rule.** Relocated hooks are one instance of a class the guard closes whole: Git
 configuration, hooks and redirection files must not be reachable through a workspace path the
@@ -336,7 +346,8 @@ policy classifies as writable.
     means a different directory to each;
   - the hook directory and every entry in it.
 - Every workspace-resident component traversed must classify as `Protected`, or the resolution
-  has permanently left the workspace.
+  has permanently left the workspace. A hook directory's chain may instead pass through ordinary
+  data, which then becomes a read-only root or a pinned component (above).
 - Components, not only symlink nodes: an operational *directory* on a chain is a future symlink
   slot the sandbox can rename away and replant, and a chain that leaves the workspace re-enters
   the rule if a link points back in.
@@ -347,11 +358,13 @@ policy classifies as writable.
   runtime and no exemption here).
 - Existence cannot weaken the answer — a missing operational name is one the sandbox can
   create — and only NotFound means absent: an unreadable step, or a config that is not UTF-8,
-  refuses the mount.
+  refuses the mount. Absent in the daemon's view is absent on the host only where the daemon sees
+  the host's objects, so a step outside them refuses too (below).
 
 The rule is also what makes the mount-time snapshot durable: a snapshot is sound only over paths
-its subject cannot mutate, and every allowed chain is made of `Protected` components the sandbox
-can neither write nor rename. Only the host can invalidate it, which is the window recorded below.
+its subject cannot mutate, and every allowed chain is made of `Protected`, read-only or pinned
+components the sandbox can neither write nor rename. Only the host can invalidate it, which is the
+window recorded below.
 
 The same recognition covers the layout with no `.git` name at all:
 
@@ -361,20 +374,23 @@ The same recognition covers the layout with no `.git` name at all:
   hooks have ordinary writable names.
 - Re-check the triple against git's discovery rules on upgrade (P5).
 
-The refusal is deliberately narrow — it fires only when the hook directory resolves **inside** the
-workspace. Hooks kept outside it are unreachable through the mount (`RESOLVE_IN_ROOT` clamps the
-resolution), so there is nothing to refuse and those repositories are served normally.
+The read-only root is added only when the hook directory resolves **inside** the workspace.
+
+- Hooks kept outside it are unreachable through the mount (`RESOLVE_IN_ROOT` clamps the
+  resolution), so there is nothing to protect and those repositories are served normally.
+- That holds where the daemon sees the host's own objects: all of them on native Linux, and
+  through a podman machine only the directories the machine shares. A chain leaving those refuses
+  the mount, since the host could follow it back into the workspace unseen.
 
 The scanner behind it does not read section headers, so it cannot tell `core.hooksPath` from a
 `hooksPath` under a section git never consults for hooks.
 
-- It therefore judges **every** `hooksPath` the file states and refuses if any one of them
-  resolves inside the workspace.
+- It therefore judges **every** `hooksPath` the file states and serves each one resolving inside
+  the workspace read-only.
 - Keeping only the last would be the fail-open reading: a stray `[tool] hooksPath = /opt/hooks`
   after a real `[core] hooksPath = ./githooks` would answer for both, and the worktree hooks git
   actually runs would be served as ordinary writable data.
-- The price is over-refusing a config whose only inside-workspace `hooksPath` is one git
-  ignores — a refused mount, never a lost guarantee.
+- The price is a read-only directory for a `hooksPath` git ignores, never a lost guarantee.
 
 The doubts refuse rather than guess, each of them a value the scanner would otherwise compare in a
 different spelling than the one hooks run from:
@@ -391,7 +407,8 @@ root is unchecked, recorded in `TODO.md` and named in `SECURITY.md`:
 
 - A repository the **host** nested deeper — its protected entries under `.git` names are frozen
   like any other's, but Git metadata the host routed into the worktree (relocated hooks, a
-  redirected gitdir) are served writable; the sandbox cannot create this layout.
+  redirected gitdir) are served writable unless a file rule lists them, as `readonly .husky`
+  does husky's; the sandbox cannot create this layout.
 - A **bare layout**, which the sandbox *can* create — `git init --bare` and
   `git clone --bare|--mirror` write only ordinary names, and no per-name rule can refuse `HEAD`,
   `objects` and `refs` individually without refusing legitimate projects ("Consequences",
@@ -401,7 +418,7 @@ root is unchecked, recorded in `TODO.md` and named in `SECURITY.md`:
 The check is also a snapshot, taken before the mount and not repeated.
 
 - A host that relocates its hooks into the worktree *after* a session is serving gets no second
-  refusal.
+  resolution.
 - Polling for it would buy a guarantee only as fresh as its last poll while putting a config read
   and an `lstat` on the hot path, so the answer is to record the window rather than chase it.
 - The window is the host's own to open: the binding rule allows only chains the sandbox cannot

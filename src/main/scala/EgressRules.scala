@@ -135,55 +135,11 @@ object EgressRules:
   val RuleFiles: Vector[(String, String)] = Vector("rule" -> "EGRESS_RULE")
 
   /**
-   * Present egress rule files as (name, normalized text). Refuse forms that could hide or
-   * misread configuration:
-   * - A file at egress/ would leave its rules unread because the reader expects a directory.
-   * - An unknown filename could be a typo that leaves intended rules unread.
-   * - A symlink at egress/ or a rule file could redirect the host read. Podman resolves mount
-   *   sources on the host, so this read must see the bytes the mounted directory would show.
-   * - An entry with a rule filename that is not a regular file would be skipped by the reader.
-   * - A present but empty rule file is more likely a forgotten edit than a deliberate no-op;
-   *   an intentionally empty rule file is absent.
-   * Entries inside egress/ follow SandboxProject.isMetadataEntry's metadata exemption.
+   * Present egress rule files as (name, normalized text), under the refusals
+   * SandboxProject.readBoundaryRuleFiles lists.
    */
   def readRuleFiles(egressDir: Path): Either[String, Vector[(String, String)]] =
-    def symlinkRefusal(path: Path): String =
-      s"error: $path must not be a symlink\nRefusing to read this project's egress rules through one."
-
-    if Files.isSymbolicLink(egressDir) then Left(symlinkRefusal(egressDir))
-    else if !Files.exists(egressDir) then Right(Vector.empty)
-    else if !Files.isDirectory(egressDir) then
-      Left(
-        s"""error: $egressDir is a file
-           |egress is a directory holding the rule file ${RuleFiles.map(_(0)).mkString(", ")}. Move the
-           |lines there and remove the file; doc/egress-proxy.md has the grammar.""".stripMargin
-      )
-    else
-      val entries = directoryEntries(egressDir)
-        .filterNot(entry => SandboxProject.isMetadataEntry(entry.getFileName.toString))
-        .sortBy(_.getFileName.toString)
-
-      val refusal = entries
-        .collectFirst:
-          case entry if !RuleFiles.exists(_(0) == entry.getFileName.toString) =>
-            s"error: $entry is not a rule file\negress/ holds only " +
-              s"${RuleFiles.map(_(0)).mkString(", ")}; a stray name would be ignored config."
-          case entry if Files.isSymbolicLink(entry) => symlinkRefusal(entry)
-          case entry if !Files.isRegularFile(entry) =>
-            s"error: $entry is not a regular file\negress/ holds a text file per rule file; " +
-              "anything else would leave this file silently unread."
-        .orElse:
-          RuleFiles
-            .map(_(0))
-            .collectFirst:
-              case name if readIfPresent(egressDir.resolve(name)).map(normalizeRuleText).contains("") =>
-                s"error: ${egressDir.resolve(name)} lists no lines\n" +
-                  "Delete the file; an intentionally empty rule file is an absent file."
-
-      refusal.toLeft(
-        RuleFiles.flatMap: (name, _) =>
-          readIfPresent(egressDir.resolve(name)).map(normalizeRuleText).map(name -> _),
-      )
+    SandboxProject.readBoundaryRuleFiles(egressDir, RuleFiles.map(_(0)), "doc/egress-proxy.md", normalizeRuleText)
 
   /**
    * Only the basename of the directly launched command is classified; the launcher does not inspect

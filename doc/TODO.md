@@ -124,16 +124,6 @@ again.
   directories. Phase 2 waits for each agent's measurement on a refused write, which the plan
   names.
 
-## Deferred — host command injection through project files
-
-- [ ] `plan-host-command-injection.md`, as one change: a `.ko-agent-sandbox/file/rule` naming
-  the project files a host program executes on an event that is not a run of the project,
-  read-only in the filter and the `--run-on-host` profile.
-  - The defaults: editor configuration, hook managers' configuration, devcontainer, mise, the
-    agents' project hooks, skills and servers.
-  - Husky-style relocated hook directories are served read-only instead of refused; husky's
-    `npm install` under the read-only set waits for the measurement the plan names.
-
 ## Deferred — a release-age window in the other package managers
 
 SECURITY.md, "The supply chain", has npm's seven-day window and why uv gets none.
@@ -419,6 +409,40 @@ measurably needs it (`SeatbeltProfile.SystemPaths.txt`), and no build here runs 
   - Measure, before the form is chosen, that `curl` fetches from an allowed host with that one
     file granted: the acceptance test's "CA bundle variables" rows print what it does, and
     whether it then reads `CURL_CA_BUNDLE` or `SSL_CERT_FILE`.
+
+## Deferred — Node for ScalablyTyped and scalajs-bundler under `--run-on-host`
+
+Both plugins run `npm install` from the sbt JVM, which a host command cannot do (read from the
+code, not measured):
+
+- The command's `PATH` is the JDK's `bin` and the system directories, and the profile executes
+  nothing else, so no Homebrew, nvm or asdf `node` or `npm` is found or run
+  (`RunOnHostSandbox.scala`, the command's environment; `SeatbeltProfile.SystemPaths.txt`).
+- `HOME` passes through, so npm's cache is `~/.npm`, which the profile does not grant.
+- The plugins, read at scalajs-bundler `2d9cbce` and ScalablyTyped Converter `c2c414f`:
+  - scalajs-bundler runs `npm install` (or `yarn`) by name in its install directory under the
+    target (`ExternalCommand.scala`), and `node` for bundling (`JSBundler.scala`) and for tests
+    under jsdom (`JSDOMNodeJSEnv.scala`), so it needs Node at every build, not only at install;
+  - ScalablyTyped runs `npm install` (or `yarn`) by name in `<crossTarget>/scalablytyped-npm`
+    (`NpmInstall.scala`), or, under its external-npm plugin, calls the project's own
+    `externalNpm` task, which returns a directory holding `package.json` and `node_modules`
+    (`docs/plugin-no-bundler.md`). It publishes what it converts to the Ivy home's `local`
+    (`Utils.IvyLocal`), which the run-on-host cache holds.
+
+- [ ] Measure the workaround that needs no change here: ScalablyTyped's external-npm plugin with
+  `externalNpm` returning a directory the session ran `npm install` in, in the container. Record
+  whether the conversion then runs on the host without Node.
+- [ ] A Node a host command may run, only once a build needs it on the host, in the shape of the
+  mill launcher's grant:
+  - a Node distribution the user provisions, read-only and executable, on the command's `PATH`,
+    never the host's `PATH`;
+  - npm's cache in the project's run-on-host cache (`npm_config_cache`), not `~/.npm`;
+  - the registry allowed in the sbt program's egress rule; `HTTPS_PROXY` and
+    `NODE_EXTRA_CA_CERTS` already reach Node (`run-on-host.md`, the CA variables' table), and
+    npm's proxy and HTTP/1.1 use through the inspecting proxy is to be measured;
+  - what `npm install` then runs on the host: the lifecycle scripts of every package, under the
+    command's profile, which SECURITY.md's "Run on host" should state beside the limit
+    `node_modules` already has there.
 
 ## Deferred — a bound on a silent host command
 

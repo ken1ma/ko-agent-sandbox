@@ -90,7 +90,8 @@ costs are described below.
 - Claude Code's managed settings are stored in the read-only image and take precedence over
   repository settings. An organization's remote managed settings can supersede the image's settings
   (the sandbox Containerfile's managed-settings note explains the consequences).
-- The egress rules in `.ko-agent-sandbox` are read on the host before the container starts.
+- The rules in `.ko-agent-sandbox/egress` and `.ko-agent-sandbox/file` are read on the host
+  before the container starts.
 - The session's write mode keeps a session from writing the configuration governing the next
   launch:
   - under `--write=reject` the whole tree is read-only;
@@ -133,10 +134,20 @@ while a session mutates it:
 Every path through which host git reaches these entries must also be protected. The mount-time guard
 checks the repository host git discovers from the project directory, and refuses:
 
-- a workspace-root repository whose gitdir, config or hooks reach host git through a writable
-  workspace path — a redirected gitdir (`git init --separate-git-dir`), a config or hook aliased
-  into the worktree, or a `commondir` pointing back in;
-- a bare layout at the workspace root.
+- a repository at the project root that keeps its Git directory, or part of it such as `config`,
+  at an ordinary path in the project, as `git init --separate-git-dir` can: the filter protects
+  Git entries under a `.git` name, so the session could write that path;
+- a bare layout at the workspace root;
+- a `core.hooksPath` naming the project directory itself, whose hooks — `<project>/pre-commit` —
+  no read-only directory short of the whole tree could hold;
+- through a podman machine, a chain to any of these, hooks included, that leaves the directories
+  the machine shares, where the filter cannot see what the host follows: `/Users`, `/private` and
+  `/var/folders` on macOS, the project's own drive on Windows, so a link to another drive is
+  refused.
+
+Hooks kept in the worktree — husky's `.husky/_`, a `core.hooksPath` of `githooks`, a symlinked
+`.git/hooks` — are served read-only instead, with the components their chain passes through
+pinned against rename ("A host program executing a project file on an event", below).
 
 A directory laid out as a gitdir *without* a `.git` name elsewhere in the tree is the gap "The
 project directory" describes.
@@ -170,6 +181,58 @@ These are the default protections, with qualifications under "Not defended":
 - Under `--run-on-host`, host commands write directly to the host tree without passing through the
   workspace filter. The Seatbelt profile's deny rules protect those Git entries on that path ("Run
   on host", below).
+
+**A host program executing a project file on an event, not when you build or run the project.**
+An agent's hooks and MCP servers when you start it, a hook manager's configuration when you
+commit, an editor's tasks when you open the folder, mise's hooks when you enter the directory, and
+a Dev Container's `initializeCommand` when you reopen it run commands the project's files name, on
+the host. A session cannot change those files (`doc/file-rules.md` has the list and the rule file):
+
+- The filter keeps what the defaults and `.ko-agent-sandbox/file/rule` name read-only at any depth,
+  under the name rule `.git` has, and refuses creating it, by any means.
+- A directory such a name passes through cannot be renamed, replaced or removed while it holds
+  anything, so the name cannot be staged elsewhere and moved into place.
+- Below a directory a `writable` line names, `node_modules` among the defaults, a session can
+  write names the other lines protect: the filter refuses moving a directory or symlink out of
+  it, renaming it included, a hard link of a symlink out of it, and a symlink into it from
+  outside.
+- The filter refuses the same moves out of a Git directory's operational state, where no line
+  applies, and any new symlink whose target names a `.git` entry or spells an NTFS 8.3 short
+  name such as `GIT~1`, whatever that name holds when the link is made. The check reads the
+  target's names as the link is made, so a symlink the session did not make — the host's, or one
+  that predates the check — into a Git directory or through a short name still lets a later link
+  reach it.
+- The mount-time guard adds what a name cannot express, from the tree as it finds it at the
+  mount, a snapshot like the Git check above:
+  - a hook directory kept in the worktree, and the target of a symlink inside a listed entry at
+    the workspace root, also when that entry links to a directory outside the project: each
+    read-only, and the directories and links its chain passes through cannot be renamed or
+    replaced;
+  - below the directory a symlink at the workspace root makes part of a listed name,
+    `shared/claude` for `.claude -> shared/claude`, what that name's lines protect, including
+    entries the session creates later;
+  - a refusal for a listed entry, or a symlink inside one, that leads to the project root or a
+    directory holding it, which no read-only path could express.
+- Under `--run-on-host` the Seatbelt profile denies writing the same files, in the same order. It
+  cannot refuse moving a directory out of `node_modules`, so a host command can bring a listed
+  name to a subdirectory that had none ("Run on host", below).
+
+What the selected command then runs stays open; review its diff first, as "The project directory"
+says:
+
+- a project script a task, a hook or `initializeCommand` runs, a `package.json` script, a file an
+  `.envrc` loads through `source_env`, and code a listed plugin imports from a dependency
+  directory;
+- a tool a hook runs from `node_modules`, which the defaults leave writable: a husky hook running
+  `npx lint-staged` or `npm test`, the `lefthook` binary its Git hooks run from `node_modules`.
+  For such a project the read-only hook configuration fixes which command a commit runs, not
+  that command's code.
+  - Protecting a hook runner's own configuration, `.lintstagedrc` or `commitlint.config.*`, would
+    add nothing while its code is writable, so the defaults do not list it.
+  - Making `node_modules` read-only whole would stop `npm install` in the session.
+- an editor extension that evaluates a project file on open or save;
+- a dependency directory you open in an editor or enter, which `npm explore` does;
+- a symlink or relocated hook deeper than the workspace root's entries, as for nested repositories.
 
 **Silent changes to what you own.** The launcher never silently modifies configuration or files it
 does not own. Unannounced changes to host configuration or metadata can invalidate the user's
@@ -350,14 +413,17 @@ still write there is data which your git then parses, so a memory-safety bug in 
 reachable, exactly as with any cloned untrusted repository (`.gitattributes` stays writable, but
 can only invoke filter commands your host configuration already defines).
 
-Everything else writable — build scripts, CI definitions, IDE configuration, generators, binaries
-— is output from an untrusted execution environment: editing them is the job, and confining their
-author says nothing about what running them on the host will do. Review the diff first, exactly as
-for a contribution from a stranger. That includes a repository the agent created deeper in the
-tree: the filter, which refuses creating a `.git` entry, cannot refuse a *bare layout* built from
-ordinary names (`git init --bare`, `git clone --bare|--mirror`, or by hand): its config and hooks
-are served as writable data anywhere in the writable workspace, and git's ascending discovery
-adopts it for a host command run at or beneath it.
+Everything else writable — build scripts, CI definitions, IDE configuration the file rules do not
+list, generators, binaries — is output from an untrusted execution environment: editing them is
+the job, and confining their author says nothing about what running them on the host will do.
+Review the diff first, exactly as for a contribution from a stranger.
+
+That includes a repository the agent created deeper in the tree:
+
+- The filter, which refuses creating a `.git` entry, cannot refuse a *bare layout* built from
+  ordinary names (`git init --bare`, `git clone --bare|--mirror`, or by hand).
+- A bare layout's config and hooks are served as writable data anywhere in the writable
+  workspace, and git's ascending discovery adopts it for a host command run at or beneath it.
 
 Running host git *inside* a directory the agent created is running the agent's output.
 
@@ -386,10 +452,10 @@ The tree is also shared live with the host:
 - Your editor, builds and git run against the same files the agent is writing; host and sandbox
   writes race like any two processes on one directory, and git's own lock files are the only
   arbiter the writable parts of `.git` get.
-- On Windows the sharing adds one rule: a file a live session holds open cannot be written from the
-  host. The machine's 9p handle imposes Windows sharing rules, so a host editor's save meets "used
-  by another process" until the session lets go (`fuse/ko-agent-fs/doc/verification-log.md` has
-  the measurement).
+- On Windows a file a live session holds open refuses some host writers until the session lets
+  go: the machine's 9p handle imposes Windows sharing rules, so PowerShell's `Set-Content` meets
+  "used by another process", while Notepad's save and .NET's `WriteAllText` succeed
+  (`fuse/ko-agent-fs/doc/verification-log.md` has the measurement).
 - Concurrent sandbox sessions of one project race each other the same way, under the workspace
   filter too: they share the one filter mount — the same files, the same live view, the same
   races.
@@ -410,7 +476,8 @@ directories"):
 - It checks the repository discovered from the project directory, not every nested repository.
   - The protected entries under a nested repository's `.git` cannot be modified, but pre-existing
     redirections into writable worktree files — relocated hooks or a redirected gitdir — remain
-    writable (`fuse/ko-agent-fs/doc/TODO.md`).
+    writable (`fuse/ko-agent-fs/doc/TODO.md`), as do the targets of symlinks at or inside listed
+    entries deeper than the root's.
   - Bare layouts below the workspace root are also outside that check; a bare layout present at
     the root at launch is refused ("The project directory").
 - The check is a snapshot. It does not revalidate protected Git entries relocated by the host during
@@ -1126,6 +1193,8 @@ provides the confinement for these commands; they execute outside the container.
   A command's access is:
   - the project, read-write, except `.git` and `.ko-agent-sandbox`: denied at any depth after path
     resolution, link creation included, with the `.GIT` gap `doc/run-on-host.md` records;
+    writes and links are denied as well to what the launch's file rules make read-only and to
+    the paths the filter's guard added;
   - its own per-project run-on-host caches;
   - one Coursier-managed JDK, read-only;
   - the program's own executable and distribution, read-only: the cs-installed `sbt` and the
@@ -1327,6 +1396,11 @@ provides the confinement for these commands; they execute outside the container.
   both options authorizes those writes despite the container's read-only mount, and the launch
   says so on a line of its own. A session that must leave the project untouched must not enable
   `--run-on-host`.
+- **A listed file can reach a project subdirectory through `node_modules`.** A host command can
+  move a directory out of `node_modules`, with a listed file the session wrote in it, to a path
+  such as `apps/web`; a host program started there then runs the file. A listed name still cannot
+  be written at the project root or inside a directory a line names (`doc/file-rules.md`, "Under
+  `--run-on-host`"); a session without `--run-on-host` has no such gap.
 - **Teardown follows descriptor lifetime.** The shim holds one FIFO open for the life of its
   request, and the request itself travels on it, so no command starts without its liveness.
   - An interrupted command, a killed shim and a dead sandbox container all close it, and the broker

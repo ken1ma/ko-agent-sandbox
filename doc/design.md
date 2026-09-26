@@ -163,6 +163,20 @@ Attested in:
 Do not add a wildcard on the granting side, a second precedence, a richer pattern language, or
 a grant word outside the closed set without a concrete need that outweighs the added attack surface.
 
+The file rules (`file-rules.md`) apply the same model to names: `readonly` and `writable` lines
+in order over the launcher's defaults, the last line naming an entry or an ancestor deciding.
+They carry no path pattern beyond `*` within a component:
+
+- A name matches at any depth, as `.git` does: a line anchored at the root would miss a nested
+  folder, which the programs read when you open or enter it.
+- The filter folds the name as it folds `.git`, and decides each entry from its parent's context
+  and its own name at lookup; a richer language would need a path, which no inode stores.
+- An outermost-wins or most-specific-wins order would be a second precedence; the ordered form
+  already makes `node_modules` the exception with its last line.
+- They differ from `egress/rule` in carrying one bit instead of grant words, and in letting
+  `readonly` name a path, since the filter, not an origin, decides how a name reads (SECURITY.md,
+  "Adding hosts, not patterns").
+
 ### No approve-on-miss prompt for a refused host
 
 Codex, Gemini CLI's "sandbox expansion" and Copilot's `allowBypass` answer a refused request with
@@ -275,6 +289,26 @@ Keep the rule procedural: a credential in the project directory violates the ope
 it is the user's to keep out. A `deny` of the forge in `egress/rule` removes one way to use a
 forge token left there, not the risk — every allowed host is a possible recipient of what the
 sandbox holds.
+
+### A `--run-on-host` limit, not a stricter form
+
+Every session gets the same file rules, `writable node_modules` among the defaults, and under
+`--run-on-host` a host command can carry a listed file out of `node_modules`: `file-rules.md`,
+"Under `--run-on-host`", states the limit. It is a cost of `--run-on-host`, like the project a host
+command writes under `--write=reject` (SECURITY.md, "Run on host").
+
+The alternative weighed, a strict form under `--run-on-host` in which a `writable` line only
+cancels an earlier `readonly` line of the same name, closes the limit and costs:
+
+- npm installing a package without a listed name it carries, with a warning: the measured ones
+  carry development leftovers (`file-rules.md`, "Measurements");
+- `writable` lines that hold in one kind of session and not the other, a second meaning of
+  `writable` for the reader to keep in mind;
+- a filter mount that a session with `--run-on-host` and one without cannot share, since their
+  rules differ.
+
+Revisit when `../src/probe/seatbelt-semantics.sh` E13-E16 find a rule refusing a move out of
+`node_modules` that leaves npm's renames and `rmdir` there, which would close the limit.
 
 ### No writable session without the workspace filter
 
