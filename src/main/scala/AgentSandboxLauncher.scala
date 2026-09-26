@@ -258,9 +258,14 @@ object AgentSandboxLauncher:
    * reader's Enter, or by the hold itself at EOF, which echoes nothing.
    */
   def confirmStart(mode: String, command: Seq[String], reader: Option[Reader]): Boolean =
-    reader.filter(_ => mode == "pause") match
+    startPrompt(mode, reader) match
       case None         => true
       case Some(reader) => agreed(reader, s"\nstart: ${command.map(renderArgument).mkString(" ")} [Y/n] ")
+
+  /** The reader the start prompt asks through, if it asks at all: what a consent that rides on
+    * that prompt, such as joining a mount under other file rules (KoAgentFs.joinUnderOtherRules),
+    * depends on. */
+  def startPrompt(mode: String, reader: Option[Reader]): Option[Reader] = reader.filter(_ => mode == "pause")
 
   /**
    * Whether a launch from a linked worktree shares its main worktree's agent-state volume: the
@@ -498,9 +503,9 @@ object AgentSandboxLauncher:
 
   /**
    * The KO_AGENT_SANDBOX_* names this launcher reads — plus KO_AGENT_SANDBOX_EGRESS_RULESET,
-   * KO_AGENT_SANDBOX_JAVA_OPTS and KO_AGENT_SANDBOX_RUN_ON_HOST, which it sets inside the sandbox
-   * rather than reads, so a launcher nested in a sandbox session is not warned about the variables
-   * that session legitimately has set.
+   * KO_AGENT_SANDBOX_FILE_RULES, KO_AGENT_SANDBOX_JAVA_OPTS and KO_AGENT_SANDBOX_RUN_ON_HOST,
+   * which it sets inside the sandbox rather than reads, so a launcher nested in a sandbox session
+   * is not warned about the variables that session legitimately has set.
    */
   val KnownSandboxVariables: Set[String] = Set(
     "KO_AGENT_SANDBOX_JAVA_OPTS",
@@ -512,6 +517,7 @@ object AgentSandboxLauncher:
     SessionStartVariable,
     ClipboardVariable,
     "KO_AGENT_SANDBOX_EGRESS_RULESET",
+    "KO_AGENT_SANDBOX_FILE_RULES",
     RunOnHostChannel.RunOnHostVariable,
   )
 
@@ -2106,9 +2112,10 @@ object AgentSandboxLauncher:
           |with `--write=live` when project files must be written.""".stripMargin
       case "live" =>
         s"""`$mountPath` is writable and shared live with the host project directory through the
-          |`ko-agent-fs` filter. Git configuration, hooks, other protected Git entries, and
-          |`.ko-agent-sandbox` cannot be modified at any depth;
-          |symlink targets must be relative and remain inside the workspace.""".stripMargin
+          |`ko-agent-fs` filter. Git config, hooks, `.git` files, `commondir`, `gitdir`,
+          |rebase instructions, `.ko-agent-sandbox` and what `$$KO_AGENT_SANDBOX_FILE_RULES` makes
+          |read-only cannot be modified at any depth; in those rules the last line naming an entry or
+          |an ancestor decides. Symlink targets must be relative and remain inside the workspace.""".stripMargin
       case _ =>
         throw IllegalArgumentException(s"unknown write mode: $writeMode")
     val gitParagraph = git.fold("")(paragraph => s"\n\n$paragraph")
@@ -2121,7 +2128,8 @@ object AgentSandboxLauncher:
            |
            |Run $names for this project as $commands: they run on the
            |host, sandboxed to the project, per-project run-on-host caches and configured artifact repositories,
-           |and they may write the project except `.git` and `.ko-agent-sandbox`.
+           |and they may write the project except `.git`, `.ko-agent-sandbox` and what
+           |`$$KO_AGENT_SANDBOX_FILE_RULES` makes read-only.
            |The daemons of sbt, mill and gradle stay warm across invocations. To run several
            |commands in one, quote them: `ko-sandbox-run-on-host sbt 'compile; test'`; sbt reads separate
            |arguments as one command, and `compile test` fails to parse. The container's own `sbt` is the last
@@ -2718,6 +2726,18 @@ object AgentSandboxLauncher:
 
     val ruleFiles = readRuleFiles(boundaryDir.resolve("egress")).fold(fail(_), identity)
 
+    // The project files a host program executes on an event (FileRules), read as the egress rules
+    // are and resolved to what the filter and the Seatbelt profile enforce. The filter's guard adds
+    // to them at the mount; under --write=reject with --run-on-host, where no daemon runs,
+    // `ko-agent-fs --resolve` does.
+    val projectFileRules = FileRules.readRuleFile(boundaryDir.resolve("file")).fold(fail(_), identity)
+    val fileRuleLines = FileRules.resolve(projectFileRules.fold(Vector.empty[FileRules.Line])(_(1)))
+    val fileRulesInForce = writeMode == "live" || runOnHost.nonEmpty
+    val fileRulesText = FileRules.daemonText(fileRuleLines, FileRules.hostView(os, mountPath))
+    val rejectFileRules = Option.when(writeMode == "reject" && runOnHost.nonEmpty)(
+      resolveFileRules(podman, os, projectId, mountPath, fileRulesText),
+    )
+
     // The provider the launched command selects, and the one warning that is the launcher's to
     // print: the proxy never sees the command, so "this command selects no provider" cannot come
     // from its resolution.
@@ -2834,6 +2854,16 @@ object AgentSandboxLauncher:
     // The filter's checks and its mountpoint now; the mount itself once the sandbox container
     // exists (mountKoAgentFs has why), which is after the proxy and the hold.
     val filteredWorkspace = Option.when(writeMode == "live")(prepareKoAgentFs(podman, os, projectId))
+    // A live mount under other file rules, after an edit of file/rule, is joined under its rules,
+    // which an earlier session of the project accepted; the start prompt below is the consent.
+    val joinedRules = joinUnderOtherRules(
+      filteredWorkspace.flatMap(_.running),
+      fileRulesText,
+      prompted = startPrompt(sessionStartMode, terminalReader).nonEmpty,
+    ).fold(fail(_), identity)
+    val (sessionRuleLines, sessionRulesText) = joinedRules match
+      case Some(running) => (FileRules.parseDaemonText(running.rules).fold(fail(_), identity), running.rules)
+      case None          => (fileRuleLines, fileRulesText)
 
     // -----------------------------------------------------------------------
     // Networks
@@ -3212,6 +3242,11 @@ object AgentSandboxLauncher:
       case None       => noGit.foreach(cause => warn(noGitWarning(cause, os)))
     gitdirBindRefusal.foreach: reason =>
       System.err.println(s"note: the main worktree's Git directory is not mounted; $reason")
+    joinedRules match
+      case Some(running) =>
+        warn(joinWarning(running))
+        FileRules.runningLaunchLines(sessionRuleLines).foreach(System.err.println)
+      case None => if fileRulesInForce then FileRules.launchLines(projectFileRules).foreach(System.err.println)
     if ruleFiles.nonEmpty then printRuleFiles(ruleFiles)
     printWidening(rulesetText)
     System.err.println(egressBanner(rulesetText))
@@ -3271,6 +3306,12 @@ object AgentSandboxLauncher:
       // confirmStart, for the same reason: the TUI clears it otherwise.
       s"--env=$SessionStartVariable=$sessionStartMode",
     ) ++ sandboxFiles
+
+    // The rule lines the session's writes are held to, for the agent to consult on a refusal; what
+    // the filter's guard adds at the mount comes after the container exists and is not among them.
+    val fileRuleArgs = Option.when(fileRulesInForce)(
+      s"--env=KO_AGENT_SANDBOX_FILE_RULES=${sessionRuleLines.map(_.text).mkString("\n")}",
+    ).toVector
 
     // The nested-container loosenings (NestingLoosenings has the what and why). Loud every session
     // they apply: the weaker boundary must never be the silent one.
@@ -3361,7 +3402,7 @@ object AgentSandboxLauncher:
 
       // Do not inherit the host's proxy variables; egressArgs passes the sandbox's own explicitly.
       "--http-proxy=false",
-    ) ++ nestedArgs ++ clipboardArgs ++ runOnHostArgs ++ egressArgs ++ Vector(
+    ) ++ nestedArgs ++ clipboardArgs ++ runOnHostArgs ++ egressArgs ++ fileRuleArgs ++ Vector(
 
       // The host's zone, because the JVM resolves it on every platform the launcher runs on. The image
       // ships tzdata and nothing else sets a zone, so without this a commit made in the sandbox
@@ -3445,20 +3486,28 @@ object AgentSandboxLauncher:
 
     // Said here, not on the workspace line above: the user should not have to infer "joined" from
     // silence, and which branch the mount took is known only now.
-    filteredWorkspace.foreach: prepared =>
-      val joined = mountKoAgentFs(podman, os, prepared, projectId, mountPath, sandboxContainer)
+    val mountedFileRules = filteredWorkspace.map: prepared =>
+      val (joined, resolved) =
+        mountKoAgentFs(podman, os, prepared, projectId, mountPath, sandboxContainer, sessionRulesText)
       System.err.println(
         if joined then "ko-agent-fs filter: joined the existing mount for this project directory"
         else "ko-agent-fs filter: mounted",
       )
+      resolved
+    val resolvedFileRules = mountedFileRules.orElse(rejectFileRules)
+    resolvedFileRules.map(FileRules.guardLines).getOrElse(Vector.empty).foreach(System.err.println)
 
     // The command broker, detached like the reaper: it must outlive the exec below, and it ends
     // itself when the sandbox stops. A session that asked for the channel and cannot have it is a
     // failed launch, as with the clipboard above.
     if runOnHost.nonEmpty then
+      // In this run's own directory, removed with it, where the broker and each command read it.
+      val brokerFileRules = runFiles.resolve("file-rules.resolved")
+      resolvedFileRules.foreach(resolved => writePrivate(brokerFileRules, resolved.text))
       if !RunOnHostChannel.spawnBroker(
           podman, sandboxContainer, projectDir, runOnHost, channelLogFile, mountPath,
           forwards = parsed.env,
+          fileRules = resolvedFileRules.map(_ => brokerFileRules),
         )
       then fail("error: could not spawn the command broker, which serves --run-on-host")
 

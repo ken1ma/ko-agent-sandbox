@@ -66,6 +66,7 @@ object RunOnHostMillDaemons:
     session: Session,
     systemPaths: SeatbeltProfile.SystemPaths,
     forwards: Vector[(String, String)],
+    fileRules: FileRules.Resolved,
     processes: Processes,
     log: String => Unit,
     start: DaemonStart,
@@ -75,7 +76,7 @@ object RunOnHostMillDaemons:
     val output = starterLog(session, start.hash)
     val inputs = RunOnHostSandbox.runtimeInputs(
       assembled, session.tmp, start.runtime.proxyPort, start.runtime.trust, systemPaths, forwards,
-      SeatbeltProfile.Network.MillDaemon,
+      SeatbeltProfile.Network.MillDaemon, fileRules,
     )
     def said =
       s"the starter's output:\n${RunOnHostSandbox.sessionLogTail(output, 4096).getOrElse("(nothing was written)\n")}"

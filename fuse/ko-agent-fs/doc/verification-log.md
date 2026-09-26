@@ -113,6 +113,25 @@ The create side, in a filtered session over a new, empty project: `mkdir GIT~1` 
 host's `cmd /c dir /x /a` afterwards lists one directory, long name `GIT~1`, no short name, and
 no `.git`.
 
+### Verified: a listed name's NTFS 8.3 short name (Windows Server 2025, podman 6.1.0; 2026-09-27)
+
+On a `C:` volume with 8.3 name generation on, a project whose `.vscode/tasks.json`,
+`.claude/settings.json` and `node_modules/p` the host created shows, in `cmd /c dir /x /a`, the
+short names `VSCODE~1`, `CLAUDE~1`, `NODE_M~1` and `GIT~1`. In a filtered session under the
+default file rules:
+
+- `: >> VSCODE~1/tasks.json`, `: >> VSCODE~1/new.json`, `mv VSCODE~1 moved`,
+  `: >> CLAUDE~1/settings.json`, `mv CLAUDE~1 moved2` and `mv NODE_M~1/p apps/p` each fail: a short
+  name takes the context of the long name it stands for (`fs.rs`, `policy_name`);
+- `echo x > CLAUDE~1/notes.md` succeeds, as beside the long name.
+
+A symlink the session makes is one the host follows: `ln -s GIT~1 gitlink` in the session gave an
+NTFS `SymbolicLink` whose target is `GIT~1`, and the host's `Get-Content gitlink\HEAD` printed
+`ref: refs/heads/master`. So a symlink target that spells a short name is refused, whatever the
+name holds when the link is made (`fs.rs`, `allow_symlink_target`). With that check, in a session
+over a project whose `.git` and `node_modules` show `GIT~1` and `NODE_M~1`, `ln -s GIT~1 gitlink`,
+`ln -s NODE_M~1 nm` and `ln -s .git gitlink2` each fail, and `ln -s src srclink` succeeds.
+
 ## End-to-end coherency through the host share
 
 ### Verified: end-to-end coherency, filtered stack (macOS 26.4.1, podman 6.0.2; 2026-08-22)
@@ -153,25 +172,28 @@ that matters, and the unfiltered bind mount speed the perf control measures is t
 answering fast. Host→session coherency rests on the hypervisor's behavior alone; the filter's TTL 0
 is the only cache policy in the path.
 
-### Measured: coherency on Windows — fresh when unheld, locked when held (Server 24H2; 2026-08-19)
+### Measured: coherency on Windows — fresh when unheld; a hold refuses some writers (Server 24H2)
 
 On a Windows host (podman 6.1.0, machine on WSL2, kernel 6.18.33.2-microsoft-standard-WSL2),
 measured against host-side observations at every step:
 
 - A host-created file, and a host rewrite of a file nothing held open, both reached an in-session
   `read()` promptly — host→session visibility holds for unheld files, and session→host held
-  already (the NTFS name-rule run).
-- A host write to a file a live session held open failed with a sharing violation ("used by
-  another process") until the session released it: the daemon's backing fd reaches NTFS through
-  the machine's 9p server, whose handle follows Windows sharing rules. Isolated below the
-  filter: a bare 9p hold (`tail -f` in the machine, no session involved) reproduces the refusal,
-  and the write succeeds the moment the hold ends.
+  already (the NTFS name-rule run). 2026-08-19.
+- A file a session holds open refuses some host writers and not others: the daemon's backing fd
+  reaches NTFS through the machine's 9p server, whose handle follows Windows sharing rules. With
+  `tail -f held.txt` in a filtered session over `C:\work\tmp1` (2026-09-27):
+  - PowerShell's `Set-Content` fails with "used by another process";
+  - .NET's `[IO.File]::WriteAllText` and Notepad's save succeed, and the session's `tail -f`
+    prints the new bytes;
+  - Java's `Files.write`, the `--self-test` writer, succeeds against a read-only open with a
+    read-only `mmap` of the same file.
+- Below the filter, a bare 9p hold (`tail -f` in the machine) refused a host write whose writer
+  was not recorded, and the write succeeded the moment the hold ended. 2026-08-19.
 
-Together they close the mmap question by construction: a mapped file cannot go stale under a host
-write, because the write is refused while the mapping holds — the coherency measurement's mmap
-half therefore cannot and need not run there. What the lock costs is co-editing, and SECURITY.md
-("The project directory") records it: a host editor's save is refused while a session holds that
-file open.
+So a mapped file can see a host write on Windows too, and `--self-test` runs the `mmap` row
+there as on macOS. What the lock costs is co-editing with the writers it refuses, and SECURITY.md
+("The project directory") records it.
 
 The Windows 8.3 short name `GIT~1` is in the empirical corpus to be *confirmed* rather than assumed,
 not because it is evidence of a git-side gap: the 8.3 leg of CVE-2014-9390 was **Mercurial's**, not

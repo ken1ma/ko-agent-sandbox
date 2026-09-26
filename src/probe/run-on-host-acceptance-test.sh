@@ -717,6 +717,21 @@ for p in $profiles; do
     expect_denied "$p" "link PROJECT/x -> PROJECT/.git/config" "ln '$scratch/sub/nested/.git/config' '$scratch/x'"
     expect_denied "$p" "write via PROJECT/link -> PROJECT/.git" ": >> '$scratch/link/config'"
     expect_denied "$p" "write PROJECT/.ko-agent-sandbox/..." ": >> '$scratch/.ko-agent-sandbox/egress/rule'"
+    # The file rules' defaults (doc/file-rules.md), laid out on the host. The rename rows measure
+    # which operations SBPL checks for a rename.
+    mkdir -p "$scratch/rules/.vscode" "$scratch/rules/.claude" "$scratch/rules/sub" \
+        "$scratch/rules/node_modules/p"
+    printf '{}\n' > "$scratch/rules/.vscode/tasks.json"
+    printf '{}\n' > "$scratch/rules/.claude/settings.json"
+    expect_denied "$p" "write a listed file" ": >> '$scratch/rules/.vscode/tasks.json'"
+    expect_denied "$p" "create a listed name deeper" "mkdir '$scratch/rules/sub/.vscode'"
+    expect_denied "$p" "rename a directory a listed name passes through" \
+        "mv '$scratch/rules/.claude' '$scratch/rules/saved'"
+    expect_denied "$p" "rename a staged directory onto a name a listed name passes through" \
+        "mkdir -p '$scratch/rules/staged' && mv '$scratch/rules/staged' '$scratch/rules/sub/.claude'"
+    expect_allowed "$p" "create a listed name inside node_modules, which a later writable line lifts" \
+        "mkdir '$scratch/rules/node_modules/p/.vscode'"
+    expect_allowed "$p" "write beside a listed file" ": > '$scratch/rules/.claude/notes.md'"
     expect_denied "$p" "write the user's Coursier v1" ": > '$user_v1/$marker'"
     present_or_skip "write the user's mill download folder" "$mill_downloads" \
         && expect_denied "$p" "write the user's mill download folder" ": > '$mill_downloads/$marker'"

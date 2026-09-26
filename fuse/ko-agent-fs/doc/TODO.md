@@ -28,6 +28,18 @@ short names"; `SECURITY.md` states the exception to its claims).
   generation off leaves the existing short names (`fsutil 8dot3name strip` removes those).
   Staged mode keeps session mutations off the host tree, and its apply step needs the same
   protection against a concurrent replacement.
+- [ ] `a_create_never_reopens_a_guarded_entry_that_arrives_under_a_second_name`
+  (`tests/mounted_races.rs`) failed in two of three `--self-test` runs on Windows Server 24H2
+  (x86_64, WSL2 kernel 6.18.33.2; 2026-09-27), the second at `ac405d2`: "SECURITY: a create opened
+  the host's pointer file". It passed in the first run and on the macOS rig. A failed suite ends
+  `--self-test` before its share rows, so Windows's `mmap` row waits on this item.
+  - Unverified cause: an entry's identity is `(st_dev, st_ino)` (`fs.rs`, `identity`), so a new
+    host `.git` given the inode number of the object a lookup recorded for `GIT~1` passes
+    `open_ino`'s check under the ordinary context.
+  - Next: the failure rate from repeated `--self-test a_create_never_reopens` and
+    `probe/rig.sh a_create_never_reopens`; a debug build logging a number that returns for a new
+    object; then a stronger identity (change or birth time beside the number), written up before
+    it changes the core.
 
 ## P1 — Platform verification (needs real filesystems)
 
@@ -91,10 +103,12 @@ The `.git` rows pass on APFS (both variants, macOS 26.4.1) and NTFS (Windows Ser
 TTL 0 covers our layer only; end to end also needs the virtiofs share beneath to reflect host
 writes promptly (`architecture.md`). The launcher's `--self-test` share rows measure both paths a
 write can travel, `read()` and an established `mmap`, across the whole stack, launcher-driven and
-machine-recorded. macOS 26.4.1 passes, and Windows measures fresh-when-unheld with host writes to
-session-held files refused by a share lock; `verification-log.md` records both, and why the
+machine-recorded. macOS 26.4.1 passes; Windows measures fresh-when-unheld, and a session-held file
+refuses some host writers and not others; `verification-log.md` records both, and why the
 premise is behavioral rather than declarative.
 
+- [ ] Run `--self-test` on Windows for its first `mmap` row: whether a host write reaches a
+  mapping the session holds, which Git's mapped `.git/index` and packfiles depend on.
 - [ ] Run `--self-test` on Linux, and after a podman or macOS upgrade — the measurement, not the
   mount table, is what notices a changed hypervisor default.
 
@@ -167,9 +181,8 @@ What is left:
 - [ ] macOS Podman machine on x86_64, if it still matters — aarch64 is where the rows above ran.
 
 On Windows the name rule, coherency and performance rows are measured (`verification-log.md`):
-fold tables are per-volume, so the name-rule run verifies the volume it ran on; coherency comes
-with the share-lock cost recorded there; and `ls -lR` costs ~100 ms per entry ("Performance",
-below).
+fold tables are per-volume, so the name-rule run verifies the volume it ran on; coherency's `mmap`
+row waits on the run above; and `ls -lR` costs ~100 ms per entry ("Performance", below).
 
 
 ## Test infrastructure
@@ -381,8 +394,28 @@ defended"), which leaves:
 - [ ] After Linux verification, remove the unverified-platform qualification from `SECURITY.md`.
   Retain the mount-time guard's scope and snapshot limits, and move the explanation of build trust
   beside the verified guarantee. Platform evidence does not resolve those separate limits.
-- [ ] The guard's scope gap (`SECURITY.md`, "Not defended"): decide whether to extend the
-  checks to the repositories and bare layouts a pre-mount walk finds, or to keep recording it.
+- [ ] The guard's scope gap (`SECURITY.md`, "Not defended"): a nested repository's relocated
+  hooks or redirected gitdir stay writable; husky's `.husky/` is covered by the default
+  `readonly .husky`. Decide whether to close it or keep recording it:
+  - a walk of the whole tree at every mount, `node_modules` and `target/` included, checking each
+    repository and bare layout it finds: mount time on large projects, and a repository the host
+    creates mid-session is still missed;
+  - a check when a lookup first meets a `.git`: no walk, but a hook directory can be looked up and
+    written before its repository's `.git` is, so every directory lookup needs a `stat` for
+    `.git`, and read-only roots added mid-session invalidate cached contexts.
+- [ ] A symlink the session makes that later resolves outside the workspace on the host
+  (`SECURITY.md`, "The project directory"; `fs.rs`, `target_has_portable_syntax`). Three routes:
+  moving the link or a directory above it to a shallower depth, a hard link of it in a shallower
+  directory, and a target through another symlink followed by `..` (`x -> d1/d2/a/..` with
+  `a -> ../..`). A host program that follows it reads or writes outside the project; a
+  `--run-on-host` command does not, since Seatbelt matches the resolved path. Closing it for the
+  session's own links:
+  - refuse `..` after a named component in a target: npm's and pnpm's links climb only first, but
+    which tools write `a/../b` is unmeasured, and it refuses links that work today;
+  - re-judge the targets below a directory renamed to a shallower depth, and a symlink
+    hard-linked there: one walk per such rename, none for npm's renames within one depth;
+  - refuse a target through a host-made symlink whose own target is absolute or climbs: one
+    lookup per component at creation.
 
 
 ## Deferred research

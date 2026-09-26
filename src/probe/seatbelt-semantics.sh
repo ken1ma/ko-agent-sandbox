@@ -5,7 +5,12 @@
 #
 # Run it on each new macOS release. If E3, E4, E5, E9 or E12 stops answering DENIED, the guard has
 # silently weakened and the profile no longer enforces what SECURITY.md claims — a release blocker,
-# not a test to update.
+# not a test to update. The same holds for the first answer of E13 and of E14, on which the file
+# rules' pinned directories rest. A row of E13-E16 reading DENIED / ALLOWED / ALLOWED / ALLOWED /
+# ALLOWED is a rule that would let a --run-on-host session keep node_modules writable. E17's
+# narrowed rule reading DENIED / DENIED lets the profile's deny on a directory a line passes
+# through narrow to the operations E13 and E14 measure (run-on-host.md, "The host command's
+# filesystem rules").
 #
 # Each experiment isolates one variable: the profile is `(allow default)` plus the single deny
 # under test, so the shell always runs and only that rule decides the outcome. The real profile is
@@ -183,6 +188,107 @@ for spelling in "$kelvin" "$long_s"; do
         "does /\\.ko-agent-sandbox(/|\$) match the spelling?" "$(spelled "$r")" \
         "DENIED: the pattern covers it. ALLOWED where E11 says ALIAS: the guard misses a name the launcher reads."
 done
+
+# ---------------------------------------------------------------------------
+# E13-E16: whether any rule can refuse moving a directory out of a writable region (node_modules)
+# while leaving what npm does inside it — renames within it, rmdir, unlink — allowed. Without one,
+# --run-on-host leaves the limit doc/file-rules.md, "Under --run-on-host", states.
+# Each rule is judged on one path, so the only discriminators are the operation SBPL checks on
+# each side of a rename and the vnode type.
+
+region() { # a fresh node_modules with a package, an empty directory and a file, and a target
+    rm -rf "$proj/nm" "$proj/out"
+    mkdir -p "$proj/nm/x/.vscode" "$proj/nm/empty" "$proj/out"
+    echo original > "$proj/nm/file"
+}
+compiles() { /usr/bin/sandbox-exec -f "$root/p.sb" /usr/bin/true 2>/dev/null; }
+# The five operations, each against a fresh region: out of it, within it, rmdir and unlink in it,
+# and mkdir outside it.
+region_ops() { # label
+    region; out=$(attempt "" "mv '$proj/nm/x' '$proj/out/x'")
+    region; within=$(attempt "" "mv '$proj/nm/x' '$proj/nm/.x-retired'")
+    region; rmd=$(attempt "" "rmdir '$proj/nm/empty'")
+    region; unl=$(attempt "" "rm '$proj/nm/file'")
+    region; mk=$(attempt "" "mkdir '$proj/out/y'")
+    report "$1" "out of nm / within nm / rmdir in nm / unlink in nm / mkdir outside" \
+        "$out / $within / $rmd / $unl / $mk" \
+        "a rule refusing a move out is usable only as DENIED / ALLOWED / ALLOWED / ALLOWED / ALLOWED."
+}
+
+profile <<'SB'
+(version 1)
+(allow default)
+(deny file-write-unlink (subpath "@PROJ@/nm"))
+SB
+region_ops "E13 file-write-unlink denied in the region: the operation a rename's source is checked as"
+
+profile <<'SB'
+(version 1)
+(allow default)
+(deny file-write-create (subpath "@PROJ@/out"))
+SB
+region_ops "E14 file-write-create denied outside: the operation a rename's destination is checked as"
+
+profile <<'SB'
+(version 1)
+(allow default)
+(deny file-write-unlink (require-all (subpath "@PROJ@/nm") (vnode-type DIRECTORY)))
+SB
+if compiles; then region_ops "E15 file-write-unlink denied on directories alone in the region"
+else report "E15 vnode-type on file-write-unlink" "does the profile compile?" "REJECTED" \
+    "vnode-type cannot narrow the unlink deny to directories."; fi
+
+# An operation of a rename's own, if SBPL has one: a name it does not know refuses the profile.
+for operation in file-write-rename file-rename; do
+    printf '(version 1)\n(allow default)\n(deny %s (subpath "%s/nm"))\n' "$operation" "$proj" > "$root/p.sb"
+    if compiles; then region_ops "E16 $operation denied in the region"
+    else report "E16 $operation" "does SBPL know the operation?" "REJECTED" \
+        "no rename-specific operation of that name."; fi
+done
+rm -rf "$proj/nm" "$proj/out"
+
+# ---------------------------------------------------------------------------
+# E17: which operations a renamex_np(RENAME_SWAP) exchange is checked as. The profile's deny on a
+# directory a line passes through, `pin`, covers every write to the entry; narrowed to
+# file-write-unlink and file-write-create, it would still refuse renaming it either way (E13, E14),
+# and the question is whether it refuses exchanging it. No shell command exchanges, so python3's
+# ctypes calls libSystem's renamex_np, as fuse/ko-agent-fs/probe/lower-probe-host.py does.
+cat > "$root/swap.py" <<'PY'
+import ctypes, sys
+RENAME_SWAP = 0x2
+renamex_np = ctypes.CDLL(None).renamex_np
+sys.exit(renamex_np(sys.argv[1].encode(), sys.argv[2].encode(), ctypes.c_uint(RENAME_SWAP)) != 0)
+PY
+swap() { printf "python3 '%s' '%s' '%s'" "$root/swap.py" "$1" "$2"; } # the exchange, as a command
+pinned() { # a fresh pinned directory and another one to exchange it with
+    rm -rf "$proj/pin" "$proj/other"
+    mkdir -p "$proj/pin" "$proj/other"
+    echo pin > "$proj/pin/mark"
+    echo other > "$proj/other/mark"
+}
+swap_ops() { # label
+    pinned; forward=$(attempt "" "$(swap "$proj/pin" "$proj/other")")
+    pinned; backward=$(attempt "" "$(swap "$proj/other" "$proj/pin")")
+    report "$1" "exchange pin with other / exchange other with pin" "$forward / $backward" \
+        "$2"
+}
+if ! python3 -c 'import ctypes; ctypes.CDLL(None).renamex_np' 2>/dev/null; then
+    report "E17 RENAME_SWAP" "can python3 call renamex_np?" "SKIPPED" \
+        "no python3 with ctypes and libSystem's renamex_np on this host."
+else
+    printf '(version 1)\n(allow default)\n' > "$root/p.sb"
+    swap_ops "E17 control, no deny" "ALLOWED / ALLOWED: the exchange works here, so the rows below measure the rules."
+    for operation in file-write-unlink file-write-create; do
+        printf '(version 1)\n(allow default)\n(deny %s (literal "%s/pin"))\n' "$operation" "$proj" \
+            > "$root/p.sb"
+        swap_ops "E17 $operation denied on pin" "DENIED on a side: the exchange is checked as this operation there."
+    done
+    printf '(version 1)\n(allow default)\n(deny file-write-unlink file-write-create (literal "%s/pin"))\n' \
+        "$proj" > "$root/p.sb"
+    swap_ops "E17 the narrowed rule: file-write-unlink and file-write-create denied on pin" \
+        "DENIED / DENIED: the pinned deny can narrow to these two. An ALLOWED: it cannot."
+    rm -rf "$proj/pin" "$proj/other"
+fi
 
 printf '\n=== machine ===\n'
 printf '%-20s %s\n' "macOS" "$(sw_vers -productVersion)"

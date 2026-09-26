@@ -305,7 +305,8 @@ class HostCommandsTest extends munit.FunSuite:
 
   test("every script the launcher writes names its own PATH before running anything"):
     val scripts = Vector(
-      "mount" -> koAgentFsMountScript("/tmp/backing", "app-abc123def456", "d" * 64, "run-1"),
+      "mount" -> koAgentFsMountScript("/tmp/backing", "app-abc123def456", "d" * 64, "run-1", "host-view /\n"),
+      "resolve" -> koAgentFsResolveScript("/tmp/backing", "app-abc123def456", "d" * 64, "host-view /\n"),
       "reap" -> koAgentFsReapScript("/usr/bin/podman", "app-abc123def456", "run-1"),
       "unmount" -> koAgentFsUnmountScript("app-abc123def456"),
       "unmount-all" -> koAgentFsUnmountAllScript,

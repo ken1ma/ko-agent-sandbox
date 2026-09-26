@@ -427,12 +427,17 @@ object RunOnHostSandbox:
       val stray = options.filterNot(option =>
         option.startsWith(EnvOption) || option.startsWith(ChannelLogOption)
           || option.startsWith(RuntimeSessionOption) || option.startsWith(ProxyPortOption)
-          || option.startsWith(ProxyLogOption) || option.startsWith(DaemonPortOption),
+          || option.startsWith(ProxyLogOption) || option.startsWith(DaemonPortOption)
+          || option.startsWith(FileRulesOption),
       )
       if stray.nonEmpty then
         Console.err.println(s"--run-command-on-host: unexpected arguments: ${stray.mkString(" ")}")
         sys.exit(2)
       val runtime = runtimeOf(options).fold(
+        reason => { Console.err.println(s"--run-command-on-host: $reason"); sys.exit(2) },
+        identity,
+      )
+      val fileRules = fileRulesOf(options, Path.of(project)).fold(
         reason => { Console.err.println(s"--run-command-on-host: $reason"); sys.exit(2) },
         identity,
       )
@@ -455,6 +460,7 @@ object RunOnHostSandbox:
           channelLog = options.find(_.startsWith(ChannelLogOption))
             .map(option => Path.of(option.stripPrefix(ChannelLogOption))),
           runtime = runtime,
+          fileRules = fileRules,
         ),
       )
     args.toList match
@@ -476,6 +482,17 @@ object RunOnHostSandbox:
   /** `--channel-log=<file>`: the broker's own log, where the wrapper appends a signal-ended
     * command's logs (appendSessionLogs). */
   val ChannelLogOption = "--channel-log="
+
+  /** `--file-rules=<file>`: the resolved file rules the launch wrote for its broker, which hands the
+    * option on to each command (RunOnHostChannel.spawnBroker). */
+  val FileRulesOption = "--file-rules="
+
+  /** The file rules a command's or runtime's profile denies writes to: the launch's resolved set
+    * when the broker handed one on, else the project's lines alone (FileRules.ofProject). */
+  def fileRulesOf(options: Seq[String], project: Path): Either[String, FileRules.Resolved] =
+    options.find(_.startsWith(FileRulesOption)) match
+      case Some(option) => FileRules.readResolved(Path.of(option.stripPrefix(FileRulesOption)))
+      case None         => FileRules.ofProject(project)
 
   /** The broker's runtime as the wrapper's options: the first three together or none, the
     * daemon port with them for a mill runtime. */
@@ -784,6 +801,8 @@ object RunOnHostSandbox:
     channelLog: Option[Path] = None,
     // The broker's runtime for this command (Runtime).
     runtime: Option[Runtime] = None,
+    // The launch's resolved file rules (fileRulesOf).
+    fileRules: FileRules.Resolved = FileRules.Resolved.Empty,
   ): Int =
     val env: String => Option[String] = name => Option(System.getenv(name))
     val root = RunOnHostSession.root(uid)
@@ -842,7 +861,7 @@ object RunOnHostSandbox:
                   case Right(_) =>
                     runInSession(
                       session, assembled, commandArgs, systemPaths, workingDirectory, log,
-                      forwarded.flatMap(name => env(carrierName(name)).map(name -> _)), runtime,
+                      forwarded.flatMap(name => env(carrierName(name)).map(name -> _)), runtime, fileRules,
                     )
               finally
                 teardown(bySignal = false)
@@ -882,6 +901,7 @@ object RunOnHostSandbox:
     systemPaths: SeatbeltProfile.SystemPaths,
     forwards: Vector[(String, String)],
     network: SeatbeltProfile.Network,
+    fileRules: FileRules.Resolved,
     host: String => Option[String] = name => Option(System.getenv(name)),
     userName: String = System.getProperty("user.name"),
   ): RuntimeInputs =
@@ -899,6 +919,7 @@ object RunOnHostSandbox:
         trust = trust,
         systemPaths = systemPaths,
         network = network,
+        fileRules = fileRules,
       ),
       commandEnvironment(
         host, forwards, prereqs, assembled.sbtGlobal, assembled.ivyHome, assembled.gradleUserHome,
@@ -961,15 +982,20 @@ object RunOnHostSandbox:
     log: String => Unit,
     systemPaths: SeatbeltProfile.SystemPaths,
     forwards: Vector[(String, String)],
+    fileRules: FileRules.Resolved,
   )(
     processes: RunOnHostSession.Processes = RunOnHostSession.HostProcesses,
     assemble: (Path, Program, Path) => Either[String, Assembled] =
       (project, program, buildDirectory) =>
         RunOnHostSandbox.assemble(project, program, name => Option(System.getenv(name)), buildDirectory),
     proxy: (Program, Vector[String], Path, Path) => Either[String, Int] = createProxy(systemPaths),
-    server: ServerStart => Either[String, Unit] = start => startSbtServer(session, systemPaths, forwards, start),
+    server: ServerStart => Either[String, Unit] =
+      start => startSbtServer(session, systemPaths, forwards, fileRules, start),
     daemon: DaemonStart => Either[String, RunOnHostMillDaemons.Daemon] =
-      start => RunOnHostMillDaemons.start(session, systemPaths, forwards, RunOnHostSession.HostProcesses, log, start),
+      start =>
+        RunOnHostMillDaemons.start(
+          session, systemPaths, forwards, fileRules, RunOnHostSession.HostProcesses, log, start,
+        ),
     scavenge: () => Unit = () => (),
     // The daemons holding the launch's registry under the given tmp/ (RunOnHostGradleDaemons.daemons).
     gradleDaemons: Path => Vector[(Long, String)] = RunOnHostGradleDaemons.daemons(_, RunOnHostSession.HostProcesses),
@@ -1195,7 +1221,7 @@ object RunOnHostSandbox:
         group <- read(record)
         inputs = runtimeInputs(
           current.assembled, session.tmp, current.runtime.proxyPort, current.runtime.trust, systemPaths, forwards,
-          network,
+          network, fileRules,
         )
         _ <- RunOnHostRuntimeDescriptor.publish(
           RunOnHostRuntimeDescriptor.file(session.directory, program, current.hash),
@@ -1342,7 +1368,7 @@ object RunOnHostSandbox:
               val ownerProxyLog = owner.resolve(s"$proxyName.log")
               val inputs = runtimeInputs(
                 assembled, ownerTmp, descriptor.proxyPort, RunOnHostInspection.trustDirectory(ownerProxyLog),
-                systemPaths, forwards, network,
+                systemPaths, forwards, network, fileRules,
               )
               val own = RunOnHostRuntimeDescriptor.fingerprint(inputs, egressRuleText(program, hosts))
               val checked =
@@ -1580,6 +1606,7 @@ object RunOnHostSandbox:
     session: Session,
     systemPaths: SeatbeltProfile.SystemPaths,
     forwards: Vector[(String, String)],
+    fileRules: FileRules.Resolved,
     start: ServerStart,
   ): Either[String, Unit] =
     val assembled = start.assembled
@@ -1587,7 +1614,7 @@ object RunOnHostSandbox:
     val output = serverLog(session, start.hash)
     val inputs = runtimeInputs(
       assembled, session.tmp, start.runtime.proxyPort, start.runtime.trust, systemPaths, forwards,
-      SeatbeltProfile.Network.ProxyOnly,
+      SeatbeltProfile.Network.ProxyOnly, fileRules,
     )
     for
       profile <- SeatbeltProfile.render(inputs.profile)
@@ -1662,12 +1689,13 @@ object RunOnHostSandbox:
     log: String => Unit,
     forwards: Vector[(String, String)],
     brokerRuntime: Option[Runtime],
+    fileRules: FileRules.Resolved,
   ): Either[String, Int] =
     val program = assembled.prereqs.program
     val buildDirectory = workingDirectory.getOrElse(assembled.prereqs.project)
     for
       runtime <- brokerRuntime.map(Right(_)).getOrElse(
-        ownRuntime(session, assembled, buildDirectory, commandArgs, systemPaths, forwards, log),
+        ownRuntime(session, assembled, buildDirectory, commandArgs, systemPaths, forwards, fileRules, log),
       )
       // The broker's log has served earlier commands: the report reads what this one adds.
       reportFrom = logLength(runtime.proxyLog)
@@ -1692,6 +1720,7 @@ object RunOnHostSandbox:
           trust = runtime.trust,
           systemPaths = systemPaths,
           network = network,
+          fileRules = fileRules,
         ),
       )
       exit <- runCommand(session, assembled, profile, runtime, commandArgs, workingDirectory, forwards, tmp, socketDir)
@@ -1716,10 +1745,11 @@ object RunOnHostSandbox:
     commandArgs: Seq[String],
     systemPaths: SeatbeltProfile.SystemPaths,
     forwards: Vector[(String, String)],
+    fileRules: FileRules.Resolved,
     log: String => Unit,
   ): Either[String, Runtime] =
     val program = assembled.prereqs.program
-    BrokerRuntimes(session, assembled.prereqs.project, log, systemPaths, forwards)(
+    BrokerRuntimes(session, assembled.prereqs.project, log, systemPaths, forwards, fileRules)(
       assemble = (_, _, _) => Right(assembled),
     )
       .prepare(program, buildDirectory, commandArgs)

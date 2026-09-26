@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use fuser::BackgroundSession;
 use ko_agent_fs::fs::{KoAgentFs, mount_config};
+use ko_agent_fs::policy::FileRules;
 use nix::fcntl::{OFlag, open};
 use nix::sys::stat::Mode;
 use nix::sys::statfs::{FUSE_SUPER_MAGIC, statfs};
@@ -32,6 +33,15 @@ impl TestMount {
     /// Lay out a backing tree with `setup` — the host's side, written directly, bypassing the
     /// filter, exactly as the host does — then mount the filter over it and wait until it serves.
     pub fn new(setup: impl FnOnce(&Path)) -> TestMount {
+        Self::with_rules(setup, |_| FileRules::default())
+    }
+
+    /// [`Self::new`] serving the file rules `rules_of` gives for the tree `setup` laid out, as the
+    /// daemon serves what its guard resolved over the backing.
+    pub fn with_rules(
+        setup: impl FnOnce(&Path),
+        rules_of: impl FnOnce(&Path) -> FileRules,
+    ) -> TestMount {
         let unique = format!(
             "ko-agent-fs-it-{}-{}",
             std::process::id(),
@@ -44,6 +54,7 @@ impl TestMount {
         fs::create_dir_all(&mount).expect("create mountpoint");
 
         setup(&backing);
+        let rules = rules_of(&backing);
 
         let root = open(
             &backing,
@@ -54,7 +65,7 @@ impl TestMount {
 
         // The product's own options (`fs::mount_config`), not a convenient subset: a suite that
         // mounted differently would be exercising a filesystem no session ever runs.
-        let session = fuser::spawn_mount(KoAgentFs::new(root), &mount, &mount_config())
+        let session = fuser::spawn_mount(KoAgentFs::new(root, rules), &mount, &mount_config())
             .expect("mount the filter");
 
         let harness = TestMount {

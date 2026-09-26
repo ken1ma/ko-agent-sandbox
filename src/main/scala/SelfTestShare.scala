@@ -37,17 +37,12 @@ object SelfTestShare:
   val OldBytes = "AAAA"
   val NewBytes = "BBBB" // same length: the mapped page is compared in place, no size change
 
-  /** The orchestrator's answer to `HELD` (the Windows program), whichever way its write attempt
-    * went: the file whose appearance tells the container to release the seed and exit. */
-  val ReleaseName = "share-probe-release"
-
   // The line protocol between the container half and the orchestrator. Interpolated into the
   // probe programs below, so the two sides cannot drift.
   private val StackPrefix = "stack "
   private val Ready = "READY"
   private val ReadVisible = "read-visible"
   private val MmapVisible = "mmap-visible"
-  private val Held = "HELD"
   private val Abort = "abort: "
 
   /** Where the probe container has the scratch project. A fixed path of the probe's own, not the
@@ -69,7 +64,7 @@ object SelfTestShare:
       "ko-agent-sandbox:latest", "python3", "-",
     )
 
-  /** The stack check both programs open with — `.git` refused at *any* depth is a property a bind
+  /** The stack check the program opens with — `.git` refused at *any* depth is a property a bind
     * mount does not have, and probing in a fresh subdirectory is what makes it answer in a tree
     * that already has a `.git`. */
   private val ProbePrelude: String =
@@ -92,7 +87,7 @@ object SelfTestShare:
    * a failed row rather than a hung action; the mmap wait starts at the moment read() saw the
    * write, which makes its figure the lag between the two views.
    */
-  val PosixSessionProbe: String = ProbePrelude +
+  val SessionProbe: String = ProbePrelude +
     s"""with open("$SeedName", "rb") as handle:
        |    page = mmap.mmap(handle.fileno(), ${OldBytes.length}, prot=mmap.PROT_READ)
        |    if bytes(page) != b"$OldBytes":
@@ -120,47 +115,6 @@ object SelfTestShare:
        |    sys.exit(1)
        |""".stripMargin
 
-  /**
-   * The Windows program (verification-log.md, "coherency on Windows"): the podman machine reaches
-   * the host's NTFS through its 9p server, whose handles follow Windows sharing rules, so the
-   * POSIX program's opening mmap would turn the orchestrator's own rewrite into the failure. Here
-   * nothing holds the seed when READY asks for the rewrite — the unheld half of the documented
-   * result — and the file is opened and mapped only afterwards: HELD asks the orchestrator to
-   * write against the hold and expect the refusal, which is what closes the mmap question on that
-   * machine — a mapped file cannot go stale, because the write is refused while the mapping holds.
-   * The release file is the orchestrator's answer either way, and waiting for it is bounded like
-   * every other wait.
-   */
-  val WindowsSessionProbe: String = ProbePrelude +
-    s"""with open("$SeedName", "rb") as handle:
-       |    seed = handle.read()
-       |if seed != b"$OldBytes":
-       |    print("${Abort}the seed reads %r" % seed, flush=True)
-       |    sys.exit(3)
-       |print("$Ready", flush=True)
-       |deadline = time.monotonic() + 120
-       |seen = False
-       |while time.monotonic() < deadline:
-       |    with open("$SeedName", "rb") as reader:
-       |        if reader.read() == b"$NewBytes":
-       |            seen = True
-       |            break
-       |    time.sleep(0.01)
-       |if not seen:
-       |    print("$ReadVisible never", flush=True)
-       |    sys.exit(1)
-       |print("$ReadVisible", flush=True)
-       |handle = open("$SeedName", "rb")
-       |page = mmap.mmap(handle.fileno(), ${OldBytes.length}, prot=mmap.PROT_READ)
-       |print("$Held", flush=True)
-       |while time.monotonic() < deadline + 120:
-       |    if os.path.exists("$ReleaseName"):
-       |        sys.exit(0)
-       |    time.sleep(0.01)
-       |print("${Abort}never released", flush=True)
-       |sys.exit(1)
-       |""".stripMargin
-
   /** What one probe line means to the orchestrator; Noise is any unrecognized line, printed so
     * a failed run's transcript is whole. */
   enum ProbeEvent:
@@ -168,14 +122,12 @@ object SelfTestShare:
     case ReadySeen
     case ReadSeen(ok: Boolean)
     case MmapSeen(lagMillis: Option[Long])
-    case HeldSeen
     case Aborted(reason: String)
     case Noise(text: String)
 
   def interpret(line: String): ProbeEvent =
     if line.startsWith(StackPrefix) then ProbeEvent.Stack(line.stripPrefix(StackPrefix) == "filtered")
     else if line == Ready then ProbeEvent.ReadySeen
-    else if line == Held then ProbeEvent.HeldSeen
     else if line == ReadVisible then ProbeEvent.ReadSeen(true)
     else if line == s"$ReadVisible never" then ProbeEvent.ReadSeen(false)
     else if line == s"$MmapVisible never" then ProbeEvent.MmapSeen(None)
@@ -248,8 +200,7 @@ object SelfTestShare:
         )
         watchdog.setDaemon(true)
         watchdog.start()
-        val program = if os == Os.Windows then WindowsSessionProbe else PosixSessionProbe
-        process.getOutputStream.write(program.getBytes(UTF_8))
+        process.getOutputStream.write(SessionProbe.getBytes(UTF_8))
         process.getOutputStream.close()
 
         val reader = BufferedReader(InputStreamReader(process.getInputStream, UTF_8))
@@ -262,9 +213,10 @@ object SelfTestShare:
                 if filtered then "" else "mkdir .git succeeded")
             case ProbeEvent.ReadySeen =>
               writeAt = System.nanoTime()
-              // A refused write is retried within a bound: on Windows the program's read poll
-              // itself holds the seed through the 9p server for an instant, and a genuine hold
-              // outlasts the bound. The kill turns the container's own wait into an exit.
+              // A refused write is retried within a bound: on Windows the machine's 9p server
+              // opens the seed under Windows sharing rules, which refuse some writers while it is
+              // held (verification-log.md, "coherency on Windows"), and a refusal that outlasts
+              // the bound fails the row. The kill turns the container's own wait into an exit.
               var refusal: Option[String] = None
               var written = false
               while !written && System.nanoTime() - writeAt < 10L * 1000 * 1000 * 1000 do
@@ -276,7 +228,7 @@ object SelfTestShare:
                     refusal = Some(ex.toString)
                     Thread.sleep(50)
               if !written then
-                row(false, "a host rewrite of the unheld seed", refusal.getOrElse(""))
+                row(false, "a host rewrite of the mapped seed", refusal.getOrElse(""))
                 process.destroyForcibly(); ()
             case ProbeEvent.ReadSeen(ok) =>
               val millis = (System.nanoTime() - writeAt) / 1000000
@@ -287,19 +239,6 @@ object SelfTestShare:
               row(true, "the write reaches an established mmap", s"$lag ms behind read()$marginal")
             case ProbeEvent.MmapSeen(None) =>
               row(false, "the write reaches an established mmap", "AUTO_INVAL_DATA is not invalidating")
-            case ProbeEvent.HeldSeen =>
-              val refused =
-                try
-                  Files.write(scratch.resolve(SeedName), OldBytes.getBytes(UTF_8))
-                  false
-                catch case _: java.io.IOException => true
-              row(
-                refused,
-                "a host write is refused while the seed is held",
-                if refused then "the sharing lock, so the mapping can never go stale"
-                else "the write succeeded — the lock premise failed; re-measure the mmap row (verification-log.md)",
-              )
-              Files.write(scratch.resolve(ReleaseName), Array.emptyByteArray)
             case ProbeEvent.Aborted(reason) =>
               row(false, "share probe", reason)
             case ProbeEvent.Noise(text) =>

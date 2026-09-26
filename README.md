@@ -9,6 +9,8 @@ The AI agents in this sandbox by default
     1. the model providers supported by the sandbox
     1. an opinionated, customizable selection of sites, limited to reading and explicitly
        permitted operations, such as `git clone`/`pull`
+1. cannot change Git files that can hold arbitrary commands, such as hooks and rebase
+   instructions, so `git rebase` fails in the project inside the sandbox
 
 The sandbox runs rootless, and its agents run as the `nonroot` user.
 
@@ -26,8 +28,7 @@ The sandbox runs rootless, and its agents run as the `nonroot` user.
     │  └─────┬─────────────────────────┘     └───────┬───────────────────────┘     │
     │        │ mounted at its own path: RW (--write= │ at ~/persistent-volume, RW  │
     │        │ live, the default) with protected     │                             │
-    │        │ Git entries (including hooks) frozen  │                             │
-    │        │ at every depth                        │                             │
+    │        │ Git entries frozen at every depth     │                             │
     │        │                                       │                             │
     │        │                  ┌────────────────────┘                             │
     │        │                  │                                                  │
@@ -56,6 +57,8 @@ A typical workflow:
 2. Run an agent in the sandbox: it should feel mostly like running it on the host.
 3. Review the changes, then `git commit`/`push` on the host.
 
+You can deviate, for example with `git pull` from a public remote in the sandbox.
+
 The sandbox image preinstalls:
 
 1. [Claude Code](https://github.com/anthropics/claude-code)             (Anthropic)
@@ -78,13 +81,13 @@ without reading. The sandbox enforces the boundary.
     1. Download [the installer](https://github.com/containers/podman/releases)
         1. On macOS and Windows, run `podman machine init` after a new installation;
            on native Linux, podman runs rootless without a machine.
-        1. `podman machine start` is not needed: the launcher starts a stopped machine.
-    1. [Windows Prerequisite](https://github.com/podman-container-tools/podman/blob/main/docs/tutorials/podman-for-windows.md):
-       WSL 2 or Hyper-V.  Assuming the default WSL 2 provider:
+        1. `podman machine start` is optional: the launcher starts a stopped machine.
+    1. [Windows prerequisite](https://github.com/podman-container-tools/podman/blob/main/docs/tutorials/podman-for-windows.md):
+       WSL 2 or Hyper-V. Assuming the default WSL 2 provider:
         1. `wsl --version` shows the versions if WSL is installed.
             1. Update WSL with `wsl --update`, then `wsl --shutdown`.
         1. No Linux distribution is needed; `wsl --install --no-distribution` is enough.
-        1. AWS EC2: before `podman machine init`, shut down the instance then
+        1. AWS EC2: before `podman machine init`, shut down the instance, then
             1. Actions → Instance settings → Change CPU options: Enable Nested virtualization
 
 1. Java 25 LTS
@@ -138,10 +141,10 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 1. Sign-in prints an authorization URL; open it in an external browser and paste the resulting
    code back.
-1. Ctrl-V pastes a copied image only when `KO_AGENT_SANDBOX_CLIPBOARD` is `paste` or
-   `bidirectional`.
 1. A prompt remains for some `rm` commands
    ([doc/limitations.md](doc/limitations.md#permission-prompts-that-remain)).
+1. Ctrl-V pastes a copied image only when `KO_AGENT_SANDBOX_CLIPBOARD` is `paste` or
+   `bidirectional`.
 1. `/ko-review:codex`, a skill of the image's `ko-review` plugin, has Codex review the working tree
    on one persistent Codex thread and Claude fix or rebut each finding on that thread until Codex
    approves the exact tree or asks for a decision only you can make. It uses this project's Codex
@@ -178,7 +181,7 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 1. Run `/connect`, then `/models` to pick a model from the connected provider.
     1. Anthropic and Google take an API key.
-    1. For a ChatGPT plan choose the headless method, not the browser method.
+    1. For a ChatGPT plan, choose the headless method, not the browser method.
     1. GitHub Copilot prints a device code, and the token it stores has the `read:user` scope,
        not `repo`.
 1. The default model, `opencode/big-pickle`, posts to `opencode.ai`, where the proxy allows only
@@ -198,7 +201,7 @@ produced, and what that costs.
 
 #### Sessions
 
-1. Each launch prints the workspace mode and the resolved egress profile, plus its rule file and
+1. Each launch prints the workspace mode and the resolved egress profile, plus the rule files and
    any warning.
 1. More than one session can run at once from the same project directory; they share the
    workspace mount and the agent-state volume.
@@ -231,7 +234,7 @@ session keeps the ruleset it started with:
 See [doc/egress-proxy.md](doc/egress-proxy.md) for profiles, rule syntax, TLS inspection, audit logs
 and diagnostics, and [SECURITY.md](SECURITY.md#egress-proxy) for the limits.
 
-To use an upstream proxy, set `HTTPS_PROXY` in the launcher’s environment; the launch banner
+To use an upstream proxy, set `HTTPS_PROXY` in the launcher's environment; the launch banner
 prints the selected endpoint. A proxy that terminates TLS with its own certificate is unsupported;
 connections fail with certificate errors. See
 [doc/egress-proxy.md](doc/egress-proxy.md#through-an-upstream-proxy) for
@@ -261,8 +264,9 @@ restore permission prompts and set the Claude Code status line.
       --write=reject|live
                          reject makes the project read-only; live (default)
                          lets the agent edit the shared project files, except
-                         Git configuration, hooks, other protected Git entries
-                         and .ko-agent-sandbox at any depth (SECURITY.md)
+                         Git config, hooks, .git files, commondir, gitdir, rebase
+                         instructions and .ko-agent-sandbox, at any depth, and
+                         what the file rules protect (SECURITY.md)
       --egress=deny-all|deny-unless-model|deny-unless-allowed|allow-unless-denied
                          which hosts the session reaches; the default,
                          deny-unless-allowed, allows the launcher-owned
@@ -273,11 +277,12 @@ restore permission prompts and set the Claude Code status line.
                          Adds the ko-sandbox-run-on-host command inside the sandbox, to run
                          those programs on the host under Seatbelt. Host commands can write
                          the project even under --write=reject; access is
-                         confined to the project (excluding .git and .ko-agent-sandbox),
+                         confined to the project (excluding .git, .ko-agent-sandbox
+                         and what the file rules protect),
                          per-project caches, and a dedicated egress proxy.
                          Before the start prompt, offers to run the project's ./mill,
-                         ./gradlew or ./mvnw for a launcher or distribution not yet
-                         provisioned, if you answer yes.
+                         ./gradlew or ./mvnw when its launcher or distribution is not
+                         yet provisioned.
                          The session keeps one sbt/mill daemon warm per build directory.
                          On first use there, a daemon you started is shut down after its
                          current build finishes; your new clients then share the session's
@@ -375,6 +380,10 @@ restore permission prompts and set the Claude Code status line.
     .ko-agent-sandbox/egress/rule in the project directory modifies the egress ruleset: allow
     and deny lines naming URLs, applied in order over the launcher-owned defaults
     (doc/egress-proxy.md).
+
+    .ko-agent-sandbox/file/rule modifies which project files a session cannot change because a
+    host program runs commands from them: readonly and writable lines naming files or directories
+    at any depth, applied in order over the launcher-owned defaults (doc/file-rules.md).
 
 
 ### `--build`

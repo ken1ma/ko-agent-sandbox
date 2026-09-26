@@ -10,3 +10,4 @@ pub mod fs;
 pub mod guard;
 pub mod inode;
 pub mod policy;
+pub mod rulefile;

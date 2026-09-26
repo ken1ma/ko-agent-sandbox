@@ -73,7 +73,7 @@ class KoAgentFsTest extends munit.FunSuite:
 
   test("the mount script has the backing path only base64-encoded, and every lifecycle step"):
     val backing = "/Users/some one's ~dir/proj; rm -rf $HOME"
-    val script = koAgentFsMountScript(backing, "app-abc123def456", "d" * 64, "run-container-1")
+    val script = koAgentFsMountScript(backing, "app-abc123def456", "d" * 64, "run-container-1", "host-view /\n")
     // The build check runs under the project lock and right before the daemon start; the
     // image-build lock mountKoAgentFs holds around the whole script is what keeps a --build out.
     val check = script.indexOf(s"""*" source ${"d" * 64}") ;;""")
@@ -89,8 +89,9 @@ class KoAgentFsTest extends munit.FunSuite:
       "mountpoint -q",
       "fusermount3 -uz",
       "is not empty; refusing",
-      "--source \"$backing\" --mount \"$mnt\" --foreground",
-      "fuse*) echo \"mounted\"; exit 0",
+      "--source \"$backing\" --mount \"$mnt\"",
+      "--file-rules \"$dir/file-rules\" --foreground",
+      "echo \"mounted\"",
       "mounts/app-abc123def456",
       "d" * 64,
       // The user must not have to infer "reused" from silence.
@@ -107,6 +108,75 @@ class KoAgentFsTest extends munit.FunSuite:
     assert(script.contains("9>&- >>\"$dir/daemon.log\""), script)
     // PATH first (see below), then fail-fast before anything that can fail.
     assertEquals(script.linesIterator.drop(1).next(), "set -eu")
+
+  test("the mount script joins a live mount only under the same file rules, and prints the resolved set"):
+    val rules = "host-view /Users /private /var/folders\nreadonly .vscode\n"
+    val script = koAgentFsMountScript("/Users/u/proj", "app-abc123def456", "d" * 64, "run-container-1", rules)
+    val encoded = java.util.Base64.getEncoder.encodeToString(rules.getBytes("UTF-8"))
+    // User-controlled, like the backing path: base64 only.
+    assert(!script.contains("readonly .vscode"), script)
+    assert(script.contains(s"printf %s $encoded | base64 -d > \"$$dir/file-rules.new\""), script)
+    // Compared under the project lock, inside the reuse branch, before the launch joins.
+    val compare = script.indexOf("\"$(cat \"$dir/file-rules.new\")\" != \"$(cat \"$dir/file-rules\"")
+    assert(compare > script.indexOf("flock 9"), script)
+    assert(compare < script.indexOf("echo \"reusing the existing mount\""), script)
+    assert(script.contains("mounted for sessions under other file rules"), script)
+    // The refusal names the other sessions, never this launch's own marker.
+    assert(script.contains("[ \"$(basename \"$marker\")\" = \"run-container-1\" ] ||"), script)
+    // A fresh mount's rules are this launch's; the daemon writes the resolved set beside them.
+    assert(script.indexOf("mv -f \"$dir/file-rules.new\" \"$dir/file-rules\"") < script.indexOf("nohup"), script)
+    assert(script.indexOf("rm -f \"$dir/file-rules.resolved\"") < script.indexOf("nohup"), script)
+    // Both branches end with the marker and the set.
+    assertEquals(script.split(s"echo \"${FileRules.ResolvedMarker}\"", -1).length, 3, script)
+
+  test("the prepare step describes a live mount of this build, its sessions and its rules, under the lock"):
+    val script = koAgentFsPrepareScript("app-abc123def456", "d" * 64)
+    val running = script.indexOf(s"echo \"$RunningMountMarker\"")
+    assert(script.indexOf("flock 9") < running, script)
+    assert(script.contains("[ \"$(cat \"$dir/source-id\" 2>/dev/null || true)\" = \"" + "d" * 64 + "\" ]"), script)
+    assert(script.indexOf(s"echo \"$RunningRulesMarker\"") < script.indexOf("cat \"$dir/file-rules\""), script)
+    val rules = "host-view /\nreadonly .vscode\n"
+    assertEquals(
+      runningMountOf(s"$RunningMountMarker\nsession run-a\nsession run-b\n$RunningRulesMarker\n$rules"),
+      Some(RunningMount(Vector("run-a", "run-b"), rules)),
+    )
+    assertEquals(runningMountOf(""), None)
+
+  test("a launch under other rules joins a running mount only when the start prompt asks, and says so on one line"):
+    val running = RunningMount(Vector("run-a", "run-b"), "host-view /\nreadonly .vscode\n")
+    assertEquals(joinUnderOtherRules(None, "host-view /\n", prompted = false), Right(None))
+    assertEquals(joinUnderOtherRules(Some(running), running.rules, prompted = false), Right(None))
+    assertEquals(joinUnderOtherRules(Some(running), "host-view /\n", prompted = true), Right(Some(running)))
+    val refusal = joinUnderOtherRules(Some(running), "host-view /\n", prompted = false).swap.getOrElse(fail("joined"))
+    assert(refusal.contains("run-a, run-b") && refusal.contains("KO_AGENT_SANDBOX_SESSION_START"), refusal)
+    val warning = joinWarning(running)
+    assert(!warning.contains("\n"), warning)
+    assert(warning.indexOf("do not take effect") < warning.indexOf("until"), warning)
+
+  test("the resolved set is read after the marker, and a filter of another format is refused"):
+    val output = s"reusing the existing mount\n${FileRules.ResolvedMarker}\nreadonly .vscode\nreadonly-path .husky/_\n"
+    assertEquals(
+      resolvedAfterMarker(output),
+      FileRules.Resolved(Vector(FileRules.Line(FileRules.Word.ReadOnly, ".vscode")), Vector(".husky/_"), Vector.empty),
+    )
+    assert(FileRules.parseResolved("readonly .vscode\nignore x\n").isLeft)
+    // What the profile writes into its regexes stays in the grammar, whatever the filter answers.
+    for line <- Vector(
+        "readonly ../x",
+        "writable a//b",
+        "readonly-under shared/claude",
+        "readonly-under shared/claude a b",
+        "readonly-under shared/claude ../x",
+        "readonly-under shared/claude a\"b",
+      )
+    do assert(FileRules.parseResolved(s"$line\n").isLeft, line)
+
+  test("--resolve runs the build check before the filter, and removes its rule file either way"):
+    val script = koAgentFsResolveScript("/Users/u/proj", "app-abc123def456", "d" * 64, "host-view /\n")
+    val check = script.indexOf(s"""*" source ${"d" * 64}") ;;""")
+    assert(check >= 0 && check < script.indexOf("--resolve"), script)
+    assert(script.contains("--source \"$backing\" --resolve --file-rules \"$rules\" || status=$?"), script)
+    assert(script.indexOf("rm -f \"$rules\"\nexit $status") > script.indexOf("--resolve"), script)
 
   test("lifecycle scripts run in the VM on podman machine and locally on Linux"):
     val script = "if mountpoint -q \"$mnt\"; then exit 0; fi"

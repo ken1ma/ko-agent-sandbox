@@ -731,14 +731,14 @@ object SandboxProject:
    * repository controls to rules outside the project); anything that is not
    * a directory; or an entry that is no configuration of this launcher's — only recognized
    * configuration entries are accepted, so a typo'd `egres/` is a refused launch and not ignored
-   * config, the same rule each entry applies inside itself. The files inside egress/ are vetted
-   * where they are read (EgressRules.readRuleFiles), and run-on-host/ where the host command
+   * config, the same rule each entry applies inside itself. The files inside egress/ and file/ are
+   * vetted where they are read (readBoundaryRuleFiles), and run-on-host/ where the host command
    * wrapper reads it (RunOnHostPrereqs.programRuleHosts). An absent directory is empty
    * configuration, never a directory to create.
    */
   def boundaryDirRefusal(boundaryDir: Path): Option[String] =
     def symlinkRefusal(path: Path): String =
-      s"error: $path must not be a symlink\nRefusing to read this project's egress rules through one."
+      s"error: $path must not be a symlink\nRefusing to read this project's boundary configuration through one."
 
     val linkedEntry = BoundaryDirEntries.toVector.sorted.map(boundaryDir.resolve).find(Files.isSymbolicLink)
     if Files.isSymbolicLink(boundaryDir) then Some(symlinkRefusal(boundaryDir))
@@ -761,7 +761,65 @@ object SandboxProject:
                |newer launcher reads, so check the spelling or update the launcher and image.""".stripMargin
           )
 
-  val BoundaryDirEntries: Set[String] = Set("egress", "run-on-host")
+  val BoundaryDirEntries: Set[String] = Set("egress", "file", "run-on-host")
+
+  /**
+   * One boundary configuration directory's rule files, as (name, normalized text) in `names`
+   * order: egress/ (EgressRules.readRuleFiles) and file/ (FileRules.readRuleFile). Refused forms,
+   * each of which could hide or misread configuration:
+   * - A file in the directory's place would leave its rules unread because the reader expects a
+   *   directory.
+   * - An unknown filename could be a typo that leaves intended rules unread.
+   * - A symlink at the directory or a rule file could redirect the host read. Podman resolves
+   *   mount sources on the host, so this read must see the bytes the mounted directory would show.
+   * - An entry with a rule filename that is not a regular file would be skipped by the reader.
+   * - A present but empty rule file is more likely a forgotten edit than a deliberate no-op;
+   *   an intentionally empty rule file is absent.
+   * Entries follow isMetadataEntry's metadata exemption. `grammar` is where the refusal sends the
+   * reader.
+   */
+  def readBoundaryRuleFiles(
+    dir: Path,
+    names: Vector[String],
+    grammar: String,
+    normalize: String => String,
+  ): Either[String, Vector[(String, String)]] =
+    val kind = dir.getFileName.toString
+    def symlinkRefusal(path: Path): String =
+      s"error: $path must not be a symlink\nRefusing to read this project's $kind rules through one."
+
+    if Files.isSymbolicLink(dir) then Left(symlinkRefusal(dir))
+    else if !Files.exists(dir) then Right(Vector.empty)
+    else if !Files.isDirectory(dir) then
+      Left(
+        s"""error: $dir is a file
+           |$kind is a directory holding the rule file ${names.mkString(", ")}. Move the
+           |lines there and remove the file; $grammar has the grammar.""".stripMargin
+      )
+    else
+      val entries = directoryEntries(dir)
+        .filterNot(entry => isMetadataEntry(entry.getFileName.toString))
+        .sortBy(_.getFileName.toString)
+
+      val refusal = entries
+        .collectFirst:
+          case entry if !names.contains(entry.getFileName.toString) =>
+            s"error: $entry is not a rule file\n$kind/ holds only " +
+              s"${names.mkString(", ")}; a stray name would be ignored config."
+          case entry if Files.isSymbolicLink(entry) => symlinkRefusal(entry)
+          case entry if !Files.isRegularFile(entry) =>
+            s"error: $entry is not a regular file\n$kind/ holds a text file per rule file; " +
+              "anything else would leave this file silently unread."
+        .orElse:
+          names.collectFirst:
+            case name if readIfPresent(dir.resolve(name)).map(normalize).contains("") =>
+              s"error: ${dir.resolve(name)} lists no lines\n" +
+                "Delete the file; an intentionally empty rule file is an absent file."
+
+      refusal.toLeft(
+        names.flatMap: name =>
+          readIfPresent(dir.resolve(name)).map(normalize).map(name -> _),
+      )
 
   /**
    * Dot-named entries are reserved for editor and OS metadata (.DS_Store, .gitkeep), never

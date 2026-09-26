@@ -163,6 +163,30 @@ The filesystem rules define what a host command can access:
     creates those spellings, `.GIT` and `.KO-AGENT-SANDBOX` under each command profile, and each is
     denied.
   - A spelling the volume resolves to the name and no row creates is unmeasured.
+- **Writes to what the file rules protect are denied the same way, in the rules' order**
+  (`doc/file-rules.md`): each `readonly` line a deny and each `writable` line an allow, as a regex
+  anchored after the project's path; each directory a line passes through a deny on the entry
+  itself, at the line's position; what the filter's guard added by path, after the lines; and
+  below a directory a symlink makes part of a listed name, the rest of each `readonly` line.
+  - SBPL checks a rename's source as `file-write-unlink`, as it checks `rmdir` and `unlink`, and
+    its destination as `file-write-create`, as it checks `mkdir`; it has no operation of a
+    rename's own, and checks a `RENAME_SWAP` exchange as both, on either operand
+    (`src/probe/seatbelt-semantics.sh` E13-E17, macOS 26.4.1).
+  - So the deny on a directory a line passes through denies `file-write-create`,
+    `file-write-unlink` and `file-link` on the entry: it refuses renaming, exchanging and
+    replacing it, and leaves its contents, mode and attributes to the other rules, as the filter
+    does. The acceptance test's file-rule rows, a listed name created inside `node_modules` among
+    them, pass on macOS 26.4.1 (2026-09-27).
+  - And no rule refuses moving a directory out of one a `writable` line names while leaving
+    npm's renames and `rmdir` inside it: `doc/file-rules.md`, "Under `--run-on-host`", states the
+    limit.
+  - That deny is stricter than the filter in one respect: it also refuses the entry's `mkdir`,
+    and its `rmdir` once empty, which SBPL checks as a rename's two sides are checked.
+  - Below the target of a symlink the rules reach, `shared/claude` for
+    `.claude -> shared/claude`, the profile keeps denying what a `writable` line lifts under the
+    symlink's name, where the filter allows it. Rendered as a later allow, the lift would also
+    apply under the target's own name: with `.claude -> .vscode/claude`, it would lift part of
+    `readonly .vscode`.
 - **The `.git` and `.ko-agent-sandbox` denials cover link creation, not only writes.** Without them,
   a command could create `link(PROJECT/.git/config, PROJECT/x)` and write through `x` to modify
   `.git/config`.
