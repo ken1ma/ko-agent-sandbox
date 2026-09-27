@@ -156,6 +156,10 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 1. Sign-in: "ChatGPT Settings" → "Security and login" → "Enable device code authorization for
    Codex", then choose "Sign in with Device Code" in the login UI.
+1. Codex 0.157.0 or later runs in the alt-screen mode by default and captures the mouse;
+   `codex --no-alt-screen` keeps the conversation in the terminal's scrollback, where you can
+   select and copy it. `KO_AGENT_SANDBOX_CLIPBOARD` does not help: Codex's own copy and image
+   paste do not use the sandbox's clipboard channel.
 
 #### `agy`
 
@@ -174,7 +178,9 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
        (SECURITY.md, "The web reached through the model provider").
 
 1. Prompts for paths outside the project and for URLs remain unless you run `copilot --yolo`.
-1. Its fullscreen TUI cannot be turned off, so use `/copy` to copy text out; this requires
+1. Its fullscreen TUI cannot be turned off, so use `/copy` to copy text out. It writes OSC 52,
+   which sets the clipboard on a terminal that honors it
+   ([SECURITY.md](SECURITY.md#terminal-clipboard-requests-osc-52)); on another terminal it needs
    `KO_AGENT_SANDBOX_CLIPBOARD=bidirectional`.
 
 #### `opencode`

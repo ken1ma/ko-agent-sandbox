@@ -1143,6 +1143,8 @@ Clipboard access is off by default because the host clipboard may contain sensit
     what the user controls is what is on the clipboard at each moment, and a process polling the
     FIFOs can capture images copied later in the session.
   - Text is never served.
+    - Text pasted through the terminal, such as with Cmd+V, still reaches the session in every
+      mode, `off` included: the terminal types it in as input, and the user chooses each paste.
   - A `set` request is read and dropped.
 - **`bidirectional` adds writes.** A session can replace the clipboard with arbitrary text,
   including text the user may later paste into a terminal. The user must explicitly select this
@@ -1152,6 +1154,23 @@ Clipboard access is off by default because the host clipboard may contain sensit
   - If the broker dies, the shim fails within its timeout rather than blocking the TUI
     indefinitely.
   - Clipboard contents written by the session can remain after exit.
+
+### Terminal clipboard requests (OSC 52)
+
+OSC 52 is a terminal escape sequence: a program writes it to its terminal to put text on the
+system clipboard, or to ask for the clipboard's text. It bypasses the channel above. In every mode,
+`off` included, any process in the session can send it: the sandbox filters neither what the
+session writes to the terminal nor what the terminal answers, so the terminal's own settings
+decide.
+
+- **Writes.** kitty, Ghostty and WezTerm set the clipboard on request by default.
+- **Reads.** kitty and Ghostty answer with the clipboard after the user accepts a prompt by
+  default, and can be configured to answer without one; WezTerm ignores the request.
+
+When the session must not set the clipboard, use `off` or `paste` and a terminal that ignores
+OSC 52 writes or has them turned off. When it must not read the clipboard, use `off` and a
+terminal that ignores OSC 52 reads or has them turned off. To let the terminal answer reads only
+with your consent, keep its prompt and decline one you did not expect.
 
 ## Run on host
 
