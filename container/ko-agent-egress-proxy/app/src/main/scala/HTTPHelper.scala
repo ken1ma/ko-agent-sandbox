@@ -100,9 +100,7 @@ object HTTPHelper:
           throw BadRequest("expected CONNECT authority HTTP/1.1")
 
     def parseAuthority(authority: String): ConnectRequest =
-      // `isWhitespace` misses the controls that matter most in the audit log — ESC and BEL are not
-      // whitespace, and DEL is not above 0x7f — and this authority may be logged on a refusal
-      // before parseAuthority validates it or authorizeRequest normalizes its host.
+      // `isWhitespace` misses ESC, BEL and DEL, which no authority holds either.
       if authority.isEmpty ||
           authority.exists(ch => ch.isWhitespace || ch > 0x7f || isForbiddenControl(ch))
       then
@@ -448,13 +446,11 @@ object HTTPHelper:
 
   /**
    * A control character is invalid in a request target and in a field value alike (RFC 9112 §3.2,
-   * RFC 9110 §5.5), and this proxy refuses one rather than passing it on. The audit log and the origin
-   * both depend on that. The target is written verbatim into the audit log, so a tab would break the field grammar
-   * tooling greps and an escape sequence would let a request choose how the record of itself reads
-   * on the operator's terminal. And an origin is entitled to a well-formed request: CR and LF are
-   * already refused above, which is what closes smuggling, but forwarding NUL or DEL into a header
-   * hands the origin's parser a decision this one did not make. HTAB is the single exception, legal
-   * inside a field value and nowhere else.
+   * RFC 9110 §5.5), and this proxy refuses one rather than passing it on: an origin is entitled to
+   * a well-formed request. CR and LF are already refused above, which is what closes smuggling,
+   * but forwarding NUL or DEL into a header hands the origin's parser a decision this one did not
+   * make. HTAB is the single exception, legal inside a field value and nowhere else. The audit log
+   * escapes controls itself (LogHelper.auditLine), C1 ones included, which this check lets through.
    */
   def isForbiddenControl(ch: Char): Boolean = ch < 0x20 || ch == 0x7f
 
@@ -617,7 +613,8 @@ object HTTPHelper:
 
     @tailrec
     def loop(previousWasCr: Boolean): String =
-      if out.size() > maxBytes then throw BadRequest(s"line exceeds $maxBytes bytes")
+      // The CRLF counts: `maxBytes` bounds what the line consumes from the stream.
+      if out.size() >= maxBytes then throw BadRequest(s"line exceeds $maxBytes bytes")
 
       val value = in.read()
       if value < 0 then throw EOFException("connection closed inside a chunked body")
@@ -639,19 +636,23 @@ object HTTPHelper:
       .getBytes(StandardCharsets.UTF_8)
 
   /** The refusal as curl and git see it: a reason inside the tunnel beats a dropped connection.
-    * Socket rather than SSLSocket, like relayInspected: nothing here is TLS-specific. */
+    * Socket rather than SSLSocket, like relayInspected: nothing here is TLS-specific. A response
+    * to a HEAD keeps the header section and omits the body (RFC 9110 §9.3.2); the reason stays in
+    * Proxy-Status. `requestMethod` is `-` when the head did not parse, and that answer has a body. */
   def respondInsideTls(
     socket: Socket,
+    requestMethod: String,
     status: Int,
     reason: String,
     proxyError: String,
     detail: String,
     advice: Option[String] = None,
   ): Unit =
-    respondQuietly(socket, status, reason, proxyError, Some(detail), advice)
+    respondQuietly(socket, status, reason, proxyError, Some(detail), advice, answersHead = requestMethod == "HEAD")
 
   /** `detail` is the Proxy-Status `details` and, unless `bodyless`, the body's first line
-    * (refusalBody). */
+    * (refusalBody). `bodyless` sends no body and says so (Content-Length: 0); `answersHead` sends
+    * the header section a GET would have received, Content-Length included, without the body. */
   def respondQuietly(
     client: Socket,
     status: Int,
@@ -660,8 +661,9 @@ object HTTPHelper:
     detail: Option[String] = None,
     advice: Option[String] = None,
     bodyless: Boolean = false,
+    answersHead: Boolean = false,
   ): Unit =
-    try respond(client, status, reason, proxyError, detail, advice, bodyless)
+    try respond(client, status, reason, proxyError, detail, advice, bodyless, answersHead)
     catch case _: IOException => ()
 
   /** This proxy's member of the Proxy-Status field. */
@@ -683,7 +685,7 @@ object HTTPHelper:
 
   def respond(
     client: Socket, status: Int, reason: String, proxyError: String, detail: Option[String], advice: Option[String],
-    bodyless: Boolean,
+    bodyless: Boolean, answersHead: Boolean,
   ): Unit =
     val body = detail.filterNot(_ => bodyless).fold(Array.emptyByteArray)(refusalBody(_, advice))
     val out = client.getOutputStream
@@ -695,7 +697,7 @@ object HTTPHelper:
         s"Content-Length: ${body.length}\r\n" +
         "Connection: close\r\n\r\n",
     )
-    out.write(body)
+    if !answersHead then out.write(body)
     out.flush()
 
   def writeAscii(out: OutputStream, value: String): Unit =

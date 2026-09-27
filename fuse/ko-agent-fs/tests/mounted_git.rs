@@ -140,6 +140,49 @@ fn branch_switching_and_merging_work() {
 
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn commands_whose_gitdir_files_last_one_command_work() {
+    // Each writes a file at the gitdir root that is gone, or renamed away, when it ends, which
+    // `observe-git.sh` cannot see (`tests/git_corpus.rs` lists them).
+    let mount = TestMount::new(host_repository);
+    let workspace = mount.at("");
+    let git = |what: &str, args: &[&str]| succeeds(what, git_in(&workspace, args));
+
+    // index.stash.<pid>, for tracked changes and for untracked files alike.
+    fs::write(mount.at("file.txt"), b"one\ntwo\nstashed\n").unwrap();
+    git("git stash", &["stash", "push", "-q"]);
+    git("git stash pop", &["stash", "pop", "-q"]);
+    fs::write(mount.at("untracked.txt"), b"untracked\n").unwrap();
+    git("git stash -u", &["stash", "push", "-q", "-u"]);
+    git("git stash pop -u", &["stash", "pop", "-q"]);
+
+    // next-index-<pid>.lock: a commit of a pathspec with other changes staged.
+    fs::write(mount.at("staged.txt"), b"staged\n").unwrap();
+    git("git add", &["add", "staged.txt", "untracked.txt"]);
+    git(
+        "git commit <pathspec>",
+        &["commit", "-qm", "partial", "file.txt"],
+    );
+    git("git commit", &["commit", "-qm", "the rest"]);
+
+    // gc.pid and packed-refs.new; afterwards `side` and `v1` are packed refs, whose deletion
+    // rewrites packed-refs through packed-refs.new again.
+    git("git tag", &["tag", "v1"]);
+    git("git gc", &["gc", "-q"]);
+    git(
+        "git branch -D of a packed ref",
+        &["branch", "-q", "-D", "side"],
+    );
+    git("git tag -d of a packed ref", &["tag", "-d", "v1"]);
+    let refs = git("git for-each-ref", &["for-each-ref", "--format=%(refname)"]);
+    assert_eq!(
+        refs.trim(),
+        "refs/heads/main",
+        "the deletions did not take:\n{refs}"
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn the_deliberately_blocked_commands_fail() {
     // Each of these is documented in `git-metadata.md` as a known limitation, with its reason.
     // Asserting the block keeps a later allowlist widening from silently reopening it.
@@ -175,6 +218,30 @@ fn the_deliberately_blocked_commands_fail() {
             &workspace,
             &["config", "--local", "core.hooksPath", "/tmp/evil"],
         ),
+    );
+
+    // Writes .git/config too, like every command recording a remote, upstream or branch name.
+    fails(
+        "git remote add",
+        git_in(
+            &workspace,
+            &[
+                "remote",
+                "add",
+                "elsewhere",
+                "https://example.invalid/r.git",
+            ],
+        ),
+    );
+
+    // Writes BISECT_NAMES, which `git bisect visualize` in a host git through 2.33 evaluates.
+    fails(
+        "git bisect start",
+        git_in(&workspace, &["bisect", "start", "HEAD", "HEAD~1"]),
+    );
+    assert!(
+        !mount.backing_at(".git/BISECT_NAMES").exists(),
+        "bisect state was created despite the block"
     );
 
     // Would plant a new repository for the host to discover.

@@ -30,15 +30,16 @@ operations the kernel forwards. Three other mechanisms were considered and rejec
   three reasons below.
 
 The deciding requirement is the **host/container asymmetry**: the container's view is filtered, the
-host's direct writes to the same files are not (`git-metadata.md`, "Host modifications bypass the
-filter"). FUSE delivers this natively — the filtered view is a *separate mount only the container
-binds*, while the host reaches the backing tree by another path the filter never sees. fanotify and
-BPF-LSM instead hook the backing objects for every accessor in the VM, so preserving the asymmetry
-means carving the container out by cgroup/mount-namespace scoping — code to write for a property
-FUSE gives for free. FUSE also keeps the "works wherever the VM does" portability `SECURITY.md`
-("The workspace filter") rests the choice on, and stays plain auditable Rust rather than a BPF
-policy program whose enablement (`CONFIG_BPF_LSM`, the active LSM list) is itself an environment
-risk. So FUSE is the mechanism — chosen against the alternatives, not defaulted into.
+host's direct writes to the same files are not (`git-metadata.md`, "What this intentionally does
+*not* protect, and why that is safe"). FUSE delivers this natively — the filtered view is a
+*separate mount only the container binds*, while the host reaches the backing tree by another path
+the filter never sees. fanotify and BPF-LSM instead hook the backing objects for every accessor in
+the VM, so preserving the asymmetry means carving the container out by cgroup/mount-namespace
+scoping — code to write for a property FUSE gives for free. FUSE also keeps the "works wherever the
+VM does" portability `SECURITY.md` ("The workspace filter") rests the choice on, and stays plain
+auditable Rust rather than a BPF policy program whose enablement (`CONFIG_BPF_LSM`, the active LSM
+list) is itself an environment risk. So FUSE is the mechanism — chosen against the alternatives,
+not defaulted into.
 
 
 ## Inode model: path + `openat2(RESOLVE_IN_ROOT)`

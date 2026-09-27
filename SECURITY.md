@@ -108,8 +108,9 @@ user's next host `git` invocation:
 - It refuses a new entry named `.git` at any depth, under any spelling a case-insensitive host
   filesystem treats as that name.
 - It prevents changes to the protected Git entries of every repository rooted at a `.git` entry —
-  `config`, `hooks/`, files that redirect Git to another directory, and rebase instructions — while
-  operational state stays writable, so the agent's own git keeps working.
+  `config`, `hooks/`, files that redirect Git to another directory, rebase instructions, and the
+  bisect state a host git through 2.33 evaluates as shell code — while operational state stays
+  writable, so the agent's own git keeps working.
 - It serves the tree live: a repository created on the host mid-session appears at once, with the
   same Git entries protected against modification.
 - It treats a second name of a host-created `.git` or `.ko-agent-sandbox` as that entry: an NTFS
@@ -712,9 +713,14 @@ timestamp, including startup lines; the examples below omit it.
 - **`<target>`** appears exactly when a parsed inspected request exists, query string included.
   - The URL is the message an allowed `GET` can carry ("Exfiltration through allowed network
     traffic", above), so the log records it whole, which is also why the log files are owner-only.
-  - Whole, but not arbitrary: a control character in a request target, a field value or a `CONNECT`
-    authority is refused at the parser, so nothing that reaches this log can split a line's fields
-    with a tab or rewrite it with an escape sequence on the terminal reading it.
+  - Whole, but not arbitrary: a C0 control character or DEL in a request target, a field value or
+    a `CONNECT` authority is refused at the parser.
+- Every field, `<why>` included, spells a C0 or C1 control character, DEL, U+2028, U+2029, a
+  format character (the bidi controls, zero-width characters, U+00AD), an unpaired surrogate, `"`
+  and `\` as a Java/Scala string literal would (`\t`, `\u001b`, `\u202e`, `\"`, `\\`).
+  - Nothing a request or an origin sends can split a line's fields with a tab, break the line, or
+    rewrite, reorder or hide part of it on the terminal or in the editor reading it.
+  - A field reads back exactly.
 - **`deny`** records a protocol or policy refusal; **`error`** records a connection, origin or relay
   failure without such a refusal. A count of `deny` lines therefore includes malformed requests but
   excludes ordinary network failures.

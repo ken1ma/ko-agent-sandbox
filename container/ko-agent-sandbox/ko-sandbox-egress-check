@@ -5,12 +5,15 @@ the launcher's --egress-check=<host>, answering the running proxy instead of a o
 
     ko-sandbox-egress-check <host>
 
-One CONNECT <host>:443 to $HTTPS_PROXY. A refusal is a 403 whose body names the reason and the
-next step, and every client discards a failed CONNECT's body, which is why this exists: it prints
-the response's Proxy-Status field, which has the proxy's error type and is all a response without
-a body says, then the body, and exits 1. An allowed host gets one HEAD / inside TLS, trusting $SSL_CERT_FILE; the
-origin's status line is printed and the exit is 0. A host the ruleset allowed but the network
-failed — a 502 from the proxy, a TLS failure — prints what happened and exits 2.
+One CONNECT <host>:443 to $HTTPS_PROXY. A refusal is a 403 whose body names the reason and the next
+step, and every client discards a failed CONNECT's body, which is why this exists: it prints the
+response's Proxy-Status field, which has the proxy's error type and is all a response without a
+body says, then the body, and exits 1. An allowed host gets one HEAD / inside TLS, trusting
+$SSL_CERT_FILE. The proxy inspects some hosts and answers that HEAD itself when no line grants /:
+its status line and Proxy-Status are printed, and a 403 exits 1. That answer has no body, being a
+HEAD's; the agent's own refused request gets the next step for its own path. Otherwise the origin's
+status line is printed and the exit is 0. A host the ruleset allowed but the network failed — a 502
+from the proxy, a TLS failure — prints what happened and exits 2.
 
 Each run leaves in the audit log exactly the line the agent's own program would have: one deny, or
 one allow. Python rather than openssl or curl because its ssl module wraps a socket already
@@ -24,11 +27,24 @@ import sys
 
 NAME = "ko-sandbox-egress-check"
 MAX_HEAD_BYTES = 16 * 1024
+PROXY_STATUS_MEMBER = "ko-agent-egress-proxy"
 
 
 def fail(message, code=2):
     print(f"{NAME}: {message}", file=sys.stderr)
     sys.exit(code)
+
+
+def print_proxy_answer(request, status_line, headers, body_from=None):
+    """A response the proxy made itself: its Proxy-Status field and any body, then exit 1 on a
+    refusal."""
+    status = status_line.split(" ")[1] if status_line.count(" ") >= 2 else ""
+    print(f"{request}: {status_line}")
+    if "proxy-status" in headers:
+        print(f"Proxy-Status: {headers['proxy-status']}")
+    if body_from is not None:
+        sys.stdout.write(read_body(body_from, headers))
+    sys.exit(1 if status == "403" else 2)
 
 
 def proxy_address():
@@ -74,7 +90,10 @@ def read_body(sock, headers):
 def main():
     if len(sys.argv) != 2 or sys.argv[1].startswith("-"):
         fail(f"usage: {NAME} <host>")
-    host = sys.argv[1].encode("idna").decode("ascii")
+    try:
+        host = sys.argv[1].encode("idna").decode("ascii")
+    except UnicodeError as ex:
+        fail(f"'{sys.argv[1]}' is not a hostname: {ex}")
     proxy_host, proxy_port = proxy_address()
 
     try:
@@ -91,11 +110,7 @@ def main():
         status = status_line.split(" ")[1] if status_line.count(" ") >= 2 else ""
 
         if status != "200":
-            print(f"CONNECT {host}:443: {status_line}")
-            if "proxy-status" in headers:
-                print(f"Proxy-Status: {headers['proxy-status']}")
-            sys.stdout.write(read_body(sock, headers))
-            sys.exit(1 if status == "403" else 2)
+            print_proxy_answer(f"CONNECT {host}:443", status_line, headers, sock)
 
         # Past the 200 every failure is the network's, not the ruleset's: exit 2, never 1.
         try:
@@ -107,10 +122,12 @@ def main():
         with tls:
             try:
                 tls.sendall(f"HEAD / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode("ascii"))
-                origin_status, _ = read_head(tls)
+                origin_status, origin_headers = read_head(tls)
                 # An informational response (103 Early Hints) precedes the final one.
                 while origin_status.split(" ")[1:2] and origin_status.split(" ")[1].startswith("1"):
-                    origin_status, _ = read_head(tls)
+                    origin_status, origin_headers = read_head(tls)
+                if origin_headers.get("proxy-status", "").split(";")[0].strip() == PROXY_STATUS_MEMBER:
+                    print_proxy_answer(f"CONNECT {host}:443: 200; HEAD /", origin_status, origin_headers)
             except (OSError, EOFError, ValueError) as ex:
                 print(f"CONNECT {host}:443: 200, then HEAD / failed: {ex}")
                 sys.exit(2)

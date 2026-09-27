@@ -285,8 +285,13 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
     }
 
     const OPERATIONAL_TREES: &[&[u8]] = &[
-        b"objects", b"refs", b"logs",
-        b"info", // exclude/sparse-checkout/attributes patterns — data, never executed
+        b"objects",
+        b"refs",
+        b"logs",
+        b"info",     // exclude/sparse-checkout/attributes patterns — data, never executed
+        b"reftable", // the refs of a `--ref-format=reftable` repository
+        b"NOTES_MERGE_WORKTREE",
+        b"lost-found", // `git fsck --lost-found`
     ];
     if OPERATIONAL_TREES.contains(&first) {
         return GitPathClass::Operational;
@@ -296,7 +301,17 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
     // `sequencer` hold the rebase/cherry-pick todo, whose `exec` lines a later host
     // `git rebase --continue` runs — a file whose content git executes, exactly like a hook. They
     // fall through to Protected below, so a rebase/am/sequenced cherry-pick cannot be left in
-    // /workspace for the host to resume. This note marks the spot where they must not be added.
+    // the workspace for the host to resume. This note marks the spot where they must not be added.
+    //
+    // Nor the bisect state (`BISECT_START`, `BISECT_LOG`, `BISECT_NAMES`, …): the host's git may be
+    // older than the image's, and through git 2.33 `git bisect visualize` runs `eval` over
+    // BISECT_NAMES (`git-bisect.sh`), so writing it plants shell code. `git bisect start` writes it
+    // and BISECT_LOG every time, so bisecting does not work in the workspace.
+    //
+    // Nor `rr-cache` and `MERGE_RR`: with `rerere.enabled` unset, host git enables rerere when
+    // `rr-cache` exists, so creating it switches on replaying recorded resolutions in host merges,
+    // a switch that belongs to the protected config. Nor `lfs`: the image has no git-lfs, and its
+    // downloads are refused.
 
     if components.len() == 1 {
         const OPERATIONAL_FILES: &[&[u8]] = &[
@@ -308,17 +323,29 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
             b"REVERT_HEAD",
             b"REBASE_HEAD",
             b"AUTO_MERGE",
-            b"BISECT_HEAD",
+            b"MERGE_AUTOSTASH",
+            b"NOTES_MERGE_PARTIAL",
+            b"NOTES_MERGE_REF",
             b"index",
             b"packed-refs",
+            b"packed-refs.new", // renamed onto `packed-refs`, which every packed ref deletion rewrites
             b"COMMIT_EDITMSG",
             b"MERGE_MSG",
             b"MERGE_MODE",
             b"SQUASH_MSG",
             b"TAG_EDITMSG",
+            b"NOTES_EDITMSG",
+            b"EDIT_DESCRIPTION",
+            b"ADD_EDIT.patch",
+            b"REPLACE_EDITOBJ",
             b"shallow",
+            b"BISECT_HEAD",
+            b"gc.pid",
+            // Host `git gc --auto` prints this through `warning()`, which replaces control
+            // characters with `?` (git 2.20 and later).
+            b"gc.log",
         ];
-        if OPERATIONAL_FILES.contains(&first) {
+        if OPERATIONAL_FILES.contains(&first) || is_operational_scratch_name(first) {
             return GitPathClass::Operational;
         }
         // git writes `<name>.lock` beside anything it locks and renames it into place, so a lock
@@ -332,6 +359,27 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
     }
 
     GitPathClass::Protected
+}
+
+/// The temporary index and shallow files git names after its process or a random suffix beside
+/// their permanent ones: `index.stash.<pid>` (`git stash`), `next-index-<pid>` (`git commit
+/// <pathspec>`), `sharedindex.<hash>` and `sharedindex_XXXXXX` (a split index), `shallow_XXXXXX`
+/// (a fetch into a shallow repository).
+fn is_operational_scratch_name(name: &[u8]) -> bool {
+    let all =
+        |text: &[u8], accepted: fn(&u8) -> bool| !text.is_empty() && text.iter().all(accepted);
+    if let Some(pid) = name
+        .strip_prefix(b"index.stash.")
+        .or_else(|| name.strip_prefix(b"next-index-"))
+    {
+        return all(pid, u8::is_ascii_digit);
+    }
+    if let Some(hash) = name.strip_prefix(b"sharedindex.") {
+        return all(hash, u8::is_ascii_hexdigit);
+    }
+    name.strip_prefix(b"sharedindex_")
+        .or_else(|| name.strip_prefix(b"shallow_"))
+        .is_some_and(|suffix| suffix.len() == 6 && all(suffix, u8::is_ascii_alphanumeric))
 }
 
 /// Both the `.git` name rule (a new gitdir the host would discover) and the destination

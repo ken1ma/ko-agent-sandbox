@@ -162,11 +162,18 @@ for archive in "$apt/cache/archives"/*.deb; do
     mv "$manifest.new" "$manifest"
 done
 
+# The command a wrapper this script wrote execs, or nothing: the exec line under $root marks our own
+# wrappers, so the image's commands and anything else in ~/.local/bin answer nothing.
+wrapper_target() {
+    sed -n "s|^exec \\($root/[^\"]*\\) \"\$@\"\$|\\1|p" "$1" 2>/dev/null
+}
+
 # One wrapper per unpacked command: LD_LIBRARY_PATH scoped to that process tree instead of exported
-# globally, so nothing agent-unpacked shadows libraries for the image's own binaries. A command the
-# image already provides is left alone for the same reason — a dependency chain that happens to
-# include python3 must not change which python3 the session runs. Our own earlier wrappers do get
-# rewritten, so re-running stays idempotent.
+# globally, so nothing agent-unpacked shadows libraries for the image's own binaries. Left alone:
+# - a command already on PATH, for the same reason: a dependency chain that happens to include
+#   python3 must not change which python3 the session runs;
+# - any other file of its name in ~/.local/bin, such as a `uv tool` or `cs install` command.
+# Our own earlier wrappers do get rewritten, so re-running stays idempotent.
 libs="$root/usr/lib/$(uname -m)-linux-gnu:$root/usr/lib:$root/lib"
 wrapped=""
 skipped=""
@@ -175,31 +182,32 @@ for dir in "$root/usr/bin" "$root/usr/sbin" "$root/bin" "$root/sbin"; do
     for command in "$dir"/*; do
         [ -f "$command" ] && [ -x "$command" ] || continue
         name=${command##*/}
-        if [ ! -e "$HOME/.local/bin/$name" ] && command -v "$name" >/dev/null 2>&1; then
+        wrapper=$HOME/.local/bin/$name
+        if [ -z "$(wrapper_target "$wrapper")" ] \
+            && { [ -e "$wrapper" ] || [ -L "$wrapper" ] || command -v "$name" >/dev/null 2>&1; }; then
             skipped="$skipped $name"
             continue
         fi
-        cat > "$HOME/.local/bin/$name" <<WRAP
+        cat > "$wrapper" <<WRAP
 #!/bin/sh
 export LD_LIBRARY_PATH=$libs\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}
 export PATH=$root/usr/bin:$root/usr/sbin:\$PATH
 exec $command "\$@"
 WRAP
-        chmod 0755 "$HOME/.local/bin/$name"
+        chmod 0755 "$wrapper"
         wrapped="$wrapped $name"
     done
 done
 
 # A wrapper the upgrade above orphaned would still answer `command -v` for a command that is gone;
-# drop the ones whose $root target no longer exists. The exec line under $root names only our own
-# wrappers, so the image's commands and anything else in ~/.local/bin are left untouched.
+# drop the ones whose $root target no longer exists.
 for wrapper in "$HOME/.local/bin"/*; do
     [ -f "$wrapper" ] || continue
-    target=$(sed -n "s|^exec \\($root/[^\"]*\\) \"\$@\"\$|\\1|p" "$wrapper")
+    target=$(wrapper_target "$wrapper")
     [ -n "$target" ] && [ ! -e "$target" ] && rm -f "$wrapper"
 done
 
 summary=$(printf '%s' "$wrapped" | tr ' ' '\n' | grep -c . || true)
 echo "unpacked under $root; $summary commands wrapped into ~/.local/bin:${wrapped:- (libraries only)}" \
     | cut -c1-200
-[ -z "$skipped" ] || echo "already provided by the image, left alone:$skipped" | cut -c1-200
+[ -z "$skipped" ] || echo "already on PATH or in ~/.local/bin, left alone:$skipped" | cut -c1-200

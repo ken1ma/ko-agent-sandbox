@@ -2449,6 +2449,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
     intercept[BadRequest]:
       readCrLfLine(ByteArrayInputStream(ascii("0123456789\r\n")), 4)
+    // The bound counts the CRLF.
+    assertEquals(readCrLfLine(ByteArrayInputStream(ascii("ab\r\n")), 4), "ab")
+    intercept[BadRequest]:
+      readCrLfLine(ByteArrayInputStream(ascii("abc\r\n")), 4)
 
   test("audit lines are action host method [target] tail, with - for fields never learned"):
     // SECURITY.md, "The audit line grammar".
@@ -2471,6 +2475,31 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(
       auditLine("deny", "github.com", "POST", "/r.git/git-receive-pack", "POST not granted"),
       "deny github.com POST /r.git/git-receive-pack POST not granted",
+    )
+
+  test("audit lines spell controls, separators, format characters, lone surrogates, quotes and backslashes"):
+    // A request target decodes as ISO-8859-1, so the byte 0x9b arrives as U+009B, the C1 CSI; an
+    // origin's malformed status line reaches the tail with its escape sequence.
+    assertEquals(
+      auditLine("error", "github.com", "GET", "/r\u009b31m\u0085", "origin: status line '\u001b[2J\tx\r'"),
+      "error github.com GET /r\\u009b31m\\u0085 origin: status line '\\u001b[2J\\tx\\r'",
+    )
+    assertEquals(escapeForLogLine("\u0000\b\n\f\u007f\u009f\u00a0é"), "\\u0000\\b\\n\\f\\u007f\\u009f\u00a0é")
+    // Line separators, and surrogates unless they pair: a pair is one character, kept as it is.
+    assertEquals(
+      escapeForLogLine("a\u2028b\u2029c\ud83d\ude00d\ud800e\udc00f\ud83d"),
+      "a\\u2028b\\u2029c\ud83d\ude00d\\ud800e\\udc00f\\ud83d",
+    )
+    // Format characters, which a terminal or editor shows as nothing or reorders the line by, in
+    // either half of UTF-16; the soft hyphen arrives in a target as the byte 0xad.
+    assertEquals(
+      auditLine("deny", "github.com", "GET", "/a\u00adb", "x\u202ey\u200bz\ufeff\udb40\udc41."),
+      "deny github.com GET /a\\u00adb x\\u202ey\\u200bz\\ufeff\\udb40\\udc41.",
+    )
+    // A target that spells an escape itself stays distinguishable from one the log wrote.
+    assertEquals(
+      auditLine("deny", "github.com", "GET", "/a\\u001b\"b", "details=\"x\""),
+      "deny github.com GET /a\\\\u001b\\\"b details=\\\"x\\\"",
     )
 
   test("every reported line is stamped once with the UTC instant, however it is written"):
@@ -2827,10 +2856,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
         assert(advice.endsWith("can allow it."), advice)
     assert(hostNotAllowed("github.com", DefaultProfile).contains("deny defaults"))
 
-  test("a refusal inside the tunnel is the reason and the step, framed as text/plain"):
+  test("a refusal inside the tunnel is the reason and the step, framed as text/plain, without it for a HEAD"):
     val (client, server) = socketPair()
     respondInsideTls(
-      server, 403, "Forbidden", "http_request_denied", "POST not granted", Some(RefusalAdvice.methodNotGranted),
+      server, "POST", 403, "Forbidden", "http_request_denied", "POST not granted", Some(RefusalAdvice.methodNotGranted),
     )
     server.close()
     val received = String(client.getInputStream.readAllBytes(), StandardCharsets.UTF_8)
@@ -2843,6 +2872,23 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "Proxy-Status: ko-agent-egress-proxy; error=http_request_denied; details=\"POST not granted\"\r\n" +
         "Content-Type: text/plain; charset=utf-8\r\n" +
         s"Content-Length: ${body.getBytes(StandardCharsets.UTF_8).length}\r\nConnection: close\r\n\r\n" + body,
+    )
+    // A HEAD's answer is the same header section without the body (RFC 9110 §9.3.2).
+    val (headClient, headServer) = socketPair()
+    respondInsideTls(
+      headServer, "HEAD", 403, "Forbidden", "http_request_denied", "path under no line",
+      Some(RefusalAdvice.methodNotGranted),
+    )
+    headServer.close()
+    val headReceived = String(headClient.getInputStream.readAllBytes(), StandardCharsets.UTF_8)
+    headClient.close()
+    val headBody = s"ko-agent-egress-proxy: path under no line\n${RefusalAdvice.methodNotGranted}\n"
+    assertEquals(
+      headReceived,
+      "HTTP/1.1 403 Forbidden\r\n" +
+        "Proxy-Status: ko-agent-egress-proxy; error=http_request_denied; details=\"path under no line\"\r\n" +
+        "Content-Type: text/plain; charset=utf-8\r\n" +
+        s"Content-Length: ${headBody.getBytes(StandardCharsets.UTF_8).length}\r\nConnection: close\r\n\r\n",
     )
     // A 400 or 502 has no step to name, and keeps the one-line body.
     assertEquals(
