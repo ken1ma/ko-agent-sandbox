@@ -82,6 +82,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     assertEquals(run("id", "-u").text, "65532")
     assertEquals(run("id", "-g").text, "65532")
     assertEquals(field("/proc/self/status", "NoNewPrivs"), "1")
+    assertEquals(field("/proc/self/status", "Seccomp"), "2")
 
     // "All capabilities dropped" is the wrong assertion: the nesting opt-in grants exactly one, so
     // demanding an empty set fails a correctly configured nested session while missing the failure

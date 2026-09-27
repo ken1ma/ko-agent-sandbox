@@ -116,6 +116,19 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(memoryTotal(HostCommands.Run(0, "0".getBytes, "")), None)
     assertEquals(memoryTotal(HostCommands.Run(1, "".getBytes, "not running")), None)
 
+  test("podman actions refuse a service that is rootful or does not say, with the fix for the OS"):
+    assertEquals(rootfulRefusal(Os.Linux, HostCommands.Run(0, "true\n".getBytes, "")), None)
+    val linux = rootfulRefusal(Os.Linux, HostCommands.Run(0, "false\n".getBytes, ""))
+    assert(linux.exists(_.startsWith("error: podman runs rootful\n")), linux)
+    assert(linux.exists(_.contains("without sudo")), linux)
+    val mac = rootfulRefusal(Os.Mac, HostCommands.Run(0, "false".getBytes, ""))
+    assert(mac.exists(_.contains("podman machine set --rootful=false")), mac)
+    val unanswered = rootfulRefusal(Os.Windows, HostCommands.Run(125, "".getBytes, "template: bad"))
+    val unansweredLine = "error: podman did not say whether it runs rootless: template: bad\n"
+    assert(unanswered.exists(_.startsWith(unansweredLine)), unanswered)
+    val unknown = rootfulRefusal(Os.Linux, HostCommands.Run(0, "<no value>".getBytes, ""))
+    assert(unknown.exists(_.contains("did not say")), unknown)
+
   test("build actions ask first only below what a default machine idles at, read from the machine's own meminfo"):
     assertEquals(buildMemoryWarning(None), None)
     assertEquals(buildMemoryWarning(Some(3L << 30)), None)
@@ -1217,7 +1230,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
              |printf '%s\\n' "$$*" >> "$root/calls"
              |case "$$1 $$2" in
              |  "--version ") printf 'podman version 6.1.1\\n' ;;
-             |  "info --format") printf '68719476736\\n' ;;
+             |  "info --format") case "$$3" in *Rootless*) printf 'true\\n' ;; *) printf '68719476736\\n' ;; esac ;;
              |  "machine ssh") printf 'MemAvailable: 60000000 kB\\n' ;;
              |  "image exists") ${if label.isDefined then "exit 0" else "exit 1"} ;;
              |  "image inspect") case "$$*" in *debian-coursier:*) printf '%s\\n' '${label.getOrElse("")}' ;; esac ;;

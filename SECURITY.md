@@ -16,6 +16,14 @@ costs are described below.
 - The host exposes the project directory and the agent-state volume, without exposing the user's
   home or unrelated projects.
 - The containers run rootless, and agents run as an unprivileged user with `no-new-privileges`.
+  - Every podman action but `--stats`, `--reset` and `--reset-all`, which only read or remove,
+    refuses a rootful service: a rootful service makes the agent's uid and the container's root
+    the host's own.
+  - The session's entrypoint refuses to start unless `/proc/self/status` shows a seccomp filter,
+    `no-new-privileges` and exactly the capabilities `KO_AGENT_SANDBOX_NESTING` grants: the host's
+    `containers.conf` can turn the filter off, and `podman info` reports only kernel support.
+  - The check shows that a filter is loaded, not what it allows: a permissive `seccomp_profile`
+    in `containers.conf` passes.
 - Writable `$HOME` and `/tmp` contents outside the persistent volume are discarded with the session.
 - No host container-runtime socket is mounted: access to one would let a session control containers
   outside its confinement. `SessionBoundaryTest` checks both Docker and Podman socket paths.
