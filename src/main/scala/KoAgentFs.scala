@@ -399,9 +399,11 @@ object KoAgentFs:
     withScriptPath(
       s"""dir="$$HOME/${koAgentFsMountDir(projectId)}"
        |rm -f "$$dir/sessions/$sandboxContainer"
+       |# A directory a reset removed took the markers and the mount with it, so there is nothing to
+       |# reap; recreated to take the lock in, it would name the project to the next reset again.
+       |[ -d "$$dir" ] || exit 0
        |# The project lock (see above). A shell that cannot even open it exits here, which leaves
        |# the mount up — as every other failure in this script does.
-       |mkdir -p "$$dir" 2>/dev/null || true
        |exec 9>"$$dir/lock"
        |flock 9 2>/dev/null || true
        |for marker in "$$dir/sessions"/*; do

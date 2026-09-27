@@ -299,11 +299,11 @@ class SandboxStatsTest extends munit.FunSuite:
     // The contract --stats prints and --reset reads: every id listed is one --reset accepts.
     assertEquals(AgentSandboxLauncher.projectIdOperands("--reset", ids.toList), Right(ids))
 
-  test("a volume probe answers present on 0, absent on 1, and nothing on any other exit"):
-    assertEquals(AgentSandboxLauncher.volumeExistsAnswer(0), Some(true))
-    assertEquals(AgentSandboxLauncher.volumeExistsAnswer(1), Some(false))
-    assertEquals(AgentSandboxLauncher.volumeExistsAnswer(125), None)
-    assertEquals(AgentSandboxLauncher.volumeExistsAnswer(-1), None)
+  test("podman's exists answers present on 0, absent on 1, and nothing on any other exit"):
+    assertEquals(AgentSandboxLauncher.existsAnswer(0), Some(true))
+    assertEquals(AgentSandboxLauncher.existsAnswer(1), Some(false))
+    assertEquals(AgentSandboxLauncher.existsAnswer(125), None)
+    assertEquals(AgentSandboxLauncher.existsAnswer(-1), None)
 
   test("a reset drops the record once nothing it names remains, and keeps it while a resource does"):
     val root = Files.createTempDirectory("projects")

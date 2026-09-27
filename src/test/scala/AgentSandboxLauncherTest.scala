@@ -1579,6 +1579,72 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // Windows argument encoding passes a double quote through unescaped (HostCommands.quoteFreeSh).
     assert(command.forall(word => !word.contains('"') && !word.contains('\n')), command)
 
+  test("a reset's failed removal counts as done only when podman says the resource is gone"):
+    assume(!scala.util.Properties.isWin, "the stand-in podman is a /bin/sh script")
+    val dir = Files.createTempDirectory("reset-removed").toRealPath()
+    try
+      // `rm` answers `rmExit`; `exists` answers `existsExit`, as the three `exists` commands do.
+      def podman(rmExit: Int, existsExit: Int): String =
+        val path = dir.resolve(s"podman-$rmExit-$existsExit")
+        Files.writeString(
+          path,
+          s"""#!/bin/sh
+             |echo "$$*" >> '${dir.resolve("asked")}'
+             |case "$$*" in
+             |  *exists*) exit $existsExit ;;
+             |  *) exit $rmExit ;;
+             |esac
+             |""".stripMargin,
+        )
+        path.toFile.setExecutable(true)
+        path.toString
+      assert(resetRemoved(podman(rmExit = 0, existsExit = 0), "network", "net-a"))
+      assert(resetRemoved(podman(rmExit = 1, existsExit = 1), "network", "net-a"))
+      assert(!resetRemoved(podman(rmExit = 1, existsExit = 0), "network", "net-a"))
+      assert(!resetRemoved(podman(rmExit = 1, existsExit = 125), "volume", "vol-a"))
+      assert(resetRemoved(podman(rmExit = 1, existsExit = 1), "container", "box-a"))
+      // The removals are the ones a reset has always made; a container's is forced.
+      assertEquals(
+        Files.readAllLines(dir.resolve("asked")).asScala.toVector,
+        Vector(
+          "network rm net-a",
+          "network rm net-a", "network exists net-a",
+          "network rm net-a", "network exists net-a",
+          "volume rm vol-a", "volume exists vol-a",
+          "rm --force box-a", "container exists box-a",
+        ),
+      )
+    finally FileHelper.deleteRecursively(dir)
+
+  test("one run of an image reads several files, each whole, and says which it lacks"):
+    assume(!scala.util.Properties.isWin, "the script runs under the local /bin/sh here")
+    val dir = Files.createTempDirectory("image-files").toRealPath()
+    try
+      val text = Files.writeString(dir.resolve("bundle.crt"), "-----BEGIN CERTIFICATE-----\nAAA\n")
+      // Bytes a line reader or a charset would change: a newline first and a digit line inside.
+      val binary = Files.write(dir.resolve("agents.md"), Array[Byte](10, 52, 50, 10, -1, 0, 10))
+      val paths = Vector(text.toString, dir.resolve("absent").toString, dir.toString, binary.toString)
+      val process = ProcessBuilder(HostCommands.quoteFreeSh(ImageFilesScript, paths*)*).start()
+      process.getOutputStream.close()
+      val out = process.getInputStream.readAllBytes()
+      assertEquals(process.waitFor(), 0)
+      val files = imageFilesOf(out, paths)
+      assertEquals(files.keySet, Set(text.toString, binary.toString))
+      assertEquals(String(files(text.toString), "US-ASCII"), "-----BEGIN CERTIFICATE-----\nAAA\n")
+      assertEquals(files(binary.toString).toVector, Files.readAllBytes(binary).toVector)
+      // An answer cut short keeps what came whole before it, and nothing after.
+      assertEquals(imageFilesOf(out.dropRight(1), paths).keySet, Set(text.toString))
+      assertEquals(imageFilesOf("12\nshort".getBytes, Vector("/a")), Map.empty)
+      assertEquals(imageFilesOf("error\n".getBytes, Vector("/a")), Map.empty)
+      // Through a podman that runs the image's command here: a file the image lacks is named.
+      val podman = Files.writeString(dir.resolve("podman"), "#!/bin/sh\nshift 6\nexec \"$@\"\n")
+      podman.toFile.setExecutable(true)
+      val (read, missing) = readImageFiles(podman.toString, "sha256:image", Vector(text.toString, dir.toString))
+      assertEquals(read.keySet, Set(text.toString))
+      assertEquals(missing, s"no readable file at $dir")
+      assertEquals(readImageFiles(podman.toString, "sha256:image", Vector.empty), (Map.empty, ""))
+    finally FileHelper.deleteRecursively(dir)
+
   test("an image's absent at a mount path is cached for that image and path, and no other answer is"):
     val dir = Files.createTempDirectory("mount-path-answer")
     try

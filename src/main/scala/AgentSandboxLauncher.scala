@@ -634,6 +634,8 @@ object AgentSandboxLauncher:
    *     --build, brings the machine up itself.
    *   - Gives the machine's total memory, which the launch reuses: changing it
    *     (`podman machine set --memory`) needs the machine stopped.
+   *   - The available memory is asked beside `podman info`: through `podman machine ssh` on macOS
+   *     and Windows, a second round trip to the machine. A machine this starts is asked again.
    */
   def requirePodman(
     os: Os,
@@ -647,9 +649,10 @@ object AgentSandboxLauncher:
            |Reinstall it: https://podman.io/docs/installation""".stripMargin,
         127,
       )
+    val awaitAvailable = inBackground("machine memory probe")(probedMachineAvailable(os))
     val answered = run(podman, "info", "--format", PodmanInfoFormat)
-    val info =
-      if answered.ok then answered
+    val (info, available) =
+      if answered.ok then (answered, awaitAvailable())
       else
         os match
           case Os.Linux =>
@@ -657,6 +660,9 @@ object AgentSandboxLauncher:
               "error: podman is not usable.\nOn Linux, run rootless podman as your normal user, without sudo.",
             )
           case _ =>
+            // Discarded, since a stopped machine gives no answer, and settled first, so the probe
+            // does not run into the start.
+            awaitAvailable()
             System.err.println("the podman machine is not running; starting it")
             val started = run(podman, "machine", "start")
             if !started.ok then
@@ -667,10 +673,10 @@ object AgentSandboxLauncher:
                    |Initialize it once, for example:
                    |  podman machine init""".stripMargin
               )
-            run(podman, "info", "--format", PodmanInfoFormat)
+            (run(podman, "info", "--format", PodmanInfoFormat), probedMachineAvailable(os))
     if refuseRootful then rootfulRefusal(os, podmanInfoField(info, 0)).foreach(fail(_))
     val total = memoryTotal(podmanInfoField(info, 1))
-    machineMemoryLine(os, total, probedMachineAvailable(os), scale = memoryScale).foreach(System.err.println)
+    machineMemoryLine(os, total, available, scale = memoryScale).foreach(System.err.println)
     total
 
   /** What requirePodman asks `podman info`, in one call: rootlessness, then MemTotal, a line each. */
@@ -1458,7 +1464,7 @@ object AgentSandboxLauncher:
   private def resetOne(os: Os, projectDir: Path, id: String, named: Boolean, mainWorktree: Option[Path]): Reset =
     var failures = 0
     var found = false
-    def remove(command: String*): Unit = if !stepOk(command*) then failures += 1
+    def remove(kind: String, name: String): Unit = if !resetRemoved(podman, kind, name) then failures += 1
     def deleteTree(dir: Path): Unit =
       found |= Files.exists(dir)
       try removeTree(dir)
@@ -1479,7 +1485,7 @@ object AgentSandboxLauncher:
         isRunNamed(proxyRunContainer, id)(name) || isRunNamed(sandboxRunContainer, id)(name)
       .foreach: name =>
         found = true
-        remove(podman, "rm", "--force", name)
+        remove("container", name)
 
     // Only the computed per-project volume; a volume shared through KO_AGENT_SANDBOX_PERSISTENT_VOLUME belongs to other
     // projects too.
@@ -1487,7 +1493,7 @@ object AgentSandboxLauncher:
     val volume = s"ko-agent-sandbox-persistent-$id"
     val volumeExists: Option[Boolean] =
       val probe = run(podman, "volume", "exists", volume)
-      val answer = volumeExistsAnswer(probe.exit)
+      val answer = existsAnswer(probe.exit)
       if answer.isEmpty then
         failures += 1
         System.err.println(s"podman volume exists $volume: exit ${probe.exit} ${probe.err}".stripTrailing)
@@ -1499,7 +1505,7 @@ object AgentSandboxLauncher:
       case None =>
         if volumeExists.contains(true) then
           found = true
-          remove(podman, "volume", "rm", volume)
+          remove("volume", volume)
         false
     // The main worktree's volume, which this directory's launches may have shared, is named for
     // that project and left in place like a configured shared one: removing it would sign the
@@ -1507,7 +1513,7 @@ object AgentSandboxLauncher:
     // what this reset did not remove and where the reset that does runs.
     mainWorktree.foreach: main =>
       val mainVolume = mainWorktreeVolume(main, os)
-      if volumeExistsAnswer(run(podman, "volume", "exists", mainVolume).exit).contains(true) then
+      if existsAnswer(run(podman, "volume", "exists", mainVolume).exit).contains(true) then
         System.err.println(mainWorktreeVolumeNote(main, os))
 
     // This project's per-run networks. Containers went first above, so nothing still holds them.
@@ -1518,7 +1524,7 @@ object AgentSandboxLauncher:
     projectNetworks(networks.text.linesIterator.map(_.trim).toSeq, id)
       .foreach: network =>
         found = true
-        remove(podman, "network", "rm", network)
+        remove("network", network)
 
     deleteTree(tlsStateRoot(os).resolve(id))
     deleteTree(rulesetStateRoot(os).resolve(id))
@@ -1586,12 +1592,27 @@ object AgentSandboxLauncher:
     else if done.isEmpty then Vector("note: filter unmount skipped (no machine running, or the unmount script failed)")
     else done :+ "note: the filter unmount script failed after the actions above"
 
-  /** `podman volume exists` answers present with exit 0, absent with 1, and any failure with
-    * another code, which is neither. */
-  def volumeExistsAnswer(exit: Int): Option[Boolean] = exit match
+  /** `podman container exists`, `volume exists` and `network exists` answer present with exit 0,
+    * absent with 1, and any failure with another code, which is neither. */
+  def existsAnswer(exit: Int): Option[Boolean] = exit match
     case 0 => Some(true)
     case 1 => Some(false)
     case _ => None
+
+  /**
+   * A reset's removal of the podman `kind` (`container`, `volume` or `network`) `name`: done when
+   * the removal succeeds, or when it failed and podman says `name` no longer exists. The reaper of
+   * a run that has just ended removes the same containers and networks, and whichever of the two
+   * loses the race is told they are not found. An existence podman cannot answer is a failure.
+   */
+  def resetRemoved(podman: String, kind: String, name: String): Boolean =
+    val rm =
+      if kind == "container" then Vector(podman, "rm", "--force", name) else Vector(podman, kind, "rm", name)
+    stepOk(rm*) || {
+      val gone = existsAnswer(run(podman, kind, "exists", name).exit).contains(false)
+      if gone then System.err.println(s"note: the $kind $name was already gone")
+      gone
+    }
 
   /**
    * `--reset-all`, every project's `--reset`. It deliberately does not remove built images or
@@ -1625,18 +1646,18 @@ object AgentSandboxLauncher:
         System.err.println(result.err)
       result.text.linesIterator.map(_.trim).filter(_.nonEmpty).toVector
 
-    def remove(command: String*): Unit = if !stepOk(command*) then failures += 1
+    def remove(kind: String, name: String): Unit = if !resetRemoved(podman, kind, name) then failures += 1
 
     val containers = listed(podman, "ps", "-a", "--format", "{{.Names}}")
     (proxyContainers(containers) ++ sandboxRunContainers(containers) ++
       SelfTestShare.probeContainers(containers))
-      .foreach(name => remove(podman, "rm", "--force", name))
+      .foreach(name => remove("container", name))
 
     persistentVolumes(listed(podman, "volume", "ls", "--format", "{{.Name}}"))
-      .foreach(name => remove(podman, "volume", "rm", name))
+      .foreach(name => remove("volume", name))
 
     launcherNetworks(listed(podman, "network", "ls", "--format", "{{.Name}}"))
-      .foreach(name => remove(podman, "network", "rm", name))
+      .foreach(name => remove("network", name))
 
     removeTree(tlsStateRoot(os))
     removeTree(rulesetStateRoot(os))
@@ -1708,7 +1729,7 @@ object AgentSandboxLauncher:
     // the record stays.
     val state = Vector(tlsStateRoot(os), logStateRoot(os), rulesetStateRoot(os)).map(_.resolve(id))
     val volumeKept = findOnPath("podman", env("PATH").getOrElse(""), os).fold(true): found =>
-      volumeExistsAnswer(run(found.toString, "volume", "exists", s"ko-agent-sandbox-persistent-$id").exit)
+      existsAnswer(run(found.toString, "volume", "exists", s"ko-agent-sandbox-persistent-$id").exit)
         .getOrElse(true)
     dropRecordUnless(projectsStateRoot(os), id, state, volumeKept)
     sys.exit(0)
@@ -1800,10 +1821,55 @@ object AgentSandboxLauncher:
       |echo absent""".stripMargin
 
   /** `--entrypoint=` and `--network=none`: the image's own program and egress are not the question
-    * (the CA-bundle read in the launch has the same form). */
+    * (readImageFiles has the same form). */
   def mountPathProbeCommand(podman: String, image: String, mountPath: String): Vector[String] =
     Vector(podman, "run", "--rm", "--pull=never", "--network=none", "--entrypoint=", image) ++
       quoteFreeSh(MountPathProbeScript, mountPath)
+
+  /**
+   * Each path's size in bytes on a line of its own and then its content, or `missing` on the line
+   * for a path that is not a readable file, so one run of the image reads several files.
+   */
+  val ImageFilesScript: String =
+    """for p; do
+      |  if [ -f "$p" ] && [ -r "$p" ]; then wc -c < "$p"; cat "$p"; else echo missing; fi
+      |done""".stripMargin
+
+  /**
+   * The files at `paths` read out of `imageId` in one run, by path, beside why any is missing: the
+   * run's stderr, or the paths the image has no readable file at. When none are asked for, nothing
+   * runs. `--entrypoint=`: the answer must be the script's stdout alone, whatever ENTRYPOINT the
+   * image declares (JdkTrust.jdkMounts has the argument).
+   */
+  def readImageFiles(podman: String, imageId: String, paths: Vector[String]): (Map[String, Array[Byte]], String) =
+    if paths.isEmpty then (Map.empty, "")
+    else
+      val read = run(
+        Vector(podman, "run", "--rm", "--pull=never", "--network=none", "--entrypoint=", imageId)
+          ++ quoteFreeSh(ImageFilesScript, paths*)*
+      )
+      if !read.ok then (Map.empty, read.err)
+      else
+        val found = imageFilesOf(read.out, paths)
+        (found, paths.filterNot(found.contains).map(path => s"no readable file at $path").mkString("\n"))
+
+  /** The files an ImageFilesScript answer holds, by path: a path answered `missing`, and every path
+    * after an answer cut short, has none. */
+  def imageFilesOf(out: Array[Byte], paths: Vector[String]): Map[String, Array[Byte]] =
+    @scala.annotation.tailrec
+    def from(at: Int, remaining: Vector[String], found: Map[String, Array[Byte]]): Map[String, Array[Byte]] =
+      val lineEnd = out.indexOf('\n'.toByte, at)
+      remaining.headOption.filter(_ => lineEnd >= 0) match
+        case None => found
+        case Some(path) =>
+          val header = String(out.slice(at, lineEnd), StandardCharsets.US_ASCII).trim
+          val start = lineEnd + 1
+          header.toIntOption match
+            case Some(size) if size >= 0 && start + size <= out.length =>
+              from(start + size, remaining.tail, found + (path -> out.slice(start, start + size)))
+            case None if header == "missing" => from(start, remaining.tail, found)
+            case _ => found
+    from(0, paths, Map.empty)
 
   /**
    * The stamp an image's answer about `mountPath` is cached under. The probe reads only the image,
@@ -3163,21 +3229,26 @@ object AgentSandboxLauncher:
 
       // The sandbox's trust: the image's own CA bundle — not the workstation's, a different set
       // entirely — plus the CA this run trusts. Re-read when image or CA changes; the stamp records
-      // both (imageId came from the inspect beside the image-exists check).
+      // both (imageId comes from the sandbox image's inspect).
       val caFingerprint = certificateFingerprint(pemBody(Files.readString(caCertFile)))
       val bundleStamp = s"$imageId $caFingerprint"
 
-      if readIfPresent(bundleFile).forall(_.isEmpty) || firstLine(bundleStampFile) != bundleStamp then
-        // --entrypoint=: what is written to the bundle must be cat's stdout alone, whatever ENTRYPOINT
-        // the image declares (JdkTrust.jdkMounts has the argument).
-        val imageBundle = run(
-          podman, "run", "--rm", "--pull=never", "--network=none", "--entrypoint=",
-          imageId, "cat", "/etc/ssl/certs/ca-certificates.crt",
-        )
-        if !imageBundle.ok || imageBundle.out.isEmpty then
-          fail(s"error: could not read the CA bundle out of $image\n${imageBundle.err}")
+      // The image's files both caches below are made from, read in one run of the image when both
+      // are stale, as after a rebuild.
+      val bundleStale = readIfPresent(bundleFile).forall(_.isEmpty) || firstLine(bundleStampFile) != bundleStamp
+      val agentDocStale =
+        readIfPresent(agentDocFile).forall(_.isEmpty) || firstLine(agentDocStampFile) != agentDocStamp
+      val imageBundlePath = "/etc/ssl/certs/ca-certificates.crt"
+      val (imageFiles, imageFilesMissing) = readImageFiles(
+        podman, imageId,
+        Vector(imageBundlePath).filter(_ => bundleStale) ++ Vector(AgentDocPath).filter(_ => agentDocStale),
+      )
+
+      if bundleStale then
+        val imageBundle = imageFiles.get(imageBundlePath).filter(_.nonEmpty)
+          .getOrElse(fail(s"error: could not read the CA bundle out of $image\n$imageFilesMissing"))
         val bundleText =
-          String(imageBundle.out, StandardCharsets.US_ASCII).stripLineEnd + "\n" +
+          String(imageBundle, StandardCharsets.US_ASCII).stripLineEnd + "\n" +
             Files.readString(caCertFile)
         writeReadable(bundleFile, bundleText)
         writeReadable(bundleStampFile, bundleStamp + "\n")
@@ -3190,19 +3261,12 @@ object AgentSandboxLauncher:
         selinuxEnforcing,
       )
 
-      if readIfPresent(agentDocFile).forall(_.isEmpty)
-        || firstLine(agentDocStampFile) != agentDocStamp
-      then
-        // --entrypoint= for the same reason as the bundle read above.
-        val imageDoc = run(
-          podman, "run", "--rm", "--pull=never", "--network=none", "--entrypoint=",
-          imageId, "cat", AgentDocPath,
-        )
-        if !imageDoc.ok || imageDoc.out.isEmpty then
-          fail(s"error: could not read the agent instructions out of $image\n${imageDoc.err}")
+      if agentDocStale then
+        val imageDoc = imageFiles.get(AgentDocPath).filter(_.nonEmpty)
+          .getOrElse(fail(s"error: could not read the agent instructions out of $image\n$imageFilesMissing"))
         writeReadable(
           agentDocFile,
-          String(imageDoc.out, StandardCharsets.UTF_8).stripLineEnd
+          String(imageDoc, StandardCharsets.UTF_8).stripLineEnd
             + appendedSection(
               mountPath, writeMode, rulesetText, runOnHost, os == Os.Mac, gitInstruction,
             ),

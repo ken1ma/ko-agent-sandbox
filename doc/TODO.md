@@ -594,6 +594,13 @@ are the image's Mach services, which the same mode measures once it starts.
 - [ ] Build the binary in CI and run the launcher suite as the binary, on both shipping
   architectures; only then does the README offer it. build.sbt's comments explain the two exports
   and the resource includes the command carries.
+- [ ] Compute the bundle digests (`KoAgentFs.bundledSourceId`) while `native-image` builds the
+  binary, with build-time initialization: the binary then hashes nothing at launch, and
+  `bundleSourceId` stays the one implementation. Check first that the bundled resources are
+  readable at that point.
+  - The jar hashes its three bundles in about 30 ms (a fresh JVM in a Linux container,
+    2026-09-28), too little to justify an sbt step that precomputes them with the launcher's own
+    classes.
 - [ ] Decide it together with the published identity: whether the binary is a release artifact at
   all, or `java -jar` and a Coursier command are the two forms.
 

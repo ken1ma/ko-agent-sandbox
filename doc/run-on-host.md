@@ -1122,6 +1122,12 @@ where the caller is not interactive.
   the user's unconfined sbt built links into a store the profile denies ("sbt").
 - **The global base and the Ivy home are the project's own — confinement.** Redirected into the
   run-on-host cache, where stock uses `~/.sbt` and `~/.ivy2` ("sbt", "The run-on-host cache").
+- **While the launch's server lives, your terminal's `sbt` in the build directory runs on it, and
+  `sbt shutdownall` does not end it — ownership.** Run `sbt shutdown` there first to end it.
+  - Stock sbt attaches to whatever server holds the portfile, so the command runs under the
+    profile and the launch's environment: a test that runs podman fails there.
+  - `sbt shutdownall` kills what `jps -v` lists as `sbt-launch`, which does not include a
+    launch's server (sbt 2.0.9, macOS 26.4.1, 2026-09-28). The server ends with the launch anyway.
 
 ### Under `mill`
 
