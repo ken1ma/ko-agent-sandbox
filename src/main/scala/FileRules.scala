@@ -200,7 +200,7 @@ object FileRules:
   private def wideningLine(lines: Vector[Line], color: Boolean): Option[String] =
     val widening = lines.filter(_.word == Word.Writable)
     Option.when(widening.nonEmpty)(
-      HostCommands.weakenedByProject(s"file rules widen: ${widening.map(_.text).mkString("; ")}", color),
+      HostCommands.weakened(s"file rules widen: ${widening.map(_.text).mkString("; ")}", color),
     )
 
   /** The rule lines of a text daemonText wrote, as a running mount serves them. */

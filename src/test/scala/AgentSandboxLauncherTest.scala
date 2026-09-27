@@ -206,7 +206,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assert(line.startsWith("\u001b[38;5;208m") && line.endsWith("\u001b[0m"), line)
       assertEquals(line.count(_ == '\u001b'), 2, line)
 
-  test("a program's rule file naming hosts is a red line of its own, and a control character in it is shown"):
+  test("a program's rule file naming hosts is an orange line of its own, and a control character in it is shown"):
     val silent = Seq("sbt" -> Vector.empty, "mill" -> Vector.empty)
     assertEquals(runOnHostWideningLines(silent, color = false), Vector.empty)
     assertEquals(
@@ -223,7 +223,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(
       hostile,
       Vector(
-        "\u001b[31mrun-on-host egress rules (.ko-agent-sandbox/run-on-host/gradle/egress/rule) widen: " +
+        "\u001b[38;5;208mrun-on-host egress rules (.ko-agent-sandbox/run-on-host/gradle/egress/rule) widen: " +
           "allow https://x.example\\x1b[2K/ read\u001b[0m",
       ),
     )
