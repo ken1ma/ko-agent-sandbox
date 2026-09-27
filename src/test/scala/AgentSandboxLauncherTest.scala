@@ -1770,6 +1770,20 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val twice = projectIdOperands("--reset", List("a-0123456789ab", "b-0123456789ab", "a-0123456789ab"))
     assert(twice.left.exists(_.contains("names a-0123456789ab twice")), twice.toString)
 
+  test("a reset relays every unmount and removal the script made, a failure after them included"):
+    def ran(exit: Int, out: String) = Some(HostCommands.Run(exit, out.getBytes, ""))
+    val label = "ko-agent-fs filter on the host"
+    assertEquals(unmountReport(label, ran(0, "")), Vector.empty)
+    assertEquals(unmountReport(label, ran(0, "removed /m/a\n")), Vector(s"$label: removed /m/a"))
+    // The unmount went through; only what followed it failed, and the note must not deny it.
+    assertEquals(
+      unmountReport(label, ran(1, "unmounted /m/a/workspace\n")),
+      Vector(s"$label: unmounted /m/a/workspace", "note: the filter unmount script failed after the actions above"),
+    )
+    val skipped = Vector("note: filter unmount skipped (no machine running, or the unmount script failed)")
+    assertEquals(unmountReport(label, ran(255, "")), skipped)
+    assertEquals(unmountReport(label, None), skipped)
+
   test("the state root must be absolute, resolves canonically, and stays outside the project"):
     // Refused rather than resolved, on every platform spelling.
     assert(stateRootOf(HostCommands.Os.Linux, Map("XDG_STATE_HOME" -> "relative/state").get).isLeft)

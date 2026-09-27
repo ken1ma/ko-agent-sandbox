@@ -4,6 +4,7 @@
 // state directories the reset removed; the plain --reset then takes both. discard covers the
 // common case, a reset with nothing kept, in every suite's teardown. The last test is the project
 // whose directory went before any reset: --stats can only name it by id, and --reset takes that.
+// A --reset-run-on-host or --reset that finds nothing left echoes no removal.
 //
 // Runs only under testWithPodman, like the other container-launching suites (WithPodman has the condition):
 //
@@ -42,6 +43,7 @@ class ResetRecordTest extends munit.FunSuite:
 
       val (cacheOk, cacheOutput) = resetRunOnHost(project)
       assert(cacheOk, s"--reset-run-on-host failed; its output:\n$cacheOutput")
+      assert(!cacheOutput.contains("+ rm"), s"--reset-run-on-host echoed a removal of nothing:\n$cacheOutput")
       assert(Files.exists(record), "--reset-run-on-host dropped the record with the generated volume still there")
 
       val (ok, output) = reset(project)
@@ -138,6 +140,11 @@ class ResetRecordTest extends munit.FunSuite:
       assert(
         !SandboxStats.projectIds(currentOs, Vector.empty).contains(session.id), "the reset left state under the id",
       )
+
+      // Again, with nothing left: the reset reports no removal.
+      val (againOk, again) = resetIds(elsewhere, session.id)
+      assert(!againOk && again.contains(s"no project ${session.id}"), again)
+      assert(!again.contains("+ ") && !again.contains("filter"), s"a removal of nothing was reported:\n$again")
     finally
       // The same path is the same id, so a failure above is reset from the recreated directory.
       Files.createDirectories(project)

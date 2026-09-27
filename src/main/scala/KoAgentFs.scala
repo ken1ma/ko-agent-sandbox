@@ -453,20 +453,27 @@ object KoAgentFs:
       case Os.Linux => "local"
       case Os.Mac | Os.Windows => "machine"
 
-  /** Unmount and remove one project's filter state; `-z` because a bind may still hold it. */
+  /** Unmount and remove one project's filter state; `-z` because a bind may still hold it. Prints a
+    * line for each unmount and removal it made, and nothing where there is no state. An unmount is
+    * reported only when fusermount3 made one: a resolve (koAgentFsResolveScript) leaves the state
+    * directory without a mount. */
   def koAgentFsUnmountScript(projectId: String): String =
     withScriptPath(
       s"""dir="$$HOME/${koAgentFsMountDir(projectId)}"
-       |fusermount3 -uz "$$dir/workspace" 2>/dev/null || true
-       |rm -rf "$$dir"""".stripMargin
+       |[ -e "$$dir" ] || [ -L "$$dir" ] || exit 0
+       |fusermount3 -uz "$$dir/workspace" 2>/dev/null && echo "unmounted $$dir/workspace"
+       |rm -rf "$$dir" && echo "removed $$dir"""".stripMargin
     )
 
+  /** [[koAgentFsUnmountScript]] for every project. */
   def koAgentFsUnmountAllScript: String =
     withScriptPath(
-      s"""for mnt in "$$HOME"/$KoAgentFsInstallDir/mounts/*/workspace; do
-       |  fusermount3 -uz "$$mnt" 2>/dev/null || true
+      s"""mounts="$$HOME/$KoAgentFsInstallDir/mounts"
+       |[ -e "$$mounts" ] || [ -L "$$mounts" ] || exit 0
+       |for mnt in "$$mounts"/*/workspace; do
+       |  fusermount3 -uz "$$mnt" 2>/dev/null && echo "unmounted $$mnt"
        |done
-       |rm -rf "$$HOME/$KoAgentFsInstallDir/mounts"""".stripMargin
+       |rm -rf "$$mounts" && echo "removed $$mounts"""".stripMargin
     )
 
   def koAgentFsScriptCommand(podman: String, os: Os, script: String): Vector[String] =
