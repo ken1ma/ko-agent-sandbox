@@ -77,6 +77,39 @@ fn operational_state_git_writes_during_normal_ops_stays_writable() {
 }
 
 #[test]
+fn state_observe_git_misses_stays_writable() {
+    // What `probe/observe-git.sh` cannot see, because it is gone when the command ends or only a
+    // command the script does not run writes it. Recorded with `strace -f` around one git 2.47.3
+    // command each, except the line that names git's source instead.
+    for path in [
+        ".git/index.stash.3943",      // git stash
+        ".git/index.stash.3943.lock", // git stash
+        ".git/next-index-3999.lock",  // git commit <pathspec>
+        ".git/packed-refs.new",       // git gc, pack-refs, branch -d or tag -d of a packed ref
+        ".git/gc.pid.lock",           // git gc
+        ".git/gc.pid",
+        ".git/gc.log.lock",              // git gc --auto, detached
+        ".git/MERGE_AUTOSTASH.lock",     // git merge --autostash
+        ".git/NOTES_MERGE_PARTIAL.lock", // git notes merge
+        ".git/NOTES_MERGE_REF.lock",
+        ".git/NOTES_MERGE_WORKTREE/7875ff97b57f0181f7dbea31886e290d0462d976",
+        ".git/NOTES_EDITMSG",    // git notes edit
+        ".git/EDIT_DESCRIPTION", // git branch --edit-description
+        ".git/ADD_EDIT.patch",   // git add -e
+        ".git/REPLACE_EDITOBJ",  // git replace --edit
+        ".git/sharedindex.c78dfdba23422a067a1b890713e7bc6535d24598", // git update-index --split-index
+        ".git/sharedindex_AltQxj",
+        ".git/shallow_Ab12Cd", // shallow.c, setup_temporary_shallow
+        ".git/lost-found/commit/1aed62d97f0249bd46b04ed52216e59699ec7c21", // git fsck --lost-found
+        ".git/reftable/tables.list.lock", // a reftable repository's refs
+        ".git/reftable/0x000000000001-0x000000000002-f3ae823b.ref",
+        ".git/worktrees/wt/index.stash.3943", // a linked worktree's stash
+    ] {
+        operational(path);
+    }
+}
+
+#[test]
 fn protected_entries_stay_frozen() {
     for path in [
         // The command-defining config files and the hook tree: what the filter exists to freeze.
@@ -98,6 +131,20 @@ fn protected_entries_stay_frozen() {
         // A protected entry's lock is protected: the inheritance rule must not become a way in.
         ".git/config.lock",
         ".git/config.worktree.lock",
+        // Frozen, each for a reason `policy::classify_within_gitdir` records.
+        ".git/BISECT_NAMES",
+        ".git/BISECT_LOG",
+        ".git/BISECT_START",
+        ".git/rr-cache/0123/preimage",
+        ".git/MERGE_RR",
+        ".git/lfs/objects/ab/cd/abcd",
+        // Only the exact shapes of git's scratch names.
+        ".git/index.stash.",
+        ".git/index.stash.12x",
+        ".git/next-index-",
+        ".git/sharedindex.xyz",
+        ".git/shallow_12345",
+        ".git/shallow_1234567",
     ] {
         protected(path);
     }
@@ -106,7 +153,7 @@ fn protected_entries_stay_frozen() {
 #[test]
 fn rebase_and_sequencer_todo_state_is_frozen() {
     // Frozen like hooks despite git writing them constantly (`doc/git-metadata.md`, group 1): the
-    // one place security overrides compatibility, so those commands do not work in /workspace.
+    // one place security overrides compatibility, so those commands do not work in the workspace.
     for path in [
         ".git/rebase-merge/git-rebase-todo",
         ".git/rebase-apply/0001",

@@ -243,6 +243,17 @@ class SessionBoundaryTest extends munit.FunSuite:
     val allowed = run("ko-sandbox-egress-check", "api.github.com")
     assertEquals(allowed.exit, 0, allowed.err)
     assert(allowed.text.contains("HEAD / -> HTTP/1.1 "), allowed.text)
+    // A host granted below / alone, when the session's providers list one: the proxy refuses the
+    // HEAD / inside the tunnel, and the check reports that as the refusal it is.
+    val grants = raw"allow https://([^/\s]+)(/\S*)".r
+      .findAllMatchIn(env("KO_AGENT_SANDBOX_EGRESS_RULESET").getOrElse(""))
+      .map(found => found.group(1) -> found.group(2))
+      .toVector
+    grants.map(_._1).distinct.find(host => !grants.contains(host -> "/")).foreach: host =>
+      val inner = run("ko-sandbox-egress-check", host)
+      assertEquals(inner.exit, 1, inner.text)
+      assert(inner.text.contains(s"CONNECT $host:443: 200; HEAD /: HTTP/1.1 403"), inner.text)
+      assert(inner.text.contains("Proxy-Status: ko-agent-egress-proxy; error=http_request_denied"), inner.text)
 
   test("a JVM reaches an allowed host with no proxy variable of its own"):
     inSession()

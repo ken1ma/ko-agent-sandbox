@@ -452,7 +452,8 @@ malformed request, a failed origin leg, the connection limit — and on none it 
 - A header as well as a body, because clients that discard a failed CONNECT's body still show its
   header section (`curl -v`), and a program can read one field where the body is text for people.
   `ko-sandbox-egress-check` prints the field before the body; for the responses without a body —
-  the `400` to a malformed CONNECT, the `500`, the `503` — the field is all the client receives.
+  the `400` to a malformed CONNECT, the `500`, the `503`, any answer to a `HEAD` inside the tunnel
+  (RFC 9110 §9.3.2) — the field is all the client receives.
 - Unlike Via ("No Via header", below) it reaches the client alone, never an origin.
 - The member is the image's name, not a deployment's, against RFC 9209's advice: a session has
   one proxy, and the refusal body already starts with that name.

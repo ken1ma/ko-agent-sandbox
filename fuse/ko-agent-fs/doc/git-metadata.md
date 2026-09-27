@@ -161,6 +161,9 @@ entries. There are two ways to draw that line, and they fail in opposite directi
 - The operational set is enumerated by the **execution question** ("can a write here cause host
   git to execute?"), *not* "does git write here": watching real git ("Premises", below) checks
   only that legitimate git is not *over*-frozen, never what is safe to allow.
+  - The question is asked of every host git a user may run, not of the image's version alone:
+    through 2.33, `git bisect` is a shell script that `eval`s `BISECT_NAMES`, which is why the
+    bisect state stays protected.
 - Where the two diverge — `rebase-merge`, `rebase-apply`, `sequencer` — security wins, and the
   affected commands are listed under blocked operations below.
 
@@ -439,8 +442,9 @@ The check is also a snapshot, taken before the mount and not repeated.
 
 ## Consequences: git operations blocked inside the project
 
-These follow from the name rule and must be documented, not silently broken (SECURITY.md, "The
-project directory", has the security reason for each):
+These follow from the name rule and the classifier and must be documented, not silently broken
+(SECURITY.md, "The host's git executing what the sandbox wrote" and "The project directory", has
+the security reason for each):
 
 - `git init` / `git clone` into the project — creates a new `.git`. Blocked. Clone under `~`.
   - The **bare-layout forms are not blocked**: `git init --bare` and `git clone --bare|--mirror`
@@ -456,6 +460,13 @@ project directory", has the security reason for each):
   operational state in `.git/modules/<n>/` stays writable, while its protected entries stay frozen
   by the recursion in "The immutable set". The new `.git` pointer in the worktree is refused.
 - Editing `.git/config` (e.g. `git config --local core.hooksPath …`) — blocked; the whole point.
+  - So is every command that records something there: `git remote add`, `git push -u`,
+    `git branch --set-upstream-to`, `git switch --track`, `git sparse-checkout`. `git branch -m`
+    renames the branch and then fails; `git branch -d` deletes it and warns.
+- `git bisect` — its state stays protected, because a host git through 2.33 evaluates
+  `BISECT_NAMES` as shell code (`classify_within_gitdir` in `src/policy.rs` has the details).
+- `git rerere` — its `rr-cache/` stays protected, since creating it enables rerere for host merges
+  (`classify_within_gitdir` has why).
 - `git rebase` (any form — the merge backend writes `rebase-merge/` even for a clean rebase),
   `git am` (writes `rebase-apply/`), and `git cherry-pick`/`git revert` of a *range* or when a
   conflict makes git open a sequence (writes `sequencer/`) — all blocked, because their todo
@@ -464,8 +475,8 @@ project directory", has the security reason for each):
   - Do rebases on the host, or on a clone under `~`.
 
 Existing host repositories keep working for the everyday commands: `status`, `add`, `commit`,
-`checkout`, `switch`, `fetch`, `merge` touch only operational state. The rebase family is the
-deliberate exception above.
+`checkout`, `switch`, `fetch`, `merge`, `stash`, `gc` touch only operational state. The rebase
+family, bisect and the commands writing config are the deliberate exceptions above.
 
 
 ## Prior art: git's own CVE history
@@ -579,7 +590,9 @@ and it has three blind spots worth knowing:
 
 - it sees only state that *persists* after a command, so a clean `git rebase` (which creates and
   deletes `rebase-merge/` in one command) never appears in a run;
-- neither does any `.lock`, which git renames away within the same command;
+- neither does any file git removes or renames away within the same command: every `.lock`, and
+  `git stash`'s `index.stash.<pid>`, `git gc`'s `gc.pid` and `packed-refs.new`. `strace -f`
+  around single commands sees them; `tests/git_corpus.rs` records what it saw;
 - a path being written does not make it safe to allow.
 
 Only real git against a real mount exercises the locks, so `tests/mounted_git.rs` is what

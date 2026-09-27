@@ -609,15 +609,15 @@ object AgentEgressProxy:
 
         case ex: BadRequest =>
           System.err.println(auditLine("deny", host, method, target, ex.getMessage))
-          respondInsideTls(clientTls, 400, "Bad Request", "http_request_error", ex.getMessage)
+          respondInsideTls(clientTls, method, 400, "Bad Request", "http_request_error", ex.getMessage)
 
         case ex: Refusal =>
           System.err.println(auditLine("deny", host, method, target, ex.getMessage))
-          respondInsideTls(clientTls, 403, "Forbidden", ex.proxyError, ex.getMessage, Some(ex.advice))
+          respondInsideTls(clientTls, method, 403, "Forbidden", ex.proxyError, ex.getMessage, Some(ex.advice))
 
         case ex: IOException =>
           System.err.println(auditLine("error", host, method, target, s"origin: ${ex.getMessage}"))
-          respondInsideTls(clientTls, 502, "Bad Gateway", originProxyError(ex), ex.getMessage)
+          respondInsideTls(clientTls, method, 502, "Bad Gateway", originProxyError(ex), ex.getMessage)
 
     finally closeTlsOutput(clientTls, client)
 

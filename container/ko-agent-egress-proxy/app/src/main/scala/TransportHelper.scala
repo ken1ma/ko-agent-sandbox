@@ -266,9 +266,9 @@ object TransportHelper:
         writeAscii(link.getOutputStream, connectRequest(address, port))
         val head = finalResponseHead(link, interimRead = 0)
         head.status match
+          // Content-Length and Transfer-Encoding are ignored here, as RFC 9112 §6.3 requires: the
+          // tunnel starts right after the head.
           case status if status / 100 == 2 =>
-            if head.values("Content-Length").nonEmpty || head.values("Transfer-Encoding").nonEmpty then
-              throw IOException("upstream proxy answered 2xx with body framing")
             link.setSoTimeout(0)
             Right(OriginSocket(link, transport, address))
           case 407 =>

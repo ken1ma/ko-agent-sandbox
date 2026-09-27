@@ -421,6 +421,10 @@ impl KoAgentFs {
     /// reads the link, not when the link is made: an ordinary `pivot/GIT~1` at creation, removed and
     /// replaced by `pivot -> .`, aims the link at `.git`. No entry can vouch for the spelling, so the
     /// spelling itself is refused.
+    ///
+    /// Without file rules every target is allowed: a link into a gitdir is refused only because the
+    /// host would read through it, under a name a rule makes read-only, what the session wrote in
+    /// the gitdir, where no rule applies.
     fn allow_symlink_target(
         &self,
         parent: u64,
