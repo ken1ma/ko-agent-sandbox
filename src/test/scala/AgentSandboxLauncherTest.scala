@@ -206,7 +206,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assert(line.startsWith("\u001b[38;5;208m") && line.endsWith("\u001b[0m"), line)
       assertEquals(line.count(_ == '\u001b'), 2, line)
 
-  test("a program's rule file naming hosts is an orange line of its own, and a control character in it is shown"):
+  test("a program's rule file naming hosts is an orange report, one rule per line, and a control character is shown"):
     val silent = Seq("sbt" -> Vector.empty, "mill" -> Vector.empty)
     assertEquals(runOnHostWideningLines(silent, color = false), Vector.empty)
     assertEquals(
@@ -215,16 +215,17 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         color = false,
       ),
       Vector(
-        "run-on-host egress rules (.ko-agent-sandbox/run-on-host/sbt/egress/rule) widen: " +
-          "allow https://repo.example/ read; allow https://plugins.example/ read",
+        "run-on-host egress rules (.ko-agent-sandbox/run-on-host/sbt/egress/rule) widen:",
+        "  allow https://repo.example/ read",
+        "  allow https://plugins.example/ read",
       ),
     )
     val hostile = runOnHostWideningLines(Seq("gradle" -> Vector("x.example\u001b[2K")), color = true)
     assertEquals(
       hostile,
       Vector(
-        "\u001b[38;5;208mrun-on-host egress rules (.ko-agent-sandbox/run-on-host/gradle/egress/rule) widen: " +
-          "allow https://x.example\\x1b[2K/ read\u001b[0m",
+        "\u001b[38;5;208mrun-on-host egress rules (.ko-agent-sandbox/run-on-host/gradle/egress/rule) widen:\u001b[0m",
+        "\u001b[38;5;208m  allow https://x.example\\x1b[2K/ read\u001b[0m",
       ),
     )
 

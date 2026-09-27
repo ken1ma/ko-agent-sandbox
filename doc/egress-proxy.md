@@ -227,11 +227,10 @@ without starting a session; inside one, `ko-sandbox-egress-check <host>` asks th
 Every start prints, in order:
 
 1. the rule file as written, one line;
-1. the launch banner — the profile and the counts, never a host name;
 1. when the file grants beyond the defaults — a host the defaults lack, a grant the defaults lack
-   at the line's path, `deny defaults` — one more line: `egress rules widen:`, then those rule
-   lines with `; ` between them. A file that only removes grants or narrows them prints no such
-   line.
+   at the line's path, `deny defaults` — the line `egress rules widen:`, then those rule lines,
+   each on its own indented line. A file that only removes grants or narrows them prints neither;
+1. the launch banner — the profile and the counts, never a host name.
 
 The ruleset itself is what the proxy prints at its start and `--egress-effective` shows whole, in
 the rule grammar, hosts and paths sorted:

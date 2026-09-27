@@ -186,7 +186,7 @@ object FileRules:
     val file = project match
       case None            => "file rules: no project rule file; the launcher-owned defaults"
       case Some((text, _)) => s"file rules (.ko-agent-sandbox/file/rule): ${EgressRules.lineSummary(text)}"
-    file +: wideningLine(project.fold(Vector.empty[Line])(_(1)), color).toVector
+    file +: widening(project.fold(Vector.empty[Line])(_(1)), color)
 
   /** The launch lines about a running mount's rules a launch joins: its lines beyond the defaults,
     * all of them when it runs under other defaults, and their widening. */
@@ -195,13 +195,12 @@ object FileRules:
     val file =
       if beyond.isEmpty then "file rules (the running mount's): the launcher-owned defaults"
       else s"file rules (the running mount's): ${beyond.map(_.text).mkString("; ")}"
-    file +: wideningLine(beyond, color).toVector
+    file +: widening(beyond, color)
 
-  private def wideningLine(lines: Vector[Line], color: Boolean): Option[String] =
-    val widening = lines.filter(_.word == Word.Writable)
-    Option.when(widening.nonEmpty)(
-      HostCommands.weakened(s"file rules widen: ${widening.map(_.text).mkString("; ")}", color),
-    )
+  private def widening(lines: Vector[Line], color: Boolean): Vector[String] =
+    val writable = lines.filter(_.word == Word.Writable)
+    if writable.isEmpty then Vector.empty
+    else HostCommands.wideningReport("file rules", writable.map(_.text), color)
 
   /** The rule lines of a text daemonText wrote, as a running mount serves them. */
   def parseDaemonText(text: String): Either[String, Vector[Line]] =
