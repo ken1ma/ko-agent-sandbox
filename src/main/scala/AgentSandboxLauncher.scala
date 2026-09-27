@@ -610,12 +610,17 @@ object AgentSandboxLauncher:
 
   /**
    * The check every podman-talking action runs first: a client that runs, and a service that
-   * answers. On macOS and Windows the service is the podman machine, started here when stopped —
-   * never created or resized, the boundary SECURITY.md draws ("Silent changes to what you own") —
-   * so `machine init` stays the one manual step of a fresh install: the next action, usually
+   * answers and, where `refuseRootful`, runs rootless (rootfulRefusal). On macOS and
+   * Windows the service is the podman machine, started here when stopped — never created or
+   * resized, the boundary SECURITY.md draws ("Silent changes to what you own") — so
+   * `machine init` stays the one manual step of a fresh install: the next action, usually
    * --build, brings the machine up itself.
    */
-  def requirePodman(os: Os, memoryScale: Long => Headroom = launchMemoryHeadroom): Unit =
+  def requirePodman(
+    os: Os,
+    memoryScale: Long => Headroom = launchMemoryHeadroom,
+    refuseRootful: Boolean = true,
+  ): Unit =
     if !podmanRuns then
       fail(
         s"""error: $podman does not run
@@ -640,12 +645,36 @@ object AgentSandboxLauncher:
                  |Initialize it once, for example:
                  |  podman machine init""".stripMargin
             )
+    if refuseRootful then
+      rootfulRefusal(os, run(podman, "info", "--format", "{{.Host.Security.Rootless}}")).foreach(fail(_))
     machineMemoryLine(
       os,
       memoryTotal(run(podman, "info", "--format", "{{.Host.MemTotal}}")),
       probedMachineAvailable(os),
       scale = memoryScale,
     ).foreach(System.err.println)
+
+  /**
+   * SECURITY.md's "The containers run rootless" as a condition of every podman action but the
+   * ones that only read or remove. A rootful service maps `--userns=keep-id` one to one onto the
+   * host's uids (podman's `GetKeepIDMapping`), so the agent's uid is the host's 65532 and the
+   * container's root the host's root. An answer other than `true` refuses too: rootlessness is
+   * then unknown.
+   */
+  def rootfulRefusal(os: Os, answer: HostCommands.Run): Option[String] =
+    val reported = if answer.ok then answer.text.trim else ""
+    Option.when(reported != "true"):
+      val what =
+        if reported == "false" then "podman runs rootful"
+        else s"podman did not say whether it runs rootless: ${answer.err}"
+      val fix = os match
+        case Os.Linux =>
+          "Run the launcher as your normal user, without sudo, and point CONTAINER_HOST or\n" +
+            "`podman system connection default` at that user's podman."
+        case _ =>
+          "Switch the machine to rootless; what root's podman holds stays in its separate store:\n" +
+            "  podman machine set --rootful=false"
+      s"error: $what\nThe sandbox needs rootless podman (SECURITY.md). $fix"
 
   def probedMachineAvailable(os: Os): Option[Long] =
     machineMemoryAvailable(
@@ -2337,7 +2366,9 @@ object AgentSandboxLauncher:
       case Some(("--reset", rest)) =>
         noSessionOptions("--reset")
         val givenIds = projectIdOperands("--reset", rest).fold(fail(_), identity)
-        requirePodman(currentOs)
+        // The resets only remove what carries this launcher's names, so they run against a
+        // rootful service too.
+        requirePodman(currentOs, refuseRootful = false)
         resetProject(currentOs, givenIds)
 
       // No id form: a gone project's cache goes with `--reset <id>`, and this action exists for the
@@ -2350,7 +2381,7 @@ object AgentSandboxLauncher:
       case Some(("--reset-all", rest)) =>
         noSessionOptions("--reset-all")
         if rest.nonEmpty then fail("error: --reset-all takes no further arguments")
-        requirePodman(currentOs)
+        requirePodman(currentOs, refuseRootful = false)
         resetAll(currentOs)
 
       // No requirePodman(): the report is read-only and reads host directories either way; the

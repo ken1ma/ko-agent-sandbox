@@ -9,6 +9,9 @@
 # either nothing or the whole seed; the loser's rename fails on the winner's directory, which is
 # the outcome wanted, and its staging directory is removed.
 #
+# Before seeding, it refuses a session whose container lacks its seccomp filter, no-new-privileges
+# or exact capabilities.
+#
 # Then each agent's trust entry for the project, keyed by the path it is mounted at: the working
 # directory, which the launcher sets to the project's own path. Per launch rather than seeded,
 # because the entry is per project while a seeded directory is never touched again and the volume
@@ -27,6 +30,30 @@ seed=$KO_SANDBOX_VOLUME_SEED
 volume=$HOME/persistent-volume
 # The tests substitute a fixture for /proc; nothing else sets it.
 proc=${KO_SANDBOX_PROC:-/proc}
+
+# The confinement as the kernel applied it; SECURITY.md, "Compromise the host", has why it is read
+# here. The launcher always sets KO_AGENT_SANDBOX_NESTING, so unset means a container run by hand,
+# not a session.
+status_field() { awk -v key="$1:" '$1 == key { print $2 }' "$proc/self/status" 2>/dev/null; }
+case "${KO_AGENT_SANDBOX_NESTING-}" in
+    '') capabilities= ;;
+    none) capabilities=0000000000000000 ;;
+    same-uid) capabilities=0000000000040000 ;; # cap_sys_chroot, and only that
+    *) capabilities="(none for nesting mode $KO_AGENT_SANDBOX_NESTING)" ;;
+esac
+if [ -n "$capabilities" ]; then
+    found="Seccomp $(status_field Seccomp), NoNewPrivs $(status_field NoNewPrivs), CapEff $(status_field CapEff)"
+    needed="Seccomp 2, NoNewPrivs 1, CapEff $capabilities"
+    if [ "$found" != "$needed" ]; then
+        {
+            echo "error: this session's container runs with $found;"
+            echo "  the sandbox needs $needed (SECURITY.md)."
+            echo "  For Seccomp, remove seccomp_profile = \"unconfined\" from containers.conf where podman runs;"
+            echo "  for NoNewPrivs or CapEff, report a bug with podman --version: the launcher sets both."
+        } >&2
+        exit 1
+    fi
+fi
 
 # No $volume, no seeding: a session always has the directory — the image ships nonroot's, and the
 # launcher mounts the named volume over it — so its absence means a container run by hand, likely
