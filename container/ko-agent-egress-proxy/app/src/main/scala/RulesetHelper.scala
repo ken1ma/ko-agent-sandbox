@@ -79,12 +79,6 @@ object RulesetHelper:
       // The pattern's own dot is the label boundary: `**.foo.com` covers foo.com and api.foo.com, never barfoo.com.
       case Subtree(b) => host == b || host.endsWith("." + b)
 
-    /** Whether every host this pattern matches, `other` matches too. */
-    def within(other: HostPattern): Boolean = (this, other) match
-      case (Exact(h), _)               => other.matches(h)
-      case (Subtree(b), Subtree(wide)) => b == wide || b.endsWith("." + wide)
-      case (Subtree(_), Exact(_))      => false
-
     def spelled: String = this match
       case Exact(h)   => h
       case Subtree(b) => s"**.$b"
@@ -110,7 +104,7 @@ object RulesetHelper:
   /** The egress profiles, weakest-to-widest; deny-unless-allowed is what an unset
     * EGRESS_PROFILE means — the launcher-owned defaults, every line inspected or a model
     * provider's own endpoints, so the default is useful without opening the open internet. */
-  val Profiles = Vector("deny-all", "deny-unless-model", "deny-unless-allowed", "allow-unless-denied")
+  val Profiles = Vector("deny-all", "deny-unless-model", "deny-unless-allowed")
   val DefaultProfile = "deny-unless-allowed"
 
   val ModelProviders: Vector[String] = Vector("anthropic", "openai", "google", "aws", "github")
@@ -387,9 +381,8 @@ object RulesetHelper:
     state.copy(contributions = state.contributions :+ contribution, warnings = state.warnings ++ warning)
 
   /** A URL deny's step: the grants it names, or every grant, taken from each contribution on the
-    * hosts it matches, whichever line gave them. A whole-host or `read` deny is also a pattern
-    * under which no unlisted host — one holding `read` and nothing else — is allowed, which only
-    * `allow-unless-denied` consults. */
+    * hosts it matches, whichever line gave them. A whole-host or `read` deny is also kept as a
+    * pattern, for the refusal of a host beneath it to name (Provenance.denialOf). */
   private def take(state: State, pattern: HostPattern, grants: Set[String], line: Line): State =
     val (contributions, hit) =
       state.contributions.foldLeft((Vector.empty[Contribution], Set.empty[String])):
@@ -460,19 +453,12 @@ object RulesetHelper:
    * names. Equality of this structure is what "one ruleset" means: two files resolving to it print
    * one digest and the same lines, and the same file under two profiles never does — the profile
    * is in it, and the selected provider under deny-unless-model alone, where it changes authority.
-   * `denialPatterns` exists under allow-unless-denied alone: the patterns, exact hosts and
-   * subtrees, under which no unlisted host — one no line names — is allowed — whole-host and
-   * `read` denies alike, since an unlisted host holds `read` and nothing else, and every host a
-   * deny emptied — in normal form: a pattern a subtree covers dropped, an exact pattern of a host
-   * the map holds dropped as inert, sorted. Under the finite profiles the host map embodies every
-   * denial and none is kept.
+   * The host map embodies every denial, and none is kept.
    */
   case class Ruleset(
     profile: String,
-    publicDefault: Boolean,
     provider: Option[String],
     hosts: Map[String, Treatment],
-    denialPatterns: Vector[HostPattern],
   ):
     val inspectedScopes: Map[String, Map[String, Set[String]]] =
       hosts.collect { case (host, Treatment.Inspected(scopes)) => host -> scopes }
@@ -482,14 +468,11 @@ object RulesetHelper:
 
     /** Whether a CONNECT to `host` is allowed: a host on the map, whatever pattern covers it,
       * since an inspected host surviving beneath a denied subtree is exactly what the map
-      * records; off it, under allow-unless-denied, one no denial pattern matches. */
-    def allows(host: String): Boolean =
-      hosts.contains(host) || (publicDefault && !denialPatterns.exists(_.matches(host)))
+      * records. */
+    def allows(host: String): Boolean = hosts.contains(host)
 
-    /** An allowed inspected host's scopes: its lines' where the map lists it, the public
-      * default's `read` at the root where it does not. */
-    def scopesOf(host: String): Map[String, Set[String]] =
-      inspectedScopes.getOrElse(host, if publicDefault then Map(RulePath.Root -> Set(Grant.Read)) else Map.empty)
+    /** An allowed inspected host's scopes. */
+    def scopesOf(host: String): Map[String, Set[String]] = inspectedScopes.getOrElse(host, Map.empty)
 
   /** The sources behind a resolved scope: one set for its boundary — the lines at its exact path —
     * and one per grant it holds, the contributions currently supplying it; a folded scope has no
@@ -498,7 +481,7 @@ object RulesetHelper:
 
   /**
    * Kept beside the ruleset, never in it: what the structure's equality must not see. `scopes` per
-   * inspected scope; `patterns` per whole-host or `tunnel` deny and per host a deny emptied, under
+   * inspected scope; `patterns` per whole-host or `read` deny and per host a deny emptied, under
    * every profile, so a refusal can say `host denied (<line>)` where a file line matched the host;
    * `widening`, the project lines granting beyond the defaults — a host the defaults lack, a
    * grant the defaults lack at the line's path, `deny defaults` — for the summary line's count
@@ -521,10 +504,8 @@ object RulesetHelper:
     clearsDefaults: Boolean,
   ):
     def profile: String = ruleset.profile
-    def publicDefault: Boolean = ruleset.publicDefault
     def provider: Option[String] = ruleset.provider
     def hosts: Map[String, Treatment] = ruleset.hosts
-    def denialPatterns: Vector[HostPattern] = ruleset.denialPatterns
     def inspectedScopes: Map[String, Map[String, Set[String]]] = ruleset.inspectedScopes
     def tunnelHosts: Set[String] = ruleset.tunnelHosts
     def inspected: Set[String] = ruleset.inspected
@@ -540,16 +521,13 @@ object RulesetHelper:
    *   deny-unless-model   = the selected providers' lines — one provider, or every provider under
    *                         AllProviders — then the file's deny lines
    *   deny-unless-allowed = the defaults — none after `deny defaults` — then every line
-   *   allow-unless-denied = deny-unless-allowed's fold, and every public hostname on port 443 the
-   *                         map leaves out receives an inspected `read` unless a denial
-   *                         pattern covers it
    *
    * Refusals and warnings come from one further fold, every line over the defaults, so that a file
    * valid under one profile is valid under every one.
    *
    * The internal-network denials of the security model are not rules here: they are IPAddrHelper's
-   * address vetting, applied to every resolved destination at connection time, unlisted hosts
-   * included, so no rule file can spell them away.
+   * address vetting, applied to every resolved destination at connection time, so no rule file
+   * can spell them away.
    *
    * Fails closed on every ambiguity: an unknown profile, provider, word or line form; a line
    * outside canonical form; a resolved host holding `tunnel` beside an inspected grant; a `tunnel`
@@ -601,11 +579,10 @@ object RulesetHelper:
       case Rule.Deny(_, _) | Rule.DenyProvider(_) => true
       case _                                      => false
 
-    val (initial, consult, publicDefault) = profile match
-      case "deny-all"            => (Vector.empty[Contribution], (_: Rule) => false, false)
-      case "deny-unless-model"   => (selectedProviders.flatMap(providerContributions(_, None)), isDeny, false)
-      case "deny-unless-allowed" => (defaults, (_: Rule) => true, false)
-      case "allow-unless-denied" => (defaults, (_: Rule) => true, true)
+    val (initial, consult) = profile match
+      case "deny-all"            => (Vector.empty[Contribution], (_: Rule) => false)
+      case "deny-unless-model"   => (selectedProviders.flatMap(providerContributions(_, None)), isDeny)
+      case "deny-unless-allowed" => (defaults, (_: Rule) => true)
     val enforced =
       if profile == "deny-all" then State()
       else lines.foldLeft(start(initial))((state, line) => step(state, line, consult, check = false))
@@ -621,19 +598,8 @@ object RulesetHelper:
         .toVector
         .map((pattern, sources) => pattern -> sources.distinct)
         .sortBy(_(0).spelled)
-    val patternSet = patterns.map(_(0)).toSet
-    val denialPatterns =
-      if !publicDefault then Vector.empty
-      else
-        patterns.map(_(0)).filter: pattern =>
-          val inert = pattern match
-            case HostPattern.Exact(host) => hosts.contains(host)
-            case HostPattern.Subtree(_)  => false
-          !inert && !patternSet.exists(other => other != pattern && pattern.within(other))
 
-    val ruleset = Ruleset(
-      profile, publicDefault, Option.when(profile == "deny-unless-model")(provider).flatten, hosts, denialPatterns,
-    )
+    val ruleset = Ruleset(profile, Option.when(profile == "deny-unless-model")(provider).flatten, hosts)
 
     val scopes = hosts.toVector.flatMap: (host, treatment) =>
       val own = enforced.contributions.filter(_.host == host)
@@ -671,7 +637,7 @@ object RulesetHelper:
         val unreachable = ModelProviderLines(selected).map(_.rule)
           .collect { case Rule.Allow(host, _, _) => host }
           .distinct.sorted
-          .filterNot(host => hosts.contains(host) || (publicDefault && !denialPatterns.exists(_.matches(host))))
+          .filterNot(hosts.contains)
         Option.when(unreachable.nonEmpty)(
           s"the selected model provider '$selected' is not fully reachable under $profile: " +
             unreachable.mkString(" "),
@@ -700,22 +666,15 @@ object RulesetHelper:
    * and serve() logs identically, the launcher reads the leaf's names off and exports in
    * KO_AGENT_SANDBOX_EGRESS_RULESET. It is a serialization, not a rule file: no
    * `deny defaults` header, no promise to re-parse to itself, and nothing reads it as input. First
-   * the profile line — the grammar
-   * alone cannot say "any public host" or "only this provider's default rules" — then, under
-   * allow-unless-denied, the denial patterns as whole-host deny lines, before the allow lines so
-   * that a host surviving beneath one reads as the exception the grammar's order makes it, then
+   * the profile line — the grammar alone cannot say "only this provider's default rules" — then
    * one allow line per resolved scope with its whole grant set, hosts and paths sorted.
    */
   def rulesetLines(resolved: ResolvedEgress): Vector[String] =
     val profileLine = resolved.profile match
       case "deny-unless-model" =>
         s"egress profile: deny-unless-model; model provider: ${resolved.provider.getOrElse("none")}"
-      case "allow-unless-denied" =>
-        "egress profile: allow-unless-denied; default: public HTTPS read"
       case other => s"egress profile: $other"
-    val denyLines = resolved.denialPatterns.map(pattern => s"deny https://${pattern.spelled}/")
-    val allowLines = resolved.hosts.toVector.sortBy(_(0)).flatMap(ruleLines)
-    profileLine +: (denyLines ++ allowLines)
+    profileLine +: resolved.hosts.toVector.sortBy(_(0)).flatMap(ruleLines)
 
   /** The lines after the ruleset lines, outside the digest: they describe the ruleset's size and
     * how the file arrived at it, not the ruleset. The launcher splits the dry run's text at the
@@ -723,7 +682,7 @@ object RulesetHelper:
   def metadataLines(resolved: ResolvedEgress): Vector[String] =
     val summary =
       s"ruleset summary: ${resolved.inspected.size} inspected hosts; ${resolved.tunnelHosts.size} tunnel hosts; " +
-        s"${resolved.denialPatterns.size} denial patterns; ${resolved.provenance.widening.size} widening lines"
+        s"${resolved.provenance.widening.size} widening lines"
     summary +: wideningLine(resolved).toVector
 
   /** The project lines reaching past the defaults (Provenance.widening); lines, so `; ` separates
@@ -733,22 +692,12 @@ object RulesetHelper:
     Option.when(widening.nonEmpty)(s"widening lines (${widening.size}): " + widening.map(_.text).mkString("; "))
 
   /**
-   * Each ruleset line followed by its sources — an allow line's boundary and each of its grants, a
-   * deny line's pattern, with the lines of every denied pattern the normal form folded into it —
-   * then, under the finite profiles, the hosts the file's lines denied, which the structure keeps
-   * no line for. Printed by `--print-ruleset --provenance`, which is what `--egress-effective` runs.
+   * Each ruleset line followed by its sources — an allow line's boundary and each of its grants —
+   * then the hosts the file's lines denied, which the structure keeps no line for. Printed by
+   * `--print-ruleset --provenance`, which is what `--egress-effective` runs.
    */
   def provenanceLines(resolved: ResolvedEgress): Vector[String] =
     val provenance = resolved.provenance
-    val denyLines = resolved.denialPatterns.flatMap: pattern =>
-      val inert = (p: HostPattern) => p match
-        case HostPattern.Exact(host) => resolved.hosts.contains(host)
-        case HostPattern.Subtree(_)  => false
-      val (own, folded) = provenance.patterns
-        .filter((p, _) => p == pattern || (p.within(pattern) && !inert(p)))
-        .partition(_(0) == pattern)
-      val sources = (own ++ folded).flatMap(_(1)).distinct
-      Vector(s"deny https://${pattern.spelled}/", s"  pattern: ${sources.mkString("; ")}")
     val allowLines = resolved.hosts.toVector.sortBy(_(0)).flatMap: (host, treatment) =>
       val paths = treatment match
         case Treatment.Tunnel       => Vector(RulePath.Root)
@@ -764,12 +713,10 @@ object RulesetHelper:
         Vector(s"allow https://$host$path ${Grant.spelled(grants)}", s"  boundary: ${scope.boundary.mkString("; ")}")
           ++ grantLines
     val deniedHosts =
-      if resolved.publicDefault then Vector.empty
-      else
-        provenance.patterns.collect { case (HostPattern.Exact(host), sources) if !resolved.hosts.contains(host) =>
-          s"  $host: denied by ${sources.mkString("; ")}"
-        }
-    Vector("provenance:") ++ denyLines ++ allowLines
+      provenance.patterns.collect { case (HostPattern.Exact(host), sources) if !resolved.hosts.contains(host) =>
+        s"  $host: denied by ${sources.mkString("; ")}"
+      }
+    Vector("provenance:") ++ allowLines
       ++ (if deniedHosts.nonEmpty then "denied hosts:" +: deniedHosts else Vector.empty)
 
   // ---------------------------------------------------------------------------
@@ -854,9 +801,8 @@ object RulesetHelper:
         throw Refusal(s"$method not granted", RefusalAdvice.methodNotGranted)
 
   /*
-   * The IP-literal rejection is defence in depth for the finite profiles — their maps cannot
-   * contain one and resolvePublic rejects private answers — and under `allow-unless-denied` it is
-   * the named refusal a literal target gets. `Ruleset.allows` makes the decision. The refusal's
+   * The IP-literal rejection is defence in depth: the map cannot contain one and resolvePublic
+   * rejects private answers. `Ruleset.allows` makes the decision. The refusal's
    * reason is presentation: `host denied (<line>)` where a file line matched the host, from
    * provenance, `host not allowed` otherwise.
    */

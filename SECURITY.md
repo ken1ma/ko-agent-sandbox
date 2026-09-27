@@ -644,9 +644,8 @@ Each connection passes these checks and transitions in order:
 1. IP-literal targets are refused — not just dotted-quads: the resolver also accepts `127.1`,
    `0177.0.0.1` and `2130706433` as spellings of `127.0.0.1`, and a match on the first form alone
    is a known bypass class
-1. the resolved ruleset allows the hostname: by an exact entry in its host map, or — under
-   `allow-unless-denied` — as an unlisted name no resolved denial pattern matches.
-   The map already incorporates rule order, including grants that follow denials
+1. the resolved ruleset allows the hostname, by an exact entry in its host map. The map already
+   incorporates rule order, including grants that follow denials
 1. DNS is resolved once to obtain the candidate addresses
 1. every address the name resolved to must be a public one — a name that answers with a loopback,
    RFC1918, link-local or CGNAT address is refused outright. The connection uses those validated
@@ -738,7 +737,6 @@ The stages emit the following kinds of events:
     # tunnels and inspected requests — step 11 onward
     allow api.anthropic.com CONNECT -> 160.79.104.10
     allow github.com GET /owner/repo?tab=readme -> 140.82.112.3
-    allow docs.example GET /guide?q=x -> 203.0.113.7    # unlisted, under allow-unless-denied
     deny github.com POST /owner/repo.git/git-receive-pack POST not granted
     deny github.com GET /r.git/info/refs?service=git-receive-pack git push ref discovery
     deny github.com GET /r.git/info/refs?service=git-upload-pack git fetch ref discovery
@@ -888,8 +886,7 @@ response, then closes:
 
 ### Who holds the CA key
 
-- The launcher keeps the CA private key on the host under every profile except
-  `allow-unless-denied`. That profile uses a separate per-run CA, described below.
+- The launcher keeps the CA private key on the host.
 - A host command's proxy has a CA of its own, whose key is never written ("Run on host", below).
 - Each project gets its own CA, created under `~/.local/state/ko-agent-sandbox/tls/<project>`
   (`%LOCALAPPDATA%` on Windows) — outside the project, so the agent can neither read the key that
@@ -912,24 +909,7 @@ read-only.
   - an extra name would let the proxy authenticate as a host outside its inspection set,
     potentially including an opaque model endpoint.
 
-Under `allow-unless-denied`, allowed unlisted hosts receive inspected `read` access. They cannot
-all be named in a leaf issued at launch, so the proxy issues a leaf at each host's first connection,
-which needs a CA key inside the proxy container — the process facing the internet, and under this
-profile all of it.
-
-- The CA is created for the run and trusted by that session alone through a bundle kept in the
-  run's directory under `tls/<project>/` and removed with it. The project CA never enters the
-  container.
-- During the run, a compromised proxy could issue a certificate for an opaque tunnel host and
-  intercept model traffic or provider tokens. This is the additional authority required to inspect
-  unlisted hosts and restrict them to logged reads. The proxy is written in memory-safe code and
-  exposes no query endpoint (`doc/design.md`, "No HTTP query endpoint on the proxy").
-- Preparing the run CA requires one keypair and one image-JDK trust store per launch.
-- The run CA and its leaves use the leaf validity period. Session isolation relies on which CA each
-  session trusts, not on expiration coinciding with an exit whose time was unknown at launch.
-- The proxy requires a run CA under this profile and refuses one under other profiles.
-
-The sandbox trusts that CA — the project's, or under `allow-unless-denied` the run's — through:
+The sandbox trusts that CA through:
 
 - a bundle assembled on the host from the image's own CA bundle plus it, mounted over
   `/etc/ssl/certs/ca-certificates.crt`;
@@ -1001,12 +981,11 @@ grants would also allow matching hosts added later:
 - For a shared apex like a cloud provider's, `allow https://*.example.com/` could allow names an
   attacker can register or take over. The breadth is in the grant, not the matcher, so no careful
   pattern syntax removes it.
-- For an inspected host under the finite profiles, an open-ended subtree also cannot satisfy the
-  design's certificate check: the leaf issued at launch must enumerate the inspected host set.
+- For an inspected host, an open-ended subtree also cannot satisfy the design's certificate
+  check: the leaf issued at launch must enumerate the inspected host set.
 
-Grants therefore name exact hosts. `allow-unless-denied` separately allows unlisted public hosts
-unless denied, with inspected `read` access. The user selects that profile on the launch command
-line; a repository cannot select it by adding a wildcard grant.
+Grants therefore name exact hosts, and no profile reaches a host no rule names (`doc/design.md`,
+"No profile that allows hosts no rule names").
 
 A line grants exactly its words, under the path it names, and nothing else on the host; nothing is
 implied, so a line with no grant word is refused rather than read as `read`. The grammar, the order
@@ -1072,9 +1051,8 @@ is denying a wanted host — fail-closed — never reaching a new one.
 Unlike a grant, a removal can fail when a typo matches nothing, leaving a default in place while
 reading as though it were dropped. The warnings:
 
-- A `deny` matching nothing at its position produces a warning under every profile. Under
-  `allow-unless-denied`, it may intentionally deny an otherwise unlisted host, so the validator
-  cannot treat it as a typo.
+- A `deny` matching nothing at its position produces a warning under every profile, so a
+  misspelled deny does not fail silently.
 - The other two warnings (`doc/egress-proxy.md`, "The rule file") concern lines that grant nothing;
   a warning rather than a refusal because the check reads the defaults, and a file that launches
   today must not fail under a later image whose defaults include it.

@@ -24,13 +24,11 @@ The words the documents share, each defined in the document its entry names and 
     (`run-on-host.md`, "The command's egress proxy").
   - **rule, ruleset, profile** — a rule is a line of the project's `.ko-agent-sandbox/egress/rule`;
     the ruleset is what a launch enforces, the defaults, the profile and the file resolved together
-    and printed at every start; a profile is one of the four `--egress=` treatments
+    and printed at every start; a profile is one of the three `--egress=` treatments
     (`egress-proxy.md`). Under `--run-on-host` a profile is also a Seatbelt profile, the generated
     sandbox a host command runs under; each document names which it means.
   - **grant word** — what a rule permits at its URL: `tunnel`, `read`, `git-fetch`, `method=`
     (`egress-proxy.md`, "The rule file").
-  - **listed host, unlisted host** — a host some rule names, and one none does; under
-    `allow-unless-denied` an unlisted host holds an inspected `read` and nothing else.
   - **tunnel, inspected** — an allowed host's two treatments: application traffic left opaque after
     the TLS identity check, or TLS terminated and each request decided against its grants
     (SECURITY.md, "Reading without being able to write").
@@ -350,23 +348,22 @@ It would be incomplete against encoding, timing, allowed-host selection, and pro
 channels while adding false positives and another complex policy engine. Destination restriction
 remains the primary exfiltration control.
 
-### No signing broker for the proxy's leaves, and no run intermediate
+### No profile that allows hosts no rule names
 
-Under `allow-unless-denied` the proxy issues a leaf per unlisted host from a CA created for the run
-(SECURITY.md, "Who holds the CA key"). Two designs that would keep the CA key on the host were
-rejected:
+Every profile reaches the hosts its ruleset lists and nothing else; a rule file cannot grant a
+pattern (SECURITY.md, "Adding hosts, not patterns"). A profile that reads every public host a line
+does not deny is rejected:
 
-- A signing broker — the proxy asking the launcher to sign each leaf — satisfies "the launcher
-  holds the key" literally but not its purpose: the broker is a signing oracle for whatever the
-  proxy asks, so the key's location no longer bounds what a compromised proxy can issue, only
-  where the bytes are stored, at the cost of a channel and a round trip per host.
-- A run intermediate signed by the project CA would keep the project-level trust store and JDK
-  keystore, and would let a leaf a compromised proxy issued chain to the project CA and be
-  honoured by every other session of the project, which is what the run scope exists to prevent.
-
-A launch-issued leaf beside the run CA proves nothing either: a missing or extra name, the two
-defects the "names exactly" check exists for, cannot happen when the proxy issues what it
-inspects.
+- Inspecting a host no rule names needs a leaf issued at its first connection, so a CA key inside
+  the proxy container, the process facing the internet. A compromised proxy could then issue a
+  certificate for an opaque tunnel host and intercept model traffic or provider tokens. With the
+  CA key on the host, the proxy holds one leaf naming the inspected set and can issue nothing.
+- Selected on the launch command line, such a profile leaves no trace in the repository: a
+  reviewer of `.ko-agent-sandbox/egress/rule` sees a narrower policy than the session runs.
+- Work whose hosts cannot be listed in advance has a form the rule file can list: a relay the
+  user runs, granted `read` by one line, fetching the URL its query names. The relay then holds
+  the policy the proxy cannot apply to the URL — the private-address refusal and any per-domain
+  denial — and the audit log records the relay's URL, its target in the query.
 
 ### No upstream-proxy discovery, exclusions, chaining or negotiated authentication
 

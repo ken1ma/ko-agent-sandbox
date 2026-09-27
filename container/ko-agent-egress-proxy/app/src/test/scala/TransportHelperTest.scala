@@ -313,7 +313,7 @@ class TransportHelperTest extends munit.FunSuite:
       try
         val socket = server.accept()
         try
-          val tls = serving.accept(socket, Array.emptyByteArray, "proxy.corp.example")
+          val tls = serving.accept(socket, Array.emptyByteArray)
           afterHandshake.set(String(tls.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1))
         catch case ex: IOException => afterHandshake.set(s"handshake failed: ${ex.getClass.getSimpleName}")
         finally socket.close()

@@ -267,7 +267,7 @@ restore permission prompts and set the Claude Code status line.
                          Git config, hooks, .git files, commondir, gitdir, rebase
                          instructions and .ko-agent-sandbox, at any depth, and
                          what the file rules protect (SECURITY.md)
-      --egress=deny-all|deny-unless-model|deny-unless-allowed|allow-unless-denied
+      --egress=deny-all|deny-unless-model|deny-unless-allowed
                          which hosts the session reaches; the default,
                          deny-unless-allowed, allows the launcher-owned
                          defaults modified by .ko-agent-sandbox/egress/rule.

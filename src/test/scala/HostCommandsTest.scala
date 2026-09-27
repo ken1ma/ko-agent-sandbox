@@ -345,23 +345,15 @@ class HostCommandsTest extends munit.FunSuite:
     for clipboard <- Seq(ClipboardBroker.sandboxRequestReader(), ClipboardBroker.sandboxResponseWriter()) do
       assert(quoteFreeSh(clipboard).forall(word => !word.contains('"') && !word.contains('\n')))
 
-  test("a file bind is relabeled on an SELinux-enforcing host only, privately unless several containers read it"):
+  test("a file bind is relabeled privately on an SELinux-enforcing host only"):
     val source = java.nio.file.Path.of("/state/leaf.key")
     assertEquals(
       fileBind(source, "/etc/leaf.key", "ro", selinuxEnforcing = false),
       s"--volume=$source:/etc/leaf.key:ro",
     )
     assertEquals(
-      fileBind(source, "/etc/leaf.key", "ro", selinuxEnforcing = false, FileBindReaders.SeveralContainers),
-      s"--volume=$source:/etc/leaf.key:ro",
-    )
-    assertEquals(
-      fileBind(source, "/etc/leaf.key", "ro", selinuxEnforcing = true),
-      s"--volume=$source:/etc/leaf.key:ro,Z",
-    )
-    assertEquals(
-      fileBind(source, "/etc/leaf.key", "rw", selinuxEnforcing = true, FileBindReaders.SeveralContainers),
-      s"--volume=$source:/etc/leaf.key:rw,z",
+      fileBind(source, "/etc/leaf.key", "rw", selinuxEnforcing = true),
+      s"--volume=$source:/etc/leaf.key:rw,Z",
     )
 
 object PodmanResolutionProbe:

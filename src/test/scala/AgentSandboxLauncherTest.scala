@@ -29,48 +29,40 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     arguments.collect:
       case s"--volume=$source:$_:$options" => source -> options.split(',').toVector
 
-  /** Each container's arguments as a launch builds them, per egress profile. */
-  private def containerArguments(allowUnlessDenied: Boolean, selinuxEnforcing: Boolean): Vector[Vector[String]] =
+  /** Each container's arguments as a launch builds them: the run's copies for the proxy and the
+    * sandbox, the project's CA for the throwaway JDK container. */
+  private def containerArguments(selinuxEnforcing: Boolean): Vector[Vector[String]] =
     val state = Paths.get("/state/project")
     val runFiles = state.resolve("run-1")
-    // A launch mounts a file where it is when it lies in the run's directory, and a copy there
-    // otherwise: allow-unless-denied writes its CA inside, the finite profiles keep theirs outside.
-    val caCertificate = (if allowUnlessDenied then runFiles.resolve("allow-unless-denied") else state).resolve("ca.crt")
-    val proxyTls =
-      if allowUnlessDenied then ProxyTlsMaterial.RunCa(caCertificate, caCertificate.resolveSibling("ca.key"))
-      else ProxyTlsMaterial.Leaf(runFiles.resolve("leaf.crt"), runFiles.resolve("leaf.key"))
     Vector(
-      proxyTlsArgs(proxyTls, selinuxEnforcing) ++ proxyLogArgs(state.resolve("proxy.log"), selinuxEnforcing),
+      proxyTlsArgs(ProxyTlsMaterial.Leaf(runFiles.resolve("leaf.crt"), runFiles.resolve("leaf.key")), selinuxEnforcing)
+        ++ proxyLogArgs(state.resolve("proxy.log"), selinuxEnforcing),
       sandboxFileArgs(
         runFiles.resolve("sandbox-ca-bundle.crt"),
-        if allowUnlessDenied then caCertificate else runFiles.resolve("ca.crt"),
+        runFiles.resolve("ca.crt"),
         Vector(runFiles.resolve("cacerts") -> "/opt/java/lib/security/cacerts"),
         runFiles.resolve("agents.md"),
         selinuxEnforcing,
       ),
       JdkTrust.jdkPreparationCreateCommand(
-        "podman", "image", caCertificate, "egress-proxy", 3128, selinuxEnforcing, Vector("sh"),
+        "podman", "image", state.resolve("ca.crt"), "egress-proxy", 3128, selinuxEnforcing, Vector("sh"),
       ),
     )
 
-  test("an SELinux-enforcing host relabels every launcher file bind, shared only for the CA certificate"):
-    for allowUnlessDenied <- Seq(true, false) do
-      val containers = containerArguments(allowUnlessDenied, selinuxEnforcing = true).map(fileBinds)
-      assertEquals(containers.map(_.size), Vector(3, 4, 1), s"a bind went unparsed: $containers")
-      for (source, options) <- containers.flatten do
-        val relabel = options.filter(Set("z", "Z"))
-        assertEquals(relabel, Vector(if source.endsWith("ca.crt") then "z" else "Z"), s"$source has $options")
-      // What the rule above is for: a second container's Z would take the file from the first.
-      val sharedSources = containers.flatMap(_.map(_._1).distinct).groupBy(identity).filter(_._2.size > 1).keySet
-      assertEquals(sharedSources.nonEmpty, allowUnlessDenied)
-      for (source, options) <- containers.flatten if sharedSources(source) do
-        assert(options.contains("z"), s"$source is mounted into several containers with $options")
+  test("an SELinux-enforcing host relabels every launcher file bind privately, and no file reaches two containers"):
+    val containers = containerArguments(selinuxEnforcing = true).map(fileBinds)
+    assertEquals(containers.map(_.size), Vector(3, 4, 1), s"a bind went unparsed: $containers")
+    for (source, options) <- containers.flatten do
+      assertEquals(options.filter(Set("z", "Z")), Vector("Z"), s"$source has $options")
+    // What Z relies on: a second container's Z would take the file from the first.
+    val sharedSources = containers.flatMap(_.map(_._1).distinct).groupBy(identity).filter(_._2.size > 1).keySet
+    assertEquals(sharedSources, Set.empty[String])
 
-      val unlabeled = containerArguments(allowUnlessDenied, selinuxEnforcing = false).flatMap(fileBinds)
-      assert(
-        unlabeled.forall((_, options) => !options.exists(Set("z", "Z"))),
-        s"relabeled where not enforcing: $unlabeled",
-      )
+    val unlabeled = containerArguments(selinuxEnforcing = false).flatMap(fileBinds)
+    assert(
+      unlabeled.forall((_, options) => !options.exists(Set("z", "Z"))),
+      s"relabeled where not enforcing: $unlabeled",
+    )
 
     assertEquals(proxyTlsArgs(ProxyTlsMaterial.Uninspected, selinuxEnforcing = true), Vector.empty)
 
@@ -1403,7 +1395,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // Neither project-file metadata nor its hostnames belong in the instructions.
     val widened = appendedSection(Mount, 
       "live",
-      emptyResolution + "\nruleset summary: 0 inspected hosts; 0 tunnel hosts; 0 denial patterns; 1 widening lines\n" +
+      emptyResolution + "\nruleset summary: 0 inspected hosts; 0 tunnel hosts; 1 widening lines\n" +
         "widening lines (1): allow https://a.example/ tunnel",
     )
     assert(!widened.contains("widening lines") && !widened.contains("ruleset summary"), widened)
@@ -1497,15 +1489,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(rejectWithHostCommands.contains("session's own writes"), rejectWithHostCommands)
     assert(rejectWithHostCommands.contains("ko-sandbox-run-on-host"), rejectWithHostCommands)
     assert(rejectWithHostCommands.contains("--write=live"), rejectWithHostCommands)
-    // Under `allow-unless-denied` the listed hosts are the exception, not the whole, and a refusal
-    // was chosen: the agent is not sent to ask for an allow line it already has.
-    val publicDefault =
-      appendedSection(Mount, "live", "egress profile: allow-unless-denied; default: public HTTPS read")
-    assert(publicDefault.contains("reachable for reading"), publicDefault)
-    assert(publicDefault.contains("listed with `tunnel` is an opaque tunnel"), publicDefault)
-    assert(publicDefault.contains("denied on purpose"), publicDefault)
-    assert(!publicDefault.contains("Anything not allowed by the ruleset is refused"), publicDefault)
-    assert(!publicDefault.contains("adds `allow https://<host>/ read`"), publicDefault)
     assert(filtered.contains("Anything not allowed by the ruleset is refused"), filtered)
     assert(filtered.contains("adds `allow https://<host>/ read`"), filtered)
     // A session without git, or with read-only git: the agent hears it before its first command,

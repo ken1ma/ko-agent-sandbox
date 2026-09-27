@@ -53,9 +53,8 @@ class EgressRulesTest extends munit.FunSuite:
       "allow https://a.example/ read; deny https://b.example/",
     )
 
-  private def summary(inspected: Int, tunnel: Int, denied: Int, widening: Int = 0): String =
-    s"ruleset summary: $inspected inspected hosts; $tunnel tunnel hosts; $denied denial patterns; " +
-      s"$widening widening lines"
+  private def summary(inspected: Int, tunnel: Int, widening: Int = 0): String =
+    s"ruleset summary: $inspected inspected hosts; $tunnel tunnel hosts; $widening widening lines"
 
   // The profile reads as the ruleset spells it; case is not emphasis (HostCommands, "Emphasis").
   test("the launch banner names the profile off the profile line and the counts off the summary line, never a host"):
@@ -63,12 +62,8 @@ class EgressRulesTest extends munit.FunSuite:
       egressBanner(
         "egress profile: deny-unless-allowed\n" +
           "allow https://github.com/ read git-fetch\nallow https://secret.example/ read\n" +
-          "allow https://a.example/ tunnel\n" + summary(
-            2,
-            1,
-            0,
-            1,
-          ) + "\nwidening lines (1): allow https://secret.example/ read",
+          "allow https://a.example/ tunnel\n" + summary(2, 1, 1) +
+          "\nwidening lines (1): allow https://secret.example/ read",
         color = false,
       ),
       "egress: deny-unless-allowed; 2 inspected, 1 tunnel",
@@ -76,30 +71,21 @@ class EgressRulesTest extends munit.FunSuite:
     assertEquals(
       egressBanner(
         "egress profile: deny-unless-model; model provider: anthropic\n" +
-          "allow https://a/ tunnel\nallow https://b/ tunnel\nallow https://c/ tunnel\n" + summary(0, 3, 0),
+          "allow https://a/ tunnel\nallow https://b/ tunnel\nallow https://c/ tunnel\n" + summary(0, 3),
         color = false,
       ),
       "egress: deny-unless-model; model provider anthropic; 0 inspected, 3 tunnel",
     )
     assertEquals(
-      egressBanner("egress profile: deny-unless-model; model provider: none\n" + summary(0, 0, 0), color = false),
+      egressBanner("egress profile: deny-unless-model; model provider: none\n" + summary(0, 0), color = false),
       "egress: deny-unless-model; no provider selected; 0 inspected, 0 tunnel",
     )
     assertEquals(
-      egressBanner("egress profile: deny-unless-model; model provider: all\n" + summary(4, 17, 0), color = false),
+      egressBanner("egress profile: deny-unless-model; model provider: all\n" + summary(4, 17), color = false),
       "egress: deny-unless-model; every model provider; 4 inspected, 17 tunnel",
     )
     assertEquals(
-      egressBanner(
-        "egress profile: allow-unless-denied; default: public HTTPS read\n" +
-          "deny https://w/\ndeny https://x/\ndeny https://**.y/\ndeny https://z/\n" +
-          "allow https://a/ read\nallow https://b/ read\n" + summary(2, 0, 4),
-        color = false,
-      ),
-      "egress: allow-unless-denied; public HTTPS read; 0 tunnel, 4 denied",
-    )
-    assertEquals(
-      egressBanner("egress profile: deny-all\n" + summary(0, 0, 0), color = false),
+      egressBanner("egress profile: deny-all\n" + summary(0, 0), color = false),
       "egress: deny-all; 0 inspected, 0 tunnel",
     )
     assertEquals(egressBanner("some reason instead", color = false), "egress: some reason instead")
@@ -107,7 +93,7 @@ class EgressRulesTest extends munit.FunSuite:
       egressBanner("egress profile: deny-all\nallow https://secret.example/ read", color = false),
       "egress: egress profile: deny-all",
     )
-    assertEquals(egressBanner(summary(1, 0, 0), color = false), "egress: " + summary(1, 0, 0))
+    assertEquals(egressBanner(summary(1, 0), color = false), "egress: " + summary(1, 0))
     // Keep the banner concise by showing counts rather than the resolved host list.
     assert(
       !egressBanner(
@@ -131,46 +117,21 @@ class EgressRulesTest extends munit.FunSuite:
       val output = (rulesetLines(resolved) ++ metadataLines(resolved)).mkString("\n")
       val banner = egressBanner(output, color = false)
       assert(banner.startsWith(s"egress: $profile; "), banner)
-      val expectedCounts =
-        if resolved.publicDefault then
-          s"public HTTPS read; ${resolved.tunnelHosts.size} tunnel, ${resolved.denialPatterns.size} denied"
-        else s"${resolved.inspected.size} inspected, ${resolved.tunnelHosts.size} tunnel"
-      assert(banner.endsWith(expectedCounts), banner)
+      assert(banner.endsWith(s"${resolved.inspected.size} inspected, ${resolved.tunnelHosts.size} tunnel"), banner)
 
   test("a terminal reads the profile as the mode it is, and never in the severity hue"):
     assertEquals(
-      egressBanner("egress profile: deny-unless-allowed\nallow https://a/ read\n" + summary(1, 0, 0), color = true),
+      egressBanner("egress profile: deny-unless-allowed\nallow https://a/ read\n" + summary(1, 0), color = true),
       "egress: \u001b[38;5;207mdeny-unless-allowed\u001b[0m; 1 inspected, 0 tunnel",
     )
     // The counts are what the profile resolved to, not a mode of their own.
     assertEquals(
       egressBanner(
-        "egress profile: deny-unless-model; model provider: anthropic\nallow https://a/ tunnel\n" + summary(0, 1, 0),
+        "egress profile: deny-unless-model; model provider: anthropic\nallow https://a/ tunnel\n" + summary(0, 1),
         color = true,
       ),
       "egress: \u001b[38;5;207mdeny-unless-model\u001b[0m; model provider anthropic; 0 inspected, 1 tunnel",
     )
-    // The permissive line is tinted whole, as the user's own weakening, so nothing inside it ends that colour.
-    assertEquals(
-      egressBanner(
-        "egress profile: allow-unless-denied; default: public HTTPS read\n" + summary(0, 0, 0),
-        color = true,
-      ),
-      "\u001b[38;5;208megress: allow-unless-denied; public HTTPS read; 0 tunnel, 0 denied\u001b[0m",
-    )
-
-  test("the permissive profile is read from the head line, whatever follows it on the line"):
-    assert(
-      permissiveProfile(
-        "egress profile: allow-unless-denied; default: public HTTPS read\n" + summary(0, 0, 0),
-      ),
-    )
-    assert(!permissiveProfile("egress profile: deny-unless-allowed\n" + summary(0, 0, 0)))
-    assert(!permissiveProfile("egress profile: deny-all"))
-    assert(!permissiveProfile("some reason instead"))
-    assert(!permissiveProfile(""))
-    // Only the head line decides; a hostname further down cannot make a strict profile read weak.
-    assert(!permissiveProfile("egress profile: deny-all\nallow https://allow-unless-denied.example/ read"))
 
   test("only the basename of a recognized agent command selects a provider"):
     assertEquals(commandProvider(Some("claude")), Some("anthropic"))
@@ -240,15 +201,14 @@ class EgressRulesTest extends munit.FunSuite:
   test("the inspected hosts are the allow lines' hosts, a tunnel line never among them"):
     assertEquals(
       inspectedHostsOf(
-        "egress profile: allow-unless-denied; default: public HTTPS read\n" +
-          "deny https://x.example/\n" +
+        "egress profile: deny-unless-allowed\n" +
           "allow https://pypi.org/ read\nallow https://github.com/ read git-fetch\n" +
           "allow https://github.com/login/device/code read git-fetch method=POST\n" +
-          "allow https://api.anthropic.com/ tunnel\n" + summary(2, 1, 1),
+          "allow https://api.anthropic.com/ tunnel\n" + summary(2, 1),
       ),
       Right(Vector("github.com", "pypi.org")),
     )
-    assertEquals(inspectedHostsOf("egress profile: deny-all\n" + summary(0, 0, 0)), Right(Vector.empty))
+    assertEquals(inspectedHostsOf("egress profile: deny-all\n" + summary(0, 0)), Right(Vector.empty))
     assert(inspectedHostsOf("another form entirely").isLeft)
     assert(inspectedHostsOf("allow https://pypi.org/ read").isLeft)
 
@@ -257,7 +217,7 @@ class EgressRulesTest extends munit.FunSuite:
     // (AgentEgressProxyTest has the classes); the launcher only reads the line back.
     assertEquals(
       wideningLines(
-        "egress profile: deny-unless-allowed\nallow https://a/ read\n" + summary(1, 0, 0, 2) + "\n" +
+        "egress profile: deny-unless-allowed\nallow https://a/ read\n" + summary(1, 0, 2) + "\n" +
           "widening lines (2): allow https://api.example/ tunnel; allow https://pypi.org/ git-fetch",
       ),
       Vector("allow https://api.example/ tunnel", "allow https://pypi.org/ git-fetch"),
@@ -270,7 +230,7 @@ class EgressRulesTest extends munit.FunSuite:
     // follows it, and unchanged when nothing does.
     val ruleset = "egress profile: deny-unless-allowed\nallow https://a/ read"
     assertEquals(
-      rulesetLinesOf(ruleset + "\n" + summary(1, 0, 0, 1) + "\nwidening lines (1): allow https://a/ tunnel"),
+      rulesetLinesOf(ruleset + "\n" + summary(1, 0, 1) + "\nwidening lines (1): allow https://a/ tunnel"),
       ruleset,
     )
     assertEquals(rulesetLinesOf(ruleset), ruleset)

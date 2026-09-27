@@ -64,8 +64,7 @@ object EgressRules:
    * a line people learn to skip, and skipping it is how a ruleset nobody expected goes unnoticed.
    * On parse failure, show only the first line to avoid dumping the resolved host list.
    *
-   * @param color tints the profile, except under the permissive one, whose line is tinted whole
-   *              (HostCommands.weakened).
+   * @param color tints the profile (HostCommands.chosen).
    */
   def egressBanner(resolved: String, color: Boolean = colorStderr): String =
     val lines = resolved.linesIterator.toVector
@@ -84,14 +83,9 @@ object EgressRules:
         head <- lines.headOption.filter(_.startsWith("egress profile: "))
         inspected <- counts.get("inspected hosts")
         tunnel <- counts.get("tunnel hosts")
-        denied <- counts.get("denial patterns")
       yield
         val profile = head.stripPrefix("egress profile: ").takeWhile(_ != ';')
         profile match
-          case "allow-unless-denied" =>
-            // The tunnel hosts are the exception set; the inspected count says nothing where
-            // every unlisted host is inspected too.
-            weakened(s"egress: $profile; public HTTPS read; $tunnel tunnel, $denied denied", color)
           case "deny-unless-model" =>
             val provider = head
               .split("model provider: ", 2)
@@ -108,11 +102,6 @@ object EgressRules:
             s"egress: ${chosen(profile, color)}; $inspected inspected, $tunnel tunnel"
 
     parsed.getOrElse(s"egress: ${lines.headOption.getOrElse("(empty resolution)")}")
-
-  /** The one profile weaker than the launcher's default — public HTTPS to whatever is not
-    * denied. */
-  def permissiveProfile(resolved: String): Boolean =
-    resolved.linesIterator.nextOption().exists(_.startsWith("egress profile: allow-unless-denied"))
 
   /**
    * Everything but the newest retain-1, so the new file makes retain; names
@@ -233,7 +222,6 @@ object EgressRules:
    * answer under this project's rules, so no second copy of any list exists to drift, and a proxy
    * image or rules of the user's choosing get a matching leaf too. Empty means the ruleset
    * inspects nothing; the launcher then issues no leaf and hands the proxy no inspection material.
-   * Under allow-unless-denied no leaf is issued at all: the proxy issues its own from the run CA.
    * A resolution without its profile line is another launcher version's format, refused.
    */
   def inspectedHostsOf(dryRunOutput: String): Either[String, Vector[String]] =

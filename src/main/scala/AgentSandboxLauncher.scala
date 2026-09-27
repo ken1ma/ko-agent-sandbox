@@ -1854,8 +1854,7 @@ object AgentSandboxLauncher:
    */
   val WriteModes = Vector("reject", "live")
   val DefaultWriteMode = "live"
-  val EgressProfiles =
-    Vector("deny-all", "deny-unless-model", "deny-unless-allowed", "allow-unless-denied")
+  val EgressProfiles = Vector("deny-all", "deny-unless-model", "deny-unless-allowed")
   val DefaultEgressProfile = "deny-unless-allowed"
 
   /** The programs `--run-on-host` can name. Available on macOS only, which
@@ -2160,27 +2159,12 @@ object AgentSandboxLauncher:
            |rather than left with the podman machine, and at host speed.
            |""".stripMargin
       else ""
-    // `allow-unless-denied` inverts the default's reading of the lines: what is listed is the
-    // exception, not the whole, and a refusal there was chosen, so the agent is not sent to ask
-    // for an allow line it already has.
-    val publicDefault = permissiveProfile(resolved)
-    val allowed =
-      if publicDefault then
-        """Every public host on port 443 is reachable for reading — GET and HEAD, inspected and
-          |logged — except as the ruleset says: a host listed with grants is limited to those
-          |grants, a host listed with `tunnel` is an opaque tunnel, and a host under a `deny` line
-          |is refused.""".stripMargin
-      else "Anything not allowed by the ruleset is refused."
     val refused =
-      if publicDefault then
-        """A refused host is one the user denied on purpose: name it to the user rather than
-          |looking for another route.""".stripMargin
-      else
-        """If a package registry or clone host you need is not allowed, do not look for another
-          |route: name the host to the user, who adds `allow https://<host>/ read` to
-          |`.ko-agent-sandbox/egress/rule` on the host and relaunches — under the default
-          |deny-unless-allowed profile or a broader one, if this session's profile does not allow
-          |project hosts at all.""".stripMargin
+      """If a package registry or clone host you need is not allowed, do not look for another
+        |route: name the host to the user, who adds `allow https://<host>/ read` to
+        |`.ko-agent-sandbox/egress/rule` on the host and relaunches — under the default
+        |deny-unless-allowed profile, if this session's profile ignores the file's allow
+        |lines.""".stripMargin
     s"""
        |
        |# What this session may do
@@ -2192,7 +2176,7 @@ object AgentSandboxLauncher:
        |$profileLine
        |
        |For a destination's grants and restrictions, consult `$$KO_AGENT_SANDBOX_EGRESS_RULESET`.
-       |$allowed A line grants exactly its words under its
+       |Anything not allowed by the ruleset is refused. A line grants exactly its words under its
        |path: `tunnel` is an opaque tunnel; `read` is GET and HEAD, bodyless; `git-fetch`
        |serves `clone` and `pull`; `method=` names the
        |HTTP methods allowed there. On an inspected host, the rule with the longest matching
@@ -2405,22 +2389,13 @@ object AgentSandboxLauncher:
 
       case None => launch(parsed)
 
-  /** The TLS material a proxy mounts; the launch's call of proxyTlsArgs has which profile gets which. */
+  /** The TLS material a proxy mounts: the leaf and its key when the ruleset inspects a host. */
   enum ProxyTlsMaterial:
-    case RunCa(certificate: Path, key: Path)
     case Leaf(certificate: Path, key: Path)
     case Uninspected
 
   def proxyTlsArgs(material: ProxyTlsMaterial, selinuxEnforcing: Boolean): Vector[String] =
     material match
-      case ProxyTlsMaterial.RunCa(certificate, key) =>
-        val mounted = "/etc/ko-agent-egress-proxy/allow-unless-denied"
-        Vector(
-          fileBind(certificate, s"$mounted/ca.crt", "ro", selinuxEnforcing, caCertificateReaders),
-          fileBind(key, s"$mounted/ca.key", "ro", selinuxEnforcing),
-          s"--env=EGRESS_TLS_CA_CERTIFICATE=$mounted/ca.crt",
-          s"--env=EGRESS_TLS_CA_PRIVATE_KEY=$mounted/ca.key",
-        )
       case ProxyTlsMaterial.Leaf(certificate, key) =>
         Vector(
           fileBind(certificate, "/etc/ko-agent-egress-proxy/leaf.crt", "ro", selinuxEnforcing),
@@ -2458,7 +2433,7 @@ object AgentSandboxLauncher:
     val sandboxCaBundle = "/etc/ssl/certs/ca-certificates.crt"
     Vector(
       fileBind(caBundle, sandboxCaBundle, "ro", selinuxEnforcing),
-      fileBind(caCertificate, SandboxEgressProxyCaPath, "ro", selinuxEnforcing, caCertificateReaders),
+      fileBind(caCertificate, SandboxEgressProxyCaPath, "ro", selinuxEnforcing),
       s"--env=SSL_CERT_FILE=$sandboxCaBundle",
       s"--env=CURL_CA_BUNDLE=$sandboxCaBundle",
       s"--env=REQUESTS_CA_BUNDLE=$sandboxCaBundle",
@@ -2921,18 +2896,8 @@ object AgentSandboxLauncher:
     val leafCertFile = tlsDir.resolve("leaf.crt")
     val leafKeyFile = tlsDir.resolve("leaf.key")
     val leafSansFile = tlsDir.resolve("leaf.sans")
-    // Under allow-unless-denied the CA the sandbox trusts is this run's own, created below and
-    // mounted into the proxy with its key, which issues every leaf from it (X509Helper.scala;
-    // SECURITY.md, "Who holds the CA key", has the trade); the project CA and its leaf are left as
-    // they are, and the trust files derived from the CA are this run's too, in its directory,
-    // where nothing shares them. The CA is stored under the proxy's and the profile's names, so a
-    // listing says whose it is and why a key is there.
-    val publicDefault = permissiveProfile(rulesetText)
-    val trustDir = if publicDefault then runFiles else tlsDir
-    val runCaDir = runFiles.resolve("ko-agent-egress-proxy").resolve("allow-unless-denied")
-    val trustCertFile = if publicDefault then runCaDir.resolve("ca.crt") else caCertFile
-    val bundleFile = trustDir.resolve("sandbox-ca-bundle.crt")
-    val bundleStampFile = trustDir.resolve("bundle.stamp")
+    val bundleFile = tlsDir.resolve("sandbox-ca-bundle.crt")
+    val bundleStampFile = tlsDir.resolve("bundle.stamp")
 
     val sanList = inspectedHosts.map("DNS:" + _).mkString(",")
     val reissueDeadline = Instant.now().plusSeconds(ReissueMarginSeconds)
@@ -3037,22 +3002,12 @@ object AgentSandboxLauncher:
           case (Some(cert), Some(key)) => keyMatchesCertificate(cert, key)
           case _                       => false
 
-      // This run's directory first: the run CA, the trust files and the copies below are written into it.
+      // This run's directory first: the copies below are written into it.
       Files.createDirectories(runFiles)
       if posixPermissions(runFiles) then
         Files.setPosixFilePermissions(runFiles, PosixFilePermissions.fromString("rwx------"))
 
-      if publicDefault then
-        try
-          Files.createDirectories(runCaDir)
-          val ca =
-            createCa(s"$projectSlug $runSuffix", days = agentsandbox.egress.X509Helper.LeafValidityDays)
-          writePrivate(runCaDir.resolve("ca.key"), ca.privateKeyPem)
-          writePrivate(trustCertFile, ca.certificatePem)
-        catch
-          case ex: Exception =>
-            fail(s"error: could not create this run's inspection CA in $runCaDir\n$ex")
-      else if !certificateExpiresAfter(readIfPresent(caCertFile), reissueDeadline)
+      if !certificateExpiresAfter(readIfPresent(caCertFile), reissueDeadline)
         || !coherentPair(caCertFile, caKeyFile)
       then
         try
@@ -3075,7 +3030,7 @@ object AgentSandboxLauncher:
       // it expires — and not issued at all for a ruleset that inspects nothing. Its own coherence
       // check, plus the chain to this CA: a leaf another launch issued under a CA since replaced
       // is internally consistent and still fails every handshake.
-      if !publicDefault && inspectedHosts.nonEmpty
+      if inspectedHosts.nonEmpty
         && (!certificateExpiresAfter(readIfPresent(leafCertFile), reissueDeadline)
           || firstLine(leafSansFile) != sanList
           || !coherentPair(leafCertFile, leafKeyFile)
@@ -3097,7 +3052,7 @@ object AgentSandboxLauncher:
       // The sandbox's trust: the image's own CA bundle — not the workstation's, a different set
       // entirely — plus the CA this run trusts. Re-read when image or CA changes; the stamp records
       // both (imageId came from the inspect beside the image-exists check).
-      val caFingerprint = certificateFingerprint(pemBody(Files.readString(trustCertFile)))
+      val caFingerprint = certificateFingerprint(pemBody(Files.readString(caCertFile)))
       val bundleStamp = s"$imageId $caFingerprint"
 
       if readIfPresent(bundleFile).forall(_.isEmpty) || firstLine(bundleStampFile) != bundleStamp then
@@ -3111,7 +3066,7 @@ object AgentSandboxLauncher:
           fail(s"error: could not read the CA bundle out of $image\n${imageBundle.err}")
         val bundleText =
           String(imageBundle.out, StandardCharsets.US_ASCII).stripLineEnd + "\n" +
-            Files.readString(trustCertFile)
+            Files.readString(caCertFile)
         writeReadable(bundleFile, bundleText)
         writeReadable(bundleStampFile, bundleStamp + "\n")
 
@@ -3119,7 +3074,7 @@ object AgentSandboxLauncher:
       // HTTPS_PROXY family cannot reach it; JdkTrust.scala handles all of it, and empty means
       // the image ships no JDK.
       val jdkFileMounts = jdkMounts(
-        podman, image, imageEnv, trustDir, bundleStamp, trustCertFile, EgressProxyHost, EgressProxyPort,
+        podman, image, imageEnv, tlsDir, bundleStamp, caCertFile, EgressProxyHost, EgressProxyPort,
         selinuxEnforcing,
       )
 
@@ -3156,22 +3111,20 @@ object AgentSandboxLauncher:
           )
           target
 
-      // Under the finite profiles the leaf and its key only: the project CA key is stored beside them
-      // and is never copied or mounted, and a ruleset that inspects nothing gets no material — the
-      // proxy refuses material it has nothing to inspect with. Under allow-unless-denied the run
-      // CA and its key, and no leaf. --userns makes an owner-only key readable as uid 65532;
+      // The leaf and its key only: the CA key is stored beside them and is never copied or
+      // mounted, and a ruleset that inspects nothing gets no material — the proxy refuses material
+      // it has nothing to inspect with. --userns makes an owner-only key readable as uid 65532;
       // without it the key would have to be world-readable on the host. (The userns flag itself
       // stays on the create call: the proxy writes its owner-only log file through the same
       // mapping.)
       val proxyTls = proxyTlsArgs(
-        if publicDefault then ProxyTlsMaterial.RunCa(trustCertFile, runCaDir.resolve("ca.key"))
-        else if inspectedHosts.isEmpty then ProxyTlsMaterial.Uninspected
+        if inspectedHosts.isEmpty then ProxyTlsMaterial.Uninspected
         else ProxyTlsMaterial.Leaf(carried(leafCertFile), carried(leafKeyFile)),
         selinuxEnforcing,
       )
 
       val preparedSandboxFiles = sandboxFileArgs(
-        carried(bundleFile), carried(trustCertFile),
+        carried(bundleFile), carried(caCertFile),
         jdkFileMounts.map((file, at) => (carried(file), at)), carried(agentDocFile),
         selinuxEnforcing,
       )
@@ -3269,7 +3222,7 @@ object AgentSandboxLauncher:
       )
       System.err.println(transport.replace("upstream proxy", chosen("upstream proxy")))
     if rulesetWarnings.nonEmpty then System.err.println(emphasized(rulesetWarnings))
-    if inspectedHosts.isEmpty && !publicDefault then
+    if inspectedHosts.isEmpty then
       System.err.println("egress tls inspection: this ruleset inspects no hosts; no leaf issued")
     System.err.println(pathLine("egress log", hostLogFile, os, tint = lookedUp(_)))
     // Names only: a forwarded value may be a secret, and this line is the one place the forward
