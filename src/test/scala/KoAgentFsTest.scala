@@ -299,6 +299,18 @@ class KoAgentFsTest extends munit.FunSuite:
       Set("live"),
     )
 
+  test("a reap after a reset leaves the project's filter directory gone"):
+    // The reaper of a session that has just ended can run after a --reset removed the directory.
+    assume(!isWindows, "the reap script runs under /bin/sh")
+    val home = Files.createTempDirectory("ko-agent-fs-reap-reset")
+    try
+      val builder = ProcessBuilder("/bin/sh", "-c", koAgentFsReapScript("podman-unused", "app-abc123def456", "run-1"))
+      builder.environment().put("HOME", home.toString)
+      builder.redirectErrorStream(true)
+      assertEquals(builder.start().waitFor(), 0, "the reap script failed")
+      assert(!Files.exists(home.resolve(koAgentFsMountDir("app-abc123def456"))), "the reap recreated the directory")
+    finally deleteRecursively(home)
+
   test("a reap prunes only on podman's own not-exists answer, never on a broken podman"):
     assume(!isWindows, "the stub podman is a /bin/sh script")
     assertEquals(
