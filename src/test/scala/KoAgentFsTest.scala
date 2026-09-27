@@ -55,6 +55,59 @@ class KoAgentFsTest extends munit.FunSuite:
       Vector("podman", "machine", "ssh", s"./$KoAgentFsBinary --self-test"),
     )
 
+  test("a launch's filter checks are one script: home, version, and the self-test only for this build"):
+    assume(!isWindows, "the stub ko-agent-fs is a /bin/sh script")
+    val home = Files.createTempDirectory("ko-agent-fs-checks").toRealPath()
+    try
+      val selfTested = home.resolve("self-tested")
+      Files.createDirectories(home.resolve(KoAgentFsBinary).getParent)
+      def stub(reported: String, selfTestExit: Int): Unit =
+        val binary = Files.writeString(
+          home.resolve(KoAgentFsBinary),
+          s"""#!/bin/sh
+             |case "$$1" in
+             |  --version) echo '$reported' ;;
+             |  --self-test) touch '$selfTested'; echo 'self-test failed: no fusermount3' >&2; exit $selfTestExit ;;
+             |esac
+             |""".stripMargin,
+        )
+        binary.toFile.setExecutable(true)
+      // The machine's form finds the home as its working directory; native Linux is given it.
+      def checks(knownHome: Option[String]): HostCommands.Run =
+        val script = koAgentFsChecksScript(knownHome, "abc")
+        val process = ProcessBuilder(koAgentFsScriptCommand("podman", Os.Linux, script)*)
+          .directory(home.toFile)
+          .start()
+        val out = process.getInputStream.readAllBytes()
+        val err = String(process.getErrorStream.readAllBytes()).stripLineEnd
+        HostCommands.Run(process.waitFor(), out, err)
+
+      stub("ko-agent-fs 0.1.0 source abc", selfTestExit = 0)
+      for knownHome <- Vector(None, Some(home.toString)) do
+        assertEquals(checkedKoAgentFsHome(checks(knownHome), "abc"), Right(home.toString))
+
+      stub("ko-agent-fs 0.1.0 source abc", selfTestExit = 3)
+      assertEquals(
+        checkedKoAgentFsHome(checks(Some(home.toString)), "abc"),
+        Left(("error: ko-agent-fs self-test failed; not launching:\nself-test failed: no fusermount3", 3)),
+      )
+
+      Files.delete(selfTested)
+      stub("ko-agent-fs 0.1.0 source other", selfTestExit = 0)
+      val foreign = checkedKoAgentFsHome(checks(Some(home.toString)), "abc")
+      val named = "not this launcher's build\n  (ko-agent-fs 0.1.0 source other)"
+      assert(foreign.swap.exists(_._1.contains(named)), foreign)
+      assert(!Files.exists(selfTested), "another build's self-test must not run")
+
+      Files.delete(home.resolve(KoAgentFsBinary))
+      val missing = checkedKoAgentFsHome(checks(Some(home.toString)), "abc")
+      assert(missing.swap.exists(_._1.contains(KoAgentFsBinary)), missing)
+      assert(!Files.exists(selfTested))
+    finally deleteRecursively(home)
+
+    val unanswered = checkedKoAgentFsHome(HostCommands.Run(255, Array.emptyByteArray, "ssh: connect refused"), "abc")
+    assertEquals(unanswered, Left(("error: cannot determine the filter daemon's home directory", 1)))
+
   test("the fuse.conf consent check is idempotent and enables exactly what it describes"):
     assertEquals(
       koAgentFsFuseConfCheckCommand("podman"),

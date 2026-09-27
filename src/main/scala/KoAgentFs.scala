@@ -491,15 +491,6 @@ object KoAgentFs:
           java.util.Base64.getEncoder.encodeToString(script.getBytes(StandardCharsets.UTF_8))
         Vector(podman, "machine", "ssh", s"printf %s $encoded | base64 -d | sh")
 
-  /** The daemon user's home — the base every relative lifecycle path resolves against, and the
-    * prefix that turns the mountpoint into an absolute `--volume` source. */
-  def koAgentFsHome(podman: String, os: Os): String =
-    val home =
-      if os == Os.Linux then sys.props("user.home")
-      else run(podman, "machine", "ssh", "pwd").text
-    if home.isEmpty then fail("error: cannot determine the filter daemon's home directory")
-    home
-
   /**
    * The mountpoint made ready for a `podman create` that binds it: a directory, so podman's
    * statfs of every bind source at create finds one, and not a dead mount — a daemon gone
@@ -573,31 +564,89 @@ object KoAgentFs:
       s"(${running.sessions.mkString(", ")}); this session runs under the file rules they started with"
 
   /**
-   * The checks before each session, before anything of the run exists: prove the installed binary is this
-   * launcher's build, prove it can mount and the policy refuses (self-test), and make the
-   * mountpoint one a `podman create` can bind (koAgentFsPrepareScript). Every failure aborts the
-   * launch — there is no fallback to an unfiltered bind mount. The mount itself is
-   * mountKoAgentFs, once the sandbox container exists; its script repeats the build check beside
-   * the daemon start, so this early one is the friendly refusal, not the binding one.
+   * prepareKoAgentFs's read-only checks as one script: one `podman machine ssh` where the filter
+   * runs in the machine, and a step the launch can start before its own checks finish. It prints:
+   *
+   *   - the daemon user's home: the base every relative lifecycle path resolves against, and the
+   *     prefix that turns the mountpoint into an absolute `--volume` source. On native Linux it is
+   *     `home`, the JVM's `user.home` as installKoAgentFs uses it; the working directory there is
+   *     the project;
+   *   - the installed binary's `--version`;
+   *   - only when that names `sourceId`, ChecksSelfTestMarker and then the self-test, whose status
+   *     is the script's.
    */
-  def prepareKoAgentFs(podman: String, os: Os, projectId: String): KoAgentFsPrepared =
-    val home = koAgentFsHome(podman, os)
-    val expected = bundledKoAgentFsSourceId()
-    val version = run(koAgentFsVersionCommand(podman, os, home)*)
-    if !version.ok || !koAgentFsReportedSourceId(version.text).contains(expected) then
-      fail(
-        s"""error: the installed ko-agent-fs is not this launcher's build
-           |  (${if version.ok then version.text else version.err})
-           |
-           |Run --build first.""".stripMargin
-      )
-    val selfTest = run(koAgentFsSelfTestCommand(podman, os, home)*)
-    if !selfTest.ok then
-      fail(s"error: ko-agent-fs self-test failed; not launching:\n${selfTest.err}", selfTest.exit)
+  def koAgentFsChecksScript(home: Option[String], sourceId: String): String =
+    val homeLine = home match
+      case Some(path) =>
+        val encoded = java.util.Base64.getEncoder.encodeToString(path.getBytes(StandardCharsets.UTF_8))
+        s"""home="$$(printf %s $encoded | base64 -d)""""
+      case None => """home="$(pwd)""""
+    withScriptPath(
+      s"""set -u
+       |$homeLine
+       |printf '%s\\n' "$$home"
+       |version="$$("$$home/$KoAgentFsBinary" --version)"
+       |printf '%s\\n' "$$version"
+       |case "$$version" in
+       |  *" source $sourceId") ;;
+       |  *) exit 0 ;;
+       |esac
+       |echo "$ChecksSelfTestMarker"
+       |exec "$$home/$KoAgentFsBinary" --self-test""".stripMargin
+    )
+
+  /** The line koAgentFsChecksScript prints once the version matched, before the self-test runs. */
+  val ChecksSelfTestMarker = "self-test:"
+
+  /** Runs koAgentFsChecksScript where the filter runs; on native Linux, with the JVM's home. */
+  def koAgentFsChecks(podman: String, os: Os, sourceId: String): HostCommands.Run =
+    val home = Option.when(os == Os.Linux)(sys.props("user.home"))
+    run(koAgentFsScriptCommand(podman, os, koAgentFsChecksScript(home, sourceId))*)
+
+  /**
+   * The checks before each session, before anything of the run exists. Every failure aborts the
+   * launch — there is no fallback to an unfiltered bind mount.
+   *
+   *   - `checks`, koAgentFsChecks's answer, which the caller runs: the installed binary is this
+   *     launcher's build, and it can mount and the policy refuses (self-test).
+   *   - koAgentFsPrepareScript makes the mountpoint one a `podman create` can bind.
+   *
+   * The mount itself is mountKoAgentFs, once the sandbox container exists; its script repeats the
+   * build check beside the daemon start, so this early one is the friendly refusal, not the binding
+   * one.
+   */
+  def prepareKoAgentFs(
+    podman: String,
+    os: Os,
+    projectId: String,
+    expected: String,
+    checks: HostCommands.Run,
+  ): KoAgentFsPrepared =
+    val home = checkedKoAgentFsHome(checks, expected).fold(fail(_, _), identity)
     val prepared = run(koAgentFsScriptCommand(podman, os, koAgentFsPrepareScript(projectId, expected))*)
     if !prepared.ok then
       fail(s"error: preparing the ${koAgentFsLabel(os)} mountpoint failed:\n${prepared.err}", prepared.exit)
     KoAgentFsPrepared(expected, s"$home/${koAgentFsMountDir(projectId)}/workspace", runningMountOf(prepared.text))
+
+  /** The home a koAgentFsChecks answer reports, or the refusal and exit status the answer calls for. */
+  def checkedKoAgentFsHome(checks: HostCommands.Run, expected: String): Either[(String, Int), String] =
+    val lines = checks.text.linesIterator.toVector
+    val home = lines.headOption.getOrElse("")
+    val marker = lines.indexOf(ChecksSelfTestMarker)
+    val version = lines.slice(1, if marker < 0 then lines.length else marker).mkString("\n")
+    if home.isEmpty then Left(("error: cannot determine the filter daemon's home directory", 1))
+    else if marker < 0 || !koAgentFsReportedSourceId(version).contains(expected) then
+      Left(
+        (
+          s"""error: the installed ko-agent-fs is not this launcher's build
+             |  (${if version.nonEmpty then version else checks.err})
+             |
+             |Run --build first.""".stripMargin,
+          1,
+        ),
+      )
+    else if !checks.ok then Left((s"error: ko-agent-fs self-test failed; not launching:\n${checks.err}", checks.exit))
+    else Right(home)
 
   /** What prepareKoAgentFs proved and where: the installed build's source id, the absolute
     * mountpoint to bind at the project's mount path, and the live mount there a launch would join. */
@@ -691,7 +740,8 @@ object KoAgentFs:
     backing: String,
     sandboxContainer: String,
   ): String =
-    val prepared = prepareKoAgentFs(podman, os, projectId)
+    val expected = bundledKoAgentFsSourceId()
+    val prepared = prepareKoAgentFs(podman, os, projectId, expected, koAgentFsChecks(podman, os, expected))
     val noRules = FileRules.daemonText(Vector.empty, Vector("/"))
     mountKoAgentFs(podman, os, prepared, projectId, backing, sandboxContainer, noRules)
     prepared.mountpoint
