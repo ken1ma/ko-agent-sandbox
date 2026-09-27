@@ -115,12 +115,11 @@ object HostCommands:
    * alike, and the reader is not shouted at for the mode they selected. Colour is the emphasis, and
    * each hue has one meaning:
    *
-   *   - red: what the user did not ask for. On the `error:` label, the launch stopped (stopped);
-   *     on a whole line, a file of the project directory widens a boundary (weakenedByProject) —
-   *     a file that arrives with the repository, written by whoever can write there.
+   *   - red: the launch stopped. On the `error:` label only (stopped).
    *   - orange: the launch goes on, and there is something to know. On the `warning:` label
-   *     (caution); on a whole line, an option or environment variable of this launch weakens a
-   *     boundary (weakenedByUser) — the user's own, so a reminder and not an alarm.
+   *     (caution); on a whole line, a boundary is weaker than the default (weakened), by an option
+   *     or environment variable of this launch or by a rule file of the project directory — a
+   *     reminder and not an alarm, and the line or the one before it says what weakened it.
    *   - purple: what the user chose where it weakens nothing — the project directory, the
    *     workspace mode, the egress profile, an upstream proxy (chosen) — a hue of its own so it
    *     is never read as a severity.
@@ -142,9 +141,7 @@ object HostCommands:
 
   def stopped(text: String, color: Boolean = colorStderr): String = tinted(Red, text, color)
 
-  def weakenedByUser(text: String, color: Boolean = colorStderr): String = tinted(Orange, text, color)
-
-  def weakenedByProject(text: String, color: Boolean = colorStderr): String = tinted(Red, text, color)
+  def weakened(text: String, color: Boolean = colorStderr): String = tinted(Orange, text, color)
 
   /** What the user chose, as the line stating it says it — `live`, `deny-unless-allowed`.
     * Purple and orange are not among the theme's sixteen — its magenta is as often pink, its

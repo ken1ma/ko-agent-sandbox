@@ -65,7 +65,7 @@ object EgressRules:
    * On parse failure, show only the first line to avoid dumping the resolved host list.
    *
    * @param color tints the profile, except under the permissive one, whose line is tinted whole
-   *              (HostCommands.weakenedByUser).
+   *              (HostCommands.weakened).
    */
   def egressBanner(resolved: String, color: Boolean = colorStderr): String =
     val lines = resolved.linesIterator.toVector
@@ -91,7 +91,7 @@ object EgressRules:
           case "allow-unless-denied" =>
             // The tunnel hosts are the exception set; the inspected count says nothing where
             // every unlisted host is inspected too.
-            weakenedByUser(s"egress: $profile; public HTTPS read; $tunnel tunnel, $denied denied", color)
+            weakened(s"egress: $profile; public HTTPS read; $tunnel tunnel, $denied denied", color)
           case "deny-unless-model" =>
             val provider = head
               .split("model provider: ", 2)

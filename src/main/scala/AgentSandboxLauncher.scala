@@ -1295,12 +1295,12 @@ object AgentSandboxLauncher:
       System.err.println(s"egress rules (.ko-agent-sandbox/egress/$name): ${lineSummary(text)}")
 
   /** The lines the dry run reports as granting beyond the defaults (EgressRules.wideningLines),
-    * once more, alone, tinted as the project's (HostCommands.weakenedByProject): the lines as
+    * once more, alone, tinted as a weakened boundary (HostCommands.weakened): the lines as
     * written print at every launch and are read as a habit; this one appears only when there is
     * one. */
   def printWidening(rulesetText: String): Unit =
     val widens = wideningLines(rulesetText)
-    if widens.nonEmpty then System.err.println(weakenedByProject(s"egress rules widen: ${widens.mkString("; ")}"))
+    if widens.nonEmpty then System.err.println(weakened(s"egress rules widen: ${widens.mkString("; ")}"))
 
   /**
    * The ruleset this project would apply, without a session: the same readRuleFiles +
@@ -2013,12 +2013,12 @@ object AgentSandboxLauncher:
   // -------------------------------------------------------------------------
 
   /** The launch's host-command lines: the programs chosen — authority a container session alone
-    * does not have, so tinted as the user's weakening (HostCommands.weakenedByUser) — and what
+    * does not have, so tinted as a weakened boundary (HostCommands.weakened) — and what
     * running them on the host costs the user; under `--write=reject` an extra line, tinted alike
     * as a boundary weaker than the option says, since a host command writes the project as its
     * program does while the session's own writes are refused (SECURITY.md "Run on host"). */
   def runOnHostLines(runOnHost: Seq[String], writeMode: String, color: Boolean = colorStderr): Vector[String] =
-    val programs = weakenedByUser(s"ko-sandbox-run-on-host: ${runOnHost.mkString(", ")} on host", color)
+    val programs = weakened(s"ko-sandbox-run-on-host: ${runOnHost.mkString(", ")} on host", color)
     val displaced = runOnHost.collect:
       case "sbt" => "sbt server"
       case "mill" => "mill daemon"
@@ -2026,7 +2026,7 @@ object AgentSandboxLauncher:
       s"your own ${displaced.mkString(" or ")} in the build directory is stopped when the agent runs that program",
     )
     val reject = Option.when(writeMode == "reject")(
-      weakenedByUser(
+      weakened(
         "run on host: --write=reject refuses the session's own writes, not a host command's: a build writes the" +
           " project as its program does",
         color,
@@ -2035,14 +2035,14 @@ object AgentSandboxLauncher:
     Vector(programs) ++ shutdown ++ reject
 
   def nestingLine(mode: String, color: Boolean = colorStderr): String =
-    weakenedByUser(
+    weakened(
       s"nested containers: $mode by $NestingVariable; /proc unmasked, SELinux label " +
         "disabled and CAP_SYS_CHROOT added, for the whole session",
       color,
     )
 
   def clipboardLine(mode: String, color: Boolean = colorStderr): String =
-    weakenedByUser(
+    weakened(
       s"clipboard: $mode by $ClipboardVariable; the agent can read an image you copy" +
         (if mode == "bidirectional" then " and set your clipboard" else ""),
       color,
@@ -2060,7 +2060,7 @@ object AgentSandboxLauncher:
       case (program, hosts) if hosts.nonEmpty =>
         val grants = hosts.map(host => printable(s"allow https://$host/ read")).mkString("; ")
         val file = s".ko-agent-sandbox/run-on-host/$program/egress/rule"
-        weakenedByProject(s"run-on-host egress rules ($file) widen: $grants", color)
+        weakened(s"run-on-host egress rules ($file) widen: $grants", color)
 
   /** The `--help` text, extracted from README.md's Reference block by build.sbt. */
   val UsageText: String =
@@ -3227,7 +3227,7 @@ object AgentSandboxLauncher:
     // rules that arrived with the repository never take effect unseen: the files as written, then
     // the dry run's counts, the proxy's own answers to exactly what is enforced. Each line tints
     // the mode it states; a line stating a boundary weaker than the default is tinted whole
-    // instead, by who weakened it (HostCommands.weakenedByUser, weakenedByProject).
+    // instead (HostCommands.weakened).
     // The mount path is said on Windows only, where it is not the project directory line's
     // spelling but the /mnt/<drive> one the agent will print.
     val mountedAt = if os == Os.Windows then s" at $mountPath" else ""
