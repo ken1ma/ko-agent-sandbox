@@ -1405,8 +1405,7 @@ object AgentSandboxLauncher:
     def remove(command: String*): Unit = if !stepOk(command*) then failures += 1
     def deleteTree(dir: Path): Unit =
       found |= Files.exists(dir)
-      echoCommand(Vector("rm", "-rf", dir.toString))
-      try deleteRecursively(dir)
+      try removeTree(dir)
       catch
         case ex: IOException =>
           failures += 1
@@ -1492,9 +1491,7 @@ object AgentSandboxLauncher:
 
     // The project's filter daemon and mountpoint, where the feature has been used. Best effort by
     // design: with no machine running there is nothing mounted to tear down.
-    System.err.println(s"unmounting the ${koAgentFsLabel(os)}, if mounted")
-    if !runOk(koAgentFsScriptCommand(podman, os, koAgentFsUnmountScript(id))*) then
-      System.err.println("note: filter unmount skipped (no machine running, or nothing mounted)")
+    found |= unmountKoAgentFs(os, koAgentFsUnmountScript(id))
 
     // Last, as in --reset-all, and only after every step succeeded: the record outlives the
     // generated volume a shared one left in place, a cache under a root the step above could not
@@ -1509,6 +1506,29 @@ object AgentSandboxLauncher:
           failures += 1
           System.err.println(s"record of $id: $ex")
     Reset(failures, found)
+
+  /** `rm -rf`, echoed only where there is something to remove, so a reset lists what it removed. */
+  private def removeTree(dir: Path): Unit =
+    if Files.exists(dir) then
+      echoCommand(Vector("rm", "-rf", dir.toString))
+      deleteRecursively(dir)
+
+  /** Runs an unmount script and prints its [[unmountReport]]; true when the script acted on any filter state. */
+  private def unmountKoAgentFs(os: Os, script: String): Boolean =
+    val result =
+      try Some(run(koAgentFsScriptCommand(podman, os, script)*))
+      catch case _: IOException => None
+    val lines = unmountReport(koAgentFsLabel(os), result)
+    lines.foreach(System.err.println)
+    result.exists(_.text.nonEmpty)
+
+  /** The lines reporting an unmount script's run, None when it could not start: every action it
+    * printed, even when a later one failed, then a note if the run failed. */
+  def unmountReport(label: String, result: Option[Run]): Vector[String] =
+    val done = result.toVector.flatMap(_.text.linesIterator).map(line => s"$label: $line")
+    if result.exists(_.ok) then done
+    else if done.isEmpty then Vector("note: filter unmount skipped (no machine running, or the unmount script failed)")
+    else done :+ "note: the filter unmount script failed after the actions above"
 
   /** `podman volume exists` answers present with exit 0, absent with 1, and any failure with
     * another code, which is neither. */
@@ -1562,32 +1582,19 @@ object AgentSandboxLauncher:
     launcherNetworks(listed(podman, "network", "ls", "--format", "{{.Name}}"))
       .foreach(name => remove(podman, "network", "rm", name))
 
-    val tls = tlsStateRoot(os)
-    echoCommand(Vector("rm", "-rf", tls.toString))
-    deleteRecursively(tls)
-
-    val rulesetCache = rulesetStateRoot(os)
-    echoCommand(Vector("rm", "-rf", rulesetCache.toString))
-    deleteRecursively(rulesetCache)
-
-    val logs = logStateRoot(os)
-    echoCommand(Vector("rm", "-rf", logs.toString))
-    deleteRecursively(logs)
+    removeTree(tlsStateRoot(os))
+    removeTree(rulesetStateRoot(os))
+    removeTree(logStateRoot(os))
 
     // Every project's filter mount. Best effort, as in the per-project reset.
-    System.err.println(s"unmounting every project's ${koAgentFsLabel(os)}, if mounted")
-    if !runOk(koAgentFsScriptCommand(podman, os, koAgentFsUnmountAllScript)*) then
-      System.err.println("note: filter unmount skipped (no machine running, or nothing mounted)")
+    unmountKoAgentFs(os, koAgentFsUnmountAllScript)
 
-    echoCommand(Vector("rm", "-rf", caches.toString))
-    deleteRecursively(caches)
+    removeTree(caches)
 
     if failures > 0 then fail(s"error: $failures reset steps failed")
     // Last, and only after everything it locates is gone: a volume or cache left by a failed
     // step keeps its directory in the next --stats.
-    val records = projectsStateRoot(os)
-    echoCommand(Vector("rm", "-rf", records.toString))
-    deleteRecursively(records)
+    removeTree(projectsStateRoot(os))
     sys.exit(0)
 
   /**
@@ -1639,8 +1646,7 @@ object AgentSandboxLauncher:
     val caches = runOnHostCacheRoot(os, project)
       .flatMap(root => runOnHostRemoval(os, project, RunOnHostPrereqs.runOnHostCacheDir(root, id)))
       .fold(refusal => fail(cacheRootRefusalLine(refusal)), identity)
-    echoCommand(Vector("rm", "-rf", caches.toString))
-    deleteRecursively(caches)
+    removeTree(caches)
     // The generated volume is asked for as well: a shared volume or a failed step leaves it behind
     // a --reset that removed these directories. This action needs no podman, so where none answers
     // the record stays.

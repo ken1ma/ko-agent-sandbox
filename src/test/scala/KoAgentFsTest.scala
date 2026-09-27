@@ -312,14 +312,43 @@ class KoAgentFsTest extends munit.FunSuite:
       s"a bare podman invocation crept in:\n$onHost",
     )
 
-  test("the unmount scripts release the mount lazily and remove only launcher-owned state"):
+  test("the unmount scripts release the mount lazily"):
     val one = koAgentFsUnmountScript("app-abc123def456")
     assert(one.contains("fusermount3 -uz"))
-    assert(one.contains("mounts/app-abc123def456"))
-    assert(!one.contains("rm -rf /"), one)
-    val all = koAgentFsUnmountAllScript
-    assert(all.contains("fusermount3 -uz"))
-    assert(all.contains(s"""rm -rf "$$HOME/$KoAgentFsInstallDir/mounts""""))
+    assert(koAgentFsUnmountAllScript.contains("fusermount3 -uz"))
+
+  test("the unmount scripts remove only their own state, print what they removed, and nothing else"):
+    // A reset relays these lines. Nothing is mounted here, so fusermount3 fails for every directory
+    // and no "unmounted" line may appear: the state directory a resolve leaves is not a mount.
+    assume(!isWindows, "the scripts run under /bin/sh")
+    val home = Files.createTempDirectory("ko-agent-fs-unmount")
+    def unmount(script: String): (Int, String) =
+      val builder = ProcessBuilder("/bin/sh", "-c", script)
+      builder.environment().put("HOME", home.toString)
+      val process = builder.start()
+      val out = String(process.getInputStream.readAllBytes()).trim
+      (process.waitFor(), out)
+    try
+      val one = koAgentFsUnmountScript("app-abc123def456")
+      val all = koAgentFsUnmountAllScript
+      assertEquals(unmount(one), (0, ""))
+      assertEquals(unmount(all), (0, ""))
+
+      val mounts = home.resolve(KoAgentFsInstallDir).resolve("mounts")
+      val kept = Files.createDirectories(mounts.resolve("other-abc123def456/workspace"))
+      val state = Files.createDirectories(home.resolve(koAgentFsMountDir("app-abc123def456")).resolve("workspace"))
+      assertEquals(unmount(one), (0, s"removed ${state.getParent}"))
+      assert(!Files.exists(state.getParent) && Files.exists(kept))
+      assertEquals(unmount(one), (0, ""))
+
+      // A dangling link is state too, and goes as a link.
+      val link = Files.createSymbolicLink(state.getParent, home.resolve("gone"))
+      assertEquals(unmount(one), (0, s"removed $link"))
+      assert(!Files.exists(link, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+
+      assertEquals(unmount(all), (0, s"removed $mounts"))
+      assert(!Files.exists(mounts))
+    finally deleteRecursively(home)
 
   test("the bundled ko-agent-fs source id is computable from this classpath and well-formed"):
     // The per-session check compares the installed binary's --version against this digest; it must
