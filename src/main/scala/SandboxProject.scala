@@ -465,9 +465,12 @@ object SandboxProject:
    *     reads it the same way);
    *   - what it names is a directory called `.git`, and the gitdir is one component under that
    *     directory's `worktrees` (fuse/ko-agent-fs/doc/git-metadata.md, P1);
-   *   - that directory's `config` is readable, and neither it nor its `config.worktree` — the two
-   *     files git consults for `core.bare` from a linked worktree — sets `bare` true or leaves the
-   *     question open (scanBare);
+   *   - that directory's `config` is readable, and neither it nor the gitdir's `config.worktree`
+   *     sets `bare` true or leaves the question open (scanBare):
+   *       - git in a linked worktree reads `core.bare` from these two files and not from the main
+   *         worktree's `config.worktree` (`do_git_config_sequence`, config.c);
+   *       - the gitdir's file counts even without `extensions.worktreeConfig`, which git needs to
+   *         read it: git writes the file only while the extension is set and keeps it once unset;
    *   - the directory holding that `.git`, resolved as a launch from it resolves it, is one the
    *     launcher accepts as a project.
    *
@@ -491,7 +494,7 @@ object SandboxProject:
       common <- Option(worktrees.getParent)
       if realized(common) == realized(commondir)
       config <- boundedText(commondir.resolve("config"))
-      configWorktree <- optionalText(commondir.resolve("config.worktree"))
+      configWorktree <- optionalText(gitdir.resolve("config.worktree"))
       if (config +: configWorktree.toSeq).forall(text => scanBare(text).contains(false))
       main <- Option(commondir.getParent)
       canonical <-

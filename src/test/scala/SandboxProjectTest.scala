@@ -531,10 +531,10 @@ class SandboxProjectTest extends munit.FunSuite:
       ),
       None,
     )
-    // A bare repository whose directory is named `.git` is what git's `get_main_worktree` would
-    // name too, and what `core.bare` then marks bare — in the common config, or in the
-    // `config.worktree` git consults from a linked worktree. A config that cannot be read decides
-    // nothing, so it names no main worktree either.
+    // git's `get_main_worktree`, like the name check, takes a bare repository whose directory is
+    // called `.git` for a main worktree; `core.bare` marks it bare — in the common config, or in
+    // the linked gitdir's `config.worktree`, where `git config --worktree` in the linked worktree
+    // writes it. A config that cannot be read decides nothing, so it names no main worktree either.
     val bareDotGit = gitdirAt(root.resolve("bare-dot/.git"), bare = true)
     assertEquals(
       mainWorktreeOf(
@@ -542,14 +542,9 @@ class SandboxProjectTest extends munit.FunSuite:
       ),
       None,
     )
-    val bareByWorktreeConfig = gitdirAt(root.resolve("bare-wt/.git"))
-    Files.writeString(bareByWorktreeConfig.resolve("config.worktree"), "[core]\n\tbare\n")
-    assertEquals(
-      mainWorktreeOf(
-        linkedAt("of-bare-wt", bareByWorktreeConfig.resolve("worktrees/of-bare-wt"), Some("../..\n")), homes, Os.Linux,
-      ),
-      None,
-    )
+    val bareByWorktreeConfig = underMain("of-bare-wt")
+    Files.writeString(mainGitdir.resolve("worktrees/of-bare-wt/config.worktree"), "[core]\n\tbare\n")
+    assertEquals(mainWorktreeOf(bareByWorktreeConfig, homes, Os.Linux), None)
     val noConfig = gitdirAt(root.resolve("no-config/.git"))
     Files.delete(noConfig.resolve("config"))
     assertEquals(
@@ -559,13 +554,18 @@ class SandboxProjectTest extends munit.FunSuite:
       None,
     )
     // A `config.worktree` that exists but exceeds what is read is unknown content, not absence.
-    val hugeWorktreeConfig = gitdirAt(root.resolve("huge-wt/.git"))
-    Files.write(hugeWorktreeConfig.resolve("config.worktree"), new Array[Byte]((1 << 20) + 1))
+    val withHugeWorktreeConfig = underMain("of-huge-wt")
+    Files.write(mainGitdir.resolve("worktrees/of-huge-wt/config.worktree"), new Array[Byte]((1 << 20) + 1))
+    assertEquals(mainWorktreeOf(withHugeWorktreeConfig, homes, Os.Linux), None)
+    // Git in a linked worktree does not read the main worktree's own `config.worktree`, so a
+    // `bare` there does not stop the main worktree from being named.
+    val mainBareToItself = gitdirAt(root.resolve("main-wt/.git"))
+    Files.writeString(mainBareToItself.resolve("config.worktree"), "[core]\n\tbare\n")
     assertEquals(
       mainWorktreeOf(
-        linkedAt("of-huge-wt", hugeWorktreeConfig.resolve("worktrees/of-huge-wt"), Some("../..\n")), homes, Os.Linux,
+        linkedAt("of-main-wt", mainBareToItself.resolve("worktrees/of-main-wt"), Some("../..\n")), homes, Os.Linux,
       ),
-      None,
+      Some(root.resolve("main-wt")),
     )
     // A main worktree the launcher refuses as a project — the home directory — is no volume
     // owner, whether the pointer spells it directly or through a symlink that hides it.
