@@ -143,6 +143,11 @@ object HostCommands:
 
   def weakened(text: String, color: Boolean = colorStderr): String = tinted(Orange, text, color)
 
+  /** A heading ending in `widen:`, then one indented line per rule, each tinted on its own so a
+    * line filtered out of a saved log still opens and closes its colour. */
+  def wideningReport(heading: String, rules: Seq[String], color: Boolean = colorStderr): Vector[String] =
+    (s"$heading widen:" +: rules.map(rule => s"  $rule")).toVector.map(weakened(_, color))
+
   /** What the user chose, as the line stating it says it — `live`, `deny-unless-allowed`.
     * Purple and orange are not among the theme's sixteen — its magenta is as often pink, its
     * yellow as often olive — so both are the 256-colour cube's. */

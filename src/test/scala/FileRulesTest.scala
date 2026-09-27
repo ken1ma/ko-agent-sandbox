@@ -64,7 +64,9 @@ class FileRulesTest extends munit.FunSuite:
       launchLines(project, color = false),
       Vector(
         "file rules (.ko-agent-sandbox/file/rule): writable .claude/skills; writable .vscode/settings.json",
-        "file rules widen: writable .claude/skills; writable .vscode/settings.json",
+        "file rules widen:",
+        "  writable .claude/skills",
+        "  writable .vscode/settings.json",
       ),
     )
     assertEquals(
@@ -80,7 +82,8 @@ class FileRulesTest extends munit.FunSuite:
       runningLaunchLines(Defaults ++ extra, color = false),
       Vector(
         "file rules (the running mount's): writable .claude/skills; readonly .envrc",
-        "file rules widen: writable .claude/skills",
+        "file rules widen:",
+        "  writable .claude/skills",
       ),
     )
     assertEquals(

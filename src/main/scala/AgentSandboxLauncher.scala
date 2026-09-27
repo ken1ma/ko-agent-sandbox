@@ -1288,19 +1288,19 @@ object AgentSandboxLauncher:
     (projectId, proxyImage, ruleFiles, provider)
 
   /** The project's rule file as written, one line. Printed by a launch and by the egress actions
-    * alike; the launch follows it with the widening line once the dry run has answered
+    * alike; the launch follows it with the widening report once the dry run has answered
     * (printWidening). */
   def printRuleFiles(ruleFiles: Vector[(String, String)]): Unit =
     ruleFiles.foreach: (name, text) =>
       System.err.println(s"egress rules (.ko-agent-sandbox/egress/$name): ${lineSummary(text)}")
 
   /** The lines the dry run reports as granting beyond the defaults (EgressRules.wideningLines),
-    * once more, alone, tinted as a weakened boundary (HostCommands.weakened): the lines as
-    * written print at every launch and are read as a habit; this one appears only when there is
-    * one. */
+    * once more, alone, tinted as a weakened boundary (HostCommands.wideningReport): the lines as
+    * written print at every launch and are read as a habit; the report appears only when the
+    * file widens. */
   def printWidening(rulesetText: String): Unit =
     val widens = wideningLines(rulesetText)
-    if widens.nonEmpty then System.err.println(weakened(s"egress rules widen: ${widens.mkString("; ")}"))
+    if widens.nonEmpty then wideningReport("egress rules", widens).foreach(System.err.println)
 
   /**
    * The ruleset this project would apply, without a session: the same readRuleFiles +
@@ -2054,19 +2054,20 @@ object AgentSandboxLauncher:
       color,
     )
 
-  /** One line per program whose rule file names hosts, each a grant beyond the program's Maven
-    * Central host (RunOnHostPrereqs.egressRuleText). The launch reads the files for this line
-    * alone: the broker reads them again at a program's first command, where a refusal reaches the
-    * agent and not the user. */
+  /** One widening report per program whose rule file names hosts, each a grant beyond the
+    * program's Maven Central host (RunOnHostPrereqs.egressRuleText). The launch reads the files for
+    * this report alone: the broker reads them again at a program's first command, where a refusal
+    * reaches the agent and not the user. */
   def runOnHostWideningLines(
     programHosts: Seq[(String, Vector[String])],
     color: Boolean = colorStderr,
   ): Vector[String] =
-    programHosts.toVector.collect:
+    programHosts.toVector.flatMap:
       case (program, hosts) if hosts.nonEmpty =>
-        val grants = hosts.map(host => printable(s"allow https://$host/ read")).mkString("; ")
+        val grants = hosts.map(host => printable(s"allow https://$host/ read"))
         val file = s".ko-agent-sandbox/run-on-host/$program/egress/rule"
-        weakened(s"run-on-host egress rules ($file) widen: $grants", color)
+        wideningReport(s"run-on-host egress rules ($file)", grants, color)
+      case _ => Vector.empty
 
   /** The `--help` text, extracted from README.md's Reference block by build.sbt. */
   val UsageText: String =
