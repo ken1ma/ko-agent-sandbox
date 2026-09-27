@@ -57,8 +57,6 @@ object AgentEgressProxy:
 
   val CertificateVariable = "EGRESS_TLS_CERTIFICATE"
   val PrivateKeyVariable = "EGRESS_TLS_PRIVATE_KEY"
-  val CaCertificateVariable = "EGRESS_TLS_CA_CERTIFICATE"
-  val CaPrivateKeyVariable = "EGRESS_TLS_CA_PRIVATE_KEY"
   val LogFileVariable = "EGRESS_LOG_FILE"
   val BindVariable = "EGRESS_BIND"
 
@@ -279,54 +277,26 @@ object AgentEgressProxy:
     acceptForever(server, run)
 
   /*
-   * The material a proxy starts with is keyed by profile. Under the three finite profiles the
-   * leaf and its key are present exactly when the ruleset inspects a host: both absent is the
+   * The leaf and its key are present exactly when the ruleset inspects a host: both absent is the
    * image running on its own, inspection off and said so; material for a ruleset that inspects
    * nothing is an error, not a narrower ruleset, since the launcher never issues a leaf for such a
-   * ruleset and a supplied one means the two disagree about what this ruleset is. Under
-   * allow-unless-denied the run CA and its key are present, and no leaf: every unlisted host is
-   * inspected, and without the CA each would be the writable tunnel this profile no longer allows,
-   * so their absence refuses the start. Either pair under the other profile is refused likewise
-   * (SECURITY.md, "Who holds the CA key").
+   * ruleset and a supplied one means the two disagree about what this ruleset is (SECURITY.md,
+   * "Who holds the CA key").
    */
   def loadInspection(
     resolved: ResolvedEgress,
     read: String => Option[String] = variable => Option(System.getenv(variable)),
   ): Option[TlsInspection] =
-    def pair(certificateVariable: String, keyVariable: String): Option[(Path, Path)] =
-      (read(certificateVariable).filter(_.nonEmpty), read(keyVariable).filter(_.nonEmpty)) match
-        case (Some(certificate), Some(key)) => Some((Path.of(certificate), Path.of(key)))
-        case (None, None)                   => None
-        case _ => throw IllegalArgumentException(s"$certificateVariable and $keyVariable must be set together")
-    val leaf = pair(CertificateVariable, PrivateKeyVariable)
-    val ca = pair(CaCertificateVariable, CaPrivateKeyVariable)
-
-    if resolved.publicDefault then
-      if leaf.nonEmpty then
-        throw IllegalArgumentException(
-          s"$CertificateVariable is set under ${resolved.profile}, which issues every leaf from " +
-            s"$CaCertificateVariable and takes none",
-        )
-      val (certificate, key) = ca.getOrElse(
-        throw IllegalArgumentException(
-          s"$CaCertificateVariable and $CaPrivateKeyVariable are unset under ${resolved.profile}, which " +
-            "inspects every unlisted host and issues their leaves from the run CA",
-        ),
-      )
-      Some(TlsInspection.issuing(certificate, key))
-    else
-      if ca.nonEmpty then
-        throw IllegalArgumentException(
-          s"$CaCertificateVariable is set under ${resolved.profile}, which issues nothing; the CA key never " +
-            "enters this container there",
-        )
-      leaf.map: (certificate, key) =>
+    (read(CertificateVariable).filter(_.nonEmpty), read(PrivateKeyVariable).filter(_.nonEmpty)) match
+      case (Some(certificate), Some(key)) =>
         if resolved.inspected.isEmpty then
           throw IllegalArgumentException(
             s"$CertificateVariable is set, but this ruleset inspects no host; " +
               "with nothing to inspect the material can only be a mistake",
           )
-        TlsInspection.load(certificate, key, resolved.inspected)
+        Some(TlsInspection.load(Path.of(certificate), Path.of(key), resolved.inspected))
+      case (None, None) => None
+      case _ => throw IllegalArgumentException(s"$CertificateVariable and $PrivateKeyVariable must be set together")
 
   /**
    * What loadInspection throws for material that cannot be read or parsed. A missing file and a
@@ -381,8 +351,6 @@ object AgentEgressProxy:
 
     def inspectionSummary: String =
       inspection match
-        case Some(_) if resolved.publicDefault =>
-          s"tls inspection: every allowed host, except the ${resolved.tunnelHosts.size} tunnel hosts"
         case Some(_) =>
           s"tls inspection: active for the ${resolved.inspected.size} inspected hosts"
         case None =>
@@ -597,7 +565,7 @@ object AgentEgressProxy:
     allowed: String => Boolean,
     requireAuditLog: () => Unit,
   ): Unit =
-    val clientTls = inspection.accept(client, hello.wireBytes, host)
+    val clientTls = inspection.accept(client, hello.wireBytes)
 
     // The in-tunnel audit context, like handle()'s: `-` until the request head parses. The allow
     // line prints only after the origin leg connects, so a failing request's method and target

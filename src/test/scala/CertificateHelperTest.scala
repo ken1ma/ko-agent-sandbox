@@ -120,21 +120,6 @@ class CertificateHelperTest extends munit.FunSuite:
     assert(!signedBy(leaf.certificatePem, other.certificatePem))
     assert(!signedBy(leaf.certificatePem, ""))
 
-  test("a leaf the proxy issues from a run CA chains to it, matches its key and names its host alone"):
-    // The run CA reaches the proxy as the launcher's PEM text; this issues from that text as the
-    // proxy does. EgressSessionTest has curl in the sandbox verify such a leaf.
-    val ca = createCa("run-1a2b3c4d")
-    val issued = agentsandbox.egress.X509Helper.issueLeaf(
-      Vector("docs.example"), parse(ca.certificatePem), parseEcPrivateKey(ca.privateKeyPem),
-    )
-    val leafPem = toPem("CERTIFICATE", issued.certificate.getEncoded)
-    assert(signedBy(leafPem, ca.certificatePem))
-    assert(!signedBy(leafPem, createCa("run-1a2b3c4d").certificatePem))
-    assert(keyMatchesCertificate(leafPem, toPem("PRIVATE KEY", issued.privateKey.getEncoded)))
-    val leaf = parse(leafPem)
-    assertEquals(leaf.getSubjectAlternativeNames.asScala.map(_.get(1).toString).toVector, Vector("docs.example"))
-    assertEquals(leaf.getBasicConstraints, -1)
-
   test("expiring, absent and unparsable certificates all require reissue"):
     val now = Instant.now()
     val deadline = now.plusSeconds(2592000)

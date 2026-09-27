@@ -45,18 +45,6 @@ The profiles:
      every provider under `defaults/model-provider/`.
    - Only the basename of the directly launched command is classified; anything else selects no
      provider, allows no host, and says so at startup.
-1. `allow-unless-denied` — `deny-unless-allowed`'s ruleset, and every public hostname on port
-   443 it leaves out receives an inspected `read`: `GET` and `HEAD`, logged, all other methods
-   refused. Choose it for work whose hosts cannot be listed in advance, such as web browsing or
-   dependency downloads.
-   - A whole-host or `read` deny refuses such a host outright — an unlisted host holds `read` and
-     nothing else, so a `tunnel` deny removes no grant from it.
-   - Public hosts remain readable unless a rule restricts them, and a permitted read carries its
-     URL (SECURITY.md, "Exfiltration through allowed network traffic").
-   - An `allow` line narrows one such host to its grants or, with `tunnel`, makes it opaque;
-     `deny https://**.domain/` refuses a domain and every host under it.
-   - A clone from an unlisted forge fails at its first request until a `git-fetch` line names the
-     forge.
 1. `deny-all` — nothing.
 
 ## The rule file
@@ -129,9 +117,7 @@ by `allow https://codeberg.org/my-org/ read git-fetch`.
 A request is decided against the resolved scope of its longest literal match: the scope at a path
 holds the union of the contributions still in force there once the lines have applied in order,
 so a root `git-fetch` line and a narrower `method=POST` line make the narrower scope hold both.
-A request matching no line, on a host without a root line, is refused; under `allow-unless-denied`
-that is a host some line narrowed, since one no line names has `read` at the root (the profiles,
-above).
+A request matching no line, on a host without a root line, is refused.
 
 Which path spellings a request may carry depends on the matched scope, because the proxy compares
 literally and cannot know how the origin decodes:
@@ -149,9 +135,8 @@ holds still changes which path spellings are refused.
 
 The `defaults` and `model-provider` lines:
 
-- Under `deny-unless-allowed` and `allow-unless-denied`, `deny defaults` removes the built-in
-  rules from the starting ruleset. It must be the first line. The public-read fallback under
-  `allow-unless-denied` still applies.
+- Under `deny-unless-allowed`, `deny defaults` removes the built-in rules from the starting
+  ruleset. It must be the first line.
 - `allow model-provider NAME` expands to the provider's default rules at that position.
 - `deny model-provider NAME` expands to a whole-host denial for every host listed in those rules,
   regardless of their paths or grants. It removes all earlier grants on those hosts, including
@@ -236,8 +221,6 @@ The ruleset itself is what the proxy prints at its start and `--egress-effective
 the rule grammar, hosts and paths sorted:
 
 1. the profile line;
-1. under `allow-unless-denied`, one `deny` line per host or subtree the public default does not
-   reach;
 1. one `allow` line per resolved scope, with the scope's whole grant set.
 
 ```text
@@ -248,18 +231,17 @@ allow https://github.com/login/device/code read git-fetch method=POST
 ...
 ```
 
-- Each `allow` and `deny` line uses the rule grammar so a reader learns one; but the printout is a
+- Each `allow` line uses the rule grammar so a reader learns one; but the printout is a
   serialization of the ruleset, not a rule file: it has no `deny defaults` header, nothing reads
   it as input, and it is not promised to re-parse to itself.
 - Those lines are what the proxy's digest names — one stable log line per run, comparable across
   runs — what the leaf certificate's names are read from, and what
   `KO_AGENT_SANDBOX_EGRESS_RULESET` holds, so two files resolving to one ruleset print one digest
   and the same lines, and the same file under two profiles never does.
-- Metadata follows outside the digest: a summary of inspected and tunnel hosts, denial patterns
-  and widening lines, then the widening line.
+- Metadata follows outside the digest: a summary of inspected hosts, tunnel hosts and widening
+  lines, then the widening line.
 - `--egress-effective` adds each line's sources: an `allow` line's boundary and each of its
-  grants, a `deny` line's pattern, and under the finite profiles the hosts the file's lines
-  denied.
+  grants, then the hosts the file's lines denied.
 
 The agent instructions include the profile and direct agents to consult
 `KO_AGENT_SANDBOX_EGRESS_RULESET` when they need a destination's grants or restrictions. Keeping
@@ -296,8 +278,8 @@ writable again — usually by freeing disk space — and relaunch (SECURITY.md, 
 The proxy terminates TLS for every inspected host and checks each request against its grants.
 Only hosts with the `tunnel` treatment stay opaque:
 
-- under `deny-unless-allowed` and `allow-unless-denied`, the hosts with model-provider tunnel
-  rules, unless a project removes them or adds more;
+- under `deny-unless-allowed`, the hosts with model-provider tunnel rules, unless a project
+  removes them or adds more;
 - under `deny-unless-model`, the selected providers' remaining tunnel hosts;
 - under `deny-all`, none.
 
@@ -310,10 +292,6 @@ The per-project CA is stored on the host, under
    "Who holds the CA key").
 1. Deleting that directory is how you rotate the CA. The next launch recreates it, and every
    launch's proxy starts with the certificates the launch found or issued.
-1. Under `allow-unless-denied` a launch creates a CA for the run instead, as
-   `run-<suffix>/ko-agent-egress-proxy/allow-unless-denied/ca.crt` and `ca.key` under that
-   directory, and removes it with the run; the proxy issues each host's certificate from it at the
-   host's first connection. Nothing is rotated: no session trusts another's.
 
 ## Through an upstream proxy
 

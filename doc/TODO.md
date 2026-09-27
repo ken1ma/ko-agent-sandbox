@@ -221,8 +221,7 @@ unreachable from a session. If that is ever needed, the design that keeps the se
 - [ ] A launch option naming exact addresses — never a range, never a line in
   `.ko-agent-sandbox/egress/`: an address is local to whoever runs the sandbox, so a committed
   line would name a different machine on every clone, and a reviewer could not say what it
-  reaches. Selected at launch, like `--egress=allow-unless-denied`, and tinted in the
-  banner the same way.
+  reaches. Selected at launch and tinted orange in the banner, as `--run-on-host` is.
 - [ ] The vetting allows those addresses and nothing else of the private space, and only when
   the CONNECT names the address itself: a public name resolving to a private address stays
   refused, or a name whose answer changes, or has one public and one private record, reaches

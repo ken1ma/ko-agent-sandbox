@@ -15,7 +15,7 @@ import X509Helper.*
 import X509HelperTest.*
 
 object X509HelperTest:
-  /** A CA of the kind the launcher creates for a run. */
+  /** A CA of the kind the launcher creates for a project. */
   def testCa(now: Instant, days: Long): (X509Certificate, PrivateKey) =
     val ca = createCa("ko-agent-sandbox egress CA (test)", now, days)
     (ca.certificate, ca.privateKey)
@@ -133,19 +133,13 @@ class X509HelperTest extends munit.FunSuite:
     assertNotEquals(again.getSerialNumber, leaf.getSerialNumber)
     assertNotEquals(again.getPublicKey, leaf.getPublicKey)
 
-  test("a client verifying the host under the run CA accepts the issued leaf, and the next connection reuses it"):
+  test("a client verifying the host under the CA accepts the leaf the proxy serves from its replayed ClientHello"):
     val now = Instant.now()
     val (ca, caKey) = testCa(now, days = 825)
-    val directory = Files.createTempDirectory("run-ca")
-    val (certificateFile, keyFile) = writePem(directory, "ca", ca, caKey)
-    val inspection = TlsInspection.issuing(certificateFile, keyFile)
-    val first = inspection.contextFor("docs.example")
-    assert(first eq inspection.contextFor("docs.example"))
-    assert(first ne inspection.contextFor("other.example"))
-    // The cache is bounded: past LeafCacheCapacity distinct hosts the least recently used host's context is
-    // evicted, and its next connection issues another leaf.
-    (1 to TlsInspection.LeafCacheCapacity).foreach(i => inspection.contextFor(s"host$i.example"))
-    assert(first ne inspection.contextFor("docs.example"))
+    val directory = Files.createTempDirectory("leaf")
+    val leaf = issueLeaf(Vector("docs.example"), ca, caKey, now)
+    val (certificateFile, keyFile) = writePem(directory, "leaf", leaf.certificate, leaf.privateKey)
+    val inspection = TlsInspection.load(certificateFile, keyFile, Set("docs.example"))
 
     val clientContext = SSLContext.getInstance("TLS")
     clientContext.init(null, trusting(ca).getTrustManagers, null)
@@ -159,7 +153,7 @@ class X509HelperTest extends munit.FunSuite:
           try
             val hello = TlsClientHello.read(client.getInputStream, AgentEgressProxy.MaxClientHelloBytes)
             validateTlsIdentity("docs.example", hello)
-            inspection.accept(client, hello.wireBytes, "docs.example").close()
+            inspection.accept(client, hello.wireBytes).close()
           finally client.close()
       def presented(): X509Certificate =
         val raw = Socket(InetAddress.getLoopbackAddress, server.getLocalPort)
@@ -174,20 +168,7 @@ class X509HelperTest extends munit.FunSuite:
         finally tls.close()
       val first = presented()
       assertEquals(TlsInspection.subjectAlternativeNames(first), Set("docs.example"))
+      assertEquals(first.getEncoded.toVector, leaf.certificate.getEncoded.toVector)
       assertEquals(presented().getEncoded.toVector, first.getEncoded.toVector)
       serving.join()
     finally server.close()
-
-  test("the run CA is refused at start when its key does not match it or it is no CA"):
-    val now = Instant.now()
-    val (ca, caKey) = testCa(now, days = 825)
-    val (other, otherKey) = testCa(now, days = 825)
-    val directory = Files.createTempDirectory("run-ca")
-    val (certificateFile, _) = writePem(directory, "ca", ca, caKey)
-    val (_, otherKeyFile) = writePem(directory, "other", other, otherKey)
-    val mismatched = intercept[IllegalArgumentException](TlsInspection.issuing(certificateFile, otherKeyFile))
-    assert(mismatched.getMessage.contains("does not match"), mismatched.getMessage)
-    val leaf = issueLeaf(Vector("docs.example"), ca, caKey, now)
-    val (leafFile, leafKeyFile) = writePem(directory, "leaf", leaf.certificate, leaf.privateKey)
-    val notCa = intercept[IllegalArgumentException](TlsInspection.issuing(leafFile, leafKeyFile))
-    assert(notCa.getMessage.contains("not a CA certificate"), notCa.getMessage)

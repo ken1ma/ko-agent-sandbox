@@ -1,11 +1,9 @@
 // The certificates of TLS inspection, from one builder so that every chain has one profile: the CA
-// the launcher creates for a project or a run, the leaf it issues for deny-unless-allowed's
-// inspected hosts (the launcher compiles this file in; its CertificateHelper.scala calls it), and
-// the leaves the proxy issues under allow-unless-denied from the run CA the launcher hands it
-// (SECURITY.md, "Who holds the CA key", has the profile's exception and its trade). The
-// builder is the JDK's own internal one — the classes keytool and CertificateFactory run — because
-// JCA has no public certificate builder and every library that has one is a dependency neither
-// program carries: BouncyCastle is 12 MB of jars, against a launcher jar of 12 MB and a native
+// the launcher creates for a project and the leaf it issues for the inspected hosts (the launcher
+// compiles this file in; its CertificateHelper.scala calls it). The builder is the JDK's own
+// internal one — the classes keytool and CertificateFactory run — because JCA has no public
+// certificate builder and every library that has one is a dependency neither program carries:
+// BouncyCastle is 12 MB of jars, against a launcher jar of 12 MB and a native
 // image that holds nothing it does not run, WildFly Elytron's `x500-cert` brings an application
 // server's logging facade, and a DER encoder written here would be a second X.509 implementation
 // to keep correct. The package is not exported, so the JDK major is part of this file's source
@@ -27,9 +25,7 @@ import sun.security.x509.*
 object X509Helper:
 
   /** The longest validity Apple's TLS trust evaluation accepts for a server certificate from a CA
-    * outside its own root store, this one included (its shipped roots are held to 398 days). The
-    * run CA the launcher creates has the same, so issueLeaf's clamp ends every leaf under it when
-    * the CA ends. */
+    * outside its own root store, this one included (its shipped roots are held to 398 days). */
   val LeafValidityDays = 825L
 
   /** RFC 5280's bound on a common name (ub-common-name), which the JDK's builder does not enforce. */
@@ -65,8 +61,8 @@ object X509Helper:
 
   /**
    * A leaf naming `hosts` and nothing else, signed by `ca` with `caKey`: P-256, `serverAuth`, and
-   * a fresh key of its own, so the leaf key the launcher mounts into the proxy under
-   * deny-unless-allowed cannot issue certificates. Its lifetime is clamped to the CA's, so a
+   * a fresh key of its own, so the leaf key the launcher mounts into the proxy cannot issue
+   * certificates. Its lifetime is clamped to the CA's, so a
    * ten-year project CA's last years are not a launch failure; the launcher's reissue margin
    * normally keeps the clamp inactive under that CA.
    */

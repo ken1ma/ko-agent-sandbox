@@ -39,7 +39,7 @@ object RefusalAdvice:
     * about what that profile would apply from the project's file, a denial of this very host
     * included. A defaults host reaches this refusal under the default profile only through `deny
     * defaults` — a host a deny line emptied is refused as denied, naming the line — so the step
-    * names that. allow-unless-denied never reaches this refusal. */
+    * names that. */
   def hostNotAllowed(host: String, profile: String): String =
     val default = RulesetHelper.DefaultProfile
     val defaults = RulesetHelper.DefaultHosts.contains(host)

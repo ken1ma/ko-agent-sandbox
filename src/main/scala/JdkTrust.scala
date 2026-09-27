@@ -47,12 +47,6 @@ object JdkTrust:
     * despite its usual .cer examples. */
   val SandboxEgressProxyCaPath = "/etc/ko-agent-sandbox/egress-proxy-ca.crt"
 
-  /** One CA certificate file can be mounted into the throwaway JDK container, the proxy and the
-    * sandbox: the launcher copies a file per run only when it lies outside the run's directory,
-    * and allow-unless-denied writes its CA inside. The certificate is public, so no container
-    * needs it kept from the others. */
-  val caCertificateReaders = FileBindReaders.SeveralContainers
-
   /**
    * The mounts that make the image's JDK trust this project's CA and reach the proxy — the
    * bundle's technique one layer over: take the image's own files, add this session's part, mount
@@ -132,7 +126,7 @@ object JdkTrust:
   ): Vector[String] =
     Vector(
       podman, "create", "--pull=never", "--network=none", "--user=0", "--entrypoint=",
-      fileBind(caCertFile, SandboxEgressProxyCaPath, "ro", selinuxEnforcing, caCertificateReaders),
+      fileBind(caCertFile, SandboxEgressProxyCaPath, "ro", selinuxEnforcing),
       s"--env=HTTPS_PROXY=http://$proxyHost:$proxyPort",
       image,
     ) ++ containerCommand

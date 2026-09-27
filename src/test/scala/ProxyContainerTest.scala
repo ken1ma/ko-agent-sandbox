@@ -101,26 +101,6 @@ class ProxyContainerTest extends munit.FunSuite:
   private def projectCaKey(live: Session): java.nio.file.Path =
     AgentSandboxLauncher.tlsStateRoot(currentOs).resolve(live.id).resolve("ca.key")
 
-  test("under allow-unless-denied the proxy holds this run's own CA and key, and no leaf"):
-    requireTestWithPodman()
-
-    val project = scratchProject()
-    var session: Option[Session] = None
-    try
-      val live = launchWith(project, project.resolve("session.log"), Vector("--egress=allow-unless-denied"))
-      session = Some(live)
-      val sources = inspect(live.proxy, "{{range .HostConfig.Binds}}{{println .}}{{end}}")
-        .linesIterator.map(_.trim).filter(_.nonEmpty).map(_.takeWhile(_ != ':')).toVector
-      val runCaDir = AgentSandboxLauncher.tlsStateRoot(currentOs).resolve(live.id)
-        .resolve(s"run-${live.suffix}").resolve("ko-agent-egress-proxy").resolve("allow-unless-denied")
-      assert(sources.contains(runCaDir.resolve("ca.crt").toString), s"the run CA is not mounted: $sources")
-      assert(sources.contains(runCaDir.resolve("ca.key").toString), s"the run CA's key is not mounted: $sources")
-      assert(!sources.contains(projectCaKey(live).toString), s"SECURITY: the project CA's key is mounted: $sources")
-      assert(!sources.exists(_.endsWith("leaf.crt")), s"a leaf is mounted beside the run CA: $sources")
-    finally
-      session.foreach(stop)
-      discard(project)
-
   /**
    * A CONNECT proxy on this host for the proxy container to leave through: it records each request
    * head, dials the authority itself and relays the bytes, which is an upstream proxy's whole
