@@ -178,21 +178,33 @@ object AgentSandboxLauncher:
    * elapses; either failure reports what the proxy wrote. The file rather than `podman logs`:
    * the container is `--rm`, and a proxy refusing at once is gone, with its output, before a
    * follower attaches — the file outlives it.
+   *
+   * Ready, it gives the proxy's networks as ProxyNetworksFormat prints them, from an inspect that
+   * found it running, so the launch need not ask podman for them again.
    */
-  def awaitProxyReady(podman: String, container: String, log: Path, bound: java.time.Duration): Either[String, Unit] =
+  def awaitProxyReady(podman: String, container: String, log: Path, bound: java.time.Duration): Either[String, String] =
     val deadline = System.nanoTime() + bound.toNanos
     def said: String =
       try Files.readString(log, StandardCharsets.UTF_8) catch case _: IOException => ""
     def ready: Boolean = said.linesIterator.exists(isProxyReadyLine)
-    def running: Boolean =
-      val state = run(podman, "container", "inspect", "--format", "{{.State.Running}}", container)
-      state.ok && state.text.trim == "true"
-    var outcome: Option[Either[String, Unit]] = None
+    var networks: Option[String] = None
+    def inspected: Boolean =
+      val state = run(
+        podman, "container", "inspect", "--format", s"{{.State.Running}}{{println}}$ProxyNetworksFormat", container,
+      )
+      val lines = state.text.linesIterator
+      val running = state.ok && lines.nextOption().exists(_.trim == "true")
+      if running then networks = Some(lines.mkString("\n"))
+      running
+    def readied: Either[String, String] =
+      if networks.isEmpty then inspected
+      Right(networks.getOrElse(""))
+    var outcome: Option[Either[String, String]] = None
     while outcome.isEmpty do
-      if ready then outcome = Some(Right(()))
-      else if !running then
+      if ready then outcome = Some(readied)
+      else if !inspected then
         // The last write may arrive after the liveness answer; read once more, then report.
-        if ready then outcome = Some(Right(()))
+        if ready then outcome = Some(readied)
         else
           val written = said
           // If the proxy could not open its log, the refusal may appear only in podman's logs — and
@@ -208,7 +220,8 @@ object AgentSandboxLauncher:
           outcome = Some(Left(s"the egress proxy exited before listening\n$reason"))
       else if System.nanoTime() >= deadline then
         outcome = Some(Left(s"the egress proxy did not report ready within ${bound.toSeconds}s\n$said"))
-      else Thread.sleep(200)
+      // Each pass asks podman once; the pause is how late a proxy that is ready can be noticed.
+      else Thread.sleep(50)
     outcome.get
 
   /**
@@ -553,8 +566,11 @@ object AgentSandboxLauncher:
 
   /**
    * The proxy's address on one named network, out of the per-network listing
-   * the Go template below prints as `<network> <ip>` lines.
+   * ProxyNetworksFormat prints as `<network> <ip>` lines.
    */
+  val ProxyNetworksFormat =
+    "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}} {{$conf.IPAddress}}{{println}}{{end}}"
+
   def addressOn(networksOutput: String, network: String): Option[String] =
     networksOutput.linesIterator
       .find(_.startsWith(network + " "))
@@ -610,17 +626,20 @@ object AgentSandboxLauncher:
 
   /**
    * The check every podman-talking action runs first: a client that runs, and a service that
-   * answers and, where `refuseRootful`, runs rootless (rootfulRefusal). On macOS and
-   * Windows the service is the podman machine, started here when stopped — never created or
-   * resized, the boundary SECURITY.md draws ("Silent changes to what you own") — so
-   * `machine init` stays the one manual step of a fresh install: the next action, usually
-   * --build, brings the machine up itself.
+   * answers and, where `refuseRootful`, runs rootless (rootfulRefusal).
+   *
+   *   - On macOS and Windows the service is the podman machine, started here when stopped — never
+   *     created or resized, the boundary SECURITY.md draws ("Silent changes to what you own") — so
+   *     `machine init` stays the one manual step of a fresh install: the next action, usually
+   *     --build, brings the machine up itself.
+   *   - Gives the machine's total memory, which the launch reuses: changing it
+   *     (`podman machine set --memory`) needs the machine stopped.
    */
   def requirePodman(
     os: Os,
     memoryScale: Long => Headroom = launchMemoryHeadroom,
     refuseRootful: Boolean = true,
-  ): Unit =
+  ): Option[Long] =
     if !podmanRuns then
       fail(
         s"""error: $podman does not run
@@ -628,31 +647,39 @@ object AgentSandboxLauncher:
            |Reinstall it: https://podman.io/docs/installation""".stripMargin,
         127,
       )
-    if !runOk(podman, "info") then
-      os match
-        case Os.Linux =>
-          fail(
-            "error: podman is not usable.\nOn Linux, run rootless podman as your normal user, without sudo.",
-          )
-        case _ =>
-          System.err.println("the podman machine is not running; starting it")
-          val started = run(podman, "machine", "start")
-          if !started.ok then
+    val answered = run(podman, "info", "--format", PodmanInfoFormat)
+    val info =
+      if answered.ok then answered
+      else
+        os match
+          case Os.Linux =>
             fail(
-              s"""error: podman Machine could not be started.
-                 |${started.err}
-                 |
-                 |Initialize it once, for example:
-                 |  podman machine init""".stripMargin
+              "error: podman is not usable.\nOn Linux, run rootless podman as your normal user, without sudo.",
             )
-    if refuseRootful then
-      rootfulRefusal(os, run(podman, "info", "--format", "{{.Host.Security.Rootless}}")).foreach(fail(_))
-    machineMemoryLine(
-      os,
-      memoryTotal(run(podman, "info", "--format", "{{.Host.MemTotal}}")),
-      probedMachineAvailable(os),
-      scale = memoryScale,
-    ).foreach(System.err.println)
+          case _ =>
+            System.err.println("the podman machine is not running; starting it")
+            val started = run(podman, "machine", "start")
+            if !started.ok then
+              fail(
+                s"""error: podman Machine could not be started.
+                   |${started.err}
+                   |
+                   |Initialize it once, for example:
+                   |  podman machine init""".stripMargin
+              )
+            run(podman, "info", "--format", PodmanInfoFormat)
+    if refuseRootful then rootfulRefusal(os, podmanInfoField(info, 0)).foreach(fail(_))
+    val total = memoryTotal(podmanInfoField(info, 1))
+    machineMemoryLine(os, total, probedMachineAvailable(os), scale = memoryScale).foreach(System.err.println)
+    total
+
+  /** What requirePodman asks `podman info`, in one call: rootlessness, then MemTotal, a line each. */
+  val PodmanInfoFormat = "{{.Host.Security.Rootless}}{{println}}{{.Host.MemTotal}}"
+
+  /** Line `index` of a PodmanInfoFormat answer, as the answer a format of that field alone gives. */
+  def podmanInfoField(answer: HostCommands.Run, index: Int): HostCommands.Run =
+    val line = answer.text.linesIterator.drop(index).nextOption().getOrElse("")
+    answer.copy(out = line.getBytes(StandardCharsets.UTF_8))
 
   /**
    * SECURITY.md's "The containers run rootless" as a condition of every podman action but the
@@ -1778,6 +1805,37 @@ object AgentSandboxLauncher:
     Vector(podman, "run", "--rm", "--pull=never", "--network=none", "--entrypoint=", image) ++
       quoteFreeSh(MountPathProbeScript, mountPath)
 
+  /**
+   * The stamp an image's answer about `mountPath` is cached under. The probe reads only the image,
+   * so its answer holds while the image Id, the probe script and the path are the ones it was asked
+   * with; the path is hashed because the stamp is one line.
+   */
+  def mountPathProbeStamp(imageId: String, mountPath: String): String =
+    s"$imageId ${sha256Hex(MountPathProbeScript)} ${sha256Hex(mountPath)}"
+
+  /** The probe's `absent` from `file`, when it was cached for this image and path. */
+  def cachedMountPathAnswer(file: Path, imageId: String, mountPath: String): Option[HostCommands.Run] =
+    stampedEntry(file, mountPathProbeStamp(imageId, mountPath))
+      .filter(_ == "absent")
+      .map(answer => HostCommands.Run(0, answer.getBytes(StandardCharsets.UTF_8), ""))
+
+  /** The probe asked of `imageId`, the Id its answer is cached under, never of a name (launch's
+    * `imageId` has why). */
+  def probeMountPath(podman: String, imageId: String, mountPath: String): HostCommands.Run =
+    run(mountPathProbeCommand(podman, imageId, mountPath)*)
+
+  /** The image's answer about `mountPath`: cached in `file`, or probed now and cached when `absent`. */
+  def mountPathAnswer(podman: String, imageId: String, mountPath: String, file: Path): HostCommands.Run =
+    cachedMountPathAnswer(file, imageId, mountPath).getOrElse:
+      val asked = probeMountPath(podman, imageId, mountPath)
+      cacheMountPathAnswer(file, imageId, mountPath, asked)
+      asked
+
+  /** Caches `answer` in `file` when it is `absent`: every other answer refuses, and is asked again. */
+  def cacheMountPathAnswer(file: Path, imageId: String, mountPath: String, answer: HostCommands.Run): Unit =
+    if answer.ok && answer.text.trim == "absent" then
+      writeStamped(file, mountPathProbeStamp(imageId, mountPath), "absent")
+
   /** Why the image cannot take the project at `mountPath`, read from the probe's answer, or None. */
   def mountPathRefusal(answer: String, projectDir: Path, mountPath: String): Option[String] =
     val refusing = s"error: refusing to mount $projectDir at $mountPath\n\n"
@@ -1837,8 +1895,9 @@ object AgentSandboxLauncher:
   def logStateRoot(os: Os): Path = stateRoot(os).resolve("log")
 
   /**
-   * Stamped copies of --print-ruleset dry runs. A cache, never an authority:
-   * the proxy re-resolves the ruleset at every startup.
+   * Per project, stamped copies of --print-ruleset dry runs, which are a cache and never an
+   * authority: the proxy re-resolves the ruleset at every startup. Beside them, the assembled
+   * agent instructions and the image's `absent` answers about mount paths (mountPathProbeStamp).
    */
   def rulesetStateRoot(os: Os): Path = stateRoot(os).resolve("ruleset")
 
@@ -2597,8 +2656,9 @@ object AgentSandboxLauncher:
           false
 
     // Where the container has the project: the same path, so nothing on either side translates
-    // (SandboxProject.mountPathOf). What the image has there is asked once the image is known,
-    // below, still before any per-project resource exists.
+    // (SandboxProject.mountPathOf). What the image has there is asked, or read from the cache of
+    // an earlier answer, once the image is known, below, still before any per-project resource
+    // exists.
     val mountPath = mountPathOf(os, projectDir).fold(fail(_), identity)
 
     // Detected this early because reject's refusal below must come before any resource exists;
@@ -2641,46 +2701,59 @@ object AgentSandboxLauncher:
       .orElse(sharedWithMain.map(mainWorktreeVolume(_, os)))
       .getOrElse(s"ko-agent-sandbox-persistent-$projectId")
 
-    requirePodman(os)
+    val machineMemory = requirePodman(os)
+
+    // The filter's read-only checks run beside the image and rule checks below; prepareKoAgentFs
+    // reads their answer once this run's cleanup is armed.
+    val startedKoAgentFsChecks = Option.when(writeMode == "live"):
+      val sourceId = bundledKoAgentFsSourceId()
+      (sourceId, inBackground("ko-agent-fs checks")(koAgentFsChecks(podman, os, sourceId)))
 
     // -----------------------------------------------------------------------
     // Sandbox image
     // -----------------------------------------------------------------------
     //
     // No implicit pull: image rollout is separate from running an agent.
-    if !runOk(podman, "image", "exists", image) then
+    val imageInspected = run(
+      podman, "image", "inspect",
+      "--format",
+      "{{.Id}}{{println}}" + // imageId: every run of the image and every cache stamp below
+        s"$BundleLabelTemplate{{println}}" + // the version lock
+        "{{range .Config.Env}}{{println .}}{{end}}", // JdkTrust's JAVA_HOME
+      image,
+    )
+    if !imageInspected.ok then
       fail(
         s"""error: sandbox image not found: $image
            |
            |Build it first: run this launcher with --build.""".stripMargin
       )
-
-    val imageInspect = run(
-      podman, "image", "inspect",
-      "--format",
-      "{{.Id}}{{println}}" + // the CA-bundle and agents.md stamps below
-        s"$BundleLabelTemplate{{println}}" + // the version lock
-        "{{range .Config.Env}}{{println .}}{{end}}", // JdkTrust's JAVA_HOME
-      image,
-    ).text
+    val imageInspect = imageInspected.text
+    // Every later run of the image names this Id rather than `image`: a build or a retag can move
+    // the name after this inspect, and this Id is what the version lock checks and what the caches
+    // below are stamped with. The proxy image's Id is used the same way.
     val imageId = imageInspect.linesIterator.nextOption().getOrElse("")
     val imageLabel = imageInspect.linesIterator.drop(1).nextOption().getOrElse("")
     val imageEnv = imageInspect.linesIterator.drop(2).mkString("\n")
+
+    // A mount path the image has an entry at, or that the sandbox user cannot reach, is refused
+    // before the filter's preparation, the networks and the TLS state, so a refusal writes
+    // nothing (mountPathRefusal has the cases).
+    //   - The probe is a run of the image, 0.2 s on a macOS podman machine (2026-09-18), so its
+    //     `absent` is cached per image Id, written once the project's cache directory exists below.
+    //   - A miss runs beside the sandbox image's version lock and the proxy image's inspect; its
+    //     refusals come between theirs.
+    val mountPathAnswerFile = rulesetStateRoot(os).resolve(projectId).resolve("mount-path.answer")
+    val cachedMountPath = cachedMountPathAnswer(mountPathAnswerFile, imageId, mountPath)
+    val awaitMountPathProbe = cachedMountPath.fold(
+      inBackground("mount path probe")(probeMountPath(podman, imageId, mountPath)),
+    )(answer => () => answer)
 
     // A jar upgrade must never run silently against last month's images; checked before any
     // resource exists. bundleMismatch has the refuse-versus-warn reasoning.
     bundleMismatch(image, bundledSourceId("ko-agent-sandbox"), imageLabel).foreach: mismatch =>
       if imageOverridden then warn(mismatch)
       else fail(s"error: $mismatch")
-
-    // A mount path the image has an entry at, or that the sandbox user cannot reach, is refused
-    // here: before the filter's preparation, the networks and the TLS state, so a refusal writes
-    // nothing (mountPathRefusal has the cases). One run of the image per launch, uncached: 0.2 s
-    // per run of the probe command on a macOS podman machine (2026-09-18).
-    val mountPathProbe = run(mountPathProbeCommand(podman, image, mountPath)*)
-    if !mountPathProbe.ok then
-      fail(s"error: could not ask $image about $mountPath\n${mountPathProbe.err}")
-    mountPathRefusal(mountPathProbe.text, projectDir, mountPath).foreach(fail(_))
 
     // -----------------------------------------------------------------------
     // This run's egress proxy
@@ -2701,7 +2774,21 @@ object AgentSandboxLauncher:
     val sandboxNetwork = sandboxRunNetwork(projectId, runSuffix)
     val egressNetwork = egressRunNetwork(projectId, runSuffix)
 
-    if !runOk(podman, "image", "exists", proxyImage) then
+    // The proxy side of the version lock above: this is the image whose --print-ruleset output
+    // and environment interface the launcher parses, so a mismatched default image must not get
+    // as far as a cryptic parse failure.
+    val proxyInspected = run(
+      podman, "image", "inspect",
+      "--format", s"{{.Id}}{{println}}$BundleLabelTemplate",
+      proxyImage,
+    )
+
+    val mountPathProbe = awaitMountPathProbe()
+    if !mountPathProbe.ok then
+      fail(s"error: could not ask $image about $mountPath\n${mountPathProbe.err}")
+    mountPathRefusal(mountPathProbe.text, projectDir, mountPath).foreach(fail(_))
+
+    if !proxyInspected.ok then
       fail(
         s"""error: egress proxy image not found: $proxyImage
            |
@@ -2709,15 +2796,7 @@ object AgentSandboxLauncher:
            |what it reaches instead. Build it first: run this launcher with
            |--build.""".stripMargin
       )
-
-    // The proxy side of the version lock above: this is the image whose --print-ruleset output
-    // and environment interface the launcher parses, so a mismatched default image must not get
-    // as far as a cryptic parse failure.
-    val proxyInspect = run(
-      podman, "image", "inspect",
-      "--format", s"{{.Id}}{{println}}$BundleLabelTemplate",
-      proxyImage,
-    ).text
+    val proxyInspect = proxyInspected.text
     val proxyImageId = proxyInspect.linesIterator.nextOption().getOrElse("")
     val proxyImageLabel = proxyInspect.linesIterator.drop(1).nextOption().getOrElse("")
 
@@ -2772,6 +2851,7 @@ object AgentSandboxLauncher:
     if posixPermissions(rulesetCacheDir) then
       Files.setPosixFilePermissions(rulesetCacheDir, PosixFilePermissions.fromString("rwx------"))
     recordProjectDirectory(projectsStateRoot(os), projectId, projectDir)
+    if cachedMountPath.isEmpty then cacheMountPathAnswer(mountPathAnswerFile, imageId, mountPath, mountPathProbe)
 
     val resolvedHostsFile = rulesetCacheDir.resolve("resolved.hosts")
     val resolvedWarningsFile = rulesetCacheDir.resolve("resolved.warnings")
@@ -2798,7 +2878,7 @@ object AgentSandboxLauncher:
       cachedRuleset match
         case (Some(hosts), Some(warnings)) => (hosts, warnings)
         case _ =>
-          val resolved = resolvedRuleset(podman, proxyImage, egressProfile, provider, ruleFiles)
+          val resolved = resolvedRuleset(podman, proxyImageId, egressProfile, provider, ruleFiles)
           if !resolved.ok then
             fail(s"error: this project's egress rules are not valid\n${resolved.err}")
           val warnings = resolved.err.linesIterator.filter(_.startsWith("warning:")).mkString("\n")
@@ -2864,9 +2944,10 @@ object AgentSandboxLauncher:
     // every refusal below ends the JVM rather than raising (SandboxLifecycle, armRunCleanup).
     val cleanup = armRunCleanup(removeWhatThisRunCreated)
 
-    // The filter's checks and its mountpoint now; the mount itself once the sandbox container
-    // exists (mountKoAgentFs has why), which is after the proxy and the hold.
-    val filteredWorkspace = Option.when(writeMode == "live")(prepareKoAgentFs(podman, os, projectId))
+    // The filter's checks, started above, and its mountpoint now; the mount itself once the sandbox
+    // container exists (mountKoAgentFs has why), which is after the proxy and the hold.
+    val filteredWorkspace = startedKoAgentFsChecks.map: (sourceId, awaitChecks) =>
+      prepareKoAgentFs(podman, os, projectId, sourceId, awaitChecks())
     // A live mount under other file rules, after an edit of file/rule, is joined under its rules,
     // which an earlier session of the project accepted; the start prompt below is the consent.
     val joinedRules = joinUnderOtherRules(
@@ -2964,7 +3045,7 @@ object AgentSandboxLauncher:
             s"chcon -R -t container_file_t -l s0 ${pathInline(bind.source, os)} gives it one for the next launch",
         )
       else
-        val probe = run(mountPathProbeCommand(podman, image, bind.target)*)
+        val probe = mountPathAnswer(podman, imageId, bind.target, rulesetCacheDir.resolve("gitdir-mount-path.answer"))
         Option.when(!probe.ok || probe.text.trim != "absent"):
           s"the sandbox image cannot take a mount at ${bind.target}"
     val mountedGitdir = gitdirBind.filter(_ => gitdirBindRefusal.isEmpty)
@@ -3091,7 +3172,7 @@ object AgentSandboxLauncher:
         // the image declares (JdkTrust.jdkMounts has the argument).
         val imageBundle = run(
           podman, "run", "--rm", "--pull=never", "--network=none", "--entrypoint=",
-          image, "cat", "/etc/ssl/certs/ca-certificates.crt",
+          imageId, "cat", "/etc/ssl/certs/ca-certificates.crt",
         )
         if !imageBundle.ok || imageBundle.out.isEmpty then
           fail(s"error: could not read the CA bundle out of $image\n${imageBundle.err}")
@@ -3105,7 +3186,7 @@ object AgentSandboxLauncher:
       // HTTPS_PROXY family cannot reach it; JdkTrust.scala handles all of it, and empty means
       // the image ships no JDK.
       val jdkFileMounts = jdkMounts(
-        podman, image, imageEnv, tlsDir, bundleStamp, caCertFile, EgressProxyHost, EgressProxyPort,
+        podman, imageId, imageEnv, tlsDir, bundleStamp, caCertFile, EgressProxyHost, EgressProxyPort,
         selinuxEnforcing,
       )
 
@@ -3115,7 +3196,7 @@ object AgentSandboxLauncher:
         // --entrypoint= for the same reason as the bundle read above.
         val imageDoc = run(
           podman, "run", "--rm", "--pull=never", "--network=none", "--entrypoint=",
-          image, "cat", AgentDocPath,
+          imageId, "cat", AgentDocPath,
         )
         if !imageDoc.ok || imageDoc.out.isEmpty then
           fail(s"error: could not read the agent instructions out of $image\n${imageDoc.err}")
@@ -3194,7 +3275,7 @@ object AgentSandboxLauncher:
             "--http-proxy=false",
             s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid",
           ) ++ rulesetEnvArgs(egressProfile, provider, ruleFiles) ++ upstreamProxyArgs(env)
-          ++ proxyTls ++ proxyLogArgs(hostLogFile, selinuxEnforcing) ++ Vector(proxyImage)*
+          ++ proxyTls ++ proxyLogArgs(hostLogFile, selinuxEnforcing) ++ Vector(proxyImageId)*
       )
       if !proxyCreated.ok then
         fail(s"error: could not create the egress proxy container\n${proxyCreated.err}")
@@ -3204,15 +3285,10 @@ object AgentSandboxLauncher:
     val proxyStarted = run(podman, "start", proxyContainer)
     if !proxyStarted.ok then
       fail(s"error: could not start the egress proxy container\n${proxyStarted.err}")
-    awaitProxyReady(podman, proxyContainer, hostLogFile, EgressProxyReadyBound).left.foreach: reason =>
-      fail(s"error: $reason")
-
-    val networksFormat =
-      "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}} {{$conf.IPAddress}}{{println}}{{end}}"
-    val proxyIp = addressOn(
-      run(podman, "container", "inspect", "--format", networksFormat, proxyContainer).text,
-      sandboxNetwork,
-    ).getOrElse(fail(s"error: could not determine the egress proxy's address on $sandboxNetwork"))
+    val proxyNetworks = awaitProxyReady(podman, proxyContainer, hostLogFile, EgressProxyReadyBound)
+      .fold(reason => fail(s"error: $reason"), identity)
+    val proxyIp = addressOn(proxyNetworks, sandboxNetwork)
+      .getOrElse(fail(s"error: could not determine the egress proxy's address on $sandboxNetwork"))
 
     // The workspace mode and the egress profile with their relevant state, said every launch — and
     // rules that arrived with the repository never take effect unseen: the files as written, then
@@ -3351,7 +3427,6 @@ object AgentSandboxLauncher:
     // reserves memory for Podman's service, which every session needs. For diagnosis, see
     // "The whole machine degrades" in fuse/ko-agent-fs/doc/troubleshooting.md.
     val explicitMemory = env("KO_AGENT_SANDBOX_MEMORY").map(_.trim).filter(_.nonEmpty)
-    val machineMemory = memoryTotal(run(podman, "info", "--format", "{{.Host.MemTotal}}"))
     val availableMemory = hostMemoryAvailable(os, readIfPresent(Paths.get("/proc/meminfo")).getOrElse(""))
     if machineMemory.isEmpty && explicitMemory.isEmpty then
       warn("podman info reports no machine memory; the sandbox runs without a memory limit")
@@ -3419,7 +3494,7 @@ object AgentSandboxLauncher:
       "--shm-size=512m",
     ) ++ memoryArgs ++ Vector(
       "--workdir", mountPath,
-      image,
+      imageId,
     ) ++ command.toVector
 
     // Before the hold, what the first mill, gradle or mvn command would refuse for want of an

@@ -4,7 +4,7 @@
 
 package agentsandbox.launcher
 
-import java.nio.file.{Files, Paths}
+import java.nio.file.{Files, Path, Paths}
 import scala.jdk.CollectionConverters.*
 
 import java.time.ZoneId
@@ -115,6 +115,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(memoryTotal(HostCommands.Run(0, "8589934592\n".getBytes, "")), Some(8589934592L))
     assertEquals(memoryTotal(HostCommands.Run(0, "0".getBytes, "")), None)
     assertEquals(memoryTotal(HostCommands.Run(1, "".getBytes, "not running")), None)
+    val info = HostCommands.Run(0, "true\n8589934592\n".getBytes, "")
+    assertEquals(podmanInfoField(info, 0).text, "true")
+    assertEquals(memoryTotal(podmanInfoField(info, 1)), Some(8589934592L))
+    val unanswered = HostCommands.Run(125, "".getBytes, "not running")
+    assertEquals(memoryTotal(podmanInfoField(unanswered, 1)), None)
+    assert(rootfulRefusal(Os.Linux, podmanInfoField(unanswered, 0)).exists(_.contains("not running")))
 
   test("podman actions refuse a service that is rootful or does not say, with the fix for the OS"):
     assertEquals(rootfulRefusal(Os.Linux, HostCommands.Run(0, "true\n".getBytes, "")), None)
@@ -416,15 +422,18 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // The run's host log, beside a liveness answer from a fake podman.
     assume(!scala.util.Properties.isWin, "the fake podman is a /bin/sh script")
     val dir = Files.createTempDirectory("proxy-ready").toRealPath()
-    def podman(running: Boolean, logs: Option[String] = None): String =
-      val path = dir.resolve(s"podman-$running-${logs.hashCode.toHexString}")
+    // `readyOn`: the log the proxy's ready line reaches as the fake answers an inspect, so the
+    // wait has asked podman before it reads the line.
+    def podman(running: Boolean, logs: Option[String] = None, readyOn: Option[Path] = None): String =
+      val path = dir.resolve(s"podman-$running-${logs.hashCode.toHexString}-${readyOn.hashCode.toHexString}")
       // `logs` on a container `--rm` already took: podman's own complaint, and a failure.
       val relay = logs.fold("echo 'no such container' >&2; exit 125")(text => s"printf '%s' '$text' >&2")
+      val readying = readyOn.fold("")(log => s"; echo '$EgressProxyReadyLine' >> '$log'")
       Files.writeString(
         path,
         s"""#!/bin/sh
            |case "$$1 $$2" in
-           |  'container inspect') echo $running ;;
+           |  'container inspect') echo $running; echo 'sandbox-net 10.89.0.2'$readying ;;
            |  'logs proxy') $relay ;;
            |  *) exit 9 ;;
            |esac
@@ -439,7 +448,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       listened,
       s"2026-08-29T00:00:00Z $EgressProxyReadyLine\n2026-08-29T00:00:00Z allow https://a/ read\n",
     )
-    assertEquals(awaitProxyReady(podman(running = true), "proxy", listened, bound), Right(()))
+    // Ready before the first inspect, and after it: the proxy's networks either way.
+    assertEquals(awaitProxyReady(podman(running = true), "proxy", listened, bound), Right("sandbox-net 10.89.0.2"))
+    val later = dir.resolve("later.log")
+    Files.writeString(later, "")
+    assertEquals(
+      awaitProxyReady(podman(running = true, readyOn = Some(later)), "proxy", later, bound),
+      Right("sandbox-net 10.89.0.2"),
+    )
     val refused = dir.resolve("refused.log")
     Files.writeString(refused, "2026-08-29T00:00:00Z the leaf certificate names 2 hosts; the ruleset inspects 3\n")
     val reason = awaitProxyReady(podman(running = false), "proxy", refused, bound).swap
@@ -1562,6 +1578,36 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(command.last, "/usr/local/bin")
     // Windows argument encoding passes a double quote through unescaped (HostCommands.quoteFreeSh).
     assert(command.forall(word => !word.contains('"') && !word.contains('\n')), command)
+
+  test("an image's absent at a mount path is cached for that image and path, and no other answer is"):
+    val dir = Files.createTempDirectory("mount-path-answer")
+    try
+      val file = dir.resolve("mount-path.answer")
+      def answered(text: String, exit: Int = 0) = HostCommands.Run(exit, text.getBytes, "")
+      cacheMountPathAnswer(file, "image-a", "/Users/me/app", answered("entry\n"))
+      cacheMountPathAnswer(file, "image-a", "/Users/me/app", answered("absent\n", exit = 125))
+      assertEquals(cachedMountPathAnswer(file, "image-a", "/Users/me/app"), None)
+      cacheMountPathAnswer(file, "image-a", "/Users/me/app", answered("absent\n"))
+      assertEquals(cachedMountPathAnswer(file, "image-a", "/Users/me/app").map(_.text), Some("absent"))
+      assertEquals(cachedMountPathAnswer(file, "image-b", "/Users/me/app"), None)
+      assertEquals(cachedMountPathAnswer(file, "image-a", "/Users/me/other"), None)
+      // One line whatever the path holds, so a newline in it cannot forge the stamp's end.
+      assertEquals(mountPathProbeStamp("image-a", "/tmp/a\nb").linesIterator.size, 1)
+      // The probe runs against the Id the answer is cached under, never a name a retag can move,
+      // and a cached answer runs nothing.
+      if !scala.util.Properties.isWin then
+        val asked = dir.resolve("asked")
+        val script = s"#!/bin/sh\nprintf '%s\\n' \"$$@\" >> '$asked'\necho absent\n"
+        val podman = Files.writeString(dir.resolve("podman"), script)
+        podman.toFile.setExecutable(true)
+        val gitdirFile = dir.resolve("gitdir-mount-path.answer")
+        assertEquals(mountPathAnswer(podman.toString, "sha256:image-c", "/repo/.git", gitdirFile).text, "absent")
+        val words = Files.readAllLines(asked).asScala.toVector
+        assert(words.contains("sha256:image-c") && !words.exists(_.contains(":latest")), words)
+        Files.delete(asked)
+        assertEquals(mountPathAnswer(podman.toString, "sha256:image-c", "/repo/.git", gitdirFile).text, "absent")
+        assert(!Files.exists(asked), "a cached answer asked podman")
+    finally FileHelper.deleteRecursively(dir)
 
   test("the generated agent document cache varies with every input"):
     def stamp(

@@ -309,6 +309,51 @@ object HostCommands:
     errThread.join()
     Run(process.waitFor(), out, String(err, StandardCharsets.UTF_8).stripLineEnd)
 
+  /**
+   * `body` on its own thread, for a launch step that overlaps the steps after it; the function
+   * returned waits for it and gives its result, or throws what it threw.
+   *
+   *   - `body` must not call `fail` or print: the caller does both with the result, in the launch's
+   *     own order.
+   *   - An exit waits for a started step, through a shutdown hook. Without it, a refusal on the main
+   *     thread would leave the step's child with nobody reading its pipes, and its next write would
+   *     kill it with SIGPIPE: the filter's self-test could stop between its mount and its unmount.
+   *   - A step a shutdown overtakes does not start, since the JVM ends once the hooks finish,
+   *     wherever the step is. A shutdown under way refuses the hook; a hook run before the start
+   *     closes `gate`. The function returned then blocks until the JVM ends, as `fail` does during
+   *     shutdown.
+   *   - `register` adds the hook; a test passes its own to run the hook between the registration
+   *     and the start.
+   */
+  def inBackground[A](
+    name: String,
+    register: Thread => Unit = Runtime.getRuntime.addShutdownHook(_),
+  )(body: => A): () => A =
+    var outcome: Option[scala.util.Try[A]] = None
+    val worker = Thread(() => outcome = Some(scala.util.Try(body)), name)
+    val gate = Object()
+    var closed = false
+    val settle = Thread: () =>
+      gate.synchronized { closed = true }
+      worker.join()
+    val started =
+      try
+        register(settle)
+        gate.synchronized:
+          if !closed then worker.start()
+          !closed
+      catch case _: IllegalStateException => false
+    () =>
+      if !started then untilTheJvmEnds()
+      worker.join()
+      try Runtime.getRuntime.removeShutdownHook(settle)
+      catch case _: IllegalStateException => ()
+      outcome.getOrElse(throw IllegalStateException(s"$name ended without a result")).get
+
+  private def untilTheJvmEnds(): Nothing =
+    while true do Thread.sleep(Long.MaxValue)
+    throw IllegalStateException("the JVM outlived its shutdown")
+
   def runOk(command: String*): Boolean =
     try run(command*).ok
     catch case _: IOException => false

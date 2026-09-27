@@ -186,19 +186,12 @@ class HostCommandsTest extends munit.FunSuite:
     // The true case needs a shutdown under way, so it runs in a JVM of its own on this test's
     // classes (FailDuringShutdown). The exit status is the shutdown's, not the refusal's: the
     // refusal's exit blocked indefinitely, and the JVM ended when the hook finished.
-    def location(of: Class[?]) = Paths.get(of.getProtectionDomain.getCodeSource.getLocation.toURI).toString
-    val classpath = Vector(
-      FailDuringShutdown.getClass, HostCommands.getClass, scala.runtime.LazyVals.getClass, classOf[Option[?]],
-    ).map(location).distinct.mkString(java.io.File.pathSeparator)
-    val jvm = Paths.get(sys.props("java.home"), "bin", "java").toString
-    // Native access as the jar's manifest grants it, for the isatty or console-mode call behind
+    // ownJvm's native access is for the isatty or console-mode call behind
     // colorStderr: this JVM's stderr is a pipe, so the plain labels below are also that call
     // answering for a redirected stream, which sbt's own JVM, run from a console, cannot show.
     // The environment is set so that colorAllowed passes and the call is what decides.
     // What the JVM prints before the first refusal line is its own: _JAVA_OPTIONS echoed back.
-    val builder = ProcessBuilder(
-      jvm, "--enable-native-access=ALL-UNNAMED", "-cp", classpath, "agentsandbox.launcher.FailDuringShutdown",
-    )
+    val builder = ownJvm(FailDuringShutdown)
     builder.environment().remove("NO_COLOR")
     builder.environment().put("TERM", "xterm-256color")
     val process = builder.start()
@@ -216,6 +209,33 @@ class HostCommandsTest extends munit.FunSuite:
     )
     assertEquals(process.waitFor(), 130)
 
+  test("a background step gives its result or its exception, and a refusal meanwhile waits for it"):
+    assertEquals(inBackground("sum")(1 + 2)(), 3)
+    val failing = inBackground("failing")(throw IllegalArgumentException("no answer"))
+    assertEquals(intercept[IllegalArgumentException](failing()).getMessage, "no answer")
+    // The refusal exits, so it runs in a JVM of its own (RefuseDuringBackgroundStep).
+    val process = ownJvm(RefuseDuringBackgroundStep).start()
+    process.getOutputStream.close()
+    process.getInputStream.readAllBytes()
+    val err = String(process.getErrorStream.readAllBytes())
+    assertEquals(
+      err.linesIterator.dropWhile(!_.startsWith("error:")).toVector,
+      Vector("error: refused", "step: finished"),
+    )
+    assertEquals(process.waitFor(), 1)
+
+  test("a background step a shutdown overtakes does not start"):
+    // The shutdown ends the JVM, so each case runs in one of its own (BackgroundStepDuringShutdown).
+    def stepLines(mode: String): Vector[String] =
+      val process = ownJvm(BackgroundStepDuringShutdown, mode).start()
+      process.getOutputStream.close()
+      process.getInputStream.readAllBytes()
+      val err = String(process.getErrorStream.readAllBytes())
+      assertEquals(process.waitFor(), 3, err)
+      err.linesIterator.filter(_.startsWith("step:")).toVector
+    assertEquals(stepLines("begun"), Vector.empty)
+    assertEquals(stepLines("window"), Vector.empty)
+
   test("every warning and refusal the launcher writes goes through the one label"):
     // warn and fail are where the label is spelled and tinted; a println of its own prints it
     // plain on a terminal and drifts the day the rule changes.
@@ -227,6 +247,16 @@ class HostCommandsTest extends munit.FunSuite:
         hit <- printedLabel.findFirstIn(Files.readString(file))
       yield s"${file.getFileName}: $hit"
     assertEquals(offenders, Vector.empty)
+
+  /** A JVM of its own running `fixture`'s main on this test's classes, with native access as the
+    * jar's manifest grants it. */
+  private def ownJvm(fixture: Any, args: String*): ProcessBuilder =
+    def location(of: Class[?]) = Paths.get(of.getProtectionDomain.getCodeSource.getLocation.toURI).toString
+    val classpath = Vector(fixture.getClass, HostCommands.getClass, scala.runtime.LazyVals.getClass, classOf[Option[?]])
+      .map(location).distinct.mkString(java.io.File.pathSeparator)
+    val jvm = Paths.get(sys.props("java.home"), "bin", "java").toString
+    val main = fixture.getClass.getName.stripSuffix("$")
+    ProcessBuilder((Vector(jvm, "--enable-native-access=ALL-UNNAMED", "-cp", classpath, main) ++ args)*)
 
   // The POSIX-branch resolution tests below build ':'-separated PATH strings out of real
   // directories, which on a Windows runner have their own ':' after the drive letter — the

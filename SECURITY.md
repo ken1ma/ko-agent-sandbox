@@ -303,7 +303,8 @@ launcher refuses:
 - a path at which the sandbox image has an entry (`/tmp`, `/usr/local/bin`), or beneath a
   directory of the image the sandbox user cannot enter (`/root`), asked of the image with a run of
   it so that a directory the image gains later is refused without a list to update; `/tmp/app`
-  binds into `/tmp` and is accepted;
+  binds into `/tmp` and is accepted. An `absent` is cached per image Id, and a rebuilt image has
+  a new one;
 - on Windows, a UNC path, in every write mode: the mount path is the one WSL gives a drive,
   `/mnt/<drive>/...`, which a share has not.
 
