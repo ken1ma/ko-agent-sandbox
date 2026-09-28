@@ -1,6 +1,6 @@
-// The sandbox → host command channel: the FIFO protocol both sides speak, and the host-side broker
+// The sandbox → host command channel: the FIFO protocol both sides speak, and the host-side runner
 // that serves it. The sandbox side is the image's ko-sandbox-run-on-host
-// shim; the broker is a detached process of the launcher's own executable — the jar or native
+// shim; the runner is a detached process of the launcher's own executable — the jar or native
 // binary — spawned per session under --run-on-host. SECURITY.md "Run on host" has what the
 // channel grants and withholds.
 
@@ -14,12 +14,14 @@ import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 
 import scala.util.control.NonFatal
 
+import agentsandbox.egress.{BrokeredCredential, CredentialGrammar}
+
 import HostCommands.Os
 
 object RunOnHostChannel:
 
   /**
-   * One well-known FIFO, `req`, made by the broker's first exec so that a session without the
+   * One well-known FIFO, `req`, made by the runner's first exec so that a session without the
    * channel has none and the shim fails at once; everything else is transaction-scoped. The shim
    * takes the lock, creates its own `ctl.<pid>`, `out.<pid>`, `err.<pid>` and `exit.<pid>`,
    * writes its pid to `req` as one line — a single write, so it frames itself — and then sends
@@ -29,26 +31,26 @@ object RunOnHostChannel:
    * `exit`.
    *
    * The request travels on the liveness descriptor, so no request is ever runnable without its
-   * liveness: the broker acts on `ctl`'s EOF alone — an interrupted shim, a killed one and a
+   * liveness: the runner acts on `ctl`'s EOF alone — an interrupted shim, a killed one and a
    * dead container all close the descriptor, and the running command is ended with SIGTERM, the
-   * wrapper's own measured teardown (RunOnHostSession). A handshake whose `ctl` never opens, or whose request
+   * supervisor's own measured teardown (RunOnHostSession). A handshake whose `ctl` never opens, or whose request
    * never completes, expires on a deadline with no command started. The shim bounds startup
    * through opening both output streams, then separately the exit-status read, and exits 70 on
    * either timeout. Waiting for the lock and draining command output have no deadline. The data FIFOs
    * are the transaction's own, so a later shim — the lock frees when its holder dies — cannot
    * attach to a predecessor's streams; a reused pid takes fresh inodes, never leftovers.
    *
-   * The broker reads `req` through one exec at a time — each serving every handshake it
+   * The runner reads `req` through one exec at a time — each serving every handshake it
    * delivers, in order — and answers through short ones, so the sandbox opens nothing outward
    * and the host runs nothing it did not start. A second
    * writer scribbling on `req` or a transaction's FIFOs is the agent breaking its own channel —
-   * the broker drops what it cannot frame, and the authority it enforces is unaffected.
+   * the runner drops what it cannot frame, and the authority it enforces is unaffected.
    */
   val SandboxDir = "/tmp/ko-agent-sandbox/run-on-host"
 
   /**
    * Set in the sandbox to the programs `--run-on-host` names: the shim's cue to wait for a `req`
-   * the broker may not have made yet, and the agent's one variable saying the channel exists.
+   * the runner may not have made yet, and the agent's one variable saying the channel exists.
    */
   val RunOnHostVariable = "KO_AGENT_SANDBOX_RUN_ON_HOST"
 
@@ -60,7 +62,7 @@ object RunOnHostChannel:
   private val TransactionId = "[0-9]{1,18}".r
 
   /** A request is small — a path and a command line — so a huge one is framing gone wrong, not a
-    * command to run; refused before memory is committed to it. The broker parses these bytes on
+    * command to run; refused before memory is committed to it. The runner parses these bytes on
     * the host, so every read is bounded: the handshake, the header, and the fields as a whole.
     * An over-bound frame is still drained (never stored) up to DrainBytes — comfortably past any
     * ARG_MAX — because the requester opens its response readers only after writing the whole
@@ -79,10 +81,10 @@ object RunOnHostChannel:
       case None => Right(None)
       case Some(header) =>
         header.split(" ", 2) match
-          case Array(program, count) if count.forall(_.isDigit) && count.nonEmpty =>
+          case Array(program, count) if agentsandbox.egress.HTTPHelper.isDecimal(count) =>
             count.toIntOption match
               case None =>
-                Left(s"request names $count arguments, which is no count at all")
+                Left(s"request names $count arguments, over the $MaxArguments bound")
               case Some(argc) if argc > MaxArguments =>
                 drainFields(in, argc.toLong + 1)
                 Left(s"request names $argc arguments, over the $MaxArguments bound")
@@ -158,11 +160,11 @@ object RunOnHostChannel:
     result.get
 
   // ---------------------------------------------------------------------------
-  // The broker
+  // The runner
   // ---------------------------------------------------------------------------
 
   /**
-   * How the broker reaches the sandbox, as data so the acceptance test and the tests can substitute a local
+   * How the runner reaches the sandbox, as data so the acceptance test and the tests can substitute a local
    * shell for `podman exec -i <container>`: the transport is what they stub, never the protocol.
    */
   final case class Transport(
@@ -173,38 +175,42 @@ object RunOnHostChannel:
     sandboxDir: String = SandboxDir,
   )
 
-  /** Everything one session's broker serves with: the launcher's canonical project root, the
+  /** Everything one session's runner serves with: the launcher's canonical project root, the
     * programs `--run-on-host` named, and how a validated request — program, working directory,
-    * build lock file, arguments — becomes a wrapper command. */
+    * build lock file, arguments — becomes a supervisor command. */
   final case class Service(
     project: Path,
     programs: Set[String],
-    /** A locked spawn of the wrapper (RunOnHostSession.lockedSpawn, under the broker): dispatch
-      * speaks its protocol. */
-    wrapperCommand: (String, Path, Path, Seq[String]) => Seq[String],
+    /** The supervisor under the build lock (RunOnHostSession.lockedSpawn, under the runner): dispatch
+      * speaks the lock holder's protocol. */
+    supervisorCommand: (String, Path, Path, Seq[String]) => Seq[String],
     os: Os,
     /** The build lock file of a program and build directory (RunOnHostSession.buildLockFile),
-      * which the wrapper holds for its life. */
+      * which the supervisor holds for its life. */
     buildLock: (String, Path) => Either[String, Path],
     /** The runtime a program's command in a build directory runs against, given the request's
-      * arguments, prepared while the spawn holds the build lock: the wrapper options naming it
-      * (RunOnHostSandbox.runtimeOptions), none for a program whose wrapper creates its own. */
+      * arguments, prepared while the lock holder has the build lock: the supervisor options naming it
+      * (RunOnHostSandbox.runtimeOptions), none for a program whose supervisor creates its own. */
     runtime: (String, Path, Seq[String]) => Either[String, Seq[String]],
-    /** After a dispatched spawn ended — its command run, refused, or ended with its requester —
+    /** After a dispatched child ended — its command run, refused, or ended with its requester —
       * with the request's program: what the runtime records once the command is over
-      * (RunOnHostSandbox.BrokerRuntimes.commandEnded). */
+      * (RunnerRuntimes.commandEnded). */
     ended: String => Unit = _ => (),
-    canonicalize: Path => Option[Path] = RunOnHostPrereqs.realPath,
+    canonicalize: Path => Option[Path] = FileHelper.realPath,
     /** What the project is mounted at inside the container — its own path
       * (SandboxProject.mountPathOf): the spelling requests arrive in. */
     mount: String,
-    /** How long the broker waits for a complete request before the handshake expires. */
+    /** How long the runner waits for a complete request before the handshake expires. */
     requestDeadlineMillis: Long = 30_000,
+    /** Given a program and the runtime options its word carries: the brokered credentials its
+      * supervisor reads after the word, for the proxy it starts itself when the runner holds no runtime
+      * for the program (RunOnHostSandbox.CredentialsOption), as CredentialGrammar.bindingInput writes them. */
+    credentialsFrame: (String, Seq[String]) => Option[String] = (_, _) => None,
   )
 
   /**
-   * The broker's life: wait for the sandbox to run, then serve handshakes cycle by cycle while
-   * it still runs — ClipboardBroker.serve's loop, with commands where the clipboard was; each
+   * The runner's life: wait for the sandbox to run, then serve handshakes cycle by cycle while
+   * it still runs — ClipboardRelay.serve's loop, with commands where the clipboard was; each
    * cycle is one reader exec and every transaction its stream delivers. Both waits are bounded
    * pacing, not correctness: an idle cycle blocks in the handshake reader's own open.
    */
@@ -229,7 +235,7 @@ object RunOnHostChannel:
    * A transport exec is killed whole, descendants first: the shell behind it may have forked the
    * command it ran (measured — a stubbed exec left its `cat` alive under pid 1 after
    * destroyForcibly took only the shell), and a surviving grandchild holds both the FIFO and
-   * this side's pipe open past the transaction, leaving the broker blocked on a read because the
+   * this side's pipe open past the transaction, leaving the runner blocked on a read because the
    * surviving grandchild prevents EOF.
    */
   private def end(process: Process): Unit =
@@ -268,20 +274,20 @@ object RunOnHostChannel:
       end(reader)
       reader.waitFor(10, TimeUnit.SECONDS)
 
-  /** How to end the command a broker is currently running, for the shutdown hook: a TERM to the
-    * broker ends the command too, rather than silently leaving it to finish, and returns only
-    * when the wrapper has ended, its teardown included, before the broker's own session is
+  /** How to end the command a runner is currently running, for the shutdown hook: a TERM to the
+    * runner ends the command too, rather than silently leaving it to finish, and returns only
+    * when the supervisor has ended, its teardown included, before the runner's own session is
     * ended. */
   @volatile private var currentCommand: Option[() => Unit] = None
 
   def endCurrentCommand(): Unit = currentCommand.foreach(end => end())
 
-  /** Where a dispatched spawn is, for an end asked of it — the requester gone, endCurrentCommand.
+  /** Where a dispatched child is, for an end asked of it — the requester gone, endCurrentCommand.
     * Waiting for the build lock, it is destroyed at once. Preparing the runtime, it holds the
     * lock the preparation runs under, so the end is applied once the word is out: the refusal,
-    * which it exits on by itself. Running the wrapper, it is destroyed, the wrapper's teardown
+    * which it exits on by itself. Running the supervisor, it is destroyed, the supervisor's teardown
     * answering. */
-  private enum SpawnPhase:
+  private enum ChildPhase:
     case Waiting, Preparing, Running, Ending
 
   private def transact(
@@ -385,20 +391,20 @@ object RunOnHostChannel:
   ): Unit =
     val outWriter = writer(transport, id, "out")
     val errWriter = writer(transport, id, "err")
-    val command = service.wrapperCommand(request.program, workingDirectory, lockFile, request.arguments)
+    val command = service.supervisorCommand(request.program, workingDirectory, lockFile, request.arguments)
     log(s"${request.program} in $workingDirectory: ${request.arguments.mkString(" ")}")
     try
-      // The wrapper's stdin is this broker's pipe, written once — the word below — and then
-      // held: its EOF is the broker gone, killed or ended, and the wrapper ends the command at
-      // it (RunOnHostSandbox.runCommandMain) as this broker ends it at ctl's.
+      // The supervisor's stdin is this runner's pipe, written once — the word below — and then
+      // held: its EOF is the runner gone, killed or ended, and the supervisor ends the command at
+      // it (RunOnHostSandbox.runCommandMain) as this runner ends it at ctl's.
       val child = ProcessBuilder(command*).start()
       val ended = AtomicBoolean(false)
       val requesterGone = AtomicBoolean(false)
-      val phase = AtomicReference(SpawnPhase.Waiting)
+      val phase = AtomicReference(ChildPhase.Waiting)
       val endAsked = AtomicBoolean(false)
       def endChild(): Unit =
         endAsked.set(true)
-        if phase.get == SpawnPhase.Running || phase.compareAndSet(SpawnPhase.Waiting, SpawnPhase.Ending) then
+        if phase.get == ChildPhase.Running || phase.compareAndSet(ChildPhase.Waiting, ChildPhase.Ending) then
           child.destroy()
       currentCommand = Some(() => { endChild(); child.waitFor(); () })
       // The writers die only with their requester: a slow reader is the requester's own
@@ -411,36 +417,40 @@ object RunOnHostChannel:
           endChild()
           end(outWriter)
           end(errWriter)
-      // stderr from the start: the spawn's wait for the build lock is announced there.
+      // stderr from the start: the child's wait for the build lock is announced there.
       val errPump = pump(child.getErrorStream, errWriter.getOutputStream)
-      // The spawn's first line says it holds the build lock; the word — the runtime's options,
-      // or the refusal the spawn prints and exits 2 on — is what it execs the wrapper on.
-      // Anything else is the spawn ending before the lock, or ended while it waited, and its
+      // The child's first line says it holds the build lock; the word — the runtime's options,
+      // or the refusal the child prints and exits 2 on — is what it execs the supervisor on.
+      // Anything else is the child ending before the lock, or ended while it waited, and its
       // exit is the answer.
       readLine(child.getInputStream) match
         case Right(Some(RunOnHostSession.LockedLine))
-            if phase.compareAndSet(SpawnPhase.Waiting, SpawnPhase.Preparing) =>
-          // Any failure to prepare is the refusal: an exception would leave the spawn waiting
+            if phase.compareAndSet(ChildPhase.Waiting, ChildPhase.Preparing) =>
+          // Any failure to prepare is the refusal: an exception would leave the child waiting
           // for a word, the lock held.
           val prepared =
             try service.runtime(request.program, workingDirectory, request.arguments)
             catch case NonFatal(ex) => Left(s"preparing the runtime: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
           val word = prepared match
             case Right(arguments) if !endAsked.get =>
-              phase.set(SpawnPhase.Running)
-              RunOnHostSession.runWord(arguments)
+              phase.set(ChildPhase.Running)
+              // After the word, not in it: the lock holder makes the word's fields the supervisor's
+              // arguments, which other processes read (RunOnHostSession.LockScript).
+              service.credentialsFrame(request.program, arguments) match
+                case Some(frame) => RunOnHostSession.runWord(arguments :+ RunOnHostSandbox.CredentialsOption) + frame
+                case None        => RunOnHostSession.runWord(arguments)
             case Right(_) =>
-              phase.set(SpawnPhase.Ending)
+              phase.set(ChildPhase.Ending)
               RunOnHostSession.refusedWord("refused: the command was ended before it started")
             case Left(reason) =>
               log(s"refused: $reason")
-              phase.set(SpawnPhase.Ending)
+              phase.set(ChildPhase.Ending)
               RunOnHostSession.refusedWord(s"refused: $reason")
           try
             child.getOutputStream.write(word.getBytes(UTF_8))
             child.getOutputStream.flush()
-          catch case _: IOException => () // the spawn is gone; waited for below
-          if endAsked.get && phase.get == SpawnPhase.Running then child.destroy()
+          catch case _: IOException => () // the child is gone; waited for below
+          if endAsked.get && phase.get == ChildPhase.Running then child.destroy()
         case _ => ()
       val pumps = Seq(pump(child.getInputStream, outWriter.getOutputStream), errPump)
       val exit = child.waitFor()
@@ -448,11 +458,11 @@ object RunOnHostChannel:
       pumps.foreach(_.join())
       try service.ended(request.program)
       catch case NonFatal(ex) => log(s"after the command: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
-      // Nothing is retired here on a cancel; the broker follows each program, and the two differ.
+      // Nothing is retired here on a cancel; the runner follows each program, and the two differ.
       // Stock sbt's server survives a client's disconnect: the disconnect cancels the exec
       // (CommandExchange.removeChannel, force=false) and the warm server serves the next
       // command. Stock Mill's daemon shuts itself down on a client's disconnect mid-command
-      // (Server.scala), so the next mill command starts one (BrokerRuntimes.prepare).
+      // (Server.scala), so the next mill command starts one (RunnerRuntimes.prepare).
       if requesterGone.get then log(s"ended with $exit for a requester already gone")
       else
         // Only after both writers have drained: the shim reads the exit code last, and an
@@ -469,9 +479,9 @@ object RunOnHostChannel:
         log(s"exit $exit")
     catch
       case ex: IOException =>
-        log(s"could not start the wrapper: ${ex.getMessage}")
+        log(s"could not start the supervisor: ${ex.getMessage}")
         writeAll(outWriter.getOutputStream, "")
-        writeAll(errWriter.getOutputStream, s"could not start the command wrapper: ${ex.getMessage}\n")
+        writeAll(errWriter.getOutputStream, s"could not start the command supervisor: ${ex.getMessage}\n")
         writeExit(transport, id, 2)
     finally
       currentCommand = None
@@ -520,13 +530,13 @@ object RunOnHostChannel:
   // ---------------------------------------------------------------------------
 
   /**
-   * Detached like the reaper: stdio to /dev/null, the broker must outlive the launcher's exec,
+   * Detached like the reaper: stdio to /dev/null, the runner must outlive the launcher's exec,
    * and the terminal's INT and HUP are ignored before the exec — sh's ignore is inherited, and a
    * JVM leaves an inherited SIG_IGN in place — so a Ctrl-C at the session's terminal cannot take
-   * the broker before its sandbox. TERM stays live: a deliberate kill ends the broker, and its
-   * shutdown hook ends the running command and the broker's session with it.
+   * the runner before its sandbox. TERM stays live: a deliberate kill ends the runner, and its
+   * shutdown hook ends the running command and the runner's session with it.
    */
-  def spawnBroker(
+  def spawnRunner(
     podman: String,
     container: String,
     project: Path,
@@ -538,41 +548,58 @@ object RunOnHostChannel:
     // argument below the launcher carries a value and an explicit one is read by no trusted
     // helper. A name-only forward's own variable is in this environment regardless, inherited as
     // the launcher's whole environment is.
-    forwards: Vector[AgentSandboxLauncher.EnvForward] = Vector.empty,
-    // The launch's resolved file rules, which every profile the broker and its commands render
+    forwards: Vector[CommandLine.EnvForward] = Vector.empty,
+    // The launch's resolved file rules, which every profile the runner and its commands render
     // denies writes to (RunOnHostSandbox.fileRulesOf).
     fileRules: Option[Path] = None,
+    // The brokered credentials, written to the runner's standard input: by pipe, as everywhere below the
+    // launcher, never an environment or an argument (design.md, "Credential brokering at the egress proxy").
+    credentials: Seq[BrokeredCredential] = Seq.empty,
   ): Boolean =
     try
       val builder = ProcessBuilder(
-        (Seq("/bin/sh", "-c", "trap '' INT HUP; exec \"$@\"", "ko-agent-run-on-host-broker")
+        (Seq("/bin/sh", "-c", "trap '' INT HUP; exec \"$@\"", "ko-agent-run-on-host-runner")
           ++ RunOnHostSandbox.selfInvocation(
             (Seq(
               "--serve-run-on-host", podman, container, project.toString,
               programs.mkString(","), logFile.toString,
             ) ++ forwards.map(forward => RunOnHostSandbox.EnvOption + forward.name)
-              ++ fileRules.map(file => RunOnHostSandbox.FileRulesOption + file) :+ mount)*,
+              ++ fileRules.map(file => RunOnHostSandbox.FileRulesOption + file)
+              ++ Option.when(credentials.nonEmpty)(RunOnHostSandbox.CredentialsOption) :+ mount)*,
           ))*,
       )
+      EgressCredentials.scrub(builder)
       forwards.foreach: forward =>
         forward.value.orElse(Option(System.getenv(forward.name))).foreach: value =>
           builder.environment.put(RunOnHostSandbox.carrierName(forward.name), value)
-      builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
+      if credentials.isEmpty then builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
       builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
       builder.redirectError(ProcessBuilder.Redirect.DISCARD)
-      builder.start()
+      val runner = builder.start()
+      val input = runner.getOutputStream
+      try if credentials.nonEmpty then input.write(CredentialGrammar.bindingBytes(credentials))
+      finally input.close()
       true
     catch case _: IOException => false
 
   /** `--serve-run-on-host <podman> <container> <project> <programs-csv> <log-file>
-    * [--env=<name>...] [--file-rules=<file>] <mount>`: spawned by the launcher before it hands
+    * [--env=<name>...] [--file-rules=<file>] [--credentials-on-stdin] <mount>`: spawned by the launcher before it hands
     * over to podman, detached like the reaper. The trailing mount is what the project is mounted
     * at inside the container; the acceptance test's shim passes the project's path too. */
   def serveMain(args: Seq[String]): Unit =
     def isOption(arg: String) =
       arg.startsWith(RunOnHostSandbox.EnvOption) || arg.startsWith(RunOnHostSandbox.FileRulesOption)
+        || arg == RunOnHostSandbox.CredentialsOption
     args match
       case Seq(podman, container, projectArg, programsCsv, logFile, rest*) if rest.filterNot(isOption).sizeIs == 1 =>
+        // First: the launcher wrote them before the runner could read anything else.
+        val credentials =
+          if !rest.contains(RunOnHostSandbox.CredentialsOption) then Vector.empty
+          else
+            RunOnHostSandbox.readStdinCredentials().fold(
+              reason => { Console.err.println(s"--serve-run-on-host: the brokered credentials: $reason"); sys.exit(2) },
+              identity,
+            )
         val forwardedNames = RunOnHostSandbox.forwardedNames(rest)
         val trailing = rest.filterNot(isOption)
         val logPath = Path.of(logFile)
@@ -593,7 +620,7 @@ object RunOnHostChannel:
               sys.exit(1)
         val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
         val root = RunOnHostSession.root(uid)
-        // The broker's session: published for the launch's lifetime, after the scavenge every
+        // The runner's session: published for the launch's lifetime, after the scavenge every
         // start runs, and ended at the serve loop's end or from the TERM hook. Its tmp/ is the
         // sbt server's socket directory, so the socket path budget applies to it.
         val session =
@@ -601,16 +628,16 @@ object RunOnHostChannel:
             RunOnHostSession
               .scavenge(root, RunOnHostSession.HostProcesses, RunOnHostSbtServerShutdown.shutdown(_))
               .foreach((entry, actions) => log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}"))
-            RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker)
+            RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner)
           }.flatMap: session =>
             RunOnHostPrereqs.sessionTmpFits(session.tmp).map(_ => session).left.map(RunOnHostPrereqs.wording)
           match
             case Right(session) => session
             case Left(reason) =>
-              log(s"the broker's session: $reason")
+              log(s"the runner's session: $reason")
               sys.exit(1)
         try java.nio.file.Files.writeString(session.directory.resolve(RunOnHostSession.RunFile), container + "\n")
-        catch case ex: IOException => log(s"the broker's run file: ${ex.getMessage}")
+        catch case ex: IOException => log(s"the runner's run file: ${ex.getMessage}")
         val fileRulesOption = rest.filter(_.startsWith(RunOnHostSandbox.FileRulesOption))
         val fileRules = RunOnHostSandbox.fileRulesOf(fileRulesOption, project) match
           case Right(resolved) => resolved
@@ -618,11 +645,13 @@ object RunOnHostChannel:
             log(s"the file rules: $reason")
             sys.exit(1)
         // The forwarded values, from this process's environment under their carrier names, as
-        // the wrapper reads them; the system paths the artifact bundles, as the wrapper's.
-        val runtimes = RunOnHostSandbox.BrokerRuntimes(
+        // the supervisor reads them; the system paths the artifact bundles, as the supervisor's.
+        val runtimes = RunnerRuntimes(
           session, project, log, RunOnHostSandbox.bundledSystemPaths(),
           forwardedNames.flatMap(name => Option(System.getenv(RunOnHostSandbox.carrierName(name))).map(name -> _)),
           fileRules,
+          credentials,
+          Some(logPath),
         )(scavenge = () =>
           RunOnHostSession
             .scavenge(
@@ -631,19 +660,19 @@ object RunOnHostChannel:
             )
             .foreach((entry, actions) => log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}")))
         // The runtimes' groups end with the session, their audit logs appended to this log
-        // first; under the runtimes' monitor, for the reason BrokerRuntimes gives.
+        // first; under the runtimes' monitor, for the reason RunnerRuntimes gives.
         val teardown = RunOnHostSession.Teardown: _ =>
           runtimes.synchronized:
-            // A daemon a command still running at the broker's end started is observed here,
+            // A daemon a command still running at the runner's end started is observed here,
             // after endCurrentCommand and before the records are read.
             runtimes.commandEnded(RunOnHostPrereqs.Program.Gradle)
             RunOnHostSession
               .endSession(root, session, RunOnHostSession.HostProcesses, RunOnHostSbtServerShutdown.shutdown(_),
                 beforeRemoval = condemned =>
                   RunOnHostSandbox.appendSessionLogs(
-                    logPath, condemned, s"the broker's session ${condemned.getFileName} ended",
+                    logPath, condemned, s"the runner's session ${condemned.getFileName} ended",
                   ))
-              .foreach(action => log(s"the broker's session ended: $action"))
+              .foreach(action => log(s"the runner's session ended: $action"))
         Runtime.getRuntime.addShutdownHook(Thread(() =>
           endCurrentCommand()
           teardown(bySignal = true)))
@@ -659,7 +688,7 @@ object RunOnHostChannel:
         val service = Service(
           project = project,
           programs = programsCsv.split(",").toSet,
-          wrapperCommand = (program, workingDirectory, lockFile, arguments) =>
+          supervisorCommand = (program, workingDirectory, lockFile, arguments) =>
             RunOnHostSession.lockedSpawn(
               lockFile,
               RunOnHostSandbox.selfInvocation(
@@ -667,18 +696,26 @@ object RunOnHostChannel:
                   ++ forwardedNames.map(RunOnHostSandbox.EnvOption + _) ++ fileRulesOption
                   ++ Seq(RunOnHostSandbox.ChannelLogOption + logPath, "--"))*,
               ) ++ arguments,
-              underBroker = true,
+              underRunner = true,
             ),
           os = Os.Mac,
           buildLock = RunOnHostSession.buildLockFile(root, _, _),
           runtime = (programName, buildDirectory, arguments) =>
-            RunOnHostPrereqs.Program.values.find(_.name == programName)
+            RunOnHostPrereqs.Program.named(programName)
               .toRight(s"unknown program $programName")
               .flatMap(runtimes.prepare(_, buildDirectory, arguments))
               .map(_.toSeq.flatMap(RunOnHostSandbox.runtimeOptions)),
           ended = programName =>
-            RunOnHostPrereqs.Program.values.find(_.name == programName).foreach(runtimes.commandEnded),
+            RunOnHostPrereqs.Program.named(programName).foreach(runtimes.commandEnded),
           mount = trailing.head,
+          // A command the runner holds a runtime for uses that runtime's proxy, which the runner started.
+          credentialsFrame = (programName, runtimeArguments) =>
+            RunOnHostPrereqs.Program.named(programName)
+              .filter(_ => runtimeArguments.isEmpty)
+              .flatMap(program => RunOnHostPrereqs.readProgramRules(project, program).toOption.map(program -> _))
+              .map((program, hosts) => RunOnHostSandbox.credentialsFor(program, hosts, credentials))
+              .filter(_.nonEmpty)
+              .map(CredentialGrammar.bindingInput),
         )
         log(s"serving $programsCsv for $project in $container")
         serve(transport, service, log)

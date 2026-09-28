@@ -65,10 +65,11 @@ After renaming a heading or moving a file, run `ko-sandbox-markdown-link-check` 
 local links across the repository's Markdown files.
 
 
-## Codex review
+## Independent review
 
-In Claude Code, after completing a non-trivial change, offer `/ko-review:codex`, which has Codex
-review the working tree and debate the findings with you.
+In Claude Code or Codex, after completing a non-trivial change, offer `/ko-review` (`$ko-review`
+in Codex), which has a separate Codex or Claude session review the working tree and debate the
+findings with you.
 
 ## git
 

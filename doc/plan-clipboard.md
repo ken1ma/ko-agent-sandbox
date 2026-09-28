@@ -2,7 +2,7 @@
 
 Codex and Copilot read clipboard images through a Wayland library, never through the command
 shims, so image paste reaches neither of them in any mode. This plan adds a Wayland service inside
-the sandbox that offers only the clipboard, backed by the existing host broker, and keeps the four
+the sandbox that offers only the clipboard, backed by the existing host relay, and keeps the four
 command shims for the agents that run clipboard commands.
 
 The requirement: unmodified installed agents paste host images under `paste` and
@@ -22,15 +22,15 @@ What a terminal or a live agent does with them is unmeasured; "Tests" lists each
 | `bidirectional` | the current image as PNG       | text; on Linux, also the primary selection  |
 
 OSC 52 requests bypass the channel and this table (SECURITY.md, "Terminal clipboard requests
-(OSC 52)"). Under `off` no broker runs, so every call fails. Under the other modes the broker
+(OSC 52)"). Under `off` no relay runs, so every call fails. Under the other modes the relay
 enforces the table: it never serves the host's text or file lists. Which images it serves depends
-on the host (`ClipboardBroker`):
+on the host (`ClipboardRelay`):
 
 - macOS: an image the pasteboard offers as PNG (`«class PNGf»`).
 - Linux: an image the selection offers as `image/png`.
 - Windows: any image `Clipboard.ContainsImage()` reports, converted to PNG.
 
-The service's socket is one more way into the same broker. The change widens one cell: under
+The service's socket is one more way into the same relay. The change widens one cell: under
 `bidirectional` a Linux host's primary selection, which middle-click pastes and which is separate
 from the clipboard, can also be set ("Copies to the primary selection"). Today the shim's
 `wl-copy --primary` sets the clipboard instead.
@@ -39,8 +39,8 @@ from the clipboard, can also be set ("Copies to the primary selection"). Today t
 
 ### The channel
 
-- The host broker answers `types`, `get image/png` and `set <bytes>` on two FIFOs in the sandbox
-  (`ClipboardBroker`); SECURITY.md "Clipboard" has what each mode grants.
+- The host relay answers `types`, `get image/png` and `set <bytes>` on two FIFOs in the sandbox
+  (`ClipboardRelay`); SECURITY.md "Clipboard" has what each mode grants.
 - `ko-sandbox-clipboard` is installed as `xclip`, `xsel`, `wl-paste` and `wl-copy`, answers only
   the argument patterns in its `case`, and exits 64 on any other.
 - The launcher sets `WAYLAND_DISPLAY=ko-sandbox-clipboard` only under `bidirectional`, a name with
@@ -102,7 +102,7 @@ OpenCode 1.18.32:
   `bidirectional`.
 - Copy writes OSC 52, then `wl-copy` when `WAYLAND_DISPLAY` is set, else
   `xclip -selection clipboard`, else `xsel --clipboard --input`.
-  - Under `paste`: OSC 52, and `xclip`, which the broker drops.
+  - Under `paste`: OSC 52, and `xclip`, which the relay drops.
   - Under `bidirectional`: OSC 52 and `wl-copy`, which reaches the host.
 
 agy 1.2.12:
@@ -146,7 +146,7 @@ run `wl-copy`.
 - The launcher sets `WAYLAND_DISPLAY` to the socket's absolute path under both modes.
   `XDG_RUNTIME_DIR` is unset in the container, and wayland-client 0.31 connects to an absolute
   `WAYLAND_DISPLAY` without it (`src/conn.rs`).
-- It talks to the broker through the FIFOs under the shims' lock, as one more caller. The broker
+- It talks to the relay through the FIFOs under the shims' lock, as one more caller. The relay
   gains one request, `primary` ("Copies to the primary selection"), in both twins and on each host;
   its other requests and its limits are unchanged.
 
@@ -154,15 +154,15 @@ run `wl-copy`.
 
 - wl-clipboard-rs opens a connection per read, creates the data device, makes one round trip, and
   reports an empty clipboard if no offer arrived by then (`src/paste.rs`, `get_offer`).
-- So the service asks the broker for `types` while creating the device and holds that
+- So the service asks the relay for `types` while creating the device and holds that
   connection until the answer, within the shims' bounds.
 - ext-data-control-v1 requires the first `selection` event, and `primary_selection` from a
   compositor that supports it, on binding the device. The service sends, in order:
   - with an image on the host: `data_offer`, `offer` `image/png`, and `selection` with that offer;
-  - otherwise, or without the broker's answer: `selection` with NULL, which the client reports as
+  - otherwise, or without the relay's answer: `selection` with NULL, which the client reports as
     an empty clipboard;
   - then `primary_selection` with NULL, since it accepts primary copies.
-- The broker serves one request at a time under the shims' lock, so a stalled broker delays every
+- The relay serves one request at a time under the shims' lock, so a stalled relay delays every
   native client and shim up to those bounds; threads in the service cannot remove that.
 - The offer lists `image/png` when the host has an image, and never text or `text/uri-list`.
 - A `receive` for `image/png` is one `get image/png`. The service reads the whole answer, up to a
@@ -176,15 +176,15 @@ run `wl-copy`.
 ### Copies
 
 - A client's `set_selection` names a source; the service reads its `text/plain` and sends one
-  `set`. Under `paste`, the broker drops it as it drops a shim's.
+  `set`. Under `paste`, the relay drops it as it drops a shim's.
 - A source is read to its end, for `set_selection` and `set_primary_selection` alike, and sent
-  only whole, as the broker copies a body.
+  only whole, as the relay copies a body.
   - Passing `MaxRequestBytes`, a deadline, the source's cancellation, the client's disconnect and
     the session's end abort the read, and nothing is sent.
 - A native copy reports success without waiting for the service or the host to accept it:
   wl-clipboard-rs returns once the source exists, makes no round trip after `set_selection`, and
   drops errors from serving it (`src/copy.rs`, `copy_internal`, `prepare_copy_internal`).
-  - So a copy the host refuses or fails — over `MaxRequestBytes`, a failed host program, a broker
+  - So a copy the host refuses or fails — over `MaxRequestBytes`, a failed host program, a relay
     gone — reads as done to Codex and Copilot's native module, and Codex writes no OSC 52 for it.
   - "Documentation" has what the README says. The shims keep reporting such a copy as failed.
 - When a new source replaces it, the service cancels the old one, which ends the copying client's
@@ -193,32 +193,37 @@ run `wl-copy`.
 
 ### Shims
 
-- All four names stay and keep calling the broker directly.
+- All four names stay and keep calling the relay directly.
 - New forms: `wl-paste -t image/png` (OpenCode), Copilot's `wl-copy --primary --type text/plain`,
   and agy's once measured.
 
 ### Copies to the primary selection
 
 - Copilot's copy on mouse selection runs `wl-copy --primary --type text/plain`. The shim sends it,
-  and the existing `wl-copy --primary` form, as a new broker request `primary <bytes>` instead of
+  and the existing `wl-copy --primary` form, as a new relay request `primary <bytes>` instead of
   `set`; the service does the same for a native client's `set_primary_selection`. Its count is
   read and bounded as a `set`'s.
-- On macOS and Windows hosts the broker reads and drops it and answers `ok`, as `paste` drops a
+- On macOS and Windows hosts the relay reads and drops it and answers `ok`, as `paste` drops a
   `set`: Copilot's own macOS and Windows builds do not copy on selection, and forwarding it would
   replace the host clipboard at every selection.
 - On Linux hosts under `bidirectional`, it sets the host's primary selection, following Copilot's
   own Linux build: `xclip -selection primary -i`, falling back to `wl-copy --primary` when xclip
-  is absent or fails, as the broker's `copy` falls back for a `set`. The host clipboard is
+  is absent or fails, as the relay's `copy` falls back for a `set`. The host clipboard is
   untouched. A host that cannot set it fails the request, as a failed `set` does.
 
 ### Agents
 
 - Claude Code: unchanged under `bidirectional`. Under `paste`, it now sees a display and copies
-  through `wl-copy`, which the broker drops, and OSC 52 as before.
+  through `wl-copy`, which the relay drops, and OSC 52 as before.
+  - Reconsider the image's `claude-code/managed-settings.d/tui.json`, which keeps the classic
+    renderer so that the terminal can select text.
 - Codex: image paste works under `paste` and `bidirectional`. Copy reaches the host under
   `bidirectional`; under `paste`, arboard succeeds against the service, so Codex no longer writes
   OSC 52 and its copies reach no clipboard on any terminal. Under `off` it keeps OSC 52.
   - Decided: this is `paste` mode's intent, no copy through the sandbox ("Documentation").
+  - Reconsider `fullscreen_transcript = false` in the image's `codex/config.toml`: Codex's own
+    copies then reach the host under `bidirectional`, but under `paste` only the terminal's
+    selection copies.
 - Copilot: image paste works under `paste` and `bidirectional`. Copy is unchanged under
   `bidirectional` except that an HTML copy reaches the host twice, through `wl-copy` and the
   native module; under `paste`, OSC 52 as before.
@@ -231,8 +236,8 @@ run `wl-copy`.
 ## Documentation
 
 - README, `codex`: under `paste`, Codex's copies reach no clipboard; under `bidirectional`, a copy
-  the host refuses or fails still reads as done, and the text can be selected in the terminal
-  under `--no-alt-screen`.
+  the host refuses or fails still reads as done, and the text can be selected in the terminal,
+  since the image's `codex/config.toml` turns off Codex's fullscreen transcript.
 - README, `copilot`: selecting text behaves as in Copilot's own build for the host, under
   `bidirectional`.
   - On Linux hosts it sets the host's primary selection, for middle-click paste.
@@ -243,7 +248,7 @@ run `wl-copy`.
   holds for — Claude Code, Codex, Copilot and OpenCode, agy as measured — and not kiro-cli.
 - SECURITY.md "Clipboard": the service's socket beside the FIFOs, and that `bidirectional` also
   sets the primary selection on Linux hosts.
-- The broker's code records that `primary` follows Copilot's own build for each host.
+- The relay's code records that `primary` follows Copilot's own build for each host.
 
 ## Tests
 
@@ -267,21 +272,21 @@ Specific checks:
   Wayland or X11 commands by `WAYLAND_DISPLAY`.
 - kiro-cli: `/paste` and `/copy` fail in every mode; what `kiro-cli`'s "Copy to clipboard" is.
 
-### The prototype, against a fake broker
+### The prototype, against a fake relay
 
 - arboard `get_image` and clipboard-rs `get_image` read the PNG; a changed image between two
   pastes is read fresh.
-- arboard `set_html` and clipboard-rs `setClipboardContents` reach the fake broker as one `set`
+- arboard `set_html` and clipboard-rs `setClipboardContents` reach the fake relay as one `set`
   of the plain text.
 - A PNG larger than the capacity `F_GETPIPE_SZ` reports for the client's pipe arrives whole,
   though the client drops its connection before reading; pipe(7) fixes no capacity.
-- A client slow to read its pipe holds no broker lock: a shim and another native client are served
+- A client slow to read its pipe holds no relay lock: a shim and another native client are served
   meanwhile.
-- A stalled broker ends a native client's `types` wait with an empty clipboard, and a shim's
+- A stalled relay ends a native client's `types` wait with an empty clipboard, and a shim's
   request with a failure, each within its bound.
 - Replacing a copy cancels the previous source, and the copying client's thread ends.
 - On binding: the seat at version 2, then `selection` with the PNG offer or with NULL, then
-  `primary_selection` with NULL; a stalled broker still yields `selection` with NULL.
+  `primary_selection` with NULL; a stalled relay still yields `selection` with NULL.
 - A source that neither writes nor closes its descriptor is abandoned at the deadline, and at once
   when the client disconnects.
 
@@ -289,7 +294,7 @@ Specific checks:
 
 - Integration under `paste` and `bidirectional`, for the native clients and the shims:
   - concurrent requests, a changing image, a client that disconnects mid-transfer;
-  - a stalled broker, and one that dies: bounded failure;
+  - a stalled relay, and one that dies: bounded failure;
   - the session's end: the service exits, and the agent's exit status and signals pass through.
 - Copies, by mode:
   - `off`: no service runs; native copies fail, and the shims fail at once.
@@ -302,7 +307,7 @@ Specific checks:
   `bidirectional` it sets the primary selection through xclip, through wl-copy on a Wayland-only
   host, and through wl-copy when both are installed and xclip fails, and leaves the clipboard
   unchanged.
-- `ClipboardBrokerTest` covers `primary` in both twins' grammar and, on a Linux host, through xclip,
+- `ClipboardRelayTest` covers `primary` in both twins' grammar and, on a Linux host, through xclip,
   through wl-copy on a Wayland-only host, and through wl-copy when an installed xclip fails; its
   existing cases keep covering the other requests.
 - Live: the "Before building" matrix again, on macOS first, then one Linux and one Windows host;

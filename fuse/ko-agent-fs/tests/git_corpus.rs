@@ -165,8 +165,8 @@ fn protected_entries_stay_frozen() {
 
 #[test]
 fn rebase_and_sequencer_todo_state_is_frozen() {
-    // Frozen like hooks despite git writing them constantly (`doc/git-metadata.md`, group 1): the
-    // one place security overrides compatibility, so those commands do not work in the workspace.
+    // Frozen like hooks despite git writing them constantly (`doc/git-metadata.md`, group 1):
+    // security overrides compatibility here, so those commands do not work in the workspace.
     for path in [
         ".git/rebase-merge/git-rebase-todo",
         ".git/rebase-apply/0001",

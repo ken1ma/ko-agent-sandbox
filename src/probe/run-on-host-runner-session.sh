@@ -1,6 +1,6 @@
 #!/bin/sh
-# What the broker's session rests on (doc/run-on-host.md, "Network", "sbt" and "mill"), measured
-# before the broker encodes any of it; a changed rule or command line calls for a rerun. Four
+# What the runner's session rests on (doc/run-on-host.md, "Network", "sbt" and "mill"), measured
+# before the runner encodes any of it; a changed rule or command line calls for a rerun. Four
 # groups of rows:
 #
 #   L1-L4  SBPL: a loopback listener on port 0 under (local ip "localhost:*"), its control, and an
@@ -24,12 +24,12 @@
 #
 # Run it on macOS, from this repository's root, with the cs-installed sbt on
 # PATH and JAVA_HOME (or `cs java-home`) naming a JDK. It downloads what the two sbt versions and
-# Mill need, unconfined, into the user's own caches — the provisioning the wrapper requires of the
+# Mill need, unconfined, into the user's own caches — the provisioning the supervisor requires of the
 # user — and confines only the rows. About ten minutes on a warm cache. On any FAIL the scratch
 # tree under /private/tmp is kept and named; INFO rows are measurements with no expected answer.
 #
 # Every process it starts runs in a group whose leader stays alive, its start time recorded, the
-# wrapper's own registration (RunOnHostSession.registeredSpawn): the leader installs the closed
+# supervisor's own registration (RunOnHostSession.registeredSpawn): the leader installs the closed
 # environment, publishes the child's exit status beside its record, and stays; every wait has a
 # deadline, a deadline passed is a FAIL that ends the group, and cleanup signals only groups whose
 # leader is still alive. A denial row passes only on the operating system's own refusal in the
@@ -79,7 +79,7 @@ work=$(mktemp -d /private/tmp/ko-probe.XXXXXX)   # short: sbt's boot socket path
 
 # --- groups --------------------------------------------------------------------------------------
 
-leaders=$work/leaders   # `<pid> <lstart>` per live leader, the wrapper's own record
+leaders=$work/leaders   # `<pid> <lstart>` per live leader, the supervisor's own record
 : > "$leaders"
 probe_env=""   # a file of NAME=VALUE lines the leader installs as the whole environment; "" inherits
 # Start COMMAND in DIR as the child of a new group's leader, which publishes the child's exit
@@ -116,7 +116,7 @@ status_of() {
     else cat "$1.exit" 2>/dev/null || echo none; fi
 }
 # End a group behind its recorded leader only — alive, with the start time recorded when it
-# was made, as the wrapper checks a group's leader before signalling it — and retire the record: a pgid
+# was made, as the supervisor checks a group's leader before signalling it — and retire the record: a pgid
 # whose leader died may be someone else's by now.
 end_group() { # leader
     recorded=$(sed -n "s/^$1 //p" "$leaders" | head -1)
@@ -140,7 +140,7 @@ bounded() { # seconds record dir command...
 
 # The run's logs, tables and records under the project, where the sandbox can read them; the
 # scratch tree itself stays short for sbt's socket paths, and its build trees are not copied.
-logs=$PWD/log/run-on-host-broker-session
+logs=$PWD/log/run-on-host-runner-session
 save_logs() {
     rm -rf "$logs" && mkdir -p "$logs" || return
     (cd "$work" && find . -type f \
@@ -151,7 +151,7 @@ save_logs() {
         -not -path './mill/tmp/*' | while read -r file; do
             mkdir -p "$logs/$(dirname "$file")" && cp "$file" "$logs/$file"
         done)
-    echo "logs: log/run-on-host-broker-session/"
+    echo "logs: log/run-on-host-runner-session/"
 }
 cleanup() {
     for leader in $(cut -d' ' -f1 "$leaders"); do end_group "$leader"; done
@@ -258,7 +258,7 @@ profile() { # file rule...: an allow-default profile that denies network* and al
     { echo '(version 1)'; echo '(allow default)'; echo '(deny network*)'
       for rule in "$@"; do echo "$rule"; done; } > "$out"
 }
-# The wrapper's closed environment, minus the proxy, as a file for the group leader.
+# The supervisor's closed environment, minus the proxy, as a file for the group leader.
 write_env() { # file tmp runtime-dir extra-java-options [NAME=VALUE...]
     out=$1; tmp=$2; runtime=$3; extra=$4; shift 4
     { printf 'PATH=%s\nJAVA_HOME=%s\nHOME=%s\nUSER=%s\nLOGNAME=%s\n' \
@@ -561,7 +561,7 @@ then report PASS "G7 outbound reaches any loopback port" "127.0.0.1:$g7_port"
 else report FAIL "G7 outbound reaches any loopback port" "$(first_line "$work/g7-loop.log")"; fi
 end_group "$g7_leader"
 # G6's unconfined control has shown the LAN address reachable by then.
-if [ -z "$lan_ip" ]; then report SKIP "G7 outbound denies the LAN address" "no LAN address"
+if [ -z "$lan_ip" ]; then report SKIP "G7 outbound at the LAN address" "no LAN address"
 else
     group_start "$work/g7b" "$work" python3 "$work/tcp-listen.py" >"$work/g7b.out" 2>"$work/g7b.log"
     g7b_leader=$leader
@@ -690,7 +690,7 @@ SCALA
     echo
     echo "S: sbt $version"
     # S1: the owner's command line — NetworkClient.serverCommand's, which the client passes
-    # -Dsbt.script to and not -batch — in a group of its own, stdio as the broker gives its server.
+    # -Dsbt.script to and not -batch — in a group of its own, stdio as the runner gives its server.
     probe_env=$d/env-srv
     group_start "$d/server" "$proj" "$sbt_script" "-Dsbt.script=$sbt_script" --detach-stdio --server \
         >"$d/server-out.log" 2>"$d/server-err.log"
@@ -749,11 +749,11 @@ SCALA
     forked() { pgrep -f -- "$proj/target" 2>/dev/null | head -1; }
     if until_true 300 has_line probe-main "$d/client-run.log" && [ -n "$(forked)" ]; then
         forked_pid=$(forked)
-        # The idle detector for a confined sbt server — a measurement no broker path reads, since
+        # The idle detector for a confined sbt server — a measurement no runner path reads, since
         # the user's server is shut down by protocol after its exec and another launch's is
         # attached to or taken over
         # (doc/run-on-host.md, "The channel and the command") — on the server JVM and never its
-        # group leader, and with no baseline, as a broker taking over has none: the clients of the
+        # group leader, and with no baseline, as a runner taking over has none: the clients of the
         # server's path-named sockets, as `peers` finds them. Measured first on the already-busy
         # server, then after the client is gone, then with an unrelated UNIX connection the server
         # itself opened beside a connected client; the tables follow each row.
@@ -936,7 +936,7 @@ daemons() { with_cwd 'mill.daemon.MillDaemonMain' "$mp/out/mill-daemon"; }
 no_daemons() { [ -z "$(daemons)" ]; }
 end_daemons() { for pid in $(daemons); do kill "$pid" 2>/dev/null; done; until_true 20 no_daemons; }
 # The download folder as the bootstrap derives it (RunOnHostPrereqs.millDownloadDir), resolved
-# once here and given to the confined rows the way the wrapper gives it, so provisioning and the
+# once here and given to the confined rows the way the supervisor gives it, so provisioning and the
 # rows agree on it whatever MILL_FINAL_DOWNLOAD_FOLDER or XDG_CACHE_HOME the host has set.
 mill_downloads=${MILL_FINAL_DOWNLOAD_FOLDER:-${XDG_CACHE_HOME:-$HOME/.cache}/mill/download}
 export MILL_FINAL_DOWNLOAD_FOLDER="$mill_downloads"
@@ -970,7 +970,7 @@ start_daemon() { # env-file
 profile "$mp/daemon.sb" '(allow network-bind network-inbound (local ip "localhost:*"))'
 
 # Provisioning, unconfined but in a group of its own that ends with it, daemon included: the
-# executable, the daemon classpath memo, the compiler.
+# executable, Mill's `mill-daemon-classpath` file, the compiler.
 echo "provisioning mill 1.1.9 and its compiler, unconfined (can take a few minutes)"
 probe_env=""
 if ! bounded 900 "$mp/provision" "$mp" ./mill app.compile >"$mp/provision.log" 2>&1; then
@@ -1068,7 +1068,7 @@ $(failed "$mp/starter" "$mp/starter.log")"
         group_start "$mp/m5" "$mp" /usr/bin/sandbox-exec -f "$mp/client.sb" $mill_client app.run >"$mp/m5.log" 2>&1
         run_leader=$leader
         if until_true 180 has_line probe-main "$mp/m5.log"; then
-            # The idle observation the broker's foreign-daemon rule rests on (RunOnHostMillDaemons.endForeign):
+            # The idle observation the runner's foreign-daemon rule rests on (RunOnHostMillDaemons.endForeign):
             # a running
             # command is an established connection on the daemon's port, and none once it ends.
             busy=$(lsof -a -p "$daemon" -iTCP -sTCP:ESTABLISHED -nP 2>/dev/null | grep -c ":$port")
@@ -1140,7 +1140,7 @@ $(failed "$mp/starter" "$mp/starter.log")"
     end_group "$foreign_leader"
     end_daemons
 
-    # M8: the broker's early end of a starter (RunOnHostMillDaemons.endStarter): once the daemon in the
+    # M8: the runner's early end of a starter (RunOnHostMillDaemons.endStarter): once the daemon in the
     # starter's group listens on the port socketPort names, TERM to the launcher alone — the
     # daemon's parent, a member of the group other than the leader — and the daemon stays,
     # listening, and serves a client. The group's rows before and after are the topology: which

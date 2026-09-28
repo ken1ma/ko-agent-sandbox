@@ -3,19 +3,20 @@
 // directory a request from inside the sandbox may name as a working directory. run-on-host.md is
 // the reference; this file is the contract's prerequisite half, and holds no backend.
 //
-// Everything here is pure over (Os, environment, filesystem layout), so the macOS answers are
-// testable from any host — the technique AgentSandboxLauncher.stateRootOf already uses. A refusal
+// Everything here except readProgramRules, which reads the project's run-on-host/ tree, is pure
+// over (Os, environment, filesystem layout), so the macOS answers are
+// testable from any host — the technique LauncherState.stateRootOf already uses. A refusal
 // is a value rather than an exit, because the same classification serves the launch's provisioning
 // (RunOnHostProvisioning), a channel request, and the tests that prove unsupported layouts stay
 // unsupported.
 
 package agentsandbox.launcher
 
-import java.io.{IOException, StringReader}
+import java.io.StringReader
 import java.math.BigInteger
 import java.net.{URI, URISyntaxException}
 import java.nio.charset.StandardCharsets.UTF_8
-import java.nio.file.{InvalidPathException, Path, Paths}
+import java.nio.file.{Files, InvalidPathException, LinkOption, Path, Paths}
 import java.security.MessageDigest
 import java.util.{Locale, Properties}
 
@@ -29,9 +30,12 @@ object RunOnHostPrereqs:
     /** What a launch, a request, the rule file and the shim call it: the executable's name. */
     def name: String = toString.toLowerCase(Locale.ROOT)
 
+  object Program:
+    def named(name: String): Option[Program] = values.find(_.name == name)
+
   /**
    * Why a command cannot run, one case per category (run-on-host.md "Refusals"). A value, not a
-   * message: the wrapper prints one wording, the channel another, and the tests match on neither.
+   * message: the supervisor prints one wording, the channel another.
    */
   enum Refusal:
     case PrereqJvmNotCoursier(found: String)
@@ -40,7 +44,9 @@ object RunOnHostPrereqs:
     case PrereqMillVersionUnpinned
     case PrereqMillExecutableMissing(launcherVersion: String, downloadDir: Path)
     case PrereqMillNativeLauncher(pinned: String)
-    case PrereqMillJvmNotSystem(found: Option[String])
+    case PrereqMillJvmUnreadable(found: Option[String])
+    case PrereqMillJdkMissing(pin: String, launcherVersion: String)
+    case PrereqMillJdkNotCoursier(pin: String, launcherVersion: String, cacheRoot: Path)
     case PrereqGradleWrapperMissing
     case PrereqGradleWrapperUnreadable(reason: String)
     case PrereqGradleDistributionMissing(distributionUrl: String, directory: Path)
@@ -61,7 +67,7 @@ object RunOnHostPrereqs:
 
   /**
    * The refusal as the blocked reader sees it: what stopped the command, and what to do next.
-   * Every case is worded here, so a case the wrapper prints through its enum spelling is a
+   * Every case is worded here, so a case the supervisor prints through its enum spelling is a
    * compile error, not a message with a class name in it.
    */
   def wording(refusal: Refusal): String = refusal match
@@ -81,8 +87,14 @@ object RunOnHostPrereqs:
       s"the pinned mill version $pinned names the native launcher, which cannot reach the launch's daemon: it " +
         "takes no _JAVA_OPTIONS, so its connect is the dual-stack one the profile denies; pin " +
         s"`${pinned.stripSuffix("-native")}` or `${pinned.stripSuffix("-native")}-jvm`"
-    case Refusal.PrereqMillJvmNotSystem(found) =>
-      s"mill-jvm-version must be `system`; found ${found.getOrElse("nothing")}"
+    case Refusal.PrereqMillJvmUnreadable(found) =>
+      s"mill-jvm-version must be `system` or one JVM id such as `temurin:25`; found ${found.getOrElse("nothing")}"
+    case Refusal.PrereqMillJdkMissing(pin, launcherVersion) =>
+      s"the JDK that mill-jvm-version pins, $pin, is not provisioned: $MillJavaHomeFile does not record it; run " +
+        s"`MILL_VERSION=$launcherVersion ./mill version` once on the host"
+    case Refusal.PrereqMillJdkNotCoursier(pin, launcherVersion, cacheRoot) =>
+      s"$MillJavaHomeFile records no JDK inside the Coursier cache $cacheRoot for mill-jvm-version $pin; delete " +
+        s"that file, then run `MILL_VERSION=$launcherVersion ./mill version` once on the host"
     case Refusal.PrereqGradleWrapperMissing =>
       "the build directory has no gradle/wrapper/gradle-wrapper.properties; a global gradle is not used"
     case Refusal.PrereqGradleWrapperUnreadable(reason) => reason
@@ -126,7 +138,7 @@ object RunOnHostPrereqs:
   // ---------------------------------------------------------------------------
 
   /**
-   * The run-on-host cache root, discovered exactly as [[AgentSandboxLauncher.stateRootOf]] discovers the
+   * The run-on-host cache root, discovered exactly as [[LauncherState.stateRootOf]] discovers the
    * state root so the two answer alike on one machine: XDG_CACHE_HOME when set and absolute,
    * otherwise $HOME/.cache. Unset is the ordinary case on macOS rather than the exception — mill's
    * own bootstrap takes the same fallback there — so the fallback is the path most runs use.
@@ -181,18 +193,15 @@ object RunOnHostPrereqs:
    * directory, which `--reset A` removes.
    *
    * `path` must be canonical — a symlinked `run-on-host` or project directory places it wherever
-   * the link points, which the spelling never shows — and is compared under the macOS data-volume
-   * spellings as [[cacheRootOutsideProject]] compares.
+   * the link points, which the spelling never shows — and is compared in each of its spellings
+   * (SandboxProject.dataVolumeSpellings).
    */
   def cachePathClearOfStateRoot(path: Path, stateRoot: Path, os: Os): Either[Refusal, Path] =
-    val clear = spellings(os, path).forall: candidate =>
-      spellings(os, stateRoot).forall: state =>
+    val clear = SandboxProject.dataVolumeSpellings(os, Seq(path)).forall: candidate =>
+      SandboxProject.dataVolumeSpellings(os, Seq(stateRoot)).forall: state =>
         candidate.startsWith(runOnHostCachesOf(state)) ||
           (!candidate.startsWith(state) && !state.startsWith(candidate))
     if clear then Right(path) else Left(Refusal.CachePathOverlapsStateRoot(path, stateRoot))
-
-  private def spellings(os: Os, path: Path): Seq[Path] =
-    if os == Os.Mac then SandboxProject.withMacDataVolumeAliases(Seq(path)) else Seq(path)
 
   def coursierV1Of(cacheRoot: Path, projectId: String): Path =
     runOnHostCacheDir(cacheRoot, projectId).resolve("coursier").resolve("v1")
@@ -230,7 +239,7 @@ object RunOnHostPrereqs:
 
   /**
    * Refused when the cache root would be inside the project, the check
-   * [[AgentSandboxLauncher.requireStateRootOutside]] makes for the state root: a cache the
+   * [[LauncherState.requireStateRootOutside]] makes for the state root: a cache the
    * workspace can reach is a cache the sandbox can rewrite between commands.
    */
   def cacheRootOutsideProject(
@@ -240,18 +249,13 @@ object RunOnHostPrereqs:
     canonicalize: Path => Either[String, Path],
   ): Either[Refusal, Path] =
     // Canonical before the overlap check: XDG_CACHE_HOME can be a symlink whose text is outside the
-    // project and whose target is inside it, and the lexical answer would pass it.
-    // Under the macOS data-volume spellings too: a firmlink is not a symlink, so canonicalization
-    // leaves `/System/Volumes/Data/...` and `/...` as two names of one directory
-    // (SandboxProject.withMacDataVolumeAliases). The canonical root is the answer, and every path
-    // derived from it must come from that answer, not from the spelling that was checked.
+    // project and whose target is inside it, and the lexical answer would pass it. The canonical
+    // root is the answer, and every path derived from it must come from that answer, not from
+    // cacheRoot as given.
     canonicalize(cacheRoot) match
       case Left(reason) => Left(Refusal.CacheRootUnusable(reason))
       case Right(root) =>
-        // Exact, both being canonical: folding would refuse a case-different sibling that a
-        // case-sensitive volume keeps distinct.
-        def overlapsExactly(left: Path, right: Path) = left.startsWith(right) || right.startsWith(left)
-        if spellings(os, root).exists(r => spellings(os, project).exists(p => overlapsExactly(r, p))) then
+        if SandboxProject.overlapsInAnySpelling(os, root, project) then
           Left(Refusal.CacheRootInsideProject(root, project))
         else Right(root)
 
@@ -304,20 +308,24 @@ object RunOnHostPrereqs:
     env("JAVA_HOME").filter(_.nonEmpty) match
       case None => Left(Refusal.PrereqJvmNotCoursier("JAVA_HOME is not set"))
       case Some(value) =>
-        parsePath(value).flatMap(canonicalize) match
-          case None => Left(Refusal.PrereqJvmNotCoursier(value))
-          case Some(home) =>
-            // bin/java canonical and still under the home: a symlink out of it would run a JVM the
-            // profile never granted.
-            val java = canonicalize(home.resolve("bin").resolve("java"))
-            canonicalize(cacheRoot) match
-              case Some(root)
-                if home.startsWith(root)
-                  && home != root
-                  && home.getParent != root
-                  && java.exists(binary => binary.startsWith(home) && isExecutableFile(binary)) =>
-                Right(home)
-              case _ => Left(Refusal.PrereqJvmNotCoursier(value))
+        jdkHomeInside(value, cacheRoot, canonicalize, isExecutableFile).toRight(Refusal.PrereqJvmNotCoursier(value))
+
+  /** The canonical home `value` names, when it is a JDK home inside the Coursier cache. */
+  private def jdkHomeInside(
+    value: String,
+    cacheRoot: Path,
+    canonicalize: Path => Option[Path],
+    isExecutableFile: Path => Boolean,
+  ): Option[Path] =
+    parsePath(value).flatMap(canonicalize).filter: home =>
+      // bin/java canonical and still under the home: a symlink out of it would run a JVM the
+      // profile never granted.
+      val java = canonicalize(home.resolve("bin").resolve("java"))
+      canonicalize(cacheRoot).exists: root =>
+        home.startsWith(root)
+          && home != root
+          && home.getParent != root
+          && java.exists(binary => binary.startsWith(home) && isExecutableFile(binary))
 
   /**
    * The `sbt` the command runs, which must be the one `cs install sbt` produced. An `sbt` found on
@@ -337,8 +345,39 @@ object RunOnHostPrereqs:
       case _                   => Left(Refusal.PrereqSbtNotCoursier(candidate))
 
   /**
+   * The second half of the cs-installed `sbt`: the script execs an unpacked distribution inside the
+   * Coursier archive cache. Its path encodes the download URL of whichever sbt Coursier installed,
+   * so it is read out of the script rather than derived — and read rather than obtained by running
+   * it: running the script is executing on the host, unconfined.
+   *
+   * The longest cache path the script names, because a shorter one is a prefix of the real answer
+   * and a grant on a prefix is wider than it should be. Refused if it escapes the cache root.
+   */
+  def sbtDistribution(scriptText: String, coursierCacheRoot: Path): Option[Path] =
+    val prefix = coursierCacheRoot.toString
+    val candidates =
+      for
+        line <- scriptText.linesIterator
+        start <- indexesOf(line, prefix)
+        raw = line.drop(start).takeWhile(ch => ch != '"' && ch != '\'' && ch != ';' && ch != '\n')
+        trimmed = raw.trim
+        if trimmed.length > prefix.length
+      yield trimmed
+    candidates.toSeq.sortBy(-_.length).headOption
+      .map(text => Path.of(text).normalize())
+      .filter(_.startsWith(coursierCacheRoot))
+
+  private def indexesOf(line: String, needle: String): Seq[Int] =
+    Iterator
+      .unfold(0): from =>
+        line.indexOf(needle, from) match
+          case -1    => None
+          case index => Some((index, index + 1))
+      .toSeq
+
+  /**
    * The sbt distribution home to grant, from the distribution's `sbt` the cs-installed script execs
-   * (SeatbeltProfile.sbtDistribution names it). It is checked as the script itself is —
+   * (sbtDistribution names it). It is checked as the script itself is —
    * canonical, an executable file, still inside the cache once symlinks are followed — and its
    * layout is checked too: `<home>/bin/sbt` with the home strictly inside `arc`, where Coursier
    * unpacks archives. A grant is the home, so `arc/bin/sbt` or `v1/x/bin/sbt` would grant `arc`
@@ -429,13 +468,13 @@ object RunOnHostPrereqs:
       case None          => Left(Refusal.PrereqMillVersionUnpinned)
 
   /**
-   * The launcher the wrapper runs for a pinned version: the JVM launcher, `<v>-jvm` as the
+   * The launcher the supervisor runs for a pinned version: the JVM launcher, `<v>-jvm` as the
    * bootstrap spells it, for a `<v>` with no suffix and a `<v>-jvm` pin alike. The bootstrap would run the
    * native image for `<v>`, and that image cannot be the launch's client: it takes no
    * `_JAVA_OPTIONS`, so the environment's `preferIPv4Stack` never reaches it, its connect
    * is the dual-stack one the "localhost" class denies (run-on-host.md "Network"), and
    * `-Djava.net.preferIPv4Stack=true` on its command line changes nothing (measured,
-   * src/probe/run-on-host-broker-session.sh M2). A `<v>-native` pin asks for that one
+   * src/probe/run-on-host-runner-session.sh M2). A `<v>-native` pin asks for that one
    * launcher by name and is refused.
    */
   def millLauncherVersion(pinned: String): Either[Refusal, String] =
@@ -443,39 +482,49 @@ object RunOnHostPrereqs:
     else if pinned.endsWith("-jvm") then Right(pinned)
     else Right(pinned + "-jvm")
 
+  /** The JVM a build directory's `mill-jvm-version` selects. */
+  enum MillJvm:
+    /** `system`: `java` from the PATH the supervisor sets, the JDK `JAVA_HOME` names. */
+    case System
+    /** A Coursier JVM id, such as `temurin:25`: the JDK a host run provisioned (millPinnedJdk). */
+    case Pinned(id: String)
+
   /**
-   * `mill-jvm-version` must be `system`: mill otherwise provisions a JVM through Coursier's
-   * index, a JDK fetched by the command, where `system` takes `java` from the PATH the wrapper sets.
+   * `mill-jvm-version` must be `system` or one JVM id: mill resolves an id through Coursier's
+   * index into a JDK it downloads, which a command may not do, so the JDK is the one a host run
+   * provisioned (millPinnedJdk).
    *
    * Read as mill reads it (`MillProcessLauncher.loadMillConfig`, `mill.constants.Util.
    * readBuildHeader`): `.mill-jvm-version`, else `.config/mill-jvm-version` — the first line that is
    * not blank or a `#` comment, compared as written, so `" system "` is not `system` — else the
    * header of the first root build file that exists, `build.mill.yaml` (the whole file is YAML)
    * then `build.mill` (the initial run of `//| ` lines only), where the key is a top-level YAML
-   * key. The first source that exists is authoritative, empty or not; anything but `system` is a
-   * refusal, absent included, since absent means mill's own default.
+   * key. The first source that exists is authoritative, empty or not; a value that is neither
+   * `system` nor an id is a refusal, absent included, since absent means mill's own default, which
+   * differs between mill versions.
    */
-  def millJvmIsSystem(
+  def millJvm(
     project: Path,
     readLines: Path => Option[Seq[String]],
-  ): Either[Refusal, Unit] =
+  ): Either[Refusal, MillJvm] =
     def lines(name: String): Option[Seq[String]] = readLines(project.resolve(name))
     // No environment interpolation, though mill's reader does it: a value that needs the
     // environment to become `system` is not literally `system`, and refusing it fails closed.
     def optsFile(name: String): Option[Option[String]] =
       lines(name).map(_.find(line => line.trim.nonEmpty && !line.trim.startsWith("#")))
-    // A recognizer, not a YAML parser: the only question is "is this exactly `system`?", so the
-    // accepted spellings are enumerated — plain or quoted, an optional comment after whitespace,
-    // as YAML requires — and every other value, `system#x` and an unmatched quote included, is
-    // returned as found and refused below. Conservative false rejects fail closed; a parser that
-    // guessed would fail open.
+    // A recognizer, not a YAML parser: the only question is "is this exactly `system` or one
+    // id?", so the accepted spellings are enumerated — plain or quoted, an optional comment after
+    // whitespace, as YAML requires — and every other value, `system#x` and an unmatched quote
+    // included, is returned as found and refused below. Conservative false rejects fail closed; a
+    // parser that guessed would fail open.
     def topLevel(all: Seq[String]): Option[String] =
       // mill parses one YAML document; a `---` or `...` marker starts territory it never reads,
       // and a key there would be recognized here and ignored there. Refused, and the refusal is the value.
       if all.exists(line => DocumentMarker.matches(line)) then Some("multi-document YAML")
       else all.collect { case TopLevelJvmKey(value) => value } match
         case Seq()      => None
-        case Seq(value) => Some(if SystemSpelling.matches(value) then "system" else value.trim)
+        case Seq(ScalarSpelling(plain, double, single)) => Option(plain).orElse(Option(double)).orElse(Option(single))
+        case Seq(value) => Some(value.trim)
         // Which one mill's parsed map keeps is its parser's business; two keys are never `system`.
         case _ => Some("duplicate mill-jvm-version keys")
     // The //| lines as readBuildHeader takes them: `//|` alone is an empty line, `//| ...` is
@@ -496,7 +545,10 @@ object RunOnHostPrereqs:
         .orElse(header("build.mill.yaml"))
         .orElse(header("build.mill"))
         .flatten
-    if found.contains("system") then Right(()) else Left(Refusal.PrereqMillJvmNotSystem(found))
+    found match
+      case Some("system")                 => Right(MillJvm.System)
+      case Some(id) if JvmId.matches(id) => Right(MillJvm.Pinned(id))
+      case _                              => Left(Refusal.PrereqMillJvmUnreadable(found))
 
   /** `---` or `...` at line start, bare or followed by whitespace and anything: both start
     * territory mill's single-document parse never reads. */
@@ -505,7 +557,51 @@ object RunOnHostPrereqs:
   /** The colon must be followed by whitespace or end the line: YAML's `key:value` is one scalar,
     * not a mapping, and mill would not see the key. */
   private val TopLevelJvmKey = raw"""mill-jvm-version:((?:\s.*)?)""".r
-  private val SystemSpelling = raw"""\s*(?:system|"system"|'system')(?:\s+#.*)?\s*""".r
+  /** One scalar of the id's characters, plain or in either quote, then an optional comment. */
+  private val ScalarSpelling =
+    raw"""\s*(?:([A-Za-z0-9.:+_-]+)|"([A-Za-z0-9.:+_-]+)"|'([A-Za-z0-9.:+_-]+)')(?:\s+#.*)?\s*""".r
+
+  /** A Coursier JVM id as `mill-jvm-version` takes one: a version, or a name, a colon and a
+    * version. Starting with a letter, since a plain scalar of digits and dots is a number to
+    * YAML, and what mill makes of one is its parser's business. */
+  private val JvmId = raw"""[A-Za-z][A-Za-z0-9.+_-]*(?::[A-Za-z0-9.+_-]+)?""".r
+
+  /** Where mill's launcher writes the JDK home it resolved for a pinned `mill-jvm-version`, under
+    * the build directory (`CoursierClient.resolveJavaHome`, 1.1.10). */
+  val MillJavaHomeFile = "out/mill-daemon/cache/java-home"
+
+  /** The file's whole text: a JSON pair of strings, the key then the home, neither holding an
+    * escape — mill writes none for the paths this accepts, and one refused fails closed. */
+  private val RecordedJavaHome = raw"""\["([^"\\]*)","([^"\\]*)"\]""".r
+
+  /**
+   * The JDK a pinned `mill-jvm-version` runs on: the home mill's launcher recorded in
+   * `MillJavaHomeFile` when a host run resolved the id, accepted when it passes the checks
+   * `JAVA_HOME` passes (resolveJdkHome). `recorded` is that file's text, None when absent.
+   *
+   * Mill uses the recorded home while the file's key equals `<id>:<index version>:<repositories>`
+   * and the home is a directory, and otherwise resolves the id again, fetching the index and the
+   * JDK — measured, src/probe/mill-pinned-jvm.sh. So a file recording another id is refused here
+   * as not provisioned. The index version is mill's own default unless the build sets one, and
+   * the repositories are a YAML list, so neither is compared: a file mill itself rejects on
+   * those fails the command at mill's fetch.
+   *
+   * Mill runs whatever directory the file names (the same probe), and a command can write the
+   * file, so the checks here are what keep the grant a JDK the user provisioned.
+   */
+  def millPinnedJdk(
+    id: String,
+    launcherVersion: String,
+    recorded: Option[String],
+    cacheRoot: Path,
+    canonicalize: Path => Option[Path],
+    isExecutableFile: Path => Boolean,
+  ): Either[Refusal, Path] =
+    recorded match
+      case Some(RecordedJavaHome(key, home)) if key.startsWith(s"$id:") =>
+        Some(home).filter(_.startsWith("/")).flatMap(jdkHomeInside(_, cacheRoot, canonicalize, isExecutableFile))
+          .toRight(Refusal.PrereqMillJdkNotCoursier(id, launcherVersion, cacheRoot))
+      case _ => Left(Refusal.PrereqMillJdkMissing(id, launcherVersion))
 
   /** The JVM launcher's file, provisioned: `<download folder>/<v>` for the launcher version
     * `<v>-jvm`, as the bootstrap derives it (its `case "$MILL_VERSION"` block strips the suffix and
@@ -521,12 +617,12 @@ object RunOnHostPrereqs:
     else Left(Refusal.PrereqMillExecutableMissing(launcherVersion, downloadDir))
 
   /**
-   * What Mill's launcher restarts the daemon on (`ServerLauncher.DaemonConfig`, 1.1.9): the
+   * What Mill's launcher restarts the daemon on (`ServerLauncher.DaemonConfig`, 1.1.10): the
    * launcher's version, the resolved JVM, `mill-jvm-opts` and `mill-repositories` — the last
    * three each from the source `MillProcessLauncher.loadMillConfig` selects, `.<key>`, else
    * `.config/<key>`, else the header of the first root build file, `build.mill.yaml` (the whole
    * file) then `build.mill` (its `//|` lines). Its other inputs, `JAVA_OPTS` and
-   * `JDK_JAVA_OPTIONS`, require explicit forwarding and stay fixed for the launch. The broker compares this before
+   * `JDK_JAVA_OPTIONS`, require explicit forwarding and stay fixed for the launch. The runner compares this before
    * each command and replaces the daemon when it differs, so that the client never meets the
    * mismatch itself: Mill's launcher would end the daemon and start a replacement from the
    * client's own profile, which cannot bind, and the command would fail.
@@ -537,9 +633,13 @@ object RunOnHostPrereqs:
    * `build.mill.yaml` changes the build anyway. Each source is named with its text, so an empty
    * file, which Mill selects like any other, differs from an absent one, and one file's lines
    * never read as another's. The version is read as the bootstrap reads it (millVersion); the
-   * JVM version as Mill reads it, `system` for every command the prerequisites admit.
+   * JVM version as Mill reads it. `javaHome` is the text of `MillJavaHomeFile`, taken under a
+   * pinned JVM alone: it names the JDK the daemon runs on and its profile grants, so a daemon
+   * started from another text is replaced.
    */
-  def millDaemonConfig(buildDirectory: Path, readLines: Path => Option[Seq[String]]): String =
+  def millDaemonConfig(
+    buildDirectory: Path, readLines: Path => Option[Seq[String]], javaHome: Option[String] = None,
+  ): String =
     def lines(name: String): Option[Seq[String]] = readLines(buildDirectory.resolve(name))
     def named(name: String, content: Option[Seq[String]]): Option[Seq[String]] = content.map(s"$name:" +: _)
     val header: Seq[String] =
@@ -550,8 +650,11 @@ object RunOnHostPrereqs:
       named(s".$key", lines(s".$key")).orElse(named(s".config/$key", lines(s".config/$key")))
         .getOrElse(Seq(s"$key from the header"))
     val version = millVersion(buildDirectory, readLines).fold(_ => "", identity)
-    (version +: (Seq("mill-jvm-version", "mill-jvm-opts", "mill-repositories").flatMap(selected) ++ header))
-      .mkString("\n")
+    val recordedHome = millJvm(buildDirectory, readLines) match
+      case Right(MillJvm.Pinned(_)) => Seq(s"$MillJavaHomeFile:", javaHome.getOrElse("absent"))
+      case _                        => Seq.empty
+    (version +: (Seq("mill-jvm-version", "mill-jvm-opts", "mill-repositories").flatMap(selected) ++ header
+      ++ recordedHome)).mkString("\n")
 
   /** `DEFAULT_MILL_VERSION="1.1.8"` as the bootstrap spells it, inside its `if [ -z … ]` guard. */
   private val DefaultAssignment = raw""".*\bDEFAULT_MILL_VERSION="([^"]+)".*""".r
@@ -571,7 +674,7 @@ object RunOnHostPrereqs:
     value.nonEmpty && !value.exists(ch => ch == '/' || ch == '\\' || ch.isWhitespace)
 
   /**
-   * The wrapper's distribution as Gradle's wrapper takes it (9.7.1: `WrapperExecutor`,
+   * The wrapper's distribution as Gradle's wrapper takes it (9.8.0: `WrapperExecutor`,
    * `WrapperDistributionUrlConverter`, `GradleWrapperMain`). The properties are loaded as
    * `java.util.Properties` loads them, so `https\://` and `https://` are one URL; `distributionUrl`
    * is required; a URL without a scheme is a file relative to the properties file's directory.
@@ -588,7 +691,6 @@ object RunOnHostPrereqs:
     projectPropertiesText: Option[String],
   ): Either[Refusal, URI] =
     def unreadable(reason: String) = Left(Refusal.PrereqGradleWrapperUnreadable(reason))
-    def printable(text: String) = text.forall(ch => ch >= ' ' && ch <= '~')
     def load(name: String, text: String): Either[Refusal, Properties] =
       val properties = Properties()
       try
@@ -597,7 +699,7 @@ object RunOnHostPrereqs:
       catch case ex: IllegalArgumentException => unreadable(s"$name is malformed: ${ex.getMessage}")
     def setting(properties: Properties, key: String, default: String): Either[Refusal, String] =
       val value = Option(properties.getProperty(key)).getOrElse(default)
-      if printable(value) then Right(value) else unreadable(s"$key contains a character outside printable ASCII")
+      if isPrintableAscii(value) then Right(value) else unreadable(s"$key contains a character outside printable ASCII")
     def defaultOnly(properties: Properties, key: String, default: String): Either[Refusal, Unit] =
       setting(properties, key, default).flatMap: value =>
         if value == default then Right(())
@@ -615,7 +717,7 @@ object RunOnHostPrereqs:
           "no distributionUrl in gradle/wrapper/gradle-wrapper.properties",
         ))
       url <-
-        if printable(raw) then Right(raw)
+        if isPrintableAscii(raw) then Right(raw)
         else unreadable("distributionUrl contains a character outside printable ASCII")
       parsed <-
         try Right(URI(url))
@@ -704,12 +806,11 @@ object RunOnHostPrereqs:
         line.dropWhile(_ != '=').drop(1)
     val pattern = "/org/apache/maven/"
     val cSpace = Set(' ', '\t', '\n', '\u000b', '\f', '\r')
-    def printable(text: String) = text.forall(ch => ch >= ' ' && ch <= '~')
     def noUrl = Left(Refusal.PrereqMvnWrapperUnreadable("no distributionUrl in .mvn/wrapper/maven-wrapper.properties"))
     // A URL is quoted in a refusal only once it is printable ASCII: never a control character.
     found.lastOption match
       case None => noUrl
-      case Some(raw) if !printable(raw.filterNot(cSpace)) =>
+      case Some(raw) if !isPrintableAscii(raw.filterNot(cSpace)) =>
         Left(Refusal.PrereqMvnWrapperUnreadable("distributionUrl contains a character outside printable ASCII"))
       case Some(raw) =>
         val url = raw.filterNot(cSpace)
@@ -718,7 +819,7 @@ object RunOnHostPrereqs:
             case -1    => url
             case index => url.drop(index + pattern.length))
         if url.isEmpty then noUrl
-        else if !printable(effective) then
+        else if !isPrintableAscii(effective) then
           Left(Refusal.PrereqMvnWrapperUnreadable("MVNW_REPOURL contains a character outside printable ASCII"))
         else if url.drop(url.lastIndexOf('/') + 1).startsWith("maven-mvnd-") then
           Left(Refusal.PrereqMvnDistributionIsMvnd(url))
@@ -766,7 +867,7 @@ object RunOnHostPrereqs:
    * server side refuses a longer path with a message; the client's JNI connect has no such check and
    * dies in memcpy with `Trace/BPT trap: 5`. Measured: 52 runs, 56 traps.
    *
-   * The wrapper points `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` and `java.io.tmpdir` at this one
+   * The supervisor points `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` and `java.io.tmpdir` at this one
    * directory, so this is the budget for all three.
    */
   val SessionTmpMaxLength: Int = 104 - 1 - "/.sbt/sbt-socket".length - "-9223372036854775808".length -
@@ -790,24 +891,83 @@ object RunOnHostPrereqs:
     case Program.Gradle | Program.Mvn => "repo.maven.apache.org"
 
   def programRulePath(project: Path, program: Program): Path =
-    project.resolve(".ko-agent-sandbox").resolve("run-on-host").resolve(program.name).resolve("egress").resolve("rule")
+    SandboxProject.boundaryDirOf(project).resolve("run-on-host").resolve(program.name).resolve("egress").resolve("rule")
 
-  /** The one line form the program's rule file holds, `allow https://<host>/ read`, as the refusal spells it. */
-  val ProgramRuleForm = "allow https://<host>/ read"
+  /**
+   * The program's rule file's hosts, validated to the program's rule grammar (run-on-host.md
+   * "Configuration"). The whole run-on-host/ tree is checked first, every program's egress/ as
+   * egress/ and file/ are (SandboxProject.readBoundaryRuleFiles), and only the selected program's
+   * rule file is read: an absent file contributes nothing. A host the proxy refuses — an IP literal,
+   * a name that is no hostname — is refused here with the proxy's reason: the resolution the proxy's
+   * start runs (RunOnHostInspection.leafNames) runs here first, so the launch reports the host.
+   */
+  def readProgramRules(project: Path, program: Program): Either[String, Vector[String]] =
+    def egressDir(each: Program) = programRulePath(project, each).getParent
+    val grammar = "doc/run-on-host.md"
+    for
+      _ <- programDirectoryRefusal(project).toLeft(())
+      _ <- Program.values.iterator
+        .flatMap(each => SandboxProject.ruleDirectoryRefusal(egressDir(each), Vector("rule"), grammar))
+        .nextOption().toLeft(())
+      files <- SandboxProject
+        .readBoundaryRuleFiles(egressDir(program), Vector("rule"), grammar, EgressRules.normalizeRuleText)
+      hosts <- files.headOption.fold(Right(Vector.empty)): (_, text) =>
+        programRuleHosts(text).left.map(wording)
+          .flatMap(hosts => RunOnHostInspection.leafNames(egressRuleText(program, hosts)).map(_ => hosts))
+          .left.map(reason => s"error: ${HostCommands.shown(s"${programRulePath(project, program)}: $reason")}")
+    yield hosts
+
+  /**
+   * run-on-host/ accepts only recognized configuration entries, as does its parent directory
+   * (SandboxProject.boundaryDirRefusal): a directory per Program, and egress/ inside each. A stray
+   * name, a symlinked component, or a file where a directory belongs refuses the command rather
+   * than staying as ignored config; a file where a directory belongs would read as absent
+   * configuration.
+   */
+  private def programDirectoryRefusal(project: Path): Option[String] =
+    val dir = SandboxProject.boundaryDirOf(project).resolve("run-on-host")
+    val programs = Program.values.toVector.map(_.name)
+    val directories = dir +: programs.map(dir.resolve)
+    def strays(path: Path, allowed: Set[String]): Vector[String] =
+      if !Files.isDirectory(path) then Vector.empty
+      else
+        FileHelper.directoryEntries(path).map(_.getFileName.toString)
+          .filterNot(SandboxProject.isMetadataEntry).filterNot(allowed).sorted
+          .map(name => HostCommands.shown(s"$path/$name"))
+    def shown(path: Path) = HostCommands.shown(path.toString)
+    directories.find(Files.isSymbolicLink)
+      .map: link =>
+        s"error: ${shown(link)} must not be a symlink\n" +
+          "Refusing to read this project's boundary configuration through one."
+      .orElse(directories.find(path => Files.exists(path, LinkOption.NOFOLLOW_LINKS) && !Files.isDirectory(path))
+        .map: file =>
+          s"error: ${shown(file)} must be a directory\n" +
+            "Remove what is in its place; the directory holds this project's boundary configuration.")
+      .orElse:
+        val stray = strays(dir, programs.toSet) ++ programs.flatMap(name => strays(dir.resolve(name), Set("egress")))
+        Option.when(stray.nonEmpty):
+          s"error: ${stray.mkString(", ")}: not configuration this launcher reads — " +
+            "a typo, or a newer launcher's file; check the spelling or update the launcher"
+
+  /** The one line form the program's rule file holds, for `host`. */
+  def programRuleLine(host: String): String = s"allow https://$host/ read"
+
+  /** The line form as the refusal spells it. */
+  val ProgramRuleForm = programRuleLine("<host>")
 
   /**
    * The program's rule file grammar: `allow https://<host>/ read` lines and `#` comments, nothing
    * else — no other grant, no path, no provider, no deny. The proxy's full grammar would let one
    * `allow model-provider` line expand into endpoints that are no artifact repository, and a
    * `tunnel` or `method=` word would let a host command write to a host; anything outside the subset
-   * is refused here, never passed through for the proxy to interpret. Tokenization mirrors the
-   * proxy's — split on whitespace, a comment from the first token starting with `#`, and a `#`
-   * inside a token refused — so a line read here is the line the proxy would read, and
-   * `read#typo` is not `read`; the host is what the proxy's own parser will normalize and vet.
+   * is refused here, never passed through for the proxy to interpret. The words are the proxy's
+   * own (RulesetHelper.ruleTokens) and a `#` inside a word is refused, so a line read here is the
+   * line the proxy would read, and `read#typo` is not `read`; the host is what the proxy's own
+   * parser will normalize and vet.
    */
   def programRuleHosts(text: String): Either[Refusal, Vector[String]] =
     val lines = text.linesIterator
-      .map(_.split("\\s+").toVector.filter(_.nonEmpty).takeWhile(!_.startsWith("#")))
+      .map(agentsandbox.egress.RulesetHelper.ruleTokens)
       .filter(_.nonEmpty)
       .toVector
     def hostOf(tokens: Vector[String]): Option[String] = tokens match
@@ -825,8 +985,13 @@ object RunOnHostPrereqs:
    * Deduplicated, so a host the file restates is not warned as a redundant grant at every command.
    */
   def egressRuleText(program: Program, fileHosts: Vector[String]): String =
-    ("deny defaults" +: (centralHost(program) +: fileHosts).distinct.map(host => s"allow https://$host/ read"))
-      .mkString("\n")
+    ("deny defaults" +: programHosts(program, fileHosts).map(programRuleLine)).mkString("\n")
+
+  /** The hosts a program's proxy allows, every one of them inspected (egressRuleText): its Maven
+    * Central host, then the rule file's as the file spells them. A brokered credential's host is
+    * compared with the proxy's resolution of them (RunOnHostSandbox.credentialHosts). */
+  def programHosts(program: Program, fileHosts: Vector[String]): Vector[String] =
+    (centralHost(program) +: fileHosts).distinct
 
   // ---------------------------------------------------------------------------
   // The channel's working directory
@@ -902,19 +1067,12 @@ object RunOnHostPrereqs:
         && childParts.length >= parentParts.length
         && childParts.take(parentParts.length) == parentParts
 
-  /** Overlap in either direction: a cache above the project exposes it, one below is writable. */
-  def overlaps(left: Path, right: Path, os: Os): Boolean =
-    startsWith(left, right, os) || startsWith(right, left, os)
-
   /** macOS and Windows default to case-insensitive volumes; Linux does not. */
   def foldsCase(os: Os): Boolean = os != Os.Linux
+
+  private def isPrintableAscii(text: String): Boolean = text.forall(ch => ch >= ' ' && ch <= '~')
 
   /** A string that is not a path at all is a refusal, never an exception thrown at a caller. */
   private def parsePath(value: String): Option[Path] =
     try Some(Paths.get(value))
     catch case _: InvalidPathException => None
-
-  /** The real path, or None when it does not exist — an absence the caller classifies. */
-  def realPath(path: Path): Option[Path] =
-    try Some(path.toRealPath())
-    catch case _: IOException => None

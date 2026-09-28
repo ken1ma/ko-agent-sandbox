@@ -48,7 +48,8 @@ FUSE addresses objects by inode number and `(parent_ino, name)`, never by path, 
 unavoidable. The table is the minimum that reconstructs a position:
 
 ```
-Inode { parent: u64, name: OsString, nlookup: u64, git: GitContext, dev: u64, ino_id: u64 }
+Inode { parent: u64, name: OsString, nlookup: u64, git: GitContext, rule: RuleContext,
+        dev: u64, ino_id: u64 }
 ```
 
 - **Resolution.** To act on an inode, walk its parent chain to the root collecting names (depth is
@@ -166,7 +167,8 @@ shorter per-op path, never a cache; `verification-log.md` ("The cost of a path w
 measurements and `TODO.md`, "Performance", the open rows. In place:
 
 - **A directory snapshot per `opendir`** — `fs.rs`, `opendir`: a stable scan, not a cache.
-- **A minimal per-op path** — a getattr is one `fstatat` on the live backing, and the O(1)
+- **A minimal per-op path** — a path-based getattr is one `openat2` from the root and one `fstat`
+  on the live backing, that of the identity comparison (`fs.rs`, `open_ino`), and the O(1)
   git-context fast-path keeps non-`.git` ops free of policy work.
 
 The layer beneath matters: the backing tree is itself the host share (virtiofs on a Podman machine).
@@ -221,7 +223,7 @@ how to undo it, is its `README.md` ("`--build`"). This section is the build and 
    (`build.sbt`) — so editing either cannot change the digest below. A jar's resource tree cannot
    be enumerated at runtime, so an `INDEX` lists what is there.
 2. **`--build`** unpacks that bundle to a temporary directory and runs `podman build` from it
-   (`AgentSandboxLauncher.unpackBuildContext`, `buildCommands`; the ko-agent-fs half is
+   (`ImageBuilds.unpackBuildContext`, `buildCommands`; the ko-agent-fs half is
    `KoAgentFs.scala`). For this image the launcher first
    digests the bundled source and passes the digest in:
 
@@ -253,9 +255,9 @@ how to undo it, is its `README.md` ("`--build`"). This section is the build and 
    the digest of the source it bundles (`Containerfile`, header).
 
 The digest's construction, and why the algorithm exists only on the launcher side, are with the
-code: `KoAgentFs.koAgentFsSourceId`.
+code: `LauncherImages.bundleSourceId`.
 
-**All steps run from `--build`** (`AgentSandboxLauncher.buildCommands`,
+**All steps run from `--build`** (`ImageBuilds.buildCommands`,
 `KoAgentFs.koAgentFsSourceId` and `installKoAgentFs`), **and the mount lifecycle runs every
 `--write=live` session** (`--write=reject` binds the tree read-only without it): each launch checks
 the installed binary's identity and self-test, then mounts the project through a per-project
@@ -274,9 +276,10 @@ a mount made *inside* a container does not propagate up to where the sandbox's b
 
 The policy decisions are in `src/policy.rs`, dependency-free and position-only. Everything else
 here — the inode table, the resolver, the fuser bindings, passthrough, cache tuning — is the
-untrusted FUSE layer around it. The FUSE layer decides *where* an op is; `policy.rs` alone decides
-*whether* it is allowed. Keeping that separation strict is what keeps the authorization rules
-auditable at 100k-file scale, where the FUSE layer is necessarily busy.
+untrusted FUSE layer around it. The FUSE layer decides *where* an op is; `policy.rs` decides
+*whether* it is allowed, save the symlink-target refusals `fs.rs` makes itself
+(`allow_symlink_target`, `symlink`). Keeping that separation strict is what keeps the
+authorization rules auditable at 100k-file scale, where the FUSE layer is necessarily busy.
 
 The line is worth reading precisely, because *where* is not always a function of the names. Under
 `<gitdir>/modules` it is not: a submodule's name defaults to its path, so the same path can be a

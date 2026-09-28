@@ -1,9 +1,9 @@
-# Plan: provider credential mediation at the egress proxy
+# Plan: provider credential brokering at the egress proxy
 
 ## Outcome
 
-Add a host-selected service layer above the substitution primitive in
-`plan-credential-broker-proxy.md`:
+Add a host-selected service layer above the substitution primitive of `--egress-cred`
+(`egress-proxy.md`, "Brokered credentials"):
 
 ```text
 credential instance -> source and lifecycle
@@ -11,14 +11,15 @@ service definition   -> sandbox adapter and approved injection targets
 egress ruleset       -> whether each target is reachable
 ```
 
-The existing plan remains canonical for placeholder construction, exact-token substitution in a
-declared header or named query parameter, per-request auditing and the rule that a real value
-never enters the sandbox. This plan specifies what that primitive does not: one service spanning
+`--egress-cred`'s documents remain canonical for placeholder construction, exact-token substitution
+in a declared header or named query parameter, per-request auditing and the rule that a brokered
+value never enters the sandbox (`egress-proxy.md`, "Brokered credentials"; SECURITY.md, "Who holds a
+brokered value"). This plan specifies what that primitive does not: one service spanning
 several domains, credentials stored on the host across runs, dynamic sources, expiry and refresh,
 explicit mechanism choice and provider endpoints whose writable traffic must be TLS-terminated
-before a header or parameter can be mediated.
+before a header or parameter can be brokered.
 
-An existing `--env=NAME@HOST` binding remains a one-run, one-host binding. Provider mediation is a
+An `--egress-cred=NAME@HOST` binding remains a one-run, one-host binding. Provider brokering is a
 separate session option; it neither changes that grammar nor turns a stored credential on by
 itself.
 
@@ -26,11 +27,11 @@ itself.
 
 Each fact is specified in one place:
 
-- `plan-credential-broker-proxy.md` specifies the proxy's placeholder-to-value rewrite and its
-  tests.
-- This document specifies service composition, credential sources, refresh and mediated TLS.
+- `egress-proxy.md`, "Brokered credentials", specifies the proxy's placeholder-to-value rewrite.
+- This document specifies service composition, credential sources, refresh and TLS termination at
+  provider endpoints.
 - The egress ruleset defines path matching; a credential target refers to that matcher
-  (`plan-credential-broker-proxy.md`, the `PREFIX` form) and defines no other.
+  (`egress-proxy.md`, "Where the value goes", the `PREFIX` form) and defines no other.
 - The egress ruleset alone decides reachability. A credential service never adds a host.
 - `SECURITY.md` records the resulting trust model once implementation ships.
 
@@ -39,12 +40,12 @@ Each fact is specified in one place:
 1. Store or resolve one GitHub credential once, select it for a run and use it at the exact GitHub
    API and Git HTTPS targets its service definition names.
 2. Give two projects or concurrent runs the same stored instance without sharing a proxy,
-   placeholder, per-run value file or audit log.
+   placeholder or audit log.
 3. Resolve a short-lived access token with a host executable, refresh it before expiry and keep the
    refresh token or provider login outside the sandbox.
 4. Select one credential mechanism for a model provider without an unrelated stored service or
    project file changing that choice.
-5. Mediate an API-key or OAuth-backed model provider only when the installed client accepts the
+5. Broker an API-key or OAuth-backed model provider only when the installed client accepts the
    launch CA and the host explicitly accepts plaintext proxy visibility for that run.
 
 Registry login, SSH agent forwarding and cloud request re-signing are different protocols and are
@@ -75,7 +76,7 @@ not requirements of this plan.
     with a credential-unavailable response and no uncredentialed retry.
 11. Selecting one service cannot change another service's mechanism, adapter, source, targets,
     placeholder or cache generation.
-12. TLS mediation of an otherwise opaque provider endpoint is explicit in the launch banner and
+12. TLS termination at an otherwise opaque provider endpoint is explicit in the launch banner and
     `--egress-effective` output. Without a selected credential, its configured opaque behavior is
     unchanged.
 13. The proxy never sends a real credential before origin TLS identity is validated, and never
@@ -108,7 +109,7 @@ separates accounts or scopes without copying a service definition: `github/work`
 
 An **active binding** is the intersection of a selected instance's targets with the egress
 ruleset. Denied targets are removed first. Every remaining target must be TLS-inspected by the
-existing inspected treatment or by the mediated-provider path below.
+existing inspected treatment or by the brokered-provider path below.
 
 The service catalog is a closed image resource, parsed by `--print-ruleset` and the serving proxy.
 The launcher consumes that answer and does not keep a second provider-domain table.
@@ -170,8 +171,8 @@ path /
 The serialized form is internal to the image, not project configuration. Its parser requires:
 
 - an exact normalized hostname already present in the same image's provider or host catalog;
-- a header from the base plan's closed set, or a query parameter name under its grammar (its
-  guarantee 4);
+- a header name or query parameter name the binding grammar admits (`egress-proxy.md`, "Where the
+  value goes");
 - with a header, a format containing exactly one `%s`, no other conversion, and otherwise only
   visible ASCII and space: catalog text, trusted for the space `Bearer %s` needs, and the field
   is built by placing a value that has separately passed the raw-value grammar into the format;
@@ -180,7 +181,7 @@ The serialized form is internal to the image, not project configuration. Its par
 - unique `(host, place, format, matcher)` entries inside one service.
 
 For a configured tunnel host, the target deliberately has no method or path grants:
-the existing authority already permits writable traffic. Mediation parses enough HTTP to inject
+the existing authority already permits writable traffic. Brokering parses enough HTTP to inject
 and relay, but it does not claim to make model traffic read-only.
 
 Multiple domains are one service only when the provider documents them as recipients of the same
@@ -204,12 +205,13 @@ source kind, descriptor digest and refresh times. The secret backend contains on
 OAuth material. Project state contains neither.
 
 Validate every credential value before storing it or publishing a generation: every value
-passes the base plan's value grammar (its guarantee 4) at those two steps, whatever produced it —
-`set`, `import`, an executable result, an OAuth access token at issuance or refresh, a cached
-generation being reused. A value that fails is refused at that producer with the byte's offset
-and nothing is stored; a refresh that yields one is a refresh failure, and the current
-generation stays until its expiry. Storage therefore never holds a value the proxy will refuse,
-and the proxy's own re-check at load is a second reading of the same rule, not the first.
+passes `--egress-cred`'s value grammar (`egress-proxy.md`, "Where the value goes") at those two
+steps, whatever produced it — `set`, `import`, an executable result, an OAuth access token at
+issuance or refresh, a cached generation being reused. A value that fails is refused at that
+producer with the byte's offset and nothing is stored; a refresh that yields one is a refresh
+failure, and the current generation stays until its expiry. Storage therefore never holds a
+value the proxy will refuse, and the proxy's own re-check at load is a second reading of the same
+rule, not the first.
 
 An executable source descriptor is bounded JSON:
 
@@ -305,17 +307,17 @@ response-body interceptor imitating the CLI's token cache. If a provider can onl
 intercepted OAuth responses, specify its endpoint, bounded JSON fields, rotation and write mount
 as a provider adapter with separate security review.
 
-What the Copilot adapter must measure first, from a `--proxy-log` of a `copilot` session on the
+What the Copilot adapter must measure first, from a `--egress-log` of a `copilot` session on the
 installed CLI: which token reaches `api.githubcopilot.com`. Copilot clients generally exchange
 the GitHub OAuth token at `api.github.com/copilot_internal/v2/token` for a short-lived session
 token and present only that to the model endpoint; the exchange is on the inspected path, so the
 placeholder is substituted there and `api.githubcopilot.com` stays an opaque tunnel. If the
 built-in GitHub MCP server sends the OAuth token itself, brokering breaks that server alone —
 `--disable-builtin-mcps` is the documented switch. If the CLI sends the OAuth token straight to
-`api.githubcopilot.com`, an opaque tunnel cannot substitute, and that host is mediated under
-"Mediated provider traffic" or Copilot stays unbrokered.
+`api.githubcopilot.com`, an opaque tunnel cannot substitute, and that host is brokered under
+"Brokered provider traffic" or Copilot stays unbrokered.
 
-## Mediated provider traffic
+## Brokered provider traffic
 
 The rule grammar's treatments are:
 
@@ -327,26 +329,26 @@ tunnel       opaque writable tunnel
 A selected credential adds a per-run overlay, not a third treatment in the rule grammar:
 
 ```text
-mediated     TLS-terminated writable relay for an allowed provider target
+brokered     TLS-terminated writable relay for an allowed provider target
 ```
 
 The overlay applies only to exact targets in the selected service. A denied host remains absent.
 An inspected host stays inspected, and the rewritten head is what its authorization reads
-("Mediated provider traffic", steps 4 and 5). A tunnel host is
-mediated only for that run and otherwise remains an opaque tunnel.
+("Brokered provider traffic", steps 4 and 5). A tunnel host is
+brokered only for that run and otherwise remains an opaque tunnel.
 
-The launch leaf certificate names the union of inspected hosts and active mediated targets. The
-`--egress-effective` answer and startup banner list the mediated targets and say:
+The launch leaf certificate names the union of inspected hosts and active brokered targets. The
+`--egress-effective` answer and startup banner list the brokered targets and say:
 
 ```text
-credential mediation: proxy reads provider HTTP for <service>/<instance>: <hosts>
+credential brokering: proxy reads provider HTTP for <service>/<instance>: <hosts>
 ```
 
-This is a privacy boundary: the trusted proxy sees model request and response bytes for mediated
+This is a privacy boundary: the trusted proxy sees model request and response bytes for brokered
 hosts. Plaintext model conversations are an asset in its memory. The proxy never logs bodies or
 headers; crash reports and exceptions must not include them.
 
-For one mediated connection:
+For one brokered connection:
 
 1. Preserve CONNECT authorization, public-address validation, SNI equality and connection to the
    validated origin address.
@@ -355,20 +357,21 @@ For one mediated connection:
 4. Replace only the selected instance's complete placeholder in the declared header format or
    query parameter.
 5. Apply the configured inspected authorization to the rewritten head when the ruleset says
-   inspected (base plan, "Substitution": authorization and the origin see the same head).
+   inspected (`egress-proxy.md`, "Where the value goes": authorization and the origin see the same
+   head).
 6. Relay request and response framing without interpreting provider bodies.
 7. Emit one audit line after origin connection, with `inject=<service>/<instance>` only when
    substituted.
 
 Advertise only HTTP/1.1 initially. Server-sent events and bounded streaming bodies must work on the
-existing relay. Mediation does not support WebSocket upgrade, HTTP/2-only clients or
+existing inspected path. Brokering does not support WebSocket upgrade, HTTP/2-only clients or
 certificate-pinned clients; they do not regain a real credential inside the sandbox.
 
 The Codex client accepts the inspection CA and falls back from a refused websocket upgrade to HTTP
-requests (`plan-credential-broker-proxy.md`, "Claude Code and Codex logins: excluded", has the
-measurement). It remains excluded from OpenAI mediation until one turn succeeds through the
-inspected relay. Each other installed agent's TLS and HTTP compatibility is measured the same way
-before its service is listed as supported.
+requests (`design.md`, "Credential brokering at the egress proxy", has the measurement). It
+remains excluded from OpenAI brokering until one turn succeeds over an inspected connection. Each
+other installed agent's TLS and HTTP compatibility is measured the same way before its service is
+listed as supported.
 
 ## Failure and audit contract
 
@@ -385,7 +388,7 @@ states. They name the management action to run, not source stderr. Origin 401 an
 origin responses; the proxy cannot infer whether they mean scope, revocation or application state.
 
 The launch banner and `--egress-effective` show selected instance, mechanism, source kind, active
-targets, excluded targets, refresh deadline and TLS mediation. They show no value, placeholder,
+targets, excluded targets, refresh deadline and TLS termination. They show no value, placeholder,
 header contents, OAuth subject or executable output.
 
 Retained audit lines make credential use attributable but not replayable. A refresh event is a
@@ -446,11 +449,11 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 
 ### Placeholder and request path
 
-- Reuse the base plan's entire substitution suite for every supported header format and
-  parameter target.
+- Reuse `--egress-cred`'s substitution tests (`CredentialTest`) for every supported header format
+  and parameter target.
 - Generate many concurrent runs and instances; assert all placeholders are distinct, including
   multiple credentials for one host, and each selects only its own value.
-- Run every target through denial, inspected authorization and mediated relay. Assert redirects,
+- Run every target through denial, inspected authorization and brokered relay. Assert redirects,
   aliases, wrong paths and wrong headers or parameters receive no credential.
 - Scan every sandbox environment, filesystem, persistent volume, argument, log, error and retained
   artifact for all real values and mappings after each lifecycle exit.
@@ -462,7 +465,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 - Test executable descriptor parsing, absolute-path enforcement, no shell, environment allowlist,
   closed stdin, timeout, output bounds, malformed JSON, expiry and protected stderr.
 - Test value validation at every producer — `set`, `import`, an executable result, OAuth
-  issuance, OAuth refresh, a cached generation — with each byte the base plan's value grammar
+  issuance, OAuth refresh, a cached generation — with each byte `--egress-cred`'s value grammar
   refuses: nothing is stored or published, the refusal names the offset and not
   the value, and a refreshed bad token leaves the prior generation in place. Test that a
   `Bearer %s` format with a conforming token yields one field, and that a format with `%s`
@@ -498,14 +501,14 @@ order and its reason.
 3. Generalize one instance to multiple exact targets.
 4. Add executable sources, cross-process single-flight caching and scheduled refresh. Pass the
    crash and concurrency matrix before adding OAuth.
-5. Add the mediated-provider overlay and one TLS-compatible API-key client. Update `SECURITY.md`
+5. Add the brokered-provider overlay and one TLS-compatible API-key client. Update `SECURITY.md`
    when plaintext provider traffic first enters proxy memory.
 6. Add provider OAuth implementations one at a time, each with a host-owned client identity,
    compatibility fixture and refresh/revocation tests.
 7. Update README, launcher help, agent instructions and the `--egress-effective` reference. Remove
    completed plan facts after the code and `SECURITY.md` record them.
 
-Do not expose provider mediation as complete until multi-domain isolation, cross-service
+Do not expose provider brokering as complete until multi-domain isolation, cross-service
 independence, single-flight refresh, expiry fail-closed, TLS compatibility, secret scanning and
 production-container cleanup pass together.
 

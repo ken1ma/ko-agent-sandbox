@@ -1,14 +1,17 @@
-// The images this launcher owns: what they are named, how a built one is identified, which of them
-// are still present, and which a newer build has superseded.
+// The images this launcher owns and the build context the jar bundles for them: what they are named,
+// how a built one is identified, which of them are still present, and which a newer build has
+// superseded.
 
 package agentsandbox.launcher
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
+import java.security.MessageDigest
+import scala.jdk.CollectionConverters.*
+import scala.util.Using
 
-import HostCommands.{echoCommand, fail, run}
+import HostCommands.{echoCommand, fail, podman, run, runOk, Run}
 import FileHelper.{readIfPresent, writePrivate}
-import KoAgentFs.bundleSourceId
 
 object LauncherImages:
 
@@ -21,6 +24,12 @@ object LauncherImages:
    * a major version there differs from the tag's.
    */
   val ImgTagVersion = "latest-13-25"
+  def temurinImage(version: String): String = s"debian-temurin:$version"
+  def coursierImage(version: String): String = s"debian-coursier:$version"
+  val SandboxImage = "ko-agent-sandbox:latest"
+  val ProxyImage = "ko-agent-egress-proxy:latest"
+  val KoAgentFsImage = "ko-agent-fs:latest"
+  val SelfTestImage = "ko-agent-self-test:latest"
   val ProxyBuildImage = "ko-agent-egress-proxy-build:cache"
   val KoAgentFsBuildImage = "ko-agent-fs-build:cache"
   val SelfTestBuildImage = "ko-agent-self-test-build:cache"
@@ -28,17 +37,17 @@ object LauncherImages:
   /** In dependency order. */
   def buildImageTags(version: String): Vector[String] =
     Vector(
-      s"debian-temurin:$version",
-      s"debian-coursier:$version",
-      "ko-agent-sandbox:latest",
+      temurinImage(version),
+      coursierImage(version),
+      SandboxImage,
       ProxyBuildImage,
-      "ko-agent-egress-proxy:latest",
+      ProxyImage,
       KoAgentFsBuildImage,
-      "ko-agent-fs:latest",
+      KoAgentFsImage,
     )
 
   /** In dependency order. */
-  val SelfTestImageTags = Vector(SelfTestBuildImage, "ko-agent-self-test:latest")
+  val SelfTestImageTags = Vector(SelfTestBuildImage, SelfTestImage)
 
   def managedImageTags(version: String): Vector[String] = buildImageTags(version) ++ SelfTestImageTags
 
@@ -48,6 +57,65 @@ object LauncherImages:
       "ko-agent-self-test" -> selfTestSourceId.getBytes(StandardCharsets.UTF_8),
       "ko-agent-sandbox-image" -> sandboxImageId.getBytes(StandardCharsets.UTF_8),
     ))
+
+  /**
+   * The one source-identity digest, for the filter binary and the image bundle labels alike:
+   * SHA-256 over (path, content) pairs in path order, each entry framed by its path, a NUL and its
+   * big-endian length — the sort makes bundling order irrelevant, the length keeps file boundaries
+   * unambiguous, and the path makes a rename a new identity. The algorithm is only here,
+   * deliberately: a build is told the answer and repeats it, so there is no second implementation
+   * to drift from this one.
+   */
+  def bundleSourceId(entries: Seq[(String, Array[Byte])]): String =
+    val digest = MessageDigest.getInstance("SHA-256")
+    entries.sortBy(_._1).foreach: (path, content) =>
+      digest.update(path.getBytes(StandardCharsets.UTF_8))
+      digest.update(0.toByte)
+      digest.update(java.nio.ByteBuffer.allocate(8).putLong(content.length.toLong).array())
+      digest.update(content)
+    digest.digest().map(b => f"$b%02x").mkString
+
+  /**
+   * Digest one directory of the unpacked context — the literal build input,
+   * so the id describes exactly what podman build is about to see.
+   */
+  def contextSourceId(context: Path, dir: String): String =
+    val root = context.resolve(dir)
+    val entries = Using.resource(Files.walk(root)): files =>
+      files.iterator().asScala
+        .filter(Files.isRegularFile(_))
+        .map(file => (root.relativize(file).toString.replace('\\', '/'), Files.readAllBytes(file)))
+        .toVector
+    bundleSourceId(entries)
+
+  /**
+   * The digest of one bundle directory as this jar bundles it — the same
+   * bytes ImageBuilds.unpackBuildContext writes and contextSourceId hashes, read
+   * straight from the jar so no unpack is needed. What the filter binary's
+   * `--version` must report, and what --build stamps into the sandbox and
+   * proxy images as their bundle label (bundleMismatch).
+   */
+  def bundledSourceId(dir: String): String =
+    val entries = bundleIndex()
+      .filter(_.startsWith(s"$dir/"))
+      .map(entry => entry.stripPrefix(s"$dir/") -> bundleResource(entry))
+    bundleSourceId(entries)
+
+  /** One entry of the build context the jar bundles (build.sbt), by its path in the context. */
+  def bundleResource(name: String): Array[Byte] =
+    val stream = getClass.getResourceAsStream(s"/sandbox-build/$name")
+    if stream == null then
+      fail(
+        s"""error: the launcher jar has no bundled build-context entry '$name'
+           |
+           |Rebuild the launcher: sbt dist, from the repository root""".stripMargin,
+      )
+    try stream.readAllBytes()
+    finally stream.close()
+
+  /** The bundled build context's entries, as INDEX lists them. */
+  def bundleIndex(): Vector[String] =
+    String(bundleResource("INDEX"), StandardCharsets.UTF_8).linesIterator.filter(_.nonEmpty).toVector
 
   val BundleLabel = "ko-agent-sandbox.bundle"
 
@@ -68,11 +136,85 @@ object LauncherImages:
    * The label read back through Go's raw-string (backtick) quoting, because the argument must not
    * contain a double quote: on Windows, Java's argument encoding passes an embedded quote through
    * unescaped, and podman then parses a mangled template ("bad character U+002D"). Literal
-   * newlines are avoided in the multi-line templates below for the same reason — `{{println}}`
-   * emits them on the output side instead.
+   * newlines are avoided in the multi-line templates (AgentSandboxLauncher.PodmanInfoFormat and
+   * the image inspections) for the same reason — `{{println}}` emits them on the output side
+   * instead.
    */
   def labelTemplate(label: String): String = s"{{with .Config.Labels}}{{index . `$label`}}{{end}}"
   val BundleLabelTemplate = labelTemplate(BundleLabel)
+
+  def imageLabel(podman: String, image: String, labelName: String): Run =
+    run(podman, "image", "inspect", "--format", labelTemplate(labelName), image)
+
+  /**
+   * The version-lock verdict for one built image: None when its label
+   * holds the jar's own digest of that image's bundled sources. The only
+   * way a default-named image exists is --build, so a mismatch means a jar
+   * other than this one built it — launch refuses it. An explicitly overridden
+   * KO_AGENT_SANDBOX_*_IMAGE only warns: a custom image is a supported
+   * case, and its interface drift still fails closed at runtime (the
+   * --print-ruleset parse, the leaf's exact names).
+   *
+   * "container image", spelled out: the reader of this message is upgrading
+   * the launcher, not thinking about images at all, and the bare name reads
+   * as noise until the words say it is a container image.
+   *
+   * Both digests are printed because the mismatch alone cannot say which
+   * side is stale — an old image, or a launch through a different jar than
+   * the one that ran --build.
+   */
+  def bundleMismatch(
+    image: String,
+    expected: String,
+    label: String,
+    labelName: String = BundleLabel,
+  ): Option[String] =
+    Option.when(label.trim != expected)(
+      s"container image $image was not built from the sources this launcher bundles" +
+        (if label.trim.isEmpty then " (it has no bundle label)" else "") +
+        "; rebuild with --build" +
+        s"\n  launcher bundle digest: $expected" +
+        s"\n  image label $labelName: " +
+        (if label.trim.isEmpty then "(none)" else label.trim),
+    )
+
+  /**
+   * --update uses a base built from this jar's bundled base sources, or does not start. The
+   * identity is of the sources, not of the image's contents: the same sources install what the
+   * package repositories hold on the day of the build.
+   */
+  def requireBaseFromBundledSources(podman: String, baseImage: String, expected: String): Unit =
+    if !runOk(podman, "image", "exists", baseImage) then
+      fail(s"error: base container image not found: $baseImage\n\nBuild it first: run this launcher with --build.")
+    val inspected = imageLabel(podman, baseImage, BaseBundleLabel)
+    if !inspected.ok then fail(s"error: could not inspect $baseImage\n${inspected.err}")
+    bundleMismatch(baseImage, expected, inspected.text, BaseBundleLabel).foreach: mismatch =>
+      fail(s"error: $mismatch")
+
+  /**
+   * A build's check of what it just stamped, immediately after committing the images: the
+   * layer-cache staleness ImageBuilds.buildCommands describes is exactly the kind of
+   * silent drift the version lock exists for, so the freshly committed labels are read back
+   * rather than assumed. A failure here is podman misbehaving, not a wrong
+   * jar — the remediation is clearing the build cache, not --build again.
+   */
+  def verifyBuiltBundleLabels(expected: Seq[(String, String)], labelName: String = BundleLabel): Unit =
+    expected.foreach: (image, id) =>
+      val inspected = imageLabel(podman, image, labelName)
+      if !inspected.ok then
+        fail(s"error: could not inspect the just-built image $image\n${inspected.err}")
+      if inspected.text.trim != id then
+        fail(
+          s"""error: the image build committed $image with a stale bundle label
+             |  launcher bundle digest: $id
+             |  image label $labelName: ${
+                if inspected.text.trim.isEmpty then "(none)" else inspected.text.trim}
+             |
+             |podman's layer cache can serve a LABEL derived from a changed
+             |build arg stale (buildah #5501); this launcher passes --label to
+             |bypass that cache, so this failing means podman dropped --label
+             |too. Remove $image, then rerun the same launcher action.""".stripMargin,
+        )
 
   private def localImageTag(tag: String): String = tag.stripPrefix("localhost/")
 
@@ -225,7 +367,7 @@ object LauncherImages:
     val currentTags = existingImageTags(podman, "cleanup did not start")
     val sandboxImageId = requiredImageId(
       currentTags,
-      "ko-agent-sandbox:latest",
+      SandboxImage,
       "cleanup did not start",
     )
     val selfTestId = selfTestBundleId(fsSourceId, selfTestSourceId, sandboxImageId)

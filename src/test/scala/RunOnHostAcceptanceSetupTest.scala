@@ -9,7 +9,7 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
 
   private def preflight(root: Path, projects: String*): (Int, String) =
     // The lock file stands in for lsof's observed open descriptors. The real setup function runs
-    // unchanged; these cases need neither macOS nor a live broker in the developer's checkout.
+    // unchanged; these cases need neither macOS nor a live runner in the developer's checkout.
     val process = ProcessBuilder(
       (Seq(
         "sh", "-c",
@@ -24,18 +24,18 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
     val output = String(process.getInputStream.readAllBytes(), UTF_8)
     process.waitFor() -> output
 
-  private def broker(root: Path, name: String, project: String, open: Boolean = true): Path =
+  private def runner(root: Path, name: String, project: String, open: Boolean = true): Path =
     val session = Files.createDirectories(root.resolve(name))
     Files.createDirectories(session.resolve("records"))
     Files.writeString(session.resolve("project"), project + "\n")
     Files.writeString(session.resolve("lock"), if open then "1234\n" else "")
     session
 
-  test("preflight refuses an owning broker even with no server or portfile"):
+  test("preflight refuses an owning runner even with no server or portfile"):
     val project = "/Users/test/my project"
-    for name <- Seq("b1", "condemned/b1") do
+    for name <- Seq("r1", "condemned/r1") do
       val root = Files.createTempDirectory("acceptance-owner")
-      val owner = broker(root, name, project)
+      val owner = runner(root, name, project)
       val (status, output) = preflight(root, project)
       assertEquals(status, 1, clue = name)
       assert(output.contains("end that sandbox session"), clue = output)
@@ -52,25 +52,25 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
     )
     for (ownerProject, record, requested) <- cases do
       val root = Files.createTempDirectory("acceptance-build")
-      val owner = broker(root, "b1", ownerProject)
-      record.foreach(name => Files.writeString(owner.resolve("records").resolve(name), project + "\n"))
+      val owner = runner(root, "r1", ownerProject)
+      record.foreach(name => Files.writeString(owner.resolve(name), project + "\n"))
       assertEquals(preflight(root, "/unrelated", requested)._1, 1, clue = (ownerProject, record, requested))
 
   test("preflight permits unrelated, ended and unpublished claims"):
     val project = "/Users/test/project"
     val root = Files.createTempDirectory("acceptance-unowned")
     assertEquals(preflight(root, project), 0 -> "")
-    broker(root, "b1", project + "-other")
-    broker(root, "b2", project, open = false)
-    broker(root, "s1", project)
-    val pending = broker(root, "b3", "/elsewhere")
-    Files.writeString(pending.resolve("records/build-0123456789abcdef.pending"), project + "\n")
+    runner(root, "r1", project + "-other")
+    runner(root, "r2", project, open = false)
+    runner(root, "s1", project)
+    val pending = runner(root, "r3", "/elsewhere")
+    Files.writeString(pending.resolve("build-0123456789abcdef.pending"), project + "\n")
     assertEquals(preflight(root, project), 0 -> "")
 
-  test("preflight names the sandbox to stop instead of suggesting sbt shutdown or a broker kill"):
+  test("preflight names the sandbox to stop instead of suggesting sbt shutdown or a runner kill"):
     val project = "/Users/test/my project"
     val root = Files.createTempDirectory("acceptance-remedy")
-    val owner = broker(root, "b1", project)
+    val owner = runner(root, "r1", project)
     val container = "ko-agent-sandbox-my-project-0123456789ab-abcdef123456"
     Files.writeString(owner.resolve("run"), container + "\n")
     val (status, output) = preflight(root, project)
@@ -84,7 +84,7 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
 
   test("an unusable sandbox name does not become a suggested shell command"):
     val root = Files.createTempDirectory("acceptance-remedy-name")
-    val owner = broker(root, "b1", "/project")
+    val owner = runner(root, "r1", "/project")
     for name <- Seq("", "--all", "name; echo injected", "$(echo injected)", "one\ntwo") do
       Files.writeString(owner.resolve("run"), name + "\n")
       val (status, output) = preflight(root, "/project")
@@ -110,13 +110,13 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
       assertEquals(process.waitFor(), if alive == "yes" && started == "yes" then 0 else 1,
         clue = (alive, started, output))
 
-  test("cleanup leaves live broker claims, unknown directories and reused pids alone"):
+  test("cleanup leaves live runner claims, unknown directories and reused pids alone"):
     for
       kind <- Seq("sbt", "mill", "gradle", "proxy")
       state <- Seq("owned", "ended", "unrelated", "unknown", "reused")
     do
       val root = Files.createTempDirectory("acceptance-cleanup")
-      broker(root, "b1", if state == "unrelated" then "/other" else "/project",
+      runner(root, "r1", if state == "unrelated" then "/other" else "/project",
         open = state != "ended" && state != "reused")
       val process = ProcessBuilder(
         "sh", "-c",
@@ -142,7 +142,7 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
       assertEquals(output.contains("SIGNALLED 123"), permitted, clue = (kind, state, output))
       assertEquals(status, if permitted then 0 else 1, clue = (kind, state, output))
 
-  test("failed wrapper setup skips cache-dependent sbt rows but retains the failure"):
+  test("failed supervisor setup skips cache-dependent sbt rows but retains the failure"):
     val script = Files.readString(Path.of("src/probe/run-on-host-acceptance-test.sh"))
     val start = script.indexOf("if want sbt; then", script.indexOf("echo \"positive rows\""))
     val rows = script.substring(start, script.indexOf("\nif want mill; then", start))
@@ -155,7 +155,7 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
         """work=$1; project=$work; ivy_project=$work/.; quick=0; JAVA_HOME=/jdk; failed_command=$2
           |want() { return 0; }
           |use_profile() { :; }
-          |wrapper() {
+          |supervisor() {
           |    if [ "$2" = "$project" ] && [ "$3" = "$failed_command" ]; then
           |        echo 'refused: setup failed'; return 2
           |    fi
@@ -173,6 +173,6 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
       ).redirectErrorStream(true).start()
       val output = String(process.getInputStream.readAllBytes(), UTF_8)
       assertEquals(process.waitFor(), 0, clue = output)
-      assert(output.contains(s"FAIL|sbt $failedCommand (wrapper)|refused: setup failed"), clue = output)
+      assert(output.contains(s"FAIL|sbt $failedCommand (supervisor)|refused: setup failed"), clue = output)
       assertEquals(output.linesIterator.count(_.startsWith("SKIP|")), 4, clue = output)
       assert(!output.contains("UNEXPECTED"), clue = output)

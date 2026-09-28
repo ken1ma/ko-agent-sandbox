@@ -72,7 +72,7 @@ object WithPodman extends munit.Assertions:
       case ((image, overridden), context) =>
         assert(runOk(podman, "image", "exists", image), s"$image is not built; run `java -jar $jar --build` first")
         val label = inspect(image, LauncherImages.BundleLabelTemplate)
-        AgentSandboxLauncher.bundleMismatch(image, KoAgentFs.bundledSourceId(context), label).foreach: mismatch =>
+        LauncherImages.bundleMismatch(image, LauncherImages.bundledSourceId(context), label).foreach: mismatch =>
           assert(overridden, mismatch)
 
   /** One scratch project as the registry records it: the id the launcher gives its directory, the
@@ -289,7 +289,7 @@ object WithPodman extends munit.Assertions:
 
   /** The file `--stats` names this project's directory from. */
   def projectRecord(project: Path): Path =
-    AgentSandboxLauncher.projectsStateRoot(currentOs).resolve(launcherId(project))
+    LauncherState.projectsStateRoot(currentOs).resolve(launcherId(project))
 
   /** Each session creates project state — a volume, a CA, a ruleset cache, logs and the mount
     * tree — so a scratch project is reset before it is deleted. A scratch

@@ -121,7 +121,7 @@ class FileRulesTest extends munit.FunSuite:
       Files.writeString(fileDir.resolve("rule"), "readonly .envrc\n")
       assertEquals(readRuleFile(fileDir), Right(Some(("readonly .envrc", Vector(Line(Word.ReadOnly, ".envrc"))))))
       Files.writeString(fileDir.resolve("rule"), "# nothing yet\n")
-      assert(readRuleFile(fileDir).swap.exists(_.contains("lists no lines")))
+      assertEquals(readRuleFile(fileDir), Right(None))
       Files.writeString(fileDir.resolve("rule"), "readonly .Envrc\n")
       assert(readRuleFile(fileDir).swap.exists(_.contains(".ko-agent-sandbox/file/rule")))
       Files.writeString(fileDir.resolve("rule"), "readonly .envrc\n")

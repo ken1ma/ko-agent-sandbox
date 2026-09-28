@@ -1,6 +1,6 @@
 #!/bin/sh
 # The security acceptance test, run by hand on macOS before each release, and when the profile generator,
-# the wrapper or the channel changes. One row per contract claim, each run under the generated
+# the supervisor or the channel changes. One row per contract claim, each run under the generated
 # profile, each reporting PASS, FAIL or SKIP with what it observed. Everything else in src/probe/
 # finds out what a profile needs, except machine-memory-return.sh, which measures the podman
 # machine; this one finds out whether the profile that resulted enforces
@@ -12,13 +12,13 @@
 # The program selects the positive rows; the negative matrix and the network rows run under every
 # selected profile. `quick` leaves the test rows and the lifecycle rows out. Profiles for the
 # negative matrix come from `sbt Test/runMain EmitRunOnHostProfile`; the build rows run through
-# RunOnHost — the RunOnHostSandbox wrapper — as plain java on the classpath emit printed, never
+# RunOnHost — the RunOnHostSandbox supervisor — as plain java on the classpath emit printed, never
 # through `sbt Test/runMain`, whose own server would hold this project's portfile and be ended by
-# the wrapper (one server per build directory). Each wrapper row scavenges, publishes a command directory, starts the
-# command's own proxy and sbt server or mill daemon in it — the broker's functions over the command's own session —
-# runs the command under the profile and ends what it started, so the rows measure the lifecycle as well as the
-# profile; there is no warm-up block, and a cold run-on-host cache resolves through the proxy inside the
-# profile, which is the measurement.
+# the supervisor (one server per build directory). Each supervisor row scavenges, publishes a command
+# directory, starts the command's own proxy and sbt server or mill daemon in it — the runner's
+# functions over the command's own session — runs the command under the profile and ends what it
+# started, so the rows measure the lifecycle as well as the profile; there is no warm-up block, and
+# a cold run-on-host cache resolves through the proxy inside the profile, which is the measurement.
 #
 # The sbt rows build this repository. The mill rows build src/probe/mill-fixture, the gradle rows
 # src/probe/gradle-fixture and the mvn rows src/probe/mvn-fixture, one-module projects that exist
@@ -77,6 +77,9 @@ report() { # status label detail
 
 # The project each profile is for.
 mill_project=$project/src/probe/mill-fixture
+# The pinned-JVM rows' build, a project of its own at a fixed path: the run-on-host cache is per
+# project path, so a path new to each run would leave a cache behind each time.
+pinned_project=$project/target/acceptance-pinned-mill
 gradle_project=$project/src/probe/gradle-fixture
 mvn_project=$project/src/probe/mvn-fixture
 project_of() {
@@ -96,7 +99,8 @@ if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]
 then machine "$("$JAVA_HOME/bin/java" -version 2>&1 | head -1) ($JAVA_HOME)"
 else machine "JAVA_HOME does not name a JDK"; fi
 machine "sbt $(sed -n 's/^sbt.version=//p' "$project/project/build.properties")"
-machine "mill $(grep -m1 -o '"[0-9][^"]*"' "$mill_project/mill" | tr -d '"')"
+mill_version=$(grep -m1 -o '"[0-9][^"]*"' "$mill_project/mill" | tr -d '"')
+machine "mill $mill_version"
 machine "gradle $(sed -n 's|^distributionUrl=.*/gradle-\(.*\)-bin.zip$|\1|p' \
     "$gradle_project/gradle/wrapper/gradle-wrapper.properties")"
 mvn_version=$(sed -n 's|^distributionUrl=.*/apache-maven-\(.*\)-bin.zip$|\1|p' \
@@ -134,7 +138,7 @@ emit() { # program
 # PATH, because -java-home reaches sbt's client alone: the client starts the server by re-running
 # the sbt script, which takes `java` from PATH — /usr/bin/java, the stub the JVM rule rejects and the
 # profile denies. mill's `mill-jvm-version: system` takes `java` from PATH the same way.
-# `env -i`, because the wrapper's environment is a closed set (RunOnHostSandbox.commandEnvironment;
+# `env -i`, because the supervisor's environment is a closed set (RunOnHostSandbox.commandEnvironment;
 # run-on-host.md, "The command's lifetime and environment", has the table). A row passing on a variable
 # or a PATH entry production withholds would invalidate the measurement. These rows run without a
 # proxy, with one temporary directory for clients and servers; network rows measure denial itself.
@@ -168,38 +172,38 @@ sandboxed() { # program command...
     profile=$work/acceptance-$1.sb; shift
     with_timeout "${ACCEPTANCE_ROW_TIMEOUT:-600}" command_env "$cache_v1" /usr/bin/sandbox-exec -f "$profile" "$@"
 }
-run_sbt() { # client command...: the executable the wrapper runs; the profile PATH holds no sbt
+run_sbt() { # client command...: the executable the supervisor runs; the profile PATH holds no sbt
     client=$1; shift
     sandboxed sbt "$sbt_executable" "-Dsbt.global.base=$sbt_global" \
         $client -batch -java-home "$JAVA_HOME" "$@"
 }
 
-# A command through the wrapper: RunOnHost scavenges, publishes a command directory, starts the command's
+# A command through the supervisor: RunOnHost scavenges, publishes a command directory, starts the command's
 # proxy and, for sbt, its server, runs the program under the generated profile, ends them, and preserves the
-# exit code. Its stderr carries the wrapper's own lines — `scavenged ...`, `refused: ...`,
+# exit code. Its stderr carries the supervisor's own lines — `scavenged ...`, `refused: ...`,
 # `Command requested network access ...` — which several rows read. $test_cp and $lock_script
-# are captured from emit and RunOnHost; the command runs under the build lock the broker's spawn
-# takes (locked_wrapper).
+# are captured from emit and RunOnHost; the command runs under the build lock the runner's lock
+# holder takes (locked_supervisor).
 build_lock() { "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost --build-lock "$1" "$2"; }
-# The wrapper issues its proxy's certificates, which needs the exports the launcher's own
+# The supervisor issues its proxy's certificates, which needs the exports the launcher's own
 # re-invocation passes (RunOnHostSandbox.CertificateBuilderExports).
 certificate_exports="--add-exports=java.base/sun.security.x509=ALL-UNNAMED
 --add-exports=java.base/sun.security.util=ALL-UNNAMED"
-# The hash that names a build directory's lock and the broker's records for it (RunOnHostSession.buildHash).
+# The hash that names a build directory's lock and the runner's records for it (RunOnHostSession.buildHash).
 build_hash() { lock=$(build_lock sbt "$1") && printf '%s\n' "${lock##*-}"; }
-locked_wrapper() { # program project command...
+locked_supervisor() { # program project command...
     lw_program=$1; lw_project=$2; shift 2
     lock=$(build_lock "$lw_program" "$lw_project") || return 2
-    # exec, so the with_timeout background pid is this perl and then the wrapper JVM, not a
-    # subshell whose kill would miss them (victim_wrapper's own reason).
+    # exec, so the with_timeout background pid is this perl and then the supervisor JVM, not a
+    # subshell whose kill would miss them (victim_supervisor's own reason).
     # shellcheck disable=SC2086 # two options, split on purpose
     exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" $certificate_exports -cp "$test_cp" \
         agentsandbox.launcher.RunOnHost "$lw_program" "$lw_project" \
         src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt -- "$@"
 }
-wrapper() { # program project command...
-    wrapper_program=$1; wrapper_project=$2; shift 2
-    with_timeout "${ACCEPTANCE_ROW_TIMEOUT:-900}" locked_wrapper "$wrapper_program" "$wrapper_project" "$@"
+supervisor() { # program project command...
+    supervisor_program=$1; supervisor_project=$2; shift 2
+    with_timeout "${ACCEPTANCE_ROW_TIMEOUT:-900}" locked_supervisor "$supervisor_program" "$supervisor_project" "$@"
 }
 deny_project=$project/src/probe/deny-fixture
 ivy_project=$project/src/probe/ivy-fixture
@@ -241,6 +245,11 @@ deny_servers() { with_cwd '-Dsbt.script=' "$deny_project" exact; }
 ivy_servers() { with_cwd '-Dsbt.script=' "$ivy_project" exact; }
 # A mill daemon's cwd is out/mill-daemon/<id>/sandbox (MillProcessLauncher.configureRunMillProcess).
 mill_daemons() { with_cwd 'mill.daemon.MillDaemonMain' "$mill_project/out/mill-daemon" under; }
+pinned_mill_daemons() { with_cwd 'mill.daemon.MillDaemonMain' "$pinned_project/out/mill-daemon" under; }
+# Whether a `mill version` log has the version the fixture's bootstrap pins, on a line of its own.
+printed_mill_version() { # log
+    [ -n "$mill_version" ] && grep -qxF "$mill_version" "$1"
+}
 # A launch's gradle daemons carry the launch's tmp/ as java.io.tmpdir in their initial
 # environment, the client's own (RunOnHostGradleDaemons): those of every session under the root here,
 # this acceptance run's own included. The "yours" row's daemon, unconfined in a registry under $work, is
@@ -258,9 +267,9 @@ acceptance_gradle_daemons() {
             && printf '%s\n' "$pid"
     done
 }
-# This run's proxies: a command's, and under the channel rows the broker's. A timed-out or killed
-# wrapper's, and a killed broker's, is ended by the next start's scavenge, but the acceptance test must not
-# leave one when it exits before running a start. Only this run's: its wrappers run on the run's
+# This run's proxies: a command's, and under the channel rows the runner's. A timed-out or killed
+# supervisor's, and a killed runner's, is ended by the next start's scavenge, but the acceptance test must not
+# leave one when it exits before running a start. Only this run's: its supervisors run on the run's
 # scratch classpath, which the proxy re-invokes on its own command line — a concurrent acceptance run's or
 # a real command's proxy carries a different path and is not this acceptance run's to end.
 stray_proxies() {
@@ -268,45 +277,45 @@ stray_proxies() {
         ps -o command= -p "$pid" 2>/dev/null | grep -qF -- "$work" && printf '%s\n' "$pid"
     done
 }
-# The proxies no broker's session records: a command's own. A broker's proxy is meant to outlive
+# The proxies no runner's session records: a command's own. A runner's proxy is meant to outlive
 # each command, so the rows between commands settle on these.
 command_proxies() {
-    recorded=$(cat "$command_root"/b*/records/proxy-* 2>/dev/null | awk '{print $1}')
+    recorded=$(cat "$command_root"/r[0-9]*/records/proxy-* 2>/dev/null | awk '{print $1}')
     for pid in $(stray_proxies); do
         pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
         printf '%s\n' "$recorded" | grep -qx "$pgid" || printf '%s\n' "$pid"
     done
 }
-# The broker's sbt runtime records for a build directory, `<pgid> <start>` each — the proxy's and the
+# The runner's sbt runtime records for a build directory, `<pgid> <start>` each — the proxy's and the
 # server's — and whether a record's group leader lives.
-broker_proxy_record() { # build-directory
-    cat "$command_root"/b*/records/proxy-sbt-"$(build_hash "$1")" 2>/dev/null
+runner_proxy_record() { # build-directory
+    cat "$command_root"/r[0-9]*/records/proxy-sbt-"$(build_hash "$1")" 2>/dev/null
 }
-broker_server_record() { # build-directory
-    cat "$command_root"/b*/records/server-sbt-"$(build_hash "$1")" 2>/dev/null
+runner_server_record() { # build-directory
+    cat "$command_root"/r[0-9]*/records/server-sbt-"$(build_hash "$1")" 2>/dev/null
 }
-broker_daemon_record() { # build-directory
-    cat "$command_root"/b*/records/daemon-mill-"$(build_hash "$1")" 2>/dev/null
+runner_daemon_record() { # build-directory
+    cat "$command_root"/r[0-9]*/records/daemon-mill-"$(build_hash "$1")" 2>/dev/null
 }
-# The broker's gradle daemon records, `<pid> <start>` each, one per daemon of the launch's registry.
-broker_gradle_records() {
-    cat "$command_root"/b*/records/daemon-gradle-* 2>/dev/null
+# The runner's gradle daemon records, `<pid> <start>` each, one per daemon of the launch's registry.
+runner_gradle_records() {
+    cat "$command_root"/r[0-9]*/records/daemon-gradle-* 2>/dev/null
 }
-# The mill daemon behind a broker record: the MillDaemonMain in the record's group, the starter's.
+# The mill daemon behind a runner record: the MillDaemonMain in the record's group, the starter's.
 daemon_in_group() { # record-line
     [ -n "$1" ] || return 0
     for pid in $(mill_daemons); do
         [ "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" = "${1%% *}" ] && printf '%s\n' "$pid"
     done
 }
-# The broker session holding the sbt runtime of a build directory.
-broker_session_of() { # build-directory
-    ls -d "$command_root"/b*/records/proxy-sbt-"$(build_hash "$1")" 2>/dev/null | head -1 | sed 's|/records/.*||'
+# The runner session holding the sbt runtime of a build directory.
+runner_session_of() { # build-directory
+    ls -d "$command_root"/r[0-9]*/records/proxy-sbt-"$(build_hash "$1")" 2>/dev/null | head -1 | sed 's|/records/.*||'
 }
-# The sbt servers no broker's session records: a command's own — the acceptance test's entry starts one in the
-# command's session — where the broker's server outlives each command.
+# The sbt servers no runner's session records: a command's own — the acceptance test's entry starts one in the
+# command's session — where the runner's server outlives each command.
 command_servers() {
-    recorded=$(cat "$command_root"/b*/records/server-sbt-* 2>/dev/null | awk '{print $1}')
+    recorded=$(cat "$command_root"/r[0-9]*/records/server-sbt-* 2>/dev/null | awk '{print $1}')
     for pid in $(project_servers) $(deny_servers) $(ivy_servers); do
         pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
         printf '%s\n' "$recorded" | grep -qx "$pgid" || printf '%s\n' "$pid"
@@ -322,7 +331,7 @@ acceptance_require_idle "$command_root" "$project" "$mill_project" "$gradle_proj
 
 # One sbt server per project at a time (SECURITY.md "Run on host"). A thin client attaches to whatever server the
 # project's portfile names and runs with that server's environment, and one that cannot connect
-# deletes the portfile and starts its own. A server already here is refused, as the wrapper will.
+# deletes the portfile and starts its own. A server already here is refused, as the supervisor will.
 existing=$(project_servers | tr '\n' ' ')
 if [ -n "$existing" ]; then
     echo "an sbt server is already running for $project (pid $existing): run 'sbt shutdown'," >&2
@@ -346,7 +355,7 @@ fi
 # daemon holds out/mill-daemon/daemonLock and a port that a mill executable under the profile
 # finds and cannot connect to, so it is ended before the rows too.
 end_project_servers() {
-    for pid in $(project_servers) $(deny_servers) $(ivy_servers) $(mill_daemons) \
+    for pid in $(project_servers) $(deny_servers) $(ivy_servers) $(mill_daemons) $(pinned_mill_daemons) \
         $(gradle_daemons) $(acceptance_gradle_daemons) $(stray_proxies); do
         acceptance_end_unclaimed_process "$command_root" "$pid" && echo "ended acceptance-test process $pid"
     done
@@ -383,14 +392,14 @@ fi
 profiles=${profiles# }
 first=${profiles%% *}
 test_cp=$(sed -n 's/^classpath: //p' "$work/emit-$first.log")
-[ -n "$test_cp" ] || { echo "emit printed no classpath; the wrapper rows cannot run" >&2; exit 1; }
-# The proxy's own profile, for the java and classpath the wrapper rows run their proxies with.
+[ -n "$test_cp" ] || { echo "emit printed no classpath; the supervisor rows cannot run" >&2; exit 1; }
+# The proxy's own profile, for the java and classpath the supervisor rows run their proxies with.
 echo "emitting the proxy profile"
 sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile \"$work/acceptance-proxy.sb\" \
         src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt proxy \"$JAVA_HOME\" \"$test_cp\"" \
         >"$work/emit-proxy.log" 2>&1 || { echo "emit failed for the proxy:"; tail -20 "$work/emit-proxy.log"; exit 1; }
-# `emit`'s own sbt server goes before any wrapper or command_env client runs, for the one-server reason
-# above: the wrapper would find it holding this project's portfile and refuse.
+# `emit`'s own sbt server goes before any supervisor or command_env client runs, for the one-server reason
+# above: the supervisor would find it holding this project's portfile and refuse.
 sbt --jvm-client -batch shutdown >/dev/null 2>&1
 acceptance_require_idle "$command_root" "$project" "$mill_project" "$gradle_project" "$mvn_project" || exit 1
 lock_script=$("$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost --lock-script)
@@ -427,9 +436,10 @@ safe_path "the user's Coursier cache" "${COURSIER_CACHE:-$HOME/Library/Caches/Co
 safe_path "the sbt executable path" "$sbt_executable"
 safe_path "the mill download folder" "$mill_downloads"
 mill_executable=$(sed -n 's/^executable: //p' "$work/emit-mill.log" 2>/dev/null)
-# The distribution ./gradlew unpacked on this host, as the wrapper derived it (RunOnHostPrereqs.gradleDistributionDir).
+# The distribution ./gradlew unpacked on this host, as the supervisor derived it
+# (RunOnHostPrereqs.gradleDistributionDir).
 gradle_home=$(sed -n 's|^executable: \(.*\)/bin/gradle$|\1|p' "$work/emit-gradle.log" 2>/dev/null)
-# The distribution ./mvnw unpacked on this host, as the wrapper derived it (RunOnHostPrereqs.mvnDistributionDir).
+# The distribution ./mvnw unpacked on this host, as the supervisor derived it (RunOnHostPrereqs.mvnDistributionDir).
 mvn_home=$(sed -n 's|^executable: \(.*\)/bin/mvn$|\1|p' "$work/emit-mvn.log" 2>/dev/null)
 
 # A scratch tree per profile, inside that profile's project, standing in for a project with
@@ -438,8 +448,8 @@ mvn_home=$(sed -n 's|^executable: \(.*\)/bin/mvn$|\1|p' "$work/emit-mvn.log" 2>/
 # One variable per profile — never a word-split list, which a space in the checkout path would
 # split mid-path. Registered before the first tree exists, so a failed second mktemp leaves
 # nothing.
-scratch_sbt=""; scratch_mill=""; scratch_gradle=""; scratch_mvn=""; sibling_repo=""; pin_saved=""
-acceptance_opts_file=""; port_saved=""; redirect_saved=""; unrelated_listener=""
+scratch_sbt=""; scratch_mill=""; scratch_gradle=""; scratch_mvn=""; sibling_repo=""; pin_saved=""; pinned_made=""
+acceptance_opts_file=""; port_saved=""; redirect_saved=""; unrelated_listener=""; held_jdk=""
 marker=acceptance-marker.${work##*.}
 cleanup() {
     # The ivy fixture's pin, edited under the sbt.version row: restored on any exit.
@@ -450,6 +460,8 @@ cleanup() {
     if [ -n "$redirect_saved" ] && [ -d "$redirect_saved" ]; then
         rm -f "$mill_project/out/mill-daemon"; mv "$redirect_saved" "$mill_project/out/mill-daemon"
     fi
+    # A build directory left under the project would be met by the next launch's provisioning.
+    [ -n "$pinned_made" ] && rm -rf "$pinned_project"
     [ -n "$scratch_sbt" ] && rm -rf "$scratch_sbt"
     [ -n "$scratch_mill" ] && rm -rf "$scratch_mill"
     [ -n "$scratch_gradle" ] && rm -rf "$scratch_gradle"
@@ -463,11 +475,13 @@ cleanup() {
         "$HOME/.gradle/$marker" "$HOME/.m2/repository/$marker" 2>/dev/null
     # The unrelated-service row's listener is this acceptance run's.
     [ -n "$unrelated_listener" ] && kill "$unrelated_listener" 2>/dev/null
-    # The channel rows' broker and stubbed execs; their FIFOs are this acceptance run's alone — a real
+    # So is the process-read rows' target.
+    [ -n "$held_jdk" ] && kill "$held_jdk" 2>/dev/null
+    # The channel rows' runner and stubbed execs; their FIFOs are this acceptance run's alone — a real
     # session's live inside its container.
-    if [ -n "${channel_broker:-}" ]; then
-        kill "$channel_broker" 2>/dev/null
-        [ -n "${second_broker:-}" ] && kill "$second_broker" 2>/dev/null
+    if [ -n "${channel_runner:-}" ]; then
+        kill "$channel_runner" 2>/dev/null
+        [ -n "${second_runner:-}" ] && kill "$second_runner" 2>/dev/null
         kill_channel_execs
         rm -rf /tmp/ko-agent-sandbox/run-on-host
         [ -n "${channel_dir2:-}" ] && rm -rf "$channel_dir2"
@@ -506,7 +520,7 @@ done
 
 # --- positive rows ------------------------------------------------------------------------------
 #
-# The wrapper rows come first: a cold run-on-host cache resolves through the command's proxy inside the
+# The supervisor rows come first: a cold run-on-host cache resolves through the command's proxy inside the
 # profile, warming what the emit-profile rows after them read.
 
 echo
@@ -524,23 +538,23 @@ if want sbt; then
     sbt_ready=1
     for command in compile test; do
         [ "$command" = test ] && [ "$quick" = 1 ] && { report SKIP "sbt test" "quick mode"; continue; }
-        if wrapper sbt "$project" "$command" >"$work/$command.log" 2>&1
-        then report PASS "sbt $command (wrapper)" "$(grep -m1 '^\[success\]' "$work/$command.log")"
+        if supervisor sbt "$project" "$command" >"$work/$command.log" 2>&1
+        then report PASS "sbt $command (supervisor)" "$(grep -m1 '^\[success\]' "$work/$command.log")"
         else
             sbt_ready=0
-            report FAIL "sbt $command (wrapper)" \
+            report FAIL "sbt $command (supervisor)" \
                 "$(grep -m1 '^\[error\]\|^refused\|Exception' "$work/$command.log" | cut -c1-70); $work/$command.log"
         fi
     done
     # A build with an inter-project edge: Ivy must take its lock file in the redirected home, or
     # the build dies canonicalizing ~/.ivy2 (RunOnHostPrereqs.ivyHomeOf).
     version=$(sed -n 's/^sbt.version=//p' "$ivy_project/project/build.properties")
-    if wrapper sbt "$ivy_project" app/packageBin >"$work/ivy.log" 2>&1
+    if supervisor sbt "$ivy_project" app/packageBin >"$work/ivy.log" 2>&1
     then report PASS "sbt $version packageBin across dependsOn" "$(grep -m1 '^\[success\]' "$work/ivy.log")"
     else report FAIL "sbt $version packageBin across dependsOn" \
         "$(grep -m1 '^\[error\]\|^refused\|Exception' "$work/ivy.log" | cut -c1-70)"; fi
 
-    # The emit-profile rows: same profile, no proxy behind them — the wrapper rows above warmed
+    # The emit-profile rows: same profile, no proxy behind them — the supervisor rows above warmed
     # the run-on-host cache through it. Both clients run so the need for --jvm-client stays measured. The server's
     # java.home is checked against the JDK the profile granted: the server is forked by the
     # client, so nothing about the client's own JVM proves which one the command runs in.
@@ -550,8 +564,8 @@ if want sbt; then
         then report PASS "$label" "$(grep -m1 'version:' "$work/version.log" | cut -c1-40)"
         else report FAIL "$label" "$(grep -v '^$' "$work/version.log" | tail -1 | cut -c1-70)"; fi
     done
-    # The wrapper sweeps host-cache links before warming the granted cache. If it failed, these
-    # direct clients cannot establish that prerequisite themselves; the wrapper row holds the failure.
+    # The supervisor sweeps host-cache links before warming the granted cache. If it failed, these
+    # direct clients cannot establish that prerequisite themselves; the supervisor row holds the failure.
     if [ "$sbt_ready" -eq 1 ]; then
         if run_sbt --jvm-client 'eval System.getProperty("java.home")' >"$work/jvm.log" 2>&1; then
             if grep -qF "$JAVA_HOME" "$work/jvm.log"
@@ -585,41 +599,95 @@ if want sbt; then
         for row in "server runs the granted JDK" \
             "a process forked by the command cannot read ~" \
             "a process forked by the command cannot write PROJECT/.git" "sbtn compile"; do
-            report SKIP "$row" "sbt wrapper setup failed; see $work/compile.log and $work/test.log"
+            report SKIP "$row" "sbt supervisor setup failed; see $work/compile.log and $work/test.log"
         done
     fi
 fi
 
 if want mill; then
     use_profile mill
-    # Each wrapper row starts a daemon in the command's session — the stock bootstrap under the
+    # Each supervisor row starts a daemon in the command's session — the stock bootstrap under the
     # daemon profile, ten seconds of denied connect retry — runs the client against its port, and
     # ends it with the session; out/mill-daemon is Mill's, neither cleared nor read for authority
-    # (RunOnHostSandbox.BrokerRuntimes, RunOnHostMillDaemons), beyond the classpath memo a start deletes
-    # when it names paths the profile denies (RunOnHostMillDaemons.discardForeignMemo).
+    # (RunnerRuntimes, RunOnHostMillDaemons), beyond the `mill-daemon-classpath` file a
+    # start deletes when it names paths the profile denies (RunOnHostMillDaemons.discardForeignClasspath).
     for command in __.compile __.test; do
         [ "$command" = __.test ] && [ "$quick" = 1 ] && { report SKIP "./mill $command" "quick mode"; continue; }
-        if wrapper mill "$mill_project" "$command" >"$work/mill.log" 2>&1
-        then report PASS "./mill $command (wrapper)" \
+        if supervisor mill "$mill_project" "$command" >"$work/mill.log" 2>&1
+        then report PASS "./mill $command (supervisor)" \
             "$(grep -m1 -i 'mill\|compiling\|passed' "$work/mill.log" | cut -c1-40)"
-        else report FAIL "./mill $command (wrapper)" \
+        else report FAIL "./mill $command (supervisor)" \
             "$(grep -v 'Picked up' "$work/mill.log" | tail -1 | cut -c1-70)"; fi
     done
     if [ -z "$(mill_daemons)" ]
     then report PASS "no mill daemon survives its command"
     else report FAIL "no mill daemon survives its command" "$(mill_daemons | tr '\n' ' ')"; fi
+
+    # A pinned mill-jvm-version (doc/run-on-host.md, "A pinned JVM"). `mill-jvm-index-version`
+    # makes the key of Mill's java-home file one these rows can write, where Mill's own default is
+    # its release's. Mill runs whatever home that file names under the id's key
+    # (src/probe/mill-pinned-jvm.sh), so the rows name a JDK already in the Coursier cache and
+    # nothing is fetched: one other than JAVA_HOME's when there is one Mill runs on, so that the
+    # grant is a second JDK's.
+    pinned_made=1
+    rm -rf "$pinned_project"; mkdir -p "$pinned_project"
+    cp "$mill_project/mill" "$pinned_project/"; cp -R "$mill_project/src" "$mill_project/test" "$pinned_project/"
+    sed 's/^mill-jvm-version: system$/mill-jvm-version: temurin:99\
+mill-jvm-index-version: acceptance/' "$mill_project/build.mill.yaml" > "$pinned_project/build.mill.yaml"
+    record_pinned_home() { # home
+        mkdir -p "$pinned_project/out/mill-daemon/cache" &&
+            printf '["temurin:99:acceptance:","%s"]' "$1" > "$pinned_project/out/mill-daemon/cache/java-home"
+    }
+    pinned_refused() { # label log wording: the supervisor refuses, in that wording
+        if supervisor mill "$pinned_project" version >"$2" 2>&1
+        then report FAIL "$1" "ran"
+        elif grep -qF "$3" "$2"
+        then report PASS "$1"
+        else report FAIL "$1" "$(grep -v 'Picked up' "$2" | tail -1 | cut -c1-70)"; fi
+    }
+    pinned_refused "a pinned JVM with no java-home file is refused, naming the host run" \
+        "$work/mill-pinned-absent.log" "MILL_VERSION=$mill_version-jvm ./mill version"
+    mkdir -p "$pinned_project/jdk/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$pinned_project/jdk/bin/java"; chmod +x "$pinned_project/jdk/bin/java"
+    record_pinned_home "$pinned_project/jdk"
+    pinned_refused "a java-home file naming a directory outside the Coursier cache is refused" \
+        "$work/mill-pinned-planted.log" "no JDK inside the Coursier cache"
+
+    java_home_real=$(cd "$JAVA_HOME" && pwd -P)
+    pinned_home=$java_home_real; pinned_which="JAVA_HOME's, the only JDK 17 or later in the Coursier cache"
+    find "$user_arc" -maxdepth 13 -type f -path '*/Contents/Home/bin/java' 2>/dev/null |
+        sed 's|/bin/java$||' > "$work/cached-jdks"
+    while IFS= read -r candidate; do
+        candidate=$(cd "$candidate" && pwd -P) || continue
+        [ "$candidate" != "$java_home_real" ] || continue
+        major=$("$candidate/bin/java" -version 2>&1 | sed -n '1s/.*version "\([0-9]*\).*/\1/p')
+        if [ "${major:-0}" -ge 17 ]; then pinned_home=$candidate; pinned_which="a second JDK, Java $major"; break; fi
+    done < "$work/cached-jdks"
+    safe_path "the pinned JDK home" "$pinned_home"
+    record_pinned_home "$pinned_home"
+    pinned_row="a pinned JVM's daemon runs on the JDK the java-home file records"
+    if supervisor mill "$pinned_project" --version >"$work/mill-pinned.log" 2>&1 \
+        && grep -qxF "java.home: $pinned_home" "$work/mill-pinned.log"
+    then report PASS "$pinned_row" "$pinned_which"
+    else report FAIL "$pinned_row" \
+        "$pinned_which; $(grep -v 'Picked up' "$work/mill-pinned.log" | tail -1 | cut -c1-70)"
+    fi
+    pinned_row="no mill daemon of the pinned build survives its command"
+    if [ -z "$(pinned_mill_daemons)" ]
+    then report PASS "$pinned_row"
+    else report FAIL "$pinned_row" "$(pinned_mill_daemons | tr '\n' ' ')"; fi
 fi
 
 if want gradle; then
     use_profile gradle
-    # Each wrapper row's client starts a daemon in the registry under the command's session,
-    # resolving through the proxy into the run-on-host cache's Gradle user home; the wrapper
+    # Each supervisor row's client starts a daemon in the registry under the command's session,
+    # resolving through the proxy into the run-on-host cache's Gradle user home; the supervisor
     # records the daemon after the command and ends it with the session (RunOnHostGradleDaemons).
     for task in help build; do
-        [ "$task" = build ] && [ "$quick" = 1 ] && { report SKIP "gradle build (wrapper)" "quick mode"; continue; }
-        if wrapper gradle "$gradle_project" "$task" >"$work/gradle.log" 2>&1
-        then report PASS "gradle $task (wrapper)" "$(grep -m1 'BUILD SUCCESSFUL' "$work/gradle.log" | cut -c1-40)"
-        else report FAIL "gradle $task (wrapper)" \
+        [ "$task" = build ] && [ "$quick" = 1 ] && { report SKIP "gradle build (supervisor)" "quick mode"; continue; }
+        if supervisor gradle "$gradle_project" "$task" >"$work/gradle.log" 2>&1
+        then report PASS "gradle $task (supervisor)" "$(grep -m1 'BUILD SUCCESSFUL' "$work/gradle.log" | cut -c1-40)"
+        else report FAIL "gradle $task (supervisor)" \
             "$(grep -m1 'FAILURE\|^refused\|Exception' "$work/gradle.log" | cut -c1-70)"; fi
     done
     if [ -z "$(gradle_daemons)" ]
@@ -632,10 +700,11 @@ if want mvn; then
     # One-shot, no daemon: each row is one Maven JVM under the profile, resolving plugins and the
     # test dependency from Central through the proxy into the run-on-host cache's local repository.
     for goal in --version test; do
-        [ "$goal" = test ] && [ "$quick" = 1 ] && { report SKIP "mvn test (wrapper)" "quick mode"; continue; }
-        if wrapper mvn "$mvn_project" "$goal" >"$work/mvn.log" 2>&1
-        then report PASS "mvn $goal (wrapper)" "$(grep -m1 'BUILD SUCCESS\|^Apache Maven' "$work/mvn.log" | cut -c1-40)"
-        else report FAIL "mvn $goal (wrapper)" \
+        [ "$goal" = test ] && [ "$quick" = 1 ] && { report SKIP "mvn test (supervisor)" "quick mode"; continue; }
+        if supervisor mvn "$mvn_project" "$goal" >"$work/mvn.log" 2>&1
+        then report PASS "mvn $goal (supervisor)" \
+            "$(grep -m1 'BUILD SUCCESS\|^Apache Maven' "$work/mvn.log" | cut -c1-40)"
+        else report FAIL "mvn $goal (supervisor)" \
             "$(grep -m1 '^\[ERROR\]\|^refused\|Exception' "$work/mvn.log" | cut -c1-70)"; fi
     done
 fi
@@ -657,6 +726,12 @@ python3 "$work/unrelated.py" >"$work/unrelated.log" 2>&1 & unrelated_listener=$!
 tries=0
 while ! grep -q port "$work/unrelated.log" && [ "$tries" -lt 50 ]; do tries=$((tries + 1)); sleep 0.1; done
 unrelated_port=$(sed -n 's/^port //p' "$work/unrelated.log")
+
+# The process-read rows' target: a JDK outside every profile holding a variable, as the launcher,
+# the runner and a supervisor are JDKs holding the launch's environment. Apple's own binaries
+# would not do: the kernel withholds their environment (run-on-host.md, "The Seatbelt profile").
+KO_AGENT_PROCARGS_PROBE=1 "$JAVA_HOME/bin/java" "$project/src/probe/ProcArgs.java" --hold >/dev/null 2>&1 &
+held_jdk=$!
 
 for p in $profiles; do
     use_profile "$p"
@@ -774,7 +849,7 @@ for p in $profiles; do
     cat > "$SESSION_TMP/Resolve.java" <<'EOF'
 class Resolve {
     public static void main(String[] arguments) {
-        try { System.out.println(java.net.InetAddress.getByName("localhost")); }
+        try { System.out.println(java.net.InetAddress.getByName(arguments[0])); }
         catch (java.net.UnknownHostException ex) { System.out.println(ex); }
     }
 }
@@ -782,7 +857,24 @@ EOF
     # From the profile's own project: a JVM asks for its working directory at start, and the
     # acceptance test's is the sbt profile's project alone.
     expect_allowed "$p" "a JVM resolving a name survives it" \
-        "cd '$(project_of "$p")' && '$JAVA_HOME/bin/java' '$SESSION_TMP/Resolve.java'"
+        "cd '$(project_of "$p")' && '$JAVA_HOME/bin/java' '$SESSION_TMP/Resolve.java' localhost"
+
+    echo
+    echo "processes, under the $p profile"
+    # SeatbeltProfile.ProcessReadRule. A row passes only on ProcArgs's own report: a JVM that did
+    # not run fails it. Mill's client also asks info() of its daemon, which Network.MillClient's
+    # exception covers, so these rows do not check it.
+    # The reader is copied out of the project, which only the sbt profile grants.
+    cp "$project/src/probe/ProcArgs.java" "$SESSION_TMP/ProcArgs.java"
+    expect_allowed "$p" "reading another process's arguments and environment is refused" \
+        "cd '$(project_of "$p")' && '$JAVA_HOME/bin/java' --enable-native-access=ALL-UNNAMED \
+            '$SESSION_TMP/ProcArgs.java' 'target=$held_jdk' > '$SESSION_TMP/procargs.out' \
+            && grep -q '^target (pid $held_jdk): DENIED errno=1 .*; ProcessHandle.of present; info ' \
+                '$SESSION_TMP/procargs.out'"
+    expect_allowed "$p" "read a child the command starts: the same sandbox" \
+        "cd '$(project_of "$p")' && '$JAVA_HOME/bin/java' --enable-native-access=ALL-UNNAMED \
+            '$SESSION_TMP/ProcArgs.java' '--child=$SESSION_TMP/ProcArgs.java' > '$SESSION_TMP/procargs.out' \
+            && grep -q '^a child of the reader (pid [0-9]*): ENVIRONMENT READ ' '$SESSION_TMP/procargs.out'"
 
     echo
     echo "allowed writes, under the $p profile"
@@ -806,6 +898,12 @@ EOF
     expect_denied "$p" "HTTPS around the proxy (curl, direct)" \
         "/usr/bin/curl --max-time 5 -sS https://repo1.maven.org/maven2/"
     expect_denied "$p" "DNS resolution (direct socket)" "/usr/bin/nslookup -timeout=3 example.com"
+    # The system's resolver, through the Mach service the profile grants (SECURITY.md, "DNS"). The
+    # row passes only on Resolve's own report of an unresolved name: a JVM that crashed or
+    # resolved the name fails it.
+    expect_allowed "$p" "DNS resolution (the system's resolver) fails" \
+        "cd '$(project_of "$p")' && '$JAVA_HOME/bin/java' '$SESSION_TMP/Resolve.java' example.com \
+            > '$SESSION_TMP/resolve.out' && grep -q '^java.net.UnknownHostException' '$SESSION_TMP/resolve.out'"
     # An unrelated service of this host: what a Gradle process may reach — its daemon, workers
     # and file-lock socket connect to each other's ports of the kernel's choosing — and no other
     # program's process may (SECURITY.md "Run on host", the table). The listener is the acceptance test's.
@@ -822,7 +920,7 @@ echo "the command's proxy"
 if ! want sbt; then
     report SKIP "fetch allowed Maven artifact via proxy" "sbt rows not selected"
     report SKIP "fetch unlisted host via proxy" "sbt rows not selected"
-    report SKIP "a PUT to an allowed host is refused, and the wrapper names it" "sbt rows not selected"
+    report SKIP "a PUT to an allowed host is refused, and the supervisor names it" "sbt rows not selected"
     report SKIP "CA bundle variables" "sbt rows not selected"
 else
     use_profile sbt
@@ -830,23 +928,23 @@ else
     # only have fetched it — and the direct-connect row already showed the profile's only route is
     # the proxy.
     rm -rf "$cache_v1/https/repo1.maven.org/maven2/org/scalameta"
-    if wrapper sbt "$project" Test/compile >"$work/refetch.log" 2>&1
+    if supervisor sbt "$project" Test/compile >"$work/refetch.log" 2>&1
     then report PASS "fetch allowed Maven artifact via proxy" "munit re-fetched, Test/compile ok"
     else report FAIL "fetch allowed Maven artifact via proxy" \
         "$(grep -m1 '^\[error\]\|^refused\|Exception' "$work/refetch.log" | cut -c1-70)"; fi
 
-    # deny-fixture's resolution reaches a refused host; the command must fail and the wrapper must
-    # say which host — the wrapper's denied-host report.
-    if wrapper sbt "$deny_project" update >"$work/deny.log" 2>&1
+    # deny-fixture's resolution reaches a refused host; the command must fail and the supervisor must
+    # say which host — the supervisor's denied-host report.
+    if supervisor sbt "$deny_project" update >"$work/deny.log" 2>&1
     then report FAIL "fetch unlisted host via proxy" "the command succeeded"
     elif grep -q 'Command requested network access' "$work/deny.log" \
         && grep -q 'denied.example.com' "$work/deny.log"
-    then report PASS "fetch unlisted host via proxy" "refused; wrapper named denied.example.com"
+    then report PASS "fetch unlisted host via proxy" "refused; supervisor named denied.example.com"
     else report FAIL "fetch unlisted host via proxy" \
-        "failed without the wrapper's diagnostic: $(tail -1 "$work/deny.log" | cut -c1-50)"; fi
+        "failed without the supervisor's diagnostic: $(tail -1 "$work/deny.log" | cut -c1-50)"; fi
 
     # `read` is enforced: the proxy answers a PUT to the host it allows with 403 inside the tunnel,
-    # and the wrapper names the request after the command. One expression without `;`, which
+    # and the supervisor names the request after the command. One expression without `;`, which
     # sbt's command splitter would cut at (the cancel row has the same constraint); the client
     # is the JDK's, which takes the proxy and the trust store from _JAVA_OPTIONS.
     put_url=https://repo1.maven.org/maven2/ko-agent-sandbox-acceptance-put
@@ -854,12 +952,12 @@ else
     put_request="$put_request.PUT(java.net.http.HttpRequest.BodyPublishers.noBody()).build()"
     put_eval="eval java.net.http.HttpClient.newHttpClient().send($put_request,"
     put_eval="$put_eval java.net.http.HttpResponse.BodyHandlers.discarding()).statusCode"
-    wrapper sbt "$project" "$put_eval" >"$work/put.log" 2>&1
+    supervisor sbt "$project" "$put_eval" >"$work/put.log" 2>&1
     if grep -q 'Int = 403' "$work/put.log" \
         && grep -q 'Command sent requests the host command sandbox refuses' "$work/put.log" \
         && grep -qF "PUT $put_url" "$work/put.log"
-    then report PASS "a PUT to an allowed host is refused, and the wrapper names it" "403; PUT $put_url"
-    else report FAIL "a PUT to an allowed host is refused, and the wrapper names it" \
+    then report PASS "a PUT to an allowed host is refused, and the supervisor names it" "403; PUT $put_url"
+    else report FAIL "a PUT to an allowed host is refused, and the supervisor names it" \
         "$(grep -m1 'Int = \|^\[error\]\|^refused\|Exception' "$work/put.log" | cut -c1-70); $work/put.log"; fi
 
     # Which CA bundle variables the curl and git this macOS ships read (run-on-host.md, "The
@@ -895,7 +993,7 @@ git_row "no GIT_SSL_CAINFO, no CURL_CA_BUNDLE" -u GIT_SSL_CAINFO -u CURL_CA_BUND
 git_row "none of the three" -u GIT_SSL_CAINFO -u CURL_CA_BUNDLE -u SSL_CERT_FILE
 CA_PROBE
     rm -f "$work/ca-probe.out"
-    wrapper sbt "$project" "eval scala.sys.process.Process(Seq(\"/bin/sh\", \"$work/ca-probe.sh\")).!" \
+    supervisor sbt "$project" "eval scala.sys.process.Process(Seq(\"/bin/sh\", \"$work/ca-probe.sh\")).!" \
         >"$work/ca-probe.log" 2>&1
     if [ -s "$work/ca-probe.out" ]
     then while IFS= read -r line; do report INFO "CA bundle variables" "$(printf '%s' "$line" | cut -c1-90)"; done \
@@ -905,7 +1003,7 @@ fi
 
 # --- the proxy's own profile ----------------------------------------------------------------------
 #
-# The wrapper rows above ran every fetch through a proxy under this profile, so they prove the
+# The supervisor rows above ran every fetch through a proxy under this profile, so they prove the
 # confined proxy works, the resolver rule included. These rows prove the profile denies, with the
 # granted java as the probe, since the profile execs nothing else. A JVM reading `@dir` reports
 # "Failed to read" on a directory it may open and "could not open" on one it may not, so the
@@ -913,7 +1011,7 @@ fi
 # control creates the file and whose denial the JVM reports as the open it could not make.
 echo
 echo "the proxy's own profile"
-# From /, as the wrapper runs its proxy: the JVM asks for its working directory at start. Both
+# From /, as the supervisor runs its proxy: the JVM asks for its working directory at start. Both
 # streams, since the JVM reports a log file it cannot open on stdout.
 proxy_java() {
     (cd / && /usr/bin/sandbox-exec -f "$work/acceptance-proxy.sb" "$JAVA_HOME/bin/java" "$@") >"$work/row.err" 2>&1
@@ -943,15 +1041,15 @@ else report FAIL "the proxy cannot write a file" "$(first_error)"; fi
 
 echo
 echo "the command lifecycle"
-# Command sessions alone: the broker's own session (b<random>), the build locks and the retirement
+# Command sessions alone: the runner's own session (r<random>), the build locks and the retirement
 # locks are not commands.
 commands_now() {
     ls "$command_root" 2>/dev/null \
         | grep -cv -e '^staging$' -e '^condemned$' -e '^root-lock$' -e '^build-lock$' -e '^retire-lock$' \
-            -e '^b[0-9]'
+            -e '^r[0-9]'
 }
 lifecycle_rows="two concurrent commands
-SIGTERM: the wrapper cleans up behind itself
+SIGTERM: the supervisor cleans up behind itself
 SIGKILL mid-command: the running group is ended while its leader is alive
 SIGKILL: next start condemns and collects
 leaderless server ended by portfile attribution"
@@ -961,10 +1059,10 @@ skip_lifecycle() {
 $lifecycle_rows
 EOF
 }
-# The victim's own client record, bound to it directly: the recorded spawn is started by the
-# wrapper, so its parent pid is the victim's, and the recorded start time must match the live
-# process — the same pid-plus-start check the wrapper's own scavenger uses, so a stale record
-# whose pid was reused by another child of the victim never passes. Empty when the wrapper ends
+# The victim's own client record, bound to it directly: the recorded leader is started by the
+# supervisor, so its parent pid is the victim's, and the recorded start time must match the live
+# process — the same pid-plus-start check the supervisor's own scavenger uses, so a stale record
+# whose pid was reused by another child of the victim never passes. Empty when the supervisor ends
 # first.
 await_client_record() { # victim-pid
     tries=0
@@ -980,10 +1078,10 @@ await_client_record() { # victim-pid
         tries=$((tries + 1)); sleep 0.5
     done
 }
-# Always launched with `&`, and exec so $! IS the wrapper JVM: without it the background pid is
-# the subshell running this function, java is its child, and every staged kill — and the spawn's
+# Always launched with `&`, and exec so $! IS the supervisor JVM: without it the background pid is
+# the subshell running this function, java is its child, and every staged kill — and the leader's
 # parent-pid check above — would signal or look at the wrong process.
-victim_wrapper() { # log-name
+victim_supervisor() { # log-name
     lock=$(build_lock sbt "$project") || exit 2
     # shellcheck disable=SC2086 # two options, split on purpose
     exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" $certificate_exports -cp "$test_cp" \
@@ -993,11 +1091,11 @@ victim_wrapper() { # log-name
 if [ "$quick" = 1 ]; then
     skip_lifecycle "quick mode"
 elif [ "$program" != all ]; then
-    skip_lifecycle "needs both programs"
+    skip_lifecycle "needs every program"
 else
     # Concurrency: one sbt and one mill command overlap, each with its own directory and proxy.
-    wrapper sbt "$project" compile >"$work/conc-sbt.log" 2>&1 & conc_sbt=$!
-    wrapper mill "$mill_project" __.compile >"$work/conc-mill.log" 2>&1 & conc_mill=$!
+    supervisor sbt "$project" compile >"$work/conc-sbt.log" 2>&1 & conc_sbt=$!
+    supervisor mill "$mill_project" __.compile >"$work/conc-mill.log" 2>&1 & conc_mill=$!
     peak=0; tries=0
     while [ "$tries" -lt 600 ]; do
         now=$(commands_now); [ "$now" -gt "$peak" ] && peak=$now
@@ -1010,12 +1108,12 @@ else
     then report PASS "two concurrent commands" "both built; peak concurrent command directories: $peak"
     else report FAIL "two concurrent commands" "sbt exit $conc_a, mill exit $conc_b"; fi
 
-    # SIGTERM mid-command: the wrapper's shutdown hook — a JVM's `finally` never runs on a signal —
+    # SIGTERM mid-command: the supervisor's shutdown hook — a JVM's `finally` never runs on a signal —
     # ends the groups and removes the command's directory before the JVM exits (RunOnHostSession).
-    victim_wrapper sigterm.log & victim=$!
+    victim_supervisor sigterm.log & victim=$!
     client_record=$(await_client_record "$victim")
     if [ -z "$client_record" ]; then
-        report FAIL "SIGTERM: the wrapper cleans up behind itself" \
+        report FAIL "SIGTERM: the supervisor cleans up behind itself" \
             "no client record appeared: $(tail -1 "$work/sigterm.log" | cut -c1-50)"
     else
         kill -TERM "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
@@ -1025,23 +1123,23 @@ else
         victim_session=${client_record%/records/client}
         if [ ! -d "$victim_session" ] && [ ! -d "$command_root/condemned/${victim_session##*/}" ] \
             && [ -z "$(project_servers)" ] && [ -z "$(stray_proxies)" ]
-        then report PASS "SIGTERM: the wrapper cleans up behind itself"
-        else report FAIL "SIGTERM: the wrapper cleans up behind itself" \
+        then report PASS "SIGTERM: the supervisor cleans up behind itself"
+        else report FAIL "SIGTERM: the supervisor cleans up behind itself" \
             "left: $(ls -d "$victim_session" 2>/dev/null) \
 $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
         fi
     fi
 
-    # SIGKILL mid-command: the spawn, the leader, survives the wrapper, so the next start ends the whole
+    # SIGKILL mid-command: the leader survives the supervisor, so the next start ends the whole
     # running group while its leader is alive instead of refusing a leaderless one.
-    victim_wrapper killed-mid.log & victim=$!
+    victim_supervisor killed-mid.log & victim=$!
     client_record=$(await_client_record "$victim")
     if [ -z "$client_record" ]; then
         report FAIL "SIGKILL mid-command: the running group is ended while its leader is alive" \
             "no client record appeared: $(tail -1 "$work/killed-mid.log" | cut -c1-50)"
     else
         kill -9 "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
-        wrapper sbt "$project" --version >"$work/recover-mid.log" 2>&1
+        supervisor sbt "$project" --version >"$work/recover-mid.log" 2>&1
         if grep -q 'GroupEnded' "$work/recover-mid.log"
         then report PASS "SIGKILL mid-command: the running group is ended while its leader is alive" \
             "$(grep -m1 'scavenged' "$work/recover-mid.log" | cut -c1-70)"
@@ -1049,15 +1147,15 @@ $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
             "$(tail -1 "$work/recover-mid.log" | cut -c1-70)"; fi
     fi
 
-    # The leaderless server needs the spawns gone too: SIGKILL the wrapper mid-command, let the
-    # client finish its command cleanly — the spawn publishes its exit beside the record — then
-    # SIGKILL the client's spawn and the server's spawn alone: the server, its group's leader
+    # The leaderless server needs the leaders gone too: SIGKILL the supervisor mid-command, let the
+    # client finish its command cleanly — the leader publishes its exit beside the record — then
+    # SIGKILL the client's leader and the server's leader alone: the server, its group's leader
     # gone, survives with the portfile. Proxy recorded and ended, client and server groups
     # leaderless and skipped, server ended by attribution (RunOnHostSession.collectServers).
     # Killing any of the client's processes instead stages the wrong state: a server whose
-    # client dies mid-exec cancels the exec, and the wrapper's teardown would end the server's
+    # client dies mid-exec cancels the exec, and the supervisor's teardown would end the server's
     # group behind its live leader.
-    victim_wrapper killed.log & victim=$!
+    victim_supervisor killed.log & victim=$!
     client_record=$(await_client_record "$victim")
     if [ -z "$client_record" ]; then
         report FAIL "SIGKILL: next start condemns and collects" \
@@ -1076,14 +1174,14 @@ $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
             report SKIP "leaderless server ended by portfile attribution" "no orphan was staged"
             pkill -9 -g "$client_pgid" 2>/dev/null
         else
-            # The spawns alone: the command is done, the server stays.
+            # The leaders alone: the command is done, the server stays.
             kill -9 "$client_pgid" 2>/dev/null
             [ -n "$server_record" ] && kill -9 "$(awk '{print $1}' "$server_record")" 2>/dev/null
             sleep 1
             staged=$(project_servers | tr '\n' ' ')
             # The recovery run's own command is beside the point (and --version is the cheap one);
             # its stderr reports cleanup of the victim's command directory.
-            wrapper sbt "$project" --version >"$work/recover.log" 2>&1
+            supervisor sbt "$project" --version >"$work/recover.log" 2>&1
             if grep -q 'scavenged' "$work/recover.log"
             then report PASS "SIGKILL: next start condemns and collects" \
                 "$(grep -m1 'scavenged' "$work/recover.log" | cut -c1-70)"
@@ -1100,10 +1198,10 @@ fi
 
 # --- the channel ---------------------------------------------------------------------------
 #
-# The real shim against the real broker, the `podman exec` transport a local script and the
-# sandbox this host. The wrapper behind it is the same one the rows above measured; what these
+# The real shim against the real runner, the `podman exec` transport a local script and the
+# sandbox this host. The supervisor behind it is the same one the rows above measured; what these
 # add is the channel — framing, streamed output and the command's own exit code, the
-# working-directory boundary, and teardown by descriptor lifetime — and the broker's runtime: the
+# working-directory boundary, and teardown by descriptor lifetime — and the runner's runtime: the
 # proxy and the sbt server or mill daemon the commands of one build directory share, and what
 # retires them (doc/run-on-host.md, "sbt" and "mill").
 
@@ -1111,8 +1209,8 @@ echo
 echo "the channel"
 channel_dir=/tmp/ko-agent-sandbox/run-on-host
 channel_rows="channel: sbt test returns the command's own exit code
-channel: the broker's sbt server serves the commands of one build directory
-channel: the broker's proxy serves the commands of one build directory
+channel: the runner's sbt server serves the commands of one build directory
+channel: the runner's proxy serves the commands of one build directory
 channel: the starting request's -D reaches the build
 channel: a cancelled command's warm server survives, and the next command reuses it
 channel: the denied-host report is per command
@@ -1122,20 +1220,20 @@ channel: a second launch attaches to the first's sbt server, recording nothing
 channel: a second launch forwarding a variable the first did not is refused, the server kept
 channel: a working directory outside the project is refused
 channel: a dead shim ends the running command
-channel: a dead sandbox ends the channel, its command and the broker's runtimes
-channel: TERM to the broker ends its command before the broker exits
-channel: a killed broker's command ends with it, and its server with the next start
+channel: a dead sandbox ends the channel, its command and the runner's runtimes
+channel: TERM to the runner ends its command before the runner exits
+channel: a killed runner's command ends with it, and its server with the next start
 channel: a planted portfile nominates nothing: refused, no shutdown spoken
-channel: the broker's end takes the gradle daemon, and the JVM its build forked"
+channel: the runner's end takes the gradle daemon, and the JVM its build forked"
 mill_channel_rows="channel: a second launch attaches to the first's mill daemon
-channel: mill compile starts the broker's daemon, and the next command reuses it
+channel: mill compile starts the runner's daemon, and the next command reuses it
 channel: a mill build's forked JVM writes temporary files where the daemon's profile allows
 channel: a redirected out/mill-daemon is refused before Mill's launcher acts on it
 channel: a planted socketPort reaches no daemon: the client is denied, the daemon untouched
 channel: after a cancelled mill command, the next command runs
 channel: a mill option-file edit replaces the daemon, and the next command runs under it
-channel: a mill daemon of yours, mismatched, is ended once idle before the broker's starts
-channel: a mill daemon of yours, matching, is ended once idle before the broker's starts
+channel: a mill daemon of yours, mismatched, is ended once idle before the runner's starts
+channel: a mill daemon of yours, matching, is ended once idle before the runner's starts
 channel: a mill daemon of yours mid-command is left until its client disconnects
 channel: a mill daemon of yours busy past the bound is refused, and left alive
 channel: a new launch adopts nothing planted in out/mill-daemon"
@@ -1162,11 +1260,11 @@ $gradle_channel_rows
 EOF
 }
 # Only processes the stub podman recorded, checked by the same pid-plus-start identity the
-# wrapper's scavenger uses — never a pattern kill, which would match a real session's own
+# supervisor's scavenger uses — never a pattern kill, which would match a real session's own
 # `podman exec` command lines, and never by pid alone, which a recycled pid defeats. Each owned
 # tree goes descendants-first, while the parent still holds them: the shell behind an exec may
 # have forked its command, and a surviving orphan keeps the FIFO and pipe open (the measured
-# behavior RunOnHostChannel.end answers on the broker's side). Every signal is checked
+# behavior RunOnHostChannel.end answers on the runner's side). Every signal is checked
 # immediately before it fires — a descendant by its link to the live, owned parent, which is
 # killed after its children and spawns nothing new, so a recycled pid cannot re-enter the tree;
 # the recorded root by its start time once more.
@@ -1188,19 +1286,19 @@ kill_channel_execs() {
         [ "$(ps -o lstart= -p "$pid" 2>/dev/null)" = "$start" ] && kill -9 "$pid" 2>/dev/null
     done < "$work/exec.pids"
 }
-# `exec` for the same reason as victim_wrapper: the staged kills must be delivered to the shim itself.
+# `exec` for the same reason as victim_supervisor: the staged kills must be delivered to the shim itself.
 channel_shim() { # log cwd args...
     chan_log=$1; chan_cwd=$2; shift 2
     cd "$chan_cwd" || exit 1
     PATH="$work/bin:$PATH" exec "$project/container/ko-agent-sandbox/ko-sandbox-run-on-host" "$@" \
         >"$work/$chan_log" 2>"$work/$chan_log.err"
 }
-channel_settled() { # await the broker between rows: no command directory, command server or command proxy
+channel_settled() { # await the runner between rows: no command directory, command server or command proxy
     tries=0
     while { [ "$(commands_now)" -gt 0 ] || [ -n "$(command_servers)" ] || [ -n "$(command_proxies)" ]; } \
         && [ "$tries" -lt 240 ]; do tries=$((tries + 1)); sleep 0.5; done
 }
-# The server processes behind a broker record, as project_servers finds them: the members of the
+# The server processes behind a runner record, as project_servers finds them: the members of the
 # record's group — a supervisor and the JVM it starts, so more than one line is normal.
 server_in_group() { # record-line
     [ -n "$1" ] || return 0
@@ -1214,7 +1312,7 @@ elif [ "$program" = mvn ]; then
     skip_channel "needs sbt, mill or gradle"
 else
     # macOS has neither flock(1) nor timeout(1): the shim's serialization is stubbed out — the
-    # rows are serial — and its exit-read bound runs unbounded, which only a broker dying
+    # rows are serial — and its exit-read bound runs unbounded, which only a runner dying
     # mid-command would notice.
     mkdir -p "$work/bin"
     printf '#!/bin/sh\nexit 0\n' > "$work/bin/flock"; chmod +x "$work/bin/flock"
@@ -1233,19 +1331,19 @@ case "\$1 \$2" in
 esac
 EOF
     chmod +x "$work/podman"
-    start_channel_broker() { # false when it made no FIFO
+    start_channel_runner() { # false when it made no FIFO
         echo true > "$work/running"
         rm -rf "$channel_dir"
         # shellcheck disable=SC2086 # two options, split on purpose
         "$JAVA_HOME/bin/java" $certificate_exports -cp "$test_cp" agentsandbox.launcher.AgentSandboxLauncher \
             --serve-run-on-host "$work/podman" C "$project" sbt,mill,gradle "$work/channel.log" "$project" \
-            >/dev/null 2>&1 & channel_broker=$!
+            >/dev/null 2>&1 & channel_runner=$!
         tries=0
         while [ ! -p "$channel_dir/req" ] && [ "$tries" -lt 100 ]; do tries=$((tries + 1)); sleep 0.2; done
         [ -p "$channel_dir/req" ]
     }
-    if ! start_channel_broker; then
-        skip_channel "the broker made no FIFOs: $(tail -1 "$work/channel.log" 2>/dev/null | cut -c1-50)"
+    if ! start_channel_runner; then
+        skip_channel "the runner made no FIFOs: $(tail -1 "$work/channel.log" 2>/dev/null | cut -c1-50)"
     else
         # The exit criterion's row: an agent-invoked `sbt test`, its exit code the command's own.
         with_timeout 1800 channel_shim chan-test.log "$project" sbt test; status=$?
@@ -1256,34 +1354,34 @@ EOF
             "exit $status: $(tail -1 "$work/chan-test.log.err" | cut -c1-60)"; fi
         channel_settled
 
-        # The broker holds one server and one proxy record for the build directory, each unchanged
+        # The runner holds one server and one proxy record for the build directory, each unchanged
         # after the next command of the same directory, and no runtime of either kind in a
         # command's own session.
-        root_server=$(broker_server_record "$project")
-        root_record=$(broker_proxy_record "$project")
+        root_server=$(runner_server_record "$project")
+        root_record=$(runner_proxy_record "$project")
         with_timeout 300 channel_shim chan-reuse.log "$project" sbt about
         channel_settled
         # The server record's group is still alive (server_in_group) and no sbt server runs outside
-        # a broker's recorded group — a second server would be a group of its own, which
+        # a runner's recorded group — a second server would be a group of its own, which
         # command_servers would name.
         if [ -n "$root_server" ] && record_alive "$root_server" \
-            && [ "$(broker_server_record "$project")" = "$root_server" ] \
+            && [ "$(runner_server_record "$project")" = "$root_server" ] \
             && [ -n "$(server_in_group "$root_server")" ] && [ -z "$(command_servers)" ] \
             && grep -q 'This is sbt' "$work/chan-reuse.log"
-        then report PASS "channel: the broker's sbt server serves the commands of one build directory" \
+        then report PASS "channel: the runner's sbt server serves the commands of one build directory" \
             "record $root_server, group $(server_in_group "$root_server" | tr '\n' ' ')"
-        else report FAIL "channel: the broker's sbt server serves the commands of one build directory" \
-            "record before: ${root_server:-none}, after: $(broker_server_record "$project"), \
+        else report FAIL "channel: the runner's sbt server serves the commands of one build directory" \
+            "record before: ${root_server:-none}, after: $(runner_server_record "$project"), \
 group: $(server_in_group "$root_server" | tr '\n' ' '), command servers: $(command_servers | tr '\n' ' ')"; fi
         if [ -n "$root_record" ] && record_alive "$root_record" \
-            && [ "$(broker_proxy_record "$project")" = "$root_record" ] && [ -z "$(command_proxies)" ]
-        then report PASS "channel: the broker's proxy serves the commands of one build directory" \
+            && [ "$(runner_proxy_record "$project")" = "$root_record" ] && [ -z "$(command_proxies)" ]
+        then report PASS "channel: the runner's proxy serves the commands of one build directory" \
             "record $root_record"
-        else report FAIL "channel: the broker's proxy serves the commands of one build directory" \
-            "record before: $root_record, after: $(broker_proxy_record "$project"), \
+        else report FAIL "channel: the runner's proxy serves the commands of one build directory" \
+            "record before: $root_record, after: $(runner_proxy_record "$project"), \
 command proxies: $(command_proxies | tr '\n' ' ')"; fi
 
-        # The request that starts a server gives it its -D (RunOnHostSandbox.serverCommand).
+        # The request that starts a server gives it its -D (RunOnHostSbtServer.serverCommand).
         # `shutdown` ends the server the test row started, and the next request starts one.
         probe='eval sys.props.getOrElse("acceptance.probe", "unset")'
         with_timeout 300 channel_shim chan-shutdown.log "$project" sbt shutdown
@@ -1297,13 +1395,13 @@ command proxies: $(command_proxies | tr '\n' ' ')"; fi
 
         # A client disconnect mid-task follows stock sbt: it detaches the channel (removeChannel,
         # force = false) without stopping the running task, which runs to completion on the warm
-        # server — as in a terminal. The broker does not retire the server, so the same server,
+        # server — as in a terminal. The runner does not retire the server, so the same server,
         # its record unchanged, serves the next command once the task finishes. The task runs on
         # the task engine — not `eval`, which runs on the command thread — and writes a marker so
         # the disconnect lands while it is still running. The sleep is short, so the next command
         # waits it out rather than the acceptance test.
         #
-        # The wrapper hands sbt all of its arguments as one command, so the `set` and the task
+        # The supervisor hands sbt all of its arguments as one command, so the `set` and the task
         # invocation ride one string joined by `;`; the task body is a single expression — the
         # marker written inside the sleep's argument — so no inner `;` or newline meets sbt's
         # command splitter. Def.uncached makes the marker and sleep run on every invocation:
@@ -1322,21 +1420,21 @@ command proxies: $(command_proxies | tr '\n' ' ')"; fi
         else
         # The marker proves the task runs on a server: record it now, whether the task reused a
         # warm one or started its own, and compare the same group after the cancel.
-        old_record=$(broker_server_record "$project")
+        old_record=$(runner_server_record "$project")
         old_server=$(server_in_group "$old_record")
         kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
         channel_settled
         with_timeout 600 channel_shim chan-after-cancel.log "$project" sbt about
         channel_settled
-        new_server=$(server_in_group "$(broker_server_record "$project")")
+        new_server=$(server_in_group "$(runner_server_record "$project")")
         if [ -n "$old_server" ] && [ "$new_server" = "$old_server" ] \
-            && [ "$(broker_server_record "$project")" = "$old_record" ] \
+            && [ "$(runner_server_record "$project")" = "$old_record" ] \
             && grep -q 'This is sbt' "$work/chan-after-cancel.log"
         then report PASS "channel: a cancelled command's warm server survives, and the next command reuses it" \
             "server $old_server kept across the cancel"
         else report FAIL "channel: a cancelled command's warm server survives, and the next command reuses it" \
             "old server ${old_server:-none}, after cancel: ${new_server:-none} \
-(record before $old_record, after $(broker_server_record "$project"))"; fi
+(record before $old_record, after $(runner_server_record "$project"))"; fi
         fi
         rm -f "$cancel_marker"
 
@@ -1363,16 +1461,16 @@ command proxies: $(command_proxies | tr '\n' ' ')"; fi
         # Both directories warm: the root has a runtime (root_record, from chan-reuse above), the
         # deny fixture one (deny_record). Visiting each again reuses its own; neither retires the
         # other.
-        deny_record=$(broker_proxy_record "$deny_project")
-        root_record=$(broker_proxy_record "$project")
+        deny_record=$(runner_proxy_record "$deny_project")
+        root_record=$(runner_proxy_record "$project")
         with_timeout 600 channel_shim chan-root.log "$project" sbt about
         channel_settled
-        root_same=$([ "$(broker_proxy_record "$project")" = "$root_record" ] && echo yes || echo no)
-        deny_after_root=$([ "$(broker_proxy_record "$deny_project")" = "$deny_record" ] \
+        root_same=$([ "$(runner_proxy_record "$project")" = "$root_record" ] && echo yes || echo no)
+        deny_after_root=$([ "$(runner_proxy_record "$deny_project")" = "$deny_record" ] \
             && record_alive "$deny_record" && echo yes || echo no)
         with_timeout 600 channel_shim chan-deny3.log "$deny_project" sbt update
         channel_settled
-        deny_reused=$([ "$(broker_proxy_record "$deny_project")" = "$deny_record" ] && echo yes || echo no)
+        deny_reused=$([ "$(runner_proxy_record "$deny_project")" = "$deny_record" ] && echo yes || echo no)
         if [ -n "$root_record" ] && [ "$root_same" = yes ] && [ "$deny_after_root" = yes ] \
             && [ "$deny_reused" = yes ] && record_alive "$root_record"
         then report PASS "channel: a second build directory stays warm beside the first, each reused"
@@ -1403,12 +1501,12 @@ deny alive after root: $deny_after_root, deny reused: $deny_reused"; fi
 
         # --- two launches on one project (doc/run-on-host.md, "The channel and the command") ------
         #
-        # A second broker on the same project: its commands attach to the first broker's server
+        # A second runner on the same project: its commands attach to the first runner's server
         # and daemon when they would start one under the same confinement and environment, and
         # otherwise end them by the first's records and start their own
-        # (RunOnHostSandbox.BrokerRuntimes.attached, takeOver). The shim and the
-        # broker both spell the channel directory as one constant, and the stub podman runs every
-        # exec on this host, so a second broker would share the first's FIFOs: its own stub
+        # (RunnerRuntimes.attached, takeOver). The shim and the
+        # runner both spell the channel directory as one constant, and the stub podman runs every
+        # exec on this host, so a second runner would share the first's FIFOs: its own stub
         # rewrites the constant in each script it execs, and its shim is a copy with the constant
         # rewritten. Its execs go into the same pid file, which the cleanup reads for both
         # directories. The directory is this run's own under /tmp, its name safe for the
@@ -1429,42 +1527,42 @@ case "\$1 \$2" in
 esac
 EOF
         chmod +x "$work/podman2"
-        # A name-only forward's value travels under its carrier name in the broker's own
-        # environment (RunOnHostChannel.spawnBroker), which the launcher sets: this script sets it.
-        # The broker sessions under the root — `b` and digits, as commands_now tells them from
+        # A name-only forward's value travels under its carrier name in the runner's own
+        # environment (RunOnHostChannel.spawnRunner), which the launcher sets: this script sets it.
+        # The runner sessions under the root — `b` and digits, as commands_now tells them from
         # `build-lock/` — are not the acceptance test's alone: a launch on this project from another
-        # terminal, an agent session's included, keeps its own broker session there. So the
-        # second broker's session is the one that appears when it starts, and the first's the
+        # terminal, an agent session's included, keeps its own runner session there. So the
+        # second runner's session is the one that appears when it starts, and the first's the
         # one whose server record for the project is alive.
-        broker_sessions() { ls "$command_root" 2>/dev/null | grep '^b[0-9]' | sed "s|^|$command_root/|"; }
+        runner_sessions() { ls "$command_root" 2>/dev/null | grep '^r[0-9]' | sed "s|^|$command_root/|"; }
         session_record() { # session record-name
             cat "$1/records/$2" 2>/dev/null
         }
         sbt_record=server-sbt-$(build_hash "$project")
         mill_record=daemon-mill-$(build_hash "$mill_project")
-        start_second_broker() { # [--env=NAME]: false when it made no FIFO and published no session
+        start_second_runner() { # [--env=NAME]: false when it made no FIFO and published no session
             echo true > "$work/running2"
             rm -rf "$channel_dir2"
-            broker_sessions > "$work/sessions-before"
+            runner_sessions > "$work/sessions-before"
             # shellcheck disable=SC2086 # two options, split on purpose
             KO_AGENT_RUN_ON_HOST_ENV_ACCEPTANCE_SHARE=1 "$JAVA_HOME/bin/java" $certificate_exports -cp "$test_cp" \
                 agentsandbox.launcher.AgentSandboxLauncher --serve-run-on-host "$work/podman2" C2 "$project" \
-                sbt,mill,gradle "$work/channel2.log" "$@" "$project" >/dev/null 2>&1 & second_broker=$!
+                sbt,mill,gradle "$work/channel2.log" "$@" "$project" >/dev/null 2>&1 & second_runner=$!
             tries=0
             second_session_dir=""
             while { [ ! -p "$channel_dir2/req" ] || [ -z "$second_session_dir" ]; } && [ "$tries" -lt 100 ]; do
                 tries=$((tries + 1)); sleep 0.2
-                second_session_dir=$(broker_sessions | grep -vxFf "$work/sessions-before" | head -1)
+                second_session_dir=$(runner_sessions | grep -vxFf "$work/sessions-before" | head -1)
             done
             [ -p "$channel_dir2/req" ] && [ -n "$second_session_dir" ]
         }
-        stop_second_broker() {
-            [ -n "${second_broker:-}" ] || return 0
-            kill -TERM "$second_broker" 2>/dev/null
+        stop_second_runner() {
+            [ -n "${second_runner:-}" ] || return 0
+            kill -TERM "$second_runner" 2>/dev/null
             tries=0
-            while kill -0 "$second_broker" 2>/dev/null && [ "$tries" -lt 120 ]; do tries=$((tries + 1)); sleep 0.5; done
-            kill -9 "$second_broker" 2>/dev/null
-            second_broker=""
+            while kill -0 "$second_runner" 2>/dev/null && [ "$tries" -lt 120 ]; do tries=$((tries + 1)); sleep 0.5; done
+            kill -9 "$second_runner" 2>/dev/null
+            second_runner=""
             rm -rf "$channel_dir2"
         }
         second_shim() { # log cwd args...
@@ -1473,7 +1571,7 @@ EOF
             PATH="$work/bin:$PATH" exec "$work/shim2" "$@" >"$work/$chan_log" 2>"$work/$chan_log.err"
         }
         first_session=""
-        for candidate in $(broker_sessions); do
+        for candidate in $(runner_sessions); do
             record_alive "$(session_record "$candidate" "$sbt_record")" && first_session=$candidate
         done
         second_session() { printf '%s\n' "$second_session_dir"; }
@@ -1485,70 +1583,71 @@ EOF
         mill_share_row="channel: a second launch attaches to the first's mill daemon"
         mill_takeover_row="channel: a second launch forwarding a variable the first did not takes the mill daemon over"
         # The mill rows are reported once: here, or with the mill rows' own skip.
-        if ! start_second_broker; then
-            report FAIL "$share_row" "the second broker made no FIFOs: $(tail -1 "$work/channel2.log" | cut -c1-50)"
-            report SKIP "$takeover_row" "no second broker"
-            report SKIP "$takeback_row" "no second broker"
-            report SKIP "$teardown_row" "no second broker"
-            want mill && report SKIP "$mill_share_row" "no second broker"
-            want mill && report SKIP "$mill_takeover_row" "no second broker"
+        if ! start_second_runner; then
+            report FAIL "$share_row" "the second runner made no FIFOs: $(tail -1 "$work/channel2.log" | cut -c1-50)"
+            report SKIP "$takeover_row" "no second runner"
+            report SKIP "$takeback_row" "no second runner"
+            report SKIP "$teardown_row" "no second runner"
+            want mill && report SKIP "$mill_share_row" "no second runner"
+            want mill && report SKIP "$mill_takeover_row" "no second runner"
         else
-            # The first broker's server for the project is warm from the rows above. The second
+            # The first runner's server for the project is warm from the rows above. The second
             # launch's `about` runs in it: the record and its group unchanged, no second server,
-            # and nothing recorded in the second broker's session.
-            share_before=$(broker_server_record "$project")
+            # and nothing recorded in the second runner's session.
+            share_before=$(runner_server_record "$project")
             with_timeout 600 second_shim chan-share-sbt.log "$project" sbt about; share_status=$?
             channel_settled
             share_session=$(second_session)
             share_records=$(ls "$share_session/records" 2>/dev/null | tr '\n' ' ')
             if [ "$share_status" -eq 0 ] && grep -q 'This is sbt' "$work/chan-share-sbt.log" \
                 && [ -n "$share_before" ] && record_alive "$share_before" \
-                && [ "$(broker_server_record "$project")" = "$share_before" ] \
+                && [ "$(runner_server_record "$project")" = "$share_before" ] \
                 && [ -n "$(server_in_group "$share_before")" ] && [ -z "$(command_servers)" ] \
                 && [ -n "$share_session" ] && [ -z "$share_records" ] \
                 && grep -q 'attached to' "$work/channel2.log"
             then report PASS "$share_row" "$(grep -m1 -o 'attached to [^ ]*' "$work/channel2.log")"
             else report FAIL "$share_row" "exit $share_status, record before ${share_before:-none}, after \
-$(broker_server_record "$project"), command servers: $(command_servers | tr '\n' ' '), second session \
+$(runner_server_record "$project"), command servers: $(command_servers | tr '\n' ' '), second session \
 ${share_session:-none} records: ${share_records:-none}; $(tail -1 "$work/chan-share-sbt.log.err" | cut -c1-50)"; fi
 
-            # The daemon the second launch attaches to is the first broker's, started here by its
-            # own `version` — the start meets the wrapper rows' memo before the mill rows below
-            # do — and shut down after, so the mill rows still measure a start of their own.
+            # The daemon the second launch attaches to is the first runner's, started here by its
+            # own `version` — the start meets the `mill-daemon-classpath` file the supervisor rows left
+            # before the mill rows below do — and shut down after, so the mill rows still measure a
+            # start of their own.
             if want mill; then
                 with_timeout 900 channel_shim chan-share-mill1.log "$mill_project" mill version
                 channel_settled
-                mill_share_record=$(broker_daemon_record "$mill_project")
+                mill_share_record=$(runner_daemon_record "$mill_project")
                 mill_share_daemon=$(daemon_in_group "$mill_share_record")
                 with_timeout 600 second_shim chan-share-mill.log "$mill_project" mill version; mill_share_status=$?
                 channel_settled
-                if [ "$mill_share_status" -eq 0 ] && grep -q '1\.1\.9' "$work/chan-share-mill.log" \
+                if [ "$mill_share_status" -eq 0 ] && printed_mill_version "$work/chan-share-mill.log" \
                     && [ -n "$mill_share_daemon" ] && record_alive "$mill_share_record" \
-                    && [ "$(broker_daemon_record "$mill_project")" = "$mill_share_record" ] \
+                    && [ "$(runner_daemon_record "$mill_project")" = "$mill_share_record" ] \
                     && [ "$(daemon_in_group "$mill_share_record")" = "$mill_share_daemon" ] \
                     && [ "$(mill_daemons | wc -l | tr -d ' ')" -eq 1 ] \
                     && [ -z "$(ls "$(second_session)/records" 2>/dev/null)" ] \
                     && grep -q 'attached to .* mill runtime' "$work/channel2.log"
                 then report PASS "$mill_share_row" "daemon $mill_share_daemon in group ${mill_share_record%% *}"
                 else report FAIL "$mill_share_row" "exit $mill_share_status, daemon before ${mill_share_daemon:-none}, \
-after $(daemon_in_group "$(broker_daemon_record "$mill_project")" | tr '\n' ' '), all: $(mill_daemons | tr '\n' ' '); \
+after $(daemon_in_group "$(runner_daemon_record "$mill_project")" | tr '\n' ' '), all: $(mill_daemons | tr '\n' ' '); \
 $(tail -1 "$work/chan-share-mill.log.err" | cut -c1-50)"; fi
                 with_timeout 300 channel_shim chan-share-mill2.log "$mill_project" mill shutdown
                 channel_settled
             fi
-            stop_second_broker
+            stop_second_runner
 
             # The second launch forwards a variable the first did not: the server it would start
-            # has another environment, so it ends the first broker's server by its record, under
+            # has another environment, so it ends the first runner's server by its record, under
             # the retirement lock, and starts its own; the first's record stays, its group gone.
             # The first launch's next command finds its group dead and takes the server back
             # the same way: two launches whose runtimes differ alternate restarts.
-            if ! start_second_broker --env=ACCEPTANCE_SHARE; then
+            if ! start_second_runner --env=ACCEPTANCE_SHARE; then
                 report FAIL "$takeover_row" \
-                    "the second broker made no FIFOs: $(tail -1 "$work/channel2.log" | cut -c1-50)"
-                report SKIP "$takeback_row" "no second broker"
-                report SKIP "$teardown_row" "no second broker"
-                want mill && report SKIP "$mill_takeover_row" "no second broker"
+                    "the second runner made no FIFOs: $(tail -1 "$work/channel2.log" | cut -c1-50)"
+                report SKIP "$takeback_row" "no second runner"
+                report SKIP "$teardown_row" "no second runner"
+                want mill && report SKIP "$mill_takeover_row" "no second runner"
             else
                 taken_before=$(session_record "$first_session" "$sbt_record")
                 with_timeout 600 second_shim chan-share-takeover.log "$project" sbt about; takeover_status=$?
@@ -1582,7 +1681,7 @@ $(record_alive "$taken_back" && echo alive || echo gone), second's ${taken_after
 $(record_alive "$taken_after" && echo alive || echo gone) in ${second:-no session}, command servers: \
 $(command_servers | tr '\n' ' '), root: $(root_now); $(tail -1 "$work/chan-share-takeback.log.err" | cut -c1-60)"; fi
 
-                # The daemon likewise: the first broker's, started by its own `version`, is ended
+                # The daemon likewise: the first runner's, started by its own `version`, is ended
                 # by the second's and replaced; the first's `shutdown` then ends the second's the
                 # same way and stops its own, so the mill rows still measure a start of their own.
                 if want mill; then
@@ -1594,7 +1693,7 @@ $(command_servers | tr '\n' ' '), root: $(root_now); $(tail -1 "$work/chan-share
                     mill_takeover_status=$?
                     channel_settled
                     mill_after=$(session_record "$second" "$mill_record")
-                    if [ "$mill_takeover_status" -eq 0 ] && grep -q '1\.1\.9' "$work/chan-share-mill-takeover.log" \
+                    if [ "$mill_takeover_status" -eq 0 ] && printed_mill_version "$work/chan-share-mill-takeover.log" \
                         && [ -n "$mill_daemon_before" ] && ! record_alive "$mill_before" \
                         && ! kill -0 "$mill_daemon_before" 2>/dev/null \
                         && [ -n "$mill_after" ] && record_alive "$mill_after" \
@@ -1611,7 +1710,7 @@ $(tail -1 "$work/chan-share-mill-takeover.log.err" | cut -c1-50)"; fi
                     channel_settled
                 fi
 
-                # The second launch owning the server again, its broker is ended while the
+                # The second launch owning the server again, its runner is ended while the
                 # first's command runs: the taker waits on the retirement lock the teardown
                 # holds, finds the group ended or ends it, and starts its own — one server, its
                 # record the first's, no signal twice, the second's session collected.
@@ -1619,9 +1718,9 @@ $(tail -1 "$work/chan-share-mill-takeover.log.err" | cut -c1-50)"; fi
                 channel_settled
                 retaken=$(session_record "$second" "$sbt_record")
                 takeovers_before=$(grep -c "took over $(basename "$second")" "$work/channel.log")
-                kill -TERM "$second_broker" 2>/dev/null
+                kill -TERM "$second_runner" 2>/dev/null
                 with_timeout 600 channel_shim chan-share-teardown.log "$project" sbt about; teardown_status=$?
-                stop_second_broker
+                stop_second_runner
                 channel_settled
                 torn_down=$(session_record "$first_session" "$sbt_record")
                 if [ "$retake_status" -eq 0 ] && [ "$teardown_status" -eq 0 ] \
@@ -1642,38 +1741,38 @@ $(tail -1 "$work/chan-share-teardown.log.err" | cut -c1-60)"; fi
             fi
         fi
 
-        # --- mill: the broker's daemon (doc/run-on-host.md, "mill") ------------------------------
+        # --- mill: the runner's daemon (doc/run-on-host.md, "mill") ------------------------------
         #
-        # The daemon the broker starts in its session serves every mill command of the build
+        # The daemon the runner starts in its session serves every mill command of the build
         # directory; each client runs under a profile naming that daemon's port and no other. The
-        # first row also meets the memo the wrapper rows left, naming the fixture project's cache,
-        # which this broker's profile — the fixture as this repository's build directory — denies:
-        # the start deletes it (RunOnHostMillDaemons.discardForeignMemo), or the daemon dies unable to
-        # open its jars. The
+        # first row also meets the `mill-daemon-classpath` file the supervisor rows left, naming the
+        # fixture project's cache, which this runner's profile — the fixture as this repository's
+        # build directory — denies: the start deletes it
+        # (RunOnHostMillDaemons.discardForeignClasspath), or the daemon dies unable to open its jars. The
         # fixture's `run` prints the TMPDIR the build sees and, with `sleep`, stays up for the
         # cancel and busy-daemon rows.
         if ! want mill; then skip_mill_channel "needs mill"; else
-        mill_row="channel: mill compile starts the broker's daemon, and the next command reuses it"
+        mill_row="channel: mill compile starts the runner's daemon, and the next command reuses it"
         # The start TERMs its starter once the daemon listens (RunOnHostMillDaemons.endStarter): the channel
         # log says the TERM was sent — counted before and after, since the log accumulates — and
         # the starter's exit record, beside the daemon record, says it ended on it, 143.
         starters_termed_before=$(grep -c 'TERM to the mill starter' "$work/channel.log")
         with_timeout 900 channel_shim chan-mill1.log "$mill_project" mill __.compile; mill_status=$?
         channel_settled
-        mill_record=$(broker_daemon_record "$mill_project")
+        mill_record=$(runner_daemon_record "$mill_project")
         mill_daemon=$(daemon_in_group "$mill_record")
         starters_termed=$(grep -c 'TERM to the mill starter' "$work/channel.log")
-        starter_exit=$(cat "$command_root"/b*/records/daemon-mill-"$(build_hash "$mill_project")".exit 2>/dev/null)
+        starter_exit=$(cat "$command_root"/r[0-9]*/records/daemon-mill-"$(build_hash "$mill_project")".exit 2>/dev/null)
         with_timeout 300 channel_shim chan-mill2.log "$mill_project" mill version
         channel_settled
         if [ "$mill_status" -eq 0 ] && [ -n "$mill_daemon" ] && record_alive "$mill_record" \
-            && [ "$(broker_daemon_record "$mill_project")" = "$mill_record" ] \
+            && [ "$(runner_daemon_record "$mill_project")" = "$mill_record" ] \
             && [ "$(daemon_in_group "$mill_record")" = "$mill_daemon" ] \
-            && [ "$(mill_daemons | wc -l | tr -d ' ')" -eq 1 ] && grep -q '1\.1\.9' "$work/chan-mill2.log" \
+            && [ "$(mill_daemons | wc -l | tr -d ' ')" -eq 1 ] && printed_mill_version "$work/chan-mill2.log" \
             && [ "$starters_termed" -gt "$starters_termed_before" ] && [ "${starter_exit:-none}" = 143 ]
         then report PASS "$mill_row" "daemon $mill_daemon in group ${mill_record%% *}; starter exit 143 on the TERM"
         else report FAIL "$mill_row" "compile exit $mill_status, daemon before ${mill_daemon:-none}, after \
-$(daemon_in_group "$(broker_daemon_record "$mill_project")" | tr '\n' ' '), all: $(mill_daemons | tr '\n' ' '), \
+$(daemon_in_group "$(runner_daemon_record "$mill_project")" | tr '\n' ' '), all: $(mill_daemons | tr '\n' ' '), \
 TERMs: $starters_termed (before $starters_termed_before), starter exit ${starter_exit:-none}"; fi
 
         # A forked JVM — a `run`, a test — inherits the daemon's profile but gets the command's
@@ -1703,18 +1802,18 @@ $(grep -v 'Picked up' "$work/chan-mill-tmp.log.err" | tail -1 | cut -c1-50)"; fi
             && [ "$(daemon_in_group "$mill_record")" = "$mill_daemon" ]
         then report PASS "$port_row" "exit $planted_status; daemon $mill_daemon kept"
         else report FAIL "$port_row" "exit $planted_status; daemon now \
-$(daemon_in_group "$(broker_daemon_record "$mill_project")" | tr '\n' ' '); \
+$(daemon_in_group "$(runner_daemon_record "$mill_project")" | tr '\n' ' '); \
 $(grep -m1 -h 'Exception\|refused' "$work/chan-mill-planted-port.log.err" | cut -c1-50)"; fi
 
         # A client disconnect mid-command: the next command runs, whatever the daemon did on the
         # disconnect — stock Mill shuts it down (Server.scala; measured,
-        # src/probe/run-on-host-broker-session.sh M5), which the wait below lets finish.
+        # src/probe/run-on-host-runner-session.sh M5), which the wait below lets finish.
         cancel_row="channel: after a cancelled mill command, the next command runs"
         channel_shim chan-mill-cancel.log "$mill_project" mill run sleep "$fixture_tag" & shim=$!
         cancel_ready=no
         acceptance_wait_started "$shim" 600 grep -q 'fixture-main' "$work/chan-mill-cancel.log" 2>/dev/null \
             && cancel_ready=yes
-        cancel_record=$(broker_daemon_record "$mill_project")
+        cancel_record=$(runner_daemon_record "$mill_project")
         cancel_daemon=$(daemon_in_group "$cancel_record")
         kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
         channel_settled
@@ -1728,9 +1827,9 @@ $(grep -m1 -h 'Exception\|refused' "$work/chan-mill-planted-port.log.err" | cut 
         else report INFO "forked run JVM after the cancel" "gone"; fi
         with_timeout 300 channel_shim chan-mill-after-cancel.log "$mill_project" mill version
         channel_settled
-        new_daemon=$(daemon_in_group "$(broker_daemon_record "$mill_project")")
+        new_daemon=$(daemon_in_group "$(runner_daemon_record "$mill_project")")
         if [ "$cancel_ready" = yes ] && [ -n "$cancel_daemon" ] && [ -n "$new_daemon" ] \
-            && grep -q '1\.1\.9' "$work/chan-mill-after-cancel.log"
+            && printed_mill_version "$work/chan-mill-after-cancel.log"
         then report PASS "$cancel_row" "daemon before $cancel_daemon, after $new_daemon"
         else report FAIL "$cancel_row" "ready to cancel: $cancel_ready; see $work/chan-mill-cancel.log{,.err}; \
 daemon before ${cancel_daemon:-none} \
@@ -1740,27 +1839,27 @@ $(kill -0 "$cancel_daemon" 2>/dev/null && echo alive || echo gone), after ${new_
         # the daemon before the command, and removing the file replaces it again. The file is
         # this acceptance run's, removed by the cleanup too.
         opts_row="channel: a mill option-file edit replaces the daemon, and the next command runs under it"
-        opts_record=$(broker_daemon_record "$mill_project")
+        opts_record=$(runner_daemon_record "$mill_project")
         acceptance_opts_file=$mill_project/.mill-jvm-opts
         printf -- '-Dko.acceptance.opts=1\n' > "$acceptance_opts_file"
         with_timeout 600 channel_shim chan-mill-opts1.log "$mill_project" mill version; opts1_status=$?
         channel_settled
-        edited_record=$(broker_daemon_record "$mill_project")
+        edited_record=$(runner_daemon_record "$mill_project")
         rm -f "$acceptance_opts_file"; acceptance_opts_file=""
         with_timeout 600 channel_shim chan-mill-opts2.log "$mill_project" mill version; opts2_status=$?
         channel_settled
         if [ "$opts1_status" -eq 0 ] && [ "$opts2_status" -eq 0 ] && [ -n "$edited_record" ] \
             && [ "$edited_record" != "$opts_record" ] \
-            && [ "$(broker_daemon_record "$mill_project")" != "$edited_record" ] \
-            && record_alive "$(broker_daemon_record "$mill_project")" \
+            && [ "$(runner_daemon_record "$mill_project")" != "$edited_record" ] \
+            && record_alive "$(runner_daemon_record "$mill_project")" \
             && grep -q 'its configuration changed' "$work/channel.log"
         then report PASS "$opts_row"
         else report FAIL "$opts_row" "exits $opts1_status/$opts2_status; records: $opts_record -> \
-${edited_record:-none} -> $(broker_daemon_record "$mill_project")"; fi
+${edited_record:-none} -> $(runner_daemon_record "$mill_project")"; fi
 
         # A link at out/mill-daemon would point Mill's launcher at another build directory's
         # daemon, past the ownership and idleness checks (RunOnHostMillDaemons.rendezvousIsOwn): refused
-        # before any of it runs. With the broker's daemon shut down first, since the daemon reads
+        # before any of it runs. With the runner's daemon shut down first, since the daemon reads
         # its processId by path and would exit while the directory is aside.
         redirect_row="channel: a redirected out/mill-daemon is refused before Mill's launcher acts on it"
         with_timeout 300 channel_shim chan-mill-shutdown0.log "$mill_project" mill shutdown
@@ -1780,11 +1879,11 @@ ${edited_record:-none} -> $(broker_daemon_record "$mill_project")"; fi
 $(tail -1 "$work/chan-mill-redirect.log.err" | cut -c1-60)"; fi
 
         # A daemon of yours — from a terminal, outside any launch — is ended after its start-time check, once idle,
-        # before the broker's starts, and the channel log says so. The broker's own is shut down
+        # before the runner's starts, and the channel log says so. The runner's own is shut down
         # first, through Mill's own command, since only a start meets a foreign daemon; then an
         # unconfined ./mill leaves one — once with a JAVA_OPTS the closed environment lacks, so
-        # its fingerprint differs from the broker's, and once with none, matching — and the next
-        # channel command ends it and starts the broker's. The unconfined ./mill runs the native
+        # its fingerprint differs from the runner's, and once with none, matching — and the next
+        # channel command ends it and starts the runner's. The unconfined ./mill runs the native
         # launcher, with the JDK the profile grants first on its PATH.
         foreign_mill() { # in the fixture, unconfined: command...
             ( cd "$mill_project" && env -u JAVA_OPTS -u JDK_JAVA_OPTIONS PATH="$JAVA_HOME/bin:$PATH" "$@" )
@@ -1798,18 +1897,18 @@ $(tail -1 "$work/chan-mill-redirect.log.err" | cut -c1-60)"; fi
             ended_before=$(grep -c 'ended the mill daemon' "$work/channel.log")
             with_timeout 600 channel_shim chan-mill-foreign.log "$mill_project" mill version; foreign_status=$?
             channel_settled
-            ours=$(daemon_in_group "$(broker_daemon_record "$mill_project")")
+            ours=$(daemon_in_group "$(runner_daemon_record "$mill_project")")
             if [ -n "$foreign" ] && ! kill -0 "$foreign" 2>/dev/null && [ "$foreign_status" -eq 0 ] \
                 && [ "$(grep -c 'ended the mill daemon' "$work/channel.log")" -gt "$ended_before" ] \
                 && [ -n "$ours" ] && [ "$ours" != "$foreign" ]
-            then report PASS "$foreign_label" "foreign $foreign ended, the broker's $ours started"
+            then report PASS "$foreign_label" "foreign $foreign ended, the runner's $ours started"
             else report FAIL "$foreign_label" "foreign ${foreign:-none} \
 $(kill -0 "${foreign:-0}" 2>/dev/null && echo alive || echo gone), exit $foreign_status, ours ${ours:-none}, \
 log lines: $(grep -c 'ended the mill daemon' "$work/channel.log") (before $ended_before)"; fi
         }
-        foreign_row "channel: a mill daemon of yours, mismatched, is ended once idle before the broker's starts" \
+        foreign_row "channel: a mill daemon of yours, mismatched, is ended once idle before the runner's starts" \
             JAVA_OPTS=-Dko.acceptance.foreign=1
-        foreign_row "channel: a mill daemon of yours, matching, is ended once idle before the broker's starts"
+        foreign_row "channel: a mill daemon of yours, matching, is ended once idle before the runner's starts"
 
         # A daemon of yours running a command — an established connection on its port — is left
         # until its client disconnects: the channel command waits, and completes once the daemon
@@ -1831,15 +1930,15 @@ log lines: $(grep -c 'ended the mill daemon' "$work/channel.log") (before $ended
         pkill -f "$fixture_sleep" 2>/dev/null
         wait "$shim"; busy_status=$?
         channel_settled
-        ours=$(daemon_in_group "$(broker_daemon_record "$mill_project")")
+        ours=$(daemon_in_group "$(runner_daemon_record "$mill_project")")
         if [ -n "$foreign" ] && [ "$waiting" = yes ] && [ "$foreign_alive" = yes ] && [ "$busy_status" -eq 0 ] \
             && ! kill -0 "$foreign" 2>/dev/null && [ -n "$ours" ] && [ "$ours" != "$foreign" ]
-        then report PASS "$busy_row" "waited 20s on foreign $foreign; then the broker's $ours"
+        then report PASS "$busy_row" "waited 20s on foreign $foreign; then the runner's $ours"
         else report FAIL "$busy_row" "foreign ${foreign:-none} alive while busy: $foreign_alive, command \
 waiting: $waiting, exit $busy_status, ours ${ours:-none}"; fi
 
         # One busy past the bound (RunOnHostMillDaemons.ForeignIdleDeadlineMillis): the command is refused
-        # naming it, and the daemon and its build are left alone. The broker's daemon is shut down
+        # naming it, and the daemon and its build are left alone. The runner's daemon is shut down
         # first: a ./mill of yours with matching settings attaches to a live daemon of the launch's,
         # and the row needs a daemon of its own to be busy.
         bound_row="channel: a mill daemon of yours busy past the bound is refused, and left alive"
@@ -1871,8 +1970,8 @@ $(tail -1 "$work/chan-mill-bound.log.err" | cut -c1-60)"; fi
 
         # --- gradle: the launch's daemons (doc/run-on-host.md, "Gradle") -------------------------
         #
-        # Gradle's own client starts the daemon in the launch's registry under the broker's tmp/,
-        # and later clients match it there; the broker records each daemon after every command
+        # Gradle's own client starts the daemon in the launch's registry under the runner's tmp/,
+        # and later clients match it there; the runner records each daemon after every command
         # and ends the records' groups with its session (RunOnHostGradleDaemons). The fixture's `run`
         # prints the TMPDIR the forked JVM sees and, with `sleep`, stays up for the cancel and
         # teardown rows.
@@ -1880,22 +1979,22 @@ $(tail -1 "$work/chan-mill-bound.log.err" | cut -c1-60)"; fi
         gradle_row="channel: gradle build starts a daemon in the launch's registry, and the next command reuses it"
         with_timeout 900 channel_shim chan-gradle1.log "$gradle_project" gradle build; gradle_status=$?
         channel_settled
-        gradle_record=$(broker_gradle_records)
+        gradle_record=$(runner_gradle_records)
         gradle_daemon=$(gradle_daemons | head -1)
         with_timeout 300 channel_shim chan-gradle2.log "$gradle_project" gradle help; gradle2_status=$?
         channel_settled
         if [ "$gradle_status" -eq 0 ] && [ "$gradle2_status" -eq 0 ] && [ -n "$gradle_daemon" ] \
             && [ "${gradle_record%% *}" = "$gradle_daemon" ] && record_alive "$gradle_record" \
-            && [ "$(broker_gradle_records)" = "$gradle_record" ] \
+            && [ "$(runner_gradle_records)" = "$gradle_record" ] \
             && [ "$(gradle_daemons | wc -l | tr -d ' ')" -eq 1 ] && grep -q 'BUILD SUCCESSFUL' "$work/chan-gradle1.log"
         then report PASS "$gradle_row" "daemon $gradle_daemon"
         else report FAIL "$gradle_row" "exits $gradle_status/$gradle2_status, daemon ${gradle_daemon:-none}, records: \
-$(broker_gradle_records | tr '\n' ' '), all: $(gradle_daemons | tr '\n' ' ')"; fi
+$(runner_gradle_records | tr '\n' ' '), all: $(gradle_daemons | tr '\n' ' ')"; fi
 
         # Gradle unpacks its native libraries under the user home and loads them from there: the
         # daemon has one mapped, from the directory the profile grants read-write.
         native_row="channel: the daemon maps Gradle's native libraries from the user home's read-write grant"
-        # The launch's user home is the broker's project's, under its run-on-host cache
+        # The launch's user home is the runner's project's, under its run-on-host cache
         # (RunOnHostPrereqs.gradleUserHomeOf); its name is the launcher's own.
         native=$(lsof -p "${gradle_daemon:-0}" 2>/dev/null | grep -F "/gradle-user-home/native/" | head -1 \
             | awk '{print $NF}')
@@ -1941,7 +2040,7 @@ $(broker_gradle_records | tr '\n' ' '), all: $(gradle_daemons | tr '\n' ' ')"; f
         ours=$(gradle_daemons | tr '\n' ' ')
         foreign_gradle ./gradlew --stop >/dev/null 2>&1
         if [ -n "$foreign" ] && [ "$foreign_alive" = yes ] && [ "$own_status" -eq 0 ] \
-            && [ -n "$ours" ] && ! broker_gradle_records | grep -q "^$foreign "
+            && [ -n "$ours" ] && ! runner_gradle_records | grep -q "^$foreign "
         then report PASS "$own_row" "yours $foreign untouched; the launch's $ours"
         else report FAIL "$own_row" "yours ${foreign:-none} alive after: $foreign_alive, exit $own_status, \
 the launch's: ${ours:-none}; $(tail -1 "$work/foreign-gradle.log" | cut -c1-50)"; fi
@@ -1970,11 +2069,11 @@ the launch's: ${ours:-none}; $(tail -1 "$work/foreign-gradle.log" | cut -c1-50)"
         channel_settled
         if [ "$cancel_ready" = yes ] && [ -n "$cancel_daemon" ] && [ "$after_status" -eq 0 ] \
             && [ "$(gradle_daemons | wc -l | tr -d ' ')" -eq 1 ] \
-            && [ "$(broker_gradle_records | wc -l | tr -d ' ')" -eq 1 ] && record_alive "$(broker_gradle_records)"
+            && [ "$(runner_gradle_records | wc -l | tr -d ' ')" -eq 1 ] && record_alive "$(runner_gradle_records)"
         then report PASS "$cancel_row" "daemon before $cancel_daemon, after $(gradle_daemons)"
         else report FAIL "$cancel_row" "ready to cancel: $cancel_ready; see $work/chan-gradle-cancel.log{,.err}; \
 daemon before ${cancel_daemon:-none}, exit $after_status, daemons after: \
-$(gradle_daemons | tr '\n' ' '), records: $(broker_gradle_records | tr '\n' ' ')"; fi
+$(gradle_daemons | tr '\n' ' '), records: $(runner_gradle_records | tr '\n' ' ')"; fi
         fi
 
         with_timeout 120 channel_shim chan-refused.log /private/tmp sbt about; status=$?
@@ -1983,34 +2082,34 @@ $(gradle_daemons | tr '\n' ' '), records: $(broker_gradle_records | tr '\n' ' ')
         else report FAIL "channel: a working directory outside the project is refused" \
             "exit $status: $(tail -1 "$work/chan-refused.log.err" | cut -c1-60)"; fi
 
-        # The shim dies; the broker sees the descriptor close and ends the command's client group,
+        # The shim dies; the runner sees the descriptor close and ends the command's client group,
         # leaving the warm server as stock sbt does on a disconnect (doc/run-on-host.md). So the
-        # command's own group and directory go, while the broker, its proxy and its warm server
+        # command's own group and directory go, while the runner, its proxy and its warm server
         # stay: the next command reuses that server.
         channel_shim chan-kill.log "$project" sbt compile & shim=$!
         tries=0
         while [ "$(commands_now)" -eq 0 ] && [ "$tries" -lt 600 ]; do tries=$((tries + 1)); sleep 0.5; done
-        server_before=$(broker_server_record "$project")
+        server_before=$(runner_server_record "$project")
         kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
         channel_settled
-        broker_state=$(kill -0 "$channel_broker" 2>/dev/null && echo alive || echo gone)
+        runner_state=$(kill -0 "$channel_runner" 2>/dev/null && echo alive || echo gone)
         # Teardown appended the command's logs to the channel log before removing its directory
-        # (appendSessionLogs); the broker's proxy and warm server are untouched by the command's end.
+        # (appendSessionLogs); the runner's proxy and warm server are untouched by the command's end.
         if [ "$(commands_now)" -eq 0 ] && [ -z "$(command_servers)" ] && [ -z "$(command_proxies)" ] \
-            && [ "$broker_state" = alive ] && grep -q "ended by signal" "$work/channel.log" \
-            && record_alive "$(broker_proxy_record "$project")" \
+            && [ "$runner_state" = alive ] && grep -q "ended by signal" "$work/channel.log" \
+            && record_alive "$(runner_proxy_record "$project")" \
             && [ -n "$server_before" ] && record_alive "$server_before"
         then report PASS "channel: a dead shim ends the running command"
         else report FAIL "channel: a dead shim ends the running command" \
-            "commands: $(commands_now), command servers: $(command_servers | tr '\n' ' '), broker $broker_state," \
+            "commands: $(commands_now), command servers: $(command_servers | tr '\n' ' '), runner $runner_state," \
             "logs kept: $(grep -c 'ended by signal' "$work/channel.log")," \
             "warm server: ${server_before:-none} $(record_alive "$server_before" && echo alive || echo gone)"; fi
 
-        # The sandbox dies: every exec dies with it, the shim included; the broker ends the command
+        # The sandbox dies: every exec dies with it, the shim included; the runner ends the command
         # and, with the container gone, itself: its session, server and proxy with it. With gradle
         # the command is a `run` whose forked JVM sleeps in the daemon's group, the group the
-        # broker's end signals behind the daemon's record.
-        gradle_end_row="channel: the broker's end takes the gradle daemon, and the JVM its build forked"
+        # runner's end signals behind the daemon's record.
+        gradle_end_row="channel: the runner's end takes the gradle daemon, and the JVM its build forked"
         gradle_run_daemon=""
         if want gradle; then
             channel_shim chan-dead.log "$gradle_project" gradle run --args="sleep $fixture_tag" & shim=$!
@@ -2024,24 +2123,24 @@ $(gradle_daemons | tr '\n' ' '), records: $(broker_gradle_records | tr '\n' ' ')
             tries=0
             while [ "$(commands_now)" -eq 0 ] && [ "$tries" -lt 600 ]; do tries=$((tries + 1)); sleep 0.5; done
         fi
-        broker_session=$(broker_session_of "$project")
+        runner_session=$(runner_session_of "$project")
         echo false > "$work/running"
         kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
         kill_channel_execs
         channel_settled
         tries=0
-        while kill -0 "$channel_broker" 2>/dev/null && [ "$tries" -lt 120 ]; do tries=$((tries + 1)); sleep 0.5; done
-        broker_state=$(kill -0 "$channel_broker" 2>/dev/null && echo alive || echo gone)
-        # The broker's own teardown ended its server and proxy with its session.
+        while kill -0 "$channel_runner" 2>/dev/null && [ "$tries" -lt 120 ]; do tries=$((tries + 1)); sleep 0.5; done
+        runner_state=$(kill -0 "$channel_runner" 2>/dev/null && echo alive || echo gone)
+        # The runner's own teardown ended its server and proxy with its session.
         if [ "$(commands_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ -z "$(mill_daemons)" ] \
-            && [ "$broker_state" = gone ] \
-            && [ -z "$(stray_proxies)" ] && [ -n "$broker_session" ] && [ ! -d "$broker_session" ]
-        then report PASS "channel: a dead sandbox ends the channel, its command and the broker's runtimes"
-        else report FAIL "channel: a dead sandbox ends the channel, its command and the broker's runtimes" \
+            && [ "$runner_state" = gone ] \
+            && [ -z "$(stray_proxies)" ] && [ -n "$runner_session" ] && [ ! -d "$runner_session" ]
+        then report PASS "channel: a dead sandbox ends the channel, its command and the runner's runtimes"
+        else report FAIL "channel: a dead sandbox ends the channel, its command and the runner's runtimes" \
             "commands: $(commands_now), servers: $(project_servers | tr '\n' ' '), \
-daemons: $(mill_daemons | tr '\n' ' '), broker $broker_state, \
-proxies: $(stray_proxies | tr '\n' ' '), session ${broker_session:-unknown}: \
-$([ -d "$broker_session" ] && echo kept || echo gone)"; fi
+daemons: $(mill_daemons | tr '\n' ' '), runner $runner_state, \
+proxies: $(stray_proxies | tr '\n' ' '), session ${runner_session:-unknown}: \
+$([ -d "$runner_session" ] && echo kept || echo gone)"; fi
         if ! want gradle; then report SKIP "$gradle_end_row" "needs gradle"
         else
             forked=$(pgrep -f "$fixture_sleep" 2>/dev/null | tr '\n' ' ')
@@ -2053,66 +2152,66 @@ forked: ${forked:-none}"; pkill -f "$fixture_sleep" 2>/dev/null; fi
         fi
         rm -rf "$channel_dir"
 
-        # The broker's own end mid-command. TERM: its hook ends the wrapper and waits for the
-        # wrapper's teardown, then ends the broker's session, its server and its proxy, so the
-        # moment the broker is gone the command's directory, the server and every proxy are gone
-        # too. KILL: nothing waits, but the wrapper's stdin is the broker's pipe, and its EOF ends
-        # the command by the same teardown; the broker's server and proxy stay, recorded in its
-        # session, until the next start scavenges them by their records — the wrapper's recovery run
+        # The runner's own end mid-command. TERM: its hook ends the supervisor and waits for the
+        # supervisor's teardown, then ends the runner's session, its server and its proxy, so the
+        # moment the runner is gone the command's directory, the server and every proxy are gone
+        # too. KILL: nothing waits, but the supervisor's stdin is the runner's pipe, and its EOF ends
+        # the command by the same teardown; the runner's server and proxy stay, recorded in its
+        # session, until the next start scavenges them by their records — the supervisor's recovery run
         # here. The shim is left blocked on its exit read (no timeout(1) here) and killed after.
-        broker_end_row() { # row signal
+        runner_end_row() { # row signal
             before=$(grep -c 'ended by signal' "$work/channel.log")
-            if ! start_channel_broker; then report FAIL "$1" "the broker made no FIFOs"; return; fi
+            if ! start_channel_runner; then report FAIL "$1" "the runner made no FIFOs"; return; fi
             # With gradle, TERM arrives during the launch's first gradle build, its daemon
             # unobserved and still cancelling when the teardown looks, so the teardown must find
             # it then. On KILL nothing observes, so the daemon is one a completed command
             # recorded, for the next start's scavenge to end by that record.
             if want gradle && [ "$2" = TERM ]; then
-                channel_shim "chan-broker-$2.log" "$gradle_project" gradle run --args="sleep $fixture_tag" & shim=$!
+                channel_shim "chan-runner-$2.log" "$gradle_project" gradle run --args="sleep $fixture_tag" & shim=$!
                 tries=0
-                while ! grep -q 'fixture-main' "$work/chan-broker-$2.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
+                while ! grep -q 'fixture-main' "$work/chan-runner-$2.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
                     tries=$((tries + 1)); sleep 0.5
                 done
             else
                 if want gradle; then
-                    with_timeout 600 channel_shim "chan-broker-$2-gradle.log" "$gradle_project" gradle help
+                    with_timeout 600 channel_shim "chan-runner-$2-gradle.log" "$gradle_project" gradle help
                     channel_settled
                 fi
-                channel_shim "chan-broker-$2.log" "$project" sbt compile & shim=$!
+                channel_shim "chan-runner-$2.log" "$project" sbt compile & shim=$!
                 tries=0
                 while [ "$(commands_now)" -eq 0 ] && [ "$tries" -lt 600 ]; do tries=$((tries + 1)); sleep 0.5; done
             fi
-            kill "-$2" "$channel_broker" 2>/dev/null
+            kill "-$2" "$channel_runner" 2>/dev/null
             tries=0
-            while kill -0 "$channel_broker" 2>/dev/null && [ "$tries" -lt 240 ]; do
+            while kill -0 "$channel_runner" 2>/dev/null && [ "$tries" -lt 240 ]; do
                 tries=$((tries + 1)); sleep 0.5
             done
             if [ "$2" = KILL ]; then
                 channel_settled
                 orphan=$(stray_proxies | tr '\n' ' ')
                 orphan_server=$(project_servers | tr '\n' ' ')
-                wrapper sbt "$project" --version >"$work/recover-broker.log" 2>&1
+                supervisor sbt "$project" --version >"$work/recover-runner.log" 2>&1
                 proxies_ended=$([ -n "$orphan" ] && [ -n "$orphan_server" ] \
-                    && grep -q 'scavenged b.*GroupEnded.*GroupEnded' "$work/recover-broker.log" \
+                    && grep -q 'scavenged r[0-9].*GroupEnded.*GroupEnded' "$work/recover-runner.log" \
                     && [ -z "$(stray_proxies)" ] && echo yes || echo no)
             else
                 proxies_ended=$([ -z "$(stray_proxies)" ] && echo yes || echo no)
             fi
             if [ "$(commands_now)" -eq 0 ] && [ -z "$(project_servers)" ] && [ -z "$(mill_daemons)" ] \
                 && [ -z "$(gradle_daemons)" ] && ! pgrep -f "$fixture_sleep" >/dev/null 2>&1 \
-                && [ "$proxies_ended" = yes ] && ! kill -0 "$channel_broker" 2>/dev/null \
+                && [ "$proxies_ended" = yes ] && ! kill -0 "$channel_runner" 2>/dev/null \
                 && [ "$(grep -c 'ended by signal' "$work/channel.log")" -gt "$before" ]
             then report PASS "$1"
             else report FAIL "$1" "commands: $(commands_now), servers: $(project_servers | tr '\n' ' '), \
 daemons: $(mill_daemons | tr '\n' ' ') $(gradle_daemons | tr '\n' ' '), \
-broker $(kill -0 "$channel_broker" 2>/dev/null && echo alive || echo gone), proxies ended: $proxies_ended, \
+runner $(kill -0 "$channel_runner" 2>/dev/null && echo alive || echo gone), proxies ended: $proxies_ended, \
 logs kept: $(grep -c 'ended by signal' "$work/channel.log") (before: $before)"; fi
             kill -9 "$shim" 2>/dev/null; wait "$shim" 2>/dev/null
             kill_channel_execs
             rm -rf "$channel_dir"
         }
-        broker_end_row "channel: TERM to the broker ends its command before the broker exits" TERM
-        broker_end_row "channel: a killed broker's command ends with it, and its server with the next start" KILL
+        runner_end_row "channel: TERM to the runner ends its command before the runner exits" TERM
+        runner_end_row "channel: a killed runner's command ends with it, and its server with the next start" KILL
 
         # A new launch adopts nothing a portfile nominates: the fixture's portfile names a live
         # socket that is not sbt's derivation for the directory, so the request is refused and
@@ -2142,8 +2241,8 @@ PY
         mkdir -p "$deny_project/project/target"
         printf '{"uri":"local://%s"}' "$planted_sock" > "$deny_project/project/target/active.json"
         # The mill rendezvous files name this script's listener's TCP port and its sleep's pid: the
-        # new broker connects to nothing they name and signals nothing, and the client reaches
-        # the broker's own daemon.
+        # new runner connects to nothing they name and signals nothing, and the client reaches
+        # the runner's own daemon.
         cat > "$work/planted-tcp.py" <<'PY'
 import socket, sys
 s = socket.socket()
@@ -2164,7 +2263,7 @@ PY
             sed -n 's/^port //p' "$work/planted-tcp.log" | tr -d '\n' > "$mill_project/out/mill-daemon/socketPort"
             printf '%s' "$planted_sleep" > "$mill_project/out/mill-daemon/processId"
         fi
-        if ! start_channel_broker; then report FAIL "$planted_row" "the broker made no FIFOs"
+        if ! start_channel_runner; then report FAIL "$planted_row" "the runner made no FIFOs"
         else
             with_timeout 300 channel_shim chan-planted.log "$deny_project" sbt about; status=$?
             channel_settled
@@ -2178,7 +2277,7 @@ listener: $(grep bytes "$work/planted.log" | tr '\n' ' ')"; fi
                 with_timeout 600 channel_shim chan-planted-mill.log "$mill_project" mill version; status=$?
                 channel_settled
                 port_saved=""
-                adopted=$(daemon_in_group "$(broker_daemon_record "$mill_project")")
+                adopted=$(daemon_in_group "$(runner_daemon_record "$mill_project")")
                 if [ "$status" -eq 0 ] && [ -n "$adopted" ] && ! grep -q connect "$work/planted-tcp.log" \
                     && kill -0 "$planted_sleep" 2>/dev/null
                 then report PASS "$planted_mill_row" "daemon $adopted; the planted port heard nothing, the pid lives"
@@ -2186,9 +2285,9 @@ listener: $(grep bytes "$work/planted.log" | tr '\n' ' ')"; fi
 $(grep -c connect "$work/planted-tcp.log"), planted pid \
 $(kill -0 "$planted_sleep" 2>/dev/null && echo alive || echo gone)"; fi
             fi
-            kill -TERM "$channel_broker" 2>/dev/null
+            kill -TERM "$channel_runner" 2>/dev/null
             tries=0
-            while kill -0 "$channel_broker" 2>/dev/null && [ "$tries" -lt 240 ]; do
+            while kill -0 "$channel_runner" 2>/dev/null && [ "$tries" -lt 240 ]; do
                 tries=$((tries + 1)); sleep 0.5
             done
             kill_channel_execs
@@ -2200,7 +2299,7 @@ $(kill -0 "$planted_sleep" 2>/dev/null && echo alive || echo gone)"; fi
     fi
 fi
 
-# After every wrapper row: no process or temporary directory outlives its command.
+# After every supervisor row: no process or temporary directory outlives its command.
 leftover=""
 [ -n "$(project_servers)" ] && leftover="sbt server: $(project_servers | tr '\n' ' ')"
 [ -n "$(deny_servers)" ] && leftover="$leftover deny-fixture server: $(deny_servers | tr '\n' ' ')"

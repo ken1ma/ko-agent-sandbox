@@ -1,28 +1,27 @@
 // The launch's Gradle daemons (run-on-host.md "Gradle"): started by Gradle's own client under the
-// command's profile, in the registry every Gradle command line names under the broker's `tmp/`,
+// command's profile, in the registry every Gradle command line names under the runner's `tmp/`,
 // and detached by the daemon itself into a group of its own (`DaemonMain`, `setsid`), where its
-// workers and test executors are forked. The broker records each after every command, and once
+// workers and test executors are forked. The runner records each after every command, and once
 // more at the launch's end, by pid and start time, as `records/daemon-gradle-<pid>`, and the
 // launch's end signals the group behind each record as it does every recorded group. What identifies
 // a daemon as the launch's is its initial environment: the client starts it with its own
 // (`DefaultProcessForkOptions.getInheritableEnvironment`), whose `_JAVA_OPTIONS` names the
-// broker's `tmp/` as `java.io.tmpdir`, a value no process outside this launch's commands was
+// runner's `tmp/` as `java.io.tmpdir`, a value no process outside this launch's commands was
 // started with. No path identifies it: the build writes across `tmp/` and the project, and a file a
 // daemon of yours holds open, renamed into the registry under any name, is reported by the kernel
 // at that name. `ps -E` reads the strings from the daemon's own memory (`KERN_PROCARGS2`,
 // `sysctl_procargsx`), so build code in the daemon can rewrite them and hide the daemon from its
-// own launch, and nothing else: a daemon so hidden is unrecorded, as one started under a broker
+// own launch, and nothing else: a daemon so hidden is unrecorded, as one started under a runner
 // that died during the command is — the daemon's pid is its group id, so the record is one like
-// any registered spawn's, written after the fact — and either is confined, holds nothing, and
-// exits on Gradle's idle timeout (SECURITY.md "Run on host"). macOS only, like the wrapper: the
-// observations are pgrep and ps, so BrokerRuntimes takes `gradleDaemons` as a parameter tests replace and the
+// a leader's, written after the fact — and either is confined, holds nothing, and
+// exits on Gradle's idle timeout (SECURITY.md "Run on host"). macOS only, like the supervisor: the
+// observations are pgrep and ps, so RunnerRuntimes takes `gradleDaemons` as a parameter tests replace and the
 // acceptance test measures it.
 
 package agentsandbox.launcher
 
 import java.io.IOException
-import java.nio.charset.StandardCharsets.UTF_8
-import java.nio.file.{Files, Path, StandardCopyOption}
+import java.nio.file.{Files, Path}
 
 import RunOnHostSession.{HostProcesses, Processes, Record}
 
@@ -33,7 +32,7 @@ object RunOnHostGradleDaemons:
   val DaemonMain = "org.gradle.launcher.daemon.bootstrap.GradleDaemon"
 
   /** `org.gradle.daemon.registry.base` on every Gradle command line
-    * (RunOnHostSandbox.gradleCommand): under the broker's `tmp/`, which every Gradle process of
+    * (RunOnHostSandbox.gradleCommand): under the runner's `tmp/`, which every Gradle process of
     * the launch is granted and which ends with the launch. */
   def registryBase(tmp: Path): Path = tmp.resolve("gradle-daemon")
 
@@ -77,23 +76,17 @@ object RunOnHostGradleDaemons:
         FileHelper.directoryEntries(records).filter(_.getFileName.toString.startsWith(RecordPrefix))
       catch case _: IOException => Vector.empty
     val (alive, stale) = existing.partition: file =>
-      parsed(file).exists(record => processes.startOf(record.pgid).contains(record.leaderStart))
+      RunOnHostSession.leaderLives(file, processes)
     val deleted = stale.flatMap: file =>
       try
         Files.deleteIfExists(file)
         Some(s"forgot ${file.getFileName}: its daemon is gone")
       catch case _: IOException => None
-    val recorded = alive.flatMap(parsed).map(record => record.pgid -> record.leaderStart).toSet
+    val recorded = alive.flatMap(RunOnHostSession.readRecord).map(record => record.pgid -> record.leaderStart).toSet
     val added = found.filterNot(recorded).flatMap: (pid, start) =>
       val file = records.resolve(recordName(pid))
       try
-        val pending = file.resolveSibling(s"${file.getFileName}.pending")
-        Files.writeString(pending, RunOnHostSession.renderRecord(Record(pid, start)), UTF_8)
-        Files.move(pending, file, StandardCopyOption.ATOMIC_MOVE)
+        RunOnHostSession.publishByRename(file, RunOnHostSession.renderRecord(Record(pid, start)))
         Some(s"recorded the gradle daemon $pid")
       catch case ex: IOException => Some(s"recording the gradle daemon $pid: ${ex.getMessage}")
     deleted ++ added
-
-  private def parsed(file: Path): Option[Record] =
-    try RunOnHostSession.parseRecord(Files.readString(file, UTF_8))
-    catch case _: IOException => None

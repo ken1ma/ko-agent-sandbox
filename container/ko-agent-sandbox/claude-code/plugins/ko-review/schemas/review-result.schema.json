@@ -29,10 +29,10 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["issue", "codexPosition", "whyTechnicalEvidenceCannotDecide", "decisionRequested"],
+          "required": ["issue", "reviewerPosition", "whyTechnicalEvidenceCannotDecide", "decisionRequested"],
           "properties": {
             "issue": {"type": "string"},
-            "codexPosition": {"type": "string"},
+            "reviewerPosition": {"type": "string"},
             "whyTechnicalEvidenceCannotDecide": {"type": "string"},
             "decisionRequested": {"type": "string"}
           }

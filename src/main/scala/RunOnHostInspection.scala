@@ -13,7 +13,7 @@ import FileHelper.{writePrivate, writeReadable}
 object RunOnHostInspection:
 
   /** The proxy's two directories, siblings of its log as its profile is
-    * (RunOnHostSandbox.proxyProfileFile), so a runtime's log names them for whoever attaches to
+    * (RunOnHostProxy.proxyProfileFile), so a runtime's log names them for whoever attaches to
     * it. Two, because each is one profile's grant: `leaf` the proxy's, `trust` the command's. */
   private def sibling(proxyLog: Path, suffix: String): Path =
     proxyLog.resolveSibling(proxyLog.getFileName.toString.stripSuffix(".log") + suffix)
@@ -24,7 +24,7 @@ object RunOnHostInspection:
   def leafCertificate(proxyLog: Path): Path = leafDirectory(proxyLog).resolve("leaf.crt")
   def leafKey(proxyLog: Path): Path = leafDirectory(proxyLog).resolve("leaf.key")
 
-  /** The CA certificate as PEM, for the programs that read a variable (CaBundleVariables). */
+  /** The CA certificate as PEM, for the programs that read a variable (AgentSandboxLauncher.CaBundleVariables). */
   def caBundle(trust: Path): Path = trust.resolve("ca.crt")
 
   /** The same certificate as a PKCS12 store, for `javax.net.ssl.trustStore`. */
@@ -34,12 +34,6 @@ object RunOnHostInspection:
     * has. A JVM given no password loads no certificate from a PKCS12 store (measured, JDK 25:
     * "the trustAnchors parameter must be non-empty"), so the command's JVMs are given it. */
   val TrustStorePassword = "changeit"
-
-  /** The variables that name a PEM bundle, as the sandbox container gets them (SECURITY.md, "Who
-    * holds the CA key"). run-on-host.md, "The command's lifetime and environment", lists which
-    * programs read each. */
-  val CaBundleVariables: Vector[String] =
-    Vector("SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO")
 
   /**
    * The names the proxy's leaf must have: the hosts its rules inspect, as the proxy's own
@@ -84,7 +78,7 @@ object RunOnHostInspection:
       case ex: (IOException | java.security.GeneralSecurityException | IllegalArgumentException) =>
         Left(s"creating the proxy's inspection certificate: ${ex.getMessage}")
       // A JVM started without RunOnHostSandbox.CertificateBuilderExports. An Error, which no
-      // caller's NonFatal handler takes. Measured: a broker started without them logged the
+      // caller's NonFatal handler takes. Measured: a runner started without them logged the
       // request and nothing after it, and the requester waited out the row's 1800 s bound.
       case ex: IllegalAccessError =>
         Left(

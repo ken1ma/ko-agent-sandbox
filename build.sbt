@@ -99,7 +99,7 @@ Compile / unmanagedResourceDirectories +=
 // execvp is a restricted FFM method: without this, a warning per launch and refusal on a future JDK.
 // The exports open the JDK's internal certificate builder to X509Helper.scala, which has why; the
 // assembly manifest carries both for `java -jar`, the launcher's re-invocation of itself for the
-// broker, wrapper and proxy it starts as `java -cp` (RunOnHostSandbox.CertificateBuilderExports),
+// runner, supervisor and proxy it starts as `java -cp` (RunOnHostSandbox.CertificateBuilderExports),
 // the native-image command in doc/TODO.md for the binary, and .jvmopts for the tests, which run in
 // sbt's own JVM —
 // a forked test JVM would need sbt's TCP listener to reach it, which the host command sandbox does
@@ -133,7 +133,7 @@ Compile / resourceGenerators += Def.task {
 }.taskValue
 
 // Bundle the build contexts into the jar so --build works with no checkout present
-// (AgentSandboxLauncher.unpackBuildContext). INDEX lists every bundled path: a jar's resource tree cannot be enumerated
+// (ImageBuilds.unpackBuildContext). INDEX lists every bundled path: a jar's resource tree cannot be enumerated
 // at runtime.
 // Native-image's resource discovery misses required files; the native-image command in doc/TODO.md must include
 // sandbox-build/ (build contexts), defaults/ (proxy rules) and agentsandbox/ (--help and Seatbelt system paths).
@@ -166,7 +166,7 @@ Compile / resourceGenerators += Def.task {
   //
   // ko-agent-fs/doc and ko-agent-fs/probe are excluded for a different reason: neither is a build input nor
   // distribution — probe/ holds the platform-verification probes a developer runs by hand, not under cargo — and
-  // leaving them out keeps them out of AgentSandboxLauncher.koAgentFsSourceId too, so editing a design document or a
+  // leaving them out keeps them out of KoAgentFs.koAgentFsSourceId too, so editing a design document or a
   // probe does not invalidate every installed filter binary. Its .dockerignore drops the same paths, so a direct
   // `podman build` from a checkout sees what a jar-built one does.
   // IO.relativize answers in the platform's separator, and everything downstream reads `/` — the

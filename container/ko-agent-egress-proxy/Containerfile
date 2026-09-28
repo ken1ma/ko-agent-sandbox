@@ -71,8 +71,6 @@ RUN set -euxo pipefail; \
     native-image \
         -J-Xmx1536m \
         -R:MaxHeapSize=64m \
-        --add-exports=java.base/sun.security.x509=ALL-UNNAMED \
-        --add-exports=java.base/sun.security.util=ALL-UNNAMED \
         -o /build/ko-agent-egress-proxy \
         -jar target/dist/ko-agent-egress-proxy.jar
 
@@ -94,7 +92,7 @@ RUN set -euxo pipefail; \
 # An enforcement point should hold nothing an attacker could use:
 # distroless has no shell, package manager, interpreter or JVM, so an ad-hoc
 # command cannot run inside it. The cost is no HEALTHCHECK; liveness is the log
-# (--proxy-log). `nonroot` is a mutable tag resolving to uid 65532.
+# (--egress-log). `nonroot` is a mutable tag resolving to uid 65532.
 #
 # debian13 follows debian-temurin's DEBIAN_VERSION: the build stage above links the executable
 # against that release's glibc, which this base has to provide.
@@ -104,9 +102,9 @@ LABEL org.opencontainers.image.title="ko-agent-egress-proxy"
 LABEL org.opencontainers.image.description="CONNECT-only egress proxy for ko-agent-sandbox, enforcing a project's rules"
 LABEL org.opencontainers.image.base.name="gcr.io/distroless/base-debian13:nonroot"
 
-# The digest of this directory as the launcher bundled it (KoAgentFs.contextSourceId). A launch
+# The digest of this directory as the launcher bundled it (LauncherImages.contextSourceId). A launch
 # recomputes it from its own jar and refuses a default-named image another jar built — the
-# version lock between launcher and image (AgentSandboxLauncher.bundleMismatch).
+# version lock between launcher and image (LauncherImages.bundleMismatch).
 ARG BUNDLE_ID
 LABEL ko-agent-sandbox.bundle=${BUNDLE_ID}
 

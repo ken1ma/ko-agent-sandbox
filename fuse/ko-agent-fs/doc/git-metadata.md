@@ -93,7 +93,7 @@ repository's configuration files:
   host chose; they cannot define the command.
 - `.gitmodules` additionally cannot supply `submodule.<name>.update = !cmd`: `git` has refused to
   honor the `!command` form from `.gitmodules` since the CVE-2017-1000117 family. The design
-  rests on this assumption, which is tested, not trusted.
+  rests on this assumption ("Premises", P4).
 
 ### 3. Indirection — moves the gitdir itself
 
@@ -148,6 +148,8 @@ From the four groups, the state that must be immutable to the sandbox:
    - `objects/info/**` except what git writes there for itself — `commit-graph`,
      `commit-graphs/**`, `packs` — so `alternates` and `http-alternates` (group 4); `objects` and
      `objects/info` themselves are created only by `mkdir` and never renamed or unlinked
+   - every other entry the classifier's allowlist does not name, among them the rebase and
+     sequencer state (group 1), the bisect state and `rr-cache`
    - and, by recursion, the same classes inside every nested gitdir: `worktrees/<name>/**`
      and `modules/<name>/**` are themselves gitdirs, so their `config`, `hooks/**`, `commondir` and
      `gitdir` are immutable while their operational state is not.
@@ -163,8 +165,8 @@ Everything else stays writable — see the classifier — except what the file r
 The whole of `.git` cannot be read-only: `git` must write its operational state for `status`,
 `commit`, `checkout`, `fetch`, `merge` to work at all — `index`, `HEAD` and the other `*_HEAD`
 refs, `refs/**`, `logs/**`, `objects/**`, `packed-refs`, `COMMIT_EDITMSG`, `MERGE_MSG`, and so
-on. (`rebase` is the deliberate exception — its todo is protected; see group 1 and blocked
-operations.)
+on. (`rebase` and `bisect` are the deliberate exceptions — their state is protected; see group 1
+and blocked operations.)
 
 So inside a gitdir the filter must keep operational state writable while protecting the other
 entries. There are two ways to draw that line, and they fail in opposite directions:
@@ -204,9 +206,10 @@ entries. There are two ways to draw that line, and they fail in opposite directi
 
 Deny creation of any basename that equals `.git` after all of:
 
-- dropping invisible/ignorable code points (U+00AD, U+200B–U+200D, U+2060, U+FEFF) — a filesystem
-  that ignores these in comparison resolves `.gi<U+200C>t` to `.git` (the HFS+ half of
-  CVE-2014-9390);
+- dropping invisible/ignorable code points (U+00AD, U+200B–U+200F, U+202A–U+202E, U+2060,
+  U+206A–U+206F, U+FEFF) — a filesystem that ignores these in comparison resolves `.gi<U+200C>t`
+  to `.git` (the HFS+ half of CVE-2014-9390). The list holds every code point git's
+  `next_hfs_char` (utf8.c) skips;
 - folding the Turkish i-family (U+0130, U+0131) to `i` — some Windows upcase tables map dotless and
   dotted i to `I`;
 - folding U+212A KELVIN SIGN to `k` and U+017F LATIN SMALL LETTER LONG S to `s` — APFS resolves
@@ -380,7 +383,7 @@ policy classifies as writable.
   slot the sandbox can rename away and replant, and a chain that leaves the workspace re-enters
   the rule if a link points back in.
 - `canonicalize` cannot express this — it returns the endpoint and erases the chain — so the walk
-  is explicit and depth-bounded.
+  is explicit and bounded in symlink hops.
 - It classifies against the same submodule gitdir roots the runtime discovers by their `HEAD`, so
   guard-`Protected` means runtime-`Protected` (`.git/modules/<sub>/objects` is writable at
   runtime and no exemption here).
@@ -410,8 +413,8 @@ The read-only root is added only when the hook directory resolves **inside** the
   through a podman machine only the directories the machine shares. A chain leaving those refuses
   the mount, since the host could follow it back into the workspace unseen.
 
-The scanner behind it does not read section headers, so it cannot tell `core.hooksPath` from a
-`hooksPath` under a section git never consults for hooks.
+The scanner behind it skips section headers without reading their names, so it cannot tell
+`core.hooksPath` from a `hooksPath` under a section git never consults for hooks.
 
 - It therefore judges **every** `hooksPath` the file states and serves each one resolving inside
   the workspace read-only.
@@ -420,12 +423,23 @@ The scanner behind it does not read section headers, so it cannot tell `core.hoo
   actually runs would be served as ordinary writable data.
 - The price is a read-only directory for a `hooksPath` git ignores, never a lost guarantee.
 
-The doubts refuse rather than guess, each of them a value the scanner would otherwise compare in a
-different spelling than the one hooks run from:
+It reads the forms git's `git_parse_source` (config.c) reads, so that the value it judges is the
+one hooks run from:
+
+- a leading BOM is skipped, and a key may follow one or more section headers on its line
+  (`[core] hooksPath = ./githooks`), whose quoted subsection may hold `]`;
+- quote characters anywhere in the value are removed, and whitespace inside them is kept;
+- whitespace outside quotes is kept when another character or a quote character follows it, and
+  judged both as written, which git 2.47 reads, and with each character replaced by a space,
+  which git 2.39 reads.
+
+The doubts refuse rather than guess: with each, the scanner would otherwise compare a different
+spelling than the one hooks run from, or miss a `hooksPath` git reads:
 
 - a `~` (expanding it needs the host's home directory, which the daemon does not have);
 - a backslash (git decodes escapes the scanner does not);
 - an unterminated quote;
+- a section header left open on its line;
 - a bare `path` key, which under `include` or `includeIf` names a file the scanner never opens.
 
 All are rare in a *repository-local* config, and the message tells the operator what to change.
@@ -541,10 +555,10 @@ Policy unit tests cover the classifier in isolation; these run against a mounted
 **Name rule / creation (group 3a):**
 
 - `mkdir`, `open(O_CREAT)`, `mknod`, `symlink`, `link`, `rename` into, `renameat2`
-  `RENAME_EXCHANGE` into — for basenames `.git`, `.GIT`, `.Git`, `.git.`, `.git ` (trailing
-  space), and a non-UTF-8 name; each must fail.
-- Control names `.git<newline>`, `.gitignore`, `.github` must **succeed** (only exact-fold `.git`
-  is special).
+  `RENAME_EXCHANGE` into — for basenames `.git`, `.GIT`, `.Git`, `.git.` and `.git ` (trailing
+  space); each must fail.
+- Control names `.git<newline>`, `.gitignore`, `.github` and a non-UTF-8 name must **succeed**
+  (only exact-fold `.git` is special).
 
 **Pointer rewrite (group 3b):** with an existing `.git` file present, every mutation op above must
 fail against it.

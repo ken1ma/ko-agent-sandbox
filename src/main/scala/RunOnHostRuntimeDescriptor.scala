@@ -1,5 +1,5 @@
-// What a launch's broker publishes about each runtime it owns, for another launch on the same
-// project to attach its commands to (RunOnHostSandbox.BrokerRuntimes.attached): the file
+// What a launch's runner publishes about each runtime it owns, for another launch on the same
+// project to attach its commands to (RunnerRuntimes.attached): the file
 // `runtime-<program>-<hash>` in the owner's session directory, which no confined process can
 // write, since the profiles grant `tmp/` and nothing else of the session. Published by rename once
 // the server or daemon is up, deleted before any record of the runtime is discarded, and so
@@ -14,7 +14,9 @@ package agentsandbox.launcher
 
 import java.io.IOException
 import java.nio.charset.StandardCharsets.UTF_8
-import java.nio.file.{Files, Path, StandardCopyOption}
+import java.nio.file.{Files, Path}
+
+import agentsandbox.egress.LogHelper.sha256Hex
 
 import RunOnHostPrereqs.Program
 import RunOnHostSession.{parseRecord, Record}
@@ -81,11 +83,7 @@ object RunOnHostRuntimeDescriptor:
       yield RunOnHostRuntimeDescriptor(fingerprint, proxyPort, proxy, group, daemon, value("daemon-config"))
 
   def publish(file: Path, descriptor: RunOnHostRuntimeDescriptor): Either[String, Unit] =
-    try
-      val pending = file.resolveSibling(s"${file.getFileName}.pending")
-      Files.writeString(pending, render(descriptor), UTF_8)
-      Files.move(pending, file, StandardCopyOption.ATOMIC_MOVE)
-      Right(())
+    try Right(RunOnHostSession.publishByRename(file, render(descriptor)))
     catch case ex: IOException => Left(s"publishing ${file.getFileName}: ${ex.getMessage}")
 
   /** None when absent, unreadable or not this launcher's format. */
@@ -99,11 +97,11 @@ object RunOnHostRuntimeDescriptor:
     * fingerprints what its own proxy would get.
     *
     * Not in it: the request's own launcher flags, which an sbt server is started with
-    * (RunOnHostSandbox.serverCommand). Within one launch the warm server keeps the flags of the
+    * (RunOnHostSbtServer.serverCommand). Within one launch the warm server keeps the flags of the
     * command that started it and every later command attaches regardless, as stock sbt's thin
     * client attaches to whatever server holds the portfile; attaching across launches follows
     * the same rule. They widen nothing this fingerprint guards: the profile is rendered from the
-    * assembly and the session, never from the request; the wrapper's properties ride
+    * assembly and the session, never from the request; the supervisor's properties ride
     * `_JAVA_OPTIONS`, which HotSpot applies after argv, so a `-D` moves neither the global base
     * nor the socket directory; a bind under the sbt profile gets EPERM, so `-jvm-debug` listens
     * nowhere; a cache flag naming a path outside the grants fails the server at its first write;
@@ -122,11 +120,11 @@ object RunOnHostRuntimeDescriptor:
     val RunOnHostPrereqs.CommandPrereqs(project, jdkHome, coursierV1, program, executable) = prereqs
     val SeatbeltProfile.SystemPaths(reads, executes) = systemPaths
     val networkName = network match
-      case SeatbeltProfile.Network.ProxyOnly        => "proxy-only"
-      case SeatbeltProfile.Network.SbtClient(tmp)   => s"sbt-client $tmp"
-      case SeatbeltProfile.Network.MillDaemon       => "mill-daemon"
-      case SeatbeltProfile.Network.MillClient(port) => s"mill-client $port"
-      case SeatbeltProfile.Network.Gradle           => "gradle"
+      case SeatbeltProfile.Network.ProxyOnly             => "proxy-only"
+      case SeatbeltProfile.Network.SbtClient(tmp)        => s"sbt-client $tmp"
+      case SeatbeltProfile.Network.MillDaemon            => "mill-daemon"
+      case SeatbeltProfile.Network.MillClient(port, pid) => s"mill-client $port $pid"
+      case SeatbeltProfile.Network.Gradle                => "gradle"
     val fields =
       Seq(
         program.name, project.toString, jdkHome.toString, coursierV1.toString, executable.toString,
@@ -136,7 +134,4 @@ object RunOnHostRuntimeDescriptor:
       ) ++ reads.map(_.toString) ++ Seq("executes") ++ executes.map(_.toString)
         ++ Seq("environment") ++ inputs.environment.toSeq.sorted.flatMap((name, value) => Seq(name, value))
         ++ Seq("rules", rules, "file rules", fileRules.text)
-    digest(fields.map(field => s"${field.length}:$field").mkString)
-
-  def digest(text: String): String =
-    java.security.MessageDigest.getInstance("SHA-256").digest(text.getBytes(UTF_8)).map(byte => f"$byte%02x").mkString
+    sha256Hex(fields.map(field => s"${field.length}:$field").mkString)

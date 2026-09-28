@@ -11,7 +11,7 @@
 // The project defaults to the working directory; the acceptance test's mill rows name src/probe/mill-fixture.
 // The system-paths-file grammar is RunOnHostSandbox.readSystemPaths's. The proxy form renders
 // the host proxy's own profile for the java and class path the acceptance test runs its proxy rows with; the
-// proxy-image form renders it for a native image, whose inputs RunOnHostSandbox.proxyInputs builds
+// proxy-image form renders it for a native image, whose inputs RunOnHostProxy.proxyInputs builds
 // only when it runs as one.
 
 package agentsandbox.launcher
@@ -36,7 +36,7 @@ object EmitRunOnHostProfile:
     if args.lift(2).contains("proxy") then
       if args.length != 5 then fail("the proxy form takes <out.sb> <system-paths-file> proxy <jdk> <classpath>")
       val systemPaths = RunOnHostSandbox.readSystemPaths(args.lift(1).map(Paths.get(_)))
-      val profile = RunOnHostSandbox.proxyInputs(systemPaths, javaHome = args(3), classPath = args(4))
+      val profile = RunOnHostProxy.proxyInputs(systemPaths, javaHome = args(3), classPath = args(4))
         .flatMap(SeatbeltProfile.renderProxy).fold(fail, identity)
       Files.writeString(Paths.get(args(0)), profile)
       Console.err.println(s"profile: ${args(0)}")
@@ -59,22 +59,16 @@ object EmitRunOnHostProfile:
 
     val program = args.lift(2).map(_.toLowerCase) match
       case None        => Program.Sbt
-      case Some(name)  => Program.values.find(_.name == name).getOrElse(fail(s"unknown program $name"))
+      case Some(name)  => Program.named(name).getOrElse(fail(s"unknown program $name"))
 
     val assembled = RunOnHostSandbox.assemble(project, program, env, project).fold(fail, identity)
     val sessionTmp = sessionTmpFits(newSessionTmp()).fold(fail, identity)
     val systemPaths = RunOnHostSandbox.readSystemPaths(args.lift(1).map(Paths.get(_)))
 
-    val inputs = SeatbeltProfile.ProfileInputs(
-      prereqs = assembled.prereqs,
+    val inputs = assembled.profileInputs(
       sessionTmp = sessionTmp,
-      distribution = assembled.distribution,
-      sbtGlobal = assembled.sbtGlobalGranted,
-      ivyHome = assembled.ivyHomeGranted,
-      gradleUserHome = assembled.gradleUserHomeGranted,
-      m2Repository = assembled.m2RepositoryGranted,
       proxyPort = 51234,
-      // No proxy runs under the emitted profile, so nothing is here: the wrapper rows have the real one.
+      // No proxy runs under the emitted profile, so nothing is here: the supervisor rows have the real one.
       trust = RunOnHostInspection.trustDirectory(sessionTmp.resolveSibling("proxy.log")),
       systemPaths = systemPaths,
       network = program match
@@ -100,7 +94,7 @@ object EmitRunOnHostProfile:
     Console.err.println(s"gradle user home: ${assembled.gradleUserHome}")
     Console.err.println(s"m2 repository: ${assembled.m2Repository}")
     // The acceptance test re-runs this classpath as RunOnHost, plain java with no sbt in front, because a
-    // wrapper driven through `sbt Test/runMain` would find its own server holding the project's
+    // supervisor driven through `sbt Test/runMain` would find its own server holding the project's
     // portfile and end it (one server per build directory). Walked from the class loaders, not
     // java.class.path — runMain ran this inside the build JVM, whose own classpath is sbt's — and
     // copied beside the profile,
@@ -129,9 +123,9 @@ object EmitRunOnHostProfile:
 
   /**
    * `/private/tmp/ko-agent-<uid>-accept/<session>/tmp`: short enough for SessionTmpMaxLength where
-   * the per-user temporary directory is not, vetted like the wrapper root. Its own root on
+   * the per-user temporary directory is not, vetted like the supervisor root. Its own root on
    * purpose: the acceptance test drives many builds against one emitted profile with nothing holding a
-   * session lock, and inside the wrapper root any scavenge would rightly collect that; this root
+   * session lock, and inside the supervisor root any scavenge would rightly collect that; this root
    * is outside every scan and the acceptance test's to clean.
    */
   private def newSessionTmp(): Path =

@@ -56,17 +56,24 @@ The words the documents share, each defined in the document its entry names and 
   sandbox container to stop and then removes the proxy container and the networks the run created; a
   launch that stays resident, on Windows or after a failed spawn, removes them itself
   (`SandboxLifecycle.scala`).
-- **broker** — a host process answering requests the sandbox makes through a FIFO under its `/tmp`,
-  never a listener, and not the capability broker this document declines:
-  - the clipboard broker (SECURITY.md, "Clipboard");
-  - the run-on-host broker, one per session, which relays each host command and owns the processes
-    it starts (`run-on-host.md`).
-- **shim, wrapper, command** — under `--run-on-host`:
-  - the shim is `ko-sandbox-run-on-host` inside the sandbox, which sends one command to the broker;
-  - the wrapper is the launcher process the broker spawns for it on the host, which runs the
+- **clipboard relay, runner** — host processes answering requests the sandbox makes through a
+  FIFO under its `/tmp`, never a listener; "broker" is reserved for the credential sense ("No
+  general capability broker", "Credential brokering at the egress proxy"):
+  - the clipboard relay copies between the host clipboard and the sandbox (SECURITY.md,
+    "Clipboard");
+  - the runner, one per session, dispatches each host command and owns the processes it starts
+    (`run-on-host.md`).
+- **shim, supervisor, command** — under `--run-on-host`:
+  - the shim is `ko-sandbox-run-on-host` inside the sandbox, which sends one command to the runner;
+  - the supervisor is the launcher process the runner spawns for it on the host, which runs the
     program under its Seatbelt profile;
-  - a command session is the wrapper's own record of that one invocation, beside the broker's
-    session for the launch (`run-on-host.md`, "The command's lifetime and environment").
+  - a command session is the supervisor's own record of that one invocation, beside the runner's
+    session for the launch (`run-on-host.md`, "The command's lifetime and environment");
+  - the leader is the process `RunOnHostSession.registeredSpawn` starts for a command, a proxy, an
+    sbt server or a mill daemon's starter: its own group's leader, which registers the group and
+    publishes the exit of what it ran;
+  - the lock holder is the process `RunOnHostSession.lockedSpawn` starts, which takes the build
+    lock and execs the supervisor holding it.
 
 ## Standing design decisions
 
@@ -76,7 +83,7 @@ argument the decision rests on no longer holds. Nothing less reopens one.
 
 ### No richer rule format
 
-The rules stay four fixed profiles over one file, `rule`, in the grammar `doc/egress-proxy.md`
+The rules stay three fixed profiles over one file, `rule`, in the grammar `doc/egress-proxy.md`
 spells out:
 
 - `allow` and `deny` lines naming URLs;
@@ -214,8 +221,8 @@ launcher does not prevent that: instruction files change no enforcement.
 
 A symlinked `.ko-agent-sandbox`, `egress` or a file inside them refuses the launch
 (`boundaryDirRefusal`, `readRuleFiles`, tested). The workspace filter refuses to mount a project
-whose `.git` is a symlink, or whose `.git/hooks` is a symlink to a directory inside the project
-(`../fuse/ko-agent-fs/doc/git-metadata.md`, "Relocated hook directories").
+whose `.git` is a symlink; a `.git/hooks` symlinked to a directory inside the project is served
+read-only instead (`../fuse/ko-agent-fs/doc/git-metadata.md`, "Relocated hook directories").
 
 - The launcher reads the rules on the host, so a repository-controlled link would choose which
   host file it reads as this project's rules.
@@ -238,10 +245,16 @@ Accept that cost rather than following links.
 
 ### No repository-controlled host executable resolution
 
-The launcher resolves `podman` (and `selinuxenabled`) through `PATH` entries that are absolute
-**and** outside the project directory — `HostCommands.findOnPath` — and the reaper receives the
-resolved path as an argument, so no host-side invocation consults `PATH` or, on Windows,
-CreateProcess's implicit current-directory search.
+The launcher resolves `podman` (and `getenforce`, `stat` and the clipboard programs) through
+`PATH` entries that are absolute **and** outside the project directory —
+`HostCommands.findOnPath` — and the reaper receives the resolved path as an argument, so those
+invocations consult neither `PATH` nor, on Windows, CreateProcess's implicit current-directory
+search.
+
+- The `sh` scripts the launcher prefixes with `HostCommands.withScriptPath` find what they run
+  through a fixed `PATH` of system directories (`ScriptPath`).
+- Some host programs are started by bare name, `ps` among them, and found through the `PATH`
+  their caller has (`TODO.md`, "Host programs started by bare name").
 
 Absoluteness is not consent, and a repository must never be what supplies the host's container
 runtime: both halves of that filter are necessary, and `findOnPath`'s comment has why. Prior
@@ -360,10 +373,10 @@ does not deny is rejected:
   CA key on the host, the proxy holds one leaf naming the inspected set and can issue nothing.
 - Selected on the launch command line, such a profile leaves no trace in the repository: a
   reviewer of `.ko-agent-sandbox/egress/rule` sees a narrower policy than the session runs.
-- Work whose hosts cannot be listed in advance has a form the rule file can list: a relay the
-  user runs, granted `read` by one line, fetching the URL its query names. The relay then holds
+- Work whose hosts cannot be listed in advance has a form the rule file can list: a fetcher the
+  user runs, granted `read` by one line, fetching the URL its query names. The fetcher then holds
   the policy the proxy cannot apply to the URL — the private-address refusal and any per-domain
-  denial — and the audit log records the relay's URL, its target in the query.
+  denial — and the audit log records the fetcher's URL, its target in the query.
 
 ### No upstream-proxy discovery, exclusions, chaining or negotiated authentication
 
@@ -385,17 +398,17 @@ proxy"), and each of these stays out of it for a reason of its own:
   argument, banner, log line or error, and the proxy is its one reader; a second source would need
   a second reader.
 
-### No WebSocket in the inspected relay
+### No WebSocket on an inspected connection
 
-Considered: relaying a WebSocket on an inspected or mediated host after checking the upgrade
-request's headers, so that a mediated OpenAI host could carry the Codex CLI's first choice of
+Considered: relaying a WebSocket on an inspected or brokered host after checking the upgrade
+request's headers, so that a brokered OpenAI host could carry the Codex CLI's first choice of
 transport. Rejected:
 
 - A WebSocket matters only on an inspected host; on a tunnel it passes as bytes. Every model host
   is a tunnel under the default rules, so no installed agent meets the refusal today.
 - The one client known to open a WebSocket to its model host, the Codex CLI's built-in provider,
-  falls back to HTTP after the refusal (`doc/plan-credential-broker-proxy.md`, "Claude Code and
-  Codex logins: excluded", has the measurement). Its `supports_websockets = false` cannot be set
+  falls back to HTTP after the refusal ("Credential brokering at the egress proxy" has the
+  measurement). Its `supports_websockets = false` cannot be set
   for that provider: codex-cli 0.155.1 refuses to load an override of a built-in provider.
 - The other installed agents' binaries hold no `wss://` literal for a model host; `claude` holds
   one for its Remote Control bridge, `bridge.claudeusercontent.com`, which no default rule allows.
@@ -405,8 +418,31 @@ transport. Rejected:
   the one-request rule's protection against request smuggling (`SECURITY.md`, "Reading without
   being able to write").
 
-Revisit if one Codex turn through a mediated relay fails on the HTTP fallback, or the provider
+Revisit if one Codex turn through a brokered relay fails on the HTTP fallback, or the provider
 drops the HTTP path.
+
+### No inspecting every allowed host
+
+The credential broker needs the proxy to terminate TLS at a host before it can substitute or
+refuse a credential there. That is no reason to terminate TLS everywhere and drop `tunnel`: the
+broker gets termination per launch, at its own targets (`plan-provider-credential-proxy.md`,
+"Brokered provider traffic"; `TODO.md`, "Credential brokering", for the refusal). Terminating TLS
+everywhere would, from the most serious cost:
+
+- break the agents whose clients an inspected connection cannot carry: a certificate-pinned client
+  cannot be terminated at all, and an HTTP/2-only or WebSocket client needs a relay the proxy
+  lacks. Which installed agents these are is not yet measured ("Brokered provider traffic" lists
+  the clients and the measurement);
+- take away the per-launch consent to the proxy seeing the conversation and provider tokens in
+  plaintext, which the provider plan requires the launch banner to state (its use case 5 and
+  guarantee 12; SECURITY.md, "Not defended", "What is inside TLS", has the exposure);
+- gain nothing at an OAuth login's hosts, which the broker cannot serve before the provider plan's
+  step 6 (`TODO.md`, "Credential brokering"), nor at a signed cloud API, where no header holds a
+  value to substitute ("Credential brokering at the egress proxy"), while
+  costing every request a handshake (SECURITY.md, "What is inside TLS").
+
+Revisit per agent, once one brokered turn through its model host is measured. Making that agent's
+model hosts inspected by default is a separate decision: it changes the privacy boundary above.
 
 ### No HTTP query endpoint on the proxy
 
@@ -424,13 +460,13 @@ header, answering the ruleset in force from the live proxy. Rejected:
 and this one never does — non-CONNECT is refused at the proxy layer, both methods are refused
 inside inspected tunnels, and an opaque tunnel is not an HTTP hop at all.
 
-The run-on-host wrapper does send that request, and it is no query endpoint: the proxy parses
-nothing of it and refuses it as it refuses any request that is no CONNECT. What the wrapper reads
+The run-on-host supervisor does send that request, and it is no query endpoint: the proxy parses
+nothing of it and refuses it as it refuses any request that is no CONNECT. What the supervisor reads
 is the refusal itself. After a write to the audit log failed, every refusal is a `403` whose
 `Proxy-Status` names that reason (`SECURITY.md`, "Egress proxy"); the log cannot, and a program
-need not print it (`run-on-host.md`, "Refusals"). The wrapper sends no CONNECT so
+need not print it (`run-on-host.md`, "Refusals"). The supervisor sends no CONNECT so
 that a proxy still logging records no refused host for it, and sends `Max-Forwards: 0` for a
-recipient that is not this proxy (`RunOnHostSandbox.unwritableProxyLog`).
+recipient that is not this proxy (`RunOnHostProxy.unwritableProxyLog`).
 
 ### Proxy-Status on the proxy's own responses
 
@@ -502,10 +538,102 @@ this project's operating model deliberately avoids:
 
 - https://github.com/mattolson/agent-sandbox/issues/122
 
-`plan-credential-broker-proxy.md` is inside this decision, not an exception to it: it moves a
-value the user forwards out of the sandbox and adds no grant word — what the value may do stays
-with its issuer's scope and the ruleset (SECURITY.md, "Why the ruleset is not a capability
-system").
+`--egress-cred` is inside this decision, not an exception to it: it moves a value the user
+forwards out of the sandbox and adds no grant word — what the value may do stays with its issuer's
+scope and the ruleset (SECURITY.md, "Why the ruleset is not a capability system").
+
+### Credential brokering at the egress proxy
+
+`--egress-cred` keeps a credential the user names out of the sandbox and the host commands
+(egress-proxy.md, "Brokered credentials"). Every comparable project that holds a credential
+converged on one design, and this one keeps its recurring rules — a placeholder inside, one host
+per secret, a rewrite in a declared header or one named parameter, never a body or a response:
+
+- Claude Code on the web: the real GitHub token in a proxy outside the VM
+  (https://code.claude.com/docs/en/cloud-environments);
+- Codex CLI: a dummy of the same prefix and length in the child's environment, swapped only for
+  the bound GitHub hosts (`codex-rs/network-proxy/src/credential_broker.rs`);
+- Docker Sandboxes: a `proxy-managed` sentinel, the value in the OS keychain
+  (https://docs.docker.com/ai/sandboxes/);
+- anthropic-experimental/sandbox-runtime's credential masking (`injectHosts`, its README),
+  GreyhavenHQ/greywall's `greyproxy:credential:v1:…` in headers and query alone,
+  89luca89/clampdown's auth-proxy container holding the real key.
+
+A forwarded SSH agent's socket is how docker/sbx-releases #121 reached a private repository under a
+public-reads ruleset: brokering protects a value only while no other channel that authenticates is
+mounted (SECURITY.md, "Who holds a brokered value").
+
+The binding:
+
+- An option of its own, not a form of `--env`, so a forgotten `@HOST` is a refusal, not the value
+  forwarded into the sandbox. Command-line-only, like `--env`: a repository file cannot bind a host.
+- No `NAME=VALUE@HOST`, though `--env` takes `NAME=VALUE`:
+  - `ps` shows a process's arguments to every user of the host, a launcher that stays resident
+    keeps them for the whole launch, and a value typed there is in the shell's history file;
+  - the value grammar admits `@`, `:`, `?` and `/`, which would end the value and start the host
+    and the place;
+  - `NAME=VALUE <launcher> --egress-cred=NAME@HOST` already sets a value for one launch.
+- One host per binding, which a proxy of the launch must inspect. A binding the proxy cannot
+  substitute is refused at launch and again at the proxy's start: it would otherwise show as a 401
+  inside the sandbox with nothing in the log to explain it.
+- The grammar is one object the launcher and the proxy compile (`CredentialGrammar`), not the
+  proxy's dry run: the dry run mounts nothing by design, a value handed to it would be one more
+  place holding the secret, and `plan-provider-credential-proxy.md`'s management actions must
+  validate before any run exists.
+
+The value travels by pipe, held in memory alone (SECURITY.md, "Who holds a brokered value"):
+
+- Not a file: a token works from anywhere until it is revoked, and a file under the state root
+  reaches backups and outlives a lost reaper. The leaf key is a file, since it serves only someone
+  between the sandbox and the proxy.
+- Not an environment or an argument of a process the launcher starts: an environment is inherited
+  by every helper, both are read by other processes of the same user (SECURITY.md, "Run on host"),
+  and on a container `podman inspect` shows the environment. An agent can persist one, as Codex's
+  shell snapshots did (openai/codex #30971, #32327); `ProxyContainerTest` checks the persistent
+  volume after a brokered session.
+- Not a podman secret, whose default driver keeps it in a file (podman-secret-create(1)). Not a
+  `podman exec` writing into the proxy container: its root is read-only with no tmpfs, and the
+  proxy would take bindings a second way.
+
+Left out:
+
+- Repository scoping, as Claude Code on the web's "attached repositories" 403: it needs path
+  knowledge per forge API, a separate increment. SECURITY.md, "Who holds a brokered value", has what
+  the credential reaches meanwhile.
+- Response and body rewriting, and rewriting every occurrence of a token in a query: the recurring
+  failure of broader rewriters is breaking applications with tokens of their own
+  (docker/sbx-releases #8); a declared header or one named parameter is the durable form.
+- Brokering at a tunnel host, where no substitution can happen, and with it the agents' own logins:
+  - Claude Code's endpoints are tunnels by design, since model traffic has to write. Its login is
+    an OAuth pair with local expiry bookkeeping and a refresh exchange; the proxy would mirror that
+    lifecycle per release. A stolen model token is a nuisance to the account holder, a stolen forge
+    token every private repository: hiding the first does not pay for a per-release contract.
+  - `ANTHROPIC_API_KEY@api.anthropic.com` would fit — a fixed header, no lifecycle — and is
+    refused because the host is a tunnel; so is `AWS_BEARER_TOKEN_BEDROCK` at a project's
+    `bedrock-runtime.<region>.amazonaws.com`. If model endpoints are ever inspected for another
+    reason, the binding works unchanged.
+  - The Codex CLI trusts the CA in `SSL_CERT_FILE`, and its built-in provider opens a websocket
+    first, which the proxy refuses on an inspected connection. Measured with codex-cli 0.155.1 on an
+    API key against a local server refusing the upgrade (2026-09-22): seven `GET /v1/responses` with
+    `Upgrade: websocket` over about seven seconds, then `POST /v1/responses`. It is not brokered
+    until one turn succeeds over an inspected connection; that, and the ChatGPT login, are not
+    measured.
+  - Which credential may reach a model host is a rule an inspected host could apply and a tunnel
+    cannot (SECURITY.md, "Exfiltration through allowed network traffic"); `TODO.md`, "Credential
+    brokering", has that item.
+- AWS SigV4 re-signing, which sandbox-runtime does: every AWS login — `aws login`, `aws sso login`,
+  a static key — ends in an access key the client signs with and never sends, so no header carries
+  a placeholder.
+  - With the hosts as tunnels the binding is refused at launch; inspected, the origin answers
+    `SignatureDoesNotMatch`.
+  - What a session forwards instead is `doc/cloud-credentials.md`.
+- A keychain or secret-manager resolver on the host (Docker's `gh auth token`, 1Password): the
+  binding reads the host environment as `--env=NAME` does, and a resolver is a shell pipeline in
+  front of it.
+- Rotation or revocation on exit: the value is in no file for an exit to leave, the issuer's own
+  revocation covers a leak, and an automatic revoke needs a provider API call the launcher does
+  not make.
+- Copilot CLI's forge-credential sign-in: `plan-provider-credential-proxy.md`, "OAuth mechanisms".
 
 ### No gVisor or microVM isolation layer
 
@@ -578,15 +706,15 @@ enforcement.
 ### No Stop hook that gates on a ko-review approval
 
 A managed Stop hook could refuse to let Claude end its turn while the working tree differs from
-HEAD without a fresh approval or a recorded escalation from `/ko-review:codex` (`ko-review.md`).
+HEAD without a fresh approval or a recorded escalation from a `ko-review` skill (`ko-review.md`).
 Rejected:
 
 - The only check a local hook can make cannot tell Claude's changes from the user's own uncommitted
   edits, a one-line change the user asked for, or a turn that answered a question: each stop would
-  be blocked until Codex reviews, spending quota the user did not intend to spend.
-- Under `--egress=deny-unless-model claude`, or before Codex is signed in, the block can be passed
-  only by recording an escalation, which makes the gate a formality; letting the hook pass when
-  Codex is unreachable reopens the loophole it exists to close.
+  be blocked until the reviewer reviews, spending quota the user did not intend to spend.
+- Under an egress profile that refuses the reviewer's provider, or before the reviewer is signed in,
+  the block can be passed only by recording an escalation, which makes the gate a formality;
+  letting the hook pass when the reviewer is unreachable reopens the loophole it exists to close.
 - A managed hook applies to every project on the image; a per-project opt-in marker would add a
   second mechanism for a workflow that starts only at the user's request.
 - Claude skipping a requested review is an instruction failure, fixed in the skill text or
@@ -690,7 +818,8 @@ Program, plugin and variable names say where they work: `ko-sandbox-*` and `KO_S
 what works only inside the image (`ko-sandbox-entrypoint`, `ko-sandbox-egress-check`);
 `ko-agent-sandbox` and `KO_AGENT_SANDBOX_*` name the launcher and the project; what also runs on a
 host carries its own name, and that name is the workflow's, not a component's, so that another
-component can join: `ko-review` with the skill `codex`, not `ko-codex`, since `agy` may review too.
+component can join: `ko-review`, whose skill asks for `codex` or `claude`, not `ko-codex`, so
+that `agy` can review too.
 
 The accepted costs of `doc` over `docs`:
 

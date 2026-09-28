@@ -6,7 +6,7 @@ FROM debian-coursier:${IMG_TAG_VER}
 ARG IMG_TAG_VER
 LABEL org.opencontainers.image.base.name="debian-coursier:${IMG_TAG_VER}"
 
-ARG UV_VERSION=0.12.17
+ARG UV_VERSION=0.12.21
 ARG PYTHON_VERSION=3.14
 ARG WCWIDTH_VERSION=0.8.4
 ARG LYCHEE_VERSION=0.24.2
@@ -138,7 +138,7 @@ RUN printf 'min-release-age=7\n' > /opt/node/lib/node_modules/npm/npmrc
 #
 # gcc + libc6-dev are here as Rust's linker driver, not as a C toolchain:
 # rustc's own LLVM emits the objects and only shells out to cc to drive ld
-# against glibc's crt*.o. Kept out of AGENTS-SANDBOX.md's program table for that
+# against glibc's crt*.o. Kept out of AGENTS-SANDBOX.md's program list for that
 # reason — nothing here invites C development, though gcc compiles C if asked.
 #
 # Needed even though ko-agent-fs both ships and tests as static musl: proc-macro
@@ -222,6 +222,7 @@ RUN set -euxo pipefail; \
     install -d -o nonroot -g nonroot \
         /home/nonroot/.config \
         /home/nonroot/.local \
+        /home/nonroot/.local/bin \
         /home/nonroot/.local/share \
         /home/nonroot/.local/state; \
     ln -s persistent-volume/claude /home/nonroot/.claude; \
@@ -270,7 +271,7 @@ RUN set -euxo pipefail; \
     apt-get install -y --no-install-recommends \
         claude-code \
         # Claude Code's own sandbox for Bash commands, off in the managed settings below.
-        # Carried because an organization's server-managed settings, which outrank that
+        # Carried because an organization's server-managed settings, which override that
         # file, can enforce sandbox.failIfUnavailable: without these the session exits,
         # with the reason on stderr, which the TUI discards. Enabled in here it would
         # also need enableWeakerNestedSandbox: bwrap cannot mount a fresh /proc under
@@ -344,6 +345,13 @@ RUN set -euxo pipefail; \
 # The managed command accepts a data-only project template so display
 # customization does not require a project-supplied command.
 # Usage: doc/agent-settings.md, "Claude Code status line".
+#
+# tui.json keeps Claude Code's classic renderer. The fullscreen renderer
+# keeps the conversation out of the terminal's scrollback and copies a mouse
+# selection through OSC 52, which some terminals ignore; in some, holding
+# Shift does not bypass it. Setting `tui` to either value also stops Claude
+# Code's tip and dialog suggesting `/tui fullscreen`.
+# doc/plan-clipboard.md reconsiders this.
 COPY --chmod=0644 claude-code/command/ /etc/claude-code/command/
 COPY --chmod=0644 claude-code/managed-settings.d/ /etc/claude-code/managed-settings.d/
 
@@ -602,21 +610,31 @@ RUN set -euxo pipefail; \
 
 
 # ---------------------------------------------------------------------------
-# Claude Code plugins
+# Claude Code plugins, and ko-review for Codex
 # ---------------------------------------------------------------------------
 #
 # Image-owned plugins, loaded beside whatever the user installs: nothing in the
-# persistent volume can drop or replace them. A plugin's bin/ joins the Bash
-# tool's PATH. The Codex CLI above is what ko-review calls (doc/ko-review.md).
+# persistent volume can drop or replace them. A plugin's bin/ joins Claude
+# Code's Bash tool's PATH. The Codex CLI above and Claude Code are what ko-review calls
+# (doc/ko-review.md).
 # Copied after the agent downloads, so that a plugin edit leaves their layers
 # cached. The modes are set after the copy: COPY --chmod gives the copied
 # subdirectories the file mode too, ko-review/ comes out `drw-r--r--`, and
 # Claude Code cannot read the manifest (EACCES).
+#
+# Codex runs the same skill from its admin scope, /etc/codex/skills, as a
+# copy: through a symlink, Codex finds the plugin's .claude-plugin/plugin.json
+# above the target and names the skill `ko-review:ko-review`. Codex's shell
+# PATH is the toolchain path codex/bash-env restores, without the plugin's
+# bin/, hence the helper's link in /usr/local/bin.
 COPY claude-code/plugins/ /etc/claude-code/plugins/
 RUN set -eu; \
     find /etc/claude-code/plugins -type d -exec chmod 0755 {} +; \
     find /etc/claude-code/plugins -type f -exec chmod 0644 {} +; \
-    chmod 0755 /etc/claude-code/plugins/ko-review/bin/ko-review
+    chmod 0755 /etc/claude-code/plugins/ko-review/bin/ko-review; \
+    install -D -m 0644 /etc/claude-code/plugins/ko-review/skills/ko-review/SKILL.md \
+        /etc/codex/skills/ko-review/SKILL.md; \
+    ln -s /etc/claude-code/plugins/ko-review/bin/ko-review /usr/local/bin/ko-review
 ENV CLAUDE_CODE_PLUGIN_DIRS=/etc/claude-code/plugins
 
 
@@ -695,9 +713,9 @@ USER nonroot
 ENTRYPOINT ["ko-sandbox-entrypoint"]
 CMD ["bash"]
 
-# The digest of this directory as the launcher bundled it (KoAgentFs.contextSourceId). A launch
+# The digest of this directory as the launcher bundled it (LauncherImages.contextSourceId). A launch
 # recomputes it from its own jar and refuses a default-named image another jar built — the
-# version lock between launcher and image (AgentSandboxLauncher.bundleMismatch).
+# version lock between launcher and image (LauncherImages.bundleMismatch).
 # Last: every RUN after an ARG is keyed on its value, and this one changes whenever a file in
 # this directory does, so declared any earlier it would rerun every RUN after it.
 ARG BUNDLE_ID

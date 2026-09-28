@@ -11,66 +11,16 @@ import java.nio.file.attribute.{BasicFileAttributes, FileTime}
 import java.time.{Instant, ZoneId}
 import java.time.format.DateTimeFormatter
 
-import AgentSandboxLauncher.{
-  logStateRoot, machineMemoryAvailable, machineMemoryLine, memoryTotal, persistentVolumes, rulesetStateRoot,
-  projectsStateRoot, runContainerParts, stateRoot, buildMemoryHeadroom, tlsStateRoot,
-}
+import AgentSandboxLauncher.{buildMemoryHeadroom, machineMemoryAvailable, machineMemoryLine, memoryTotal}
+import LauncherState.{perProjectStateRoots, persistentVolumes, projectsStateRoot, runContainerParts, stateRoot}
 import HostCommands.*
 import FileHelper.*
-import RunOnHostPrereqs.Program
 
 object SandboxStats:
 
   // -------------------------------------------------------------------------
-  // Figures
+  // Counts
   // -------------------------------------------------------------------------
-
-  private val Units = Vector("", "K", "M", "G", "T", "P", "E")
-
-  /**
-   * A size as `df -h`, `du -h` and `ls -lh` print it, so a reader brings the rule with them:
-   * bytes bare, otherwise the largest unit the size reaches, one decimal below 10 of it and none
-   * from 10 up, rounded up, with 1023.6M carrying to 1.0G. That is two or three significant
-   * figures; the four of `podman stats` are what make `16.67MB / 268.4MB` hard to read. Every
-   * figure the launcher prints is this rule, and the entrypoint's `human` is its awk spelling.
-   */
-  def humanBytes(bytes: Long): String =
-    val index = unitIndex(bytes)
-    figure(bytes, index) + Units(index)
-
-  /**
-   * `0.3 / 11G` as (`0.3`, `11G`): a part beside its whole reads as a ratio when both are in
-   * the whole's unit, so the part is rendered there — rounded as any figure, and the unit
-   * written once, on the whole. The part is then known to a tenth of the whole's unit, a tenth
-   * of a 1.0G limit at worst: the ratio's precision, on purpose, not the part's, so 30 MiB
-   * under 6.7G reads 0.1.
-   */
-  def humanPair(part: Long, whole: Long): (String, String) =
-    val index = unitIndex(whole)
-    (figure(part, index), figure(whole, index) + Units(index))
-
-  private def unitIndex(bytes: Long): Int =
-    val reached = (1 until Units.size).count(index => bytes >= (1L << (10 * index)))
-    if reached == Units.size - 1 || Math.ceilDiv(bytes, 1L << (10 * reached)) < 1024 then reached
-    else reached + 1
-
-  private def figure(bytes: Long, index: Int): String =
-    if index == 0 then bytes.toString
-    else
-      val unit = 1L << (10 * index)
-      // The remainder's tenths as fifths of half the unit: bytes * 10 overflows from 0.8 EiB.
-      val tenths = (bytes / unit) * 10 + Math.ceilDiv((bytes % unit) * 5, unit / 2)
-      if tenths < 100 then s"${tenths / 10}.${tenths % 10}" else Math.ceilDiv(bytes, unit).toString
-
-  /**
-   * `memory: 58% (4.2G) available`, `storage: 58% (937G) free`: the share first, for a
-   * reader who knows the machine's size, and beside it the figure the limits and the
-   * `--reset-run-on-host` flag act on, `tint` applied to just those. `whole` is positive; a
-   * machine that cannot say its size gets no line.
-   */
-  def shareLine(label: String, part: Long, whole: Long, state: String, tint: String => String = identity): String =
-    val figure = f"${part * 100.0 / whole}%.0f%% (${humanBytes(part)})"
-    s"$label: ${tint(figure)} $state"
 
   /** `0 live sessions`, `1 project`, `3 projects`: the line over each table, and the whole
     * section when there is nothing to tabulate. */
@@ -150,47 +100,44 @@ object SandboxStats:
       table(Vector("run", "sandbox", "proxy", "cpu", "project"), rows, rightAligned = Set(3))
 
   // -------------------------------------------------------------------------
-  // Run-on-host brokers
+  // Run-on-host runners
   // -------------------------------------------------------------------------
 
-  /** One live broker: its launch's run suffix, its project, and for each build directory it has
+  /** One live runner: its launch's run suffix, its project, and for each build directory it has
     * served, the programs whose runtime it keeps there — a proxy and the server or daemon it
     * serves, which a `shutdown` or an idle exit leaves without the latter until the next command
-    * (RunOnHostSandbox.BrokerRuntimes), so a runtime is not a process up this instant. */
-  final case class Broker(run: String, project: String, warm: Vector[(String, Vector[String])])
+    * (RunnerRuntimes), so a runtime is not a process up this instant. */
+  final case class Runner(run: String, project: String, warm: Vector[(String, Vector[String])])
 
   /**
-   * The live brokers under the session root (`RunOnHostSession.root`): each a locked broker
+   * The live runners under the session root (`RunOnHostSession.root`): each a locked runner
    * session, its `run` file naming the launch's sandbox container, its build files the
    * directories served, and its proxy records the programs kept warm there — the proxy is the
    * runtime's constant part, a server or daemon gone on its own being replaced under it
-   * (RunOnHostSandbox.BrokerRuntimes). A broker without a run file, one from a launch that
-   * predates it, has a run the report cannot name. macOS only, like the brokers.
+   * (RunnerRuntimes). A runner without a run file, one from a launch that
+   * predates it, has a run the report cannot name. macOS only, like the runners.
    */
-  def brokers(root: Path): Vector[Broker] =
+  def runners(root: Path): Vector[Runner] =
     // `except` names the caller's own session; the report has none, and the root is no child of itself.
-    RunOnHostSession.liveBrokerSessions(root, except = root).map: session =>
+    RunOnHostSession.liveRunnerSessions(root, except = root).map: session =>
       def file(name: String): Option[String] = readIfPresent(session.resolve(name)).map(_.trim).filter(_.nonEmpty)
       val run = file(RunOnHostSession.RunFile).flatMap(runContainerParts).map(_._3).getOrElse("?")
       val project = file(RunOnHostSession.ProjectFile).getOrElse("-")
       val programsByHash = childNames(session.resolve(RunOnHostSession.RecordsDir))
-        .flatMap: name =>
-          Program.values.iterator
-            .find(program => name.startsWith(s"proxy-${program.name}-"))
-            .map(program => name.stripPrefix(s"proxy-${program.name}-") -> program)
+        .flatMap(name => RunOnHostSession.proxyRecordOf(name).map((program, hash) => hash -> program))
         .groupMap(_._1)(_._2)
       val warm = RunOnHostSession.buildDirectories(session).map: (hash, directory) =>
         directory.toString -> programsByHash.getOrElse(hash, Vector.empty).sortBy(_.ordinal).map(_.name)
-      Broker(run, project, warm.sortBy(_._1))
-    .sortBy(broker => (broker.run, broker.project))
+      Runner(run, project, warm.sortBy(_._1))
+    .sortBy(runner => (runner.run, runner.project))
 
-  /** One row per directory a broker has served, by run, `runtime` the programs whose runtime
-    * the broker keeps there. A broker that has served none yet has no row: its session is in the
-    * live table, and a broker is one per session. */
-  def brokerTable(brokers: Vector[Broker]): String =
-    val rows = brokers.flatMap: broker =>
-      broker.warm.map: (directory, programs) =>
-        Vector(broker.run, if programs.isEmpty then "none" else programs.mkString(", "), directory)
+  /** One row per directory a runner has served, by run, `runtime` the programs whose runtime
+    * the runner keeps there. A runner that has served none yet has no row: its session is in the
+    * live table, and a runner is one per session. */
+  def runnerTable(runners: Vector[Runner]): String =
+    val rows = runners.flatMap: runner =>
+      runner.warm.map: (directory, programs) =>
+        Vector(runner.run, if programs.isEmpty then "none" else programs.mkString(", "), directory)
     counted(rows.size, "run-on-host directory", "run-on-host directories") + "\n" +
       (if rows.isEmpty then "" else table(Vector("run", "runtime", "directory"), rows, rightAligned = Set.empty))
 
@@ -261,9 +208,9 @@ object SandboxStats:
    * One project's disk use: the launcher's state and build-cache roots, and its agents' volume —
    * None when podman was not there to size it. `directory` is the recorded one where it still
    * exists; None for a project last launched before the record existed, or whose directory is gone.
+   * `lastWrite` is the newest modification under the project's state and cache trees — the
+   * volume is in podman's store, out of the walk — and None where neither tree exists.
    */
-  /** `lastWrite` is the newest modification under the project's state and cache trees — the
-    * volume is in podman's store, out of the walk — and None where neither tree exists. */
   final case class ProjectUsage(
     id: String,
     directory: Option[String],
@@ -288,12 +235,10 @@ object SandboxStats:
 
   /** The roots holding one directory per project id, sized into the state column. */
   private def stateDirs(os: Os): Vector[Path] =
-    Vector(tlsStateRoot(os), logStateRoot(os), rulesetStateRoot(os), projectsStateRoot(os))
+    perProjectStateRoots(os) :+ projectsStateRoot(os)
 
   private def cacheDir(os: Os): Option[Path] =
     RunOnHostPrereqs.cacheRootOf(os, env).toOption.map(RunOnHostPrereqs.runOnHostCachesOf)
-
-  private val VolumePrefix = "ko-agent-sandbox-persistent-"
 
   /** Project ids found under the state or cache roots, or extracted from persistent-volume names. */
   def projectIds(os: Os, volumeNames: Seq[String]): Vector[String] =
@@ -302,7 +247,7 @@ object SandboxStats:
   /** Names matching the id's pattern only (SandboxProject.ProjectIdPattern): a stray file under a root is
     * not a project, and would be a row `--reset <id>` refuses. */
   def projectIdsUnder(roots: Seq[Path], volumeNames: Seq[String]): Vector[String] =
-    val volumeIds = persistentVolumes(volumeNames).map(_.stripPrefix(VolumePrefix))
+    val volumeIds = persistentVolumes(volumeNames).map(_.stripPrefix(SandboxProject.PersistentVolumePrefix))
     (roots.flatMap(childNames) ++ volumeIds).filter(SandboxProject.isProjectId).distinct.sorted.toVector
 
   private val WriteFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
@@ -376,7 +321,7 @@ object SandboxStats:
         else System.out.print(liveTable(liveContainers(answer.text.linesIterator.toVector), directories))
     if os == Os.Mac then
       val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
-      System.out.print(brokerTable(brokers(RunOnHostSession.root(uid))))
+      System.out.print(runnerTable(runners(RunOnHostSession.root(uid))))
 
     val volumes: Option[Map[String, Long]] = service.toOption.flatMap: podman =>
       val answer = run(podman, "system", "df", "-v")
@@ -415,7 +360,7 @@ object SandboxStats:
         directories.get(id),
         state.map(_.bytes).sum,
         cache.map(_.bytes).getOrElse(0L),
-        volumes.map(_.getOrElse(VolumePrefix + id, 0L)),
+        volumes.map(_.getOrElse(SandboxProject.persistentVolumeName(id), 0L)),
         (state ++ cache).flatMap(_.newestWrite).maxOption,
       )
     val cacheFreeBytes = cacheDir.flatMap(hostRoot).map(_.freeBytes).getOrElse(0L)

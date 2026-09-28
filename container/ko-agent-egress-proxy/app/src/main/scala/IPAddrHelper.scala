@@ -25,24 +25,34 @@ object IPAddrHelper:
         throw BadRequest(s"invalid hostname: ${ex.getMessage}")
 
   /**
-   * Expects a normalized host. Dotted-quad is not the only spelling
-   * InetAddress accepts (`2130706433`, `127.1`, `0177.0.0.1`); what they
-   * share is an all-digits final label, which RFC 1123 forbids in a real
-   * TLD — no enumeration of the resolver's numeric forms to keep in step
-   * with. ASCII digits only: Char.isDigit would accept non-ASCII digits.
+   * Expects a normalized host, or the unbracketed host text the upstream-endpoint parser
+   * (TransportHelper) split off at the only colon. Dotted-quad is not the only spelling a
+   * resolver accepts: InetAddress reads `2130706433` and `127.1` as
+   * 127.0.0.1, and glibc's getaddrinfo also reads `0x7f.1` as that
+   * address, which InetAddress on JDK 25 does not resolve. What they
+   * share is a final label that is a number — all digits, or `0x` and
+   * hex digits, the "ends in a number" test of the WHATWG URL standard —
+   * which RFC 1123 forbids in a real TLD, so there is no enumeration of
+   * a resolver's numeric forms to keep in step with. ASCII digits only:
+   * Char.isDigit would accept non-ASCII digits.
    *
-   * The colon test below is unreachable through every caller here:
-   * normalizeHost runs IDN.toASCII with USE_STD3_ASCII_RULES, which
-   * refuses a `:` outright, so an IPv6 literal is already a BadRequest
-   * ("invalid hostname", a 400) before it can become the Refusal the
-   * message below describes. Keeping the test costs nothing and holds if this
-   * is ever called on a host normalizeHost did not vet.
+   * The colon test below is unreachable through every caller here: the
+   * upstream-endpoint parser passes no colon, and normalizeHost runs
+   * IDN.toASCII with USE_STD3_ASCII_RULES, which refuses a `:` outright, so
+   * an IPv6 literal is already a BadRequest ("invalid hostname", a 400)
+   * before authorizeRequest can refuse it as an IP-literal target. Keeping
+   * the test costs nothing and holds if this is ever called on a host
+   * neither vetted.
    */
   def isIpLiteral(host: String): Boolean =
     if host.contains(':') then true
     else
       val lastLabel = host.split("\\.", -1).last
-      lastLabel.nonEmpty && lastLabel.forall(ch => ch >= '0' && ch <= '9')
+      def isDigit(ch: Char) = ch >= '0' && ch <= '9'
+      def isHexDigit(ch: Char) = isDigit(ch) || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
+      val isHexNumber =
+        (lastLabel.startsWith("0x") || lastLabel.startsWith("0X")) && lastLabel.drop(2).forall(isHexDigit)
+      (lastLabel.nonEmpty && lastLabel.forall(isDigit)) || isHexNumber
 
   /**
    * The single DNS lookup for a connection. Its result is what the dial loop
@@ -77,7 +87,7 @@ object IPAddrHelper:
    * 2001:20::/28 ORCHIDv2) — protocol anycast and overlay addresses, which no package registry
    * or clone host is served from. A globally reachable entry outside the listed blocks
    * (192.31.196.0/24, 2620:4f:8000::/48) is accepted. IPv6 must also be within 2000::/3, which
-   * leaves out 64:ff9b::/96. Review when IANA updates the registries.
+   * leaves out 64:ff9b::/96 and the listed 5f00::/16. Review when IANA updates the registries.
    */
   def isPublicDestination(address: InetAddress): Boolean =
     address match

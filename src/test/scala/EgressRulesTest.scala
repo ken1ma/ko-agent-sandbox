@@ -153,10 +153,10 @@ class EgressRulesTest extends munit.FunSuite:
       Right(Vector("rule" -> "allow https://ghcr.io/ read\ndeny https://**.example.org/")),
     )
 
-  test("a missing egress directory is an empty rule file"):
+  test("a missing egress directory reads as no rule file"):
     assertEquals(readRuleFiles(Paths.get("/nonexistent/egress")), Right(Vector.empty))
 
-  test("the egress directory's refused forms each name their reason"):
+  test("the egress directory's refused forms each name their reason; a file with no rule line is absent"):
     val parent = Files.createTempDirectory("rule-forms")
 
     val asFile = parent.resolve("egress")
@@ -169,6 +169,12 @@ class EgressRulesTest extends munit.FunSuite:
     assert(readRuleFiles(dir).swap.exists(_.contains("not a rule file")))
     Files.delete(dir.resolve("rules"))
 
+    // The repository chose the stray's name, so what a terminal acts on is spelled out.
+    Files.writeString(dir.resolve("rule\u202e"), "allow https://ghcr.io/ read\n")
+    val bidi = readRuleFiles(dir)
+    assert(bidi.swap.exists(reason => reason.contains("rule\\u202e") && !reason.contains("\u202e")), bidi.toString)
+    Files.delete(dir.resolve("rule\u202e"))
+
     Files.createDirectory(dir.resolve("rule"))
     assert(readRuleFiles(dir).swap.exists(_.contains("not a regular file")))
     Files.delete(dir.resolve("rule"))
@@ -177,8 +183,15 @@ class EgressRulesTest extends munit.FunSuite:
     assert(readRuleFiles(dir).swap.exists(_.contains("symlink")))
     Files.delete(dir.resolve("rule"))
 
+    // Bytes that are not UTF-8 are refused by name, not thrown.
+    Files.write(dir.resolve("rule"), Array[Byte](0xff.toByte))
+    assert(readRuleFiles(dir).swap.exists(reason => reason.contains("rule") && reason.contains("not UTF-8")))
+
+    // A file with no rule line reads as absent: no EGRESS_RULE, no rule line printed.
     Files.writeString(dir.resolve("rule"), "# only a comment\n")
-    assert(readRuleFiles(dir).swap.exists(_.contains("lists no lines")))
+    assertEquals(readRuleFiles(dir), Right(Vector.empty))
+    Files.writeString(dir.resolve("rule"), "")
+    assertEquals(readRuleFiles(dir), Right(Vector.empty))
 
   test("the ruleset env args pass the selected profile, provider and each file's variable"):
     assertEquals(

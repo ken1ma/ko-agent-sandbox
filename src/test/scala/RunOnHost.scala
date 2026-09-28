@@ -1,16 +1,16 @@
-// The acceptance test's wrapper driver, EmitRunOnHostProfile's sibling: the RunOnHostSandbox wrapper with the
+// The acceptance test's supervisor driver, EmitRunOnHostProfile's sibling: the RunOnHostSandbox supervisor with the
 // system-paths file as an argument, where the durable front-end — the launcher's --run-command-on-host action, behind
 // the channel — reads the bundled copy. src/probe/run-on-host-acceptance-test.sh is its caller.
 //
 //   java -cp <the classpath EmitRunOnHostProfile prints> \
 //     agentsandbox.launcher.RunOnHost <program> <project> [system-paths-file] -- <args...>
 //
-// The acceptance test runs that under the build lock the broker's spawn takes (RunOnHostSession.lockedSpawn),
-// through perl's exec, so the pid its kill rows signal is the wrapper's: `--lock-script` prints
+// The acceptance test runs that under the build lock the runner's lock holder takes (RunOnHostSession.lockedSpawn),
+// through perl's exec, so the pid its kill rows signal is the supervisor's: `--lock-script` prints
 // the perl script and `--build-lock <program> <project>` the lock file, for the acceptance test to compose.
 //
 // Plain java, never `sbt Test/runMain`: runMain would host this in the build's own JVM, whose
-// server holds the target project's portfile — the wrapper would end it (one server per build
+// server holds the target project's portfile — the supervisor would end it (one server per build
 // directory) — and whose exit is sys.exit's.
 // Exits with the command's code; a refusal is 2, on stderr.
 
@@ -38,7 +38,7 @@ object RunOnHost:
           .flatMap(_ => RunOnHostSession.buildLockFile(root, programName.toLowerCase, Paths.get(projectName)))
           .fold(reason => { Console.err.println(s"refused: $reason"); sys.exit(2) }, println)
       case programName :: projectName :: rest if rest.sizeIs <= 1 =>
-        val program = Program.values.find(_.name == programName.toLowerCase).getOrElse:
+        val program = Program.named(programName.toLowerCase).getOrElse:
           Console.err.println(s"unknown program $programName\n$usage")
           sys.exit(2)
         val systemPaths = RunOnHostSandbox.readSystemPaths(rest.headOption.map(Paths.get(_)))

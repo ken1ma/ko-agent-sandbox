@@ -12,6 +12,7 @@ import java.nio.file.Files
 import java.time.Instant
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicReference
+import javax.net.ssl.SSLContext
 
 import AgentEgressProxy.*
 import HTTPHelper.*
@@ -84,6 +85,8 @@ class TransportHelperTest extends munit.FunSuite:
     assert(refusal("http://proxy.corp.example:0").contains("port must be explicit"))
     assert(refusal("http://proxy.corp.example:65536").contains("port must be explicit"))
     assert(refusal("http://proxy.corp.example:abc").contains("port must be explicit"))
+    assert(refusal("http://proxy.corp.example:+3128").contains("port must be explicit"))
+    assert(refusal("http://proxy.corp.example:٣١٢٨").contains("port must be explicit"))
     assert(refusal("http://proxy.corp.example:3128/path").contains("path"))
     assert(refusal("http://proxy.corp.example:3128/?x").contains("query or fragment"))
     assert(refusal("http://proxy.corp.example:3128#f").contains("query or fragment"))
@@ -100,6 +103,11 @@ class TransportHelperTest extends munit.FunSuite:
     def read(values: Map[String, String]): Option[UpstreamEndpoint] = UpstreamEndpoint.configured(values.get)
     assertEquals(read(Map.empty), None)
     assertEquals(read(Map("HTTPS_PROXY" -> "")), None)
+    assertEquals(
+      read(Map("HTTPS_PROXY" -> "", "https_proxy" -> "http://lower.example:1")).map(_.host),
+      Some("lower.example"),
+      "an empty uppercase is unset, so the lowercase is read",
+    )
     assertEquals(read(Map("https_proxy" -> "http://lower.example:1")).map(_.host), Some("lower.example"))
     // The lowercase variable is diagnosed and reported as itself.
     val lower = intercept[IllegalArgumentException](read(Map("https_proxy" -> "http://lower.example"))).getMessage
@@ -333,6 +341,48 @@ class TransportHelperTest extends munit.FunSuite:
     assert(message.startsWith(s"upstream proxy https://proxy.corp.example:${server.getLocalPort}: "), message)
     assert(!message.contains(Basic), message)
     assert(afterHandshake.get.startsWith("handshake failed"), afterHandshake.get)
+
+  test("an https endpoint is verified against the name or literal HTTPS_PROXY spelled"):
+    val directory = Files.createTempDirectory("verified-endpoint")
+    val (ca, caKey) = X509HelperTest.testCa(Instant.now(), 30)
+    val leaf = X509Helper.issueLeaf(Vector("proxy.corp.example"), ca, caKey)
+    val (certificate, key) = X509HelperTest.writePem(directory, "endpoint", leaf.certificate, leaf.privateKey)
+    val serving = TlsInspection.load(certificate, key, Set("proxy.corp.example"))
+    val trustingCa = SSLContext.getInstance("TLS")
+    trustingCa.init(null, X509HelperTest.trusting(ca).getTrustManagers, null)
+
+    /** "completed", or the failure's message, against an endpoint presenting the leaf and
+      * establishing the tunnel. */
+    def outcome(host: String, literal: Option[InetAddress]): String =
+      val server = ServerSocket(0, 1, loopback)
+      val serverThread = Thread.startVirtualThread: () =>
+        try
+          val socket = server.accept()
+          try
+            val tls = serving.accept(socket, Array.emptyByteArray)
+            readHttpHeader(tls.getInputStream, 64 * 1024)
+            tls.getOutputStream.write(ascii(Established))
+            tls.getOutputStream.flush()
+          catch case _: Exception => ()
+          finally socket.close()
+        finally server.close()
+      val endpoint = UpstreamEndpoint("HTTPS_PROXY", true, host, literal, server.getLocalPort, Some(Basic))
+      val saved = SSLContext.getDefault
+      SSLContext.setDefault(trustingCa)
+      try
+        UpstreamProxy(endpoint, Vector(loopback)).connect(Vector(OriginV4), 443).close()
+        "completed"
+      catch case ex: IOException => ex.getMessage
+      finally
+        SSLContext.setDefault(saved)
+        serverThread.join()
+
+    assertEquals(outcome("proxy.corp.example", None), "completed")
+    val otherName = outcome("other.example", None)
+    assert(otherName.contains("No subject alternative DNS name matching other.example"), otherName)
+    val literal = outcome("127.0.0.1", Some(loopback))
+    assert(literal.contains("No subject alternative names matching IP address 127.0.0.1"), literal)
+    assert(!otherName.contains(Basic) && !literal.contains(Basic))
 
   test("a locally refused CONNECT reaches no upstream proxy"):
     val proxy = ScriptedProxy(Vector(Established))

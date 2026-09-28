@@ -1,4 +1,4 @@
-// Host executable resolution and execution, platform selection, and launcher diagnostics.
+// Host executable resolution and execution, platform selection, launcher diagnostics and the sizes they print.
 // This object does not depend on sandbox policy, so launcher components can use it without a
 // dependency cycle. findOnPath enforces trusted executable resolution.
 
@@ -6,7 +6,7 @@ package agentsandbox.launcher
 
 import java.io.IOException
 import java.nio.charset.StandardCharsets
-import java.nio.file.{Files, Path, Paths}
+import java.nio.file.{Path, Paths}
 
 object HostCommands:
 
@@ -118,8 +118,9 @@ object HostCommands:
    *   - red: the launch stopped. On the `error:` label only (stopped).
    *   - orange: the launch goes on, and there is something to know. On the `warning:` label
    *     (caution); on a whole line, a boundary is weaker than the default (weakened), by an option
-   *     or environment variable of this launch or by a rule file of the project directory — a
-   *     reminder and not an alarm, and the line or the one before it says what weakened it.
+   *     or environment variable of this launch, by a rule file of the project directory, or by
+   *     the unconfined host run a prompt offers (RunOnHostProvisioning) — a reminder and not an
+   *     alarm, and the line or the one before it says what weakened it.
    *   - purple: what the user chose where it weakens nothing — the project directory, the
    *     workspace mode, the egress profile, an upstream proxy (chosen) — a hue of its own so it
    *     is never read as a severity.
@@ -218,6 +219,57 @@ object HostCommands:
     else FFMHelper.libc.isatty(fd)
 
   // -------------------------------------------------------------------------
+  // Sizes
+  // -------------------------------------------------------------------------
+
+  private val Units = Vector("", "K", "M", "G", "T", "P", "E")
+
+  /**
+   * A size as `df -h`, `du -h` and `ls -lh` print it, so a reader brings the rule with them:
+   * bytes bare, otherwise the largest unit the size reaches, one decimal below 10 of it and none
+   * from 10 up, rounded up, with 1023.6M carrying to 1.0G. That is two or three significant
+   * figures; the four of `podman stats` are what make `16.67MB / 268.4MB` hard to read. Every
+   * figure the launcher prints is this rule, and the entrypoint's `human` is its awk spelling.
+   */
+  def humanBytes(bytes: Long): String =
+    val index = unitIndex(bytes)
+    figure(bytes, index) + Units(index)
+
+  /**
+   * `0.3 / 11G` as (`0.3`, `11G`): a part beside its whole reads as a ratio when both are in
+   * the whole's unit, so the part is rendered there — rounded as any figure, and the unit
+   * written once, on the whole. The part is then known to a tenth of the whole's unit, a tenth
+   * of a 1.0G limit at worst: the ratio's precision, on purpose, not the part's, so 30 MiB
+   * under 6.7G reads 0.1.
+   */
+  def humanPair(part: Long, whole: Long): (String, String) =
+    val index = unitIndex(whole)
+    (figure(part, index), figure(whole, index) + Units(index))
+
+  private def unitIndex(bytes: Long): Int =
+    val reached = (1 until Units.size).count(index => bytes >= (1L << (10 * index)))
+    if reached == Units.size - 1 || Math.ceilDiv(bytes, 1L << (10 * reached)) < 1024 then reached
+    else reached + 1
+
+  private def figure(bytes: Long, index: Int): String =
+    if index == 0 then bytes.toString
+    else
+      val unit = 1L << (10 * index)
+      // The remainder's tenths as fifths of half the unit: bytes * 10 overflows from 0.8 EiB.
+      val tenths = (bytes / unit) * 10 + Math.ceilDiv((bytes % unit) * 5, unit / 2)
+      if tenths < 100 then s"${tenths / 10}.${tenths % 10}" else Math.ceilDiv(bytes, unit).toString
+
+  /**
+   * `memory: 58% (4.2G) available`, `storage: 58% (937G) free`: the share first, for a
+   * reader who knows the machine's size, and beside it the figure the limits and the
+   * `--reset-run-on-host` flag act on, `tint` applied to just those. `whole` is positive; a
+   * machine that cannot say its size gets no line.
+   */
+  def shareLine(label: String, part: Long, whole: Long, state: String, tint: String => String = identity): String =
+    val figure = f"${part * 100.0 / whole}%.0f%% (${humanBytes(part)})"
+    s"$label: ${tint(figure)} $state"
+
+  // -------------------------------------------------------------------------
   // Subprocesses
   // -------------------------------------------------------------------------
 
@@ -237,33 +289,76 @@ object HostCommands:
   def echoCommand(command: Seq[String]): Unit =
     System.err.println(renderCommand(command, announcedPodman))
 
+  def stepOk(command: String*): Boolean =
+    echoCommand(command)
+    ProcessBuilder(command*).inheritIO().start().waitFor() == 0
+
   /** The echoed line; `announcedPodman` is the path the `using:` line said, or None before it has. */
   def renderCommand(command: Seq[String], announcedPodman: Option[String]): String =
     val words = command.toVector
-    val shown =
+    val named =
       if words.headOption.exists(announcedPodman.contains) then "podman" +: words.tail else words
-    "+ " + shown.map(shellWord).mkString(" ")
+    "+ " + named.map(shellWord).mkString(" ")
 
   private val BareWord = "[A-Za-z0-9_@%+=:,./-]+".r
 
   /** The word as an unambiguous one-line display: bare where sh would read it so, single-quoted
-    * otherwise, with a line break or another control character shown as `\n`, `\t` or `\xNN`
-    * and a backslash as `\\` so the two stay apart. No shell of the supported hosts reads that
-    * back; it keeps the command on one physical line, so a following line is never one of its
-    * words. */
+    * otherwise, with a character the terminal would act on spelled out as `shown` spells it and a
+    * backslash as `\\` so the two stay apart. No shell of the supported hosts reads that back; it
+    * keeps the command on one physical line, so a following line is never one of its words. */
   def shellWord(word: String): String =
     if BareWord.matches(word) then word
-    else "'" + word.replace("\\", "\\\\").flatMap(visible).replace("'", "'\\''") + "'"
+    else "'" + shown(word.replace("\\", "\\\\")).replace("'", "'\\''") + "'"
 
-  /** Text a project file supplied, safe on a terminal: a control character is shown, never sent. */
-  def printable(text: String): String = text.flatMap(visible)
+  /**
+   * One argument as the reader agrees to it: verbatim when it is one plain word, so that the
+   * usual command reads as typed, and otherwise quoted so that `program "a b"` and `program a b` render
+   * apart and a character that would drive or reorder the terminal's display — a control,
+   * a bidi or other format character, a line or paragraph separator — is spelled out instead.
+   * The spelling is the shell's: single quotes, or `$'...'` around escapes.
+   */
+  def renderArgument(argument: String): String =
+    if BareWord.matches(argument) then argument
+    else if !argument.codePoints().anyMatch(invisible(_)) then s"'${argument.replace("'", "'\\''")}'"
+    else s"$$'${shown(argument.replace("\\", "\\\\").replace("'", "\\'"))}'"
 
-  private def visible(char: Char): String =
-    char match
-      case '\n' => "\\n"
-      case '\t' => "\\t"
-      case other if other.isControl => f"\\x${other.toInt}%02x"
-      case other => other.toString
+  /**
+   * One line as the terminal shows it whole: a code point the terminal would act on rather than
+   * show — a control, a bidi or other format character, a line or paragraph separator — spelled
+   * out as `\n`, `\xNN`, `\uNNNN` or `\UNNNNNNNN`, so nothing the text came from can erase or
+   * redraw what the reader answers to. A backslash stays as it is: the line may already carry
+   * the escapes renderArgument or shellWord wrote, and a literal one acts on nothing.
+   */
+  def shown(line: String): String =
+    val visible = new StringBuilder
+    line.codePoints().forEach: cp =>
+      cp match
+        case '\n'                                => visible ++= "\\n"
+        case '\t'                                => visible ++= "\\t"
+        case '\r'                                => visible ++= "\\r"
+        case cp if cp < 0x80 && invisible(cp)    => visible ++= f"\\x$cp%02x"
+        case cp if invisible(cp) && cp <= 0xffff => visible ++= f"\\u$cp%04x"
+        case cp if invisible(cp)                 => visible ++= f"\\U$cp%08x"
+        case cp                                  => visible.appendAll(Character.toChars(cp))
+    visible.result()
+
+  /** Character.getType values the terminal would act on rather than show: escaped by shown. */
+  val InvisibleTypes: Set[Int] = Set(
+    Character.CONTROL,
+    Character.FORMAT,
+    Character.LINE_SEPARATOR,
+    Character.PARAGRAPH_SEPARATOR,
+    Character.SURROGATE,
+    Character.PRIVATE_USE,
+    Character.UNASSIGNED,
+  ).map(_.toInt)
+
+  private def invisible(codePoint: Int): Boolean = InvisibleTypes.contains(Character.getType(codePoint))
+
+  /** A shell command printing `text` byte for byte: base64 in the script, decoded where it runs,
+    * so no quote, newline or `$` in it reaches the script's own syntax. */
+  def printingCommand(text: String): String =
+    s"printf %s ${java.util.Base64.getEncoder.encodeToString(text.getBytes(StandardCharsets.UTF_8))} | base64 -d"
 
   /**
    * `sh -c <script> sh <arguments>` for a script the launcher passes to podman, as words holding
@@ -412,9 +507,9 @@ object HostCommands:
         catch case _: java.nio.file.InvalidPathException => None
       .filter(_.isAbsolute)
       .flatMap(dir => extensions.iterator.map(ext => dir.resolve(name + ext)))
-      .flatMap(candidate => try Some(candidate.toRealPath()) catch case _: IOException => None)
+      .flatMap(FileHelper.realPath)
       .filterNot(_.startsWith(ignoreUnder))
-      .find(p => Files.isRegularFile(p) && Files.isExecutable(p))
+      .find(FileHelper.isExecutableFile)
 
   /**
    * The PATH every script this launcher writes runs with, named rather than

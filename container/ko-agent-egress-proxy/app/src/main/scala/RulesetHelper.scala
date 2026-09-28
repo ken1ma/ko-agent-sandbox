@@ -58,17 +58,6 @@ object RulesetHelper:
         ++ Option.when(methods.nonEmpty)("method=" + methods.mkString(","))
         ++ Option.when(grants(Tunnel))(Tunnel)).mkString(" ")
 
-  /** A rule's path: `/` the root, a trailing `/` a tree, none one exact path. */
-  object RulePath:
-    val Root = "/"
-
-    def contains(path: String, request: String): Boolean =
-      if path.endsWith("/") then request.startsWith(path) else request == path
-
-    /** The longest of `scopes` containing `path`, a request's or a rule's. */
-    def longestMatch(scopes: Iterable[String], path: String): Option[String] =
-      scopes.filter(scope => contains(scope, path)).maxByOption(_.length)
-
   /** What a `deny` names: an exact host, or the apex and everything under it. */
   enum HostPattern:
     case Exact(host: String)
@@ -101,7 +90,7 @@ object RulesetHelper:
   val ProfileVariable = "EGRESS_PROFILE"
   val ModelProviderVariable = "EGRESS_MODEL_PROVIDER"
 
-  /** The egress profiles, weakest-to-widest; deny-unless-allowed is what an unset
+  /** The egress profiles, narrowest to widest; deny-unless-allowed is what an unset
     * EGRESS_PROFILE means — the launcher-owned defaults, every line inspected or a model
     * provider's own endpoints, so the default is useful without opening the open internet. */
   val Profiles = Vector("deny-all", "deny-unless-model", "deny-unless-allowed")
@@ -143,9 +132,15 @@ object RulesetHelper:
         )
     lines
 
+  /** A rule line's words: split on whitespace, up to the first word that starts with `#`.
+    * The launcher reads its rule files with the same split (EgressRules.normalizeRuleText,
+    * RunOnHostPrereqs.programRuleHosts). */
+  def ruleTokens(line: String): Vector[String] =
+    line.split("\\s+").toVector.filter(_.nonEmpty).takeWhile(!_.startsWith("#"))
+
   private def tokenized(file: String, text: String): Vector[Vector[String]] =
     text.linesIterator
-      .map(_.split("\\s+").toVector.filter(_.nonEmpty).takeWhile(!_.startsWith("#")))
+      .map(ruleTokens)
       .filter(_.nonEmpty)
       .map: tokens =>
         tokens.find(_.contains('#')).foreach: token =>
@@ -188,8 +183,8 @@ object RulesetHelper:
       case _ => refuse(s"is no line of the rule grammar: $GrammarForms")
 
   /** The URL's host part and path, the scheme literal `https://` already seen; refusals name what
-    * a rule cannot name — a port, userinfo, a query — and a path outside canonical form: printable
-    * ASCII, no `%`, `\`, empty, `.` or `..` segment (GitHelper.literalPathProblem). */
+    * a rule cannot name — a port, userinfo, a query — and a path outside canonical form
+    * (RulePath.literalPathProblem). */
   private def splitUrl(refuse: String => Nothing, url: String): (String, String) =
     val rest = url.drop("https://".length)
     val slash = rest.indexOf('/')
@@ -199,10 +194,9 @@ object RulesetHelper:
     if authority.isEmpty then refuse("names no host")
     Vector('@' -> "userinfo", ':' -> "a port", '[' -> "a bracket", ']' -> "a bracket").foreach: (ch, what) =>
       if authority.contains(ch) then refuse(s"carries $what in its host; a rule names an exact hostname on port 443")
-    if path.exists(ch => ch < 0x21 || ch > 0x7e) then refuse("has a character outside printable ASCII in its path")
     if path.contains('?') then refuse("has a query; a rule names a path, never a query")
-    literalPathProblem(path).foreach: problem =>
-      refuse(s"has $problem in its path; a path is written unencoded, in canonical form")
+    RulePath.literalPathProblem(path).foreach: problem =>
+      refuse(s"has $problem in its path; a path is written in canonical form, as doc/egress-proxy.md gives it")
     (authority, path)
 
   private def parseGrants(refuse: String => Nothing, words: Vector[String]): Set[String] =
@@ -249,7 +243,8 @@ object RulesetHelper:
    * comment beside it. `defaults/host` lists inspected hosts; `defaults/model-provider/<name>`
    * supplies the rules for `allow model-provider <name>`. Provider rules cover model,
    * authentication and control-plane endpoints, including GitHub's inspected login and token
-   * paths. SECURITY.md, "What is inside TLS", explains why the model endpoints are not inspected.
+   * paths and Google's inspected account reads. SECURITY.md, "What is inside TLS", explains why
+   * the model endpoints are not inspected.
    *
    * A defaults file holds `allow https://` lines and nothing else, and the catalog holds no
    * tunnel; either is a refused start, not a silent narrowing, so the image's own --print-ruleset
@@ -533,7 +528,8 @@ object RulesetHelper:
    * outside canonical form; a resolved host holding `tunnel` beside an inspected grant; a `tunnel`
    * line for a host the defaults inspect without `deny defaults`. Warns at every launch, under
    * every profile: a `deny` matching nothing at its position — the misspelled deny must not fail
-   * silently — a redundant grant, and a line every grant of which a later line takes back. An
+   * silently — a redundant grant, a line every grant of which a later line takes back, and a
+   * selected provider's host the resolved ruleset does not allow. An
    * empty ruleset is valid and reported as such — deny-all resolves empty by design, as
    * does deny-unless-model with no provider selected.
    */
@@ -672,16 +668,23 @@ object RulesetHelper:
   def rulesetLines(resolved: ResolvedEgress): Vector[String] =
     val profileLine = resolved.profile match
       case "deny-unless-model" =>
-        s"egress profile: deny-unless-model; model provider: ${resolved.provider.getOrElse("none")}"
-      case other => s"egress profile: $other"
+        s"${ProfileLineHead}deny-unless-model; $ModelProviderLabel${resolved.provider.getOrElse("none")}"
+      case other => s"$ProfileLineHead$other"
     profileLine +: resolved.hosts.toVector.sortBy(_(0)).flatMap(ruleLines)
+
+  /** The fixed text the launcher matches in what rulesetLines and metadataLines print
+    * (EgressRules): each line's start, and the provider's label inside the profile line. */
+  val ProfileLineHead = "egress profile: "
+  val ModelProviderLabel = "model provider: "
+  val SummaryLineHead = "ruleset summary:"
+  val WideningLineHead = "widening lines ("
 
   /** The lines after the ruleset lines, outside the digest: they describe the ruleset's size and
     * how the file arrived at it, not the ruleset. The launcher splits the dry run's text at the
     * first of them (EgressRules.MetadataPrefixes). */
   def metadataLines(resolved: ResolvedEgress): Vector[String] =
     val summary =
-      s"ruleset summary: ${resolved.inspected.size} inspected hosts; ${resolved.tunnelHosts.size} tunnel hosts; " +
+      s"$SummaryLineHead ${resolved.inspected.size} inspected hosts; ${resolved.tunnelHosts.size} tunnel hosts; " +
         s"${resolved.provenance.widening.size} widening lines"
     summary +: wideningLine(resolved).toVector
 
@@ -689,7 +692,7 @@ object RulesetHelper:
     * them. */
   def wideningLine(resolved: ResolvedEgress): Option[String] =
     val widening = resolved.provenance.widening
-    Option.when(widening.nonEmpty)(s"widening lines (${widening.size}): " + widening.map(_.text).mkString("; "))
+    Option.when(widening.nonEmpty)(s"$WideningLineHead${widening.size}): " + widening.map(_.text).mkString("; "))
 
   /**
    * Each ruleset line followed by its sources — an allow line's boundary and each of its grants —
@@ -731,9 +734,9 @@ object RulesetHelper:
    * upload-pack under `git-fetch` (GitHelper.isUploadPack), so a clone that could not transfer
    * fails at its first request; push discovery under a `POST` grant, where the push is the
    * project's own grant; other requests under their method grants, their paths refused for spellings a
-   * forge decodes first (requireUnambiguousPath). Where the longest match is a line other than
-   * the root, the request is first refused for `%`, a dot segment, a backslash and an empty
-   * segment, on every method: under such a line the path decides grants the root does not give.
+   * forge decodes first (RulePath.requireUnambiguousPath). Where the longest match is a line other than
+   * the root, the request is first refused for any spelling RulePath.literalPathProblem names, on
+   * every method: under such a line the path decides grants the root does not give.
    * Under the root a read may carry `%` — what keeps npm's `/@scope%2fname` reading — since it
    * gains nothing by any decoding. A path in no scope is refused.
    *
@@ -771,7 +774,7 @@ object RulesetHelper:
     val grants = matched match
       case Some(scope) => scopes(scope)
       case None        => throw Refusal("path under no line", RefusalAdvice.pathOutside(scopes.keySet))
-    if matched.get != RulePath.Root then requireLiteralPath(path)
+    if matched.get != RulePath.Root then RulePath.requireLiteralPath(path)
 
     head.method match
       case "GET" | "HEAD" =>
@@ -787,7 +790,7 @@ object RulesetHelper:
           throw Refusal("read not granted", RefusalAdvice.noRead)
 
       case method if Grant.Methods.contains(method) =>
-        requireUnambiguousPath(path)
+        RulePath.requireUnambiguousPath(path)
 
         val opened = grants(method) || (method == "POST" && grants(Grant.GitFetch) && isUploadPack(path))
         if !opened then

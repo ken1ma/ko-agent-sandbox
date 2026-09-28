@@ -1,6 +1,6 @@
 # Run on Host — sbt, `mill`, Gradle and Maven commands outside the container
 
-`--run-on-host=<programs>` (macOS only, off by default) relays this project's sbt, `mill`, Gradle
+`--run-on-host=<programs>` (macOS only, off by default) sends this project's sbt, `mill`, Gradle
 and Maven commands to the host, where each runs under a Seatbelt profile of its own.
 
     ┌─ macOS host ───────────────────────────────────────────────────────────────────────┐
@@ -10,7 +10,7 @@ and Maven commands to the host, where each runs under a Seatbelt profile of its 
     │  └────────────────────────────────────────────────────────────────────────────┘    │
     │                       │  command       ↑  stdout, stderr, and exit status          │
     │                       ↓                │                                           │
-    │  ┌─ host broker (one per sandbox session) ────────────────────────────────────┐    │
+    │  ┌─ host runner (one per sandbox session) ────────────────────────────────────┐    │
     │  │ runs one command at a time; starts and stops the processes it owns         │    │
     │  └────────────────────────────────────────────────────────────────────────────┘    │
     │                       │                                     │                      │
@@ -46,14 +46,20 @@ the code that enforces each part:
 | the command lifecycle: publish, lock, scavenge | `RunOnHostSession.scala` |
 | prerequisite validation and the paths it settles | `RunOnHostPrereqs.scala` |
 | provisioning offered at the start prompt | `RunOnHostProvisioning.scala` |
-| the wrapper and the broker's runtimes: proxy, sbt server, environment | `RunOnHostSandbox.scala` |
-| the broker's mill daemon: its start, its port, a daemon of yours | `RunOnHostMillDaemons.scala` |
+| the supervisor's steps and a command's environment | `RunOnHostSandbox.scala` |
+| the runner's runtimes, kept across a launch's commands | `RunnerRuntimes.scala` |
+| a host command's proxy and what its log reports after a command | `RunOnHostProxy.scala` |
+| the runner's sbt server: its start, a server of yours | `RunOnHostSbtServer.scala` |
+| the runner's mill daemon: its start, its port, a daemon of yours | `RunOnHostMillDaemons.scala` |
+| the launch's Gradle daemons and their records | `RunOnHostGradleDaemons.scala` |
+| what a runner publishes for another launch to attach to | `RunOnHostRuntimeDescriptor.scala` |
+| sbt's local-socket shutdown | `RunOnHostSbtServerShutdown.scala` |
 | a proxy's CA and leaf, and what a command trusts | `RunOnHostInspection.scala` |
 | the generated profile | `SeatbeltProfile.scala` |
 | the exit criteria, measured | `src/probe/run-on-host-acceptance-test.sh` |
 
-The full acceptance test (`all`) reports **255 PASS, 0 FAIL, 0 SKIP** on macOS 26.4.1 arm64 with
-Temurin 25.0.4, sbt 2.0.9, Mill 1.1.9, Gradle 9.7.1 and Maven 3.9.16 (2026-09-21).
+The full acceptance test (`all`) reports **295 PASS, 0 FAIL, 0 SKIP** on macOS 26.4.1 arm64 with
+Temurin 25.0.4, sbt 2.0.9, Mill 1.1.10, Gradle 9.8.0 and Maven 3.9.16 (2026-10-04).
 
 The measurement behind the feature: an `sbt test` of this project takes about 2 GB inside the podman
 machine, whose total is fixed when the machine is created and shared with every other session on it.
@@ -195,8 +201,10 @@ The filesystem rules define what a host command can access:
   Seatbelt profile nor the workspace filter refuses those names. Running host `git` inside a
   directory the agent created is running the agent's output, the same gap `SECURITY.md` records
   for the workspace filter.
-- **Each command gets a fresh temporary directory.** A killed command can leave one behind;
-  the next command reclaims it rather than reusing it (`RunOnHostSession.scala`).
+- **Each command gets a fresh directory, which holds its temporary directory under sbt and
+  Maven.** A killed command can leave one behind; the next command reclaims it rather than
+  reusing it (`RunOnHostSession.scala`). A mill or gradle command's `TMPDIR` is the runner's
+  `tmp/` ("The command's lifetime and environment").
 
 ## Network
 
@@ -204,7 +212,7 @@ The command's only egress is its proxy (below):
 
 - Seatbelt permits connections to the proxy's port — at every address of this host, the proxy
   listening on the loopback one — and nothing else, with UNIX-domain sockets only inside the
-  command's temporary directory and, for an sbt client, the broker's, where its server listens.
+  command's temporary directory and, for an sbt client, the runner's, where its server listens.
 - A port grant reaches this host's other services the same way, so no other port is granted.
 - No listener but the mill daemon's and Gradle's: a test suite that binds one — the proxy's
   wire-relay tests do — gets `EPERM` on the host under sbt and Maven and runs in the container,
@@ -216,8 +224,8 @@ Per program (`SeatbeltProfile.Network` is the typed input the dispatch shows):
 
 | process | network |
 |---|---|
-| sbt server | the proxy's port; UNIX sockets bound and connected under the broker's `tmp/` |
-| sbt client | the same under the command's `tmp/`, plus connects under the broker's `tmp/` |
+| sbt server | the proxy's port; UNIX sockets bound and connected under the runner's `tmp/` |
+| sbt client | the same under the command's `tmp/`, plus connects under the runner's `tmp/` |
 | `mill` daemon | the proxy's port; listeners, any port, any address of this host (below) |
 | `mill` client | the proxy's port, and the daemon's one port |
 | `gradle`, client and daemon | the proxy's port; listeners and connects on any port of this host |
@@ -229,7 +237,7 @@ other's, no supported Gradle setting fixes any of them, and confining them would
 Gradle or instrumenting its JVMs, which this launcher does not take on.
 
 Seven measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh`,
-`src/probe/run-on-host-broker-session.sh`); none is chosen from documentation:
+`src/probe/run-on-host-runner-session.sh`); none is chosen from documentation:
 
 - The proxy rule is `(remote ip "localhost:<port>")`: an ip-literal host is refused by the
   compiler ("host must be * or localhost").
@@ -249,8 +257,8 @@ Seven measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh
   (G11), is denied the neighboring one (L3, L4, M3), and only the JVM launcher connects under it:
   the native image's connect is
   dual-stack, for the reason above, and stays denied with the property on its command line (M2).
-  That is why the wrapper runs the JVM launcher ("`mill`").
-- The sbt client's `(remote unix-socket (subpath <broker tmp>))` must reach the boot socket and
+  That is why the supervisor runs the JVM launcher ("`mill`").
+- The sbt client's `(remote unix-socket (subpath <runner tmp>))` must reach the boot socket and
   the server socket exactly: a client whose connect is denied does not fail but deletes the
   portfile and forks a server under its own profile
   (`NetworkClient.connectOrStartServerAndConnect`), which dies at its boot-socket bind, and the
@@ -282,22 +290,22 @@ Missing prerequisites and denied accesses fail clearly, nothing expands authorit
 falls back: a host command that cannot run is reported to the user, never re-run in the
 container — the same rule the egress refusal follows.
 
-- Every prerequisite refusal before the command starts is a `RunOnHostPrereqs.Refusal` value, one
-  case per category, so the wrapper, the channel and the launch word the same refusal for their
-  own readers without the tests matching on any wording.
-- A runtime the broker cannot prepare — a proxy, server or daemon that fails to start, the
+- A prerequisite refusal before the command starts is a `RunOnHostPrereqs.Refusal` value, one
+  case per category, or a sentence from the step that met it (`StepRefusal`); the supervisor, the
+  channel and the launch each word a `Refusal` for their own readers.
+- A runtime the runner cannot prepare — a proxy, server or daemon that fails to start, the
   launcher's executable gone — is refused with its reason as text from the code that met it
-  (`BrokerRuntimes.prepare`).
+  (`RunnerRuntimes.prepare`).
 - A denial while the command runs falls under no refusal category:
   - a filesystem denial reaches the command's own stderr as the OS error;
-  - a network denial is the proxy's audit line, which the wrapper reads and reports per host after
-    the command ("Command requested network access to: …") — from the log's length at the
+  - a network denial is the proxy's audit line, which the supervisor reads and reports per host
+    after the command ("Command requested network access to: …") — from the log's length at the
     command's start, so a shared proxy's earlier denials are not this command's. It never adds the
     host itself.
   - a request the proxy refuses inside a tunnel — a `PUT`, a `POST`, a `GET` with a body — gets a
-    `403` whose body the programs need not print, so the wrapper reports it the same way
+    `403` whose body the programs need not print, so the supervisor reports it the same way
     ("Command sent requests the host command sandbox refuses: …",
-    `RunOnHostSandbox.refusedRequests`), each request with the audit line's reason.
+    `RunOnHostProxy.refusedRequests`), each request with the audit line's reason.
     - A refusal the command answers by changing the request — a body framing header on a `GET`, a
       `Host` header naming another host, `Upgrade`, an absolute target, a path spelled with
       percent-encoding — also gets the step the `403` body had (`RefusalAdvice.requestStep`).
@@ -305,8 +313,8 @@ container — the same rule the egress refusal follows.
       `read`: to run the command yourself, outside the sandbox.
   - a proxy that serves nothing because a write to its log failed (`SECURITY.md`, "Egress proxy")
     cannot say so in that log, and the programs need not print it. After a command that exits
-    non-zero the wrapper asks the proxy with `OPTIONS *` and `Max-Forwards: 0`
-    (`RunOnHostSandbox.unwritableProxyLog`), reads the reason from the response's `Proxy-Status`
+    non-zero the supervisor asks the proxy with `OPTIONS *` and `Max-Forwards: 0`
+    (`RunOnHostProxy.unwritableProxyLog`), reads the reason from the response's `Proxy-Status`
     field, and reports it with the log's path. A proxy still logging answers `400` and logs
     `deny - - OPTIONS non-CONNECT request`.
     - sbt 2.0.9 and mill 1.0.6 print the status line alone, measured against a proxy answering
@@ -324,30 +332,37 @@ only artifacts.**
 - `mill`'s executable *is* the fetched artifact — so it is provisioned, not fetched, and a version
   bump is an explicit host update rather than an automatic update performed by the build
   definition.
+- The JDK a `mill` build pins is an executable Mill would download, so it is provisioned too
+  ("`mill`").
 - Gradle's and Maven's are the distributions the projects' wrappers unpacked on the host.
 
 `RunOnHostPrereqs.scala` validates these prerequisites before a command starts; a violation is a
 refusal naming what to fix, and `src/probe/host-layout.sh` shows what a host actually has.
 
 The launch checks `mill`'s, Gradle's and Maven's before its start prompt
-(`RunOnHostProvisioning.scala`), so a launcher or distribution not yet provisioned is met by you at
-the launch, not by the agent at the first command. sbt has nothing to check: its executable is
-the one `cs install sbt` produced, whatever the project pins.
+(`RunOnHostProvisioning.scala`), so a launcher, pinned JDK or distribution not yet provisioned is
+met by you at the launch, not by the agent at the first command. sbt has nothing to check: its
+executable is the one `cs install sbt` produced, whatever the project pins.
 
 - Every build directory of the selected programs is found — each directory holding a `mill`
-  bootstrap or a Gradle wrapper's properties file, the files the wrapper keys a build directory
-  on ("`mill`", "Gradle"), anywhere under the project except inside `.git`, `.ko-agent-sandbox`
-  or a symlink, and for Maven the project alone, holding `mvnw` ("Maven") — and its executable
-  resolved as its first command would resolve it; each refusal is printed in the command's
-  wording. `gradlew` is only what the run below executes: a properties file without it is
+  bootstrap or a Gradle wrapper's properties file, the files the supervisor keys a build
+  directory on ("`mill`", "Gradle"), anywhere under the project except inside `.git`,
+  `.ko-agent-sandbox` or a symlink, and for Maven the project alone, holding `mvnw` ("Maven") — and
+  its executable resolved as its first command would resolve it; each refusal is printed in the
+  command's wording. `gradlew` is only what the run below executes: a properties file without it is
   reported, with nothing to run.
-- For the refusals a host run fixes, a launcher or distribution not yet provisioned, the prompt
-  shows that run — `MILL_VERSION=<v>-jvm ./mill version`, `./gradlew --version` or
-  `./mvnw --version` in the build directory — and runs it on an explicit `y`, unconfined and in
-  the launcher's environment: the run the refusal asks you for, made one answer (`SECURITY.md`,
-  "Run on host"). Each build directory is judged when its turn comes, so one run that provisions
-  a version two directories share is asked once, and the check repeats after the run, so a
-  script that exits zero without provisioning is reported at once.
+- For the refusals a host run fixes — a launcher, a pinned JDK or a distribution not yet
+  provisioned — the prompt shows that run and runs it on an explicit `y`, unconfined and in the
+  launcher's environment: the run the refusal asks you for, made one answer (`SECURITY.md`, "Run
+  on host").
+  - The run is `MILL_VERSION=<v>-jvm ./mill version`, `./gradlew --version` or `./mvnw --version`
+    in the build directory, shown in full.
+  - The question is tinted orange, as every line stating a weakened boundary is
+    (`HostCommands.weakened`).
+  - Each build directory is judged when its turn comes, so one run that provisions a version two
+    directories share is asked once.
+  - The check repeats after the run, so a script that exits zero without provisioning is reported
+    at once.
 - A launch that holds nothing — no terminal, or `KO_AGENT_SANDBOX_SESSION_START=immediate` —
   prints the refusals and runs nothing.
 - What the launch cannot see — a pin changed during the session, a build directory created
@@ -357,8 +372,10 @@ the one `cs install sbt` produced, whatever the project pins.
 
 Only Coursier-managed JVMs.
 
-- `JAVA_HOME` is the only source, and must resolve to one canonical JDK home under the user's
+- `JAVA_HOME` names the JDK, and must resolve to one canonical JDK home under the user's
   Coursier cache root.
+- The one other source is the JDK a `mill` build pins, for that build's daemon and under the same
+  checks ("`mill`").
 - `java` on `PATH` is `/usr/bin/java`, a macOS stub that resolves through `JAVA_HOME` or
   `/usr/libexec/java_home`, reporting the right JVM while being the wrong path.
 - Rejected: the stub, `/Library/Java/JavaVirtualMachines`, Homebrew and SDKMAN JVMs, and a
@@ -376,26 +393,26 @@ A current Coursier unpacks a JDK into its archive cache, so the home is a URL-de
 
 `cs install sbt`, and no arbitrary `sbt` from `PATH`.
 
-- The wrapper verifies the executable belongs to the Coursier application-install directory — on
+- The supervisor verifies the executable belongs to the Coursier application-install directory — on
   macOS `~/Library/Application Support/Coursier/bin`, whose space makes correct shell quoting
   necessary.
 - That `sbt` is two files: the 1.2 KB script on `PATH` execs a second `sbt` inside an unpacked
   distribution in the archive cache, and the profile grants the distribution's *home* — the
   distribution's `sbt` reads `sbt-launch.jar` and `conf/` relative to itself.
-- The home is read from the script's text (`SeatbeltProfile.sbtDistribution`); running the script
+- The home is read from the script's text (`RunOnHostPrereqs.sbtDistribution`); running the script
   to ask would execute what the profile exists to contain, on the host, unconfined.
 
-sbt 2 is client/server by construction — there is no one-shot mode — so the broker starts the
+sbt 2 is client/server by construction — there is no one-shot mode — so the runner starts the
 server, and each command's client then attaches to it. The server runs:
 
 - inside the server profile, with the build directory as its working directory;
-- with the broker's own `tmp/` as its temporary and socket directory;
+- with the runner's own `tmp/` as its temporary and socket directory;
 - with the command line sbt's thin client uses when it starts one, given the request's launcher
   flags as that client forwards them, less those naming a program ("Where a host command deviates
   from the stock program" lists both);
-- with its output in a file in the broker's session directory ("The channel and the command").
+- with its output in a file in the runner's session directory ("The channel and the command").
 
-The broker rather than the client, which forks a server itself when the portfile names none: a
+The runner rather than the client, which forks a server itself when the portfile names none: a
 server so forked inherits three things a server outliving the command must not:
 
 - the client's profile, whose temporary-directory grant names a directory removed with the
@@ -409,7 +426,7 @@ The server's state follows `-Dsbt.global.base` into the project's run-on-host ca
   content-addressed store, so removing that base when the command ends would leave the build's
   own outputs dangling.
 - The same fact cuts the other way at entry: a tree the user's unconfined sbt built links into a
-  store the profile denies, so the broker sweeps `target/` symlinks that resolve outside the
+  store the profile denies, so the runner sweeps `target/` symlinks that resolve outside the
   granted roots before it starts an sbt server, after any foreign server for the directory is
   shut down — its build finished — so a sweep never runs during the user's own build.
 - `~/.sbt/boot` is not granted and has no consumer — with the global base redirected, sbt boots
@@ -449,11 +466,11 @@ file from `sbt.ivy.home`, so the redirect and its grant stay after the lock is g
 only when a released sbt stops deriving those two paths, and check that by reading `Defaults.scala`
 again, not by an acceptance-test run.
 
-- The wrapper passes `--jvm-client`: sbt 2 defaults to `sbtn`, which under the profile prints
+- The supervisor passes `--jvm-client`: sbt 2 defaults to `sbtn`, which under the profile prints
   that it is starting the server and returns with no build run — an acceptance-test row keeps
-  measuring it, and if it starts passing, the wrapper can reconsider requiring `--jvm-client`.
+  measuring it, and if it starts passing, the supervisor can reconsider requiring `--jvm-client`.
 - The distribution's `sbt` resolves `java` from `PATH`, so the environment puts the granted JDK's
-  `bin` first: the broker starts the server by running the script, and `-java-home` reaches the
+  `bin` first: the runner starts the server by running the script, and `-java-home` reaches the
   client alone.
 
 ### `mill`
@@ -478,44 +495,45 @@ because the image takes no `_JAVA_OPTIONS`:
 - the environment's `preferIPv4Stack` never reaches it;
 - its connect to the daemon is the dual-stack one the "localhost" class denies ("Network");
 - the property on its command line changes nothing (measured,
-  `src/probe/run-on-host-broker-session.sh` M2).
+  `src/probe/run-on-host-runner-session.sh` M2).
 
 A `<v>-native` pin asks for that image by name and is refused with the reason.
 
-The wrapper resolves the version the way the bootstrap does, from the build directory —
+The supervisor resolves the version the way the bootstrap does, from the build directory —
 `.mill-version`, `.config/mill-version`, `build.mill.yaml`, the build script's `//|` header, then
 the script's own default (`RunOnHostPrereqs.millVersion`) — so a nested build directory with a
 bootstrap of its own is another build.
 
 - The script's `MILL_VERSION` and `DEFAULT_MILL_VERSION` environment overrides are not read: the
-  command's environment carries the wrapper's own `MILL_VERSION` and no other, so the script and
-  the wrapper resolve alike.
+  command's environment carries the supervisor's own `MILL_VERSION` and no other, so the script and
+  the supervisor resolve alike.
 - Reading the version is a read; asking the script by running it would execute agent-authored
   shell on the host.
-- `mill-jvm-version: system` is required in the build directory — its default provisions a JVM
-  through Coursier's index into a writable, executable place, which is what the JVM rule
-  refuses — and is what makes the daemon's JVM the granted JDK, the first `java` on the command's
-  `PATH`.
+- `mill-jvm-version` in the build directory is `system` or one JVM id such as `temurin:25`
+  (`RunOnHostPrereqs.millJvm`). Absent is refused: Mill's default differs between its versions.
+  - `system` makes the daemon's JVM the granted JDK, the first `java` on the command's `PATH`.
+  - An id runs the daemon on the JDK a host run provisioned ("A pinned JVM" below). Mill's
+    launcher, the client, runs on the granted JDK under either.
 
 Mill is client/daemon by construction: the launcher starts a daemon that binds a port of the
 kernel's choosing on the loopback address, writes it to `out/mill-daemon/socketPort`, and connects
-(`Server.scala`, `ServerLauncher.scala`, Mill 1.1.9). The broker starts the daemon itself, before
+(`Server.scala`, `ServerLauncher.scala`, Mill 1.1.10). The runner starts the daemon itself, before
 the first `mill` command of a build directory, and every command from that directory attaches to
-it (`RunOnHostMillDaemons.scala`, `RunOnHostSandbox.BrokerRuntimes`):
+it (`RunOnHostMillDaemons.scala`, `RunnerRuntimes`):
 
-1. The **starter**: the build directory's `./mill version`, as a registered spawn in the broker's
-   session (`records/daemon-mill-<hash>`) under the daemon profile — the profile with listeners
-   granted and no outbound but the proxy — with the closed environment and the broker's `tmp/`
-   as its temporary directory.
+1. The **starter**: the build directory's `./mill version`, started through `registeredSpawn` in
+   the runner's session (`records/daemon-mill-<hash>`) under the daemon profile — the profile
+   with listeners granted and no outbound but the proxy — with the closed environment and the
+   runner's `tmp/` as its temporary directory.
    - The launcher starts the daemon, the daemon binds its port and writes `socketPort`, and the
      launcher's own connect is denied: the daemon inherits the starter's profile, and the only
      outbound that would admit the connect is outbound to every port of this host
      (`SeatbeltProfile.Network.MillDaemon` has the reasoning).
-   - Once `lsof` shows the daemon listening on the port `socketPort` names, the broker ends the
+   - Once `lsof` shows the daemon listening on the port `socketPort` names, the runner ends the
      launcher — TERM to its pid alone, the daemon's parent in the group, behind its pid and start
      time.
    - Without that observation the launcher retries for ten seconds and exits nonzero, and a launcher
-     the TERM does not end reaches that bound too; either way the daemon stays in the spawn's
+     the TERM does not end reaches that bound too; either way the daemon stays in the leader's
      group (measured, M1 for the exit, M8 for the TERM: the daemon is spawned with
      `destroyOnExit = false`).
    - The group is three processes — the leader, the launcher JVM as its child, since
@@ -532,7 +550,7 @@ it (`RunOnHostMillDaemons.scala`, `RunOnHostSandbox.BrokerRuntimes`):
    - The file is the build's to write and authorizes nothing, and a candidate the daemon does not
      listen on refuses the start.
 3. Each command's **client** runs `./mill <args>` from the build directory under the client
-   profile, which admits outbound to that one port and the proxy, with the broker's `tmp/` as
+   profile, which admits outbound to that one port and the proxy, with the runner's `tmp/` as
    its temporary directory ("The command's lifetime and environment" has why). The launcher
    reads `socketPort` and connects; a port planted there is one the profile denies, so the
    command fails and the daemon is untouched.
@@ -541,12 +559,13 @@ The daemon gets each command's environment through the protocol (`DaemonRpc.Init
 closed environment reaches the build per command; the daemon JVM's own options, the proxy
 settings included, are the starter's, fixed at its start.
 
-The broker replaces the daemon under the same proxy before the next command — its starter's spawn
-staying as the group's leader and ended with the group first — when:
+The runner replaces the daemon under the same proxy before the next command — its starter's
+leader staying and ended with the group first — when:
 
 - what Mill's launcher restarts the daemon on has changed: the launcher version, the resolved
   JVM, `mill-jvm-opts` and `mill-repositories`, each from the source Mill reads it from, the
-  build file's header taken whole (`RunOnHostPrereqs.millDaemonConfig`). The broker compares
+  build file's header taken whole and, under a pinned JVM, the text of Mill's `java-home` file
+  (`RunOnHostPrereqs.millDaemonConfig`). The runner compares
   them before each command, the launcher assembled afresh since a changed pin grants another;
   the stock client meeting the mismatch would end the daemon and start a replacement from its own
   profile, which cannot bind, and the command would fail;
@@ -558,8 +577,8 @@ Mill's idle exit counts from the last client's disconnect, and a daemon no clien
 to yet never expires (`Server.ConnectionTracker`): a starter's daemon whose first command never
 comes lives until the launch ends.
 
-`out/mill-daemon` is Mill's: the broker neither clears nor writes it, beyond the classpath memo
-below, and reads only the port candidate and that memo.
+`out/mill-daemon` is Mill's: the runner neither clears nor writes it, beyond the classpath file
+below, and reads only the port candidate and that file.
 
 - The `launcherLock` there names the ended starter until the next client: it is a pid lock
   (`PidLock`, `pid:start`) the launcher deletes on its own exit, which the TERM skips, and a
@@ -574,23 +593,26 @@ below, and reads only the port candidate and that memo.
   no check before the command closes that. What bounds it is the profile: the launcher writes
   only where the command may write, so the daemon it can end that way is one whose
   `out/mill-daemon` lies under the command's writable roots — this project, its run-on-host
-  caches, the broker's `tmp/` — that is, this launch's for another build directory, another
+  caches, the runner's `tmp/` — that is, this launch's for another build directory, another
   launch's on this project, or yours; and the one-port rule keeps the client from attaching to
   it.
 - `MILL_OUTPUT_DIR` and `MILL_BSP_OUTPUT_DIR` are never forwarded, since every check looks under
   `out/`.
-- Mill's classpath memo there, `out/mill-daemon/cache/mill-daemon-classpath`, is deleted before a
+- Mill's launcher writes the daemon's classpath to `out/mill-daemon/cache/mill-daemon-classpath`
+  and reuses that file while every path it names exists. The runner deletes the file before a
   start when it names a path outside the cache the profile grants
-  (`RunOnHostMillDaemons.discardForeignMemo`, the read and the delete under the daemon profile, so
-  a link planted under `out/` after the rendezvous check sends neither past what the build could
-  write). Mill keeps a memo while every path it names exists, and Seatbelt answers an existence
-  test for a path it denies reading — measured, `Files.exists` true and the open denied — so a
-  memo from an unconfined run, or from this directory served as another project's build
-  directory, would start a daemon on jars it cannot open, and the daemon dies before it listens.
-  Deleted, the memo is resolved afresh through the proxy into the granted cache.
+  (`RunOnHostMillDaemons.discardForeignClasspath`).
+  - Seatbelt answers an existence test for a path it denies reading — measured, `Files.exists`
+    true and the open denied — so a file from an unconfined run, or from this directory served
+    as another project's build directory, would start a daemon on jars it cannot open, and the
+    daemon dies before it listens.
+  - With the file deleted, Mill's launcher resolves the classpath afresh through the proxy into
+    the granted cache.
+  - The read and the delete run under the daemon profile, so a link planted under `out/` after
+    the rendezvous check sends neither past what the build could write.
 
 A daemon of yours for the build directory — from a terminal, outside any launch — is ended
-before the broker's starts, as your sbt server is shut down, and the channel log says so.
+before the runner's starts, as your sbt server is shut down, and the channel log says so.
 
 - It is found in the process table by its command line and its working directory under
   `out/mill-daemon`, never through `processId`, and ended by TERM then KILL behind its pid and
@@ -600,7 +622,7 @@ before the broker's starts, as your sbt server is shut down, and the channel log
 - Between the observation and the signal a terminal `./mill` can still connect, and its command
   then dies with the daemon; no observation closes that window.
 
-A daemon another launch owns — its broker's session holds `daemon-mill-<hash>` — is attached to,
+A daemon another launch owns — its runner's session holds `daemon-mill-<hash>` — is attached to,
 or ended by that record and replaced, as its sbt server is ("The channel and the command").
 
 - Attaching needs the daemon alive under the build directory's present configuration, so after
@@ -608,11 +630,57 @@ or ended by that record and replaced, as its sbt server is ("The channel and the
   group — and starts its own.
 - The reverse holds too: while the launch's daemon lives, your own `./mill` with matching
   settings attaches to it and runs your build under the profile and the launch's proxy, and one
-  with different settings ends it, as Mill does on a fingerprint mismatch, after which the broker
+  with different settings ends it, as Mill does on a fingerprint mismatch, after which the runner
   ends yours once idle and starts its own again.
-- A daemon whose registered leader was killed on its own — the spawn, not the broker — remains
-  in a group whose leader the scavenger cannot check, and is nothing a portfile attributes; it
-  exits on Mill's idle timeout.
+- A daemon whose registered leader was killed on its own — the leader alone, not the runner —
+  remains in a group whose leader the scavenger cannot check, and is nothing a portfile
+  attributes; it exits on Mill's idle timeout.
+
+#### A pinned JVM
+
+Run `MILL_VERSION=<v>-jvm ./mill version` once on the host in the build directory, the run that
+provisions the launcher; the start prompt offers it. A command refused for the JDK names that
+run.
+
+- Mill's launcher resolves the id through Coursier's index, downloads the JDK into the user's
+  Coursier archive cache, and writes its home to `out/mill-daemon/cache/java-home` with a key
+  naming the id (`CoursierClient.resolveJavaHome`, Mill 1.1.10). A command may neither fetch a
+  JDK nor write that cache, so the host run does both.
+- The supervisor grants the home that file records, read-only, when it passes the checks
+  `JAVA_HOME` passes ("The JVM"), and refuses the command when the file is absent or records
+  another id (`RunOnHostPrereqs.millPinnedJdk`).
+- A file recording a home that fails those checks is refused with the instruction to delete it
+  first: Mill keeps a file whose key matches, so the run alone would change nothing.
+- The launch, the supervisor and the runner read the file outside any profile, while a command
+  may be writing under `out/` (`RunOnHostSandbox.millJavaHomeText`):
+  - each directory below the build directory, then the file, is opened relative to the one
+    before it and never through a symlink, whatever a command renames meanwhile;
+  - the read stops at 256 KiB and is abandoned after two seconds, so neither a growing file
+    nor a FIFO moved into the file's place holds the runner;
+  - an abandoned read keeps a thread and its open directories, so at most four run or stay
+    abandoned at once; past that the file reads as absent until one returns;
+  - the text is never printed.
+
+Measured under the command profile with no proxy running (`src/probe/mill-pinned-jvm.sh`, macOS
+26.4.1, Mill 1.1.10, `temurin:21`, 2026-10-02):
+
+- With the file present and its home granted, Mill runs that JDK, fetches nothing and leaves the
+  file as it is.
+- With the file absent, under another key, or its home not granted, Mill resolves the id again
+  and fails at its first fetch, the JVM index.
+- Mill runs whatever directory the file names under the id's key: a file naming `JAVA_HOME`'s
+  JDK runs that one.
+
+What the supervisor's check leaves open:
+
+- A command can write the file, so it chooses which JDK in the user's Coursier cache the daemon
+  runs on. The checks keep the grant to a JDK the user provisioned, read-only, and what runs on
+  it stays under the profile.
+- The key also holds the JVM index version, Mill's own default unless the build sets one, and
+  `mill-repositories`. The supervisor compares neither, so a file Mill itself rejects on those
+  passes the check and the command fails at Mill's fetch; the host run rewrites the file.
+- A module's own `jvmVersion` is resolved by a task inside the daemon (`JavaHomeModule`, read in
+  Mill 1.1.10's source, not measured), so its JDK is neither fetched nor granted.
 
 ### Gradle
 
@@ -629,8 +697,8 @@ as `./gradlew` run there would read them; a `gradle` installed globally is not u
   run.
 
 The command runs the distribution's `bin/gradle` in the working directory, not `gradlew`, which
-would download. The wrapper computes the directory exactly as Gradle's wrapper does
-(`RunOnHostPrereqs.gradleDistributionDir`, from Gradle 9.7.1's `PathAssembler`):
+would download. The supervisor computes the directory exactly as Gradle's wrapper does
+(`RunOnHostPrereqs.gradleDistributionDir`, from Gradle 9.8.0's `PathAssembler`):
 
 1. `distributionUrl` read as `java.util.Properties` reads the file, a value without a scheme
    resolved as a file against the properties file's directory;
@@ -646,12 +714,12 @@ distribution to a place the project chooses, and the executable is the user's to
 - The command's own `GRADLE_USER_HOME` is under the run-on-host cache ("The run-on-host cache"),
   so Gradle's caches are the project's own.
 - The daemon registry is the launch's own, not the home's: `org.gradle.daemon.registry.base` on
-  the command line names a directory under the broker's `tmp/`, which every Gradle process of the
+  the command line names a directory under the runner's `tmp/`, which every Gradle process of the
   launch is granted and which ends with the launch (`RunOnHostSandbox.gradleCommand`).
   `gradle --stop` stops every daemon in a registry, whatever its JVM (`DaemonStopClient`), so a
   registry under the per-project home would let one launch's `--stop` end another launch's builds
   on the project.
-- Attaching is the launch's own either way: the client's `java.io.tmpdir`, the broker's `tmp/`,
+- Attaching is the launch's own either way: the client's `java.io.tmpdir`, the runner's `tmp/`,
   is among the immutable properties Gradle's daemon compatibility compares
   (`InitialPropertiesConverter`, `DaemonCompatibilitySpec`), so a daemon started under another
   launch is never compatible.
@@ -663,15 +731,15 @@ later commands attach to it through Gradle's own matching, inside the profile.
 - A client disconnected mid-build cancels the build, and a daemon still busy ten seconds later
   stops itself (`DaemonStateCoordinator`, `WatchForDisconnection`).
 - The daemon detaches itself into a group of its own (`DaemonMain`, `setsid`), where its workers
-  and test executors are forked, so ending the client's group leaves it alive; the broker ends it
+  and test executors are forked, so ending the client's group leaves it alive; the runner ends it
   by its recorded pid and start time (`RunOnHostGradleDaemons.scala`).
-- After each command, and once more at the launch's end, the broker records every daemon started
+- After each command, and once more at the launch's end, the runner records every daemon started
   with the launch's environment by pid and start time, `records/daemon-gradle-<pid>`, forgetting
   the record of one gone; the launch's end signals the group behind each record as it does every
   recorded group.
 
 What identifies a daemon as the launch's is its initial environment, which the client starts it with
-(`DefaultProcessForkOptions`), read with `ps -E`: its `_JAVA_OPTIONS` names the broker's `tmp/`
+(`DefaultProcessForkOptions`), read with `ps -E`: its `_JAVA_OPTIONS` names the runner's `tmp/`
 as `java.io.tmpdir`, a value no process outside this launch's commands was started with.
 
 - No path identifies it: the build writes across `tmp/` and the project, and a file a daemon of
@@ -679,17 +747,17 @@ as `java.io.tmpdir`, a value no process outside this launch's commands was start
   reported by the kernel at that name.
 - `ps -E` reads the strings from the daemon's own memory (`sysctl_procargsx`), so build code in
   the daemon can rewrite them and hide the daemon from its own launch, and nothing else.
-- A daemon no observation reached — one started under a broker that died during the command, or
+- A daemon no observation reached — one started under a runner that died during the command, or
   one so hidden — is confined and holds nothing of the launch, and exits on Gradle's idle timeout,
   three hours, once idle; one hung in its build never becomes idle, and nothing bounds it.
-- Its registry directory goes with the broker's `tmp/`, so no later launch finds it.
+- Its registry directory goes with the runner's `tmp/`, so no later launch finds it.
 
 Three properties on the command line close the toolchain inventory to the launch's JDK —
 `org.gradle.java.installations.auto-detect=false`, `auto-download=false` and `paths=<JDK>` —
-where a `-D` outranks every `gradle.properties`, so a project asking for another toolchain fails
+where a `-D` overrides every `gradle.properties`, so a project asking for another toolchain fails
 naming it rather than meeting a denial.
 
-Gradle 9.7.1 is the release measured, the one `src/probe/gradle-fixture` pins; older lines are
+Gradle 9.8.0 is the release measured, the one `src/probe/gradle-fixture` pins; older lines are
 out, since 8.14 does not run on the JDK 25 the launcher requires, and Gradle itself refuses a JDK
 it cannot run on.
 
@@ -722,7 +790,7 @@ Only the `only-script` wrapper type is served, the default that `mvn wrapper:wra
 
 - A project with any other wrapper type is refused, and the refusal names the command that
   converts it.
-- The wrapper recognizes the type from the script's `hash_string` function, reading the script
+- The supervisor recognizes the type from the script's `hash_string` function, reading the script
   and never running it.
 - The other types run a jar that computes the distribution directory from more inputs —
   `distributionBase`, `distributionPath`, a relative URL, the JVM's `user.home` — which this
@@ -730,8 +798,8 @@ Only the `only-script` wrapper type is served, the default that `mvn wrapper:wra
   a stale copy where the script selects another.
 
 The command runs `bin/mvn --batch-mode` from that directory, not `mvnw`, which looks for Maven under
-a home directory it computes itself. The wrapper computes the directory exactly as the script does
-(`RunOnHostPrereqs.mvnDistributionDir`), from the script's inputs:
+a home directory it computes itself. The supervisor computes the directory exactly as the script
+does (`RunOnHostPrereqs.mvnDistributionDir`), from the script's inputs:
 
 1. `distributionUrl`, rewritten by `MVNW_REPOURL` when the launcher's environment sets that
    mirror override;
@@ -757,14 +825,14 @@ An mvnd distribution is refused: mvnd is a daemon.
 
 ## The command's lifetime and environment
 
-`RunOnHostSession.scala` tracks one wrapper invocation, which it calls a command session.
+`RunOnHostSession.scala` tracks one supervisor invocation, which it calls a command session.
 
 - Its directory is published by rename so it is never seen half-made.
-- A lock marks the wrapper as live, and records identify its child processes.
+- A lock marks the supervisor as live, and records identify its child processes.
 - Cleanup moves the directory out of the active set before ending those processes and any
   leaderless sbt server its portfile identifies.
 
-The broker holds a session of the same kind for the launch's lifetime:
+The runner holds a session of the same kind for the launch's lifetime:
 
 - its records name the launch's runtimes — `proxy-<program>-<hash>`, `server-sbt-<hash>` and
   `daemon-mill-<hash>`, the hash the build directory's, and `daemon-gradle-<pid>` for each Gradle
@@ -772,40 +840,40 @@ The broker holds a session of the same kind for the launch's lifetime:
 - a `build-<hash>` file names the directory those of a hash serve;
 - a `runtime-<program>-<hash>` file describes each sbt server and mill daemon for another launch
   to attach to (`RunOnHostRuntimeDescriptor.scala`);
-- a `run` file names the launch's sandbox container, by which `--stats` joins the broker to its
+- a `run` file names the launch's sandbox container, by which `--stats` joins the runner to its
   session;
 - its `tmp/` is where the sbt server binds its sockets and where the servers and daemons keep
   their temporary files.
 
 Two locks:
 
-- Each command the broker dispatches holds a build lock — one per program and build directory,
-  under `build-lock/` — for the command's life, and the broker's own work on the runtime before a
+- Each command the runner dispatches holds a build lock — one per program and build directory,
+  under `build-lock/` — for the command's life, and the runner's own work on the runtime before a
   command runs under it, so two launches on one project queue behind each other's commands; the
   waiting one says so on its stderr.
-- Ending a runtime's recorded group — the broker replacing or retiring its own, its teardown, the
+- Ending a runtime's recorded group — the runner replacing or retiring its own, its teardown, the
   scavenger, another launch taking the runtime over — runs under a retirement lock,
   `retire-lock/<program>-<hash>`, held across the leader's start-time check and the signal
   alone, so no two processes signal one group; one not free within twenty seconds keeps the
   record for the next collection (`RunOnHostSession.retirementLockFile` has the rules).
 
-The wrapper root is `/private/tmp/ko-agent-<uid>`, short on purpose: sbt's boot socket path must
-fit a UNIX-domain socket's `sun_path` (`RunOnHostPrereqs.SessionTmpMaxLength`), and the broker's
+The supervisor root is `/private/tmp/ko-agent-<uid>`, short on purpose: sbt's boot socket path must
+fit a UNIX-domain socket's `sun_path` (`RunOnHostPrereqs.SessionTmpMaxLength`), and the runner's
 `tmp/` is under the same budget.
 
-The wrapper constructs the command's environment from the variables listed below
+The supervisor constructs the command's environment from the variables listed below
 (`RunOnHostSandbox.commandEnvironment`), rather than inheriting the launcher's; SECURITY.md, "Run
 on host", has why. The acceptance test supplies the same closed environment; `command_env` documents
 its deviations for rows without a proxy and with one temporary directory for clients and servers.
-What the wrapper supplies:
+What the supervisor supplies:
 
 | Environment Variable | Value |
 |---|---|
 | `JAVA_HOME` | the canonical path of the host's `$JAVA_HOME` |
 | `_JAVA_OPTIONS` | the `java -D` properties below, inherited by forked JVMs |
 | `PATH` | `$JAVA_HOME/bin:/usr/bin:/bin:/usr/sbin:/sbin` |
-| `TMPDIR` | `<command directory>/tmp`; under `mill` and `gradle` the broker's `tmp/` |
-| `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` | the broker's `tmp/`, or the command's under Maven |
+| `TMPDIR` | `<command directory>/tmp`; under `mill` and `gradle` the runner's `tmp/` |
+| `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` | the runner's `tmp/`, or the command's under Maven |
 | `COURSIER_CACHE` | `<run-on-host cache>/coursier/v1` |
 | `GRADLE_USER_HOME` | `<run-on-host cache>/gradle-user-home` |
 | `USER`, `LOGNAME` | the account's name, the JVM's `user.name` |
@@ -875,8 +943,8 @@ sandbox container's do (`SECURITY.md`, "Who holds the CA key"). By each program'
 
 The placeholders:
 
-- `<command directory>` is this invocation's directory under the wrapper root above — the
-  broker's sbt server, and every `mill` and `gradle` process, have the broker's `tmp/` for every
+- `<command directory>` is this invocation's directory under the supervisor root above — the
+  runner's sbt server, and every `mill` and `gradle` process, have the runner's `tmp/` for every
   row naming one;
 - `<cache home>` is `${XDG_CACHE_HOME:-$HOME/.cache}` from the launcher's environment;
 - `<run-on-host cache>` is the project's own run-on-host cache root,
@@ -885,7 +953,7 @@ The placeholders:
 One environment serves every program:
 
 - sbt's global base and Ivy home, Gradle's user home and Maven's local repository are set for
-  every command; a command of another program reads none of them, and the wrapper neither creates
+  every command; a command of another program reads none of them, and the supervisor neither creates
   nor grants them for it;
 - the mill download folder, the one holding the granted executable, is set for the other programs
   the same way, and they ignore it;
@@ -895,23 +963,23 @@ Why the rows are what they are:
 
 - The host's `TMPDIR` names a directory the command is not granted, so the command's replaces it
   for forked shell programs, as `java.io.tmpdir` does for JVMs.
-- Under `mill` that directory is the broker's `tmp/`, for two reasons
+- Under `mill` that directory is the runner's `tmp/`, for two reasons
   (`RunOnHostSandbox.temporaryDirectories`); under `gradle` for the first, the daemon serving
   later commands with the profile and environment it was started with:
   - a JVM the daemon forks — a `run`, a test — inherits the daemon's profile, which grants the
-    broker's `tmp/` and not the command's, yet gets the command's environment
+    runner's `tmp/` and not the command's, yet gets the command's environment
     (`RunModule.scala`, `ctx.env`);
   - with one directory the starter's environment and every client's are one map, so an option
     file Mill interpolates from the environment (`MillProcessLauncher.loadMillConfig`) yields the
-    same value in both, and a client never meets a fingerprint mismatch of the wrapper's own
+    same value in both, and a client never meets a fingerprint mismatch of the supervisor's own
     making.
 - `HOME` is passed because the programs' scripts derive paths from it, and nothing under it is
   granted.
 - `--env` is the same forward the sandbox gets, with the same refusal of `KO_AGENT_SANDBOX_*`; it
-  replaces a pass-through, but cannot replace any setting supplied by the wrapper.
-  `_JAVA_OPTIONS` and `HTTPS_PROXY` keep the wrapper's values; the launcher's own `HTTPS_PROXY` is
-  replaced as above.
-- `MILL_VERSION` and `DEFAULT_MILL_VERSION` are never the forwarded values, because the wrapper
+  replaces a pass-through, but cannot replace any setting supplied by the supervisor.
+  `_JAVA_OPTIONS` and `HTTPS_PROXY` keep the supervisor's values; the launcher's own `HTTPS_PROXY`
+  is replaced as above.
+- `MILL_VERSION` and `DEFAULT_MILL_VERSION` are never the forwarded values, because the supervisor
   granted the launcher of the version the build directory pins, and `MILL_VERSION` names that
   launcher; `MILL_OUTPUT_DIR` and `MILL_BSP_OUTPUT_DIR` are not either, because the daemon's
   rendezvous is looked for under `out/` ("`mill`").
@@ -943,14 +1011,14 @@ own comments. One command runs at a time, serial by design rather than as a shor
 - a queued sbt request attaches to the server the running one leaves, a queued `mill` request to
   the daemon;
 - the runtime's selection, start and retirement never overlap a command;
-- the per-transaction FIFOs leave a concurrent broker open as later work if a program ever makes
+- the per-transaction FIFOs leave a concurrent runner open as later work if a program ever makes
   it worth having.
 
-Before starting a server the broker checks who holds the build directory's portfile:
+Before starting a server the runner checks who holds the build directory's portfile:
 
 - the *user's own* server — from a terminal, outside any launch — is shut down by protocol at the
-  socket the broker derives itself;
-- a server *another launch* still owns — its broker's session names the directory, and the
+  socket the runner derives itself;
+- a server *another launch* still owns — its runner's session names the directory, and the
   recorded group is not known to be gone — the command attaches to when the server this launch
   would start has the same confinement and environment, and otherwise ends by that record and
   replaces with its own (below);
@@ -997,7 +1065,7 @@ A runtime the command cannot attach to is taken over. The reasons:
 - its server or daemon is gone, the portfile does not name its socket, or the daemon is not under
   the directory's present configuration.
 
-The takeover: under the build lock the command holds, the broker ends the group the owner's record
+The takeover: under the build lock the command holds, the runner ends the group the owner's record
 names, under the retirement lock and after the same start-time check every ender makes, and
 starts its own server or daemon under its own proxy, as a first command does.
 
@@ -1026,25 +1094,28 @@ its working directory, and sbt 2 has no one-shot mode ("sbt", above), so every i
 attaches to the portfile's server or contends for it; the upstream request that would add one is
 in `upstream-issues.md`. Mill's `out/mill-daemon` lock is the same exclusivity over `out/`.
 
-The broker's cancel carries no reason: the shim's descriptor closes the same way whether the agent
+The runner's cancel carries no reason: the shim's descriptor closes the same way whether the agent
 changed its mind or gave up on a command that sat silent.
 
-Before removing that command's directory, the wrapper appends the command's logs to the channel's
+Before removing that command's directory, the supervisor appends the command's logs to the channel's
 log, the file the launch printed as `host command log` (`RunOnHostSandbox.appendSessionLogs`):
 
 - the tail of the proxy audit log, under Maven, and of the stderr file a thin client leaves under
   `tmp/` when it forked a server of its own, the client's answer to a socket it cannot reach;
-- the wrapper runs unconfined and the command wrote that directory, so the read comes after the
-  rename and the ending of the command's groups, refuses a link at any component, and takes the
-  tail by position rather than by the file's size;
+- the supervisor runs unconfined and the command could write `tmp/` in that directory, and replace
+  `tmp/` itself, so the read comes after the rename and the ending of the command's groups, refuses
+  a link at any component, and takes the tail by position rather than by the file's size;
+- the proxy audit log's name in that directory is the launcher's own link to the file in the
+  project's log directory, both outside what the command can write: the read follows that link
+  when it names an audit log there, and no other (`RunOnHostProxy.keptAuditLog`);
 - a command that completed leaves nothing there: its output reached the agent.
 
-The broker's session ends the same way, at the launch's end or on TERM: its proxies' audit logs
+The runner's session ends the same way, at the launch's end or on TERM: its proxies' audit logs
 and its servers' logs are appended before its directory is removed.
 
-The broker starts each sbt server with stdout and stderr appended to `server-sbt-<hash>.log` in
+The runner starts each sbt server with stdout and stderr appended to `server-sbt-<hash>.log` in
 its session directory — not under `tmp/`, which the server could replace with a link or a FIFO
-before the broker opens the file for the next server — and waits for the portfile with a bound on
+before the runner opens the file for the next server — and waits for the portfile with a bound on
 progress:
 
 - a server that has published none while neither that file nor the proxy log grew for two minutes
@@ -1064,19 +1135,19 @@ where the caller is not interactive.
 
 - **Persistent processes end with the launch — ownership.** Stock sbt, Mill and Gradle leave
   their server or daemon running when the terminal that started it closes, Gradle's for three
-  idle hours. The broker's run against the launch's proxy and its forwarded environment, both of
+  idle hours. The runner's run against the launch's proxy and its forwarded environment, both of
   which die with the launch, so the server and the daemons must too; the next start scavenges
-  what a killed broker left, and a later launch adopts none whose owner is gone.
+  what a killed runner left, and a later launch adopts none whose owner is gone.
 - **A foreign server or daemon is never attached to — confinement.** Stock sbt attaches to
   whatever server holds the portfile, and stock Mill to whatever daemon holds `out/mill-daemon`
-  unless its fingerprint differs; a client attached to one the broker did not start would run
+  unless its fingerprint differs; a client attached to one the runner did not start would run
   the build under that process's environment and confinement, or none.
-  - The user's own terminal server the broker shuts down by protocol at the socket it derives,
+  - The user's own terminal server the runner shuts down by protocol at the socket it derives,
     and the user's own daemon it ends once idle, after its start-time check ("`mill`").
   - A server or daemon another launch still owns it attaches to only when it would start one
     under the same confinement and environment, and otherwise ends by that launch's record, under
     the retirement lock, and replaces with its own ("The channel and the command").
-- **The environment is a closed set — confinement.** The command sees the wrapper's set and not
+- **The environment is a closed set — confinement.** The command sees the supervisor's set and not
   the launching shell's ("The command's lifetime and environment"): `HOME` passed and nothing
   under it granted, `preferIPv4Stack` set for the loopback rule ("Network"), no destination off
   this host but the proxy, and the project writable even under `--write=reject` (`SECURITY.md`,
@@ -1084,13 +1155,13 @@ where the caller is not interactive.
 - **A repository takes reads alone — confinement.** Stock sbt, Mill, Gradle and Maven publish
   to a repository with a `PUT`. A host command's proxy refuses
   every request but a `GET` or `HEAD` without a body ("The command's egress proxy"), and the rule
-  file takes no other grant, so publishing is yours, outside the sandbox; the wrapper names the
+  file takes no other grant, so publishing is yours, outside the sandbox; the supervisor names the
   refused request ("Refusals"). The JVM's default trust is the proxy's CA alone, with no public
   root ("The command's lifetime and environment").
 - **The wait for a start has a bound — operability.** sbt's thin client waits for a starting
   server with no deadline, which an interactive user can Ctrl-C; the agent cannot, so an
   unbounded wait would be an unrecoverable command.
-  - The broker fails the start when neither the server's log nor the proxy log grows and no
+  - The runner fails the start when neither the server's log nor the proxy log grows and no
     portfile appears for two minutes (`RunOnHostSandbox.ServerStartSilenceMillis`), with the
     log's tail.
   - A mill starter that neither ends nor writes for as long, the proxy log still, fails the same
@@ -1098,7 +1169,7 @@ where the caller is not interactive.
 
 ### Under sbt
 
-- **The server is the broker's, not the client's — ownership.** The broker starts it, in its own
+- **The server is the runner's, not the client's — ownership.** The runner starts it, in its own
   directory for sockets and temporary files, and each command's client attaches; a server the
   client forked would inherit the command's profile, environment and group ("sbt").
 - **The server receives the request's launcher flags as the thin client forwards them, less
@@ -1108,16 +1179,16 @@ where the caller is not interactive.
     forwards nothing of `-J`.
   - Dropped beyond the client: `-java-home`, `-sbt-jar`, `--sbt-script`, `--sbt-launch-jar` and
     `-Dsbt.script=`, each naming the JVM, the launcher jar or the runner script, which the
-    profile's grants decide (`RunOnHostSandbox.serverCommand`).
+    profile's grants decide (`RunOnHostSbtServer.serverCommand`).
 - **`new` and `init` run through a server — the client model.** Stock sbt runs those two in the
   sbt process itself, in place, since a template is written where no build is, and every other
-  command through its client; the broker has one path, a client to the server it starts, so
+  command through its client; the runner has one path, a client to the server it starts, so
   `ko-sandbox-run-on-host sbt new` in an empty directory meets the runner's refusal of a directory
   with no build, and `--allow-empty` starts the server there as the stock client's flag would.
   Whether `new` then writes its template through that server the acceptance test does not measure.
 - **The JVM client, never `sbtn` — operability.** sbt 2 runs its native client by default, which
   under the profile prints that it is starting the server and returns with no build run; the
-  wrapper passes `--jvm-client`, and an acceptance-test row keeps measuring `sbtn` ("sbt").
+  supervisor passes `--jvm-client`, and an acceptance-test row keeps measuring `sbtn` ("sbt").
 - **`target/` links into a denied store are swept before a server starts — confinement.** A tree
   the user's unconfined sbt built links into a store the profile denies ("sbt").
 - **The global base and the Ivy home are the project's own — confinement.** Redirected into the
@@ -1131,37 +1202,39 @@ where the caller is not interactive.
 
 ### Under `mill`
 
-- **The daemon is started by the broker's `./mill version`, not by the first client —
-  ownership.** The starter's denied connect leaves the daemon in the broker's group, and the
+- **The daemon is started by the runner's `./mill version`, not by the first client —
+  ownership.** The starter's denied connect leaves the daemon in the runner's group, and the
   starter is ended once the daemon listens ("`mill`").
 - **The JVM launcher, never the native image — confinement.** The stock bootstrap runs the
-  native image for a version with no suffix; the wrapper sets `MILL_VERSION` to `<v>-jvm` so that
+  native image for a version with no suffix; the supervisor sets `MILL_VERSION` to `<v>-jvm` so that
   the client takes the environment's `preferIPv4Stack` and connects under the one-port rule, which
   the image cannot ("`mill`"). The user provisions that launcher, and a `-native` pin is refused
   with the reason.
 - **A configuration edit replaces the daemon before the command — operability.** Stock Mill's
   client ends a daemon whose fingerprint differs and starts a replacement itself; from a
-  confined client that replacement cannot bind, so the command would fail once. The broker
+  confined client that replacement cannot bind, so the command would fail once. The runner
   reads the same inputs before each command and replaces the daemon first
   (`RunOnHostPrereqs.millDaemonConfig`).
-- **`mill-jvm-version: system` is required — confinement.** Stock Mill provisions a JVM through
-  Coursier's index into a writable, executable place, which the JVM rule refuses ("`mill`").
+- **A pinned `mill-jvm-version` runs on the JDK a host run provisioned, and an absent one is
+  refused — confinement.** Stock Mill resolves the id, or its default, and downloads the JDK
+  itself; a command may not fetch one ("A pinned JVM").
 - **A request's `MILL_VERSION`, `DEFAULT_MILL_VERSION`, `MILL_OUTPUT_DIR` and
-  `MILL_BSP_OUTPUT_DIR` are not read — confinement.** The wrapper's `MILL_VERSION` names the
+  `MILL_BSP_OUTPUT_DIR` are not read — confinement.** The supervisor's `MILL_VERSION` names the
   granted launcher, and the daemon's rendezvous is looked for under `out/` ("The command's
   lifetime and environment").
 - **A redirected `out/mill-daemon` is refused — confinement.** Mill's launcher would act on
   another build directory's daemon through it ("`mill`").
-- **A classpath memo naming what the profile denies is deleted before a start — confinement.**
+- **A `mill-daemon-classpath` file naming what the profile denies is deleted before a start —
+  confinement.**
   Stock Mill keeps it, since the paths exist; under the profile the daemon could not open them
   ("`mill`").
-- **Clients use the broker's temporary directory, not their own — confinement.** A JVM the
+- **Clients use the runner's temporary directory, not their own — confinement.** A JVM the
   daemon forks inherits the daemon's profile and gets the client's environment ("The command's
   lifetime and environment").
 
 ### Under Gradle
 
-- **The daemon registry is the launch's, under the broker's `tmp/` — confinement.** Stock keeps
+- **The daemon registry is the launch's, under the runner's `tmp/` — confinement.** Stock keeps
   it in the user home, where one launch's `gradle --stop` would end another launch's builds
   ("Gradle").
 - **The distribution's `bin/gradle` runs, never `gradlew` — confinement.** The wrapper script
@@ -1183,7 +1256,7 @@ where the caller is not interactive.
   resolver ignores the proxy the profile leaves as the one route out ("The command's lifetime
   and environment").
 
-Two behaviors are the stock program's, though they could be read as the broker's:
+Two behaviors are the stock program's, though they could be read as the runner's:
 
 - It keeps one warm server or daemon per build directory, not one per program, so visiting
   another directory leaves the first warm.
@@ -1197,7 +1270,7 @@ Two behaviors are the stock program's, though they could be read as the broker's
     busy ten seconds later (`DaemonStateCoordinator`), so the next `gradle` command attaches or
     starts one.
 
-The broker retires none and revives none on its own.
+The runner retires none and revives none on its own.
 
 ## The Seatbelt profile
 
@@ -1235,15 +1308,43 @@ rest, measured:
     build could report.
   - `open` started nothing from under the command profile while `mach-lookup` was unfiltered
     (`mach-route`): `open -a` found no application, and a `.command` file the command wrote had
-    no application claiming it. Under the named service the acceptance test has a row for `open -a`,
-    and one for a JVM asking the resolver.
+    no application claiming it.
+  - Under the named service the acceptance test has rows for `open -a`, for a JVM asking the
+    resolver, and for a lookup of an internet name, which must fail (SECURITY.md, "DNS").
 - What this toolchain needs, per layer: the JDK needs `sysctl-read`, its home, and
   `/System/Library/CoreServices/SystemVersion.plist` — without that one file `java` refuses to
   start with `os.version malformed: -1.0`. It does *not* need `file-map-executable`, which Apple's
   profiles use for system frameworks; a JDK outside those paths loads without it.
 - Adopted from `system.sb` rather than re-derived: `file-test-existence`, a narrower operation than
-  `file-read*` for the ancestor chain; and `(import "dyld-support.sb")`, Apple's own statement of
-  what a process needs from the loader.
+  `file-read*` for the ancestor chain.
+- The profile denies a command reading another process's arguments and environment through
+  `sysctl` `kern.procargs2`, the call behind `ps -E` (`SeatbeltProfile.ProcessReadRule`;
+  `run-on-host-profile-iterate.sh procargs`, 2026-10-04):
+  - the kernel answers for any process of the same user. It withholds the environment, not the
+    arguments, of a code-signing restricted target, as Apple's own binaries are, unless the
+    caller is that target (xnu, `sysctl_procargsx`);
+  - the call succeeds while either `sysctl-read` of its name or `process-info-pidinfo` is
+    allowed, and `(deny default)` does not cover `process-info*`: a deny of either alone leaves
+    it succeeding;
+  - a deny of both, with pidinfo allowed again for the same sandbox, refuses it, arguments
+    included, while the JDK runs and still lists processes (the rule of agent-safehouse's
+    `profiles/10-system-runtime.sb`);
+  - under that rule the same sandbox is the inherited one: the read succeeds for a child the
+    reader starts, and is refused for a JDK under a `sandbox-exec` of its own with the same
+    profile. `ProcessHandle.of` still finds every process, those outside included;
+  - `ProcessHandle.info()` of a process outside throws "Operation not permitted": the JDK reads
+    its arguments for it, and throws on any error but `EINVAL` and `EIO`
+    (`ProcessHandleImpl_macosx.c`). Mill 1.1.10's client checks its daemon that way (`PidLock`),
+    and the acceptance test's mill rows fail under the rule without the exception below
+    (2026-10-04);
+  - `(allow sysctl-read (sysctl-name "kern.procargs2.<pid>"))` after the rule opens the read, and
+    `info()`, for that one process: every other target stays denied (the probe's last row,
+    2026-10-04);
+  - a mill client's profile allows that name for its daemon (`SeatbeltProfile.Network.MillClient`):
+    the runner gave the daemon the client's own environment, so the read exposes nothing the client
+    lacks;
+  - the acceptance test's process rows read a JDK outside the profile and a child inside it,
+    under every program's profile.
 
 Prior art: Bazel sandboxes build actions on macOS with `sandbox-exec` — this feature's problem
 exactly — and its generated profile is worth reading and worth *not* copying.
@@ -1268,7 +1369,7 @@ system:
   `src/probe/run-on-host-profile-iterate.sh` is how candidate entries are measured.
 - The measured set is one file, a resource of the launcher's own artifact
   (`src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt`): what the production
-  wrapper grants is what the probes measured. The acceptance test and host commands use that same
+  supervisor grants is what the probes measured. The acceptance test and host commands use that same
   set of grants.
 - Do not pre-authorize broad paths (`/System/**`, `/usr/**`, `/opt/homebrew/**`); add the
   narrowest rule testing justifies.
@@ -1277,13 +1378,13 @@ system:
 
 The proxy is a process from the same codebase as the container's.
 
-- Under sbt, `mill` and `gradle` it is the broker's: started in the broker's session when the
+- Under sbt, `mill` and `gradle` it is the runner's: started in the runner's session when the
   first command of that program arrives from a build directory — the request's working directory,
   whose `project/target/active.json` or `out/` the build owns — with the program's rule file as
   read then, and kept for the commands that follow from that directory.
 - A request from another build directory gets a proxy of its own, and both stay.
 - A proxy that is gone is replaced, with its server or daemon, before the next command.
-- Maven's is the command's, started by the wrapper in the command's session and ended with it, as
+- Maven's is the command's, started by the supervisor in the command's session and ended with it, as
   every program's is under the acceptance test's entry (`RunOnHost`).
 
 The sandbox session's proxy runs on a network created `--internal`, inside the podman machine.
@@ -1294,10 +1395,28 @@ moved out of the VM to avoid. A JVM proxy client speaks TCP, so a loopback liste
 either way; what is worth controlling is the rules behind it: an attacker who reaches a proxy
 allowing one artifact repository can reach only that repository through it.
 
-The proxy lives as long as the session holding its record: the broker's until it retires the
-proxy or ends with the launch, the command's until the wrapper cleans up that invocation — past
+A launch with `--egress-cred` gives each proxy its bindings (`RunOnHostSandbox.credentialsFor`;
+SECURITY.md, "Who holds a brokered value"), on its standard input under `EGRESS_CREDS=stdin`:
+
+- the runner reads the launch's bindings on its own standard input, written by the launcher;
+- a Maven supervisor reads its proxy's bindings after the runner's run word
+  (`RunOnHostSession.runWord`), which carries `--credentials-on-stdin` and no value; the lock
+  holder reads the word a byte at a time, so the bindings stay in the pipe across its `exec`
+  (`RunOnHostSession.LockScript`);
+- a proxy reads them once, at start, so a rule-file edit reaches them as it reaches the hosts
+  (below);
+- no proxy outlives the launch whose placeholders it holds, so a mill or Gradle daemon kept across
+  commands never meets a stale binding;
+- a binding widens no proxy's grants: a hostile build's route out is that proxy's hosts, as without
+  one.
+
+A proxy's audit log is a file in the project's log directory, where `--egress-log` lists it
+(egress-proxy.md, "Audit what has been allowed or denied").
+
+The proxy lives as long as the session holding its record: the runner's until it retires the
+proxy or ends with the launch, the command's until the supervisor cleans up that invocation — past
 the client process, since the server the client forks resolves artifacts and lives until the
-wrapper ends it.
+supervisor ends it.
 
 A rule-file edit takes effect when a proxy is next created, never by restarting a running one,
 which holds the lines it was created with:
@@ -1307,19 +1426,19 @@ which holds the lines it was created with:
 - at the next launch, as the session's own rule file takes effect at the next launch.
 
 Until then a host removed from the file stays reachable from that proxy, and one added is not; to
-apply an edit, relaunch, as for the session's rule file. A broker retiring a running proxy on an
+apply an edit, relaunch, as for the session's rule file. A runner retiring a running proxy on an
 edit is declined: what a launch may reach is decided at launch (`design.md`, "Design principles to
 preserve"), and a relaunch is the one step that applies an edit to both proxies alike.
 
 It ships in the launcher's own artifact: the proxy sources share the launcher's Scala version,
-`dist` compiles them in beside their `/defaults` resources, and the broker or the wrapper starts the
-proxy by re-invoking its own executable — `java -jar` or the native binary — under a private
+`dist` compiles them in beside their `/defaults` resources, and the runner or the supervisor starts
+the proxy by re-invoking its own executable — `java -jar` or the native binary — under a private
 action.
 
 - That executable must still exist at its launch path, as spelled at launch — the link, when
   launched through a symlink — in either form: each is one file built under `target/dist`, which
   `sbt clean` or `git clean` removes while a session runs.
-- So the broker checks it before every command's wrapper is exec'd and before every proxy start,
+- So the runner checks it before every command's supervisor is exec'd and before every proxy start,
   and refuses with the path and the remedies — rebuild at that path, or relaunch — rather than
   letting the JVM fail at its main class after the ready wait (`RunOnHostSandbox.selfPresent`).
 - A rebuild at the same path is no removal, nor is a link's retargeting: the running processes
@@ -1368,7 +1487,7 @@ every proxy start):
   the sandbox session's leaf takes its names: a rule spelling a host with a trailing dot,
   capitals or Unicode is a host the certificate names in its resolved form.
 - The CA's key is never written, and is dropped once the leaf is signed.
-- The leaf and its key are in `<proxy log's name>.leaf/` beside the proxy's log, in the broker's
+- The leaf and its key are in `<proxy log's name>.leaf/` beside the proxy's log, in the runner's
   or the command's session directory, which is the user's alone and which no command's profile
   grants. The proxy holds the key because it answers the TLS handshake as each host.
 - The CA certificate is in `<proxy log's name>.trust/`, as `ca.crt` and as `truststore.p12`. The
@@ -1379,14 +1498,14 @@ every proxy start):
   project's: a leaf's key serves one proxy's host commands and nothing else.
 - A launch attaching to another launch's runtime names that runtime's trust directory, as it
   names its `tmp/` and proxy port, so its commands trust the proxy they use
-  (`BrokerRuntimes`, the attachment).
+  (`RunnerRuntimes`, the attachment).
 
 Measured by the acceptance test (its recorded run is at the top of this document):
 
-- Its wrapper and channel rows start each proxy under a profile that reads the leaf's directory
+- Its supervisor and channel rows start each proxy under a profile that reads the leaf's directory
   and each command under one that reads the two trust files, and "fetch allowed Maven artifact
   via proxy" passes only through both.
-- A `PUT` to `repo1.maven.org` gets `403`, and the wrapper names the request.
+- A `PUT` to `repo1.maven.org` gets `403`, and the supervisor names the request.
 
 Measured through a sandbox session's proxy, which inspects the same hosts with a handshake per
 request:
@@ -1399,8 +1518,8 @@ request:
 | Maven 3.9.16 | `src/probe/mvn-fixture`, `test`, the distribution's download included | 418 files, 14 MB, 37 s |
 
 - Gradle and Maven fail with `PKIX path building failed` under a `javax.net.ssl.trustStore`
-  naming a store without the CA, the wrapper's download and the resolver alike, so both read the
-  property.
+  naming a store without the CA, the wrapper script's distribution download and the resolver alike,
+  so both read the property.
 - A JVM given a `PKCS12` store holding the CA alone, and its password, fetches through that proxy;
   given no password it loads no certificate (`the trustAnchors parameter must be non-empty`).
 - Not measured: a Gradle plugin applied by id, which resolves from `plugins.gradle.org`.
@@ -1425,9 +1544,10 @@ To allow artifact downloads beyond Maven Central, add repository hosts to this p
   into endpoints that are no artifact repository, and a `tunnel` or `method=` word would let a
   host command write to a host, which no host command may.
 - A launch selecting the program prints, per file, `run-on-host egress rules (<file>) widen:`
-  then each of the file's hosts as an indented rule line, and refuses a file outside the grammar,
-  so you see a host that arrived with the repository before the agent's first command.
-- The wrapper hands the proxy `deny defaults`, Maven Central, then the file's lines
+  then each of the file's hosts as an indented rule line, and refuses a file outside the grammar
+  or naming a host the proxy refuses, such as an IP literal, so you see a host that arrived with
+  the repository before the agent's first command.
+- The supervisor hands the proxy `deny defaults`, Maven Central, then the file's lines
   (`RunOnHostPrereqs.egressRuleText`), so the container's catalog contributes nothing.
 
 The file inherits the directory's properties:
@@ -1437,7 +1557,7 @@ The file inherits the directory's properties:
 - it is reviewed in a pull request like any other file;
 - `run-on-host/` accepts only recognized configuration entries, as does `.ko-agent-sandbox` — a
   stray entry fails the launch instead of being ignored (`SandboxProject.boundaryDirRefusal`,
-  `RunOnHostSandbox.hostCommandStray`).
+  `RunOnHostPrereqs.readProgramRules`).
 
 No program needs a GitHub release CDN: the one download that would, the `mill` executable, is
 provisioned on the host instead.
@@ -1476,7 +1596,7 @@ Why not the launcher state root:
 
 How each program reaches its cache:
 
-- the wrapper sets `COURSIER_CACHE` to the `v1` directory, which the sbt script, sbt's own
+- the supervisor sets `COURSIER_CACHE` to the `v1` directory, which the sbt script, sbt's own
   resolution and Coursier all honour;
 - sbt's own two caches travel as the `java -D` properties above, which sbt's launcher reads;
 - Gradle's user home as `GRADLE_USER_HOME`;
@@ -1484,13 +1604,14 @@ How each program reaches its cache:
 
 ## Sources
 
-- Mill 1.1.9's daemon and launcher — the port-0 bind, `socketPort` and `processId`, the shutdown
-  on a client's disconnect mid-command, the idle timeout, the fingerprint the launcher restarts on
-  and its ten-second connect retry:
-  - https://github.com/com-lihaoyi/mill/blob/1.1.9/libs/daemon/server/src/mill/server/Server.scala
-  - https://github.com/com-lihaoyi/mill/blob/1.1.9/libs/daemon/client/src/mill/client/ServerLauncher.scala
-  - https://github.com/com-lihaoyi/mill/blob/1.1.9/runner/launcher/src/mill/launcher/MillProcessLauncher.scala
-  - https://github.com/com-lihaoyi/mill/blob/1.1.9/runner/launcher/src/mill/launcher/MillServerLauncher.scala
+- Mill 1.1.10's daemon and launcher — the port-0 bind, `socketPort` and `processId`, the shutdown
+  on a client's disconnect mid-command, the idle timeout, the fingerprint the launcher restarts
+  on, its ten-second connect retry, and the `java-home` file of a pinned JVM:
+  - https://github.com/com-lihaoyi/mill/blob/1.1.10/libs/daemon/server/src/mill/server/Server.scala
+  - https://github.com/com-lihaoyi/mill/blob/1.1.10/libs/daemon/client/src/mill/client/ServerLauncher.scala
+  - https://github.com/com-lihaoyi/mill/blob/1.1.10/runner/launcher/src/mill/launcher/MillProcessLauncher.scala
+  - https://github.com/com-lihaoyi/mill/blob/1.1.10/runner/launcher/src/mill/launcher/MillServerLauncher.scala
+  - https://github.com/com-lihaoyi/mill/blob/1.1.10/runner/launcher/src/mill/launcher/CoursierClient.scala
 - sbt server — domain-socket and TCP modes, the port file, discovery and the token:
   - https://www.scala-sbt.org/1.x/docs/sbt-server.html
 - sbt 1.13.0 and 2.0.9 — the thin client's server fork and its denied-connect retry, the
@@ -1505,23 +1626,23 @@ How each program reaches its cache:
   - https://github.com/sbt/sbt/blob/v2.0.9/launch/src/main/input_resources/sbt/sbt.boot.properties
   - https://github.com/sbt/sbt/blob/v2.0.9/lm-ivy/src/main/scala/sbt/internal/librarymanagement/Ivy.scala
   - https://repo1.maven.org/maven2/org/scala-sbt/librarymanagement-ivy_2.12/1.12.3/librarymanagement-ivy_2.12-1.12.3-sources.jar
-- Gradle 9.7.1's wrapper — the distribution directory, the properties it reads, the user home:
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/PathAssembler.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/WrapperExecutor.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/Install.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-main/src/main/java/org/gradle/wrapper/GradleWrapperMain.java
-- Gradle 9.7.1's daemon — its detach at start, the client's fork with its own environment and
+- Gradle 9.8.0's wrapper — the distribution directory, the properties it reads, the user home:
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/PathAssembler.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/WrapperExecutor.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/Install.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/wrapper-main/src/main/java/org/gradle/wrapper/GradleWrapperMain.java
+- Gradle 9.8.0's daemon — its detach at start, the client's fork with its own environment and
   the registry option, the compatibility check on the client's immutable properties, the cancel
   on a client's disconnect, `--stop`, and the file lock's UDP socket:
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/daemon-server/src/main/java/org/gradle/launcher/daemon/bootstrap/DaemonMain.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/client-services/src/main/java/org/gradle/launcher/daemon/client/DefaultDaemonStarter.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/process-services/src/main/java/org/gradle/process/internal/DefaultProcessForkOptions.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/daemon-protocol/src/main/java/org/gradle/launcher/daemon/context/DaemonCompatibilitySpec.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/cli/converter/InitialPropertiesConverter.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/daemon/server/DaemonStateCoordinator.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/daemon/server/exec/WatchForDisconnection.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/client-services/src/main/java/org/gradle/launcher/daemon/client/DaemonStopClient.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-execution/persistent-cache/src/main/java/org/gradle/cache/internal/locklistener/DefaultFileLockCommunicator.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/daemon-server/src/main/java/org/gradle/launcher/daemon/bootstrap/DaemonMain.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/client-services/src/main/java/org/gradle/launcher/daemon/client/DefaultDaemonStarter.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/process-services/src/main/java/org/gradle/process/internal/DefaultProcessForkOptions.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/daemon-protocol/src/main/java/org/gradle/launcher/daemon/context/DaemonCompatibilitySpec.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/cli/converter/InitialPropertiesConverter.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/daemon/server/DaemonStateCoordinator.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/daemon/server/exec/WatchForDisconnection.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/client-services/src/main/java/org/gradle/launcher/daemon/client/DaemonStopClient.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-execution/persistent-cache/src/main/java/org/gradle/cache/internal/locklistener/DefaultFileLockCommunicator.java
 - Gradle toolchains — auto-detection, auto-provisioning and `installations.paths`:
   - https://docs.gradle.org/current/userguide/toolchains.html
 - Gradle's configuration precedence — a `-D` over every `gradle.properties`:

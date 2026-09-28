@@ -1,18 +1,17 @@
 # A sandbox container for AI agents
 
-Status: Beta on macOS, alpha on Linux and Windows
+Status: Beta
 
-The AI agents in this sandbox by default
+The AI agents in this sandbox, by default
 
-1. reach no user files except the current directory (project directory)
+1. reach no user files except the project directory (current directory)
 1. reach no network destinations except:
     1. the model providers supported by the sandbox
-    1. an opinionated, customizable selection of sites, limited to reading and explicitly
-       permitted operations, such as `git clone`/`pull`
+    1. an opinionated, customizable selection of sites, read-only
 1. cannot change Git files that can hold arbitrary commands, such as hooks and rebase
-   instructions, so `git rebase` fails in the project inside the sandbox
+   instructions (`git rebase` fails in the project)
 
-The sandbox runs rootless, and its agents run as the `nonroot` user.
+The containers run rootless, and the agents run as the `nonroot` user.
 
     ┌─ macOS / Linux / Windows (with/without WSL) ─────────────────────────────────┐
     │                                                                              │
@@ -36,10 +35,10 @@ The sandbox runs rootless, and its agents run as the `nonroot` user.
     │  ┃  runs claude/codex/agy/...    ┃     │  https only, stateless,       │     │
     │  ┃  capabilities dropped,        ┃ (a) │  TLS-inspects except model    │ (b) │
     │  ┃  read-only rootfs,            ┠────>│  providers                    ├─────┼─> Internet
-    │  ┃  ephemeral /tmp and $HOME     ┃     │                               │     │
+    │  ┃  ephemeral /tmp and $HOME,    ┃     │                               │     │
+    │  ┃  no outbound DNS              ┃     │                               │     │
     │  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛     └────┬──────────────────────────┘     │
-    │  (a) internal network, no gateway           │                                │
-    │  (b) only egress network                    │                                │
+    │      (a) internal network, no gateway       │   (b) the only egress network  │
     │                                             │                                │
     │                                           ┌─┴─ proxy log (audit) ─────┐      │
     │  the containers and networks are created  │  every allow and refusal; │      │
@@ -47,7 +46,7 @@ The sandbox runs rootless, and its agents run as the `nonroot` user.
     │  they are all removed                     └───────────────────────────┘      │
     │                                                                              │
     │  ┌─ macOS: --run-on-host sandbox for resource-intensive commands ───────┐    │
-    │  │  sbt/mill/gradle/mvn relayed under Seatbelt                          │    │
+    │  │  sbt/mill/gradle/mvn run under Seatbelt                              │    │
     │  └──────────────────────────────────────────────────────────────────────┘    │
     └──────────────────────────────────────────────────────────────────────────────┘
 
@@ -55,9 +54,8 @@ A typical workflow:
 
 1. `git clone`/`pull` on the host first — host Git credentials are not automatically forwarded.
 2. Run an agent in the sandbox: it should feel mostly like running it on the host.
+    1. The agent can `git clone` public GitHub repositories into the sandbox's `$HOME`.
 3. Review the changes, then `git commit`/`push` on the host.
-
-You can deviate, for example with `git pull` from a public remote in the sandbox.
 
 The sandbox image preinstalls:
 
@@ -69,8 +67,8 @@ The sandbox image preinstalls:
 1. [OpenCode](https://github.com/anomalyco/opencode)                    (multiple providers)
 1. plus the toolchains: Python + uv / Node.js / Rust / Java / Scala.
 
-The agents are configured to run without permission prompts to avoid training users to approve
-without reading. The sandbox enforces the boundary.
+The agents are configured to run without permission prompts, to avoid training users to approve
+without reading. The sandbox enforces the boundary; inside it, the agents can call each other.
 
 
 ## Install
@@ -81,7 +79,7 @@ without reading. The sandbox enforces the boundary.
     1. Download [the installer](https://github.com/containers/podman/releases)
         1. On macOS and Windows, run `podman machine init` after a new installation;
            on native Linux, podman runs rootless without a machine.
-        1. `podman machine start` is optional: the launcher starts a stopped machine.
+        1. `podman machine start` is optional: the launcher automatically starts a stopped machine.
     1. [Windows prerequisite](https://github.com/podman-container-tools/podman/blob/main/docs/tutorials/podman-for-windows.md):
        WSL 2 or Hyper-V. Assuming the default WSL 2 provider:
         1. `wsl --version` shows the versions if WSL is installed.
@@ -141,25 +139,35 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 1. Sign-in prints an authorization URL; open it in an external browser and paste the resulting
    code back.
-1. A prompt remains for some `rm` commands
-   ([doc/limitations.md](doc/limitations.md#permission-prompts-that-remain)).
 1. Ctrl-V pastes a copied image only when `KO_AGENT_SANDBOX_CLIPBOARD` is `paste` or
    `bidirectional`.
-1. `/ko-review:codex`, a skill of the image's `ko-review` plugin, has Codex review the working tree
-   on one persistent Codex thread and Claude fix or rebut each finding on that thread until Codex
-   approves the exact tree or asks for a decision only you can make. It uses this project's Codex
-   sign-in. Each round's tree and transcript are on a ref under `refs/ko-review/` in the repository,
-   for `git diff` between rounds; the raw record is under
-   `persistent-volume/ko-review` ([doc/ko-review.md](doc/ko-review.md)).
+1. The image keeps Claude Code's conversation in the terminal's scrollback, where you can select
+   and copy it. For the fullscreen renderer, launch with `--env=CLAUDE_CODE_NO_FLICKER=1`: the
+   image's managed setting overrides `/tui fullscreen`.
+1. Run `/ko-review`, the skill of the image's `ko-review` plugin, to review the working tree.
+   Choose Codex or a separate Claude Code session as the reviewer. Claude fixes or disputes each
+   finding on the same reviewer thread until the reviewer approves the exact tree or asks for a
+   decision only you can make.
+   - The review covers the uncommitted changes by default.
+   - Codex reviews under this project's Codex sign-in.
+   - Each round's tree and transcript are on a ref under `refs/ko-review/` in the repository, for
+     `git diff` between rounds; the raw record is under `persistent-volume/ko-review`
+     ([doc/ko-review.md](doc/ko-review.md)).
+1. A prompt remains for some `rm` commands
+   ([doc/limitations.md](doc/limitations.md#permission-prompts-that-remain)).
 
 #### `codex`
 
 1. Sign-in: "ChatGPT Settings" → "Security and login" → "Enable device code authorization for
    Codex", then choose "Sign in with Device Code" in the login UI.
-1. Codex 0.157.0 or later runs in the alt-screen mode by default and captures the mouse;
-   `codex --no-alt-screen` keeps the conversation in the terminal's scrollback, where you can
-   select and copy it. `KO_AGENT_SANDBOX_CLIPBOARD` does not help: Codex's own copy and image
-   paste do not use the sandbox's clipboard channel.
+1. The image keeps Codex's conversation in the terminal's scrollback, where you can select and copy
+   it. To restore Codex's default, pass `-c tui.fullscreen_transcript=true` for one launch, or set
+   `tui.fullscreen_transcript = true` in `~/.codex/config.toml`.
+1. Ctrl-V pastes no image in any `KO_AGENT_SANDBOX_CLIPBOARD` mode
+   ([clipboard plan](doc/plan-clipboard.md)).
+1. `$ko-review` runs the same review as [`/ko-review`](#claude), with Codex fixing or disputing
+   the findings. Codex asks its questions in replies, since it has no question tool outside Plan
+   mode.
 
 #### `agy`
 
@@ -214,8 +222,6 @@ produced, and what that costs.
 
     1. When sessions change the same file concurrently, later writes can overwrite earlier changes.
 
-1. Calling another installed agent's command or MCP server reuses that agent's login and
-   configuration. Treat the project directory as their shared trust domain.
 1. `KO_AGENT_SANDBOX_NESTING=same-uid` lets the session run containers of its own.
 
     1. Follow [AGENTS-SANDBOX.md](container/ko-agent-sandbox/AGENTS-SANDBOX.md) for the container
@@ -287,8 +293,8 @@ restore permission prompts and set the Claude Code status line.
                          and what the file rules protect),
                          per-project caches, and a dedicated egress proxy.
                          Before the start prompt, offers to run the project's ./mill,
-                         ./gradlew or ./mvnw when its launcher or distribution is not
-                         yet provisioned.
+                         ./gradlew or ./mvnw when its launcher, pinned JDK or
+                         distribution is not yet provisioned.
                          The session keeps one sbt/mill daemon warm per build directory.
                          On first use there, a daemon you started is shut down after its
                          current build finishes; your new clients then share the session's
@@ -297,11 +303,22 @@ restore permission prompts and set the Claude Code status line.
                          Windows needs a different design to enforce the filesystem restrictions.
                          See SECURITY.md "Run on host" and doc/run-on-host.md.
       --env=<name>[=<value>]
-                         set a variable in the sandbox and --run-on-host commands.
+                         set an environment variable in the sandbox and --run-on-host
+                         commands.
                          An explicit <value> needs no export on the host.
                          Without <value>, use the host's value; an unset name fails.
                          Repeatable; KO_AGENT_SANDBOX_* names are refused.
                          Before forwarding a secret, read SECURITY.md
+      --egress-cred=<name>@<host>[/<prefix>/][:<header>|?<param>]
+                         give environment variable <name> to the egress proxy, which
+                         puts its value in Authorization, or in header <header> or
+                         query parameter <param>, of requests to <host> under
+                         /<prefix>/ alone. The sandbox and --run-on-host commands
+                         see <name> set to a placeholder, which the proxy replaces.
+                         <host> must be inspected by the session's rules or a
+                         --run-on-host program's. Repeatable, each name once.
+                         See doc/egress-proxy.md "Brokered credentials" and SECURITY.md
+                         "Who holds a brokered value".
 
     Management actions, each recognized before the command; whatever follows
     belongs to the action:
@@ -339,9 +356,9 @@ restore permission prompts and set the Claude Code status line.
                          Starts a temporary proxy container.
                          Inside a session, ko-sandbox-egress-check <host>
                          checks through the running proxy
-      --proxy-log        print this project's retained proxy audit logs;
-                         with extra args (-f, --tail 50), run podman logs on the
-                         running proxies instead
+      --egress-log       print this project's retained proxy audit logs, the
+                         run-on-host proxies' included; with extra args (-f,
+                         --tail 50), run podman logs on the running proxies instead
 
       --self-test [<filter>]
                          run the workspace filter's own suites; <filter> selects one

@@ -143,9 +143,9 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(guard.forall(_.contains(s"""(subpath "$project")""")))
     assert(guard.forall(line => !line.contains("/tmp/")))
 
-  test("the guard is the only regex; every wrapper-supplied path is a subpath literal"):
+  test("without file rules the guard is the only regex; every supervisor-supplied path is a subpath literal"):
     val regexLines = rendered().linesIterator.filter(_.contains("(regex")).toSeq
-    assertEquals(regexLines.size, GuardedNames.size)
+    assertEquals(regexLines.size, FileRules.GuardedComponents.size)
     assert(regexLines.forall(_.startsWith("(deny")))
 
   // --------------------------------------------------------------------------
@@ -217,6 +217,13 @@ class SeatbeltProfileTest extends munit.FunSuite:
   test("/dev is in the ancestor chain, or SecureRandom cannot open /dev/urandom"):
     assert(clue(rendered()).contains("""(allow file-read-metadata file-test-existence (literal "/dev"))"""))
 
+  test("another process's arguments are denied by name and by pidinfo, after the sysctl-read grant they narrow"):
+    val lines = rendered().linesIterator.toVector
+    val grant = lines.indexOf("(allow process-fork sysctl-read)")
+    val afterGrant = lines.drop(grant + 1).filterNot(_.startsWith(";;"))
+    assertEquals(afterGrant.take(3), SeatbeltProfile.ProcessReadRule)
+    assertEquals(lines.filterNot(_.startsWith(";;")).count(_.contains("process-info")), 2)
+
   test("file-map-executable is absent: measurement says it is not needed"):
     assert(!clue(rendered()).contains("file-map-executable"))
 
@@ -233,9 +240,9 @@ class SeatbeltProfileTest extends munit.FunSuite:
       ),
     )
 
-  test("an sbt client reaches the sockets under the broker's tmp, and nothing else there"):
-    val brokerTmp = Paths.get("/private/tmp/ko-agent-command/bxyz/tmp")
-    val text = rendered(inputs().copy(network = Network.SbtClient(brokerTmp)))
+  test("an sbt client reaches the sockets under the runner's tmp, and nothing else there"):
+    val runnerTmp = Paths.get("/private/tmp/ko-agent-command/bxyz/tmp")
+    val text = rendered(inputs().copy(network = Network.SbtClient(runnerTmp)))
     val network = text.linesIterator.filter(_.startsWith("(allow network")).toSeq
     assertEquals(
       network,
@@ -247,7 +254,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
         """(allow network-outbound (remote unix-socket (subpath "/private/tmp/ko-agent-command/bxyz/tmp")))""",
       ),
     )
-    // The socket's directory resolves; the broker's directory is an ancestor like any other.
+    // The socket's directory resolves; the runner's directory is an ancestor like any other.
     assert(text.contains(
       """(allow file-read-metadata file-test-existence (subpath "/private/tmp/ko-agent-command/bxyz/tmp"))""",
     ))
@@ -257,7 +264,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(!text.contains("""(allow file-read* (subpath "/private/tmp/ko-agent-command/bxyz/tmp"))"""))
     // Only an sbt client has a server to reach.
     assert(render(inputs().copy(prereqs = millPrereqs, distribution = None, sbtGlobal = None, ivyHome = None,
-      network = Network.SbtClient(brokerTmp))).isLeft)
+      network = Network.SbtClient(runnerTmp))).isLeft)
 
   test("the mill daemon binds listeners on any port, and its client reaches the one port it was observed listening on"):
     val daemonRules = render(millInputs.copy(network = Network.MillDaemon)).fold(fail(_), identity)
@@ -272,7 +279,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
         """(allow network-bind network-inbound (local ip "localhost:*"))""",
       ),
     )
-    val clientRules = render(millInputs.copy(network = Network.MillClient(50123))).fold(fail(_), identity)
+    val clientRules = render(millInputs.copy(network = Network.MillClient(50123, 4321))).fold(fail(_), identity)
       .linesIterator.filter(_.startsWith("(allow network")).toSeq
     assertEquals(
       clientRules,
@@ -284,12 +291,24 @@ class SeatbeltProfileTest extends munit.FunSuite:
         """(allow network-outbound (remote ip "localhost:50123"))""",
       ),
     )
-    // Neither grant reaches another program, and the client's port is a port.
+    // Neither grant reaches another program, the client's port is a port, and its daemon's pid a pid.
     assert(render(inputs().copy(network = Network.MillDaemon)).isLeft)
-    assert(render(inputs().copy(network = Network.MillClient(50123))).isLeft)
-    assert(render(mvnInputs.copy(network = Network.MillClient(50123))).isLeft)
-    assert(render(millInputs.copy(network = Network.MillClient(0))).isLeft)
-    assert(render(millInputs.copy(network = Network.MillClient(70000))).isLeft)
+    assert(render(inputs().copy(network = Network.MillClient(50123, 4321))).isLeft)
+    assert(render(mvnInputs.copy(network = Network.MillClient(50123, 4321))).isLeft)
+    assert(render(millInputs.copy(network = Network.MillClient(0, 4321))).isLeft)
+    assert(render(millInputs.copy(network = Network.MillClient(70000, 4321))).isLeft)
+    assert(render(millInputs.copy(network = Network.MillClient(50123, 0))).isLeft)
+
+  test("a mill client reads its daemon's arguments alone, after the rule that denies every other process's"):
+    // Mill's client checks its daemon with ProcessHandle.info(), which reads the daemon's arguments.
+    val lines = render(millInputs.copy(network = Network.MillClient(50123, 4321))).fold(fail(_), identity)
+      .linesIterator.toVector
+    val opened = lines.filter(_.startsWith("(allow sysctl-read (sysctl-name"))
+    assertEquals(opened, Vector("""(allow sysctl-read (sysctl-name "kern.procargs2.4321"))"""))
+    assert(lines.indexOf(opened.head) > lines.indexOf(SeatbeltProfile.ProcessReadRule.head))
+    for network <- Vector(Network.MillDaemon, Network.ProxyOnly) do
+      val other = render(millInputs.copy(network = network)).fold(fail(_), identity)
+      assert(!other.contains("kern.procargs2."), network)
 
   // --------------------------------------------------------------------------
   // The host proxy's own profile
@@ -380,27 +399,6 @@ class SeatbeltProfileTest extends munit.FunSuite:
   // The cs-installed sbt script's second half
   // --------------------------------------------------------------------------
 
-  test("the distribution is read out of the script, not derived from a convention"):
-    val script =
-      s"""#!/usr/bin/env sh
-         |exec "$distributionExec" "$$@"
-         |""".stripMargin
-    assertEquals(sbtDistribution(script, cacheRoot), Some(distributionExec))
-
-  test("the longest cache path wins, so a grant never applies to a prefix"):
-    val script =
-      s"""CACHE="$cacheRoot"
-         |exec "$distributionExec" "$$@"
-         |""".stripMargin
-    assertEquals(sbtDistribution(script, cacheRoot), Some(distributionExec))
-
-  test("a path escaping the cache root is not accepted"):
-    val escaping = s"$cacheRoot/../../../etc/passwd"
-    assertEquals(sbtDistribution(s"""exec "$escaping"""", cacheRoot), None)
-
-  test("a script naming no cache path yields nothing rather than a guess"):
-    assertEquals(sbtDistribution("#!/bin/sh\nexec /usr/local/bin/sbt \"$@\"\n", cacheRoot), None)
-
   test("the distribution grant is its home, not the executable: sbt-launch.jar is beside it"):
     assert(rendered().contains(s"(subpath \"$distribution\")"))
     assert(!rendered().contains(s"(subpath \"$distributionExec\")"))
@@ -413,6 +411,20 @@ class SeatbeltProfileTest extends munit.FunSuite:
   private def millInputs = inputs().copy(prereqs = millPrereqs, distribution = None, sbtGlobal = None, ivyHome = None)
 
   private def millText: String = render(millInputs).fold(reason => fail(reason), identity)
+
+  test("a mill build's pinned JDK is granted to read and run, once when it is JAVA_HOME's, and never to write"):
+    val pinned = cacheRoot.resolve(
+      "arc/https/github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.10%252B7/" +
+        "OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.10_7.tar.gz/jdk-21.0.10+7/Contents/Home",
+    )
+    def grant(home: Path) = s"""(allow process-exec* file-read* (subpath "$home"))"""
+    assert(!millText.contains("temurin21"))
+    val text = rendered(millInputs.copy(distribution = Some(pinned)))
+    assert(clue(text).contains(grant(pinned)) && text.contains(grant(jdkHome)))
+    assert(text.contains(s"""(allow file-read-metadata file-test-existence (literal "${pinned.getParent}"))"""))
+    assert(!text.linesIterator.exists(line => line.contains("file-write") && line.contains(s""""$pinned"""")))
+    val same = rendered(millInputs.copy(distribution = Some(jdkHome)))
+    assertEquals(same.linesIterator.count(_ == grant(jdkHome)), 1)
 
   private val gradleHome =
     Paths.get(s"$home/.gradle/wrapper/dists/gradle-9.7.1-bin/1w1c7tv4s851m17nbqdsro2tv/gradle-9.7.1")

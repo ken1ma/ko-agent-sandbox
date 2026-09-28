@@ -57,13 +57,14 @@ The decisive question is not "what do our name-matching rules cover" but the pro
 This cannot be reasoned to a conclusion: the fold tables are per-volume on NTFS and tied to a
 Unicode version on APFS (`git-metadata.md`, "The name rule"). Reasoning bounds the candidate list;
 only the filesystem settles it. `probe/apfs-name-rule-probe.py` creates each candidate *through the
-mount* inside a filtered session and runs the host-side checks (its header has the procedure and the
-cleanup). The corpus:
+mount* inside a filtered session; its header has the host-side checks, run by hand or by
+`probe/name-rule-cs-apfs.sh`, and the cleanup. The corpus:
 
 - `.git` itself (the base case must be refused).
 - Case variants: `.GIT`, `.Git`, `.gIt`, `.giT`.
 - Turkish i-family: `.gıt` (U+0131), `.gİt` (U+0130).
-- Ignorable code points: `.gi<U+200C>t`, `.g<U+200B>it`, `<U+FEFF>.git`, `.git<U+00AD>`.
+- Ignorable code points: `.gi<U+200C>t`, `.g<U+200B>it`, `<U+FEFF>.git`, `.git<U+00AD>`,
+  `.gi<U+200E>t`, `.g<U+202E>it`, `.git<U+206F>`.
 - Trailing punctuation: `.git.`, `.git ` (space), `.git. `.
 - A Windows 8.3 short name, `GIT~1`, on NTFS: creating it where no `.git` exists must not make
   one. The short names an existing `.git` and `.ko-agent-sandbox` have, `GIT~1` and `KO-AGE~1`,
@@ -82,10 +83,12 @@ it succeeds *and* host `lstat` of `.git` and of `.ko-agent-sandbox` still finds 
 on any row means the fold rule needs widening in `policy::folds_to` — fix the code, not the test.
 Fold tables are version-specific, which is why the recorded versions matter here.
 
-The `.git` rows pass on APFS (both variants, macOS 26.4.1) and NTFS (Windows Server 24H2; the
-8.3 rows on Windows Server 2025) — `verification-log.md` has the runs;
+The `.git` rows the recorded runs hold pass on APFS (both variants, macOS 26.4.1) and NTFS
+(Windows Server 24H2; the 8.3 rows on Windows Server 2025) — `verification-log.md` has the runs;
 `probe/name-rule-cs-apfs.sh` drives the case-sensitive APFS one end to end. What is left:
 
+- [ ] The `.git` rows for U+200E, U+202E and U+206F, on every backing: the recorded runs hold
+  four of the seven ignorable forms.
 - [ ] The `.ko-agent-sandbox` rows on case-sensitive APFS; case-insensitive APFS and NTFS pass
   (`verification-log.md`, which also has the measurement that added the U+212A and U+017F folds).
 - [ ] ext4, the control.
@@ -172,8 +175,8 @@ give — a session cannot see a hardlink relationship at all, because the filter
 What is left:
 
 - [ ] ext4 and NTFS, the same five rows. NTFS is where symlink creation is privileged and where a
-  session-held descriptor already refuses host writes (the coherency row above); rename and unlink
-  of a held path are the unmeasured half.
+  session-held descriptor already refuses some host writers (the coherency row above); rename and
+  unlink of a held path are the unmeasured half.
 
 ### The platform matrix itself
 
@@ -201,7 +204,8 @@ The filter enforces the default mode, `--write=live`, so its cost is the sandbox
 reports per-entry times per workload. Run it once in a filtered session and once under
 `probe/unfiltered.sh` (`probe\unfiltered.ps1` on Windows) — the ratio between the columns is the
 answer, and the control isolates the filter's cost from the backing share. The runs are
-`verification-log.md`, "The cost of a path walk".
+`verification-log.md`, "The cost of a path walk". For the profiling rows below, a daemon started
+with `--trace` logs each request and the time it took (`troubleshooting.md`, "Tracing requests").
 
 The margin over the unfiltered bind mount is **~6–18×**, and it is this layer's cost alone: one
 FUSE round trip through the daemon per path component, which TTL 0 makes unavoidable. On Windows it
@@ -229,45 +233,46 @@ where a user meets it.
   files as all the mount holds afterwards, some 0.2 s a source file where a path operation at
   that depth costs milliseconds. Which operations the build issues, on the inputs or on files it
   creates and removes during the build, is unmeasured.
-- [ ] **Profile where the millisecond goes.** The guest resolves a component in ~0.06 ms, so ~0.6 ms
-  of a depth-1 `lstat`'s 0.64 ms is the container→daemon FUSE hop plus the daemon's own work per op
-  — still unattributed between the two: the path inode model's full-path `openat2` per op, per-op
-  fd open/close, the inode-table lock, and the single-threaded session serializing round trips.
-  Candidate fix if the daemon's share dominates: parent-directory fd reuse *within one operation*.
-  This is the only gain available to programs like `find`, which hold directory fds and never pay
-  the walk; it composes with the cache-TTL option below, which reaches only path-walking ones.
-  Reuse *across* operations is the directory-fd cache row below.
-- [ ] A path-based `getattr` stats one descriptor twice: `open_ino` for the identity comparison,
-  then `getattr` for the reply. Reusing the first result saves a stat per `getattr`. Two cases
-  the change must keep right, each with a test: the root, whose identity `open_ino` does not
-  check and so does not stat; and an `O_TRUNC` open, whose comparison runs before the truncation,
-  so its stat must never become a reply's attributes.
+- [ ] **Profile where the millisecond goes.** ~0.6 ms of a depth-1 `lstat`'s 0.64 ms is the
+  container→daemon FUSE hop plus the daemon's own work per op, unattributed between the two; the
+  guest resolves a component in ~0.06 ms.
+    - The candidates: the path inode model's full-path `openat2` per op, per-op fd open/close, the
+      inode-table lock, and the single-threaded session serializing round trips.
+    - Candidate fix if the daemon's share dominates: parent-directory fd reuse *within one
+      operation*. It is the only gain available to programs like `find`, which hold directory fds
+      and never pay the walk.
+    - It composes with the cache-TTL option below, which reaches only path-walking programs. Reuse
+      *across* operations is the directory-fd cache row below.
 - [ ] **A directory-fd cache for the requests that change nothing.** Every request re-walks its
-  full path (`fs.rs`, `open_ino`), so its cost grows with depth. Counted from the code, in path
-  components resolved plus stat calls: a `lookup` at depth k costs k + 3 — the walk, the
-  identity `fstat`, the `fstatat` of the name and `policy_name`'s two of `.git` and
-  `.ko-agent-sandbox` — and a `getattr` k + 2: the walk, the identity `fstat` and a second `fstat`
-  for the attributes. An `lstat` sums to 34 at depth 4 and 124 at depth 9. How many virtiofs
-  requests the guest kernel sends for them is unmeasured; at one each and the ~56 µs of a guest
-  lookup, the 34 are 1.9 ms of the measured 3.05 ms. The daemon keeps an `O_PATH` descriptor per
-  *directory* inode, bounded, with today's walk on a miss. `lookup`, `getattr`, `readdir`,
-  `readlink` and a read-only `open` go through the parent's descriptor: the walk and the identity
-  `fstat` go, since a descriptor never comes to name another object. `policy_name`'s two stay —
-  without them a second name of a guarded entry is classified as ordinary — so a `lookup` costs 3
-  at any depth and a `getattr` 1: 15 for the `lstat` at depth 4, 35 at depth 9. Measure the gain;
-  the counts predict how it scales with depth, not how large it is. Every mutation, an `open` for
-  writing included, keeps the full walk and the identity comparison, so the policy decides on
-  exactly what it decides on today.
+  full path (`fs.rs`, `open_ino`), so its cost grows with depth.
+    - Counted from the code, in path components resolved plus stat calls: a `lookup` at depth k
+      costs k + 3 — the walk, the identity `fstat`, the `fstatat` of the name and `policy_name`'s
+      two of `.git` and `.ko-agent-sandbox`; a `getattr` k + 1 — the walk and the identity
+      `fstat`, which is also the reply.
+    - An `lstat` sums to 31 at depth 4 and 116 at depth 9. At one virtiofs request each and the
+      ~56 µs of a guest lookup, the 31 are 1.7 ms of the 2.73 ms measured at depth 4
+      (`verification-log.md`, "cost per operation and per component"). How many requests the
+      guest kernel sends for them is unmeasured.
+    - The design: the daemon keeps an `O_PATH` descriptor per *directory* inode, bounded, with
+      today's walk on a miss. `lookup`, `getattr`, `readdir`, `readlink` and a read-only `open` go
+      through the parent's descriptor, without the walk and the identity `fstat`, since a
+      descriptor never comes to name another object.
+    - `policy_name`'s two stay — without them a second name of a guarded entry is classified as
+      ordinary — so a `lookup` costs 3 at any depth and a `getattr` 1: 15 for the `lstat` at
+      depth 4, 35 at depth 9. Measure the gain; the counts predict how it scales with depth, not
+      how large it is.
+    - Every mutation, an `open` for writing included, keeps the full walk and the identity
+      comparison, so the policy decides on exactly what it decides on today.
     - A path the sandbox walks stays fresh: under TTL 0 the kernel asks for each component, and
       `fstatat(parent_fd, name)` answers from the live tree, so a directory the host replaced
       (`rm -rf` then recreate — `npm install`, `cargo clean`) takes a new inode at the next walk.
     - Accepted (2026-09-20): through a directory the sandbox *holds* — its working directory, an
       open descriptor — reads follow the object when the host moves it, where today they fail
-      `ESTALE` or `ENOENT`. A mutation through it fails as it does today: it walks the stored
-      names.
-      That differs from a local filesystem, where a create through a held descriptor lands in
-      the moved directory (measured on xfs); the difference is what keeps a directory the host
-      moved into a gitdir from being written under its old classification.
+      `ESTALE` or `ENOENT`.
+        - A mutation through it fails as it does today: it walks the stored names.
+        - A local filesystem differs: a create through a held descriptor lands in the moved
+          directory (measured on xfs). The difference keeps a directory the host moved into a
+          gitdir from being written under its old classification.
     - Accepted (2026-09-20), provided it is documented: when the host moves a held directory
       *out of* the project, the sandbox can still read that subtree through it, where
       `RESOLVE_IN_ROOT` refuses today. An unfiltered bind mount behaves the same; `..` does not
@@ -374,16 +379,6 @@ unmeasured; the sweep below decides.
       attributes and data always fresh, directory names and attributes ≤ T, default 0;
       `troubleshooting.md` "Everything works but slowly" names the flag and the exposure sentence;
       the launcher’s `README.md` reference block documents the flag.
-
-
-## P2 — Diagnostics
-
-What exists is what `troubleshooting.md` reads from: the banner, the `DENY` line, the previous
-daemon's log, the bounded deny log (`fs.rs`, `deny_log_action`), and a reasoned message on every
-launch check. The gap:
-
-- [ ] Op-level tracing behind a flag (`--trace`?), for the performance profiling above and for
-  diagnosing hangs — off by default, never in the launcher's normal invocation.
 
 
 ## P2 — Launcher and deployment integration

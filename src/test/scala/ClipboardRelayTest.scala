@@ -11,7 +11,7 @@ import java.nio.file.attribute.PosixFilePermissions
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
-class ClipboardBrokerTest extends munit.FunSuite:
+class ClipboardRelayTest extends munit.FunSuite:
 
   // The shim runs in the Debian image, so its programs are the image's; a macOS host has neither.
   private val programs = Vector("sh", "flock", "timeout", "setsid", "mkfifo")
@@ -22,9 +22,9 @@ class ClipboardBrokerTest extends munit.FunSuite:
 
   /**
    * Never the production path. A suite is run inside a sandbox session as readily as outside one,
-   * and there `/tmp/ko-agent-sandbox/clipboard` holds the FIFOs that session's broker is reading:
+   * and there `/tmp/ko-agent-sandbox/clipboard` holds the FIFOs that session's relay is reading:
    * removing them leaves its reader blocked on an unlinked inode, and nothing inside the container can
-   * restore the channel. Both sides are pointed here instead — the broker's shell functions by
+   * restore the channel. Both sides are pointed here instead — the relay's shell functions by
    * their argument, the shim by the one line rewritten below.
    */
   private val FifoDir = Files.createTempDirectory("clipboard-fifos")
@@ -37,7 +37,7 @@ class ClipboardBrokerTest extends munit.FunSuite:
   private def Shim: Path = shimCopy.getOrElse:
     val source = Paths.get("container/ko-agent-sandbox/ko-sandbox-clipboard").toAbsolutePath
     val text = Files.readString(source)
-    val line = s"dir=${ClipboardBroker.SandboxDir}"
+    val line = s"dir=${ClipboardRelay.SandboxDir}"
     require(text.linesIterator.count(_ == line) == 1, s"$source no longer spells `$line`")
     val copy = Files.createTempFile("ko-sandbox-clipboard", "")
     Files.writeString(copy, text.replace(line, s"dir=$FifoDir"))
@@ -65,9 +65,9 @@ class ClipboardBrokerTest extends munit.FunSuite:
     val out = process.getInputStream.readAllBytes()
     (process.waitFor(), out)
 
-  // `wayland`: the host has only wl-clipboard, so the broker's xclip-first chain must fall through.
+  // `wayland`: the host has only wl-clipboard, so the relay's xclip-first chain must fall through.
   // `blockingCopy`: the host's copy never returns, as a clipboard program waiting on its display
-  // may not. `failingCopy`: the host's copy exits nonzero, as one with no display does. The broker's
+  // may not. `failingCopy`: the host's copy exits nonzero, as one with no display does. The relay's
   // temporary files go under `host/tmp`.
   private def exchange(
     mode: String,
@@ -92,7 +92,7 @@ class ClipboardBrokerTest extends munit.FunSuite:
         |esac
         |""".stripMargin
     )
-    // The host's real clipboard programs, answering the three calls the broker makes, by absolute
+    // The host's real clipboard programs, answering the three calls the relay makes, by absolute
     // path as the launcher resolves them; the host's PATH is deliberately not offered. xclip's copy
     // leaves a child behind holding stdout, as its selection owner does (wl-copy's has stdout on
     // /dev/null): on the response pipe it would hold the shim past `ok` until the writer's timeout.
@@ -125,14 +125,14 @@ class ClipboardBrokerTest extends munit.FunSuite:
     deleteRecursively(FifoDir)
     val hostPrograms =
       if wayland then s"'' $host/wl-paste $host/wl-copy" else s"$host/xclip '' ''"
-    val broker = ProcessBuilder(
+    val relay = ProcessBuilder(
       "setsid", "sh", "-c",
-      s"${ClipboardBroker.hostShellFunctions(FifoDir.toString)}\n" +
-        s"clipboard_broker $host/podman C $mode $hostPrograms",
+      s"${ClipboardRelay.hostShellFunctions(FifoDir.toString)}\n" +
+        s"clipboard_relay $host/podman C $mode $hostPrograms",
     )
-    broker.redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD)
-    broker.environment().put("TMPDIR", Files.createDirectory(host.resolve("tmp")).toString)
-    val process = broker.start()
+    relay.redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD)
+    relay.environment().put("TMPDIR", Files.createDirectory(host.resolve("tmp")).toString)
+    val process = relay.start()
     try
       Thread.sleep(500)
       check(sandboxBin, host)
@@ -163,7 +163,7 @@ class ClipboardBrokerTest extends munit.FunSuite:
       assert(!Files.exists(host.resolve("copied.txt")), "paste mode set the host clipboard")
       assertEquals(String(sandboxCall(sandboxBin, Array.empty, "wl-paste", "-l")._2, UTF_8), "image/png\n")
 
-  /** The call's exit status, asserting it returned on the broker's answer rather than on the
+  /** The call's exit status, asserting it returned on the relay's answer rather than on the
     * response writer's ten-second timeout — what a copy's child left holding the pipe costs. */
   private def promptly(call: => (Int, Array[Byte])): Int =
     val started = System.nanoTime()
@@ -224,7 +224,7 @@ class ClipboardBrokerTest extends munit.FunSuite:
         Thread.sleep(300)
         Option.when(Files.exists(host.resolve("copied.txt")))(Files.readString(host.resolve("copied.txt")))
       // A line outside the grammar, with a request behind it: the reading ends at the line, so
-      // the `get` is never read as a request — a PNG answered to nobody would hold the broker for
+      // the `get` is never read as a request — a PNG answered to nobody would hold the relay for
       // the response writer's ten seconds, past the shim's own wait.
       assertEquals(rawRequest("junk\nget image/png\n".getBytes(UTF_8)), 0)
       assertEquals(String(sandboxCall(sandboxBin, Array.empty, "wl-paste", "-l")._2, UTF_8), "image/png\n")
@@ -235,7 +235,7 @@ class ClipboardBrokerTest extends munit.FunSuite:
       assertEquals(rawResponse().toVector, Image.toVector)
       // A `set` past the cap, and one whose count `[` could not compare: nothing copied, the
       // writer's end read as for a served request.
-      assertEquals(rawRequest(s"set ${ClipboardBroker.MaxRequestBytes + 1}\nabc".getBytes(UTF_8)), 0)
+      assertEquals(rawRequest(s"set ${ClipboardRelay.MaxRequestBytes + 1}\nabc".getBytes(UTF_8)), 0)
       assertEquals(rawRequest("set 99999999999999999999\nabc".getBytes(UTF_8)), 0)
       assertEquals(copied(), None)
       // A body the writer cut short, and a count with a leading zero: nothing copied.
@@ -243,7 +243,7 @@ class ClipboardBrokerTest extends munit.FunSuite:
       assertEquals(rawRequest("set 03\nabc".getBytes(UTF_8)), 0)
       assertEquals(copied(), None)
       // The count's bytes and no more, as the Windows twin reads them (`requests`). Without a
-      // response reader, the broker waits for the response writer's timeout before serving the next request.
+      // response reader, the relay waits for the response writer's timeout before serving the next request.
       assertEquals(rawRequest("set 3\nabcdef".getBytes(UTF_8)), 0)
       assertEquals(String(rawResponse(), UTF_8), "ok\n")
       assertEquals(copied(), Some("abc"))
@@ -258,17 +258,17 @@ class ClipboardBrokerTest extends munit.FunSuite:
       call.setDaemon(true)
       call.start()
       Thread.sleep(500)
-      // The body must have no name while copy is blocked: a session ending here KILLs the broker's tree.
+      // The body must have no name while copy is blocked: a session ending here KILLs the relay's tree.
       assertEquals(Files.list(host.resolve("tmp")).count(), 0L)
 
   test("a copy the host program fails is reported to the caller, not answered ok"):
     exchange("bidirectional", failingCopy = true): (sandboxBin, _) =>
-      // xclip exits nonzero, so the broker answers nothing and the shim fails the copy rather than
+      // xclip exits nonzero, so the relay answers nothing and the shim fails the copy rather than
       // report success on a write that never reached the host.
       assertEquals(sandboxCall(sandboxBin, "lost".getBytes(UTF_8), "wl-copy")._1, 1)
 
   test("the Windows twin's stream grammar is the shell twin's"):
-    import ClipboardBroker.{MaxRequestBytes, Request, requests}
+    import ClipboardRelay.{MaxRequestBytes, Request, requests}
     def stream(text: String): Array[Byte] = text.getBytes(UTF_8)
     def bodies(text: String): Vector[String] =
       requests(stream(text)).map:
@@ -287,7 +287,7 @@ class ClipboardBrokerTest extends munit.FunSuite:
     // A body the stream does not hold whole — the writer stopped, or the cut did — is refused.
     Vector(
       "types", "junk\nget image/png\n", "set\n", "set -1\nx", "set +1\nx", "set 1 2\nx", "set 6\nabc",
-      "set 03\nabc", "set 00\n",
+      "set 03\nabc", "set 00\n", "set ٣\nabc",
       s"set ${MaxRequestBytes + 1}\nx", "set 99999999999999999999\nx",
     ).foreach(text => assertEquals(requests(stream(text)), Vector.empty, text))
     val cut = stream(s"set ${MaxRequestBytes - 8}\n") ++ Array.fill[Byte](MaxRequestBytes - 13)(0)
@@ -302,13 +302,13 @@ class ClipboardBrokerTest extends munit.FunSuite:
       Thread.sleep(300)
       assertEquals(Files.readString(host.resolve("copied.txt")), "via wl-copy")
 
-  test("without a broker the shim fails at once, and an unknown argument pattern is a usage error"):
+  test("without a relay the shim fails at once, and an unknown argument pattern is a usage error"):
     assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
     val sandboxBin = Files.createTempDirectory("clipboard-none")
     Files.createSymbolicLink(sandboxBin.resolve("xclip"), Shim)
     deleteRecursively(FifoDir)
     assertEquals(sandboxCall(sandboxBin, Array.empty, "xclip", "-selection", "clipboard", "-t", "TARGETS", "-o")._1, 1)
-    // A broker present, an argument pattern the shim does not answer: refused before any FIFO is touched.
+    // A relay present, an argument pattern the shim does not answer: refused before any FIFO is touched.
     Files.createDirectories(FifoDir)
     try
       ProcessBuilder("mkfifo", FifoDir.resolve("req").toString).start().waitFor()

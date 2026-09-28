@@ -21,6 +21,7 @@
 #   sh src/probe/run-on-host-profile-iterate.sh mach-route     # does `open` start a program outside the profile?
 #   sh src/probe/run-on-host-profile-iterate.sh mach ["<sbt command>"]   # which Mach services does sbt fail without?
 #   sh src/probe/run-on-host-profile-iterate.sh mach-proxy [native-image]   # ... and the host proxy, in either form?
+#   sh src/probe/run-on-host-profile-iterate.sh procargs   # can a command read another process's environment?
 #
 # Whether the current grant set builds is src/probe/run-on-host-acceptance-test.sh's question, not this one's.
 #
@@ -55,7 +56,7 @@ emit() {
 # is "run sbtn, and fail if it cannot connect to a server", and sets that same flag. sbt 2 is
 # client/server by construction, so the server starts inside the sandbox and its state goes to the
 # command's temporary directory with everything else.
-# The command's environment is the wrapper's closed set (RunOnHostSandbox): COURSIER_CACHE routes to the
+# The command's environment is the supervisor's closed set (RunOnHostSandbox): COURSIER_CACHE routes to the
 # run-on-host cache, _JAVA_OPTIONS reaches the server the client forks where -D flags do not, and
 # the two socket directories keep sbt inside the command's temporary directory.
 # `run_bound` seconds, 0 for none: `mach` sets it, because an sbt client waits without end for a
@@ -559,7 +560,7 @@ mach)
     run_bound=${MACH_BOUND:-600}
     # A build of its own inside the project the profile grants: this checkout's target/ links into
     # the store of the unconfined sbt that emit ran, which the profile denies (run-on-host.md,
-    # the sbt server's state), and the broker's sweep of those links is not this probe's to run.
+    # the sbt server's state), and the runner's sweep of those links is not this probe's to run.
     fixture=$(pwd -P)/target/mach-fixture
     rm -rf "$fixture"; mkdir -p "$fixture/project"
     cp project/build.properties "$fixture/project/"
@@ -622,7 +623,7 @@ mach-proxy)
         mach_profile "$work/proxy.sb" "$1" "$work/mach.sb"
         (cd / && /usr/bin/sandbox-exec -f "$work/mach.sb" "$JAVA_HOME/bin/java" -version) >/dev/null 2>&1
     }
-    # Started as RunOnHostSandbox.startProxy starts it, then one fetch through it, which makes it
+    # Started as RunOnHostProxy.startProxy starts it, then one fetch through it, which makes it
     # resolve a name and connect.
     proxy_ready() { grep -q 'ko-agent-egress-proxy listening on :[0-9]' "$work/mach-proxy.log"; }
     # Not exec'd: the subshell then reports a JVM that a denied lookup ends with a segmentation
@@ -668,6 +669,101 @@ allow https://repo1.maven.org/ read' EGRESS_BIND=127.0.0.1:0 \
     echo "measuring: the host proxy${image:+ ($image)} serving one fetch of https://repo1.maven.org/maven2/"
     mach_search quick_passes serve_passes serve_baseline "$work/mach-proxy.log"
     ;;
+procargs)
+    # Whether a confined command reads another same-user process's environment through
+    # sysctl(KERN_PROCARGS2), the call behind `ps -E`, and whether the rule that denies it leaves the
+    # JDK running (run-on-host.md "The Seatbelt profile" records the answers). ProcArgs.java makes
+    # the call: `ps` is setuid, which no profile lets a command execute, and a build can make the
+    # call itself.
+    #
+    # Two targets outside the sandbox, because the kernel omits the environment of a cs_restricted
+    # process, which Apple's own binaries are, unless the caller is the target (xnu
+    # bsd/kern/kern_sysctl.c, sysctl_procargsx): a JDK started here with a marker variable, as the
+    # runner and a supervisor are JDKs holding the launch's environment, and this shell, which is
+    # Apple's.
+    #
+    # Two more for what `same-sandbox` spans: a child the reader starts, which inherits its
+    # sandbox, and a JDK under a sandbox-exec of its own with the same profile, as the runner
+    # starts an sbt server and a Mill daemon apart from their clients. Each line ends with whether
+    # `ProcessHandle.of` finds the target and whether `info()` reads it, which Mill's client asks of
+    # its daemon (PidLock.isLockValid).
+    #
+    # The call succeeds while either sysctl-read of its name, kern.procargs2.<pid>, or
+    # process-info-pidinfo is allowed, and `(deny default)` does not cover process-info*, so the
+    # rule denies both and allows pidinfo again inside the sandbox, where a build inspects its own
+    # children (https://github.com/eugene1g/agent-safehouse profiles/10-system-runtime.sb). The two
+    # rows before it deny one family each.
+    #
+    # Each profile is `(allow default)` plus the rule, as seatbelt-semantics.sh isolates them, then
+    # the rendered command profile without the rule, with it, and with it and a mill client's one-name
+    # exception. No build runs here: the JDK starting
+    # under the rendered profile is the row itself, and every program starting under it is the
+    # acceptance test's question. Run it on each new macOS release.
+    : "${JAVA_HOME:?set JAVA_HOME to the JDK the profile grants}"
+    probe_source=$(pwd -P)/src/probe/ProcArgs.java
+    KO_AGENT_PROCARGS_PROBE=1 "$JAVA_HOME/bin/java" "$probe_source" --hold >/dev/null 2>&1 &
+    held=$!
+    apart=""
+    trap 'kill "$held" $apart 2>/dev/null' EXIT INT TERM
+    sleep 2
+    by_name='(deny sysctl-read (sysctl-name-regex #"procargs"))'
+    by_pidinfo='(deny process-info-pidinfo) (allow process-info-pidinfo (target same-sandbox))'
+    profile_with() { # out rule...
+        profile_out=$1; shift
+        { printf '(version 1)\n(allow default)\n'; printf '%s\n' "$@"; } > "$profile_out"
+    }
+    read_under() { # label profile [tmpdir]
+        printf '\n--- %s\n' "$1"
+        KO_AGENT_PROCARGS_PROBE=1 /usr/bin/sandbox-exec -f "$2" "$JAVA_HOME/bin/java" \
+            ${3:+"-Djava.io.tmpdir=$3"} "$probe_source" --hold >/dev/null 2>&1 &
+        apart=$!
+        sleep 2
+        if /usr/bin/sandbox-exec -f "$2" "$JAVA_HOME/bin/java" --enable-native-access=ALL-UNNAMED \
+            ${3:+"-Djava.io.tmpdir=$3"} "$probe_source" "the held JDK=$held" "this shell=$$" \
+            "a JDK in a sandbox of its own=$apart" "--child=$probe_source" \
+            >"$work/procargs.out" 2>"$work/procargs.err"
+        then sed 's/^/    /' "$work/procargs.out"
+        else echo "    the JVM did not run (exit $?):"; tail -5 "$work/procargs.err" | sed 's/^/    /'
+        fi
+        kill "$apart" 2>/dev/null; apart=""
+    }
+
+    profile_with "$work/procargs-rule.sb"
+    read_under "no rule: what the kernel allows a same-user process" "$work/procargs-rule.sb"
+    profile_with "$work/procargs-rule.sb" "$by_name"
+    read_under "the name alone: $by_name" "$work/procargs-rule.sb"
+    profile_with "$work/procargs-rule.sb" "$by_pidinfo"
+    read_under "pidinfo alone: $by_pidinfo" "$work/procargs-rule.sb"
+    profile_with "$work/procargs-rule.sb" "$by_name" "$by_pidinfo"
+    read_under "both" "$work/procargs-rule.sb"
+
+    emit "$system_paths" || exit 1
+    . "$work/command.env"
+    # SeatbeltProfile.ProcessReadRule's lines, taken out for the contrast.
+    awk '
+        /^\(deny sysctl-read \(sysctl-name-regex #"procargs"\)\)$/ || /process-info-pidinfo/ { found++; next }
+        { print }
+        END { exit found == 3 ? 0 : 3 }' "$work/command.sb" > "$work/command-norule.sb" || {
+        echo "the rendered profile does not hold SeatbeltProfile.ProcessReadRule's three lines" >&2; exit 1
+    }
+    read_under "the rendered command profile without the rule" "$work/command-norule.sb" "$SESSION_TMP"
+    read_under "the rendered command profile" "$work/command.sb" "$SESSION_TMP"
+    # The exception a mill client's profile takes for its daemon (SeatbeltProfile.Network.MillClient):
+    # the sysctl name of the held JDK's arguments alone, allowed after the rule. Expected: the held
+    # JDK read, with info read; every other target denied, with info throwing.
+    one_name="(allow sysctl-read (sysctl-name \"kern.procargs2.$held\"))"
+    one_name="$one_name" awk '
+        { print }
+        /^\(allow process-info-pidinfo \(target same-sandbox\)\)$/ { print ENVIRON["one_name"]; found = 1 }
+        END { exit found ? 0 : 3 }' "$work/command.sb" > "$work/command-one-name.sb" || {
+        echo "the rendered profile has no same-sandbox pidinfo line to put the name after" >&2; exit 1
+    }
+    read_under "the rendered command profile and $one_name" "$work/command-one-name.sb" "$SESSION_TMP"
+    echo
+    echo "ENVIRONMENT READ of the held JDK without the rule is what a host command would reach"
+    echo "(SECURITY.md, \"Run on host\"). DENIED (EPERM) under the rendered profile, with the JDK running and"
+    echo "listing its processes, is SeatbeltProfile.ProcessReadRule; the acceptance test runs every program."
+    ;;
 *)
-    echo "usage: $0 [checks|ops|paths|narrow|mach-route|mach|mach-proxy] [command|native-image]" >&2; exit 2 ;;
+    echo "usage: $0 [checks|ops|paths|narrow|mach-route|mach|mach-proxy|procargs] [command|native-image]" >&2; exit 2 ;;
 esac

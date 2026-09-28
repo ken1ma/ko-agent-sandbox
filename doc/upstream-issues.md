@@ -164,3 +164,60 @@ reading `event.detail.throwable` prints the clue in both cases above.
 The test stays skipped and the run's totals do not change.
 
 **Not verified:** reproduced under sbt only, not under Mill, Gradle or Maven.
+
+## openai/codex, anthropic-experimental/sandbox-runtime, google-gemini/gemini-cli
+
+One report for each project's macOS Seatbelt profile. This project's own profile closes the gap
+with the rule below (`SeatbeltProfile.ProcessReadRule`; `run-on-host.md`, "The Seatbelt profile").
+
+### A sandboxed command reads other processes' environment through `KERN_PROCARGS2`
+
+**Title:** The macOS Seatbelt profile lets a sandboxed command read the arguments and environment
+of processes outside the sandbox
+
+**Versions:** macOS 26 on Apple silicon, Temurin 25.0.4. Profiles as read on 2026-10-04: Codex's
+`codex-rs/sandboxing/src/seatbelt_base_policy.sbpl`, sandbox-runtime's
+`src/sandbox/macos-sandbox-utils.ts`, Gemini CLI's `packages/cli/src/utils/sandbox-macos-*.sb`.
+
+**Reproducer:** `ProcArgs.java` is `src/probe/ProcArgs.java` of this repository. It calls
+`sysctl` with `{CTL_KERN, KERN_PROCARGS2, pid}` and prints variable names, never values.
+
+```sh
+KO_AGENT_PROCARGS_PROBE=1 "$JAVA_HOME/bin/java" ProcArgs.java --hold &      # a process outside
+printf '%s\n' '(version 1)' '(allow default)' \
+    '(deny sysctl-read (sysctl-name-regex #"procargs"))' > procargs.sb
+sandbox-exec -f procargs.sb "$JAVA_HOME/bin/java" --enable-native-access=ALL-UNNAMED \
+    ProcArgs.java "outside=$!"
+```
+
+**What happens:** the sandboxed process reads the other process's environment, though the
+profile denies the sysctl by name:
+
+```text
+outside (pid 48275): ENVIRONMENT READ arguments=3 variables=39 names=KO_AGENT_PROCARGS_PROBE,…
+```
+
+A token in the environment of any process of the user whose binary is not Apple's is readable:
+the kernel omits the environment only for a code-signing restricted target (xnu,
+`sysctl_procargsx`). Arguments are readable for every process.
+
+**Why:** the call succeeds while either `sysctl-read` of its name, `kern.procargs2.<pid>`, or
+`process-info-pidinfo` is allowed, and `(deny default)` does not cover `process-info*`
+(Firefox's `SandboxPolicyContent.h`: "These are not included in (deny default)"; WebKit's
+`com.apple.WebProcess.sb.in`: "process-info* defaults to allow"). Each of the three profiles
+starts from `(deny default)` and allows `sysctl-read` for a list of names without this one, and
+none denies `process-info*`, so the second route stays open. Codex's and sandbox-runtime's
+`(allow process-info* (target same-sandbox))` narrows nothing without a deny before it.
+
+**Expected:** the rule of agent-safehouse's `profiles/10-system-runtime.sb`, which refuses the
+read here while a JDK runs, lists processes and still reads a child it started:
+
+```scheme
+(deny sysctl-read (sysctl-name-regex #"procargs"))
+(deny process-info-pidinfo)
+(allow process-info-pidinfo (target same-sandbox))
+```
+
+**Not verified:** the reproducer ran under `sandbox-exec` with the profile above, not under any
+of the three projects' own sandboxes. Run its last command under each before submitting. No
+public report of it for these projects was found by a web search without GitHub code search.

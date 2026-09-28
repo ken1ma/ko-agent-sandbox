@@ -72,7 +72,8 @@ Findings the rule rests on:
     name. The other folds into the names' characters are to `ss` (U+00DF, U+1E9E) and `st`
     (U+FB05, U+FB06), sequences neither name has.
 - **Invisible/ignorable code points are a real collapse vector**, so the rule drops U+00AD,
-  U+200B–U+200D, U+2060 and U+FEFF before comparing. This is the HFS+ half of CVE-2014-9390;
+  U+200B–U+200F, U+202A–U+202E, U+2060, U+206A–U+206F and U+FEFF before comparing. This is the
+  HFS+ half of CVE-2014-9390, and the list holds every code point git's `next_hfs_char` skips;
   whether APFS still ignores them is exactly the sort of table detail we should not have to know.
 - **NTFS folds through a *per-volume* `$UpCase` table** — table-driven and volume-specific, so the
   exact fold set is *not statically knowable*, and a crafted volume can even remap ASCII (out of our
@@ -126,6 +127,9 @@ run). Findings the check rests on:
 
 What the check does not cover:
 
+- **Open:** the `create` test failed in two of three runs on Windows: a create opened the host's
+  pointer file. `TODO.md` ("A second name arriving during a name-based mutation") has the runs and
+  the unverified cause.
 - **Open:** `rename`, `unlink` and `rmdir` exist by name only, so `allow_child` and `allow_create`
   decide about a name and the backing syscall then resolves that name again. A host change between
   the two — the ordinary entry moved away and a second name of a guarded entry in its place, or a

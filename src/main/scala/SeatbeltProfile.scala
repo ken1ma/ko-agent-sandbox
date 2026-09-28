@@ -23,19 +23,6 @@ import RunOnHostPrereqs.{CommandPrereqs, Program}
 object SeatbeltProfile:
 
   /**
-   * `.git` and `.ko-agent-sandbox` at any depth under the project. A pattern by intent, and the
-   * only regex in the profile: everything else is a wrapper-supplied path, which a regex would
-   * mangle — the Coursier JDK home alone contains a percent-encoded `+`, a literal `+` and dots.
-   * The project itself is kept out of the pattern the same way: `(require-all (subpath …) (regex …))`
-   * conjoins a literal filter with the name pattern.
-   *
-   * The trailing `(/|$)` is what stops `.gitignore` and `.github` matching. The pattern is
-   * lowercase alone: on a case-insensitive volume it matches the other spellings measured
-   * (run-on-host.md, "The host command's filesystem rules").
-   */
-  val GuardedNames: Seq[String] = Seq(".git", ".ko-agent-sandbox")
-
-  /**
    * The root directory entry. `(subpath "/")` is not the union of `(subpath "/child")` over every
    * child — resolving `/bin/sh` authorizes `/` first, and no grant on a child covers it. Measured
    * rather than reasoned: metadata alone is *not* sufficient, `file-read*` is, and without it a
@@ -93,6 +80,19 @@ object SeatbeltProfile:
    */
   val MachServices: Seq[String] = Seq("com.apple.system.opendirectoryd.libinfo")
 
+  /**
+   * Keeps a command from reading another process's arguments and environment through
+   * `sysctl(KERN_PROCARGS2)`, the call behind `ps -E`, which the kernel answers for any process of
+   * the same user. The rule is agent-safehouse's (`profiles/10-system-runtime.sb`); pidinfo stays
+   * allowed inside the inherited sandbox, where a build inspects its own children. `ProcessHandle.of`
+   * still finds a process outside it, and its `info()` throws (run-on-host.md, "The Seatbelt profile").
+   */
+  val ProcessReadRule: Seq[String] = Seq(
+    """(deny sysctl-read (sysctl-name-regex #"procargs"))""",
+    "(deny process-info-pidinfo)",
+    "(allow process-info-pidinfo (target same-sandbox))",
+  )
+
   private val MachLookup: String =
     s"(allow mach-lookup ${MachServices.map(name => s"(global-name ${sbpl(name)})").mkString(" ")})"
 
@@ -103,21 +103,22 @@ object SeatbeltProfile:
 
   /** The network authority beyond the proxy and the session's own UNIX sockets, typed so that
     * the dispatch shows which program gets which: nothing more for an sbt server and Maven; for
-    * an sbt client, the sockets under the broker's `tmp/`, where its server listens; for the
+    * an sbt client, the sockets under the runner's `tmp/`, where its server listens; for the
     * mill daemon, listeners on any port, since it binds port 0 and no rule confines a bind to
     * one, and at any address of this host, since the "localhost" class admits a wildcard bind —
     * a grant everything the daemon forks inherits, so a build under mill can bind a listener a
     * LAN peer reaches, where one under sbt or Maven gets EPERM (SECURITY.md "Run on host");
-    * for a mill client, outbound to the daemon's one port (RunOnHostSandbox.BrokerRuntimes,
-    * RunOnHostMillDaemons); for Gradle, the mill daemon's grant plus outbound to any port of this host:
+    * for a mill client, outbound to the daemon's one port (RunnerRuntimes,
+    * RunOnHostMillDaemons), and the daemon's arguments, which Mill's client reads to check the
+    * daemon is the one that took its lock; for Gradle, the mill daemon's grant plus outbound to any port of this host:
     * its daemon, workers and file-lock socket bind port 0 and connect to each other's, and the
     * client starts the daemon itself, so one profile serves both. Measured:
-    * src/probe/run-on-host-broker-session.sh L1–L4, G1, G7–G10. */
+    * src/probe/run-on-host-runner-session.sh L1–L4, G1, G7–G10. */
   enum Network:
     case ProxyOnly
     case SbtClient(serverTmp: Path)
     case MillDaemon
-    case MillClient(daemonPort: Int)
+    case MillClient(daemonPort: Int, daemonPid: Long)
     case Gradle
 
   case class ProfileInputs(
@@ -145,7 +146,8 @@ object SeatbeltProfile:
    */
   def render(inputs: ProfileInputs): Either[String, String] =
     val prereqs = inputs.prereqs
-    val readOnly = Seq(prereqs.jdkHome) ++ inputs.distribution ++ Seq(prereqs.executable)
+    // Distinct: a mill build may pin the JDK that JAVA_HOME names.
+    val readOnly = (Seq(prereqs.jdkHome) ++ inputs.distribution ++ Seq(prereqs.executable)).distinct
     // Tests write and run stubs in the project and the command's temporary directory. Children
     // inherit the profile. Caches need no process-exec grant: the JVM loads their code by reading it.
     val readWriteExec = Seq(prereqs.project, inputs.sessionTmp)
@@ -155,13 +157,13 @@ object SeatbeltProfile:
       case Network.SbtClient(tmp) => Some(tmp)
       case _                      => None
     val networkProgram = inputs.network match
-      case Network.ProxyOnly                          => None
-      case Network.SbtClient(_)                       => Some(Program.Sbt)
-      case Network.MillDaemon | Network.MillClient(_) => Some(Program.Mill)
-      case Network.Gradle                             => Some(Program.Gradle)
-    val daemonPort = inputs.network match
-      case Network.MillClient(port) => Some(port)
-      case _                        => None
+      case Network.ProxyOnly                             => None
+      case Network.SbtClient(_)                          => Some(Program.Sbt)
+      case Network.MillDaemon | Network.MillClient(_, _) => Some(Program.Mill)
+      case Network.Gradle                                => Some(Program.Gradle)
+    val (daemonPort, daemonPid) = inputs.network match
+      case Network.MillClient(port, pid) => (Some(port), Some(pid))
+      case _                             => (None, None)
     val trustFiles = Seq(RunOnHostInspection.caBundle(inputs.trust), RunOnHostInspection.trustStore(inputs.trust))
     val everyPath =
       readOnly ++ readWriteExec ++ readWrite ++ inputs.systemPaths.reads ++ inputs.systemPaths.executes ++ serverTmp
@@ -187,12 +189,12 @@ object SeatbeltProfile:
         Left("an sbt profile needs the Ivy home it grants; without it the local resolver is a denial")
       case _ if program == Program.Mvn && inputs.m2Repository.isEmpty =>
         Left("an mvn profile needs the local repository it grants; without it every resolution is a denial")
-      case _ if program == Program.Mill && inputs.distribution.isDefined =>
-        Left("a mill profile has no distribution to grant")
       case _ if networkProgram.exists(_ != program) =>
         Left(s"a ${program.name} profile has no ${networkProgram.get.name} server or daemon to reach")
       case _ if daemonPort.exists(port => port < 1 || port > 65535) =>
         Left(s"the daemon port ${daemonPort.get} is not a port")
+      case _ if daemonPid.exists(_ < 1) =>
+        Left(s"the daemon pid ${daemonPid.get} is not a pid")
       case _ if program != Program.Sbt && inputs.sbtGlobal.isDefined =>
         Left(s"a ${program.name} profile has no sbt global base to grant")
       case _ if program != Program.Sbt && inputs.ivyHome.isDefined =>
@@ -226,6 +228,9 @@ object SeatbeltProfile:
         lines += ""
         lines += ";; A process at all: not filesystem authority, and none of it reaches user data."
         lines += "(allow process-fork sysctl-read)"
+        lines += ";; No other process's arguments and environment: the read succeeds while either"
+        lines += ";; the name or pidinfo is allowed, and (deny default) does not cover process-info*."
+        lines ++= ProcessReadRule
         lines += MachLookup
         lines += Devices
         lines += ""
@@ -258,11 +263,11 @@ object SeatbeltProfile:
         lines += ";; sbt's boot and server sockets, inside the command's temporary directory."
         lines += "(allow network-bind network-inbound network-outbound " +
           s"(local unix-socket ${subpath(inputs.sessionTmp)}) (remote unix-socket ${subpath(inputs.sessionTmp)}))"
-        // The client attaches to the server socket the broker's server bound under the broker's
+        // The client attaches to the server socket the runner's server bound under the runner's
         // tmp/, `<SBT_GLOBAL_SERVER_DIR>/<hash>/sock`; the connect resolves the socket's own
         // directory, hence the metadata grant, and nothing there is read.
         serverTmp.foreach: tmp =>
-          lines += ";; The broker's sbt server: its socket under the broker's temporary directory."
+          lines += ";; The runner's sbt server: its socket under the runner's temporary directory."
           lines += s"(allow file-read-metadata file-test-existence ${subpath(tmp)})"
           lines += s"(allow network-outbound (remote unix-socket ${subpath(tmp)}))"
         inputs.network match
@@ -273,14 +278,21 @@ object SeatbeltProfile:
             // kernel during the starter's own run, so no rule can name it — is
             // (remote ip "localhost:*"), which reaches every service of this host (Gradle's
             // grant; run-on-host.md "Network" records the cost). So the starter's own connect
-            // is denied, which is what leaves the daemon behind, and the broker ends the starter
+            // is denied, which is what leaves the daemon behind, and the runner ends the starter
             // once the daemon listens rather than widen the grant (RunOnHostMillDaemons.endStarter).
             lines += ";; The mill daemon: listeners, any port, any address of this host; inherited by what the build" +
               " forks."
             lines += """(allow network-bind network-inbound (local ip "localhost:*"))"""
-          case Network.MillClient(port) =>
-            lines += ";; The broker's mill daemon, on the one port it was observed listening on."
+          case Network.MillClient(port, pid) =>
+            lines += ";; The runner's mill daemon, on the one port it was observed listening on."
             lines += s"""(allow network-outbound (remote ip "localhost:$port"))"""
+            // Mill's client checks the daemon that holds its lock with ProcessHandle.info(), which reads
+            // the daemon's arguments (PidLock.isLockValid) and throws under ProcessReadRule: the daemon
+            // runs under a sandbox-exec of its own. An allow of the one sysctl name `kern.procargs2.<pid>`,
+            // after the rule, opens that read for the daemon alone (run-on-host.md, "The Seatbelt profile").
+            lines += ";; The daemon's arguments, which Mill's client reads to check the daemon holds its lock; the" +
+              " runner gave the daemon the client's own environment."
+            lines += s"""(allow sysctl-read (sysctl-name "kern.procargs2.$pid"))"""
           case Network.Gradle =>
             // Gradle's daemon, workers and file-lock socket bind port 0 and connect to each
             // other's, TCP and UDP; the client starts the daemon, so the grant is one profile's.
@@ -303,7 +315,7 @@ object SeatbeltProfile:
         lines += ";; and the boundary configuration a later launch would read. Scoped to the project:"
         lines += ";; a .git a test builds in the command's temporary directory is removed with it, and no"
         lines += ";; host git ever runs there."
-        GuardedNames.foreach: name =>
+        FileRules.GuardedComponents.foreach: name =>
           lines +=
             s"(deny file-write* file-read* file-link (require-all ${subpath(prereqs.project)} ${anyDepth(name)}))"
         Right(lines.result().mkString("\n") + "\n")
@@ -311,7 +323,7 @@ object SeatbeltProfile:
   /**
    * The host proxy's inputs (run-on-host.md "The command's egress proxy"): what it runs from —
    * the native image, or the JDK of the jar form — what it loads, the class-path entries of the
-   * jar form, and the system paths the command profile grants (RunOnHostSandbox.proxyInputs).
+   * jar form, and the system paths the command profile grants (RunOnHostProxy.proxyInputs).
    */
   case class ProxyInputs(executables: Seq[Path], reads: Seq[Path], systemPaths: SystemPaths)
 
@@ -319,7 +331,7 @@ object SeatbeltProfile:
    * The profile every host proxy runs under, or the first reason it cannot be built. Nothing of
    * the user's is granted: no project, no cache, no write anywhere — its log is its inherited
    * stderr — and no working directory: the proxy runs from `/`, which the root component grants
-   * (RunOnHostSandbox.startProxy).
+   * (RunOnHostProxy.startProxy).
    */
   def renderProxy(inputs: ProxyInputs): Either[String, String] =
     val everyPath = inputs.executables ++ inputs.reads ++ inputs.systemPaths.reads ++ inputs.systemPaths.executes
@@ -376,37 +388,6 @@ object SeatbeltProfile:
   /** The root link the resolver's client goes through to reach ResolverSocket. */
   val ResolverSocketLink: Path = Path.of("/var")
 
-  /**
-   * The second half of the cs-installed `sbt`: the script execs an unpacked distribution inside the
-   * Coursier archive cache. Its path encodes the download URL of whichever sbt Coursier installed,
-   * so it is read out of the script rather than derived — and read rather than obtained by running
-   * it: running the script is executing on the host, unconfined.
-   *
-   * The longest cache path the script names, because a shorter one is a prefix of the real answer
-   * and a grant on a prefix is wider than it should be. Refused if it escapes the cache root.
-   */
-  def sbtDistribution(scriptText: String, coursierCacheRoot: Path): Option[Path] =
-    val prefix = coursierCacheRoot.toString
-    val candidates =
-      for
-        line <- scriptText.linesIterator
-        start <- indexesOf(line, prefix)
-        raw = line.drop(start).takeWhile(ch => ch != '"' && ch != '\'' && ch != ';' && ch != '\n')
-        trimmed = raw.trim
-        if trimmed.length > prefix.length
-      yield trimmed
-    candidates.toSeq.sortBy(-_.length).headOption
-      .map(text => Path.of(text).normalize())
-      .filter(_.startsWith(coursierCacheRoot))
-
-  private def indexesOf(line: String, needle: String): Seq[Int] =
-    Iterator
-      .unfold(0): from =>
-        line.indexOf(needle, from) match
-          case -1    => None
-          case index => Some((index, index + 1))
-      .toSeq
-
   /** Absolute and already normalized. Symlink resolution happens before this, in RunOnHostPrereqs:
     * it needs the filesystem, and this stays pure. */
   private def isAbsoluteNormalized(path: Path): Boolean =
@@ -417,7 +398,7 @@ object SeatbeltProfile:
       "and resolve symlinks before rendering the profile"
 
   /** An SBPL string literal. Paths here contain spaces, `+` and percent signs; only a quote or a
-    * backslash needs escaping, and neither occurs in a path this wrapper accepts. */
+    * backslash needs escaping, and neither occurs in a path this supervisor accepts. */
   private def sbpl(value: String): String =
     "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
@@ -514,6 +495,17 @@ object SeatbeltProfile:
       case '.' => "\\."
       case ch  => ch.toString
 
-  /** The name at any depth, anchored so `.gitignore` and `.github` do not match. */
+  /**
+   * A guarded name (FileRules.GuardedComponents) at any depth under the project. A pattern by
+   * intent, and the only regex besides the file rules' (fileRuleFilters): everything else is a
+   * supervisor-supplied path, which a regex would mangle — the Coursier JDK home alone contains a
+   * percent-encoded `+`, a literal `+` and dots.
+   * The project itself is kept out of the pattern the same way: `(require-all (subpath …) (regex …))`
+   * conjoins a literal filter with the name pattern.
+   *
+   * The trailing `(/|$)` is what stops `.gitignore` and `.github` matching. The pattern is
+   * lowercase alone: on a case-insensitive volume it matches the other spellings measured
+   * (run-on-host.md, "The host command's filesystem rules").
+   */
   private def anyDepth(name: String): String =
     s"""(regex #"/${name.replace(".", "\\.")}(/|$$)")"""

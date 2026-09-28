@@ -14,6 +14,10 @@ All filter state is stored in the daemon user's home, per project:
         daemon.log.1                                        the previous daemon's log — the one
                                                             you want after a crash
         source-id                                           the source digest the daemon serves
+        file-rules                                          the launcher's file rules the daemon
+                                                            was started with
+        file-rules.resolved                                 those rules and the guard's additions,
+                                                            written by the daemon
         sessions/<container>                                one marker per live session
         lock                                                serializes a launch's reuse decision
                                                             against a reap's unmount
@@ -38,6 +42,9 @@ The matching `DENY` line in `daemon.log` names the operation, the target and the
 - `reason=protected-git-control` on a file needed by a normally allowed Git command — report the
   command and DENY line. The filter may be missing an operational path from its allowlist
   (`git-metadata.md`, P2).
+- `reason=pinned-git-component` — a Git directory's `objects` and `objects/info` are created only
+  by `mkdir` and never renamed or unlinked (`git-metadata.md`, "The immutable set"). If a normally
+  allowed Git command needs otherwise, report the command and DENY line.
 - `reason=protected-git-entry` on a name that is not `.git` — the conservative name rule
   (`git-metadata.md`, "The name rule") refused a legitimate name. Report the exact bytes.
 - `reason=protected-sandbox-config` — edit `.ko-agent-sandbox` on the host. If the refused name
@@ -181,6 +188,34 @@ For Maven the image supplies nothing that moves `target/` from outside the proje
 to 47 s, against 1.9 s wholly outside the mount (`verification-log.md`, "a Maven build"). Where
 the POM is not to change, build a copy of the project under `~`, or run Maven on the host with
 `--run-on-host`.
+
+## Tracing requests
+
+To see which requests a program sends and how long the daemon takes over each, start a daemon by
+hand with `--trace` at a mountpoint of your own, and run the program there:
+
+    ko-agent-fs --source <backing-dir> --mount <mountpoint> --trace 2>trace.log
+
+The launcher never passes `--trace`, so a session's mount is not traced. Each request the filter
+implements writes two lines:
+
+    TRACE begin_us=5123 op=lookup parent=1:"." name="src"
+    TRACE took_us=412 op=lookup parent=1:"." name="src"
+
+- `begin_us` is microseconds since the daemon was about to mount, written before the request is
+  served: when the mount hangs, the log's last line names the request the daemon is in.
+- `took_us` runs from after the first line is written until after the reply is sent; for
+  `op=init`, until just before it.
+- The next `begin_us` minus the sum of this request's `begin_us` and `took_us` is time outside
+  the measured interval. It holds the kernel's and the caller's time, and also the daemon's
+  dispatch, building and writing the two lines, and any request that writes no lines: these
+  timestamps cannot divide it among them.
+- A node is `<inode number>:<path from the backing root>`, or `<inode number>:?` when the daemon
+  no longer knows the node. Names are escaped as in a `DENY` line; file contents are never logged.
+- The reply's error is not in the lines. A `DENY` line, written while the log is under its cap,
+  falls between the two.
+- Requests the filter leaves unimplemented (`fs.rs`, "Mutation coverage") write no lines.
+- The trace has no cap: stop the daemon when the measurement is done.
 
 ## The whole machine degrades (every podman command slow or erroring)
 

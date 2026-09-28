@@ -3,6 +3,10 @@
 
 package agentsandbox.egress
 
+import java.io.IOException
+import java.net.SocketException
+import java.nio.charset.StandardCharsets
+
 case class BadRequest(message: String) extends RuntimeException(message)
 
 /** A connection that closed after zero bytes: routine pooled-client behavior after the ruleset
@@ -16,9 +20,9 @@ case class ClosedWithoutRequest() extends RuntimeException("closed without sendi
 case class TruncatedResponse(message: String) extends RuntimeException(message)
 
 /** A refusal the ruleset made, told to the refused party as a 403 body of two lines
-  * (HTTPHelper.refusalBody): `message` is the audit line's `<why>`, `advice` the next step,
+  * (Refusals.refusalBody): `message` is the audit line's `<why>`, `advice` the next step,
   * RefusalAdvice's. Both are required, so no refusal site can ship without its step.
-  * `proxyError` is the response's RFC 9209 proxy error type (HTTPHelper.proxyStatus): the
+  * `proxyError` is the response's RFC 9209 proxy error type (Refusals.proxyStatus): the
   * ruleset's refusal unless the site has a more specific registered type. */
 case class Refusal(message: String, advice: String, proxyError: String = "http_request_denied")
     extends RuntimeException(message)
@@ -95,7 +99,9 @@ object RefusalAdvice:
 
   val hostHeader = "The Host header must name the host the tunnel was opened to."
 
-  val ambiguousPath = "Spell the path without percent-encoding, dot segments, backslashes or empty segments."
+  val ambiguousPath =
+    "Spell the path in printable ASCII without dot segments, backslashes, semicolons, # or empty segments. " +
+      "Percent-encode only non-ASCII text and spaces, and nothing at all in a POST, PUT, PATCH or DELETE."
 
   /** The paths are the ruleset's own words for this host, so naming them names nothing new. */
   def pathOutside(paths: Set[String]): String =
@@ -107,9 +113,9 @@ object RefusalAdvice:
   val clientHello = "Send SNI naming the CONNECT host, without Encrypted ClientHello."
 
   /**
-   * For a reader of the audit log, who has the line's `<why>` and no 403 body — the run-on-host wrapper,
+   * For a reader of the audit log, who has the line's `<why>` and no 403 body — the run-on-host supervisor,
    * reporting for a program that printed none: the step of a refusal the requester answers by changing
-   * the request, else None. Matched on the reasons authorizeInspectedRequest and GitHelper throw with;
+   * the request, else None. Matched on the reasons authorizeInspectedRequest and RulePath throw with;
    * the refusal table's test holds the two together.
    */
   def requestStep(reason: String): Option[String] =
@@ -134,3 +140,54 @@ object RefusalAdvice:
     else methodNotGranted
 
 case class BadTls(message: String) extends RuntimeException(message)
+
+object Refusals:
+
+  /** The refusal's body: the audit line's tail, and under it the next step when the refusal is
+    * the ruleset's (Refusal.advice). One line each, so a client that prints the body —
+    * curl as it is, git as `remote:` lines, since the type is text/plain — prints the step. */
+  def refusalBody(detail: String, advice: Option[String]): Array[Byte] =
+    (s"ko-agent-egress-proxy: $detail\n" + advice.map(_ + "\n").getOrElse(""))
+      .getBytes(StandardCharsets.UTF_8)
+
+  /** This proxy's member of the Proxy-Status field. */
+  val ProxyStatusMember = "ko-agent-egress-proxy"
+
+  /**
+   * RFC 9209's response field, on every response this proxy generates itself and on none it
+   * relays: `error` is the registered proxy error type, which also tells a client the origin did
+   * not send this response, and `details` the audit line's `<why>`. A header, because clients
+   * that discard a failed CONNECT's body still show its header section (`curl -v`), and the
+   * run-on-host supervisor reads it (RunOnHostProxy.unwritableProxyLog). A Structured Fields
+   * String holds printable ASCII alone, so any other character is sent as `?`.
+   */
+  def proxyStatus(proxyError: String, detail: Option[String]): String =
+    val details = detail.map: text =>
+      val printable = text.map(char => if char >= ' ' && char <= '~' then char else '?')
+      "; details=\"" + printable.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+    s"$ProxyStatusMember; error=$proxyError${details.getOrElse("")}"
+
+  /** The `details` of a Proxy-Status line proxyStatus wrote, unescaped, or None for any other line. */
+  def proxyStatusDetails(line: String): Option[String] =
+    line match
+      case ProxyStatusDetails(details) => Some(details.replaceAll(raw"\\(.)", "$1"))
+      case _                           => None
+
+  private val ProxyStatusDetails = raw"""(?i)Proxy-Status:.*; details="((?:[^"\\]|\\.)*)".*""".r
+
+  /** The RFC 9209 proxy error type of a failure on the origin leg of an inspected connection,
+    * after the origin's address accepted the connection. */
+  def originProxyError(ex: IOException): String =
+    def certificate(cause: Throwable): Boolean =
+      cause != null && (cause.isInstanceOf[java.security.cert.CertificateException] || certificate(cause.getCause))
+    ex match
+      case _: javax.net.ssl.SSLException if certificate(ex) => "tls_certificate_error"
+      case _: javax.net.ssl.SSLException                    => "tls_protocol_error"
+      case _: java.net.SocketTimeoutException               => "http_response_timeout"
+      case _: SocketException                               => "connection_terminated"
+      case _                                                => "http_protocol_error"
+
+  /** Starts the reason of every refusal after a failed log write; the run-on-host supervisor looks for it. */
+  val AuditLogUnwritable = "audit log cannot be written"
+
+  def auditLogFailure(ex: IOException): String = s"$AuditLogUnwritable: ${ex.getMessage}"

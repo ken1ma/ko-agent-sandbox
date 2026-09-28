@@ -1,16 +1,16 @@
 //! The `ko-agent-fs` binary itself: argument handling and the startup refusal.
 //!
 //! The mounted suites construct the filesystem in-process, which bypasses `main.rs` entirely. These
-//! drive the real binary instead. They need **no** `/dev/fuse` and no privileges, because every case
-//! here is one the binary decides *before* it mounts — so unlike the mounted suites, these run
-//! everywhere, including a hardened sandbox and CI.
+//! drive the real binary instead. Except the three ignored mount cases, they need **no** `/dev/fuse` and
+//! no privileges, because each is one the binary decides *before* it mounts — so unlike the mounted
+//! suites, these run everywhere, including a hardened sandbox and CI.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// The binary under test. `env!("CARGO_BIN_EXE_...")` bakes an absolute path at *compile* time,
-/// and this project compiles in the hardened sandbox (`/workspace/...`) but runs mounted
+/// and this project compiles in the hardened sandbox (at the project's host path) but runs mounted
 /// tests in the privileged rig (`/work/...`) — so resolve relative to the running test executable
 /// (`target/debug/deps/<test>` → `target/debug/ko-agent-fs`), which holds wherever the tree is.
 fn binary() -> PathBuf {
@@ -220,6 +220,120 @@ fn the_self_test_passes_where_fuse_is_available() {
 }
 
 #[test]
+fn trace_is_refused_where_nothing_is_mounted() {
+    let source = scratch("trace-resolve-source");
+    let output = Command::new(binary())
+        .arg("--source")
+        .arg(&source)
+        .arg("--resolve")
+        .arg("--trace")
+        .output()
+        .expect("run ko-agent-fs");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("usage:"));
+    let _ = fs::remove_dir_all(&source);
+}
+
+/// Serve a one-file tree with the binary, read the file through the mount, unmount, and return the
+/// daemon's log.
+fn log_of_a_served_read(name: &str, trace: bool) -> String {
+    let source = scratch(&format!("{name}-source"));
+    let mountpoint = scratch(&format!("{name}-mnt"));
+    fs::write(source.join("seed"), b"seed\n").unwrap();
+
+    let mut command = Command::new(binary());
+    command
+        .arg("--source")
+        .arg(&source)
+        .arg("--mount")
+        .arg(&mountpoint)
+        .stderr(std::process::Stdio::piped());
+    if trace {
+        command.arg("--trace");
+    }
+    let daemon = command.spawn().expect("spawn ko-agent-fs");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while fs::read_to_string(mountpoint.join("seed")).ok().as_deref() != Some("seed\n") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the mount never began serving"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    unmount(&mountpoint);
+    let output = daemon.wait_with_output().expect("reap the daemon");
+    assert!(output.status.success());
+
+    let _ = fs::remove_dir_all(&source);
+    let _ = fs::remove_dir_all(&mountpoint);
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+#[test]
+#[ignore = "needs a FUSE-capable environment; run in the privileged dev rig"]
+fn trace_writes_a_pair_of_lines_per_request_and_nothing_without_the_flag() {
+    let untraced = log_of_a_served_read("untraced", false);
+    assert!(
+        !untraced.contains("TRACE"),
+        "traced without --trace: {untraced}"
+    );
+
+    let traced = log_of_a_served_read("traced", true);
+    let lines: Vec<&str> = traced
+        .lines()
+        .filter(|line| line.starts_with("TRACE "))
+        .collect();
+    assert!(
+        lines.iter().any(|line| line.starts_with("TRACE begin_us=")
+            && line.ends_with(" op=lookup parent=1:\".\" name=\"seed\"")),
+        "no lookup of the seed file: {traced}"
+    );
+    assert!(
+        lines
+            .first()
+            .is_some_and(|line| line.starts_with("TRACE begin_us=") && line.ends_with(" op=init")),
+        "the first request traced is not the initialization: {traced}"
+    );
+    for op in ["open", "read", "release"] {
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains(&format!(" op={op} ino=")) && line.contains(":\"seed\"")),
+            "no {op} of the seed file: {traced}"
+        );
+    }
+    // Requests are served one at a time, so each `begin_us` line is followed by its `took_us` line.
+    assert!(lines.len().is_multiple_of(2), "an unpaired line: {traced}");
+    for pair in lines.chunks(2) {
+        let request = |line: &str, key: &str| -> String {
+            let rest = line
+                .strip_prefix(&format!("TRACE {key}="))
+                .unwrap_or_else(|| panic!("expected a {key} line: {line}"));
+            let (micros, request) = rest.split_once(' ').expect("a request after the time");
+            micros.parse::<u64>().expect("microseconds");
+            request.to_string()
+        };
+        assert_eq!(request(pair[0], "begin_us"), request(pair[1], "took_us"));
+    }
+}
+
+/// Callers unmount before they reap the daemon: killing it first would leave a dead superblock
+/// that `remove_dir_all` then trips over.
+fn unmount(mountpoint: &Path) {
+    let unmounted = Command::new("fusermount3")
+        .args(["-u"])
+        .arg(mountpoint)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !unmounted {
+        let path = std::ffi::CString::new(mountpoint.as_os_str().as_encoded_bytes()).unwrap();
+        unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) };
+    }
+}
+
+#[test]
 #[ignore = "needs a FUSE-capable environment; run in the privileged dev rig"]
 fn the_binary_mounts_and_serves_end_to_end() {
     // The one code path nothing else drives: main.rs itself — argument parsing, the guard, the mount,
@@ -256,18 +370,7 @@ fn the_binary_mounts_and_serves_end_to_end() {
     let refusal = fs::create_dir(mountpoint.join(".git")).unwrap_err();
     assert_eq!(refusal.raw_os_error(), Some(libc::EPERM));
 
-    // Teardown: unmount first — killing the daemon before unmounting would leave a dead
-    // superblock that remove_dir_all then trips over.
-    let unmounted = Command::new("fusermount3")
-        .args(["-u"])
-        .arg(&mountpoint)
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false);
-    if !unmounted {
-        let path = std::ffi::CString::new(mountpoint.as_os_str().as_encoded_bytes()).unwrap();
-        unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) };
-    }
+    unmount(&mountpoint);
     // fuser::mount returns once the kernel releases the mount; reap rather than kill, proving the
     // daemon's exit path too.
     let status = daemon.wait().expect("reap the daemon");

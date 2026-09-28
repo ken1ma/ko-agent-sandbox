@@ -7,6 +7,7 @@ import java.util.Locale
 import scala.annotation.tailrec
 
 import IPAddrHelper.normalizeHost
+import Refusals.{proxyStatus, refusalBody}
 
 /**
  * HTTP parsing, framing and relay. Everything here refuses ambiguity rather than resolving
@@ -64,24 +65,27 @@ object HTTPHelper:
 
     loop(0, 0)
 
+  /** A head readHttpHeader returned, as its start line and its field lines. */
+  def splitHead(bytes: Array[Byte], incomplete: => Nothing, bareCrOrLf: => Nothing): (String, Vector[String]) =
+    val text = String(bytes, StandardCharsets.ISO_8859_1)
+    if !text.endsWith("\r\n\r\n") then incomplete
+    if text.replace("\r\n", "").exists(ch => ch == '\r' || ch == '\n') then bareCrOrLf
+    // Never empty: a head with no start line splits into an empty one, which each start-line
+    // parser refuses.
+    val lines = text.dropRight(4).split("\r\n", -1).toVector
+    (lines.head, lines.tail)
+
   case class ConnectRequest(host: String, port: Int)
 
   object ConnectRequest:
     def parse(bytes: Array[Byte]): ConnectRequest =
-      val text = String(bytes, StandardCharsets.ISO_8859_1)
-
-      if !text.endsWith("\r\n\r\n") then
-        throw BadRequest("incomplete HTTP header")
-
-      val withoutCrLf = text.replace("\r\n", "")
-      if withoutCrLf.exists(ch => ch == '\r' || ch == '\n') then
-        throw BadRequest("bare CR or LF in HTTP header")
-
-      val lines = text.dropRight(4).split("\r\n", -1).toVector
-      val requestLine = lines.headOption.getOrElse(throw BadRequest("missing request line"))
-
+      val (requestLine, fieldLines) = splitHead(
+        bytes,
+        incomplete = throw BadRequest("incomplete HTTP header"),
+        bareCrOrLf = throw BadRequest("bare CR or LF in HTTP header"),
+      )
       val request = parseRequestLine(requestLine)
-      validateHeaders(lines.drop(1))
+      validateHeaders(fieldLines)
       request
 
     def parseRequestLine(line: String): ConnectRequest =
@@ -138,20 +142,11 @@ object HTTPHelper:
         .map(_.toInt)
         .getOrElse(throw BadRequest("invalid CONNECT port"))
 
+    /** Values go unchecked: ConnectRequest keeps only the host and port, so no CONNECT header is
+      * read or forwarded. */
     def validateHeaders(lines: Vector[String]): Unit =
       lines.foreach: line =>
-        if line.startsWith(" ") || line.startsWith("\t") then
-          throw BadRequest("obsolete folded HTTP header is not allowed")
-
-        val colon = line.indexOf(':')
-        if colon <= 0 then
-          throw BadRequest("malformed HTTP header")
-
-        val name = line.substring(0, colon)
-        if !name.forall(isHttpTokenChar) then
-          throw BadRequest("invalid HTTP header name")
-
-        name.toLowerCase(Locale.ROOT) match
+        headerName(line).toLowerCase(Locale.ROOT) match
           case "content-length" | "transfer-encoding" =>
             throw BadRequest("CONNECT request bodies are not allowed")
           case _ => ()
@@ -175,11 +170,7 @@ object HTTPHelper:
 
     def query: String = target.dropWhile(_ != '?').drop(1)
 
-    def values(name: String): Vector[String] =
-      val wanted = name.toLowerCase(Locale.ROOT)
-
-      headers.collect:
-        case (header, value) if header.toLowerCase(Locale.ROOT) == wanted => value
+    def values(name: String): Vector[String] = headerValues(headers, name)
 
     /** Ambiguous framing is refused rather than resolved, per the file
       * header. */
@@ -218,10 +209,7 @@ object HTTPHelper:
 
       builder.append(s"$method $target HTTP/1.1\r\n")
 
-      val dropped = HopByHopHeaders ++ connectionNamedHeaders(values("Connection"))
-      headers
-        .filterNot((name, _) => dropped.contains(name.toLowerCase(Locale.ROOT)))
-        .foreach((name, value) => builder.append(s"$name: $value\r\n"))
+      endToEnd(headers).foreach((name, value) => builder.append(s"$name: $value\r\n"))
 
       builder.append("Connection: close\r\n\r\n")
 
@@ -239,8 +227,28 @@ object HTTPHelper:
       "upgrade",
     )
 
+  /** The name of a header line, refusing a folded line and a name that is empty or not a token. */
+  private def headerName(line: String): String =
+    if line.startsWith(" ") || line.startsWith("\t") then throw BadRequest("obsolete folded HTTP header is not allowed")
+    val colon = line.indexOf(':')
+    if colon <= 0 then throw BadRequest("malformed HTTP header")
+    val name = line.substring(0, colon)
+    if !name.forall(isHttpTokenChar) then throw BadRequest("invalid HTTP header name")
+    name
+
+  /** The values of every `name` header, its name matched without case. */
+  def headerValues(headers: Vector[(String, String)], name: String): Vector[String] =
+    val wanted = name.toLowerCase(Locale.ROOT)
+    headers.collect:
+      case (header, value) if header.toLowerCase(Locale.ROOT) == wanted => value
+
+  /** The headers less this hop's: the fixed hop-by-hop set and whatever the Connection header names. */
+  private def endToEnd(headers: Vector[(String, String)]): Vector[(String, String)] =
+    val dropped = HopByHopHeaders ++ connectionNamedHeaders(headerValues(headers, "Connection"))
+    headers.filterNot((name, _) => dropped.contains(name.toLowerCase(Locale.ROOT)))
+
   /** The header names a message's own Connection header declares hop-by-hop (RFC 9110 §7.6.1):
-    * those are this hop's to remove too, not just the fixed set above. */
+    * those are this hop's to remove too, not just HopByHopHeaders. */
   def connectionNamedHeaders(values: Vector[String]): Set[String] =
     values
       .flatMap(_.split(','))
@@ -260,18 +268,11 @@ object HTTPHelper:
 
   object HttpRequestHead:
     def parse(bytes: Array[Byte]): HttpRequestHead =
-      val text = String(bytes, StandardCharsets.ISO_8859_1)
-
-      if !text.endsWith("\r\n\r\n") then
-        throw BadRequest("incomplete HTTP request head")
-
-      val withoutCrLf = text.replace("\r\n", "")
-      if withoutCrLf.exists(ch => ch == '\r' || ch == '\n') then
-        throw BadRequest("bare CR or LF in HTTP request head")
-
-      val lines = text.dropRight(4).split("\r\n", -1).toVector
-
-      val requestLine = lines.headOption.getOrElse(throw BadRequest("missing request line"))
+      val (requestLine, fieldLines) = splitHead(
+        bytes,
+        incomplete = throw BadRequest("incomplete HTTP request head"),
+        bareCrOrLf = throw BadRequest("bare CR or LF in HTTP request head"),
+      )
 
       requestLine.split(" ", -1).toList match
         case method :: target :: "HTTP/1.1" :: Nil =>
@@ -282,7 +283,7 @@ object HTTPHelper:
           if target.exists(isForbiddenControl) then
             throw BadRequest("control character in request target")
 
-          HttpRequestHead(method, target, "HTTP/1.1", parseHeaders(lines.drop(1)))
+          HttpRequestHead(method, target, "HTTP/1.1", parseHeaders(fieldLines))
 
         case _ :: _ :: "HTTP/1.0" :: Nil =>
           throw BadRequest("HTTP/1.0 is not supported")
@@ -292,20 +293,11 @@ object HTTPHelper:
 
     def parseHeaders(lines: Vector[String]): Vector[(String, String)] =
       lines.map: line =>
-        if line.startsWith(" ") || line.startsWith("\t") then
-          throw BadRequest("obsolete folded HTTP header is not allowed")
-
-        val colon = line.indexOf(':')
-        if colon <= 0 then throw BadRequest("malformed HTTP header")
-
-        val name = line.substring(0, colon)
-        if !name.forall(isHttpTokenChar) then
-          throw BadRequest("invalid HTTP header name")
-
+        val name = headerName(line)
         // Checked before the optional whitespace is stripped: Java's `trim` removes every
         // character up to SP, so trimming first would drop an edge NUL, VT or FF where it should
         // refuse the head.
-        val raw = line.substring(colon + 1)
+        val raw = line.substring(name.length + 1)
         if raw.exists(ch => isForbiddenControl(ch) && ch != '\t') then
           throw BadRequest("control character in HTTP header value")
 
@@ -330,11 +322,7 @@ object HTTPHelper:
     reason: String,
     headers: Vector[(String, String)],
   ):
-    def values(name: String): Vector[String] =
-      val wanted = name.toLowerCase(Locale.ROOT)
-
-      headers.collect:
-        case (header, value) if header.toLowerCase(Locale.ROOT) == wanted => value
+    def values(name: String): Vector[String] = headerValues(headers, name)
 
     def interim: Boolean = status / 100 == 1
 
@@ -353,10 +341,7 @@ object HTTPHelper:
 
       builder.append(s"HTTP/1.1 $status $reason\r\n")
 
-      val dropped = HopByHopHeaders ++ connectionNamedHeaders(values("Connection"))
-      headers
-        .filterNot((name, _) => dropped.contains(name.toLowerCase(Locale.ROOT)))
-        .foreach((name, value) => builder.append(s"$name: $value\r\n"))
+      endToEnd(headers).foreach((name, value) => builder.append(s"$name: $value\r\n"))
 
       builder.append(if interim then "\r\n" else "Connection: close\r\n\r\n")
 
@@ -364,7 +349,9 @@ object HTTPHelper:
 
     /** RFC 9112 §6.3 for the connections this proxy closes after one request. Mirrors the request side's
       * refusals of ambiguity, as IOExceptions; the no-framing default differs by design —
-      * UntilClose, because this proxy sends `Connection: close` to the origin. */
+      * UntilClose, because this proxy sends `Connection: close` to the origin. Kept separate from
+      * the request's: every refusal's wording differs, so one implementation would take five
+      * messages as parameters. */
     def bodyFraming(requestMethod: String): BodyFraming =
       protectedConnectionNomination(values("Connection")).foreach: name =>
         throw IOException(s"origin's Connection nominates $name, which this proxy reads")
@@ -400,15 +387,8 @@ object HTTPHelper:
       def malformed(reason: String): Nothing =
         throw IOException(s"$subject: $reason")
 
-      val text = String(bytes, StandardCharsets.ISO_8859_1)
-
-      if !text.endsWith("\r\n\r\n") then malformed("incomplete")
-
-      val withoutCrLf = text.replace("\r\n", "")
-      if withoutCrLf.exists(ch => ch == '\r' || ch == '\n') then malformed("bare CR or LF")
-
-      val lines = text.dropRight(4).split("\r\n", -1).toVector
-      val statusLine = lines.headOption.getOrElse(malformed("missing status line"))
+      val (statusLine, fieldLines) =
+        splitHead(bytes, incomplete = malformed("incomplete"), bareCrOrLf = malformed("bare CR or LF"))
 
       statusLine.split(" ", 3).toList match
         case version :: statusText :: rest if isHttp1Version(version) =>
@@ -425,19 +405,21 @@ object HTTPHelper:
             malformed("control character in reason phrase")
 
           val headers =
-            try HttpRequestHead.parseHeaders(lines.drop(1))
+            try HttpRequestHead.parseHeaders(fieldLines)
             catch case ex: BadRequest => malformed(ex.getMessage)
 
           HttpResponseHead(status, reason, headers)
 
         case _ => malformed(s"status line '$statusLine'")
 
-  /** ASCII digits and nothing else, which is all that the grammars of Content-Length, a port and
-    * a status code allow. `toLongOption` alone also accepts a sign, and a forwarded
-    * `Content-Length: +1` leaves the origin free to read a length other than the one this proxy
-    * framed the body by. */
-  def parseDecimal(text: String): Option[Long] =
-    Option.when(text.nonEmpty && text.forall(ch => ch >= '0' && ch <= '9'))(text.toLongOption).flatten
+  /** ASCII digits and nothing else: all that the grammars of Content-Length, a port and a status
+    * code allow, and the one spelling the credential pipe, the run-on-host channel and the
+    * clipboard relay take for their counts. `toLongOption` alone also accepts a sign and any
+    * script's digits (`+1`, `١`), and a forwarded `Content-Length: +1` leaves the origin free to
+    * read a length other than the one this proxy framed the body by. */
+  def parseDecimal(text: String): Option[Long] = Option.when(isDecimal(text))(text.toLongOption).flatten
+
+  def isDecimal(text: String): Boolean = text.nonEmpty && text.forall(ch => ch >= '0' && ch <= '9')
 
   /** `HTTP/1.` and one digit, the grammar of RFC 9112 §2.3; every minor version, since the framing
     * rules cover them all. */
@@ -628,13 +610,6 @@ object HTTPHelper:
 
     loop(false)
 
-  /** The refusal's body: the audit line's tail, and under it the next step when the refusal is
-    * the ruleset's (Refusal.advice). One line each, so a client that prints the body —
-    * curl as it is, git as `remote:` lines, since the type is text/plain — prints the step. */
-  def refusalBody(detail: String, advice: Option[String]): Array[Byte] =
-    (s"ko-agent-egress-proxy: $detail\n" + advice.map(_ + "\n").getOrElse(""))
-      .getBytes(StandardCharsets.UTF_8)
-
   /** The refusal as curl and git see it: a reason inside the tunnel beats a dropped connection.
     * Socket rather than SSLSocket, like relayInspected: nothing here is TLS-specific. A response
     * to a HEAD keeps the header section and omits the body (RFC 9110 §9.3.2); the reason stays in
@@ -665,23 +640,6 @@ object HTTPHelper:
   ): Unit =
     try respond(client, status, reason, proxyError, detail, advice, bodyless, answersHead)
     catch case _: IOException => ()
-
-  /** This proxy's member of the Proxy-Status field. */
-  val ProxyStatusMember = "ko-agent-egress-proxy"
-
-  /**
-   * RFC 9209's response field, on every response this proxy generates itself and on none it
-   * relays: `error` is the registered proxy error type, which also tells a client the origin did
-   * not send this response, and `details` the audit line's `<why>`. A header, because clients
-   * that discard a failed CONNECT's body still show its header section (`curl -v`), and the
-   * run-on-host wrapper reads it (RunOnHostSandbox.unwritableProxyLog). A Structured Fields
-   * String holds printable ASCII alone, so any other character is sent as `?`.
-   */
-  def proxyStatus(proxyError: String, detail: Option[String]): String =
-    val details = detail.map: text =>
-      val printable = text.map(char => if char >= ' ' && char <= '~' then char else '?')
-      "; details=\"" + printable.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
-    s"$ProxyStatusMember; error=$proxyError${details.getOrElse("")}"
 
   def respond(
     client: Socket, status: Int, reason: String, proxyError: String, detail: Option[String], advice: Option[String],

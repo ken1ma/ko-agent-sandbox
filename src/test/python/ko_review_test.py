@@ -1,4 +1,5 @@
-"""Tests of the ko-review plugin's helper against a fake `codex` on PATH; no model is used."""
+"""Tests of the ko-review plugin's helper against a fake `codex` and a fake `claude` on PATH; no model
+is used."""
 
 import json
 import os
@@ -16,13 +17,16 @@ PROJECT = Path(__file__).resolve().parents[3]
 PLUGIN = PROJECT / "container/ko-agent-sandbox/claude-code/plugins/ko-review"
 HELPER = PLUGIN / "bin/ko-review"
 
-# Steps are consumed one per invocation from the file FAKE_CODEX_SCRIPT names; each invocation
-# appends its argv and stdin to FAKE_CODEX_LOG.
-FAKE_CODEX = r'''#!/usr/bin/env python3
+# One script installed under both names; its basename says which CLI it imitates. Steps are consumed
+# one per invocation from the file FAKE_REVIEWER_SCRIPT names; each invocation appends its argv and
+# stdin to FAKE_REVIEWER_LOG.
+FAKE_REVIEWER = r'''#!/usr/bin/env python3
 import json, os, sys, time
-if sys.argv[1:] == ["--version"]:
-    print("fake-codex 0"); sys.exit(0)
-if sys.argv[1:] == ["debug", "models"]:
+name = os.path.basename(sys.argv[0])
+args = sys.argv[1:]
+if args == ["--version"]:
+    print(f"fake-{name} 0"); sys.exit(0)
+if name == "codex" and args == ["debug", "models"]:
     if os.environ.get("FAKE_CODEX_NO_CATALOG"):
         sys.exit(1)
     print(json.dumps({"models": [
@@ -37,25 +41,38 @@ if sys.argv[1:] == ["debug", "models"]:
          "default_reasoning_level": "medium", "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}]},
     ]}))
     sys.exit(0)
-if sys.argv[1:] == ["login", "status"]:
-    if os.environ.get("FAKE_CODEX_SIGNED_OUT"):
+if name == "codex" and args == ["login", "status"]:
+    if os.environ.get("FAKE_REVIEWER_SIGNED_OUT"):
         print("Not logged in"); sys.exit(1)
     print("Logged in using ChatGPT"); sys.exit(0)
+if name == "claude" and args == ["auth", "status", "--json"]:
+    print(json.dumps({"loggedIn": not os.environ.get("FAKE_REVIEWER_SIGNED_OUT"), "authMethod": "claude.ai"}))
+    sys.exit(0)
 prompt = sys.stdin.read()
-script = json.loads(open(os.environ["FAKE_CODEX_SCRIPT"]).read())
+script = json.loads(open(os.environ["FAKE_REVIEWER_SCRIPT"]).read())
 step = script.pop(0) if script else {}
-open(os.environ["FAKE_CODEX_SCRIPT"], "w").write(json.dumps(script))
-with open(os.environ["FAKE_CODEX_LOG"], "a") as log:
-    log.write(json.dumps({"argv": sys.argv[1:], "prompt": prompt, "cwd": os.getcwd(), "pid": os.getpid()}) + "\n")
+open(os.environ["FAKE_REVIEWER_SCRIPT"], "w").write(json.dumps(script))
+with open(os.environ["FAKE_REVIEWER_LOG"], "a") as log:
+    log.write(json.dumps({
+        "argv": args, "prompt": prompt, "cwd": os.getcwd(), "pid": os.getpid(),
+        "effort_variable": os.environ.get("CLAUDE_CODE_EFFORT_LEVEL"),
+    }) + "\n")
 def emit(event):
-    # like Codex mid-command, live on when the helper's end of stdout is gone
+    # like a reviewer mid-command, live on when the helper's end of stdout is gone
     try:
         print(json.dumps(event), flush=True)
     except BrokenPipeError:
         pass
-args = sys.argv[1:]
-resume_id = args[args.index("resume") + 1] if "resume" in args else None
-thread_id = step.get("thread_id", resume_id or "thread-" + str(len(open(os.environ["FAKE_CODEX_LOG"]).readlines())))
+if name == "codex":
+    resume_id = args[args.index("resume") + 1] if "resume" in args else None
+else:
+    resume_id = args[args.index("--resume") + 1] if "--resume" in args else None
+count = len(open(os.environ["FAKE_REVIEWER_LOG"]).readlines())
+thread_id = step.get("thread_id", resume_id or "thread-" + str(count))
+if name == "codex":
+    started = {"type": "thread.started", "thread_id": thread_id}
+else:
+    started = {"type": "system", "subtype": "init", "session_id": thread_id, "model": "fake-model"}
 if step.get("touch"):
     open(step["touch"], "a").write("changed during review\n")
 if "raw_stdout" in step:
@@ -63,20 +80,28 @@ if "raw_stdout" in step:
     sys.stdout.flush()
 else:
     if step.get("emit_thread_started", True):
-        emit({"type": "thread.started", "thread_id": thread_id})
+        emit(started)
     time.sleep(step.get("sleep", 0))
-    emit({"type": "turn.started"})
+    if name == "codex":
+        emit({"type": "turn.started"})
     for event in step.get("events", []):
         emit(event)
-    if "result" in step and step["result"] is not None:
-        result = step["result"]
-        text = result if isinstance(result, str) else json.dumps(result)
-        emit({"type": "item.completed", "item": {"type": "agent_message", "text": text}})
-        open(args[args.index("--output-last-message") + 1], "w").write(text)
-    emit({"type": "turn.completed"})
+    result = step.get("result")
+    text = None if result is None else (result if isinstance(result, str) else json.dumps(result))
+    if name == "codex":
+        if text is not None:
+            emit({"type": "item.completed", "item": {"type": "agent_message", "text": text}})
+            open(args[args.index("--output-last-message") + 1], "w").write(text)
+        emit({"type": "turn.completed"})
+    else:
+        emit({
+            "type": "result", "subtype": "success", "is_error": False, "session_id": thread_id,
+            "structured_output": result if isinstance(result, dict) else None, "result": text,
+            **step.get("claude_result", {}),
+        })
 sys.stderr.write(step.get("stderr", ""))
-if os.environ.get("FAKE_CODEX_DONE"):
-    open(os.environ["FAKE_CODEX_DONE"], "w").write("ran to the end\n")
+if os.environ.get("FAKE_REVIEWER_DONE"):
+    open(os.environ["FAKE_REVIEWER_DONE"], "w").write("ran to the end\n")
 sys.exit(step.get("exit", 0))
 '''
 
@@ -89,27 +114,40 @@ APPROVED = {"disposition": "APPROVED", "summary": "fine", "findings": [], "userD
 USER_DECIDES = {
     "disposition": "USER_DECISION_REQUIRED", "summary": "needs a call", "findings": [],
     "userDecision": {
-        "issue": "i", "codexPosition": "p", "whyTechnicalEvidenceCannotDecide": "w", "decisionRequested": "d",
+        "issue": "i", "reviewerPosition": "p", "whyTechnicalEvidenceCannotDecide": "w", "decisionRequested": "d",
     },
 }
 
 
+def both_reviewers(test):
+    """Marks a test ClaudeHelperTest runs again with Claude as the reviewer."""
+    test.both_reviewers = True
+    return test
+
+
 class HelperTest(unittest.TestCase):
+    reviewer = "codex"
+    display = "Codex"
+    host = "api.openai.com"
+    other_host = "api.anthropic.com"
+    lost_thread_stderr = "Error: thread/resume failed: no rollout found for thread id x"
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="ko-review-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        fake = self.bin / "codex"
-        fake.write_text(FAKE_CODEX)
-        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+        for name in ("codex", "claude"):
+            fake = self.bin / name
+            fake.write_text(FAKE_REVIEWER)
+            fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
         self.script = self.root / "script.json"
         self.log = self.root / "log.jsonl"
         self.script.write_text("[]")
         self.log.write_text("")
         self.state = self.root / "state"
-        self.ruleset = "egress profile: deny-unless-allowed\nallow https://api.openai.com/ tunnel\n"
+        self.ruleset = f"egress profile: deny-unless-allowed\nallow https://{self.host}/ tunnel\n"
         self.repo = self.root / "repo"
         self.repo.mkdir()
         self.git("init", "-q", "-b", "main")
@@ -155,8 +193,8 @@ class HelperTest(unittest.TestCase):
             env={
                 **{name: value for name, value in os.environ.items() if not name.startswith("KO_")},
                 "PATH": f"{self.bin}:{os.environ['PATH']}",
-                "FAKE_CODEX_SCRIPT": str(self.script),
-                "FAKE_CODEX_LOG": str(self.log),
+                "FAKE_REVIEWER_SCRIPT": str(self.script),
+                "FAKE_REVIEWER_LOG": str(self.log),
                 "KO_REVIEW_STATE": str(self.state),
                 "KO_AGENT_SANDBOX_EGRESS_RULESET": self.ruleset,
                 **environment,
@@ -179,8 +217,53 @@ class HelperTest(unittest.TestCase):
 
     def start(self, result=CHANGES, **step):
         self.plan({"result": result, **step})
-        return self.helper("start", "codex", "--message-file", self.message())
+        return self.helper("start", self.reviewer, "--message-file", self.message())
 
+    def assert_opens_a_thread(self, argv):
+        if self.reviewer == "codex":
+            self.assertEqual(argv[:2], ["exec", "--json"])
+            self.assertNotIn("resume", argv)
+            self.assertNotIn("--ephemeral", argv)
+        else:
+            self.assertEqual(argv[:1], ["-p"])
+            self.assertNotIn("--resume", argv)
+            self.assertNotIn("--no-session-persistence", argv)
+
+    def assert_resumes(self, argv, thread_id):
+        if self.reviewer == "codex":
+            self.assertEqual(argv[:3], ["exec", "resume", thread_id])
+        else:
+            self.assertEqual(argv[:3], ["-p", "--resume", thread_id])
+
+    def assert_model_and_effort(self, argv, model, effort):
+        self.assertEqual(argv[argv.index("--model") + 1], model)
+        if self.reviewer == "codex":
+            self.assertEqual(argv[argv.index("-c") + 1], f'model_reasoning_effort="{effort}"')
+        else:
+            self.assertEqual(argv[argv.index("--effort") + 1], effort)
+
+    def thread_started_line(self, thread_id):
+        """The fake's first event line, as the reviewer names its thread."""
+        if self.reviewer == "codex":
+            return json.dumps({"type": "thread.started", "thread_id": thread_id}) + "\n"
+        return json.dumps({"type": "system", "subtype": "init", "session_id": thread_id}) + "\n"
+
+    def reviewer_failure_cases(self):
+        """Failure shapes in the reviewer's own event stream, each with the error it must become."""
+        if self.reviewer == "codex":
+            return [
+                ({"events": [{"type": "turn.failed", "error": {"message": "model overloaded"}}]}, "REVIEWER_FAILED"),
+            ]
+        return [
+            # an API error in the result with exit status 0 (anthropics/claude-code#79500)
+            ({"claude_result": {"is_error": True, "result": "API Error: 529 overloaded"}}, "REVIEWER_FAILED"),
+            ({"claude_result": {"is_error": True, "result": "Not logged in · Please run /login"}},
+             "REVIEWER_AUTH_FAILED"),
+            ({"claude_result": {"subtype": "error_during_execution", "errors": ["boom"]}}, "REVIEWER_FAILED"),
+            ({"result": APPROVED, "claude_result": {"subtype": "error_max_turns"}}, "REVIEWER_FAILED"),
+        ]
+
+    @both_reviewers
     def test_start_opens_a_thread_and_records_the_round(self):
         output = self.start()
         self.assertEqual(output["disposition"], "CHANGES_REQUESTED")
@@ -188,32 +271,36 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(output["round"], 1)
         self.assertEqual(output["findings"][0]["id"], "F1")
         state = self.state_of(output["reviewId"])
-        self.assertEqual(state["codexThreadId"], "thread-1")
+        self.assertEqual((state["reviewer"], state["threadId"]), (self.reviewer, "thread-1"))
         self.assertEqual(state["lastReviewed"]["worktreeDigest"], output["currentWorktreeDigest"])
         self.assertIsNone(state["approved"])
         call = self.calls()[0]
-        self.assertEqual(call["argv"][:2], ["exec", "--json"])
-        self.assertNotIn("resume", call["argv"])
-        self.assertNotIn("--ephemeral", call["argv"])
-        schema = call["argv"][call["argv"].index("--output-schema") + 1]
-        self.assertEqual(schema, str(PLUGIN / "schemas/review-result.schema.json"))
+        self.assert_opens_a_thread(call["argv"])
+        schema = PLUGIN / "schemas/review-result.schema.json"
+        if self.reviewer == "codex":
+            self.assertEqual(call["argv"][call["argv"].index("--output-schema") + 1], str(schema))
+        else:
+            self.assertEqual(call["argv"][call["argv"].index("--json-schema") + 1], schema.read_text())
         self.assertEqual(Path(call["cwd"]).resolve(), self.repo.resolve())
         self.assertIn("You are an independent code reviewer", call["prompt"])
         self.assertIn("review me", call["prompt"])
         rounds = Path(state["reviewId"] and output["statePath"]).parent / "rounds"
         self.assertEqual(sorted(path.name for path in rounds.iterdir()),
-                         ["001-codex.jsonl", "001-codex.stderr", "001-input.md", "001-manifest.json",
-                          "001-result.json"])
+                         [f"001-{self.reviewer}.jsonl", f"001-{self.reviewer}.stderr", "001-input.md",
+                          "001-manifest.json", "001-result.json"])
+        self.assertEqual(json.loads((rounds / "001-result.json").read_text()), CHANGES)
         kinds = [(entry["seq"], entry["actor"], entry["kind"]) for entry in self.journal_of(output["reviewId"])]
-        self.assertEqual(kinds, [(1, "author", "review-request"), (2, "codex", "review-result")])
+        self.assertEqual(kinds, [(1, "author", "review-request"), (2, "reviewer", "review-result")])
         listed = self.helper("list")["reviews"]
         self.assertEqual(listed, [{
-            "reviewId": output["reviewId"], "reviewer": "codex", "effectiveStatus": "CHANGES_REQUESTED", "round": 1,
+            "reviewId": output["reviewId"], "reviewer": self.reviewer, "effectiveStatus": "CHANGES_REQUESTED",
+            "round": 1,
             "approvalFresh": False, "createdAt": output["createdAt"], "updatedAt": output["updatedAt"],
         }])
         repository = json.loads(next(self.state.glob("repositories/*/repository.json")).read_text())
         self.assertEqual(Path(repository["repository"]).resolve(), self.repo.resolve())
 
+    @both_reviewers
     def test_continue_resumes_the_same_thread_and_approval_binds_the_tree(self):
         review_id = self.start()["reviewId"]
         self.helper("verify", review_id, expect=1)
@@ -225,7 +312,7 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(output["round"], 2)
         self.assertTrue(output["approvalFresh"])
         call = self.calls()[1]
-        self.assertEqual(call["argv"][:3], ["exec", "resume", "thread-1"])
+        self.assert_resumes(call["argv"], "thread-1")
         self.assertIn("F1 fixed", call["prompt"])
         self.assertIn("The author responded to your previous review", call["prompt"])
         verified = self.helper("verify", review_id)
@@ -251,21 +338,23 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(again["round"], 3)
         self.assertTrue(again["approvalFresh"])
 
+    @both_reviewers
     def test_resumed_thread_must_be_the_persisted_one(self):
         review_id = self.start()["reviewId"]
         self.plan({"result": APPROVED, "thread_id": "thread-other"})
         error = self.helper("continue", review_id, "--message-file", self.message(), expect=1)["error"]
-        self.assertEqual(error["code"], "CODEX_RESUME_MISMATCH")
+        self.assertEqual((error["code"], error["reviewer"]), ("REVIEWER_RESUME_MISMATCH", self.reviewer))
         self.assertEqual((error["expected"], error["actual"]), ("thread-1", "thread-other"))
         state = self.state_of(review_id)
         self.assertEqual(state["status"], "CHANGES_REQUESTED")
-        self.assertEqual(state["codexThreadId"], "thread-1")
-        self.assertEqual(state["lastError"]["code"], "CODEX_RESUME_MISMATCH")
+        self.assertEqual(state["threadId"], "thread-1")
+        self.assertEqual(state["lastError"]["code"], "REVIEWER_RESUME_MISMATCH")
         self.assertEqual(state["lastError"]["round"], 2)
         self.assertEqual(self.journal_of(review_id)[-1]["kind"], "error")
         self.plan({"result": APPROVED})
         self.assertEqual(self.helper("continue", review_id, "--message-file", self.message())["round"], 3)
 
+    @both_reviewers
     def test_failures_are_errors_never_dispositions(self):
         cases = [
             ({"raw_stdout": "not json\n"}, "INVALID_RESULT"),
@@ -285,61 +374,65 @@ class HelperTest(unittest.TestCase):
             ({"result": {**USER_DECIDES, "userDecision": {**USER_DECIDES["userDecision"], "more": "x"}}},
              "INVALID_RESULT"),
             ({"result": None}, "INVALID_RESULT"),
-            ({"exit": 1, "emit_thread_started": False, "stderr": "boom"}, "CODEX_FAILED"),
-            ({"exit": 1, "result": APPROVED, "stderr": "boom"}, "CODEX_FAILED"),
-            ({"emit_thread_started": False, "result": APPROVED}, "CODEX_FAILED"),
-            ({"events": [{"type": "turn.failed", "error": {"message": "model overloaded"}}]}, "CODEX_FAILED"),
-            ({"exit": 1, "stderr": "Error: thread/resume failed: no rollout found for thread id x"}, "CODEX_FAILED"),
-            ({"exit": 1, "stderr": "Not logged in. Run codex login."}, "CODEX_AUTH_FAILED"),
-            ({"exit": 1, "stderr": "error sending request: 403 Forbidden from proxy"}, "CODEX_EGRESS_DENIED"),
+            ({"exit": 1, "emit_thread_started": False, "stderr": "boom"}, "REVIEWER_FAILED"),
+            ({"exit": 1, "result": APPROVED, "stderr": "boom"}, "REVIEWER_FAILED"),
+            ({"emit_thread_started": False, "result": APPROVED}, "REVIEWER_FAILED"),
+            ({"exit": 1, "stderr": self.lost_thread_stderr}, "REVIEWER_FAILED"),
+            ({"exit": 1, "stderr": "Not logged in. Run codex login."}, "REVIEWER_AUTH_FAILED"),
+            ({"exit": 1, "stderr": "error sending request: 403 Forbidden from proxy"}, "REVIEWER_EGRESS_DENIED"),
+            *self.reviewer_failure_cases(),
         ]
         for step, code in cases:
             with self.subTest(step=step):
                 self.plan(step)
-                error = self.helper("start", "codex", "--message-file", self.message(), expect=1)["error"]
+                error = self.helper("start", self.reviewer, "--message-file", self.message(), expect=1)["error"]
                 self.assertEqual(error["code"], code, error)
+                self.assertEqual(error["reviewer"], self.reviewer)
         for review in self.reviews():
             self.assertEqual(review["status"], "NEW")
             self.assertIsNone(review["approved"])
             self.assertEqual(review["lastError"]["round"], 1)
             self.assertEqual(self.helper("verify", review["reviewId"], expect=1)["error"]["code"], "NOT_APPROVED")
 
+    @both_reviewers
     def test_tree_change_during_a_turn_discards_the_result(self):
         self.plan({"result": APPROVED, "touch": "app.py"})
-        error = self.helper("start", "codex", "--message-file", self.message(), expect=1)["error"]
+        error = self.helper("start", self.reviewer, "--message-file", self.message(), expect=1)["error"]
         self.assertEqual(error["code"], "WORKTREE_CHANGED_DURING_REVIEW")
         self.assertNotEqual(error["before"], error["after"])
         self.assertEqual(error["paths"], ["app.py"])
         review = self.reviews()[0]
         self.assertEqual(review["status"], "NEW")
         self.assertIsNone(review["approved"])
-        self.assertEqual(review["codexThreadId"], "thread-1")
+        self.assertEqual(review["threadId"], "thread-1")
         self.assertIn("changed during review", (self.repo / "app.py").read_text())
         self.plan({"result": APPROVED})
         retried = self.helper("continue", review["reviewId"], "--message-file", self.message("again\n"))
         self.assertEqual((retried["status"], retried["round"]), ("APPROVED", 2))
         call = self.calls()[1]
-        self.assertEqual(call["argv"][:3], ["exec", "resume", "thread-1"])
+        self.assert_resumes(call["argv"], "thread-1")
         self.assertIn("You are an independent code reviewer", call["prompt"])
 
+    @both_reviewers
     def test_a_thread_named_before_an_interrupted_or_truncated_turn_is_kept(self):
-        started = json.dumps({"type": "thread.started", "thread_id": "kept"}) + "\n"
+        started = self.thread_started_line("kept")
         cases = [
             ("timeout", {"result": APPROVED, "sleep": 5}, ("--timeout", "1"), "TURN_INTERRUPTED"),
             ("truncated", {"raw_stdout": started + '{"type": "turn.sta'}, (), "INVALID_RESULT"),
-            ("failed after start", {"raw_stdout": started, "exit": 1, "stderr": "boom"}, (), "CODEX_FAILED"),
+            ("failed after start", {"raw_stdout": started, "exit": 1, "stderr": "boom"}, (), "REVIEWER_FAILED"),
         ]
         for label, step, options, code in cases:
             with self.subTest(label):
                 self.plan(step, {"result": APPROVED})
-                error = self.helper("start", "codex", *options, "--message-file", self.message(), expect=1)["error"]
+                error = self.helper("start", self.reviewer, *options, "--message-file", self.message(),
+                                    expect=1)["error"]
                 self.assertEqual(error["code"], code, error)
                 review = self.reviews()[-1]
                 self.assertEqual(review["status"], "NEW")
-                self.assertEqual(review["codexThreadId"], "kept" if label != "timeout" else "thread-1")
+                self.assertEqual(review["threadId"], "kept" if label != "timeout" else "thread-1")
                 retried = self.helper("continue", review["reviewId"], "--message-file", self.message())
                 self.assertEqual(retried["status"], "APPROVED")
-                self.assertEqual(self.calls()[-1]["argv"][:3], ["exec", "resume", review["codexThreadId"]])
+                self.assert_resumes(self.calls()[-1]["argv"], review["threadId"])
                 self.log.write_text("")
 
     def test_a_helper_failure_while_codex_runs_kills_codex_before_the_lock_is_released(self):
@@ -348,7 +441,7 @@ class HelperTest(unittest.TestCase):
         (rounds / "002-codex.jsonl").mkdir()  # the event log cannot be opened once Codex has started
         self.plan({"result": APPROVED, "sleep": 2}, {"result": APPROVED})
         done = self.root / "codex-ran-to-the-end"
-        self.environment = {"FAKE_CODEX_DONE": str(done)}
+        self.environment = {"FAKE_REVIEWER_DONE": str(done)}
         error = self.helper("continue", review_id, "--message-file", self.message(), expect=1)["error"]
         self.environment = {}
         self.assertEqual(error["code"], "HELPER_FAILED", error)
@@ -365,12 +458,12 @@ class HelperTest(unittest.TestCase):
         import signal
         self.plan({"result": APPROVED, "sleep": 4}, {"result": APPROVED})
         done = self.root / "codex-ran-to-the-end"
-        self.environment = {"FAKE_CODEX_DONE": str(done)}
+        self.environment = {"FAKE_REVIEWER_DONE": str(done)}
         process = self.spawn("start", "codex", "--message-file", self.message())
         self.environment = {}
         for _ in range(100):  # until the fake has named its thread
             reviews = self.reviews()
-            if reviews and reviews[0]["codexThreadId"]:
+            if reviews and reviews[0]["threadId"]:
                 break
             threading.Event().wait(0.1)
         process.send_signal(signal.SIGTERM)
@@ -381,14 +474,13 @@ class HelperTest(unittest.TestCase):
         threading.Event().wait(5)  # past the fake's sleep: an orphaned Codex would have written the marker
         self.assertFalse(done.exists(), "codex outlived the helper")
         review = self.reviews()[0]
-        self.assertEqual((review["status"], review["codexThreadId"]), ("NEW", "thread-1"))
+        self.assertEqual((review["status"], review["threadId"]), ("NEW", "thread-1"))
         self.assertEqual(review["lastError"]["code"], "TURN_INTERRUPTED")
         retried = self.helper("continue", review["reviewId"], "--message-file", self.message())
         self.assertEqual(retried["status"], "APPROVED")
         self.assertEqual(self.calls()[-1]["argv"][:3], ["exec", "resume", "thread-1"])
 
     def test_termination_while_the_snapshot_is_taken_stops_before_codex(self):
-        import shutil
         import signal
         real_git = shutil.which("git")
         wrapper = self.bin / "git"
@@ -422,19 +514,30 @@ class HelperTest(unittest.TestCase):
         self.assertEqual((review["status"], review["lastError"]["code"]), ("NEW", "TURN_INTERRUPTED"))
         self.assertEqual(self.git_out("for-each-ref", f"refs/ko-review/{output['reviewId']}/"), "")
 
-    def test_model_and_effort_reach_every_codex_command(self):
+    @both_reviewers
+    def test_model_and_effort_reach_every_reviewer_command(self):
         self.plan({"result": CHANGES}, {"result": APPROVED})
-        output = self.helper("start", "codex", "--model", "gpt-test", "--effort", "high",
+        output = self.helper("start", self.reviewer, "--model", "model-test", "--effort", "high",
                              "--message-file", self.message())
-        self.assertEqual((output["codexModel"], output["codexEffort"]), ("gpt-test", "high"))
+        self.assertEqual((output["model"], output["effort"]), ("model-test", "high"))
         self.helper("continue", output["reviewId"], "--message-file", self.message())
         for call in self.calls():
-            argv = call["argv"]
-            self.assertEqual(argv[argv.index("--model") + 1], "gpt-test")
-            self.assertEqual(argv[argv.index("-c") + 1], 'model_reasoning_effort="high"')
+            self.assert_model_and_effort(call["argv"], "model-test", "high")
         self.start()
-        self.assertNotIn("--model", self.calls()[-1]["argv"])
-        self.assertNotIn("-c", self.calls()[-1]["argv"])
+        for option in ("--model", "-c", "--effort"):
+            self.assertNotIn(option, self.calls()[-1]["argv"])
+
+    def test_start_records_the_author_session_of_claude_code_or_codex(self):
+        for claude_session, codex_thread, expected in (
+            ("claude-session", "", "claude-session"),
+            ("", "codex-thread", "codex-thread"),
+            ("", "", None),
+        ):
+            with self.subTest(expected=expected):
+                self.environment = {"CLAUDE_CODE_SESSION_ID": claude_session, "CODEX_THREAD_ID": codex_thread}
+                review_id = self.start()["reviewId"]
+                self.environment = {}
+                self.assertEqual(self.state_of(review_id)["authorSessionId"], expected)
 
     def test_defaults_follow_codex_precedence_for_this_repository(self):
         home = self.root / "codex-home"
@@ -523,7 +626,7 @@ class HelperTest(unittest.TestCase):
         found = self.helper("defaults", "codex", cwd=worktree)  # the worktree's own entry wins
         self.assertEqual((found["model"], found["effort"]), ("gpt-user", None))
         (home / "config.toml").write_text("model = [not toml\n")
-        self.assertEqual(self.helper("defaults", "codex", expect=1)["error"]["code"], "CODEX_CONFIG_UNREADABLE")
+        self.assertEqual(self.helper("defaults", "codex", expect=1)["error"]["code"], "REVIEWER_CONFIG_UNREADABLE")
         self.environment = {}
 
     def filtered_repository(self, directory):
@@ -588,9 +691,9 @@ class HelperTest(unittest.TestCase):
             {"result": CHANGES},
         )
         review_id = self.helper("start", "codex", "--max-rounds", "2", "--message-file", self.message())["reviewId"]
-        lost = self.message("## Rebutted findings\n\nF1 is fine\n\n```c\n#include <stdio.h>\n```\n")
+        lost = self.message("## Disputed findings\n\nF1 is fine\n\n```c\n#include <stdio.h>\n```\n")
         error = self.helper("continue", review_id, "--message-file", lost, expect=1)["error"]
-        self.assertEqual((error["code"], error["message"]), ("CODEX_FAILED", f"codex failed: {limit}"))
+        self.assertEqual((error["code"], error["message"]), ("REVIEWER_FAILED", f"codex failed: {limit}"))
         error = self.helper("continue", review_id, "--message-file", self.message("nothing changed\n"), expect=1)
         self.assertEqual(error["error"]["message"], "codex failed: Quota exceeded")
         retried = self.helper("continue", review_id, "--message-file", self.message("still nothing\n"))
@@ -598,7 +701,7 @@ class HelperTest(unittest.TestCase):
         prompt = self.calls()[-1]["prompt"]
         self.assertLess(prompt.index("# The author's message of round 2, which you did not answer"),
                         prompt.index("# The author's message of round 3, which you did not answer"))
-        self.assertLess(prompt.index("\n\n## Rebutted findings\n\nF1 is fine"), prompt.index("\n\nnothing changed"))
+        self.assertLess(prompt.index("\n\n## Disputed findings\n\nF1 is fine"), prompt.index("\n\nnothing changed"))
         self.assertLess(prompt.index("nothing changed"), prompt.index("# The author's response, round 4"))
         self.assertIn("F1 is fine\n\n```c\n#include <stdio.h>\n```\n", prompt)  # as written
         self.assertNotIn("review me", prompt)  # round 1 had its answer
@@ -607,16 +710,17 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(closed["code"], "LOOP_LIMIT_REACHED")
         self.assertEqual(len(self.calls()), 4)  # the limit refuses before Codex runs
 
+    @both_reviewers
     def test_a_first_turn_that_dies_before_a_thread_is_retried_on_a_new_thread(self):
         self.plan({"exit": 1, "emit_thread_started": False, "stderr": "boom"}, {"result": APPROVED})
-        review_id = self.helper("start", "codex", "--message-file", self.message(), expect=1)["error"] and \
+        review_id = self.helper("start", self.reviewer, "--message-file", self.message(), expect=1)["error"] and \
             self.helper("list")["reviews"][0]["reviewId"]
-        self.assertIsNone(self.helper("show", review_id)["codexThreadId"])
+        self.assertIsNone(self.helper("show", review_id)["threadId"])
         retried = self.helper("continue", review_id, "--message-file", self.message("the retry\n"))
-        self.assertEqual((retried["status"], retried["codexThreadId"]), ("APPROVED", "thread-2"))
+        self.assertEqual((retried["status"], retried["threadId"]), ("APPROVED", "thread-2"))
         self.assertIn("did not answer\n\nYour turn on it ended in an error before you answered. The author's latest"
                       " message follows the unanswered ones.\n\n## Task\n\nreview me\n", self.calls()[1]["prompt"])
-        self.assertNotIn("resume", self.calls()[1]["argv"])
+        self.assert_opens_a_thread(self.calls()[1]["argv"])
 
     def test_concurrent_commands_on_one_review_are_refused(self):
         review_id = self.start()["reviewId"]
@@ -663,16 +767,16 @@ class HelperTest(unittest.TestCase):
             state_path.write_text(saved)
         self.assertEqual(self.helper("show", review_id)["status"], "CHANGES_REQUESTED")
 
-    def test_user_decision_needs_claude_agreement(self):
+    def test_user_decision_needs_author_agreement(self):
         review_id = self.start(USER_DECIDES)["reviewId"]
         self.assertEqual(self.helper("show", review_id)["status"], "USER_PROPOSED")
         error = self.helper("escalate", self.start()["reviewId"], "--message-file", self.message(), expect=1)["error"]
         self.assertEqual(error["code"], "ESCALATION_NOT_PROPOSED")
         self.plan({"result": USER_DECIDES})
-        rebuttal = self.message("## Rebutted findings\n\nevidence\n")
-        rebutted = self.helper("continue", review_id, "--message-file", rebuttal)
-        self.assertEqual(rebutted["status"], "USER_PROPOSED")
-        self.assertEqual(rebutted["round"], 2)
+        response_file = self.message("## Disputed findings\n\nevidence\n")
+        continued = self.helper("continue", review_id, "--message-file", response_file)
+        self.assertEqual(continued["status"], "USER_PROPOSED")
+        self.assertEqual(continued["round"], 2)
         escalated = self.helper("escalate", review_id, "--message-file", self.message("agreed\n"))
         self.assertEqual(escalated["status"], "USER_DECISION_REQUIRED")
         self.assertEqual(self.journal_of(review_id)[-1]["kind"], "escalation")
@@ -706,28 +810,29 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(self.helper("show", review_id)["status"], "LOOP_LIMIT_REACHED")
         self.assertEqual(len(self.calls()), 1)
 
-    def test_preconditions_are_checked_before_codex_runs(self):
+    @both_reviewers
+    def test_preconditions_are_checked_before_the_reviewer_runs(self):
         def start_fails_with(code):
-            error = self.helper("start", "codex", "--message-file", self.message(), expect=1)["error"]
-            self.assertEqual(error["code"], code, error)
+            error = self.helper("start", self.reviewer, "--message-file", self.message(), expect=1)["error"]
+            self.assertEqual((error["code"], error["reviewer"]), (code, self.reviewer), error)
 
-        self.environment = {"FAKE_CODEX_SIGNED_OUT": "1"}
-        start_fails_with("CODEX_AUTH_FAILED")
+        self.environment = {"FAKE_REVIEWER_SIGNED_OUT": "1"}
+        start_fails_with("REVIEWER_AUTH_FAILED")
         self.environment = {}
-        self.ruleset = "egress profile: deny-unless-model\nallow https://api.anthropic.com/ tunnel\n"
-        start_fails_with("CODEX_EGRESS_DENIED")
+        self.ruleset = f"egress profile: deny-unless-model\nallow https://{self.other_host}/ tunnel\n"
+        start_fails_with("REVIEWER_EGRESS_DENIED")
         self.ruleset = ""
         self.plan({"result": APPROVED})
-        self.assertEqual(self.helper("start", "codex", "--message-file", self.message())["status"], "APPROVED")
+        self.assertEqual(self.helper("start", self.reviewer, "--message-file", self.message())["status"], "APPROVED")
         self.assertEqual(len(self.calls()), 1)
         empty = self.message("")
-        unreadable = self.helper("start", "codex", "--message-file", empty, expect=1)["error"]
+        unreadable = self.helper("start", self.reviewer, "--message-file", empty, expect=1)["error"]
         self.assertEqual(unreadable["code"], "MESSAGE_UNREADABLE")
         self.assertEqual(self.helper("show", "no-such-review", expect=1)["error"]["code"], "UNKNOWN_REVIEW")
         outside = self.root / "outside"
         outside.mkdir()
         (outside / "program.py").write_text("print('review me')\n")
-        error = self.helper("start", "codex", "--message-file", self.message(), cwd=outside, expect=1)["error"]
+        error = self.helper("start", self.reviewer, "--message-file", self.message(), cwd=outside, expect=1)["error"]
         self.assertEqual(error["code"], "NOT_A_GIT_REPOSITORY")
         steps = [line for line in error["message"].splitlines() if line.startswith("git ")]
         self.assertEqual(steps, ["git init", 'git commit --allow-empty -m "Start of the review"'])
@@ -736,7 +841,7 @@ class HelperTest(unittest.TestCase):
             subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", str(outside),
                             *shlex.split(step)[1:]], check=True, capture_output=True)
         self.plan({"result": APPROVED})
-        recovered = self.helper("start", "codex", "--message-file", self.message(), cwd=outside)
+        recovered = self.helper("start", self.reviewer, "--message-file", self.message(), cwd=outside)
         self.assertEqual(recovered["status"], "APPROVED")
         self.assertIn("`git diff HEAD` plus untracked files", self.calls()[-1]["prompt"])
         listed = subprocess.run(["git", "-C", str(outside), "ls-tree", "--name-only", recovered["snapshots"][0]["ref"]],
@@ -812,7 +917,6 @@ class HelperTest(unittest.TestCase):
         changed("nested repository")
         (nested / "inner.txt").write_text("two\n")
         changed("nested repository content")
-        import shutil
         shutil.rmtree(nested)
         self.assertEqual(self.digest(), clean)
         self.write("app.py", "print('committed')\n")
@@ -952,12 +1056,11 @@ class HelperTest(unittest.TestCase):
         ref = f"refs/ko-review/{error['reviewId']}/round-001"
         shown = self.git_out("show", ref)
         self.assertIn("my request", shown)
-        self.assertIn("### Error: CODEX_FAILED", shown)
+        self.assertIn("### Error: REVIEWER_FAILED", shown)
         tag = self.reviews()[0]["snapshots"][0]["tag"]
         self.assertEqual(tag, self.git_out("rev-parse", ref).strip())
 
     def test_a_transcript_write_failure_is_reported_and_leaves_the_tree_on_the_ref(self):
-        import shutil
         real_git = shutil.which("git")
         wrapper = self.bin / "git"
         wrapper.write_text("\n".join([
@@ -987,7 +1090,7 @@ class HelperTest(unittest.TestCase):
                 self.plan({"exit": 1, "stderr": "boom"})  # a failed turn reports both failures
                 failed = self.helper("start", "codex", "--message-file", self.message(), expect=1)
                 self.environment = {}
-                self.assertEqual(failed["error"]["code"], "CODEX_FAILED")
+                self.assertEqual(failed["error"]["code"], "REVIEWER_FAILED")
                 self.assertIn(diagnostic, failed["snapshots"][0]["transcriptError"])
 
     def test_a_snapshot_failure_in_diff_is_a_structured_error(self):
@@ -1053,7 +1156,6 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(self.helper("start", "codex", "--message-file", self.message())["round"], 1)
         (self.repo / "untracked.txt").unlink()
         wrapper = self.bin / "git"
-        import shutil
         real_git = shutil.which("git")
         wrapper.write_text("\n".join([
             "#!/usr/bin/env python3",
@@ -1123,7 +1225,7 @@ class HelperTest(unittest.TestCase):
         stricter = self.message("Be strict.\n")
         error = self.helper("continue", review_id, "--instructions-file", stricter,
                             "--message-file", self.message(), expect=1)
-        self.assertEqual(error["error"]["code"], "CODEX_FAILED")
+        self.assertEqual(error["error"]["code"], "REVIEWER_FAILED")
         self.assertEqual((error["reviewId"], error["status"]), (review_id, "APPROVED"))
         self.assertEqual(self.helper("verify", review_id, expect=1)["error"]["effectiveStatus"], "STALE_APPROVAL")
 
@@ -1145,14 +1247,15 @@ class HelperTest(unittest.TestCase):
         "```text\n- ```\n# literal content\n```\n"
     )
 
+    @both_reviewers
     def test_export_renders_the_transcript(self):
         instructions = self.message("Be strict.\n")
         self.plan({"result": CHANGES}, {"result": USER_DECIDES})
-        review_id = self.helper("start", "codex", "--instructions-file", instructions,
+        review_id = self.helper("start", self.reviewer, "--instructions-file", instructions,
                                 "--message-file", self.message(
                                     "## Task\n\nthe task\n\n" + self.QUOTED_CODE + "\n###### Deep\n"))["reviewId"]
         self.helper("continue", review_id, "--instructions-file", self.message("Be lenient.\n"),
-                    "--message-file", self.message("## Rebutted findings\n\nF1 is fine\n"))
+                    "--message-file", self.message("## Disputed findings\n\nF1 is fine\n"))
         self.assertIn("Be lenient.", self.calls()[1]["prompt"])
         self.helper("escalate", review_id, "--message-file", self.message("agreed\n"))
         process = self.spawn("export", review_id)
@@ -1161,11 +1264,12 @@ class HelperTest(unittest.TestCase):
         self.assertLess(markdown.index("## Round 1"), markdown.index("Be strict."))
         self.assertLess(markdown.index("Be strict."), markdown.index("#### Task"))
         self.assertLess(markdown.index("## Round 2"), markdown.index("Be lenient."))
-        for text in (f"# Codex review {review_id}", "- Status: USER_DECISION_REQUIRED",
-                     "### Instructions from the user, from this round on",
+        for text in (f"# {self.display} review {review_id}", "- Status: USER_DECISION_REQUIRED",
+                     f"- {self.display} thread: thread-1", "### Instructions from the user, from this round on",
                      "Be lenient.", "## Round 1", f"Snapshot: `refs/ko-review/{review_id}/round-001`", "### The author",
-                     "#### Task", "### Codex: CHANGES_REQUESTED", "- **F1** (high) `app.py:1`: d", "Evidence: e",
-                     "## Round 2", "### Codex: USER_DECISION_REQUIRED", "- Decision requested: d",
+                     "#### Task", f"### {self.display}: CHANGES_REQUESTED", "- **F1** (high) `app.py:1`: d",
+                     "Evidence: e", "## Round 2", f"### {self.display}: USER_DECISION_REQUIRED",
+                     f"- {self.display}'s position: p", "- Decision requested: d",
                      "### The author agreed that the user must decide", "## How to see how it went",
                      f"ko-review export {review_id}"):
             self.assertIn(text, markdown)
@@ -1174,21 +1278,51 @@ class HelperTest(unittest.TestCase):
         second, stderr = process.communicate(timeout=60)
         self.assertEqual(process.returncode, 0, stderr)
         self.assertTrue(second.startswith(f"# Review {review_id}, round 2\n"), second)
-        for text in ("F1 is fine", "### Codex: USER_DECISION_REQUIRED",
+        for text in ("F1 is fine", f"### {self.display}: USER_DECISION_REQUIRED",
                      "### The author agreed that the user must decide"):
             self.assertIn(text, second)
         self.assertNotIn("the task", second)
         self.assertEqual(self.helper("export", review_id, "--round", "3", expect=1)["error"]["code"], "UNKNOWN_ROUND")
 
-    def test_start_names_the_reviewer_and_continue_reads_it_from_the_review(self):
+    def test_start_names_the_reviewer_and_every_later_command_reads_it_from_the_review(self):
         review_id = self.start()["reviewId"]
         self.assertEqual(self.helper("show", review_id)["reviewer"], "codex")
         state_path = Path(self.helper("show", review_id)["statePath"])
         state = json.loads(state_path.read_text())
         state["reviewer"] = "agy"
         state_path.write_text(json.dumps(state))
-        error = self.helper("continue", review_id, "--message-file", self.message(), expect=1)["error"]
-        self.assertEqual(error["code"], "REVIEWER_UNSUPPORTED")
+        for command in (("continue", review_id, "--message-file", self.message()), ("show", review_id)):
+            self.assertEqual(self.helper(*command, expect=1)["error"]["code"], "REVIEWER_UNSUPPORTED")
+        unreadable = (
+            ("REVIEWER_UNSUPPORTED", json.dumps(state), 0o600), ("STATE_IO_FAILED", "not JSON", 0o600),
+            ("STATE_IO_FAILED", "{}", 0o600), ("STATE_IO_FAILED", json.dumps(state), 0),
+        )
+        for code, text, mode in unreadable:  # `delete` takes every id `list` prints
+            doomed = self.start()["reviewId"]
+            doomed_state = Path(self.helper("show", doomed)["statePath"])
+            doomed_state.write_text(text)
+            doomed_state.chmod(mode)
+            self.assertEqual(self.helper("show", doomed, expect=1)["error"]["code"], code)
+            listed = {row["reviewId"]: row for row in self.helper("list")["reviews"]}
+            self.assertEqual(listed[doomed]["effectiveStatus"], code)
+            self.assertEqual(self.helper("delete", doomed)["reviewId"], doomed)
+            self.assertFalse(doomed_state.exists())
+        state["reviewer"] = "codex"
+        state["schemaVersion"] = 1
+        state_path.write_text(json.dumps(state))
+        error = self.helper("show", review_id, expect=1)["error"]
+        self.assertEqual(error["code"], "STATE_IO_FAILED")
+        self.assertIn(f"ko-review delete {review_id}", error["message"])
+        for key in ("threadId", "model", "effort"):  # as an earlier helper wrote it
+            del state[key]
+        state_path.write_text(json.dumps(state))
+        current = self.start()["reviewId"]
+        listed = {row["reviewId"]: row for row in self.helper("list")["reviews"]}  # both, the old one by its error
+        self.assertEqual(listed[review_id]["effectiveStatus"], "STATE_IO_FAILED")
+        self.assertEqual((listed[review_id]["reviewer"], listed[review_id]["round"]), ("codex", 1))
+        self.assertEqual(listed[current]["effectiveStatus"], "CHANGES_REQUESTED")
+        self.assertEqual(self.helper("delete", review_id)["reviewId"], review_id)  # whatever its version
+        self.assertEqual([row["reviewId"] for row in self.helper("list")["reviews"]], [current])
         without = ("start", "--message-file", self.message())
         unknown = ("start", "agy", "--message-file", self.message())
         for arguments in (without, unknown):
@@ -1199,11 +1333,148 @@ class HelperTest(unittest.TestCase):
     def test_plugin_manifest_and_skill_agree_on_names(self):
         manifest = json.loads((PLUGIN / ".claude-plugin/plugin.json").read_text())
         self.assertEqual(manifest["name"], "ko-review")
-        skill = (PLUGIN / "skills/codex/SKILL.md").read_text()
-        self.assertIn("ko-review start codex --message-file", skill)
+        self.assertEqual([path.name for path in (PLUGIN / "skills").iterdir() if path.is_dir()], ["ko-review"])
+        skill = (PLUGIN / "skills/ko-review/SKILL.md").read_text()
+        self.assertIn("name: ko-review\n", skill)  # the plugin's own name, so that the bare /ko-review runs it
+        self.assertIn("ko-review start REVIEWER --message-file", skill)
+        self.assertIn("ko-review defaults REVIEWER", skill)
         for command in ("continue", "escalate", "verify"):
             self.assertIn(f"ko-review {command} REVIEW_ID", skill)
+        for name in ("codex", "claude"):  # the reviewer question offers each name the helper takes
+            self.assertIn(f"`{name}`", skill)
         self.assertTrue(os.access(HELPER, os.X_OK))
+
+
+class ClaudeHelperTest(HelperTest):
+    """The tests marked for both reviewers, against the fake `claude`, plus what is Claude's own."""
+
+    reviewer = "claude"
+    display = "Claude"
+    host = "api.anthropic.com"
+    other_host = "api.openai.com"
+    lost_thread_stderr = "No conversation found with session ID: x"
+
+    def test_the_reviewer_session_is_print_mode_resumable_and_cannot_write(self):
+        self.start()
+        argv = self.calls()[0]["argv"]
+        self.assertEqual(argv[:1], ["-p"])
+        self.assertEqual(argv[argv.index("--output-format") + 1], "stream-json")
+        self.assertIn("--verbose", argv)  # stream-json in print mode requires it
+        for option in ("--bare", "--no-session-persistence", "--dangerously-skip-permissions", "--permission-mode"):
+            self.assertNotIn(option, argv)
+        self.assertEqual(argv[argv.index("--permission-prompts") + 1], "none")
+        self.assertEqual(argv[argv.index("--setting-sources") + 1], "")
+        self.assertIn("--disable-slash-commands", argv)
+        self.assertIn("--strict-mcp-config", argv)
+        tools = argv[argv.index("--tools") + 1].split(",")
+        self.assertEqual(sorted(tools), ["Bash", "Glob", "Grep", "Read", "WebFetch", "WebSearch"])
+        allowed = argv[argv.index("--allowedTools") + 1:]
+        self.assertTrue(all(tool.startswith("Bash(git ") or tool in ("WebFetch", "WebSearch") for tool in allowed))
+
+    def test_the_chosen_effort_overrides_an_inherited_effort_variable(self):
+        self.environment = {"CLAUDE_CODE_EFFORT_LEVEL": "max"}
+        self.plan({"result": CHANGES}, {"result": APPROVED}, {"result": APPROVED})
+        chosen = self.helper("start", "claude", "--effort", "low", "--message-file", self.message())
+        self.helper("continue", chosen["reviewId"], "--message-file", self.message())
+        self.assertEqual([call["effort_variable"] for call in self.calls()], ["low", "low"])  # start and resume
+        self.start(APPROVED)  # no choice: the variable is the user's, and Claude Code applies it
+        self.assertEqual(self.calls()[-1]["effort_variable"], "max")
+        self.environment = {}
+
+    def managed_settings(self, main=None, drop_ins=None):
+        """A managed settings directory of its own, as the environment that points the helper at it."""
+        directory = self.root / "managed"
+        shutil.rmtree(directory, ignore_errors=True)
+        (directory / "managed-settings.d").mkdir(parents=True)
+        if main is not None:
+            (directory / "managed-settings.json").write_text(main if isinstance(main, str) else json.dumps(main))
+        for name, settings in (drop_ins or {}).items():
+            (directory / "managed-settings.d" / name).write_text(json.dumps(settings))
+        return {"KO_REVIEW_CLAUDE_MANAGED_SETTINGS": str(directory), "CLAUDE_CONFIG_DIR": str(self.root / "config")}
+
+    def test_an_effort_the_managed_settings_set_is_the_only_one_a_review_takes(self):
+        self.environment = self.managed_settings({"env": {"CLAUDE_CODE_EFFORT_LEVEL": "high"}})
+        error = self.helper("start", "claude", "--effort", "low", "--message-file", self.message(), expect=1)
+        self.assertEqual(error["error"]["code"], "REVIEWER_CHOICE_REFUSED")
+        self.assertIn("--effort high", error["error"]["message"])
+        self.assertNotIn("reviewId", error)  # refused before a review exists
+        self.assertEqual(self.calls(), [])
+        self.plan({"result": APPROVED}, {"result": APPROVED})
+        for options in (("--effort", "high"), ()):
+            self.assertEqual(self.helper("start", "claude", *options, "--message-file", self.message())["status"],
+                             "APPROVED")
+        # a later drop-in that empties the variable leaves the effort to the review
+        self.environment = self.managed_settings(
+            {"env": {"CLAUDE_CODE_EFFORT_LEVEL": "high"}}, {"10.json": {"env": {"CLAUDE_CODE_EFFORT_LEVEL": ""}}})
+        self.plan({"result": APPROVED})
+        chosen = self.helper("start", "claude", "--effort", "low", "--message-file", self.message())
+        self.assertEqual((chosen["status"], chosen["effort"]), ("APPROVED", "low"))
+        self.environment = {}
+
+    def test_defaults_are_what_the_reviewer_session_reads(self):
+        all_efforts = ["low", "medium", "high", "xhigh", "max"]
+        self.environment = self.managed_settings()
+        found = self.helper("defaults", "claude")
+        self.assertEqual((found["model"], found["effort"], found["partial"]), (None, None, True))
+        self.assertEqual([(model["model"], model["efforts"]) for model in found["catalog"]],
+                         [("fable", all_efforts), ("opus", all_efforts), ("sonnet", all_efforts), ("haiku", [])])
+        self.assertEqual(found["recommended"], {"model": None, "effort": None, "efforts": None, "upgrade": None})
+        # the reviewer loads no user, project or local settings file, so none of them selects anything
+        (self.root / "config").mkdir()
+        (self.root / "config/settings.json").write_text(json.dumps({"model": "opus", "effortLevel": "low"}))
+        self.write(".claude/settings.json", json.dumps({"model": "sonnet"}))
+        self.write(".claude/settings.local.json", json.dumps({"model": "haiku", "effortLevel": "medium"}))
+        found = self.helper("defaults", "claude")
+        self.assertEqual((found["model"], found["effort"]), (None, None))
+        # managed files: the drop-ins in alphabetical order over the main file, hidden ones left out
+        managed = self.managed_settings({"model": "sonnet", "effortLevel": "low"}, {
+            "10.json": {"model": "opus"}, "20.json": {"model": "haiku"}, ".hidden.json": {"model": "fable"},
+            "z.txt": {"model": "fable"},
+        })
+        directory = Path(managed["KO_REVIEW_CLAUDE_MANAGED_SETTINGS"])
+        self.environment = managed
+        found = self.helper("defaults", "claude")
+        self.assertEqual((found["model"], found["effort"]), ("haiku", "low"))
+        self.assertEqual(found["source"], {
+            "model": str(directory / "managed-settings.d/20.json"), "effort": str(directory / "managed-settings.json"),
+        })
+        self.assertEqual(found["recommended"]["efforts"], [])  # Haiku takes no effort
+        # the variables override the managed keys, and a managed env block the inherited variables
+        self.environment = {**managed, "ANTHROPIC_MODEL": "fable", "CLAUDE_CODE_EFFORT_LEVEL": "max",
+                            "ANTHROPIC_DEFAULT_MODEL": "opus"}
+        found = self.helper("defaults", "claude")
+        self.assertEqual((found["model"], found["effort"]), ("fable", "max"))
+        self.assertEqual(found["source"], {"model": "ANTHROPIC_MODEL", "effort": "CLAUDE_CODE_EFFORT_LEVEL"})
+        self.assertEqual(found["recommended"]["efforts"], all_efforts)
+        managed = self.managed_settings(
+            {"env": {"ANTHROPIC_MODEL": "claude-opus-5-5", "CLAUDE_CODE_EFFORT_LEVEL": "xhigh"}})
+        self.environment = {**managed, "ANTHROPIC_MODEL": "fable", "CLAUDE_CODE_EFFORT_LEVEL": "max"}
+        found = self.helper("defaults", "claude")
+        self.assertEqual((found["model"], found["effort"]), ("claude-opus-5-5", "xhigh"))
+        self.assertIsNone(found["recommended"]["efforts"])  # not a model of the catalog: unknown
+        # an empty managed entry unsets the inherited variable instead of yielding to it
+        managed = self.managed_settings(
+            {"model": "sonnet", "env": {"ANTHROPIC_MODEL": "", "CLAUDE_CODE_EFFORT_LEVEL": ""}})
+        self.environment = {**managed, "ANTHROPIC_MODEL": "fable", "CLAUDE_CODE_EFFORT_LEVEL": "max"}
+        found = self.helper("defaults", "claude")
+        self.assertEqual((found["model"], found["effort"]), ("sonnet", None))
+        self.assertEqual(found["source"]["effort"], None)
+        self.environment = {**self.managed_settings({}), "ANTHROPIC_DEFAULT_MODEL": "opus"}  # the last source
+        self.assertEqual(self.helper("defaults", "claude")["source"]["model"], "ANTHROPIC_DEFAULT_MODEL")
+        # per-model efforts are keyed by names the helper does not resolve: unknown rather than guessed
+        self.environment = self.managed_settings(
+            {"effortLevel": "low", "modelSettings": {"claude-opus-5-5": {"effortLevel": "high"}}})
+        self.assertIsNone(self.helper("defaults", "claude")["effort"])
+        self.environment = self.managed_settings("{not json")
+        self.assertEqual(self.helper("defaults", "claude", expect=1)["error"]["code"], "REVIEWER_CONFIG_UNREADABLE")
+        self.environment = {}
+
+
+# Only the tests marked for both reviewers run again under ClaudeHelperTest: the rest are hidden
+# from unittest, which collects callable `test_*` attributes, by shadowing them with None.
+for _name, _test in list(vars(HelperTest).items()):
+    if _name.startswith("test_") and not getattr(_test, "both_reviewers", False):
+        setattr(ClaudeHelperTest, _name, None)
 
 
 if __name__ == "__main__":

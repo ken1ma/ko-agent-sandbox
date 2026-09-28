@@ -9,42 +9,6 @@ import SandboxStats.*
 
 class SandboxStatsTest extends munit.FunSuite:
 
-  test("sizes print as `numfmt --to=iec` prints them, the rule of df, du and ls -h"):
-    // Each expected string is numfmt's own output for the same byte count.
-    assertEquals(humanBytes(0), "0")
-    assertEquals(humanBytes(1023), "1023")
-    assertEquals(humanBytes(1024), "1.0K")
-    assertEquals(humanBytes(1025), "1.1K")
-    assertEquals(humanBytes(1536), "1.5K")
-    assertEquals(humanBytes(10188), "10K")
-    assertEquals(humanBytes(10240), "10K")
-    assertEquals(humanBytes(10241), "11K")
-    assertEquals(humanBytes(1047552), "1023K")
-    assertEquals(humanBytes(1048064), "1.0M")
-    assertEquals(humanBytes(1048575), "1.0M")
-    assertEquals(humanBytes(1073321984), "1.0G")
-    assertEquals(humanBytes(11381243904L), "11G")
-    assertEquals(humanBytes(1L << 40), "1.0T")
-    assertEquals(humanBytes(3L << 40), "3.0T")
-    assertEquals(humanBytes(3L << 50), "3.0P")
-    assertEquals(humanBytes((1L << 62) - 1), "4.0E")
-    assertEquals(humanBytes(Long.MaxValue), "8.0E")
-    // A part in its whole's unit, rounded by the same rule at that unit.
-    assertEquals(humanPair(237L << 20, 11381243904L), ("0.3", "11G"))
-    assertEquals(humanPair(8L << 20, 256L << 20), ("8.0", "256M"))
-    assertEquals(humanPair(15L << 20, 256L << 20), ("15", "256M"))
-    assertEquals(humanPair(0, 256L << 20), ("0.0", "256M"))
-    assertEquals(humanPair(1048064, 1048064), ("1.0", "1.0M"))
-
-  test("a share line says the percentage first and the figure the thresholds act on beside it"):
-    assertEquals(shareLine("storage", (9367L << 30) / 10, (16L << 40) / 10, "free"), "storage: 57% (937G) free")
-    assertEquals(shareLine("memory", 6L << 30, 8L << 30, "available"), "memory: 75% (6.0G) available")
-    // The tint wraps the figure alone, so the words hold where the escape does not.
-    assertEquals(
-      shareLine("memory", 6L << 30, 8L << 30, "available", "<" + _ + ">"),
-      "memory: <75% (6.0G)> available",
-    )
-
   test("a count line is the section over each table, and the whole section when there is nothing to tabulate"):
     assertEquals(counted(0, "live session"), "0 live sessions")
     assertEquals(counted(1, "live session"), "1 live session")
@@ -95,11 +59,11 @@ class SandboxStatsTest extends munit.FunSuite:
     assert(alone.contains("  1a2b3c4d  0.1 / 6.7G  -      8.0%  small-0123456789ab\n"), alone)
     assertEquals(liveTable(Vector.empty, Map.empty), "0 live sessions\n")
 
-  test("brokers are the locked broker sessions, each named by its run file, one row per directory served"):
+  test("runners are the locked runner sessions, each named by its run file, one row per directory served"):
     val root = Files.createTempDirectory("ko-agent")
     val project = Files.createTempDirectory("project")
     val nested = project.resolve("nested")
-    val live = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val live = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
     def named(session: RunOnHostSession.Session, run: String): Unit =
       Files.writeString(
         session.directory.resolve(RunOnHostSession.RunFile), s"ko-agent-sandbox-run-app-0123456789ab-$run\n",
@@ -110,32 +74,32 @@ class SandboxStatsTest extends munit.FunSuite:
       RunOnHostSession.publishBuildFile(live.directory, hash, directory)
       records.foreach(record => Files.writeString(live.records.resolve(s"$record-$hash"), "1 x\n"))
     Files.writeString(live.records.resolve("daemon-gradle-4242"), "4242 x\n")
-    // A broker that has served nothing yet, and one whose launch predates the run file.
-    val fresh = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    // A runner that has served nothing yet, and one whose launch predates the run file.
+    val fresh = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
     named(fresh, "1a2b3c4d")
-    RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
-    // A dead broker's session, unlocked, is the scavenger's, not the report's; a command's is no broker.
-    val dead = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
+    // A dead runner's session, unlocked, is the scavenger's, not the report's; a command's is no runner.
+    val dead = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
     dead.close()
     RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Command).toOption.get
     assertEquals(
-      brokers(root),
+      runners(root),
       Vector(
-        Broker("1a2b3c4d", project.toString, Vector.empty),
-        Broker(
+        Runner("1a2b3c4d", project.toString, Vector.empty),
+        Runner(
           "5e6f7a8b", project.toString,
           Vector(project.toString -> Vector("sbt", "gradle"), nested.toString -> Vector.empty),
         ),
-        Broker("?", project.toString, Vector.empty),
+        Runner("?", project.toString, Vector.empty),
       ),
     )
     assertEquals(
-      brokerTable(Vector(
-        Broker(
+      runnerTable(Vector(
+        Runner(
           "5e6f7a8b", "/home/me/big",
           Vector("/home/me/big" -> Vector("sbt", "gradle"), "/home/me/big/nested" -> Vector("mill")),
         ),
-        Broker("1a2b3c4d", "/home/me/small", Vector.empty),
+        Runner("1a2b3c4d", "/home/me/small", Vector.empty),
       )),
       """2 run-on-host directories
         |  run       runtime      directory
@@ -143,11 +107,11 @@ class SandboxStatsTest extends munit.FunSuite:
         |  5e6f7a8b  mill         /home/me/big/nested
         |""".stripMargin,
     )
-    assertEquals(brokerTable(Vector.empty), "0 run-on-host directories\n")
-    assertEquals(brokerTable(Vector(Broker("1a2b3c4d", "/home/me/small", Vector("/home/me/small" -> Vector("sbt"))))),
+    assertEquals(runnerTable(Vector.empty), "0 run-on-host directories\n")
+    assertEquals(runnerTable(Vector(Runner("1a2b3c4d", "/home/me/small", Vector("/home/me/small" -> Vector("sbt"))))),
       "1 run-on-host directory\n  run       runtime  directory\n  1a2b3c4d  sbt      /home/me/small\n")
-    assertEquals(brokerTable(Vector(Broker("1a2b3c4d", "/home/me/small", Vector.empty))), "0 run-on-host directories\n")
-    assertEquals(brokers(root.resolve("absent")), Vector.empty)
+    assertEquals(runnerTable(Vector(Runner("1a2b3c4d", "/home/me/small", Vector.empty))), "0 run-on-host directories\n")
+    assertEquals(runners(root.resolve("absent")), Vector.empty)
 
   test("volume sizes are read back from the verbose df table, in podman's decimal units"):
     val df =
@@ -257,22 +221,22 @@ class SandboxStatsTest extends munit.FunSuite:
 
   test("a run container's name reads back as kind, project id and run suffix"):
     assertEquals(
-      AgentSandboxLauncher.runContainerParts("ko-agent-sandbox-run-app-0123456789ab-1a2b3c4d"),
+      LauncherState.runContainerParts("ko-agent-sandbox-run-app-0123456789ab-1a2b3c4d"),
       Some(("sandbox-run", "app-0123456789ab", "1a2b3c4d")),
     )
     assertEquals(
-      AgentSandboxLauncher.runContainerParts("ko-agent-egress-proxy-my.app_2-0123456789ab-1a2b3c4d"),
+      LauncherState.runContainerParts("ko-agent-egress-proxy-my.app_2-0123456789ab-1a2b3c4d"),
       Some(("egress-proxy", "my.app_2-0123456789ab", "1a2b3c4d")),
     )
-    assertEquals(AgentSandboxLauncher.runContainerParts("ko-agent-sandbox-run-app-0123456789ab"), None)
-    assertEquals(AgentSandboxLauncher.runContainerParts("ko-agent-self-test-app-0123456789ab-1a2b3c4d"), None)
+    assertEquals(LauncherState.runContainerParts("ko-agent-sandbox-run-app-0123456789ab"), None)
+    assertEquals(LauncherState.runContainerParts("ko-agent-self-test-app-0123456789ab-1a2b3c4d"), None)
 
   test("the directory behind an id is what the launch recorded while it exists, and nothing otherwise"):
     val root = Files.createTempDirectory("projects")
     val project = Files.createTempDirectory("app")
-    AgentSandboxLauncher.recordProjectDirectory(root, "app-0123456789ab", project)
+    LauncherState.recordProjectDirectory(root, "app-0123456789ab", project)
     // A record whose directory is gone: the row falls back to the id, the handle --reset takes.
-    AgentSandboxLauncher.recordProjectDirectory(root, "gone-0123456789ab", project.resolve("gone"))
+    LauncherState.recordProjectDirectory(root, "gone-0123456789ab", project.resolve("gone"))
     Files.createDirectories(root.resolve("odd-0123456789ab"))
     Files.writeString(root.resolve("blank-0123456789ab"), "\n")
     // A stray file under the root is not a record: its name is no id --reset would take.
@@ -297,25 +261,25 @@ class SandboxStatsTest extends munit.FunSuite:
     )
     assertEquals(ids, Vector("a-0123456789ab", "b-0123456789ab", "c-0123456789ab"))
     // The contract --stats prints and --reset reads: every id listed is one --reset accepts.
-    assertEquals(AgentSandboxLauncher.projectIdOperands("--reset", ids.toList), Right(ids))
+    assertEquals(LauncherState.projectIdOperands("--reset", ids.toList), Right(ids))
 
   test("podman's exists answers present on 0, absent on 1, and nothing on any other exit"):
-    assertEquals(AgentSandboxLauncher.existsAnswer(0), Some(true))
-    assertEquals(AgentSandboxLauncher.existsAnswer(1), Some(false))
-    assertEquals(AgentSandboxLauncher.existsAnswer(125), None)
-    assertEquals(AgentSandboxLauncher.existsAnswer(-1), None)
+    assertEquals(LauncherState.existsAnswer(0), Some(true))
+    assertEquals(LauncherState.existsAnswer(1), Some(false))
+    assertEquals(LauncherState.existsAnswer(125), None)
+    assertEquals(LauncherState.existsAnswer(-1), None)
 
   test("a reset drops the record once nothing it names remains, and keeps it while a resource does"):
     val root = Files.createTempDirectory("projects")
     val id = "app-0123456789ab"
     val kept = Files.createTempDirectory("cache")
     val absent = kept.resolve("absent")
-    AgentSandboxLauncher.recordProjectDirectory(root, id, Paths.get("/home/me/app"))
-    AgentSandboxLauncher.dropRecordUnless(root, id, Vector(absent, kept), volumeKept = false)
+    LauncherState.recordProjectDirectory(root, id, Paths.get("/home/me/app"))
+    LauncherState.dropRecordUnless(root, id, Vector(absent, kept), volumeKept = false)
     assert(Files.exists(root.resolve(id)), "kept: one of the named directories exists")
-    AgentSandboxLauncher.dropRecordUnless(root, id, Vector(absent), volumeKept = true)
+    LauncherState.dropRecordUnless(root, id, Vector(absent), volumeKept = true)
     assert(Files.exists(root.resolve(id)), "kept: the generated volume remains")
-    AgentSandboxLauncher.dropRecordUnless(root, id, Vector(absent), volumeKept = false)
+    LauncherState.dropRecordUnless(root, id, Vector(absent), volumeKept = false)
     assert(!Files.exists(root.resolve(id)), "dropped: nothing named remains")
-    AgentSandboxLauncher.dropRecordUnless(root, id, Vector.empty, volumeKept = false)
-    AgentSandboxLauncher.dropRecordUnless(root.resolve("never"), id, Vector(absent), volumeKept = false)
+    LauncherState.dropRecordUnless(root, id, Vector.empty, volumeKept = false)
+    LauncherState.dropRecordUnless(root.resolve("never"), id, Vector(absent), volumeKept = false)

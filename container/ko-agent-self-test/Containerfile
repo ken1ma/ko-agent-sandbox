@@ -6,7 +6,7 @@
 # (`fuse/ko-agent-fs/doc/testing.md`). Their mounted half needs /dev/fuse and CAP_SYS_ADMIN, which no
 # image build has, so they compile here and run later:
 # `--no-run` in the builder means nothing is compiled, and nothing fetched, at verification time.
-# Built by the launcher's `--self-test` (AgentSandboxLauncher.selfTestBuildCommands).
+# Built by the launcher's `--self-test` (ImageBuilds.selfTestBuildCommands).
 #
 # The context is the unpacked bundle root rather than this directory, because the crate to compile
 # is beside it. RUST_VERSION has no default here: it is the version ko-agent-fs/Containerfile

@@ -11,17 +11,25 @@ import java.net.{Inet6Address, InetAddress, InetSocketAddress, Socket, UnknownHo
 import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.util.Base64
-import javax.net.ssl.{SNIHostName, SNIServerName, SSLContext, SSLSocket}
+import javax.net.ssl.SSLSocket
 import scala.annotation.tailrec
 
 import HTTPHelper.*
 import IPAddrHelper.*
+import TLSHelper.verifiedClient
 
 object TransportHelper:
 
-  /** Read in that order: the launcher passes through whichever of the two its own environment
-    * has, uppercase first, and this is the same order. */
+  /** Read in that order (upstreamProxyVariable), by the proxy and by the launcher that passes the
+    * variable through. */
   val UpstreamProxyVariables = Vector("HTTPS_PROXY", "https_proxy")
+
+  /** How the transport line a proxy logs at its start begins (EgressRules.transportLineOf). */
+  val TransportLineHead = "egress transport: "
+
+  /** The upstream proxy variable this environment sets, and its value: an empty one is unset. */
+  def upstreamProxyVariable(read: String => Option[String]): Option[(String, String)] =
+    UpstreamProxyVariables.iterator.flatMap(name => read(name).filter(_.nonEmpty).map(name -> _)).nextOption()
 
   /** A connected origin socket, the TCP connection under it, and the vetted address behind it.
     * The address is carried apart from the socket because through the upstream proxy the
@@ -77,7 +85,7 @@ object TransportHelper:
         catch case ex: IOException => throw TransportFailure(addresses, ex.getMessage)
       OriginSocket(socket, socket, socket.getInetAddress)
 
-    val summary = "egress transport: direct"
+    val summary = s"${TransportLineHead}direct"
 
   /**
    * The upstream proxy as `variable` — HTTPS_PROXY or its lowercase — spelled it, parsed once at
@@ -114,9 +122,7 @@ object TransportHelper:
   object UpstreamEndpoint:
 
     def configured(read: String => Option[String]): Option[UpstreamEndpoint] =
-      UpstreamProxyVariables.iterator
-        .flatMap(variable => read(variable).filter(_.nonEmpty).map(value => parse(value, variable)))
-        .nextOption()
+      upstreamProxyVariable(read).map((variable, value) => parse(value, variable))
 
     def parse(value: String, variable: String): UpstreamEndpoint =
       def refuse(problem: String): Nothing =
@@ -152,8 +158,9 @@ object TransportHelper:
             case i                               => (hostPort.substring(0, i), hostPort.substring(i + 1))
       if hostText.isEmpty then refuse("has an empty host")
       val port =
-        portText.toIntOption
+        parseDecimal(portText)
           .filter(p => 1 <= p && p <= 65535)
+          .map(_.toInt)
           .getOrElse(refuse("has no port; the port must be explicit"))
 
       val (host, literal) =
@@ -217,7 +224,7 @@ object TransportHelper:
    */
   class UpstreamProxy(val endpoint: UpstreamEndpoint, val proxyAddresses: Vector[InetAddress]) extends OriginTransport:
 
-    val summary = s"egress transport: upstream proxy ${endpoint.spelled} -> " +
+    val summary = s"${TransportLineHead}upstream proxy ${endpoint.spelled} -> " +
       s"${proxyAddresses.map(_.getHostAddress).mkString(" ")} (${endpoint.variable})"
 
     def connect(addresses: Vector[InetAddress], port: Int): OriginSocket =
@@ -315,18 +322,10 @@ object TransportHelper:
     /** The endpoint's own TLS, verified against the image's public roots for the name or literal
       * HTTPS_PROXY spelled, before a byte — the credential included — is sent. */
     private def secure(socket: Socket): SSLSocket =
-      val tls =
-        SSLContext.getDefault.getSocketFactory
-          .createSocket(socket, endpoint.host, endpoint.port, true)
-          .asInstanceOf[SSLSocket]
-      val parameters = tls.getSSLParameters
-      parameters.setEndpointIdentificationAlgorithm("HTTPS")
-      if endpoint.literal.isEmpty then
-        parameters.setServerNames(java.util.List.of[SNIServerName](SNIHostName(endpoint.host)))
-      tls.setSSLParameters(parameters)
-      tls.setSoTimeout(AgentEgressProxy.HandshakeTimeoutMillis)
-      tls.startHandshake()
-      tls
+      verifiedClient(
+        socket, endpoint.host, endpoint.port, autoClose = true, sni = endpoint.literal.isEmpty,
+        applicationProtocol = None,
+      )
 
   /** The transport a run uses, from its environment: direct unless HTTPS_PROXY is set. Parse
     * refusals are IllegalArgumentException, a failed endpoint resolution IOException — both end

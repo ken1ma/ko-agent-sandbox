@@ -31,7 +31,8 @@ The proxy's default rules, listed in the proxy image's `defaults/host` and
 
 - for every supported model provider — `anthropic`, `openai`, `google`, `aws` and `github` —
   tunnels to model, authentication and control-plane endpoints; GitHub's rules also permit two
-  inspected login `POST`s and one token read;
+  inspected login `POST`s and one token read, and Google's two inspected reads of the signed-in
+  account;
 - inspected documentation, package-registry and forge hosts, with `read` on every line and
   `git-fetch` on the three forges.
 
@@ -70,8 +71,16 @@ GRANT: read | git-fetch | method=M,... | tunnel           at least one; each onc
   literal, a port, userinfo, a query or a fragment.
 - `**.` is the deny side's only pattern, the apex and everything under it (`**.foo.com` covers
   `foo.com` and `api.foo.com`, never `barfoo.com`).
-- The path is written unencoded, in printable ASCII, in canonical form: it begins with `/`, and
-  has no `%`, `\`, empty, `.` or `..` segment, and no `?`.
+- The path is written in canonical form, one spelling for each path (`RulePath.literalPathProblem`):
+  - it begins with `/`, in printable ASCII, with no `\`, `;`, `?`, `#`, empty segment, or `.` or
+    `..` segment; servlet containers drop a `;` parameter before resolving `..`, so `/a/..;/b` is
+    `/b` to Tomcat;
+  - `%` only escapes non-ASCII text, in UTF-8, or a space (`%20`): `/docs/%E3%81%82/` is one path,
+    and `%41` or `%2e` is refused, since `A` and `.` have a spelling of their own. Hex case is
+    compared as written, as letter case is: a request in the other case is not under the line;
+  - an escape must decode as strict UTF-8, so no overlong form spells `.` or `/` (`%C0%AE`), and
+    its text may not gain `/`, `\`, `.`, `;`, `%`, `?` or `#` under Unicode normalization (NFKC), as
+    the fullwidth `／` (`%EF%BC%8F`) and U+037E (`%CD%BE`, `;` under NFC already) do.
 - A trailing `/` names the tree under it; none names that one path; `https://HOST/` is the root,
   the whole host. `https://HOST` without its slash is refused, never read as the root.
 - Case is the origin's: the proxy folds nothing.
@@ -122,13 +131,13 @@ A request matching no line, on a host without a root line, is refused.
 Which path spellings a request may carry depends on the matched scope, because the proxy compares
 literally and cannot know how the origin decodes:
 
-- Where the longest match is a scope other than the root, the request is first refused, on every
-  method, for a spelling the origin might fold onto another path — `%`, a dot segment, a
-  backslash, an empty segment. A wrong-case path fails closed on GitHub and GCS alike.
+- Where the longest match is a scope other than the root, the request's path must have a rule
+  path's canonical form, on every method: anything else is a spelling the origin might fold onto
+  another path. A wrong-case path fails closed on GitHub and GCS alike.
 - Under the root, `GET` and `HEAD` may carry any of those spellings, which keeps npm's
   `/@scope%2fname` readable beside a `method=` line. `POST`, `PUT`, `PATCH` and `DELETE` still
-  refuse percent-encoding and dot segments there; backslashes and empty segments are refused only
-  under a scope other than the root.
+  refuse percent-encoding and dot segments there; the canonical form's other checks apply only under
+  a scope other than the root.
 
 A line is therefore a boundary as well as a grant: one whose grants its enclosing scope already
 holds still changes which path spellings are refused.
@@ -184,8 +193,8 @@ Two lines disagreeing about a grant are the ordinary case, not a refusal: the la
 `deny`, `allow`, `deny` removes the exception the `allow` made; `allow`, `deny`, `allow` restores
 the grant the `deny` removed.
 
-Three conditions are warned at every launch instead, under every profile, so a misspelling cannot
-fail silently:
+Three conditions in the file are warned at every launch instead, under every profile, so a
+misspelling cannot fail silently:
 
 - a `deny` matching nothing at its position;
 - a redundant grant — a line granting nothing its enclosing scope lacks,
@@ -193,10 +202,14 @@ fail silently:
   a host-wide `deny` before it was intended, though the boundary it opens remains;
 - a line every grant of which a later line takes back.
 
+A fourth warning names the hosts of the selected model provider that the resolved ruleset does
+not allow.
+
 A line restating a defaults line at its path is silent: that is how a file stays valid as the
 image adopts its hosts.
 
-1. Without a rule file, the selected profile applies without project overrides.
+1. Without a rule file, or with one holding only comments and blank lines, the selected profile
+   applies without project overrides.
    - An empty ruleset is valid and reported as such — `deny-all` resolves empty by design, as
      does `deny-unless-model` under `bash`.
 1. Editing the file takes effect on the next launch; a running session keeps its original ruleset.
@@ -249,16 +262,21 @@ the full ruleset there avoids including the host list in every prompt.
 
 ## Audit what has been allowed or denied
 
-Run with `--proxy-log` from the project directory. Every proxy connection is logged,
+Run with `--egress-log` from the project directory. Every proxy connection is logged,
 and the proxy appends the log to a per-run file on the host, under
 
     ~/.local/state/ko-agent-sandbox/log/<project>/     # Linux / macOS / WSL
     %LOCALAPPDATA%\ko-agent-sandbox\log\<project>\     # native Windows
 
-- With no arguments, `--proxy-log` prints the retained files oldest first — the newest 20 runs,
+- With no arguments, `--egress-log` prints the retained files oldest first — the newest 20 runs,
   and any older one whose session is still running, since a live proxy is still appending to its
   file.
-- The startup lines are the ruleset, its digest, the metadata and whether inspection is active.
+- A `--run-on-host` program's proxy has its own file there, named after its run as the container
+  proxy's is. It is the file that proxy writes, so it fills during the run and stays when the
+  proxy's session directory is removed (`RunOnHostProxy.keepAuditLog`).
+- A host command whose proxy's file cannot be created there is refused, with a message naming the
+  directory to make writable.
+- Startup lines come first; SECURITY.md, "The audit line grammar", lists them.
 - Every connection event after them is one line, with an inspected request's full target — query
   string included, which is what makes an exfiltrating `GET` visible.
 
@@ -293,6 +311,147 @@ The per-project CA is stored on the host, under
 1. Deleting that directory is how you rotate the CA. The next launch recreates it, and every
    launch's proxy starts with the certificates the launch found or issued.
 
+## Brokered credentials
+
+`--egress-cred=NAME@HOST` gives environment variable `NAME` to the proxy that inspects `HOST`. The
+sandbox and `--run-on-host` commands see `NAME` set to a placeholder, and that proxy puts the value
+in its place in requests to `HOST`.
+
+    GH_TOKEN=$(gh auth token) <launcher> --egress-cred=GH_TOKEN@api.github.com claude
+
+- `HOST` must be inspected by the session's rules or by a `--run-on-host` program's rule file
+  (`.ko-agent-sandbox/run-on-host/<program>/egress/rule`). The launch refuses a binding to a host
+  no rule allows, naming the `allow` line to add, and one to a tunnel host, naming the alternatives.
+- The value comes from the launcher's environment alone: `NAME=VALUE@HOST` is refused (design.md,
+  "Credential brokering at the egress proxy", has why).
+- The launch prints each binding with its placeholder, `--egress-effective` prints where each would
+  go under the ruleset, and the agent instructions name them.
+- The audit line of a request that carried a value ends `inject=NAME -> <ip>` (SECURITY.md, "The
+  audit line grammar").
+- Measured against GitHub (2026-10-04, `gh` 2.102.0 installed in the sandbox), one token bound as
+  `GH_TOKEN@api.github.com` and as `GIT_TOKEN@github.com`:
+  - each name holds a placeholder of its own in the token's `gho_` format;
+  - `gh api user` succeeds, its audit line `inject=GH_TOKEN`;
+  - a private `git clone` succeeds with a credential helper returning `$GIT_TOKEN`, its `info/refs`
+    and `git-upload-pack` lines `inject=GIT_TOKEN`; git's first `info/refs`, sent without
+    credentials, has none;
+  - with the helper returning `$GH_TOKEN` instead, GitHub refuses the clone (`Invalid username or
+    token`);
+  - `GH_TOKEN`'s placeholder sent to `gitlab.com` gets a 401, its line without `inject`;
+  - `git push --dry-run` is refused at ref discovery.
+- SECURITY.md, "Who holds a brokered value", has where the value is held and what stays open.
+
+### Where the value goes
+
+The binding names one place, and the value goes there only when the whole token in it equals the
+placeholder:
+
+- `NAME@HOST`: `Authorization`, the token of `Bearer` or `token`, or the password half of `Basic`.
+  `Basic` is what git sends for an `https://` remote with a credential helper, and what git and
+  curl make of `https://user:token@host/`, so the URL form is rewritten too.
+- `NAME@HOST:HEADER`: the whole value of `HEADER`, such as `x-api-key`. Bind the header the service
+  authenticates with: a header the service stores as metadata or echoes back hands the value to the
+  sandbox.
+- `NAME@HOST?PARAM`: the percent-decoded value of query parameter `PARAM`, the value written
+  percent-encoded, since the value grammar admits `&`, `=`, `#` and `%`. The value is the
+  parameter's alone: an Azure SAS token is composed around it in
+  the sandbox, `"sv=…&sp=rl&sig=$AZURE_SAS_SIG"`.
+- `NAME@HOST/PREFIX/` with any of the above: requests whose path is under `/PREFIX/` alone.
+
+A header or parameter sent more than once is rewritten in each occurrence holding the placeholder,
+so whichever occurrence the origin reads means what the client sent there.
+
+Everything else is forwarded as sent:
+
+- a request to another host, whatever placeholder it carries;
+- a token that is not the placeholder, so an application's own credential for the host reaches it
+  unchanged (docker/sbx-releases #8);
+- a placeholder anywhere else — the path, a body, an unbound header or parameter — which
+  authenticates nothing: a credential sent that way fails with the origin's 401, as the launch's
+  note says;
+- every response: a response echoing a credential is not rewritten.
+
+The rewrite happens before the request is authorized and framed, so the decision reads what the
+origin receives: a bound `service` parameter on a Git host is decided as the value it becomes.
+
+`PREFIX` is written as a rule's path is, in canonical form ("The rule file"), so non-ASCII text is
+escaped and anything else spelled two ways is refused at launch. A request under it must have that
+form too, or it is not covered: the origin could decode another spelling to a path outside the
+prefix. The rules' own paths decide first; a prefix narrows where the value goes, never what may be
+requested.
+
+What the binding admits, checked at launch and again where a proxy reads its bindings:
+
+- a value of 1 to 16384 bytes of visible ASCII (`0x21`–`0x7E`), which can end no field and alter
+  no framing; a refusal names the offset, never the value;
+- a binding of at most 16384 bytes, counted with the host normalized and the place named,
+  `:Authorization` when the binding names none;
+- at most 256 bindings in a launch (`CredentialGrammar.MaxBindings`);
+- a header name that is an HTTP token, other than `Host`, `Content-Length`, `Transfer-Encoding`
+  and the hop-by-hop headers, `Connection` and `Upgrade` among them, which the proxy reads or
+  removes (`CredentialGrammar.RefusedHeaders`): a value there would never reach the origin as that
+  header;
+- a parameter name without `&`, `=`, `#`, `+` or a byte outside visible ASCII: `+` is refused
+  because a form parser reads it as a space, so the origin would read `a+b` as `a b`.
+
+16384 bytes is the longest request head the proxy reads (`AgentEgressProxy.MaxHttpHeaderBytes`). A
+request's head holds the value, and the host, the prefix and the header or parameter name of a
+binding that applies to it:
+
+- a JWT with many group or role claims is longer than 4 KiB, so the value's bound is well above it;
+- a longer value is refused at the origin by an AWS Application Load Balancer, whose limit for
+  one header is 16 K, and by a Node.js server, whose default for a message's headers is 16 KiB:
+  - https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-limits.html
+  - https://nodejs.org/docs/latest-v24.x/api/cli.html#--max-http-header-sizesize
+
+The placeholder is fresh each launch and random. The project sees the placeholder once the
+session runs; the randomness keeps a string written before it, such as an application's own
+token, from equaling it and being replaced.
+
+A value starting with a prefix programs recognize — `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`,
+`github_pat_`, `glpat-` — gets a placeholder in its format, so a program checking a token's syntax
+before it sends one still sends it:
+
+- the prefix and the length;
+- `-`, `.`, `_` and `~` in place, which separate the parts of GitHub's `ghs_APPID_JWT` installation
+  tokens;
+- a digit for each digit and a letter of the same case for each letter. Other punctuation becomes
+  a letter or a digit: `&`, `=`, `#` and `%` would split or re-parse the query a `?PARAM`
+  placeholder is composed into.
+
+Any other value gets 22 random letters and digits, the fewest that hold 128 bits; no format limits
+that placeholder's length (`EgressCredentials.placeholderFor`):
+
+- a value without such a prefix is one, and so is a prefixed value whose format leaves fewer than
+  64 random bits, about 14 letters or 20 digits besides the prefix and those separators;
+- that placeholder shows the sandbox nothing of the value. One in the value's format would show
+  its length, where its separators are and each other character's class, which narrows the
+  guesses for a password a person chose;
+- a program that checks such a value's syntax before sending it may refuse the placeholder
+  (`TODO.md`, "Credential brokering").
+
+### Which credentials fit
+
+- Forge tokens, and the bearer tokens of cloud APIs: Google Cloud and Azure access tokens are
+  `Authorization: Bearer`, so a binding covers them once the API host is inspected, with the
+  `method=POST` grants cloud APIs need and the cloud's CLI or SDK trusting the launch CA.
+- A whole token in one query parameter: an Azure storage SAS token's `sig`, an HMAC over the SAS's
+  own fields that whoever holds it reuses, and a Google API `key`.
+- Not a request-bound signature, an S3 presigned URL's `X-Amz-Signature` or a Cloud Storage V4
+  signed URL's `X-Goog-Signature`: consuming one needs nothing here, and generating one computes
+  the signature locally, so no request passes the proxy while it happens.
+  - Cloud Storage can sign through the IAM Credentials `signBlob` API instead, whose request
+    carries a bearer token a binding covers; the key stays with Google.
+  - Azure's `getUserDelegationKey` runs under a bearer token too, but its response is the
+    delegation key, forwarded unchanged: the sandbox then holds a signing credential for the
+    account until the expiry the request asked for, at most seven days
+    (https://learn.microsoft.com/en-us/rest/api/storageservices/get-user-delegation-key). A
+    session that must not hold one obtains the key and signs on the host.
+  - An AWS client signs each request itself and never sends its key (design.md, "Credential
+    brokering at the egress proxy").
+- Not a model provider's login or API key: their hosts are tunnels, where nothing is substituted
+  (the same design.md section has why).
+
 ## Through an upstream proxy
 
 `HTTPS_PROXY` in the launcher's environment, `http[s]://[user:password@]host:port`, sends every
@@ -309,7 +468,7 @@ origin connection of the session's proxy through that upstream proxy.
 
 What changes is only how an allowed address is reached:
 
-- the ruleset decides every destination as before, the name is resolved once and every answer
+- the ruleset decides every destination, the name is resolved once and every answer
   must be public;
 - the upstream proxy is asked for a tunnel to that numeric address — never for the hostname,
   which it would resolve itself, outside the check;

@@ -5,12 +5,18 @@ whose benefit is uncertain, each with the condition that decides whether to buil
 examined and found without benefit is recorded in design.md with its reason, so it is not proposed
 again.
 
-## Codex review plugin (`ko-review.md`)
+## Review plugin (`ko-review.md`)
 
-- [ ] A linked worktree whose main Git directory is mounted read-only: Codex's own `git` commands
-  and the helper's digest against that tree; unverified.
-- [ ] `--egress=deny-unless-model claude` fails the review with `CODEX_EGRESS_DENIED` before Codex
-  runs; unverified in a session.
+- [ ] Use Codex's `request_user_input` for reviewer, model and effort selection once it supports
+  more than three options per question. Its three-option limit leaves out choices such as `high`
+  after the default, `low` and `medium`; free-form entry does not replace a selectable option.
+  Enable `default_mode_request_user_input` in the image's Codex defaults when adopting the menu.
+- [ ] A linked worktree whose main Git directory is mounted read-only: the reviewer's own `git`
+  commands and the helper's digest against that tree; unverified.
+- [ ] `--egress=deny-unless-model claude` fails a Codex review, and `deny-unless-model codex` a
+  Claude review, with `REVIEWER_EGRESS_DENIED` before the reviewer runs; unverified in a session.
+- [ ] A `codex exec` reviewer started from a Codex author's shell, which passes it the author's
+  `CODEX_THREAD_ID`, driven to approval in the image; unmeasured.
 - A regression test for a fix in this plugin is run against the helper without the fix and shown
   to fail before it counts: a fake reviewer that dies on its own once the helper exits lets a test
   for an orphaned reviewer pass without the fix, and only that run shows it.
@@ -18,20 +24,35 @@ again.
   openai/codex #24833 (durable MCP resume). If OpenAI ships a stateful review, fix, re-review
   primitive, delete the helper's orchestration rather than maintain a duplicate.
 
-## Credential brokering — its two plans, in order
+## Credential brokering — `--egress-cred`, then the provider plan
 
-- [ ] `plan-credential-broker-proxy.md` whole, through its acceptance checklist.
-- [ ] Real sessions on it before `plan-provider-credential-proxy.md`, whose steps are taken one
-  at a time, each on a use case those sessions produced, never as the broker's automatic second
-  half: what that plan adds — storage, generations, refresh, removal — is where the field
-  failures are (docker/sbx-releases #492, a removed credential still injected after a restart),
-  and none of it is needed for a per-run static value.
-- AWS is in neither: the broker plan's "Deliberate exclusions" has why, and what a session
-  forwards instead.
+- [ ] Run `sbt "testWithPodman *ProxyContainerTest"` on Linux and Windows: the proxy's attached
+  `podman start` is measured on macOS alone, where it passes (podman 6.1.2, 2026-10-04).
+- [ ] Check `--egress-cred` under `--run-on-host` against real hosts; `egress-proxy.md`, "Brokered
+  credentials", has the GitHub session's measurement:
+  - With `--run-on-host=sbt` and `maven.pkg.github.com` allowed in
+    `.ko-agent-sandbox/run-on-host/sbt/egress/rule`,
+    `--egress-cred=GH_TOKEN@maven.pkg.github.com` resolves a private GitHub Packages artifact;
+    `env` in the command shows the placeholder; `--egress-log` shows the sbt proxy's
+    `inject=GH_TOKEN` line.
+  - With a binding, `src/probe/ProcArgs.java` finds the value in no environment or argument of
+    `podman`, the runner or a supervisor.
+- [ ] Test a host command's request reaching a local origin with the value: it needs an origin the
+  host proxy trusts, and that proxy checks origins against the JDK's own trust store.
+- [ ] Give a value without a recognized prefix a placeholder its program accepts, where the program
+  checks the value's syntax before it sends one: it refuses the 22 letters and digits
+  (`egress-proxy.md`, "Where the value goes").
+- [ ] Real sessions on `--egress-cred` before `plan-provider-credential-proxy.md`, whose steps are
+  taken one at a time, each on a use case those sessions produced, never as `--egress-cred`'s
+  automatic second half: what that plan adds — storage, generations, refresh, removal — is where
+  the field failures are (docker/sbx-releases #492, a removed credential still injected after a
+  restart), and none of it is needed for a per-run static value.
+- AWS is in neither: `design.md`, "Credential brokering at the egress proxy", has why, and what a
+  session forwards instead.
 - [ ] Refuse a credential that is not the session's at a model host (SECURITY.md, "Exfiltration
   through allowed network traffic", has the attack). An exception to the order above: its use
-  case came from a review of the documents, not from a session on the broker. A target of
-  a service definition gains a property, `require-placeholder`: on a mediated target carrying it,
+  case came from a review of the documents, not from a session on `--egress-cred`. A target of
+  a service definition gains a property, `require-placeholder`: on a brokered target carrying it,
   a request is forwarded only if one authentication form the target declares holds this run's
   placeholder and no other declared form is present; any other request is refused with a fixed
   reason and a `deny` audit line, at every path.
@@ -43,37 +64,93 @@ again.
     alone and beside the placeholder. A form the provider adds later reopens the attack until the
     catalog declares it.
   - It needs a selected service instance, so provider plan delivery steps 1, 2 and 5: the
-    catalog, storage with per-run generations for a static key, the mediated overlay and one
+    catalog, storage with per-run generations for a static key, the brokered overlay and one
     API-key client. It needs neither executable sources and refresh (step 4) nor OAuth (step 6).
-    An `--env=NAME@HOST` binding does not carry it: that plan keeps the binding separate from a
-    selected service, and a binding forwards a token that is not a placeholder and names one
-    header, so it cannot refuse the placeholder beside a foreign key in another declared form.
+    An `--egress-cred=NAME@HOST` binding does not carry it: that plan keeps the binding separate
+    from a selected service, and a binding forwards a token that is not a placeholder and names
+    one header, so it cannot refuse the placeholder beside a foreign key in another declared
+    form.
   - It protects an API-key session only. A subscription login stays a tunnel until step 6.
   - A project that tests against the provider with its own key selects no credential for that
     host, or accepts the refusal; forwarding a token that is not a placeholder stays the rule at
-    every other host (broker plan, "Substitution").
+    every other host (`egress-proxy.md`, "Where the value goes").
   - Measure first, with the model host inspected at the root: the hosts and paths the installed
     `claude` calls, login and refresh included; that a long server-sent-event stream survives the
     one-request-per-connection relay; that `claude` trusts `NODE_EXTRA_CA_CERTS` on every
     connection to the provider.
-  - Rejected: exact-path grants on the model host without mediation (`/v1/messages` alone). The
-    path list is the per-release contract with the CLI the broker plan declines, and a
+  - Rejected: exact-path grants on the model host without brokering (`/v1/messages` alone). The
+    path list is the per-release contract with the CLI that brokering declines, and a
     retrievable-storage behavior added at an allowed endpoint reopens the attack. Rejecting it
     gives up path-based protection for a subscription session before step 6: exact-path grants
     refuse the storage endpoints whatever credential is sent.
   - Codex: taking this to the OpenAI hosts needs one `codex` turn to succeed with those hosts
-    inspected, read from `--proxy-log` (broker plan, "Claude Code and Codex logins: excluded",
+    inspected, read from `--egress-log` (`design.md`, "Credential brokering at the egress proxy",
     has what is measured), and a second turn in the same session, to learn whether the refused
     upgrades recur per turn. If they do, measure whether a custom `[model_providers.NAME]` with
     `supports_websockets = false` accepts the ChatGPT login; the built-in provider cannot be
-    overridden (`doc/design.md`, "No WebSocket in the inspected relay").
+    overridden (`doc/design.md`, "No WebSocket on an inspected connection").
+
+## Host programs started by bare name
+
+- [ ] `ps`, `pgrep` and `lsof` under `--run-on-host` (`RunOnHostSession.HostProcesses`,
+  `RunOnHostMillDaemons`, `RunOnHostGradleDaemons`) and `uname` in `--self-test`
+  (`SelfTestShare`) are started by bare name, so the JVM finds them through the inherited
+  `PATH`, which `findOnPath` exists to avoid (`design.md`, "No repository-controlled host
+  executable resolution"). The run-on-host registration script runs a bare `ps` too
+  (`RunOnHostSession.RegistrationScript`), through the leader's `PATH`, which for a command starts
+  with the JDK's `bin`. Resolve them as `podman` is resolved, or start them by absolute path as
+  `/bin/kill` and `/usr/bin/sandbox-exec` are.
+- [ ] Or start none of them: make the kernel calls behind them through the JDK's foreign-function
+  API, as `src/probe/ProcArgs.java` calls `sysctl`. A helper inherits the environment of the
+  runner or supervisor that starts it, and a call does not.
+  - `ps` and `pgrep` read `sysctl` `kern.proc` and `kern.procargs2`; `lsof` reads libproc's
+    `proc_pidinfo` and `proc_pidfdinfo`.
+  - The registration script's `ps` runs inside the leader's shell and needs another form.
+
+## What a host command reads of other processes
+
+`run-on-host.md`, "The Seatbelt profile", has `SeatbeltProfile.ProcessReadRule` and its
+measurement.
+
+- [ ] Measure the older `kern.procargs` call under the rule; the probe reads `kern.procargs2`
+  alone.
+- [ ] Start what the launcher starts — the runner, each supervisor, `podman` — with a controlled
+  environment: a fixed set of names and the `--env` forwards, nothing else of the launching
+  shell's. The profile's rule is the boundary; this bounds what a miss in it exposes.
+  - `podman`'s set starts from the variables its manual documents (podman(1), "Environment
+    Variables"): `CONTAINERS_CONF`, `CONTAINER_CONNECTION`, `CONTAINER_HOST`,
+    `CONTAINER_SSHKEY`, `PODMAN_CONNECTIONS_CONF`, `TMPDIR` and the `XDG_*` directories among
+    them. Its client also reads `CONTAINER_PROXY` (`pkg/bindings/connection.go`), which that
+    page does not list, so the page is not the whole set.
+- [ ] `(deny default)` leaves `process-info*`, `nvram*`, `iokit-get-properties` and
+  `file-map-executable` allowed (Firefox's `SandboxPolicyContent.h`: "These are not included in
+  (deny default)"; Chromium's `renderer.sb` denies the first three as "allowed by default"), and
+  the command profile names only `process-info-pidinfo`, which `ProcessReadRule` denies outside the
+  command's sandbox. Decide the others.
+  - The probe's `ops` mode measures a family by leaving its allow out under `(deny default)`,
+    which denies none of these, so it cannot say that the JDK does without `file-map-executable`
+    (`run-on-host.md`, "The Seatbelt profile") or `process-info*`.
+- [ ] Measure the other routes to another process's arguments, environment or memory under the
+  rendered profile, which grants none of them by name: a task port (`task_for_pid` and its
+  read, inspect and name flavors), and the process service `com.apple.sysmond` behind `pgrep`.
+  The profile's one Mach service is the resolver's (`SeatbeltProfile.MachServices`), and `pgrep`
+  fails under it with "sysmond service not found".
+
+## The profile probe's confined sbt on this checkout
+
+- [ ] `run-on-host-profile-iterate.sh`'s `run_command` fails under the rendered profile after
+  `emit`, which runs an unconfined sbt in the same checkout: `sbt about` stops at
+  `Compile / previousCompile` with `Operation not permitted` on
+  `target/out/jvm/scala-3.8.4/ko-agent-sandbox-build/zinc/inc_compile_3.zip`, then "failed to
+  connect to server" (2026-10-03). The cause is not found. `narrow` runs the same function in
+  this checkout; `mach` runs it in its fixture.
 
 ## IDE integration through VS Code's Agent Host
 
-- [ ] `plan-ide-integration.md`, in its steps: attach VS Code to a `code agent host` in the
-  sandbox, then the hostile-host test that decides where enforcement lives, then one harness,
-  then `--protocol=ahp`. ACP is deferred; the plan keeps its reviewed design and the conditions
-  that reopen it.
+- [ ] `plan-ide-integration.md`, from its phase 1: the measurements step 2's "Not measured"
+  paragraph says the relay's design needs first, and that design; then one harness (step 3);
+  then `--protocol=ahp` (step 4), whose acceptance stages the same paragraph names. ACP is
+  deferred; the plan keeps its reviewed design and the conditions that reopen it.
 
 ## One list of launch refusals
 
@@ -135,16 +212,21 @@ again.
   directories. Phase 2 waits for each agent's measurement on a refused write, which the plan
   names.
 
-## Deferred — a release-age window in the other package managers
+## Deferred — package-manager settings against malicious packages
 
 SECURITY.md, "The supply chain", has npm's seven-day window and why uv gets none.
 
-- [ ] The same window for `cs`, Maven, Gradle and Cargo, each only if the manager offers a
-  resolution-time setting that its lockfile does not record. Whether any of them does is not
-  yet looked up.
-- [ ] npm's `ignore-scripts`, only after measuring that the commands the image's agents and the
-  common `npx` targets install still work with lifecycle scripts skipped: installation can
-  succeed while leaving a package unusable because a required lifecycle script was skipped
+- [ ] Cargo's window: `registry.global-min-publish-age` in `/.cargo/config.toml`, once `--build`
+  installs Rust 1.100 (2026-11-12), which stabilizes it; 1.98.1 ignores it with a warning.
+  - That file lets a project's `.cargo/config.toml` shorten the window, as `.npmrc` does npm's;
+    `CARGO_REGISTRY_GLOBAL_MIN_PUBLISH_AGE` would override the project's file.
+  - A version already in `Cargo.lock` installs even when younger than the window. Measure first
+    that `Cargo.lock` does not record the window, for uv's reason.
+- [ ] A window for `cs`, Maven and Gradle, only once one offers a resolution-time setting that its
+  lockfile does not record; a search on 2026-09-30 found none.
+- [ ] npm's `ignore-scripts`, only after measuring that the image's agents and the common `npx`
+  targets still work when installed with lifecycle scripts skipped: an installation can succeed
+  and leave a package unusable because it skipped a required script
   (https://docs.npmjs.com/cli/v11/using-npm/config/#ignore-scripts). An explicit `npm run` still
   runs its script.
 
@@ -160,9 +242,9 @@ SECURITY.md, "The supply chain", has npm's seven-day window and why uv gets none
     host (`TLSHelper`, the extension constant).
   - This adds a second ECH step to SECURITY.md's handshake list and its tests.
 
-## Deferred — inspected-relay keep-alive
+## Deferred — inspected-connection keep-alive
 
-- [ ] Client-side keep-alive in the inspected relay, only if the per-request TLS handshake ever
+- [ ] Client-side keep-alive on inspected connections, only if the per-request TLS handshake ever
   measurably hurts (104 handshakes added seconds to the recorded 104-archive install).
   - Both legs' framing is parsed and enforced, so the design is a request loop per client
     connection with a fresh origin connection per request.
@@ -216,7 +298,7 @@ container's git cannot follow at `/mnt/c/...`, so the read-only bind is skipped 
   the no-git warning, with a note, rather than promise git (`SandboxProject.setsRelativeWorktrees`).
   The route opens when the image's git is 2.48 or later, and that check goes with the upgrade;
   until then only a hand-written relative pointer works, which `git worktree repair` rewrites
-  absolute. "The project mounted at its own path" has the measurement.
+  absolute. "The project mounted at its own path" has the row that measures it.
 - For an absolute pointer, bind a launcher-written pointer file naming the `/mnt/<drive>` spelling
   over `<mountPath>/.git`, hiding the filter's protected pointer from the container alone. Setting
   `GIT_DIR` and `GIT_WORK_TREE` instead would redirect git in every other repository the agent
@@ -456,14 +538,14 @@ code, not measured):
 
 ## Deferred — a bound on a silent host command
 
-An sbt server's and a mill daemon's start are bounded by the broker's progress bound
+An sbt server's and a mill daemon's start are bounded by the runner's progress bound
 (`run-on-host.md`, "The channel and the command", "`mill`"). A command that stalls after its
 server or daemon is up — or a Maven command at any point — is silent until the agent gives up:
-nothing bounds it, not the wrapper, not the
-broker, whose writers die only with their requester, and not the shim, which reads output to EOF.
+nothing bounds it, not the supervisor, not the
+runner, whose writers die only with their requester, and not the shim, which reads output to EOF.
 One form would, and it waits on a measurement:
 
-- [ ] Generic, in the broker: no output for N seconds ends the command through the same SIGTERM,
+- [ ] Generic, in the runner: no output for N seconds ends the command through the same SIGTERM,
   so the command's logs are kept, with a stderr line naming the bound and the host command log.
   - Silence is measured where the command's bytes are read, and time the pump spends blocked on a
     slow requester does not count.
@@ -488,25 +570,25 @@ Under `--run-on-host` the host's mill daemon keeps its lock and `socketPort` in 
   - If the two conflict, the run-on-host text the launcher appends is the place to tell an agent
     to set the variable.
 - [ ] The same conflict for gradle. The two sides' daemon registries are separate — the host's
-  is under the broker's temporary directory (`RunOnHostSandbox.gradleCommand`), the container's
+  is under the runner's temporary directory (`RunOnHostSandbox.gradleCommand`), the container's
   in its gradle user home — but both builds use the project's `build/` and the locks under its
   `.gradle/`, and the rules allow `./gradlew`'s download by default.
 
 ## Deferred — an idle bound for the sbt server
 
-The broker's sbt server has no idle bound of the broker's: it lives until the launch ends,
+The runner's sbt server has no idle bound of the runner's: it lives until the launch ends,
 `ko-sandbox-run-on-host sbt shutdown`, or sbt's own `serverIdleTimeout`, seven days
 (`run-on-host.md`, the startup-cost paragraph). A warm server is what a terminal user keeps on
 purpose, so its heap is the price chosen; Mill's daemon exits on Mill's own thirty minutes.
 
-The form, if a launch ever wants one: a broker-kept bound selected by a launch option — never an
+The form, if a launch ever wants one: a runner-kept bound selected by a launch option — never an
 environment variable, since the command's environment is closed by design — with thirty minutes,
 Mill's default, as the value to start from. Idle counts from the end of the last sbt command,
-never from the server's start. The broker's serve loop blocks in the handshake reader between
+never from the server's start. The runner's serve loop blocks in the handshake reader between
 requests, so the bound needs a timer thread, the one thread retiring runtimes outside the serial
 dispatch, fenced thus:
 
-- one lock covers the broker's runtime state;
+- one lock covers the runner's runtime state;
 - a request takes it, marks the runtime busy and cancels its pending expiry before the command
   receives the runtime, and re-arms the expiry when the command ends;
 - each re-arming increments an idle generation kept with the runtime;
@@ -531,7 +613,7 @@ replacement, each leaving one consistent runtime.
 Recorded macOS results (2026-09-18):
 
 - `MountPathTest`, `MountLifecycleTest` and the run-on-host acceptance test pass.
-- `sbt testFull` inside a session passes in every suite except `ClipboardBrokerTest` and
+- `sbt testFull` inside a session passes in every suite except `ClipboardRelayTest` and
   `SandboxLifecycleTest`; those two pass when run alone on Linux.
 - The four agents start without a trust prompt on fresh and used volumes.
 - A host build's error reports a path accessible inside the session.
@@ -549,7 +631,7 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
 
 ## Deferred — readable session directory names under `--run-on-host`
 
-- [ ] Name the sessions `broker-<random>` and `command-<random>` instead of `b<random>` and
+- [ ] Name the sessions `runner-<random>` and `command-<random>` instead of `r<random>` and
   `s<random>` (`RunOnHostSession.Kind`), once the path length allows it.
   - The session's `tmp/` hosts sbt's boot socket, and `RunOnHostPrereqs.SessionTmpMaxLength`
     leaves that path 53 characters, of which the root and Java's 20-digit temp-directory name
@@ -563,29 +645,29 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
   (`RunOnHostSession.root`), under the same budget: a second host feature keeping state under
   `/private/tmp` would otherwise land in a root that names neither.
 
-## Deferred — the per-command wrapper process under `--run-on-host`
+## Deferred — the per-command supervisor process under `--run-on-host`
 
-- [ ] Re-evaluate the wrapper, the `--run-command-on-host` process the broker starts for each
+- [ ] Re-evaluate the supervisor, the `--run-command-on-host` process the runner starts for each
   request (`RunOnHostSandbox.runCommandMain`; `run-on-host.md`, "The channel and the command").
   - What it buys:
-    - the broker's cancel is a SIGTERM to one process, answered by that process's shutdown hook,
+    - the runner's cancel is a SIGTERM to one process, answered by that process's shutdown hook,
       which ends exactly the command's groups and directory;
     - a command's death, however it dies, is confined to its own process and never takes the
-      broker and its warm servers with it;
-    - the acceptance test drives one command's whole lifecycle as `RunOnHost` with no broker, which
-      is how the wrapper rows measure the profile.
+      runner and its warm servers with it;
+    - the acceptance test drives one command's whole lifecycle as `RunOnHost` with no runner, which
+      is how the supervisor rows measure the profile.
   - What it costs:
     - one more JVM start per command, about a third of a second in the jar form and tens of
       milliseconds as the native image;
-    - a second code path for the command's runtime, the wrapper's own under Maven.
-  - The alternative is the same work in a broker thread with cancellation done by hand; decide
+    - a second code path for the command's runtime, the supervisor's own under Maven.
+  - The alternative is the same work in a runner thread with cancellation done by hand; decide
     with the measured cost per command and what the acceptance test would drive instead.
 
 ## Deferred — the native-image launcher
 
 A GraalVM (JDK 25) native image, with `native-image` and a C toolchain, starts in tens of
 milliseconds where `java -jar` takes ~350 ms. The launcher branches on running as an image
-(`RunOnHostSandbox.isNativeImage`: the wrapper's self-invocation, its launch file, the Seatbelt
+(`RunOnHostSandbox.isNativeImage`: the supervisor's self-invocation, its launch file, the Seatbelt
 proxy inputs) and stays resident when GraalVM refuses the FFM execvp (`SandboxLifecycle.handOver`).
 No build or test exercises any of it, and the proxy as an image does not start under its profile
 (macOS 26.4.1, GraalVM CE 25.0.2, `run-on-host-profile-iterate.sh mach-proxy <binary>`):
@@ -605,7 +687,7 @@ are the image's Mach services, which the same mode measures once it starts.
 - [ ] Build the binary in CI and run the launcher suite as the binary, on both shipping
   architectures; only then does the README offer it. build.sbt's comments explain the two exports
   and the resource includes the command carries.
-- [ ] Compute the bundle digests (`KoAgentFs.bundledSourceId`) while `native-image` builds the
+- [ ] Compute the bundle digests (`LauncherImages.bundledSourceId`) while `native-image` builds the
   binary, with build-time initialization: the binary then hashes nothing at launch, and
   `bundleSourceId` stays the one implementation. Check first that the bundled resources are
   readable at that point.

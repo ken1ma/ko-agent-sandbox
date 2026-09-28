@@ -103,9 +103,10 @@ The launcher:
   pause needs a terminal on stdin.
 - The model provider a launch admits under egress is selected by the command's first word
   (`EgressRules`); `opencode` and `copilot` are recognized.
-- No host process accepts a connection from the sandbox: the brokers read FIFOs through `podman
-  exec` (SECURITY.md, "Clipboard" and "Run on host"). The listeners SECURITY.md documents, the
-  per-program egress proxy and the mill and Gradle daemons' ports, serve host processes.
+- No host process accepts a connection from the sandbox: the clipboard relay and the runner read
+  FIFOs through `podman exec` (SECURITY.md, "Clipboard" and "Run on host"). The listeners
+  SECURITY.md documents, the per-program egress proxy and the mill and Gradle daemons' ports,
+  serve host processes.
 - The project is mounted at its real path on macOS and Linux, and on Windows at
   `/mnt/<drive>/...`, the spelling `SandboxProject.mountPathOf` derives from `C:\...`. An IDE that
   opened the project through a symbolic link sees a different spelling from the sandbox's;

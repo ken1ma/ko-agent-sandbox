@@ -1,8 +1,10 @@
-//! The policy core: position and raw bytes in, a decision out. No syscalls, no FUSE, no `String`
-//! (Linux names are byte sequences). Every per-operation FUSE authorization rule is here, the part worth
-//! auditing closely; `doc/git-metadata.md` is the reasoning it transcribes, save for the one rule that protects the
-//! launcher's own `.ko-agent-sandbox` ([`is_sandbox_config_name`]) and the file rules ([`FileRules`]), whose
-//! reasoning is `../../doc/file-rules.md`, "Why these files", and `../../SECURITY.md`.
+//! The policy core: position and raw bytes in, a decision out. No syscalls, no FUSE, no `String` for
+//! an entry's name (Linux names are byte sequences). Every per-operation FUSE authorization rule is
+//! here, save the symlink-target refusals `fs.rs` decides (`allow_symlink_target`, `symlink`), the part
+//! worth auditing closely; `doc/git-metadata.md` is the reasoning it transcribes, save
+//! for the one rule that protects the launcher's own `.ko-agent-sandbox` ([`is_sandbox_config_name`])
+//! and the file rules ([`FileRules`]), whose reasoning is `../../doc/file-rules.md`, "Why these
+//! files", and `../../SECURITY.md`.
 //!
 //! The FUSE layer never re-derives protection from a path string. It caches one
 //! [`GitContext`] per inode, computed once at lookup from the parent's context plus the child's
@@ -81,12 +83,26 @@ impl GitContext {
 
 /// UTF-8 encodings of the invisible code points a filesystem may ignore when comparing names. A
 /// name that reads as `.git` once these are dropped is refused; none of them belongs in a filename.
+/// Holds every code point git's `next_hfs_char` (utf8.c) skips for HFS+.
 const IGNORABLE: &[&[u8]] = &[
     b"\xc2\xad",     // U+00AD soft hyphen
     b"\xe2\x80\x8b", // U+200B zero width space
     b"\xe2\x80\x8c", // U+200C zero width non-joiner
     b"\xe2\x80\x8d", // U+200D zero width joiner
+    b"\xe2\x80\x8e", // U+200E left-to-right mark
+    b"\xe2\x80\x8f", // U+200F right-to-left mark
+    b"\xe2\x80\xaa", // U+202A left-to-right embedding
+    b"\xe2\x80\xab", // U+202B right-to-left embedding
+    b"\xe2\x80\xac", // U+202C pop directional formatting
+    b"\xe2\x80\xad", // U+202D left-to-right override
+    b"\xe2\x80\xae", // U+202E right-to-left override
     b"\xe2\x81\xa0", // U+2060 word joiner
+    b"\xe2\x81\xaa", // U+206A inhibit symmetric swapping
+    b"\xe2\x81\xab", // U+206B activate symmetric swapping
+    b"\xe2\x81\xac", // U+206C inhibit arabic form shaping
+    b"\xe2\x81\xad", // U+206D activate arabic form shaping
+    b"\xe2\x81\xae", // U+206E national digit shapes
+    b"\xe2\x81\xaf", // U+206F nominal digit shapes
     b"\xef\xbb\xbf", // U+FEFF zero width no-break space
 ];
 
@@ -102,8 +118,8 @@ const FOLDS_TO_ASCII: &[(&[u8], u8)] = &[
 
 /// Whether `name` (a raw basename, no slashes) must be refused as a new `.git` entry.
 ///
-/// The rule as executed: strip trailing `.` and space, drop [`IGNORABLE`], fold
-/// [`FOLDS_TO_ASCII`], ASCII case-fold, compare to `.git`. Byte-safe: a non-UTF-8 `name` fails to
+/// The rule as executed: drop [`IGNORABLE`], fold [`FOLDS_TO_ASCII`], strip trailing `.` and
+/// space, ASCII case-fold, compare to `.git`. Byte-safe: a non-UTF-8 `name` fails to
 /// match and is allowed, never a panic. Why each step: `doc/git-metadata.md`, "The name rule".
 pub fn is_dotgit_name(name: &[u8]) -> bool {
     folds_to(name, GUARDED_NAMES[0])
@@ -938,6 +954,20 @@ mod tests {
         assert!(is_dotgit_name("\u{feff}\u{2e}git".as_bytes())); // leading BOM
         assert!(is_dotgit_name("\u{2e}git\u{00ad}".as_bytes())); // trailing soft hyphen
         assert!(is_dotgit_name("\u{2e}G\u{2060}IT".as_bytes())); // combined with case folding
+        // Dropped before the trailing `.` is stripped, so one hidden behind the other is caught.
+        assert!(is_dotgit_name(".git.\u{200b}".as_bytes()));
+        // Every code point git's `next_hfs_char` skips, at each position in the name.
+        let hfs_ignored = (0x200c..=0x200f)
+            .chain(0x202a..=0x202e)
+            .chain(0x206a..=0x206f)
+            .chain([0xfeff]);
+        for ignored in hfs_ignored.map(|code_point| char::from_u32(code_point).unwrap()) {
+            for at in 0..=".git".len() {
+                let mut name = String::from(".git");
+                name.insert(at, ignored);
+                assert!(is_dotgit_name(name.as_bytes()), "{name:?}");
+            }
+        }
     }
 
     #[test]
