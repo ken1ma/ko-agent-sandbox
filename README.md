@@ -36,10 +36,10 @@ The sandbox runs rootless, and its agents run as the `nonroot` user.
     │  ┃  runs claude/codex/agy/...    ┃     │  https only, stateless,       │     │
     │  ┃  capabilities dropped,        ┃ (a) │  TLS-inspects except model    │ (b) │
     │  ┃  read-only rootfs,            ┠────>│  providers                    ├─────┼─> Internet
-    │  ┃  ephemeral /tmp and $HOME     ┃     │                               │     │
+    │  ┃  ephemeral /tmp and $HOME,    ┃     │                               │     │
+    │  ┃  no outbound DNS              ┃     │                               │     │
     │  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛     └────┬──────────────────────────┘     │
-    │  (a) internal network, no gateway           │                                │
-    │  (b) only egress network                    │                                │
+    │      (a) internal network, no gateway       │   (b) the only egress network  │
     │                                             │                                │
     │                                           ┌─┴─ proxy log (audit) ─────┐      │
     │  the containers and networks are created  │  every allow and refusal; │      │
