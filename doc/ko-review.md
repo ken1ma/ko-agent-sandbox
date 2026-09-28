@@ -5,8 +5,13 @@ the same Codex thread until Codex approves the exact tree or asks for a decision
 make. One invocation is one Codex thread; invoking the skill again starts a new thread, which is
 how an independent audit of an approved tree is obtained.
 
-- Only the user invokes the skill: `disable-model-invocation` keeps its description out of Claude's
-  context, and the sandbox's AGENTS.md has Claude offer it after a non-trivial change.
+- A review starts only at the user's request, as `/ko-review:codex` or in words ("ko-review the
+  changes since the last review"); the sandbox's AGENTS.md has Claude offer it after a
+  non-trivial change.
+  - The skill's description tells Claude to invoke it only on such a request. Nothing enforces
+    that: `disable-model-invocation` would, but it also stops Claude acting on a request in words.
+  - Invoked by Claude, the skill's argument holds only a base, review id, model, effort or
+    instructions the user named, and Claude first says it invoked the skill, quoting the request.
 - The plugin `ko-review` (`container/ko-agent-sandbox/claude-code/plugins/ko-review`) holds the
   skill, named after its reviewer so that another reviewer can join as another skill, the helper
   `ko-review`, the reviewer prompts and the result schema.

@@ -1,11 +1,12 @@
 # Git metadata that must be immutable through `ko-agent-fs`
 
 This is the crux: *what is the complete set of Git administrative state that must be immutable so
-that a sandbox cannot cause a later host `git` invocation to execute sandbox-controlled code?*
+that a sandbox cannot cause a later host `git` invocation to execute sandbox-controlled code, or to
+open a path the sandbox chose?*
 
 - The policy code is this document's transcription, and the git half of the filter is all of it.
 - The scope is narrow on purpose. The filter is not protecting repository integrity, correctness,
-  or the agent from itself. It defends exactly one property.
+  or the agent from itself. It defends exactly the property below.
 - One rule in `policy.rs` derives from elsewhere: `.ko-agent-sandbox` cannot be created or written
   either — the launcher's own boundary configuration, protected for the reason `SECURITY.md` ("A
   project loosening its own confinement") gives rather than for anything about git. It shares
@@ -16,17 +17,18 @@ that a sandbox cannot cause a later host `git` invocation to execute sandbox-con
 ## The property
 
 > Through the host-shared project mount, the sandbox can never create or alter repository
-> state that causes a subsequent host-side `git` command to run a program the sandbox chose.
+> state that causes a subsequent host-side `git` command to run a program the sandbox chose, or
+> to open an object directory at a path the sandbox chose.
 
 "Host-side" matters: the danger is not code running in the sandbox (the container is the boundary
 for that) but code the *host user's* `git` runs later, outside the sandbox, against the shared
 project directory — a `git status`, `git commit`, or `git checkout` in their editor or terminal.
 
 
-## How a repository makes `git` run a program
+## How a repository makes `git` run a program or open a path
 
 Every vector below is repository-controlled state that some `git` command turns into process
-execution. They fall into three groups.
+execution, or, in group 4, into opening a path. They fall into four groups.
 
 ### 1. Hooks — executed directly
 
@@ -111,10 +113,29 @@ inside `.git/worktrees/<name>/`, `$GIT_COMMON_DIR` — relocate where `git` look
 Both halves must be closed. Blocking creation alone leaves the pointer rewrite open; blocking
 rewrite alone leaves fresh-repository planting open.
 
+### 4. Alternates — opens a path the sandbox names
+
+`objects/info/alternates` lists further object directories, by any path, and host `git` opens each
+one when it looks up objects. Nothing runs, but the path can name a network location, such as a
+Windows UNC path, which the host opens outside the egress proxy.
+
+- Inside the operational `objects/**`, `objects/info` alone allowlists its entries. A directory
+  holding an `alternates` could be written elsewhere and moved into place, so `objects` and
+  `objects/info` are created only by `mkdir` and never renamed or unlinked.
+- A symlink the host made at either directory or at an alternates file would lead the protected
+  name to one the sandbox writes. The mount-time guard checks the root repository: it refuses such
+  a link in a gitdir inside the workspace when it leads back into the workspace, and serves
+  read-only the workspace entry one in a gitdir outside it leads to.
+- `objects/info/http-alternates` names object stores by URL for a client fetching the repository
+  over dumb HTTP. Git never writes it, so it is protected at no cost.
+
+**Vector:** write `objects/info/alternates`, or move a directory holding one onto
+`objects/info` or `objects`.
+
 
 ## The immutable set
 
-From the three groups, the state that must be immutable to the sandbox:
+From the four groups, the state that must be immutable to the sandbox:
 
 1. **Any new entry named `.git`** — directory *or* file, at any depth. (Name rule below.)
 2. **Any existing `.git` pointer file** — the `gitdir:` indirection, immutable so it cannot be
@@ -124,6 +145,9 @@ From the three groups, the state that must be immutable to the sandbox:
    - `hooks/**`
    - `commondir` and `gitdir` — the redirections of group 3 above, which relocate where `config`
      and `hooks` are resolved from
+   - `objects/info/**` except what git writes there for itself — `commit-graph`,
+     `commit-graphs/**`, `packs` — so `alternates` and `http-alternates` (group 4); `objects` and
+     `objects/info` themselves are created only by `mkdir` and never renamed or unlinked
    - and, by recursion, the same classes inside every nested gitdir: `worktrees/<name>/**`
      and `modules/<name>/**` are themselves gitdirs, so their `config`, `hooks/**`, `commondir` and
      `gitdir` are immutable while their operational state is not.
@@ -159,8 +183,9 @@ entries. There are two ways to draw that line, and they fail in opposite directi
 - A forgotten operational file breaks a git command (caught by the integration suite).
 - A new command-executing file is denied by default.
 - The operational set is enumerated by the **execution question** ("can a write here cause host
-  git to execute?"), *not* "does git write here": watching real git ("Premises", below) checks
-  only that legitimate git is not *over*-frozen, never what is safe to allow.
+  git to execute, or to open a path the sandbox chose?"), *not* "does git write here": watching
+  real git ("Premises", below) checks only that legitimate git is not *over*-frozen, never what is
+  safe to allow.
   - The question is asked of every host git a user may run, not of the image's version alone:
     through 2.33, `git bisect` is a shell script that `eval`s `BISECT_NAMES`, which is why the
     bisect state stays protected.
@@ -433,9 +458,10 @@ The check is also a snapshot, taken before the mount and not repeated.
 ## What this intentionally does *not* protect, and why that is safe
 
 - `.gitattributes`, `.gitmodules` — writable worktree data; can only activate host-defined drivers,
-  cannot define commands (and cannot smuggle `!cmd` submodule updates).
+  cannot define commands (and cannot smuggle `!cmd` submodule updates). A host's git-lfs filter
+  still connects where `.lfsconfig` says (`SECURITY.md`, "The project directory").
 - Operational gitdir state (`objects`, `refs`, `logs`, `index`, …) — writable, or `git` cannot
-  function; none of it is executed.
+  function; none of it is executed, and `alternates` is the one path in it git opens (group 4).
 - Host-side changes — the host writes the backing store directly, bypassing the filter by design.
   Legitimate host `git` metadata is created outside the sandbox and is not the threat.
 
@@ -467,6 +493,9 @@ the security reason for each):
   `BISECT_NAMES` as shell code (`classify_within_gitdir` in `src/policy.rs` has the details).
 - `git rerere` — its `rr-cache/` stays protected, since creating it enables rerere for host merges
   (`classify_within_gitdir` has why).
+- Removing `objects/info/alternates` to detach a repository from the object directories it
+  borrows, after `git repack -a` — blocked (group 4). Do it on the host. Git writes the file only
+  when it creates a repository, `git clone --shared` or `--reference`, which is blocked already.
 - `git rebase` (any form — the merge backend writes `rebase-merge/` even for a clean rebase),
   `git am` (writes `rebase-apply/`), and `git cherry-pick`/`git revert` of a *range* or when a
   conflict makes git open a sequence (writes `sequencer/`) — all blocked, because their todo
@@ -547,6 +576,10 @@ fail against it.
 - Assert that a host-defined filter activated by an agent-written `.gitattributes` runs only the
   host's command (documents the accepted boundary), and that a `!command` in an agent-written
   `.gitmodules` is not honored.
+
+**Alternates (group 4):** creating or symlinking `objects/info/alternates` and
+`http-alternates` fails, in the gitdir and a submodule's; renaming `objects` or `objects/info`, and
+renaming or symlinking a directory onto `objects/info`, fails.
 
 **Operational writability (classifier):**
 

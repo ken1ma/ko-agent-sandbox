@@ -93,8 +93,9 @@ keeps the previous log as `daemon.log.1`.
   `podman machine ssh .local/share/ko-agent-sandbox/ko-agent-fs --self-test`.
   If setup succeeds but a check fails, report that failure; more mount privileges will not fix it.
 - `refusing to serve ...` — follow the message's remedy on the host. Naming a path `inside the
-  workspace`, a protected Git path resolves through writable project files; naming a `bare
-  repository`, the project root has a layout the filter cannot protect (`guard.rs`).
+  workspace`, or saying a symlink `leads into the workspace`, a protected Git path resolves through
+  writable project files; naming a `bare repository`, the project root has a layout the filter
+  cannot protect (`guard.rs`).
 - `refusing to serve ...` naming a path `outside the directories the podman machine shares` — a
   Git setting or a symlink below a listed entry leads where the machine does not see the host's
   files, on Windows to another drive than the project's. Replace the link or setting with a real

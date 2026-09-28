@@ -116,9 +116,10 @@ user's next host `git` invocation:
 - It refuses a new entry named `.git` at any depth, under any spelling a case-insensitive host
   filesystem treats as that name.
 - It prevents changes to the protected Git entries of every repository rooted at a `.git` entry —
-  `config`, `hooks/`, files that redirect Git to another directory, rebase instructions, and the
-  bisect state a host git through 2.33 evaluates as shell code — while operational state stays
-  writable, so the agent's own git keeps working.
+  `config`, `hooks/`, files that redirect Git to another directory, rebase instructions, the
+  bisect state a host git through 2.33 evaluates as shell code, and `objects/info/alternates`,
+  whose paths host git opens — while operational state stays writable, so the agent's own git
+  keeps working.
 - It serves the tree live: a repository created on the host mid-session appears at once, with the
   same Git entries protected against modification.
 - It treats a second name of a host-created `.git` or `.ko-agent-sandbox` as that entry: an NTFS
@@ -147,6 +148,9 @@ checks the repository host git discovers from the project directory, and refuses
   at an ordinary path in the project, as `git init --separate-git-dir` can: the filter protects
   Git entries under a `.git` name, so the session could write that path;
 - a bare layout at the workspace root;
+- in a Git directory inside the project, a symlink at `objects`, `objects/info` or either
+  alternates file below it that leads back into the project, where the session would write
+  `alternates` under another name;
 - a `core.hooksPath` naming the project directory itself, whose hooks — `<project>/pre-commit` —
   no read-only directory short of the whole tree could hold;
 - through a podman machine, a chain to any of these, hooks included, that leaves the directories
@@ -156,7 +160,10 @@ checks the repository host git discovers from the project directory, and refuses
 
 Hooks kept in the worktree — husky's `.husky/_`, a `core.hooksPath` of `githooks`, a symlinked
 `.git/hooks` — are served read-only instead, with the components their chain passes through
-pinned against rename ("A host program executing a project file on an event", below).
+pinned against rename ("A host program executing a project file on an event", below). So is the
+project entry that a symlink at `objects`, `objects/info` or an alternates file leads to from a
+Git directory outside the project. Such a link that leads out of the project, to objects kept on
+another disk, is served as it is.
 
 A directory laid out as a gitdir *without* a `.git` name elsewhere in the tree is the gap "The
 project directory" describes.
@@ -413,15 +420,29 @@ agy's Business sign-in stores a Google Cloud credential for the licensed project
 **Low-bandwidth channels.** The choice of allowed host, request timing and request order can all
 encode information. The proxy does not detect or bound these covert channels.
 
-**The project directory.** The project is mounted at the path the host has it at (on Windows, at
-the path WSL gives it, `/mnt/<drive>/...`), so a path the agent prints is one the user, an IDE and
-a host build all name alike, and none translates. The path itself — the home directory's name and
-the layout above the project — is therefore visible to the agent, and through its prompts to the
-model provider, in every session. The directory is writable on purpose: the sandbox protects the
-rest of the host, not the project. With the Git entries listed above protected, what an agent can
-still write there is data which your git then parses, so a memory-safety bug in git itself remains
-reachable, exactly as with any cloned untrusted repository (`.gitattributes` stays writable, but
-can only invoke filter commands your host configuration already defines).
+**The project directory.**
+
+- The project is mounted at the path the host has it at (on Windows, at the path WSL gives it,
+  `/mnt/<drive>/...`), so a path the agent prints is one the user, an IDE and a host build all
+  name alike, and none translates.
+- The path itself — the home directory's name and the layout above the project — is therefore
+  visible to the agent, and through its prompts to the model provider, in every session.
+- The directory is writable on purpose: the sandbox protects the rest of the host, not the
+  project.
+- With the Git entries listed above protected, what an agent can still write there is data which
+  your git then parses, so a memory-safety bug in git itself remains reachable, exactly as with
+  any cloned untrusted repository.
+- `.gitattributes` stays writable, but can only invoke filter commands your host configuration
+  already defines.
+- One such filter connects outside the egress proxy: git-lfs, where your host has it, contacts the
+  server `.lfsconfig` names when a host checkout writes an LFS file, and uploads to it at push.
+  - The default file rules keep the worktree's `.lfsconfig` read-only. Without one there, git-lfs
+    reads it from the index, then from `HEAD`, both of which the session writes.
+  - In a repository whose worktree has no `.lfsconfig`, read `git show :.lfsconfig` and
+    `git show HEAD:.lfsconfig` before a host checkout, merge or pull. `git status` can hide the
+    first: the session can mark the entry skip-worktree.
+  - A `.lfsconfig` that includes another project file protects nothing unless
+    `.ko-agent-sandbox/file/rule` lists that file too: git-lfs reads the file with its includes.
 
 Everything else writable — build scripts, CI definitions, IDE configuration the file rules do not
 list, generators, binaries — is output from an untrusted execution environment: editing them is

@@ -141,7 +141,7 @@ fn branch_switching_and_merging_work() {
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn commands_whose_gitdir_files_last_one_command_work() {
-    // Each writes a file at the gitdir root that is gone, or renamed away, when it ends, which
+    // Each writes a file in the gitdir that is gone, or renamed away, when it ends, which
     // `observe-git.sh` cannot see (`tests/git_corpus.rs` lists them).
     let mount = TestMount::new(host_repository);
     let workspace = mount.at("");
@@ -164,8 +164,15 @@ fn commands_whose_gitdir_files_last_one_command_work() {
     );
     git("git commit", &["commit", "-qm", "the rest"]);
 
-    // gc.pid and packed-refs.new; afterwards `side` and `v1` are packed refs, whose deletion
-    // rewrites packed-refs through packed-refs.new again.
+    // objects/info/commit-graphs: the split chain, its lock and tmp_graph_XXXXXX. Before `git gc`,
+    // whose commit-graph would already hold every commit and leave nothing to write.
+    git(
+        "git commit-graph write --split",
+        &["commit-graph", "write", "--reachable", "--split"],
+    );
+    // gc.pid, packed-refs.new, and objects/info's packs_XXXXXX and commit-graph.lock; afterwards
+    // `side` and `v1` are packed refs, whose deletion rewrites packed-refs through packed-refs.new
+    // again.
     git("git tag", &["tag", "v1"]);
     git("git gc", &["gc", "-q"]);
     git(

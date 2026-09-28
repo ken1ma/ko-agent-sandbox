@@ -1,5 +1,6 @@
 //! The mutation checks, exercised through a real mount by an attacker who is *not* git: raw
-//! filesystem operations against every path that could make a later host `git` execute code.
+//! filesystem operations against every path that could make a later host `git` execute code or
+//! open a path the sandbox chose.
 //!
 //! Each refusal is asserted to be `EPERM` specifically — a policy denial, not merely "an error".
 //! The exception is the pair of stale-handle tests at the end, whose refusal comes from the
@@ -531,6 +532,102 @@ fn rebase_and_sequencer_todo_state_is_immutable() {
     denied(
         "create sequencer",
         fs::create_dir(mount.at(".git/sequencer")),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn alternates_cannot_be_written_or_moved_into_place() {
+    // Host git opens each object directory `objects/info/alternates` names, by any path.
+    let mount = TestMount::new(repository);
+    allowed(
+        "mkdir objects/info",
+        fs::create_dir(mount.at(".git/objects/info")),
+    );
+    allowed(
+        "write the commit-graph",
+        fs::write(mount.at(".git/objects/info/commit-graph"), b"graph\n"),
+    );
+    denied(
+        "create alternates",
+        fs::write(
+            mount.at(".git/objects/info/alternates"),
+            b"/elsewhere/objects\n",
+        ),
+    );
+    denied(
+        "create http-alternates",
+        fs::write(
+            mount.at(".git/objects/info/http-alternates"),
+            b"https://elsewhere.example/objects\n",
+        ),
+    );
+    denied(
+        "symlink alternates",
+        symlink("../pack", mount.at(".git/objects/info/alternates")),
+    );
+    denied(
+        "rename objects/info",
+        fs::rename(
+            mount.at(".git/objects/info"),
+            mount.at(".git/objects/moved"),
+        ),
+    );
+    denied(
+        "rename objects",
+        fs::rename(mount.at(".git/objects"), mount.at(".git/refs/objects")),
+    );
+
+    // Written in another directory, it cannot be moved into place.
+    allowed(
+        "empty objects/info",
+        fs::remove_file(mount.at(".git/objects/info/commit-graph")),
+    );
+    allowed(
+        "rmdir the empty objects/info",
+        fs::remove_dir(mount.at(".git/objects/info")),
+    );
+    allowed(
+        "mkdir objects/staged",
+        fs::create_dir(mount.at(".git/objects/staged")),
+    );
+    allowed(
+        "write alternates in objects/staged",
+        fs::write(
+            mount.at(".git/objects/staged/alternates"),
+            b"/elsewhere/objects\n",
+        ),
+    );
+    denied(
+        "rename a directory onto objects/info",
+        fs::rename(
+            mount.at(".git/objects/staged"),
+            mount.at(".git/objects/info"),
+        ),
+    );
+    denied(
+        "symlink objects/info",
+        symlink("staged", mount.at(".git/objects/info")),
+    );
+
+    // Re-rooting applies the same protection to the nested gitdir.
+    allowed(
+        "mkdir a submodule's objects/info",
+        fs::create_dir_all(mount.at(".git/modules/sub/objects/info")),
+    );
+    denied(
+        "create a submodule's alternates",
+        fs::write(
+            mount.at(".git/modules/sub/objects/info/alternates"),
+            b"/elsewhere/objects\n",
+        ),
+    );
+
+    assert!(!mount.backing_at(".git/objects/info").exists());
+    assert!(
+        !mount
+            .backing_at(".git/modules/sub/objects/info/alternates")
+            .exists()
     );
 }
 

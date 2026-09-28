@@ -68,7 +68,7 @@ local links across the repository's Markdown files.
 ## Codex review
 
 In Claude Code, after completing a non-trivial change, offer `/ko-review:codex`, which has Codex
-review the working tree and debate the findings with you; only the user invokes it.
+review the working tree and debate the findings with you.
 
 ## git
 

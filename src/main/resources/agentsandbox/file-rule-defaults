@@ -1,8 +1,8 @@
 # The launcher's default file rules: project files a program on your host runs a command from
 # when you start an agent in the project, commit, open it in an editor, enter its directory, or
-# reopen it in a Dev Container. A session cannot change them at any depth, except inside
-# node_modules (the last line). Build files, scripts and package.json stay writable, because you
-# run those yourself.
+# reopen it in a Dev Container, and the file git-lfs on your host takes its server from when you
+# check out or push. A session cannot change them at any depth, except inside node_modules (the
+# last line). Build files, scripts and package.json stay writable, because you run those yourself.
 #
 # - A file is listed unless a command you run for another purpose rewrites it, the way
 #   `npm install` rewrites package-lock.json, or its program asks you again when it changes, as
@@ -76,6 +76,9 @@ readonly .tool-versions                 # its templates can run commands
 readonly .miserc.toml                   # which configuration files load
 readonly .miserc.*.toml
 readonly miserc.toml                    # .config/miserc.toml, without pinning every .config
+
+# Git LFS: the server a checkout downloads from and a push uploads to.
+readonly .lfsconfig
 
 # Last, so it decides inside node_modules: npm installs packages that carry listed names.
 writable node_modules

@@ -53,6 +53,9 @@ fn operational_state_git_writes_during_normal_ops_stays_writable() {
         ".git/logs/refs/heads/main",
         ".git/objects/pack/pack-0123.pack",
         ".git/objects/ab/cdef0123456789",
+        ".git/objects/info/packs", // git gc, through update-server-info
+        ".git/objects/info/commit-graph",
+        ".git/objects/info/commit-graphs/commit-graph-chain",
         ".git/info/exclude",
         // A submodule's own gitdir (.git/modules/<name>) re-roots, so its *operational* state is
         // writable — its own config, hooks and redirections are frozen, and are asserted so below.
@@ -80,13 +83,17 @@ fn operational_state_git_writes_during_normal_ops_stays_writable() {
 fn state_observe_git_misses_stays_writable() {
     // What `probe/observe-git.sh` cannot see, because it is gone when the command ends or only a
     // command the script does not run writes it. Recorded with `strace -f` around one git 2.47.3
-    // command each, except the line that names git's source instead.
+    // command each, except the lines that name git's source instead.
     for path in [
-        ".git/index.stash.3943",      // git stash
-        ".git/index.stash.3943.lock", // git stash
-        ".git/next-index-3999.lock",  // git commit <pathspec>
-        ".git/packed-refs.new",       // git gc, pack-refs, branch -d or tag -d of a packed ref
-        ".git/gc.pid.lock",           // git gc
+        ".git/index.stash.3943",               // git stash
+        ".git/index.stash.3943.lock",          // git stash
+        ".git/next-index-3999.lock",           // git commit <pathspec>
+        ".git/packed-refs.new", // git gc, pack-refs, branch -d or tag -d of a packed ref
+        ".git/gc.pid.lock",     // git gc
+        ".git/objects/info/commit-graph.lock", // commit-graph.c, write_commit_graph_file
+        ".git/objects/info/commit-graphs/commit-graph-chain.lock",
+        ".git/objects/info/commit-graphs/tmp_graph_Ab12Cd",
+        ".git/objects/info/packs_Ab12Cd", // server-info.c, update_info_file
         ".git/gc.pid",
         ".git/gc.log.lock",              // git gc --auto, detached
         ".git/MERGE_AUTOSTASH.lock",     // git merge --autostash
@@ -138,6 +145,12 @@ fn protected_entries_stay_frozen() {
         ".git/rr-cache/0123/preimage",
         ".git/MERGE_RR",
         ".git/lfs/objects/ab/cd/abcd",
+        ".git/objects/info/alternates",
+        ".git/objects/info/alternates.lock",
+        ".git/objects/info/http-alternates",
+        ".git/modules/sub/objects/info/alternates",
+        ".git/modules/libs/foo/objects/info/alternates",
+        ".git/worktrees/wt/objects/info/alternates",
         // Only the exact shapes of git's scratch names.
         ".git/index.stash.",
         ".git/index.stash.12x",

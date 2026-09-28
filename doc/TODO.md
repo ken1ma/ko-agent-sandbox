@@ -75,6 +75,17 @@ again.
   then `--protocol=ahp`. ACP is deferred; the plan keeps its reviewed design and the conditions
   that reopen it.
 
+## One list of launch refusals
+
+- [ ] Inventory every condition that stops a launch, in the launcher (`AgentSandboxLauncher.scala`,
+  `SandboxProject.scala`, `RunOnHostPrereqs.scala`, …) and in the filter's mount-time guard
+  (`fuse/ko-agent-fs/src/guard.rs`). No document lists them all: `SECURITY.md` has the guard's,
+  `fuse/ko-agent-fs/doc/troubleshooting.md` some filter messages, `run-on-host.md` its
+  prerequisites.
+- [ ] One list from it in `doc/launch-refusals.md`, linked from `README.md` and `SECURITY.md`:
+  each refusal's message, what the user does, and the document that records its reason, which
+  stays where it was decided.
+
 ## Deferred — refuse user namespaces under `NESTING=none`
 
 - [ ] A launcher-owned seccomp profile for `NESTING=none` that refuses a user namespace, only if
