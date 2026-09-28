@@ -408,6 +408,29 @@ transport. Rejected:
 Revisit if one Codex turn through a mediated relay fails on the HTTP fallback, or the provider
 drops the HTTP path.
 
+### No inspecting every allowed host
+
+The credential broker needs the proxy to terminate TLS at a host before it can substitute or
+refuse a credential there. That is no reason to terminate TLS everywhere and drop `tunnel`: the
+broker gets termination per launch, at its own targets (`plan-provider-credential-proxy.md`,
+"Mediated provider traffic"; `TODO.md`, "Credential brokering", for the refusal). Terminating TLS
+everywhere would, from the most serious cost:
+
+- break the agents whose clients the inspected relay cannot carry: a certificate-pinned client
+  cannot be terminated at all, and an HTTP/2-only or WebSocket client needs a relay the proxy
+  lacks. Which installed agents these are is not yet measured ("Mediated provider traffic" lists
+  the clients and the measurement);
+- take away the per-launch consent to the proxy seeing the conversation and provider tokens in
+  plaintext, which the provider plan requires the launch banner to state (its use case 5 and
+  guarantee 12; SECURITY.md, "Not defended", "What is inside TLS", has the exposure);
+- gain nothing at an OAuth login's hosts, which the broker cannot serve before the provider plan's
+  step 6 (`TODO.md`, "Credential brokering"), nor at a signed cloud API, where no header holds a
+  value to substitute (`plan-credential-broker-proxy.md`, "Deliberate exclusions"), while
+  costing every request a handshake (SECURITY.md, "What is inside TLS").
+
+Revisit per agent, once one mediated turn through its model host is measured. Making that agent's
+model hosts inspected by default is a separate decision: it changes the privacy boundary above.
+
 ### No HTTP query endpoint on the proxy
 
 Considered: the RFC 9110 request `OPTIONS * HTTP/1.1` with `Max-Forwards: 0` and a custom query
