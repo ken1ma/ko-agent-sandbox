@@ -284,8 +284,12 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
         _ => {}
     }
 
+    if first == b"objects" && components.len() > 2 && fold(components[1]) == b"info" {
+        return classify_within_object_info(&components[2..]);
+    }
+
     const OPERATIONAL_TREES: &[&[u8]] = &[
-        b"objects",
+        b"objects", // except below `objects/info`: [`classify_within_object_info`]
         b"refs",
         b"logs",
         b"info",     // exclude/sparse-checkout/attributes patterns — data, never executed
@@ -361,6 +365,53 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
     GitPathClass::Protected
 }
 
+/// Classify a path below a gitdir's `objects/info` by its components there: the allowlist of what
+/// git writes in it for itself, the commit-graph and the dumb-HTTP pack list. What it leaves out is
+/// protected, `alternates` and `http-alternates` among it:
+///
+/// - `alternates` names further object directories, and host git opens each one — a network path on
+///   a host that reaches one by name, such as a Windows UNC path. Git writes it only when it
+///   creates a repository (`git clone --shared` or `--reference`), which the session cannot do in
+///   the project.
+/// - `http-alternates` names object stores by URL for a client fetching this repository over dumb
+///   HTTP; git never writes it.
+///
+/// [`is_pinned_within_gitdir`] keeps either from arriving inside a directory moved into place.
+fn classify_within_object_info(components: &[&[u8]]) -> GitPathClass {
+    let name = components[0];
+    if name == b"commit-graphs" {
+        return GitPathClass::Operational;
+    }
+    if components.len() == 1 {
+        // `packs_XXXXXX` is `git update-server-info`'s temporary file, renamed onto `packs`.
+        let packs_scratch = name.strip_prefix(b"packs_").is_some_and(|suffix| {
+            suffix.len() == 6 && suffix.iter().all(u8::is_ascii_alphanumeric)
+        });
+        if name == b"commit-graph" || name == b"packs" || packs_scratch {
+            return GitPathClass::Operational;
+        }
+        if let Some(base) = name.strip_suffix(b".lock") {
+            return classify_within_object_info(&[base]);
+        }
+    }
+    GitPathClass::Protected
+}
+
+/// A gitdir's `objects` and `objects/info` directories, which lead to `alternates`
+/// ([`classify_within_object_info`]). Created only by `mkdir`, which starts them empty, and never
+/// renamed or unlinked, so an `alternates` written in another directory cannot be moved into place.
+/// `rmdir` stays allowed: it removes only an empty directory. Git never moves either directory.
+fn is_pinned_within_gitdir(context: &GitContext) -> bool {
+    let GitContext::InGit(rel) = context else {
+        return false;
+    };
+    match rel.as_slice() {
+        [objects] => objects == b"objects",
+        [objects, info] => objects == b"objects" && fold(info) == b"info",
+        _ => false,
+    }
+}
+
 /// The temporary index and shallow files git names after its process or a random suffix beside
 /// their permanent ones: `index.stash.<pid>` (`git stash`), `next-index-<pid>` (`git commit
 /// <pathspec>`), `sharedindex.<hash>` and `sharedindex_XXXXXX` (a split index), `shallow_XXXXXX`
@@ -383,8 +434,9 @@ fn is_operational_scratch_name(name: &[u8]) -> bool {
 }
 
 /// Both the `.git` name rule (a new gitdir the host would discover) and the destination
-/// classification (creating inside a protected tree) apply.
-pub fn authorize_create(parent_ctx: &GitContext, new_name: &[u8]) -> Decision {
+/// classification (creating inside a protected tree) apply, and a pinned directory
+/// ([`is_pinned_within_gitdir`]) is created only by `mkdir`.
+pub fn authorize_create(parent_ctx: &GitContext, new_name: &[u8], is_mkdir: bool) -> Decision {
     if is_dotgit_name(new_name) {
         return Decision::Deny("protected-git-entry: refusing to create a .git entry");
     }
@@ -403,6 +455,11 @@ pub fn authorize_create(parent_ctx: &GitContext, new_name: &[u8]) -> Decision {
             _ => "protected-git-control: refusing to create a protected Git entry",
         });
     }
+    if !is_mkdir && is_pinned_within_gitdir(&child_context(parent_ctx, new_name)) {
+        return Decision::Deny(
+            "pinned-git-component: refusing to create a Git object directory except by mkdir",
+        );
+    }
     Decision::Allow
 }
 
@@ -410,6 +467,11 @@ pub fn authorize_create(parent_ctx: &GitContext, new_name: &[u8]) -> Decision {
 /// fires.
 pub fn authorize(ctx: &GitContext, op: Mutation) -> Decision {
     if classify(ctx) != GitPathClass::Protected {
+        if is_pinned_within_gitdir(ctx) && matches!(op, Mutation::Unlink | Mutation::RenameFrom) {
+            return Decision::Deny(
+                "pinned-git-component: refusing to rename or unlink a Git object directory",
+            );
+        }
         return Decision::Allow;
     }
     Decision::Deny(match (ctx, op) {
@@ -959,7 +1021,7 @@ mod tests {
                 "{name:?}"
             );
             assert!(matches!(
-                authorize_create(&GitContext::NotGit, name.as_bytes()),
+                authorize_create(&GitContext::NotGit, name.as_bytes(), false),
                 Decision::Deny(_)
             ));
         }
@@ -1020,13 +1082,13 @@ mod tests {
     fn creating_or_mutating_the_launcher_configuration_is_refused_by_its_own_reason() {
         let root = GitContext::root();
         assert_eq!(
-            authorize_create(&root, b".ko-agent-sandbox"),
+            authorize_create(&root, b".ko-agent-sandbox", false),
             Decision::Deny(
                 "protected-sandbox-config: refusing to create a .ko-agent-sandbox entry"
             )
         );
         assert_eq!(
-            authorize_create(&GitContext::SandboxConfig, b"egress"),
+            authorize_create(&GitContext::SandboxConfig, b"egress", false),
             Decision::Deny("protected-sandbox-config: refusing to create inside .ko-agent-sandbox")
         );
         assert_eq!(
@@ -1105,7 +1167,7 @@ mod tests {
             GitPathClass::Protected
         );
         assert!(matches!(
-            authorize_create(&GitContext::ModuleNamespace, b"HEAD"),
+            authorize_create(&GitContext::ModuleNamespace, b"HEAD", false),
             Decision::Deny(_)
         ));
         for op in [Mutation::Write, Mutation::Unlink, Mutation::RenameFrom] {
@@ -1279,6 +1341,58 @@ mod tests {
     }
 
     #[test]
+    fn in_objects_info_only_what_git_writes_is_writable() {
+        let info = |rest: &[&[u8]]| {
+            let mut components: Vec<&[u8]> = vec![b"objects", b"info"];
+            components.extend_from_slice(rest);
+            classify(&ingit(&components))
+        };
+        assert_eq!(info(&[]), GitPathClass::Operational);
+        for name in [
+            b"commit-graph".as_slice(),
+            b"commit-graph.lock",
+            b"packs",
+            b"packs_Ab12Cd",
+        ] {
+            assert_eq!(
+                info(&[name]),
+                GitPathClass::Operational,
+                "{}",
+                String::from_utf8_lossy(name)
+            );
+        }
+        assert_eq!(
+            info(&[b"commit-graphs", b"commit-graph-chain.lock"]),
+            GitPathClass::Operational
+        );
+        for name in [
+            b"alternates".as_slice(),
+            b"alternates.lock",
+            b"http-alternates",
+            b"ALTERNATES",
+            b"ALTERN~1",
+            b"packs_12345",
+            b"some-future-file",
+        ] {
+            assert_eq!(
+                info(&[name]),
+                GitPathClass::Protected,
+                "{}",
+                String::from_utf8_lossy(name)
+            );
+        }
+        // A case-insensitive backing reaches `info` as `INFO` too.
+        assert_eq!(
+            classify(&ingit(&[b"objects", b"INFO", b"alternates"])),
+            GitPathClass::Protected
+        );
+        assert_eq!(
+            classify(&ingit(&[b"objects", b"ab", b"alternates"])),
+            GitPathClass::Operational
+        );
+    }
+
+    #[test]
     fn unknown_gitdir_paths_are_protected_fail_closed() {
         assert_eq!(classify(&ingit(&[b"description"])), GitPathClass::Protected);
         assert_eq!(
@@ -1315,15 +1429,15 @@ mod tests {
     #[test]
     fn creating_dotgit_is_denied_anywhere() {
         assert!(matches!(
-            authorize_create(&GitContext::NotGit, b".git"),
+            authorize_create(&GitContext::NotGit, b".git", false),
             Decision::Deny(_)
         ));
         assert!(matches!(
-            authorize_create(&GitContext::NotGit, b".GIT"),
+            authorize_create(&GitContext::NotGit, b".GIT", false),
             Decision::Deny(_)
         ));
         assert!(matches!(
-            authorize_create(&ingit(&[b"refs"]), b".git"),
+            authorize_create(&ingit(&[b"refs"]), b".git", false),
             Decision::Deny(_)
         ));
     }
@@ -1331,15 +1445,15 @@ mod tests {
     #[test]
     fn creating_ordinary_files_is_allowed() {
         assert_eq!(
-            authorize_create(&GitContext::NotGit, b"main.rs"),
+            authorize_create(&GitContext::NotGit, b"main.rs", false),
             Decision::Allow
         );
         assert_eq!(
-            authorize_create(&GitContext::NotGit, b".gitignore"),
+            authorize_create(&GitContext::NotGit, b".gitignore", false),
             Decision::Allow
         );
         assert_eq!(
-            authorize_create(&ingit(&[b"refs", b"heads"]), b"feature"),
+            authorize_create(&ingit(&[b"refs", b"heads"]), b"feature", false),
             Decision::Allow
         );
     }
@@ -1347,17 +1461,56 @@ mod tests {
     #[test]
     fn creating_protected_entries_inside_a_gitdir_is_denied() {
         assert!(matches!(
-            authorize_create(&ingit(&[]), b"config"),
+            authorize_create(&ingit(&[]), b"config", false),
             Decision::Deny(_)
         ));
         assert!(matches!(
-            authorize_create(&ingit(&[]), b"hooks"),
+            authorize_create(&ingit(&[]), b"hooks", false),
             Decision::Deny(_)
         ));
         assert!(matches!(
-            authorize_create(&ingit(&[b"hooks"]), b"pre-commit"),
+            authorize_create(&ingit(&[b"hooks"]), b"pre-commit", false),
             Decision::Deny(_)
         ));
+    }
+
+    #[test]
+    fn the_directories_leading_to_alternates_are_created_only_by_mkdir_and_never_moved() {
+        let objects = ingit(&[b"objects"]);
+        for (parent, name) in [
+            (ingit(&[]), b"objects".as_slice()),
+            (objects.clone(), b"info"),
+        ] {
+            assert_eq!(authorize_create(&parent, name, true), Decision::Allow);
+            assert!(matches!(
+                authorize_create(&parent, name, false),
+                Decision::Deny(_)
+            ));
+        }
+        assert!(matches!(
+            authorize_create(&objects, b"INFO", false),
+            Decision::Deny(_)
+        ));
+        for pinned in [objects.clone(), ingit(&[b"objects", b"info"])] {
+            for op in [Mutation::Unlink, Mutation::RenameFrom] {
+                assert!(
+                    matches!(authorize(&pinned, op), Decision::Deny(_)),
+                    "{op:?}"
+                );
+            }
+            for op in [Mutation::Rmdir, Mutation::SetAttr] {
+                assert_eq!(authorize(&pinned, op), Decision::Allow, "{op:?}");
+            }
+        }
+        // Below them, and beside them, entries move as other operational state does.
+        assert_eq!(
+            authorize(&ingit(&[b"objects", b"pack"]), Mutation::RenameFrom),
+            Decision::Allow
+        );
+        assert_eq!(
+            authorize_create(&ingit(&[b"objects", b"info"]), b"commit-graph", false),
+            Decision::Allow
+        );
     }
 
     #[test]

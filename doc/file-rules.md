@@ -3,7 +3,8 @@
 Some project files name a command a program on your host runs without you running the project: an
 agent's hooks when you start it, a hook manager's configuration when you commit, an editor's tasks
 when you open the folder, mise's hooks when you enter the directory, a Dev Container's
-`initializeCommand` when you reopen it.
+`initializeCommand` when you reopen it. One names a server instead: `.lfsconfig`, which git-lfs
+on your host downloads from when you check out and uploads to when you push.
 
 - In a writable session the workspace filter keeps these files read-only, and under
   `--run-on-host` so does the host command's profile.
@@ -16,7 +17,7 @@ when you open the folder, mise's hooks when you enter the directory, a Dev Conta
   `src/main/resources/agentsandbox/file-rule-defaults` has them with their programs. They cover
   Claude Code, Codex, Gemini CLI, Copilot CLI, Antigravity, Kiro and OpenCode; husky, pre-commit
   and lefthook; VS Code, Visual Studio, IntelliJ IDEA, Cursor, Windsurf and Zed; Dev Containers;
-  and mise.
+  mise; and git-lfs.
 - Inside `node_modules`, nothing: npm installs packages that carry these names.
 - A Git hook directory the repository keeps in the worktree — husky's `.husky/_`, a
   `core.hooksPath` of `githooks` — found when the filter mounts.
@@ -162,6 +163,9 @@ a project file on an event", states the boundary and what stays open.
   `package.json`, and the task runs the edit on the next open.
 - The host's Claude Code asks before starting a project MCP server, once per project, so the
   `.mcp.json` line defends a changed server after that answer.
+- The `.lfsconfig` line keeps a session from choosing the server a host checkout contacts, a
+  connection the egress proxy never sees; SECURITY.md, "The project directory", has what it leaves
+  open.
 
 Which files a default line names:
 
@@ -293,6 +297,13 @@ Others:
 - Dev Containers (https://github.com/devcontainers/spec, `docs/specs/devcontainer-reference.md`):
   `initializeCommand` runs on the host; the file is `.devcontainer/devcontainer.json`,
   `.devcontainer.json` or `.devcontainer/<folder>/devcontainer.json`.
+- git-lfs (https://github.com/git-lfs/git-lfs, `git/config.go`, `config/git_fetcher.go`), read
+  on 2026-09-28:
+  - It reads `.lfsconfig` at the worktree root, or, when that is absent, `:.lfsconfig` from the
+    index, then `HEAD:.lfsconfig`, through `git config --includes`; a key your Git configuration
+    sets overrides the file's.
+  - From that file it takes `lfs.url`, `lfs.pushurl`, `remote.<name>.lfsurl` and
+    `lfs.<url>.access`, among others; it ignores the keys that name a command.
 - direnv (https://github.com/direnv/direnv, `internal/cmd/rc.go`, `man/direnv-stdlib.1.md`):
   - An `.envrc`, or an `.env` under `load_dotenv`, loads only once allowed; the allow is a hash
     of the file's path and content.

@@ -233,9 +233,10 @@ impl Workspace {
                 "{subject} resolves through {component:?}, inside the workspace and writable by \
                  the sandbox"
             ),
-            remedy: "Hooks and configuration reachable through a writable workspace path would \
-                     be writable by the sandbox and executed by your git. Move them outside it, \
-                     or under the repository's protected .git state."
+            remedy: "Hooks, configuration and object stores reachable through a writable \
+                     workspace path would be writable by the sandbox and used by your git. Move \
+                     them outside it; hooks and configuration can also go under the repository's \
+                     protected .git state."
                 .to_string(),
         }
     }
@@ -650,6 +651,90 @@ impl Workspace {
         for (dir, subject) in hooks_dirs {
             self.check_hook_entries(&dir, &subject)?;
         }
+        self.check_object_store(&common)
+    }
+
+    /// The common gitdir's `objects`, `objects/info` and its two alternates files. The filter
+    /// protects `alternates` by its name below `objects/info` and pins the two directories
+    /// (`policy::classify_within_object_info`); through a symlink the host made, the sandbox would
+    /// write the file under the name the link leads to.
+    ///
+    /// - In a gitdir outside the workspace the sandbox writes none of them, only an ordinary
+    ///   workspace entry a link there leads back to, which is served read-only as a hook's is.
+    /// - In the workspace, a link at one of them must lead outside it, with the entries below it:
+    ///   `objects` and `objects/info` are operational, so a chain back through the workspace cannot
+    ///   be proved. Objects kept on another disk stay served.
+    fn check_object_store(&mut self, common: &Path) -> Result<(), Refusal> {
+        const ENTRIES: [(&str, bool); 4] = [
+            ("objects", true),
+            ("objects/info", true),
+            ("objects/info/alternates", false),
+            ("objects/info/http-alternates", false),
+        ];
+        if self.relative_bytes(common).is_none() {
+            for (name, _) in ENTRIES {
+                let path = common.join(name);
+                let subject = format!("the object store entry {path:?}");
+                let chain = self.resolve_chain(&path, &subject, OnOrdinary::Record)?;
+                self.record(&chain, &subject)?;
+            }
+            return Ok(());
+        }
+        for (name, is_directory) in ENTRIES {
+            let path = common.join(name);
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    let target = fs::read_link(&path).map_err(|err| Refusal {
+                        reason: format!("cannot read the symlink {path:?}: {err}"),
+                        remedy:
+                            "Repair the reported Git path or symlink on the host, then relaunch."
+                                .to_string(),
+                    })?;
+                    let target = link_target(path.parent().unwrap_or(common), &target);
+                    for (below, _) in ENTRIES {
+                        let Some(suffix) = below
+                            .strip_prefix(name)
+                            .filter(|suffix| suffix.is_empty() || suffix.starts_with('/'))
+                        else {
+                            continue;
+                        };
+                        let entry = target.join(suffix.trim_start_matches('/'));
+                        let subject = format!("the object store entry {:?}", common.join(below));
+                        let chain = self.resolve_chain(&entry, &subject, OnOrdinary::Refuse)?;
+                        if chain.end.starts_with(&self.root) {
+                            return Err(Refusal {
+                                reason: format!(
+                                    "{subject}, a symlink or below one, leads into the workspace, \
+                                     to {:?}",
+                                    chain.end
+                                ),
+                                remedy: "The filter protects objects/info/alternates, whose paths \
+                                         your git opens, by its name, and a link into the \
+                                         workspace would let the sandbox write it under another. \
+                                         Point the link outside the workspace, or replace it with \
+                                         the directory or file it names."
+                                    .to_string(),
+                            });
+                        }
+                    }
+                    if is_directory {
+                        return Ok(());
+                    }
+                }
+                Ok(_) => {}
+                // A missing directory has no link below it to find.
+                Err(err) if err.kind() == ErrorKind::NotFound && is_directory => return Ok(()),
+                Err(err) if err.kind() == ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(Refusal {
+                        reason: format!("cannot read {path:?}: {err}"),
+                        remedy: "The filter will not serve a repository whose object store it \
+                                 cannot inspect."
+                            .to_string(),
+                    });
+                }
+            }
+        }
         Ok(())
     }
 
@@ -893,6 +978,29 @@ fn components_of(path: &Path) -> Vec<OsString> {
             Component::Normal(name) => name.to_os_string(),
         })
         .collect()
+}
+
+/// Where a symlink in `directory` leads, with the target's leading `..` taken lexically from
+/// `directory`: the walk above found every component of it a real directory, and resolving the
+/// joined path from the root would refuse at the first one that is a gitdir's writable state,
+/// `.git/objects`, before reaching the `..` that leaves it. The rest of the target is left for
+/// [`Workspace::resolve_chain`] to prove.
+fn link_target(directory: &Path, target: &Path) -> PathBuf {
+    if target.is_absolute() {
+        return target.to_path_buf();
+    }
+    let mut base = directory.to_path_buf();
+    let mut components = target.components();
+    loop {
+        let rest = components.as_path();
+        match components.next() {
+            Some(Component::ParentDir) => {
+                base.pop();
+            }
+            Some(Component::CurDir) => {}
+            _ => return base.join(rest),
+        }
+    }
 }
 
 fn resolve_against(base: &Path, value: &str) -> PathBuf {
@@ -1391,6 +1499,96 @@ mod tests {
         std::os::unix::fs::symlink("objects/aux", root.join(".git/config")).unwrap();
         refused_with(&root, "objects");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_object_store_link_into_the_workspace_is_refused_and_one_leading_out_is_served() {
+        // Each link leads the filter's protected name to an ordinary one the sandbox writes.
+        for (link, target) in [
+            (".git/objects", "../objects"),
+            (".git/objects/info", "../../info"),
+            (".git/objects/info/alternates", "../../../alternates"),
+            (".git/objects/info/http-alternates", "../../../alternates"),
+            (".git/objects", ".."),
+        ] {
+            let root = scratch("alternates-link");
+            let link_path = root.join(link);
+            fs::create_dir_all(link_path.parent().unwrap()).unwrap();
+            fs::create_dir_all(root.join("objects/info")).unwrap();
+            fs::create_dir_all(root.join("info")).unwrap();
+            std::os::unix::fs::symlink(target, &link_path).unwrap();
+            let refusal =
+                check_hook_location(&root).expect_err(&format!("{link} -> {target} was served"));
+            assert!(refusal.reason.contains("workspace"), "{refusal}");
+            let _ = fs::remove_dir_all(&root);
+        }
+
+        // Objects kept outside, and a link out that leads back in below it.
+        let root = scratch("objects-outside");
+        let store = scratch("objects-outside-store");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(store.join("info")).unwrap();
+        std::os::unix::fs::symlink(&store, root.join(".git/objects")).unwrap();
+        assert!(check_hook_location(&root).is_ok());
+        std::os::unix::fs::symlink(root.join("payload"), store.join("info/alternates")).unwrap();
+        let refusal = check_hook_location(&root).expect_err("a link back in was served");
+        assert!(refusal.reason.contains("alternates"), "{refusal}");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&store);
+
+        // A relative link leading out leaves `.git/objects` by `..`, and is served too. The scratch
+        // directories are siblings, so `root/../<store>` is the store.
+        for (link, up) in [
+            (".git/objects", "../.."),
+            (".git/objects/info", "../../.."),
+            (".git/objects/info/alternates", "../../../.."),
+            (".git/objects/info/http-alternates", "../../../.."),
+        ] {
+            let root = scratch("objects-relative");
+            let store = scratch("objects-relative-store");
+            let store_name = store.file_name().unwrap().to_str().unwrap();
+            let link_path = root.join(link);
+            fs::create_dir_all(link_path.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(format!("{up}/{store_name}"), &link_path).unwrap();
+            assert!(
+                check_hook_location(&root).is_ok(),
+                "{link} -> {up}/{store_name} was refused"
+            );
+            let _ = fs::remove_dir_all(&root);
+            let _ = fs::remove_dir_all(&store);
+        }
+
+        let root = scratch("alternates-real");
+        fs::create_dir_all(root.join(".git/objects/info")).unwrap();
+        fs::write(root.join(".git/objects/info/alternates"), b"/elsewhere\n").unwrap();
+        assert!(check_hook_location(&root).is_ok());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_external_gitdir_whose_object_store_links_back_into_the_workspace_protects_the_target() {
+        for (link, target) in [
+            ("objects/info/alternates", "payload"),
+            ("objects/info", "info"),
+        ] {
+            let root = scratch("external-objects");
+            let gitdir = scratch("external-objects-gitdir");
+            fs::write(
+                root.join(".git"),
+                format!("gitdir: {}\n", gitdir.display()).as_bytes(),
+            )
+            .unwrap();
+            let link_path = gitdir.join(link);
+            fs::create_dir_all(link_path.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(root.join(target), &link_path).unwrap();
+            assert_eq!(
+                served_read_only(&root).read_only,
+                BTreeSet::from([target.to_string()]),
+                "{link}",
+            );
+            let _ = fs::remove_dir_all(&root);
+            let _ = fs::remove_dir_all(&gitdir);
+        }
     }
 
     #[test]

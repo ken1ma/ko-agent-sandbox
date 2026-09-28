@@ -588,7 +588,7 @@ Rejected:
   only by recording an escalation, which makes the gate a formality; letting the hook pass when
   Codex is unreachable reopens the loophole it exists to close.
 - A managed hook applies to every project on the image; a per-project opt-in marker would add a
-  second mechanism for a workflow the user invokes by hand.
+  second mechanism for a workflow that starts only at the user's request.
 - Claude skipping a requested review is an instruction failure, fixed in the skill text or
   `AGENTS.md`, not by a hook that runs on every stop.
 

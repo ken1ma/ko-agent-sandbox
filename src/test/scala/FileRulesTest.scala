@@ -48,7 +48,7 @@ class FileRulesTest extends munit.FunSuite:
     Vector(
       ".claude/settings.json", ".mcp.json", ".codex/config.toml", ".gemini/settings.json", ".github/hooks",
       ".agents/hooks.json", ".kiro/hooks", ".opencode", ".husky", ".pre-commit-config.yaml", ".vscode",
-      ".idea", ".devcontainer", "mise.toml", ".tool-versions", ".miserc.toml",
+      ".idea", ".devcontainer", "mise.toml", ".tool-versions", ".miserc.toml", ".lfsconfig",
     ).foreach(name => assert(names.contains(name), name))
     assertEquals(Defaults.last, Line(Word.Writable, "node_modules"))
     assertEquals(Defaults.count(_.word == Word.Writable), 1)

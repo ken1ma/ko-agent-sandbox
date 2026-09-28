@@ -1,8 +1,7 @@
 ---
 name: codex
-description: Have Codex review the working tree on one persistent thread, then fix or rebut its findings on that same thread until it approves the tree or the user must decide.
+description: Have Codex review the working tree on one persistent thread, then fix or rebut its findings on that same thread until it approves the tree or the user must decide. Invoke it only when the user asks for a Codex review, never on your own.
 argument-hint: [a review id to continue, or a base commit, model, effort and instructions for Codex]
-disable-model-invocation: true
 ---
 
 # Codex review cycle
@@ -27,6 +26,11 @@ session's.
 - Otherwise, without a base and with a clean `git status`, tell the user there is nothing to
   review and that a base in the argument brings committed work into scope, and stop.
 - With a base, the step 2 summary still reports only what this session did, and says so.
+
+When you invoke the skill because the user asked in words, the argument holds only what they
+named: a base, model, effort or instructions they stated, or the id of a review this conversation
+printed that their request points to, such as "the last review". Otherwise it is empty. Before
+the first command, tell the user in one line that you invoked the skill, quoting their request.
 
 ## Steps
 

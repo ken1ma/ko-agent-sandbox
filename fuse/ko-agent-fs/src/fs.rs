@@ -328,18 +328,21 @@ impl KoAgentFs {
         }
     }
 
-    /// `op` is also how the file rules tell `mkdir`, the one way a pinned name may be created.
+    /// `op` is also how the policy tells `mkdir`, the one way a pinned name may be created, by a
+    /// file rule or in a gitdir.
     fn allow_create(&self, parent: u64, name: &OsStr, op: &str) -> Result<(), Errno> {
+        let is_mkdir = op == "mkdir";
         // An existing entry too: `rename` replaces one.
         let policy_name = self.existing_policy_name(parent, name)?;
-        let decision = match authorize_create(&self.context(parent), policy_name.as_bytes()) {
-            Decision::Allow => {
-                let inner = self.inner.lock().unwrap();
-                let (_, rule) = inner.table.child_contexts(parent, &policy_name);
-                authorize_rule_create(inner.table.rules(), &rule, op == "mkdir")
-            }
-            deny => deny,
-        };
+        let decision =
+            match authorize_create(&self.context(parent), policy_name.as_bytes(), is_mkdir) {
+                Decision::Allow => {
+                    let inner = self.inner.lock().unwrap();
+                    let (_, rule) = inner.table.child_contexts(parent, &policy_name);
+                    authorize_rule_create(inner.table.rules(), &rule, is_mkdir)
+                }
+                deny => deny,
+            };
         match decision {
             Decision::Allow => Ok(()),
             Decision::Deny(reason) => Err(deny(op, &format!("{name:?}"), reason)),
