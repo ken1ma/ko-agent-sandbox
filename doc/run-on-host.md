@@ -1235,8 +1235,9 @@ rest, measured:
     build could report.
   - `open` started nothing from under the command profile while `mach-lookup` was unfiltered
     (`mach-route`): `open -a` found no application, and a `.command` file the command wrote had
-    no application claiming it. Under the named service the acceptance test has a row for `open -a`,
-    and one for a JVM asking the resolver.
+    no application claiming it.
+  - Under the named service the acceptance test has rows for `open -a`, for a JVM asking the
+    resolver, and for a lookup of an internet name, which must fail (SECURITY.md, "DNS").
 - What this toolchain needs, per layer: the JDK needs `sysctl-read`, its home, and
   `/System/Library/CoreServices/SystemVersion.plist` — without that one file `java` refuses to
   start with `os.version malformed: -1.0`. It does *not* need `file-map-executable`, which Apple's

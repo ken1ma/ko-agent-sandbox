@@ -2825,10 +2825,10 @@ object AgentSandboxLauncher:
     // This run's egress proxy
     // -----------------------------------------------------------------------
     //
-    // The sandbox joins an internal network with no gateway; its only peer on it is this run's proxy, whose second
-    // interface has the route out. A network boundary, not a configuration hint: removing the proxy env variables below
-    // does not restore Internet access, it just makes the failure harder to diagnose. All per run — see the
-    // run-lifetime section.
+    // The sandbox joins an internal network with no gateway; its peers on it are this run's proxy, whose second
+    // interface has the route out, and podman's resolver, which answers only the run's names (SECURITY.md, "DNS").
+    // A network boundary, not a configuration hint: removing the proxy env variables below does not restore Internet
+    // access, it just makes the failure harder to diagnose. All per run — see the run-lifetime section.
     val (proxyImage, proxyImageOverridden) = proxyImageChoice
 
     // One suffix ties this run's containers, networks and log file together in podman output and the retained logs.

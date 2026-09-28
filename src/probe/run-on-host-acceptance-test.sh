@@ -774,7 +774,7 @@ for p in $profiles; do
     cat > "$SESSION_TMP/Resolve.java" <<'EOF'
 class Resolve {
     public static void main(String[] arguments) {
-        try { System.out.println(java.net.InetAddress.getByName("localhost")); }
+        try { System.out.println(java.net.InetAddress.getByName(arguments[0])); }
         catch (java.net.UnknownHostException ex) { System.out.println(ex); }
     }
 }
@@ -782,7 +782,7 @@ EOF
     # From the profile's own project: a JVM asks for its working directory at start, and the
     # acceptance test's is the sbt profile's project alone.
     expect_allowed "$p" "a JVM resolving a name survives it" \
-        "cd '$(project_of "$p")' && '$JAVA_HOME/bin/java' '$SESSION_TMP/Resolve.java'"
+        "cd '$(project_of "$p")' && '$JAVA_HOME/bin/java' '$SESSION_TMP/Resolve.java' localhost"
 
     echo
     echo "allowed writes, under the $p profile"
@@ -806,6 +806,12 @@ EOF
     expect_denied "$p" "HTTPS around the proxy (curl, direct)" \
         "/usr/bin/curl --max-time 5 -sS https://repo1.maven.org/maven2/"
     expect_denied "$p" "DNS resolution (direct socket)" "/usr/bin/nslookup -timeout=3 example.com"
+    # The system's resolver, through the Mach service the profile grants (SECURITY.md, "DNS"). The
+    # row passes only on Resolve's own report of an unresolved name: a JVM that crashed or
+    # resolved the name fails it.
+    expect_allowed "$p" "DNS resolution (the system's resolver) fails" \
+        "cd '$(project_of "$p")' && '$JAVA_HOME/bin/java' '$SESSION_TMP/Resolve.java' example.com \
+            > '$SESSION_TMP/resolve.out' && grep -q '^java.net.UnknownHostException' '$SESSION_TMP/resolve.out'"
     # An unrelated service of this host: what a Gradle process may reach — its daemon, workers
     # and file-lock socket connect to each other's ports of the kernel's choosing — and no other
     # program's process may (SECURITY.md "Run on host", the table). The listener is the acceptance test's.
