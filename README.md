@@ -145,6 +145,9 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
    ([doc/limitations.md](doc/limitations.md#permission-prompts-that-remain)).
 1. Ctrl-V pastes a copied image only when `KO_AGENT_SANDBOX_CLIPBOARD` is `paste` or
    `bidirectional`.
+1. The image keeps Claude Code's conversation in the terminal's scrollback, where you can select
+   and copy it. For the fullscreen renderer, launch with `--env=CLAUDE_CODE_NO_FLICKER=1`: the
+   image's managed setting outranks `/tui fullscreen`.
 1. Run `/ko-review`, the skill of the image's `ko-review` plugin, to review the working tree.
    Choose Codex or a separate Claude Code session as the reviewer. Claude fixes or disputes each
    finding on the same reviewer thread until the reviewer approves the exact tree or asks for a

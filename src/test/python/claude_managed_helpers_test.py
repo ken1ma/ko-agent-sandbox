@@ -174,9 +174,10 @@ class ManagedHelpersTest(unittest.TestCase):
                     self.assertIn("label", result.stdout)
                     self.assertTrue(all(character.isprintable() for character in result.stdout.removesuffix("\n")))
 
-    def test_registration_contains_only_status_line(self):
+    def test_managed_settings_are_status_line_and_classic_renderer(self):
         settings_directory = SCRIPTS / "managed-settings.d"
-        self.assertEqual({path.name for path in settings_directory.glob("*.json")}, {"statusLine.json"})
+        self.assertEqual({path.name for path in settings_directory.glob("*.json")}, {"statusLine.json", "tui.json"})
+        self.assertEqual(json.loads((settings_directory / "tui.json").read_text()), {"tui": "default"})
         settings = json.loads((settings_directory / "statusLine.json").read_text())
         self.assertEqual(settings, {
             "statusLine": {

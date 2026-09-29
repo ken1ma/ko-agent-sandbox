@@ -344,6 +344,13 @@ RUN set -euxo pipefail; \
 # The managed command accepts a data-only project template so display
 # customization does not require a project-supplied command.
 # Usage: doc/agent-settings.md, "Claude Code status line".
+#
+# tui.json keeps Claude Code's classic renderer. The fullscreen renderer
+# keeps the conversation out of the terminal's scrollback and copies a mouse
+# selection through OSC 52, which some terminals ignore; in some, holding
+# Shift does not bypass it. Setting `tui` to either value also stops Claude
+# Code's tip and dialog suggesting `/tui fullscreen`.
+# doc/plan-clipboard.md reconsiders this.
 COPY --chmod=0644 claude-code/command/ /etc/claude-code/command/
 COPY --chmod=0644 claude-code/managed-settings.d/ /etc/claude-code/managed-settings.d/
 

@@ -215,6 +215,8 @@ run `wl-copy`.
 
 - Claude Code: unchanged under `bidirectional`. Under `paste`, it now sees a display and copies
   through `wl-copy`, which the broker drops, and OSC 52 as before.
+  - Reconsider the image's `claude-code/managed-settings.d/tui.json`, which keeps the classic
+    renderer so that the terminal can select text.
 - Codex: image paste works under `paste` and `bidirectional`. Copy reaches the host under
   `bidirectional`; under `paste`, arboard succeeds against the service, so Codex no longer writes
   OSC 52 and its copies reach no clipboard on any terminal. Under `off` it keeps OSC 52.
