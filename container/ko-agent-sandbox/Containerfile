@@ -607,7 +607,8 @@ RUN set -euxo pipefail; \
 #
 # Image-owned plugins, loaded beside whatever the user installs: nothing in the
 # persistent volume can drop or replace them. A plugin's bin/ joins the Bash
-# tool's PATH. The Codex CLI above is what ko-review calls (doc/ko-review.md).
+# tool's PATH. The Codex CLI above and Claude Code are what ko-review calls
+# (doc/ko-review.md).
 # Copied after the agent downloads, so that a plugin edit leaves their layers
 # cached. The modes are set after the copy: COPY --chmod gives the copied
 # subdirectories the file mode too, ko-review/ comes out `drw-r--r--`, and

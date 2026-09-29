@@ -1,10 +1,11 @@
 #!/usr/bin/env -S python3 -I
-"""Runs one stateful Codex review cycle for the author of a change, the agent that made it.
+"""Runs one stateful review cycle for the author of a change, the agent that made it.
 
-A cycle is one Codex thread: `start` opens it with a fresh review, `continue` sends the author's
-fixes or rebuttals to the same thread, and `verify` confirms the approval covers the current working tree.
-State lives in the project's persistent volume; doc/ko-review.md is the
-design. Every command prints one JSON object; exit status 1 means the JSON carries `error`.
+A cycle is one reviewer thread, Codex's or Claude Code's: `start` opens it with a fresh review,
+`continue` sends the author's fixes or rebuttals to the same thread, and `verify` confirms the
+approval covers the current working tree. State lives in the project's persistent volume;
+doc/ko-review.md is the design. Every command prints one JSON object; exit status 1 means the JSON
+carries `error`.
 """
 
 import argparse
@@ -28,20 +29,17 @@ from pathlib import Path
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 PLUGIN_VERSION = json.loads((PLUGIN_ROOT / ".claude-plugin/plugin.json").read_text())["version"]
 RESULT_SCHEMA = PLUGIN_ROOT / "schemas/review-result.schema.json"
 DISPOSITIONS = {"APPROVED", "CHANGES_REQUESTED", "USER_DECISION_REQUIRED"}
 SEVERITIES = {"critical", "high", "medium", "low"}
 TERMINAL = {"USER_DECISION_REQUIRED", "LOOP_LIMIT_REACHED"}
 DEFAULT_MAX_ROUNDS = 12
-REVIEWERS = ("codex",)
 DEFAULT_TIMEOUT_SECONDS = 3600
 # Python turns only SIGINT into an exception; these are raised as one below so that a terminated
-# helper still kills Codex and reverts the review's state.
+# helper still kills the reviewer and reverts the review's state.
 TERMINATING_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
-# Both hosts: a ChatGPT login talks to chatgpt.com, an API key to api.openai.com.
-OPENAI_HOSTS = ("api.openai.com", "chatgpt.com")
 
 
 class ReviewError(Exception):
@@ -60,6 +58,13 @@ class GitFailure(ReviewError):
 
     def __init__(self, message, **detail):
         super().__init__("GIT_FAILED", message, **detail)
+
+
+class ReviewerError(ReviewError):
+    """The reviewer, not the helper, failed: the error names it so that the skill's advice fits."""
+
+    def __init__(self, reviewer, code, message, **detail):
+        super().__init__(code, message, reviewer=reviewer.name, **detail)
 
 
 CURRENT_REVIEW = None  # the review a command has created or opened, named in its failures
@@ -264,7 +269,7 @@ def snapshot(review, round_number, observation):
 def attach_transcript(review, taken, text):
     """The round's transcript as a tag object on the round's ref, which then peels to the tree:
     the ref's `%(contents)` is the transcript, `git diff` between refs still compares trees, and
-    `git tag` lists none of it. The tagger is the helper, since neither the user nor Codex wrote the
+    `git tag` lists none of it. The tagger is the helper, since neither the user nor the reviewer wrote the
     whole message. Without a snapshot there is no ref to carry it. A failure leaves the ref on the
     tree and its diagnostic in the snapshot's `transcriptError`, which the JSON output carries."""
     if not taken.get("ref"):
@@ -348,13 +353,17 @@ class Review:
         self.lock_file = None
 
     @staticmethod
-    def open(root, review_id):
+    def open(root, review_id, check_version=True):
         """The review locked, then loaded: what it says is what the command acts on."""
         review = Review(root, review_id)
         if not review.state_path.exists():
             raise ReviewError("UNKNOWN_REVIEW", f"no review {review_id} for {root}")
         review.lock()
-        return review.load()
+        return review.load(check_version)
+
+    @property
+    def reviewer(self):
+        return REVIEWERS[self.state["reviewer"]]
 
     @staticmethod
     def create(root, max_rounds, reviewer):
@@ -374,20 +383,20 @@ class Review:
             "schemaVersion": SCHEMA_VERSION,
             "reviewId": review.id,
             "repository": str(root),
-            "reviewer": reviewer,
+            "reviewer": reviewer.name,
+            "reviewerVersion": reviewer.version(),
             "status": "NEW",
             "round": 0,
             "maxRounds": max_rounds,
-            "codexThreadId": None,
-            "codexVersion": codex_version(),
+            "threadId": None,
             "pluginVersion": PLUGIN_VERSION,
-            "claudeSessionId": os.environ.get("CLAUDE_SESSION_ID"),
+            "authorSessionId": os.environ.get("CLAUDE_SESSION_ID"),  # the author's Claude Code session, if any
             "createdAt": now(),
             "updatedAt": None,
             "base": None,
             "instructions": None,
-            "codexModel": None,
-            "codexEffort": None,
+            "model": None,
+            "effort": None,
             "snapshots": [],
             "lastReviewed": None,
             "approved": None,
@@ -396,14 +405,23 @@ class Review:
         review.save()
         return review
 
-    def load(self):
+    def load(self, check_version=True):
         global CURRENT_REVIEW
         if not self.state_path.exists():
             raise ReviewError("UNKNOWN_REVIEW", f"no review {self.id} for {self.root}")
         self.state = json.loads(self.state_path.read_text())
         CURRENT_REVIEW = self
-        if self.state.get("schemaVersion") != SCHEMA_VERSION:
-            raise ReviewError("STATE_IO_FAILED", f"{self.state_path} has an unsupported schemaVersion")
+        if check_version and self.state.get("schemaVersion") != SCHEMA_VERSION:
+            raise ReviewError(
+                "STATE_IO_FAILED",
+                f"{self.state_path} has schemaVersion {self.state.get('schemaVersion')}, and this helper reads"
+                f" {SCHEMA_VERSION}: `ko-review delete {self.id}` removes the review",
+            )
+        if self.state.get("reviewer") not in REVIEWERS:
+            raise ReviewError(
+                "REVIEWER_UNSUPPORTED",
+                f"review {self.id} is a {self.state.get('reviewer')} review; this helper runs " + ", ".join(REVIEWERS),
+            )
         return self
 
     def save(self):
@@ -432,7 +450,8 @@ class Review:
     def round_transcript(self, round_number):
         """The round's journal entries as Markdown, headed by the review and the round."""
         entries = [entry for entry in self.journal_entries() if entry.get("round") == round_number]
-        return "\n".join([f"# Review {self.id}, round {round_number}", "", *render_entries(entries, False)])
+        rendered = render_entries(self.reviewer, entries, False)
+        return "\n".join([f"# Review {self.id}, round {round_number}", "", *rendered])
 
     def journal_length(self):
         if not self.journal_path.exists():
@@ -490,10 +509,10 @@ class Review:
 
     def activity(self):
         """What a round in progress shows: where its events land, and when the last one was
-        received, which is not proof that Codex is still working."""
+        received, which is not proof that the reviewer is still working."""
         if self.state["status"] != "REVIEWING":
             return None
-        events = self.round_path(self.state["round"], "codex.jsonl")
+        events = self.round_path(self.state["round"], self.reviewer.name + ".jsonl")
         last = None
         if events.exists():
             lines = [line for line in events.read_bytes().split(b"\n") if line.strip()]
@@ -538,17 +557,17 @@ class Review:
         return {
             "reviewId": self.id,
             "repository": str(self.root),
-            "reviewer": self.state.get("reviewer", "codex"),
+            "reviewer": self.state["reviewer"],
             "status": self.state["status"],
             "effectiveStatus": status,
             "round": self.state["round"],
             "maxRounds": self.state["maxRounds"],
             "instructions": self.state.get("instructions"),
             "base": self.state.get("base"),
-            "codexModel": self.state.get("codexModel"),
-            "codexEffort": self.state.get("codexEffort"),
+            "model": self.state.get("model"),
+            "effort": self.state.get("effort"),
             "snapshots": self.state.get("snapshots", []),
-            "codexThreadId": self.state["codexThreadId"],
+            "threadId": self.state["threadId"],
             "lastReviewed": self.state["lastReviewed"],
             "approved": self.state["approved"],
             "approvalFresh": fresh,
@@ -565,49 +584,209 @@ class Review:
         }
 
 
-def codex_version():
+def program_version(program):
     try:
-        return subprocess.run(["codex", "--version"], capture_output=True, text=True, check=False).stdout.strip()
+        return subprocess.run([program, "--version"], capture_output=True, text=True, check=False).stdout.strip()
     except FileNotFoundError:
         return None
 
 
-def check_codex_available():
-    if shutil.which("codex") is None:
-        raise ReviewError("CODEX_FAILED", "codex is not on PATH")
-    # Codex knows its credential stores (auth.json or the OS keyring); the helper does not.
-    status = subprocess.run(["codex", "login", "status"], capture_output=True, text=True, check=False, timeout=60)
-    if status.returncode != 0:
-        raise ReviewError(
-            "CODEX_AUTH_FAILED", "codex is not signed in: run `codex` in this project's sandbox, sign in, and retry",
-            loginStatus=(status.stdout + status.stderr).strip()[-500:],
+class Codex:
+    """Codex CLI as the reviewer: `codex exec` and `codex exec resume`, in the JSONL event stream."""
+
+    name = "codex"
+    display = "Codex"
+    thread_event = "thread.started"
+    # Both hosts: a ChatGPT login talks to chatgpt.com, an API key to api.openai.com.
+    hosts = ("api.openai.com", "chatgpt.com")
+    lost_thread = "no rollout found"
+    sign_in_advice = "run `codex` in this project's sandbox, sign in, and retry"
+
+    def version(self):
+        return program_version("codex")
+
+    def signed_in(self):
+        """Codex knows its credential stores (auth.json or the OS keyring); the helper does not."""
+        status = subprocess.run(["codex", "login", "status"], capture_output=True, text=True, check=False, timeout=60)
+        return status.returncode == 0, (status.stdout + status.stderr).strip()[-500:]
+
+    def command(self, state, resume_id, result_path):
+        command = ["codex", "exec"]
+        if resume_id is not None:
+            command += ["resume", resume_id]
+        if state.get("model"):
+            command += ["--model", state["model"]]
+        if state.get("effort"):
+            command += ["-c", "model_reasoning_effort=" + json.dumps(state["effort"])]
+        return command + [
+            "--json", "--output-schema", str(RESULT_SCHEMA), "--output-last-message", str(result_path), "-",
+        ]
+
+    def environment(self, state):
+        return None  # the helper's own
+
+    def check_choice(self, state):
+        pass
+
+    def thread_id(self, event):
+        if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str):
+            return event["thread_id"]
+        return None
+
+    def failed(self, event):
+        return event.get("type") in ("turn.failed", "error")
+
+    def failure_text(self, event):
+        error = event.get("error", event.get("message"))
+        text = error.get("message") if isinstance(error, dict) else error
+        return text if isinstance(text, str) else json.dumps(error)
+
+    def final_result(self, events, result_path):
+        """The final message `--output-last-message` wrote, or None."""
+        return result_path.read_text() if result_path.exists() else None
+
+    def defaults(self, root):
+        return codex_defaults(root)
+
+
+class Claude:
+    """Claude Code as the reviewer: `claude -p` and `claude -p --resume`, in the stream-json events.
+
+    Not `--bare`, which accepts only an API key: the print-mode session runs under the managed
+    settings and the project's CLAUDE.md, with the user's, project's and local settings files, the
+    slash commands and every MCP server left out. `--permission-prompts none` denies every tool a
+    permission prompt would gate, so outside a bypass-permissions policy the reviewer can only read
+    files and run the git commands listed; inside one, the digest check is what enforces reading
+    only, as for Codex."""
+
+    name = "claude"
+    display = "Claude"
+    thread_event = "system init"
+    # Model traffic, and the OAuth token refresh a claude.ai login makes.
+    hosts = ("api.anthropic.com", "platform.claude.com")
+    lost_thread = "no conversation found with session id"
+    sign_in_advice = "run `claude` in this project's sandbox, sign in with /login, and retry"
+    tools = "Bash,Read,Grep,Glob,WebFetch,WebSearch"
+    allowed_tools = (
+        "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git status:*)", "Bash(git ls-files:*)",
+        "Bash(git blame:*)", "Bash(git grep:*)", "WebFetch", "WebSearch",
+    )
+
+    def version(self):
+        return program_version("claude")
+
+    def signed_in(self):
+        status = subprocess.run(
+            ["claude", "auth", "status", "--json"], capture_output=True, text=True, check=False, timeout=60,
+        )
+        text = (status.stdout + status.stderr).strip()[-500:]
+        try:
+            logged_in = json.loads(status.stdout).get("loggedIn")
+        except (ValueError, AttributeError):
+            logged_in = None
+        return (status.returncode == 0 if logged_in is None else bool(logged_in)), text
+
+    def command(self, state, resume_id, result_path):
+        command = ["claude", "-p"]
+        if resume_id is not None:
+            command += ["--resume", resume_id]
+        if state.get("model"):
+            command += ["--model", state["model"]]
+        if state.get("effort"):
+            command += ["--effort", state["effort"]]
+        return command + [
+            "--verbose", "--output-format", "stream-json", "--json-schema", RESULT_SCHEMA.read_text(),
+            "--setting-sources", "", "--disable-slash-commands", "--strict-mcp-config", "--permission-prompts", "none",
+            "--tools", self.tools, "--allowedTools", *self.allowed_tools,
+        ]
+
+    def environment(self, state):
+        """`CLAUDE_CODE_EFFORT_LEVEL` outranks `--effort` (code.claude.com/docs/en/env-vars), so an
+        inherited one would run every round at its level while the review records the chosen one."""
+        if not state.get("effort"):
+            return None
+        return {**os.environ, "CLAUDE_CODE_EFFORT_LEVEL": state["effort"]}
+
+    def check_choice(self, state):
+        """A managed `env` block replaces the variable `environment` sets, so the effort such a block
+        sets is the only one the review can record truthfully."""
+        managed_effort, source = claude_managed_variable("CLAUDE_CODE_EFFORT_LEVEL")
+        if managed_effort and state.get("effort") and managed_effort != state["effort"]:
+            raise ReviewerError(
+                self, "REVIEWER_CHOICE_REFUSED",
+                f"{source} sets CLAUDE_CODE_EFFORT_LEVEL to {managed_effort}, which Claude Code applies whatever"
+                f" the review chooses: start the review with --effort {managed_effort} or without --effort",
+            )
+
+    def thread_id(self, event):
+        if event.get("type") == "system" and event.get("subtype") == "init" \
+                and isinstance(event.get("session_id"), str):
+            return event["session_id"]
+        return None
+
+    def failed(self, event):
+        # An API error can end a print-mode run with exit status 0 and the error in the result
+        # (anthropics/claude-code#79500), so the result object, not the status, says whether it failed.
+        return event.get("type") == "result" and (event.get("is_error") or event.get("subtype") != "success")
+
+    def failure_text(self, event):
+        errors = event.get("errors")
+        if isinstance(errors, list) and errors:
+            return "; ".join(str(error) for error in errors)
+        return event.get("result") if isinstance(event.get("result"), str) else event.get("subtype")
+
+    def final_result(self, events, result_path):
+        """The `structured_output` of the result event, kept in the round's result file, or None."""
+        for event in reversed(events):
+            if event.get("type") == "result" and event.get("structured_output") is not None:
+                text = json.dumps(event["structured_output"])
+                result_path.write_text(text)
+                return text
+        return None
+
+    def defaults(self, root):
+        return claude_defaults(root)
+
+
+REVIEWERS = {reviewer.name: reviewer for reviewer in (Codex(), Claude())}
+
+
+def check_signed_in(reviewer):
+    if shutil.which(reviewer.name) is None:
+        raise ReviewerError(reviewer, "REVIEWER_FAILED", f"{reviewer.name} is not on PATH")
+    signed_in, status = reviewer.signed_in()
+    if not signed_in:
+        raise ReviewerError(
+            reviewer, "REVIEWER_AUTH_FAILED", f"{reviewer.name} is not signed in: {reviewer.sign_in_advice}",
+            loginStatus=status,
         )
 
 
-def openai_hosts_allowed():
-    """None outside the sandbox; otherwise whether the ruleset the launcher exports allows an OpenAI host."""
+def hosts_allowed(reviewer):
+    """None outside the sandbox; otherwise whether the ruleset the launcher exports allows one of the
+    reviewer's hosts."""
     ruleset = os.environ.get("KO_AGENT_SANDBOX_EGRESS_RULESET")
     if not ruleset:
         return None
-    return any(f"allow https://{host}/" in ruleset for host in OPENAI_HOSTS)
+    return any(f"allow https://{host}/" in ruleset for host in reviewer.hosts)
 
 
-def check_egress():
-    if openai_hosts_allowed() is False:
-        raise ReviewError(
-            "CODEX_EGRESS_DENIED",
-            "the egress ruleset allows no OpenAI host: relaunch the session under an egress profile that allows both"
-            " providers, normally the default, and retry",
+def check_egress(reviewer):
+    if hosts_allowed(reviewer) is False:
+        raise ReviewerError(
+            reviewer, "REVIEWER_EGRESS_DENIED",
+            f"the egress ruleset allows none of {', '.join(reviewer.hosts)}: relaunch the session under an egress"
+            " profile that allows both providers, normally the default, and retry",
             profile=os.environ["KO_AGENT_SANDBOX_EGRESS_RULESET"].splitlines()[0],
         )
 
 
-def egress_diagnostics():
+def egress_diagnostics(reviewer):
     checker = shutil.which("ko-sandbox-egress-check")
     if checker is None:
         return None
     lines = []
-    for host in OPENAI_HOSTS:
+    for host in reviewer.hosts:
         completed = subprocess.run([checker, host], capture_output=True, text=True, check=False, timeout=60)
         lines.extend((completed.stdout + completed.stderr).splitlines())
     return lines
@@ -615,12 +794,12 @@ def egress_diagnostics():
 
 RESULT_KEYS = {"disposition", "summary", "findings", "userDecision"}
 FINDING_KEYS = {"id", "severity", "location", "description", "evidence"}
-USER_DECISION_KEYS = {"issue", "codexPosition", "whyTechnicalEvidenceCannotDecide", "decisionRequested"}
+USER_DECISION_KEYS = {"issue", "reviewerPosition", "whyTechnicalEvidenceCannotDecide", "decisionRequested"}
 
 
 def validate_result(result):
-    """The checks the schema states, applied to what Codex returned: `--output-schema` asks the
-    model for the shape but the helper decides."""
+    """The checks the schema states, applied to what the reviewer returned: the schema option asks
+    the model for the shape but the helper decides."""
     if not isinstance(result, dict):
         return "result is not an object"
     if set(result) != RESULT_KEYS:
@@ -655,58 +834,57 @@ def validate_result(result):
     return None
 
 
-def codex_said(stderr, events):
-    """Codex's own words on its failure, such as a usage limit and when it resets: its last failure
-    event's message, else the last line of its stderr."""
+def reviewer_said(reviewer, stderr, events):
+    """The reviewer's own words on its failure, such as a usage limit and when it resets: its last
+    failure event's message, else the last line of its stderr."""
     for event in reversed(events):
-        if event.get("type") in ("turn.failed", "error"):
-            error = event.get("error", event.get("message"))
-            text = error.get("message") if isinstance(error, dict) else error
+        if reviewer.failed(event):
+            text = reviewer.failure_text(event)
             if isinstance(text, str) and text.strip():
                 return text.strip()
     lines = [line.strip() for line in stderr.splitlines() if line.strip()]
     return lines[-1] if lines else None
 
 
-def codex_failed(summary, stderr, events, /, **detail):
-    said = codex_said(stderr, events)
-    return ReviewError("CODEX_FAILED", f"{summary}: {said}" if said else summary, **detail)
+def reviewer_failed(reviewer, summary, stderr, events, /, **detail):
+    said = reviewer_said(reviewer, stderr, events)
+    return ReviewerError(reviewer, "REVIEWER_FAILED", f"{summary}: {said}" if said else summary, **detail)
 
 
-def classify_failure(returncode, stderr, events):
-    failures = [event for event in events if event.get("type") in ("turn.failed", "error")]
-    messages = [json.dumps(event.get("error", event.get("message"))) for event in failures]
+def classify_failure(reviewer, returncode, stderr, events):
+    failures = [event for event in events if reviewer.failed(event)]
+    messages = [json.dumps(reviewer.failure_text(event)) for event in failures]
     text = stderr + "\n" + "\n".join(messages)
     lowered = text.lower()
     detail = {"exitStatus": returncode, "stderr": stderr[-2000:], "events": messages[-5:]}
     if returncode < 0:
-        return ReviewError("TURN_INTERRUPTED", f"codex ended by signal {-returncode}", **detail)
-    if "no rollout found" in lowered:
-        return ReviewError(
-            "CODEX_FAILED", "codex no longer has this review's thread; start a new review", **detail,
-        )
-    if re.search(r"not logged in|login required|unauthorized|401|refresh token|reauthenticate", lowered):
-        return ReviewError(
-            "CODEX_AUTH_FAILED", "codex is not signed in: run `codex` in this project's sandbox, sign in, and retry",
+        return ReviewerError(reviewer, "TURN_INTERRUPTED", f"{reviewer.name} ended by signal {-returncode}", **detail)
+    if reviewer.lost_thread in lowered:
+        return ReviewerError(
+            reviewer, "REVIEWER_FAILED", f"{reviewer.name} no longer has this review's thread; start a new review",
             **detail,
         )
-    if re.search(r"403|proxy|connect tunnel|tls|network|dns|connection refused|timed out", lowered):
-        return ReviewError(
-            "CODEX_EGRESS_DENIED",
-            "codex could not reach its provider; the diagnostics show what the proxy answered",
-            egressCheck=egress_diagnostics(), **detail,
+    if re.search(r"not logged in|login required|unauthorized|401|refresh token|reauthenticate|/login", lowered):
+        return ReviewerError(
+            reviewer, "REVIEWER_AUTH_FAILED", f"{reviewer.name} is not signed in: {reviewer.sign_in_advice}", **detail,
         )
-    return codex_failed("codex failed", stderr, events, **detail)
+    if re.search(r"403|proxy|connect tunnel|tls|network|dns|connection refused|timed out", lowered):
+        return ReviewerError(
+            reviewer, "REVIEWER_EGRESS_DENIED",
+            f"{reviewer.name} could not reach its provider; the diagnostics show what the proxy answered",
+            egressCheck=egress_diagnostics(reviewer), **detail,
+        )
+    return reviewer_failed(reviewer, f"{reviewer.name} failed", stderr, events, **detail)
 
 
 def stream_events(review, process, prompt, resume_id, timeout, events_path):
-    """Feeds the prompt, copies Codex's JSONL to the round's file and parses it as it arrives.
+    """Feeds the prompt, copies the reviewer's JSONL to the round's file and parses it as it arrives.
 
-    The thread id is persisted the moment `thread.started` arrives: whatever ends the turn after
-    that, a timeout, an interrupt or unparsable later output, the thread holds the request and a
-    retry resumes it. Any exception kills Codex and waits for it before propagating, so no turn
-    outlives the lock that serialized it. Returns the events, the first thread id or None, the
-    first line that is not JSON or None, and whether the timeout killed Codex."""
+    The thread id is persisted the moment the reviewer's event names it: whatever ends the turn
+    after that, a timeout, an interrupt or unparsable later output, the thread holds the request
+    and a retry resumes it. Any exception kills the reviewer and waits for it before propagating,
+    so no turn outlives the lock that serialized it. Returns the events, the first thread id or
+    None, the first line that is not JSON or None, and whether the timeout killed the reviewer."""
     def feed():
         try:
             process.stdin.write(prompt.encode())
@@ -718,6 +896,7 @@ def stream_events(review, process, prompt, resume_id, timeout, events_path):
         timed_out.append(True)
         os.killpg(process.pid, signal.SIGKILL)
 
+    reviewer = review.reviewer
     timed_out = []
     timer = None
     events = []
@@ -743,11 +922,10 @@ def stream_events(review, process, prompt, resume_id, timeout, events_path):
                 if not isinstance(event, dict):
                     continue
                 events.append(event)
-                if started is None and event.get("type") == "thread.started" \
-                        and isinstance(event.get("thread_id"), str):
-                    started = event["thread_id"]
+                if started is None and reviewer.thread_id(event) is not None:
+                    started = reviewer.thread_id(event)
                     if resume_id is None:
-                        review.state["codexThreadId"] = started
+                        review.state["threadId"] = started
                         review.save()
         process.wait()
     except BaseException as raised:
@@ -760,7 +938,7 @@ def stream_events(review, process, prompt, resume_id, timeout, events_path):
             pass
         process.wait()
         if isinstance(raised, KeyboardInterrupt):
-            raise ReviewError("TURN_INTERRUPTED", "interrupted while codex ran")
+            raise ReviewError("TURN_INTERRUPTED", f"interrupted while {reviewer.name} ran")
         raise
     finally:
         if timer is not None:
@@ -768,60 +946,61 @@ def stream_events(review, process, prompt, resume_id, timeout, events_path):
     return events, started, bad_line, bool(timed_out)
 
 
-def run_codex(review, round_number, prompt, resume_id, timeout):
+def run_reviewer(review, round_number, prompt, resume_id, timeout):
+    reviewer = review.reviewer
     input_path = review.round_path(round_number, "input.md")
     input_path.write_text(prompt)
-    events_path = review.round_path(round_number, "codex.jsonl")
-    stderr_path = review.round_path(round_number, "codex.stderr")
+    events_path = review.round_path(round_number, reviewer.name + ".jsonl")
+    stderr_path = review.round_path(round_number, reviewer.name + ".stderr")
     result_path = review.round_path(round_number, "result.json")
-    command = ["codex", "exec"]
-    if resume_id is not None:
-        command += ["resume", resume_id]
-    if review.state.get("codexModel"):
-        command += ["--model", review.state["codexModel"]]
-    if review.state.get("codexEffort"):
-        command += ["-c", "model_reasoning_effort=" + json.dumps(review.state["codexEffort"])]
-    command += [
-        "--json", "--output-schema", str(RESULT_SCHEMA), "--output-last-message", str(result_path), "-",
-    ]
+    command = reviewer.command(review.state, resume_id, result_path)
     with open(stderr_path, "wb") as stderr_stream:
-        # cwd, not `-C`: `codex exec resume` has no `-C`, and both forms refuse a cwd outside a
-        # trusted directory.
+        # cwd, not an option: `codex exec resume` has no `-C`, and both `codex exec` forms refuse a
+        # cwd outside a trusted directory.
         process = subprocess.Popen(
             command, cwd=review.root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr_stream,
-            start_new_session=True,
+            start_new_session=True, env=reviewer.environment(review.state),
         )
         events, started, bad_line, timed_out = stream_events(review, process, prompt, resume_id, timeout, events_path)
     stderr = stderr_path.read_bytes().decode(errors="replace")
     if timed_out:
-        raise ReviewError("TURN_INTERRUPTED", f"codex exceeded {timeout} seconds and was killed")
-    if process.returncode != 0 or any(event.get("type") in ("turn.failed", "error") for event in events):
-        raise classify_failure(process.returncode, stderr, events)
+        raise ReviewerError(
+            reviewer, "TURN_INTERRUPTED", f"{reviewer.name} exceeded {timeout} seconds and was killed",
+        )
+    if process.returncode != 0 or any(reviewer.failed(event) for event in events):
+        raise classify_failure(reviewer, process.returncode, stderr, events)
     if bad_line is not None:
-        raise ReviewError("INVALID_RESULT", "codex printed a line that is not JSON", line=bad_line)
+        raise ReviewerError(
+            reviewer, "INVALID_RESULT", f"{reviewer.name} printed a line that is not JSON", line=bad_line,
+        )
     if started is None:
-        raise codex_failed("codex ended without a thread.started event", stderr, events, stderr=stderr[-2000:])
+        raise reviewer_failed(
+            reviewer, f"{reviewer.name} ended without a {reviewer.thread_event} event", stderr, events,
+            stderr=stderr[-2000:],
+        )
     if resume_id is not None and started != resume_id:
-        raise ReviewError(
-            "CODEX_RESUME_MISMATCH", "codex resumed a different thread than this review's",
+        raise ReviewerError(
+            reviewer, "REVIEWER_RESUME_MISMATCH", f"{reviewer.name} resumed a different thread than this review's",
             expected=resume_id, actual=started,
         )
-    if not result_path.exists():
-        raise ReviewError("INVALID_RESULT", "codex wrote no final message")
+    text = reviewer.final_result(events, result_path)
+    if text is None:
+        raise ReviewerError(reviewer, "INVALID_RESULT", f"{reviewer.name} wrote no final message")
     try:
-        result = json.loads(result_path.read_text())
+        result = json.loads(text)
     except ValueError as ex:
-        raise ReviewError("INVALID_RESULT", f"codex's final message is not JSON: {ex}")
+        raise ReviewerError(reviewer, "INVALID_RESULT", f"{reviewer.name}'s final message is not JSON: {ex}")
     problem = validate_result(result)
     if problem is not None:
-        raise ReviewError(
-            "INVALID_RESULT", "codex's final message does not follow the schema: " + problem, result=result,
+        raise ReviewerError(
+            reviewer, "INVALID_RESULT", f"{reviewer.name}'s final message does not follow the schema: " + problem,
+            result=result,
         )
     return result
 
 
 def review_turn(review, message):
-    """One Codex turn under the review's lock: the state machine's REVIEWING edge and its exits.
+    """One reviewer turn under the review's lock: the state machine's REVIEWING edge and its exits.
 
     Until a round has completed, the turn is the review request, on the thread an earlier failed
     attempt opened if there is one."""
@@ -830,14 +1009,14 @@ def review_turn(review, message):
     if state["status"] in TERMINAL:
         raise ReviewError("REVIEW_CLOSED", f"review {review.id} is {state['status']}; start a new review")
     entries = review.journal_entries()
-    answered = [entry["round"] for entry in entries if entry["actor"] == "codex"]
+    answered = [entry["round"] for entry in entries if entry["actor"] == "reviewer"]
     # Failed rounds do not count, so retries after a usage limit do not use up the review.
     if len(answered) >= state["maxRounds"]:
         state["status"] = "LOOP_LIMIT_REACHED"
         review.save()
         raise ReviewError("LOOP_LIMIT_REACHED", f"review {review.id} reached {state['maxRounds']} answered rounds")
-    check_codex_available()
-    check_egress()
+    check_signed_in(review.reviewer)
+    check_egress(review.reviewer)
     round_number = state["round"] + 1
     before = observe(review.root)
     prompt_file = "reviewer.md" if first else "continue.md"
@@ -857,14 +1036,14 @@ def review_turn(review, message):
         "Review the working tree's changes against HEAD: `git diff HEAD` plus untracked files."
     )
     prompt += "\n---\n\n# Scope\n\n" + scope + "\n"
-    # A failed turn may or may not have left the author's message in Codex's thread, and the author
+    # A failed turn may or may not have left the author's message in the reviewer's thread, and the author
     # writes the next message as a sequel, so the next turn sends the unanswered ones again.
     unanswered = [
         entry for entry in entries
         if entry["actor"] == "author" and entry["kind"] in ("review-request", "review-response")
         and entry["round"] > max(answered, default=0)
     ]
-    for entry in unanswered:  # as written, like the latest message: Codex reads code in them
+    for entry in unanswered:  # as written, like the latest message: the reviewer reads code in them
         prompt += (
             f"\n---\n\n# The author's message of round {entry['round']}, which you did not answer\n\n"
             "Your turn on it ended in an error before you answered. The author's latest message follows the"
@@ -885,12 +1064,13 @@ def review_turn(review, message):
             "round": round_number, "actor": "author", "kind": "review-request" if first else "review-response",
             "text": message, "head": before["head"], "worktreeDigest": before["digest"], "snapshot": taken,
         })
-        result = run_codex(review, round_number, prompt, state["codexThreadId"], state["timeoutSeconds"])
-        after = observe(review.root)  # a second observation: what Codex reviewed must be what is still there
+        result = run_reviewer(review, round_number, prompt, state["threadId"], state["timeoutSeconds"])
+        after = observe(review.root)  # a second observation: what the reviewer read must be what is still there
         if after["digest"] != before["digest"]:
             raise ReviewError(
                 "WORKTREE_CHANGED_DURING_REVIEW",
-                "the working tree changed while codex reviewed it; the result is discarded, review again",
+                f"the working tree changed while {review.reviewer.name} reviewed it; the result is discarded,"
+                " review again",
                 before=before["digest"], after=after["digest"],
                 paths=manifest_changes(before["manifest"], after["manifest"]),
             )
@@ -919,7 +1099,7 @@ def review_turn(review, message):
         state["approved"] = None
     review.save()
     review.journal({
-        "round": round_number, "actor": "codex", "kind": "review-result", "disposition": result["disposition"],
+        "round": round_number, "actor": "reviewer", "kind": "review-result", "disposition": result["disposition"],
         "result": result,
     })
     taken["tag"] = attach_transcript(review, taken, review.round_transcript(round_number))
@@ -934,10 +1114,10 @@ def review_turn(review, message):
 
 
 def check_scope(root, base):
-    """Refuse a review of nothing: a Codex turn on an empty scope yields an approval that looks like
+    """Refuse a review of nothing: a reviewer turn on an empty scope yields an approval that looks like
     one of the session's committed work, which only `--base` brings into scope.
 
-    The scope is what Codex is told to look at, the working tree against the base commit, HEAD
+    The scope is what the reviewer is told to look at, the working tree against the base commit, HEAD
     without `--base`, plus untracked files; a dirty checkout whose edits restore the base's
     content is empty too. External diff drivers and submodule settings could hide a change, so
     the comparison runs without them."""
@@ -981,12 +1161,13 @@ def command_start(args):
     instructions = read_message(args.instructions_file) if args.instructions_file else None
     base = resolve_base(root, args.base) if args.base else None
     check_scope(root, base)
-    review = Review.create(root, args.max_rounds, args.reviewer)
+    REVIEWERS[args.reviewer].check_choice({"model": args.model, "effort": args.effort})
+    review = Review.create(root, args.max_rounds, REVIEWERS[args.reviewer])
     review.state["timeoutSeconds"] = args.timeout
     review.state["instructions"] = instructions
     review.state["base"] = base
-    review.state["codexModel"] = args.model
-    review.state["codexEffort"] = args.effort
+    review.state["model"] = args.model
+    review.state["effort"] = args.effort
     review.save()
     review.lock()
     if instructions is not None:
@@ -999,13 +1180,8 @@ def command_continue(args):
     message = read_message(args.message_file)
     instructions = read_message(args.instructions_file) if args.instructions_file else None
     review = Review.open(root, args.review_id)
-    if review.state.get("reviewer", "codex") not in REVIEWERS:
-        raise ReviewError(
-            "REVIEWER_UNSUPPORTED", f"review {review.id} is a {review.state['reviewer']} review; this helper runs "
-            + ", ".join(REVIEWERS),
-        )
     if instructions is not None:
-        # Codex never approved the tree under these instructions.
+        # The reviewer never approved the tree under these instructions.
         review.state["instructions"] = instructions
         if review.state.get("approved"):
             review.state["approvalCleared"] = {
@@ -1027,7 +1203,8 @@ def command_escalate(args):
     if review.state["status"] != "USER_PROPOSED":
         raise ReviewError(
             "ESCALATION_NOT_PROPOSED",
-            f"review {review.id} is {review.state['status']}: escalate only after codex asked for the user's decision",
+            f"review {review.id} is {review.state['status']}: escalate only after {review.reviewer.name} asked for"
+            " the user's decision",
         )
     review.state["status"] = "USER_DECISION_REQUIRED"
     review.save()
@@ -1063,9 +1240,19 @@ def command_list(args):
         observation = observe(root)  # one scan for every review's freshness
         for entry in reviews_dir.iterdir():
             if (entry / "state.json").exists():
-                summary = Review(root, entry.name).load().summary(observation)
+                try:
+                    summary = Review(root, entry.name).load().summary(observation)
+                except ReviewError as ex:
+                    # A review this helper cannot read is still listed, by what every version's
+                    # state holds, so that its id can be given to `delete`.
+                    state = json.loads((entry / "state.json").read_text())
+                    summary = {
+                        "reviewId": entry.name, "reviewer": state.get("reviewer"), "effectiveStatus": ex.code,
+                        "round": state.get("round"), "approvalFresh": False, "createdAt": state.get("createdAt"),
+                        "updatedAt": state.get("updatedAt"),
+                    }
                 rows.append({key: summary[key] for key in LIST_FIELDS})
-    rows.sort(key=lambda row: row["createdAt"])
+    rows.sort(key=lambda row: row["createdAt"] or "")
     return {"repository": str(root), "reviews": rows}
 
 
@@ -1111,7 +1298,7 @@ def shifted(markdown):
     return "\n".join(lines)
 
 
-def render_entries(entries, with_round_headings=True):
+def render_entries(reviewer, entries, with_round_headings=True):
     """The journal entries as Markdown: the export's body, and a round's transcript on its ref."""
     lines = []
     current_round = None
@@ -1131,9 +1318,9 @@ def render_entries(entries, with_round_headings=True):
             lines += ["### The author", "", shifted(entry["text"]), ""]
         elif entry["actor"] == "author":
             lines += ["### The author agreed that the user must decide", "", shifted(entry["text"]), ""]
-        elif entry["actor"] == "codex":
+        elif entry["actor"] == "reviewer":
             result = entry["result"]
-            lines += [f"### Codex: {result['disposition']}", "", result["summary"], ""]
+            lines += [f"### {reviewer.display}: {result['disposition']}", "", result["summary"], ""]
             for finding in result["findings"]:
                 where = f" `{finding['location']}`" if finding.get("location") else ""
                 lines.append(f"- **{finding['id']}** ({finding['severity']}){where}: {finding['description']}")
@@ -1143,7 +1330,8 @@ def render_entries(entries, with_round_headings=True):
             if result.get("userDecision"):
                 decision = result["userDecision"]
                 lines += [
-                    f"- Issue: {decision['issue']}", f"- Codex's position: {decision['codexPosition']}",
+                    f"- Issue: {decision['issue']}",
+                    f"- {reviewer.display}'s position: {decision['reviewerPosition']}",
                     f"- Why evidence cannot decide: {decision['whyTechnicalEvidenceCannotDecide']}",
                     f"- Decision requested: {decision['decisionRequested']}", "",
                 ]
@@ -1161,12 +1349,12 @@ def command_export(args):
         sys.stdout.write(review.round_transcript(args.round) + "\n")
         return None
     state = review.state
-    lines = [f"# Codex review {review.id}", ""]
+    lines = [f"# {review.reviewer.display} review {review.id}", ""]
     lines += [f"- Repository: {state['repository']}", f"- Status: {review.freshness()[2]}"]
     if state.get("base"):
         lines.append(f"- Base: {state['base']['ref']} ({state['base']['commit']})")
-    lines += [f"- Codex thread: {state['codexThreadId']}", f"- Started: {state['createdAt']}", ""]
-    lines += render_entries(review.journal_entries())
+    lines += [f"- {review.reviewer.display} thread: {state['threadId']}", f"- Started: {state['createdAt']}", ""]
+    lines += render_entries(review.reviewer, review.journal_entries())
     lines += ["## How to see how it went", "", "```sh", *review.inspect_lines(), "```", ""]
     sys.stdout.write("\n".join(lines))
     return None
@@ -1198,7 +1386,7 @@ def command_diff(args):
 
 def command_delete(args):
     root = repository_root(args.repository)
-    review = Review.open(root, args.review_id)
+    review = Review.open(root, args.review_id, check_version=False)
     refs = snapshot_refs(review)
     for ref in refs:
         git(root, "update-ref", "-d", ref)
@@ -1306,7 +1494,7 @@ def codex_catalog():
     ]
 
 
-def command_defaults(args):
+def codex_defaults(root):
     """The model and reasoning effort Codex's local configuration selects for this repository, for the
     skill to offer first. `partial` says that a cloud-managed layer, which Codex ranks above the
     user's file, could still name others; an explicit `--model` or `--effort` removes the doubt.
@@ -1315,7 +1503,6 @@ def command_defaults(args):
     catalog cannot fill stays null: Codex's built-in default, which the skill leaves to Codex by passing no
     option. `catalog` lists the models Codex's `/model` picker offers; a configured hidden model still gets
     its efforts in `recommended`, and a retiring one the model Codex recommends upgrading to."""
-    root = repository_root(args.repository)
     found = {"model": None, "effort": None, "source": {"model": None, "effort": None}, "partial": True}
     for layer in codex_config_layers(root):
         if not layer.is_file():
@@ -1323,7 +1510,7 @@ def command_defaults(args):
         try:
             config = tomllib.loads(layer.read_text())
         except (tomllib.TOMLDecodeError, OSError) as ex:
-            raise ReviewError("CODEX_CONFIG_UNREADABLE", f"{layer}: {ex}")
+            raise ReviewerError(REVIEWERS["codex"], "REVIEWER_CONFIG_UNREADABLE", f"{layer}: {ex}")
         for key, name in (("model", "model"), ("model_reasoning_effort", "effort")):
             if found[name] is None and isinstance(config.get(key), str):
                 found[name] = config[key]
@@ -1347,6 +1534,111 @@ def command_defaults(args):
     return found
 
 
+# The aliases Claude Code documents, with its wording, and the efforts its table gives the models
+# they name on the Anthropic API (code.claude.com/docs/en/model-config). Haiku takes no effort.
+CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+CLAUDE_MODELS = (
+    ("fable", "the Fable model for your provider, for the hardest and longest-running tasks", CLAUDE_EFFORTS),
+    ("opus", "the latest Opus model, for complex reasoning tasks", CLAUDE_EFFORTS),
+    ("sonnet", "the latest Sonnet model, for daily coding tasks", CLAUDE_EFFORTS),
+    ("haiku", "the fast and efficient Haiku model, for simple tasks", []),
+)
+
+
+def claude_managed_directory():
+    """Where Claude Code reads file-based managed settings (code.claude.com/docs/en/managed-settings);
+    `KO_REVIEW_CLAUDE_MANAGED_SETTINGS` names another directory, for the tests."""
+    override = os.environ.get("KO_REVIEW_CLAUDE_MANAGED_SETTINGS")
+    if override:
+        return Path(override)
+    if sys.platform == "darwin":
+        return Path("/Library/Application Support/ClaudeCode")
+    return Path("/etc/claude-code")
+
+
+def claude_managed_settings():
+    """The managed settings files as (path, settings), the one Claude Code merges last first:
+    `managed-settings.d/*.json` in reverse alphabetical order, hidden files left out, then
+    `managed-settings.json`."""
+    directory = claude_managed_directory()
+    drop_ins = directory / "managed-settings.d"
+    files = sorted(
+        (path for path in drop_ins.glob("*.json") if not path.name.startswith(".")), reverse=True,
+    ) if drop_ins.is_dir() else []
+    layers = []
+    for path in [*files, directory / "managed-settings.json"]:
+        if not path.is_file():
+            continue
+        try:
+            settings = json.loads(path.read_text())
+        except (ValueError, OSError) as ex:
+            raise ReviewerError(REVIEWERS["claude"], "REVIEWER_CONFIG_UNREADABLE", f"{path}: {ex}")
+        if isinstance(settings, dict):
+            layers.append((path, settings))
+    return layers
+
+
+def claude_managed_variable(name):
+    """The value the highest-ranking managed `env` block naming the variable gives it and the file
+    that does, else (None, None). Claude Code writes such a value over the one its process
+    inherited, an empty one included, which leaves the variable unset for it: the value is then ""."""
+    for path, settings in claude_managed_settings():
+        block = settings.get("env")
+        if isinstance(block, dict) and isinstance(block.get(name), str):
+            return block[name], str(path)
+    return None, None
+
+
+def claude_defaults(root):
+    """The model and effort the reviewer's session would use, for the skill to offer first. That
+    session loads no user, project or local settings file (`--setting-sources ""`), so what selects
+    them is the environment and the managed settings: `ANTHROPIC_MODEL`, else the managed `model`,
+    else `ANTHROPIC_DEFAULT_MODEL`; `CLAUDE_CODE_EFFORT_LEVEL`, else the managed top-level
+    `effortLevel`. A managed `env` block outranks the inherited variable. A value nothing sets stays
+    null: Claude Code's own default, which the skill leaves to it by passing no option.
+
+    Managed `modelSettings`, which set an effort per model under Claude Code's canonical model names,
+    are not resolved: where a managed file holds them the effort stays null. `partial` is true
+    because server-managed settings and a role's effort cap are not on disk. The catalog's efforts
+    are those of the models the aliases name on the Anthropic API; for any other model `efforts` is
+    null, and Claude Code lowers a level the model does not support."""
+    found = {"model": None, "effort": None, "source": {"model": None, "effort": None}, "partial": True}
+
+    def variable(name):
+        value, source = claude_managed_variable(name)
+        if value is not None:  # the managed entry decides, and an empty one unsets the variable
+            return (value, source + " env") if value else (None, None)
+        return (os.environ[name], name) if os.environ.get(name) else (None, None)
+
+    managed = claude_managed_settings()
+    model_sources = [variable("ANTHROPIC_MODEL")]
+    model_sources += [
+        (settings["model"], str(path)) for path, settings in managed if isinstance(settings.get("model"), str)
+    ]
+    model_sources.append(variable("ANTHROPIC_DEFAULT_MODEL"))
+    found["model"], found["source"]["model"] = next((pair for pair in model_sources if pair[0]), (None, None))
+    found["effort"], found["source"]["effort"] = variable("CLAUDE_CODE_EFFORT_LEVEL")
+    if found["effort"] is None and not any("modelSettings" in settings for path, settings in managed):
+        found["effort"], found["source"]["effort"] = next(
+            ((settings["effortLevel"], str(path)) for path, settings in managed
+             if isinstance(settings.get("effortLevel"), str)), (None, None),
+        )
+    found["catalog"] = [
+        {"model": model, "description": description, "defaultEffort": None, "efforts": efforts}
+        for model, description, efforts in CLAUDE_MODELS
+    ]
+    entry = next((model for model in found["catalog"] if model["model"] == found["model"]), None)
+    found["recommended"] = {
+        "model": found["model"], "effort": found["effort"], "efforts": entry["efforts"] if entry else None,
+        "upgrade": None,
+    }
+    return found
+
+
+def command_defaults(args):
+    return REVIEWERS[args.reviewer].defaults(repository_root(args.repository))
+
+
 def command_digest(args):
     root = repository_root(args.repository)
     observation = observe(root)
@@ -1364,9 +1656,9 @@ def build_parser():
     def add(name, handler, help_text, review_id=False, message=False, reviewer=False):
         sub = commands.add_parser(name, help=help_text)
         if reviewer:
-            # `start codex`: the review records its reviewer, and `continue` reads it from there, so
-            # that another reviewer can be added beside Codex.
-            sub.add_argument("reviewer", choices=REVIEWERS)
+            # `start codex`, `start claude`: the review records its reviewer, and every later command
+            # reads it from there.
+            sub.add_argument("reviewer", choices=sorted(REVIEWERS))
         if review_id:
             sub.add_argument("review_id")
         if message:
@@ -1378,13 +1670,13 @@ def build_parser():
     start.add_argument(
         "--max-rounds", type=int, default=DEFAULT_MAX_ROUNDS, help="rounds the reviewer answers before the review ends",
     )
-    start.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS, help="seconds per Codex turn")
+    start.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS, help="seconds per reviewer turn")
     start.add_argument(
-        "--instructions-file", help="the user's instructions to Codex, added to every round of this review",
+        "--instructions-file", help="the user's instructions to the reviewer, added to every round of this review",
     )
     start.add_argument("--base", help="review the changes since this commit or branch, not only the uncommitted ones")
-    start.add_argument("--model", help="the Codex model for every round (default: Codex's configured model)")
-    start.add_argument("--effort", help="Codex's reasoning effort for every round (default: its configured one)")
+    start.add_argument("--model", help="the reviewer's model for every round (default: its configured model)")
+    start.add_argument("--effort", help="the reviewer's reasoning effort for every round (default: its configured one)")
     export = add("export", command_export, "print the review's transcript as Markdown", review_id=True)
     export.add_argument("--round", type=int, help="print only this round: the author's message and the reviewer's")
     diff = add("diff", command_diff, "git diff of a round's snapshot against the working tree", review_id=True)

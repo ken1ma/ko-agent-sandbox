@@ -601,15 +601,15 @@ enforcement.
 ### No Stop hook that gates on a ko-review approval
 
 A managed Stop hook could refuse to let Claude end its turn while the working tree differs from
-HEAD without a fresh approval or a recorded escalation from `/ko-review:codex` (`ko-review.md`).
+HEAD without a fresh approval or a recorded escalation from a `ko-review` skill (`ko-review.md`).
 Rejected:
 
 - The only check a local hook can make cannot tell Claude's changes from the user's own uncommitted
   edits, a one-line change the user asked for, or a turn that answered a question: each stop would
-  be blocked until Codex reviews, spending quota the user did not intend to spend.
-- Under `--egress=deny-unless-model claude`, or before Codex is signed in, the block can be passed
-  only by recording an escalation, which makes the gate a formality; letting the hook pass when
-  Codex is unreachable reopens the loophole it exists to close.
+  be blocked until the reviewer reviews, spending quota the user did not intend to spend.
+- Under an egress profile that refuses the reviewer's provider, or before the reviewer is signed in,
+  the block can be passed only by recording an escalation, which makes the gate a formality;
+  letting the hook pass when the reviewer is unreachable reopens the loophole it exists to close.
 - A managed hook applies to every project on the image; a per-project opt-in marker would add a
   second mechanism for a workflow that starts only at the user's request.
 - Claude skipping a requested review is an instruction failure, fixed in the skill text or
@@ -713,7 +713,8 @@ Program, plugin and variable names say where they work: `ko-sandbox-*` and `KO_S
 what works only inside the image (`ko-sandbox-entrypoint`, `ko-sandbox-egress-check`);
 `ko-agent-sandbox` and `KO_AGENT_SANDBOX_*` name the launcher and the project; what also runs on a
 host carries its own name, and that name is the workflow's, not a component's, so that another
-component can join: `ko-review` with the skill `codex`, not `ko-codex`, since `agy` may review too.
+component can join: `ko-review`, whose skill asks for `codex` or `claude`, not `ko-codex`, so
+that `agy` can review too.
 
 The accepted costs of `doc` over `docs`:
 

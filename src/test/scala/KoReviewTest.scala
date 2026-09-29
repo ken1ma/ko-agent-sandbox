@@ -14,10 +14,10 @@ class KoReviewTest extends munit.FunSuite:
       (process.exitValue(), String(process.getInputStream.readAllBytes()))
     finally process.destroyForcibly()
 
-  test("ko-review runs a review cycle against a fake codex"):
+  test("ko-review runs a review cycle against a fake codex and a fake claude"):
     assume(System.getProperty("os.name") == "Linux", "runs the plugin's helper with Python 3")
     val (status, output) = run(
-      120,
+      300,
       "python3",
       "-I",
       Path.of("src/test/python/ko_review_test.py").toAbsolutePath.toString,
