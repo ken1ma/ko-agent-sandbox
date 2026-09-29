@@ -1,22 +1,25 @@
 ---
 name: ko-review
-description: Have a separate Codex or Claude Code session review the working tree on one persistent thread, then fix or rebut its findings on that same thread until it approves the tree or the user must decide. Invoke it only when the user asks for such a review, never on your own.
+description: >-
+  Have a separate Codex or Claude Code session review the working tree on one persistent thread,
+  then fix or dispute its findings on that same thread until it approves the tree or the user
+  must decide. Invoke it only when the user asks for such a review, never on your own.
 argument-hint: [a review id to continue, or a reviewer, base commit, model, effort and instructions]
 ---
 
 # Independent review cycle
 
 `ko-review` (on PATH) runs the cycle with the reviewer the user chooses, `codex` or `claude`;
-REVIEWER below stands for that name. Each `start` opens a fresh reviewer thread, and every later
-command of that review reuses that exact thread: the reviewer keeps the whole debate. The reviewer
+REVIEWER below stands for that name. Each `start` opens a fresh reviewer thread, and later rounds
+of that review reuse that exact thread: the reviewer keeps the whole discussion. The reviewer
 reads the repository itself; your messages are context for it, not evidence.
 
-- A reviewer of your own kind, `claude` for Claude Code or `codex` for Codex, is a separate
-  session, not you: it does not see this conversation, and you never answer its findings from
-  memory.
+- A reviewer using the same product as you, `claude` for Claude Code or `codex` for Codex, runs
+  in a separate session. It does not see this conversation, and you never answer its findings
+  from memory.
 - Every command but `export` (Markdown) and `diff` (git's output) prints one JSON object. A
-  non-zero exit status is a failure: the output is then JSON holding `error`, or a usage message
-  from the argument parser.
+  non-zero exit status is a failure: the output is then JSON containing an `error` field, or a
+  usage message from the argument parser.
 - The helper keeps every file you send: the round's `input.md` under the review directory holds
   the prompt the reviewer received, and `export` renders the text per round, so your copy need
   not outlive the session.
@@ -79,22 +82,22 @@ answer.
    `## Notes` (ambiguities and known tradeoffs).
 4. Run `ko-review start REVIEWER --message-file FILE` from inside the repository, and note
    `reviewId` from the output.
-   - Add `--model NAME` and `--effort LEVEL` from step 2, each only when it is not null:
-     `defaults` reads the local configuration only, so the choice counts once passed explicitly,
-     and a null is the reviewer's to fill.
+   - Pass each selected value from step 2 explicitly with `--model NAME` and `--effort LEVEL`,
+     since `defaults` reads only the local configuration. For a null value, omit the option so
+     the reviewer uses its default.
    - If the argument holds instructions for the reviewer, write them verbatim, without the
      reviewer, base, model and effort it names, to a second file and add
      `--instructions-file FILE`; the reviewer reads them every round, ahead of your messages.
    - If the argument names a base, add `--base REF` with it.
-5. Tell the user in one or two lines how the round went: the disposition, the open findings, each
-   id with a few words, and what you do next. `ko-review export REVIEW_ID --round N` prints the
-   round's full text for the user who asks.
-6. Evaluate every finding independently: fix the ones you accept, rebut the ones you reject with
+5. Tell the user in one or two lines how the round went: the review outcome, the open findings,
+   each id with a few words, and what you do next. `ko-review export REVIEW_ID --round N` prints
+   the round's full text for the user who asks.
+6. Evaluate every finding independently: fix the ones you accept, dispute the ones you reject with
    concrete evidence (file and line, a test result, a specification). Do not accept a finding to
    end the review, and do not reject one without evidence.
 7. Run the relevant tests and checks after your fixes.
 8. Write a response file with `## Changes since the previous review`, `## Accepted findings`
-   (what was fixed and how), `## Rebutted findings` (the evidence for each rejection) and
+   (what was fixed and how), `## Disputed findings` (the evidence for each rejection) and
    `## Verification`, then run `ko-review continue REVIEW_ID --message-file FILE`.
    - If the user sent instructions for the reviewer meanwhile, write them to a file and add
      `--instructions-file FILE`; they replace the standing instructions from that round on.
@@ -105,18 +108,19 @@ answer.
    - Only if you agree that no technical evidence can settle it, write the question for the user
      in a file, run `ko-review escalate REVIEW_ID --message-file FILE`, and put the decision to
      the user in your reply.
-10. Immediately before reporting consensus, run `ko-review verify REVIEW_ID`. It succeeds only
-    when the approval covers the current working tree; when it fails, its `staleReasons` name
-    what moved and where, and you `continue` the review for a new approval.
+10. Immediately before reporting that the reviewer approved the changes, run
+    `ko-review verify REVIEW_ID`. It succeeds only when the approval covers the current working
+    tree. When it fails, its `staleReasons` name what changed and where; run `continue` for a new
+    approval.
 
 ## When the review ends
 
 However it ends, report:
 
-- every round, as a table from `ko-review export REVIEW_ID` with a row per round: the reviewer's
-  disposition, or the error that ended the round; the findings it raised, each id with a few
-  words; and what your next message did about each, fixed or rebutted;
-- for each rebutted finding, the evidence you gave;
+- every round, as a table from `ko-review export REVIEW_ID` with a row per round: the review
+  outcome, or the error that ended the round; the findings the reviewer raised, each id with a few
+  words; and what your next message did about each, fixed or disputed;
+- for each disputed finding, the evidence you gave;
 - the review id, and the `inspect` lines of the last output as a code block: the commands with
   which the user sees how the review went, lists the checkout's reviews and deletes this one. A
   failure's JSON carries them too once a review exists.
@@ -131,7 +135,8 @@ What the `inspect` lines use:
 
 ## Errors
 
-An `error` is an operational failure, never a review outcome. Its `reviewer` field names whose.
+An `error` is an operational failure, never a review outcome. Its `reviewer` field identifies the
+reviewer that failed.
 
 - `NOT_A_GIT_REPOSITORY`, `REVIEWER_AUTH_FAILED`, `REVIEWER_EGRESS_DENIED`: they say what the
   user must do. Stop, and put the message in your reply verbatim.
@@ -153,4 +158,4 @@ An `error` is an operational failure, never a review outcome. Its `reviewer` fie
 
 - Do not start another review after an approval on your own: a new `start` is an independent
   audit the user asks for.
-- Do not choose a thread or review by recency; every command names the review id.
+- Do not choose a thread or review based on when it was created; use its review id.

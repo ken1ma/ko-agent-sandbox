@@ -692,7 +692,7 @@ class HelperTest(unittest.TestCase):
             {"result": CHANGES},
         )
         review_id = self.helper("start", "codex", "--max-rounds", "2", "--message-file", self.message())["reviewId"]
-        lost = self.message("## Rebutted findings\n\nF1 is fine\n\n```c\n#include <stdio.h>\n```\n")
+        lost = self.message("## Disputed findings\n\nF1 is fine\n\n```c\n#include <stdio.h>\n```\n")
         error = self.helper("continue", review_id, "--message-file", lost, expect=1)["error"]
         self.assertEqual((error["code"], error["message"]), ("REVIEWER_FAILED", f"codex failed: {limit}"))
         error = self.helper("continue", review_id, "--message-file", self.message("nothing changed\n"), expect=1)
@@ -702,7 +702,7 @@ class HelperTest(unittest.TestCase):
         prompt = self.calls()[-1]["prompt"]
         self.assertLess(prompt.index("# The author's message of round 2, which you did not answer"),
                         prompt.index("# The author's message of round 3, which you did not answer"))
-        self.assertLess(prompt.index("\n\n## Rebutted findings\n\nF1 is fine"), prompt.index("\n\nnothing changed"))
+        self.assertLess(prompt.index("\n\n## Disputed findings\n\nF1 is fine"), prompt.index("\n\nnothing changed"))
         self.assertLess(prompt.index("nothing changed"), prompt.index("# The author's response, round 4"))
         self.assertIn("F1 is fine\n\n```c\n#include <stdio.h>\n```\n", prompt)  # as written
         self.assertNotIn("review me", prompt)  # round 1 had its answer
@@ -768,16 +768,16 @@ class HelperTest(unittest.TestCase):
             state_path.write_text(saved)
         self.assertEqual(self.helper("show", review_id)["status"], "CHANGES_REQUESTED")
 
-    def test_user_decision_needs_claude_agreement(self):
+    def test_user_decision_needs_author_agreement(self):
         review_id = self.start(USER_DECIDES)["reviewId"]
         self.assertEqual(self.helper("show", review_id)["status"], "USER_PROPOSED")
         error = self.helper("escalate", self.start()["reviewId"], "--message-file", self.message(), expect=1)["error"]
         self.assertEqual(error["code"], "ESCALATION_NOT_PROPOSED")
         self.plan({"result": USER_DECIDES})
-        rebuttal = self.message("## Rebutted findings\n\nevidence\n")
-        rebutted = self.helper("continue", review_id, "--message-file", rebuttal)
-        self.assertEqual(rebutted["status"], "USER_PROPOSED")
-        self.assertEqual(rebutted["round"], 2)
+        response_file = self.message("## Disputed findings\n\nevidence\n")
+        continued = self.helper("continue", review_id, "--message-file", response_file)
+        self.assertEqual(continued["status"], "USER_PROPOSED")
+        self.assertEqual(continued["round"], 2)
         escalated = self.helper("escalate", review_id, "--message-file", self.message("agreed\n"))
         self.assertEqual(escalated["status"], "USER_DECISION_REQUIRED")
         self.assertEqual(self.journal_of(review_id)[-1]["kind"], "escalation")
@@ -1259,7 +1259,7 @@ class HelperTest(unittest.TestCase):
                                 "--message-file", self.message(
                                     "## Task\n\nthe task\n\n" + self.QUOTED_CODE + "\n###### Deep\n"))["reviewId"]
         self.helper("continue", review_id, "--instructions-file", self.message("Be lenient.\n"),
-                    "--message-file", self.message("## Rebutted findings\n\nF1 is fine\n"))
+                    "--message-file", self.message("## Disputed findings\n\nF1 is fine\n"))
         self.assertIn("Be lenient.", self.calls()[1]["prompt"])
         self.helper("escalate", review_id, "--message-file", self.message("agreed\n"))
         process = self.spawn("export", review_id)

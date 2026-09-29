@@ -1,14 +1,15 @@
 # Independent review from Claude Code or Codex
 
-`/ko-review` has a reviewer the user chooses, a separate Codex or Claude Code session, review the
-working tree, then has the author, the Claude Code or Codex session that made the change, fix or
-rebut each finding on the same reviewer thread until the reviewer approves the exact tree or asks
-for a decision only the user can make. One invocation is one reviewer thread; invoking the skill
-again starts a new thread, which is how an independent audit of an approved tree is obtained.
+`/ko-review` asks a separate Codex or Claude Code session to review the working tree. The user
+chooses the reviewer. The author — the session that made the changes — fixes or disputes each
+finding on the same reviewer thread until the reviewer approves the exact tree or asks for a
+decision only the user can make.
 
-- The author and the reviewer may be the same product: a Claude session reviewing another Claude
-  session's change is a thread of its own, with none of the author's context, and so is a Codex
-  one.
+Each new review has its own reviewer thread. Invoke the skill without an existing review id to
+start an independent audit of an approved tree.
+
+- The author and reviewer may use the same product. A Claude session reviewing another Claude
+  session's changes has its own thread and none of the author's context; the same applies to Codex.
 - A review starts only at the user's request, as `/ko-review`, `$ko-review` in Codex, or in words
   ("ko-review the changes since the last review with Claude"); the sandbox's AGENTS.md has the
   author offer it after a non-trivial change.
@@ -68,18 +69,18 @@ again starts a new thread, which is how an independent audit of an approved tree
 2. The reviewer answers with a structured result: `disposition` `APPROVED`, `CHANGES_REQUESTED` or
    `USER_DECISION_REQUIRED`, a summary, findings with stable ids, and for the user's decision the
    issue, the reviewer's position, why evidence cannot decide it and the decision requested.
-3. The author fixes the findings it accepts, rebuts the others with evidence, runs the tests, and
+3. The author fixes the findings it accepts, disputes the others with evidence, runs the tests, and
    sends both with `ko-review continue REVIEW_ID --message-file FILE` to the same thread.
-   - `--instructions-file FILE` on `continue` replaces the standing instructions from that round
-     on, which is how an instruction the user gives mid-review reaches the reviewer. It voids the
-     current approval, since the reviewer never approved the tree under the new instructions.
-4. This repeats until `APPROVED`, or until `maxRounds` rounds the reviewer answered (12 unless
-   `start REVIEWER --max-rounds` says otherwise) end the review with `LOOP_LIMIT_REACHED`.
-   - A user decision the reviewer proposes becomes terminal only when the author agrees and
-     runs `ko-review escalate REVIEW_ID --message-file FILE`; otherwise the author argues the point
+   - To send instructions the user gives during a review, add `--instructions-file FILE` to
+     `continue`. They replace the standing instructions from that round on and invalidate the
+     current approval, since the reviewer has not approved the tree under those instructions.
+4. The review repeats until `APPROVED` or until `maxRounds` completed rounds end it with
+   `LOOP_LIMIT_REACHED`. The default is 12; set another limit with `start REVIEWER --max-rounds`.
+   - A request for a user decision ends the review only when the author agrees and runs
+     `ko-review escalate REVIEW_ID --message-file FILE`; otherwise the author argues the point
      on the same thread.
-5. Before reporting consensus, the author runs `ko-review verify REVIEW_ID`, which succeeds only
-   when the approval covers the current working tree.
+5. Before reporting that the reviewer approved the changes, the author runs
+   `ko-review verify REVIEW_ID`. It succeeds only when the approval covers the current working tree.
 
 The skill has the author report each round's outcome in a line or two, and, when the review ends, a
 table of every round and the `inspect` lines: the commands with which the user sees how the review
@@ -91,8 +92,8 @@ are its session's, set with `/model` or the launch options; the skill runs in th
 ## Commands
 
 Every command but `export`, which prints Markdown, and `diff`, which prints git's output, prints
-one JSON object and exits 1 when it holds `error`. Each summary, and each failure once a review
-exists, carries the review id, `reviewer`, `snapshots` and `inspect`.
+one JSON object and exits 1 when it contains an `error` field. Each summary, and each failure once a
+review exists, carries the review id, `reviewer`, `snapshots` and `inspect`.
 
 - `list`: one short entry per review of this checkout, oldest first, for the id the other
   commands take. A review whose state this helper cannot read is listed with the error's code as
@@ -125,7 +126,7 @@ edits like any other, and the user commits them when and as they choose.
     Claude Code's `system` `init` event's `session_id`, resumed with `claude -p --resume <that id>`.
     The author never chooses a thread, and nothing uses `--last` or `--continue`.
 - **Approval binds to the exact tree.** Any change after approval makes `verify` fail with
-  `STALE_APPROVAL`, and `staleReasons` says what moved; `continue` obtains a new approval.
+  `STALE_APPROVAL`, and `staleReasons` says what changed; `continue` obtains a new approval.
   - The digest covers HEAD, the index and every file's raw content ("The digest", below).
   - Staging or committing the approved changes keeps the approval, a staged deletion or rename
     included: the digest moves, but the content digest recorded with the approval still matches
@@ -402,6 +403,9 @@ fake script installed as both `codex` and `claude` on `PATH`, each imitating its
 - Measured with codex-cli 0.156.1 in a session of the image: the skill in Claude Code drove a Codex
   review through fixes, re-reviews and a retry after a usage limit to an approval on one thread,
   and a second invocation opened a new thread.
-- A Claude review against the real Claude Code is unmeasured beyond the print-mode facts above.
-- Codex as the author is unmeasured: the skill run in a Codex session, and a `codex exec` reviewer
-  started from Codex's shell, which passes it the author's `CODEX_THREAD_ID`.
+- Measured with Codex 0.157.1 as the author and Claude Code 2.1.284 as the reviewer in the
+  image: `$ko-review` asked for the reviewer, model and effort in replies, then ran a Claude
+  Fable review at high effort to approval. `verify` confirmed that approval covered the working
+  tree.
+- A `codex exec` reviewer started from a Codex author's shell, which passes it the author's
+  `CODEX_THREAD_ID`, is unmeasured.
