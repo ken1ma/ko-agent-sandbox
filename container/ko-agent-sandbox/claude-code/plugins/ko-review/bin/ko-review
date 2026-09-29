@@ -390,7 +390,8 @@ class Review:
             "maxRounds": max_rounds,
             "threadId": None,
             "pluginVersion": PLUGIN_VERSION,
-            "authorSessionId": os.environ.get("CLAUDE_SESSION_ID"),  # the author's Claude Code session, if any
+            # the author's Claude Code session or Codex thread, if any
+            "authorSessionId": os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_THREAD_ID") or None,
             "createdAt": now(),
             "updatedAt": None,
             "base": None,

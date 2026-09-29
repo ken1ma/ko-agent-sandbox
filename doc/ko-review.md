@@ -1,32 +1,42 @@
-# Independent review from Claude Code
+# Independent review from Claude Code or Codex
 
-`/ko-review` has a reviewer the user chooses, Codex or a separate Claude Code session, review the
-working tree, then has Claude fix or rebut each finding on the same reviewer thread until the
-reviewer approves the exact tree or asks for a decision only the user can make. One invocation is
-one reviewer thread; invoking the skill again starts a new thread, which is how an independent
-audit of an approved tree is obtained.
+`/ko-review` has a reviewer the user chooses, a separate Codex or Claude Code session, review the
+working tree, then has the author, the Claude Code or Codex session that made the change, fix or
+rebut each finding on the same reviewer thread until the reviewer approves the exact tree or asks
+for a decision only the user can make. One invocation is one reviewer thread; invoking the skill
+again starts a new thread, which is how an independent audit of an approved tree is obtained.
 
 - The author and the reviewer may be the same product: a Claude session reviewing another Claude
-  session's change is a thread of its own, with none of the author's context.
-- A review starts only at the user's request, as `/ko-review` or in words ("ko-review the changes
-  since the last review with Claude"); the sandbox's AGENTS.md has Claude offer it after a
-  non-trivial change.
+  session's change is a thread of its own, with none of the author's context, and so is a Codex
+  one.
+- A review starts only at the user's request, as `/ko-review`, `$ko-review` in Codex, or in words
+  ("ko-review the changes since the last review with Claude"); the sandbox's AGENTS.md has the
+  author offer it after a non-trivial change.
   - The skill has the plugin's name, `ko-review`. Claude Code lists a plugin skill as
     `/ko-review:ko-review` and also runs it by its bare name, `/ko-review`, which no other command
     has; named `review`, its bare name would be `/review`, a built-in alias of `/code-review`.
-  - The skill's description tells Claude to invoke it only on such a request. Nothing enforces
-    that: `disable-model-invocation` would, but it also stops Claude acting on a request in words.
-  - Invoked by Claude, the skill's argument holds only a reviewer, base, review id, model, effort
-    or instructions the user named, and Claude first says it invoked the skill, quoting the
-    request.
+    Codex lists its copy without a plugin prefix, so the skill's name is what a Codex user types,
+    `$ko-review`.
+  - The skill's description tells the author to invoke it only on such a request. Nothing enforces
+    that: Claude Code's `disable-model-invocation` or Codex's `allow_implicit_invocation: false`
+    would, but each also stops the author acting on a request in words.
+  - Invoked by the author, the skill's argument holds only a reviewer, base, review id, model,
+    effort or instructions the user named, and the author first says it invoked the skill, quoting
+    the request. Codex passes a skill no argument, so the skill takes the text after `$ko-review`
+    in the user's message as one.
 - The skill asks three questions before a new review, each skipped when the argument answers it:
-  the reviewer, then, from `ko-review defaults REVIEWER`, the model and the effort.
+  the reviewer, then, from `ko-review defaults REVIEWER`, the model and the effort. Codex has no
+  question tool outside Plan mode (its `default_mode_request_user_input` feature is off in
+  codex-cli 0.159.0), so a Codex author asks in its reply and waits for the answer.
 - The plugin `ko-review` (`container/ko-agent-sandbox/claude-code/plugins/ko-review`) holds the
   skill, the helper `ko-review`, whose `start` takes the reviewer's name so that another reviewer
   can join as another name, the reviewer prompts and the result schema.
 - The image loads it from `/etc/claude-code/plugins` through `CLAUDE_CODE_PLUGIN_DIRS` (Claude Code
   2.1.280 or later). The helper needs only the reviewer's CLI, `git` and Python 3, so
   `claude --plugin-dir <the plugin directory>` loads it on a host too.
+- Codex reads a copy of the skill from `/etc/codex/skills`, its admin scope, and runs the helper
+  through its link in `/usr/local/bin`; the Containerfile has why. On a host, a copy of the skill
+  directory in `~/.agents/skills` and the plugin's `bin/` on PATH do the same.
 - The project must be a Git working tree. A `start` elsewhere fails with `NOT_A_GIT_REPOSITORY`
   before the reviewer runs; its message gives the `git init` and empty `git commit` that make one
   while leaving every file uncommitted, and so in the review's scope.
@@ -34,7 +44,7 @@ audit of an approved tree is obtained.
 
 ## The cycle
 
-1. Claude writes a Markdown summary of the task, its changes and its verification, and runs
+1. The author writes a Markdown summary of the task, its changes and its verification, and runs
    `ko-review start REVIEWER --message-file FILE`, REVIEWER being `codex` or `claude`. The helper
    opens a reviewer thread with the reviewer prompt and that summary; the reviewer reads the
    repository itself.
@@ -58,24 +68,24 @@ audit of an approved tree is obtained.
 2. The reviewer answers with a structured result: `disposition` `APPROVED`, `CHANGES_REQUESTED` or
    `USER_DECISION_REQUIRED`, a summary, findings with stable ids, and for the user's decision the
    issue, the reviewer's position, why evidence cannot decide it and the decision requested.
-3. Claude fixes the findings it accepts, rebuts the others with evidence, runs the tests, and
+3. The author fixes the findings it accepts, rebuts the others with evidence, runs the tests, and
    sends both with `ko-review continue REVIEW_ID --message-file FILE` to the same thread.
    - `--instructions-file FILE` on `continue` replaces the standing instructions from that round
      on, which is how an instruction the user gives mid-review reaches the reviewer. It voids the
      current approval, since the reviewer never approved the tree under the new instructions.
 4. This repeats until `APPROVED`, or until `maxRounds` rounds the reviewer answered (12 unless
    `start REVIEWER --max-rounds` says otherwise) end the review with `LOOP_LIMIT_REACHED`.
-   - A user decision the reviewer proposes becomes terminal only when Claude agrees and runs
-     `ko-review escalate REVIEW_ID --message-file FILE`; otherwise Claude argues the point on the
-     same thread.
-5. Before reporting consensus, Claude runs `ko-review verify REVIEW_ID`, which succeeds only when
-   the approval covers the current working tree.
+   - A user decision the reviewer proposes becomes terminal only when the author agrees and
+     runs `ko-review escalate REVIEW_ID --message-file FILE`; otherwise the author argues the point
+     on the same thread.
+5. Before reporting consensus, the author runs `ko-review verify REVIEW_ID`, which succeeds only
+   when the approval covers the current working tree.
 
-The skill has Claude report each round's outcome in a line or two, and, when the review ends, a
+The skill has the author report each round's outcome in a line or two, and, when the review ends, a
 table of every round and the `inspect` lines: the commands with which the user sees how the review
 went, lists the checkout's reviews and deletes this one. The table comes from `ko-review export`,
-since the session's context may have been summarized by then. Claude's own model and effort are
-the session's, set with `/model` or the launch options; the skill runs in that session.
+since the session's context may have been summarized by then. The author's own model and effort
+are its session's, set with `/model` or the launch options; the skill runs in that session.
 
 
 ## Commands
@@ -102,7 +112,7 @@ exists, carries the review id, `reviewer`, `snapshots` and `inspect`.
   repository, the models to offer with each one's efforts, and the `recommended` pair
   ("Defaults", below).
 
-The helper never commits, stages or moves HEAD: Claude's fixes during a review are working-tree
+The helper never commits, stages or moves HEAD: the author's fixes during a review are working-tree
 edits like any other, and the user commits them when and as they choose.
 
 
@@ -113,7 +123,7 @@ edits like any other, and the user commits them when and as they choose.
   - The thread id is what the reviewer's first event names, persisted the moment it arrives:
     Codex's `thread.started` event's `thread_id`, resumed with `codex exec resume <that id>`;
     Claude Code's `system` `init` event's `session_id`, resumed with `claude -p --resume <that id>`.
-    Claude never chooses a thread, and nothing uses `--last` or `--continue`.
+    The author never chooses a thread, and nothing uses `--last` or `--continue`.
 - **Approval binds to the exact tree.** Any change after approval makes `verify` fail with
   `STALE_APPROVAL`, and `staleReasons` says what moved; `continue` obtains a new approval.
   - The digest covers HEAD, the index and every file's raw content ("The digest", below).
@@ -131,7 +141,7 @@ edits like any other, and the user commits them when and as they choose.
     as reviewed.
   - `git for-each-ref --format='%(contents)' <ref>` prints the transcript alone, since `git show`
     follows it with a listing of the tree's top level.
-  - `git diff` between two rounds' refs shows what Claude changed in response to a finding.
+  - `git diff` between two rounds' refs shows what the author changed in response to a finding.
   - `ko-review diff` compares the current tree with a round, because `git diff <tree>` alone reads
     the user's index and reports every untracked file as deleted.
   - `git tag` and `git branch` do not list the refs, since they read only `refs/tags/` and
@@ -256,7 +266,7 @@ built-in default, which the skill leaves to it by passing no option.
 
 - `defaults` is marked `partial`: a layer the reviewer ranks above its files is not on disk, so the
   skill passes each chosen value explicitly rather than relying on the default it displayed.
-- Claude recommends no model or effort: nothing measured shows which one finds more in a change,
+- The skill recommends no model or effort: nothing measured shows which one finds more in a change,
   and a guess toward higher effort spends more of the reviewer's usage limit.
 
 For Codex:
@@ -358,8 +368,9 @@ is kept.
   helper sets the variable to the chosen effort in the reviewer's environment, on `start` and on
   every resumed round. A managed `env` block would replace it, so `start` refuses, with
   `REVIEWER_CHOICE_REFUSED`, an effort other than the one such a block sets.
-- The reviewer session spends the same usage as the author's, and its transcript lands in
-  `~/.claude/projects/` like any session's, where `claude --resume` can open it.
+- The reviewer session spends this project's Claude Code usage, as a Claude author does, and its
+  transcript lands in `~/.claude/projects/` like any session's, where `claude --resume` can open
+  it.
 - Measured with Claude Code 2.1.283 in a session of the image, with a claude.ai sign-in:
   - a nested `claude -p` runs from Claude Code's Bash tool;
   - `--resume` of the print-mode session answers from the earlier turn's context and returns the
@@ -384,8 +395,13 @@ fake script installed as both `codex` and `claude` on `PATH`, each imitating its
   a managed `env` block sets, and the sources of its defaults.
 - `KoReviewTest` also runs `claude plugin validate` on the plugin when `claude` is on `PATH`, and
   inside the image checks that the installed copy is readable.
+- With `codex` on `PATH`, it has `codex debug prompt-input`, which calls no model, list a copy of
+  the skill; the test fails unless Codex names it `ko-review`. Inside the image, it checks that
+  Codex's copy equals the plugin's and that `/usr/local/bin/ko-review` resolves to the helper.
 - A run against a real reviewer spends model quota, so it is done by hand.
-- Measured with codex-cli 0.156.1 in a session of the image: the skill drove a Codex review
-  through fixes, re-reviews and a retry after a usage limit to an approval on one thread, and a
-  second invocation opened a new thread.
+- Measured with codex-cli 0.156.1 in a session of the image: the skill in Claude Code drove a Codex
+  review through fixes, re-reviews and a retry after a usage limit to an approval on one thread,
+  and a second invocation opened a new thread.
 - A Claude review against the real Claude Code is unmeasured beyond the print-mode facts above.
+- Codex as the author is unmeasured: the skill run in a Codex session, and a `codex exec` reviewer
+  started from Codex's shell, which passes it the author's `CODEX_THREAD_ID`.

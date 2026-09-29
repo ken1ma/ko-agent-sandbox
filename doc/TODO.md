@@ -13,9 +13,9 @@ again.
   Claude review, with `REVIEWER_EGRESS_DENIED` before the reviewer runs; unverified in a session.
 - [ ] A Claude review driven to an approval against the real Claude Code; only the print-mode
   facts are measured.
-- [ ] Codex as the author: the skill under `/etc/codex/skills` (Codex's admin scope, which follows
-  symlinks) or the project's `.agents/skills`, and the helper on Codex's PATH, which
-  `/etc/codex/bash-env` restores to the image's toolchain path without the plugin's `bin/`.
+- [ ] Codex as the author, in a session of the image, driven to an approval: `$ko-review`, its
+  questions asked in replies, and a `codex exec` reviewer started from Codex's shell, which passes
+  it the author's `CODEX_THREAD_ID`; unmeasured.
 - A regression test for a fix in this plugin is run against the helper without the fix and shown
   to fail before it counts: a fake reviewer that dies on its own once the helper exits lets a test
   for an orphaned reviewer pass without the fix, and only that run shows it.

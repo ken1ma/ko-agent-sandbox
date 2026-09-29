@@ -165,6 +165,9 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
    `codex --no-alt-screen` keeps the conversation in the terminal's scrollback, where you can
    select and copy it. `KO_AGENT_SANDBOX_CLIPBOARD` does not help: Codex's own copy and image
    paste do not use the sandbox's clipboard channel.
+1. `$ko-review` runs the same review as [`/ko-review`](#claude), with Codex fixing or rebutting
+   the findings. Codex asks its questions in replies, since it has no question tool outside Plan
+   mode.
 
 #### `agy`
 
