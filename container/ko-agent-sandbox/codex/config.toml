@@ -3,6 +3,11 @@ sandbox_mode = "danger-full-access"
 
 # Leave full environment inheritance at Codex's default.
 
+[tui]
+# Codex 0.157.0 or later shows its transcript in the alternate screen and captures the mouse, so the terminal's
+# scrollback and text selection do not reach it. doc/plan-clipboard.md reconsiders this.
+fullscreen_transcript = false
+
 [shell_environment_policy.set]
 # Unified exec replaces PATH after Codex builds the child environment.
 # Each non-interactive `bash` reads this file and restores the PATH captured at image build time.

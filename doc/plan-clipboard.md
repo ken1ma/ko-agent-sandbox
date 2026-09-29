@@ -219,6 +219,9 @@ run `wl-copy`.
   `bidirectional`; under `paste`, arboard succeeds against the service, so Codex no longer writes
   OSC 52 and its copies reach no clipboard on any terminal. Under `off` it keeps OSC 52.
   - Decided: this is `paste` mode's intent, no copy through the sandbox ("Documentation").
+  - Reconsider `fullscreen_transcript = false` in the image's `codex/config.toml`: Codex's own
+    copies then reach the host under `bidirectional`, but under `paste` only the terminal's
+    selection copies.
 - Copilot: image paste works under `paste` and `bidirectional`. Copy is unchanged under
   `bidirectional` except that an HTML copy reaches the host twice, through `wl-copy` and the
   native module; under `paste`, OSC 52 as before.
@@ -231,8 +234,8 @@ run `wl-copy`.
 ## Documentation
 
 - README, `codex`: under `paste`, Codex's copies reach no clipboard; under `bidirectional`, a copy
-  the host refuses or fails still reads as done, and the text can be selected in the terminal
-  under `--no-alt-screen`.
+  the host refuses or fails still reads as done, and the text can be selected in the terminal,
+  since the image's `codex/config.toml` turns off Codex's fullscreen transcript.
 - README, `copilot`: selecting text behaves as in Copilot's own build for the host, under
   `bidirectional`.
   - On Linux hosts it sets the host's primary selection, for middle-click paste.
