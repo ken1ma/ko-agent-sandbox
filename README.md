@@ -145,12 +145,17 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
    ([doc/limitations.md](doc/limitations.md#permission-prompts-that-remain)).
 1. Ctrl-V pastes a copied image only when `KO_AGENT_SANDBOX_CLIPBOARD` is `paste` or
    `bidirectional`.
-1. `/ko-review:codex`, a skill of the image's `ko-review` plugin, has Codex review the working tree
-   on one persistent Codex thread and Claude fix or rebut each finding on that thread until Codex
-   approves the exact tree or asks for a decision only you can make. It uses this project's Codex
-   sign-in. Each round's tree and transcript are on a ref under `refs/ko-review/` in the repository,
-   for `git diff` between rounds; the raw record is under
-   `persistent-volume/ko-review` ([doc/ko-review.md](doc/ko-review.md)).
+1. `/ko-review`, the skill of the image's `ko-review` plugin, has the reviewer you choose,
+   Codex or a separate Claude Code session, review the working tree on one persistent thread and
+   Claude fix or rebut each finding on that thread until the reviewer approves the exact tree or
+   asks for a decision only you can make. Codex reviews under this project's Codex sign-in, Claude
+   under the session's own.
+   - Without an argument the review covers the uncommitted changes. A base commit or branch in
+     the argument brings the commits since it into the review: `/ko-review HEAD~1` reviews the
+     last commit and whatever is uncommitted, `/ko-review main` the branch's work.
+   - Each round's tree and transcript are on a ref under `refs/ko-review/` in the repository, for
+     `git diff` between rounds; the raw record is under `persistent-volume/ko-review`
+     ([doc/ko-review.md](doc/ko-review.md)).
 
 #### `codex`
 

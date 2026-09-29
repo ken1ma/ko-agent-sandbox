@@ -5,12 +5,17 @@ whose benefit is uncertain, each with the condition that decides whether to buil
 examined and found without benefit is recorded in design.md with its reason, so it is not proposed
 again.
 
-## Codex review plugin (`ko-review.md`)
+## Review plugin (`ko-review.md`)
 
-- [ ] A linked worktree whose main Git directory is mounted read-only: Codex's own `git` commands
-  and the helper's digest against that tree; unverified.
-- [ ] `--egress=deny-unless-model claude` fails the review with `CODEX_EGRESS_DENIED` before Codex
-  runs; unverified in a session.
+- [ ] A linked worktree whose main Git directory is mounted read-only: the reviewer's own `git`
+  commands and the helper's digest against that tree; unverified.
+- [ ] `--egress=deny-unless-model claude` fails a Codex review, and `deny-unless-model codex` a
+  Claude review, with `REVIEWER_EGRESS_DENIED` before the reviewer runs; unverified in a session.
+- [ ] A Claude review driven to an approval against the real Claude Code; only the print-mode
+  facts are measured.
+- [ ] Codex as the author: the skill under `/etc/codex/skills` (Codex's admin scope, which follows
+  symlinks) or the project's `.agents/skills`, and the helper on Codex's PATH, which
+  `/etc/codex/bash-env` restores to the image's toolchain path without the plugin's `bin/`.
 - A regression test for a fix in this plugin is run against the helper without the fix and shown
   to fail before it counts: a fake reviewer that dies on its own once the helper exits lets a test
   for an orphaned reviewer pass without the fix, and only that run shows it.
