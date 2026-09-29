@@ -161,10 +161,11 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 1. Sign-in: "ChatGPT Settings" → "Security and login" → "Enable device code authorization for
    Codex", then choose "Sign in with Device Code" in the login UI.
-1. Codex 0.157.0 or later runs in the alt-screen mode by default and captures the mouse;
-   `codex --no-alt-screen` keeps the conversation in the terminal's scrollback, where you can
-   select and copy it. `KO_AGENT_SANDBOX_CLIPBOARD` does not help: Codex's own copy and image
-   paste do not use the sandbox's clipboard channel.
+1. The image keeps Codex's conversation in the terminal's scrollback, where you can select and copy
+   it. To restore Codex's default, pass `-c tui.fullscreen_transcript=true` for one launch, or set
+   `tui.fullscreen_transcript = true` in `~/.codex/config.toml`.
+1. Ctrl-V pastes no image in any `KO_AGENT_SANDBOX_CLIPBOARD` mode
+   ([clipboard plan](doc/plan-clipboard.md)).
 1. `$ko-review` runs the same review as [`/ko-review`](#claude), with Codex fixing or disputing
    the findings. Codex asks its questions in replies, since it has no question tool outside Plan
    mode.
