@@ -145,11 +145,11 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
    ([doc/limitations.md](doc/limitations.md#permission-prompts-that-remain)).
 1. Ctrl-V pastes a copied image only when `KO_AGENT_SANDBOX_CLIPBOARD` is `paste` or
    `bidirectional`.
-1. `/ko-review`, the skill of the image's `ko-review` plugin, has the reviewer you choose,
-   Codex or a separate Claude Code session, review the working tree on one persistent thread and
-   Claude fix or rebut each finding on that thread until the reviewer approves the exact tree or
-   asks for a decision only you can make. Codex reviews under this project's Codex sign-in, Claude
-   under the session's own.
+1. Run `/ko-review`, the skill of the image's `ko-review` plugin, to review the working tree.
+   Choose Codex or a separate Claude Code session as the reviewer. Claude fixes or disputes each
+   finding on the same reviewer thread until the reviewer approves the exact tree or asks for a
+   decision only you can make.
+   - Codex reviews under this project's Codex sign-in; Claude uses the session's own sign-in.
    - Without an argument the review covers the uncommitted changes. A base commit or branch in
      the argument brings the commits since it into the review: `/ko-review HEAD~1` reviews the
      last commit and whatever is uncommitted, `/ko-review main` the branch's work.
@@ -165,7 +165,7 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
    `codex --no-alt-screen` keeps the conversation in the terminal's scrollback, where you can
    select and copy it. `KO_AGENT_SANDBOX_CLIPBOARD` does not help: Codex's own copy and image
    paste do not use the sandbox's clipboard channel.
-1. `$ko-review` runs the same review as [`/ko-review`](#claude), with Codex fixing or rebutting
+1. `$ko-review` runs the same review as [`/ko-review`](#claude), with Codex fixing or disputing
    the findings. Codex asks its questions in replies, since it has no question tool outside Plan
    mode.
 

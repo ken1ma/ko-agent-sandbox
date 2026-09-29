@@ -7,15 +7,16 @@ again.
 
 ## Review plugin (`ko-review.md`)
 
+- [ ] Use Codex's `request_user_input` for reviewer, model and effort selection once it supports
+  more than three options per question. Its three-option limit leaves out choices such as `high`
+  after the default, `low` and `medium`; free-form entry does not replace a selectable option.
+  Enable `default_mode_request_user_input` in the image's Codex defaults when adopting the menu.
 - [ ] A linked worktree whose main Git directory is mounted read-only: the reviewer's own `git`
   commands and the helper's digest against that tree; unverified.
 - [ ] `--egress=deny-unless-model claude` fails a Codex review, and `deny-unless-model codex` a
   Claude review, with `REVIEWER_EGRESS_DENIED` before the reviewer runs; unverified in a session.
-- [ ] A Claude review driven to an approval against the real Claude Code; only the print-mode
-  facts are measured.
-- [ ] Codex as the author, in a session of the image, driven to an approval: `$ko-review`, its
-  questions asked in replies, and a `codex exec` reviewer started from Codex's shell, which passes
-  it the author's `CODEX_THREAD_ID`; unmeasured.
+- [ ] A `codex exec` reviewer started from a Codex author's shell, which passes it the author's
+  `CODEX_THREAD_ID`, driven to approval in the image; unmeasured.
 - A regression test for a fix in this plugin is run against the helper without the fix and shown
   to fail before it counts: a fake reviewer that dies on its own once the helper exits lets a test
   for an orphaned reviewer pass without the fix, and only that run shows it.

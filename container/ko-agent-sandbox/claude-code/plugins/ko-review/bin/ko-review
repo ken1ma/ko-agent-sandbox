@@ -2,10 +2,9 @@
 """Runs one stateful review cycle for the author of a change, the agent that made it.
 
 A cycle is one reviewer thread, Codex's or Claude Code's: `start` opens it with a fresh review,
-`continue` sends the author's fixes or rebuttals to the same thread, and `verify` confirms the
-approval covers the current working tree. State lives in the project's persistent volume;
-doc/ko-review.md is the design. Every command prints one JSON object; exit status 1 means the JSON
-carries `error`.
+`continue` sends the author's fixes or reasons for disagreeing to the same thread, and `verify`
+confirms the approval covers the current working tree. State lives in the project's persistent
+volume; doc/ko-review.md describes the design and command output.
 """
 
 import argparse
