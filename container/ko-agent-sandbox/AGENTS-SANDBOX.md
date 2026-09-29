@@ -67,8 +67,9 @@ local links across the repository's Markdown files.
 
 ## Independent review
 
-In Claude Code, after completing a non-trivial change, offer `/ko-review`, which has Codex or a
-separate Claude session review the working tree and debate the findings with you.
+In Claude Code or Codex, after completing a non-trivial change, offer `/ko-review` (`$ko-review`
+in Codex), which has a separate Codex or Claude session review the working tree and debate the
+findings with you.
 
 ## git
 

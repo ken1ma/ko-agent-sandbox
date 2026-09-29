@@ -1,24 +1,25 @@
 ---
 name: ko-review
-description: Have Codex or a separate Claude Code session review the working tree on one persistent thread, then fix or rebut its findings on that same thread until it approves the tree or the user must decide. Invoke it only when the user asks for such a review, never on your own.
+description: Have a separate Codex or Claude Code session review the working tree on one persistent thread, then fix or rebut its findings on that same thread until it approves the tree or the user must decide. Invoke it only when the user asks for such a review, never on your own.
 argument-hint: [a review id to continue, or a reviewer, base commit, model, effort and instructions]
 ---
 
 # Independent review cycle
 
-`ko-review` (on PATH from this plugin) runs the cycle with the reviewer the user chooses, `codex`
-or `claude`; REVIEWER below stands for that name. Each `start` opens a fresh reviewer thread, and
-every later command of that review reuses that exact thread: the reviewer keeps the whole debate.
-The reviewer reads the repository itself; your messages are context for it, not evidence.
+`ko-review` (on PATH) runs the cycle with the reviewer the user chooses, `codex` or `claude`;
+REVIEWER below stands for that name. Each `start` opens a fresh reviewer thread, and every later
+command of that review reuses that exact thread: the reviewer keeps the whole debate. The reviewer
+reads the repository itself; your messages are context for it, not evidence.
 
-- The `claude` reviewer is a session of its own, not you: it does not see this conversation, and
-  you never answer its findings from memory.
+- A reviewer of your own kind, `claude` for Claude Code or `codex` for Codex, is a separate
+  session, not you: it does not see this conversation, and you never answer its findings from
+  memory.
 - Every command but `export` (Markdown) and `diff` (git's output) prints one JSON object. A
   non-zero exit status is a failure: the output is then JSON holding `error`, or a usage message
   from the argument parser.
 - The helper keeps every file you send: the round's `input.md` under the review directory holds
-  the prompt the reviewer received, and `export` renders the text per round, so the scratchpad
-  copy need not outlive the session.
+  the prompt the reviewer received, and `export` renders the text per round, so your copy need
+  not outlive the session.
 
 A new review's scope is the uncommitted change against HEAD. When the argument names a base
 commit or branch, the scope is the change since that commit, committed or not. Take a base only
@@ -30,24 +31,28 @@ session's.
   review and that a base in the argument brings committed work into scope, and stop.
 - With a base, the step 3 summary still reports only what this session did, and says so.
 
-When you invoke the skill because the user asked in words, the argument holds only what they
-named: a reviewer, base, model, effort or instructions they stated, or the id of a review this
-conversation printed that their request points to, such as "the last review". Otherwise it is
-empty. Before the first command, tell the user in one line that you invoked the skill, quoting
-their request.
+In Claude Code the argument is the text after the skill's name. Codex passes a skill no argument,
+so there it is the text after `$ko-review` in the user's message. When you invoke the skill
+because the user asked in words, the argument holds only what they named: a reviewer, base,
+model, effort or instructions they stated, or the id of a review this conversation printed that
+their request points to, such as "the last review". Otherwise it is empty. Before the first
+command, tell the user in one line that you invoked the skill, quoting their request.
 
 ## Steps
 
-1. Ask the user which reviewer, in one AskUserQuestion call, unless the argument names one.
-   - If the skill's argument is a review id, skip to step 6 with it instead: a continuation keeps
+To ask the user, make one AskUserQuestion call in Claude Code. In Codex, whose default mode has no
+question tool, end your turn with the questions and their numbered options, and go on with the
+answer.
+
+1. Ask the user which reviewer, unless the argument names one.
+   - If the argument is a review id, skip to step 6 with it instead: a continuation keeps
      the review's reviewer, model and effort.
    - Without a base, first run `git status --porcelain` and stop on an empty output as above.
    - The options are `codex` (Codex, under this project's Codex sign-in and usage limit) and
-     `claude` (a separate Claude Code session, under this session's sign-in and usage).
+     `claude` (Claude Code, under this project's Claude Code sign-in and usage).
 2. Before reading the change, run `ko-review defaults REVIEWER` and ask the user for the
-   reviewer's model and its reasoning effort in one AskUserQuestion call holding both questions,
-   unless the argument names them. The user can type a value no option offers, such as a full
-   Claude model name.
+   reviewer's model and its reasoning effort, both questions at once, unless the argument names
+   them. The user can type a value no option offers, such as a full Claude model name.
    - Each question's first option is `recommended`'s value, labeled "(current)" when the
      configuration set it (`model` or `effort` is not null) and "(default)" otherwise, as Codex's
      `/model` picker labels them. A null value is a first option reading "REVIEWER's default".
@@ -56,8 +61,8 @@ their request.
      Code documents, `fable`, `opus`, `sonnet` and `haiku`.
    - A non-null `recommended.upgrade` names the model Codex recommends over a retiring one: offer
      it second, labeled "(recommended upgrade)", with its `migrationMarkdown` as the description.
-   - With a null `catalog` or fewer than two models in it, AskUserQuestion, which needs two
-     options, cannot ask: leave the model question out, take `recommended.model`, and say so.
+   - With a null `catalog` or fewer than two models in it, leave the model question out, since
+     AskUserQuestion needs two options; take `recommended.model`, and say so.
    - Effort options: after the first, the other `recommended.efforts` in their order, up to four
      options; with a null `efforts`, which says the model's levels are unknown, `low`, `medium`
      and `high`.
@@ -68,9 +73,10 @@ their request.
      effort alone, from those efforts, its `defaultEffort` first.
    - Where you cannot ask, as in a non-interactive session, take `codex` and `recommended` and
      say so.
-3. Write a Markdown file in your scratchpad with these sections: `## Task` (what was requested),
-   `## Changes` (what you changed), `## Verification` (checks run and their results), `## Notes`
-   (ambiguities and known tradeoffs).
+3. Write a Markdown file outside the repository, since a file inside it joins the reviewed tree:
+   in your scratchpad, else in a `mktemp -d` directory. Its sections are `## Task` (what was
+   requested), `## Changes` (what you changed), `## Verification` (checks run and their results),
+   `## Notes` (ambiguities and known tradeoffs).
 4. Run `ko-review start REVIEWER --message-file FILE` from inside the repository, and note
    `reviewId` from the output.
    - Add `--model NAME` and `--effort LEVEL` from step 2, each only when it is not null:
@@ -135,9 +141,9 @@ An `error` is an operational failure, never a review outcome. Its `reviewer` fie
   to review, and without a base, that a base in the argument brings committed work into scope.
 - `REVIEWER_FAILED`: `message` ends with the reviewer's own words when it gave any, such as a
   usage limit and when it resets. Stop, and put the message and the review id in your reply.
-  Unless the message says to start a new review, the user continues with `/ko-review REVIEW_ID`
-  once the reviewer can run; the helper sends the reviewer the unanswered message again, so the
-  next one says only what changed since.
+  Unless the message says to start a new review, the user continues with `/ko-review REVIEW_ID`,
+  in Codex `$ko-review REVIEW_ID`, once the reviewer can run; the helper sends the reviewer the
+  unanswered message again, so the next one says only what changed since.
 - `REVIEW_BUSY`: another session runs a command on the same review.
 - `WORKTREE_CHANGED_DURING_REVIEW`: the tree changed while the reviewer read it, possibly from
   the host. Check the tree and `continue` again.

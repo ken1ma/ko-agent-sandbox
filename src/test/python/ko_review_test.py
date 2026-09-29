@@ -528,6 +528,18 @@ class HelperTest(unittest.TestCase):
         for option in ("--model", "-c", "--effort"):
             self.assertNotIn(option, self.calls()[-1]["argv"])
 
+    def test_start_records_the_author_session_of_claude_code_or_codex(self):
+        for claude_session, codex_thread, expected in (
+            ("claude-session", "", "claude-session"),
+            ("", "codex-thread", "codex-thread"),
+            ("", "", None),
+        ):
+            with self.subTest(expected=expected):
+                self.environment = {"CLAUDE_CODE_SESSION_ID": claude_session, "CODEX_THREAD_ID": codex_thread}
+                review_id = self.start()["reviewId"]
+                self.environment = {}
+                self.assertEqual(self.state_of(review_id)["authorSessionId"], expected)
+
     def test_defaults_follow_codex_precedence_for_this_repository(self):
         home = self.root / "codex-home"
         home.mkdir()
