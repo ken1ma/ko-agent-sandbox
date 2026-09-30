@@ -33,6 +33,7 @@ DENIED = [
     ".g\u0131t", ".g\u0130t",                 # Turkish i-family: dotless i, dotted capital I
     ".gi\u200ct", ".g\u200bit",               # zero width non-joiner / zero width space
     "\ufeff.git", ".git\u00ad",               # BOM prefix, soft hyphen
+    ".gi\u200et", ".g\u202eit", ".git\u206f",  # left-to-right mark, right-to-left override, nominal digit shapes
     ".git.", ".git ", ".git. ",               # trailing punctuation Win32 ignores
 ]
 # The launcher's configuration name has two letters .git has not: APFS resolves U+212A KELVIN

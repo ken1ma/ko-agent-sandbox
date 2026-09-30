@@ -63,7 +63,8 @@ cleanup). The corpus:
 - `.git` itself (the base case must be refused).
 - Case variants: `.GIT`, `.Git`, `.gIt`, `.giT`.
 - Turkish i-family: `.gıt` (U+0131), `.gİt` (U+0130).
-- Ignorable code points: `.gi<U+200C>t`, `.g<U+200B>it`, `<U+FEFF>.git`, `.git<U+00AD>`.
+- Ignorable code points: `.gi<U+200C>t`, `.g<U+200B>it`, `<U+FEFF>.git`, `.git<U+00AD>`,
+  `.gi<U+200E>t`, `.g<U+202E>it`, `.git<U+206F>`.
 - Trailing punctuation: `.git.`, `.git ` (space), `.git. `.
 - A Windows 8.3 short name, `GIT~1`, on NTFS: creating it where no `.git` exists must not make
   one. The short names an existing `.git` and `.ko-agent-sandbox` have, `GIT~1` and `KO-AGE~1`,

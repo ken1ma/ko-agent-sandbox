@@ -77,10 +77,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
       authorize("example.com", 443)
 
   test("authorizeRequest rejects every spelling of an IP-literal target"):
-    // The first four all resolve to 127.0.0.1 through InetAddress on JDK 25; 8.8.8.8 shows a public literal is
-    // refused just the same — the rule is "hostnames only", not "no private targets".
+    // The first three resolve to 127.0.0.1 through InetAddress on JDK 25, and `0177.0.0.1` to 177.0.0.1. The
+    // `0x` spellings resolve through glibc's getaddrinfo, to 127.0.0.1 and 8.8.8.8, and not through InetAddress.
+    // 8.8.8.8 shows a public literal is refused just the same — the rule is "hostnames only", not "no private
+    // targets".
     val literals =
-      Vector("127.0.0.1", "2130706433", "127.1", "0177.0.0.1", "8.8.8.8")
+      Vector("127.0.0.1", "2130706433", "127.1", "0177.0.0.1", "0x7f.1", "0x7f000001", "0x8.0x8.0x8.0x8", "8.8.8.8")
 
     literals.foreach: literal =>
       assert(isIpLiteral(literal), literal)
@@ -127,6 +129,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "files.pythonhosted.org",
       "xn--bcher-kva.example",
       "host123.example.com",
+      "0x7f.example.com",
+      "example.0xg",
     ).foreach(host => assert(!isIpLiteral(host), host))
 
   // ---------------------------------------------------------------------------

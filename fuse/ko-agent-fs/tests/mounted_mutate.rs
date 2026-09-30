@@ -348,6 +348,9 @@ fn the_name_rule_covers_the_case_folded_and_collapsing_spellings() {
         ".g\u{200b}it", // zero width space
         "\u{feff}.git", // byte order mark
         ".git\u{00ad}", // soft hyphen
+        ".gi\u{200e}t", // left-to-right mark
+        ".g\u{202e}it", // right-to-left override
+        ".git\u{206f}", // nominal digit shapes
     ] {
         denied(
             &format!("mkdir {name:?}"),
