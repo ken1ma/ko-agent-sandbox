@@ -201,7 +201,8 @@ The filter enforces the default mode, `--write=live`, so its cost is the sandbox
 reports per-entry times per workload. Run it once in a filtered session and once under
 `probe/unfiltered.sh` (`probe\unfiltered.ps1` on Windows) — the ratio between the columns is the
 answer, and the control isolates the filter's cost from the backing share. The runs are
-`verification-log.md`, "The cost of a path walk".
+`verification-log.md`, "The cost of a path walk". For the profiling rows below, a daemon started
+with `--trace` logs each request and the time it took (`troubleshooting.md`, "Tracing requests").
 
 The margin over the unfiltered bind mount is **~6–18×**, and it is this layer's cost alone: one
 FUSE round trip through the daemon per path component, which TTL 0 makes unavoidable. On Windows it
@@ -375,16 +376,6 @@ unmeasured; the sweep below decides.
       attributes and data always fresh, directory names and attributes ≤ T, default 0;
       `troubleshooting.md` "Everything works but slowly" names the flag and the exposure sentence;
       the launcher’s `README.md` reference block documents the flag.
-
-
-## P2 — Diagnostics
-
-What exists is what `troubleshooting.md` reads from: the banner, the `DENY` line, the previous
-daemon's log, the bounded deny log (`fs.rs`, `deny_log_action`), and a reasoned message on every
-launch check. The gap:
-
-- [ ] Op-level tracing behind a flag (`--trace`?), for the performance profiling above and for
-  diagnosing hangs — off by default, never in the launcher's normal invocation.
 
 
 ## P2 — Launcher and deployment integration

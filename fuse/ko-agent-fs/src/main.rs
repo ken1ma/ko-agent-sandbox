@@ -28,11 +28,14 @@ struct Args {
     mount: Option<PathBuf>,
     /// The launcher's resolved rule lines; a mount writes the full set beside them.
     file_rules: Option<PathBuf>,
+    /// `--trace`: [`KoAgentFs::traced`].
+    trace: bool,
 }
 
 fn usage() -> ExitCode {
     eprintln!(
         "usage: ko-agent-fs --source <backing-dir> --mount <mountpoint> [--file-rules <file>] [--foreground]\n\
+                                                                       [--trace]\n\
                 ko-agent-fs --source <backing-dir> --resolve [--file-rules <file>]\n\
                 ko-agent-fs --self-test\n\
                 ko-agent-fs --version"
@@ -45,12 +48,14 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, ExitCode> {
     let mut mount = None;
     let mut file_rules = None;
     let mut resolve = false;
+    let mut trace = false;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--source") => source = args.next().map(PathBuf::from),
             Some("--mount") => mount = args.next().map(PathBuf::from),
             Some("--file-rules") => file_rules = args.next().map(PathBuf::from),
             Some("--resolve") => resolve = true,
+            Some("--trace") => trace = true,
             Some("--foreground") => {} // the only mode; accepted for the launcher's explicitness
             Some("--self-test") => return Err(self_test()),
             Some("--version") => {
@@ -68,11 +73,13 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, ExitCode> {
             source,
             mount: Some(mount),
             file_rules,
+            trace,
         }),
-        (Some(source), None, true) => Ok(Args {
+        (Some(source), None, true) if !trace => Ok(Args {
             source,
             mount: None,
             file_rules,
+            trace,
         }),
         _ => Err(usage()),
     }
@@ -440,7 +447,13 @@ fn main() -> ExitCode {
         rules.lines().len(),
     );
 
-    match fuser::mount(KoAgentFs::new(root, rules), &mount, &mount_config()) {
+    let filesystem = KoAgentFs::new(root, rules);
+    let filesystem = if args.trace {
+        filesystem.traced()
+    } else {
+        filesystem
+    };
+    match fuser::mount(filesystem, &mount, &mount_config()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("ko-agent-fs: mount failed: {}", mount_error_text(&err));
