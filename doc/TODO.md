@@ -141,16 +141,21 @@ again.
   directories. Phase 2 waits for each agent's measurement on a refused write, which the plan
   names.
 
-## Deferred — a release-age window in the other package managers
+## Deferred — package-manager settings against malicious packages
 
 SECURITY.md, "The supply chain", has npm's seven-day window and why uv gets none.
 
-- [ ] The same window for `cs`, Maven, Gradle and Cargo, each only if the manager offers a
-  resolution-time setting that its lockfile does not record. Whether any of them does is not
-  yet looked up.
-- [ ] npm's `ignore-scripts`, only after measuring that the commands the image's agents and the
-  common `npx` targets install still work with lifecycle scripts skipped: installation can
-  succeed while leaving a package unusable because a required lifecycle script was skipped
+- [ ] Cargo's window: `registry.global-min-publish-age` in `/.cargo/config.toml`, once `--build`
+  installs Rust 1.100 (2026-11-12), which stabilizes it; 1.98.1 ignores it with a warning.
+  - That file lets a project's `.cargo/config.toml` shorten the window, as `.npmrc` does npm's;
+    `CARGO_REGISTRY_GLOBAL_MIN_PUBLISH_AGE` would override the project's file.
+  - A version already in `Cargo.lock` installs even when younger than the window. Measure first
+    that `Cargo.lock` does not record the window, for uv's reason.
+- [ ] A window for `cs`, Maven and Gradle, only once one offers a resolution-time setting that its
+  lockfile does not record; a search on 2026-09-30 found none.
+- [ ] npm's `ignore-scripts`, only after measuring that the image's agents and the common `npx`
+  targets still work when installed with lifecycle scripts skipped: an installation can succeed
+  and leave a package unusable because it skipped a required script
   (https://docs.npmjs.com/cli/v11/using-npm/config/#ignore-scripts). An explicit `npm run` still
   runs its script.
 
