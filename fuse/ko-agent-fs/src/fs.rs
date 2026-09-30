@@ -14,7 +14,7 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fuser::{
     BsdFileFlags, Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags,
@@ -122,6 +122,32 @@ pub struct KoAgentFs {
     /// `O_PATH` fd of the backing root; every resolution is relative to it.
     root: OwnedFd,
     inner: Mutex<Inner>,
+    /// When tracing started, which `begin_us` counts from; `None` writes no `TRACE` line.
+    trace_epoch: Option<Instant>,
+}
+
+/// One request being traced: dropping it, as the operation returns, writes the `took_us` line.
+struct RequestTrace {
+    request: String,
+    began: Instant,
+}
+
+impl Drop for RequestTrace {
+    fn drop(&mut self) {
+        write_trace_line(&format!(
+            "TRACE took_us={} {}\n",
+            self.began.elapsed().as_micros(),
+            self.request,
+        ));
+    }
+}
+
+/// The whole line in one `write`, where `eprintln!` issues one per formatted piece, to add as few
+/// system calls as it can between the requests being timed. A failed write loses the line and
+/// nothing else.
+fn write_trace_line(line: &str) {
+    use std::io::Write;
+    let _ = std::io::stderr().write_all(line.as_bytes());
 }
 
 impl KoAgentFs {
@@ -136,6 +162,40 @@ impl KoAgentFs {
                 dirs: HashMap::new(),
                 next_fh: 1,
             }),
+            trace_epoch: None,
+        }
+    }
+
+    /// Write two `TRACE` lines to the log for each request implemented below
+    /// (`doc/troubleshooting.md`, "Tracing requests"). Uncapped, unlike the `DENY` lines, so never
+    /// for a session's mount.
+    pub fn traced(mut self) -> Self {
+        self.trace_epoch = Some(Instant::now());
+        self
+    }
+
+    /// Writes the `begin_us` line now, so a request that never returns is still in the log, and
+    /// the `took_us` line when the caller drops the result. `request` is evaluated only when
+    /// tracing. `took_us` starts after the first line is written and ends after the reply is sent.
+    fn trace(&self, request: impl FnOnce() -> String) -> Option<RequestTrace> {
+        let epoch = self.trace_epoch?;
+        let request = request();
+        write_trace_line(&format!(
+            "TRACE begin_us={} {request}\n",
+            epoch.elapsed().as_micros(),
+        ));
+        Some(RequestTrace {
+            request,
+            began: Instant::now(),
+        })
+    }
+
+    /// `ino` as a `TRACE` line names it, `7:"src/main.rs"`: with its path from the backing root,
+    /// escaped like a `DENY` line's names, or `7:?` for a node the table does not hold.
+    fn traced_node(&self, ino: u64) -> String {
+        match self.relpath(ino) {
+            Some(path) => format!("{ino}:{path:?}"),
+            None => format!("{ino}:?"),
         }
     }
 
@@ -1003,6 +1063,8 @@ fn entry_kind(
 // `doc/git-metadata.md`, resting on the git-behavior premises it records under "Premises".
 impl Filesystem for KoAgentFs {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> std::io::Result<()> {
+        // fuser replies after this returns, so this `took_us` alone ends before the reply.
+        let _trace = self.trace(|| "op=init".to_string());
         // Refused rather than degraded: `doc/architecture.md`, "Coherency". Why this rather than
         // `FOPEN_DIRECT_IO`: `doc/TODO.md`, "Non-TODOs".
         if config
@@ -1019,6 +1081,12 @@ impl Filesystem for KoAgentFs {
     }
 
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+        let _trace = self.trace(|| {
+            format!(
+                "op=lookup parent={} name={name:?}",
+                self.traced_node(parent.0),
+            )
+        });
         let cname = match cstr(name) {
             Ok(value) => value,
             Err(err) => return reply.error(to_errno(err)),
@@ -1046,10 +1114,23 @@ impl Filesystem for KoAgentFs {
     }
 
     fn forget(&self, _req: &Request, ino: INodeNo, nlookup: u64) {
+        let _trace = self.trace(|| {
+            format!(
+                "op=forget ino={} nlookup={nlookup}",
+                self.traced_node(ino.0),
+            )
+        });
         self.inner.lock().unwrap().table.forget(ino.0, nlookup);
     }
 
     fn getattr(&self, _req: &Request, ino: INodeNo, fh: Option<FileHandle>, reply: ReplyAttr) {
+        let _trace = self.trace(|| {
+            format!(
+                "op=getattr ino={} handle={}",
+                self.traced_node(ino.0),
+                fh.is_some(),
+            )
+        });
         // Some getattrs carry a handle (`FUSE_GETATTR_FH`) — the kernel refreshing attributes
         // before a cached read is the one that matters, since it decides whether to keep the page
         // cache. `fstat` on the backing fd answers for the object that descriptor opened, so a read
@@ -1071,6 +1152,7 @@ impl Filesystem for KoAgentFs {
     }
 
     fn readlink(&self, _req: &Request, ino: INodeNo, reply: ReplyData) {
+        let _trace = self.trace(|| format!("op=readlink ino={}", self.traced_node(ino.0)));
         let (parent, name) = match self.inner.lock().unwrap().table.parent_and_name(ino.0) {
             Some(pair) => pair,
             None => return reply.error(Errno::EINVAL),
@@ -1090,6 +1172,13 @@ impl Filesystem for KoAgentFs {
     }
 
     fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+        let _trace = self.trace(|| {
+            format!(
+                "op=open ino={} flags={:#o}",
+                self.traced_node(ino.0),
+                flags.0,
+            )
+        });
         let accmode = flags.0 & libc::O_ACCMODE;
         let appending = flags.0 & libc::O_APPEND != 0;
         let wants_write =
@@ -1121,7 +1210,7 @@ impl Filesystem for KoAgentFs {
     fn read(
         &self,
         _req: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         fh: FileHandle,
         offset: u64,
         size: u32,
@@ -1129,6 +1218,12 @@ impl Filesystem for KoAgentFs {
         _lock: Option<fuser::LockOwner>,
         reply: ReplyData,
     ) {
+        let _trace = self.trace(|| {
+            format!(
+                "op=read ino={} offset={offset} size={size}",
+                self.traced_node(ino.0),
+            )
+        });
         let handle = self
             .inner
             .lock()
@@ -1150,13 +1245,14 @@ impl Filesystem for KoAgentFs {
     fn release(
         &self,
         _req: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         fh: FileHandle,
         _flags: OpenFlags,
         _lock: Option<fuser::LockOwner>,
         _flush: bool,
         reply: ReplyEmpty,
     ) {
+        let _trace = self.trace(|| format!("op=release ino={}", self.traced_node(ino.0)));
         self.inner.lock().unwrap().handles.remove(&fh.0);
         reply.ok();
     }
@@ -1168,6 +1264,7 @@ impl Filesystem for KoAgentFs {
     /// snapshot is a permitted reading; the *next* `opendir` sees the new state, and attributes
     /// stay live because their TTL is zero.
     fn opendir(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
+        let _trace = self.trace(|| format!("op=opendir ino={}", self.traced_node(ino.0)));
         let fd = match self.open_ino(ino.0, OFlag::O_RDONLY | OFlag::O_DIRECTORY) {
             Ok(fd) => fd,
             Err(err) => return reply.error(to_errno(err)),
@@ -1216,11 +1313,13 @@ impl Filesystem for KoAgentFs {
     fn readdir(
         &self,
         _req: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         fh: FileHandle,
         offset: u64,
         mut reply: ReplyDirectory,
     ) {
+        let _trace =
+            self.trace(|| format!("op=readdir ino={} offset={offset}", self.traced_node(ino.0)));
         let entries = self.inner.lock().unwrap().dirs.get(&fh.0).cloned();
         let Some(entries) = entries else {
             return reply.error(Errno::EBADF);
@@ -1243,11 +1342,12 @@ impl Filesystem for KoAgentFs {
     fn releasedir(
         &self,
         _req: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         fh: FileHandle,
         _flags: OpenFlags,
         reply: ReplyEmpty,
     ) {
+        let _trace = self.trace(|| format!("op=releasedir ino={}", self.traced_node(ino.0)));
         self.inner.lock().unwrap().dirs.remove(&fh.0);
         reply.ok();
     }
@@ -1262,6 +1362,12 @@ impl Filesystem for KoAgentFs {
         flags: i32,
         reply: ReplyCreate,
     ) {
+        let _trace = self.trace(|| {
+            format!(
+                "op=create parent={} name={name:?} flags={flags:#o}",
+                self.traced_node(parent.0),
+            )
+        });
         if let Err(err) = self.allow_create(parent.0, name, "create") {
             return reply.error(err);
         }
@@ -1332,6 +1438,12 @@ impl Filesystem for KoAgentFs {
         umask: u32,
         reply: ReplyEntry,
     ) {
+        let _trace = self.trace(|| {
+            format!(
+                "op=mkdir parent={} name={name:?}",
+                self.traced_node(parent.0),
+            )
+        });
         if let Err(err) = self.allow_create(parent.0, name, "mkdir") {
             return reply.error(err);
         }
@@ -1359,6 +1471,12 @@ impl Filesystem for KoAgentFs {
         rdev: u32,
         reply: ReplyEntry,
     ) {
+        let _trace = self.trace(|| {
+            format!(
+                "op=mknod parent={} name={name:?}",
+                self.traced_node(parent.0),
+            )
+        });
         if let Err(err) = self.allow_create(parent.0, name, "mknod") {
             return reply.error(err);
         }
@@ -1382,6 +1500,12 @@ impl Filesystem for KoAgentFs {
         target: &Path,
         reply: ReplyEntry,
     ) {
+        let _trace = self.trace(|| {
+            format!(
+                "op=symlink parent={} name={link_name:?}",
+                self.traced_node(parent.0),
+            )
+        });
         if let Err(err) = self.allow_create(parent.0, link_name, "symlink") {
             return reply.error(err);
         }
@@ -1436,6 +1560,13 @@ impl Filesystem for KoAgentFs {
         newname: &OsStr,
         reply: ReplyEntry,
     ) {
+        let _trace = self.trace(|| {
+            format!(
+                "op=link ino={} parent={} name={newname:?}",
+                self.traced_node(ino.0),
+                self.traced_node(newparent.0),
+            )
+        });
         // Source-side too (`doc/git-metadata.md`, "Operations that make these mutations").
         if let Err(err) = self.allow_ino(ino.0, Mutation::Link, "link-source") {
             return reply.error(err);
@@ -1484,6 +1615,12 @@ impl Filesystem for KoAgentFs {
     }
 
     fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        let _trace = self.trace(|| {
+            format!(
+                "op=unlink parent={} name={name:?}",
+                self.traced_node(parent.0),
+            )
+        });
         if let Err(err) = self.allow_child(parent.0, name, Mutation::Unlink, "unlink") {
             return reply.error(err);
         }
@@ -1491,6 +1628,12 @@ impl Filesystem for KoAgentFs {
     }
 
     fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        let _trace = self.trace(|| {
+            format!(
+                "op=rmdir parent={} name={name:?}",
+                self.traced_node(parent.0),
+            )
+        });
         if let Err(err) = self.allow_child(parent.0, name, Mutation::Rmdir, "rmdir") {
             return reply.error(err);
         }
@@ -1507,6 +1650,14 @@ impl Filesystem for KoAgentFs {
         flags: fuser::RenameFlags,
         reply: ReplyEmpty,
     ) {
+        let _trace = self.trace(|| {
+            format!(
+                "op=rename parent={} name={name:?} newparent={} newname={newname:?} flags={:#x}",
+                self.traced_node(parent.0),
+                self.traced_node(newparent.0),
+                flags.bits(),
+            )
+        });
         let exchange = flags.bits() & libc::RENAME_EXCHANGE != 0;
         if let Err(err) = self.allow_child(parent.0, name, Mutation::RenameFrom, "rename-from") {
             return reply.error(err);
@@ -1582,6 +1733,13 @@ impl Filesystem for KoAgentFs {
         _flags: Option<BsdFileFlags>,
         reply: ReplyAttr,
     ) {
+        let _trace = self.trace(|| {
+            format!(
+                "op=setattr ino={} handle={}",
+                self.traced_node(ino.0),
+                fh.is_some(),
+            )
+        });
         // The check classifies the *inode* (`allow_ino`, name-derived and stable), so it holds
         // whether or not a handle accompanies this call. A write handle was already authorized at
         // `open`; this covers the rest — a `chmod`/`chown`/`touch` on a read handle, and every
@@ -1617,7 +1775,7 @@ impl Filesystem for KoAgentFs {
     fn write(
         &self,
         _req: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         fh: FileHandle,
         offset: u64,
         data: &[u8],
@@ -1626,6 +1784,13 @@ impl Filesystem for KoAgentFs {
         _lock: Option<LockOwner>,
         reply: ReplyWrite,
     ) {
+        let _trace = self.trace(|| {
+            format!(
+                "op=write ino={} offset={offset} size={}",
+                self.traced_node(ino.0),
+                data.len(),
+            )
+        });
         let handle = self
             .inner
             .lock()
@@ -1673,11 +1838,12 @@ impl Filesystem for KoAgentFs {
     fn flush(
         &self,
         _req: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         _fh: FileHandle,
         _lock: LockOwner,
         reply: ReplyEmpty,
     ) {
+        let _trace = self.trace(|| format!("op=flush ino={}", self.traced_node(ino.0)));
         reply.ok();
     }
 
@@ -1688,11 +1854,17 @@ impl Filesystem for KoAgentFs {
     fn fsync(
         &self,
         _req: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         fh: FileHandle,
         datasync: bool,
         reply: ReplyEmpty,
     ) {
+        let _trace = self.trace(|| {
+            format!(
+                "op=fsync ino={} datasync={datasync}",
+                self.traced_node(ino.0),
+            )
+        });
         let handle = self
             .inner
             .lock()
@@ -1728,6 +1900,12 @@ impl Filesystem for KoAgentFs {
         datasync: bool,
         reply: ReplyEmpty,
     ) {
+        let _trace = self.trace(|| {
+            format!(
+                "op=fsyncdir ino={} datasync={datasync}",
+                self.traced_node(ino.0),
+            )
+        });
         let fd = match self.open_ino(ino.0, OFlag::O_RDONLY | OFlag::O_DIRECTORY) {
             Ok(fd) => fd,
             Err(err) => return reply.error(to_errno(err)),
@@ -1833,6 +2011,51 @@ mod tests {
         assert_eq!(st.st_size, 0);
 
         drop(fs);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_request_is_described_only_when_tracing() {
+        let base = std::env::temp_dir().join(format!("ko-agent-fs-trace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let open_root = || -> OwnedFd {
+            nix::fcntl::open(
+                &base,
+                OFlag::O_PATH | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+                Mode::empty(),
+            )
+            .unwrap()
+        };
+
+        let untraced = KoAgentFs::new(open_root(), FileRules::default());
+        assert!(
+            untraced
+                .trace(|| panic!("described a request without --trace"))
+                .is_none()
+        );
+
+        let traced = KoAgentFs::new(open_root(), FileRules::default()).traced();
+        let file = traced.inner.lock().unwrap().table.lookup(
+            ROOT_INO,
+            OsStr::new("new\nline"),
+            OsStr::new("new\nline"),
+            false,
+            0,
+            0,
+        );
+        // A name's newline is escaped, so it cannot start a line of its own in the log.
+        assert_eq!(traced.traced_node(file), format!("{file}:\"new\\nline\""));
+        assert_eq!(traced.traced_node(ROOT_INO), format!("{ROOT_INO}:\".\""));
+        assert_eq!(traced.traced_node(file + 1), format!("{}:?", file + 1));
+        let request = traced
+            .trace(|| "op=test".to_string())
+            .unwrap()
+            .request
+            .clone();
+        assert_eq!(request, "op=test");
+
+        drop((untraced, traced));
         std::fs::remove_dir_all(&base).unwrap();
     }
 
