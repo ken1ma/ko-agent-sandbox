@@ -229,45 +229,46 @@ where a user meets it.
   files as all the mount holds afterwards, some 0.2 s a source file where a path operation at
   that depth costs milliseconds. Which operations the build issues, on the inputs or on files it
   creates and removes during the build, is unmeasured.
-- [ ] **Profile where the millisecond goes.** The guest resolves a component in ~0.06 ms, so ~0.6 ms
-  of a depth-1 `lstat`'s 0.64 ms is the container→daemon FUSE hop plus the daemon's own work per op
-  — still unattributed between the two: the path inode model's full-path `openat2` per op, per-op
-  fd open/close, the inode-table lock, and the single-threaded session serializing round trips.
-  Candidate fix if the daemon's share dominates: parent-directory fd reuse *within one operation*.
-  This is the only gain available to programs like `find`, which hold directory fds and never pay
-  the walk; it composes with the cache-TTL option below, which reaches only path-walking ones.
-  Reuse *across* operations is the directory-fd cache row below.
-- [ ] A path-based `getattr` stats one descriptor twice: `open_ino` for the identity comparison,
-  then `getattr` for the reply. Reusing the first result saves a stat per `getattr`. Two cases
-  the change must keep right, each with a test: the root, whose identity `open_ino` does not
-  check and so does not stat; and an `O_TRUNC` open, whose comparison runs before the truncation,
-  so its stat must never become a reply's attributes.
+- [ ] **Profile where the millisecond goes.** ~0.6 ms of a depth-1 `lstat`'s 0.64 ms is the
+  container→daemon FUSE hop plus the daemon's own work per op, unattributed between the two; the
+  guest resolves a component in ~0.06 ms.
+    - The candidates: the path inode model's full-path `openat2` per op, per-op fd open/close, the
+      inode-table lock, and the single-threaded session serializing round trips.
+    - Candidate fix if the daemon's share dominates: parent-directory fd reuse *within one
+      operation*. It is the only gain available to programs like `find`, which hold directory fds
+      and never pay the walk.
+    - It composes with the cache-TTL option below, which reaches only path-walking programs. Reuse
+      *across* operations is the directory-fd cache row below.
 - [ ] **A directory-fd cache for the requests that change nothing.** Every request re-walks its
-  full path (`fs.rs`, `open_ino`), so its cost grows with depth. Counted from the code, in path
-  components resolved plus stat calls: a `lookup` at depth k costs k + 3 — the walk, the
-  identity `fstat`, the `fstatat` of the name and `policy_name`'s two of `.git` and
-  `.ko-agent-sandbox` — and a `getattr` k + 2: the walk, the identity `fstat` and a second `fstat`
-  for the attributes. An `lstat` sums to 34 at depth 4 and 124 at depth 9. How many virtiofs
-  requests the guest kernel sends for them is unmeasured; at one each and the ~56 µs of a guest
-  lookup, the 34 are 1.9 ms of the measured 3.05 ms. The daemon keeps an `O_PATH` descriptor per
-  *directory* inode, bounded, with today's walk on a miss. `lookup`, `getattr`, `readdir`,
-  `readlink` and a read-only `open` go through the parent's descriptor: the walk and the identity
-  `fstat` go, since a descriptor never comes to name another object. `policy_name`'s two stay —
-  without them a second name of a guarded entry is classified as ordinary — so a `lookup` costs 3
-  at any depth and a `getattr` 1: 15 for the `lstat` at depth 4, 35 at depth 9. Measure the gain;
-  the counts predict how it scales with depth, not how large it is. Every mutation, an `open` for
-  writing included, keeps the full walk and the identity comparison, so the policy decides on
-  exactly what it decides on today.
+  full path (`fs.rs`, `open_ino`), so its cost grows with depth.
+    - Counted from the code, in path components resolved plus stat calls: a `lookup` at depth k
+      costs k + 3 — the walk, the identity `fstat`, the `fstatat` of the name and `policy_name`'s
+      two of `.git` and `.ko-agent-sandbox`; a `getattr` k + 1 — the walk and the identity
+      `fstat`, which is also the reply.
+    - An `lstat` sums to 31 at depth 4 and 116 at depth 9. At one virtiofs request each and the
+      ~56 µs of a guest lookup, the 31 are 1.7 ms of the 2.73 ms measured at depth 4
+      (`verification-log.md`, "cost per operation and per component"). How many requests the
+      guest kernel sends for them is unmeasured.
+    - The design: the daemon keeps an `O_PATH` descriptor per *directory* inode, bounded, with
+      today's walk on a miss. `lookup`, `getattr`, `readdir`, `readlink` and a read-only `open` go
+      through the parent's descriptor, without the walk and the identity `fstat`, since a
+      descriptor never comes to name another object.
+    - `policy_name`'s two stay — without them a second name of a guarded entry is classified as
+      ordinary — so a `lookup` costs 3 at any depth and a `getattr` 1: 15 for the `lstat` at
+      depth 4, 35 at depth 9. Measure the gain; the counts predict how it scales with depth, not
+      how large it is.
+    - Every mutation, an `open` for writing included, keeps the full walk and the identity
+      comparison, so the policy decides on exactly what it decides on today.
     - A path the sandbox walks stays fresh: under TTL 0 the kernel asks for each component, and
       `fstatat(parent_fd, name)` answers from the live tree, so a directory the host replaced
       (`rm -rf` then recreate — `npm install`, `cargo clean`) takes a new inode at the next walk.
     - Accepted (2026-09-20): through a directory the sandbox *holds* — its working directory, an
       open descriptor — reads follow the object when the host moves it, where today they fail
-      `ESTALE` or `ENOENT`. A mutation through it fails as it does today: it walks the stored
-      names.
-      That differs from a local filesystem, where a create through a held descriptor lands in
-      the moved directory (measured on xfs); the difference is what keeps a directory the host
-      moved into a gitdir from being written under its old classification.
+      `ESTALE` or `ENOENT`.
+        - A mutation through it fails as it does today: it walks the stored names.
+        - A local filesystem differs: a create through a held descriptor lands in the moved
+          directory (measured on xfs). The difference keeps a directory the host moved into a
+          gitdir from being written under its old classification.
     - Accepted (2026-09-20), provided it is documented: when the host moves a held directory
       *out of* the project, the sandbox can still read that subtree through it, where
       `RESOLVE_IN_ROOT` refuses today. An unfiltered bind mount behaves the same; `..` does not

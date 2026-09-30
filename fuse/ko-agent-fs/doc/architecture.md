@@ -166,7 +166,8 @@ shorter per-op path, never a cache; `verification-log.md` ("The cost of a path w
 measurements and `TODO.md`, "Performance", the open rows. In place:
 
 - **A directory snapshot per `opendir`** — `fs.rs`, `opendir`: a stable scan, not a cache.
-- **A minimal per-op path** — a getattr is one `fstatat` on the live backing, and the O(1)
+- **A minimal per-op path** — a path-based getattr is one `openat2` from the root and one `fstat`
+  on the live backing, that of the identity comparison (`fs.rs`, `open_ino`), and the O(1)
   git-context fast-path keeps non-`.git` ops free of policy work.
 
 The layer beneath matters: the backing tree is itself the host share (virtiofs on a Podman machine).
