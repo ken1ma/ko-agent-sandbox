@@ -672,9 +672,9 @@ Each connection passes these checks and transitions in order:
 
 1. `CONNECT` only — any other method is a 400
 1. port 443 only
-1. IP-literal targets are refused — not just dotted-quads: the resolver also accepts `127.1`,
-   `0177.0.0.1` and `2130706433` as spellings of `127.0.0.1`, and a match on the first form alone
-   is a known bypass class
+1. IP-literal targets are refused — not just dotted-quads: the resolver also accepts `127.1`
+   and `2130706433` as spellings of `127.0.0.1`, and a match on the first form alone is a known
+   bypass class
 1. the resolved ruleset allows the hostname, by an exact entry in its host map. The map already
    incorporates rule order, including grants that follow denials
 1. DNS is resolved once to obtain the candidate addresses

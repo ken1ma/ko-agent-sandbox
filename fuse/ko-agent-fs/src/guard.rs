@@ -1015,8 +1015,8 @@ fn resolve_against(base: &Path, value: &str) -> PathBuf {
 #[derive(Debug, PartialEq, Eq)]
 enum HooksPath {
     Absent,
-    /// Every `hooksPath` the file states, in file order. Which one git reads is not this scanner's
-    /// to say, so the caller judges them all.
+    /// Every `hooksPath` the file states, in file order, in each reading [`value_readings`] gives
+    /// it. Which one git reads is not this scanner's to say, so the caller judges them all.
     Values(Vec<String>),
     /// The file could hide a `hooksPath` somewhere this scanner cannot follow.
     Undecidable(&'static str),
@@ -1027,25 +1027,30 @@ enum HooksPath {
 /// refuses the mount.
 ///
 /// Conservative has to mean erring *toward refusing*, which is what to preserve when changing
-/// this scanner. It reads no section headers, so it reports every `hooksPath` in
-/// the file and lets the caller protect *every* one that resolves inside the workspace — keeping only
-/// the last would be the fail-open reading — and each doubt refuses because reading it any other way would
-/// compare a different string than the one hooks run from. The worked example and the per-doubt
-/// reasons are `doc/git-metadata.md`, "Relocated hook directories".
+/// this scanner. It skips section headers without reading their names, so it reports every
+/// `hooksPath` in the file and lets the caller protect *every* one that resolves inside the
+/// workspace — keeping only the last would be the fail-open reading — and each doubt refuses
+/// because reading it any other way would compare a different string than the one hooks run from.
+/// The worked example, the git syntax it reads and the per-doubt reasons are
+/// `doc/git-metadata.md`, "Relocated hook directories".
 fn scan_hooks_path(text: &str) -> HooksPath {
     let mut found: Vec<String> = Vec::new();
-    for raw in text.lines() {
+    for raw in text.strip_prefix('\u{feff}').unwrap_or(text).lines() {
         let Some(line) = strip_comment(raw) else {
             return HooksPath::Undecidable(
                 "leaves a double quote open, so its values cannot be read",
             );
         };
-        let line = line.trim();
+        let Some(line) = after_section_headers(line) else {
+            return HooksPath::Undecidable(
+                "leaves a section header open, so its keys cannot be read",
+            );
+        };
         let lowercased = line.to_ascii_lowercase();
 
         if lowercased.starts_with("path") && lowercased.contains('=') {
-            // Sections are invisible here, so this cannot tell `include.path` from any other bare
-            // `path` key; the message says what was seen rather than asserting the section.
+            // Section names are not read here, so this cannot tell `include.path` from any other
+            // bare `path` key; the message says what was seen rather than asserting the section.
             return HooksPath::Undecidable(
                 "has a bare `path` key, which under `include` or `includeIf` would name a file \
                  this scanner does not follow",
@@ -1058,15 +1063,16 @@ fn scan_hooks_path(text: &str) -> HooksPath {
         let Some((_, value)) = line.split_once('=') else {
             continue;
         };
-        let value = value.trim().trim_matches('"').trim();
-        if value.starts_with('~') {
-            return HooksPath::Undecidable("sets a hooksPath relative to a home directory");
-        }
         if value.contains('\\') {
             return HooksPath::Undecidable("sets a hooksPath containing a backslash escape");
         }
-        if !value.is_empty() {
-            found.push(value.to_string());
+        for reading in value_readings(value) {
+            if reading.starts_with('~') {
+                return HooksPath::Undecidable("sets a hooksPath relative to a home directory");
+            }
+            if !reading.is_empty() && !found.contains(&reading) {
+                found.push(reading);
+            }
         }
     }
     if found.is_empty() {
@@ -1081,16 +1087,88 @@ fn scan_hooks_path(text: &str) -> HooksPath {
 /// `#` and `;` begin a comment only *outside* quotes. Truncating at a quoted one would compare a
 /// shorter path than the one hooks run from — `hooksPath = "#githooks"` would read as no value at
 /// all, and `"./git#hooks"` as `./git` — so the quoted forms are carried through and judged whole.
+/// A backslash escapes the character after it, so `\"` in a section header's subsection does not
+/// close the quote.
 fn strip_comment(line: &str) -> Option<&str> {
     let mut quoted = false;
-    for (at, ch) in line.char_indices() {
+    let mut characters = line.char_indices();
+    while let Some((at, ch)) = characters.next() {
         match ch {
+            '\\' => {
+                characters.next();
+            }
             '"' => quoted = !quoted,
             '#' | ';' if !quoted => return Some(&line[..at]),
             _ => {}
         }
     }
     if quoted { None } else { Some(line) }
+}
+
+/// The line past every section header it begins with, as git reads `[a][core] hooksPath = x`, or
+/// `None` when a header is left open. A `]` inside the quoted subsection does not end the header.
+fn after_section_headers(line: &str) -> Option<&str> {
+    let mut rest = line.trim_start();
+    while rest.starts_with('[') {
+        let mut quoted = false;
+        let mut header_end = None;
+        let mut characters = rest.char_indices();
+        while let Some((at, ch)) = characters.next() {
+            match ch {
+                '\\' => {
+                    characters.next();
+                }
+                '"' => quoted = !quoted,
+                ']' if !quoted => {
+                    header_end = Some(at);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        rest = rest[header_end? + 1..].trim_start();
+    }
+    Some(rest)
+}
+
+/// The whitespace git's config parser skips: `isspace` of git's own `ctype.c`, without the
+/// newline that ends a line.
+fn is_git_space(ch: char) -> bool {
+    matches!(ch, ' ' | '\t' | '\r')
+}
+
+/// What git reads from the text after a key's `=`, which holds balanced quotes and no backslash:
+/// the quote characters removed, whitespace outside quotes dropped before the value and after its
+/// last other character, and everything inside quotes kept. A quote character counts as such a
+/// character, so `./x<TAB>""` keeps its tab. Whitespace outside quotes that is kept has two
+/// readings: git 2.39 replaces each such character with a space and git 2.47 keeps it
+/// (`parse_value`, config.c). Both are returned when they differ.
+fn value_readings(text: &str) -> Vec<String> {
+    let mut verbatim = String::new();
+    let mut spaced = String::new();
+    let mut pending = String::new();
+    let mut quoted = false;
+    for ch in text.chars() {
+        if is_git_space(ch) && !quoted {
+            if !verbatim.is_empty() {
+                pending.push(ch);
+            }
+            continue;
+        }
+        verbatim.push_str(&pending);
+        spaced.extend(pending.drain(..).map(|_| ' '));
+        if ch == '"' {
+            quoted = !quoted;
+        } else {
+            verbatim.push(ch);
+            spaced.push(ch);
+        }
+    }
+    if verbatim == spaced {
+        vec![verbatim]
+    } else {
+        vec![verbatim, spaced]
+    }
 }
 
 #[cfg(test)]
@@ -1183,6 +1261,83 @@ mod tests {
     }
 
     #[test]
+    fn a_hooks_path_after_a_section_header_on_its_line_is_read() {
+        // Each spelling measured against git 2.47, which reads `core.hookspath` from all of them.
+        for (config, read) in [
+            ("[core]hooksPath=./x\n", "./x"),
+            ("[core] hooksPath = ./githooks\n", "./githooks"),
+            ("[a][core] hooksPath = ./two\n", "./two"),
+            ("[a \"]\"][core] hooksPath = ./bracket\n", "./bracket"),
+            ("[a \"\\\"#\"][core] hooksPath = ./escaped\n", "./escaped"),
+            ("\u{feff}[core]hooksPath=./bom\n", "./bom"),
+        ] {
+            assert_eq!(
+                values(scan_hooks_path(config)),
+                vec![read.to_string()],
+                "{config:?}"
+            );
+        }
+        assert!(matches!(
+            scan_hooks_path("[core\nhooksPath = ./x\n"),
+            HooksPath::Undecidable(_)
+        ));
+    }
+
+    #[test]
+    fn a_hooks_path_value_is_read_without_its_quotes_as_git_reads_it() {
+        // Measured against git 2.47: quotes anywhere in the value are removed, and whitespace is
+        // kept inside them, at the ends too.
+        for (config, read) in [
+            ("[core]\n\thooksPath = ./a\"b\"c\n", "./abc"),
+            ("[core]\n\thooksPath = \" ./sp \"\n", " ./sp "),
+            ("[core]\n\thooksPath = \"\"./x\"\"\n", "./x"),
+            ("[core]\n\thooksPath = \"./x\" ; c\n", "./x"),
+            ("[core]\n\thooksPath = ./x\u{a0}\n", "./x\u{a0}"),
+        ] {
+            assert_eq!(
+                values(scan_hooks_path(config)),
+                vec![read.to_string()],
+                "{config:?}"
+            );
+        }
+        // `~` is expanded in what git read, whether or not it was quoted.
+        assert!(matches!(
+            scan_hooks_path("[core]\n\thooksPath = \"~/hooks\"\n"),
+            HooksPath::Undecidable(_)
+        ));
+    }
+
+    #[test]
+    fn whitespace_inside_an_unquoted_value_is_reported_in_both_of_gits_readings() {
+        // git 2.47 keeps the tab (measured); `parse_value` of git 2.39 replaces it with a space.
+        assert_eq!(
+            values(scan_hooks_path("[core]\n\thooksPath = ./a\tb\n")),
+            vec!["./a\tb".to_string(), "./a b".to_string()]
+        );
+        assert_eq!(
+            values(scan_hooks_path("[core]\n\thooksPath = ./a  b\n")),
+            vec!["./a  b".to_string()]
+        );
+        // A quote character ends the run of whitespace git would trim (measured against git
+        // 2.47), so the tab before an empty pair of quotes is part of the directory's name.
+        for (config, read) in [
+            ("[core]\n\thooksPath = ./g\t\"\"\n", vec!["./g\t", "./g "]),
+            (
+                "[core]\n\thooksPath = ./g\t\"\" \t\n",
+                vec!["./g\t", "./g "],
+            ),
+            (
+                "[core]\n\thooksPath = ./g \t\"x\"\n",
+                vec!["./g \tx", "./g  x"],
+            ),
+            ("[core]\n\thooksPath = ./g \"\" \n", vec!["./g "]),
+            ("[core]\n\thooksPath = \"\" ./g\n", vec!["./g"]),
+        ] {
+            assert_eq!(values(scan_hooks_path(config)), read, "{config:?}");
+        }
+    }
+
+    #[test]
     fn a_commented_hooks_path_is_not_a_value() {
         assert_eq!(
             scan_hooks_path("[core]\n\t# hooksPath = ./githooks\n"),
@@ -1200,6 +1355,10 @@ mod tests {
         ));
         assert!(matches!(
             scan_hooks_path("[includeIf \"gitdir:~/work/\"]\n\tpath = work.config\n"),
+            HooksPath::Undecidable(_)
+        ));
+        assert!(matches!(
+            scan_hooks_path("[include] path = other\n"),
             HooksPath::Undecidable(_)
         ));
     }
@@ -1355,6 +1514,34 @@ mod tests {
         )
         .unwrap();
         assert!(served_read_only(&root).read_only.contains("githooks"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_hooks_path_on_its_section_headers_line_is_protected() {
+        let root = scratch("hookspath-header-line");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(root.join("githooks")).unwrap();
+        fs::write(root.join(".git/config"), b"[core] hooksPath = ./githooks\n").unwrap();
+        assert!(served_read_only(&root).read_only.contains("githooks"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_hooks_path_ending_in_whitespace_before_empty_quotes_is_judged_with_the_whitespace() {
+        // The directory git runs hooks from is `githooks<TAB>`, a name the file rules cannot
+        // record, so the mount is refused; read without the tab, `githooks` would be protected
+        // and the hook directory left writable.
+        let root = scratch("hookspath-trailing-tab");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(root.join("githooks")).unwrap();
+        fs::create_dir_all(root.join("githooks\t")).unwrap();
+        fs::write(
+            root.join(".git/config"),
+            b"[core]\n\thooksPath = ./githooks\t\"\"\n",
+        )
+        .unwrap();
+        refused_with(&root, "githooks\\t");
         let _ = fs::remove_dir_all(&root);
     }
 

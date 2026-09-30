@@ -204,9 +204,10 @@ entries. There are two ways to draw that line, and they fail in opposite directi
 
 Deny creation of any basename that equals `.git` after all of:
 
-- dropping invisible/ignorable code points (U+00AD, U+200B–U+200D, U+2060, U+FEFF) — a filesystem
-  that ignores these in comparison resolves `.gi<U+200C>t` to `.git` (the HFS+ half of
-  CVE-2014-9390);
+- dropping invisible/ignorable code points (U+00AD, U+200B–U+200F, U+202A–U+202E, U+2060,
+  U+206A–U+206F, U+FEFF) — a filesystem that ignores these in comparison resolves `.gi<U+200C>t`
+  to `.git` (the HFS+ half of CVE-2014-9390). The list holds every code point git's
+  `next_hfs_char` (utf8.c) skips;
 - folding the Turkish i-family (U+0130, U+0131) to `i` — some Windows upcase tables map dotless and
   dotted i to `I`;
 - folding U+212A KELVIN SIGN to `k` and U+017F LATIN SMALL LETTER LONG S to `s` — APFS resolves
@@ -410,8 +411,8 @@ The read-only root is added only when the hook directory resolves **inside** the
   through a podman machine only the directories the machine shares. A chain leaving those refuses
   the mount, since the host could follow it back into the workspace unseen.
 
-The scanner behind it does not read section headers, so it cannot tell `core.hooksPath` from a
-`hooksPath` under a section git never consults for hooks.
+The scanner behind it skips section headers without reading their names, so it cannot tell
+`core.hooksPath` from a `hooksPath` under a section git never consults for hooks.
 
 - It therefore judges **every** `hooksPath` the file states and serves each one resolving inside
   the workspace read-only.
@@ -420,12 +421,23 @@ The scanner behind it does not read section headers, so it cannot tell `core.hoo
   actually runs would be served as ordinary writable data.
 - The price is a read-only directory for a `hooksPath` git ignores, never a lost guarantee.
 
-The doubts refuse rather than guess, each of them a value the scanner would otherwise compare in a
-different spelling than the one hooks run from:
+It reads the forms git's `git_parse_source` (config.c) reads, so that the value it judges is the
+one hooks run from:
+
+- a leading BOM is skipped, and a key may follow one or more section headers on its line
+  (`[core] hooksPath = ./githooks`), whose quoted subsection may hold `]`;
+- quote characters anywhere in the value are removed, and whitespace inside them is kept;
+- whitespace outside quotes is kept when another character or a quote character follows it, and
+  judged both as written, which git 2.47 reads, and with each character replaced by a space,
+  which git 2.39 reads.
+
+The doubts refuse rather than guess: with each, the scanner would otherwise compare a different
+spelling than the one hooks run from, or miss a `hooksPath` git reads:
 
 - a `~` (expanding it needs the host's home directory, which the daemon does not have);
 - a backslash (git decodes escapes the scanner does not);
 - an unterminated quote;
+- a section header left open on its line;
 - a bare `path` key, which under `include` or `includeIf` names a file the scanner never opens.
 
 All are rare in a *repository-local* config, and the message tells the operator what to change.
