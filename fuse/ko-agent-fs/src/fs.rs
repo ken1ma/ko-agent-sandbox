@@ -175,8 +175,8 @@ impl KoAgentFs {
     /// only appear in one that has gone stale. Following one there is exactly what would let
     /// writable project data resolve into a gitdir. A stale chain fails closed with `ELOOP` — no
     /// `DENY` line, because no policy decision was reached. The callers that must see a link still
-    /// do: openat2 exempts `O_PATH | O_NOFOLLOW`, which is how `getattr` and `setattr` stat one,
-    /// and `readlink` goes through its parent's fd instead.
+    /// do: openat2 exempts `O_PATH | O_NOFOLLOW`, which is how `getattr` and `setattr` stat one
+    /// and `link` links one, and `readlink` goes through its parent's fd instead.
     ///
     /// The identity comparison is the second, because a chain of directories can be stale too: an
     /// ordinarily named component can be a second name of a guarded entry ([`Self::policy_name`]),
@@ -187,18 +187,43 @@ impl KoAgentFs {
     /// also keeps two backing objects from sharing one node's page cache (`inode.rs`, `lookup`).
     /// `O_TRUNC` waits for that comparison, so a refused open has truncated nothing.
     fn open_ino(&self, ino: u64, oflag: OFlag) -> Result<OwnedFd, NixErrno> {
+        self.open_ino_compared(ino, oflag).map(|(fd, _)| fd)
+    }
+
+    /// [`Self::open_ino`] with the opened object's attributes, taken from the identity
+    /// comparison's `fstat` when that still describes the object.
+    fn open_ino_with_stat(&self, ino: u64, oflag: OFlag) -> Result<(OwnedFd, FileStat), NixErrno> {
+        let (fd, compared) = self.open_ino_compared(ino, oflag)?;
+        let st = match compared {
+            Some(st) => st,
+            None => fstat(&fd)?,
+        };
+        Ok((fd, st))
+    }
+
+    /// [`Self::open_ino`] with the comparison's `fstat`: `None` for the root, which is not
+    /// compared, and after `O_TRUNC`, whose truncation changes the size and times that `fstat` read.
+    fn open_ino_compared(
+        &self,
+        ino: u64,
+        oflag: OFlag,
+    ) -> Result<(OwnedFd, Option<FileStat>), NixErrno> {
         let fd = self.open_ino_unchecked(ino, oflag & !OFlag::O_TRUNC)?;
+        let mut compared = None;
         // The root is inserted, never looked up, so it records no identity (`inode.rs`, `Inode`).
         if ino != ROOT_INO {
+            let st = fstat(&fd)?;
             let recorded = self.inner.lock().unwrap().table.identity(ino);
-            if recorded != Some(identity(&fstat(&fd)?)) {
+            if recorded != Some(identity(&st)) {
                 return Err(NixErrno::ESTALE);
             }
+            compared = Some(st);
         }
         if oflag.contains(OFlag::O_TRUNC) {
             ftruncate(&fd, 0)?;
+            compared = None;
         }
-        Ok(fd)
+        Ok((fd, compared))
     }
 
     fn open_ino_unchecked(&self, ino: u64, oflag: OFlag) -> Result<OwnedFd, NixErrno> {
@@ -1039,12 +1064,8 @@ impl Filesystem for KoAgentFs {
                 Err(err) => reply.error(to_errno(err)),
             };
         }
-        let fd = match self.open_ino(ino.0, OFlag::O_PATH | OFlag::O_NOFOLLOW) {
-            Ok(fd) => fd,
-            Err(err) => return reply.error(to_errno(err)),
-        };
-        match fstat(&fd) {
-            Ok(st) => reply.attr(&TTL, &to_file_attr(ino.0, &st)),
+        match self.open_ino_with_stat(ino.0, OFlag::O_PATH | OFlag::O_NOFOLLOW) {
+            Ok((_, st)) => reply.attr(&TTL, &to_file_attr(ino.0, &st)),
             Err(err) => reply.error(to_errno(err)),
         }
     }
@@ -1429,13 +1450,14 @@ impl Filesystem for KoAgentFs {
         // The source by descriptor, for `apply_setattr`'s reason: linking the node's name would
         // alias whatever that name leads to by now. `AT_EMPTY_PATH` needs `CAP_DAC_READ_SEARCH`
         // here, and the descriptor's `/proc` path, followed, does not; it links a symlink itself.
-        let source = match self.open_ino(ino.0, OFlag::O_PATH | OFlag::O_NOFOLLOW) {
-            Ok(fd) => fd,
-            Err(err) => return reply.error(to_errno(err)),
-        };
+        let (source, source_st) =
+            match self.open_ino_with_stat(ino.0, OFlag::O_PATH | OFlag::O_NOFOLLOW) {
+                Ok(pair) => pair,
+                Err(err) => return reply.error(to_errno(err)),
+            };
         // A hard link of a symlink is a second copy of its relative target, read from wherever the
         // new name is: the region check a rename gets (`allow_region_move`).
-        if fstat(&source).is_ok_and(|st| st.st_mode & libc::S_IFMT == libc::S_IFLNK) {
+        if source_st.st_mode & libc::S_IFMT == libc::S_IFLNK {
             let inner = self.inner.lock().unwrap();
             let from = inner
                 .table
@@ -1586,12 +1608,8 @@ impl Filesystem for KoAgentFs {
         if let Err(err) = self.apply_setattr(ino.0, mode, uid, gid, size, atime, mtime) {
             return reply.error(to_errno(err));
         }
-        let fd = match self.open_ino(ino.0, OFlag::O_PATH | OFlag::O_NOFOLLOW) {
-            Ok(fd) => fd,
-            Err(err) => return reply.error(to_errno(err)),
-        };
-        match fstat(&fd) {
-            Ok(st) => reply.attr(&TTL, &to_file_attr(ino.0, &st)),
+        match self.open_ino_with_stat(ino.0, OFlag::O_PATH | OFlag::O_NOFOLLOW) {
+            Ok((_, st)) => reply.attr(&TTL, &to_file_attr(ino.0, &st)),
             Err(err) => reply.error(to_errno(err)),
         }
     }
@@ -1771,6 +1789,50 @@ mod tests {
         );
 
         drop(dir);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn an_open_returns_the_attributes_of_the_object_as_it_is_after_the_open() {
+        let base =
+            std::env::temp_dir().join(format!("ko-agent-fs-open-stat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("file"), b"xyz").unwrap();
+        let root: OwnedFd = nix::fcntl::open(
+            &base,
+            OFlag::O_PATH | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        let root_identity = identity(&fstat(&root).unwrap());
+        let (dev, ino_id) = identity(&nix::sys::stat::lstat(&base.join("file")).unwrap());
+        let fs = KoAgentFs::new(root, FileRules::default());
+        let file = fs.inner.lock().unwrap().table.lookup(
+            ROOT_INO,
+            OsStr::new("file"),
+            OsStr::new("file"),
+            false,
+            dev,
+            ino_id,
+        );
+
+        let (_, st) = fs
+            .open_ino_with_stat(file, OFlag::O_PATH | OFlag::O_NOFOLLOW)
+            .unwrap();
+        assert_eq!((identity(&st), st.st_size), ((dev, ino_id), 3));
+        // The root records no identity, so no comparison stats it.
+        let (_, st) = fs
+            .open_ino_with_stat(ROOT_INO, OFlag::O_PATH | OFlag::O_DIRECTORY)
+            .unwrap();
+        assert_eq!(identity(&st), root_identity);
+        // The comparison reads the file before `O_TRUNC` empties it.
+        let (_, st) = fs
+            .open_ino_with_stat(file, OFlag::O_WRONLY | OFlag::O_TRUNC)
+            .unwrap();
+        assert_eq!(st.st_size, 0);
+
+        drop(fs);
         std::fs::remove_dir_all(&base).unwrap();
     }
 
