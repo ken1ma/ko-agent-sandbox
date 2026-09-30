@@ -1,16 +1,16 @@
 //! The `ko-agent-fs` binary itself: argument handling and the startup refusal.
 //!
 //! The mounted suites construct the filesystem in-process, which bypasses `main.rs` entirely. These
-//! drive the real binary instead. They need **no** `/dev/fuse` and no privileges, because every case
-//! here is one the binary decides *before* it mounts — so unlike the mounted suites, these run
-//! everywhere, including a hardened sandbox and CI.
+//! drive the real binary instead. Except the three ignored mount cases, they need **no** `/dev/fuse` and
+//! no privileges, because each is one the binary decides *before* it mounts — so unlike the mounted
+//! suites, these run everywhere, including a hardened sandbox and CI.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// The binary under test. `env!("CARGO_BIN_EXE_...")` bakes an absolute path at *compile* time,
-/// and this project compiles in the hardened sandbox (`/workspace/...`) but runs mounted
+/// and this project compiles in the hardened sandbox (at the project's host path) but runs mounted
 /// tests in the privileged rig (`/work/...`) — so resolve relative to the running test executable
 /// (`target/debug/deps/<test>` → `target/debug/ko-agent-fs`), which holds wherever the tree is.
 fn binary() -> PathBuf {

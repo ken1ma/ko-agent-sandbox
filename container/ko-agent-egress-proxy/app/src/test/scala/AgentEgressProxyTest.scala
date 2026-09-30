@@ -752,7 +752,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     get("/%2e%2e/x")
     assertEquals(intercept[Refusal](get("/api/%2e%2e/x")).getMessage, "percent-encoding in the path")
 
-  test("deny defaults is the whole ruleset under the two profiles consulting it, and is not consulted elsewhere"):
+  test("deny defaults is the whole ruleset under deny-unless-allowed, and is not consulted elsewhere"):
     val own = rulesetOf(rule = "deny defaults\nallow https://docs.python.org/ read")
     assertEquals(own.hosts, Map("docs.python.org" -> Treatment.Inspected(Map("/" -> Set("read")))))
     assert(own.clearsDefaults)

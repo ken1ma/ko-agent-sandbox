@@ -166,7 +166,7 @@ Compile / resourceGenerators += Def.task {
   //
   // ko-agent-fs/doc and ko-agent-fs/probe are excluded for a different reason: neither is a build input nor
   // distribution — probe/ holds the platform-verification probes a developer runs by hand, not under cargo — and
-  // leaving them out keeps them out of AgentSandboxLauncher.koAgentFsSourceId too, so editing a design document or a
+  // leaving them out keeps them out of KoAgentFs.koAgentFsSourceId too, so editing a design document or a
   // probe does not invalidate every installed filter binary. Its .dockerignore drops the same paths, so a direct
   // `podman build` from a checkout sees what a jar-built one does.
   // IO.relativize answers in the platform's separator, and everything downstream reads `/` — the

@@ -101,7 +101,7 @@ object RulesetHelper:
   val ProfileVariable = "EGRESS_PROFILE"
   val ModelProviderVariable = "EGRESS_MODEL_PROVIDER"
 
-  /** The egress profiles, weakest-to-widest; deny-unless-allowed is what an unset
+  /** The egress profiles, narrowest to widest; deny-unless-allowed is what an unset
     * EGRESS_PROFILE means — the launcher-owned defaults, every line inspected or a model
     * provider's own endpoints, so the default is useful without opening the open internet. */
   val Profiles = Vector("deny-all", "deny-unless-model", "deny-unless-allowed")
@@ -249,7 +249,8 @@ object RulesetHelper:
    * comment beside it. `defaults/host` lists inspected hosts; `defaults/model-provider/<name>`
    * supplies the rules for `allow model-provider <name>`. Provider rules cover model,
    * authentication and control-plane endpoints, including GitHub's inspected login and token
-   * paths. SECURITY.md, "What is inside TLS", explains why the model endpoints are not inspected.
+   * paths and Google's inspected account reads. SECURITY.md, "What is inside TLS", explains why
+   * the model endpoints are not inspected.
    *
    * A defaults file holds `allow https://` lines and nothing else, and the catalog holds no
    * tunnel; either is a refused start, not a silent narrowing, so the image's own --print-ruleset
@@ -533,7 +534,8 @@ object RulesetHelper:
    * outside canonical form; a resolved host holding `tunnel` beside an inspected grant; a `tunnel`
    * line for a host the defaults inspect without `deny defaults`. Warns at every launch, under
    * every profile: a `deny` matching nothing at its position — the misspelled deny must not fail
-   * silently — a redundant grant, and a line every grant of which a later line takes back. An
+   * silently — a redundant grant, a line every grant of which a later line takes back, and a
+   * selected provider's host the resolved ruleset does not allow. An
    * empty ruleset is valid and reported as such — deny-all resolves empty by design, as
    * does deny-unless-model with no provider selected.
    */

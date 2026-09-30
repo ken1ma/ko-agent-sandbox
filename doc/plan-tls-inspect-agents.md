@@ -119,8 +119,8 @@ precedence among them, `https_proxy` before `HTTPS_PROXY` in Claude Code's case,
     two are distinct lines.
   - Measure: CA trust in this build; the plan host selected; the MCP server's paths; the session
     sync's host and paths; with `COPILOT_ENABLE_HTTP2` unset, that the model path stays HTTP/1.1.
-- `agy` 1.2.12, `cloudcode-pa.googleapis.com`, `generativelanguage.googleapis.com`,
-  `businessaicode.googleapis.com` and the `aiplatform` hosts.
+- `agy` 1.2.12, `cloudcode-pa.googleapis.com`, `daily-cloudcode-pa.googleapis.com`,
+  `generativelanguage.googleapis.com`, `businessaicode.googleapis.com` and the `aiplatform` hosts.
   - Documented: nothing on a proxy or a CA in the 28 CLI pages under
     https://antigravity.google/docs/cli.
   - Reported: 1.0.2 on Windows sent `loadCodeAssist` past `HTTPS_PROXY`

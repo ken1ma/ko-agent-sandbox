@@ -191,8 +191,9 @@ measured against host-side observations at every step:
 - Below the filter, a bare 9p hold (`tail -f` in the machine) refused a host write whose writer
   was not recorded, and the write succeeded the moment the hold ended. 2026-08-19.
 
-So a mapped file can see a host write on Windows too, and `--self-test` runs the `mmap` row
-there as on macOS. What the lock costs is co-editing with the writers it refuses, and SECURITY.md
+So a host write to a mapped file succeeds on Windows too. Whether the mapping shows it is
+`--self-test`'s `mmap` row, which has not run there (`TODO.md`, "End-to-end coherency through the
+real host share"). What the lock costs is co-editing with the writers it refuses, and SECURITY.md
 ("The project directory") records it.
 
 The Windows 8.3 short name `GIT~1` is in the empirical corpus to be *confirmed* rather than assumed,

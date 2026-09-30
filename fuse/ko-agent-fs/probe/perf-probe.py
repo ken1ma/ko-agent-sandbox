@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The metadata cost of the filter, as a command rather than a reconstruction (doc/TODO.md,
 "Performance"). It builds its own corpus, so two runs are comparable even on different machines,
-and reports microseconds per entry for the workloads the table there is built from.
+and reports microseconds per entry for the workloads the tables in doc/verification-log.md, "The
+cost of a path walk", are built from.
 
 Run it in a scratch project, twice, and compare the columns — the second run is the control
 (unfiltered.sh has what it is):

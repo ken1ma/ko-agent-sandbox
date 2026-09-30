@@ -352,8 +352,7 @@ fn an_open_handle_reaches_its_object_after_the_name_is_unlinked() {
     // opened, not re-resolve a name that is now gone: a cached read's attribute refresh (getattr
     // with the handle) and `ftruncate` (the one setattr that reaches the daemon with `FATTR_FH`).
     // A bare `fstat(2)` carries no handle and still resolves by path, so it is deliberately not
-    // exercised here — that ENOENT is a path-model limit this change does not close (`fs.rs`,
-    // `getattr`).
+    // exercised here — that ENOENT is a path-model limit (`fs.rs`, `getattr`).
     use std::io::Read;
     use std::os::unix::fs::FileExt;
 
@@ -452,7 +451,7 @@ fn a_replacement_at_equal_size_and_mtime_takes_a_fresh_inode() {
     stamp_mtime(&mount.backing_at("swap.new"));
     fs::rename(mount.backing_at("swap.new"), mount.backing_at("swap")).unwrap();
 
-    // Astra's sequence: open the replacement, fill the cache through the old descriptor, then read
+    // The failing sequence: open the replacement, fill the cache through the old descriptor, then read
     // the replacement.
     let mut fresh = fs::File::open(mount.at("swap")).expect("open after the swap");
 

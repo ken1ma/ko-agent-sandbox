@@ -352,13 +352,13 @@ class Review:
         self.lock_file = None
 
     @staticmethod
-    def open(root, review_id, check_version=True):
+    def open(root, review_id, check_readable=True):
         """The review locked, then loaded: what it says is what the command acts on."""
         review = Review(root, review_id)
         if not review.state_path.exists():
             raise ReviewError("UNKNOWN_REVIEW", f"no review {review_id} for {root}")
         review.lock()
-        return review.load(check_version)
+        return review.load(check_readable)
 
     @property
     def reviewer(self):
@@ -405,13 +405,29 @@ class Review:
         review.save()
         return review
 
-    def load(self, check_version=True):
+    def load(self, check_readable=True):
+        """With `check_readable` off, for `list` and `delete`: whatever the state holds, `{}` when it
+        cannot be read as a JSON object."""
         global CURRENT_REVIEW
         if not self.state_path.exists():
             raise ReviewError("UNKNOWN_REVIEW", f"no review {self.id} for {self.root}")
-        self.state = json.loads(self.state_path.read_text())
+        try:
+            self.state = json.loads(self.state_path.read_text())
+        except (OSError, ValueError):
+            self.state = None
+        if not isinstance(self.state, dict):
+            self.state = {}
+            if check_readable:
+                raise ReviewError(
+                    "STATE_IO_FAILED",
+                    f"{self.state_path} cannot be read as a JSON object: `ko-review delete {self.id}` removes the"
+                    " review",
+                )
+            return self
         CURRENT_REVIEW = self
-        if check_version and self.state.get("schemaVersion") != SCHEMA_VERSION:
+        if not check_readable:
+            return self
+        if self.state.get("schemaVersion") != SCHEMA_VERSION:
             raise ReviewError(
                 "STATE_IO_FAILED",
                 f"{self.state_path} has schemaVersion {self.state.get('schemaVersion')}, and this helper reads"
@@ -1245,7 +1261,7 @@ def command_list(args):
                 except ReviewError as ex:
                     # A review this helper cannot read is still listed, by what every version's
                     # state holds, so that its id can be given to `delete`.
-                    state = json.loads((entry / "state.json").read_text())
+                    state = Review(root, entry.name).load(check_readable=False).state
                     summary = {
                         "reviewId": entry.name, "reviewer": state.get("reviewer"), "effectiveStatus": ex.code,
                         "round": state.get("round"), "approvalFresh": False, "createdAt": state.get("createdAt"),
@@ -1386,7 +1402,7 @@ def command_diff(args):
 
 def command_delete(args):
     root = repository_root(args.repository)
-    review = Review.open(root, args.review_id, check_version=False)
+    review = Review.open(root, args.review_id, check_readable=False)
     refs = snapshot_refs(review)
     for ref in refs:
         git(root, "update-ref", "-d", ref)
@@ -1720,7 +1736,7 @@ def main(argv):
         output = {"error": ex.to_json()}
         if CURRENT_REVIEW is not None and CURRENT_REVIEW.state is not None and CURRENT_REVIEW.state_path.exists():
             output.update({
-                "reviewId": CURRENT_REVIEW.id, "status": CURRENT_REVIEW.state["status"],
+                "reviewId": CURRENT_REVIEW.id, "status": CURRENT_REVIEW.state.get("status"),
                 "statePath": str(CURRENT_REVIEW.state_path), "inspect": CURRENT_REVIEW.inspect_lines(),
                 "snapshots": CURRENT_REVIEW.state.get("snapshots", []),  # a transcriptError travels here
             })

@@ -31,7 +31,7 @@ object RunOnHostPrereqs:
 
   /**
    * Why a command cannot run, one case per category (run-on-host.md "Refusals"). A value, not a
-   * message: the wrapper prints one wording, the channel another, and the tests match on neither.
+   * message: the wrapper prints one wording, the channel another.
    */
   enum Refusal:
     case PrereqJvmNotCoursier(found: String)

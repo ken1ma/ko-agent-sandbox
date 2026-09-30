@@ -24,7 +24,7 @@ class SelfTestShareTest extends FunSuite:
     // a second run rebuilds nothing and leaves no second container or volume behind.
     assertEquals(command.takeRight(3), Vector("ko-agent-sandbox:latest", "python3", "-"))
 
-  test("a killed run's mount and container fall inside the sweeps every reset already makes"):
+  test("a killed run's mount and container fall inside the sweeps a reset already makes"):
     assert(koAgentFsMountDir(shareMountId("1a2b3c4d")).startsWith(s"$KoAgentFsInstallDir/mounts/"))
     assertEquals(
       probeContainers(

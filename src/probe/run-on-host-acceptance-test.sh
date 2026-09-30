@@ -999,7 +999,7 @@ victim_wrapper() { # log-name
 if [ "$quick" = 1 ]; then
     skip_lifecycle "quick mode"
 elif [ "$program" != all ]; then
-    skip_lifecycle "needs both programs"
+    skip_lifecycle "needs every program"
 else
     # Concurrency: one sbt and one mill command overlap, each with its own directory and proxy.
     wrapper sbt "$project" compile >"$work/conc-sbt.log" 2>&1 & conc_sbt=$!

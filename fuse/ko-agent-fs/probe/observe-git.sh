@@ -3,7 +3,7 @@
 # through a battery of ordinary operations and classify every path it writes under .git with the
 # actual policy (via the classify_paths example). Run this after a git upgrade; if the CONTROL set gains
 # a path that is not config/hooks/description/commondir/gitdir/config.worktree/branches, or an
-# operational file moves, update the classifier, tests/git_corpus.rs, and the observations doc.
+# operational file moves, update the classifier, tests/git_corpus.rs, and those premises.
 #
 # Needs: git, and a built classify_paths example (cargo build --example classify_paths).
 set -eu

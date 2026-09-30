@@ -93,7 +93,7 @@ repository's configuration files:
   host chose; they cannot define the command.
 - `.gitmodules` additionally cannot supply `submodule.<name>.update = !cmd`: `git` has refused to
   honor the `!command` form from `.gitmodules` since the CVE-2017-1000117 family. The design
-  rests on this assumption, which is tested, not trusted.
+  rests on this assumption ("Premises", P4).
 
 ### 3. Indirection — moves the gitdir itself
 
@@ -148,6 +148,8 @@ From the four groups, the state that must be immutable to the sandbox:
    - `objects/info/**` except what git writes there for itself — `commit-graph`,
      `commit-graphs/**`, `packs` — so `alternates` and `http-alternates` (group 4); `objects` and
      `objects/info` themselves are created only by `mkdir` and never renamed or unlinked
+   - every other entry the classifier's allowlist does not name, among them the rebase and
+     sequencer state (group 1), the bisect state and `rr-cache`
    - and, by recursion, the same classes inside every nested gitdir: `worktrees/<name>/**`
      and `modules/<name>/**` are themselves gitdirs, so their `config`, `hooks/**`, `commondir` and
      `gitdir` are immutable while their operational state is not.
@@ -163,8 +165,8 @@ Everything else stays writable — see the classifier — except what the file r
 The whole of `.git` cannot be read-only: `git` must write its operational state for `status`,
 `commit`, `checkout`, `fetch`, `merge` to work at all — `index`, `HEAD` and the other `*_HEAD`
 refs, `refs/**`, `logs/**`, `objects/**`, `packed-refs`, `COMMIT_EDITMSG`, `MERGE_MSG`, and so
-on. (`rebase` is the deliberate exception — its todo is protected; see group 1 and blocked
-operations.)
+on. (`rebase` and `bisect` are the deliberate exceptions — their state is protected; see group 1
+and blocked operations.)
 
 So inside a gitdir the filter must keep operational state writable while protecting the other
 entries. There are two ways to draw that line, and they fail in opposite directions:
@@ -381,7 +383,7 @@ policy classifies as writable.
   slot the sandbox can rename away and replant, and a chain that leaves the workspace re-enters
   the rule if a link points back in.
 - `canonicalize` cannot express this — it returns the endpoint and erases the chain — so the walk
-  is explicit and depth-bounded.
+  is explicit and bounded in symlink hops.
 - It classifies against the same submodule gitdir roots the runtime discovers by their `HEAD`, so
   guard-`Protected` means runtime-`Protected` (`.git/modules/<sub>/objects` is writable at
   runtime and no exemption here).
@@ -553,10 +555,10 @@ Policy unit tests cover the classifier in isolation; these run against a mounted
 **Name rule / creation (group 3a):**
 
 - `mkdir`, `open(O_CREAT)`, `mknod`, `symlink`, `link`, `rename` into, `renameat2`
-  `RENAME_EXCHANGE` into — for basenames `.git`, `.GIT`, `.Git`, `.git.`, `.git ` (trailing
-  space), and a non-UTF-8 name; each must fail.
-- Control names `.git<newline>`, `.gitignore`, `.github` must **succeed** (only exact-fold `.git`
-  is special).
+  `RENAME_EXCHANGE` into — for basenames `.git`, `.GIT`, `.Git`, `.git.` and `.git ` (trailing
+  space); each must fail.
+- Control names `.git<newline>`, `.gitignore`, `.github` and a non-UTF-8 name must **succeed**
+  (only exact-fold `.git` is special).
 
 **Pointer rewrite (group 3b):** with an existing `.git` file present, every mutation op above must
 fail against it.

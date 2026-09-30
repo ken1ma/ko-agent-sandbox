@@ -561,7 +561,7 @@ then report PASS "G7 outbound reaches any loopback port" "127.0.0.1:$g7_port"
 else report FAIL "G7 outbound reaches any loopback port" "$(first_line "$work/g7-loop.log")"; fi
 end_group "$g7_leader"
 # G6's unconfined control has shown the LAN address reachable by then.
-if [ -z "$lan_ip" ]; then report SKIP "G7 outbound denies the LAN address" "no LAN address"
+if [ -z "$lan_ip" ]; then report SKIP "G7 outbound at the LAN address" "no LAN address"
 else
     group_start "$work/g7b" "$work" python3 "$work/tcp-listen.py" >"$work/g7b.out" 2>"$work/g7b.log"
     g7b_leader=$leader

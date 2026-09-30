@@ -11,7 +11,7 @@
 //
 //     sbt "testWithPodman *EgressSessionTest"
 //
-// The assertions use hosts outside the built-in ruleset, and the suite is only as good as their
+// The assertions use public hosts, and the suite is only as good as their
 // reachability from the host running it: `example.com` (a plain addition), `expired.badssl.com` and
 // `wrong.host.badssl.com` (origin certificates the proxy must reject, for the two different reasons
 // a certificate can be wrong), `127.0.0.1.nip.io` (a public resolver answering with the address

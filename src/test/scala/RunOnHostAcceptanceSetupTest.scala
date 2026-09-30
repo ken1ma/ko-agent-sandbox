@@ -53,7 +53,7 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
     for (ownerProject, record, requested) <- cases do
       val root = Files.createTempDirectory("acceptance-build")
       val owner = broker(root, "b1", ownerProject)
-      record.foreach(name => Files.writeString(owner.resolve("records").resolve(name), project + "\n"))
+      record.foreach(name => Files.writeString(owner.resolve(name), project + "\n"))
       assertEquals(preflight(root, "/unrelated", requested)._1, 1, clue = (ownerProject, record, requested))
 
   test("preflight permits unrelated, ended and unpublished claims"):
@@ -64,7 +64,7 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
     broker(root, "b2", project, open = false)
     broker(root, "s1", project)
     val pending = broker(root, "b3", "/elsewhere")
-    Files.writeString(pending.resolve("records/build-0123456789abcdef.pending"), project + "\n")
+    Files.writeString(pending.resolve("build-0123456789abcdef.pending"), project + "\n")
     assertEquals(preflight(root, project), 0 -> "")
 
   test("preflight names the sandbox to stop instead of suggesting sbt shutdown or a broker kill"):

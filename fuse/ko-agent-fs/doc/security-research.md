@@ -127,6 +127,9 @@ run). Findings the check rests on:
 
 What the check does not cover:
 
+- **Open:** the `create` test failed in two of three runs on Windows: a create opened the host's
+  pointer file. `TODO.md` ("A second name arriving during a name-based mutation") has the runs and
+  the unverified cause.
 - **Open:** `rename`, `unlink` and `rmdir` exist by name only, so `allow_child` and `allow_create`
   decide about a name and the backing syscall then resolves that name again. A host change between
   the two — the ordinary entry moved away and a second name of a guarded entry in its place, or a

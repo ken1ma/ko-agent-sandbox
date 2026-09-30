@@ -36,7 +36,7 @@
 //    |                                        into it)
 //    |
 //    +-- --run-on-host (macOS only): ko-sandbox-run-on-host relays a command
-//    |      request to a host-side wrapper that runs sbt/mill under a
+//    |      request to a host-side wrapper that runs a build tool under a
 //    |      Seatbelt profile — the project (`.git` and
 //    |      .ko-agent-sandbox denied), per-project build caches, one
 //    |      Coursier JDK, a session directory, and the build's own
@@ -171,8 +171,8 @@ object AgentSandboxLauncher:
 
   /**
    * `podman start` returns once the process is spawned and says nothing about whether it stayed
-   * up: a proxy refusing at start — a leaf naming other than its inspected set, a credential file
-   * it will not honour — would otherwise leave a sandbox with no egress and the reason in a log
+   * up: a proxy refusing at start — a leaf naming other than its inspected set — would
+   * otherwise leave a sandbox with no egress and the reason in a log
    * nobody was shown. Reads the run's host log, the file the proxy tees to before it does
    * anything else, until EgressProxyReadyLine, or the container is no longer running, or `bound`
    * elapses; either failure reports what the proxy wrote. The file rather than `podman logs`:
@@ -725,16 +725,6 @@ object AgentSandboxLauncher:
         console.printf("Continue anyway? [y/N] ")
         if !consented(Option(console.readLine())) then fail("error: build not started")
 
-  /**
-   * The build context is bundled into the jar (build.sbt) so --build works
-   * with no checkout present; unpacked to a temp directory, removed by
-   * runBuilds on success.
-   *
-   * A new directory every time, and Files.copy carries no mtime over from the
-   * jar entry, so every file reaches podman freshly stamped. ko-agent-fs's
-   * Containerfile leans on that: it is what stops a warm cargo cache from
-   * reusing a build with an older source id compiled into it.
-   */
   private def bundleResource(name: String): Array[Byte] =
     val stream = getClass.getResourceAsStream(s"/sandbox-build/$name")
     if stream == null then
@@ -749,6 +739,16 @@ object AgentSandboxLauncher:
   private def bundleIndex(): Vector[String] =
     String(bundleResource("INDEX"), StandardCharsets.UTF_8).linesIterator.filter(_.nonEmpty).toVector
 
+  /**
+   * The build context is bundled into the jar (build.sbt) so --build works
+   * with no checkout present; unpacked to a temp directory, removed by
+   * runBuilds on success.
+   *
+   * A new directory every time, and Files.write carries no mtime over from the
+   * jar entry, so every file reaches podman freshly stamped. ko-agent-fs's
+   * Containerfile leans on that: it is what stops a warm cargo cache from
+   * reusing a build with an older source id compiled into it.
+   */
   def unpackBuildContext(): Path =
     val root = Files.createTempDirectory("ko-agent-sandbox-build")
 
@@ -759,6 +759,13 @@ object AgentSandboxLauncher:
 
     System.err.println(s"build context: $root")
     root
+
+  /** The sandbox and proxy images a launch runs, and whether an environment override chose
+    * them, which is what turns a version-lock mismatch from a refusal into a warning. */
+  def sandboxImageChoice: (String, Boolean) = imageChoice("KO_AGENT_SANDBOX_IMAGE", "ko-agent-sandbox:latest")
+  def proxyImageChoice: (String, Boolean) = imageChoice("KO_AGENT_SANDBOX_PROXY_IMAGE", "ko-agent-egress-proxy:latest")
+  private def imageChoice(variable: String, default: String): (String, Boolean) =
+    env(variable).fold((default, false))(image => (image, true))
 
   /**
    * The version-lock verdict for one built image: None when its label
@@ -777,13 +784,6 @@ object AgentSandboxLauncher:
    * side is stale — an old image, or a launch through a different jar than
    * the one that ran --build.
    */
-  /** The sandbox and proxy images a launch runs, and whether an environment override chose
-    * them, which is what turns a version-lock mismatch from a refusal into a warning. */
-  def sandboxImageChoice: (String, Boolean) = imageChoice("KO_AGENT_SANDBOX_IMAGE", "ko-agent-sandbox:latest")
-  def proxyImageChoice: (String, Boolean) = imageChoice("KO_AGENT_SANDBOX_PROXY_IMAGE", "ko-agent-egress-proxy:latest")
-  private def imageChoice(variable: String, default: String): (String, Boolean) =
-    env(variable).fold((default, false))(image => (image, true))
-
   def bundleMismatch(
     image: String,
     expected: String,
@@ -2828,7 +2828,8 @@ object AgentSandboxLauncher:
     // The sandbox joins an internal network with no gateway; its peers on it are this run's proxy, whose second
     // interface has the route out, and podman's resolver, which answers only the run's names (SECURITY.md, "DNS").
     // A network boundary, not a configuration hint: removing the proxy env variables below does not restore Internet
-    // access, it just makes the failure harder to diagnose. All per run — see the run-lifetime section.
+    // access, it just makes the failure harder to diagnose. All per run (SandboxLifecycle, "Removing what the run
+    // created").
     val (proxyImage, proxyImageOverridden) = proxyImageChoice
 
     // One suffix ties this run's containers, networks and log file together in podman output and the retained logs.
@@ -2909,7 +2910,7 @@ object AgentSandboxLauncher:
 
     // Validated before anything is created: invalid rules would otherwise appear as "could not determine the
     // egress proxy's address" after the --rm proxy died, the reason buried in its log. Cached like the CA bundle below,
-    // keyed on (image Id, rule files verbatim) — everything the dry run reads — and only success is written.
+    // under the stamp below, and only success is written.
     // Enforcement never reads this cache: the proxy re-resolves the same variables at startup, so corruption can at
     // worst misprint the banner, never widen what is enforced.
     val rulesetCacheDir = rulesetStateRoot(os).resolve(projectId)

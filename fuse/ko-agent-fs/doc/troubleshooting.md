@@ -14,6 +14,10 @@ All filter state is stored in the daemon user's home, per project:
         daemon.log.1                                        the previous daemon's log — the one
                                                             you want after a crash
         source-id                                           the source digest the daemon serves
+        file-rules                                          the launcher's file rules the daemon
+                                                            was started with
+        file-rules.resolved                                 those rules and the guard's additions,
+                                                            written by the daemon
         sessions/<container>                                one marker per live session
         lock                                                serializes a launch's reuse decision
                                                             against a reap's unmount
@@ -38,6 +42,9 @@ The matching `DENY` line in `daemon.log` names the operation, the target and the
 - `reason=protected-git-control` on a file needed by a normally allowed Git command — report the
   command and DENY line. The filter may be missing an operational path from its allowlist
   (`git-metadata.md`, P2).
+- `reason=pinned-git-component` — a Git directory's `objects` and `objects/info` are created only
+  by `mkdir` and never renamed or unlinked (`git-metadata.md`, "The immutable set"). If a normally
+  allowed Git command needs otherwise, report the command and DENY line.
 - `reason=protected-git-entry` on a name that is not `.git` — the conservative name rule
   (`git-metadata.md`, "The name rule") refused a legitimate name. Report the exact bytes.
 - `reason=protected-sandbox-config` — edit `.ko-agent-sandbox` on the host. If the refused name

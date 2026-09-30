@@ -1,7 +1,7 @@
 // What a run creates on the host and who can reach it: the per-run networks across a session's
-// lifetime, the isolation SECURITY.md claims between concurrent sessions — "the networks and the
-// proxy are per sandbox run, created by the launch and removed with it — so concurrent sessions
-// cannot reach one another either" — and `--reset` as the recovery when a run outlives its reaper.
+// lifetime, the isolation SECURITY.md claims between concurrent sessions — "The networks and proxy
+// are per run and removed with it, so concurrent sessions cannot reach one another through those
+// networks" — and `--reset` as the recovery when a run outlives its reaper.
 //
 // Out of reach here: the resident teardown path, which removes the same resources from the launcher
 // process instead of the reaper. Native Windows always takes it, and a POSIX launch falls back to

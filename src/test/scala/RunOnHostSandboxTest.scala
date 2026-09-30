@@ -556,7 +556,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
   // The proxy handshake pieces
   // --------------------------------------------------------------------------
 
-  test("awaitProxyPort reads the bound port from the ready line, stamped or not"):
+  test("awaitProxyPort reads the bound port from the stamped ready line"):
     val log = Files.createTempDirectory("proxy").resolve("proxy.log")
     Files.writeString(log, "2026-08-31T01:08:25Z ko-agent-egress-proxy listening on :51234\n", UTF_8)
     assertEquals(awaitProxyPort(log, deadlineMillis = 1_000), Right(51234))

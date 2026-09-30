@@ -76,10 +76,21 @@ again.
 
 ## IDE integration through VS Code's Agent Host
 
-- [ ] `plan-ide-integration.md`, in its steps: attach VS Code to a `code agent host` in the
-  sandbox, then the hostile-host test that decides where enforcement lives, then one harness,
-  then `--protocol=ahp`. ACP is deferred; the plan keeps its reviewed design and the conditions
-  that reopen it.
+- [ ] `plan-ide-integration.md`, from its phase 1: the measurements step 2's "Not measured"
+  paragraph says the relay's design needs first, and that design; then one harness (step 3);
+  then `--protocol=ahp` (step 4), whose acceptance stages the same paragraph names. ACP is
+  deferred; the plan keeps its reviewed design and the conditions that reopen it.
+
+## Host programs started by bare name
+
+- [ ] `ps`, `pgrep` and `lsof` under `--run-on-host` (`RunOnHostSession.HostProcesses`,
+  `RunOnHostMillDaemons`, `RunOnHostGradleDaemons`) and `uname` in `--self-test`
+  (`SelfTestShare`) are started by bare name, so the JVM finds them through the inherited
+  `PATH`, which `findOnPath` exists to avoid (`design.md`, "No repository-controlled host
+  executable resolution"). The run-on-host registration script runs a bare `ps` too
+  (`RunOnHostSession.RegistrationScript`), through its spawn's `PATH`, which for a command starts
+  with the JDK's `bin`. Resolve them as `podman` is resolved, or start them by absolute path as
+  `/bin/kill` and `/usr/bin/sandbox-exec` are.
 
 ## One list of launch refusals
 
@@ -227,7 +238,7 @@ container's git cannot follow at `/mnt/c/...`, so the read-only bind is skipped 
   the no-git warning, with a note, rather than promise git (`SandboxProject.setsRelativeWorktrees`).
   The route opens when the image's git is 2.48 or later, and that check goes with the upgrade;
   until then only a hand-written relative pointer works, which `git worktree repair` rewrites
-  absolute. "The project mounted at its own path" has the measurement.
+  absolute. "The project mounted at its own path" has the row that measures it.
 - For an absolute pointer, bind a launcher-written pointer file naming the `/mnt/<drive>` spelling
   over `<mountPath>/.git`, hiding the filter's protected pointer from the container alone. Setting
   `GIT_DIR` and `GIT_WORK_TREE` instead would redirect git in every other repository the agent

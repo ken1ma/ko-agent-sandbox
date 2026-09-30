@@ -13,10 +13,10 @@ profile.
 
     cargo test --locked --target "$(uname -m)-unknown-linux-musl"
 
-This runs the policy, inode-table, startup-guard and static Git-corpus suites, plus binary tests
-for argument handling and startup refusal. It needs no mount privileges and runs in CI or inside a
-`ko-agent-sandbox` session, where the musl target is preinstalled; the read-only rustup home
-prevents adding targets during a session.
+This runs the unit tests beside the sources, the static Git-corpus and file-rule conformance
+suites, and the binary tests for argument handling and startup refusal. It needs no mount
+privileges and runs in CI or inside a `ko-agent-sandbox` session, where the musl target is
+preinstalled; the read-only rustup home prevents adding targets during a session.
 
 
 ## Both suites, anywhere podman runs — `--self-test`

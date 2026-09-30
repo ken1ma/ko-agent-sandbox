@@ -8,7 +8,7 @@ acceptance_require_idle() (
         [ -f "$acceptance_session/lock" ] || continue
         acceptance_pids=$(lsof -t "$acceptance_session/lock" 2>/dev/null | paste -sd ' ' -)
         [ -n "$acceptance_pids" ] || continue
-        for acceptance_claim in "$acceptance_session/project" "$acceptance_session"/records/build-*; do
+        for acceptance_claim in "$acceptance_session/project" "$acceptance_session"/build-*; do
             case "$acceptance_claim" in *.pending) continue ;; esac
             [ -f "$acceptance_claim" ] || continue
             acceptance_directory=$(cat "$acceptance_claim") || return 1
