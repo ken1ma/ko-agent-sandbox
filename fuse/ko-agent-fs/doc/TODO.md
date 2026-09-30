@@ -57,8 +57,8 @@ The decisive question is not "what do our name-matching rules cover" but the pro
 This cannot be reasoned to a conclusion: the fold tables are per-volume on NTFS and tied to a
 Unicode version on APFS (`git-metadata.md`, "The name rule"). Reasoning bounds the candidate list;
 only the filesystem settles it. `probe/apfs-name-rule-probe.py` creates each candidate *through the
-mount* inside a filtered session and runs the host-side checks (its header has the procedure and the
-cleanup). The corpus:
+mount* inside a filtered session; its header has the host-side checks, run by hand or by
+`probe/name-rule-cs-apfs.sh`, and the cleanup. The corpus:
 
 - `.git` itself (the base case must be refused).
 - Case variants: `.GIT`, `.Git`, `.gIt`, `.giT`.
@@ -83,10 +83,12 @@ it succeeds *and* host `lstat` of `.git` and of `.ko-agent-sandbox` still finds 
 on any row means the fold rule needs widening in `policy::folds_to` — fix the code, not the test.
 Fold tables are version-specific, which is why the recorded versions matter here.
 
-The `.git` rows pass on APFS (both variants, macOS 26.4.1) and NTFS (Windows Server 24H2; the
-8.3 rows on Windows Server 2025) — `verification-log.md` has the runs;
+The `.git` rows the recorded runs hold pass on APFS (both variants, macOS 26.4.1) and NTFS
+(Windows Server 24H2; the 8.3 rows on Windows Server 2025) — `verification-log.md` has the runs;
 `probe/name-rule-cs-apfs.sh` drives the case-sensitive APFS one end to end. What is left:
 
+- [ ] The `.git` rows for U+200E, U+202E and U+206F, on every backing: the recorded runs hold
+  four of the seven ignorable forms.
 - [ ] The `.ko-agent-sandbox` rows on case-sensitive APFS; case-insensitive APFS and NTFS pass
   (`verification-log.md`, which also has the measurement that added the U+212A and U+017F folds).
 - [ ] ext4, the control.
@@ -173,8 +175,8 @@ give — a session cannot see a hardlink relationship at all, because the filter
 What is left:
 
 - [ ] ext4 and NTFS, the same five rows. NTFS is where symlink creation is privileged and where a
-  session-held descriptor already refuses host writes (the coherency row above); rename and unlink
-  of a held path are the unmeasured half.
+  session-held descriptor already refuses some host writers (the coherency row above); rename and
+  unlink of a held path are the unmeasured half.
 
 ### The platform matrix itself
 

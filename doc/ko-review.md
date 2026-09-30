@@ -11,8 +11,8 @@ start an independent audit of an approved tree.
 - The author and reviewer may use the same product. A Claude session reviewing another Claude
   session's changes has its own thread and none of the author's context; the same applies to Codex.
 - A review starts only at the user's request, as `/ko-review`, `$ko-review` in Codex, or in words
-  ("ko-review the changes since the last review with Claude"); the sandbox's AGENTS.md has the
-  author offer it after a non-trivial change.
+  ("ko-review the changes since the last review with Claude"); the sandbox's `AGENTS-SANDBOX.md`
+  has the author offer it after a non-trivial change.
   - The skill has the plugin's name, `ko-review`. Claude Code lists a plugin skill as
     `/ko-review:ko-review` and also runs it by its bare name, `/ko-review`, which no other command
     has; named `review`, its bare name would be `/review`, a built-in alias of `/code-review`.
@@ -92,20 +92,23 @@ are its session's, set with `/model` or the launch options; the skill runs in th
 ## Commands
 
 Every command but `export`, which prints Markdown, and `diff`, which prints git's output, prints
-one JSON object and exits 1 when it contains an `error` field. Each summary, and each failure once a
-review exists, carries the review id, `reviewer`, `snapshots` and `inspect`.
+one JSON object and exits 1 when it contains an `error` field. Each summary, and each failure after
+the command has loaded the review's state as a JSON object, carries the review id, `snapshots` and
+`inspect`; a summary also carries `reviewer`.
 
 - `list`: one short entry per review of this checkout, oldest first, for the id the other
   commands take. A review whose state this helper cannot read is listed with the error's code as
   its `effectiveStatus`, so that `delete` can be given its id.
-- `show REVIEW_ID`, `digest`: read state. For a round in progress, `show` adds
+- `digest`: the working-tree digest.
+- `show REVIEW_ID`: the review's state. For a round in progress, `show` adds
   `activity`: the event log's path, known as soon as the round starts, the time elapsed, and the
   type and time of the last event received, which says when the reviewer last wrote, not that it
   is still working.
 - `export REVIEW_ID [--round N]`: the transcript as Markdown, one section per round, or that
   round's alone.
 - `diff REVIEW_ID [--round N] [-- git options]`: the working tree, untracked files included,
-  against a round's snapshot; the approved round unless one is named.
+  against a round's snapshot; the approved round unless one is named, the last round when none is
+  approved.
 - `delete REVIEW_ID`: the review's state and its refs, on the user's request only, whatever
   `schemaVersion` its state has. The tag and tree objects nothing else points to become eligible
   for a later garbage collection, which by default keeps recent unreachable objects for two weeks.
@@ -126,7 +129,8 @@ edits like any other, and the user commits them when and as they choose.
     Claude Code's `system` `init` event's `session_id`, resumed with `claude -p --resume <that id>`.
     The author never chooses a thread, and nothing uses `--last` or `--continue`.
 - **Approval binds to the exact tree.** Any change after approval makes `verify` fail with
-  `STALE_APPROVAL`, and `staleReasons` says what changed; `continue` obtains a new approval.
+  `NOT_APPROVED`, its `effectiveStatus` `STALE_APPROVAL`, and `staleReasons` says what changed;
+  `continue` obtains a new approval.
   - The digest covers HEAD, the index and every file's raw content ("The digest", below).
   - Staging or committing the approved changes keeps the approval, a staged deletion or rename
     included: the digest moves, but the content digest recorded with the approval still matches
@@ -177,7 +181,7 @@ edits like any other, and the user commits them when and as they choose.
     limit do not use up the review.
   - Whatever ends the turn, the helper kills the reviewer's process group and waits for it before
     it returns, so no reviewer turn runs on past the lock that serialized it.
-  - Every reviewer error carries `reviewer`, the name the message uses:
+  - Every reviewer error's `error` carries `reviewer`, the name the message uses:
     - `REVIEWER_AUTH_FAILED`: `codex login status` or `claude auth status` reports no sign-in,
       whichever credential store the CLI uses; sign in to that CLI in this project's sandbox.
     - `REVIEWER_EGRESS_DENIED`: the ruleset in `KO_AGENT_SANDBOX_EGRESS_RULESET` allows none of
@@ -190,10 +194,10 @@ edits like any other, and the user commits them when and as they choose.
       message says to start a new review.
     - `INVALID_RESULT`: the reviewer's final message does not follow the schema exactly; the
       helper validates it before touching state, the CLI's schema option only asks.
-    - Also `TURN_INTERRUPTED` and `REVIEW_BUSY`. The helper never edits the egress rules or a
-      reviewer's configuration.
-- **One mutation per review at a time.** `start`, `continue` and `escalate` take `flock` on the
-  review's lock file before reading the state they act on; a second one fails at once with
+    - `TURN_INTERRUPTED`, when a timeout or a signal ended the reviewer.
+  - The helper never edits the egress rules or a reviewer's configuration.
+- **One mutation per review at a time.** `start`, `continue`, `escalate` and `delete` take `flock`
+  on the review's lock file before reading the state they act on; a second one fails at once with
   `REVIEW_BUSY` instead of waiting behind a reviewer turn. `state.json` is replaced atomically, so
   `show` and `list` read it without a lock.
 
@@ -230,8 +234,8 @@ transcript and tree, which `delete` removes with the directory above.
 ### The digest
 
 - The working-tree digest is SHA-256 over the HEAD id, every record of
-  `git status --porcelain=v2 -z --untracked-files=all --no-renames` sorted by path, which carries
-  the index's and HEAD's object ids and modes, and a content digest.
+  `git status --porcelain=v2 -z --untracked-files=all --no-renames --ignore-submodules=none` sorted
+  by path, which carries the index's and HEAD's object ids and modes, and a content digest.
 - The content digest covers every file Git would review, from
   `git ls-files --cached --others --exclude-standard`, by its raw content with its executable bit
   or its symlink target; an absent path contributes nothing. Raw content, because `git status`
@@ -407,5 +411,3 @@ fake script installed as both `codex` and `claude` on `PATH`, each imitating its
   image: `$ko-review` asked for the reviewer, model and effort in replies, then ran a Claude
   Fable review at high effort to approval. `verify` confirmed that approval covered the working
   tree.
-- A `codex exec` reviewer started from a Codex author's shell, which passes it the author's
-  `CODEX_THREAD_ID`, is unmeasured.

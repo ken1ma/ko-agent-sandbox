@@ -25,7 +25,8 @@ object IPAddrHelper:
         throw BadRequest(s"invalid hostname: ${ex.getMessage}")
 
   /**
-   * Expects a normalized host. Dotted-quad is not the only spelling a
+   * Expects a normalized host, or the unbracketed host text the upstream-endpoint parser
+   * (TransportHelper) split off at the only colon. Dotted-quad is not the only spelling a
    * resolver accepts: InetAddress reads `2130706433` and `127.1` as
    * 127.0.0.1, and glibc's getaddrinfo also reads `0x7f.1` as that
    * address, which InetAddress on JDK 25 does not resolve. What they
@@ -35,12 +36,13 @@ object IPAddrHelper:
    * a resolver's numeric forms to keep in step with. ASCII digits only:
    * Char.isDigit would accept non-ASCII digits.
    *
-   * The colon test below is unreachable through every caller here:
-   * normalizeHost runs IDN.toASCII with USE_STD3_ASCII_RULES, which
-   * refuses a `:` outright, so an IPv6 literal is already a BadRequest
-   * ("invalid hostname", a 400) before it can become the Refusal the
-   * message below describes. Keeping the test costs nothing and holds if this
-   * is ever called on a host normalizeHost did not vet.
+   * The colon test below is unreachable through every caller here: the
+   * upstream-endpoint parser passes no colon, and normalizeHost runs
+   * IDN.toASCII with USE_STD3_ASCII_RULES, which refuses a `:` outright, so
+   * an IPv6 literal is already a BadRequest ("invalid hostname", a 400)
+   * before authorizeRequest can refuse it as an IP-literal target. Keeping
+   * the test costs nothing and holds if this is ever called on a host
+   * neither vetted.
    */
   def isIpLiteral(host: String): Boolean =
     if host.contains(':') then true

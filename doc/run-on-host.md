@@ -48,6 +48,9 @@ the code that enforces each part:
 | provisioning offered at the start prompt | `RunOnHostProvisioning.scala` |
 | the wrapper and the broker's runtimes: proxy, sbt server, environment | `RunOnHostSandbox.scala` |
 | the broker's mill daemon: its start, its port, a daemon of yours | `RunOnHostMillDaemons.scala` |
+| the launch's Gradle daemons and their records | `RunOnHostGradleDaemons.scala` |
+| what a broker publishes for another launch to attach to | `RunOnHostRuntimeDescriptor.scala` |
+| sbt's local-socket shutdown | `RunOnHostSbtServerShutdown.scala` |
 | a proxy's CA and leaf, and what a command trusts | `RunOnHostInspection.scala` |
 | the generated profile | `SeatbeltProfile.scala` |
 | the exit criteria, measured | `src/probe/run-on-host-acceptance-test.sh` |
@@ -195,8 +198,10 @@ The filesystem rules define what a host command can access:
   Seatbelt profile nor the workspace filter refuses those names. Running host `git` inside a
   directory the agent created is running the agent's output, the same gap `SECURITY.md` records
   for the workspace filter.
-- **Each command gets a fresh temporary directory.** A killed command can leave one behind;
-  the next command reclaims it rather than reusing it (`RunOnHostSession.scala`).
+- **Each command gets a fresh directory, which holds its temporary directory under sbt and
+  Maven.** A killed command can leave one behind; the next command reclaims it rather than
+  reusing it (`RunOnHostSession.scala`). A mill or gradle command's `TMPDIR` is the broker's
+  `tmp/` ("The command's lifetime and environment").
 
 ## Network
 
@@ -282,9 +287,9 @@ Missing prerequisites and denied accesses fail clearly, nothing expands authorit
 falls back: a host command that cannot run is reported to the user, never re-run in the
 container — the same rule the egress refusal follows.
 
-- Every prerequisite refusal before the command starts is a `RunOnHostPrereqs.Refusal` value, one
-  case per category, so the wrapper, the channel and the launch word the same refusal for their
-  own readers without the tests matching on any wording.
+- A prerequisite refusal before the command starts is a `RunOnHostPrereqs.Refusal` value, one
+  case per category, or a sentence from the step that met it (`StepRefusal`); the wrapper, the
+  channel and the launch each word a `Refusal` for their own readers.
 - A runtime the broker cannot prepare — a proxy, server or daemon that fails to start, the
   launcher's executable gone — is refused with its reason as text from the code that met it
   (`BrokerRuntimes.prepare`).
@@ -1243,8 +1248,7 @@ rest, measured:
   start with `os.version malformed: -1.0`. It does *not* need `file-map-executable`, which Apple's
   profiles use for system frameworks; a JDK outside those paths loads without it.
 - Adopted from `system.sb` rather than re-derived: `file-test-existence`, a narrower operation than
-  `file-read*` for the ancestor chain; and `(import "dyld-support.sb")`, Apple's own statement of
-  what a process needs from the loader.
+  `file-read*` for the ancestor chain.
 
 Prior art: Bazel sandboxes build actions on macOS with `sandbox-exec` — this feature's problem
 exactly — and its generated profile is worth reading and worth *not* copying.

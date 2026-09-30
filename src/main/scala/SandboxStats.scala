@@ -261,9 +261,9 @@ object SandboxStats:
    * One project's disk use: the launcher's state and build-cache roots, and its agents' volume —
    * None when podman was not there to size it. `directory` is the recorded one where it still
    * exists; None for a project last launched before the record existed, or whose directory is gone.
+   * `lastWrite` is the newest modification under the project's state and cache trees — the
+   * volume is in podman's store, out of the walk — and None where neither tree exists.
    */
-  /** `lastWrite` is the newest modification under the project's state and cache trees — the
-    * volume is in podman's store, out of the walk — and None where neither tree exists. */
   final case class ProjectUsage(
     id: String,
     directory: Option[String],

@@ -138,7 +138,7 @@ RUN printf 'min-release-age=7\n' > /opt/node/lib/node_modules/npm/npmrc
 #
 # gcc + libc6-dev are here as Rust's linker driver, not as a C toolchain:
 # rustc's own LLVM emits the objects and only shells out to cc to drive ld
-# against glibc's crt*.o. Kept out of AGENTS-SANDBOX.md's program table for that
+# against glibc's crt*.o. Kept out of AGENTS-SANDBOX.md's program list for that
 # reason — nothing here invites C development, though gcc compiles C if asked.
 #
 # Needed even though ko-agent-fs both ships and tests as static musl: proc-macro
@@ -222,6 +222,7 @@ RUN set -euxo pipefail; \
     install -d -o nonroot -g nonroot \
         /home/nonroot/.config \
         /home/nonroot/.local \
+        /home/nonroot/.local/bin \
         /home/nonroot/.local/share \
         /home/nonroot/.local/state; \
     ln -s persistent-volume/claude /home/nonroot/.claude; \

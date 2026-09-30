@@ -3,8 +3,8 @@
 //! open a path the sandbox chose.
 //!
 //! Each refusal is asserted to be `EPERM` specifically — a policy denial, not merely "an error".
-//! The exception is the pair of stale-handle tests at the end, whose refusal comes from the
-//! resolver rather than the policy and is `ELOOP` for the reason `stale` gives.
+//! The exception is the stale-handle tests, whose refusal comes from the resolver rather than the
+//! policy: `ELOOP` for the reason `stale` gives, `ESTALE` for the one `replaced` gives.
 
 mod common;
 
@@ -767,9 +767,10 @@ fn a_handle_held_across_a_rename_cannot_be_re_aimed_at_a_gitdir() {
     let held = File::open(mount.at("src/hooks")).expect("open the source directory");
 
     // Both steps stay allowed, and must: renaming a directory and creating a symlink are what a
-    // build does all day, and a symlink's target is not the filter's to police *for policy* — the
-    // kernel resolves a symlink itself and the resolved path is classified on its own names. The
-    // one refusal a target does earn is unrelated to policy and is asserted separately below
+    // build does all day, and without file rules a symlink's target is not the filter's to police *for
+    // policy* — the kernel resolves a symlink itself and the resolved path is classified on its own
+    // names. The one refusal a target does earn then is unrelated to policy and is asserted
+    // separately below
     // (`a_symlink_target_with_nonportable_syntax_is_refused_and_an_ordinary_one_is_not`).
     allowed(
         "rename an ordinary directory",
@@ -1019,8 +1020,8 @@ fn relocated_hooks(backing: &Path) {
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn a_symlinked_hooks_entry_cannot_be_re_aimed() {
     // What does hold: the symlink *node* is protected, so the sandbox cannot point hook
-    // resolution at a directory of its choosing. (Where the host already points it is the separate,
-    // documented gap below.)
+    // resolution at a directory of its choosing. (Where the host already points it is served
+    // read-only, below.)
     let mount = TestMount::new(relocated_hooks);
 
     denied(

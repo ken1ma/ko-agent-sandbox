@@ -481,7 +481,6 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(self.calls()[-1]["argv"][:3], ["exec", "resume", "thread-1"])
 
     def test_termination_while_the_snapshot_is_taken_stops_before_codex(self):
-        import shutil
         import signal
         real_git = shutil.which("git")
         wrapper = self.bin / "git"
@@ -918,7 +917,6 @@ class HelperTest(unittest.TestCase):
         changed("nested repository")
         (nested / "inner.txt").write_text("two\n")
         changed("nested repository content")
-        import shutil
         shutil.rmtree(nested)
         self.assertEqual(self.digest(), clean)
         self.write("app.py", "print('committed')\n")
@@ -1063,7 +1061,6 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(tag, self.git_out("rev-parse", ref).strip())
 
     def test_a_transcript_write_failure_is_reported_and_leaves_the_tree_on_the_ref(self):
-        import shutil
         real_git = shutil.which("git")
         wrapper = self.bin / "git"
         wrapper.write_text("\n".join([
@@ -1159,7 +1156,6 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(self.helper("start", "codex", "--message-file", self.message())["round"], 1)
         (self.repo / "untracked.txt").unlink()
         wrapper = self.bin / "git"
-        import shutil
         real_git = shutil.which("git")
         wrapper.write_text("\n".join([
             "#!/usr/bin/env python3",
@@ -1297,6 +1293,20 @@ class HelperTest(unittest.TestCase):
         state_path.write_text(json.dumps(state))
         for command in (("continue", review_id, "--message-file", self.message()), ("show", review_id)):
             self.assertEqual(self.helper(*command, expect=1)["error"]["code"], "REVIEWER_UNSUPPORTED")
+        unreadable = (
+            ("REVIEWER_UNSUPPORTED", json.dumps(state), 0o600), ("STATE_IO_FAILED", "not JSON", 0o600),
+            ("STATE_IO_FAILED", "{}", 0o600), ("STATE_IO_FAILED", json.dumps(state), 0),
+        )
+        for code, text, mode in unreadable:  # `delete` takes every id `list` prints
+            doomed = self.start()["reviewId"]
+            doomed_state = Path(self.helper("show", doomed)["statePath"])
+            doomed_state.write_text(text)
+            doomed_state.chmod(mode)
+            self.assertEqual(self.helper("show", doomed, expect=1)["error"]["code"], code)
+            listed = {row["reviewId"]: row for row in self.helper("list")["reviews"]}
+            self.assertEqual(listed[doomed]["effectiveStatus"], code)
+            self.assertEqual(self.helper("delete", doomed)["reviewId"], doomed)
+            self.assertFalse(doomed_state.exists())
         state["reviewer"] = "codex"
         state["schemaVersion"] = 1
         state_path.write_text(json.dumps(state))

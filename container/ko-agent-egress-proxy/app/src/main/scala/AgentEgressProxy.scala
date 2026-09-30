@@ -81,8 +81,7 @@ object AgentEgressProxy:
    * The dry run behind --egress-effective and every launch: no port, no log, a
    * pure computation the launcher runs --network=none to read back what would
    * be enforced. The ruleset lines are also where the launcher reads the leaf
-   * certificate's names from. Warnings — a deny matching nothing, a redundant
-   * grant, a selected provider the profile does not fully allow — go to
+   * certificate's names from. Warnings (RulesetHelper, `resolveRuleset`) go to
    * stderr, so the data lines pipe cleanly.
    *
    * The dry run receives no inspection material, so these counts describe the configured
@@ -132,9 +131,7 @@ object AgentEgressProxy:
     val decisions =
       try
         val authorized = authorizeRequest(ConnectRequest(host, 443), resolved)
-        resolved.hosts.get(authorized) match
-          case Some(treatment) => ruleLines(authorized, treatment)
-          case None            => Vector("read (the public-HTTPS default)")
+        ruleLines(authorized, resolved.hosts(authorized))
       catch case ex: Refusal => Vector(s"refused: ${ex.getMessage}")
     decisions.foreach(decision => println(s"ruleset: $host $decision"))
 
@@ -491,8 +488,8 @@ object AgentEgressProxy:
 
       validateTlsIdentity(connectHost, hello)
 
-      // A tunnel host is opaque; every other allowed host is inspected, with its lines' scopes or
-      // the public default's (Ruleset.scopesOf) — unless this run has no material at all.
+      // A tunnel host is opaque; every other allowed host is inspected, with its lines' scopes
+      // (Ruleset.scopesOf) — unless this run has no material at all.
       run.inspection.filter(_ => !run.resolved.tunnelHosts.contains(connectHost)) match
         case Some(inspection) =>
           runInspectedConnection(

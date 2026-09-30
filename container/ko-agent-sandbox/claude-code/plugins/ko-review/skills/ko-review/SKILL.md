@@ -135,8 +135,8 @@ What the `inspect` lines use:
 
 ## Errors
 
-An `error` is an operational failure, never a review outcome. Its `reviewer` field identifies the
-reviewer that failed.
+An `error` is an operational failure, never a review outcome. When the reviewer failed, its
+`reviewer` field identifies it.
 
 - `NOT_A_GIT_REPOSITORY`, `REVIEWER_AUTH_FAILED`, `REVIEWER_EGRESS_DENIED`: they say what the
   user must do. Stop, and put the message in your reply verbatim.

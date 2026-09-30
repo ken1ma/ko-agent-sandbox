@@ -24,8 +24,8 @@ object SeatbeltProfile:
 
   /**
    * `.git` and `.ko-agent-sandbox` at any depth under the project. A pattern by intent, and the
-   * only regex in the profile: everything else is a wrapper-supplied path, which a regex would
-   * mangle — the Coursier JDK home alone contains a percent-encoded `+`, a literal `+` and dots.
+   * only regex besides the file rules' (fileRuleFilters): everything else is a wrapper-supplied path,
+   * which a regex would mangle — the Coursier JDK home alone contains a percent-encoded `+`, a literal `+` and dots.
    * The project itself is kept out of the pattern the same way: `(require-all (subpath …) (regex …))`
    * conjoins a literal filter with the name pattern.
    *

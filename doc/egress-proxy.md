@@ -31,7 +31,8 @@ The proxy's default rules, listed in the proxy image's `defaults/host` and
 
 - for every supported model provider — `anthropic`, `openai`, `google`, `aws` and `github` —
   tunnels to model, authentication and control-plane endpoints; GitHub's rules also permit two
-  inspected login `POST`s and one token read;
+  inspected login `POST`s and one token read, and Google's two inspected reads of the signed-in
+  account;
 - inspected documentation, package-registry and forge hosts, with `read` on every line and
   `git-fetch` on the three forges.
 
@@ -184,14 +185,17 @@ Two lines disagreeing about a grant are the ordinary case, not a refusal: the la
 `deny`, `allow`, `deny` removes the exception the `allow` made; `allow`, `deny`, `allow` restores
 the grant the `deny` removed.
 
-Three conditions are warned at every launch instead, under every profile, so a misspelling cannot
-fail silently:
+Three conditions in the file are warned at every launch instead, under every profile, so a
+misspelling cannot fail silently:
 
 - a `deny` matching nothing at its position;
 - a redundant grant — a line granting nothing its enclosing scope lacks,
   `allow https://github.com/my-org/ git-fetch` under the defaults' root line, which usually means
   a host-wide `deny` before it was intended, though the boundary it opens remains;
 - a line every grant of which a later line takes back.
+
+A fourth warning names the hosts of the selected model provider that the resolved ruleset does
+not allow.
 
 A line restating a defaults line at its path is silent: that is how a file stays valid as the
 image adopts its hosts.
@@ -309,7 +313,7 @@ origin connection of the session's proxy through that upstream proxy.
 
 What changes is only how an allowed address is reached:
 
-- the ruleset decides every destination as before, the name is resolved once and every answer
+- the ruleset decides every destination, the name is resolved once and every answer
   must be public;
 - the upstream proxy is asked for a tunnel to that numeric address — never for the hostname,
   which it would resolve itself, outside the check;

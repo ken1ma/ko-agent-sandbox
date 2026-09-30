@@ -71,9 +71,9 @@ costs are described below.
 
 - The egress rules limit reachable targets and operations; they do not establish that an allowed
   request is harmless.
-- Whatever the profile — the widest allows any public hostname on port 443 — the proxy refuses
-  other ports and private addresses, cloud metadata services such as 169.254.169.254 included. The
-  proxy validates every resolved address at connection time.
+- Whatever the profile, the proxy refuses other ports and private addresses, cloud metadata
+  services such as 169.254.169.254 included. The proxy validates every resolved address at
+  connection time.
 
 **A session reaching another project, or persisting outside declared state.**
 
@@ -117,9 +117,9 @@ user's next host `git` invocation:
   filesystem treats as that name.
 - It prevents changes to the protected Git entries of every repository rooted at a `.git` entry —
   `config`, `hooks/`, files that redirect Git to another directory, rebase instructions, the
-  bisect state a host git through 2.33 evaluates as shell code, and `objects/info/alternates`,
-  whose paths host git opens — while operational state stays writable, so the agent's own git
-  keeps working.
+  bisect state a host git through 2.33 evaluates as shell code, `rr-cache`, whose existence
+  enables rerere in host merges, and `objects/info/alternates`, whose paths host git opens —
+  while operational state stays writable, so the agent's own git keeps working.
 - It serves the tree live: a repository created on the host mid-session appears at once, with the
   same Git entries protected against modification.
 - It treats a second name of a host-created `.git` or `.ko-agent-sandbox` as that entry: an NTFS
@@ -137,6 +137,10 @@ while a session mutates it:
   would have been.
 - A guarded entry moved to an ordinary name is an ordinary entry there: its Git configuration and
   hooks, or its egress rules, are writable under the new name.
+- On Windows, the test that a `create` never reopens a guarded entry arriving under a second
+  name failed in two of three runs ("a create opened the host's pointer file"); the cause is
+  unverified (`fuse/ko-agent-fs/doc/TODO.md`, "A second name arriving during a name-based
+  mutation").
 - This exception affects the claims above, including protection of repositories created
   mid-session and `.ko-agent-sandbox` (`fuse/ko-agent-fs/doc/security-research.md`, "Windows 8.3
   short names"; `fuse/ko-agent-fs/doc/TODO.md` keeps it open).
@@ -539,7 +543,8 @@ What is measured, each through the whole production stack
 (`fuse/ko-agent-fs/doc/verification-log.md` has the runs):
 
 - the name rule, on macOS against both APFS variants and on Windows against a real NTFS volume;
-- coherency, on macOS and — with the share-lock cost "The project directory" notes — on Windows.
+- coherency, on macOS for `read()` and an established `mmap`, and on Windows for `read()`, with
+  the share-lock cost "The project directory" notes; the `mmap` row has not run on Windows.
 
 The rest is what the README's status line means: on Linux the guarantees are reasoned rather than
 measured, while the filter is the enforcement of every `--write=live` session, on every platform.
@@ -743,8 +748,8 @@ timestamp, including startup lines; the examples below omit it.
 - **`<target>`** appears exactly when a parsed inspected request exists, query string included.
   - The URL is the message an allowed `GET` can carry ("Exfiltration through allowed network
     traffic", above), so the log records it whole, which is also why the log files are owner-only.
-  - Whole, but not arbitrary: a C0 control character or DEL in a request target, a field value or
-    a `CONNECT` authority is refused at the parser.
+  - Whole, but not arbitrary: a C0 control character or DEL in a request target, a field value
+    (HTAB excepted) or a `CONNECT` authority is refused at the parser.
 - Every field, `<why>` included, spells a C0 or C1 control character, DEL, U+2028, U+2029, a
   format character (the bidi controls, zero-width characters, U+00AD), an unpaired surrogate, `"`
   and `\` as a Java/Scala string literal would (`\t`, `\u001b`, `\u202e`, `\"`, `\\`).
@@ -982,7 +987,7 @@ Programs not covered by the launcher's prepared trust stores need separate handl
 - Maven, which a project's `./mvnw` brings, trusts what its JDK trusts but by default takes the
   proxy from its settings, neither `HTTPS_PROXY` nor the JDK's `net.properties`; the image ships a
   `~/.m2/settings.xml` naming it (`container/ko-agent-sandbox/m2/settings.xml`). On the host the
-  broker passes the resolver's `aether.connector.http.useSystemProperties` instead
+  wrapper passes the resolver's `aether.connector.http.useSystemProperties` instead
   (`doc/run-on-host.md`, "Maven").
 - A GraalVM native image — the `cs` and `scala` launchers — has no `conf/` and reads no variable,
   so the proxy and CA settings travel as `-D` options in `KO_AGENT_SANDBOX_JAVA_OPTS`, which the
@@ -1089,9 +1094,9 @@ reading as though it were dropped. The warnings:
 
 - A `deny` matching nothing at its position produces a warning under every profile, so a
   misspelled deny does not fail silently.
-- The other two warnings (`doc/egress-proxy.md`, "The rule file") concern lines that grant nothing;
-  a warning rather than a refusal because the check reads the defaults, and a file that launches
-  today must not fail under a later image whose defaults include it.
+- The redundant-grant and taken-back warnings (`doc/egress-proxy.md`, "The rule file") concern
+  lines that grant nothing; a warning rather than a refusal because the check reads the defaults,
+  and a file that launches today must not fail under a later image whose defaults include it.
 
 Every other ambiguity — `doc/egress-proxy.md` lists them — is a failed launch, never ignored
 config.
@@ -1241,7 +1246,7 @@ provides the confinement for these commands; they execute outside the container.
 
   A command's access is:
   - the project, read-write, except `.git` and `.ko-agent-sandbox`: denied at any depth after path
-    resolution, link creation included, with the `.GIT` gap `doc/run-on-host.md` records;
+    resolution, link creation included, with the unmeasured spellings `doc/run-on-host.md` records;
     writes and links are denied as well to what the launch's file rules make read-only and to
     the paths the filter's guard added;
   - its own per-project run-on-host caches;
@@ -1436,7 +1441,7 @@ provides the confinement for these commands; they execute outside the container.
   - `--reset` discards them all with the project's other state; `--reset-run-on-host` discards
     those caches alone.
   - The separation is by root, one directory holding them (`doc/run-on-host.md`, "The run-on-host
-    cache"), because Seatbelt has no mount namespace to overlay with (`plan-coursier.md` reaches
+    cache"), because Seatbelt has no mount namespace to overlay with (`doc/plan-coursier.md` reaches
     the same property for the container by a podman `:O` upper).
 - **The command's output names host paths**, as every session's does: the project is mounted at
   its own path ("The project directory", above).

@@ -879,7 +879,7 @@ object RunOnHostSandbox:
     * reads and whose name the proxy's trust directory has (RunOnHostInspection), and for mill the
     * one port of its daemon, the port a client's profile admits.
     * Created with the program's rule file as read then, in the session whose records
-    * name its groups — the broker's for its launch's sbt and mill commands, or another launch's
+    * name its groups — the broker's for its launch's sbt, mill and gradle commands, or another launch's
     * broker's when this launch attaches to its runtime (BrokerRuntimes), the command's own for
     * Maven and for the acceptance test's entry — and ended with that session. */
   case class Runtime(session: Path, proxyPort: Int, proxyLog: Path, daemonPort: Option[Int] = None):
@@ -936,7 +936,7 @@ object RunOnHostSandbox:
       .flatMap(_ => awaitProxyPort(proxyLog, deadlineMillis = 30_000))
 
   /** What one sbt server is started from: the runtime whose proxy it uses, the request whose
-    * `-D` and `-J` arguments it takes, and the record its group is registered at. */
+    * launcher flags it takes (serverCommand), and the record its group is registered at. */
   case class ServerStart(
     assembled: Assembled, buildDirectory: Path, hash: String, arguments: Seq[String], record: Path, runtime: Runtime,
   )
@@ -1059,7 +1059,7 @@ object RunOnHostSandbox:
         case Some(current) if lives(proxyRecord(program, hash)) && program == Program.Sbt =>
           // The client attaches to this build directory's own server: reuse only when the
           // portfile names the exact socket sbt derives for it under this session's tmp/,
-          // and the record's group still lives. namesOwnDerivedSocket checks the spelling
+          // and the record's group still lives. namesDerivedSocket checks the spelling
           // and that neither the socket nor its directory is a symlink, so a portfile
           // copied from — or a socket directory redirected to — another warm build
           // directory does not send this client to that server. Otherwise the server is
@@ -1464,9 +1464,8 @@ object RunOnHostSandbox:
       * them with the proxy log, since a successor of the same name would read this proxy's ready
       * line as its own, and the build file last, once no record of the hash remains: another
       * program's runtime for the same directory still publishes under it. Answers what became
-      * of the groups. */
-    /** The runtime's records discarded, server or daemon first, then the proxy; Left, with the
-      * proxy's group still ended, when a group outlives its KILL (`discard`). */
+      * of the groups: Left when `discard` keeps a record for the next start to retry. The proxy's
+      * record is discarded, or that tried, even when the server's or daemon's is kept. */
     private def discardRuntime(program: Program, hash: String, proxyLog: Path): Either[String, String] =
       val attached = program match
         case Program.Sbt  => Some(discard(program, hash, serverRecord(hash)).map(what => s"server $what"))
@@ -1488,9 +1487,10 @@ object RunOnHostSandbox:
         .toLeft(outcomes.collect { case Right(what) => what }.mkString(", "))
 
     /** End the group one record of the runtime `program` and `hash` names, under its
-      * retirement lock, and delete the record and its exit file — unless the group outlives its
-      * KILL, or the lock is not free within the bound: then the record stays, and Left says so,
-      * for the caller to start nothing whose spawn would rename its record over the kept one.
+      * retirement lock, and delete the record and its exit file — unless the outcome keeps the
+      * record (`Collected.keeps`), as when a member is still listed or the lock is not free within
+      * the bound: then Left says so, for the caller to start nothing whose spawn would rename its
+      * record over the kept one.
       * The runtime's descriptor goes first, before any of its groups is ended, so another launch
       * attaches to nothing ending; the start that follows republishes it. */
     private def discard(program: Program, hash: String, record: Path): Either[String, String] =
@@ -2002,7 +2002,7 @@ object RunOnHostSandbox:
     millVersion: Option[String],
     sessionTmp: Path,
     // Where sbt's server binds its sockets and its clients find them: the runtime's `tmp/` for
-    // sbt, the command's own for the other programs.
+    // sbt, mill and gradle, the command's own for Maven.
     socketDir: Path,
     proxyPort: Int,
     // The runtime's proxy's CA certificate, in both formats (RunOnHostInspection).
@@ -2089,7 +2089,7 @@ object RunOnHostSandbox:
     )
 
   /**
-   * The cost of switching where a build runs, paid before each sbt server starts or is reused
+   * The cost of switching where a build runs, paid before each sbt server starts
    * (BrokerRuntimes.sweepTargetLinks). sbt 2 leaves `target/` outputs as
    * symlinks into its global base's content-addressed store, so a tree the user's own sbt built
    * links into a store this profile cannot reach — and zinc treats the unreadable state as an

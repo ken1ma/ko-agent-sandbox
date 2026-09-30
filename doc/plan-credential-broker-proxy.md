@@ -16,8 +16,8 @@ reached through the model provider") is a provider instance of
 
 The credential gaps SECURITY.md concedes are the target.
 
-- A forwarded `--env` value "is in its environment — tolerated rather than provided for, and
-  reaching whatever this project's egress rules allow". A `GET` carries its URL, and a URL is
+- A forwarded `--env` value is available in the sandbox's environment, and the egress rules limit
+  only where it can be sent (SECURITY.md, "Credential theft"). A `GET` carries its URL, and a URL is
   a message, so a forwarded token leaves through any inspected host, or inside the opaque model
   tunnel as part of a prompt. Brokered, the sandbox holds nothing worth carrying.
 - Copilot's OAuth token, `repo` scope, plaintext under `~/.copilot`, readable by every program in

@@ -84,11 +84,11 @@ def main() -> int:
             os.mkdir(name)
             print(f"FAIL created {name!r} — the name rule missed a spelling")
             failures += 1
-        except OSError as caught:
-            if caught.errno == errno.EPERM:
+        except OSError as ex:
+            if ex.errno == errno.EPERM:
                 print(f"ok denied  {name!r}")
             else:
-                print(f"FAIL wrong errno for {name!r}: {caught}")
+                print(f"FAIL wrong errno for {name!r}: {ex}")
                 failures += 1
 
     for name in ALLOWED:
@@ -96,8 +96,8 @@ def main() -> int:
             with open(name, "w"):
                 pass
             print(f"ok allowed {name!r}")
-        except OSError as caught:
-            print(f"FAIL refused {name!r}: {caught} — the superset over-reached")
+        except OSError as ex:
+            print(f"FAIL refused {name!r}: {ex} — the superset over-reached")
             failures += 1
 
     if failures:

@@ -2,7 +2,7 @@
 //! backing tree, with every mutation checked by the policy core. Reads (`lookup`/`getattr`/`read`/
 //! `readdir`/`readlink`) pass through; creations and mutations (`create`/`mkdir`/`mknod`/`symlink`/
 //! `link`/`unlink`/`rmdir`/`rename`/`setattr`/write-`open`) first ask `policy` and return `EPERM`
-//! on a denial, with structured `DENY` log lines capped by `log_deny`.
+//! on a denial, with structured `DENY` log lines capped by `deny`.
 //!
 //! Resolution: `doc/architecture.md`, "Inode model". Mutation coverage, xattrs included: the note
 //! above `impl Filesystem`.
@@ -826,10 +826,6 @@ fn time_spec(value: Option<TimeOrNow>) -> TimeSpec {
     }
 }
 
-/// One structured denial line. Names are rendered with `{:?}` so control characters in an
-/// attacker-chosen name are escaped, never injected as fake log lines. Never logs file contents.
-/// `t=` is Unix seconds — enough to correlate a denial with a session or an incident, without
-/// pulling a time-formatting dependency into the audited build.
 /// Full lines up to the cap; then one notice; then a counted summary every thousandth. DENY lines
 /// are attacker-triggerable, so an uncapped log is a disk-filling primitive against the machine —
 /// the *count* keeps growing in the summaries, so the audit trail loses detail, never magnitude.
@@ -857,6 +853,10 @@ fn deny_log_action(nth: u64) -> DenyLog {
     }
 }
 
+/// One structured denial line. Names are rendered with `{:?}` so control characters in an
+/// attacker-chosen name are escaped, never injected as fake log lines. Never logs file contents.
+/// `t=` is Unix seconds — enough to correlate a denial with a session or an incident, without
+/// pulling a time-formatting dependency into the audited build.
 fn deny(op: &str, target: &str, reason: &str) -> Errno {
     let nth = DENIALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     match deny_log_action(nth) {
@@ -895,9 +895,9 @@ fn to_errno(err: NixErrno) -> Errno {
 ///
 ///   - it accepts a target whose own components are symlinks the host may resolve differently,
 ///     since it walks the target lexically and resolves nothing;
-///   - it refuses every absolute target, including `/workspace/...` — which is right for a host
-///     project directory anywhere else, and needlessly strict for a native Linux one that really
-///     is at `/workspace`.
+///   - it refuses every absolute target, including one under the project's own path — which is
+///     right where the host has the project at another path (Windows, `/mnt/<drive>/...` in here),
+///     and needlessly strict where the project is mounted at its host path.
 ///
 /// Syntax is what a filter serving an unknown host layout can judge. The rule earns its place on the
 /// second direction anyway: what a caching program plants is the container's own store path, which
@@ -1509,8 +1509,9 @@ impl Filesystem for KoAgentFs {
         if let Err(err) = self.allow_create(parent.0, link_name, "symlink") {
             return reply.error(err);
         }
-        // Not a policy decision — the target is never what the policy classifies (the mutation
-        // tests say why) — but a symlink target is the only session-written content the host's own
+        // Not a Git policy decision — the kernel resolves the target, and the resolved path is
+        // classified on its own names (the file rules do judge a target: `allow_symlink_target`,
+        // below) — but a symlink target is the only session-written content the host's own
         // kernel later follows as a path, with the user's privileges and nothing having to run.
         // `target_has_portable_syntax` has the syntax this accepts and how far that syntax is only
         // an approximation; SECURITY.md, "The project directory", has the threat.
@@ -2173,7 +2174,7 @@ mod tests {
     #[test]
     fn a_pre_epoch_time_round_trips_rather_than_clamping() {
         // Extracting an archive of pre-1970 files is the ordinary way to meet one, and the claim
-        // this checks is `doc/TODO.md`'s: times round-trip. Clamping would rewrite the timestamp
+        // this checks is that times round-trip. Clamping would rewrite the timestamp
         // the extraction restores, and a negative time read back without its nanoseconds loses the
         // fractional second.
         for when in [

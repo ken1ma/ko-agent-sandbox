@@ -358,7 +358,7 @@ class SessionBoundaryTest extends munit.FunSuite:
       assert(clone.ok, s"an anonymous clone failed: ${clone.err}")
     finally deleteRecursively(into)
 
-  test("the workspace is filtered, writable, and its boundary directory is not"):
+  test("the workspace is writable, and where it is filtered its Git entries are not"):
     inSession()
     val filtered = run("stat", "-f", "-c", "%T", workspace.toString).text == "fuse"
 

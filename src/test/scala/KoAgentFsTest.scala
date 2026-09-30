@@ -1,5 +1,5 @@
 // The workspace FUSE filter as the launcher drives it: source identity, install and consent
-// commands, the mount and reap scripts, and the guard selection (fuse | none) that fails closed.
+// commands, and the mount and reap scripts.
 
 package agentsandbox.launcher
 

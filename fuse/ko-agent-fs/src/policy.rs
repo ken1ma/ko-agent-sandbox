@@ -1,8 +1,10 @@
-//! The policy core: position and raw bytes in, a decision out. No syscalls, no FUSE, no `String`
-//! (Linux names are byte sequences). Every per-operation FUSE authorization rule is here, the part worth
-//! auditing closely; `doc/git-metadata.md` is the reasoning it transcribes, save for the one rule that protects the
-//! launcher's own `.ko-agent-sandbox` ([`is_sandbox_config_name`]) and the file rules ([`FileRules`]), whose
-//! reasoning is `../../doc/file-rules.md`, "Why these files", and `../../SECURITY.md`.
+//! The policy core: position and raw bytes in, a decision out. No syscalls, no FUSE, no `String` for
+//! an entry's name (Linux names are byte sequences). Every per-operation FUSE authorization rule is
+//! here, save the symlink-target refusals `fs.rs` decides (`allow_symlink_target`, `symlink`), the part
+//! worth auditing closely; `doc/git-metadata.md` is the reasoning it transcribes, save
+//! for the one rule that protects the launcher's own `.ko-agent-sandbox` ([`is_sandbox_config_name`])
+//! and the file rules ([`FileRules`]), whose reasoning is `../../doc/file-rules.md`, "Why these
+//! files", and `../../SECURITY.md`.
 //!
 //! The FUSE layer never re-derives protection from a path string. It caches one
 //! [`GitContext`] per inode, computed once at lookup from the parent's context plus the child's

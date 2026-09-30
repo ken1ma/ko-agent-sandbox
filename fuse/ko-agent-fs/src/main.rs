@@ -139,7 +139,7 @@ const SELF_TEST_SETUP_EXIT: u8 = 3;
 /// reaches both a cached read and an established mapping (`coherency_check`). It runs where the
 /// daemon will serve — inside the Podman machine, or on a native Linux host — at install time and
 /// again before every session that mounts it (`KoAgentFs.installKoAgentFs`,
-/// `ensureKoAgentFsMounted`), aborting either on failure, so the exit code is the contract and the
+/// `koAgentFsChecks`), aborting either on failure, so the exit code is the contract and the
 /// text is for the human reading the log. Beyond the policy, this is the probe for the two
 /// environmental assumptions an unprivileged mount rests on: a `fusermount3` on PATH, and
 /// `user_allow_other` enabled in /etc/fuse.conf (the mount asks for `allow_other`).

@@ -76,7 +76,7 @@ argument the decision rests on no longer holds. Nothing less reopens one.
 
 ### No richer rule format
 
-The rules stay four fixed profiles over one file, `rule`, in the grammar `doc/egress-proxy.md`
+The rules stay three fixed profiles over one file, `rule`, in the grammar `doc/egress-proxy.md`
 spells out:
 
 - `allow` and `deny` lines naming URLs;
@@ -214,8 +214,8 @@ launcher does not prevent that: instruction files change no enforcement.
 
 A symlinked `.ko-agent-sandbox`, `egress` or a file inside them refuses the launch
 (`boundaryDirRefusal`, `readRuleFiles`, tested). The workspace filter refuses to mount a project
-whose `.git` is a symlink, or whose `.git/hooks` is a symlink to a directory inside the project
-(`../fuse/ko-agent-fs/doc/git-metadata.md`, "Relocated hook directories").
+whose `.git` is a symlink; a `.git/hooks` symlinked to a directory inside the project is served
+read-only instead (`../fuse/ko-agent-fs/doc/git-metadata.md`, "Relocated hook directories").
 
 - The launcher reads the rules on the host, so a repository-controlled link would choose which
   host file it reads as this project's rules.
@@ -238,10 +238,16 @@ Accept that cost rather than following links.
 
 ### No repository-controlled host executable resolution
 
-The launcher resolves `podman` (and `selinuxenabled`) through `PATH` entries that are absolute
-**and** outside the project directory — `HostCommands.findOnPath` — and the reaper receives the
-resolved path as an argument, so no host-side invocation consults `PATH` or, on Windows,
-CreateProcess's implicit current-directory search.
+The launcher resolves `podman` (and `getenforce`, `stat` and the clipboard programs) through
+`PATH` entries that are absolute **and** outside the project directory —
+`HostCommands.findOnPath` — and the reaper receives the resolved path as an argument, so those
+invocations consult neither `PATH` nor, on Windows, CreateProcess's implicit current-directory
+search.
+
+- The `sh` scripts the launcher prefixes with `HostCommands.withScriptPath` find what they run
+  through a fixed `PATH` of system directories (`ScriptPath`).
+- Some host programs are started by bare name, `ps` among them, and found through the `PATH`
+  their caller has (`TODO.md`, "Host programs started by bare name").
 
 Absoluteness is not consent, and a repository must never be what supplies the host's container
 runtime: both halves of that filter are necessary, and `findOnPath`'s comment has why. Prior

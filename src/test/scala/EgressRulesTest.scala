@@ -153,7 +153,7 @@ class EgressRulesTest extends munit.FunSuite:
       Right(Vector("rule" -> "allow https://ghcr.io/ read\ndeny https://**.example.org/")),
     )
 
-  test("a missing egress directory is an empty rule file"):
+  test("a missing egress directory reads as no rule file"):
     assertEquals(readRuleFiles(Paths.get("/nonexistent/egress")), Right(Vector.empty))
 
   test("the egress directory's refused forms each name their reason"):

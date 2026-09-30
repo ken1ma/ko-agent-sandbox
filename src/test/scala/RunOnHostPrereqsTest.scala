@@ -828,6 +828,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       Refusal.PrereqJvmNotCoursier("/usr/bin/java"), Refusal.PrereqSbtNotCoursier(Paths.get("/usr/local/bin/sbt")),
       Refusal.PrereqMillBootstrapMissing, Refusal.PrereqMillVersionUnpinned,
       Refusal.PrereqMillExecutableMissing("1.1.8", millDownload), Refusal.PrereqMillJvmNotSystem(None),
+      Refusal.PrereqMillNativeLauncher("1.1.8-native"),
       Refusal.PrereqGradleWrapperMissing, Refusal.PrereqGradleWrapperUnreadable("no distributionUrl"),
       Refusal.PrereqGradleDistributionMissing(gradleUrl, project),
       Refusal.PrereqMvnWrapperMissing, Refusal.PrereqMvnWrapperNotOnlyScript,

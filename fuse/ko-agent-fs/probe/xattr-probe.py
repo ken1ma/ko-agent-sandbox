@@ -13,8 +13,8 @@ column is:
     .../probe/unfiltered.sh python3 xattr-probe.py      # the control
 
 Rows that differ between the two runs are what implementing xattrs would enable. Rows that fail in both
-are the environment's, not the filter's. Record the result in doc/TODO.md with the OS and podman
-versions, the way the name-rule and coherency probes do.
+are the environment's, not the filter's. Record the result in doc/verification-log.md with the OS
+and podman versions, the way the name-rule probe does.
 
 Writes only under a temporary directory it removes; leaves nothing in the project.
 """
@@ -47,8 +47,8 @@ def row(label: str, outcome: str) -> None:
     print(f"  {label:<34} {outcome}")
 
 
-def errno_of(caught: OSError) -> str:
-    return errno.errorcode.get(caught.errno, str(caught.errno))
+def errno_of(ex: OSError) -> str:
+    return errno.errorcode.get(ex.errno, str(ex.errno))
 
 
 def direct_ops(work: str) -> None:
@@ -60,16 +60,16 @@ def direct_ops(work: str) -> None:
     try:
         os.setxattr(path, MARKER, b"value")
         row("setxattr", "OK")
-    except OSError as caught:
-        row("setxattr", errno_of(caught))
+    except OSError as ex:
+        row("setxattr", errno_of(ex))
         # The rest only mean anything once one is set.
         for name in ("getxattr", "removexattr"):
             row(name, "not reached (nothing was set)")
         try:
             os.listxattr(path)
             row("listxattr", "OK")
-        except OSError as also:
-            row("listxattr", errno_of(also))
+        except OSError as list_ex:
+            row("listxattr", errno_of(list_ex))
         return
 
     for name, call in (
@@ -80,8 +80,8 @@ def direct_ops(work: str) -> None:
         try:
             call()
             row(name, "OK")
-        except OSError as caught:
-            row(name, errno_of(caught))
+        except OSError as ex:
+            row(name, errno_of(ex))
 
 
 def carrying_programs(work: str) -> None:
@@ -96,8 +96,8 @@ def carrying_programs(work: str) -> None:
             handle.write(b"payload\n")
         try:
             os.setxattr(origin, MARKER, b"carried")
-        except OSError as caught:
-            row("cp -a", f"skipped: {os.path.dirname(source)} refuses xattrs ({errno_of(caught)})")
+        except OSError as ex:
+            row("cp -a", f"skipped: {os.path.dirname(source)} refuses xattrs ({errno_of(ex)})")
             return
 
         done = subprocess.run(

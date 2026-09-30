@@ -1305,6 +1305,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       "ko-agent-sandbox/Containerfile",
       "ko-agent-egress-proxy/Containerfile",
       "ko-agent-fs/Containerfile",
+      "ko-agent-self-test/Containerfile",
     ).foreach: path =>
       assert(index.contains(path), s"INDEX missing $path")
       assert(BundledBuildContext.resource(path).contains("FROM"), path)
