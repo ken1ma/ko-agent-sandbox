@@ -36,7 +36,7 @@
 //    |                                        into it)
 //    |
 //    +-- --run-on-host (macOS only): ko-sandbox-run-on-host relays a command
-//    |      request to a host-side wrapper that runs a build tool under a
+//    |      request to a host-side supervisor that runs a build tool under a
 //    |      Seatbelt profile — the project (`.git` and
 //    |      .ko-agent-sandbox denied), per-project build caches, one
 //    |      Coursier JDK, a session directory, and the build's own

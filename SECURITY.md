@@ -664,7 +664,7 @@ machine's user also runs `sudo` without a password (Fedora CoreOS 44.20260817.3.
   - A proxy whose startup lines fail to be written exits before it accepts a connection.
   - Every later request, a `CONNECT` or not, receives `403` with the reason,
     `audit log cannot be written: <the I/O error>`, in its body, which `ko-sandbox-egress-check`
-    prints, and in its `Proxy-Status` field, which the host-command wrapper reads. The
+    prints, and in its `Proxy-Status` field, which the host-command supervisor reads. The
     proxy stays up to give that answer: podman removes an exited `--rm` container with its
     output, the reason included.
   - A connection whose `allow` line was written before the failure continues to its end: the
@@ -987,7 +987,7 @@ Programs not covered by the launcher's prepared trust stores need separate handl
 - Maven, which a project's `./mvnw` brings, trusts what its JDK trusts but by default takes the
   proxy from its settings, neither `HTTPS_PROXY` nor the JDK's `net.properties`; the image ships a
   `~/.m2/settings.xml` naming it (`container/ko-agent-sandbox/m2/settings.xml`). On the host the
-  wrapper passes the resolver's `aether.connector.http.useSystemProperties` instead
+  supervisor passes the resolver's `aether.connector.http.useSystemProperties` instead
   (`doc/run-on-host.md`, "Maven").
 - A GraalVM native image — the `cs` and `scala` launchers — has no `conf/` and reads no variable,
   so the proxy and CA settings travel as `-D` options in `KO_AGENT_SANDBOX_JAVA_OPTS`, which the
@@ -1311,15 +1311,15 @@ provides the confinement for these commands; they execute outside the container.
   - The proxy runs under a profile of its own, granting its executable, the system paths and its
     leaf's directory as reads, and the network, and nothing else of the user's: no project, no
     cache, no write anywhere.
-- **The command's environment is a closed set, not the launcher's.** The wrapper constructs it from
-  its own settings, three pass-through variables, and the variables named by `--env` at launch
+- **The command's environment is a closed set, not the launcher's.** The supervisor constructs it
+  from its own settings, three pass-through variables, and the variables named by `--env` at launch
   (`doc/run-on-host.md`, "The command's lifetime and environment", lists them). The same forwarded
   variables reach the sandbox, and `KO_AGENT_SANDBOX_*` is refused on both paths. Inheriting the
   full host environment would expose unrelated secrets, including an upstream proxy credential in
   the launcher's `HTTPS_PROXY`, to agent-chosen code.
-  - The wrapper's settings take precedence, so a forwarded `HTTPS_PROXY` cannot redirect the
+  - The supervisor's settings take precedence, so a forwarded `HTTPS_PROXY` cannot redirect the
     command past its proxy.
-  - The wrapper supplies its JVM properties through HotSpot's `_JAVA_OPTIONS`, replacing any
+  - The supervisor supplies its JVM properties through HotSpot's `_JAVA_OPTIONS`, replacing any
     forwarded value of that variable. These properties take precedence over `JAVA_TOOL_OPTIONS`,
     `JDK_JAVA_OPTIONS` and command-line properties.
   - `MILL_VERSION` names the launcher the profile authorizes, whatever was forwarded.
@@ -1403,8 +1403,8 @@ provides the confinement for these commands; they execute outside the container.
       forwards a secret never serves one that does not, and a launch whose rules differ never
       resolves through the other's proxy (`doc/run-on-host.md`, "The channel and the command").
     - The request's own launcher flags are not in the fingerprint: they select settings inside a
-      process the profile confines and the wrapper's `_JAVA_OPTIONS` outranks, as they do within a
-      launch (`RunOnHostRuntimeDescriptor.fingerprint` has what they can and cannot reach).
+      process the profile confines and the supervisor's `_JAVA_OPTIONS` outranks, as they do within
+      a launch (`RunOnHostRuntimeDescriptor.fingerprint` has what they can and cannot reach).
     - That is the one group of a live launch a broker signals that is not its own — a dead launch's
       group the scavenger collects, below — and the record alone attributes it: a file in the
       owner's session directory, which no confined process can write, never the portfile or the
@@ -1458,20 +1458,20 @@ provides the confinement for these commands; they execute outside the container.
 - **Teardown follows descriptor lifetime.** The shim holds one FIFO open for the life of its
   request, and the request itself travels on it, so no command starts without its liveness.
   - An interrupted command, a killed shim and a dead sandbox container all close it, and the broker
-    ends the command with SIGTERM. The wrapper's own hook teardown ends the command's process
+    ends the command with SIGTERM. The supervisor's own hook teardown ends the command's process
     groups and, under Maven, its proxy; appends the command's proxy audit log to the channel's log
     on the host (`doc/run-on-host.md`, "The channel and the command"); and removes the command's
     directory. The broker's server or daemon stays, as above.
-  - The wrapper holds the broker's pipe the same way: a broker gone, ended or killed, closes it, and
-    the wrapper ends its command by the same teardown. A broker ended by TERM exits only after that
-    teardown, and then ends its own session — its servers', daemons' and proxies' groups, the
-    servers' logs, the daemon starters' output and the proxies' audit logs appended to the
-    channel's log first — as it does at the launch's end.
+  - The supervisor holds the broker's pipe the same way: a broker gone, ended or killed, closes it,
+    and the supervisor ends its command by the same teardown. A broker ended by TERM exits only
+    after that teardown, and then ends its own session — its servers', daemons' and proxies'
+    groups, the servers' logs, the daemon starters' output and the proxies' audit logs appended to
+    the channel's log first — as it does at the launch's end.
   - No server or daemon the broker recorded survives the launch that owns it — a Gradle daemon its
     client started and the broker then recorded included; one it never recorded is the residual
     above. A later launch adopts none whose owner is gone: a new broker publishes a new session and
     reuses nothing.
-  - If SIGKILL prevents the wrapper's or the broker's teardown, the recorded groups remain, the
+  - If SIGKILL prevents the supervisor's or the broker's teardown, the recorded groups remain, the
     broker's servers, daemons and proxies among them, and the next start's scavenger ends them — a
     group only after checking that its leader has the recorded start time, never by guess:
     - a server whose group leader is gone, by the shutdown protocol at the socket its portfile

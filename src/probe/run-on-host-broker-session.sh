@@ -24,12 +24,12 @@
 #
 # Run it on macOS, from this repository's root, with the cs-installed sbt on
 # PATH and JAVA_HOME (or `cs java-home`) naming a JDK. It downloads what the two sbt versions and
-# Mill need, unconfined, into the user's own caches — the provisioning the wrapper requires of the
+# Mill need, unconfined, into the user's own caches — the provisioning the supervisor requires of the
 # user — and confines only the rows. About ten minutes on a warm cache. On any FAIL the scratch
 # tree under /private/tmp is kept and named; INFO rows are measurements with no expected answer.
 #
 # Every process it starts runs in a group whose leader stays alive, its start time recorded, the
-# wrapper's own registration (RunOnHostSession.registeredSpawn): the leader installs the closed
+# supervisor's own registration (RunOnHostSession.registeredSpawn): the leader installs the closed
 # environment, publishes the child's exit status beside its record, and stays; every wait has a
 # deadline, a deadline passed is a FAIL that ends the group, and cleanup signals only groups whose
 # leader is still alive. A denial row passes only on the operating system's own refusal in the
@@ -79,7 +79,7 @@ work=$(mktemp -d /private/tmp/ko-probe.XXXXXX)   # short: sbt's boot socket path
 
 # --- groups --------------------------------------------------------------------------------------
 
-leaders=$work/leaders   # `<pid> <lstart>` per live leader, the wrapper's own record
+leaders=$work/leaders   # `<pid> <lstart>` per live leader, the supervisor's own record
 : > "$leaders"
 probe_env=""   # a file of NAME=VALUE lines the leader installs as the whole environment; "" inherits
 # Start COMMAND in DIR as the child of a new group's leader, which publishes the child's exit
@@ -116,7 +116,7 @@ status_of() {
     else cat "$1.exit" 2>/dev/null || echo none; fi
 }
 # End a group behind its recorded leader only — alive, with the start time recorded when it
-# was made, as the wrapper checks a group's leader before signalling it — and retire the record: a pgid
+# was made, as the supervisor checks a group's leader before signalling it — and retire the record: a pgid
 # whose leader died may be someone else's by now.
 end_group() { # leader
     recorded=$(sed -n "s/^$1 //p" "$leaders" | head -1)
@@ -258,7 +258,7 @@ profile() { # file rule...: an allow-default profile that denies network* and al
     { echo '(version 1)'; echo '(allow default)'; echo '(deny network*)'
       for rule in "$@"; do echo "$rule"; done; } > "$out"
 }
-# The wrapper's closed environment, minus the proxy, as a file for the group leader.
+# The supervisor's closed environment, minus the proxy, as a file for the group leader.
 write_env() { # file tmp runtime-dir extra-java-options [NAME=VALUE...]
     out=$1; tmp=$2; runtime=$3; extra=$4; shift 4
     { printf 'PATH=%s\nJAVA_HOME=%s\nHOME=%s\nUSER=%s\nLOGNAME=%s\n' \
@@ -936,7 +936,7 @@ daemons() { with_cwd 'mill.daemon.MillDaemonMain' "$mp/out/mill-daemon"; }
 no_daemons() { [ -z "$(daemons)" ]; }
 end_daemons() { for pid in $(daemons); do kill "$pid" 2>/dev/null; done; until_true 20 no_daemons; }
 # The download folder as the bootstrap derives it (RunOnHostPrereqs.millDownloadDir), resolved
-# once here and given to the confined rows the way the wrapper gives it, so provisioning and the
+# once here and given to the confined rows the way the supervisor gives it, so provisioning and the
 # rows agree on it whatever MILL_FINAL_DOWNLOAD_FOLDER or XDG_CACHE_HOME the host has set.
 mill_downloads=${MILL_FINAL_DOWNLOAD_FOLDER:-${XDG_CACHE_HOME:-$HOME/.cache}/mill/download}
 export MILL_FINAL_DOWNLOAD_FOLDER="$mill_downloads"

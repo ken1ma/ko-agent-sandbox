@@ -481,7 +481,7 @@ code, not measured):
 An sbt server's and a mill daemon's start are bounded by the broker's progress bound
 (`run-on-host.md`, "The channel and the command", "`mill`"). A command that stalls after its
 server or daemon is up — or a Maven command at any point — is silent until the agent gives up:
-nothing bounds it, not the wrapper, not the
+nothing bounds it, not the supervisor, not the
 broker, whose writers die only with their requester, and not the shim, which reads output to EOF.
 One form would, and it waits on a measurement:
 
@@ -585,9 +585,9 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
   (`RunOnHostSession.root`), under the same budget: a second host feature keeping state under
   `/private/tmp` would otherwise land in a root that names neither.
 
-## Deferred — the per-command wrapper process under `--run-on-host`
+## Deferred — the per-command supervisor process under `--run-on-host`
 
-- [ ] Re-evaluate the wrapper, the `--run-command-on-host` process the broker starts for each
+- [ ] Re-evaluate the supervisor, the `--run-command-on-host` process the broker starts for each
   request (`RunOnHostSandbox.runCommandMain`; `run-on-host.md`, "The channel and the command").
   - What it buys:
     - the broker's cancel is a SIGTERM to one process, answered by that process's shutdown hook,
@@ -595,11 +595,11 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
     - a command's death, however it dies, is confined to its own process and never takes the
       broker and its warm servers with it;
     - the acceptance test drives one command's whole lifecycle as `RunOnHost` with no broker, which
-      is how the wrapper rows measure the profile.
+      is how the supervisor rows measure the profile.
   - What it costs:
     - one more JVM start per command, about a third of a second in the jar form and tens of
       milliseconds as the native image;
-    - a second code path for the command's runtime, the wrapper's own under Maven.
+    - a second code path for the command's runtime, the supervisor's own under Maven.
   - The alternative is the same work in a broker thread with cancellation done by hand; decide
     with the measured cost per command and what the acceptance test would drive instead.
 
@@ -607,7 +607,7 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
 
 A GraalVM (JDK 25) native image, with `native-image` and a C toolchain, starts in tens of
 milliseconds where `java -jar` takes ~350 ms. The launcher branches on running as an image
-(`RunOnHostSandbox.isNativeImage`: the wrapper's self-invocation, its launch file, the Seatbelt
+(`RunOnHostSandbox.isNativeImage`: the supervisor's self-invocation, its launch file, the Seatbelt
 proxy inputs) and stays resident when GraalVM refuses the FFM execvp (`SandboxLifecycle.handOver`).
 No build or test exercises any of it, and the proxy as an image does not start under its profile
 (macOS 26.4.1, GraalVM CE 25.0.2, `run-on-host-profile-iterate.sh mach-proxy <binary>`):

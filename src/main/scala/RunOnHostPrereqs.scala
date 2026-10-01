@@ -31,7 +31,7 @@ object RunOnHostPrereqs:
 
   /**
    * Why a command cannot run, one case per category (run-on-host.md "Refusals"). A value, not a
-   * message: the wrapper prints one wording, the channel another.
+   * message: the supervisor prints one wording, the channel another.
    */
   enum Refusal:
     case PrereqJvmNotCoursier(found: String)
@@ -61,7 +61,7 @@ object RunOnHostPrereqs:
 
   /**
    * The refusal as the blocked reader sees it: what stopped the command, and what to do next.
-   * Every case is worded here, so a case the wrapper prints through its enum spelling is a
+   * Every case is worded here, so a case the supervisor prints through its enum spelling is a
    * compile error, not a message with a class name in it.
    */
   def wording(refusal: Refusal): String = refusal match
@@ -429,7 +429,7 @@ object RunOnHostPrereqs:
       case None          => Left(Refusal.PrereqMillVersionUnpinned)
 
   /**
-   * The launcher the wrapper runs for a pinned version: the JVM launcher, `<v>-jvm` as the
+   * The launcher the supervisor runs for a pinned version: the JVM launcher, `<v>-jvm` as the
    * bootstrap spells it, for a `<v>` with no suffix and a `<v>-jvm` pin alike. The bootstrap would run the
    * native image for `<v>`, and that image cannot be the launch's client: it takes no
    * `_JAVA_OPTIONS`, so the environment's `preferIPv4Stack` never reaches it, its connect
@@ -445,7 +445,7 @@ object RunOnHostPrereqs:
 
   /**
    * `mill-jvm-version` must be `system`: mill otherwise provisions a JVM through Coursier's
-   * index, a JDK fetched by the command, where `system` takes `java` from the PATH the wrapper sets.
+   * index, a JDK fetched by the command, where `system` takes `java` from the PATH the supervisor sets.
    *
    * Read as mill reads it (`MillProcessLauncher.loadMillConfig`, `mill.constants.Util.
    * readBuildHeader`): `.mill-jvm-version`, else `.config/mill-jvm-version` — the first line that is
@@ -766,7 +766,7 @@ object RunOnHostPrereqs:
    * server side refuses a longer path with a message; the client's JNI connect has no such check and
    * dies in memcpy with `Trace/BPT trap: 5`. Measured: 52 runs, 56 traps.
    *
-   * The wrapper points `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` and `java.io.tmpdir` at this one
+   * The supervisor points `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` and `java.io.tmpdir` at this one
    * directory, so this is the budget for all three.
    */
   val SessionTmpMaxLength: Int = 104 - 1 - "/.sbt/sbt-socket".length - "-9223372036854775808".length -

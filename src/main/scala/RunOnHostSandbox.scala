@@ -1,4 +1,4 @@
-// The wrapper: from a project and a program to a confined command's exit code, through the thirteen
+// The supervisor: from a project and a program to a confined command's exit code, through the thirteen
 // steps — validate, scavenge, publish, runtime, profile, run, end what was started, remove — and
 // the broker's runtimes, the proxy and the sbt server or mill daemon the commands of one build
 // directory share (BrokerRuntimes). macOS only, like everything it drives; the assembly and
@@ -252,7 +252,7 @@ object RunOnHostSandbox:
 
   /**
    * run-on-host/ accepts only recognized configuration entries, as does its parent directory
-   * (SandboxProject.boundaryDirRefusal): the programs this wrapper serves, egress/ inside each, rule
+   * (SandboxProject.boundaryDirRefusal): the programs this supervisor serves, egress/ inside each, rule
    * inside that — a stray name, a symlinked component, or a component of the wrong type refuses the
    * command, never remains as ignored config. The type rule prevents real failures: a file where a
    * directory belongs would read as absent configuration, and a FIFO where the file belongs would
@@ -330,14 +330,14 @@ object RunOnHostSandbox:
 
   /** What opens the JDK's internal certificate builder to X509Helper, which has why. The jar's
     * manifest carries the same two for `java -jar` (build.sbt), and a manifest is read for `-jar`
-    * alone: a re-invocation is `java -cp`, and the broker and the wrapper it starts issue each
+    * alone: a re-invocation is `java -cp`, and the broker and the supervisor it starts issue each
     * proxy's certificates (RunOnHostInspection), which without these dies of IllegalAccessError. */
   val CertificateBuilderExports: Seq[String] = Seq(
     "--add-exports=java.base/sun.security.x509=ALL-UNNAMED",
     "--add-exports=java.base/sun.security.util=ALL-UNNAMED",
   )
 
-  /** How the wrapper re-invokes its own executable — the running JVM and classpath, or the native
+  /** How the supervisor re-invokes its own executable — the running JVM and classpath, or the native
     * image binary itself — under one of the launcher's private actions. */
   def selfInvocation(actionAndArguments: String*): Seq[String] =
     if isNativeImage then
@@ -390,7 +390,7 @@ object RunOnHostSandbox:
     * naming it as spelled; none to check passes, there being no file a re-invocation loads this
     * process's code from. Both forms alike: the jar and the native image are each one file, built
     * under `target/dist`, which `sbt clean` or `git clean` removes while a session runs. Checked
-    * before a wrapper is exec'd (BrokerRuntimes.prepare, every program) and before a proxy is
+    * before a supervisor is exec'd (BrokerRuntimes.prepare, every program) and before a proxy is
     * started (proxyInputs): a JVM starts with a missing class-path entry and fails only at loading
     * the main class, so unchecked, the jar form's failure is the proxy's ready wait timing out over
     * a Java error in its log, and the native form's is a spawn that fails to exec. Not checked at
@@ -410,7 +410,7 @@ object RunOnHostSandbox:
   /** `--run-command-on-host <program> <project> <cwd> [--env=<name>...] [--channel-log=<file>]
     * [--runtime-session=<dir> --proxy-port=<port> --proxy-log=<file> [--daemon-port=<port>]] --
     * <args...>`: one channel request as a process of its own, so the broker's cancel is a SIGTERM
-    * whose answer is this wrapper's shutdown hook. The runtime options name the broker's runtime
+    * whose answer is this supervisor's shutdown hook. The runtime options name the broker's runtime
     * (Runtime). */
   def runCommandMain(args: Seq[String]): Unit =
     def start(
@@ -479,7 +479,7 @@ object RunOnHostSandbox:
   def forwardedNames(options: Seq[String]): Vector[String] =
     options.filter(_.startsWith(EnvOption)).map(_.stripPrefix(EnvOption)).toVector
 
-  /** `--channel-log=<file>`: the broker's own log, where the wrapper appends a signal-ended
+  /** `--channel-log=<file>`: the broker's own log, where the supervisor appends a signal-ended
     * command's logs (appendSessionLogs). */
   val ChannelLogOption = "--channel-log="
 
@@ -494,7 +494,7 @@ object RunOnHostSandbox:
       case Some(option) => FileRules.readResolved(Path.of(option.stripPrefix(FileRulesOption)))
       case None         => FileRules.ofProject(project)
 
-  /** The broker's runtime as the wrapper's options: the first three together or none, the
+  /** The broker's runtime as the supervisor's options: the first three together or none, the
     * daemon port with them for a mill runtime. */
   val RuntimeSessionOption = "--runtime-session="
   val ProxyPortOption = "--proxy-port="
@@ -585,10 +585,10 @@ object RunOnHostSandbox:
       case ex: IOException => Some(s"[unreadable: ${ex.getMessage}]\n")
 
   /** The name a forwarded value is carried under from the launcher to the confined command: one nothing
-    * reads by accident. The broker and the wrapper are unconfined JVMs of the launcher's own code, and an
+    * reads by accident. The broker and the supervisor are unconfined JVMs of the launcher's own code, and an
     * explicit `--env=NAME=VALUE` installed under its own name — a loader variable, say — would be
     * read by them first; the requested name is restored inside the command's environment alone,
-    * where the wrapper's own settings still win over it. */
+    * where the supervisor's own settings still win over it. */
   def carrierName(name: String): String = s"KO_AGENT_RUN_ON_HOST_ENV_$name"
 
   /** The bound port, from the ready line the proxy prints after `bind`; its log file is its
@@ -676,7 +676,7 @@ object RunOnHostSandbox:
   private val MaxSymlinkHops = 40
 
   /**
-   * Whether a path the wrapper is about to send to could have been planted by a command. The
+   * Whether a path the supervisor is about to send to could have been planted by a command. The
    * question is not where the path ends but whether resolving it ever *enters* somewhere a command
    * writes: from the first component inside, the command chooses what every later component means,
    * and a link there can send the rest anywhere — including straight back out, which is why the
@@ -1028,7 +1028,7 @@ object RunOnHostSandbox:
         // directory must be collected on the next launch's next command, not only when that
         // command needs a runtime of its own.
         scavenge()
-        // The word this returns is what the spawn execs the wrapper on (RunOnHostChannel.dispatch):
+        // The word this returns is what the spawn execs the supervisor on (RunOnHostChannel.dispatch):
         // the executable's last check before that exec, Maven's included (selfPresent has why).
         executable().flatMap: _ =>
           if program == Program.Mvn then Right(None)
@@ -1861,7 +1861,7 @@ object RunOnHostSandbox:
    * command's own `tmp/` would be denied there; and with one directory the starter's environment
    * and every client's are one map, so an option file Mill interpolates from the environment
    * (`MillProcessLauncher.loadMillConfig`) yields the same value in both, and a client never meets
-   * a fingerprint mismatch of the wrapper's own making. Under Gradle the broker's too, for the
+   * a fingerprint mismatch of the supervisor's own making. Under Gradle the broker's too, for the
    * first reason: the daemon the first command's client starts serves the commands that follow
    * with the profile and environment it was started with, so what it writes must be a directory
    * every later command's profile grants and no command's end removes. Under Maven the command's
@@ -1912,7 +1912,7 @@ object RunOnHostSandbox:
     )
     val builder = ProcessBuilder(command*)
     builder.directory(buildDirectory.toFile)
-    // Not the wrapper's own stdin, which under the broker is its liveness pipe (runCommandMain).
+    // Not the supervisor's own stdin, which under the broker is its liveness pipe (runCommandMain).
     builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
     builder.redirectOutput(ProcessBuilder.Redirect.INHERIT)
     builder.redirectError(ProcessBuilder.Redirect.INHERIT)
@@ -1954,10 +1954,10 @@ object RunOnHostSandbox:
 
   val PassedThrough = Vector("HOME", "LANG", "LC_ALL")
 
-  /** Never the forwarded value. The version overrides: the wrapper resolved the version from the
+  /** Never the forwarded value. The version overrides: the supervisor resolved the version from the
     * build directory alone and granted that launcher (RunOnHostPrereqs.millVersion,
     * millLauncherVersion), and either would make the bootstrap select another; `MILL_VERSION` is
-    * the wrapper's own setting for a mill command, naming that launcher. The output-directory
+    * the supervisor's own setting for a mill command, naming that launcher. The output-directory
     * overrides (`OutFiles.java`): the daemon's rendezvous, its port candidate and the foreign
     * daemons are all looked for under `out/`, and Mill sent elsewhere would be checked nowhere. */
   val MillOverrides = Set("MILL_VERSION", "DEFAULT_MILL_VERSION", "MILL_OUTPUT_DIR", "MILL_BSP_OUTPUT_DIR")
@@ -1986,7 +1986,7 @@ object RunOnHostSandbox:
 
   /**
    * The command's whole environment, a closed set: `PassedThrough`, then what `--env` named, then
-   * the wrapper's own settings, which win. doc/run-on-host.md, "The command's lifetime and environment",
+   * the supervisor's own settings, which win. doc/run-on-host.md, "The command's lifetime and environment",
    * has the table of what is in it; SECURITY.md, "Run on host", has why it is closed.
    */
   def commandEnvironment(
@@ -2015,7 +2015,7 @@ object RunOnHostSandbox:
     // SBT_OPTS and JAVA_OPTS, which the sbt script and the mill executable do read, would reach
     // only the program's own JVMs. sbt 2.0.9 also copies JAVA_TOOL_OPTIONS and JDK_JAVA_OPTIONS
     // into argv without unquoting them; _JAVA_OPTIONS reaches HotSpot unchanged. HotSpot applies
-    // it after argv, so the wrapper's properties also win over command-line properties.
+    // it after argv, so the supervisor's properties also win over command-line properties.
     // The shim handles the resulting startup banner.
     val javaOptions = (Seq(
       jvmProperty("java.io.tmpdir", sessionTmp.toString),

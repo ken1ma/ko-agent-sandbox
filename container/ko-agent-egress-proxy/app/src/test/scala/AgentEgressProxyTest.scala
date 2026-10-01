@@ -2945,7 +2945,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
           s"deny $host CONNECT $unwritable",
         ),
       )
-    // A request that is no CONNECT gets the reason too: what the run-on-host wrapper asks with.
+    // A request that is no CONNECT gets the reason too: what the run-on-host supervisor asks with.
     assertEquals(
       exchange("OPTIONS * HTTP/1.1\r\nHost: localhost\r\nMax-Forwards: 0\r\n\r\n", failed),
       (

@@ -26,7 +26,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assertEquals(fileRulesOf(Seq("--other"), project), FileRules.ofProject(project))
     finally FileHelper.deleteRecursively(project)
 
-  test("the command's environment is a closed set: the wrapper's settings, three pass-throughs, and --env"):
+  test("the command's environment is a closed set: the supervisor's settings, three pass-throughs, and --env"):
     val jdk = Path.of("/Users/u/Library/Caches/Coursier/v1/jvm/temurin")
     val prereqs = RunOnHostPrereqs.CommandPrereqs(
       project = Path.of("/Users/u/project"), jdkHome = jdk, coursierV1 = Path.of("/cache/v1"),
@@ -55,7 +55,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     // Passed through as they are.
     assertEquals(environment("HOME"), "/Users/u")
     assertEquals(environment("LANG"), "en_US.UTF-8")
-    // Set by the wrapper, from what it checked or made, never from the shell.
+    // Set by the supervisor, from what it checked or made, never from the shell.
     assertEquals(environment("JAVA_HOME"), jdk.toString)
     assertEquals(environment("PATH"), s"$jdk/bin:/usr/bin:/bin:/usr/sbin:/sbin")
     assertEquals(environment("TMPDIR"), "/private/tmp/ko-agent-501/s")
@@ -66,14 +66,14 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(environment("USER"), "u")
     assertEquals(environment("LOGNAME"), "u")
     assertEquals(environment("MILL_FINAL_DOWNLOAD_FOLDER"), "/Users/u/.cache/mill/download")
-    // The wrapper's launcher version, never the forwarded one.
+    // The supervisor's launcher version, never the forwarded one.
     assertEquals(environment("MILL_VERSION"), "1.1.9-jvm")
     assertEquals(environment("COURSIER_CACHE"), "/cache/v1")
     assertEquals(environment("GRADLE_USER_HOME"), "/cache/gradle")
     assert(environment("_JAVA_OPTIONS").contains("-Dsbt.global.base=\"/cache/sbt\""))
     assert(environment("_JAVA_OPTIONS").contains("-Dsbt.ivy.home=\"/cache/ivy\""))
     assert(environment("_JAVA_OPTIONS").contains("-Dmaven.repo.local=\"/cache/m2\""))
-    // A forward reaches the command; one naming a variable the wrapper sets loses to the wrapper.
+    // A forward reaches the command; one naming a variable the supervisor sets loses to the supervisor.
     assertEquals(environment("TOKEN"), "t0ken")
     assertEquals(environment("HTTPS_PROXY"), "http://127.0.0.1:4711")
     // The proxy's CA, to the JVMs as a store and to the programs HTTPS_PROXY serves as a PEM file.
@@ -589,7 +589,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(command.last, "--serve-proxy-on-host")
     assert(command.contains("-cp"), command.toString)
     assert(command.contains("agentsandbox.launcher.AgentSandboxLauncher"), command.toString)
-    // JVM options, so before the main class: the broker and the wrapper issue certificates.
+    // JVM options, so before the main class: the broker and the supervisor issue certificates.
     assert(command.containsSlice(CertificateBuilderExports), command.toString)
     assert(command.indexOfSlice(CertificateBuilderExports) < command.indexOf("-cp"), command.toString)
     assertEquals(
@@ -641,7 +641,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(launchEntry(classPath, Some(dir.resolve("elsewhere.jar"))), None)
     assertEquals(selfPresent(None), Right(None))
 
-  test("a command is refused before its wrapper runs when the launcher's executable is gone, Maven's included"):
+  test("a command is refused before its supervisor runs when the launcher's executable is gone, Maven's included"):
     val root = Files.createTempDirectory("brk")
     val project = Files.createDirectory(root.resolve("project"))
     val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get

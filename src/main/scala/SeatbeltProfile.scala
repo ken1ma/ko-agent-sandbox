@@ -24,7 +24,7 @@ object SeatbeltProfile:
 
   /**
    * `.git` and `.ko-agent-sandbox` at any depth under the project. A pattern by intent, and the
-   * only regex besides the file rules' (fileRuleFilters): everything else is a wrapper-supplied path,
+   * only regex besides the file rules' (fileRuleFilters): everything else is a supervisor-supplied path,
    * which a regex would mangle — the Coursier JDK home alone contains a percent-encoded `+`, a literal `+` and dots.
    * The project itself is kept out of the pattern the same way: `(require-all (subpath …) (regex …))`
    * conjoins a literal filter with the name pattern.
@@ -417,7 +417,7 @@ object SeatbeltProfile:
       "and resolve symlinks before rendering the profile"
 
   /** An SBPL string literal. Paths here contain spaces, `+` and percent signs; only a quote or a
-    * backslash needs escaping, and neither occurs in a path this wrapper accepts. */
+    * backslash needs escaping, and neither occurs in a path this supervisor accepts. */
   private def sbpl(value: String): String =
     "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 

@@ -20,8 +20,8 @@ import RunOnHostSandbox.StepRefusal
 object RunOnHostProvisioning:
 
   /** A directory a command of the program would run in as its own build: one holding a `mill`
-    * bootstrap, or a Gradle wrapper's properties file, the file the wrapper keys a Gradle build
-    * directory on and reads the distribution from; for Maven the project alone, holding `mvnw`
+    * bootstrap, or a Gradle wrapper's properties file, the file the supervisor keys a Gradle
+    * build directory on and reads the distribution from; for Maven the project alone, holding `mvnw`
     * (run-on-host.md "`mill`", "Gradle", "Maven"). */
   final case class BuildDirectory(program: Program, path: Path)
 
@@ -29,7 +29,7 @@ object RunOnHostProvisioning:
   enum Finding:
     def program: Program
     def buildDirectory: Path
-    /** The refusal the wrapper would word, with the run it names. */
+    /** The refusal the supervisor would word, with the run it names. */
     def wording: String
     /** A missing executable that `command`, run in the build directory with `environment` added
       * to the launcher's own, provisions: the run the refusal names. */
@@ -97,7 +97,7 @@ object RunOnHostProvisioning:
   /**
    * Takes each build directory in turn — its finding only when its turn comes, since one run can
    * provision several directories sharing a version — reports the finding as a warning in the
-   * wrapper's wording, so the run it names is the one the first command would name, and for a
+   * supervisor's wording, so the run it names is the one the first command would name, and for a
    * provisionable one, given a reader, asks whether to run it now. The run is the user's own act
    * on a project script, unconfined and in the launcher's environment, as the manual run the
    * refusal asks for is (SECURITY.md "Run on host"): the prompt says so, only an explicit yes
