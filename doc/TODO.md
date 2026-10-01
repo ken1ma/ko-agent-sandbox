@@ -88,7 +88,7 @@ again.
   (`SelfTestShare`) are started by bare name, so the JVM finds them through the inherited
   `PATH`, which `findOnPath` exists to avoid (`design.md`, "No repository-controlled host
   executable resolution"). The run-on-host registration script runs a bare `ps` too
-  (`RunOnHostSession.RegistrationScript`), through its spawn's `PATH`, which for a command starts
+  (`RunOnHostSession.RegistrationScript`), through the leader's `PATH`, which for a command starts
   with the JDK's `bin`. Resolve them as `podman` is resolved, or start them by absolute path as
   `/bin/kill` and `/usr/bin/sandbox-exec` are.
 

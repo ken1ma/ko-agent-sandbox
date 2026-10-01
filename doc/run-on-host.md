@@ -508,10 +508,10 @@ kernel's choosing on the loopback address, writes it to `out/mill-daemon/socketP
 the first `mill` command of a build directory, and every command from that directory attaches to
 it (`RunOnHostMillDaemons.scala`, `RunOnHostSandbox.BrokerRuntimes`):
 
-1. The **starter**: the build directory's `./mill version`, as a registered spawn in the broker's
-   session (`records/daemon-mill-<hash>`) under the daemon profile — the profile with listeners
-   granted and no outbound but the proxy — with the closed environment and the broker's `tmp/`
-   as its temporary directory.
+1. The **starter**: the build directory's `./mill version`, started through `registeredSpawn` in
+   the broker's session (`records/daemon-mill-<hash>`) under the daemon profile — the profile
+   with listeners granted and no outbound but the proxy — with the closed environment and the
+   broker's `tmp/` as its temporary directory.
    - The launcher starts the daemon, the daemon binds its port and writes `socketPort`, and the
      launcher's own connect is denied: the daemon inherits the starter's profile, and the only
      outbound that would admit the connect is outbound to every port of this host
@@ -520,7 +520,7 @@ it (`RunOnHostMillDaemons.scala`, `RunOnHostSandbox.BrokerRuntimes`):
      launcher — TERM to its pid alone, the daemon's parent in the group, behind its pid and start
      time.
    - Without that observation the launcher retries for ten seconds and exits nonzero, and a launcher
-     the TERM does not end reaches that bound too; either way the daemon stays in the spawn's
+     the TERM does not end reaches that bound too; either way the daemon stays in the leader's
      group (measured, M1 for the exit, M8 for the TERM: the daemon is spawned with
      `destroyOnExit = false`).
    - The group is three processes — the leader, the launcher JVM as its child, since
@@ -546,8 +546,8 @@ The daemon gets each command's environment through the protocol (`DaemonRpc.Init
 closed environment reaches the build per command; the daemon JVM's own options, the proxy
 settings included, are the starter's, fixed at its start.
 
-The broker replaces the daemon under the same proxy before the next command — its starter's spawn
-staying as the group's leader and ended with the group first — when:
+The broker replaces the daemon under the same proxy before the next command — its starter's
+leader staying and ended with the group first — when:
 
 - what Mill's launcher restarts the daemon on has changed: the launcher version, the resolved
   JVM, `mill-jvm-opts` and `mill-repositories`, each from the source Mill reads it from, the
@@ -615,9 +615,9 @@ or ended by that record and replaced, as its sbt server is ("The channel and the
   settings attaches to it and runs your build under the profile and the launch's proxy, and one
   with different settings ends it, as Mill does on a fingerprint mismatch, after which the broker
   ends yours once idle and starts its own again.
-- A daemon whose registered leader was killed on its own — the spawn, not the broker — remains
-  in a group whose leader the scavenger cannot check, and is nothing a portfile attributes; it
-  exits on Mill's idle timeout.
+- A daemon whose registered leader was killed on its own — the leader alone, not the broker —
+  remains in a group whose leader the scavenger cannot check, and is nothing a portfile
+  attributes; it exits on Mill's idle timeout.
 
 ### Gradle
 

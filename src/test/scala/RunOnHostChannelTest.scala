@@ -162,8 +162,8 @@ class RunOnHostChannelTest extends munit.FunSuite:
   /**
    * The broker served like production — same exec argument pattern, `podman` a script running the
    * exec locally — with the shim's mount spelled as the project itself, so the shim's own $PWD is
-   * a request every host can make. The supervisor command is the test's, under the real locked
-   * spawn, since dispatch speaks its protocol; `runtime` is what the broker's word carries.
+   * a request every host can make. The supervisor command is the test's, under the real lock
+   * holder, since dispatch speaks its protocol; `runtime` is what the broker's word carries.
    */
   private def channel(
     supervisorCommand: (String, Path, Seq[String]) => Seq[String],
@@ -249,7 +249,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assertEquals(exit, 7)
       assertEquals(out, s"ran sbt test -v in $project\n")
       assertEquals(err, "complaint\n")
-      // The service hears of the command's end with its program, once the spawn is gone.
+      // The service hears of the command's end with its program, once the child is gone.
       assertEquals(endedPrograms.asScala.toList, List("sbt"))
       // The shim leaves as soon as it has its exit code, and the log records that as the
       // answer's end, never as a requester lost mid-command. The exit line lands after the
@@ -314,7 +314,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
 
   test("an end asked for during preparation waits for the word, so the build lock is held throughout"):
     // The runtime's preparation, slow enough to be interrupted: it records whether the build
-    // lock is still held halfway through, which a spawn ended early would have freed.
+    // lock is still held halfway through, which a lock holder ended early would have freed.
     val runtime = (_: String, buildDirectory: Path, _: Seq[String]) =>
       Files.writeString(buildDirectory.resolve("preparing"), "")
       Thread.sleep(1500)
@@ -377,7 +377,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assertEquals(refused, 2)
       assertEquals(err, "refused: no runtime for sub\n")
       assert(brokerLog().contains("refused: no runtime for sub"), brokerLog())
-      // An exception is answered the same way, and the spawn ends with the lock released.
+      // An exception is answered the same way, and the child ends with the lock released.
       val broken = Files.createDirectory(project.resolve("broken"))
       val (thrown, _, thrownErr) = shimCall(broken, "sbt", "compile")
       assertEquals(thrown, 2)

@@ -5,12 +5,12 @@
 // child processes. The filesystem and process operations are injected,
 // so unit tests check the kill interleavings without requiring macOS or a real SIGKILL.
 //
-// The rule the records keep: no process may outlive its record. A spawn becomes its
-// own group's leader and publishes `<pgid> <leader start time>` by rename before it runs the
-// command, aborting when the rename fails — so a kill at any instant leaves a complete record or
-// a child that ends itself. The spawn stays after the command ends, publishing its exit status
-// beside the record, so teardown can still check the leader's start time before it signals the
-// group. The scavenger condemns a
+// The rule the records keep: no process may outlive its record. The leader, the process
+// registeredSpawn starts, makes itself its own group's leader and publishes
+// `<pgid> <leader start time>` by rename before it runs the command, aborting when the rename
+// fails — so a kill at any instant leaves a complete record or a child that ends itself. The
+// leader stays after the command ends, publishing its exit status beside the record, so teardown
+// can still check the leader's start time before it signals the group. The scavenger condemns a
 // directory (rename out of the scanned root) before it reads records, ends what they name, and
 // only then deletes. Every ending of a runtime's recorded group, by whichever process, runs
 // under that group's retirement lock (retirementLockFile).
@@ -150,15 +150,15 @@ object RunOnHostSession:
    * The build lock of one build directory and program, `build-lock/<program>-<hash>`: held by
    * the command's own process for its whole life, teardown included, so no two launches run or
    * clean up a command on one build at once, and a broker's death frees nothing the supervisor
-   * holds. The spawn below takes it through flock(2), whose lock belongs to the open file
-   * description: it survives the exec into the supervisor, reaches none of the supervisor's own
-   * children — a JVM's children get only their three standard descriptors — and is released
-   * when the supervisor exits; a killed supervisor's at once, the next start's scavenge behind it. A
-   * spawn blocked on the lock is a child like any other, ended when its requester leaves. Under
-   * the broker it also watches the broker's pipe on its stdin, as the supervisor does, and ends at
-   * its EOF, so a dead broker dispatches nothing, and it execs only on the broker's word
-   * (lockedSpawn), so the broker's own work on the build before the command — its runtime
-   * observed, retired or created — happens under the lock too. The file is never deleted:
+   * holds. The lock holder (lockedSpawn) takes it through flock(2), whose lock belongs to the open
+   * file description: it survives the exec into the supervisor, reaches none of the supervisor's
+   * own children — a JVM's children get only their three standard descriptors — and is released
+   * when the supervisor exits; a killed supervisor's at once, the next start's scavenge behind it.
+   * A lock holder still waiting for the lock is a child like any other, ended when its requester
+   * leaves. Under the broker it also watches the broker's pipe on its stdin, as the supervisor
+   * does, and ends at its EOF, so a dead broker dispatches nothing, and it execs only on the
+   * broker's word (lockedSpawn), so the broker's own work on the build before the command — its
+   * runtime observed, retired or created — happens under the lock too. The file is never deleted:
    * deleted and recreated, one name would let two holders lock different inodes.
    */
   def buildLockFile(root: Path, program: String, buildDirectory: Path): Either[String, Path] =
@@ -167,14 +167,15 @@ object RunOnHostSession:
         .resolve(s"$program-${buildHash(buildDirectory)}"))
     catch case ex: IOException => Left(s"the build locks under $root: ${ex.getMessage}")
 
-  /** The command under the build lock: perl (registeredSpawn has why) takes the lock and execs
-    * the command holding it, so the lock ends exactly when the command does, however it dies.
+  /** The command under the build lock: the lock holder, perl (registeredSpawn has why), takes the
+    * lock and execs the command holding it, so the lock ends exactly when the command does,
+    * however it dies.
     * When it has to wait it says so on stderr, the requester's. `underBroker`, its stdin is the
     * broker's pipe (RunOnHostChannel.dispatch): EOF while it waits ends it, and once it holds
     * the lock it writes `LockedLine` on its stdout and reads the broker's word from the pipe —
     * `runWord`, whose arguments it inserts before the command's `--`, or `refusedWord`, whose
     * message it prints on stderr before exiting 2, the supervisor's own refusal code. Exit 71 is
-    * the spawn ending itself, as in registeredSpawn. */
+    * the holder ending itself, as the leader does in registeredSpawn. */
   def lockedSpawn(lockFile: Path, command: Seq[String], underBroker: Boolean): Seq[String] =
     Seq("/usr/bin/perl", "-e", LockScript, lockFile.toString, if underBroker then "1" else "0") ++ command
 
@@ -182,7 +183,7 @@ object RunOnHostSession:
 
   private val Nul = 0.toChar.toString
 
-  /** The broker's word to a locked spawn: one line of NUL-separated fields, the verdict first,
+  /** The broker's word to a lock holder: one line of NUL-separated fields, the verdict first,
     * each field escaped so that a refusal of several lines — a server's output quoted — and an
     * argument holding a newline or a NUL arrive whole. */
   def runWord(arguments: Seq[String]): String = ("run" +: arguments.map(escapeField)).mkString(Nul) + "\n"
@@ -423,10 +424,10 @@ object RunOnHostSession:
           case None        => processes.groupEmpty(known.pgid)
       catch case _: IOException => false
 
-  /** Whether the spawn a record names still runs its command: the leader alive with the recorded
+  /** Whether the leader a record names still runs its command: alive with the recorded
     * start time, and no exit published beside the record. Neither alone answers: the leader
     * outlives its command by design, and a group killed whole publishes no exit. */
-  def spawnLives(record: Path, processes: Processes): Boolean =
+  def leaderLives(record: Path, processes: Processes): Boolean =
     val parsed =
       try parseRecord(Files.readString(record, UTF_8))
       catch case _: IOException => None
@@ -495,7 +496,7 @@ object RunOnHostSession:
    * The supervisor's own step 11, through the scavenger's own steps: condemn the session first — the
    * command's grants are path-based and name the original pathname, so after the rename no process
    * it started can change what `collect`'s canonicalization resolves to — then collect it: recorded
-   * groups ended behind their live spawn leaders, the server with them, the directory deleted.
+   * groups ended behind their live leaders, the server with them, the directory deleted.
    * Asking the server by protocol is how the scavenger reaches the leaderless orphan; here the
    * leader is alive with its recorded start time, so the group is signalled, and TERM is the
    * clean end (the server flushes its portfile on TERM). The session's own lock is held through
@@ -730,9 +731,9 @@ object RunOnHostSession:
    * The registration, as the command the supervisor spawns. perl makes itself its own group's
    * leader, publishes `<pgid> <leader start>` beside the record path
    * and renames it into place, then runs the command as its child; any failed step is exit 71
-   * instead, which is the spawn ending itself after a condemnation won the race. When the command
+   * instead, which is the leader ending itself after a condemnation won the race. When the command
    * ends, its exit status (128+signal for a signal death, the shell's convention) is published
-   * the same way as `<record>.exit`, and the spawn stays until its group is ended: a group is
+   * the same way as `<record>.exit`, and the leader stays until its group is ended: a group is
    * signalled only behind a live leader, and a command can fork a helper and return, so
    * ownership must not expire with the command. A `.pending` file a kill leaves behind still
    * parses, and still names a group whose leader either matches (ours, ended) or is gone
@@ -772,26 +773,26 @@ object RunOnHostSession:
       |rename("$record.exit.pending", "$record.exit") or exit 71;
       |sleep 3600 while 1;""".stripMargin
 
-  /** Where the spawn publishes the command's exit status, beside its record. */
+  /** Where the leader publishes the command's exit status, beside its record. */
   def exitRecord(record: Path): Path = record.resolveSibling(s"${record.getFileName}.exit")
 
   /**
-   * The command's exit status. The spawn stays alive after publishing it, so the file, not the
-   * process, holds the answer; a spawn gone without one was killed, or ended itself (exit 71)
+   * The command's exit status. The leader stays alive after publishing it, so the file, not the
+   * process, holds the answer; a leader gone without one was killed, or ended itself (exit 71)
    * after losing a condemnation race.
    */
-  def awaitExit(exitFile: Path, spawn: Process): Either[String, Int] =
+  def awaitExit(exitFile: Path, leader: Process): Either[String, Int] =
     var result: Option[Either[String, Int]] = None
     while result.isEmpty do
-      val spawnEnded = !spawn.isAlive // read before the file: a spawn dying after its rename still answers
+      val leaderEnded = !leader.isAlive // read before the file: a leader dying after its rename still answers
       if Files.exists(exitFile) then
         result = Some(
           try Files.readString(exitFile, UTF_8).trim.toIntOption.toRight(s"$exitFile holds no status")
           catch case ex: IOException => Left(s"$exitFile: ${ex.getMessage}"),
         )
-      else if spawnEnded then
+      else if leaderEnded then
         result =
-          Some(Left(s"the spawn ended (exit ${spawn.exitValue}) without publishing an exit status"))
+          Some(Left(s"the leader ended (exit ${leader.exitValue}) without publishing an exit status"))
       else Thread.sleep(20)
     result.get
 

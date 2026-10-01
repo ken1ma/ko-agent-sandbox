@@ -13,7 +13,7 @@
 // `sysctl_procargsx`), so build code in the daemon can rewrite them and hide the daemon from its
 // own launch, and nothing else: a daemon so hidden is unrecorded, as one started under a broker
 // that died during the command is — the daemon's pid is its group id, so the record is one like
-// any registered spawn's, written after the fact — and either is confined, holds nothing, and
+// a leader's, written after the fact — and either is confined, holds nothing, and
 // exits on Gradle's idle timeout (SECURITY.md "Run on host"). macOS only, like the supervisor: the
 // observations are pgrep and ps, so BrokerRuntimes takes `gradleDaemons` as a parameter tests replace and the
 // acceptance test measures it.
