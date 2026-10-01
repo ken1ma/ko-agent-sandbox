@@ -31,7 +31,7 @@ object RunOnHostChannel:
    * The request travels on the liveness descriptor, so no request is ever runnable without its
    * liveness: the broker acts on `ctl`'s EOF alone — an interrupted shim, a killed one and a
    * dead container all close the descriptor, and the running command is ended with SIGTERM, the
-   * wrapper's own measured teardown (RunOnHostSession). A handshake whose `ctl` never opens, or whose request
+   * supervisor's own measured teardown (RunOnHostSession). A handshake whose `ctl` never opens, or whose request
    * never completes, expires on a deadline with no command started. The shim bounds startup
    * through opening both output streams, then separately the exit-status read, and exits 70 on
    * either timeout. Waiting for the lock and draining command output have no deadline. The data FIFOs
@@ -175,20 +175,20 @@ object RunOnHostChannel:
 
   /** Everything one session's broker serves with: the launcher's canonical project root, the
     * programs `--run-on-host` named, and how a validated request — program, working directory,
-    * build lock file, arguments — becomes a wrapper command. */
+    * build lock file, arguments — becomes a supervisor command. */
   final case class Service(
     project: Path,
     programs: Set[String],
-    /** A locked spawn of the wrapper (RunOnHostSession.lockedSpawn, under the broker): dispatch
+    /** A locked spawn of the supervisor (RunOnHostSession.lockedSpawn, under the broker): dispatch
       * speaks its protocol. */
-    wrapperCommand: (String, Path, Path, Seq[String]) => Seq[String],
+    supervisorCommand: (String, Path, Path, Seq[String]) => Seq[String],
     os: Os,
     /** The build lock file of a program and build directory (RunOnHostSession.buildLockFile),
-      * which the wrapper holds for its life. */
+      * which the supervisor holds for its life. */
     buildLock: (String, Path) => Either[String, Path],
     /** The runtime a program's command in a build directory runs against, given the request's
-      * arguments, prepared while the spawn holds the build lock: the wrapper options naming it
-      * (RunOnHostSandbox.runtimeOptions), none for a program whose wrapper creates its own. */
+      * arguments, prepared while the spawn holds the build lock: the supervisor options naming it
+      * (RunOnHostSandbox.runtimeOptions), none for a program whose supervisor creates its own. */
     runtime: (String, Path, Seq[String]) => Either[String, Seq[String]],
     /** After a dispatched spawn ended — its command run, refused, or ended with its requester —
       * with the request's program: what the runtime records once the command is over
@@ -270,7 +270,7 @@ object RunOnHostChannel:
 
   /** How to end the command a broker is currently running, for the shutdown hook: a TERM to the
     * broker ends the command too, rather than silently leaving it to finish, and returns only
-    * when the wrapper has ended, its teardown included, before the broker's own session is
+    * when the supervisor has ended, its teardown included, before the broker's own session is
     * ended. */
   @volatile private var currentCommand: Option[() => Unit] = None
 
@@ -279,7 +279,7 @@ object RunOnHostChannel:
   /** Where a dispatched spawn is, for an end asked of it — the requester gone, endCurrentCommand.
     * Waiting for the build lock, it is destroyed at once. Preparing the runtime, it holds the
     * lock the preparation runs under, so the end is applied once the word is out: the refusal,
-    * which it exits on by itself. Running the wrapper, it is destroyed, the wrapper's teardown
+    * which it exits on by itself. Running the supervisor, it is destroyed, the supervisor's teardown
     * answering. */
   private enum SpawnPhase:
     case Waiting, Preparing, Running, Ending
@@ -385,11 +385,11 @@ object RunOnHostChannel:
   ): Unit =
     val outWriter = writer(transport, id, "out")
     val errWriter = writer(transport, id, "err")
-    val command = service.wrapperCommand(request.program, workingDirectory, lockFile, request.arguments)
+    val command = service.supervisorCommand(request.program, workingDirectory, lockFile, request.arguments)
     log(s"${request.program} in $workingDirectory: ${request.arguments.mkString(" ")}")
     try
-      // The wrapper's stdin is this broker's pipe, written once — the word below — and then
-      // held: its EOF is the broker gone, killed or ended, and the wrapper ends the command at
+      // The supervisor's stdin is this broker's pipe, written once — the word below — and then
+      // held: its EOF is the broker gone, killed or ended, and the supervisor ends the command at
       // it (RunOnHostSandbox.runCommandMain) as this broker ends it at ctl's.
       val child = ProcessBuilder(command*).start()
       val ended = AtomicBoolean(false)
@@ -414,7 +414,7 @@ object RunOnHostChannel:
       // stderr from the start: the spawn's wait for the build lock is announced there.
       val errPump = pump(child.getErrorStream, errWriter.getOutputStream)
       // The spawn's first line says it holds the build lock; the word — the runtime's options,
-      // or the refusal the spawn prints and exits 2 on — is what it execs the wrapper on.
+      // or the refusal the spawn prints and exits 2 on — is what it execs the supervisor on.
       // Anything else is the spawn ending before the lock, or ended while it waited, and its
       // exit is the answer.
       readLine(child.getInputStream) match
@@ -469,9 +469,9 @@ object RunOnHostChannel:
         log(s"exit $exit")
     catch
       case ex: IOException =>
-        log(s"could not start the wrapper: ${ex.getMessage}")
+        log(s"could not start the supervisor: ${ex.getMessage}")
         writeAll(outWriter.getOutputStream, "")
-        writeAll(errWriter.getOutputStream, s"could not start the command wrapper: ${ex.getMessage}\n")
+        writeAll(errWriter.getOutputStream, s"could not start the command supervisor: ${ex.getMessage}\n")
         writeExit(transport, id, 2)
     finally
       currentCommand = None
@@ -618,7 +618,7 @@ object RunOnHostChannel:
             log(s"the file rules: $reason")
             sys.exit(1)
         // The forwarded values, from this process's environment under their carrier names, as
-        // the wrapper reads them; the system paths the artifact bundles, as the wrapper's.
+        // the supervisor reads them; the system paths the artifact bundles, as the supervisor's.
         val runtimes = RunOnHostSandbox.BrokerRuntimes(
           session, project, log, RunOnHostSandbox.bundledSystemPaths(),
           forwardedNames.flatMap(name => Option(System.getenv(RunOnHostSandbox.carrierName(name))).map(name -> _)),
@@ -659,7 +659,7 @@ object RunOnHostChannel:
         val service = Service(
           project = project,
           programs = programsCsv.split(",").toSet,
-          wrapperCommand = (program, workingDirectory, lockFile, arguments) =>
+          supervisorCommand = (program, workingDirectory, lockFile, arguments) =>
             RunOnHostSession.lockedSpawn(
               lockFile,
               RunOnHostSandbox.selfInvocation(

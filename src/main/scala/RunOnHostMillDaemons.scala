@@ -12,7 +12,7 @@
 // is not waited out. The helper would return for a Mill version whose daemon does not survive the
 // starter's end. Before the broker's starts, a daemon of the user's own for the build directory
 // is ended once idle, after its start-time check, as the user's sbt server is shut down by protocol.
-// macOS only, like the wrapper: the observations are ps, pgrep and lsof, so BrokerRuntimes takes
+// macOS only, like the supervisor: the observations are ps, pgrep and lsof, so BrokerRuntimes takes
 // `start` as a parameter tests replace and the acceptance test measures it.
 
 package agentsandbox.launcher

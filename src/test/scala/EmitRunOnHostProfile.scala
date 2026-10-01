@@ -74,7 +74,7 @@ object EmitRunOnHostProfile:
       gradleUserHome = assembled.gradleUserHomeGranted,
       m2Repository = assembled.m2RepositoryGranted,
       proxyPort = 51234,
-      // No proxy runs under the emitted profile, so nothing is here: the wrapper rows have the real one.
+      // No proxy runs under the emitted profile, so nothing is here: the supervisor rows have the real one.
       trust = RunOnHostInspection.trustDirectory(sessionTmp.resolveSibling("proxy.log")),
       systemPaths = systemPaths,
       network = program match
@@ -100,7 +100,7 @@ object EmitRunOnHostProfile:
     Console.err.println(s"gradle user home: ${assembled.gradleUserHome}")
     Console.err.println(s"m2 repository: ${assembled.m2Repository}")
     // The acceptance test re-runs this classpath as RunOnHost, plain java with no sbt in front, because a
-    // wrapper driven through `sbt Test/runMain` would find its own server holding the project's
+    // supervisor driven through `sbt Test/runMain` would find its own server holding the project's
     // portfile and end it (one server per build directory). Walked from the class loaders, not
     // java.class.path — runMain ran this inside the build JVM, whose own classpath is sbt's — and
     // copied beside the profile,
@@ -129,9 +129,9 @@ object EmitRunOnHostProfile:
 
   /**
    * `/private/tmp/ko-agent-<uid>-accept/<session>/tmp`: short enough for SessionTmpMaxLength where
-   * the per-user temporary directory is not, vetted like the wrapper root. Its own root on
+   * the per-user temporary directory is not, vetted like the supervisor root. Its own root on
    * purpose: the acceptance test drives many builds against one emitted profile with nothing holding a
-   * session lock, and inside the wrapper root any scavenge would rightly collect that; this root
+   * session lock, and inside the supervisor root any scavenge would rightly collect that; this root
    * is outside every scan and the acceptance test's to clean.
    */
   private def newSessionTmp(): Path =

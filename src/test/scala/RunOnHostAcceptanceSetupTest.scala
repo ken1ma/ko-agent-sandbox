@@ -142,7 +142,7 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
       assertEquals(output.contains("SIGNALLED 123"), permitted, clue = (kind, state, output))
       assertEquals(status, if permitted then 0 else 1, clue = (kind, state, output))
 
-  test("failed wrapper setup skips cache-dependent sbt rows but retains the failure"):
+  test("failed supervisor setup skips cache-dependent sbt rows but retains the failure"):
     val script = Files.readString(Path.of("src/probe/run-on-host-acceptance-test.sh"))
     val start = script.indexOf("if want sbt; then", script.indexOf("echo \"positive rows\""))
     val rows = script.substring(start, script.indexOf("\nif want mill; then", start))
@@ -155,7 +155,7 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
         """work=$1; project=$work; ivy_project=$work/.; quick=0; JAVA_HOME=/jdk; failed_command=$2
           |want() { return 0; }
           |use_profile() { :; }
-          |wrapper() {
+          |supervisor() {
           |    if [ "$2" = "$project" ] && [ "$3" = "$failed_command" ]; then
           |        echo 'refused: setup failed'; return 2
           |    fi
@@ -173,6 +173,6 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
       ).redirectErrorStream(true).start()
       val output = String(process.getInputStream.readAllBytes(), UTF_8)
       assertEquals(process.waitFor(), 0, clue = output)
-      assert(output.contains(s"FAIL|sbt $failedCommand (wrapper)|refused: setup failed"), clue = output)
+      assert(output.contains(s"FAIL|sbt $failedCommand (supervisor)|refused: setup failed"), clue = output)
       assertEquals(output.linesIterator.count(_.startsWith("SKIP|")), 4, clue = output)
       assert(!output.contains("UNEXPECTED"), clue = output)

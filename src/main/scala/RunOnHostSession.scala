@@ -1,4 +1,4 @@
-// The host command's lifecycle. A command session is one wrapper invocation; the broker's session
+// The host command's lifecycle. A command session is one supervisor invocation; the broker's session
 // is one launch, published and locked the same way by the broker, holding the runtimes its
 // commands share (RunOnHostSandbox.BrokerRuntimes). A session's directory is published by rename
 // so it is never seen half-made, its lock marks its owner as live, and its records identify the
@@ -41,7 +41,7 @@ object RunOnHostSession:
   val BuildFilePrefix = "build-"
 
   /** Whose lock a session's is, and the prefix its directory is named by: the broker's lives the
-    * launch's lifetime; a command's, its wrapper's. */
+    * launch's lifetime; a command's, its supervisor's. */
   enum Kind(val prefix: String):
     case Broker extends Kind("b")
     case Command extends Kind("s")
@@ -77,7 +77,7 @@ object RunOnHostSession:
       * observed. */
     def signal(pid: Long, name: String): Unit
 
-  /** How one collected session ended up, for the wrapper's report. */
+  /** How one collected session ended up, for the supervisor's report. */
   enum Collected:
     case GroupEnded(pgid: Long)
     /** A member still listed — after the KILL, or with the leader gone — or no listing to be
@@ -107,7 +107,7 @@ object RunOnHostSession:
     case Unanswered(reason: String)
 
   // ---------------------------------------------------------------------------
-  // The wrapper root
+  // The supervisor root
   // ---------------------------------------------------------------------------
 
   /** Within RunOnHostPrereqs.SessionTmpMaxLength's budget: every session's `tmp/` is beneath it. */
@@ -149,13 +149,13 @@ object RunOnHostSession:
   /**
    * The build lock of one build directory and program, `build-lock/<program>-<hash>`: held by
    * the command's own process for its whole life, teardown included, so no two launches run or
-   * clean up a command on one build at once, and a broker's death frees nothing the wrapper
+   * clean up a command on one build at once, and a broker's death frees nothing the supervisor
    * holds. The spawn below takes it through flock(2), whose lock belongs to the open file
-   * description: it survives the exec into the wrapper, reaches none of the wrapper's own
+   * description: it survives the exec into the supervisor, reaches none of the supervisor's own
    * children — a JVM's children get only their three standard descriptors — and is released
-   * when the wrapper exits; a killed wrapper's at once, the next start's scavenge behind it. A
+   * when the supervisor exits; a killed supervisor's at once, the next start's scavenge behind it. A
    * spawn blocked on the lock is a child like any other, ended when its requester leaves. Under
-   * the broker it also watches the broker's pipe on its stdin, as the wrapper does, and ends at
+   * the broker it also watches the broker's pipe on its stdin, as the supervisor does, and ends at
    * its EOF, so a dead broker dispatches nothing, and it execs only on the broker's word
    * (lockedSpawn), so the broker's own work on the build before the command — its runtime
    * observed, retired or created — happens under the lock too. The file is never deleted:
@@ -173,7 +173,7 @@ object RunOnHostSession:
     * broker's pipe (RunOnHostChannel.dispatch): EOF while it waits ends it, and once it holds
     * the lock it writes `LockedLine` on its stdout and reads the broker's word from the pipe —
     * `runWord`, whose arguments it inserts before the command's `--`, or `refusedWord`, whose
-    * message it prints on stderr before exiting 2, the wrapper's own refusal code. Exit 71 is
+    * message it prints on stderr before exiting 2, the supervisor's own refusal code. Exit 71 is
     * the spawn ending itself, as in registeredSpawn. */
   def lockedSpawn(lockFile: Path, command: Seq[String], underBroker: Boolean): Seq[String] =
     Seq("/usr/bin/perl", "-e", LockScript, lockFile.toString, if underBroker then "1" else "0") ++ command
@@ -261,7 +261,7 @@ object RunOnHostSession:
    * open when the next thread has locked a fresh one, would end another thread's exclusion
    * against other processes. Two threads do contend: the acceptance test's entry prepares its runtime on the
    * main thread and tears the session down from the shutdown hook (RunOnHostSandbox.ownRuntime),
-   * and the broker's monitor covers neither the wrapper nor the tests.
+   * and the broker's monitor covers neither the supervisor nor the tests.
    *
    * Only the records that name a runtime another launch could end map to a lock
    * (retirementLockName): a command session's own records and the Gradle daemons' are ended by
@@ -492,7 +492,7 @@ object RunOnHostSession:
         body(bySignal)
 
   /**
-   * The wrapper's own step 11, through the scavenger's own steps: condemn the session first — the
+   * The supervisor's own step 11, through the scavenger's own steps: condemn the session first — the
    * command's grants are path-based and name the original pathname, so after the rename no process
    * it started can change what `collect`'s canonicalization resolves to — then collect it: recorded
    * groups ended behind their live spawn leaders, the server with them, the directory deleted.
@@ -501,7 +501,7 @@ object RunOnHostSession:
    * clean end (the server flushes its portfile on TERM). The session's own lock is held through
    * the collection — the exclusivity every other
    * collector respects (scavenge) — and released only after. `beforeRemoval` sees the condemned
-   * directory once its groups are ended, the wrapper's moment to read the session's logs
+   * directory once its groups are ended, the supervisor's moment to read the session's logs
    * (RunOnHostSandbox.appendSessionLogs). A failed rename falls back to ending the recorded groups
    * and removing in place, with no shutdown sent to any socket and no logs read: at the original
    * pathname a process the command started could still redirect a read. A group alive after that
@@ -536,7 +536,7 @@ object RunOnHostSession:
    * work an earlier, killed scavenger left — then every unlocked published entry is condemned and
    * collected, then staging litter is cleared under the root lock. A condemned entry is collected
    * only under its own lock — the same lock its session held — so two starts, or a start and the
-   * wrapper's own step 11, never signal or delete the same entry concurrently. The build locks
+   * supervisor's own step 11, never signal or delete the same entry concurrently. The build locks
    * and the retirement locks are skipped by name: a directory without a `lock` file reads as a
    * dead session here.
    *
@@ -546,7 +546,7 @@ object RunOnHostSession:
    * OpenJDK's `FileChannel.lock` is a POSIX `fcntl` lock, which the kernel drops for the whole
    * process when *any* descriptor to that file is closed. Probing the caller's own lock would
    * release it, and another launch could then condemn a live session. A start that scavenges
-   * before publishing (the wrapper, and the broker at startup) holds no session yet and passes
+   * before publishing (the supervisor, and the broker at startup) holds no session yet and passes
    * None.
    */
   def scavenge(
@@ -706,7 +706,7 @@ object RunOnHostSession:
   /**
    * The socket at its canonical pathname, or None when that leaves `container`: `..` in a
    * portfile's spelling and a symlink beneath the session both point outside, and the unconfined
-   * wrapper must never send a shutdown past the session's own boundary.
+   * supervisor must never send a shutdown past the session's own boundary.
    */
   def containedSocket(socket: Path, container: Path): Option[Path] =
     try
@@ -727,7 +727,7 @@ object RunOnHostSession:
   // ---------------------------------------------------------------------------
 
   /**
-   * The registration, as the command the wrapper spawns. perl makes itself its own group's
+   * The registration, as the command the supervisor spawns. perl makes itself its own group's
    * leader, publishes `<pgid> <leader start>` beside the record path
    * and renames it into place, then runs the command as its child; any failed step is exit 71
    * instead, which is the spawn ending itself after a condemnation won the race. When the command
@@ -867,7 +867,7 @@ object RunOnHostSession:
   /** What a collector's claim on a condemned entry came to. */
   private enum Claim:
     case Taken(lock: FileChannel)
-    /** Another collector — a concurrent start, or the wrapper ending its own session — holds it. */
+    /** Another collector — a concurrent start, or the supervisor ending its own session — holds it. */
     case Held
     /** No lock file: deleteSessionTree unlinks the lock last, so this is a dead collector's
       * leftover — removed without signalling, since only the lock chain proves ownership. */

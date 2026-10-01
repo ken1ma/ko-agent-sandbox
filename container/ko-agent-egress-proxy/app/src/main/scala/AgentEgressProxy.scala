@@ -205,7 +205,7 @@ object AgentEgressProxy:
      * written should not start, and one whose log stops being written serves
      * nothing more (Run.requireAuditLog). The log is the file where one is set;
      * stderr is then a copy podman removes with the container, and its failed writes
-     * are not kept. Without a file stderr is the log: the run-on-host wrapper
+     * are not kept. Without a file stderr is the log: the run-on-host supervisor
      * redirects it into a file. The descriptor, not System.err: that PrintStream
      * catches the failure before keepingFirstFailure could keep it.
      */
@@ -322,7 +322,7 @@ object AgentEgressProxy:
       case _: SocketException                               => "connection_terminated"
       case _                                                => "http_protocol_error"
 
-  /** Starts the reason of every refusal after a failed log write; the run-on-host wrapper looks for it. */
+  /** Starts the reason of every refusal after a failed log write; the run-on-host supervisor looks for it. */
   val AuditLogUnwritable = "audit log cannot be written"
 
   def auditLogFailure(ex: IOException): String = s"$AuditLogUnwritable: ${ex.getMessage}"
@@ -428,7 +428,7 @@ object AgentEgressProxy:
         // allow, so a refused method is named in the text, not promoted to the vocabulary.
         System.err.println(auditLine("deny", host, "-", "", ex.getMessage))
         // After a failed log write every request is answered with that reason, this one included:
-        // the run-on-host wrapper asks with a request that is no CONNECT, so that a proxy still
+        // the run-on-host supervisor asks with a request that is no CONNECT, so that a proxy still
         // logging records no refused host for it (RunOnHostSandbox.unwritableProxyLog).
         try
           run.requireAuditLog()

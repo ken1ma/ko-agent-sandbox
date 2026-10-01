@@ -103,7 +103,7 @@ object RunOnHostRuntimeDescriptor:
     * command that started it and every later command attaches regardless, as stock sbt's thin
     * client attaches to whatever server holds the portfile; attaching across launches follows
     * the same rule. They widen nothing this fingerprint guards: the profile is rendered from the
-    * assembly and the session, never from the request; the wrapper's properties ride
+    * assembly and the session, never from the request; the supervisor's properties ride
     * `_JAVA_OPTIONS`, which HotSpot applies after argv, so a `-D` moves neither the global base
     * nor the socket directory; a bind under the sbt profile gets EPERM, so `-jvm-debug` listens
     * nowhere; a cache flag naming a path outside the grants fails the server at its first write;

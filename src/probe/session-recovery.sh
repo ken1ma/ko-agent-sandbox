@@ -1,9 +1,9 @@
 #!/bin/sh
-# Five measurements of the assumptions behind the wrapper's orphan recovery and proxy hosting:
+# Five measurements of the assumptions behind the supervisor's orphan recovery and proxy hosting:
 #
 #   M1  the egress proxy runs on macOS from its dist jars, allows repo1.maven.org under
 #       replacement rules (deny defaults plus one read line), and refuses unlisted hosts;
-#       it listens on wildcard :3128 unless the wrapper supplies a bind address
+#       it listens on wildcard :3128 unless the supervisor supplies a bind address
 #   M2  a local-mode sbt server's portfile carries no token
 #   M3  the sbt server stays in the client's process group after the client exits
 #   M4  the tokenless initialize + sbt/exec shutdown handshake, sent to the socket's pathname

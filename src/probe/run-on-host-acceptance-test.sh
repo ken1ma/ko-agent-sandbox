@@ -1,6 +1,6 @@
 #!/bin/sh
 # The security acceptance test, run by hand on macOS before each release, and when the profile generator,
-# the wrapper or the channel changes. One row per contract claim, each run under the generated
+# the supervisor or the channel changes. One row per contract claim, each run under the generated
 # profile, each reporting PASS, FAIL or SKIP with what it observed. Everything else in src/probe/
 # finds out what a profile needs, except machine-memory-return.sh, which measures the podman
 # machine; this one finds out whether the profile that resulted enforces
@@ -12,13 +12,13 @@
 # The program selects the positive rows; the negative matrix and the network rows run under every
 # selected profile. `quick` leaves the test rows and the lifecycle rows out. Profiles for the
 # negative matrix come from `sbt Test/runMain EmitRunOnHostProfile`; the build rows run through
-# RunOnHost — the RunOnHostSandbox wrapper — as plain java on the classpath emit printed, never
+# RunOnHost — the RunOnHostSandbox supervisor — as plain java on the classpath emit printed, never
 # through `sbt Test/runMain`, whose own server would hold this project's portfile and be ended by
-# the wrapper (one server per build directory). Each wrapper row scavenges, publishes a command directory, starts the
-# command's own proxy and sbt server or mill daemon in it — the broker's functions over the command's own session —
-# runs the command under the profile and ends what it started, so the rows measure the lifecycle as well as the
-# profile; there is no warm-up block, and a cold run-on-host cache resolves through the proxy inside the
-# profile, which is the measurement.
+# the supervisor (one server per build directory). Each supervisor row scavenges, publishes a command
+# directory, starts the command's own proxy and sbt server or mill daemon in it — the broker's
+# functions over the command's own session — runs the command under the profile and ends what it
+# started, so the rows measure the lifecycle as well as the profile; there is no warm-up block, and
+# a cold run-on-host cache resolves through the proxy inside the profile, which is the measurement.
 #
 # The sbt rows build this repository. The mill rows build src/probe/mill-fixture, the gradle rows
 # src/probe/gradle-fixture and the mvn rows src/probe/mvn-fixture, one-module projects that exist
@@ -134,7 +134,7 @@ emit() { # program
 # PATH, because -java-home reaches sbt's client alone: the client starts the server by re-running
 # the sbt script, which takes `java` from PATH — /usr/bin/java, the stub the JVM rule rejects and the
 # profile denies. mill's `mill-jvm-version: system` takes `java` from PATH the same way.
-# `env -i`, because the wrapper's environment is a closed set (RunOnHostSandbox.commandEnvironment;
+# `env -i`, because the supervisor's environment is a closed set (RunOnHostSandbox.commandEnvironment;
 # run-on-host.md, "The command's lifetime and environment", has the table). A row passing on a variable
 # or a PATH entry production withholds would invalidate the measurement. These rows run without a
 # proxy, with one temporary directory for clients and servers; network rows measure denial itself.
@@ -168,38 +168,38 @@ sandboxed() { # program command...
     profile=$work/acceptance-$1.sb; shift
     with_timeout "${ACCEPTANCE_ROW_TIMEOUT:-600}" command_env "$cache_v1" /usr/bin/sandbox-exec -f "$profile" "$@"
 }
-run_sbt() { # client command...: the executable the wrapper runs; the profile PATH holds no sbt
+run_sbt() { # client command...: the executable the supervisor runs; the profile PATH holds no sbt
     client=$1; shift
     sandboxed sbt "$sbt_executable" "-Dsbt.global.base=$sbt_global" \
         $client -batch -java-home "$JAVA_HOME" "$@"
 }
 
-# A command through the wrapper: RunOnHost scavenges, publishes a command directory, starts the command's
+# A command through the supervisor: RunOnHost scavenges, publishes a command directory, starts the command's
 # proxy and, for sbt, its server, runs the program under the generated profile, ends them, and preserves the
-# exit code. Its stderr carries the wrapper's own lines — `scavenged ...`, `refused: ...`,
+# exit code. Its stderr carries the supervisor's own lines — `scavenged ...`, `refused: ...`,
 # `Command requested network access ...` — which several rows read. $test_cp and $lock_script
 # are captured from emit and RunOnHost; the command runs under the build lock the broker's spawn
-# takes (locked_wrapper).
+# takes (locked_supervisor).
 build_lock() { "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost --build-lock "$1" "$2"; }
-# The wrapper issues its proxy's certificates, which needs the exports the launcher's own
+# The supervisor issues its proxy's certificates, which needs the exports the launcher's own
 # re-invocation passes (RunOnHostSandbox.CertificateBuilderExports).
 certificate_exports="--add-exports=java.base/sun.security.x509=ALL-UNNAMED
 --add-exports=java.base/sun.security.util=ALL-UNNAMED"
 # The hash that names a build directory's lock and the broker's records for it (RunOnHostSession.buildHash).
 build_hash() { lock=$(build_lock sbt "$1") && printf '%s\n' "${lock##*-}"; }
-locked_wrapper() { # program project command...
+locked_supervisor() { # program project command...
     lw_program=$1; lw_project=$2; shift 2
     lock=$(build_lock "$lw_program" "$lw_project") || return 2
-    # exec, so the with_timeout background pid is this perl and then the wrapper JVM, not a
-    # subshell whose kill would miss them (victim_wrapper's own reason).
+    # exec, so the with_timeout background pid is this perl and then the supervisor JVM, not a
+    # subshell whose kill would miss them (victim_supervisor's own reason).
     # shellcheck disable=SC2086 # two options, split on purpose
     exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" $certificate_exports -cp "$test_cp" \
         agentsandbox.launcher.RunOnHost "$lw_program" "$lw_project" \
         src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt -- "$@"
 }
-wrapper() { # program project command...
-    wrapper_program=$1; wrapper_project=$2; shift 2
-    with_timeout "${ACCEPTANCE_ROW_TIMEOUT:-900}" locked_wrapper "$wrapper_program" "$wrapper_project" "$@"
+supervisor() { # program project command...
+    supervisor_program=$1; supervisor_project=$2; shift 2
+    with_timeout "${ACCEPTANCE_ROW_TIMEOUT:-900}" locked_supervisor "$supervisor_program" "$supervisor_project" "$@"
 }
 deny_project=$project/src/probe/deny-fixture
 ivy_project=$project/src/probe/ivy-fixture
@@ -259,8 +259,8 @@ acceptance_gradle_daemons() {
     done
 }
 # This run's proxies: a command's, and under the channel rows the broker's. A timed-out or killed
-# wrapper's, and a killed broker's, is ended by the next start's scavenge, but the acceptance test must not
-# leave one when it exits before running a start. Only this run's: its wrappers run on the run's
+# supervisor's, and a killed broker's, is ended by the next start's scavenge, but the acceptance test must not
+# leave one when it exits before running a start. Only this run's: its supervisors run on the run's
 # scratch classpath, which the proxy re-invokes on its own command line — a concurrent acceptance run's or
 # a real command's proxy carries a different path and is not this acceptance run's to end.
 stray_proxies() {
@@ -322,7 +322,7 @@ acceptance_require_idle "$command_root" "$project" "$mill_project" "$gradle_proj
 
 # One sbt server per project at a time (SECURITY.md "Run on host"). A thin client attaches to whatever server the
 # project's portfile names and runs with that server's environment, and one that cannot connect
-# deletes the portfile and starts its own. A server already here is refused, as the wrapper will.
+# deletes the portfile and starts its own. A server already here is refused, as the supervisor will.
 existing=$(project_servers | tr '\n' ' ')
 if [ -n "$existing" ]; then
     echo "an sbt server is already running for $project (pid $existing): run 'sbt shutdown'," >&2
@@ -383,14 +383,14 @@ fi
 profiles=${profiles# }
 first=${profiles%% *}
 test_cp=$(sed -n 's/^classpath: //p' "$work/emit-$first.log")
-[ -n "$test_cp" ] || { echo "emit printed no classpath; the wrapper rows cannot run" >&2; exit 1; }
-# The proxy's own profile, for the java and classpath the wrapper rows run their proxies with.
+[ -n "$test_cp" ] || { echo "emit printed no classpath; the supervisor rows cannot run" >&2; exit 1; }
+# The proxy's own profile, for the java and classpath the supervisor rows run their proxies with.
 echo "emitting the proxy profile"
 sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile \"$work/acceptance-proxy.sb\" \
         src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt proxy \"$JAVA_HOME\" \"$test_cp\"" \
         >"$work/emit-proxy.log" 2>&1 || { echo "emit failed for the proxy:"; tail -20 "$work/emit-proxy.log"; exit 1; }
-# `emit`'s own sbt server goes before any wrapper or command_env client runs, for the one-server reason
-# above: the wrapper would find it holding this project's portfile and refuse.
+# `emit`'s own sbt server goes before any supervisor or command_env client runs, for the one-server reason
+# above: the supervisor would find it holding this project's portfile and refuse.
 sbt --jvm-client -batch shutdown >/dev/null 2>&1
 acceptance_require_idle "$command_root" "$project" "$mill_project" "$gradle_project" "$mvn_project" || exit 1
 lock_script=$("$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost --lock-script)
@@ -427,9 +427,10 @@ safe_path "the user's Coursier cache" "${COURSIER_CACHE:-$HOME/Library/Caches/Co
 safe_path "the sbt executable path" "$sbt_executable"
 safe_path "the mill download folder" "$mill_downloads"
 mill_executable=$(sed -n 's/^executable: //p' "$work/emit-mill.log" 2>/dev/null)
-# The distribution ./gradlew unpacked on this host, as the wrapper derived it (RunOnHostPrereqs.gradleDistributionDir).
+# The distribution ./gradlew unpacked on this host, as the supervisor derived it
+# (RunOnHostPrereqs.gradleDistributionDir).
 gradle_home=$(sed -n 's|^executable: \(.*\)/bin/gradle$|\1|p' "$work/emit-gradle.log" 2>/dev/null)
-# The distribution ./mvnw unpacked on this host, as the wrapper derived it (RunOnHostPrereqs.mvnDistributionDir).
+# The distribution ./mvnw unpacked on this host, as the supervisor derived it (RunOnHostPrereqs.mvnDistributionDir).
 mvn_home=$(sed -n 's|^executable: \(.*\)/bin/mvn$|\1|p' "$work/emit-mvn.log" 2>/dev/null)
 
 # A scratch tree per profile, inside that profile's project, standing in for a project with
@@ -506,7 +507,7 @@ done
 
 # --- positive rows ------------------------------------------------------------------------------
 #
-# The wrapper rows come first: a cold run-on-host cache resolves through the command's proxy inside the
+# The supervisor rows come first: a cold run-on-host cache resolves through the command's proxy inside the
 # profile, warming what the emit-profile rows after them read.
 
 echo
@@ -524,23 +525,23 @@ if want sbt; then
     sbt_ready=1
     for command in compile test; do
         [ "$command" = test ] && [ "$quick" = 1 ] && { report SKIP "sbt test" "quick mode"; continue; }
-        if wrapper sbt "$project" "$command" >"$work/$command.log" 2>&1
-        then report PASS "sbt $command (wrapper)" "$(grep -m1 '^\[success\]' "$work/$command.log")"
+        if supervisor sbt "$project" "$command" >"$work/$command.log" 2>&1
+        then report PASS "sbt $command (supervisor)" "$(grep -m1 '^\[success\]' "$work/$command.log")"
         else
             sbt_ready=0
-            report FAIL "sbt $command (wrapper)" \
+            report FAIL "sbt $command (supervisor)" \
                 "$(grep -m1 '^\[error\]\|^refused\|Exception' "$work/$command.log" | cut -c1-70); $work/$command.log"
         fi
     done
     # A build with an inter-project edge: Ivy must take its lock file in the redirected home, or
     # the build dies canonicalizing ~/.ivy2 (RunOnHostPrereqs.ivyHomeOf).
     version=$(sed -n 's/^sbt.version=//p' "$ivy_project/project/build.properties")
-    if wrapper sbt "$ivy_project" app/packageBin >"$work/ivy.log" 2>&1
+    if supervisor sbt "$ivy_project" app/packageBin >"$work/ivy.log" 2>&1
     then report PASS "sbt $version packageBin across dependsOn" "$(grep -m1 '^\[success\]' "$work/ivy.log")"
     else report FAIL "sbt $version packageBin across dependsOn" \
         "$(grep -m1 '^\[error\]\|^refused\|Exception' "$work/ivy.log" | cut -c1-70)"; fi
 
-    # The emit-profile rows: same profile, no proxy behind them — the wrapper rows above warmed
+    # The emit-profile rows: same profile, no proxy behind them — the supervisor rows above warmed
     # the run-on-host cache through it. Both clients run so the need for --jvm-client stays measured. The server's
     # java.home is checked against the JDK the profile granted: the server is forked by the
     # client, so nothing about the client's own JVM proves which one the command runs in.
@@ -550,8 +551,8 @@ if want sbt; then
         then report PASS "$label" "$(grep -m1 'version:' "$work/version.log" | cut -c1-40)"
         else report FAIL "$label" "$(grep -v '^$' "$work/version.log" | tail -1 | cut -c1-70)"; fi
     done
-    # The wrapper sweeps host-cache links before warming the granted cache. If it failed, these
-    # direct clients cannot establish that prerequisite themselves; the wrapper row holds the failure.
+    # The supervisor sweeps host-cache links before warming the granted cache. If it failed, these
+    # direct clients cannot establish that prerequisite themselves; the supervisor row holds the failure.
     if [ "$sbt_ready" -eq 1 ]; then
         if run_sbt --jvm-client 'eval System.getProperty("java.home")' >"$work/jvm.log" 2>&1; then
             if grep -qF "$JAVA_HOME" "$work/jvm.log"
@@ -585,24 +586,24 @@ if want sbt; then
         for row in "server runs the granted JDK" \
             "a process forked by the command cannot read ~" \
             "a process forked by the command cannot write PROJECT/.git" "sbtn compile"; do
-            report SKIP "$row" "sbt wrapper setup failed; see $work/compile.log and $work/test.log"
+            report SKIP "$row" "sbt supervisor setup failed; see $work/compile.log and $work/test.log"
         done
     fi
 fi
 
 if want mill; then
     use_profile mill
-    # Each wrapper row starts a daemon in the command's session — the stock bootstrap under the
+    # Each supervisor row starts a daemon in the command's session — the stock bootstrap under the
     # daemon profile, ten seconds of denied connect retry — runs the client against its port, and
     # ends it with the session; out/mill-daemon is Mill's, neither cleared nor read for authority
     # (RunOnHostSandbox.BrokerRuntimes, RunOnHostMillDaemons), beyond the classpath memo a start deletes
     # when it names paths the profile denies (RunOnHostMillDaemons.discardForeignMemo).
     for command in __.compile __.test; do
         [ "$command" = __.test ] && [ "$quick" = 1 ] && { report SKIP "./mill $command" "quick mode"; continue; }
-        if wrapper mill "$mill_project" "$command" >"$work/mill.log" 2>&1
-        then report PASS "./mill $command (wrapper)" \
+        if supervisor mill "$mill_project" "$command" >"$work/mill.log" 2>&1
+        then report PASS "./mill $command (supervisor)" \
             "$(grep -m1 -i 'mill\|compiling\|passed' "$work/mill.log" | cut -c1-40)"
-        else report FAIL "./mill $command (wrapper)" \
+        else report FAIL "./mill $command (supervisor)" \
             "$(grep -v 'Picked up' "$work/mill.log" | tail -1 | cut -c1-70)"; fi
     done
     if [ -z "$(mill_daemons)" ]
@@ -612,14 +613,14 @@ fi
 
 if want gradle; then
     use_profile gradle
-    # Each wrapper row's client starts a daemon in the registry under the command's session,
-    # resolving through the proxy into the run-on-host cache's Gradle user home; the wrapper
+    # Each supervisor row's client starts a daemon in the registry under the command's session,
+    # resolving through the proxy into the run-on-host cache's Gradle user home; the supervisor
     # records the daemon after the command and ends it with the session (RunOnHostGradleDaemons).
     for task in help build; do
-        [ "$task" = build ] && [ "$quick" = 1 ] && { report SKIP "gradle build (wrapper)" "quick mode"; continue; }
-        if wrapper gradle "$gradle_project" "$task" >"$work/gradle.log" 2>&1
-        then report PASS "gradle $task (wrapper)" "$(grep -m1 'BUILD SUCCESSFUL' "$work/gradle.log" | cut -c1-40)"
-        else report FAIL "gradle $task (wrapper)" \
+        [ "$task" = build ] && [ "$quick" = 1 ] && { report SKIP "gradle build (supervisor)" "quick mode"; continue; }
+        if supervisor gradle "$gradle_project" "$task" >"$work/gradle.log" 2>&1
+        then report PASS "gradle $task (supervisor)" "$(grep -m1 'BUILD SUCCESSFUL' "$work/gradle.log" | cut -c1-40)"
+        else report FAIL "gradle $task (supervisor)" \
             "$(grep -m1 'FAILURE\|^refused\|Exception' "$work/gradle.log" | cut -c1-70)"; fi
     done
     if [ -z "$(gradle_daemons)" ]
@@ -632,10 +633,11 @@ if want mvn; then
     # One-shot, no daemon: each row is one Maven JVM under the profile, resolving plugins and the
     # test dependency from Central through the proxy into the run-on-host cache's local repository.
     for goal in --version test; do
-        [ "$goal" = test ] && [ "$quick" = 1 ] && { report SKIP "mvn test (wrapper)" "quick mode"; continue; }
-        if wrapper mvn "$mvn_project" "$goal" >"$work/mvn.log" 2>&1
-        then report PASS "mvn $goal (wrapper)" "$(grep -m1 'BUILD SUCCESS\|^Apache Maven' "$work/mvn.log" | cut -c1-40)"
-        else report FAIL "mvn $goal (wrapper)" \
+        [ "$goal" = test ] && [ "$quick" = 1 ] && { report SKIP "mvn test (supervisor)" "quick mode"; continue; }
+        if supervisor mvn "$mvn_project" "$goal" >"$work/mvn.log" 2>&1
+        then report PASS "mvn $goal (supervisor)" \
+            "$(grep -m1 'BUILD SUCCESS\|^Apache Maven' "$work/mvn.log" | cut -c1-40)"
+        else report FAIL "mvn $goal (supervisor)" \
             "$(grep -m1 '^\[ERROR\]\|^refused\|Exception' "$work/mvn.log" | cut -c1-70)"; fi
     done
 fi
@@ -828,7 +830,7 @@ echo "the command's proxy"
 if ! want sbt; then
     report SKIP "fetch allowed Maven artifact via proxy" "sbt rows not selected"
     report SKIP "fetch unlisted host via proxy" "sbt rows not selected"
-    report SKIP "a PUT to an allowed host is refused, and the wrapper names it" "sbt rows not selected"
+    report SKIP "a PUT to an allowed host is refused, and the supervisor names it" "sbt rows not selected"
     report SKIP "CA bundle variables" "sbt rows not selected"
 else
     use_profile sbt
@@ -836,23 +838,23 @@ else
     # only have fetched it — and the direct-connect row already showed the profile's only route is
     # the proxy.
     rm -rf "$cache_v1/https/repo1.maven.org/maven2/org/scalameta"
-    if wrapper sbt "$project" Test/compile >"$work/refetch.log" 2>&1
+    if supervisor sbt "$project" Test/compile >"$work/refetch.log" 2>&1
     then report PASS "fetch allowed Maven artifact via proxy" "munit re-fetched, Test/compile ok"
     else report FAIL "fetch allowed Maven artifact via proxy" \
         "$(grep -m1 '^\[error\]\|^refused\|Exception' "$work/refetch.log" | cut -c1-70)"; fi
 
-    # deny-fixture's resolution reaches a refused host; the command must fail and the wrapper must
-    # say which host — the wrapper's denied-host report.
-    if wrapper sbt "$deny_project" update >"$work/deny.log" 2>&1
+    # deny-fixture's resolution reaches a refused host; the command must fail and the supervisor must
+    # say which host — the supervisor's denied-host report.
+    if supervisor sbt "$deny_project" update >"$work/deny.log" 2>&1
     then report FAIL "fetch unlisted host via proxy" "the command succeeded"
     elif grep -q 'Command requested network access' "$work/deny.log" \
         && grep -q 'denied.example.com' "$work/deny.log"
-    then report PASS "fetch unlisted host via proxy" "refused; wrapper named denied.example.com"
+    then report PASS "fetch unlisted host via proxy" "refused; supervisor named denied.example.com"
     else report FAIL "fetch unlisted host via proxy" \
-        "failed without the wrapper's diagnostic: $(tail -1 "$work/deny.log" | cut -c1-50)"; fi
+        "failed without the supervisor's diagnostic: $(tail -1 "$work/deny.log" | cut -c1-50)"; fi
 
     # `read` is enforced: the proxy answers a PUT to the host it allows with 403 inside the tunnel,
-    # and the wrapper names the request after the command. One expression without `;`, which
+    # and the supervisor names the request after the command. One expression without `;`, which
     # sbt's command splitter would cut at (the cancel row has the same constraint); the client
     # is the JDK's, which takes the proxy and the trust store from _JAVA_OPTIONS.
     put_url=https://repo1.maven.org/maven2/ko-agent-sandbox-acceptance-put
@@ -860,12 +862,12 @@ else
     put_request="$put_request.PUT(java.net.http.HttpRequest.BodyPublishers.noBody()).build()"
     put_eval="eval java.net.http.HttpClient.newHttpClient().send($put_request,"
     put_eval="$put_eval java.net.http.HttpResponse.BodyHandlers.discarding()).statusCode"
-    wrapper sbt "$project" "$put_eval" >"$work/put.log" 2>&1
+    supervisor sbt "$project" "$put_eval" >"$work/put.log" 2>&1
     if grep -q 'Int = 403' "$work/put.log" \
         && grep -q 'Command sent requests the host command sandbox refuses' "$work/put.log" \
         && grep -qF "PUT $put_url" "$work/put.log"
-    then report PASS "a PUT to an allowed host is refused, and the wrapper names it" "403; PUT $put_url"
-    else report FAIL "a PUT to an allowed host is refused, and the wrapper names it" \
+    then report PASS "a PUT to an allowed host is refused, and the supervisor names it" "403; PUT $put_url"
+    else report FAIL "a PUT to an allowed host is refused, and the supervisor names it" \
         "$(grep -m1 'Int = \|^\[error\]\|^refused\|Exception' "$work/put.log" | cut -c1-70); $work/put.log"; fi
 
     # Which CA bundle variables the curl and git this macOS ships read (run-on-host.md, "The
@@ -901,7 +903,7 @@ git_row "no GIT_SSL_CAINFO, no CURL_CA_BUNDLE" -u GIT_SSL_CAINFO -u CURL_CA_BUND
 git_row "none of the three" -u GIT_SSL_CAINFO -u CURL_CA_BUNDLE -u SSL_CERT_FILE
 CA_PROBE
     rm -f "$work/ca-probe.out"
-    wrapper sbt "$project" "eval scala.sys.process.Process(Seq(\"/bin/sh\", \"$work/ca-probe.sh\")).!" \
+    supervisor sbt "$project" "eval scala.sys.process.Process(Seq(\"/bin/sh\", \"$work/ca-probe.sh\")).!" \
         >"$work/ca-probe.log" 2>&1
     if [ -s "$work/ca-probe.out" ]
     then while IFS= read -r line; do report INFO "CA bundle variables" "$(printf '%s' "$line" | cut -c1-90)"; done \
@@ -911,7 +913,7 @@ fi
 
 # --- the proxy's own profile ----------------------------------------------------------------------
 #
-# The wrapper rows above ran every fetch through a proxy under this profile, so they prove the
+# The supervisor rows above ran every fetch through a proxy under this profile, so they prove the
 # confined proxy works, the resolver rule included. These rows prove the profile denies, with the
 # granted java as the probe, since the profile execs nothing else. A JVM reading `@dir` reports
 # "Failed to read" on a directory it may open and "could not open" on one it may not, so the
@@ -919,7 +921,7 @@ fi
 # control creates the file and whose denial the JVM reports as the open it could not make.
 echo
 echo "the proxy's own profile"
-# From /, as the wrapper runs its proxy: the JVM asks for its working directory at start. Both
+# From /, as the supervisor runs its proxy: the JVM asks for its working directory at start. Both
 # streams, since the JVM reports a log file it cannot open on stdout.
 proxy_java() {
     (cd / && /usr/bin/sandbox-exec -f "$work/acceptance-proxy.sb" "$JAVA_HOME/bin/java" "$@") >"$work/row.err" 2>&1
@@ -957,7 +959,7 @@ commands_now() {
             -e '^b[0-9]'
 }
 lifecycle_rows="two concurrent commands
-SIGTERM: the wrapper cleans up behind itself
+SIGTERM: the supervisor cleans up behind itself
 SIGKILL mid-command: the running group is ended while its leader is alive
 SIGKILL: next start condemns and collects
 leaderless server ended by portfile attribution"
@@ -968,9 +970,9 @@ $lifecycle_rows
 EOF
 }
 # The victim's own client record, bound to it directly: the recorded spawn is started by the
-# wrapper, so its parent pid is the victim's, and the recorded start time must match the live
-# process — the same pid-plus-start check the wrapper's own scavenger uses, so a stale record
-# whose pid was reused by another child of the victim never passes. Empty when the wrapper ends
+# supervisor, so its parent pid is the victim's, and the recorded start time must match the live
+# process — the same pid-plus-start check the supervisor's own scavenger uses, so a stale record
+# whose pid was reused by another child of the victim never passes. Empty when the supervisor ends
 # first.
 await_client_record() { # victim-pid
     tries=0
@@ -986,10 +988,10 @@ await_client_record() { # victim-pid
         tries=$((tries + 1)); sleep 0.5
     done
 }
-# Always launched with `&`, and exec so $! IS the wrapper JVM: without it the background pid is
+# Always launched with `&`, and exec so $! IS the supervisor JVM: without it the background pid is
 # the subshell running this function, java is its child, and every staged kill — and the spawn's
 # parent-pid check above — would signal or look at the wrong process.
-victim_wrapper() { # log-name
+victim_supervisor() { # log-name
     lock=$(build_lock sbt "$project") || exit 2
     # shellcheck disable=SC2086 # two options, split on purpose
     exec /usr/bin/perl -e "$lock_script" "$lock" 0 "$JAVA_HOME/bin/java" $certificate_exports -cp "$test_cp" \
@@ -1002,8 +1004,8 @@ elif [ "$program" != all ]; then
     skip_lifecycle "needs every program"
 else
     # Concurrency: one sbt and one mill command overlap, each with its own directory and proxy.
-    wrapper sbt "$project" compile >"$work/conc-sbt.log" 2>&1 & conc_sbt=$!
-    wrapper mill "$mill_project" __.compile >"$work/conc-mill.log" 2>&1 & conc_mill=$!
+    supervisor sbt "$project" compile >"$work/conc-sbt.log" 2>&1 & conc_sbt=$!
+    supervisor mill "$mill_project" __.compile >"$work/conc-mill.log" 2>&1 & conc_mill=$!
     peak=0; tries=0
     while [ "$tries" -lt 600 ]; do
         now=$(commands_now); [ "$now" -gt "$peak" ] && peak=$now
@@ -1016,12 +1018,12 @@ else
     then report PASS "two concurrent commands" "both built; peak concurrent command directories: $peak"
     else report FAIL "two concurrent commands" "sbt exit $conc_a, mill exit $conc_b"; fi
 
-    # SIGTERM mid-command: the wrapper's shutdown hook — a JVM's `finally` never runs on a signal —
+    # SIGTERM mid-command: the supervisor's shutdown hook — a JVM's `finally` never runs on a signal —
     # ends the groups and removes the command's directory before the JVM exits (RunOnHostSession).
-    victim_wrapper sigterm.log & victim=$!
+    victim_supervisor sigterm.log & victim=$!
     client_record=$(await_client_record "$victim")
     if [ -z "$client_record" ]; then
-        report FAIL "SIGTERM: the wrapper cleans up behind itself" \
+        report FAIL "SIGTERM: the supervisor cleans up behind itself" \
             "no client record appeared: $(tail -1 "$work/sigterm.log" | cut -c1-50)"
     else
         kill -TERM "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
@@ -1031,23 +1033,23 @@ else
         victim_session=${client_record%/records/client}
         if [ ! -d "$victim_session" ] && [ ! -d "$command_root/condemned/${victim_session##*/}" ] \
             && [ -z "$(project_servers)" ] && [ -z "$(stray_proxies)" ]
-        then report PASS "SIGTERM: the wrapper cleans up behind itself"
-        else report FAIL "SIGTERM: the wrapper cleans up behind itself" \
+        then report PASS "SIGTERM: the supervisor cleans up behind itself"
+        else report FAIL "SIGTERM: the supervisor cleans up behind itself" \
             "left: $(ls -d "$victim_session" 2>/dev/null) \
 $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
         fi
     fi
 
-    # SIGKILL mid-command: the spawn, the leader, survives the wrapper, so the next start ends the whole
+    # SIGKILL mid-command: the spawn, the leader, survives the supervisor, so the next start ends the whole
     # running group while its leader is alive instead of refusing a leaderless one.
-    victim_wrapper killed-mid.log & victim=$!
+    victim_supervisor killed-mid.log & victim=$!
     client_record=$(await_client_record "$victim")
     if [ -z "$client_record" ]; then
         report FAIL "SIGKILL mid-command: the running group is ended while its leader is alive" \
             "no client record appeared: $(tail -1 "$work/killed-mid.log" | cut -c1-50)"
     else
         kill -9 "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
-        wrapper sbt "$project" --version >"$work/recover-mid.log" 2>&1
+        supervisor sbt "$project" --version >"$work/recover-mid.log" 2>&1
         if grep -q 'GroupEnded' "$work/recover-mid.log"
         then report PASS "SIGKILL mid-command: the running group is ended while its leader is alive" \
             "$(grep -m1 'scavenged' "$work/recover-mid.log" | cut -c1-70)"
@@ -1055,15 +1057,15 @@ $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
             "$(tail -1 "$work/recover-mid.log" | cut -c1-70)"; fi
     fi
 
-    # The leaderless server needs the spawns gone too: SIGKILL the wrapper mid-command, let the
+    # The leaderless server needs the spawns gone too: SIGKILL the supervisor mid-command, let the
     # client finish its command cleanly — the spawn publishes its exit beside the record — then
     # SIGKILL the client's spawn and the server's spawn alone: the server, its group's leader
     # gone, survives with the portfile. Proxy recorded and ended, client and server groups
     # leaderless and skipped, server ended by attribution (RunOnHostSession.collectServers).
     # Killing any of the client's processes instead stages the wrong state: a server whose
-    # client dies mid-exec cancels the exec, and the wrapper's teardown would end the server's
+    # client dies mid-exec cancels the exec, and the supervisor's teardown would end the server's
     # group behind its live leader.
-    victim_wrapper killed.log & victim=$!
+    victim_supervisor killed.log & victim=$!
     client_record=$(await_client_record "$victim")
     if [ -z "$client_record" ]; then
         report FAIL "SIGKILL: next start condemns and collects" \
@@ -1089,7 +1091,7 @@ $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
             staged=$(project_servers | tr '\n' ' ')
             # The recovery run's own command is beside the point (and --version is the cheap one);
             # its stderr reports cleanup of the victim's command directory.
-            wrapper sbt "$project" --version >"$work/recover.log" 2>&1
+            supervisor sbt "$project" --version >"$work/recover.log" 2>&1
             if grep -q 'scavenged' "$work/recover.log"
             then report PASS "SIGKILL: next start condemns and collects" \
                 "$(grep -m1 'scavenged' "$work/recover.log" | cut -c1-70)"
@@ -1107,7 +1109,7 @@ fi
 # --- the channel ---------------------------------------------------------------------------
 #
 # The real shim against the real broker, the `podman exec` transport a local script and the
-# sandbox this host. The wrapper behind it is the same one the rows above measured; what these
+# sandbox this host. The supervisor behind it is the same one the rows above measured; what these
 # add is the channel — framing, streamed output and the command's own exit code, the
 # working-directory boundary, and teardown by descriptor lifetime — and the broker's runtime: the
 # proxy and the sbt server or mill daemon the commands of one build directory share, and what
@@ -1168,7 +1170,7 @@ $gradle_channel_rows
 EOF
 }
 # Only processes the stub podman recorded, checked by the same pid-plus-start identity the
-# wrapper's scavenger uses — never a pattern kill, which would match a real session's own
+# supervisor's scavenger uses — never a pattern kill, which would match a real session's own
 # `podman exec` command lines, and never by pid alone, which a recycled pid defeats. Each owned
 # tree goes descendants-first, while the parent still holds them: the shell behind an exec may
 # have forked its command, and a surviving orphan keeps the FIFO and pipe open (the measured
@@ -1194,7 +1196,7 @@ kill_channel_execs() {
         [ "$(ps -o lstart= -p "$pid" 2>/dev/null)" = "$start" ] && kill -9 "$pid" 2>/dev/null
     done < "$work/exec.pids"
 }
-# `exec` for the same reason as victim_wrapper: the staged kills must be delivered to the shim itself.
+# `exec` for the same reason as victim_supervisor: the staged kills must be delivered to the shim itself.
 channel_shim() { # log cwd args...
     chan_log=$1; chan_cwd=$2; shift 2
     cd "$chan_cwd" || exit 1
@@ -1309,7 +1311,7 @@ command proxies: $(command_proxies | tr '\n' ' ')"; fi
         # the disconnect lands while it is still running. The sleep is short, so the next command
         # waits it out rather than the acceptance test.
         #
-        # The wrapper hands sbt all of its arguments as one command, so the `set` and the task
+        # The supervisor hands sbt all of its arguments as one command, so the `set` and the task
         # invocation ride one string joined by `;`; the task body is a single expression — the
         # marker written inside the sleep's argument — so no inner `;` or newline meets sbt's
         # command splitter. Def.uncached makes the marker and sleep run on every invocation:
@@ -1519,7 +1521,7 @@ $(broker_server_record "$project"), command servers: $(command_servers | tr '\n'
 ${share_session:-none} records: ${share_records:-none}; $(tail -1 "$work/chan-share-sbt.log.err" | cut -c1-50)"; fi
 
             # The daemon the second launch attaches to is the first broker's, started here by its
-            # own `version` — the start meets the wrapper rows' memo before the mill rows below
+            # own `version` — the start meets the supervisor rows' memo before the mill rows below
             # do — and shut down after, so the mill rows still measure a start of their own.
             if want mill; then
                 with_timeout 900 channel_shim chan-share-mill1.log "$mill_project" mill version
@@ -1652,7 +1654,7 @@ $(tail -1 "$work/chan-share-teardown.log.err" | cut -c1-60)"; fi
         #
         # The daemon the broker starts in its session serves every mill command of the build
         # directory; each client runs under a profile naming that daemon's port and no other. The
-        # first row also meets the memo the wrapper rows left, naming the fixture project's cache,
+        # first row also meets the memo the supervisor rows left, naming the fixture project's cache,
         # which this broker's profile — the fixture as this repository's build directory — denies:
         # the start deletes it (RunOnHostMillDaemons.discardForeignMemo), or the daemon dies unable to
         # open its jars. The
@@ -2059,12 +2061,12 @@ forked: ${forked:-none}"; pkill -f "$fixture_sleep" 2>/dev/null; fi
         fi
         rm -rf "$channel_dir"
 
-        # The broker's own end mid-command. TERM: its hook ends the wrapper and waits for the
-        # wrapper's teardown, then ends the broker's session, its server and its proxy, so the
+        # The broker's own end mid-command. TERM: its hook ends the supervisor and waits for the
+        # supervisor's teardown, then ends the broker's session, its server and its proxy, so the
         # moment the broker is gone the command's directory, the server and every proxy are gone
-        # too. KILL: nothing waits, but the wrapper's stdin is the broker's pipe, and its EOF ends
+        # too. KILL: nothing waits, but the supervisor's stdin is the broker's pipe, and its EOF ends
         # the command by the same teardown; the broker's server and proxy stay, recorded in its
-        # session, until the next start scavenges them by their records — the wrapper's recovery run
+        # session, until the next start scavenges them by their records — the supervisor's recovery run
         # here. The shim is left blocked on its exit read (no timeout(1) here) and killed after.
         broker_end_row() { # row signal
             before=$(grep -c 'ended by signal' "$work/channel.log")
@@ -2097,7 +2099,7 @@ forked: ${forked:-none}"; pkill -f "$fixture_sleep" 2>/dev/null; fi
                 channel_settled
                 orphan=$(stray_proxies | tr '\n' ' ')
                 orphan_server=$(project_servers | tr '\n' ' ')
-                wrapper sbt "$project" --version >"$work/recover-broker.log" 2>&1
+                supervisor sbt "$project" --version >"$work/recover-broker.log" 2>&1
                 proxies_ended=$([ -n "$orphan" ] && [ -n "$orphan_server" ] \
                     && grep -q 'scavenged b.*GroupEnded.*GroupEnded' "$work/recover-broker.log" \
                     && [ -z "$(stray_proxies)" ] && echo yes || echo no)
@@ -2206,7 +2208,7 @@ $(kill -0 "$planted_sleep" 2>/dev/null && echo alive || echo gone)"; fi
     fi
 fi
 
-# After every wrapper row: no process or temporary directory outlives its command.
+# After every supervisor row: no process or temporary directory outlives its command.
 leftover=""
 [ -n "$(project_servers)" ] && leftover="sbt server: $(project_servers | tr '\n' ' ')"
 [ -n "$(deny_servers)" ] && leftover="$leftover deny-fixture server: $(deny_servers | tr '\n' ' ')"

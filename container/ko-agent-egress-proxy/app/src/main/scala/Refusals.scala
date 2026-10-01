@@ -107,7 +107,7 @@ object RefusalAdvice:
   val clientHello = "Send SNI naming the CONNECT host, without Encrypted ClientHello."
 
   /**
-   * For a reader of the audit log, who has the line's `<why>` and no 403 body — the run-on-host wrapper,
+   * For a reader of the audit log, who has the line's `<why>` and no 403 body — the run-on-host supervisor,
    * reporting for a program that printed none: the step of a refusal the requester answers by changing
    * the request, else None. Matched on the reasons authorizeInspectedRequest and GitHelper throw with;
    * the refusal table's test holds the two together.

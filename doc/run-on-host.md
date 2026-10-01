@@ -46,7 +46,7 @@ the code that enforces each part:
 | the command lifecycle: publish, lock, scavenge | `RunOnHostSession.scala` |
 | prerequisite validation and the paths it settles | `RunOnHostPrereqs.scala` |
 | provisioning offered at the start prompt | `RunOnHostProvisioning.scala` |
-| the wrapper and the broker's runtimes: proxy, sbt server, environment | `RunOnHostSandbox.scala` |
+| supervisor's and broker's runtimes: proxy, sbt server, environment | `RunOnHostSandbox.scala` |
 | the broker's mill daemon: its start, its port, a daemon of yours | `RunOnHostMillDaemons.scala` |
 | the launch's Gradle daemons and their records | `RunOnHostGradleDaemons.scala` |
 | what a broker publishes for another launch to attach to | `RunOnHostRuntimeDescriptor.scala` |
@@ -254,7 +254,7 @@ Seven measured rules (`src/probe/loopback-rule.sh`, `src/probe/jvm-proxy-rule.sh
   (G11), is denied the neighboring one (L3, L4, M3), and only the JVM launcher connects under it:
   the native image's connect is
   dual-stack, for the reason above, and stays denied with the property on its command line (M2).
-  That is why the wrapper runs the JVM launcher ("`mill`").
+  That is why the supervisor runs the JVM launcher ("`mill`").
 - The sbt client's `(remote unix-socket (subpath <broker tmp>))` must reach the boot socket and
   the server socket exactly: a client whose connect is denied does not fail but deletes the
   portfile and forks a server under its own profile
@@ -288,19 +288,19 @@ falls back: a host command that cannot run is reported to the user, never re-run
 container — the same rule the egress refusal follows.
 
 - A prerequisite refusal before the command starts is a `RunOnHostPrereqs.Refusal` value, one
-  case per category, or a sentence from the step that met it (`StepRefusal`); the wrapper, the
+  case per category, or a sentence from the step that met it (`StepRefusal`); the supervisor, the
   channel and the launch each word a `Refusal` for their own readers.
 - A runtime the broker cannot prepare — a proxy, server or daemon that fails to start, the
   launcher's executable gone — is refused with its reason as text from the code that met it
   (`BrokerRuntimes.prepare`).
 - A denial while the command runs falls under no refusal category:
   - a filesystem denial reaches the command's own stderr as the OS error;
-  - a network denial is the proxy's audit line, which the wrapper reads and reports per host after
-    the command ("Command requested network access to: …") — from the log's length at the
+  - a network denial is the proxy's audit line, which the supervisor reads and reports per host
+    after the command ("Command requested network access to: …") — from the log's length at the
     command's start, so a shared proxy's earlier denials are not this command's. It never adds the
     host itself.
   - a request the proxy refuses inside a tunnel — a `PUT`, a `POST`, a `GET` with a body — gets a
-    `403` whose body the programs need not print, so the wrapper reports it the same way
+    `403` whose body the programs need not print, so the supervisor reports it the same way
     ("Command sent requests the host command sandbox refuses: …",
     `RunOnHostSandbox.refusedRequests`), each request with the audit line's reason.
     - A refusal the command answers by changing the request — a body framing header on a `GET`, a
@@ -310,7 +310,7 @@ container — the same rule the egress refusal follows.
       `read`: to run the command yourself, outside the sandbox.
   - a proxy that serves nothing because a write to its log failed (`SECURITY.md`, "Egress proxy")
     cannot say so in that log, and the programs need not print it. After a command that exits
-    non-zero the wrapper asks the proxy with `OPTIONS *` and `Max-Forwards: 0`
+    non-zero the supervisor asks the proxy with `OPTIONS *` and `Max-Forwards: 0`
     (`RunOnHostSandbox.unwritableProxyLog`), reads the reason from the response's `Proxy-Status`
     field, and reports it with the log's path. A proxy still logging answers `400` and logs
     `deny - - OPTIONS non-CONNECT request`.
@@ -340,11 +340,11 @@ the launch, not by the agent at the first command. sbt has nothing to check: its
 the one `cs install sbt` produced, whatever the project pins.
 
 - Every build directory of the selected programs is found — each directory holding a `mill`
-  bootstrap or a Gradle wrapper's properties file, the files the wrapper keys a build directory
-  on ("`mill`", "Gradle"), anywhere under the project except inside `.git`, `.ko-agent-sandbox`
-  or a symlink, and for Maven the project alone, holding `mvnw` ("Maven") — and its executable
-  resolved as its first command would resolve it; each refusal is printed in the command's
-  wording. `gradlew` is only what the run below executes: a properties file without it is
+  bootstrap or a Gradle wrapper's properties file, the files the supervisor keys a build
+  directory on ("`mill`", "Gradle"), anywhere under the project except inside `.git`,
+  `.ko-agent-sandbox` or a symlink, and for Maven the project alone, holding `mvnw` ("Maven") — and
+  its executable resolved as its first command would resolve it; each refusal is printed in the
+  command's wording. `gradlew` is only what the run below executes: a properties file without it is
   reported, with nothing to run.
 - For the refusals a host run fixes, a launcher or distribution not yet provisioned, the prompt
   shows that run — `MILL_VERSION=<v>-jvm ./mill version`, `./gradlew --version` or
@@ -381,7 +381,7 @@ A current Coursier unpacks a JDK into its archive cache, so the home is a URL-de
 
 `cs install sbt`, and no arbitrary `sbt` from `PATH`.
 
-- The wrapper verifies the executable belongs to the Coursier application-install directory — on
+- The supervisor verifies the executable belongs to the Coursier application-install directory — on
   macOS `~/Library/Application Support/Coursier/bin`, whose space makes correct shell quoting
   necessary.
 - That `sbt` is two files: the 1.2 KB script on `PATH` execs a second `sbt` inside an unpacked
@@ -454,9 +454,9 @@ file from `sbt.ivy.home`, so the redirect and its grant stay after the lock is g
 only when a released sbt stops deriving those two paths, and check that by reading `Defaults.scala`
 again, not by an acceptance-test run.
 
-- The wrapper passes `--jvm-client`: sbt 2 defaults to `sbtn`, which under the profile prints
+- The supervisor passes `--jvm-client`: sbt 2 defaults to `sbtn`, which under the profile prints
   that it is starting the server and returns with no build run — an acceptance-test row keeps
-  measuring it, and if it starts passing, the wrapper can reconsider requiring `--jvm-client`.
+  measuring it, and if it starts passing, the supervisor can reconsider requiring `--jvm-client`.
 - The distribution's `sbt` resolves `java` from `PATH`, so the environment puts the granted JDK's
   `bin` first: the broker starts the server by running the script, and `-java-home` reaches the
   client alone.
@@ -487,14 +487,14 @@ because the image takes no `_JAVA_OPTIONS`:
 
 A `<v>-native` pin asks for that image by name and is refused with the reason.
 
-The wrapper resolves the version the way the bootstrap does, from the build directory —
+The supervisor resolves the version the way the bootstrap does, from the build directory —
 `.mill-version`, `.config/mill-version`, `build.mill.yaml`, the build script's `//|` header, then
 the script's own default (`RunOnHostPrereqs.millVersion`) — so a nested build directory with a
 bootstrap of its own is another build.
 
 - The script's `MILL_VERSION` and `DEFAULT_MILL_VERSION` environment overrides are not read: the
-  command's environment carries the wrapper's own `MILL_VERSION` and no other, so the script and
-  the wrapper resolve alike.
+  command's environment carries the supervisor's own `MILL_VERSION` and no other, so the script and
+  the supervisor resolve alike.
 - Reading the version is a read; asking the script by running it would execute agent-authored
   shell on the host.
 - `mill-jvm-version: system` is required in the build directory — its default provisions a JVM
@@ -634,7 +634,7 @@ as `./gradlew` run there would read them; a `gradle` installed globally is not u
   run.
 
 The command runs the distribution's `bin/gradle` in the working directory, not `gradlew`, which
-would download. The wrapper computes the directory exactly as Gradle's wrapper does
+would download. The supervisor computes the directory exactly as Gradle's wrapper does
 (`RunOnHostPrereqs.gradleDistributionDir`, from Gradle 9.7.1's `PathAssembler`):
 
 1. `distributionUrl` read as `java.util.Properties` reads the file, a value without a scheme
@@ -727,7 +727,7 @@ Only the `only-script` wrapper type is served, the default that `mvn wrapper:wra
 
 - A project with any other wrapper type is refused, and the refusal names the command that
   converts it.
-- The wrapper recognizes the type from the script's `hash_string` function, reading the script
+- The supervisor recognizes the type from the script's `hash_string` function, reading the script
   and never running it.
 - The other types run a jar that computes the distribution directory from more inputs —
   `distributionBase`, `distributionPath`, a relative URL, the JVM's `user.home` — which this
@@ -735,8 +735,8 @@ Only the `only-script` wrapper type is served, the default that `mvn wrapper:wra
   a stale copy where the script selects another.
 
 The command runs `bin/mvn --batch-mode` from that directory, not `mvnw`, which looks for Maven under
-a home directory it computes itself. The wrapper computes the directory exactly as the script does
-(`RunOnHostPrereqs.mvnDistributionDir`), from the script's inputs:
+a home directory it computes itself. The supervisor computes the directory exactly as the script
+does (`RunOnHostPrereqs.mvnDistributionDir`), from the script's inputs:
 
 1. `distributionUrl`, rewritten by `MVNW_REPOURL` when the launcher's environment sets that
    mirror override;
@@ -762,10 +762,10 @@ An mvnd distribution is refused: mvnd is a daemon.
 
 ## The command's lifetime and environment
 
-`RunOnHostSession.scala` tracks one wrapper invocation, which it calls a command session.
+`RunOnHostSession.scala` tracks one supervisor invocation, which it calls a command session.
 
 - Its directory is published by rename so it is never seen half-made.
-- A lock marks the wrapper as live, and records identify its child processes.
+- A lock marks the supervisor as live, and records identify its child processes.
 - Cleanup moves the directory out of the active set before ending those processes and any
   leaderless sbt server its portfile identifies.
 
@@ -794,15 +794,15 @@ Two locks:
   alone, so no two processes signal one group; one not free within twenty seconds keeps the
   record for the next collection (`RunOnHostSession.retirementLockFile` has the rules).
 
-The wrapper root is `/private/tmp/ko-agent-<uid>`, short on purpose: sbt's boot socket path must
+The supervisor root is `/private/tmp/ko-agent-<uid>`, short on purpose: sbt's boot socket path must
 fit a UNIX-domain socket's `sun_path` (`RunOnHostPrereqs.SessionTmpMaxLength`), and the broker's
 `tmp/` is under the same budget.
 
-The wrapper constructs the command's environment from the variables listed below
+The supervisor constructs the command's environment from the variables listed below
 (`RunOnHostSandbox.commandEnvironment`), rather than inheriting the launcher's; SECURITY.md, "Run
 on host", has why. The acceptance test supplies the same closed environment; `command_env` documents
 its deviations for rows without a proxy and with one temporary directory for clients and servers.
-What the wrapper supplies:
+What the supervisor supplies:
 
 | Environment Variable | Value |
 |---|---|
@@ -880,7 +880,7 @@ sandbox container's do (`SECURITY.md`, "Who holds the CA key"). By each program'
 
 The placeholders:
 
-- `<command directory>` is this invocation's directory under the wrapper root above — the
+- `<command directory>` is this invocation's directory under the supervisor root above — the
   broker's sbt server, and every `mill` and `gradle` process, have the broker's `tmp/` for every
   row naming one;
 - `<cache home>` is `${XDG_CACHE_HOME:-$HOME/.cache}` from the launcher's environment;
@@ -890,7 +890,7 @@ The placeholders:
 One environment serves every program:
 
 - sbt's global base and Ivy home, Gradle's user home and Maven's local repository are set for
-  every command; a command of another program reads none of them, and the wrapper neither creates
+  every command; a command of another program reads none of them, and the supervisor neither creates
   nor grants them for it;
 - the mill download folder, the one holding the granted executable, is set for the other programs
   the same way, and they ignore it;
@@ -908,15 +908,15 @@ Why the rows are what they are:
     (`RunModule.scala`, `ctx.env`);
   - with one directory the starter's environment and every client's are one map, so an option
     file Mill interpolates from the environment (`MillProcessLauncher.loadMillConfig`) yields the
-    same value in both, and a client never meets a fingerprint mismatch of the wrapper's own
+    same value in both, and a client never meets a fingerprint mismatch of the supervisor's own
     making.
 - `HOME` is passed because the programs' scripts derive paths from it, and nothing under it is
   granted.
 - `--env` is the same forward the sandbox gets, with the same refusal of `KO_AGENT_SANDBOX_*`; it
-  replaces a pass-through, but cannot replace any setting supplied by the wrapper.
-  `_JAVA_OPTIONS` and `HTTPS_PROXY` keep the wrapper's values; the launcher's own `HTTPS_PROXY` is
-  replaced as above.
-- `MILL_VERSION` and `DEFAULT_MILL_VERSION` are never the forwarded values, because the wrapper
+  replaces a pass-through, but cannot replace any setting supplied by the supervisor.
+  `_JAVA_OPTIONS` and `HTTPS_PROXY` keep the supervisor's values; the launcher's own `HTTPS_PROXY`
+  is replaced as above.
+- `MILL_VERSION` and `DEFAULT_MILL_VERSION` are never the forwarded values, because the supervisor
   granted the launcher of the version the build directory pins, and `MILL_VERSION` names that
   launcher; `MILL_OUTPUT_DIR` and `MILL_BSP_OUTPUT_DIR` are not either, because the daemon's
   rendezvous is looked for under `out/` ("`mill`").
@@ -1034,12 +1034,12 @@ in `upstream-issues.md`. Mill's `out/mill-daemon` lock is the same exclusivity o
 The broker's cancel carries no reason: the shim's descriptor closes the same way whether the agent
 changed its mind or gave up on a command that sat silent.
 
-Before removing that command's directory, the wrapper appends the command's logs to the channel's
+Before removing that command's directory, the supervisor appends the command's logs to the channel's
 log, the file the launch printed as `host command log` (`RunOnHostSandbox.appendSessionLogs`):
 
 - the tail of the proxy audit log, under Maven, and of the stderr file a thin client leaves under
   `tmp/` when it forked a server of its own, the client's answer to a socket it cannot reach;
-- the wrapper runs unconfined and the command wrote that directory, so the read comes after the
+- the supervisor runs unconfined and the command wrote that directory, so the read comes after the
   rename and the ending of the command's groups, refuses a link at any component, and takes the
   tail by position rather than by the file's size;
 - a command that completed leaves nothing there: its output reached the agent.
@@ -1081,7 +1081,7 @@ where the caller is not interactive.
   - A server or daemon another launch still owns it attaches to only when it would start one
     under the same confinement and environment, and otherwise ends by that launch's record, under
     the retirement lock, and replaces with its own ("The channel and the command").
-- **The environment is a closed set — confinement.** The command sees the wrapper's set and not
+- **The environment is a closed set — confinement.** The command sees the supervisor's set and not
   the launching shell's ("The command's lifetime and environment"): `HOME` passed and nothing
   under it granted, `preferIPv4Stack` set for the loopback rule ("Network"), no destination off
   this host but the proxy, and the project writable even under `--write=reject` (`SECURITY.md`,
@@ -1089,7 +1089,7 @@ where the caller is not interactive.
 - **A repository takes reads alone — confinement.** Stock sbt, Mill, Gradle and Maven publish
   to a repository with a `PUT`. A host command's proxy refuses
   every request but a `GET` or `HEAD` without a body ("The command's egress proxy"), and the rule
-  file takes no other grant, so publishing is yours, outside the sandbox; the wrapper names the
+  file takes no other grant, so publishing is yours, outside the sandbox; the supervisor names the
   refused request ("Refusals"). The JVM's default trust is the proxy's CA alone, with no public
   root ("The command's lifetime and environment").
 - **The wait for a start has a bound — operability.** sbt's thin client waits for a starting
@@ -1122,7 +1122,7 @@ where the caller is not interactive.
   Whether `new` then writes its template through that server the acceptance test does not measure.
 - **The JVM client, never `sbtn` — operability.** sbt 2 runs its native client by default, which
   under the profile prints that it is starting the server and returns with no build run; the
-  wrapper passes `--jvm-client`, and an acceptance-test row keeps measuring `sbtn` ("sbt").
+  supervisor passes `--jvm-client`, and an acceptance-test row keeps measuring `sbtn` ("sbt").
 - **`target/` links into a denied store are swept before a server starts — confinement.** A tree
   the user's unconfined sbt built links into a store the profile denies ("sbt").
 - **The global base and the Ivy home are the project's own — confinement.** Redirected into the
@@ -1140,7 +1140,7 @@ where the caller is not interactive.
   ownership.** The starter's denied connect leaves the daemon in the broker's group, and the
   starter is ended once the daemon listens ("`mill`").
 - **The JVM launcher, never the native image — confinement.** The stock bootstrap runs the
-  native image for a version with no suffix; the wrapper sets `MILL_VERSION` to `<v>-jvm` so that
+  native image for a version with no suffix; the supervisor sets `MILL_VERSION` to `<v>-jvm` so that
   the client takes the environment's `preferIPv4Stack` and connects under the one-port rule, which
   the image cannot ("`mill`"). The user provisions that launcher, and a `-native` pin is refused
   with the reason.
@@ -1152,7 +1152,7 @@ where the caller is not interactive.
 - **`mill-jvm-version: system` is required — confinement.** Stock Mill provisions a JVM through
   Coursier's index into a writable, executable place, which the JVM rule refuses ("`mill`").
 - **A request's `MILL_VERSION`, `DEFAULT_MILL_VERSION`, `MILL_OUTPUT_DIR` and
-  `MILL_BSP_OUTPUT_DIR` are not read — confinement.** The wrapper's `MILL_VERSION` names the
+  `MILL_BSP_OUTPUT_DIR` are not read — confinement.** The supervisor's `MILL_VERSION` names the
   granted launcher, and the daemon's rendezvous is looked for under `out/` ("The command's
   lifetime and environment").
 - **A redirected `out/mill-daemon` is refused — confinement.** Mill's launcher would act on
@@ -1273,7 +1273,7 @@ system:
   `src/probe/run-on-host-profile-iterate.sh` is how candidate entries are measured.
 - The measured set is one file, a resource of the launcher's own artifact
   (`src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt`): what the production
-  wrapper grants is what the probes measured. The acceptance test and host commands use that same
+  supervisor grants is what the probes measured. The acceptance test and host commands use that same
   set of grants.
 - Do not pre-authorize broad paths (`/System/**`, `/usr/**`, `/opt/homebrew/**`); add the
   narrowest rule testing justifies.
@@ -1288,7 +1288,7 @@ The proxy is a process from the same codebase as the container's.
   read then, and kept for the commands that follow from that directory.
 - A request from another build directory gets a proxy of its own, and both stay.
 - A proxy that is gone is replaced, with its server or daemon, before the next command.
-- Maven's is the command's, started by the wrapper in the command's session and ended with it, as
+- Maven's is the command's, started by the supervisor in the command's session and ended with it, as
   every program's is under the acceptance test's entry (`RunOnHost`).
 
 The sandbox session's proxy runs on a network created `--internal`, inside the podman machine.
@@ -1300,9 +1300,9 @@ either way; what is worth controlling is the rules behind it: an attacker who re
 allowing one artifact repository can reach only that repository through it.
 
 The proxy lives as long as the session holding its record: the broker's until it retires the
-proxy or ends with the launch, the command's until the wrapper cleans up that invocation — past
+proxy or ends with the launch, the command's until the supervisor cleans up that invocation — past
 the client process, since the server the client forks resolves artifacts and lives until the
-wrapper ends it.
+supervisor ends it.
 
 A rule-file edit takes effect when a proxy is next created, never by restarting a running one,
 which holds the lines it was created with:
@@ -1317,14 +1317,14 @@ edit is declined: what a launch may reach is decided at launch (`design.md`, "De
 preserve"), and a relaunch is the one step that applies an edit to both proxies alike.
 
 It ships in the launcher's own artifact: the proxy sources share the launcher's Scala version,
-`dist` compiles them in beside their `/defaults` resources, and the broker or the wrapper starts the
-proxy by re-invoking its own executable — `java -jar` or the native binary — under a private
+`dist` compiles them in beside their `/defaults` resources, and the broker or the supervisor starts
+the proxy by re-invoking its own executable — `java -jar` or the native binary — under a private
 action.
 
 - That executable must still exist at its launch path, as spelled at launch — the link, when
   launched through a symlink — in either form: each is one file built under `target/dist`, which
   `sbt clean` or `git clean` removes while a session runs.
-- So the broker checks it before every command's wrapper is exec'd and before every proxy start,
+- So the broker checks it before every command's supervisor is exec'd and before every proxy start,
   and refuses with the path and the remedies — rebuild at that path, or relaunch — rather than
   letting the JVM fail at its main class after the ready wait (`RunOnHostSandbox.selfPresent`).
 - A rebuild at the same path is no removal, nor is a link's retargeting: the running processes
@@ -1388,10 +1388,10 @@ every proxy start):
 
 Measured by the acceptance test (its recorded run is at the top of this document):
 
-- Its wrapper and channel rows start each proxy under a profile that reads the leaf's directory
+- Its supervisor and channel rows start each proxy under a profile that reads the leaf's directory
   and each command under one that reads the two trust files, and "fetch allowed Maven artifact
   via proxy" passes only through both.
-- A `PUT` to `repo1.maven.org` gets `403`, and the wrapper names the request.
+- A `PUT` to `repo1.maven.org` gets `403`, and the supervisor names the request.
 
 Measured through a sandbox session's proxy, which inspects the same hosts with a handshake per
 request:
@@ -1404,8 +1404,8 @@ request:
 | Maven 3.9.16 | `src/probe/mvn-fixture`, `test`, the distribution's download included | 418 files, 14 MB, 37 s |
 
 - Gradle and Maven fail with `PKIX path building failed` under a `javax.net.ssl.trustStore`
-  naming a store without the CA, the wrapper's download and the resolver alike, so both read the
-  property.
+  naming a store without the CA, the wrapper script's distribution download and the resolver alike,
+  so both read the property.
 - A JVM given a `PKCS12` store holding the CA alone, and its password, fetches through that proxy;
   given no password it loads no certificate (`the trustAnchors parameter must be non-empty`).
 - Not measured: a Gradle plugin applied by id, which resolves from `plugins.gradle.org`.
@@ -1432,7 +1432,7 @@ To allow artifact downloads beyond Maven Central, add repository hosts to this p
 - A launch selecting the program prints, per file, `run-on-host egress rules (<file>) widen:`
   then each of the file's hosts as an indented rule line, and refuses a file outside the grammar,
   so you see a host that arrived with the repository before the agent's first command.
-- The wrapper hands the proxy `deny defaults`, Maven Central, then the file's lines
+- The supervisor hands the proxy `deny defaults`, Maven Central, then the file's lines
   (`RunOnHostPrereqs.egressRuleText`), so the container's catalog contributes nothing.
 
 The file inherits the directory's properties:
@@ -1481,7 +1481,7 @@ Why not the launcher state root:
 
 How each program reaches its cache:
 
-- the wrapper sets `COURSIER_CACHE` to the `v1` directory, which the sbt script, sbt's own
+- the supervisor sets `COURSIER_CACHE` to the `v1` directory, which the sbt script, sbt's own
   resolution and Coursier all honour;
 - sbt's own two caches travel as the `java -D` properties above, which sbt's launcher reads;
 - Gradle's user home as `GRADLE_USER_HOME`;

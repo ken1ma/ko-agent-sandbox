@@ -736,7 +736,7 @@ object SandboxProject:
    * configuration entries are accepted, so a typo'd `egres/` is a refused launch and not ignored
    * config, the same rule each entry applies inside itself. The files inside egress/ and file/ are
    * vetted where they are read (readBoundaryRuleFiles), and run-on-host/ where the host command
-   * wrapper reads it (RunOnHostPrereqs.programRuleHosts). An absent directory is empty
+   * supervisor reads it (RunOnHostPrereqs.programRuleHosts). An absent directory is empty
    * configuration, never a directory to create.
    */
   def boundaryDirRefusal(boundaryDir: Path): Option[String] =

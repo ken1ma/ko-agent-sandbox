@@ -546,7 +546,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assertEquals(sessionTmpFits(fits), Right(fits))
     assertEquals(sessionTmpFits(traps), Left(Refusal.SessionTmpTooLong(traps, 53)))
     // The macOS per-user temporary directory is 49 characters before anything is added to it, so
-    // a command directory under it can never fit; the wrapper's root is elsewhere.
+    // a command directory under it can never fit; the supervisor's root is elsewhere.
     assert(sessionTmpFits(Paths.get("/var/folders/w6/grf54s4d7bz6j0fypwdxvmq40000gn/T/ko-agent")).isLeft)
 
   // --------------------------------------------------------------------------

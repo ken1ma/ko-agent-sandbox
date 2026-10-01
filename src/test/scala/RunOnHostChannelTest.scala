@@ -1,5 +1,5 @@
 // The command channel, end to end on one host: the real broker against the image's real shim,
-// with `podman exec` replaced by a script, the shim's FIFO directory rewritten, and the wrapper
+// with `podman exec` replaced by a script, the shim's FIFO directory rewritten, and the supervisor
 // by scripts the tests choose — the transport and the command stubbed, never the protocol. What
 // it holds is the channel's contract: framing under bounds, the working-directory boundary,
 // streamed output carried whole with the command's own exit code, and teardown by descriptor
@@ -162,11 +162,11 @@ class RunOnHostChannelTest extends munit.FunSuite:
   /**
    * The broker served like production — same exec argument pattern, `podman` a script running the
    * exec locally — with the shim's mount spelled as the project itself, so the shim's own $PWD is
-   * a request every host can make. The wrapper command is the test's, under the real locked
+   * a request every host can make. The supervisor command is the test's, under the real locked
    * spawn, since dispatch speaks its protocol; `runtime` is what the broker's word carries.
    */
   private def channel(
-    wrapperCommand: (String, Path, Seq[String]) => Seq[String],
+    supervisorCommand: (String, Path, Seq[String]) => Seq[String],
     deadline: Long = 30_000,
     runtime: (String, Path, Seq[String]) => Either[String, Seq[String]] = (_, _, _) => Right(Seq.empty),
     ended: String => Unit = _ => (),
@@ -202,8 +202,9 @@ class RunOnHostChannelTest extends munit.FunSuite:
         transport,
         service(project, deadline = deadline).copy(
           buildLock = (_, _) => Right(lockFile),
-          wrapperCommand = (program, directory, _, arguments) =>
-            RunOnHostSession.lockedSpawn(lockFile, wrapperCommand(program, directory, arguments), underBroker = true),
+          supervisorCommand = (program, directory, _, arguments) =>
+            RunOnHostSession.lockedSpawn(
+              lockFile, supervisorCommand(program, directory, arguments), underBroker = true),
           runtime = runtime,
           ended = ended,
         ),
@@ -296,7 +297,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
     ): (project, _, _) =>
       val (exit, out, err) = shimCall(project, "sbt")
       assertEquals(exit, 0)
-      // Only what the wrapper's own injection causes is hidden: another VM-options variable is the
+      // Only what the supervisor's own injection causes is hidden: another VM-options variable is the
       // host environment's to explain, a line that merely quotes the banner is the command's, and
       // stdout is not the stream the announcement is written to.
       assertEquals(err, s"complaint\nPicked up JAVA_TOOL_OPTIONS: -Dx=1\n[warn] $banner\n")
@@ -341,7 +342,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assert(Files.exists(project.resolve("held")), "the lock was freed while the runtime was prepared")
       await("the transaction ended")(brokerLog().contains("for a requester already gone"))
       assert(lockFree, "the lock is freed once the word is out")
-      assert(!brokerLog().contains("exit 0"), "the wrapper never ran: the word was the refusal")
+      assert(!brokerLog().contains("exit 0"), "the supervisor never ran: the word was the refusal")
       // The broker's own end mid-preparation, as its TERM hook asks for it: it returns after
       // the preparation, and the requester gets the refusal.
       Files.delete(project.resolve("preparing"))
@@ -356,7 +357,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assertEquals(err, "refused: the command was ended before it started\n")
       assert(lockFree)
 
-  test("the runtime reaches the wrapper as options; a refusal or an exception preparing it is the command's"):
+  test("the runtime reaches the supervisor as options; a refusal or an exception preparing it is the command's"):
     val prepared = java.util.concurrent.atomic.AtomicReference[(String, Path, Seq[String])]()
     channel(
       (_, _, args) => Seq("sh", "-c", "printf '%s\\n' \"$@\"", "sh", "--") ++ args,

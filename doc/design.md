@@ -61,11 +61,11 @@ The words the documents share, each defined in the document its entry names and 
   - the clipboard broker (SECURITY.md, "Clipboard");
   - the run-on-host broker, one per session, which relays each host command and owns the processes
     it starts (`run-on-host.md`).
-- **shim, wrapper, command** — under `--run-on-host`:
+- **shim, supervisor, command** — under `--run-on-host`:
   - the shim is `ko-sandbox-run-on-host` inside the sandbox, which sends one command to the broker;
-  - the wrapper is the launcher process the broker spawns for it on the host, which runs the
+  - the supervisor is the launcher process the broker spawns for it on the host, which runs the
     program under its Seatbelt profile;
-  - a command session is the wrapper's own record of that one invocation, beside the broker's
+  - a command session is the supervisor's own record of that one invocation, beside the broker's
     session for the launch (`run-on-host.md`, "The command's lifetime and environment").
 
 ## Standing design decisions
@@ -453,11 +453,11 @@ header, answering the ruleset in force from the live proxy. Rejected:
 and this one never does — non-CONNECT is refused at the proxy layer, both methods are refused
 inside inspected tunnels, and an opaque tunnel is not an HTTP hop at all.
 
-The run-on-host wrapper does send that request, and it is no query endpoint: the proxy parses
-nothing of it and refuses it as it refuses any request that is no CONNECT. What the wrapper reads
+The run-on-host supervisor does send that request, and it is no query endpoint: the proxy parses
+nothing of it and refuses it as it refuses any request that is no CONNECT. What the supervisor reads
 is the refusal itself. After a write to the audit log failed, every refusal is a `403` whose
 `Proxy-Status` names that reason (`SECURITY.md`, "Egress proxy"); the log cannot, and a program
-need not print it (`run-on-host.md`, "Refusals"). The wrapper sends no CONNECT so
+need not print it (`run-on-host.md`, "Refusals"). The supervisor sends no CONNECT so
 that a proxy still logging records no refused host for it, and sends `Max-Forwards: 0` for a
 recipient that is not this proxy (`RunOnHostSandbox.unwritableProxyLog`).
 

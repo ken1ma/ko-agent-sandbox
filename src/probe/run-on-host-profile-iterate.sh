@@ -55,7 +55,7 @@ emit() {
 # is "run sbtn, and fail if it cannot connect to a server", and sets that same flag. sbt 2 is
 # client/server by construction, so the server starts inside the sandbox and its state goes to the
 # command's temporary directory with everything else.
-# The command's environment is the wrapper's closed set (RunOnHostSandbox): COURSIER_CACHE routes to the
+# The command's environment is the supervisor's closed set (RunOnHostSandbox): COURSIER_CACHE routes to the
 # run-on-host cache, _JAVA_OPTIONS reaches the server the client forks where -D flags do not, and
 # the two socket directories keep sbt inside the command's temporary directory.
 # `run_bound` seconds, 0 for none: `mach` sets it, because an sbt client waits without end for a

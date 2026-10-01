@@ -11,7 +11,7 @@ import scala.collection.mutable.ListBuffer
 import RunOnHostSession.*
 
 object RunOnHostSessionTest:
-  /** The registration spawn is the wrapper's own process and runs outside the profile by
+  /** The registration spawn is the supervisor's own process and runs outside the profile by
     * construction; under it, perl dies before registering. True exactly where the acceptance test runs the
     * suites as a confined command, whose tests spawning one skip. */
   val underRunOnHostProfile: Boolean =
@@ -21,7 +21,7 @@ object RunOnHostSessionTest:
    * A session root for a test that binds the sbt server's socket under a session's `tmp/`. That
    * socket is up to 52 characters past the root, `/b<up to 20 digits>/tmp/<20 hex digits>/sock`,
    * and macOS allows a socket path 103: a root under its `java.io.tmpdir`,
-   * `/var/folders/<2>/<30>/T`, is too long, and the wrapper's own root is
+   * `/var/folders/<2>/<30>/T`, is too long, and the supervisor's own root is
    * `/private/tmp/ko-agent-<uid>` for the same reason (RunOnHostPrereqs.SessionTmpMaxLength). The
    * test deletes the root it got.
    */
@@ -47,7 +47,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
       assertEquals(parseRecord(text), None, clue = s"'$text'")
 
   // --------------------------------------------------------------------------
-  // The wrapper root
+  // The supervisor root
   // --------------------------------------------------------------------------
 
   def uid: Int =
@@ -167,7 +167,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
   def processes(alive: (Long, String)*): FakeProcesses = FakeProcesses(alive.toMap)
 
   def die(session: Session): Path =
-    // A SIGKILLed wrapper: the lock is freed, the directory and records stay.
+    // A SIGKILLed supervisor: the lock is freed, the directory and records stay.
     session.close()
     session.directory
 
@@ -502,7 +502,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     scavenge(root, processes(), _ => ServerAnswer.ShutDown)
     assert(!Files.exists(entry), "deletable again, the retry collects the entry whole")
 
-  test("a session being ended by its wrapper is left alone by a concurrent scavenger"):
+  test("a session being ended by its supervisor is left alone by a concurrent scavenger"):
     val root = freshRoot()
     val project = Files.createTempDirectory("proj")
     val session = publish(root, project).toOption.get

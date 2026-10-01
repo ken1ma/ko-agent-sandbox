@@ -143,7 +143,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(guard.forall(_.contains(s"""(subpath "$project")""")))
     assert(guard.forall(line => !line.contains("/tmp/")))
 
-  test("without file rules the guard is the only regex; every wrapper-supplied path is a subpath literal"):
+  test("without file rules the guard is the only regex; every supervisor-supplied path is a subpath literal"):
     val regexLines = rendered().linesIterator.filter(_.contains("(regex")).toSeq
     assertEquals(regexLines.size, GuardedNames.size)
     assert(regexLines.forall(_.startsWith("(deny")))
