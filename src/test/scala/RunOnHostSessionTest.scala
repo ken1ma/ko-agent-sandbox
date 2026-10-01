@@ -11,7 +11,7 @@ import scala.collection.mutable.ListBuffer
 import RunOnHostSession.*
 
 object RunOnHostSessionTest:
-  /** The registration spawn is the supervisor's own process and runs outside the profile by
+  /** The leader is the supervisor's own process and runs outside the profile by
     * construction; under it, perl dies before registering. True exactly where the acceptance test runs the
     * suites as a confined command, whose tests spawning one skip. */
   val underRunOnHostProfile: Boolean =
@@ -250,16 +250,16 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(liveBrokerSessions(root, mine.directory), Vector(other.directory))
     remove(mine); remove(other); remove(command); remove(dead)
 
-  test("a spawn lives while its leader matches the record and no exit is published"):
+  test("a leader lives while it matches the record and no exit is published"):
     val root = freshRoot()
     val record = root.resolve("r")
     Files.writeString(record, renderRecord(Record(7, "START-A")), UTF_8)
-    assert(spawnLives(record, processes(7L -> "START-A")))
-    assert(!spawnLives(record, processes(7L -> "RECYCLED")))
-    assert(!spawnLives(record, processes()))
+    assert(leaderLives(record, processes(7L -> "START-A")))
+    assert(!leaderLives(record, processes(7L -> "RECYCLED")))
+    assert(!leaderLives(record, processes()))
     Files.writeString(exitRecord(record), "0\n", UTF_8)
-    assert(!spawnLives(record, processes(7L -> "START-A")))
-    assert(!spawnLives(root.resolve("absent"), processes(7L -> "START-A")))
+    assert(!leaderLives(record, processes(7L -> "START-A")))
+    assert(!leaderLives(root.resolve("absent"), processes(7L -> "START-A")))
 
   test("a dead broker session's records are ended like a command's"):
     val root = freshRoot()
@@ -1020,15 +1020,15 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(listNames(root.resolve(RetireLockDir)), Vector.empty)
 
   // --------------------------------------------------------------------------
-  // The registered spawn, against real processes
+  // The leader, against real processes
   // --------------------------------------------------------------------------
 
   def notUnderRunOnHostProfile(): Unit =
-    assume(!RunOnHostSessionTest.underRunOnHostProfile, "the registration spawn never runs under the profile")
+    assume(!RunOnHostSessionTest.underRunOnHostProfile, "the leader never runs under the profile")
 
-  test("a spawned process registers pgid and start time by rename before its command runs"):
+  test("a leader registers pgid and start time by rename before its command runs"):
     notUnderRunOnHostProfile()
-    val dir = Files.createTempDirectory("spawn")
+    val dir = Files.createTempDirectory("leader")
     val record = dir.resolve("record")
     val command = registeredSpawn(record, Seq("/bin/sleep", "30"))
     val process = java.lang.ProcessBuilder(command*).start()
@@ -1037,13 +1037,13 @@ class RunOnHostSessionTest extends munit.FunSuite:
       while !Files.exists(record) && System.nanoTime < deadline do Thread.sleep(20)
       val parsed = parseRecord(Files.readString(record, UTF_8))
       assert(parsed.isDefined, "the record was published")
-      assertEquals(parsed.get.pgid, process.pid, "the spawn is the leader it registers")
+      assertEquals(parsed.get.pgid, process.pid, "the leader is the group leader it registers")
       assertEquals(HostProcesses.startOf(process.pid), Some(parsed.get.leaderStart))
     finally process.destroyForcibly().waitFor()
 
   test("the command's exit status is published beside the record, and the leader stays"):
     notUnderRunOnHostProfile()
-    val record = Files.createTempDirectory("spawn").resolve("record")
+    val record = Files.createTempDirectory("leader").resolve("record")
     val process =
       java.lang.ProcessBuilder(registeredSpawn(record, Seq("/bin/sh", "-c", "exit 7"))*).start()
     try
@@ -1053,23 +1053,23 @@ class RunOnHostSessionTest extends munit.FunSuite:
 
   test("a command's signal death is published as the shell's 128+signal"):
     notUnderRunOnHostProfile()
-    val record = Files.createTempDirectory("spawn").resolve("record")
+    val record = Files.createTempDirectory("leader").resolve("record")
     val process = java.lang.ProcessBuilder(
       registeredSpawn(record, Seq("/bin/sh", "-c", "kill -KILL $$"))*).start()
     try assertEquals(awaitExit(exitRecord(record), process), Right(137))
     finally process.destroyForcibly().waitFor()
 
-  test("a spawn gone without an exit status is a Left, not a hang"):
+  test("a leader gone without an exit status is a Left, not a hang"):
     notUnderRunOnHostProfile()
-    val record = Files.createTempDirectory("spawn").resolve("record")
+    val record = Files.createTempDirectory("leader").resolve("record")
     val process =
       java.lang.ProcessBuilder(registeredSpawn(record, Seq("/bin/sleep", "30"))*).start()
     process.destroyForcibly().waitFor()
     assert(awaitExit(exitRecord(record), process).isLeft)
 
-  test("a spawned process whose record cannot be published ends itself with 71"):
+  test("a leader whose record cannot be published ends itself with 71"):
     notUnderRunOnHostProfile()
-    val gone = Files.createTempDirectory("spawn").resolve("condemned-away/record")
+    val gone = Files.createTempDirectory("leader").resolve("condemned-away/record")
     val process =
       java.lang.ProcessBuilder(registeredSpawn(gone, Seq("/bin/sleep", "30"))*).start()
     assertEquals(process.waitFor(), 71)
@@ -1103,7 +1103,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
       assertEquals(secondReached.get, LockedLine, "the second retirer enters only once the first released")
     finally release(second)
 
-  test("a locked spawn holds the build lock for its life, and the next taker runs once it is gone"):
+  test("a lock holder holds the build lock for its life, and the next taker runs once it is gone"):
     notUnderRunOnHostProfile()
     val lockFile = Files.createTempDirectory("lock").resolve("sbt-x")
     val holder =
@@ -1138,10 +1138,10 @@ class RunOnHostSessionTest extends munit.FunSuite:
       assertEquals(blocked.exitValue, 7)
     finally holder.destroyForcibly().waitFor()
 
-  test("a locked spawn under the broker reports the lock, then execs on the word, refuses on it, or ends at EOF"):
+  test("a lock holder under the broker reports the lock, then execs on the word, refuses on it, or ends at EOF"):
     notUnderRunOnHostProfile()
     val lockFile = Files.createTempDirectory("lock").resolve("sbt-x")
-    def spawn(command: String*): (Process, java.io.BufferedReader) =
+    def holder(command: String*): (Process, java.io.BufferedReader) =
       val process = java.lang.ProcessBuilder(lockedSpawn(lockFile, command, underBroker = true)*).start()
       val out = java.io.BufferedReader(java.io.InputStreamReader(process.getInputStream, UTF_8))
       assertEquals(out.readLine(), LockedLine)
@@ -1150,7 +1150,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
       process.getOutputStream.write(word.getBytes(UTF_8))
       process.getOutputStream.flush()
     // The word's arguments go before the command's `--`, whatever follows it.
-    val (run, out) = spawn("/bin/sh", "-c", "printf '%s\\n' \"$@\"", "sh", "--", "-x")
+    val (run, out) = holder("/bin/sh", "-c", "printf '%s\\n' \"$@\"", "sh", "--", "-x")
     answer(run, runWord(Seq("--proxy-port=1", "--proxy-log=/l")))
     assertEquals(out.readLine(), "--proxy-port=1")
     assertEquals(out.readLine(), "--proxy-log=/l")
@@ -1158,12 +1158,12 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(out.readLine(), "-x")
     assertEquals(run.waitFor(), 0)
     // An argument holding a newline, the escape byte or a NUL arrives whole: the word is one line.
-    val (odd, oddOut) = spawn("/bin/sh", "-c", "printf '%s|' \"$@\" | od -An -c | tr -s ' \\n' ' '", "sh")
+    val (odd, oddOut) = holder("/bin/sh", "-c", "printf '%s|' \"$@\" | od -An -c | tr -s ' \\n' ' '", "sh")
     answer(odd, runWord(Seq("a\nb", "\u0001x", "c")))
     assertEquals(oddOut.readLine().trim, "a \\n b | 001 x | c |")
     assertEquals(odd.waitFor(), 0)
     // The pipe stays the exec'd command's stdin, its EOF still the broker gone.
-    val (held, _) = spawn("/bin/sh", "-c", "cat")
+    val (held, _) = holder("/bin/sh", "-c", "cat")
     answer(held, runWord(Seq.empty))
     assert(
       !held.waitFor(500, java.util.concurrent.TimeUnit.MILLISECONDS),
@@ -1172,14 +1172,14 @@ class RunOnHostSessionTest extends munit.FunSuite:
     held.getOutputStream.close()
     assertEquals(held.waitFor(), 0)
     // A refusal of several lines — a server's output quoted — reaches stderr whole.
-    val (refused, _) = spawn("/bin/sh", "-c", "exit 0")
+    val (refused, _) = holder("/bin/sh", "-c", "exit 0")
     answer(refused, refusedWord("refused: no runtime; its output:\n[error] line one\n[error] line two\n"))
     assertEquals(
       String(refused.getErrorStream.readAllBytes(), UTF_8),
       "refused: no runtime; its output:\n[error] line one\n[error] line two\n\n",
     )
     assertEquals(refused.waitFor(), 2)
-    val (orphan, _) = spawn("/bin/sh", "-c", "exit 0")
+    val (orphan, _) = holder("/bin/sh", "-c", "exit 0")
     orphan.getOutputStream.close()
     assertEquals(orphan.waitFor(), 71)
 

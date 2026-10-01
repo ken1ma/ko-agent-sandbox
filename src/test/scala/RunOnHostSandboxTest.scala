@@ -660,7 +660,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(proxies, 0)
 
   test("a runtime is reused while proxy, server and portfile agree, replaced otherwise; a failed start is discarded"):
-    assume(!RunOnHostSessionTest.underRunOnHostProfile, "the registration spawn never runs under the profile")
+    assume(!RunOnHostSessionTest.underRunOnHostProfile, "the leader never runs under the profile")
     val root = RunOnHostSessionTest.socketSessionRoot("brk")
     val project = Files.createDirectory(root.resolve("project"))
     val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
@@ -689,12 +689,12 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         Thread.sleep(50)
         waited += 1
       assert(condition, what)
-    // Where the proxy and the server would be: registered spawns of a sleep, so the records,
-    // their exit files and the groups are real spawns'; the server stand-in also listens on a
+    // Where the proxy and the server would be: leaders running a sleep, so the records,
+    // their exit files and the groups are real leaders'; the server stand-in also listens on a
     // socket under the session's tmp and writes the portfile naming it, as a server does.
-    val spawns = scala.collection.mutable.ListBuffer[Process]()
+    val leaders = scala.collection.mutable.ListBuffer[Process]()
     def standIn(record: Path): Unit =
-      spawns += ProcessBuilder(RunOnHostSession.registeredSpawn(record, Seq("/bin/sleep", "30"))*).start()
+      leaders += ProcessBuilder(RunOnHostSession.registeredSpawn(record, Seq("/bin/sleep", "30"))*).start()
       await(s"$record registered")(Files.exists(record))
     var neverReady = false
     var throwsAfterRegistering = false
@@ -703,7 +703,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       standIn(record)
       Files.writeString(proxyLog, "listening\n", UTF_8)
       if throwsAfterRegistering then throw java.io.IOException("log unreadable")
-      lastPort = spawns.size
+      lastPort = leaders.size
       if neverReady then Left("never ready") else Right(lastPort)
     val serverStarts = scala.collection.mutable.ListBuffer[ServerStart]()
     var serverFails = false
@@ -730,7 +730,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     )
     val logged = scala.collection.mutable.ListBuffer[String]()
     val systemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
-    // The daemon stand-in: a registered spawn of a sleep, the sleep itself standing for the
+    // The daemon stand-in: a leader running a sleep, the sleep itself standing for the
     // daemon — the process a reuse checks by pid and start time — on a port of the stand-in's choosing.
     val daemonStarts = scala.collection.mutable.ListBuffer[DaemonStart]()
     var daemonFails = false
@@ -758,7 +758,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     def logOf(dir: Path, program: String = "sbt") = session.directory.resolve(s"proxy-$program-${hashOf(dir)}.log")
     def portfileOf(dir: Path) = dir.resolve("project/target/active.json")
     def pgidOf(record: Path) = RunOnHostSession.parseRecord(Files.readString(record, UTF_8)).get.pgid
-    // A server gone on its own: its socket closes with it, and its spawn publishes the exit.
+    // A server gone on its own: its socket closes with it, and its leader publishes the exit.
     def serverExits(dir: Path): Unit =
       listeners.remove(RunOnHostSandbox.expectedServerSocket(session.tmp, dir)).foreach(_.close())
       ProcessHandle.of(pgidOf(serverOf(dir))).get.children().forEach(_.destroyForcibly())
@@ -773,9 +773,9 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assertEquals(serverStarts.head.record, serverOf(dirA))
       assert(Files.exists(portfileOf(dirA)))
       assertEquals(runtimes.prepare(Program.Sbt, dirA, Seq("-Dprobe=2", "test")), first, "reused while all agree")
-      assertEquals(spawns.size, 2)
+      assertEquals(leaders.size, 2)
       assertEquals(serverStarts.size, 1, "a later request's arguments reach no server")
-      // The server exits — `shutdown`, its idle timeout — and the spawn publishes it: the next
+      // The server exits — `shutdown`, its idle timeout — and the leader publishes it: the next
       // command gets a server, the old group ended behind its leader.
       val firstServer = pgidOf(serverOf(dirA))
       serverExits(dirA)
@@ -873,7 +873,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       throwsAfterRegistering = false
       assert(Files.exists(serverOf(dirA)) && Files.exists(serverOf(dirB)), "the warm runtimes are untouched")
       // A failed creation whose proxy group outlives its KILL keeps the record; while it does,
-      // the next request is refused before a spawn could rename its record over the kept one.
+      // the next request is refused before a leader could rename its record over the kept one.
       val dirD = Files.createDirectory(project.resolve("d"))
       neverReady = true
       groupSurvives = true
@@ -883,11 +883,11 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         refused.toString,
       )
       val keptProxy = pgidOf(recordOf(dirD))
-      val spawnsKept = spawns.size
+      val leadersKept = leaders.size
       val again = runtimes.prepare(Program.Sbt, dirD, Seq("test"))
       assert(again.swap.exists(_.contains("kept for the next start")), again.toString)
       assertEquals(pgidOf(recordOf(dirD)), keptProxy, "the kept record is not renamed over")
-      assertEquals(spawns.size, spawnsKept, "no spawn while the record is kept")
+      assertEquals(leaders.size, leadersKept, "no leader while the record is kept")
       // The group ends at last: the record goes, and the creation is retried.
       groupSurvives = false
       neverReady = false
@@ -978,14 +978,14 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       Files.delete(aSock.getParent)
     finally
       listeners.values.foreach(_.close())
-      spawns.foreach: spawn =>
-        spawn.descendants().forEach(_.destroyForcibly())
-        spawn.destroyForcibly()
+      leaders.foreach: leader =>
+        leader.descendants().forEach(_.destroyForcibly())
+        leader.destroyForcibly()
       session.close()
       FileHelper.deleteRecursively(root)
 
   test("another live broker's server is taken over by its record alone; a build file without one reserves nothing"):
-    assume(!RunOnHostSessionTest.underRunOnHostProfile, "the registration spawn never runs under the profile")
+    assume(!RunOnHostSessionTest.underRunOnHostProfile, "the leader never runs under the profile")
     val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
     val root = Files.createTempDirectory("owned").toRealPath()
     RunOnHostSession.ensureRoot(root, uid).getOrElse(fail("root"))
@@ -1017,7 +1017,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val millDir = Files.createDirectory(project.resolve("mill-only"))
     val millHash = RunOnHostSession.buildHash(millDir)
     RunOnHostSession.publishBuildFile(peer.directory, millHash, millDir)
-    // A record without a stand-in spawn, as the proxy's: what the descriptor of a started
+    // A record without a stand-in leader, as the proxy's: what the descriptor of a started
     // runtime binds to.
     def recordOnly(record: Path): Unit =
       Files.writeString(record, RunOnHostSession.renderRecord(RunOnHostSession.Record(1, "S")), UTF_8)
@@ -1055,7 +1055,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assertEquals(endedGroups.toList, List(peerLeader))
       // The daemon record is the mill ownership: the peer's `daemon-mill-<hash>` is what a mill
       // command for that directory takes over, while its sbt-only `dir` admits one with nothing
-      // to end. The record names a live group — the peer's server spawn stands in — since a dead
+      // to end. The record names a live group — the peer's server's leader stands in — since a dead
       // group's record owns nothing.
       Files.copy(peerServerRecord, peer.records.resolve(s"daemon-mill-$millHash"))
       assertEquals(
@@ -1293,7 +1293,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(table.ended.toList, List(serverLeader, proxyLeader))
     assert(!Files.exists(condemned))
 
-  /** Two brokers of one project in one JVM, over a shared process table and no real spawn: the
+  /** Two brokers of one project in one JVM, over a shared process table and no real leader: the
     * proxy and the server or daemon are records with table pids, the server's socket a listener
     * under its session's `tmp/` named by the portfile. The sharer's server and daemon start functions must
     * never run. */
@@ -1360,7 +1360,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       writePortfile(directory, socket)
     def listening(session: RunOnHostSession.Session, directory: Path = dir): Boolean =
       listeners.get(RunOnHostSandbox.expectedServerSocket(session.tmp, directory)).exists(_.isOpen)
-    /** The owner's server gone on its own: its socket closes with it and its spawn publishes the exit. */
+    /** The owner's server gone on its own: its socket closes with it and its leader publishes the exit. */
     def serverExits(): Unit =
       listeners.remove(RunOnHostSandbox.expectedServerSocket(owner.tmp, dir)).foreach(_.close())
       Files.writeString(RunOnHostSession.exitRecord(owner.records.resolve(s"server-sbt-$hash")), "0\n", UTF_8)

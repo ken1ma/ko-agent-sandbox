@@ -178,8 +178,8 @@ run_sbt() { # client command...: the executable the supervisor runs; the profile
 # proxy and, for sbt, its server, runs the program under the generated profile, ends them, and preserves the
 # exit code. Its stderr carries the supervisor's own lines — `scavenged ...`, `refused: ...`,
 # `Command requested network access ...` — which several rows read. $test_cp and $lock_script
-# are captured from emit and RunOnHost; the command runs under the build lock the broker's spawn
-# takes (locked_supervisor).
+# are captured from emit and RunOnHost; the command runs under the build lock the broker's lock
+# holder takes (locked_supervisor).
 build_lock() { "$JAVA_HOME/bin/java" -cp "$test_cp" agentsandbox.launcher.RunOnHost --build-lock "$1" "$2"; }
 # The supervisor issues its proxy's certificates, which needs the exports the launcher's own
 # re-invocation passes (RunOnHostSandbox.CertificateBuilderExports).
@@ -969,7 +969,7 @@ skip_lifecycle() {
 $lifecycle_rows
 EOF
 }
-# The victim's own client record, bound to it directly: the recorded spawn is started by the
+# The victim's own client record, bound to it directly: the recorded leader is started by the
 # supervisor, so its parent pid is the victim's, and the recorded start time must match the live
 # process — the same pid-plus-start check the supervisor's own scavenger uses, so a stale record
 # whose pid was reused by another child of the victim never passes. Empty when the supervisor ends
@@ -989,7 +989,7 @@ await_client_record() { # victim-pid
     done
 }
 # Always launched with `&`, and exec so $! IS the supervisor JVM: without it the background pid is
-# the subshell running this function, java is its child, and every staged kill — and the spawn's
+# the subshell running this function, java is its child, and every staged kill — and the leader's
 # parent-pid check above — would signal or look at the wrong process.
 victim_supervisor() { # log-name
     lock=$(build_lock sbt "$project") || exit 2
@@ -1040,7 +1040,7 @@ $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
         fi
     fi
 
-    # SIGKILL mid-command: the spawn, the leader, survives the supervisor, so the next start ends the whole
+    # SIGKILL mid-command: the leader survives the supervisor, so the next start ends the whole
     # running group while its leader is alive instead of refusing a leaderless one.
     victim_supervisor killed-mid.log & victim=$!
     client_record=$(await_client_record "$victim")
@@ -1057,9 +1057,9 @@ $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
             "$(tail -1 "$work/recover-mid.log" | cut -c1-70)"; fi
     fi
 
-    # The leaderless server needs the spawns gone too: SIGKILL the supervisor mid-command, let the
-    # client finish its command cleanly — the spawn publishes its exit beside the record — then
-    # SIGKILL the client's spawn and the server's spawn alone: the server, its group's leader
+    # The leaderless server needs the leaders gone too: SIGKILL the supervisor mid-command, let the
+    # client finish its command cleanly — the leader publishes its exit beside the record — then
+    # SIGKILL the client's leader and the server's leader alone: the server, its group's leader
     # gone, survives with the portfile. Proxy recorded and ended, client and server groups
     # leaderless and skipped, server ended by attribution (RunOnHostSession.collectServers).
     # Killing any of the client's processes instead stages the wrong state: a server whose
@@ -1084,7 +1084,7 @@ $(project_servers | tr '\n' ' ')$(stray_proxies | tr '\n' ' ')"
             report SKIP "leaderless server ended by portfile attribution" "no orphan was staged"
             pkill -9 -g "$client_pgid" 2>/dev/null
         else
-            # The spawns alone: the command is done, the server stays.
+            # The leaders alone: the command is done, the server stays.
             kill -9 "$client_pgid" 2>/dev/null
             [ -n "$server_record" ] && kill -9 "$(awk '{print $1}' "$server_record")" 2>/dev/null
             sleep 1

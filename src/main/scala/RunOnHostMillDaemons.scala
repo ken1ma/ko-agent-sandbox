@@ -82,8 +82,8 @@ object RunOnHostMillDaemons:
       s"the starter's output:\n${RunOnHostSandbox.sessionLogTail(output, 4096).getOrElse("(nothing was written)\n")}"
     def attempt(retriesLeft: Int, profileFile: Path): Either[String, Daemon] =
       for
-        spawn <- spawnStarter(start, profileFile, inputs.environment, output)
-        _ <- awaitStarter(spawn, start, output, processes, log)
+        leader <- spawnStarter(start, profileFile, inputs.environment, output)
+        _ <- awaitStarter(leader, start, output, processes, log)
         daemon <- memberDaemon(start.record) match
           case Some((pid, daemonStart)) =>
             verifiedPort(start.buildDirectory, pid).map(port => Daemon(pid, daemonStart, port))
@@ -104,7 +104,7 @@ object RunOnHostMillDaemons:
     yield daemon
 
   /** `./mill version` from the build directory — the stock bootstrap, `MILL_VERSION` naming the
-    * JVM launcher — as a registered spawn under the daemon profile, stdin `/dev/null`, its output
+    * JVM launcher — started through registeredSpawn under the daemon profile, stdin `/dev/null`, its output
     * to the starter log, the closed environment with the broker's `tmp/` as its temporary and
     * socket directory, which the daemon inherits. */
   private def spawnStarter(
@@ -138,7 +138,7 @@ object RunOnHostMillDaemons:
    * bound is on progress, not time.
    */
   private def awaitStarter(
-    spawn: Process, start: DaemonStart, output: Path, processes: Processes, log: String => Unit,
+    leader: Process, start: DaemonStart, output: Path, processes: Processes, log: String => Unit,
   ): Either[String, Unit] =
     val exit = RunOnHostSession.exitRecord(start.record)
     def sizes = (RunOnHostSandbox.logLength(output), RunOnHostSandbox.logLength(start.runtime.proxyLog))
@@ -148,10 +148,10 @@ object RunOnHostMillDaemons:
     var polls = 0
     var result: Option[Either[String, Unit]] = None
     while result.isEmpty do
-      val spawnEnded = !spawn.isAlive
+      val leaderEnded = !leader.isAlive
       if Files.exists(exit) then result = Some(Right(()))
-      else if spawnEnded then
-        result = Some(Left(s"the mill starter's spawn ended (exit ${spawn.exitValue}) without registering it"))
+      else if leaderEnded then
+        result = Some(Left(s"the mill starter's leader ended (exit ${leader.exitValue}) without registering it"))
       else
         val now = sizes
         if now != last then
@@ -453,8 +453,8 @@ object RunOnHostMillDaemons:
 
   /** A starter's group ended behind its leader, under the record's retirement lock, and its
     * record and exit file removed, before the same record name is spawned again: the failed
-    * starter's spawn is that group's live leader. A group listed after its KILL, or a lock not
-    * free within the bound, keeps its record, and Left refuses the spawn that would rename over
+    * starter's leader is alive. A group listed after its KILL, or a lock not
+    * free within the bound, keeps its record, and Left refuses the leader that would rename over
     * it. */
   private def retire(root: Path, record: Path, processes: Processes): Either[String, Unit] =
     RunOnHostSession.endRecordedGroup(root, record, processes) match

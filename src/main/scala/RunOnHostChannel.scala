@@ -179,18 +179,18 @@ object RunOnHostChannel:
   final case class Service(
     project: Path,
     programs: Set[String],
-    /** A locked spawn of the supervisor (RunOnHostSession.lockedSpawn, under the broker): dispatch
-      * speaks its protocol. */
+    /** The supervisor under the build lock (RunOnHostSession.lockedSpawn, under the broker): dispatch
+      * speaks the lock holder's protocol. */
     supervisorCommand: (String, Path, Path, Seq[String]) => Seq[String],
     os: Os,
     /** The build lock file of a program and build directory (RunOnHostSession.buildLockFile),
       * which the supervisor holds for its life. */
     buildLock: (String, Path) => Either[String, Path],
     /** The runtime a program's command in a build directory runs against, given the request's
-      * arguments, prepared while the spawn holds the build lock: the supervisor options naming it
+      * arguments, prepared while the lock holder has the build lock: the supervisor options naming it
       * (RunOnHostSandbox.runtimeOptions), none for a program whose supervisor creates its own. */
     runtime: (String, Path, Seq[String]) => Either[String, Seq[String]],
-    /** After a dispatched spawn ended — its command run, refused, or ended with its requester —
+    /** After a dispatched child ended — its command run, refused, or ended with its requester —
       * with the request's program: what the runtime records once the command is over
       * (RunOnHostSandbox.BrokerRuntimes.commandEnded). */
     ended: String => Unit = _ => (),
@@ -276,12 +276,12 @@ object RunOnHostChannel:
 
   def endCurrentCommand(): Unit = currentCommand.foreach(end => end())
 
-  /** Where a dispatched spawn is, for an end asked of it — the requester gone, endCurrentCommand.
+  /** Where a dispatched child is, for an end asked of it — the requester gone, endCurrentCommand.
     * Waiting for the build lock, it is destroyed at once. Preparing the runtime, it holds the
     * lock the preparation runs under, so the end is applied once the word is out: the refusal,
     * which it exits on by itself. Running the supervisor, it is destroyed, the supervisor's teardown
     * answering. */
-  private enum SpawnPhase:
+  private enum ChildPhase:
     case Waiting, Preparing, Running, Ending
 
   private def transact(
@@ -394,11 +394,11 @@ object RunOnHostChannel:
       val child = ProcessBuilder(command*).start()
       val ended = AtomicBoolean(false)
       val requesterGone = AtomicBoolean(false)
-      val phase = AtomicReference(SpawnPhase.Waiting)
+      val phase = AtomicReference(ChildPhase.Waiting)
       val endAsked = AtomicBoolean(false)
       def endChild(): Unit =
         endAsked.set(true)
-        if phase.get == SpawnPhase.Running || phase.compareAndSet(SpawnPhase.Waiting, SpawnPhase.Ending) then
+        if phase.get == ChildPhase.Running || phase.compareAndSet(ChildPhase.Waiting, ChildPhase.Ending) then
           child.destroy()
       currentCommand = Some(() => { endChild(); child.waitFor(); () })
       // The writers die only with their requester: a slow reader is the requester's own
@@ -411,36 +411,36 @@ object RunOnHostChannel:
           endChild()
           end(outWriter)
           end(errWriter)
-      // stderr from the start: the spawn's wait for the build lock is announced there.
+      // stderr from the start: the child's wait for the build lock is announced there.
       val errPump = pump(child.getErrorStream, errWriter.getOutputStream)
-      // The spawn's first line says it holds the build lock; the word — the runtime's options,
-      // or the refusal the spawn prints and exits 2 on — is what it execs the supervisor on.
-      // Anything else is the spawn ending before the lock, or ended while it waited, and its
+      // The child's first line says it holds the build lock; the word — the runtime's options,
+      // or the refusal the child prints and exits 2 on — is what it execs the supervisor on.
+      // Anything else is the child ending before the lock, or ended while it waited, and its
       // exit is the answer.
       readLine(child.getInputStream) match
         case Right(Some(RunOnHostSession.LockedLine))
-            if phase.compareAndSet(SpawnPhase.Waiting, SpawnPhase.Preparing) =>
-          // Any failure to prepare is the refusal: an exception would leave the spawn waiting
+            if phase.compareAndSet(ChildPhase.Waiting, ChildPhase.Preparing) =>
+          // Any failure to prepare is the refusal: an exception would leave the child waiting
           // for a word, the lock held.
           val prepared =
             try service.runtime(request.program, workingDirectory, request.arguments)
             catch case NonFatal(ex) => Left(s"preparing the runtime: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
           val word = prepared match
             case Right(arguments) if !endAsked.get =>
-              phase.set(SpawnPhase.Running)
+              phase.set(ChildPhase.Running)
               RunOnHostSession.runWord(arguments)
             case Right(_) =>
-              phase.set(SpawnPhase.Ending)
+              phase.set(ChildPhase.Ending)
               RunOnHostSession.refusedWord("refused: the command was ended before it started")
             case Left(reason) =>
               log(s"refused: $reason")
-              phase.set(SpawnPhase.Ending)
+              phase.set(ChildPhase.Ending)
               RunOnHostSession.refusedWord(s"refused: $reason")
           try
             child.getOutputStream.write(word.getBytes(UTF_8))
             child.getOutputStream.flush()
-          catch case _: IOException => () // the spawn is gone; waited for below
-          if endAsked.get && phase.get == SpawnPhase.Running then child.destroy()
+          catch case _: IOException => () // the child is gone; waited for below
+          if endAsked.get && phase.get == ChildPhase.Running then child.destroy()
         case _ => ()
       val pumps = Seq(pump(child.getInputStream, outWriter.getOutputStream), errPump)
       val exit = child.waitFor()

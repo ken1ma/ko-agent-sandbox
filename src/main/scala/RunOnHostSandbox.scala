@@ -974,7 +974,7 @@ object RunOnHostSandbox:
    * `scavenge` runs before each preparation so a dead owner is collected by the exclusive
    * scavenger before a fresh server or daemon starts; one dying after it is taken over. Preparation and
    * the session's end share this object's monitor. Tests replace the second parameter list: they
-   * register a stand-in spawn where the proxy, server or daemon would be, and stub the scavenger.
+   * register a stand-in leader where the proxy, server or daemon would be, and stub the scavenger.
    */
   final class BrokerRuntimes(
     session: Session,
@@ -1019,7 +1019,7 @@ object RunOnHostSandbox:
     private def daemonRecord(hash: String): Path = session.records.resolve(daemonRecordName(hash))
 
     /** The runtime a command in `buildDirectory` runs against, None for Maven's; `arguments` are
-      * the request's, for a server this call starts. Called while the command's spawn holds the
+      * the request's, for a server this call starts. Called while the command's lock holder has the
       * build lock. A dead owner is collected first, so a stale portfile or record cannot block a
       * fresh start. */
     def prepare(program: Program, buildDirectory: Path, arguments: Seq[String]): Either[String, Option[Runtime]] =
@@ -1028,7 +1028,7 @@ object RunOnHostSandbox:
         // directory must be collected on the next launch's next command, not only when that
         // command needs a runtime of its own.
         scavenge()
-        // The word this returns is what the spawn execs the supervisor on (RunOnHostChannel.dispatch):
+        // The word this returns is what the lock holder execs the supervisor on (RunOnHostChannel.dispatch):
         // the executable's last check before that exec, Maven's included (selfPresent has why).
         executable().flatMap: _ =>
           if program == Program.Mvn then Right(None)
@@ -1127,14 +1127,14 @@ object RunOnHostSandbox:
     ): Either[String, Option[Runtime]] =
       val name = s"proxy-${program.name}-$hash"
       val proxyLog = session.directory.resolve(s"$name.log")
-      // An exception after a spawn registered is a failed start like any other.
+      // An exception after a leader registered is a failed start like any other.
       val started =
         try
           for
             _ <- RunOnHostSession.publishBuildFile(session.directory, hash, buildDirectory)
             assembled <- assemble(project, program, buildDirectory)
             hosts <- readProgramRules(project, program)
-            // A record a failed creation kept: discarded, or the spawn that would rename over it refused.
+            // A record a failed creation kept: discarded, or the leader that would rename over it refused.
             _ <- discard(program, hash, proxyRecord(program, hash))
             port <- proxy(program, hosts, proxyRecord(program, hash), proxyLog)
             made = Live(buildDirectory, hash, assembled, Runtime(session.directory, port, proxyLog), hosts)
@@ -1151,8 +1151,8 @@ object RunOnHostSandbox:
             current.daemon.map(d => s", daemon ${d.pid} on port ${d.port}").getOrElse(""))
           Right(Some(current.runtime))
         case Left(reason) =>
-          // A spawn that registered and never reported ready: left alone, its group would
-          // outlive the record the next attempt's spawn renames over, and its late ready line
+          // A leader that registered, its proxy never reporting ready: left alone, its group would
+          // outlive the record the next attempt's leader renames over, and its late ready line
           // would be read as that attempt's.
           Left(discardRuntime(program, hash, proxyLog).fold(kept => s"$reason; $kept", _ => reason))
 
@@ -1160,7 +1160,7 @@ object RunOnHostSandbox:
       * server (foreignRuntime, decided by every caller first), once no foreign server holds its
       * portfile; up, it is described for other launches (publishDescriptor). A start that fails,
       * by refusal or exception, leaves no group behind its record. A record an earlier failure
-      * kept is discarded first, or refuses the start while its group lives: the spawn would
+      * kept is discarded first, or refuses the start while its group lives: the leader would
       * rename over it. */
     private def startServer(current: Live, arguments: Seq[String]): Either[String, Unit] =
       val record = serverRecord(current.hash)
@@ -1169,7 +1169,7 @@ object RunOnHostSandbox:
           discard(Program.Sbt, current.hash, record).flatMap(_ => noForeignServer(current)).flatMap: _ =>
             // After any foreign server is gone, not before: shutdownForeignServer waits for the
             // user's build to finish, and sweeping its `target/` links mid-build would corrupt
-            // it. Before the spawn: our server fails loading on a link into a denied store.
+            // it. Before the start: our server fails loading on a link into a denied store.
             sweepTargetLinks(current.assembled)
             server(ServerStart(
               current.assembled, current.buildDirectory, current.hash, arguments, record, current.runtime,
@@ -1331,10 +1331,10 @@ object RunOnHostSandbox:
      * live — locked under the root; one ending or dead is never attached to — its descriptor
      * (RunOnHostRuntimeDescriptor) carries the fingerprint of this launch's own would-be start,
      * derived with the owner's `tmp/` and proxy port and the rule file as read now, and is bound
-     * to the owner's present records, whose proxy spawn lives; for sbt the server spawn lives and
+     * to the owner's present records, whose proxy's leader lives; for sbt the server's leader lives and
      * the portfile names the socket derived under the owner's `tmp/`, unredirected; for mill the
      * daemon bears its start time and its configuration is the build directory's now —
-     * `spawnLives` is no liveness for a mill runtime, whose starter has exited by design. The
+     * `leaderLives` is no liveness for a mill runtime, whose starter has exited by design. The
      * command then runs against the owner's session, proxy and daemon port, exactly as the
      * owner's own commands do (`Runtime`), and this launch records and keeps nothing of it: the
      * next command asks again. What the sharer gives up (run-on-host.md "The channel and the
@@ -1458,7 +1458,7 @@ object RunOnHostSandbox:
       livePortfileServer(buildDirectory).contains(derived)
         && !Files.isSymbolicLink(derived) && !Files.isSymbolicLink(derived.getParent)
 
-    private def lives(record: Path): Boolean = RunOnHostSession.spawnLives(record, processes)
+    private def lives(record: Path): Boolean = RunOnHostSession.leaderLives(record, processes)
 
     /** End the groups the runtime's records name — the server or daemon, then the proxy — and delete
       * them with the proxy log, since a successor of the same name would read this proxy's ready
@@ -1489,7 +1489,7 @@ object RunOnHostSandbox:
     /** End the group one record of the runtime `program` and `hash` names, under its
       * retirement lock, and delete the record and its exit file — unless the outcome keeps the
       * record (`Collected.keeps`), as when a member is still listed or the lock is not free within
-      * the bound: then Left says so, for the caller to start nothing whose spawn would rename its
+      * the bound: then Left says so, for the caller to start nothing whose leader would rename its
       * record over the kept one.
       * The runtime's descriptor goes first, before any of its groups is ended, so another launch
       * attaches to nothing ending; the start that follows republishes it. */
@@ -1598,7 +1598,7 @@ object RunOnHostSandbox:
     * with no bound at all (doc/TODO.md, "a bound on a silent host command"). */
   val ServerStartSilenceMillis = 120_000L
 
-  /** The server (run-on-host.md "sbt"): a registered spawn under the server profile, the build
+  /** The server (run-on-host.md "sbt"): started through registeredSpawn under the server profile, the build
     * directory its working directory, stdin `/dev/null`, stdout and stderr to serverLog, and
     * the closed environment with the broker's `tmp/` as its temporary and socket directory. Up
     * when the build directory's portfile names a connectable socket under that `tmp/`. */
@@ -1618,7 +1618,7 @@ object RunOnHostSandbox:
     )
     for
       profile <- SeatbeltProfile.render(inputs.profile)
-      spawn <-
+      leader <-
         try
           val profileFile = session.directory.resolve(s"server-sbt-${start.hash}.sb")
           Files.writeString(profileFile, profile, UTF_8)
@@ -1639,10 +1639,10 @@ object RunOnHostSandbox:
           builder.environment.putAll(inputs.environment.asJava)
           Right(builder.start())
         catch case ex: IOException => Left(s"starting the sbt server: ${ex.getMessage}")
-      _ <- awaitServer(session, start, spawn, output)
+      _ <- awaitServer(session, start, leader, output)
     yield ()
 
-  private def awaitServer(session: Session, start: ServerStart, spawn: Process, output: Path): Either[String, Unit] =
+  private def awaitServer(session: Session, start: ServerStart, leader: Process, output: Path): Either[String, Unit] =
     val exit = RunOnHostSession.exitRecord(start.record)
     def said = s"its output:\n${sessionLogTail(output, 4096).getOrElse("(nothing was written)\n")}"
     def sizes = (logLength(output), logLength(start.runtime.proxyLog))
@@ -1650,12 +1650,12 @@ object RunOnHostSandbox:
     var since = System.nanoTime
     var result: Option[Either[String, Unit]] = None
     while result.isEmpty do
-      val spawnEnded = !spawn.isAlive // read before the file: a spawn dying after its rename still answers
+      val leaderEnded = !leader.isAlive // read before the file: a leader dying after its rename still answers
       if Files.exists(exit) then
         val status = try Files.readString(exit, UTF_8).trim catch case _: IOException => "?"
         result = Some(Left(s"the sbt server exited ($status) before publishing its portfile; $said"))
-      else if spawnEnded then
-        result = Some(Left(s"the sbt server's spawn ended (exit ${spawn.exitValue}) without registering it"))
+      else if leaderEnded then
+        result = Some(Left(s"the sbt server's leader ended (exit ${leader.exitValue}) without registering it"))
       else
         livePortfileServer(start.buildDirectory) match
           case Some(socket)
@@ -1925,8 +1925,8 @@ object RunOnHostSandbox:
       ).asJava,
     )
 
-    // The spawn publishes the command's exit status and then stays alive, for teardown to check its
-    // start time (RunOnHostSession): the answer is the exit file, never the spawn's own end.
+    // The leader publishes the command's exit status and then stays alive, for teardown to check its
+    // start time (RunOnHostSession): the answer is the exit file, never the leader's own end.
     try RunOnHostSession.awaitExit(RunOnHostSession.exitRecord(record), builder.start())
     catch case ex: IOException => Left(s"starting the command: ${ex.getMessage}")
 

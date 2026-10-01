@@ -66,7 +66,12 @@ The words the documents share, each defined in the document its entry names and 
   - the supervisor is the launcher process the broker spawns for it on the host, which runs the
     program under its Seatbelt profile;
   - a command session is the supervisor's own record of that one invocation, beside the broker's
-    session for the launch (`run-on-host.md`, "The command's lifetime and environment").
+    session for the launch (`run-on-host.md`, "The command's lifetime and environment");
+  - the leader is the process `RunOnHostSession.registeredSpawn` starts for a command, a proxy, an
+    sbt server or a mill daemon's starter: its own group's leader, which registers the group and
+    publishes the exit of what it ran;
+  - the lock holder is the process `RunOnHostSession.lockedSpawn` starts, which takes the build
+    lock and execs the supervisor holding it.
 
 ## Standing design decisions
 
