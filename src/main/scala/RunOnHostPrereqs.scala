@@ -521,7 +521,7 @@ object RunOnHostPrereqs:
     else Left(Refusal.PrereqMillExecutableMissing(launcherVersion, downloadDir))
 
   /**
-   * What Mill's launcher restarts the daemon on (`ServerLauncher.DaemonConfig`, 1.1.9): the
+   * What Mill's launcher restarts the daemon on (`ServerLauncher.DaemonConfig`, 1.1.10): the
    * launcher's version, the resolved JVM, `mill-jvm-opts` and `mill-repositories` — the last
    * three each from the source `MillProcessLauncher.loadMillConfig` selects, `.<key>`, else
    * `.config/<key>`, else the header of the first root build file, `build.mill.yaml` (the whole
@@ -571,7 +571,7 @@ object RunOnHostPrereqs:
     value.nonEmpty && !value.exists(ch => ch == '/' || ch == '\\' || ch.isWhitespace)
 
   /**
-   * The wrapper's distribution as Gradle's wrapper takes it (9.7.1: `WrapperExecutor`,
+   * The wrapper's distribution as Gradle's wrapper takes it (9.8.0: `WrapperExecutor`,
    * `WrapperDistributionUrlConverter`, `GradleWrapperMain`). The properties are loaded as
    * `java.util.Properties` loads them, so `https\://` and `https://` are one URL; `distributionUrl`
    * is required; a URL without a scheme is a file relative to the properties file's directory.
