@@ -299,8 +299,8 @@ restore permission prompts and set the Claude Code status line.
                          and what the file rules protect),
                          per-project caches, and a dedicated egress proxy.
                          Before the start prompt, offers to run the project's ./mill,
-                         ./gradlew or ./mvnw when its launcher or distribution is not
-                         yet provisioned.
+                         ./gradlew or ./mvnw when its launcher, pinned JDK or
+                         distribution is not yet provisioned.
                          The session keeps one sbt/mill daemon warm per build directory.
                          On first use there, a daemon you started is shut down after its
                          current build finishes; your new clients then share the session's

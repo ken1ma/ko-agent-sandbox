@@ -145,7 +145,8 @@ object SeatbeltProfile:
    */
   def render(inputs: ProfileInputs): Either[String, String] =
     val prereqs = inputs.prereqs
-    val readOnly = Seq(prereqs.jdkHome) ++ inputs.distribution ++ Seq(prereqs.executable)
+    // Distinct: a mill build may pin the JDK that JAVA_HOME names.
+    val readOnly = (Seq(prereqs.jdkHome) ++ inputs.distribution ++ Seq(prereqs.executable)).distinct
     // Tests write and run stubs in the project and the command's temporary directory. Children
     // inherit the profile. Caches need no process-exec grant: the JVM loads their code by reading it.
     val readWriteExec = Seq(prereqs.project, inputs.sessionTmp)
@@ -187,8 +188,6 @@ object SeatbeltProfile:
         Left("an sbt profile needs the Ivy home it grants; without it the local resolver is a denial")
       case _ if program == Program.Mvn && inputs.m2Repository.isEmpty =>
         Left("an mvn profile needs the local repository it grants; without it every resolution is a denial")
-      case _ if program == Program.Mill && inputs.distribution.isDefined =>
-        Left("a mill profile has no distribution to grant")
       case _ if networkProgram.exists(_ != program) =>
         Left(s"a ${program.name} profile has no ${networkProgram.get.name} server or daemon to reach")
       case _ if daemonPort.exists(port => port < 1 || port > 65535) =>

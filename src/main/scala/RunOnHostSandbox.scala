@@ -10,8 +10,8 @@ package agentsandbox.launcher
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets.{ISO_8859_1, UTF_8}
-import java.nio.file.{Files, LinkOption, Path, StandardOpenOption}
-import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.{Files, LinkOption, Path, SecureDirectoryStream, StandardOpenOption}
+import java.nio.file.attribute.{BasicFileAttributeView, BasicFileAttributes}
 
 import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal
@@ -26,9 +26,10 @@ object RunOnHostSandbox:
 
   case class Assembled(
     prereqs: CommandPrereqs,
-    /** The unpacked distribution the executable runs from: sbt's in the Coursier archive cache,
-      * Gradle's and Maven's under their wrappers' `dists`; mill's executable is one file and has
-      * none. */
+    /** The unpacked distribution the command also runs from: sbt's in the Coursier archive cache,
+      * Gradle's and Maven's under their wrappers' `dists`; for mill, whose executable is one file,
+      * the JDK a pinned `mill-jvm-version` runs the daemon on (RunOnHostPrereqs.millPinnedJdk),
+      * none under `system`. */
     distribution: Option[Path],
     /** The per-project sbt global base and Ivy home, Gradle's user home and Maven's local
       * repository: created and granted for the program that reads each (`sbtCachesGranted`,
@@ -84,6 +85,84 @@ object RunOnHostSandbox:
   private def readLatin1(path: Path): Option[String] =
     reading(path)(Option.when(Files.exists(path))(String(Files.readAllBytes(path), ISO_8859_1)))
 
+  /** Only so that the read is bounded: far above any key and path mill writes, the key's
+    * `mill-repositories` included, and small beside the launcher's heap. */
+  private val MillJavaHomeMaxBytes = 256 * 1024
+  private val MillJavaHomeReadMillis = 2000L
+
+  /** The reads of mill's `java-home` file running or abandoned at once (millJavaHomeText). */
+  private val MillJavaHomeReaders = java.util.concurrent.Semaphore(4)
+
+  /**
+   * The text of mill's `java-home` file in `buildDirectory` (RunOnHostPrereqs.MillJavaHomeFile),
+   * None when it is absent or cannot be read as the build's own file.
+   *
+   * The launcher reads it outside any profile, under the broker's monitor, while a command of the
+   * project may be writing under `out/`. So each directory is opened relative to the one before
+   * it and the file relative to the last, none through a symlink, whatever a command renames
+   * meanwhile; the read stops at `MillJavaHomeMaxBytes`, whatever size the file reports; and the
+   * whole is abandoned after `MillJavaHomeReadMillis`, since the open of a FIFO moved into the
+   * file's place after the type check would not return. The text is never printed.
+   *
+   * An abandoned read keeps its thread and its directories until a writer opens that FIFO, so
+   * `readers` bounds how many exist: with none free the file reads as absent, and the build is
+   * refused as not provisioned until one returns.
+   *
+   * `raced` runs between the type check and the open: tests replace it to stand in for that command.
+   */
+  private[launcher] def millJavaHomeText(
+    buildDirectory: Path,
+    millis: Long = MillJavaHomeReadMillis,
+    raced: () => Unit = () => (),
+    readers: java.util.concurrent.Semaphore = MillJavaHomeReaders,
+  ): Option[String] =
+    if !readers.tryAcquire() then None
+    else
+      val read = java.util.concurrent.FutureTask[Option[String]]: () =>
+        try millJavaHomeRead(buildDirectory, raced)
+        finally readers.release()
+      try Thread.ofPlatform().daemon().name("mill-java-home-read").start(read)
+      catch
+        case ex: Throwable =>
+          readers.release()
+          throw ex
+      try read.get(millis, java.util.concurrent.TimeUnit.MILLISECONDS)
+      catch case _: (java.util.concurrent.TimeoutException | java.util.concurrent.ExecutionException) => None
+
+  private def millJavaHomeRead(buildDirectory: Path, raced: () => Unit): Option[String] =
+    def opened(directory: SecureDirectoryStream[Path], names: List[Path]): Option[String] =
+      try
+        names match
+          case file :: Nil =>
+            val regular = directory
+              .getFileAttributeView(file, classOf[BasicFileAttributeView], LinkOption.NOFOLLOW_LINKS)
+              .readAttributes().isRegularFile
+            raced()
+            if !regular then None
+            else
+              val channel =
+                directory.newByteChannel(file, java.util.Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))
+              try
+                val buffer = ByteBuffer.allocate(MillJavaHomeMaxBytes + 1)
+                var open = true
+                while open && buffer.hasRemaining do
+                  if channel.read(buffer) < 0 then open = false
+                Option.when(buffer.position() <= MillJavaHomeMaxBytes):
+                  UTF_8.newDecoder().decode(buffer.flip()).toString
+              finally channel.close()
+          case next :: deeper => opened(directory.newDirectoryStream(next, LinkOption.NOFOLLOW_LINKS), deeper)
+          case Nil            => None
+      finally directory.close()
+    try
+      Files.newDirectoryStream(buildDirectory) match
+        case secure: SecureDirectoryStream[Path] =>
+          opened(secure, Path.of(MillJavaHomeFile).iterator().asScala.toList)
+        // A JVM without openat has no way to hold a directory while a command renames it.
+        case plain =>
+          plain.close()
+          None
+    catch case _: IOException => None
+
   /** The directories directly inside `path`; none when it is absent. */
   private def directories(path: Path): Seq[Path] =
     reading(path):
@@ -118,24 +197,36 @@ object RunOnHostSandbox:
   ): Either[StepRefusal, Path] =
     try
       program match
-        case Program.Mill   => millLauncher(env, buildDirectory).map(_._1)
+        case Program.Mill   => millLauncher(env, buildDirectory).map(_.executable)
         case Program.Gradle => gradleDistribution(env, buildDirectory).map(_.resolve("bin").resolve("gradle"))
         case Program.Mvn    => mvnDistribution(env, buildDirectory).map(_.resolve("bin").resolve("mvn"))
         case Program.Sbt    => Left(StepRefusal("sbt executable", "sbt's executable is the user's, not the project's"))
     catch case ex: Unreadable => Left(StepRefusal(program.name, ex.refusal))
 
-  /** Mill's provisioned JVM launcher and its version, `<v>-jvm`, resolved as the bootstrap in
-    * `buildDirectory` resolves them. */
-  private def millLauncher(env: String => Option[String], buildDirectory: Path): Either[StepRefusal, (Path, String)] =
+  /** Mill's provisioned JVM launcher, its version, `<v>-jvm`, and the JDK a pinned
+    * `mill-jvm-version` runs the daemon on. */
+  private case class MillLauncher(executable: Path, version: String, pinnedJdk: Option[Path])
+
+  /** Resolved as the bootstrap and mill's launcher in `buildDirectory` resolve them. The
+    * executable before the pinned JDK: the host run that provisions the one provisions the other. */
+  private def millLauncher(env: String => Option[String], buildDirectory: Path): Either[StepRefusal, MillLauncher] =
     for
       _ <- context("mill bootstrap")(validateMillBootstrap(buildDirectory, isExecutableFile))
-      _ <- context("mill jvm")(millJvmIsSystem(buildDirectory, readLines))
+      jvm <- context("mill jvm")(millJvm(buildDirectory, readLines))
       pinned <- context("mill version")(millVersion(buildDirectory, readLines))
       launcher <- context("mill version")(millLauncherVersion(pinned))
       downloads <- context("mill executable")(millDownloadDir(env).toRight("no mill download folder"))
       provisioned <- context("mill executable")(millExecutable(downloads, launcher, isExecutableFile))
       real <- context("mill executable")(realPath(provisioned).toRight(s"$provisioned vanished"))
-    yield (real, launcher)
+      jdk <- jvm match
+        case MillJvm.System => Right(None)
+        case MillJvm.Pinned(id) =>
+          for
+            cache <- context("mill jvm")(coursierCacheRoot(Os.Mac, env).toRight("no Coursier cache root"))
+            home <- context("mill jvm"):
+              millPinnedJdk(id, launcher, millJavaHomeText(buildDirectory), cache, realPath, isExecutableFile)
+          yield Some(home)
+    yield MillLauncher(real, launcher, jdk)
 
   /** Gradle's home as the wrapper in `buildDirectory` would run it: a nested build directory with
     * a wrapper of its own is another build, as under mill. */
@@ -196,7 +287,7 @@ object RunOnHostSandbox:
             )
           yield (sbt, Some(home), None)
         case Program.Mill =>
-          millLauncher(env, buildDirectory).map((real, launcher) => (real, None, Some(launcher)))
+          millLauncher(env, buildDirectory).map(mill => (mill.executable, mill.pinnedJdk, Some(mill.version)))
         case Program.Gradle =>
           gradleDistribution(env, buildDirectory).map(real => (real.resolve("bin").resolve("gradle"), Some(real), None))
         case Program.Mvn =>
@@ -1236,7 +1327,7 @@ object RunOnHostSandbox:
       processes.startOf(found.pid).contains(found.start)
 
     private def daemonConfig(buildDirectory: Path): Either[String, String] =
-      try Right(millDaemonConfig(buildDirectory, readLines))
+      try Right(millDaemonConfig(buildDirectory, readLines, millJavaHomeText(buildDirectory)))
       catch case ex: Unreadable => Left(wording(ex.refusal))
 
     /** The links a tree the user's own sbt built leaves under `target/` (cleanForeignTargetLinks),
