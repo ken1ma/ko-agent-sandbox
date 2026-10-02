@@ -6,7 +6,7 @@ FROM debian-coursier:${IMG_TAG_VER}
 ARG IMG_TAG_VER
 LABEL org.opencontainers.image.base.name="debian-coursier:${IMG_TAG_VER}"
 
-ARG UV_VERSION=0.12.17
+ARG UV_VERSION=0.12.21
 ARG PYTHON_VERSION=3.14
 ARG WCWIDTH_VERSION=0.8.4
 ARG LYCHEE_VERSION=0.24.2

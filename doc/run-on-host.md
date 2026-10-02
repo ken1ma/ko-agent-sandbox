@@ -504,7 +504,7 @@ bootstrap of its own is another build.
 
 Mill is client/daemon by construction: the launcher starts a daemon that binds a port of the
 kernel's choosing on the loopback address, writes it to `out/mill-daemon/socketPort`, and connects
-(`Server.scala`, `ServerLauncher.scala`, Mill 1.1.9). The broker starts the daemon itself, before
+(`Server.scala`, `ServerLauncher.scala`, Mill 1.1.10). The broker starts the daemon itself, before
 the first `mill` command of a build directory, and every command from that directory attaches to
 it (`RunOnHostMillDaemons.scala`, `RunOnHostSandbox.BrokerRuntimes`):
 
@@ -635,7 +635,7 @@ as `./gradlew` run there would read them; a `gradle` installed globally is not u
 
 The command runs the distribution's `bin/gradle` in the working directory, not `gradlew`, which
 would download. The supervisor computes the directory exactly as Gradle's wrapper does
-(`RunOnHostPrereqs.gradleDistributionDir`, from Gradle 9.7.1's `PathAssembler`):
+(`RunOnHostPrereqs.gradleDistributionDir`, from Gradle 9.8.0's `PathAssembler`):
 
 1. `distributionUrl` read as `java.util.Properties` reads the file, a value without a scheme
    resolved as a file against the properties file's directory;
@@ -694,7 +694,7 @@ Three properties on the command line close the toolchain inventory to the launch
 where a `-D` outranks every `gradle.properties`, so a project asking for another toolchain fails
 naming it rather than meeting a denial.
 
-Gradle 9.7.1 is the release measured, the one `src/probe/gradle-fixture` pins; older lines are
+Gradle 9.8.0 is the release measured, the one `src/probe/gradle-fixture` pins; older lines are
 out, since 8.14 does not run on the JDK 25 the launcher requires, and Gradle itself refuses a JDK
 it cannot run on.
 
@@ -1489,13 +1489,13 @@ How each program reaches its cache:
 
 ## Sources
 
-- Mill 1.1.9's daemon and launcher — the port-0 bind, `socketPort` and `processId`, the shutdown
+- Mill 1.1.10's daemon and launcher — the port-0 bind, `socketPort` and `processId`, the shutdown
   on a client's disconnect mid-command, the idle timeout, the fingerprint the launcher restarts on
   and its ten-second connect retry:
-  - https://github.com/com-lihaoyi/mill/blob/1.1.9/libs/daemon/server/src/mill/server/Server.scala
-  - https://github.com/com-lihaoyi/mill/blob/1.1.9/libs/daemon/client/src/mill/client/ServerLauncher.scala
-  - https://github.com/com-lihaoyi/mill/blob/1.1.9/runner/launcher/src/mill/launcher/MillProcessLauncher.scala
-  - https://github.com/com-lihaoyi/mill/blob/1.1.9/runner/launcher/src/mill/launcher/MillServerLauncher.scala
+  - https://github.com/com-lihaoyi/mill/blob/1.1.10/libs/daemon/server/src/mill/server/Server.scala
+  - https://github.com/com-lihaoyi/mill/blob/1.1.10/libs/daemon/client/src/mill/client/ServerLauncher.scala
+  - https://github.com/com-lihaoyi/mill/blob/1.1.10/runner/launcher/src/mill/launcher/MillProcessLauncher.scala
+  - https://github.com/com-lihaoyi/mill/blob/1.1.10/runner/launcher/src/mill/launcher/MillServerLauncher.scala
 - sbt server — domain-socket and TCP modes, the port file, discovery and the token:
   - https://www.scala-sbt.org/1.x/docs/sbt-server.html
 - sbt 1.13.0 and 2.0.9 — the thin client's server fork and its denied-connect retry, the
@@ -1510,23 +1510,23 @@ How each program reaches its cache:
   - https://github.com/sbt/sbt/blob/v2.0.9/launch/src/main/input_resources/sbt/sbt.boot.properties
   - https://github.com/sbt/sbt/blob/v2.0.9/lm-ivy/src/main/scala/sbt/internal/librarymanagement/Ivy.scala
   - https://repo1.maven.org/maven2/org/scala-sbt/librarymanagement-ivy_2.12/1.12.3/librarymanagement-ivy_2.12-1.12.3-sources.jar
-- Gradle 9.7.1's wrapper — the distribution directory, the properties it reads, the user home:
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/PathAssembler.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/WrapperExecutor.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/Install.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/wrapper-main/src/main/java/org/gradle/wrapper/GradleWrapperMain.java
-- Gradle 9.7.1's daemon — its detach at start, the client's fork with its own environment and
+- Gradle 9.8.0's wrapper — the distribution directory, the properties it reads, the user home:
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/PathAssembler.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/WrapperExecutor.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/Install.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/wrapper-main/src/main/java/org/gradle/wrapper/GradleWrapperMain.java
+- Gradle 9.8.0's daemon — its detach at start, the client's fork with its own environment and
   the registry option, the compatibility check on the client's immutable properties, the cancel
   on a client's disconnect, `--stop`, and the file lock's UDP socket:
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/daemon-server/src/main/java/org/gradle/launcher/daemon/bootstrap/DaemonMain.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/client-services/src/main/java/org/gradle/launcher/daemon/client/DefaultDaemonStarter.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/process-services/src/main/java/org/gradle/process/internal/DefaultProcessForkOptions.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/daemon-protocol/src/main/java/org/gradle/launcher/daemon/context/DaemonCompatibilitySpec.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/cli/converter/InitialPropertiesConverter.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/daemon/server/DaemonStateCoordinator.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/daemon/server/exec/WatchForDisconnection.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-runtime/client-services/src/main/java/org/gradle/launcher/daemon/client/DaemonStopClient.java
-  - https://github.com/gradle/gradle/blob/v9.7.1/platforms/core-execution/persistent-cache/src/main/java/org/gradle/cache/internal/locklistener/DefaultFileLockCommunicator.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/daemon-server/src/main/java/org/gradle/launcher/daemon/bootstrap/DaemonMain.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/client-services/src/main/java/org/gradle/launcher/daemon/client/DefaultDaemonStarter.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/process-services/src/main/java/org/gradle/process/internal/DefaultProcessForkOptions.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/daemon-protocol/src/main/java/org/gradle/launcher/daemon/context/DaemonCompatibilitySpec.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/cli/converter/InitialPropertiesConverter.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/daemon/server/DaemonStateCoordinator.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/daemon/server/exec/WatchForDisconnection.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/client-services/src/main/java/org/gradle/launcher/daemon/client/DaemonStopClient.java
+  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-execution/persistent-cache/src/main/java/org/gradle/cache/internal/locklistener/DefaultFileLockCommunicator.java
 - Gradle toolchains — auto-detection, auto-provisioning and `installations.paths`:
   - https://docs.gradle.org/current/userguide/toolchains.html
 - Gradle's configuration precedence — a `-D` over every `gradle.properties`:

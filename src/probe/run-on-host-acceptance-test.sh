@@ -96,7 +96,8 @@ if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]
 then machine "$("$JAVA_HOME/bin/java" -version 2>&1 | head -1) ($JAVA_HOME)"
 else machine "JAVA_HOME does not name a JDK"; fi
 machine "sbt $(sed -n 's/^sbt.version=//p' "$project/project/build.properties")"
-machine "mill $(grep -m1 -o '"[0-9][^"]*"' "$mill_project/mill" | tr -d '"')"
+mill_version=$(grep -m1 -o '"[0-9][^"]*"' "$mill_project/mill" | tr -d '"')
+machine "mill $mill_version"
 machine "gradle $(sed -n 's|^distributionUrl=.*/gradle-\(.*\)-bin.zip$|\1|p' \
     "$gradle_project/gradle/wrapper/gradle-wrapper.properties")"
 mvn_version=$(sed -n 's|^distributionUrl=.*/apache-maven-\(.*\)-bin.zip$|\1|p' \
@@ -241,6 +242,10 @@ deny_servers() { with_cwd '-Dsbt.script=' "$deny_project" exact; }
 ivy_servers() { with_cwd '-Dsbt.script=' "$ivy_project" exact; }
 # A mill daemon's cwd is out/mill-daemon/<id>/sandbox (MillProcessLauncher.configureRunMillProcess).
 mill_daemons() { with_cwd 'mill.daemon.MillDaemonMain' "$mill_project/out/mill-daemon" under; }
+# Whether a `mill version` log has the version the fixture's bootstrap pins, on a line of its own.
+printed_mill_version() { # log
+    [ -n "$mill_version" ] && grep -qxF "$mill_version" "$1"
+}
 # A launch's gradle daemons carry the launch's tmp/ as java.io.tmpdir in their initial
 # environment, the client's own (RunOnHostGradleDaemons): those of every session under the root here,
 # this acceptance run's own included. The "yours" row's daemon, unconfined in a registry under $work, is
@@ -1530,7 +1535,7 @@ ${share_session:-none} records: ${share_records:-none}; $(tail -1 "$work/chan-sh
                 mill_share_daemon=$(daemon_in_group "$mill_share_record")
                 with_timeout 600 second_shim chan-share-mill.log "$mill_project" mill version; mill_share_status=$?
                 channel_settled
-                if [ "$mill_share_status" -eq 0 ] && grep -q '1\.1\.9' "$work/chan-share-mill.log" \
+                if [ "$mill_share_status" -eq 0 ] && printed_mill_version "$work/chan-share-mill.log" \
                     && [ -n "$mill_share_daemon" ] && record_alive "$mill_share_record" \
                     && [ "$(broker_daemon_record "$mill_project")" = "$mill_share_record" ] \
                     && [ "$(daemon_in_group "$mill_share_record")" = "$mill_share_daemon" ] \
@@ -1602,7 +1607,7 @@ $(command_servers | tr '\n' ' '), root: $(root_now); $(tail -1 "$work/chan-share
                     mill_takeover_status=$?
                     channel_settled
                     mill_after=$(session_record "$second" "$mill_record")
-                    if [ "$mill_takeover_status" -eq 0 ] && grep -q '1\.1\.9' "$work/chan-share-mill-takeover.log" \
+                    if [ "$mill_takeover_status" -eq 0 ] && printed_mill_version "$work/chan-share-mill-takeover.log" \
                         && [ -n "$mill_daemon_before" ] && ! record_alive "$mill_before" \
                         && ! kill -0 "$mill_daemon_before" 2>/dev/null \
                         && [ -n "$mill_after" ] && record_alive "$mill_after" \
@@ -1677,7 +1682,7 @@ $(tail -1 "$work/chan-share-teardown.log.err" | cut -c1-60)"; fi
         if [ "$mill_status" -eq 0 ] && [ -n "$mill_daemon" ] && record_alive "$mill_record" \
             && [ "$(broker_daemon_record "$mill_project")" = "$mill_record" ] \
             && [ "$(daemon_in_group "$mill_record")" = "$mill_daemon" ] \
-            && [ "$(mill_daemons | wc -l | tr -d ' ')" -eq 1 ] && grep -q '1\.1\.9' "$work/chan-mill2.log" \
+            && [ "$(mill_daemons | wc -l | tr -d ' ')" -eq 1 ] && printed_mill_version "$work/chan-mill2.log" \
             && [ "$starters_termed" -gt "$starters_termed_before" ] && [ "${starter_exit:-none}" = 143 ]
         then report PASS "$mill_row" "daemon $mill_daemon in group ${mill_record%% *}; starter exit 143 on the TERM"
         else report FAIL "$mill_row" "compile exit $mill_status, daemon before ${mill_daemon:-none}, after \
@@ -1738,7 +1743,7 @@ $(grep -m1 -h 'Exception\|refused' "$work/chan-mill-planted-port.log.err" | cut 
         channel_settled
         new_daemon=$(daemon_in_group "$(broker_daemon_record "$mill_project")")
         if [ "$cancel_ready" = yes ] && [ -n "$cancel_daemon" ] && [ -n "$new_daemon" ] \
-            && grep -q '1\.1\.9' "$work/chan-mill-after-cancel.log"
+            && printed_mill_version "$work/chan-mill-after-cancel.log"
         then report PASS "$cancel_row" "daemon before $cancel_daemon, after $new_daemon"
         else report FAIL "$cancel_row" "ready to cancel: $cancel_ready; see $work/chan-mill-cancel.log{,.err}; \
 daemon before ${cancel_daemon:-none} \
