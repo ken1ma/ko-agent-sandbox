@@ -118,8 +118,9 @@ object HostCommands:
    *   - red: the launch stopped. On the `error:` label only (stopped).
    *   - orange: the launch goes on, and there is something to know. On the `warning:` label
    *     (caution); on a whole line, a boundary is weaker than the default (weakened), by an option
-   *     or environment variable of this launch or by a rule file of the project directory — a
-   *     reminder and not an alarm, and the line or the one before it says what weakened it.
+   *     or environment variable of this launch, by a rule file of the project directory, or by
+   *     the unconfined host run a prompt offers (RunOnHostProvisioning) — a reminder and not an
+   *     alarm, and the line or the one before it says what weakened it.
    *   - purple: what the user chose where it weakens nothing — the project directory, the
    *     workspace mode, the egress profile, an upstream proxy (chosen) — a hue of its own so it
    *     is never read as a severity.

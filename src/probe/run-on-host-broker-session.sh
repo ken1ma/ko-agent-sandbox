@@ -970,7 +970,7 @@ start_daemon() { # env-file
 profile "$mp/daemon.sb" '(allow network-bind network-inbound (local ip "localhost:*"))'
 
 # Provisioning, unconfined but in a group of its own that ends with it, daemon included: the
-# executable, the daemon classpath memo, the compiler.
+# executable, Mill's `mill-daemon-classpath` file, the compiler.
 echo "provisioning mill 1.1.9 and its compiler, unconfined (can take a few minutes)"
 probe_env=""
 if ! bounded 900 "$mp/provision" "$mp" ./mill app.compile >"$mp/provision.log" 2>&1; then

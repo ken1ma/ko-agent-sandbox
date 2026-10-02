@@ -414,6 +414,20 @@ class SeatbeltProfileTest extends munit.FunSuite:
 
   private def millText: String = render(millInputs).fold(reason => fail(reason), identity)
 
+  test("a mill build's pinned JDK is granted to read and run, once when it is JAVA_HOME's, and never to write"):
+    val pinned = cacheRoot.resolve(
+      "arc/https/github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.10%252B7/" +
+        "OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.10_7.tar.gz/jdk-21.0.10+7/Contents/Home",
+    )
+    def grant(home: Path) = s"""(allow process-exec* file-read* (subpath "$home"))"""
+    assert(!millText.contains("temurin21"))
+    val text = rendered(millInputs.copy(distribution = Some(pinned)))
+    assert(clue(text).contains(grant(pinned)) && text.contains(grant(jdkHome)))
+    assert(text.contains(s"""(allow file-read-metadata file-test-existence (literal "${pinned.getParent}"))"""))
+    assert(!text.linesIterator.exists(line => line.contains("file-write") && line.contains(s""""$pinned"""")))
+    val same = rendered(millInputs.copy(distribution = Some(jdkHome)))
+    assertEquals(same.linesIterator.count(_ == grant(jdkHome)), 1)
+
   private val gradleHome =
     Paths.get(s"$home/.gradle/wrapper/dists/gradle-9.7.1-bin/1w1c7tv4s851m17nbqdsro2tv/gradle-9.7.1")
   private val gradleUserHome = Paths.get(s"$home/.cache/ko-agent-sandbox/run-on-host/abc123/gradle-user-home")

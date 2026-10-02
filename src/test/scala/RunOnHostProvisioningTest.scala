@@ -14,10 +14,10 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     Files.setPosixFilePermissions(Files.createFile(path), permissions("rwxr-xr-x"))
     path
 
-  /** A build directory whose bootstrap pins Mill `version` under a system JVM. */
-  private def millBuild(dir: Path, version: String = "1.1.9"): Path =
+  /** A build directory whose bootstrap pins Mill `version` under a system JVM, or the pinned one. */
+  private def millBuild(dir: Path, version: String = "1.1.9", jvm: String = "system"): Path =
     executable(dir.resolve("mill"))
-    Files.writeString(dir.resolve("build.mill.yaml"), s"mill-version: $version\nmill-jvm-version: system\n")
+    Files.writeString(dir.resolve("build.mill.yaml"), s"mill-version: $version\nmill-jvm-version: $jvm\n")
     dir
 
   /** A build directory whose wrapper names Gradle 9.7.1, with or without the script beside it. */
@@ -116,6 +116,54 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     val notice = finding(BuildDirectory(Program.Mill, unpinned), env.get)
     assert(clue(notice).exists(_.isInstanceOf[Finding.Notice]))
 
+  test("a pinned JDK mill's java-home file does not record is provisionable by the same run"):
+    val root = Files.createTempDirectory("provisioning").toRealPath()
+    val project = millBuild(Files.createDirectories(root.resolve("project")), jvm = "temurin:25")
+    val env = Map("HOME" -> root.toString)
+    val build = BuildDirectory(Program.Mill, project)
+    val downloads = root.resolve(".cache/mill/download")
+    val coursier = root.resolve("Library/Caches/Coursier")
+    val jdk = coursier.resolve("arc/https/github.com/adoptium/jdk-25/Contents/Home")
+    executable(jdk.resolve("bin/java"))
+    val javaHome = project.resolve("out/mill-daemon/cache/java-home")
+    def record(home: Path): Unit =
+      Files.createDirectories(javaHome.getParent)
+      Files.writeString(javaHome, s"""["temurin:25:0.0.4-162-4be9be:","$home"]""")
+
+    // The launcher is asked for first: the run that downloads it resolves the pin too.
+    assert(clue(finding(build, env.get)).exists(_.wording.startsWith("mill executable: ")))
+    executable(downloads.resolve("1.1.9"))
+    val unprovisioned = Some(Finding.Provisionable(
+      Program.Mill, project,
+      "mill jvm: the JDK that mill-jvm-version pins, temurin:25, is not provisioned: " +
+        "out/mill-daemon/cache/java-home does not record it; run `MILL_VERSION=1.1.9-jvm ./mill version` once " +
+        "on the host",
+      Vector("./mill", "version"), Map("MILL_VERSION" -> "1.1.9-jvm"),
+    ))
+    assertEquals(finding(build, env.get), unprovisioned)
+
+    record(jdk)
+    assertEquals(finding(build, env.get), None)
+
+    // A home a command planted is no run's to fix: the file is the user's to delete.
+    val planted = project.resolve("jdk")
+    executable(planted.resolve("bin/java"))
+    record(planted)
+    val notCoursier = finding(build, env.get)
+    assert(clue(notCoursier).exists(_.isInstanceOf[Finding.Notice]))
+    assert(notCoursier.exists(_.wording.contains(s"no JDK inside the Coursier cache $coursier")))
+
+    // Read only as the build's own file: through a link it is absent.
+    record(jdk)
+    val elsewhere = Files.move(project.resolve("out/mill-daemon/cache"), root.resolve("cache-elsewhere"))
+    Files.createSymbolicLink(project.resolve("out/mill-daemon/cache"), elsewhere)
+    assertEquals(finding(build, env.get), unprovisioned)
+    Files.delete(project.resolve("out/mill-daemon/cache"))
+    Files.move(elsewhere, project.resolve("out/mill-daemon/cache"))
+    Files.move(javaHome, root.resolve("java-home-elsewhere"))
+    Files.createSymbolicLink(javaHome, root.resolve("java-home-elsewhere"))
+    assertEquals(finding(build, env.get), unprovisioned)
+
   test("a missing Gradle distribution is provisionable by gradlew, and a notice without one"):
     val root = Files.createTempDirectory("provisioning").toRealPath()
     val project = gradleBuild(Files.createDirectories(root.resolve("project")))
@@ -205,6 +253,18 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     assertEquals(
       declinedPrompts(),
       Vector("run `MILL_VERSION=1.1.9-jvm ./mill version` in /Users/u/project now, unconfined on the host? [y/N] "),
+    )
+    // The question in the colour of a weakened boundary, the answer after it in the terminal's own.
+    val (tinted, tintedPrompts) = answering("n")
+    provision(
+      builds.drop(1), _ => Some(provisionable), Some(tinted), run = _ => Right(0), report = _ => (), color = true,
+    )
+    assertEquals(
+      tintedPrompts(),
+      Vector(
+        "\u001b[38;5;208mrun `MILL_VERSION=1.1.9-jvm ./mill version` in /Users/u/project now, unconfined on the " +
+          "host?\u001b[0m [y/N] ",
+      ),
     )
     val (silent, _) = answering()
     assertEquals(provisioned(Some(silent), Right(0), None)._2, Vector.empty)

@@ -77,6 +77,9 @@ report() { # status label detail
 
 # The project each profile is for.
 mill_project=$project/src/probe/mill-fixture
+# The pinned-JVM rows' build, a project of its own at a fixed path: the run-on-host cache is per
+# project path, so a path new to each run would leave a cache behind each time.
+pinned_project=$project/target/acceptance-pinned-mill
 gradle_project=$project/src/probe/gradle-fixture
 mvn_project=$project/src/probe/mvn-fixture
 project_of() {
@@ -242,6 +245,7 @@ deny_servers() { with_cwd '-Dsbt.script=' "$deny_project" exact; }
 ivy_servers() { with_cwd '-Dsbt.script=' "$ivy_project" exact; }
 # A mill daemon's cwd is out/mill-daemon/<id>/sandbox (MillProcessLauncher.configureRunMillProcess).
 mill_daemons() { with_cwd 'mill.daemon.MillDaemonMain' "$mill_project/out/mill-daemon" under; }
+pinned_mill_daemons() { with_cwd 'mill.daemon.MillDaemonMain' "$pinned_project/out/mill-daemon" under; }
 # Whether a `mill version` log has the version the fixture's bootstrap pins, on a line of its own.
 printed_mill_version() { # log
     [ -n "$mill_version" ] && grep -qxF "$mill_version" "$1"
@@ -351,7 +355,7 @@ fi
 # daemon holds out/mill-daemon/daemonLock and a port that a mill executable under the profile
 # finds and cannot connect to, so it is ended before the rows too.
 end_project_servers() {
-    for pid in $(project_servers) $(deny_servers) $(ivy_servers) $(mill_daemons) \
+    for pid in $(project_servers) $(deny_servers) $(ivy_servers) $(mill_daemons) $(pinned_mill_daemons) \
         $(gradle_daemons) $(acceptance_gradle_daemons) $(stray_proxies); do
         acceptance_end_unclaimed_process "$command_root" "$pid" && echo "ended acceptance-test process $pid"
     done
@@ -444,7 +448,7 @@ mvn_home=$(sed -n 's|^executable: \(.*\)/bin/mvn$|\1|p' "$work/emit-mvn.log" 2>/
 # One variable per profile — never a word-split list, which a space in the checkout path would
 # split mid-path. Registered before the first tree exists, so a failed second mktemp leaves
 # nothing.
-scratch_sbt=""; scratch_mill=""; scratch_gradle=""; scratch_mvn=""; sibling_repo=""; pin_saved=""
+scratch_sbt=""; scratch_mill=""; scratch_gradle=""; scratch_mvn=""; sibling_repo=""; pin_saved=""; pinned_made=""
 acceptance_opts_file=""; port_saved=""; redirect_saved=""; unrelated_listener=""
 marker=acceptance-marker.${work##*.}
 cleanup() {
@@ -456,6 +460,8 @@ cleanup() {
     if [ -n "$redirect_saved" ] && [ -d "$redirect_saved" ]; then
         rm -f "$mill_project/out/mill-daemon"; mv "$redirect_saved" "$mill_project/out/mill-daemon"
     fi
+    # A build directory left under the project would be met by the next launch's provisioning.
+    [ -n "$pinned_made" ] && rm -rf "$pinned_project"
     [ -n "$scratch_sbt" ] && rm -rf "$scratch_sbt"
     [ -n "$scratch_mill" ] && rm -rf "$scratch_mill"
     [ -n "$scratch_gradle" ] && rm -rf "$scratch_gradle"
@@ -601,8 +607,8 @@ if want mill; then
     # Each supervisor row starts a daemon in the command's session — the stock bootstrap under the
     # daemon profile, ten seconds of denied connect retry — runs the client against its port, and
     # ends it with the session; out/mill-daemon is Mill's, neither cleared nor read for authority
-    # (RunOnHostSandbox.BrokerRuntimes, RunOnHostMillDaemons), beyond the classpath memo a start deletes
-    # when it names paths the profile denies (RunOnHostMillDaemons.discardForeignMemo).
+    # (RunOnHostSandbox.BrokerRuntimes, RunOnHostMillDaemons), beyond the `mill-daemon-classpath` file a
+    # start deletes when it names paths the profile denies (RunOnHostMillDaemons.discardForeignClasspath).
     for command in __.compile __.test; do
         [ "$command" = __.test ] && [ "$quick" = 1 ] && { report SKIP "./mill $command" "quick mode"; continue; }
         if supervisor mill "$mill_project" "$command" >"$work/mill.log" 2>&1
@@ -614,6 +620,60 @@ if want mill; then
     if [ -z "$(mill_daemons)" ]
     then report PASS "no mill daemon survives its command"
     else report FAIL "no mill daemon survives its command" "$(mill_daemons | tr '\n' ' ')"; fi
+
+    # A pinned mill-jvm-version (doc/run-on-host.md, "A pinned JVM"). `mill-jvm-index-version`
+    # makes the key of Mill's java-home file one these rows can write, where Mill's own default is
+    # its release's. Mill runs whatever home that file names under the id's key
+    # (src/probe/mill-pinned-jvm.sh), so the rows name a JDK already in the Coursier cache and
+    # nothing is fetched: one other than JAVA_HOME's when there is one Mill runs on, so that the
+    # grant is a second JDK's.
+    pinned_made=1
+    rm -rf "$pinned_project"; mkdir -p "$pinned_project"
+    cp "$mill_project/mill" "$pinned_project/"; cp -R "$mill_project/src" "$mill_project/test" "$pinned_project/"
+    sed 's/^mill-jvm-version: system$/mill-jvm-version: temurin:99\
+mill-jvm-index-version: acceptance/' "$mill_project/build.mill.yaml" > "$pinned_project/build.mill.yaml"
+    record_pinned_home() { # home
+        mkdir -p "$pinned_project/out/mill-daemon/cache" &&
+            printf '["temurin:99:acceptance:","%s"]' "$1" > "$pinned_project/out/mill-daemon/cache/java-home"
+    }
+    pinned_refused() { # label log wording: the supervisor refuses, in that wording
+        if supervisor mill "$pinned_project" version >"$2" 2>&1
+        then report FAIL "$1" "ran"
+        elif grep -qF "$3" "$2"
+        then report PASS "$1"
+        else report FAIL "$1" "$(grep -v 'Picked up' "$2" | tail -1 | cut -c1-70)"; fi
+    }
+    pinned_refused "a pinned JVM with no java-home file is refused, naming the host run" \
+        "$work/mill-pinned-absent.log" "MILL_VERSION=$mill_version-jvm ./mill version"
+    mkdir -p "$pinned_project/jdk/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$pinned_project/jdk/bin/java"; chmod +x "$pinned_project/jdk/bin/java"
+    record_pinned_home "$pinned_project/jdk"
+    pinned_refused "a java-home file naming a directory outside the Coursier cache is refused" \
+        "$work/mill-pinned-planted.log" "no JDK inside the Coursier cache"
+
+    java_home_real=$(cd "$JAVA_HOME" && pwd -P)
+    pinned_home=$java_home_real; pinned_which="JAVA_HOME's, the only JDK 17 or later in the Coursier cache"
+    find "$user_arc" -maxdepth 13 -type f -path '*/Contents/Home/bin/java' 2>/dev/null |
+        sed 's|/bin/java$||' > "$work/cached-jdks"
+    while IFS= read -r candidate; do
+        candidate=$(cd "$candidate" && pwd -P) || continue
+        [ "$candidate" != "$java_home_real" ] || continue
+        major=$("$candidate/bin/java" -version 2>&1 | sed -n '1s/.*version "\([0-9]*\).*/\1/p')
+        if [ "${major:-0}" -ge 17 ]; then pinned_home=$candidate; pinned_which="a second JDK, Java $major"; break; fi
+    done < "$work/cached-jdks"
+    safe_path "the pinned JDK home" "$pinned_home"
+    record_pinned_home "$pinned_home"
+    pinned_row="a pinned JVM's daemon runs on the JDK the java-home file records"
+    if supervisor mill "$pinned_project" --version >"$work/mill-pinned.log" 2>&1 \
+        && grep -qxF "java.home: $pinned_home" "$work/mill-pinned.log"
+    then report PASS "$pinned_row" "$pinned_which"
+    else report FAIL "$pinned_row" \
+        "$pinned_which; $(grep -v 'Picked up' "$work/mill-pinned.log" | tail -1 | cut -c1-70)"
+    fi
+    pinned_row="no mill daemon of the pinned build survives its command"
+    if [ -z "$(pinned_mill_daemons)" ]
+    then report PASS "$pinned_row"
+    else report FAIL "$pinned_row" "$(pinned_mill_daemons | tr '\n' ' ')"; fi
 fi
 
 if want gradle; then
@@ -1526,8 +1586,9 @@ $(broker_server_record "$project"), command servers: $(command_servers | tr '\n'
 ${share_session:-none} records: ${share_records:-none}; $(tail -1 "$work/chan-share-sbt.log.err" | cut -c1-50)"; fi
 
             # The daemon the second launch attaches to is the first broker's, started here by its
-            # own `version` — the start meets the supervisor rows' memo before the mill rows below
-            # do — and shut down after, so the mill rows still measure a start of their own.
+            # own `version` — the start meets the `mill-daemon-classpath` file the supervisor rows left
+            # before the mill rows below do — and shut down after, so the mill rows still measure a
+            # start of their own.
             if want mill; then
                 with_timeout 900 channel_shim chan-share-mill1.log "$mill_project" mill version
                 channel_settled
@@ -1659,10 +1720,10 @@ $(tail -1 "$work/chan-share-teardown.log.err" | cut -c1-60)"; fi
         #
         # The daemon the broker starts in its session serves every mill command of the build
         # directory; each client runs under a profile naming that daemon's port and no other. The
-        # first row also meets the memo the supervisor rows left, naming the fixture project's cache,
-        # which this broker's profile — the fixture as this repository's build directory — denies:
-        # the start deletes it (RunOnHostMillDaemons.discardForeignMemo), or the daemon dies unable to
-        # open its jars. The
+        # first row also meets the `mill-daemon-classpath` file the supervisor rows left, naming the
+        # fixture project's cache, which this broker's profile — the fixture as this repository's
+        # build directory — denies: the start deletes it
+        # (RunOnHostMillDaemons.discardForeignClasspath), or the daemon dies unable to open its jars. The
         # fixture's `run` prints the TMPDIR the build sees and, with `sleep`, stays up for the
         # cancel and busy-daemon rows.
         if ! want mill; then skip_mill_channel "needs mill"; else

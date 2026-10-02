@@ -419,32 +419,113 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(processes.signalled.size, 1)
     assertEquals(logged.toList, Nil)
 
-  test("a classpath memo naming a path outside the granted cache is deleted; one inside, a link or none is left"):
+  test("mill's java-home file is read as the build's own: no link followed, the read bounded in size and time"):
+    val root = Files.createTempDirectory("java-home").toRealPath()
+    val build = Files.createDirectories(root.resolve("build"))
+    val cache = Files.createDirectories(build.resolve("out/mill-daemon/cache"))
+    val file = cache.resolve("java-home")
+    val outside = Files.writeString(root.resolve("outside"), "outside")
+    val elsewhere = Files.createDirectories(root.resolve("elsewhere"))
+    Files.writeString(elsewhere.resolve("java-home"), "elsewhere")
+    def fifo(): Boolean = ProcessBuilder("mkfifo", file.toString).start().waitFor() == 0
+
+    assertEquals(millJavaHomeText(build), None)
+    Files.writeString(file, "recorded")
+    assertEquals(millJavaHomeText(build), Some("recorded"))
+    // The bound is the read's own: no size the file reports is consulted.
+    Files.writeString(file, "x" * (256 * 1024))
+    assertEquals(millJavaHomeText(build).map(_.length), Some(256 * 1024))
+    Files.writeString(file, "x" * (256 * 1024 + 1))
+    assertEquals(millJavaHomeText(build), None)
+    Files.write(file, Array(0xff.toByte))
+    assertEquals(millJavaHomeText(build), None)
+
+    // Already there when the read starts: a link for the file, a link for a directory, a FIFO.
+    Files.delete(file)
+    Files.createSymbolicLink(file, outside)
+    assertEquals(millJavaHomeText(build), None)
+    Files.delete(file)
+    Files.delete(cache)
+    Files.createSymbolicLink(cache, elsewhere)
+    assertEquals(millJavaHomeText(build), None)
+    Files.delete(cache)
+    Files.createDirectories(cache)
+    assume(fifo(), "needs mkfifo")
+    assertEquals(millJavaHomeText(build), None)
+    Files.delete(file)
+
+    // Put there by a command between the type check and the open. A link is refused by the open.
+    Files.writeString(file, "recorded")
+    val linked = millJavaHomeText(build, raced = () => { Files.delete(file); Files.createSymbolicLink(file, outside) })
+    assertEquals(linked, None)
+    Files.delete(file)
+    // A directory renamed away and replaced by a link: the read stays in the directory it opened.
+    Files.writeString(file, "recorded")
+    val moved = root.resolve("moved")
+    def redirect(): Unit =
+      Files.move(cache, moved)
+      Files.createSymbolicLink(cache, elsewhere)
+    assertEquals(millJavaHomeText(build, raced = () => redirect()), Some("recorded"))
+    Files.delete(cache)
+    Files.move(moved, cache)
+    // A FIFO's open does not return: the read is abandoned, its thread and directories with it.
+    // Only so many are abandoned at once; past that the file reads as absent, at once and
+    // without a thread, until a read returns — here once a writer opens each FIFO.
+    val readers = java.util.concurrent.Semaphore(2)
+    def abandoned(index: Int): Path =
+      var replaced = false
+      val started = System.nanoTime
+      val text = millJavaHomeText(
+        build, millis = 300, raced = () => { Files.delete(file); replaced = fifo() }, readers = readers,
+      )
+      assert(replaced)
+      assertEquals(text, None)
+      assert((System.nanoTime - started) / 1_000_000 < 10_000)
+      val kept = Files.move(file, root.resolve(s"fifo-$index"))
+      Files.writeString(file, "recorded")
+      kept
+    val fifos = (1 to 2).map(abandoned)
+    assertEquals(readers.availablePermits, 0)
+    for _ <- 1 to 3 do
+      var ran = false
+      assertEquals(millJavaHomeText(build, millis = 300, raced = () => ran = true, readers = readers), None)
+      assert(!ran)
+    assertEquals(readers.availablePermits, 0)
+    fifos.foreach: kept =>
+      Thread.ofPlatform().daemon().start: () =>
+        try Files.newOutputStream(kept).close()
+        catch case _: java.io.IOException => ()
+    val deadline = System.nanoTime + 10_000_000_000L
+    while readers.availablePermits < 2 && System.nanoTime < deadline do Thread.sleep(20)
+    assertEquals(readers.availablePermits, 2)
+    assertEquals(millJavaHomeText(build, readers = readers), Some("recorded"))
+
+  test("Mill's classpath file naming a path outside the granted cache is deleted; one inside, a link or none is left"):
     val build = Files.createTempDirectory("build")
     val cache = Files.createTempDirectory("cache").toRealPath()
-    val memo = build.resolve("out/mill-daemon/cache/mill-daemon-classpath")
-    Files.createDirectories(memo.getParent)
+    val classpathFile = build.resolve("out/mill-daemon/cache/mill-daemon-classpath")
+    Files.createDirectories(classpathFile.getParent)
     def written(paths: String*): Unit =
-      Files.writeString(memo, paths.map(path => s"\"$path\"").mkString("[\"1.1.9 |\",[", ",", "]]"))
+      Files.writeString(classpathFile, paths.map(path => s"\"$path\"").mkString("[\"1.1.9 |\",[", ",", "]]"))
     // The profile is the acceptance test's to measure; here the read and the delete are the plain ones.
     val direct = RunOnHostMillDaemons.Confined(
       read = file => Option.when(Files.isRegularFile(file))(Files.readString(file, UTF_8)),
       delete = file => Files.deleteIfExists(file),
     )
     written(s"$cache/https/repo1.maven.org/a.jar", s"$cache/https/repo1.maven.org/b.jar")
-    assertEquals(RunOnHostMillDaemons.discardForeignMemo(build, cache, direct), None)
-    assert(Files.exists(memo))
+    assertEquals(RunOnHostMillDaemons.discardForeignClasspath(build, cache, direct), None)
+    assert(Files.exists(classpathFile))
     written(s"$cache/https/repo1.maven.org/a.jar", "/Users/me/Library/Caches/Coursier/v1/https/repo1.maven.org/b.jar")
-    val said = RunOnHostMillDaemons.discardForeignMemo(build, cache, direct)
+    val said = RunOnHostMillDaemons.discardForeignClasspath(build, cache, direct)
     assert(said.exists(_.contains("/Users/me/Library/Caches/Coursier/v1/https/repo1.maven.org/b.jar, outside")), said)
-    assert(!Files.exists(memo))
-    // A memo that is a link is not the build's own file: rendezvousIsOwn refuses the command first,
+    assert(!Files.exists(classpathFile))
+    // A file that is a link is not the build's own file: rendezvousIsOwn refuses the command first,
     // and this deletes nothing through it.
-    Files.createSymbolicLink(memo, build.resolve("elsewhere"))
-    assertEquals(RunOnHostMillDaemons.discardForeignMemo(build, cache, direct), None)
-    assert(Files.isSymbolicLink(memo))
-    Files.delete(memo)
-    assertEquals(RunOnHostMillDaemons.discardForeignMemo(build, cache, direct), None)
+    Files.createSymbolicLink(classpathFile, build.resolve("elsewhere"))
+    assertEquals(RunOnHostMillDaemons.discardForeignClasspath(build, cache, direct), None)
+    assert(Files.isSymbolicLink(classpathFile))
+    Files.delete(classpathFile)
+    assertEquals(RunOnHostMillDaemons.discardForeignClasspath(build, cache, direct), None)
 
   test("the server's command line is the thin client's: the request's launcher flags as the client forwards them"):
     val sbt = Path.of("/Users/u/Library/Application Support/Coursier/bin/sbt")

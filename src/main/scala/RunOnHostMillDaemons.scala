@@ -99,7 +99,7 @@ object RunOnHostMillDaemons:
       profileFile <-
         try Right(Files.writeString(session.directory.resolve(s"daemon-mill-${start.hash}.sb"), profile, UTF_8))
         catch case ex: IOException => Left(s"writing the daemon profile: ${ex.getMessage}")
-      _ = discardForeignMemo(start.buildDirectory, prereqs.coursierV1, confined(profileFile)).foreach(log)
+      _ = discardForeignClasspath(start.buildDirectory, prereqs.coursierV1, confined(profileFile)).foreach(log)
       daemon <- attempt(retriesLeft = 1, profileFile)
     yield daemon
 
@@ -305,11 +305,12 @@ object RunOnHostMillDaemons:
       else Some(!states.contains("ESTABLISHED"))
     catch case _: IOException => None
 
-  /** The launcher's classpath memo (`CoursierClient.cached`): JSON, the key then the paths. */
-  private def memoFile(buildDirectory: Path): Path =
+  /** The file Mill's launcher writes the daemon's classpath to (`CoursierClient.cached`): JSON, the
+    * key then the paths. */
+  private def classpathFile(buildDirectory: Path): Path =
     buildDirectory.resolve("out").resolve("mill-daemon").resolve("cache").resolve("mill-daemon-classpath")
 
-  private val MemoPath = """"(/(?:[^"\\]|\\.)*)"""".r
+  private val ClasspathEntry = """"(/(?:[^"\\]|\\.)*)"""".r
 
   /** A file read and a file deletion under the profile: what a build could do to the file, and no
     * more, so a link planted under `out/` after rendezvousIsOwn — by the bootstrap script, or by
@@ -331,23 +332,23 @@ object RunOnHostMillDaemons:
     )
 
   /**
-   * Delete the memo when it names a path outside the cache the profile grants, so the launcher
-   * resolves afresh into that cache. Mill keeps a memo while every path it names exists
-   * (`CoursierClient.resolveMillDaemon`, `os.exists`), and Seatbelt answers an existence test
-   * for a path it denies reading — measured: `Files.exists` true, the open `EPERM` — so a memo
-   * from an unconfined run, or from this directory served as another project's build directory,
+   * Delete Mill's `mill-daemon-classpath` file when it names a path outside the cache the profile
+   * grants, so the launcher resolves afresh into that cache. Mill reuses the file while every path
+   * it names exists (`CoursierClient.resolveMillDaemon`, `os.exists`), and Seatbelt answers an
+   * existence test for a path it denies reading — measured: `Files.exists` true, the open `EPERM`
+   * — so a file from an unconfined run, or from this directory served as another project's build directory,
    * would start a daemon on jars its JVM cannot open, which dies before it listens. Read and
    * deleted through `confined`, and only as a regular file. What was done, for the log.
    */
-  def discardForeignMemo(buildDirectory: Path, coursierV1: Path, confined: Confined): Option[String] =
-    val memo = memoFile(buildDirectory)
-    val named = buildDirectory.relativize(memo)
-    if !Files.isRegularFile(memo, LinkOption.NOFOLLOW_LINKS) then None
+  def discardForeignClasspath(buildDirectory: Path, coursierV1: Path, confined: Confined): Option[String] =
+    val file = classpathFile(buildDirectory)
+    val named = buildDirectory.relativize(file)
+    if !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) then None
     else
-      confined.read(memo).flatMap: text =>
-        val paths = MemoPath.findAllMatchIn(text).map(_.group(1)).toVector
+      confined.read(file).flatMap: text =>
+        val paths = ClasspathEntry.findAllMatchIn(text).map(_.group(1)).toVector
         paths.find(path => !Path.of(path).startsWith(coursierV1)).map: foreign =>
-          if confined.delete(memo) then s"discarded $named: it names $foreign, outside $coursierV1"
+          if confined.delete(file) then s"discarded $named: it names $foreign, outside $coursierV1"
           else s"could not discard $named, which names $foreign, outside $coursierV1"
 
   /**
