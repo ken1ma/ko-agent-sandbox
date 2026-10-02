@@ -2,46 +2,55 @@
 
 ## Outcome
 
-A secret the session needs is never inside the sandbox. The sandbox holds a placeholder of the
-same format; the proxy holds the value and substitutes it into one header or one query parameter
-of requests to the one inspected host the secret is bound to. Everywhere else the placeholder goes
-out as it is and authenticates nothing.
+A value forwarded with `--env` and bound to a host — `--env=GH_TOKEN@api.github.com` — is never
+inside the sandbox. The sandbox holds a placeholder of the same format; the proxy holds the value
+and substitutes it into one header or one query parameter of requests to the one inspected host
+the value is bound to. Everywhere else the placeholder goes out as it is and authenticates
+nothing.
 
-One secret qualifies here: a value forwarded with `--env`, bound to a host —
-`--env=GH_TOKEN@api.github.com`. Copilot CLI's forge-credential sign-in (SECURITY.md, "The web
-reached through the model provider") is a provider instance of
-`plan-provider-credential-proxy.md`, which reuses the rewrite below ("Copilot").
+This plan keeps no other secret out of the sandbox. `--env=NAME` without a host forwards the value
+itself into the sandbox. Copilot CLI's forge-credential sign-in (SECURITY.md, "The web reached
+through the model provider") is left to `plan-provider-credential-proxy.md`, which reuses the
+rewrite below ("Copilot").
 
 ## Evidence and target
 
 The credential gaps SECURITY.md concedes are the target.
 
 - A forwarded `--env` value is available in the sandbox's environment, and the egress rules limit
-  only where it can be sent (SECURITY.md, "Credential theft"). A `GET` carries its URL, and a URL is
-  a message, so a forwarded token leaves through any inspected host, or inside the opaque model
-  tunnel as part of a prompt. Brokered, the sandbox holds nothing worth carrying.
-- Copilot's OAuth token, `repo` scope, plaintext under `~/.copilot`, readable by every program in
-  the sandbox and by anything that captures the environment or the volume — the class Codex hit
-  when shell snapshots persisted secret variables (openai/codex #30971).
+  only where it can be sent (SECURITY.md, "Credential theft"). An allowed `GET` carries its URL,
+  and the URL can hold the token, so a forwarded token leaves through any inspected host, or
+  inside the opaque model tunnel as part of a prompt. Brokered, the token is not in the sandbox
+  to carry out.
+- Copilot's OAuth token, `repo` scope, is plaintext under `~/.copilot`, readable by every program
+  in the sandbox and by anything that captures the environment or the volume — the class Codex
+  hit when shell snapshots persisted secret variables (openai/codex #30971).
 
-Every comparable project that holds a credential converged on the same design: Claude Code on the
-web (real GitHub token in a proxy outside the VM), Codex CLI (`credential_broker.rs`: dummy of the
-same prefix and length in the child's environment, swapped only for the bound GitHub hosts),
-Docker Sandboxes (`proxy-managed` sentinel, value in the OS keychain), greywall
-(`greyproxy:credential:v1:…`, headers and query only), clampdown (auth-proxy container, `sk-proxy`
-inside). This plan keeps the recurring rules: sentinel inside, one host per secret, a rewrite in
-a declared header or one named parameter, never a body or a response.
+Every comparable project that holds a credential converged on the same design:
 
-What brokering does not change: the bound host still receives authenticated requests, within the
-method grants the inspected path already enforces (`GET`/`HEAD`, `git-upload-pack` on the
-`git-fetch` hosts). It answers "the token leaks", not "the agent uses the token against
-an unauthorized repository"; repository scoping is a later increment ("Deliberate exclusions").
-One property it relies on already holds: the rewrite is the one route by which a host-held
+- Claude Code on the web: the real GitHub token in a proxy outside the VM.
+- Codex CLI (`credential_broker.rs`): a dummy of the same prefix and length in the child's
+  environment, swapped only for the bound GitHub hosts.
+- Docker Sandboxes: a `proxy-managed` sentinel, the value in the OS keychain.
+- greywall: `greyproxy:credential:v1:…`, headers and query only.
+- clampdown: an auth-proxy container, `sk-proxy` inside.
+
+This plan keeps the recurring rules: placeholder inside, one host per secret, a rewrite in a
+declared header or one named parameter, never a body or a response.
+
+What brokering does not change:
+
+- The bound host still receives authenticated requests, within the method grants the inspected
+  path already enforces (`GET`/`HEAD`, `git-upload-pack` on the `git-fetch` hosts).
+    - Brokering answers "the token leaks", not "the agent uses the token against an unauthorized
+      repository"; repository scoping is a later increment ("Deliberate exclusions").
+- What the sandbox holds of its own toward the same host — an agent's login, an unbrokered
+  forward, a file in the project — is covered in SECURITY.md.
+
+One property brokering relies on already holds: the rewrite is the one route by which a host-held
 credential enters a request, since no other host channel that authenticates — an SSH agent's
 socket, a key — is mounted (SECURITY.md, "Credential theft"; `SessionBoundaryTest`'s check of
-every mount). What the sandbox holds of its own toward the same host — an agent's login, an
-unbrokered forward, a file in the project — is covered in SECURITY.md and unchanged by this. That
-socket is the route of docker/sbx-releases #121.
+every mount). An SSH agent's socket is the route of docker/sbx-releases #121.
 
 ## Guarantees
 
@@ -347,11 +356,11 @@ where it is honoured (harmless); an origin echoing a credential in a response is
       GitHub token format; `gh api user` succeeds; the same token sent to `gitlab.com` arrives
       there as the placeholder (audit line without `inject`).
 - [ ] `github.com` is another host, so the same value bound under a second name,
-      `--env=GIT_TOKEN@github.com`, gets a placeholder of its own; a private
-      `git clone https://github.com/...` with a credential helper returning that placeholder
-      succeeds, and returning the `api.github.com` one fails with the origin's 401; `git push`
-      is still refused at ref discovery. One credential at both hosts under one name is
-      `plan-provider-credential-proxy.md`'s first use case.
+      `--env=GIT_TOKEN@github.com`, gets a placeholder of its own. One credential at both hosts
+      under one name is `plan-provider-credential-proxy.md`'s first use case.
+- [ ] A private `git clone https://github.com/...` with a credential helper returning the
+      `GIT_TOKEN` placeholder succeeds, and returning the `api.github.com` one fails with the
+      origin's 401; `git push` is still refused at ref discovery.
 - [ ] `--env=SAS_SIG@<account>.blob.core.windows.net?sig`, or any `?PARAM` binding, against the
       end-to-end test's local TLS origin, there being no real host to exercise yet: the origin
       receives the value, percent-encoded, in that parameter alone; `--proxy-log` prints
@@ -359,7 +368,7 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 - [ ] Every refusal in "Command-line contract" fires with its message.
 - [ ] `--proxy-log` shows `inject=GH_TOKEN` and `inject=GIT_TOKEN` on exactly the authenticated
       requests, each at its own host.
-- [ ] `SessionBoundaryTest` finds no value in the volume after exit.
+- [ ] `SessionBoundaryTest` finds no brokered value in the volume after exit.
 - [ ] `sbt testWithPodman` green on Linux, macOS and Windows podman machines.
 
 ## Deliberate exclusions
