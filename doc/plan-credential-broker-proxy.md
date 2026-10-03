@@ -2,11 +2,13 @@
 
 ## Outcome
 
-A value given with `--egress-cred` and bound to a host — `--egress-cred=GH_TOKEN@api.github.com`
-— is never inside the sandbox or a run-on-host command. Both see `NAME` set to a placeholder of
-the same format; the proxy holds the value and substitutes it into one header or one query
-parameter of requests to the one inspected host the value is bound to. Everywhere else the
-placeholder goes out as it is and authenticates nothing.
+The value of a host environment variable named with `--egress-cred` and bound to a host —
+`--egress-cred=GH_TOKEN@api.github.com` — is never inside the sandbox or a run-on-host command.
+Both see the variable set to a placeholder of the same format; the proxy holds the value and
+substitutes it into the `Authorization` header of requests to the one inspected host the value
+is bound to, or into the one header or query parameter the option names instead
+("Command-line contract"). Everywhere else the placeholder goes out as it is and authenticates
+nothing.
 
 This plan keeps no other secret out of the sandbox. `--env=NAME` forwards the value itself into
 the sandbox. Copilot CLI's forge-credential sign-in (SECURITY.md, "The web reached through the
@@ -57,7 +59,8 @@ every mount). An SSH agent's socket is the route of docker/sbx-releases #121.
 1. The value reaches the proxies only — the session's proxy container and each run-on-host
    program's proxy ("Run-on-host commands") — never the sandbox's environment, a run-on-host
    command's environment, the persistent volume, the project, the launch banner, or the audit
-   log.
+   log. On its way it is in no file on the host and in no environment or argument of a process
+   the launcher starts ("Where the value is held").
 1. A binding names exactly one host, which a proxy of the launch must inspect: the session's
    resolved profile, or the rules of a program selected with `--run-on-host` ("Run-on-host
    commands"). A `tunnel` host is opaque, where no substitution can happen; a denied host, or one
@@ -71,7 +74,7 @@ every mount). An SSH agent's socket is the route of docker/sbx-releases #121.
    response. A placeholder that appears anywhere else is forwarded verbatim, which is harmless:
    it authenticates nothing.
 1. A value, a header name and a parameter name reach the request bytes only through one grammar,
-   checked where each is produced and again where the proxy loads the file. A value is 1–4096
+   checked where each is produced and again where the proxy reads its bindings. A value is 1–4096
    bytes of visible ASCII (`0x21`–`0x7E`): no space, tab, control byte, CR, LF, or byte above
    `0x7E`, so it cannot end a field, start another, or alter framing. A header name is one of a
    closed set — `Authorization`, `x-api-key`, `PRIVATE-TOKEN` — never a free token: `Host`,
@@ -100,7 +103,6 @@ every mount). An SSH agent's socket is the route of docker/sbx-releases #121.
 --egress-cred=NAME@HOST          set NAME in the sandbox and in run-on-host commands to a
                                  placeholder; the proxy substitutes the host's value of NAME
                                  into Authorization for HOST only
---egress-cred=NAME=VALUE@HOST    the same with an explicit value
 --egress-cred=NAME@HOST:HEADER   substitute into HEADER instead of Authorization
                                  (x-api-key, PRIVATE-TOKEN)
 --egress-cred=NAME@HOST?PARAM    substitute where the whole value of query parameter PARAM
@@ -125,10 +127,21 @@ refusal, not a forward of the value into the sandbox. `NAME` follows `Environmen
 `KO_AGENT_SANDBOX_*` is refused as under `--env`. Like `--env`, it is command-line-only; a
 repository file cannot bind a host.
 
+The value comes from the host variable `NAME` alone. There is no `NAME=VALUE@HOST`, though
+`--env` takes `NAME=VALUE`:
+
+- `ps` shows a process's arguments to every user of the host, a launcher that stays resident
+  keeps them for the whole launch, and a value typed there is in the shell's history file;
+- the value grammar (guarantee 4) admits `@`, `:`, `?` and `/`, which are what ends the value
+  and starts the host, the header, the parameter and the prefix;
+- setting the variable for the launch does the same: `NAME=… <launcher> --egress-cred=NAME@HOST`.
+
 Refusals, each fatal at launch and naming the fix:
 
 - no `@HOST`: "a credential needs a host; to set the value itself in the sandbox, use
   `--env=NAME`".
+- `NAME=VALUE@HOST`: "a credential's value is not given on the command line; set `NAME` for
+  the launch and pass `NAME@HOST`".
 - `HOST` is in no proxy's rules, neither the resolved profile's nor a selected program's: "add
   `allow https://HOST/ read` to `.ko-agent-sandbox/egress/rule` or to
   `.ko-agent-sandbox/run-on-host/<program>/egress/rule`".
@@ -146,19 +159,53 @@ Refusals, each fatal at launch and naming the fix:
 
 ## Where the value is held
 
-The value takes the CA leaf's route ("Who holds the CA key"): written by the launcher to a
-per-run file under the project's state directory, owner-only, bind-mounted read-only into the
-proxy container, removed with the run. Not an environment variable on the proxy container:
-`KO_AGENT_SANDBOX_EGRESS_RULESET` is public by design and `podman inspect` shows environment;
-a secret does not belong beside it.
+The value is in memory alone: the launcher's, the runner's, that of a supervisor starting a
+proxy, and each proxy's. It is in no file on the host and in no environment or argument of a
+process the launcher starts.
 
-Each proxy of the launch — the session's and every run-on-host program's — gets a file holding
-the bindings whose host its own rules inspect, and no other; a proxy with none gets no file and
-starts without one. So the start-up check below holds for every proxy with one rule, and a binding
-absent from a proxy's file is inert there: no request reaches its host, the rules' `deny` line
-says why, and nothing is substituted.
+- The launcher's own environment holds it, as the user gave it. The handover replaces that
+  process with `podman`; a launcher that stays resident (`SandboxLifecycle.handOver`) keeps it
+  for the session, and "Run-on-host commands" has what that needs.
+- A token works from anywhere until it is revoked. The leaf key ("Who holds the CA key") serves
+  only someone between the sandbox and the proxy, so a file is acceptable for the key and not
+  for the value: one under the state root reaches backups and outlives a lost reaper.
+- An environment is inherited by every helper a process starts, is read by other processes of
+  the same user (SECURITY.md, "Run on host"), and on a container is shown by `podman inspect`.
+  Arguments are read the same way.
 
-The proxy reads the file once at start and refuses to start if a value or header fails the
+The value travels by pipe, and every proxy takes its bindings on its own standard input: a line
+giving their count, then one binding per line, and it reads nothing after them. So the read
+neither waits for an end of input nor meets what the writer's ending does to the pipe. A proxy
+reads its standard input only with `EGRESS_CREDS=stdin` in its environment, and a launch
+without a binding sets neither that variable nor `--interactive`.
+
+- A run-on-host proxy's starter writes them to the process it starts ("Run-on-host commands").
+- The session's proxy container is created with `--interactive`, which a start cannot add
+  (podman-start(1)), and the launcher starts it with
+  `podman start --attach --interactive --sig-proxy=false` in place of `podman start`, writing
+  the bindings to that command's standard input: attached, podman pipes it to the contained
+  process (podman-create(1), `--interactive`).
+  - That `podman start` is a client of the podman machine, which runs the container. It stays
+    connected for as long as it is attached, so the launcher ends it once the proxy reports
+    ready; `--sig-proxy=false` keeps podman from forwarding that signal to the proxy. The
+    remote client leaves the option out of its help and honours it (podman's
+    `cmd/podman/containers/start.go`).
+  - `src/probe/podman-attach-stdin.sh` measures it: the bytes reach the process, `podman inspect`
+    and `podman logs` hold none of them, and the container runs on after the client ends, where
+    without the option it stops (macOS, podman 6.1.2 client and 6.1.1 server, 2026-10-04). On
+    the Linux and Windows podman machines `ProxyContainerTest` is the first measurement
+    ("Tests"); a failure there stops a launch that has a binding or leaves it without egress.
+- Not a podman secret, whose default driver keeps it in a file (podman-secret-create(1)). Not a
+  `podman exec` writing into the container: the proxy's root is read-only with no tmpfs, its
+  audit log its one writable path, and the proxy would take bindings a second way.
+
+Each proxy of the launch — the session's and every run-on-host program's — is given the
+bindings whose host its own rules inspect, and no other; a proxy with none is given none. So the
+start-up check below holds for every proxy with one rule, and a binding a proxy was not given
+is inert there: no request reaches its host, the rules' `deny` line says why, and nothing is
+substituted.
+
+The proxy reads its bindings once at start and refuses to start if a value or header fails the
 grammar (guarantee 4) or a binding names a host outside its own resolved inspected set — the
 same in-both-directions check the leaf certificate gets, for the same reason: a binding the
 proxy cannot honour would appear as a 401 inside the sandbox with nothing in the log to
@@ -170,12 +217,6 @@ explain it. The refusal reaches the user:
   first log lines (`RunOnHostSandbox.awaitProxyPort`; doc/run-on-host.md, "Refusals"); the
   launch is up by then.
 
-"Removed with the run" is the run directory's lifetime, which `SandboxLifecycle` ("Removing
-what the run created") defines, accepted failure cases included: where those leave a lingering proxy
-and two networks, a binding leaves a lingering value too — owner-only on the host, gone with
-`--reset` — accepted for the reason that comment gives. A lingering value is never
-reused: the next run has its own directory and placeholder.
-
 ## Run-on-host commands
 
 A command run on the host (`--run-on-host`) sees `NAME` as the sandbox does: the placeholder, in
@@ -183,18 +224,26 @@ the environment the supervisor builds for it (SECURITY.md, "Run on host"). Its r
 pass through its program's proxy, a process from the proxy's codebase (doc/run-on-host.md, "The
 command's egress proxy"), which substitutes as the session's proxy does:
 
-- The value reaches each host proxy as it reaches the proxy container: a file beside the leaf
-  key, named by one more variable of the closed environment `RunOnHostSandbox.startProxyUnder`
-  builds, read under the proxy's Seatbelt profile, which grants the leaf's directory.
-  - The command cannot read it: the leaf's directory is in the proxy starter's session directory
-    under `/private/tmp/ko-agent-<uid>`, which no command's profile grants (doc/run-on-host.md,
-    "The command's egress proxy").
+- This section is built on the command profile's rule against reading other processes
+  (`doc/TODO.md`, "A host command reads other processes' environments"), which comes first.
+  Without it a host command reads `NAME` from the launcher's own environment while the launcher
+  stays resident, and from any other process of the user that carries it.
+- The value reaches each host proxy by pipe ("Where the value is held"):
+  - launcher to runner, on the runner's standard input at its start;
+  - runner to supervisor, as a frame after the word the runner sends it, on the same pipe;
+  - starter to proxy, on the proxy's standard input.
+  - The command holds none of these pipes: its standard input is `/dev/null`.
+- The frame is not part of the word: the lock holder turns the word's fields into the
+  supervisor's arguments (`RunOnHostSession.LockScript`), where another process reads them.
+  - The word carries an option saying a frame follows, and no value.
+  - The lock holder reads its word a byte at a time, so the frame stays in the pipe across its
+    `exec`; the supervisor reads the frame from its standard input, which that pipe remains,
+    before it starts its proxy.
 - A host proxy's rules are its program's and those of
   `.ko-agent-sandbox/run-on-host/<program>/egress/rule`, not the session's, so a binding whose
   host only those rules allow is honoured by that proxy alone.
   - The proxy's starter — the runner for sbt, `mill` and `gradle`, the supervisor for Maven —
-    writes the proxy's file from those rules as it reads them at the proxy's start ("Where the
-    value is held").
+    sends the proxy the bindings those rules allow, as it reads them at the proxy's start.
   - Guarantee 2's tunnel refusal has no case there: a host proxy inspects every host it allows.
 - The credential is usable within that proxy's grants, which may differ from the session's; the
   binding widens none of them. A hostile build sees the placeholder, and its route out is that
@@ -208,7 +257,7 @@ command's egress proxy"), which substitutes as the session's proxy does:
     a Maven command that ends normally loses it with its directory;
   - `--proxy-log`, which guarantee 7 renames, prints the `proxy-*.log` files alone
     (`EgressRules.retainedLogs`).
-- Each proxy reads the file once at start and lives at most the launch, and the placeholder is
+- Each proxy reads its bindings once at start and lives at most the launch, and the placeholder is
   per launch, so a mill or Gradle daemon kept across commands never meets a stale binding.
 - Windows has no run-on-host, so nothing applies there.
 
@@ -322,64 +371,82 @@ Additions to SECURITY.md, each in the section that covers it:
 - "Exfiltration through allowed network traffic": an `--egress-cred` value is in neither the
   sandbox nor a run-on-host command; the gap narrows to `--env` forwards and credentials in the
   project directory.
-- "Who holds the CA key" gains a sibling, "Who holds a brokered value": launcher state, the
-  proxy container, each run-on-host program's proxy, nowhere else; a proxy was already the
-  ruleset's single point of trust and becomes a holder of the credentials sent under it.
-  Compromising it compromises both ruleset and credential — one boundary. What a lost reaper
-  leaves, and that `--reset` is what removes it ("Where the value is held").
+- "Who holds the CA key" gains a sibling, "Who holds a brokered value": the memory of the
+  launcher, the runner, a supervisor and each proxy, and the launcher's own environment as
+  given; no file, and no environment or argument of a process the launcher starts ("Where the
+  value is held"). A proxy was already the ruleset's single point of trust and becomes a holder
+  of the credentials sent under it: compromising it compromises both — one boundary.
 - "Run on host": the command's environment carries the placeholder, its proxy holds the value,
-  and the command's grants exclude the value file ("Run-on-host commands").
+  the value passes the runner and the supervisor by pipe, and the profile's rule keeps a
+  command from reading the launcher's environment ("Run-on-host commands").
 - "The audit line grammar": the `inject` field, and the one exception to "query string
   included": a bound parameter's value prints as the binding's name.
 
-Gaps that stay, stated: the credential is still used by the agent against the bound host within
-the allowed methods; the placeholder tells a hostile project that a `GH_TOKEN` exists and
-where it is honoured (harmless); an origin echoing a credential in a response is not rewritten.
+Gaps that stay, stated:
+
+- the credential is still used by the agent against the bound host within the allowed methods;
+- the placeholder tells a hostile project that a `GH_TOKEN` exists and where it is honoured
+  (harmless);
+- an origin echoing a credential in a response is not rewritten;
+- a token in the environment or arguments of another process of the user — one exported in a
+  shell profile, or the launcher's own while it stays resident — is readable by a host command
+  while the command profile allows that read (`doc/TODO.md`, "A host command reads other
+  processes' environments").
 
 ## Implementation sites
 
 ### `src/main/scala/AgentSandboxLauncher.scala`
 
-- `--egress-cred` parses to its own case class beside `EnvForward` — the name, the optional
-  value, the host, the place (a header from the closed set, or a query parameter name) and the
-  optional prefix; `EnvForward` and `--env` parsing are unchanged. `forwardedEnvironment` returns
-  the sandbox `--env` list with the placeholders appended and, separately, the proxy's
-  secret-file contents. The supervisor builds each host command's environment from the same
-  placeholder list (`RunOnHostSandbox.commandEnvironment`).
+- `--egress-cred` parses to its own case class beside `EnvForward` — the name, the host, the
+  place (a header from the closed set, or a query parameter name) and the optional prefix;
+  `EnvForward` and `--env` parsing are unchanged. `forwardedEnvironment` returns the sandbox
+  `--env` list with the placeholders appended and, separately, the bindings with their values,
+  which join no argument list and no environment. The supervisor builds each host command's
+  environment from the same placeholder list (`RunOnHostSandbox.commandEnvironment`).
 - Binding validation against the resolved profile, reusing the inspected hosts read from the
   allow lines of `--print-ruleset` (what the leaf certificate's names are derived from, so no
   second host list), and against the selected programs' rule files, which the launch already
   reads for its widening report (`runOnHostWideningLines`); the proxy's starter reads them again
-  at the proxy's start ("Run-on-host commands"), and the file it writes then follows that reading.
+  at the proxy's start ("Run-on-host commands"), and the bindings it sends then follow that
+  reading.
 - `CredentialGrammar`: the value, header-name and parameter-name checks of guarantee 4, one
   object in the proxy's main sources, which `build.sbt` compiles into the launcher jar for
   `--serve-proxy-on-host`, so both sides run the same check. Not the proxy dry run, which
   resolves the ruleset for the launcher: validation must run in
   `plan-provider-credential-proxy.md`'s management actions before any run exists, and the dry run
-  mounts nothing by design — a secret file in it would be one more place holding the secret. The
+  mounts nothing by design — a value handed to it would be one more place holding the secret. The
   executable-source result there passes through the same object.
 - Placeholder generation: `SecureRandom`, format rules from guarantee 5.
-- Secret file: created 0600 under the run's state directory beside the leaf, mounted read-only
-  into the proxy, removed in `SandboxLifecycle` with the leaf.
+- The values: written to the runner's standard input at its start (`RunOnHostChannel`), and
+  `NAME` removed from the environment of every process the launcher starts, `podman` included.
+  The proxy container: created with `--interactive` and `EGRESS_CREDS=stdin`, started
+  attached, the bindings written, and that podman process ended after the ready line ("Where the
+  value is held"); with no binding, created without either and started detached.
 - Banner and `--egress-effective`: `NAME → HOST (Authorization)` or `NAME → HOST (?sig)` per
   binding.
 - `--proxy-log` becomes `--egress-log` (guarantee 7), the no-argument form printing the host
   proxies' retained logs with the containers'. The supervisor's own `--proxy-log=<file>`
   (`RunOnHostSandbox.ProxyLogOption`) is an internal option, not this action, and keeps its name.
 
-### `src/main/scala/RunOnHostSandbox.scala`
+### `src/main/scala/RunOnHostSandbox.scala` and `RunOnHostSession.scala`
 
-- `startProxyUnder`: the secret file beside the leaf key, holding the bindings whose host the
-  proxy's rules allow ("Where the value is held"), and the variable naming it in the proxy's
-  closed environment.
+- `startProxyUnder`: the bindings whose host the proxy's rules allow ("Where the value is
+  held"), written to the proxy's standard input, with `EGRESS_CREDS=stdin` in its closed
+  environment. The runner reads the launch's bindings from its own standard input, and sends a
+  supervisor its proxy's as a frame after `RunOnHostSession.runWord`, whose arguments name no
+  value.
+- `RunOnHostSession.LockScript`: the word read with `sysread`, a byte at a time, in place of
+  the buffered line read, which would take the frame's bytes and lose them at the `exec`.
 - The host proxy's audit log appended to a `proxy-*.log` file under the project's log directory
   ("Run-on-host commands"), so `--egress-log` prints it; `appendSessionLogs` keeps its tail in
   the channel log, which is what is read for a stalled command.
 
 ### `container/ko-agent-egress-proxy/app`
 
-- Start-up: load bindings, re-check each through `CredentialGrammar`, check hosts against the
-  resolved inspected set both ways, refuse otherwise with the mismatch named.
+- Start-up: with `EGRESS_CREDS=stdin`, read the count line and the bindings from standard
+  input before the ready line and nothing from it after, re-check each through
+  `CredentialGrammar`, check hosts against the resolved inspected set both ways, refuse
+  otherwise with the mismatch named.
 - `HTTPHelper`: `HttpRequestHead.withCredential(bindings)` — the scheme-aware rewrite of one
   header, or the percent-aware rewrite of one query parameter; pure, so it is unit-testable on
   heads alone. The same object yields the target as the audit line prints it.
@@ -388,47 +455,59 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 
 ### Tests
 
-- Launcher: grammar (`NAME@HOST`, `NAME=VALUE@HOST`, `:HEADER`, `?PARAM`, each with `/PREFIX/`),
-  every refusal with its message, `--egress-cred=NAME` without a host among them; a binding
-  whose host only a selected program's rules allow launches, and the session proxy's file lacks
-  it;
-  `CredentialGrammar` over every value a header cannot carry — CR, LF, NUL, tab,
-  space, `0x7F`, a byte above `0x7E`, an empty value, 4097 bytes — each refused from the
-  environment and from `=VALUE` alike, and each header name outside the set, `Host` and
-  `Transfer-Encoding` among them;
-  placeholder format per prefix, secret file mode and lifetime, banner content, no value in any
-  `--env` argument the sandbox receives or in any environment a supervisor builds
-  (`AgentSandboxLauncherTest` already checks the forwarded list — extend the same test).
-- Proxy unit: `Bearer`, `token`, `Basic` (password half only, user half untouched), other
-  header, wrong host, placeholder in the path or an unbound parameter left alone, non-placeholder
-  token untouched under every scheme, `Bearer` or a `Basic` password — an application's own
-  credential for the bound host (docker/sbx-releases #8), two placeholders in one request (one
-  bound to another host); a bound parameter substituted and percent-encoded, a value containing
-  `&` and `%` decoding intact at the origin, the parameter twice untouched, the printed target
-  naming the binding; a `service` binding on a Git host — the value `git-receive-pack` refused at
-  ref discovery, its `deny` line printing `?service=NAME` and no `inject`; `git-upload-pack`
-  allowed as a fetch, its `allow` line with `inject` — so authorization reads the rewritten head
-  in both Git discovery cases; a secret file with a value, header or parameter outside the grammar
-  refuses start-up; `HostileInputTest` gains the substituted head re-parsed as exactly one request
-  with the same header count and the same parameter count.
+- Launcher:
+  - grammar (`NAME@HOST`, `:HEADER`, `?PARAM`, each with `/PREFIX/`), every refusal with its
+    message, `--egress-cred=NAME` without a host and `NAME=VALUE@HOST` among them;
+  - a binding whose host only a selected program's rules allow launches, and the session proxy
+    is not given it;
+  - `CredentialGrammar` over every value a header cannot carry — CR, LF, NUL, tab, space,
+    `0x7F`, a byte above `0x7E`, an empty value, 4097 bytes — each refused, and each header name
+    outside the set, `Host` and `Transfer-Encoding` among them;
+  - placeholder format per prefix, banner content, no value in any file under the state root,
+    in any `--env` argument the sandbox receives, in any environment a supervisor builds, or in
+    the environment or arguments of `podman`, the runner or a supervisor
+    (`AgentSandboxLauncherTest` already checks the forwarded list — extend the same test).
+- Proxy unit:
+  - `Bearer`, `token`, `Basic` (password half only, user half untouched), other header, wrong
+    host, placeholder in the path or an unbound parameter left alone, non-placeholder token
+    untouched under every scheme, `Bearer` or a `Basic` password — an application's own
+    credential for the bound host (docker/sbx-releases #8), two placeholders in one request
+    (one bound to another host);
+  - a bound parameter substituted and percent-encoded, a value containing `&` and `%` decoding
+    intact at the origin, the parameter twice untouched, the printed target naming the binding;
+  - a `service` binding on a Git host — the value `git-receive-pack` refused at ref discovery,
+    its `deny` line printing `?service=NAME` and no `inject`; `git-upload-pack` allowed as a
+    fetch, its `allow` line with `inject` — so authorization reads the rewritten head in both
+    Git discovery cases;
+  - bindings with a value, header or parameter outside the grammar refuse start-up;
+  - `HostileInputTest` gains the substituted head re-parsed as exactly one request with the
+    same header count and the same parameter count.
 - Proxy end-to-end (`AgentEgressProxyTest` style, local TLS origin): a `GET` with the
   placeholder arrives at the origin with the value; the same to an unbound inspected host
   arrives with the placeholder; audit line shows `inject` exactly once; an application's own
   `Bearer` and `Basic` credential to the bound host arrives at the origin unchanged, audit line
   without `inject` — #8 over the whole inspected path.
+- Proxy container (`ProxyContainerTest`): bindings written to the attached start substitute at
+  the test's origin; the container runs on after that podman process ends; `podman inspect` and
+  `podman logs` hold no value; without `EGRESS_CREDS` the proxy never reads its standard
+  input.
 - Lifecycle (`RunTopologyTest`'s lost-reaper case, and a launcher killed between creating the
-  run directory and the handover): the value file is either gone with the run or still
-  owner-only under its own run directory and gone after `--reset`; never under another run's
-  directory.
+  run directory and the handover): no file under the state root holds the value in either case.
 - Session boundary (`SessionBoundaryTest`): after a session that forwarded a brokered value,
   the persistent volume and the project contain neither the value nor the placeholder-to-value
   mapping — the openai/codex #30971 check, run over every agent's state directory.
-- Run on host (`RunOnHostSandboxTest`, macOS): a command's environment holds the placeholder;
-  a request from the command to the bound host, allowed by the program's rule file, arrives at
-  the test's local origin with the value and its `allow` line carries `inject`; with a binding
-  whose host the program's rules lack, the proxy starts, a request to that host gets a `deny`
-  line and no `inject`, and a request to an allowed host is served; the command cannot read the
-  secret file; the proxy's audit lines are among what `--egress-log` prints.
+- Run on host (`RunOnHostSandboxTest`, macOS):
+  - a command's environment holds the placeholder; a request from the command to the bound
+    host, allowed by the program's rule file, arrives at the test's local origin with the value
+    and its `allow` line carries `inject`;
+  - with a binding whose host the program's rules lack, the proxy starts, a request to that
+    host gets a `deny` line and no `inject`, and a request to an allowed host is served;
+  - no file under the session root holds the value, and neither the runner's nor a
+    supervisor's environment or arguments do, read as `src/probe/ProcArgs.java` reads them;
+    with the launcher resident, that read of the launcher from a host command is refused;
+  - the proxy's audit lines are among what `--egress-log` prints.
+- Lock holder (`RunOnHostSessionTest`): bytes the runner writes after the word reach the exec'd
+  command's standard input whole, and none of them is among its arguments.
 
 ### Documentation
 
@@ -460,6 +539,9 @@ where it is honoured (harmless); an origin echoing a credential in a response is
       `.ko-agent-sandbox/run-on-host/sbt/egress/rule`, `--egress-cred=GH_TOKEN@maven.pkg.github.com`
       resolves a private GitHub Packages artifact from `sbt` on the host; `env` in the command
       shows the placeholder; `--egress-log` shows the sbt proxy's `inject=GH_TOKEN` line.
+- [ ] With a binding and `--run-on-host`, no file under the state root or the session root
+      holds the value, and `src/probe/ProcArgs.java` reads it from neither `podman`'s, the
+      runner's nor a supervisor's environment or arguments.
 - [ ] Every refusal in "Command-line contract" fires with its message.
 - [ ] `--egress-log` shows `inject=GH_TOKEN` and `inject=GIT_TOKEN` on exactly the authenticated
       requests, each at its own host.
@@ -485,8 +567,9 @@ where it is honoured (harmless); an origin echoing a credential in a response is
 - A keychain or secret-manager resolver on the host (Docker's `gh auth token`, 1Password):
   `--egress-cred=NAME@HOST` reads the host environment as `--env=NAME` does; a resolver is a
   shell pipeline in front of it.
-- Rotation or revocation on exit: `--reset` and the host's own revocation cover it; an
-  automatic revoke needs a provider API call the launcher does not make.
+- Rotation or revocation on exit: the value is in no file for an exit to leave, and the host's
+  own revocation covers a leak; an automatic revoke needs a provider API call the launcher does
+  not make.
 
 ## References
 

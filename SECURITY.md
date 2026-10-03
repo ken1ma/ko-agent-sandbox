@@ -1268,7 +1268,7 @@ provides the confinement for these commands; they execute outside the container.
     kept across the launch's commands of one build directory, or the command's own under Maven;
   - that proxy's CA certificate, read-only.
 
-  Everything else user-owned is invisible — the launcher state root and the rest of the user's
+  Every other user-owned file is invisible — the launcher state root and the rest of the user's
   caches included.
 
   The mill daemon and every Gradle process, alone among the host processes, may bind listeners on
@@ -1331,6 +1331,11 @@ provides the confinement for these commands; they execute outside the container.
     names (`RunOnHostSandbox.carrierName`), so no unconfined helper reads an explicit value before
     the command's environment is built. The runner inherits the launcher's environment as the
     launcher's own JVM ran in it, so a name-only forward names a variable already there.
+  - The closed set keeps a value out of the command's own environment, not out of its reach: the
+    profile does not deny a command reading other processes. It reads the arguments of any
+    process of yours, and the environment of each whose binary is not Apple's — the runner, a
+    supervisor and `podman`, which carry the launching shell's, among them (`doc/run-on-host.md`,
+    "The Seatbelt profile"; `doc/TODO.md`, "A host command reads other processes' environments").
 - **A project script runs unconfined only on your explicit yes.** Before its start prompt, the
   launch finds the mill launchers, the JDKs mill builds pin, and the Gradle and Maven
   distributions its commands would refuse for want of, and offers the run that downloads each:

@@ -75,13 +75,6 @@ again.
     `supports_websockets = false` accepts the ChatGPT login; the built-in provider cannot be
     overridden (`doc/design.md`, "No WebSocket on an inspected connection").
 
-## IDE integration through VS Code's Agent Host
-
-- [ ] `plan-ide-integration.md`, from its phase 1: the measurements step 2's "Not measured"
-  paragraph says the relay's design needs first, and that design; then one harness (step 3);
-  then `--protocol=ahp` (step 4), whose acceptance stages the same paragraph names. ACP is
-  deferred; the plan keeps its reviewed design and the conditions that reopen it.
-
 ## Host programs started by bare name
 
 - [ ] `ps`, `pgrep` and `lsof` under `--run-on-host` (`RunOnHostSession.HostProcesses`,
@@ -92,6 +85,65 @@ again.
   (`RunOnHostSession.RegistrationScript`), through the leader's `PATH`, which for a command starts
   with the JDK's `bin`. Resolve them as `podman` is resolved, or start them by absolute path as
   `/bin/kill` and `/usr/bin/sandbox-exec` are.
+- [ ] Or start none of them: make the kernel calls behind them through the JDK's foreign-function
+  API, as `src/probe/ProcArgs.java` calls `sysctl`. A helper inherits the environment of the
+  runner or supervisor that starts it, and a call does not.
+  - `ps` and `pgrep` read `sysctl` `kern.proc` and `kern.procargs2`; `lsof` reads libproc's
+    `proc_pidinfo` and `proc_pidfdinfo`.
+  - The registration script's `ps` runs inside the leader's shell and needs another form.
+
+## A host command reads other processes' environments
+
+SECURITY.md, "Run on host", states the gap (the closed environment's last item);
+`run-on-host.md`, "The Seatbelt profile", has the measurement.
+
+- [ ] Deny the read in the command profile with the rule agent-safehouse uses
+  (https://github.com/eugene1g/agent-safehouse, `profiles/10-system-runtime.sb`): deny
+  `sysctl-read` of names matching `procargs`, deny `process-info-pidinfo`, and allow that again
+  for the same sandbox.
+  - `run-on-host-profile-iterate.sh procargs` shows it under the rendered profile: the call
+    refused with the JDK running, a child of the reader still read, and `ProcessHandle.of`,
+    which Mill's client calls on its daemon's pid (`ServerLauncher.scala`, Mill 1.1.10), still
+    finding processes outside the sandbox.
+  - What remains: `SeatbeltProfile.render` takes the rule, and the acceptance test runs every
+    program. The older `kern.procargs` call is not measured.
+- [ ] Start what the launcher starts — the runner, each supervisor, `podman` — with a controlled
+  environment: a fixed set of names and the `--env` forwards, nothing else of the launching
+  shell's. The rule above is the boundary; this bounds what a miss in it exposes.
+  - `podman`'s set starts from the variables its manual documents (podman(1), "Environment
+    Variables"): `CONTAINERS_CONF`, `CONTAINER_CONNECTION`, `CONTAINER_HOST`,
+    `CONTAINER_SSHKEY`, `PODMAN_CONNECTIONS_CONF`, `TMPDIR` and the `XDG_*` directories among
+    them. Its client also reads `CONTAINER_PROXY` (`pkg/bindings/connection.go`), which that
+    page does not list, so the page is not the whole set.
+- [ ] `(deny default)` leaves `process-info*`, `nvram*`, `iokit-get-properties` and
+  `file-map-executable` allowed (Firefox's `SandboxPolicyContent.h`: "These are not included in
+  (deny default)"; Chromium's `renderer.sb` denies the first three as "allowed by default"), and
+  the command profile names none of them. Decide each; the rule above takes
+  `process-info-pidinfo`.
+  - The probe's `ops` mode measures a family by leaving its allow out under `(deny default)`,
+    which denies none of these, so it cannot say that the JDK does without `file-map-executable`
+    (`run-on-host.md`, "The Seatbelt profile") or `process-info*`.
+- [ ] Measure the other routes to another process's arguments, environment or memory under the
+  rendered profile, which grants none of them by name: a task port (`task_for_pid` and its
+  read, inspect and name flavors), and the process service `com.apple.sysmond` behind `pgrep`.
+  The profile's one Mach service is the resolver's (`SeatbeltProfile.MachServices`), and `pgrep`
+  fails under it with "sysmond service not found".
+
+## The profile probe's confined sbt on this checkout
+
+- [ ] `run-on-host-profile-iterate.sh`'s `run_command` fails under the rendered profile after
+  `emit`, which runs an unconfined sbt in the same checkout: `sbt about` stops at
+  `Compile / previousCompile` with `Operation not permitted` on
+  `target/out/jvm/scala-3.8.4/ko-agent-sandbox-build/zinc/inc_compile_3.zip`, then "failed to
+  connect to server" (2026-10-03). The cause is not found. `narrow` runs the same function in
+  this checkout; `mach` runs it in its fixture.
+
+## IDE integration through VS Code's Agent Host
+
+- [ ] `plan-ide-integration.md`, from its phase 1: the measurements step 2's "Not measured"
+  paragraph says the relay's design needs first, and that design; then one harness (step 3);
+  then `--protocol=ahp` (step 4), whose acceptance stages the same paragraph names. ACP is
+  deferred; the plan keeps its reviewed design and the conditions that reopen it.
 
 ## One list of launch refusals
 
