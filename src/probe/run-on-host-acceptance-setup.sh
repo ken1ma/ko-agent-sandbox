@@ -4,7 +4,7 @@
 # lock before emit starts an unconfined sbt in the same checkout; killing only sbt does not free it.
 acceptance_require_idle() (
     acceptance_root=$1; shift
-    for acceptance_session in "$acceptance_root"/b* "$acceptance_root"/condemned/b*; do
+    for acceptance_session in "$acceptance_root"/r[0-9]* "$acceptance_root"/condemned/r[0-9]*; do
         [ -f "$acceptance_session/lock" ] || continue
         acceptance_pids=$(lsof -t "$acceptance_session/lock" 2>/dev/null | paste -sd ' ' -)
         [ -n "$acceptance_pids" ] || continue

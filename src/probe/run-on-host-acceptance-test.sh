@@ -280,7 +280,7 @@ stray_proxies() {
 # The proxies no runner's session records: a command's own. A runner's proxy is meant to outlive
 # each command, so the rows between commands settle on these.
 command_proxies() {
-    recorded=$(cat "$command_root"/b*/records/proxy-* 2>/dev/null | awk '{print $1}')
+    recorded=$(cat "$command_root"/r[0-9]*/records/proxy-* 2>/dev/null | awk '{print $1}')
     for pid in $(stray_proxies); do
         pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
         printf '%s\n' "$recorded" | grep -qx "$pgid" || printf '%s\n' "$pid"
@@ -289,17 +289,17 @@ command_proxies() {
 # The runner's sbt runtime records for a build directory, `<pgid> <start>` each — the proxy's and the
 # server's — and whether a record's group leader lives.
 runner_proxy_record() { # build-directory
-    cat "$command_root"/b*/records/proxy-sbt-"$(build_hash "$1")" 2>/dev/null
+    cat "$command_root"/r[0-9]*/records/proxy-sbt-"$(build_hash "$1")" 2>/dev/null
 }
 runner_server_record() { # build-directory
-    cat "$command_root"/b*/records/server-sbt-"$(build_hash "$1")" 2>/dev/null
+    cat "$command_root"/r[0-9]*/records/server-sbt-"$(build_hash "$1")" 2>/dev/null
 }
 runner_daemon_record() { # build-directory
-    cat "$command_root"/b*/records/daemon-mill-"$(build_hash "$1")" 2>/dev/null
+    cat "$command_root"/r[0-9]*/records/daemon-mill-"$(build_hash "$1")" 2>/dev/null
 }
 # The runner's gradle daemon records, `<pid> <start>` each, one per daemon of the launch's registry.
 runner_gradle_records() {
-    cat "$command_root"/b*/records/daemon-gradle-* 2>/dev/null
+    cat "$command_root"/r[0-9]*/records/daemon-gradle-* 2>/dev/null
 }
 # The mill daemon behind a runner record: the MillDaemonMain in the record's group, the starter's.
 daemon_in_group() { # record-line
@@ -310,12 +310,12 @@ daemon_in_group() { # record-line
 }
 # The runner session holding the sbt runtime of a build directory.
 runner_session_of() { # build-directory
-    ls -d "$command_root"/b*/records/proxy-sbt-"$(build_hash "$1")" 2>/dev/null | head -1 | sed 's|/records/.*||'
+    ls -d "$command_root"/r[0-9]*/records/proxy-sbt-"$(build_hash "$1")" 2>/dev/null | head -1 | sed 's|/records/.*||'
 }
 # The sbt servers no runner's session records: a command's own — the acceptance test's entry starts one in the
 # command's session — where the runner's server outlives each command.
 command_servers() {
-    recorded=$(cat "$command_root"/b*/records/server-sbt-* 2>/dev/null | awk '{print $1}')
+    recorded=$(cat "$command_root"/r[0-9]*/records/server-sbt-* 2>/dev/null | awk '{print $1}')
     for pid in $(project_servers) $(deny_servers) $(ivy_servers); do
         pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
         printf '%s\n' "$recorded" | grep -qx "$pgid" || printf '%s\n' "$pid"
@@ -1016,12 +1016,12 @@ else report FAIL "the proxy cannot write a file" "$(first_error)"; fi
 
 echo
 echo "the command lifecycle"
-# Command sessions alone: the runner's own session (b<random>), the build locks and the retirement
+# Command sessions alone: the runner's own session (r<random>), the build locks and the retirement
 # locks are not commands.
 commands_now() {
     ls "$command_root" 2>/dev/null \
         | grep -cv -e '^staging$' -e '^condemned$' -e '^root-lock$' -e '^build-lock$' -e '^retire-lock$' \
-            -e '^b[0-9]'
+            -e '^r[0-9]'
 }
 lifecycle_rows="two concurrent commands
 SIGTERM: the supervisor cleans up behind itself
@@ -1509,7 +1509,7 @@ EOF
         # terminal, an agent session's included, keeps its own runner session there. So the
         # second runner's session is the one that appears when it starts, and the first's the
         # one whose server record for the project is alive.
-        runner_sessions() { ls "$command_root" 2>/dev/null | grep '^b[0-9]' | sed "s|^|$command_root/|"; }
+        runner_sessions() { ls "$command_root" 2>/dev/null | grep '^r[0-9]' | sed "s|^|$command_root/|"; }
         session_record() { # session record-name
             cat "$1/records/$2" 2>/dev/null
         }
@@ -1737,7 +1737,7 @@ $(tail -1 "$work/chan-share-teardown.log.err" | cut -c1-60)"; fi
         mill_record=$(runner_daemon_record "$mill_project")
         mill_daemon=$(daemon_in_group "$mill_record")
         starters_termed=$(grep -c 'TERM to the mill starter' "$work/channel.log")
-        starter_exit=$(cat "$command_root"/b*/records/daemon-mill-"$(build_hash "$mill_project")".exit 2>/dev/null)
+        starter_exit=$(cat "$command_root"/r[0-9]*/records/daemon-mill-"$(build_hash "$mill_project")".exit 2>/dev/null)
         with_timeout 300 channel_shim chan-mill2.log "$mill_project" mill version
         channel_settled
         if [ "$mill_status" -eq 0 ] && [ -n "$mill_daemon" ] && record_alive "$mill_record" \
@@ -2167,7 +2167,7 @@ forked: ${forked:-none}"; pkill -f "$fixture_sleep" 2>/dev/null; fi
                 orphan_server=$(project_servers | tr '\n' ' ')
                 supervisor sbt "$project" --version >"$work/recover-runner.log" 2>&1
                 proxies_ended=$([ -n "$orphan" ] && [ -n "$orphan_server" ] \
-                    && grep -q 'scavenged b.*GroupEnded.*GroupEnded' "$work/recover-runner.log" \
+                    && grep -q 'scavenged r[0-9].*GroupEnded.*GroupEnded' "$work/recover-runner.log" \
                     && [ -z "$(stray_proxies)" ] && echo yes || echo no)
             else
                 proxies_ended=$([ -z "$(stray_proxies)" ] && echo yes || echo no)
