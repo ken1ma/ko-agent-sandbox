@@ -40,7 +40,7 @@ Each fact is specified in one place:
 1. Store or resolve one GitHub credential once, select it for a run and use it at the exact GitHub
    API and Git HTTPS targets its service definition names.
 2. Give two projects or concurrent runs the same stored instance without sharing a proxy,
-   placeholder, per-run value file or audit log.
+   placeholder or audit log.
 3. Resolve a short-lived access token with a host executable, refresh it before expiry and keep the
    refresh token or provider login outside the sandbox.
 4. Select one credential mechanism for a model provider without an unrelated stored service or

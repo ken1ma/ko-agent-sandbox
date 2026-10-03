@@ -1311,6 +1311,24 @@ rest, measured:
   profiles use for system frameworks; a JDK outside those paths loads without it.
 - Adopted from `system.sb` rather than re-derived: `file-test-existence`, a narrower operation than
   `file-read*` for the ancestor chain.
+- The profile lets a command read another process's arguments and environment through `sysctl`
+  `kern.procargs2`, the call behind `ps -E` (`run-on-host-profile-iterate.sh procargs`,
+  2026-10-04):
+  - the kernel answers for any process of the same user. It withholds the environment, not the
+    arguments, of a code-signing restricted target, as Apple's own binaries are, unless the
+    caller is that target (xnu, `sysctl_procargsx`);
+  - the call succeeds while either `sysctl-read` of its name or `process-info-pidinfo` is
+    allowed, and `(deny default)` does not cover `process-info*`: a deny of either alone leaves
+    it succeeding;
+  - a deny of both, with pidinfo allowed again for the same sandbox, refuses it, arguments
+    included, while the JDK runs and still lists processes (the rule of agent-safehouse's
+    `profiles/10-system-runtime.sb`);
+  - under that rule the same sandbox is the inherited one: the read succeeds for a child the
+    reader starts, and is refused for a JDK under a `sandbox-exec` of its own with the same
+    profile. `ProcessHandle.of` still finds every process, those outside included, so a client's
+    check of its server's pid is unaffected;
+  - SECURITY.md, "Run on host", states what a command reaches by it, and `TODO.md`, "A host
+    command reads other processes' environments", has the rule's adoption.
 
 Prior art: Bazel sandboxes build actions on macOS with `sandbox-exec` — this feature's problem
 exactly — and its generated profile is worth reading and worth *not* copying.
