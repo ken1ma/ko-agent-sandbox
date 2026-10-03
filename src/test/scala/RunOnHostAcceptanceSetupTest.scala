@@ -33,7 +33,7 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
 
   test("preflight refuses an owning runner even with no server or portfile"):
     val project = "/Users/test/my project"
-    for name <- Seq("b1", "condemned/b1") do
+    for name <- Seq("r1", "condemned/r1") do
       val root = Files.createTempDirectory("acceptance-owner")
       val owner = runner(root, name, project)
       val (status, output) = preflight(root, project)
@@ -52,7 +52,7 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
     )
     for (ownerProject, record, requested) <- cases do
       val root = Files.createTempDirectory("acceptance-build")
-      val owner = runner(root, "b1", ownerProject)
+      val owner = runner(root, "r1", ownerProject)
       record.foreach(name => Files.writeString(owner.resolve(name), project + "\n"))
       assertEquals(preflight(root, "/unrelated", requested)._1, 1, clue = (ownerProject, record, requested))
 
@@ -60,17 +60,17 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
     val project = "/Users/test/project"
     val root = Files.createTempDirectory("acceptance-unowned")
     assertEquals(preflight(root, project), 0 -> "")
-    runner(root, "b1", project + "-other")
-    runner(root, "b2", project, open = false)
+    runner(root, "r1", project + "-other")
+    runner(root, "r2", project, open = false)
     runner(root, "s1", project)
-    val pending = runner(root, "b3", "/elsewhere")
+    val pending = runner(root, "r3", "/elsewhere")
     Files.writeString(pending.resolve("build-0123456789abcdef.pending"), project + "\n")
     assertEquals(preflight(root, project), 0 -> "")
 
   test("preflight names the sandbox to stop instead of suggesting sbt shutdown or a runner kill"):
     val project = "/Users/test/my project"
     val root = Files.createTempDirectory("acceptance-remedy")
-    val owner = runner(root, "b1", project)
+    val owner = runner(root, "r1", project)
     val container = "ko-agent-sandbox-my-project-0123456789ab-abcdef123456"
     Files.writeString(owner.resolve("run"), container + "\n")
     val (status, output) = preflight(root, project)
@@ -84,7 +84,7 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
 
   test("an unusable sandbox name does not become a suggested shell command"):
     val root = Files.createTempDirectory("acceptance-remedy-name")
-    val owner = runner(root, "b1", "/project")
+    val owner = runner(root, "r1", "/project")
     for name <- Seq("", "--all", "name; echo injected", "$(echo injected)", "one\ntwo") do
       Files.writeString(owner.resolve("run"), name + "\n")
       val (status, output) = preflight(root, "/project")
@@ -116,7 +116,7 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
       state <- Seq("owned", "ended", "unrelated", "unknown", "reused")
     do
       val root = Files.createTempDirectory("acceptance-cleanup")
-      runner(root, "b1", if state == "unrelated" then "/other" else "/project",
+      runner(root, "r1", if state == "unrelated" then "/other" else "/project",
         open = state != "ended" && state != "reused")
       val process = ProcessBuilder(
         "sh", "-c",

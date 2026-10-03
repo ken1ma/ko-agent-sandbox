@@ -572,7 +572,7 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
 
 ## Deferred — readable session directory names under `--run-on-host`
 
-- [ ] Name the sessions `runner-<random>` and `command-<random>` instead of `b<random>` and
+- [ ] Name the sessions `runner-<random>` and `command-<random>` instead of `r<random>` and
   `s<random>` (`RunOnHostSession.Kind`), once the path length allows it.
   - The session's `tmp/` hosts sbt's boot socket, and `RunOnHostPrereqs.SessionTmpMaxLength`
     leaves that path 53 characters, of which the root and Java's 20-digit temp-directory name

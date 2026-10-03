@@ -132,8 +132,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val root = freshRoot()
     val runner = publish(root, Path.of("/p"), Kind.Runner).toOption.get
     val command = publish(root, Path.of("/p")).toOption.get
-    assert(runner.directory.getFileName.toString.startsWith("b"), clue = runner.directory)
-    assert(command.directory.getFileName.toString.startsWith("s"), clue = command.directory)
+    assert(Kind.Runner.names(runner.directory.getFileName.toString), clue = runner.directory)
+    assert(Kind.Command.names(command.directory.getFileName.toString), clue = command.directory)
     remove(runner)
     remove(command)
 
@@ -247,7 +247,10 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val command = publish(root, Path.of("/p")).toOption.get
     val dead = publish(root, Path.of("/p"), Kind.Runner).toOption.get
     dead.close()
+    // A fixed root entry sharing the prefix's letter is no session, whatever its lock state.
+    Files.createDirectories(root.resolve(RetireLockDir))
     assertEquals(liveRunnerSessions(root, mine.directory), Vector(other.directory))
+    assertEquals(allRunnerSessions(root, mine.directory).toSet, Set(other.directory, dead.directory))
     remove(mine); remove(other); remove(command); remove(dead)
 
   test("a leader lives while it matches the record and no exit is published"):

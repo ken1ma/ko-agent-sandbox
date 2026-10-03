@@ -43,8 +43,14 @@ object RunOnHostSession:
   /** Whose lock a session's is, and the prefix its directory is named by: the runner's lives the
     * launch's lifetime; a command's, its supervisor's. */
   enum Kind(val prefix: String):
-    case Runner extends Kind("b")
+    case Runner extends Kind("r")
     case Command extends Kind("s")
+
+    /** Whether `name` is a session directory of this kind: the prefix and the digits
+      * `Files.createTempDirectory` appends, so a fixed root entry sharing the letter — `retire-lock`,
+      * `root-lock` — is not one. */
+    def names(name: String): Boolean =
+      name.length > prefix.length && name.startsWith(prefix) && name.drop(prefix.length).forall(_.isDigit)
 
   /** One registered process group: the leader's pgid (== its pid) and the leader's start time,
     * spelled exactly as `ps -o lstart=` prints it — compared as a string, never parsed, because
@@ -362,8 +368,7 @@ object RunOnHostSession:
     * scavenge collects it). */
   def allRunnerSessions(root: Path, except: Path): Vector[Path] =
     listDirectory(root).filter: entry =>
-      entry != except && entry.getFileName.toString.startsWith(Kind.Runner.prefix)
-        && Files.isDirectory(entry)
+      entry != except && Kind.Runner.names(entry.getFileName.toString) && Files.isDirectory(entry)
 
   /** The sessions under `condemned/`: an owner tearing itself down, or a scavenger, has renamed
     * its directory here and holds its lock while it ends the recorded groups. Their ownership
