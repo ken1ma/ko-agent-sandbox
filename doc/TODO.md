@@ -37,7 +37,7 @@ again.
 - [ ] Refuse a credential that is not the session's at a model host (SECURITY.md, "Exfiltration
   through allowed network traffic", has the attack). An exception to the order above: its use
   case came from a review of the documents, not from a session on the broker. A target of
-  a service definition gains a property, `require-placeholder`: on a mediated target carrying it,
+  a service definition gains a property, `require-placeholder`: on a brokered target carrying it,
   a request is forwarded only if one authentication form the target declares holds this run's
   placeholder and no other declared form is present; any other request is refused with a fixed
   reason and a `deny` audit line, at every path.
@@ -49,11 +49,12 @@ again.
     alone and beside the placeholder. A form the provider adds later reopens the attack until the
     catalog declares it.
   - It needs a selected service instance, so provider plan delivery steps 1, 2 and 5: the
-    catalog, storage with per-run generations for a static key, the mediated overlay and one
+    catalog, storage with per-run generations for a static key, the brokered overlay and one
     API-key client. It needs neither executable sources and refresh (step 4) nor OAuth (step 6).
-    An `--env=NAME@HOST` binding does not carry it: that plan keeps the binding separate from a
-    selected service, and a binding forwards a token that is not a placeholder and names one
-    header, so it cannot refuse the placeholder beside a foreign key in another declared form.
+    An `--egress-cred=NAME@HOST` binding does not carry it: that plan keeps the binding separate
+    from a selected service, and a binding forwards a token that is not a placeholder and names
+    one header, so it cannot refuse the placeholder beside a foreign key in another declared
+    form.
   - It protects an API-key session only. A subscription login stays a tunnel until step 6.
   - A project that tests against the provider with its own key selects no credential for that
     host, or accepts the refusal; forwarding a token that is not a placeholder stays the rule at
@@ -62,7 +63,7 @@ again.
     `claude` calls, login and refresh included; that a long server-sent-event stream survives the
     one-request-per-connection relay; that `claude` trusts `NODE_EXTRA_CA_CERTS` on every
     connection to the provider.
-  - Rejected: exact-path grants on the model host without mediation (`/v1/messages` alone). The
+  - Rejected: exact-path grants on the model host without brokering (`/v1/messages` alone). The
     path list is the per-release contract with the CLI the broker plan declines, and a
     retrievable-storage behavior added at an allowed endpoint reopens the attack. Rejecting it
     gives up path-based protection for a subscription session before step 6: exact-path grants
@@ -478,14 +479,14 @@ code, not measured):
 
 ## Deferred — a bound on a silent host command
 
-An sbt server's and a mill daemon's start are bounded by the broker's progress bound
+An sbt server's and a mill daemon's start are bounded by the runner's progress bound
 (`run-on-host.md`, "The channel and the command", "`mill`"). A command that stalls after its
 server or daemon is up — or a Maven command at any point — is silent until the agent gives up:
 nothing bounds it, not the supervisor, not the
-broker, whose writers die only with their requester, and not the shim, which reads output to EOF.
+runner, whose writers die only with their requester, and not the shim, which reads output to EOF.
 One form would, and it waits on a measurement:
 
-- [ ] Generic, in the broker: no output for N seconds ends the command through the same SIGTERM,
+- [ ] Generic, in the runner: no output for N seconds ends the command through the same SIGTERM,
   so the command's logs are kept, with a stderr line naming the bound and the host command log.
   - Silence is measured where the command's bytes are read, and time the pump spends blocked on a
     slow requester does not count.
@@ -510,25 +511,25 @@ Under `--run-on-host` the host's mill daemon keeps its lock and `socketPort` in 
   - If the two conflict, the run-on-host text the launcher appends is the place to tell an agent
     to set the variable.
 - [ ] The same conflict for gradle. The two sides' daemon registries are separate — the host's
-  is under the broker's temporary directory (`RunOnHostSandbox.gradleCommand`), the container's
+  is under the runner's temporary directory (`RunOnHostSandbox.gradleCommand`), the container's
   in its gradle user home — but both builds use the project's `build/` and the locks under its
   `.gradle/`, and the rules allow `./gradlew`'s download by default.
 
 ## Deferred — an idle bound for the sbt server
 
-The broker's sbt server has no idle bound of the broker's: it lives until the launch ends,
+The runner's sbt server has no idle bound of the runner's: it lives until the launch ends,
 `ko-sandbox-run-on-host sbt shutdown`, or sbt's own `serverIdleTimeout`, seven days
 (`run-on-host.md`, the startup-cost paragraph). A warm server is what a terminal user keeps on
 purpose, so its heap is the price chosen; Mill's daemon exits on Mill's own thirty minutes.
 
-The form, if a launch ever wants one: a broker-kept bound selected by a launch option — never an
+The form, if a launch ever wants one: a runner-kept bound selected by a launch option — never an
 environment variable, since the command's environment is closed by design — with thirty minutes,
 Mill's default, as the value to start from. Idle counts from the end of the last sbt command,
-never from the server's start. The broker's serve loop blocks in the handshake reader between
+never from the server's start. The runner's serve loop blocks in the handshake reader between
 requests, so the bound needs a timer thread, the one thread retiring runtimes outside the serial
 dispatch, fenced thus:
 
-- one lock covers the broker's runtime state;
+- one lock covers the runner's runtime state;
 - a request takes it, marks the runtime busy and cancels its pending expiry before the command
   receives the runtime, and re-arms the expiry when the command ends;
 - each re-arming increments an idle generation kept with the runtime;
@@ -553,7 +554,7 @@ replacement, each leaving one consistent runtime.
 Recorded macOS results (2026-09-18):
 
 - `MountPathTest`, `MountLifecycleTest` and the run-on-host acceptance test pass.
-- `sbt testFull` inside a session passes in every suite except `ClipboardBrokerTest` and
+- `sbt testFull` inside a session passes in every suite except `ClipboardRelayTest` and
   `SandboxLifecycleTest`; those two pass when run alone on Linux.
 - The four agents start without a trust prompt on fresh and used volumes.
 - A host build's error reports a path accessible inside the session.
@@ -571,7 +572,7 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
 
 ## Deferred — readable session directory names under `--run-on-host`
 
-- [ ] Name the sessions `broker-<random>` and `command-<random>` instead of `b<random>` and
+- [ ] Name the sessions `runner-<random>` and `command-<random>` instead of `b<random>` and
   `s<random>` (`RunOnHostSession.Kind`), once the path length allows it.
   - The session's `tmp/` hosts sbt's boot socket, and `RunOnHostPrereqs.SessionTmpMaxLength`
     leaves that path 53 characters, of which the root and Java's 20-digit temp-directory name
@@ -587,20 +588,20 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
 
 ## Deferred — the per-command supervisor process under `--run-on-host`
 
-- [ ] Re-evaluate the supervisor, the `--run-command-on-host` process the broker starts for each
+- [ ] Re-evaluate the supervisor, the `--run-command-on-host` process the runner starts for each
   request (`RunOnHostSandbox.runCommandMain`; `run-on-host.md`, "The channel and the command").
   - What it buys:
-    - the broker's cancel is a SIGTERM to one process, answered by that process's shutdown hook,
+    - the runner's cancel is a SIGTERM to one process, answered by that process's shutdown hook,
       which ends exactly the command's groups and directory;
     - a command's death, however it dies, is confined to its own process and never takes the
-      broker and its warm servers with it;
-    - the acceptance test drives one command's whole lifecycle as `RunOnHost` with no broker, which
+      runner and its warm servers with it;
+    - the acceptance test drives one command's whole lifecycle as `RunOnHost` with no runner, which
       is how the supervisor rows measure the profile.
   - What it costs:
     - one more JVM start per command, about a third of a second in the jar form and tens of
       milliseconds as the native image;
     - a second code path for the command's runtime, the supervisor's own under Maven.
-  - The alternative is the same work in a broker thread with cancellation done by hand; decide
+  - The alternative is the same work in a runner thread with cancellation done by hand; decide
     with the measured cost per command and what the acceptance test would drive instead.
 
 ## Deferred — the native-image launcher

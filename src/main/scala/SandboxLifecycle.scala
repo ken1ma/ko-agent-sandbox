@@ -155,12 +155,12 @@ object SandboxLifecycle:
    * The trap is necessary: the reaper shares the launcher's process
    * group, and a terminal SIGINT or SIGHUP would otherwise kill it first.
    *
-   * The clipboard broker is a job of this script rather than a process of
+   * The clipboard relay is a job of this script rather than a process of
    * its own because its lifetime is exactly the wait below: from the
    * sandbox running to the sandbox stopped. A background job, so removal
-   * waits on `podman wait` alone and a broker blocked in a host
+   * waits on `podman wait` alone and a relay blocked in a host
    * clipboard command delays nothing; killed after the wait, so it never
-   * outlives the container it serves. ClipboardBroker has the protocol it
+   * outlives the container it serves. ClipboardRelay has the protocol it
    * speaks and the Windows counterpart; the sandbox side is the image's
    * ko-sandbox-clipboard shim.
    */
@@ -168,7 +168,7 @@ object SandboxLifecycle:
     withScriptPath(
       "trap '' INT HUP TERM\n\n" +
       """# A process and its descendants, through the ps the launcher proved answers this exact
-      |# command arguments (ClipboardBroker.probedPs): one answering nothing would leave every job
+      |# command arguments (ClipboardRelay.probedPs): one answering nothing would leave every job
       |# childless here and the cleanup ending the job alone, silently. ${12} is read at top
       |# level; inside a function the positionals are the function's. STOP and KILL, the two
       |# signals no disposition can refuse — the tree inherits this shell's ignores. A stopped
@@ -181,7 +181,7 @@ object SandboxLifecycle:
       |stop_tree() { kill -STOP "$1" 2>/dev/null; for child in $(children_of "$1"); do stop_tree "$child"; done; }
       |end_tree() { for child in $(children_of "$1"); do end_tree "$child"; done; kill -KILL "$1" 2>/dev/null; }
       |
-      |""".stripMargin + ClipboardBroker.hostShellFunctions() +
+      |""".stripMargin + ClipboardRelay.hostShellFunctions() +
       """# Wait for the sandbox to be running before waiting for it to stop:
       |# `podman wait` alone would bind a created-but-never-started container
       |# (launcher killed between create and start) forever. After ten
@@ -202,12 +202,12 @@ object SandboxLifecycle:
       |# before the wait returned would free its pid for another process, which the cleanup below
       |# would then signal; sh has no process handle to tell the two apart, and dash refuses
       |# `kill %1` non-interactively. For the same reason the job holds its pid after
-      |# clipboard_broker returns, until this shell ends it or is gone.
-      |broker=
+      |# clipboard_relay returns, until this shell ends it or is gone.
+      |relay=
       |if [ "$8" != off ]; then
-      |  ( clipboard_broker "$3" "$1" "$8" "$9" "${10}" "${11}"
+      |  ( clipboard_relay "$3" "$1" "$8" "$9" "${10}" "${11}"
       |    while kill -0 "$$" 2>/dev/null; do sleep 1; done ) &
-      |  broker=$!
+      |  relay=$!
       |fi
       |
       |"$3" wait "$1"
@@ -215,9 +215,9 @@ object SandboxLifecycle:
       |# selection owner takes, and a child left behind is the channel outliving the session.
       |# What survives by design is xclip -i's own fork, the X selection owner: the clipboard
       |# content, not the channel.
-      |if [ -n "$broker" ]; then
-      |  stop_tree "$broker"
-      |  end_tree "$broker"
+      |if [ -n "$relay" ]; then
+      |  stop_tree "$relay"
+      |  end_tree "$relay"
       |fi
       |
       |# Unconditional: the proxy is this run's own. --time 2, because it
@@ -263,7 +263,7 @@ object SandboxLifecycle:
     teardownMode: String,
     teardownScript: String,
     clipboardMode: String,
-    clipboard: ClipboardBroker.HostBackend,
+    clipboard: ClipboardRelay.HostBackend,
   ): Vector[String] =
     Vector(
       "/bin/sh", "-c", ReaperScript,
@@ -288,7 +288,7 @@ object SandboxLifecycle:
     teardownMode: String,
     teardownScript: String,
     clipboardMode: String,
-    clipboard: ClipboardBroker.HostBackend,
+    clipboard: ClipboardRelay.HostBackend,
   ): Boolean =
     try
       val builder = ProcessBuilder(

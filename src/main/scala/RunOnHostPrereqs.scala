@@ -447,7 +447,7 @@ object RunOnHostPrereqs:
    * `_JAVA_OPTIONS`, so the environment's `preferIPv4Stack` never reaches it, its connect
    * is the dual-stack one the "localhost" class denies (run-on-host.md "Network"), and
    * `-Djava.net.preferIPv4Stack=true` on its command line changes nothing (measured,
-   * src/probe/run-on-host-broker-session.sh M2). A `<v>-native` pin asks for that one
+   * src/probe/run-on-host-runner-session.sh M2). A `<v>-native` pin asks for that one
    * launcher by name and is refused.
    */
   def millLauncherVersion(pinned: String): Either[Refusal, String] =
@@ -595,7 +595,7 @@ object RunOnHostPrereqs:
    * three each from the source `MillProcessLauncher.loadMillConfig` selects, `.<key>`, else
    * `.config/<key>`, else the header of the first root build file, `build.mill.yaml` (the whole
    * file) then `build.mill` (its `//|` lines). Its other inputs, `JAVA_OPTS` and
-   * `JDK_JAVA_OPTIONS`, require explicit forwarding and stay fixed for the launch. The broker compares this before
+   * `JDK_JAVA_OPTIONS`, require explicit forwarding and stay fixed for the launch. The runner compares this before
    * each command and replaces the daemon when it differs, so that the client never meets the
    * mismatch itself: Mill's launcher would end the daemon and start a replacement from the
    * client's own profile, which cannot bind, and the command would fail.

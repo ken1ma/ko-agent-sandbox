@@ -90,7 +90,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
     val command = reaperCommand(
       "/usr/bin/podman", "run-container", "proxy-container", "net-sandbox", "net-egress",
       "machine", "reap-script", "paste",
-      ClipboardBroker.HostBackend(xclip = "/usr/bin/xclip", wlPaste = "/usr/bin/wl-paste"),
+      ClipboardRelay.HostBackend(xclip = "/usr/bin/xclip", wlPaste = "/usr/bin/wl-paste"),
     )
     assertEquals(command.take(3), Vector("/bin/sh", "-c", ReaperScript))
     assertEquals(command(3), "ko-agent-sandbox-reaper")
@@ -122,12 +122,12 @@ class SandboxLifecycleTest extends munit.FunSuite:
     // The script text is checked here; what it does — no job under off, a pid held, a signal
     // delivered, a tree ended — is the lifecycle tests below.
     val wait = ReaperScript.indexOf("\"$3\" wait \"$1\"")
-    val broker = ReaperScript.indexOf(
-      "if [ \"$8\" != off ]; then\n  ( clipboard_broker \"$3\" \"$1\" \"$8\" \"$9\" \"${10}\" \"${11}\"\n" +
-        "    while kill -0 \"$$\" 2>/dev/null; do sleep 1; done ) &\n  broker=$!\nfi",
+    val relay = ReaperScript.indexOf(
+      "if [ \"$8\" != off ]; then\n  ( clipboard_relay \"$3\" \"$1\" \"$8\" \"$9\" \"${10}\" \"${11}\"\n" +
+        "    while kill -0 \"$$\" 2>/dev/null; do sleep 1; done ) &\n  relay=$!\nfi",
     )
-    assert(broker >= 0 && broker < wait, "the broker must be backgrounded before the wait")
-    assert(ReaperScript.indexOf("end_tree \"$broker\"") > wait, "the tree must be ended after the wait")
+    assert(relay >= 0 && relay < wait, "the relay must be backgrounded before the wait")
+    assert(ReaperScript.indexOf("end_tree \"$relay\"") > wait, "the tree must be ended after the wait")
     assert(!ReaperScript.contains("kill $!"), "an unconditional kill of the last background pid")
     // The job must keep the reaper's ignores: a reset would let a group TERM free its pid.
     assert(!ReaperScript.contains("trap -"), "a trap reset inside the reaper")
@@ -135,12 +135,12 @@ class SandboxLifecycleTest extends munit.FunSuite:
   /** What one reaper run against the fake podman left to observe. */
   private case class ReaperRun(
     /** `container inspect` calls the run made before the reaper exited: one is the reaper's own
-      * running check, the rest are the broker's turns. */
+      * running check, the rest are the relay's turns. */
     inspects: Int,
-    /** More inspect calls in the two seconds after the reaper exited: the broker outliving it. */
+    /** More inspect calls in the two seconds after the reaper exited: the relay outliving it. */
     inspectsAfter: Int,
     /** The reaper's live (non-zombie) children at `podman wait`, the waiting podman itself
-      * excluded: the broker job, when one is held. Handles captured while they were the fixture's
+      * excluded: the relay job, when one is held. Handles captured while they were the fixture's
       * own — a handle knows its process's start time, so one whose pid was since reused answers
       * dead and cannot be signalled into another process. */
     childrenAtWait: Vector[ProcessHandle],
@@ -169,7 +169,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
   /**
    * The reaper run for real under /bin/sh against a fake podman, the clipboard mode as given. The
    * sandbox "runs" for the first `runningAnswers` inspect calls and is stopped after; `wait`
-   * returns after a second; `exec` either returns at once (the broker then loops, one inspect per
+   * returns after a second; `exec` either returns at once (the relay then loops, one inspect per
    * turn) or blocks for good (a hung child under the job). With `groupTerm`, `wait` first sends
    * TERM to the reaper's whole process group — an explicit group signal, the form a terminal's
    * INT or HUP take — from a fake that ignores it itself; the reaper then runs under `setsid`, so
@@ -209,7 +209,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
          |""".stripMargin,
     )
     podman.toFile.setExecutable(true)
-    val backend = if mode == "off" then ClipboardBroker.HostBackend() else ClipboardBroker.HostBackend(ps = ps)
+    val backend = if mode == "off" then ClipboardRelay.HostBackend() else ClipboardRelay.HostBackend(ps = ps)
     val command = reaperCommand(podman.toString, "sandbox", "proxy", "net-a", "net-b", "none", "", mode, backend)
     // `-w`: setsid forks when its caller leads a group, and the parent's exit would leave nothing
     // to capture descendants from.
@@ -245,36 +245,36 @@ class SandboxLifecycleTest extends munit.FunSuite:
       process.destroyForcibly()
       owned.values.foreach(_.destroyForcibly())
 
-  test("under off the reaper starts no broker job"):
+  test("under off the reaper starts no relay job"):
     // Measured, not read off the script text (ReaperScript has the `if`-not-`||` pitfall).
     assume(java.nio.file.Files.isExecutable(java.nio.file.Paths.get("/bin/sh")), "needs /bin/sh")
     val run = reaperRun("off", runningAnswers = 99, hangExec = false)
     assertEquals(run.inspects, 1, "a caller besides the reaper's own check called inspect")
     assertEquals(run.childrenAtWait, Vector.empty, "a job was running at the wait")
 
-  test("the broker and everything under it end with the sandbox, through the reaper's ignored TERM"):
+  test("the relay and everything under it end with the sandbox, through the reaper's ignored TERM"):
     // Here an exec that never returns stands in for xclip waiting on a selection owner.
     assume(java.nio.file.Files.isExecutable(java.nio.file.Paths.get("/bin/sh")), "needs /bin/sh")
     val run = reaperRun("paste", runningAnswers = 99, hangExec = true)
-    assert(run.inspects > 1, "the broker never ran")
-    assertEquals(run.inspectsAfter, 0, "the broker outlived the reaper")
-    assert(!run.hungChildAlive, "a child blocked under the broker outlived the reaper")
+    assert(run.inspects > 1, "the relay never ran")
+    assertEquals(run.inspectsAfter, 0, "the relay outlived the reaper")
+    assert(!run.hungChildAlive, "a child blocked under the relay outlived the reaper")
     run.childrenAtWait.foreach(child => assert(!child.isAlive, s"${child.pid} outlived the reaper"))
 
-  test("a broker that exits early keeps its pid until the reaper ends it, and no other is touched"):
+  test("a relay that exits early keeps its pid until the reaper ends it, and no other is touched"):
     // The unrelated sleeper is the process a stray kill would have hit.
     assume(java.nio.file.Files.isExecutable(java.nio.file.Paths.get("/bin/sh")), "needs /bin/sh")
     val bystander = ProcessBuilder("sleep", "300").start()
     try
       val run = reaperRun("paste", runningAnswers = 1, hangExec = false)
-      assertEquals(run.inspects, 2, "the broker did not take exactly one turn")
+      assertEquals(run.inspects, 2, "the relay did not take exactly one turn")
       assert(run.childrenAtWait.nonEmpty, "the job did not hold its pid until the wait returned")
       run.childrenAtWait.foreach(child => assert(!child.isAlive, s"${child.pid} outlived the reaper"))
       assert(bystander.isAlive, "an unrelated process was killed")
     finally bystander.destroyForcibly()
 
   test("a TERM to the reaper's process group mid-session leaves the job's pid held until cleanup"):
-    // Both job states are covered: blocked in a hung child, and already past clipboard_broker.
+    // Both job states are covered: blocked in a hung child, and already past clipboard_relay.
     assume(java.nio.file.Files.isExecutable(java.nio.file.Paths.get("/bin/sh")), "needs /bin/sh")
     val setsid = sys.env.getOrElse("PATH", "").split(":")
       .exists(dir => java.nio.file.Files.isExecutable(java.nio.file.Paths.get(dir, "setsid")))
@@ -282,13 +282,13 @@ class SandboxLifecycleTest extends munit.FunSuite:
     for (answers, hang) <- Vector((99, true), (1, false)) do
       val run = reaperRun("paste", runningAnswers = answers, hangExec = hang, groupTerm = true)
       assert(run.childrenAtWait.nonEmpty, s"($answers, $hang): the group TERM ended the job before the wait returned")
-      assertEquals(run.inspectsAfter, 0, s"($answers, $hang): the broker outlived the reaper")
+      assertEquals(run.inspectsAfter, 0, s"($answers, $hang): the relay outlived the reaper")
       assert(!run.hungChildAlive, s"($answers, $hang): a child under the job outlived the reaper")
       run.childrenAtWait.foreach: child =>
         assert(!child.isAlive, s"($answers, $hang): ${child.pid} outlived the reaper")
-    assert(ReaperScript.contains(ClipboardBroker.sandboxRequestReader()))
-    assert(ReaperScript.contains(ClipboardBroker.sandboxResponseWriter()))
-    assert(ClipboardBroker.sandboxResponseWriter().startsWith("timeout "))
+    assert(ReaperScript.contains(ClipboardRelay.sandboxRequestReader()))
+    assert(ReaperScript.contains(ClipboardRelay.sandboxResponseWriter()))
+    assert(ClipboardRelay.sandboxResponseWriter().startsWith("timeout "))
     // Comments may name podman; no executable line may invoke it bare.
     assert(
       ReaperScript.linesIterator.forall: line =>

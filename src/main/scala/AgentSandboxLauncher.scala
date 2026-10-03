@@ -234,7 +234,7 @@ object AgentSandboxLauncher:
   val SessionStartVariable = "KO_AGENT_SANDBOX_SESSION_START"
 
   /**
-   * Whether the host clipboard is offered to the sandbox (ClipboardBroker). Off by default, and
+   * Whether the host clipboard is offered to the sandbox (ClipboardRelay). Off by default, and
    * `paste` before `bidirectional`, because each step hands the agent more of the host: reading
    * what the user last copied, then writing what the user will next paste.
    */
@@ -2209,7 +2209,7 @@ object AgentSandboxLauncher:
 
   /** One widening report per program whose rule file names hosts, each a grant beyond the
     * program's Maven Central host (RunOnHostPrereqs.egressRuleText). The launch reads the files for
-    * this report alone: the broker reads them again at a program's first command, where a refusal
+    * this report alone: the runner reads them again at a program's first command, where a refusal
     * reaches the agent and not the user. */
   def runOnHostWideningLines(
     programHosts: Seq[(String, Vector[String])],
@@ -2358,8 +2358,8 @@ object AgentSandboxLauncher:
     // options, and nothing outside this codebase spells them. Each re-invokes the launcher's own
     // executable — jar or native image (RunOnHostSandbox.selfInvocation). --serve-proxy-on-host
     // hosts a command's egress proxy, configured by the EGRESS_* environment as in the container;
-    // --serve-run-on-host is the session's command broker (RunOnHostChannel), and
-    // --run-command-on-host one channel request as the broker's own child.
+    // --serve-run-on-host is the session's command runner (RunOnHostChannel), and
+    // --run-command-on-host one channel request as the runner's own child.
     args.headOption match
       case Some("--serve-proxy-on-host") if args.length == 1 =>
         agentsandbox.egress.AgentEgressProxy.serve()
@@ -2662,7 +2662,7 @@ object AgentSandboxLauncher:
     val sessionStartMode = sessionStart(env(SessionStartVariable)).fold(fail(_), identity)
     val clipboard = clipboardMode(env(ClipboardVariable)).fold(fail(_), identity)
     val clipboardHost =
-      ClipboardBroker.hostBackend(clipboard, os, env("PATH").getOrElse("")).fold(fail(_), identity)
+      ClipboardRelay.hostBackend(clipboard, os, env("PATH").getOrElse("")).fold(fail(_), identity)
     // Raw, not HostCommands.env: that one reads an empty variable as unset, which is right for the
     // launcher's own settings and wrong here, where set-but-empty is a value to forward.
     val forwardedEnv = forwardedEnvironment(parsed.env, name => Option(System.getenv(name))).fold(fail(_), identity)
@@ -3133,7 +3133,7 @@ object AgentSandboxLauncher:
       // listing prunes nothing — unknown liveness must not read as "no live runs" and delete a
       // running session's files out from under it. Two liveness notions: a proxy audit log is kept while
       // its proxy container exists, since only the proxy writes it; a channel log and a run directory are kept
-      // while either container exists, since the broker and the mount copies serve the sandbox container too,
+      // while either container exists, since the runner and the mount copies serve the sandbox container too,
       // and a run whose proxy crashed while its sandbox lives on must keep them.
       val proxyPrefix = proxyRunContainer(projectId, "")
       val sandboxPrefix = sandboxRunContainer(projectId, "")
@@ -3159,8 +3159,8 @@ object AgentSandboxLauncher:
         logsToPrune(retainedLogs(logDir).map(_.getFileName.toString), RetainedProxyLogs, live)
           .foreach(name => Files.deleteIfExists(logDir.resolve(name)))
 
-      // The channel broker's log family, same retention — pruned by whole-run liveness, because the
-      // broker lives with the sandbox container rather than the proxy.
+      // The channel runner's log family, same retention — pruned by whole-run liveness, because the
+      // runner lives with the sandbox container rather than the proxy.
       liveRuns.foreach: live =>
         logsToPrune(retainedLogs(logDir, "run-on-host-").map(_.getFileName.toString), RetainedProxyLogs, live)
           .foreach(name => Files.deleteIfExists(logDir.resolve(name)))
@@ -3608,12 +3608,12 @@ object AgentSandboxLauncher:
         )
     if os != Os.Windows && !reaperArmed then
       // Except when the clipboard was asked for: the sandbox would wait the shim's bound
-      // on every paste for a broker that never comes. The cleanup hook removes what was created,
+      // on every paste for a relay that never comes. The cleanup hook removes what was created,
       // the never-started sandbox included (removeRunResources).
       if clipboard != "off" then
         fail(s"error: could not spawn the proxy reaper, which serves $ClipboardVariable=$clipboard")
       System.err.println("note: could not spawn the proxy reaper; staying resident to remove the proxy on exit")
-    clipboardHost.powershell.foreach(ClipboardBroker.startResident(_, podman, sandboxContainer, clipboard))
+    clipboardHost.powershell.foreach(ClipboardRelay.startResident(_, podman, sandboxContainer, clipboard))
 
     // Said here, not on the workspace line above: the user should not have to infer "joined" from
     // silence, and which branch the mount took is known only now.
@@ -3628,19 +3628,19 @@ object AgentSandboxLauncher:
     val resolvedFileRules = mountedFileRules.orElse(rejectFileRules)
     resolvedFileRules.map(FileRules.guardLines).getOrElse(Vector.empty).foreach(System.err.println)
 
-    // The command broker, detached like the reaper: it must outlive the exec below, and it ends
+    // The command runner, detached like the reaper: it must outlive the exec below, and it ends
     // itself when the sandbox stops. A session that asked for the channel and cannot have it is a
     // failed launch, as with the clipboard above.
     if runOnHost.nonEmpty then
-      // In this run's own directory, removed with it, where the broker and each command read it.
-      val brokerFileRules = runFiles.resolve("file-rules.resolved")
-      resolvedFileRules.foreach(resolved => writePrivate(brokerFileRules, resolved.text))
-      if !RunOnHostChannel.spawnBroker(
+      // In this run's own directory, removed with it, where the runner and each command read it.
+      val runnerFileRules = runFiles.resolve("file-rules.resolved")
+      resolvedFileRules.foreach(resolved => writePrivate(runnerFileRules, resolved.text))
+      if !RunOnHostChannel.spawnRunner(
           podman, sandboxContainer, projectDir, runOnHost, channelLogFile, mountPath,
           forwards = parsed.env,
-          fileRules = resolvedFileRules.map(_ => brokerFileRules),
+          fileRules = resolvedFileRules.map(_ => runnerFileRules),
         )
-      then fail("error: could not spawn the command broker, which serves --run-on-host")
+      then fail("error: could not spawn the command runner, which serves --run-on-host")
 
     // Separate the launch diagnostics from the agent's terminal UI.
     System.err.println()

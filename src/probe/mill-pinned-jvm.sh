@@ -19,7 +19,7 @@
 #
 # Every row is `mill --no-daemon --version`, which prints the `java.home` of the JVM Mill started
 # and evaluates no build. `--no-daemon` and a daemon start take the JVM from the same call
-# (`MillProcessLauncher.javaExe`), so the rows need no broker. No proxy runs: a row that fetches
+# (`MillProcessLauncher.javaExe`), so the rows need no runner. No proxy runs: a row that fetches
 # fails at its first fetch, and its log names the host.
 set -u
 if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi

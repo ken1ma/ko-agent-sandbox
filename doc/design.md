@@ -56,16 +56,17 @@ The words the documents share, each defined in the document its entry names and 
   sandbox container to stop and then removes the proxy container and the networks the run created; a
   launch that stays resident, on Windows or after a failed spawn, removes them itself
   (`SandboxLifecycle.scala`).
-- **broker** — a host process answering requests the sandbox makes through a FIFO under its `/tmp`,
-  never a listener, and not the capability broker this document declines:
-  - the clipboard broker (SECURITY.md, "Clipboard");
-  - the run-on-host broker, one per session, which relays each host command and owns the processes
-    it starts (`run-on-host.md`).
+- **relay, runner** — host processes answering requests the sandbox makes through a FIFO under its
+  `/tmp`, never a listener; "broker" is reserved for the credential sense ("No general capability
+  broker", `plan-credential-broker-proxy.md`):
+  - the relay copies between the host clipboard and the sandbox (SECURITY.md, "Clipboard");
+  - the runner, one per session, runs each host command and owns the processes it starts
+    (`run-on-host.md`).
 - **shim, supervisor, command** — under `--run-on-host`:
-  - the shim is `ko-sandbox-run-on-host` inside the sandbox, which sends one command to the broker;
-  - the supervisor is the launcher process the broker spawns for it on the host, which runs the
+  - the shim is `ko-sandbox-run-on-host` inside the sandbox, which sends one command to the runner;
+  - the supervisor is the launcher process the runner spawns for it on the host, which runs the
     program under its Seatbelt profile;
-  - a command session is the supervisor's own record of that one invocation, beside the broker's
+  - a command session is the supervisor's own record of that one invocation, beside the runner's
     session for the launch (`run-on-host.md`, "The command's lifetime and environment");
   - the leader is the process `RunOnHostSession.registeredSpawn` starts for a command, a proxy, an
     sbt server or a mill daemon's starter: its own group's leader, which registers the group and
@@ -398,8 +399,8 @@ proxy"), and each of these stays out of it for a reason of its own:
 
 ### No WebSocket in the inspected relay
 
-Considered: relaying a WebSocket on an inspected or mediated host after checking the upgrade
-request's headers, so that a mediated OpenAI host could carry the Codex CLI's first choice of
+Considered: relaying a WebSocket on an inspected or brokered host after checking the upgrade
+request's headers, so that a brokered OpenAI host could carry the Codex CLI's first choice of
 transport. Rejected:
 
 - A WebSocket matters only on an inspected host; on a tunnel it passes as bytes. Every model host
@@ -416,7 +417,7 @@ transport. Rejected:
   the one-request rule's protection against request smuggling (`SECURITY.md`, "Reading without
   being able to write").
 
-Revisit if one Codex turn through a mediated relay fails on the HTTP fallback, or the provider
+Revisit if one Codex turn through a brokered relay fails on the HTTP fallback, or the provider
 drops the HTTP path.
 
 ### No inspecting every allowed host
@@ -424,12 +425,12 @@ drops the HTTP path.
 The credential broker needs the proxy to terminate TLS at a host before it can substitute or
 refuse a credential there. That is no reason to terminate TLS everywhere and drop `tunnel`: the
 broker gets termination per launch, at its own targets (`plan-provider-credential-proxy.md`,
-"Mediated provider traffic"; `TODO.md`, "Credential brokering", for the refusal). Terminating TLS
+"Brokered provider traffic"; `TODO.md`, "Credential brokering", for the refusal). Terminating TLS
 everywhere would, from the most serious cost:
 
 - break the agents whose clients the inspected relay cannot carry: a certificate-pinned client
   cannot be terminated at all, and an HTTP/2-only or WebSocket client needs a relay the proxy
-  lacks. Which installed agents these are is not yet measured ("Mediated provider traffic" lists
+  lacks. Which installed agents these are is not yet measured ("Brokered provider traffic" lists
   the clients and the measurement);
 - take away the per-launch consent to the proxy seeing the conversation and provider tokens in
   plaintext, which the provider plan requires the launch banner to state (its use case 5 and
@@ -439,7 +440,7 @@ everywhere would, from the most serious cost:
   value to substitute (`plan-credential-broker-proxy.md`, "Deliberate exclusions"), while
   costing every request a handshake (SECURITY.md, "What is inside TLS").
 
-Revisit per agent, once one mediated turn through its model host is measured. Making that agent's
+Revisit per agent, once one brokered turn through its model host is measured. Making that agent's
 model hosts inspected by default is a separate decision: it changes the privacy boundary above.
 
 ### No HTTP query endpoint on the proxy

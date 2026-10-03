@@ -269,7 +269,7 @@ its private Git metadata cannot be applied.
 ## Deliberate exclusions
 
 There is no detached full-copy stage, named parallel stage, automatic apply, per-session live mount,
-bulk stage discard, host-wide command broker, executable-bit enforcement, or implicit fallback
+bulk stage discard, host-wide command runner, executable-bit enforcement, or implicit fallback
 between write modes. Project-controlled commands remain the user's workflow to manage rather than a
 claimed host-wide boundary.
 

@@ -43,7 +43,7 @@ object FileRules:
   object Resolved:
     val Empty: Resolved = Resolved(Vector.empty, Vector.empty, Vector.empty)
 
-  /** The resolved set the launcher wrote for the run-on-host broker and its commands. */
+  /** The resolved set the launcher wrote for the run-on-host runner and its commands. */
   def readResolved(file: Path): Either[String, Resolved] =
     try parseResolved(java.nio.file.Files.readString(file, UTF_8))
     catch case ex: java.io.IOException => Left(s"error: cannot read the file rules $file: ${ex.getMessage}")

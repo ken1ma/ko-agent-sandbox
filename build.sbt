@@ -99,7 +99,7 @@ Compile / unmanagedResourceDirectories +=
 // execvp is a restricted FFM method: without this, a warning per launch and refusal on a future JDK.
 // The exports open the JDK's internal certificate builder to X509Helper.scala, which has why; the
 // assembly manifest carries both for `java -jar`, the launcher's re-invocation of itself for the
-// broker, supervisor and proxy it starts as `java -cp` (RunOnHostSandbox.CertificateBuilderExports),
+// runner, supervisor and proxy it starts as `java -cp` (RunOnHostSandbox.CertificateBuilderExports),
 // the native-image command in doc/TODO.md for the binary, and .jvmopts for the tests, which run in
 // sbt's own JVM —
 // a forked test JVM would need sbt's TCP listener to reach it, which the host command sandbox does

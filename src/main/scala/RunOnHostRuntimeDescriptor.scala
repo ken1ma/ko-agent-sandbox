@@ -1,5 +1,5 @@
-// What a launch's broker publishes about each runtime it owns, for another launch on the same
-// project to attach its commands to (RunOnHostSandbox.BrokerRuntimes.attached): the file
+// What a launch's runner publishes about each runtime it owns, for another launch on the same
+// project to attach its commands to (RunOnHostSandbox.RunnerRuntimes.attached): the file
 // `runtime-<program>-<hash>` in the owner's session directory, which no confined process can
 // write, since the profiles grant `tmp/` and nothing else of the session. Published by rename once
 // the server or daemon is up, deleted before any record of the runtime is discarded, and so

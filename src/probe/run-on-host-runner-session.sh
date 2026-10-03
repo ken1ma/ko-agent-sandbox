@@ -1,6 +1,6 @@
 #!/bin/sh
-# What the broker's session rests on (doc/run-on-host.md, "Network", "sbt" and "mill"), measured
-# before the broker encodes any of it; a changed rule or command line calls for a rerun. Four
+# What the runner's session rests on (doc/run-on-host.md, "Network", "sbt" and "mill"), measured
+# before the runner encodes any of it; a changed rule or command line calls for a rerun. Four
 # groups of rows:
 #
 #   L1-L4  SBPL: a loopback listener on port 0 under (local ip "localhost:*"), its control, and an
@@ -140,7 +140,7 @@ bounded() { # seconds record dir command...
 
 # The run's logs, tables and records under the project, where the sandbox can read them; the
 # scratch tree itself stays short for sbt's socket paths, and its build trees are not copied.
-logs=$PWD/log/run-on-host-broker-session
+logs=$PWD/log/run-on-host-runner-session
 save_logs() {
     rm -rf "$logs" && mkdir -p "$logs" || return
     (cd "$work" && find . -type f \
@@ -151,7 +151,7 @@ save_logs() {
         -not -path './mill/tmp/*' | while read -r file; do
             mkdir -p "$logs/$(dirname "$file")" && cp "$file" "$logs/$file"
         done)
-    echo "logs: log/run-on-host-broker-session/"
+    echo "logs: log/run-on-host-runner-session/"
 }
 cleanup() {
     for leader in $(cut -d' ' -f1 "$leaders"); do end_group "$leader"; done
@@ -690,7 +690,7 @@ SCALA
     echo
     echo "S: sbt $version"
     # S1: the owner's command line — NetworkClient.serverCommand's, which the client passes
-    # -Dsbt.script to and not -batch — in a group of its own, stdio as the broker gives its server.
+    # -Dsbt.script to and not -batch — in a group of its own, stdio as the runner gives its server.
     probe_env=$d/env-srv
     group_start "$d/server" "$proj" "$sbt_script" "-Dsbt.script=$sbt_script" --detach-stdio --server \
         >"$d/server-out.log" 2>"$d/server-err.log"
@@ -749,11 +749,11 @@ SCALA
     forked() { pgrep -f -- "$proj/target" 2>/dev/null | head -1; }
     if until_true 300 has_line probe-main "$d/client-run.log" && [ -n "$(forked)" ]; then
         forked_pid=$(forked)
-        # The idle detector for a confined sbt server — a measurement no broker path reads, since
+        # The idle detector for a confined sbt server — a measurement no runner path reads, since
         # the user's server is shut down by protocol after its exec and another launch's is
         # attached to or taken over
         # (doc/run-on-host.md, "The channel and the command") — on the server JVM and never its
-        # group leader, and with no baseline, as a broker taking over has none: the clients of the
+        # group leader, and with no baseline, as a runner taking over has none: the clients of the
         # server's path-named sockets, as `peers` finds them. Measured first on the already-busy
         # server, then after the client is gone, then with an unrelated UNIX connection the server
         # itself opened beside a connected client; the tables follow each row.
@@ -1068,7 +1068,7 @@ $(failed "$mp/starter" "$mp/starter.log")"
         group_start "$mp/m5" "$mp" /usr/bin/sandbox-exec -f "$mp/client.sb" $mill_client app.run >"$mp/m5.log" 2>&1
         run_leader=$leader
         if until_true 180 has_line probe-main "$mp/m5.log"; then
-            # The idle observation the broker's foreign-daemon rule rests on (RunOnHostMillDaemons.endForeign):
+            # The idle observation the runner's foreign-daemon rule rests on (RunOnHostMillDaemons.endForeign):
             # a running
             # command is an established connection on the daemon's port, and none once it ends.
             busy=$(lsof -a -p "$daemon" -iTCP -sTCP:ESTABLISHED -nP 2>/dev/null | grep -c ":$port")
@@ -1140,7 +1140,7 @@ $(failed "$mp/starter" "$mp/starter.log")"
     end_group "$foreign_leader"
     end_daemons
 
-    # M8: the broker's early end of a starter (RunOnHostMillDaemons.endStarter): once the daemon in the
+    # M8: the runner's early end of a starter (RunOnHostMillDaemons.endStarter): once the daemon in the
     # starter's group listens on the port socketPort names, TERM to the launcher alone — the
     # daemon's parent, a member of the group other than the leader — and the daemon stays,
     # listening, and serves a client. The group's rows before and after are the topology: which

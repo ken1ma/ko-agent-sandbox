@@ -16,7 +16,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val systemPaths = RunOnHostSandbox.bundledSystemPaths()
     assert(systemPaths.executes.nonEmpty, "the bundled file grants no executable roots")
 
-  test("a command's file rules are the launch's set when the broker hands one on, else the project's lines"):
+  test("a command's file rules are the launch's set when the runner hands one on, else the project's lines"):
     val project = Files.createTempDirectory("file-rules-of")
     try
       val resolved = FileRules.Resolved(FileRules.Defaults, Vector(".husky/_"), Vector.empty)
@@ -60,7 +60,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(environment("PATH"), s"$jdk/bin:/usr/bin:/bin:/usr/sbin:/sbin")
     assertEquals(environment("TMPDIR"), "/private/tmp/ko-agent-501/s")
     assert(environment("_JAVA_OPTIONS").contains("-Djava.io.tmpdir=\"/private/tmp/ko-agent-501/s\""))
-    // The sockets are the runtime's: where the broker's server bound them.
+    // The sockets are the runtime's: where the runner's server bound them.
     assertEquals(environment("XDG_RUNTIME_DIR"), "/private/tmp/ko-agent-501/b/tmp")
     assertEquals(environment("SBT_GLOBAL_SERVER_DIR"), "/private/tmp/ko-agent-501/b/tmp")
     assertEquals(environment("USER"), "u")
@@ -290,7 +290,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     )
     assertEquals(forwardedNames(Seq.empty), Vector.empty)
 
-  test("the broker's runtime travels as three options, all or none, the daemon port with them"):
+  test("the runner's runtime travels as three options, all or none, the daemon port with them"):
     val runtime = Runtime(Path.of("/b"), 4242, Path.of("/b/proxy-sbt-0.log"))
     assertEquals(runtimeOf(runtimeOptions(runtime) :+ "--env=TOKEN"), Right(Some(runtime)))
     assertEquals(runtime.tmp, Path.of("/b/tmp"))
@@ -302,13 +302,13 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assert(runtimeOf(runtimeOptions(runtime) :+ "--daemon-port=x").isLeft)
     assert(runtimeOf(Seq("--daemon-port=51000")).isLeft)
 
-  test("a mill command's temporary directory is the broker's; sbt keeps its own with the broker's sockets"):
+  test("a mill command's temporary directory is the runner's; sbt keeps its own with the runner's sockets"):
     val own = Path.of("/r/s1/tmp")
-    val brokers = Path.of("/r/b1/tmp")
-    assertEquals(temporaryDirectories(Program.Sbt, own, brokers), (own, brokers))
-    assertEquals(temporaryDirectories(Program.Mill, own, brokers), (brokers, brokers))
-    assertEquals(temporaryDirectories(Program.Gradle, own, brokers), (brokers, brokers))
-    assertEquals(temporaryDirectories(Program.Mvn, own, brokers), (own, own))
+    val runners = Path.of("/r/b1/tmp")
+    assertEquals(temporaryDirectories(Program.Sbt, own, runners), (own, runners))
+    assertEquals(temporaryDirectories(Program.Mill, own, runners), (runners, runners))
+    assertEquals(temporaryDirectories(Program.Gradle, own, runners), (runners, runners))
+    assertEquals(temporaryDirectories(Program.Mvn, own, runners), (own, own))
 
   test("a redirected out/mill-daemon, or an entry of it with a second name, is refused; a plain one admitted"):
     val root = Files.createTempDirectory("rendezvous")
@@ -670,7 +670,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(command.last, "--serve-proxy-on-host")
     assert(command.contains("-cp"), command.toString)
     assert(command.contains("agentsandbox.launcher.AgentSandboxLauncher"), command.toString)
-    // JVM options, so before the main class: the broker and the supervisor issue certificates.
+    // JVM options, so before the main class: the runner and the supervisor issue certificates.
     assert(command.containsSlice(CertificateBuilderExports), command.toString)
     assert(command.indexOfSlice(CertificateBuilderExports) < command.indexOf("-cp"), command.toString)
     assertEquals(
@@ -725,10 +725,10 @@ class RunOnHostSandboxTest extends munit.FunSuite:
   test("a command is refused before its supervisor runs when the launcher's executable is gone, Maven's included"):
     val root = Files.createTempDirectory("brk")
     val project = Files.createDirectory(root.resolve("project"))
-    val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
     var proxies = 0
     val systemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
-    val runtimes = BrokerRuntimes(session, project, _ => (), systemPaths, Vector.empty, FileRules.Resolved.Empty)(
+    val runtimes = RunnerRuntimes(session, project, _ => (), systemPaths, Vector.empty, FileRules.Resolved.Empty)(
       RunOnHostSession.HostProcesses,
       (_, _, _) => fail("assembled without an executable"),
       (_, _, _, _) => { proxies += 1; Right(1) },
@@ -744,7 +744,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assume(!RunOnHostSessionTest.underRunOnHostProfile, "the leader never runs under the profile")
     val root = RunOnHostSessionTest.socketSessionRoot("brk")
     val project = Files.createDirectory(root.resolve("project"))
-    val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
     val endedGroups = scala.collection.mutable.ListBuffer[Long]()
     // The server stand-in's listening sockets, by the group they belong to: a server's socket
     // closes with its group.
@@ -827,7 +827,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         Right(RunOnHostMillDaemons.Daemon(sleeper, started, 40_000 + daemonStarts.size))
     var assemblies = 0
     val runtimes =
-      BrokerRuntimes(session, project, logged.append(_), systemPaths, Vector.empty, FileRules.Resolved.Empty)(
+      RunnerRuntimes(session, project, logged.append(_), systemPaths, Vector.empty, FileRules.Resolved.Empty)(
         processes, (_, _, _) => { assemblies += 1; Right(assembled) }, proxy, server, daemon,
       )
     val dirA = Files.createDirectory(project.resolve("a"))
@@ -1065,14 +1065,14 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       session.close()
       FileHelper.deleteRecursively(root)
 
-  test("another live broker's server is taken over by its record alone; a build file without one reserves nothing"):
+  test("another live runner's server is taken over by its record alone; a build file without one reserves nothing"):
     assume(!RunOnHostSessionTest.underRunOnHostProfile, "the leader never runs under the profile")
     val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
     val root = Files.createTempDirectory("owned").toRealPath()
     RunOnHostSession.ensureRoot(root, uid).getOrElse(fail("root"))
     val project = Files.createDirectory(root.resolve("project"))
-    val mine = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
-    val peer = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val mine = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
+    val peer = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
     val dir = Files.createDirectory(project.resolve("shared"))
     val hash = RunOnHostSession.buildHash(dir)
     // The peer owns dir: its build file names it, and it holds a live server for the hash.
@@ -1113,7 +1113,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       daemonStarts += start.buildDirectory
       recordOnly(start.record)
       Right(RunOnHostMillDaemons.Daemon(1, "S", 40_001))
-    val runtimes = BrokerRuntimes(mine, project, _ => (), emptySystemPaths, Vector.empty, FileRules.Resolved.Empty)(
+    val runtimes = RunnerRuntimes(mine, project, _ => (), emptySystemPaths, Vector.empty, FileRules.Resolved.Empty)(
       processes,
       (_, _, _) => Right(assembled),
       (_, _, record, _) =>
@@ -1154,8 +1154,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       peerServer.destroyForcibly().waitFor()
       mine.close(); peer.close()
 
-  test("the broker retires its own server under the retirement lock, below its monitor, and signals once"):
-    // The process table the broker and a taker share; an ended group leaves it. The end pauses
+  test("the runner retires its own server under the retirement lock, below its monitor, and signals once"):
+    // The process table the runner and a taker share; an ended group leaves it. The end pauses
     // between the leader's start-time check and the signal while `pause` is set.
     class Table:
       @volatile var alive = Map.empty[Long, String]
@@ -1188,7 +1188,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       catch case _: java.util.concurrent.TimeoutException => false
     val root = Files.createTempDirectory("brk")
     val project = Files.createDirectory(root.resolve("project"))
-    val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
     val assembled = Assembled(
       RunOnHostPrereqs.CommandPrereqs(project, Path.of("/jdk"), Path.of("/v1"), Program.Sbt, Path.of("/sbt")),
       None, Path.of("/g"), Path.of("/i"), Path.of("/gradle"), Path.of("/m"), None, None,
@@ -1210,7 +1210,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       register(start.record)
       Right(())
     val systemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
-    val runtimes = BrokerRuntimes(session, project, _ => (), systemPaths, Vector.empty, FileRules.Resolved.Empty)(
+    val runtimes = RunnerRuntimes(session, project, _ => (), systemPaths, Vector.empty, FileRules.Resolved.Empty)(
       Shared(pausing = true), (_, _, _) => Right(assembled), proxy, server, _ => fail("no daemon here"),
     )
     val dirA = Files.createDirectory(project.resolve("a"))
@@ -1225,7 +1225,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       // hash, paused between its start-time check and its signal: the replacement waits for it under the
       // monitor — a second command, for a directory with nothing to retire, waits behind it — and
       // signals nothing until it is free. Monitor first, retirement lock last.
-      val crashed = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+      val crashed = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
       crashed.close()
       val crashedRecord = crashed.records.resolve(recordA.getFileName)
       val crashedLeader = register(crashedRecord)
@@ -1244,7 +1244,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assert(replacing.get.isRight && other.get.isRight)
       assertEquals(table.ended.toList, List(crashedLeader, first))
       val second = leaderA
-      // The taker first, paused between its start-time check and its signal: the broker's replacement waits,
+      // The taker first, paused between its start-time check and its signal: the runner's replacement waits,
       // then finds the leader gone and the group empty — skipped, not signalled — and starts a
       // successor. One signal, one runtime.
       val (takerReached, takerProceed) = latches()
@@ -1260,20 +1260,20 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assertEquals(table.ended.toList, List(crashedLeader, first, second))
       val third = leaderA
       assert(table.alive.contains(third), "the successor lives behind its record")
-      // The broker first, paused: the taker waits, then reads what the broker left at the
+      // The runner first, paused: the taker waits, then reads what the runner left at the
       // instant it acquired — the dead record before the successor's is published, no record, or
       // the successor's, whose group it then ends as a taker would. Whichever it found, no group
-      // is signalled twice, and the broker's next command leaves one live server: replacing a
+      // is signalled twice, and the runner's next command leaves one live server: replacing a
       // dead group without a signal, as an owner does after a takeover, or a live one under its
       // own.
-      val (brokerReached, brokerProceed) = latches()
-      table.pause = Some((brokerReached, brokerProceed))
+      val (runnerReached, runnerProceed) = latches()
+      table.pause = Some((runnerReached, runnerProceed))
       val paused = started(runtimes.prepare(Program.Sbt, dirA, Seq("test")))
-      brokerReached.await()
+      runnerReached.await()
       table.pause = None
       val takingLater = started(RunOnHostSession.endRecordedGroup(root, recordA, Shared(pausing = false)))
-      assert(!doneWithin(takingLater, 300), "the taker waits on the broker's lock")
-      brokerProceed.countDown()
+      assert(!doneWithin(takingLater, 300), "the taker waits on the runner's lock")
+      runnerProceed.countDown()
       assert(paused.get.isRight)
       val fourth = leaderA
       takingLater.get match
@@ -1332,7 +1332,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       register(start.record)
       Right(())
     val systemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
-    val runtimes = BrokerRuntimes(session, project, _ => (), systemPaths, Vector.empty, FileRules.Resolved.Empty)(
+    val runtimes = RunnerRuntimes(session, project, _ => (), systemPaths, Vector.empty, FileRules.Resolved.Empty)(
       processes, (_, _, _) => Right(assembled), proxy, server, _ => fail("no daemon here"),
     )
     val recordName = s"server-sbt-${RunOnHostSession.buildHash(project)}"
@@ -1374,17 +1374,17 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(table.ended.toList, List(serverLeader, proxyLeader))
     assert(!Files.exists(condemned))
 
-  /** Two brokers of one project in one JVM, over a shared process table and no real leader: the
+  /** Two runners of one project in one JVM, over a shared process table and no real leader: the
     * proxy and the server or daemon are records with table pids, the server's socket a listener
     * under its session's `tmp/` named by the portfile. The sharer's server and daemon start functions must
     * never run. */
-  /** Three launches' brokers on one project over one process table: `owner` starts the runtime
+  /** Three launches' runners on one project over one process table: `owner` starts the runtime
     * for `dir`, `sharer` would start it alike, `taker` forwards a value the others do not. A
     * stand-in's record names a fresh live leader; ending a group takes its leader from the table
     * and closes the server socket it held, and `leaves` are the groups whose KILL leaves a
     * member listed, the socket with it. `onEnd` runs between a group's start-time check and its signal,
     * `onAssemble` at each assembly — where a test runs what another process does meanwhile. */
-  private class Brokers(program: Program):
+  private class Runners(program: Program):
     val root: Path =
       if program == Program.Sbt then RunOnHostSessionTest.socketSessionRoot("share")
       else Files.createTempDirectory("share")
@@ -1392,11 +1392,11 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val dir: Path = Files.createDirectory(project.resolve("app"))
     val hash: String = RunOnHostSession.buildHash(dir)
     val owner: RunOnHostSession.Session =
-      RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+      RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
     val sharer: RunOnHostSession.Session =
-      RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+      RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
     val taker: RunOnHostSession.Session =
-      RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+      RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
     @volatile var alive = Map.empty[Long, String]
     @volatile var leaves = Set.empty[Long]
     @volatile var members = Set.empty[Long]
@@ -1457,9 +1457,9 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     var daemonPid = 0L
     def port(session: RunOnHostSession.Session): Int =
       if session == owner then 7001 else if session == sharer then 7002 else 7003
-    def broker(session: RunOnHostSession.Session, jdk: String = "/jdk"): BrokerRuntimes =
+    def runner(session: RunOnHostSession.Session, jdk: String = "/jdk"): RunnerRuntimes =
       val forwards = if session == taker then Vector("TOKEN" -> "t") else Vector.empty
-      BrokerRuntimes(session, project, _ => (), systemPaths, forwards, FileRules.Resolved.Empty)(
+      RunnerRuntimes(session, project, _ => (), systemPaths, forwards, FileRules.Resolved.Empty)(
         processes,
         (_, _, _) =>
           onAssemble()
@@ -1517,12 +1517,12 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     catch case _: java.util.concurrent.TimeoutException => false
 
   test("a second launch attaches to another launch's sbt server it would start alike, and takes over one it would not"):
-    val two = Brokers(Program.Sbt)
+    val two = Runners(Program.Sbt)
     import two.*
     val proxyName = s"proxy-sbt-$hash"
     val serverName = s"server-sbt-$hash"
     try
-      val owning = broker(owner)
+      val owning = runner(owner)
       assertEquals(owning.prepare(Program.Sbt, dir, Seq("-Dmode=A", "compile")), runtime(owner))
       val published = RunOnHostRuntimeDescriptor.read(descriptor(owner)).getOrElse(fail("no descriptor"))
       assertEquals(published.proxy, record(owner, proxyName), "bound to the proxy's record")
@@ -1531,7 +1531,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       // The sharer attaches: the owner's session, port and log, nothing of its own recorded. Its
       // request's own launcher flags are not compared: the server keeps the flags it was started
       // with, as it does for the owner's later commands (RunOnHostRuntimeDescriptor.fingerprint).
-      val sharing = broker(sharer)
+      val sharing = runner(sharer)
       assertEquals(sharing.prepare(Program.Sbt, dir, Seq("-Dmode=B", "test")), runtime(owner))
       assertEquals(sharing.prepare(Program.Sbt, dir, Seq("test")), runtime(owner), "asked again, attached again")
       assertEquals(serverArguments.toList, List(Seq("-Dmode=A", "compile")), "the server's flags are the owner's")
@@ -1560,7 +1560,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assertEquals(started.size, 3)
       // A forwarded value: the taker and the owner differ for good, and alternate: each command
       // ends the other launch's server and starts its own under its own proxy.
-      val taking = broker(taker)
+      val taking = runner(taker)
       val secondServer = serverLeader(owner)
       assertEquals(taking.prepare(Program.Sbt, dir, Seq("-Dmode=C", "compile")), runtime(taker))
       assertEquals(ended.toList, List(firstServer, sharerServer, secondServer))
@@ -1575,7 +1575,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       // and once the taker's own replacement finds the leader gone with a member listed, its
       // record is kept and the start refused, until the member is gone too.
       leaves += thirdServer
-      refusal(owning.prepare(Program.Sbt, dir, Seq("test")), "another launch's broker", "not ended", "after the KILL")
+      refusal(owning.prepare(Program.Sbt, dir, Seq("test")), "another launch's runner", "not ended", "after the KILL")
       assertEquals(ended.size, 6)
       assert(Files.exists(taker.records.resolve(serverName)), "the taker's record survives the failed takeover")
       assert(!Files.exists(owner.records.resolve(serverName)), "the owner's dead record was discarded first")
@@ -1614,10 +1614,10 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     finally close()
 
   test("the owner's teardown against a taker: the taker waits on the lock, and the group is signalled once"):
-    val two = Brokers(Program.Sbt)
+    val two = Runners(Program.Sbt)
     import two.*
     try
-      assertEquals(broker(owner).prepare(Program.Sbt, dir, Seq("compile")), runtime(owner))
+      assertEquals(runner(owner).prepare(Program.Sbt, dir, Seq("compile")), runtime(owner))
       val ownerServer = serverLeader(owner)
       val reached = java.util.concurrent.CountDownLatch(1)
       val proceed = java.util.concurrent.CountDownLatch(1)
@@ -1631,7 +1631,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       reached.await()
       // The teardown has checked the leader's start time and holds the lock: the taker, finding the
       // owner in condemned/, waits rather than check and signal the same group.
-      val taking = inThread(broker(taker).prepare(Program.Sbt, dir, Seq("compile")))
+      val taking = inThread(runner(taker).prepare(Program.Sbt, dir, Seq("compile")))
       assert(!doneWithin(taking, 300), "the taker waits on the lock")
       proceed.countDown()
       assert(teardown.get.contains(RunOnHostSession.Collected.GroupEnded(ownerServer)))
@@ -1645,11 +1645,11 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       FileHelper.deleteRecursively(root)
 
   test("a takeover ends the recorded group, never what the portfile or a planted link leads to"):
-    val two = Brokers(Program.Sbt)
+    val two = Runners(Program.Sbt)
     import two.*
     val other = Files.createDirectory(project.resolve("lib"))
     try
-      val owning = broker(owner)
+      val owning = runner(owner)
       assertEquals(owning.prepare(Program.Sbt, dir, Seq("compile")), runtime(owner))
       assert(owning.prepare(Program.Sbt, other, Seq("compile")).isRight)
       val otherServer = RunOnHostSession.parseRecord(
@@ -1659,7 +1659,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       // `dir`'s portfile naming the other directory's live socket: the takeover ends the group
       // `dir`'s record names, and the start that follows refuses the live foreign socket the
       // portfile leads to (noForeignServer), the other server never signalled.
-      val taking = broker(taker)
+      val taking = runner(taker)
       writePortfile(dir, otherSocket)
       val first = serverLeader(owner)
       val foreignSocket = "a live sbt server holds this build directory's portfile"
@@ -1688,14 +1688,14 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     finally close()
 
   test("a second launch attaches to another launch's mill daemon under the directory's configuration, else takes over"):
-    val two = Brokers(Program.Mill)
+    val two = Runners(Program.Mill)
     import two.*
     try
-      val owning = broker(owner)
+      val owning = runner(owner)
       assertEquals(owning.prepare(Program.Mill, dir, Seq("compile")), runtime(owner, Some(40_001)))
       val published = RunOnHostRuntimeDescriptor.read(descriptor(owner)).getOrElse(fail("no descriptor"))
       assertEquals(published.daemon, Some(RunOnHostMillDaemons.Daemon(daemonPid, s"START-$daemonPid", 40_001)))
-      val sharing = broker(sharer)
+      val sharing = runner(sharer)
       assertEquals(sharing.prepare(Program.Mill, dir, Seq("test")), runtime(owner, Some(40_001)))
       assertEquals(recordNames(sharer), Nil)
       // A configuration edit: the daemon is not the directory's, so the sharer ends its
@@ -1718,10 +1718,10 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assertEquals(started.size, 3)
     finally close()
 
-  test("after a gradle command the broker records the launch's daemons; after any other program nothing"):
+  test("after a gradle command the runner records the launch's daemons; after any other program nothing"):
     val root = Files.createTempDirectory("brk")
     val project = Files.createDirectory(root.resolve("project"))
-    val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val session = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
     val processes = new RunOnHostSession.Processes:
       def startOf(pid: Long): Option[String] = Option.when(pid == 4242)("S")
       def endGroup(pgid: Long): Boolean = true
@@ -1729,7 +1729,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
     val observed = scala.collection.mutable.ListBuffer[Path]()
     val logged = scala.collection.mutable.ListBuffer[String]()
-    val runtimes = BrokerRuntimes(
+    val runtimes = RunnerRuntimes(
       session, project, logged.append(_), SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty), Vector.empty,
       FileRules.Resolved.Empty,
     )(
@@ -1788,7 +1788,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     )
     assertEquals(deniedHosts(log), Vector("example.com"))
     assertEquals(deniedHosts(log.resolveSibling("absent")), Vector.empty)
-    // From an offset: what a command added to the broker's log, an earlier command's lines excluded.
+    // From an offset: what a command added to the runner's log, an earlier command's lines excluded.
     val before = Files.size(log)
     assertEquals(deniedHosts(log, before), Vector.empty)
     Files.writeString(log, "2026-08-31T01:08:28Z deny other.example CONNECT host not allowed\n", UTF_8,
@@ -2133,20 +2133,20 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assert(again.contains("==> proxy.log\nshort\n"), again)
     assert(!again.contains("[last"), again)
     assert(!again.contains("sbt-server-err"), again)
-    // The broker's session: one proxy log per runtime, and nothing else of the directory.
-    val broker = Files.createDirectory(root.resolve("b1"))
-    Files.createDirectory(broker.resolve(RunOnHostSession.TmpDir))
-    Files.writeString(broker.resolve("proxy-sbt-0a.log"), "sbt audit\n", UTF_8)
-    Files.writeString(broker.resolve("proxy-mill-0b.log"), "mill audit\n", UTF_8)
-    Files.writeString(broker.resolve("server-sbt-0a.log"), "server said\n", UTF_8)
-    Files.writeString(broker.resolve("project"), "/p\n", UTF_8)
+    // The runner's session: one proxy log per runtime, and nothing else of the directory.
+    val runner = Files.createDirectory(root.resolve("b1"))
+    Files.createDirectory(runner.resolve(RunOnHostSession.TmpDir))
+    Files.writeString(runner.resolve("proxy-sbt-0a.log"), "sbt audit\n", UTF_8)
+    Files.writeString(runner.resolve("proxy-mill-0b.log"), "mill audit\n", UTF_8)
+    Files.writeString(runner.resolve("server-sbt-0a.log"), "server said\n", UTF_8)
+    Files.writeString(runner.resolve("project"), "/p\n", UTF_8)
     Files.writeString(channelLog, "", UTF_8)
-    appendSessionLogs(channelLog, broker, "the broker's session b1 ended")
-    val brokers = Files.readString(channelLog, UTF_8)
-    assert(brokers.contains("the broker's session b1 ended; its logs follow"), brokers)
-    assert(brokers.contains("==> proxy-mill-0b.log\nmill audit\n==> proxy-sbt-0a.log\nsbt audit\n"), brokers)
-    assert(brokers.contains("==> server-sbt-0a.log\nserver said\n"), brokers)
-    assert(!brokers.contains("==> project"), brokers)
+    appendSessionLogs(channelLog, runner, "the runner's session b1 ended")
+    val runners = Files.readString(channelLog, UTF_8)
+    assert(runners.contains("the runner's session b1 ended; its logs follow"), runners)
+    assert(runners.contains("==> proxy-mill-0b.log\nmill audit\n==> proxy-sbt-0a.log\nsbt audit\n"), runners)
+    assert(runners.contains("==> server-sbt-0a.log\nserver said\n"), runners)
+    assert(!runners.contains("==> project"), runners)
 object ForkJvmSettings:
   def main(args: Array[String]): Unit =
     val command = ProcessBuilder(

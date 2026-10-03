@@ -233,9 +233,9 @@ class SeatbeltProfileTest extends munit.FunSuite:
       ),
     )
 
-  test("an sbt client reaches the sockets under the broker's tmp, and nothing else there"):
-    val brokerTmp = Paths.get("/private/tmp/ko-agent-command/bxyz/tmp")
-    val text = rendered(inputs().copy(network = Network.SbtClient(brokerTmp)))
+  test("an sbt client reaches the sockets under the runner's tmp, and nothing else there"):
+    val runnerTmp = Paths.get("/private/tmp/ko-agent-command/bxyz/tmp")
+    val text = rendered(inputs().copy(network = Network.SbtClient(runnerTmp)))
     val network = text.linesIterator.filter(_.startsWith("(allow network")).toSeq
     assertEquals(
       network,
@@ -247,7 +247,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
         """(allow network-outbound (remote unix-socket (subpath "/private/tmp/ko-agent-command/bxyz/tmp")))""",
       ),
     )
-    // The socket's directory resolves; the broker's directory is an ancestor like any other.
+    // The socket's directory resolves; the runner's directory is an ancestor like any other.
     assert(text.contains(
       """(allow file-read-metadata file-test-existence (subpath "/private/tmp/ko-agent-command/bxyz/tmp"))""",
     ))
@@ -257,7 +257,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(!text.contains("""(allow file-read* (subpath "/private/tmp/ko-agent-command/bxyz/tmp"))"""))
     // Only an sbt client has a server to reach.
     assert(render(inputs().copy(prereqs = millPrereqs, distribution = None, sbtGlobal = None, ivyHome = None,
-      network = Network.SbtClient(brokerTmp))).isLeft)
+      network = Network.SbtClient(runnerTmp))).isLeft)
 
   test("the mill daemon binds listeners on any port, and its client reaches the one port it was observed listening on"):
     val daemonRules = render(millInputs.copy(network = Network.MillDaemon)).fold(fail(_), identity)
