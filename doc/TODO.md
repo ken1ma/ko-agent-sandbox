@@ -73,7 +73,7 @@ again.
     has what is measured), and a second turn in the same session, to learn whether the refused
     upgrades recur per turn. If they do, measure whether a custom `[model_providers.NAME]` with
     `supports_websockets = false` accepts the ChatGPT login; the built-in provider cannot be
-    overridden (`doc/design.md`, "No WebSocket in the inspected relay").
+    overridden (`doc/design.md`, "No WebSocket on an inspected connection").
 
 ## IDE integration through VS Code's Agent Host
 
@@ -183,9 +183,9 @@ SECURITY.md, "The supply chain", has npm's seven-day window and why uv gets none
     host (`TLSHelper`, the extension constant).
   - This adds a second ECH step to SECURITY.md's handshake list and its tests.
 
-## Deferred — inspected-relay keep-alive
+## Deferred — inspected-connection keep-alive
 
-- [ ] Client-side keep-alive in the inspected relay, only if the per-request TLS handshake ever
+- [ ] Client-side keep-alive on inspected connections, only if the per-request TLS handshake ever
   measurably hurts (104 handshakes added seconds to the recorded 104-archive install).
   - Both legs' framing is parsed and enforced, so the design is a request loop per client
     connection with a fresh origin connection per request.

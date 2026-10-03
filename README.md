@@ -47,7 +47,7 @@ The sandbox runs rootless, and its agents run as the `nonroot` user.
     │  they are all removed                     └───────────────────────────┘      │
     │                                                                              │
     │  ┌─ macOS: --run-on-host sandbox for resource-intensive commands ───────┐    │
-    │  │  sbt/mill/gradle/mvn relayed under Seatbelt                          │    │
+    │  │  sbt/mill/gradle/mvn run under Seatbelt                              │    │
     │  └──────────────────────────────────────────────────────────────────────┘    │
     └──────────────────────────────────────────────────────────────────────────────┘
 

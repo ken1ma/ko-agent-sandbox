@@ -56,10 +56,11 @@ The words the documents share, each defined in the document its entry names and 
   sandbox container to stop and then removes the proxy container and the networks the run created; a
   launch that stays resident, on Windows or after a failed spawn, removes them itself
   (`SandboxLifecycle.scala`).
-- **relay, runner** — host processes answering requests the sandbox makes through a FIFO under its
-  `/tmp`, never a listener; "broker" is reserved for the credential sense ("No general capability
-  broker", `plan-credential-broker-proxy.md`):
-  - the relay copies between the host clipboard and the sandbox (SECURITY.md, "Clipboard");
+- **clipboard relay, runner** — host processes answering requests the sandbox makes through a
+  FIFO under its `/tmp`, never a listener; "broker" is reserved for the credential sense ("No
+  general capability broker", `plan-credential-broker-proxy.md`):
+  - the clipboard relay copies between the host clipboard and the sandbox (SECURITY.md,
+    "Clipboard");
   - the runner, one per session, dispatches each host command and owns the processes it starts
     (`run-on-host.md`).
 - **shim, supervisor, command** — under `--run-on-host`:
@@ -372,10 +373,10 @@ does not deny is rejected:
   CA key on the host, the proxy holds one leaf naming the inspected set and can issue nothing.
 - Selected on the launch command line, such a profile leaves no trace in the repository: a
   reviewer of `.ko-agent-sandbox/egress/rule` sees a narrower policy than the session runs.
-- Work whose hosts cannot be listed in advance has a form the rule file can list: a relay the
-  user runs, granted `read` by one line, fetching the URL its query names. The relay then holds
+- Work whose hosts cannot be listed in advance has a form the rule file can list: a fetcher the
+  user runs, granted `read` by one line, fetching the URL its query names. The fetcher then holds
   the policy the proxy cannot apply to the URL — the private-address refusal and any per-domain
-  denial — and the audit log records the relay's URL, its target in the query.
+  denial — and the audit log records the fetcher's URL, its target in the query.
 
 ### No upstream-proxy discovery, exclusions, chaining or negotiated authentication
 
@@ -397,7 +398,7 @@ proxy"), and each of these stays out of it for a reason of its own:
   argument, banner, log line or error, and the proxy is its one reader; a second source would need
   a second reader.
 
-### No WebSocket in the inspected relay
+### No WebSocket on an inspected connection
 
 Considered: relaying a WebSocket on an inspected or brokered host after checking the upgrade
 request's headers, so that a brokered OpenAI host could carry the Codex CLI's first choice of
@@ -428,7 +429,7 @@ broker gets termination per launch, at its own targets (`plan-provider-credentia
 "Brokered provider traffic"; `TODO.md`, "Credential brokering", for the refusal). Terminating TLS
 everywhere would, from the most serious cost:
 
-- break the agents whose clients the inspected relay cannot carry: a certificate-pinned client
+- break the agents whose clients an inspected connection cannot carry: a certificate-pinned client
   cannot be terminated at all, and an HTTP/2-only or WebSocket client needs a relay the proxy
   lacks. Which installed agents these are is not yet measured ("Brokered provider traffic" lists
   the clients and the measurement);
