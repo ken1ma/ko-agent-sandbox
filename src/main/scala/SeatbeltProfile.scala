@@ -103,16 +103,16 @@ object SeatbeltProfile:
 
   /** The network authority beyond the proxy and the session's own UNIX sockets, typed so that
     * the dispatch shows which program gets which: nothing more for an sbt server and Maven; for
-    * an sbt client, the sockets under the broker's `tmp/`, where its server listens; for the
+    * an sbt client, the sockets under the runner's `tmp/`, where its server listens; for the
     * mill daemon, listeners on any port, since it binds port 0 and no rule confines a bind to
     * one, and at any address of this host, since the "localhost" class admits a wildcard bind —
     * a grant everything the daemon forks inherits, so a build under mill can bind a listener a
     * LAN peer reaches, where one under sbt or Maven gets EPERM (SECURITY.md "Run on host");
-    * for a mill client, outbound to the daemon's one port (RunOnHostSandbox.BrokerRuntimes,
+    * for a mill client, outbound to the daemon's one port (RunOnHostSandbox.RunnerRuntimes,
     * RunOnHostMillDaemons); for Gradle, the mill daemon's grant plus outbound to any port of this host:
     * its daemon, workers and file-lock socket bind port 0 and connect to each other's, and the
     * client starts the daemon itself, so one profile serves both. Measured:
-    * src/probe/run-on-host-broker-session.sh L1–L4, G1, G7–G10. */
+    * src/probe/run-on-host-runner-session.sh L1–L4, G1, G7–G10. */
   enum Network:
     case ProxyOnly
     case SbtClient(serverTmp: Path)
@@ -257,11 +257,11 @@ object SeatbeltProfile:
         lines += ";; sbt's boot and server sockets, inside the command's temporary directory."
         lines += "(allow network-bind network-inbound network-outbound " +
           s"(local unix-socket ${subpath(inputs.sessionTmp)}) (remote unix-socket ${subpath(inputs.sessionTmp)}))"
-        // The client attaches to the server socket the broker's server bound under the broker's
+        // The client attaches to the server socket the runner's server bound under the runner's
         // tmp/, `<SBT_GLOBAL_SERVER_DIR>/<hash>/sock`; the connect resolves the socket's own
         // directory, hence the metadata grant, and nothing there is read.
         serverTmp.foreach: tmp =>
-          lines += ";; The broker's sbt server: its socket under the broker's temporary directory."
+          lines += ";; The runner's sbt server: its socket under the runner's temporary directory."
           lines += s"(allow file-read-metadata file-test-existence ${subpath(tmp)})"
           lines += s"(allow network-outbound (remote unix-socket ${subpath(tmp)}))"
         inputs.network match
@@ -272,13 +272,13 @@ object SeatbeltProfile:
             // kernel during the starter's own run, so no rule can name it — is
             // (remote ip "localhost:*"), which reaches every service of this host (Gradle's
             // grant; run-on-host.md "Network" records the cost). So the starter's own connect
-            // is denied, which is what leaves the daemon behind, and the broker ends the starter
+            // is denied, which is what leaves the daemon behind, and the runner ends the starter
             // once the daemon listens rather than widen the grant (RunOnHostMillDaemons.endStarter).
             lines += ";; The mill daemon: listeners, any port, any address of this host; inherited by what the build" +
               " forks."
             lines += """(allow network-bind network-inbound (local ip "localhost:*"))"""
           case Network.MillClient(port) =>
-            lines += ";; The broker's mill daemon, on the one port it was observed listening on."
+            lines += ";; The runner's mill daemon, on the one port it was observed listening on."
             lines += s"""(allow network-outbound (remote ip "localhost:$port"))"""
           case Network.Gradle =>
             // Gradle's daemon, workers and file-lock socket bind port 0 and connect to each

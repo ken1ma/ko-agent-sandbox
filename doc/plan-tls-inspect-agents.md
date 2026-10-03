@@ -11,7 +11,7 @@ Every model request is then logged with its method, path and size, so the log sh
 endpoint the session should not use and a request far larger than a conversation turn.
 
 This plan neither substitutes nor refuses a credential: that is `plan-credential-broker-proxy.md`
-and `plan-provider-credential-proxy.md`. An inspected model host is what their mediated overlay
+and `plan-provider-credential-proxy.md`. An inspected model host is what their brokered overlay
 terminates anyway, so this plan brings that termination forward and adds the log fields; the
 overlay's own steps are unchanged.
 
@@ -26,7 +26,7 @@ overlay's own steps are unchanged.
   token ("Claude Code and Codex logins: excluded"). The exposure that keeps the model hosts
   opaque is already accepted for the forge hosts.
 - What inspection cannot do: read the conversation for intent (`design.md`, "No DLP/entropy/LLM
-  firewall"), or refuse the foreign key, which needs the session's own key and so the mediated
+  firewall"), or refuse the foreign key, which needs the session's own key and so the brokered
   overlay (`TODO.md`, "Credential brokering", the `require-placeholder` item).
 - Copilot's and agy's control-plane writes travel through the same tunnels as their model
   traffic and are indistinguishable there (SECURITY.md, "Not defended"). Inspected, each is a
@@ -256,8 +256,8 @@ did not bother; they prove nothing.
   - "Reading without being able to write": the item "`Upgrade` is refused" gains the status, if
     Codex's measurement adopts `426`.
 - `design.md`, "No inspecting every allowed host": the second cost and the revisit condition
-  no longer tie inspection to mediation; they point here.
-- `plan-provider-credential-proxy.md`, "Mediated provider traffic": "The proxy never logs bodies
+  no longer tie inspection to brokering; they point here.
+- `plan-provider-credential-proxy.md`, "Brokered provider traffic": "The proxy never logs bodies
   or headers" becomes "never logs bodies, and of headers only the audit line's allowlist".
 - `TODO.md`, "Credential brokering": the "measure first" list moves here; the Codex item points
   here.

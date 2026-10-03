@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# A broker retains its build-directory claims after its sbt server ends. Check its open session
+# A runner retains its build-directory claims after its sbt server ends. Check its open session
 # lock before emit starts an unconfined sbt in the same checkout; killing only sbt does not free it.
 acceptance_require_idle() (
     acceptance_root=$1; shift
@@ -16,7 +16,7 @@ acceptance_require_idle() (
             for acceptance_project do
                 case "$acceptance_project/" in
                     "$acceptance_directory/"*)
-                        echo "a sandbox session has a run-on-host broker (pid $acceptance_pids)" \
+                        echo "a sandbox session has a run-on-host runner (pid $acceptance_pids)" \
                             "for $acceptance_directory" >&2
                         acceptance_container=$(cat "$acceptance_session/run" 2>/dev/null) || acceptance_container=""
                         case "$acceptance_container" in
@@ -45,7 +45,7 @@ acceptance_end_unclaimed_process() (
     [ -n "$acceptance_start" ] || return 1
     acceptance_cwd=$(lsof -a -p "$acceptance_pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
     if [ -z "$acceptance_cwd" ] || ! acceptance_require_idle "$acceptance_root" "$acceptance_cwd" >/dev/null 2>&1; then
-        echo "left process $acceptance_pid: its working directory is unknown or claimed by a live broker" >&2
+        echo "left process $acceptance_pid: its working directory is unknown or claimed by a live runner" >&2
         return 1
     fi
     [ "$(ps -o lstart= -p "$acceptance_pid" 2>/dev/null)" = "$acceptance_start" ] || return 1

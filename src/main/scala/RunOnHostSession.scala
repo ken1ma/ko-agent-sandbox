@@ -1,6 +1,6 @@
-// The host command's lifecycle. A command session is one supervisor invocation; the broker's session
-// is one launch, published and locked the same way by the broker, holding the runtimes its
-// commands share (RunOnHostSandbox.BrokerRuntimes). A session's directory is published by rename
+// The host command's lifecycle. A command session is one supervisor invocation; the runner's session
+// is one launch, published and locked the same way by the runner, holding the runtimes its
+// commands share (RunOnHostSandbox.RunnerRuntimes). A session's directory is published by rename
 // so it is never seen half-made, its lock marks its owner as live, and its records identify the
 // child processes. The filesystem and process operations are injected,
 // so unit tests check the kill interleavings without requiring macOS or a real SIGKILL.
@@ -31,7 +31,7 @@ object RunOnHostSession:
   val TmpDir = "tmp"
   val RecordsDir = "records"
   val ProjectFile = "project"
-  /** The broker's: the launch's sandbox container, by which `--stats` joins the broker to its session. */
+  /** The runner's: the launch's sandbox container, by which `--stats` joins the runner to its session. */
   val RunFile = "run"
   val StagingDir = "staging"
   val CondemnedDir = "condemned"
@@ -40,10 +40,10 @@ object RunOnHostSession:
   val RetireLockDir = "retire-lock"
   val BuildFilePrefix = "build-"
 
-  /** Whose lock a session's is, and the prefix its directory is named by: the broker's lives the
+  /** Whose lock a session's is, and the prefix its directory is named by: the runner's lives the
     * launch's lifetime; a command's, its supervisor's. */
   enum Kind(val prefix: String):
-    case Broker extends Kind("b")
+    case Runner extends Kind("b")
     case Command extends Kind("s")
 
   /** One registered process group: the leader's pgid (== its pid) and the leader's start time,
@@ -149,15 +149,15 @@ object RunOnHostSession:
   /**
    * The build lock of one build directory and program, `build-lock/<program>-<hash>`: held by
    * the command's own process for its whole life, teardown included, so no two launches run or
-   * clean up a command on one build at once, and a broker's death frees nothing the supervisor
+   * clean up a command on one build at once, and a runner's death frees nothing the supervisor
    * holds. The lock holder (lockedSpawn) takes it through flock(2), whose lock belongs to the open
    * file description: it survives the exec into the supervisor, reaches none of the supervisor's
    * own children — a JVM's children get only their three standard descriptors — and is released
    * when the supervisor exits; a killed supervisor's at once, the next start's scavenge behind it.
    * A lock holder still waiting for the lock is a child like any other, ended when its requester
-   * leaves. Under the broker it also watches the broker's pipe on its stdin, as the supervisor
-   * does, and ends at its EOF, so a dead broker dispatches nothing, and it execs only on the
-   * broker's word (lockedSpawn), so the broker's own work on the build before the command — its
+   * leaves. Under the runner it also watches the runner's pipe on its stdin, as the supervisor
+   * does, and ends at its EOF, so a dead runner dispatches nothing, and it execs only on the
+   * runner's word (lockedSpawn), so the runner's own work on the build before the command — its
    * runtime observed, retired or created — happens under the lock too. The file is never deleted:
    * deleted and recreated, one name would let two holders lock different inodes.
    */
@@ -170,20 +170,20 @@ object RunOnHostSession:
   /** The command under the build lock: the lock holder, perl (registeredSpawn has why), takes the
     * lock and execs the command holding it, so the lock ends exactly when the command does,
     * however it dies.
-    * When it has to wait it says so on stderr, the requester's. `underBroker`, its stdin is the
-    * broker's pipe (RunOnHostChannel.dispatch): EOF while it waits ends it, and once it holds
-    * the lock it writes `LockedLine` on its stdout and reads the broker's word from the pipe —
+    * When it has to wait it says so on stderr, the requester's. `underRunner`, its stdin is the
+    * runner's pipe (RunOnHostChannel.dispatch): EOF while it waits ends it, and once it holds
+    * the lock it writes `LockedLine` on its stdout and reads the runner's word from the pipe —
     * `runWord`, whose arguments it inserts before the command's `--`, or `refusedWord`, whose
     * message it prints on stderr before exiting 2, the supervisor's own refusal code. Exit 71 is
     * the holder ending itself, as the leader does in registeredSpawn. */
-  def lockedSpawn(lockFile: Path, command: Seq[String], underBroker: Boolean): Seq[String] =
-    Seq("/usr/bin/perl", "-e", LockScript, lockFile.toString, if underBroker then "1" else "0") ++ command
+  def lockedSpawn(lockFile: Path, command: Seq[String], underRunner: Boolean): Seq[String] =
+    Seq("/usr/bin/perl", "-e", LockScript, lockFile.toString, if underRunner then "1" else "0") ++ command
 
   val LockedLine = "locked"
 
   private val Nul = 0.toChar.toString
 
-  /** The broker's word to a lock holder: one line of NUL-separated fields, the verdict first,
+  /** The runner's word to a lock holder: one line of NUL-separated fields, the verdict first,
     * each field escaped so that a refusal of several lines — a server's output quoted — and an
     * argument holding a newline or a NUL arrive whole. */
   def runWord(arguments: Seq[String]): String = ("run" +: arguments.map(escapeField)).mkString(Nul) + "\n"
@@ -201,11 +201,11 @@ object RunOnHostSession:
 
   val LockScript: String =
     """use Fcntl qw(:flock F_SETFD);
-      |my ($lock, $broker, @command) = @ARGV;
+      |my ($lock, $runner, @command) = @ARGV;
       |open(my $fh, '>>', $lock) or exit 71;
       |unless (flock($fh, LOCK_EX | LOCK_NB)) {
       |    print STDERR "waiting for the build lock: another launch's command runs in this build directory\n";
-      |    if ($broker) {
+      |    if ($runner) {
       |        my $stdin = '';
       |        vec($stdin, fileno(STDIN), 1) = 1;
       |        until (flock($fh, LOCK_EX | LOCK_NB)) {
@@ -218,7 +218,7 @@ object RunOnHostSession:
       |        flock($fh, LOCK_EX) or exit 71;
       |    }
       |}
-      |if ($broker) {
+      |if ($runner) {
       |    syswrite(STDOUT, "locked\n") or exit 71;
       |    my $word = <STDIN>;
       |    exit 71 unless defined $word;
@@ -235,9 +235,9 @@ object RunOnHostSession:
 
   /**
    * The retirement lock of one build directory and program, `retire-lock/<program>-<hash>`: what
-   * every process ending a runtime's recorded group — the broker replacing or retiring its own
-   * (RunOnHostSandbox.BrokerRuntimes.discard, RunOnHostMillDaemons.retire), its teardown, the scavenger,
-   * and another launch taking the runtime over (RunOnHostSandbox.BrokerRuntimes.takeOver) —
+   * every process ending a runtime's recorded group — the runner replacing or retiring its own
+   * (RunOnHostSandbox.RunnerRuntimes.discard, RunOnHostMillDaemons.retire), its teardown, the scavenger,
+   * and another launch taking the runtime over (RunOnHostSandbox.RunnerRuntimes.takeOver) —
    * holds across the leader's start-time check and the group's signal,
    * and across nothing else. Two processes running that check-then-signal on one group would
    * correlate the pid recycling window: the first's kill frees the pids at the moment the
@@ -262,7 +262,7 @@ object RunOnHostSession:
    * open when the next thread has locked a fresh one, would end another thread's exclusion
    * against other processes. Two threads do contend: the acceptance test's entry prepares its runtime on the
    * main thread and tears the session down from the shutdown hook (RunOnHostSandbox.ownRuntime),
-   * and the broker's monitor covers neither the supervisor nor the tests.
+   * and the runner's monitor covers neither the supervisor nor the tests.
    *
    * Only the records that name a runtime another launch could end map to a lock
    * (retirementLockName): a command session's own records and the Gradle daemons' are ended by
@@ -350,19 +350,19 @@ object RunOnHostSession:
         try Some(name.stripPrefix(BuildFilePrefix) -> Path.of(Files.readString(file, UTF_8).trim))
         catch case _: IOException => None
 
-  /** The other live brokers' sessions under the root: published under the broker prefix and
-    * locked. A broker attaches to another launch's runtime only from one of these
-    * (RunOnHostSandbox.BrokerRuntimes.attached). */
-  def liveBrokerSessions(root: Path, except: Path): Vector[Path] =
-    allBrokerSessions(root, except).filter(entry => !lockIsFree(entry.resolve(LockFile)))
+  /** The other live runners' sessions under the root: published under the runner prefix and
+    * locked. A runner attaches to another launch's runtime only from one of these
+    * (RunOnHostSandbox.RunnerRuntimes.attached). */
+  def liveRunnerSessions(root: Path, except: Path): Vector[Path] =
+    allRunnerSessions(root, except).filter(entry => !lockIsFree(entry.resolve(LockFile)))
 
-  /** Every broker session directory under the root, locked or not — a just-crashed owner's is
+  /** Every runner session directory under the root, locked or not — a just-crashed owner's is
     * unlocked but not yet condemned, and its server group can still be running, so runtimeOwner
     * must weigh it too (its finding is taken over, never attached to, and the next start's
     * scavenge collects it). */
-  def allBrokerSessions(root: Path, except: Path): Vector[Path] =
+  def allRunnerSessions(root: Path, except: Path): Vector[Path] =
     listDirectory(root).filter: entry =>
-      entry != except && entry.getFileName.toString.startsWith(Kind.Broker.prefix)
+      entry != except && entry.getFileName.toString.startsWith(Kind.Runner.prefix)
         && Files.isDirectory(entry)
 
   /** The sessions under `condemned/`: an owner tearing itself down, or a scavenger, has renamed
@@ -376,11 +376,11 @@ object RunOnHostSession:
 
   /**
    * Another launch's session that holds the ownership record `record` — `server-sbt-<hash>` or
-   * `daemon-mill-<hash>` — or None. Any broker session under the root — live, or just-crashed
+   * `daemon-mill-<hash>` — or None. Any runner session under the root — live, or just-crashed
    * and not yet collected — or a session under `condemned/` whose teardown or scavenge has not
    * finished, owns it; the record is read here, and its group ended only by its owner, or by
    * the launch taking the runtime over, under the retirement lock
-   * (RunOnHostSandbox.BrokerRuntimes.takeOver). A dead owner's runtime is taken over this time
+   * (RunOnHostSandbox.RunnerRuntimes.takeOver). A dead owner's runtime is taken over this time
    * and the next start's scavenge collects its session, so its server or daemon is never left
    * running beside a fresh one.
    *
@@ -405,7 +405,7 @@ object RunOnHostSession:
     def owns(session: Path): Boolean =
       val file = session.resolve(RecordsDir).resolve(record)
       Files.exists(file) && !groupIsDead(file, processes)
-    val inRoot = allBrokerSessions(root, except)
+    val inRoot = allRunnerSessions(root, except)
     betweenScan()
     inRoot.find(owns).orElse(collectingSessions(root).find(owns))
 
@@ -542,12 +542,12 @@ object RunOnHostSession:
    * dead session here.
    *
    * `ownSession` is the caller's own live session, which it must pass when it scavenges after
-   * publishing — the broker between commands (RunOnHostSandbox.BrokerRuntimes). That session is
+   * publishing — the runner between commands (RunOnHostSandbox.RunnerRuntimes). That session is
    * skipped entirely: `lockIsFree` opens a second descriptor to the lock file and closes it, and
    * OpenJDK's `FileChannel.lock` is a POSIX `fcntl` lock, which the kernel drops for the whole
    * process when *any* descriptor to that file is closed. Probing the caller's own lock would
    * release it, and another launch could then condemn a live session. A start that scavenges
-   * before publishing (the supervisor, and the broker at startup) holds no session yet and passes
+   * before publishing (the supervisor, and the runner at startup) holds no session yet and passes
    * None.
    */
   def scavenge(
@@ -739,7 +739,7 @@ object RunOnHostSession:
    * parses, and still names a group whose leader either matches (ours, ended) or is gone
    * (skipped), so the scavenger reads the records directory without special cases.
    *
-   * perl, and not a shell or Python: the leader must be the process the broker started, so that
+   * perl, and not a shell or Python: the leader must be the process the runner started, so that
    * its `Process` handle and the record name one pid, and a shell cannot move itself into a new
    * group — it has no builtin for `setpgid` on its own pid, and `set -m` moves a child job
    * instead, one process below the handle. The lock script needs `flock` held across `exec`

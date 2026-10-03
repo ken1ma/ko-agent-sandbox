@@ -5,7 +5,7 @@
 //   java -cp <the classpath EmitRunOnHostProfile prints> \
 //     agentsandbox.launcher.RunOnHost <program> <project> [system-paths-file] -- <args...>
 //
-// The acceptance test runs that under the build lock the broker's lock holder takes (RunOnHostSession.lockedSpawn),
+// The acceptance test runs that under the build lock the runner's lock holder takes (RunOnHostSession.lockedSpawn),
 // through perl's exec, so the pid its kill rows signal is the supervisor's: `--lock-script` prints
 // the perl script and `--build-lock <program> <project>` the lock file, for the acceptance test to compose.
 //

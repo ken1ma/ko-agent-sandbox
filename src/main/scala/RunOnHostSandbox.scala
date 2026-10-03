@@ -1,7 +1,7 @@
 // The supervisor: from a project and a program to a confined command's exit code, through the thirteen
 // steps — validate, scavenge, publish, runtime, profile, run, end what was started, remove — and
-// the broker's runtimes, the proxy and the sbt server or mill daemon the commands of one build
-// directory share (BrokerRuntimes). macOS only, like everything it drives; the assembly and
+// the runner's runtimes, the proxy and the sbt server or mill daemon the commands of one build
+// directory share (RunnerRuntimes). macOS only, like everything it drives; the assembly and
 // refusal logic are in RunOnHostPrereqs and are unit-tested there, so this file is the sequence
 // of steps plus the host observations no Linux test can make.
 
@@ -97,7 +97,7 @@ object RunOnHostSandbox:
    * The text of mill's `java-home` file in `buildDirectory` (RunOnHostPrereqs.MillJavaHomeFile),
    * None when it is absent or cannot be read as the build's own file.
    *
-   * The launcher reads it outside any profile, under the broker's monitor, while a command of the
+   * The launcher reads it outside any profile, under the runner's monitor, while a command of the
    * project may be writing under `out/`. So each directory is opened relative to the one before
    * it and the file relative to the last, none through a symlink, whatever a command renames
    * meanwhile; the read stops at `MillJavaHomeMaxBytes`, whatever size the file reports; and the
@@ -421,7 +421,7 @@ object RunOnHostSandbox:
 
   /** What opens the JDK's internal certificate builder to X509Helper, which has why. The jar's
     * manifest carries the same two for `java -jar` (build.sbt), and a manifest is read for `-jar`
-    * alone: a re-invocation is `java -cp`, and the broker and the supervisor it starts issue each
+    * alone: a re-invocation is `java -cp`, and the runner and the supervisor it starts issue each
     * proxy's certificates (RunOnHostInspection), which without these dies of IllegalAccessError. */
   val CertificateBuilderExports: Seq[String] = Seq(
     "--add-exports=java.base/sun.security.x509=ALL-UNNAMED",
@@ -481,11 +481,11 @@ object RunOnHostSandbox:
     * naming it as spelled; none to check passes, there being no file a re-invocation loads this
     * process's code from. Both forms alike: the jar and the native image are each one file, built
     * under `target/dist`, which `sbt clean` or `git clean` removes while a session runs. Checked
-    * before a supervisor is exec'd (BrokerRuntimes.prepare, every program) and before a proxy is
+    * before a supervisor is exec'd (RunnerRuntimes.prepare, every program) and before a proxy is
     * started (proxyInputs): a JVM starts with a missing class-path entry and fails only at loading
     * the main class, so unchecked, the jar form's failure is the proxy's ready wait timing out over
     * a Java error in its log, and the native form's is a spawn that fails to exec. Not checked at
-    * the launch's own broker spawn (RunOnHostChannel.spawnBroker), which follows the launcher's
+    * the launch's own runner spawn (RunOnHostChannel.spawnRunner), which follows the launcher's
     * own load from that file. A rebuild at the same path is not a removal, nor is a symlink's
     * retargeting: the running processes keep their inode, and the next re-invocation runs the new
     * file. */
@@ -500,8 +500,8 @@ object RunOnHostSandbox:
 
   /** `--run-command-on-host <program> <project> <cwd> [--env=<name>...] [--channel-log=<file>]
     * [--runtime-session=<dir> --proxy-port=<port> --proxy-log=<file> [--daemon-port=<port>]] --
-    * <args...>`: one channel request as a process of its own, so the broker's cancel is a SIGTERM
-    * whose answer is this supervisor's shutdown hook. The runtime options name the broker's runtime
+    * <args...>`: one channel request as a process of its own, so the runner's cancel is a SIGTERM
+    * whose answer is this supervisor's shutdown hook. The runtime options name the runner's runtime
     * (Runtime). */
   def runCommandMain(args: Seq[String]): Unit =
     def start(
@@ -532,17 +532,17 @@ object RunOnHostSandbox:
         reason => { Console.err.println(s"--run-command-on-host: $reason"); sys.exit(2) },
         identity,
       )
-      // The broker's pipe (RunOnHostChannel.dispatch): its EOF is the broker gone, and the command
+      // The runner's pipe (RunOnHostChannel.dispatch): its EOF is the runner gone, and the command
       // ends with it through the shutdown hook, as it ends with the requester's ctl. The status is
       // nobody's to read. A def, not the thread's own lambda: a lambda ending in sys.exit types
       // as Nothing, which the JVM's lambda factory refuses for Runnable's void at link time.
-      def endWithBroker(): Unit =
+      def endWithRunner(): Unit =
         try while System.in.read() != -1 do ()
         catch case _: IOException => ()
         sys.exit(143)
-      val brokerGone = Thread(() => endWithBroker())
-      brokerGone.setDaemon(true)
-      brokerGone.start()
+      val runnerGone = Thread(() => endWithRunner())
+      runnerGone.setDaemon(true)
+      runnerGone.start()
       sys.exit(
         run(
           Path.of(project), program, commandArgs, bundledSystemPaths(), uid,
@@ -562,30 +562,30 @@ object RunOnHostSandbox:
         Console.err.println(s"--run-command-on-host: unexpected arguments: ${other.mkString(" ")}")
         sys.exit(2)
 
-  /** `--env=<name>` as the broker and the command receive it: the name alone, the value read from
-    * the receiving process's own environment under `carrierName` (RunOnHostChannel.spawnBroker).
+  /** `--env=<name>` as the runner and the command receive it: the name alone, the value read from
+    * the receiving process's own environment under `carrierName` (RunOnHostChannel.spawnRunner).
     * A forward is thus never an argument with a secret in it below the launcher. */
   val EnvOption = "--env="
 
   def forwardedNames(options: Seq[String]): Vector[String] =
     options.filter(_.startsWith(EnvOption)).map(_.stripPrefix(EnvOption)).toVector
 
-  /** `--channel-log=<file>`: the broker's own log, where the supervisor appends a signal-ended
+  /** `--channel-log=<file>`: the runner's own log, where the supervisor appends a signal-ended
     * command's logs (appendSessionLogs). */
   val ChannelLogOption = "--channel-log="
 
-  /** `--file-rules=<file>`: the resolved file rules the launch wrote for its broker, which hands the
-    * option on to each command (RunOnHostChannel.spawnBroker). */
+  /** `--file-rules=<file>`: the resolved file rules the launch wrote for its runner, which hands the
+    * option on to each command (RunOnHostChannel.spawnRunner). */
   val FileRulesOption = "--file-rules="
 
   /** The file rules a command's or runtime's profile denies writes to: the launch's resolved set
-    * when the broker handed one on, else the project's lines alone (FileRules.ofProject). */
+    * when the runner handed one on, else the project's lines alone (FileRules.ofProject). */
   def fileRulesOf(options: Seq[String], project: Path): Either[String, FileRules.Resolved] =
     options.find(_.startsWith(FileRulesOption)) match
       case Some(option) => FileRules.readResolved(Path.of(option.stripPrefix(FileRulesOption)))
       case None         => FileRules.ofProject(project)
 
-  /** The broker's runtime as the supervisor's options: the first three together or none, the
+  /** The runner's runtime as the supervisor's options: the first three together or none, the
     * daemon port with them for a mill runtime. */
   val RuntimeSessionOption = "--runtime-session="
   val ProxyPortOption = "--proxy-port="
@@ -615,7 +615,7 @@ object RunOnHostSandbox:
   val SessionLogTailBytes = 64 << 10
 
   /** Logs retained before a session's directory is removed: the proxy audit logs — a command's
-    * `proxy.log`, the broker's one per runtime — the sbt servers' logs (serverLog),
+    * `proxy.log`, the runner's one per runtime — the sbt servers' logs (serverLog),
     * the mill starters' output (RunOnHostMillDaemons.starterLog), and the stderr file a thin client
     * leaves under `tmp/` when it forked a server of its own.
     * run-on-host.md "The channel and the command" has why every signal keeps them and what a
@@ -676,7 +676,7 @@ object RunOnHostSandbox:
       case ex: IOException => Some(s"[unreadable: ${ex.getMessage}]\n")
 
   /** The name a forwarded value is carried under from the launcher to the confined command: one nothing
-    * reads by accident. The broker and the supervisor are unconfined JVMs of the launcher's own code, and an
+    * reads by accident. The runner and the supervisor are unconfined JVMs of the launcher's own code, and an
     * explicit `--env=NAME=VALUE` installed under its own name — a loader variable, say — would be
     * read by them first; the requested name is restored inside the command's environment alone,
     * where the supervisor's own settings still win over it. */
@@ -704,8 +704,8 @@ object RunOnHostSandbox:
    * The live server a build directory's portfile names, if any: SECURITY.md "Run on host"
    * records the one-server rule it serves. A thin client attaches to whatever server the
    * portfile names and then runs with that server's environment and confinement, so before the
-   * broker starts its own server, a live one here is ended (BrokerRuntimes.noForeignServer), and
-   * while the broker's runs, a live socket inside the broker's `tmp/` is that server. Live means
+   * runner starts its own server, a live one here is ended (RunnerRuntimes.noForeignServer), and
+   * while the runner's runs, a live socket inside the runner's `tmp/` is that server. Live means
    * connectable; a stale portfile is left for sbt, which replaces it. The socket here is wherever
    * the portfile points, uncontained on purpose — the user's own server runs outside any
    * sandbox — and the probe only connects and closes, writing nothing to what it reaches.
@@ -828,7 +828,7 @@ object RunOnHostSandbox:
           catch case _: IOException => true
 
   /**
-   * The user's own server, ended before the broker starts its own: a protocol shutdown, which
+   * The user's own server, ended before the runner starts its own: a protocol shutdown, which
    * the server runs after the exec it is on, so a build in flight there completes first. The
    * socket the shutdown is sent to is derived from the build directory the way sbt derives it,
    * never read from the portfile, and the portfile's word is only compared against it: workspace
@@ -890,7 +890,7 @@ object RunOnHostSandbox:
     forwarded: Vector[String] = Vector.empty,
     // Where a command ended by signal leaves its session's logs (appendSessionLogs).
     channelLog: Option[Path] = None,
-    // The broker's runtime for this command (Runtime).
+    // The runner's runtime for this command (Runtime).
     runtime: Option[Runtime] = None,
     // The launch's resolved file rules (fileRulesOf).
     fileRules: FileRules.Resolved = FileRules.Resolved.Empty,
@@ -906,9 +906,9 @@ object RunOnHostSandbox:
         assembled <- assemble(project, program, env, workingDirectory.getOrElse(project))
         _ <- RunOnHostSession.ensureRoot(root, uid)
         // Scavenge before anything runs — an orphan a kill left is ours to end here — but only
-        // when not dispatched by a broker: the broker owns scavenging (at its startup and before
+        // when not dispatched by a runner: the runner owns scavenging (at its startup and before
         // each runtime it prepares), and a dispatched command scavenging the root could condemn
-        // the live broker's own session. channelLog is set exactly when the broker dispatched
+        // the live runner's own session. channelLog is set exactly when the runner dispatched
         // this command; the acceptance test's own entry, with none, still scavenges.
         _ =
           if channelLog.isEmpty then
@@ -970,8 +970,8 @@ object RunOnHostSandbox:
     * reads and whose name the proxy's trust directory has (RunOnHostInspection), and for mill the
     * one port of its daemon, the port a client's profile admits.
     * Created with the program's rule file as read then, in the session whose records
-    * name its groups — the broker's for its launch's sbt, mill and gradle commands, or another launch's
-    * broker's when this launch attaches to its runtime (BrokerRuntimes), the command's own for
+    * name its groups — the runner's for its launch's sbt, mill and gradle commands, or another launch's
+    * runner's when this launch attaches to its runtime (RunnerRuntimes), the command's own for
     * Maven and for the acceptance test's entry — and ended with that session. */
   case class Runtime(session: Path, proxyPort: Int, proxyLog: Path, daemonPort: Option[Int] = None):
     def tmp: Path = session.resolve(RunOnHostSession.TmpDir)
@@ -1037,7 +1037,7 @@ object RunOnHostSandbox:
   case class DaemonStart(assembled: Assembled, buildDirectory: Path, hash: String, record: Path, runtime: Runtime)
 
   /**
-   * The broker's runtimes: one per build directory and program — a proxy, and the server or
+   * The runner's runtimes: one per build directory and program — a proxy, and the server or
    * daemon the program's clients attach to, sbt's server and mill's daemon — kept warm across the
    * launch's commands from that directory while its proxy lives. Visiting another build
    * directory leaves the runtimes already made alive (`live` is keyed by program and the build
@@ -1047,27 +1047,27 @@ object RunOnHostSandbox:
    * build file deleted only when the last runtime of the hash is retired; so is a mill daemon
    * whose configuration changed, the one Mill's launcher restarts it on
    * (RunOnHostPrereqs.millDaemonConfig), assembled afresh since a changed version pin grants
-   * another launcher. On a cancel the broker follows each program: a cancelled sbt command's server
+   * another launcher. On a cancel the runner follows each program: a cancelled sbt command's server
    * is not retired, since stock sbt's disconnect cancels the exec and leaves the server, and a
    * cancelled mill command's daemon shuts itself down, as stock Mill's does on a disconnect
    * mid-command, so the next mill command starts one. Gradle's runtime is its proxy: the client
    * starts and matches the daemon in the launch's own registry, inside the profile, and the
-   * broker records the registry's daemons after each command and ends them with its session
+   * runner records the registry's daemons after each command and ends them with its session
    * (RunOnHostGradleDaemons). Maven is never here: it runs once and exits, its proxy with the command.
    * The acceptance test's entry holds one of these over the command's own session for its one command, so
    * the one lifecycle has two callers and no second owner.
    *
    * When another launch owns the build directory's server or daemon (SECURITY.md "Run on host"),
-   * this broker attaches its command to that runtime if it would start one under the same
+   * this runner attaches its command to that runtime if it would start one under the same
    * confinement and environment (`attached`), and otherwise ends it by its owner's record under
-   * the retirement lock and starts its own (`takeOver`) — the one case in which a broker signals
+   * the retirement lock and starts its own (`takeOver`) — the one case in which a runner signals
    * a live launch's group not its own; a dead launch's the scavenger collects.
    * `scavenge` runs before each preparation so a dead owner is collected by the exclusive
    * scavenger before a fresh server or daemon starts; one dying after it is taken over. Preparation and
    * the session's end share this object's monitor. Tests replace the second parameter list: they
    * register a stand-in leader where the proxy, server or daemon would be, and stub the scavenger.
    */
-  final class BrokerRuntimes(
+  final class RunnerRuntimes(
     session: Session,
     project: Path,
     log: String => Unit,
@@ -1340,7 +1340,7 @@ object RunOnHostSandbox:
         log(s"removed ${swept.size} target/ links resolving outside the command's roots (first: ${swept.head})")
 
     /**
-     * No server but this broker's may hold the build directory's portfile when its own starts
+     * No server but this runner's may hold the build directory's portfile when its own starts
      * (SECURITY.md "Run on host", one server per build directory), another launch's ownership
      * decided before this (foreignRuntime): another launch's is attached to, or ended by its
      * record, never through the portfile. Beyond that:
@@ -1414,7 +1414,7 @@ object RunOnHostSandbox:
       case Unattachable(why: String)
 
     /**
-     * The runtime `owner`, another launch's broker session, holds for the build directory, for
+     * The runtime `owner`, another launch's runner session, holds for the build directory, for
      * this launch's command to run against, or why it cannot; Left is this launch's own failure
      * to assemble what it would start. Attached to when the server or daemon this launch would
      * start has the running one's confinement and environment
@@ -1445,7 +1445,7 @@ object RunOnHostSandbox:
         catch case _: IOException => None
       val ownerTmp = owner.resolve(RunOnHostSession.TmpDir)
       val proxyName = s"proxy-${program.name}-$hash"
-      if !RunOnHostSession.liveBrokerSessions(root, session.directory).contains(owner) then
+      if !RunOnHostSession.liveRunnerSessions(root, session.directory).contains(owner) then
         Right(Attachment.Unattachable("that launch is ending, or gone and not yet collected"))
       else
         RunOnHostRuntimeDescriptor.read(RunOnHostRuntimeDescriptor.file(owner, program, hash)) match
@@ -1520,7 +1520,7 @@ object RunOnHostSandbox:
       outcome match
         case Some(kept) if kept.keeps =>
           Left(
-            s"another launch's broker (${owner.getFileName}) owns the $what for $buildDirectory; this launch " +
+            s"another launch's runner (${owner.getFileName}) owns the $what for $buildDirectory; this launch " +
               s"cannot attach to it — $why — and its group is not ended: $kept; retry, or use a different build " +
               "directory",
           )
@@ -1601,7 +1601,7 @@ object RunOnHostSandbox:
           Right(ended.map(_.toString).getOrElse("no record"))
 
   /** The ownership records of one build directory's server and daemon, by the directory's hash:
-    * what another launch's broker reads to attach or take over (RunOnHostSession.runtimeOwner). */
+    * what another launch's runner reads to attach or take over (RunOnHostSession.runtimeOwner). */
   def serverRecordName(hash: String): String = s"server-sbt-$hash"
   def daemonRecordName(hash: String): String = s"daemon-mill-$hash"
 
@@ -1679,7 +1679,7 @@ object RunOnHostSandbox:
 
   /** Where a server's output goes, stdout and stderr: in the session directory, which the profile
     * grants no process, rather than under `tmp/`, where the server could replace the file with a
-    * link or a FIFO before the broker opens it for the next server; appendSessionLogs keeps it
+    * link or a FIFO before the runner opens it for the next server; appendSessionLogs keeps it
     * there with the session's other logs. Appended to across the servers of one build directory. */
   def serverLog(session: Session, hash: String): Path = session.directory.resolve(s"server-sbt-$hash.log")
 
@@ -1691,7 +1691,7 @@ object RunOnHostSandbox:
 
   /** The server (run-on-host.md "sbt"): started through registeredSpawn under the server profile, the build
     * directory its working directory, stdin `/dev/null`, stdout and stderr to serverLog, and
-    * the closed environment with the broker's `tmp/` as its temporary and socket directory. Up
+    * the closed environment with the runner's `tmp/` as its temporary and socket directory. Up
     * when the build directory's portfile names a connectable socket under that `tmp/`. */
   private def startSbtServer(
     session: Session,
@@ -1779,16 +1779,16 @@ object RunOnHostSandbox:
     workingDirectory: Option[Path],
     log: String => Unit,
     forwards: Vector[(String, String)],
-    brokerRuntime: Option[Runtime],
+    runnerRuntime: Option[Runtime],
     fileRules: FileRules.Resolved,
   ): Either[String, Int] =
     val program = assembled.prereqs.program
     val buildDirectory = workingDirectory.getOrElse(assembled.prereqs.project)
     for
-      runtime <- brokerRuntime.map(Right(_)).getOrElse(
+      runtime <- runnerRuntime.map(Right(_)).getOrElse(
         ownRuntime(session, assembled, buildDirectory, commandArgs, systemPaths, forwards, fileRules, log),
       )
-      // The broker's log has served earlier commands: the report reads what this one adds.
+      // The runner's log has served earlier commands: the report reads what this one adds.
       reportFrom = logLength(runtime.proxyLog)
       (tmp, socketDir) = temporaryDirectories(program, session.tmp, runtime.tmp)
       network <- program match
@@ -1816,8 +1816,8 @@ object RunOnHostSandbox:
       )
       exit <- runCommand(session, assembled, profile, runtime, commandArgs, workingDirectory, forwards, tmp, socketDir)
     yield
-      // Under the broker the daemons are the broker's to record (BrokerRuntimes.commandEnded).
-      if program == Program.Gradle && brokerRuntime.isEmpty then
+      // Under the runner the daemons are the runner's to record (RunnerRuntimes.commandEnded).
+      if program == Program.Gradle && runnerRuntime.isEmpty then
         val processes = RunOnHostSession.HostProcesses
         val found = RunOnHostGradleDaemons.daemons(runtime.tmp, processes)
         RunOnHostGradleDaemons.record(session.records, found, processes).foreach(log)
@@ -1825,9 +1825,9 @@ object RunOnHostSandbox:
       if exit != 0 then reportUnwritableProxyLog(runtime, log)
       exit
 
-  /** The runtime a command without the broker's runs against: the acceptance test's entry, and Maven under
-    * the broker. Created in the command's own session — by the broker's functions for the
-    * programs whose runtime the broker holds, and as the command's proxy alone for Maven — and
+  /** The runtime a command without the runner's runs against: the acceptance test's entry, and Maven under
+    * the runner. Created in the command's own session — by the runner's functions for the
+    * programs whose runtime the runner holds, and as the command's proxy alone for Maven — and
     * ended with the session. */
   private def ownRuntime(
     session: Session,
@@ -1840,7 +1840,7 @@ object RunOnHostSandbox:
     log: String => Unit,
   ): Either[String, Runtime] =
     val program = assembled.prereqs.program
-    BrokerRuntimes(session, assembled.prereqs.project, log, systemPaths, forwards, fileRules)(
+    RunnerRuntimes(session, assembled.prereqs.project, log, systemPaths, forwards, fileRules)(
       assemble = (_, _, _) => Right(assembled),
     )
       .prepare(program, buildDirectory, commandArgs)
@@ -1945,14 +1945,14 @@ object RunOnHostSandbox:
 
   /**
    * Where a command's processes keep temporary files, and where sbt's sockets are: `(tmp,
-   * socketDir)`. Under sbt the command's own `tmp/`, and the broker's for the sockets its server
-   * listens under. Under mill the broker's `tmp/` for both: the daemon's forked JVMs — a `run`,
-   * a test — inherit the daemon's profile, which grants the broker's `tmp/`, but get the client's
+   * socketDir)`. Under sbt the command's own `tmp/`, and the runner's for the sockets its server
+   * listens under. Under mill the runner's `tmp/` for both: the daemon's forked JVMs — a `run`,
+   * a test — inherit the daemon's profile, which grants the runner's `tmp/`, but get the client's
    * environment (`RunModule.scala`, `ctx.env`), so a `TMPDIR` or `java.io.tmpdir` naming the
    * command's own `tmp/` would be denied there; and with one directory the starter's environment
    * and every client's are one map, so an option file Mill interpolates from the environment
    * (`MillProcessLauncher.loadMillConfig`) yields the same value in both, and a client never meets
-   * a fingerprint mismatch of the supervisor's own making. Under Gradle the broker's too, for the
+   * a fingerprint mismatch of the supervisor's own making. Under Gradle the runner's too, for the
    * first reason: the daemon the first command's client starts serves the commands that follow
    * with the profile and environment it was started with, so what it writes must be a directory
    * every later command's profile grants and no command's end removes. Under Maven the command's
@@ -2003,7 +2003,7 @@ object RunOnHostSandbox:
     )
     val builder = ProcessBuilder(command*)
     builder.directory(buildDirectory.toFile)
-    // Not the supervisor's own stdin, which under the broker is its liveness pipe (runCommandMain).
+    // Not the supervisor's own stdin, which under the runner is its liveness pipe (runCommandMain).
     builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
     builder.redirectOutput(ProcessBuilder.Redirect.INHERIT)
     builder.redirectError(ProcessBuilder.Redirect.INHERIT)
@@ -2024,11 +2024,11 @@ object RunOnHostSandbox:
   /**
    * The distribution's own `gradle`, not the project's `gradlew` (run-on-host.md "Gradle"), with
    * its settings on the command line, where a `-D` outranks every gradle.properties. The daemon
-   * registry is the launch's own, under the broker's `tmp/`, which every Gradle process of the
+   * registry is the launch's own, under the runner's `tmp/`, which every Gradle process of the
    * launch is granted and which ends with the launch: `gradle --stop` stops every daemon in the
    * registry, whatever its JVM (`DaemonStopClient`), so a registry under the per-project user
    * home would let one launch's `--stop` end another launch's builds on the project. Attaching
-   * is already the launch's own: the client's `java.io.tmpdir`, the broker's `tmp/`, is among the
+   * is already the launch's own: the client's `java.io.tmpdir`, the runner's `tmp/`, is among the
    * immutable properties Gradle's daemon compatibility compares (`InitialPropertiesConverter`,
    * `DaemonCompatibilitySpec`). The daemons the registry holds are recorded after each command
    * and ended with the launch (RunOnHostGradleDaemons). The toolchain inventory is closed to the JDK the
@@ -2113,7 +2113,7 @@ object RunOnHostSandbox:
       jvmProperty("java.util.prefs.userRoot", sessionTmp.toString),
       // ipcsocket extracts its native socket library to sbt.ipcsocket.tmpdir, else
       // $XDG_RUNTIME_DIR, else java.io.tmpdir (org.scalasbt.ipcsocket.NativeLoader). An sbt
-      // client's XDG_RUNTIME_DIR is the broker's tmp/, which its profile grants no write or
+      // client's XDG_RUNTIME_DIR is the runner's tmp/, which its profile grants no write or
       // exec, so the load fails there; this points it at the command's own tmp/, always
       // read-write-exec. The rendezvous sockets still go under XDG_RUNTIME_DIR.
       jvmProperty("sbt.ipcsocket.tmpdir", sessionTmp.toString),
@@ -2181,7 +2181,7 @@ object RunOnHostSandbox:
 
   /**
    * The cost of switching where a build runs, paid before each sbt server starts
-   * (BrokerRuntimes.sweepTargetLinks). sbt 2 leaves `target/` outputs as
+   * (RunnerRuntimes.sweepTargetLinks). sbt 2 leaves `target/` outputs as
    * symlinks into its global base's content-addressed store, so a tree the user's own sbt built
    * links into a store this profile cannot reach — and zinc treats the unreadable state as an
    * error, not a cold start (measured: `previousCompile` fails on `inc_compile_3.zip`). Every

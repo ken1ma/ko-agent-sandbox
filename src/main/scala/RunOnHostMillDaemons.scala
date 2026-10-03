@@ -10,9 +10,9 @@
 // starter's profile (SeatbeltProfile.Network.MillDaemon has why no outbound is granted); the
 // starter is ended once its daemon is observed listening, so the denied connect's ten-second retry
 // is not waited out. The helper would return for a Mill version whose daemon does not survive the
-// starter's end. Before the broker's starts, a daemon of the user's own for the build directory
+// starter's end. Before the runner's starts, a daemon of the user's own for the build directory
 // is ended once idle, after its start-time check, as the user's sbt server is shut down by protocol.
-// macOS only, like the supervisor: the observations are ps, pgrep and lsof, so BrokerRuntimes takes
+// macOS only, like the supervisor: the observations are ps, pgrep and lsof, so RunnerRuntimes takes
 // `start` as a parameter tests replace and the acceptance test measures it.
 
 package agentsandbox.launcher
@@ -37,7 +37,7 @@ object RunOnHostMillDaemons:
   val DaemonMain = "mill.daemon.MillDaemonMain"
 
   /** Where the starter's stdout and stderr go: a "Mill launcher failed" trace there marks a
-    * starter the broker did not end — its daemon never listened, or the launcher reached its own
+    * starter the runner did not end — its daemon never listened, or the launcher reached its own
     * retry bound first — and is the finding when the start failed. In the session directory,
     * beside the sbt servers' logs, for the same reason (serverLog). */
   def starterLog(session: Session, hash: String): Path = session.directory.resolve(s"daemon-mill-$hash.log")
@@ -49,7 +49,7 @@ object RunOnHostMillDaemons:
   /** The bound on observing the daemon listen on the port after the starter's exit: the launcher's connect retry
     * (`MillServerLauncher.serverInitWaitMillis`, 10 s), within which a daemon listens and
     * `socketPort` is written, so a port not verifiable this long after is a daemon that is not
-    * listening. It matters for a starter that exited on its own; one the broker ended was ended
+    * listening. It matters for a starter that exited on its own; one the runner ended was ended
     * after that very observation. */
   val PortDeadlineMillis = 10_000L
 
@@ -105,7 +105,7 @@ object RunOnHostMillDaemons:
 
   /** `./mill version` from the build directory — the stock bootstrap, `MILL_VERSION` naming the
     * JVM launcher — started through registeredSpawn under the daemon profile, stdin `/dev/null`, its output
-    * to the starter log, the closed environment with the broker's `tmp/` as its temporary and
+    * to the starter log, the closed environment with the runner's `tmp/` as its temporary and
     * socket directory, which the daemon inherits. */
   private def spawnStarter(
     start: DaemonStart, profileFile: Path, environment: Map[String, String], output: Path,
@@ -128,7 +128,7 @@ object RunOnHostMillDaemons:
     catch case ex: IOException => Left(s"starting the mill starter: ${ex.getMessage}")
 
   /**
-   * The starter's end, in the exit file the leader writes: ended by the broker once its daemon is
+   * The starter's end, in the exit file the leader writes: ended by the runner once its daemon is
    * observed listening on the port `socketPort` names (endStarter), or, without that, exited
    * on its own, nonzero, at the end of the launcher's denied-connect retry. The TERM is sent once:
    * a launcher it does not end reaches that retry bound anyway. The group is looked at every half
@@ -176,7 +176,7 @@ object RunOnHostMillDaemons:
    * the group: the daemon is a member, and the leader's start time is checked before the
    * group is ended. The daemon, spawned with
    * `destroyOnExit = false` (MillProcessLauncher.scala), survives its launcher's TERM as it
-   * survives the launcher's exit (measured, run-on-host-broker-session.sh M8). The observations
+   * survives the launcher's exit (measured, run-on-host-runner-session.sh M8). The observations
    * are parameters so that the tests can interleave them.
    */
   private def endStarter(start: DaemonStart, processes: Processes, log: String => Unit): Boolean =

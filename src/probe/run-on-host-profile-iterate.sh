@@ -559,7 +559,7 @@ mach)
     run_bound=${MACH_BOUND:-600}
     # A build of its own inside the project the profile grants: this checkout's target/ links into
     # the store of the unconfined sbt that emit ran, which the profile denies (run-on-host.md,
-    # the sbt server's state), and the broker's sweep of those links is not this probe's to run.
+    # the sbt server's state), and the runner's sweep of those links is not this probe's to run.
     fixture=$(pwd -P)/target/mach-fixture
     rm -rf "$fixture"; mkdir -p "$fixture/project"
     cp project/build.properties "$fixture/project/"

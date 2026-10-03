@@ -374,7 +374,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assert(clipboardMode(Some(value)).isLeft, s"'$value' was not refused")
 
   test("a clipboard mode is refused where the host cannot serve it"):
-    import ClipboardBroker.{hostBackend, HostBackend}
+    import ClipboardRelay.{hostBackend, HostBackend}
     // findOnPath answers with the real path, and macOS keeps its temp directory behind /var -> /private/var.
     val bin = java.nio.file.Files.createTempDirectory("clipboard-host").toRealPath()
     def program(name: String, body: String = ""): String =
@@ -387,13 +387,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(hostBackend("paste", Os.Windows, bin.toString).isLeft)
     val noPs = hostBackend("paste", Os.Mac, bin.toString)
     assert(noPs.swap.exists(_.contains("needs ps")), noPs.toString)
-    // Windows resolves its shell and executes nothing, so this holds on every runner.
+    // Windows resolves its shell and executes nothing, so this holds on every host.
     val powershell = program("powershell.exe")
     assertEquals(
       hostBackend("paste", Os.Windows, bin.toString),
       Right(HostBackend(powershell = Some(java.nio.file.Paths.get(powershell)))),
     )
-    // From here the fakes are executed, as shell scripts: a POSIX runner only.
+    // From here the fakes are executed, as shell scripts: a POSIX host only.
     assume(!scala.util.Properties.isWin, "the fake programs are /bin/sh scripts")
     program("ps", "#!/bin/sh\nexit 0\n")
     val mutePs = hostBackend("paste", Os.Mac, bin.toString)
@@ -1925,7 +1925,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // The other direction: a project under the state root would be under a reset's deletions.
     val stateRoot = base.resolve("ko-agent-sandbox")
     assert(forbiddenStateRootReason(linux, stateRoot, stateRoot.resolve("logs/proj")).isDefined)
-    // Not exercised from a Windows runner, whose Path type cannot spell a POSIX absolute path.
+    // Not exercised from a Windows host, whose Path type cannot spell a POSIX absolute path.
     if !scala.util.Properties.isWin then
       val mac = HostCommands.Os.Mac
       val aliasedProject = Paths.get("/System/Volumes/Data/Users/me/proj")

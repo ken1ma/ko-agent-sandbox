@@ -19,7 +19,7 @@ class RunOnHostGradleDaemonsTest extends munit.FunSuite:
     val file = records.resolve(RunOnHostGradleDaemons.recordName(pid))
     Option.when(Files.exists(file))(RunOnHostSession.parseRecord(Files.readString(file, UTF_8)).get)
 
-  test("the registry base is under the broker's tmp, and its records name the daemon's pid"):
+  test("the registry base is under the runner's tmp, and its records name the daemon's pid"):
     assertEquals(RunOnHostGradleDaemons.registryBase(Path.of("/b/tmp")), Path.of("/b/tmp/gradle-daemon"))
     assertEquals(RunOnHostGradleDaemons.recordName(4242), "daemon-gradle-4242")
 

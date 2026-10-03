@@ -10,21 +10,21 @@ import java.nio.file.Path
 
 import HostCommands.{Os, findOnPath, quoteFreeSh, run}
 
-object ClipboardBroker:
+object ClipboardRelay:
 
   /**
-   * Two FIFOs under the sandbox's /tmp, both made by the broker's first exec so that a session
-   * without a broker has neither and the shim fails at once. The shim opens `req` once per
+   * Two FIFOs under the sandbox's /tmp, both made by the relay's first exec so that a session
+   * without a relay has neither and the shim fails at once. The shim opens `req` once per
    * request and writes one line — `types`, `get image/png`, or `set <bytes>` followed by that
    * many bytes — then reads `rsp` to EOF: the MIME type (or nothing), the PNG (or nothing), or for
    * `set` the word `ok` once the host clipboard is set (or paste mode has dropped the body) and
    * nothing when the copy failed, so the shim reports a write that did not reach the host. The
-   * broker reads requests through an exec that ends with the FIFO's writers — one open of it, or
+   * relay reads requests through an exec that ends with the FIFO's writers — one open of it, or
    * several that overlap — parsing them by line and count, and answers each through an exec of its
    * own, so the sandbox opens nothing outward and the host runs nothing it did not start.
    *
    * The response writer is bounded from inside the sandbox — the host may have no `timeout` — so
-   * a shim that gave up waiting cannot hold the broker on a FIFO nobody reads.
+   * a shim that gave up waiting cannot hold the relay on a FIFO nobody reads.
    */
   val SandboxDir = "/tmp/ko-agent-sandbox/clipboard"
 
@@ -40,7 +40,7 @@ object ClipboardBroker:
   val MaxRequestBytes = 16 * 1024 * 1024
 
   // Each takes the directory rather than reading the constant, so a test can serve a channel of
-  // its own: a suite on the live one would delete the FIFOs this session's broker is holding.
+  // its own: a suite on the live one would delete the FIFOs this session's relay is holding.
   def sandboxRequestReader(sandboxDir: String = SandboxDir): String =
     s"trap \"\" INT HUP TERM; d=$sandboxDir; mkdir -p -m 700 $$d; " +
       s"for f in req rsp; do [ -p $$d/$$f ] || mkfifo -m 600 $$d/$$f; done; cat $$d/req"
@@ -49,7 +49,7 @@ object ClipboardBroker:
     s"timeout 10 sh -c \"cat > $sandboxDir/rsp\""
 
   /**
-   * The POSIX twin: `clipboard_broker <podman> <sandbox> <mode> <xclip> <wl-paste> <wl-copy>`, for
+   * The POSIX twin: `clipboard_relay <podman> <sandbox> <mode> <xclip> <wl-paste> <wl-copy>`, for
    * the reaper to run as a job. The programs are [[hostBackend]]'s, absolute — the reaper's PATH is
    * [[HostCommands.ScriptPath]], not the one they were found on — and empty where absent, or
    * everywhere on macOS, whose osascript and pbcopy are in /usr/bin. xclip is tried first and the
@@ -64,7 +64,7 @@ object ClipboardBroker:
   def hostShellFunctions(sandboxDir: String = SandboxDir): String =
     """# The host clipboard as three commands: is there an image, print it as PNG, set the clipboard
       |# from stdin. macOS prints the PNG as AppleScript hex («data PNGf…»).
-      |clipboard_broker() {
+      |clipboard_relay() {
       |  clipboard_xclip=$4
       |  clipboard_wl_paste=$5
       |  clipboard_wl_copy=$6
@@ -118,7 +118,7 @@ object ClipboardBroker:
       |                head -c "$$arg" >&3
       |                # Answered only for a whole body: a short one — which only a raw writer,
       |                # never the shim, sends — is dropped unanswered, so a FIFO that writer never
-      |                # reads does not hold the broker. The copy's stdout is not the response pipe:
+      |                # reads does not hold the relay. The copy's stdout is not the response pipe:
       |                # xclip forks a child that serves the selection and inherits stdout, and on
       |                # the pipe it would hold the shim's read past `ok` until the response
       |                # writer's timeout (wl-copy's child has stdout on /dev/null already).
@@ -143,7 +143,7 @@ object ClipboardBroker:
   // The Windows twin
   // -------------------------------------------------------------------------
   //
-  // Windows has no reaper — the launcher stays resident — so the broker is a daemon thread here,
+  // Windows has no reaper — the launcher stays resident — so the relay is a daemon thread here,
   // ending when its loop finds the sandbox stopped. Windows PowerShell rather than pwsh: it is
   // always present, and its default STA apartment is what the clipboard API demands.
 
@@ -161,7 +161,7 @@ object ClipboardBroker:
     xclip: String = "",
     wlPaste: String = "",
     wlCopy: String = "",
-    /** The `ps` the reaper ends the broker's process tree with; empty on Windows and under off. */
+    /** The `ps` the reaper ends the relay's process tree with; empty on Windows and under off. */
     ps: String = "",
   )
 
@@ -189,7 +189,7 @@ object ClipboardBroker:
       case _ => probedPs(mode, os, pathValue).map(ps => HostBackend(ps = ps))
 
   /**
-   * The `ps` the reaper enumerates the broker's process tree with, proven on this host before an
+   * The `ps` the reaper enumerates the relay's process tree with, proven on this host before an
    * enabled mode is accepted: an absent `ps`, or one that answers `ps -A -o pid=,ppid=` with
    * nothing (BusyBox's prints another format), would leave a blocked clipboard program alive after the
    * session while the cleanup silently ended the job alone. The proof is this launcher's own row —
@@ -197,7 +197,7 @@ object ClipboardBroker:
    */
   def probedPs(mode: String, os: Os, pathValue: String): Either[String, String] =
     findOnPath("ps", pathValue, os).map(_.toString)
-      .toRight(s"error: $ClipboardVariable=$mode needs ps on PATH; the reaper ends the broker's processes with it")
+      .toRight(s"error: $ClipboardVariable=$mode needs ps on PATH; the reaper ends the relay's processes with it")
       .flatMap: ps =>
         val me = ProcessHandle.current
         val listed =

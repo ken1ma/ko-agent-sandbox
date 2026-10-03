@@ -95,11 +95,11 @@ class SandboxStatsTest extends munit.FunSuite:
     assert(alone.contains("  1a2b3c4d  0.1 / 6.7G  -      8.0%  small-0123456789ab\n"), alone)
     assertEquals(liveTable(Vector.empty, Map.empty), "0 live sessions\n")
 
-  test("brokers are the locked broker sessions, each named by its run file, one row per directory served"):
+  test("runners are the locked runner sessions, each named by its run file, one row per directory served"):
     val root = Files.createTempDirectory("ko-agent")
     val project = Files.createTempDirectory("project")
     val nested = project.resolve("nested")
-    val live = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    val live = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
     def named(session: RunOnHostSession.Session, run: String): Unit =
       Files.writeString(
         session.directory.resolve(RunOnHostSession.RunFile), s"ko-agent-sandbox-run-app-0123456789ab-$run\n",
@@ -110,32 +110,32 @@ class SandboxStatsTest extends munit.FunSuite:
       RunOnHostSession.publishBuildFile(live.directory, hash, directory)
       records.foreach(record => Files.writeString(live.records.resolve(s"$record-$hash"), "1 x\n"))
     Files.writeString(live.records.resolve("daemon-gradle-4242"), "4242 x\n")
-    // A broker that has served nothing yet, and one whose launch predates the run file.
-    val fresh = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    // A runner that has served nothing yet, and one whose launch predates the run file.
+    val fresh = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
     named(fresh, "1a2b3c4d")
-    RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
-    // A dead broker's session, unlocked, is the scavenger's, not the report's; a command's is no broker.
-    val dead = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Broker).toOption.get
+    RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
+    // A dead runner's session, unlocked, is the scavenger's, not the report's; a command's is no runner.
+    val dead = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
     dead.close()
     RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Command).toOption.get
     assertEquals(
-      brokers(root),
+      runners(root),
       Vector(
-        Broker("1a2b3c4d", project.toString, Vector.empty),
-        Broker(
+        Runner("1a2b3c4d", project.toString, Vector.empty),
+        Runner(
           "5e6f7a8b", project.toString,
           Vector(project.toString -> Vector("sbt", "gradle"), nested.toString -> Vector.empty),
         ),
-        Broker("?", project.toString, Vector.empty),
+        Runner("?", project.toString, Vector.empty),
       ),
     )
     assertEquals(
-      brokerTable(Vector(
-        Broker(
+      runnerTable(Vector(
+        Runner(
           "5e6f7a8b", "/home/me/big",
           Vector("/home/me/big" -> Vector("sbt", "gradle"), "/home/me/big/nested" -> Vector("mill")),
         ),
-        Broker("1a2b3c4d", "/home/me/small", Vector.empty),
+        Runner("1a2b3c4d", "/home/me/small", Vector.empty),
       )),
       """2 run-on-host directories
         |  run       runtime      directory
@@ -143,11 +143,11 @@ class SandboxStatsTest extends munit.FunSuite:
         |  5e6f7a8b  mill         /home/me/big/nested
         |""".stripMargin,
     )
-    assertEquals(brokerTable(Vector.empty), "0 run-on-host directories\n")
-    assertEquals(brokerTable(Vector(Broker("1a2b3c4d", "/home/me/small", Vector("/home/me/small" -> Vector("sbt"))))),
+    assertEquals(runnerTable(Vector.empty), "0 run-on-host directories\n")
+    assertEquals(runnerTable(Vector(Runner("1a2b3c4d", "/home/me/small", Vector("/home/me/small" -> Vector("sbt"))))),
       "1 run-on-host directory\n  run       runtime  directory\n  1a2b3c4d  sbt      /home/me/small\n")
-    assertEquals(brokerTable(Vector(Broker("1a2b3c4d", "/home/me/small", Vector.empty))), "0 run-on-host directories\n")
-    assertEquals(brokers(root.resolve("absent")), Vector.empty)
+    assertEquals(runnerTable(Vector(Runner("1a2b3c4d", "/home/me/small", Vector.empty))), "0 run-on-host directories\n")
+    assertEquals(runners(root.resolve("absent")), Vector.empty)
 
   test("volume sizes are read back from the verbose df table, in podman's decimal units"):
     val df =

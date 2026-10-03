@@ -259,7 +259,7 @@ class HostCommandsTest extends munit.FunSuite:
     ProcessBuilder((Vector(jvm, "--enable-native-access=ALL-UNNAMED", "-cp", classpath, main) ++ args)*)
 
   // The POSIX-branch resolution tests below build ':'-separated PATH strings out of real
-  // directories, which on a Windows runner have their own ':' after the drive letter — the
+  // directories, which on a Windows host have their own ':' after the drive letter — the
   // string cannot be built there, not merely the branch untested. The Windows branch has its own
   // test, which runs everywhere.
   private val isWindows = scala.util.Properties.isWin
@@ -372,7 +372,7 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(process.waitFor(), 0, output)
     assertEquals(output, "my app/*|it's \"quoted\"|from stdin")
     // The clipboard scripts, which a Windows launcher passes the same way, take no argument.
-    for clipboard <- Seq(ClipboardBroker.sandboxRequestReader(), ClipboardBroker.sandboxResponseWriter()) do
+    for clipboard <- Seq(ClipboardRelay.sandboxRequestReader(), ClipboardRelay.sandboxResponseWriter()) do
       assert(quoteFreeSh(clipboard).forall(word => !word.contains('"') && !word.contains('\n')))
 
   test("a file bind is relabeled privately on an SELinux-enforcing host only"):

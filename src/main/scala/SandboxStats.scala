@@ -150,26 +150,26 @@ object SandboxStats:
       table(Vector("run", "sandbox", "proxy", "cpu", "project"), rows, rightAligned = Set(3))
 
   // -------------------------------------------------------------------------
-  // Run-on-host brokers
+  // Run-on-host runners
   // -------------------------------------------------------------------------
 
-  /** One live broker: its launch's run suffix, its project, and for each build directory it has
+  /** One live runner: its launch's run suffix, its project, and for each build directory it has
     * served, the programs whose runtime it keeps there — a proxy and the server or daemon it
     * serves, which a `shutdown` or an idle exit leaves without the latter until the next command
-    * (RunOnHostSandbox.BrokerRuntimes), so a runtime is not a process up this instant. */
-  final case class Broker(run: String, project: String, warm: Vector[(String, Vector[String])])
+    * (RunOnHostSandbox.RunnerRuntimes), so a runtime is not a process up this instant. */
+  final case class Runner(run: String, project: String, warm: Vector[(String, Vector[String])])
 
   /**
-   * The live brokers under the session root (`RunOnHostSession.root`): each a locked broker
+   * The live runners under the session root (`RunOnHostSession.root`): each a locked runner
    * session, its `run` file naming the launch's sandbox container, its build files the
    * directories served, and its proxy records the programs kept warm there — the proxy is the
    * runtime's constant part, a server or daemon gone on its own being replaced under it
-   * (RunOnHostSandbox.BrokerRuntimes). A broker without a run file, one from a launch that
-   * predates it, has a run the report cannot name. macOS only, like the brokers.
+   * (RunOnHostSandbox.RunnerRuntimes). A runner without a run file, one from a launch that
+   * predates it, has a run the report cannot name. macOS only, like the runners.
    */
-  def brokers(root: Path): Vector[Broker] =
+  def runners(root: Path): Vector[Runner] =
     // `except` names the caller's own session; the report has none, and the root is no child of itself.
-    RunOnHostSession.liveBrokerSessions(root, except = root).map: session =>
+    RunOnHostSession.liveRunnerSessions(root, except = root).map: session =>
       def file(name: String): Option[String] = readIfPresent(session.resolve(name)).map(_.trim).filter(_.nonEmpty)
       val run = file(RunOnHostSession.RunFile).flatMap(runContainerParts).map(_._3).getOrElse("?")
       val project = file(RunOnHostSession.ProjectFile).getOrElse("-")
@@ -181,16 +181,16 @@ object SandboxStats:
         .groupMap(_._1)(_._2)
       val warm = RunOnHostSession.buildDirectories(session).map: (hash, directory) =>
         directory.toString -> programsByHash.getOrElse(hash, Vector.empty).sortBy(_.ordinal).map(_.name)
-      Broker(run, project, warm.sortBy(_._1))
-    .sortBy(broker => (broker.run, broker.project))
+      Runner(run, project, warm.sortBy(_._1))
+    .sortBy(runner => (runner.run, runner.project))
 
-  /** One row per directory a broker has served, by run, `runtime` the programs whose runtime
-    * the broker keeps there. A broker that has served none yet has no row: its session is in the
-    * live table, and a broker is one per session. */
-  def brokerTable(brokers: Vector[Broker]): String =
-    val rows = brokers.flatMap: broker =>
-      broker.warm.map: (directory, programs) =>
-        Vector(broker.run, if programs.isEmpty then "none" else programs.mkString(", "), directory)
+  /** One row per directory a runner has served, by run, `runtime` the programs whose runtime
+    * the runner keeps there. A runner that has served none yet has no row: its session is in the
+    * live table, and a runner is one per session. */
+  def runnerTable(runners: Vector[Runner]): String =
+    val rows = runners.flatMap: runner =>
+      runner.warm.map: (directory, programs) =>
+        Vector(runner.run, if programs.isEmpty then "none" else programs.mkString(", "), directory)
     counted(rows.size, "run-on-host directory", "run-on-host directories") + "\n" +
       (if rows.isEmpty then "" else table(Vector("run", "runtime", "directory"), rows, rightAligned = Set.empty))
 
@@ -376,7 +376,7 @@ object SandboxStats:
         else System.out.print(liveTable(liveContainers(answer.text.linesIterator.toVector), directories))
     if os == Os.Mac then
       val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
-      System.out.print(brokerTable(brokers(RunOnHostSession.root(uid))))
+      System.out.print(runnerTable(runners(RunOnHostSession.root(uid))))
 
     val volumes: Option[Map[String, Long]] = service.toOption.flatMap: podman =>
       val answer = run(podman, "system", "df", "-v")
