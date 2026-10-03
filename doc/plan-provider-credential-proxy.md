@@ -362,14 +362,14 @@ For one brokered connection:
    substituted.
 
 Advertise only HTTP/1.1 initially. Server-sent events and bounded streaming bodies must work on the
-existing relay. Brokering does not support WebSocket upgrade, HTTP/2-only clients or
+existing inspected path. Brokering does not support WebSocket upgrade, HTTP/2-only clients or
 certificate-pinned clients; they do not regain a real credential inside the sandbox.
 
 The Codex client accepts the inspection CA and falls back from a refused websocket upgrade to HTTP
 requests (`plan-credential-broker-proxy.md`, "Claude Code and Codex logins: excluded", has the
-measurement). It remains excluded from OpenAI brokering until one turn succeeds through the
-inspected relay. Each other installed agent's TLS and HTTP compatibility is measured the same way
-before its service is listed as supported.
+measurement). It remains excluded from OpenAI brokering until one turn succeeds over an
+inspected connection. Each other installed agent's TLS and HTTP compatibility is measured the
+same way before its service is listed as supported.
 
 ## Failure and audit contract
 

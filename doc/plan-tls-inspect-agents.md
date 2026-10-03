@@ -3,7 +3,7 @@
 ## Outcome
 
 The default rules inspect an agent's model hosts instead of tunnelling them, one agent at a time,
-each after a measurement shows its client works through the inspected relay. The `tunnel` grant
+each after a measurement shows its client works over an inspected connection. The `tunnel` grant
 stays for the hosts no measurement has cleared and for a project's own rules (`design.md`, "No
 inspecting every allowed host").
 
@@ -69,7 +69,7 @@ precedence among them, `https_proxy` before `HTTPS_PROXY` in Claude Code's case,
     Anthropic API and polls for work; while it is connected, Anthropic stores the transcript
     (https://code.claude.com/docs/en/remote-control, "Connection and security"). `claude` holds a
     `wss://` URL for `bridge.claudeusercontent.com`, which no default rule allows (`design.md`,
-    "No WebSocket in the inspected relay").
+    "No WebSocket on an inspected connection").
   - Measure: a session with tool calls, a subagent and a compaction; a stream that fails
     mid-turn, whose fallback is a non-streaming request to the same host and so a second `POST`
     line (`CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` in the environment variables page turns
@@ -287,9 +287,9 @@ did not bother; they prove nothing.
   (Codex's full documentation text and Copilot CLI's pages, read 2026-09-28). Revisit per agent
   with a documented header list.
 - Any log field from a body, for any host.
-- A relay change for a client the measurement fails: `design.md`, "No WebSocket in the inspected
-  relay", records the one considered. The refused `Upgrade`'s status is an answer, not a relay
-  change, and Codex's entry may change it.
+- A relay change for a client the measurement fails: `design.md`, "No WebSocket on an inspected
+  connection", records the one considered. The refused `Upgrade`'s status is an answer, not a
+  relay change, and Codex's entry may change it.
 
 ## References
 

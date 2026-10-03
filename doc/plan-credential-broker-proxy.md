@@ -162,8 +162,13 @@ The proxy reads the file once at start and refuses to start if a value or header
 grammar (guarantee 4) or a binding names a host outside its own resolved inspected set — the
 same in-both-directions check the leaf certificate gets, for the same reason: a binding the
 proxy cannot honour would appear as a 401 inside the sandbox with nothing in the log to
-explain it. The refusal reaches the user through `AgentSandboxLauncher.awaitProxyReady`: the launch
-fails with the message.
+explain it. The refusal reaches the user:
+
+- from the session's proxy, through `AgentSandboxLauncher.awaitProxyReady`: the launch fails with
+  the message;
+- from a run-on-host proxy, as the refusal of the first command needing it, carrying the proxy's
+  first log lines (`RunOnHostSandbox.awaitProxyPort`; doc/run-on-host.md, "Refusals"); the
+  launch is up by then.
 
 "Removed with the run" is the run directory's lifetime, which `SandboxLifecycle` ("Removing
 what the run created") defines, accepted failure cases included: where those leave a lingering proxy
@@ -209,8 +214,8 @@ command's egress proxy"), which substitutes as the session's proxy does:
 
 ## Substitution
 
-In the inspected relay, after the request head is parsed and before `authorizeInspectedRequest`,
-so that authorization and the origin see the same head:
+In `runInspectedConnection`, after the request head is parsed and before
+`authorizeInspectedRequest`, so that authorization and the origin see the same head:
 
 1. Take the header the binding names. `Authorization` is parsed by scheme:
     - `Bearer <token>`, `token <token>`: the whole `<token>` must equal a placeholder.
@@ -287,12 +292,12 @@ with the one measurement that design must settle first.
 Not brokered:
 
 - The Codex CLI trusts the CA in `SSL_CERT_FILE` ("Who holds the CA key"). Its built-in
-  provider opens a websocket first; the inspected relay refuses the `Upgrade`, and Codex then
-  falls back to HTTP. Measured with codex-cli 0.155.1 signed in with an API key, against a local
-  server that answers the upgrade with an error (2026-09-22): seven `GET /v1/responses` with
-  `Upgrade: websocket` over about seven seconds, then `POST /v1/responses`. It is not brokered
-  until one turn succeeds through the inspected relay; that, and the ChatGPT login, are not
-  measured.
+  provider opens a websocket first; the proxy refuses the `Upgrade` on an inspected connection,
+  and Codex then falls back to HTTP. Measured with codex-cli 0.155.1 signed in with an API key,
+  against a local server that answers the upgrade with an error (2026-09-22): seven
+  `GET /v1/responses` with `Upgrade: websocket` over about seven seconds, then
+  `POST /v1/responses`. It is not brokered until one turn succeeds over an inspected connection;
+  that, and the ChatGPT login, are not measured.
 - Claude Code is a Node program and could be inspected, but its endpoints are tunnels by
   design: model traffic has to write. Its login is an OAuth pair with local expiry bookkeeping
   and a refresh exchange on the provider's hosts; the proxy would have to mirror that lifecycle
@@ -410,7 +415,7 @@ where it is honoured (harmless); an origin echoing a credential in a response is
   placeholder arrives at the origin with the value; the same to an unbound inspected host
   arrives with the placeholder; audit line shows `inject` exactly once; an application's own
   `Bearer` and `Basic` credential to the bound host arrives at the origin unchanged, audit line
-  without `inject` — #8 over the whole relay path.
+  without `inject` — #8 over the whole inspected path.
 - Lifecycle (`RunTopologyTest`'s lost-reaper case, and a launcher killed between creating the
   run directory and the handover): the value file is either gone with the run or still
   owner-only under its own run directory and gone after `--reset`; never under another run's

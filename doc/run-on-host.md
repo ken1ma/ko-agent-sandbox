@@ -1,6 +1,6 @@
 # Run on Host — sbt, `mill`, Gradle and Maven commands outside the container
 
-`--run-on-host=<programs>` (macOS only, off by default) relays this project's sbt, `mill`, Gradle
+`--run-on-host=<programs>` (macOS only, off by default) sends this project's sbt, `mill`, Gradle
 and Maven commands to the host, where each runs under a Seatbelt profile of its own.
 
     ┌─ macOS host ───────────────────────────────────────────────────────────────────────┐
