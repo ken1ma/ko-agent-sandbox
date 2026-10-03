@@ -60,7 +60,7 @@ The words the documents share, each defined in the document its entry names and 
   `/tmp`, never a listener; "broker" is reserved for the credential sense ("No general capability
   broker", `plan-credential-broker-proxy.md`):
   - the relay copies between the host clipboard and the sandbox (SECURITY.md, "Clipboard");
-  - the runner, one per session, runs each host command and owns the processes it starts
+  - the runner, one per session, dispatches each host command and owns the processes it starts
     (`run-on-host.md`).
 - **shim, supervisor, command** — under `--run-on-host`:
   - the shim is `ko-sandbox-run-on-host` inside the sandbox, which sends one command to the runner;

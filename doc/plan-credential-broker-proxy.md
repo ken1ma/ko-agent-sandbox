@@ -174,29 +174,35 @@ reused: the next run has its own directory and placeholder.
 ## Run-on-host commands
 
 A command run on the host (`--run-on-host`) sees `NAME` as the sandbox does: the placeholder, in
-the environment the run-on-host runner builds for it (SECURITY.md, "Run on host"). Its requests
+the environment the supervisor builds for it (SECURITY.md, "Run on host"). Its requests
 pass through its program's proxy, a process from the proxy's codebase (doc/run-on-host.md, "The
 command's egress proxy"), which substitutes as the session's proxy does:
 
 - The value reaches each host proxy as it reaches the proxy container: a file beside the leaf
   key, named by one more variable of the closed environment `RunOnHostSandbox.startProxyUnder`
-  builds, read under the proxy's Seatbelt profile, which grants the leaf's directory. The command
-  cannot read it: its grants (SECURITY.md, "Run on host") leave the launcher state root
-  invisible, the leaf key included.
+  builds, read under the proxy's Seatbelt profile, which grants the leaf's directory.
+  - The command cannot read it: the leaf's directory is in the proxy starter's session directory
+    under `/private/tmp/ko-agent-<uid>`, which no command's profile grants (doc/run-on-host.md,
+    "The command's egress proxy").
 - A host proxy's rules are its program's and those of
-  `.ko-agent-sandbox/run-on-host/<program>/egress/rule`, not the session's, so the runner writes
-  its file from those rules as it reads them at the proxy's start ("Where the value is held"); a
-  binding whose host only those rules allow is honoured by that proxy alone. Guarantee 2's tunnel
-  refusal has no case there: a host proxy inspects every host it allows.
+  `.ko-agent-sandbox/run-on-host/<program>/egress/rule`, not the session's, so a binding whose
+  host only those rules allow is honoured by that proxy alone.
+  - The proxy's starter — the runner for sbt, `mill` and `gradle`, the supervisor for Maven —
+    writes the proxy's file from those rules as it reads them at the proxy's start ("Where the
+    value is held").
+  - Guarantee 2's tunnel refusal has no case there: a host proxy inspects every host it allows.
 - The credential is usable within that proxy's grants, which may differ from the session's; the
   binding widens none of them. A hostile build sees the placeholder, and its route out is that
   proxy's allowed hosts, as without a binding.
-- The `inject` field lands in that proxy's audit log. That log is kept as its last 64 KiB,
-  appended to the launch's `run-on-host-*.log` when the runner's session ends
-  (`RunOnHostSandbox.appendSessionLogs`), and `--proxy-log`, which guarantee 7 renames, prints
-  the `proxy-*.log` files alone (`EgressRules.retainedLogs`), so guarantee 7 needs the host
-  proxy to append its audit lines to a `proxy-*.log` file under the project's log directory, as
-  the proxy container does.
+- The `inject` field lands in that proxy's audit log, so guarantee 7 needs the host proxy to
+  append its audit lines to a `proxy-*.log` file under the project's log directory, as the proxy
+  container does:
+  - the log's last 64 KiB alone is kept, appended to the launch's `run-on-host-*.log` when the
+    runner's session ends or, for Maven's proxy, when the command ends by signal
+    (`RunOnHostSandbox.appendSessionLogs`; doc/run-on-host.md, "The channel and the command"), so
+    a Maven command that ends normally loses it with its directory;
+  - `--proxy-log`, which guarantee 7 renames, prints the `proxy-*.log` files alone
+    (`EgressRules.retainedLogs`).
 - Each proxy reads the file once at start and lives at most the launch, and the placeholder is
   per launch, so a mill or Gradle daemon kept across commands never meets a stale binding.
 - Windows has no run-on-host, so nothing applies there.
@@ -333,13 +339,13 @@ where it is honoured (harmless); an origin echoing a credential in a response is
   value, the host, the place (a header from the closed set, or a query parameter name) and the
   optional prefix; `EnvForward` and `--env` parsing are unchanged. `forwardedEnvironment` returns
   the sandbox `--env` list with the placeholders appended and, separately, the proxy's
-  secret-file contents. The run-on-host runner builds its commands' environments from the same
-  placeholder list.
+  secret-file contents. The supervisor builds each host command's environment from the same
+  placeholder list (`RunOnHostSandbox.commandEnvironment`).
 - Binding validation against the resolved profile, reusing the inspected hosts read from the
   allow lines of `--print-ruleset` (what the leaf certificate's names are derived from, so no
   second host list), and against the selected programs' rule files, which the launch already
-  reads for its widening report (`runOnHostWideningLines`); the runner reads them again at the
-  proxy's start, and the file it writes then follows that reading.
+  reads for its widening report (`runOnHostWideningLines`); the proxy's starter reads them again
+  at the proxy's start ("Run-on-host commands"), and the file it writes then follows that reading.
 - `CredentialGrammar`: the value, header-name and parameter-name checks of guarantee 4, one
   object in the proxy's main sources, which `build.sbt` compiles into the launcher jar for
   `--serve-proxy-on-host`, so both sides run the same check. Not the proxy dry run, which
@@ -386,7 +392,7 @@ where it is honoured (harmless); an origin echoing a credential in a response is
   environment and from `=VALUE` alike, and each header name outside the set, `Host` and
   `Transfer-Encoding` among them;
   placeholder format per prefix, secret file mode and lifetime, banner content, no value in any
-  `--env` argument the sandbox receives or in any environment the run-on-host runner builds
+  `--env` argument the sandbox receives or in any environment a supervisor builds
   (`AgentSandboxLauncherTest` already checks the forwarded list — extend the same test).
 - Proxy unit: `Bearer`, `token`, `Basic` (password half only, user half untouched), other
   header, wrong host, placeholder in the path or an unbound parameter left alone, non-placeholder
