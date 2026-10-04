@@ -16,9 +16,11 @@ scalacOptions ++= Seq(
 )
 
 // X509Helper issues leaves with the JDK's internal certificate builder, which the JVM keeps behind
-// the module boundary at run time; scalac compiles against it unasked. The Containerfile passes the
-// same two exports to native-image, and the launcher's manifest carries them for the host command's
-// proxy.
+// the module boundary at run time; scalac compiles against it unasked. The launcher carries the same
+// two for the runner and supervisor that issue each host proxy's certificates
+// (RunOnHostSandbox.CertificateBuilderExports). The image's native-image takes neither: nothing the
+// proxy runs reaches X509Helper (measured with GraalVM 25.3.4.1: the same reachable types, fields
+// and methods with and without them).
 Test / fork := true
 Test / javaOptions ++= Seq(
   "--add-exports=java.base/sun.security.x509=ALL-UNNAMED",

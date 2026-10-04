@@ -67,10 +67,10 @@ class MountPathTest extends munit.FunSuite:
   /** The state a launch may create before its container, listed by name so an addition shows. */
   private def stateEntries(): Vector[String] =
     Vector(
-      AgentSandboxLauncher.rulesetStateRoot(currentOs),
-      AgentSandboxLauncher.tlsStateRoot(currentOs),
-      AgentSandboxLauncher.logStateRoot(currentOs),
-      AgentSandboxLauncher.projectsStateRoot(currentOs),
+      LauncherState.rulesetStateRoot(currentOs),
+      LauncherState.tlsStateRoot(currentOs),
+      LauncherState.logStateRoot(currentOs),
+      LauncherState.projectsStateRoot(currentOs),
     ).flatMap(root => FileHelper.directoryEntries(root).map(_.toString))
 
   test("a path the image has an entry at is refused, naming it, before anything is created"):

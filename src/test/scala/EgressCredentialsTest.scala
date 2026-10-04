@@ -7,6 +7,8 @@ import java.security.SecureRandom
 
 import agentsandbox.egress.{BrokeredCredential, CredentialBinding, CredentialGrammar}
 import AgentSandboxLauncher.*
+import CommandLine.*
+import LaunchMessages.*
 
 class EgressCredentialsTest extends munit.FunSuite:
 
@@ -225,7 +227,7 @@ class EgressCredentialsTest extends munit.FunSuite:
   test("a host proxy's audit log is named after the channel log, so --egress-log lists it and pruning keeps it"):
     val channelLog = Path.of("/s/log/p/run-on-host-20261004-120000-abcd1234.log")
     assertEquals(
-      RunOnHostSandbox.projectAuditLog(channelLog, Path.of("/tmp/ko-agent-501/rXYZ/proxy-sbt-0123456789ab.log")),
+      RunOnHostProxy.projectAuditLog(channelLog, Path.of("/tmp/ko-agent-501/rXYZ/proxy-sbt-0123456789ab.log")),
       Some(Path.of("/s/log/p/proxy-20261004-120000-rXYZ-proxy-sbt-0123456789ab-abcd1234.log")),
     )
     assertEquals(
@@ -234,4 +236,4 @@ class EgressCredentialsTest extends munit.FunSuite:
       ),
       Vector.empty,
     )
-    assertEquals(RunOnHostSandbox.projectAuditLog(Path.of("/s/log/p/other.log"), Path.of("/t/r/proxy.log")), None)
+    assertEquals(RunOnHostProxy.projectAuditLog(Path.of("/s/log/p/other.log"), Path.of("/t/r/proxy.log")), None)

@@ -42,7 +42,7 @@ object AgentEgressProxy:
   private val ReadyText = "ko-agent-egress-proxy listening on :"
   val ReadyLine = readyLine(ListenPort)
 
-  /** The port out of a ready line, stamped or not (RunOnHostSandbox.awaitProxyPort). */
+  /** The port out of a ready line, stamped or not (RunOnHostProxy.awaitProxyPort). */
   val ReadyPort: scala.util.matching.Regex = s".*${java.util.regex.Pattern.quote(ReadyText)}(\\d+).*".r
 
   val ConnectTimeoutMillis = 10_000
@@ -461,7 +461,7 @@ object AgentEgressProxy:
         System.err.println(auditLine("deny", host, "-", "", ex.getMessage))
         // After a failed log write every request is answered with that reason, this one included:
         // the run-on-host supervisor asks with a request that is no CONNECT, so that a proxy still
-        // logging records no refused host for it (RunOnHostSandbox.unwritableProxyLog).
+        // logging records no refused host for it (RunOnHostProxy.unwritableProxyLog).
         try
           run.requireAuditLog()
           respondQuietly(client, 400, "Bad Request", "http_request_error", Some(ex.getMessage), bodyless = true)

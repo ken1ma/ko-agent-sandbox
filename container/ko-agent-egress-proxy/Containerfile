@@ -71,8 +71,6 @@ RUN set -euxo pipefail; \
     native-image \
         -J-Xmx1536m \
         -R:MaxHeapSize=64m \
-        --add-exports=java.base/sun.security.x509=ALL-UNNAMED \
-        --add-exports=java.base/sun.security.util=ALL-UNNAMED \
         -o /build/ko-agent-egress-proxy \
         -jar target/dist/ko-agent-egress-proxy.jar
 

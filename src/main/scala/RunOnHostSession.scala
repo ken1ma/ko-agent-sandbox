@@ -1,6 +1,6 @@
 // The host command's lifecycle. A command session is one supervisor invocation; the runner's session
 // is one launch, published and locked the same way by the runner, holding the runtimes its
-// commands share (RunOnHostSandbox.RunnerRuntimes). A session's directory is published by rename
+// commands share (RunnerRuntimes). A session's directory is published by rename
 // so it is never seen half-made, its lock marks its owner as live, and its records identify the
 // child processes. The filesystem and process operations are injected,
 // so unit tests check the kill interleavings without requiring macOS or a real SIGKILL.
@@ -265,8 +265,8 @@ object RunOnHostSession:
   /**
    * The retirement lock of one build directory and program, `retire-lock/<program>-<hash>`: what
    * every process ending a runtime's recorded group — the runner replacing or retiring its own
-   * (RunOnHostSandbox.RunnerRuntimes.discard, RunOnHostMillDaemons.retire), its teardown, the scavenger,
-   * and another launch taking the runtime over (RunOnHostSandbox.RunnerRuntimes.takeOver) —
+   * (RunnerRuntimes.discard, RunOnHostMillDaemons.retire), its teardown, the scavenger,
+   * and another launch taking the runtime over (RunnerRuntimes.takeOver) —
    * holds across the leader's start-time check and the group's signal,
    * and across nothing else. Two processes running that check-then-signal on one group would
    * correlate the pid recycling window: the first's kill frees the pids at the moment the
@@ -389,7 +389,7 @@ object RunOnHostSession:
 
   /** The other live runners' sessions under the root: published under the runner prefix and
     * locked. A runner attaches to another launch's runtime only from one of these
-    * (RunOnHostSandbox.RunnerRuntimes.attached). */
+    * (RunnerRuntimes.attached). */
   def liveRunnerSessions(root: Path, except: Path): Vector[Path] =
     allRunnerSessions(root, except).filter(entry => !lockIsFree(entry.resolve(LockFile)))
 
@@ -416,7 +416,7 @@ object RunOnHostSession:
    * and not yet collected — or a session under `condemned/` whose teardown or scavenge has not
    * finished, owns it; the record is read here, and its group ended only by its owner, or by
    * the launch taking the runtime over, under the retirement lock
-   * (RunOnHostSandbox.RunnerRuntimes.takeOver). A dead owner's runtime is taken over this time
+   * (RunnerRuntimes.takeOver). A dead owner's runtime is taken over this time
    * and the next start's scavenge collects its session, so its server or daemon is never left
    * running beside a fresh one.
    *
@@ -572,7 +572,7 @@ object RunOnHostSession:
    * dead session here.
    *
    * `ownSession` is the caller's own live session, which it must pass when it scavenges after
-   * publishing — the runner between commands (RunOnHostSandbox.RunnerRuntimes). That session is
+   * publishing — the runner between commands (RunnerRuntimes). That session is
    * skipped entirely: `lockIsFree` opens a second descriptor to the lock file and closes it, and
    * OpenJDK's `FileChannel.lock` is a POSIX `fcntl` lock, which the kernel drops for the whole
    * process when *any* descriptor to that file is closed. Probing the caller's own lock would
@@ -788,7 +788,7 @@ object RunOnHostSession:
    * signalled only behind a live leader, and a command can fork a helper and return, so
    * ownership must not expire with the command. The leader closes its standard input after forking,
    * so when the command exits without reading its input, the writer gets EPIPE instead of blocking
-   * (a host proxy's bindings, RunOnHostSandbox.startProxyUnder). A `.pending` file a kill leaves behind still
+   * (a host proxy's bindings, RunOnHostProxy.startProxyUnder). A `.pending` file a kill leaves behind still
    * parses, and still names a group whose leader either matches (ours, ended) or is gone
    * (skipped), so the scavenger reads the records directory without special cases.
    *

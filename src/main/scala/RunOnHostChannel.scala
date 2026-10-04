@@ -194,7 +194,7 @@ object RunOnHostChannel:
     runtime: (String, Path, Seq[String]) => Either[String, Seq[String]],
     /** After a dispatched child ended — its command run, refused, or ended with its requester —
       * with the request's program: what the runtime records once the command is over
-      * (RunOnHostSandbox.RunnerRuntimes.commandEnded). */
+      * (RunnerRuntimes.commandEnded). */
     ended: String => Unit = _ => (),
     canonicalize: Path => Option[Path] = FileHelper.realPath,
     /** What the project is mounted at inside the container — its own path
@@ -548,7 +548,7 @@ object RunOnHostChannel:
     // argument below the launcher carries a value and an explicit one is read by no trusted
     // helper. A name-only forward's own variable is in this environment regardless, inherited as
     // the launcher's whole environment is.
-    forwards: Vector[AgentSandboxLauncher.EnvForward] = Vector.empty,
+    forwards: Vector[CommandLine.EnvForward] = Vector.empty,
     // The launch's resolved file rules, which every profile the runner and its commands render
     // denies writes to (RunOnHostSandbox.fileRulesOf).
     fileRules: Option[Path] = None,
@@ -646,7 +646,7 @@ object RunOnHostChannel:
             sys.exit(1)
         // The forwarded values, from this process's environment under their carrier names, as
         // the supervisor reads them; the system paths the artifact bundles, as the supervisor's.
-        val runtimes = RunOnHostSandbox.RunnerRuntimes(
+        val runtimes = RunnerRuntimes(
           session, project, log, RunOnHostSandbox.bundledSystemPaths(),
           forwardedNames.flatMap(name => Option(System.getenv(RunOnHostSandbox.carrierName(name))).map(name -> _)),
           fileRules,

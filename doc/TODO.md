@@ -142,33 +142,11 @@ measurement.
   connect to server" (2026-10-03). The cause is not found. `narrow` runs the same function in
   this checkout; `mach` runs it in its fixture.
 
-## Files holding several concerns
+## `AgentSandboxLauncher.launch` as phases
 
-Each split is a move with no change in behaviour, in a change of its own, so `git diff
---color-moved` shows it as moved lines. Measured 2026-10-04: `AgentSandboxLauncher.scala` about
-3650 lines, `RunOnHostSandbox.scala` about 2370.
-
-- [ ] From `AgentSandboxLauncher.scala`:
-  - the egress actions (`egressLog`, `egressPreflight`, `printRuleFiles`, `printWidening`,
-    `egressEffective`, `egressCheck`) to `EgressRules.scala`, whose header names the audit log;
-  - `--build`, `--update` and `--self-test` (`buildCommands` through `imageCleanupJournal`, and
-    `selfTest`) to a new file;
-  - the state root, the resets and the run-name filters they sweep (`stateRootOf`, the
-    `*StateRoot` roots, `resetOne`, `resetAll`, `resetRunOnHost`, `isAnyProjectRunNamed`) to a new
-    file;
-  - `parseCommandLine` and its types to a new file;
-  - the agent instructions and launch banners (`appendedSection`, `runOnHostLines`,
-    `nestingLine`, `clipboardLine`) to a new file.
-- [ ] From `RunOnHostSandbox.scala`:
-  - the sbt server (`livePortfileServer` through `shutdownForeignServer`, `serverCommand`,
-    `startSbtServer`, `awaitServer`) to a new file beside `RunOnHostMillDaemons.scala`;
-  - the host proxy (`proxyInputs`, `startProxy`, `awaitProxyPort`, `projectAuditLog`,
-    `deniedHosts` and the reports after a command) to a new file;
-  - `RunnerRuntimes` to a new file.
-  - Self-invocation stays: `launchFile` is read when `RunOnHostSandbox` initializes, which the
-    supervisor does at its start.
 - [ ] `AgentSandboxLauncher.launch` is one function of about 1000 lines. Phases of it as functions
-  need their shared values passed explicitly; a separate change from the moves.
+  need their shared values passed explicitly, so the change is not a move: commit it apart from
+  the file splits, which `git diff --color-moved` shows as moved lines.
 
 ## Proxy parsing written more than once
 
@@ -184,13 +162,6 @@ caller.
 - [ ] The two TLS client setups, `TLSHelper.TlsInspection.connect` and the upstream proxy's
   `secure` in `TransportHelper`: one place would set hostname verification for both legs. ALPN,
   SNI for an address literal, autoClose and the port stay parameters.
-
-## The proxy image's build flags
-
-- [ ] The proxy image's `native-image` gets `--add-exports` for `sun.security.x509` and
-  `sun.security.util`, which only `X509Helper` uses, and the proxy itself never calls it
-  (`AgentEgressProxy`'s header). Build the image without them to see whether native-image needs
-  them.
 
 ## IDE integration through VS Code's Agent Host
 

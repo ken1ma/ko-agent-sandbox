@@ -158,7 +158,7 @@ object Refusals:
    * relays: `error` is the registered proxy error type, which also tells a client the origin did
    * not send this response, and `details` the audit line's `<why>`. A header, because clients
    * that discard a failed CONNECT's body still show its header section (`curl -v`), and the
-   * run-on-host supervisor reads it (RunOnHostSandbox.unwritableProxyLog). A Structured Fields
+   * run-on-host supervisor reads it (RunOnHostProxy.unwritableProxyLog). A Structured Fields
    * String holds printable ASCII alone, so any other character is sent as `?`.
    */
   def proxyStatus(proxyError: String, detail: Option[String]): String =

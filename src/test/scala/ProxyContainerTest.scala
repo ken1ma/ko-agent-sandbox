@@ -103,7 +103,7 @@ class ProxyContainerTest extends munit.FunSuite:
 
   /** The project CA's key, by its path: what no proxy of any profile may mount. */
   private def projectCaKey(live: Session): java.nio.file.Path =
-    AgentSandboxLauncher.tlsStateRoot(currentOs).resolve(live.id).resolve("ca.key")
+    LauncherState.tlsStateRoot(currentOs).resolve(live.id).resolve("ca.key")
 
   /**
    * A CONNECT proxy on this host for the proxy container to leave through: it records each request
@@ -266,7 +266,7 @@ class ProxyContainerTest extends munit.FunSuite:
             walked.iterator.asScala.filter(java.nio.file.Files.isRegularFile(_))
               .filter(file => contains(java.nio.file.Files.readAllBytes(file), bytes)).toVector
           finally walked.close()
-      assertEquals(holding(AgentSandboxLauncher.stateRoot(currentOs)), Vector.empty)
+      assertEquals(holding(LauncherState.stateRoot(currentOs)), Vector.empty)
       assertEquals(holding(project), Vector.empty)
       val volume = run(podman, "volume", "export", s"ko-agent-sandbox-persistent-${live.id}")
       assert(volume.ok, volume.err)

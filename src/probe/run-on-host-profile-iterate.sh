@@ -623,7 +623,7 @@ mach-proxy)
         mach_profile "$work/proxy.sb" "$1" "$work/mach.sb"
         (cd / && /usr/bin/sandbox-exec -f "$work/mach.sb" "$JAVA_HOME/bin/java" -version) >/dev/null 2>&1
     }
-    # Started as RunOnHostSandbox.startProxy starts it, then one fetch through it, which makes it
+    # Started as RunOnHostProxy.startProxy starts it, then one fetch through it, which makes it
     # resolve a name and connect.
     proxy_ready() { grep -q 'ko-agent-egress-proxy listening on :[0-9]' "$work/mach-proxy.log"; }
     # Not exec'd: the subshell then reports a JVM that a denied lookup ends with a segmentation

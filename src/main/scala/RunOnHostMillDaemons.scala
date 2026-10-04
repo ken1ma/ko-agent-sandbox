@@ -37,11 +37,11 @@ object RunOnHostMillDaemons:
   /** Where the starter's stdout and stderr go: a "Mill launcher failed" trace there marks a
     * starter the runner did not end — its daemon never listened, or the launcher reached its own
     * retry bound first — and is the finding when the start failed. In the session directory,
-    * beside the sbt servers' logs, for the same reason (serverLog). */
+    * beside the sbt servers' logs, for the same reason (RunOnHostSbtServer.serverLog). */
   def starterLog(session: Session, hash: String): Path = session.directory.resolve(s"${daemonRecordName(hash)}.log")
 
   /** How long a foreign daemon may stay busy before the start is refused: the bound the user's
-    * sbt server gets for its shutdown (shutdownForeignServer), for the same reason. */
+    * sbt server gets for its shutdown (RunOnHostSbtServer.shutdownForeignServer), for the same reason. */
   val ForeignIdleDeadlineMillis = 120_000L
 
   /** The bound on observing the daemon listen on the port after the starter's exit: the launcher's connect retry

@@ -221,22 +221,22 @@ class SandboxStatsTest extends munit.FunSuite:
 
   test("a run container's name reads back as kind, project id and run suffix"):
     assertEquals(
-      AgentSandboxLauncher.runContainerParts("ko-agent-sandbox-run-app-0123456789ab-1a2b3c4d"),
+      LauncherState.runContainerParts("ko-agent-sandbox-run-app-0123456789ab-1a2b3c4d"),
       Some(("sandbox-run", "app-0123456789ab", "1a2b3c4d")),
     )
     assertEquals(
-      AgentSandboxLauncher.runContainerParts("ko-agent-egress-proxy-my.app_2-0123456789ab-1a2b3c4d"),
+      LauncherState.runContainerParts("ko-agent-egress-proxy-my.app_2-0123456789ab-1a2b3c4d"),
       Some(("egress-proxy", "my.app_2-0123456789ab", "1a2b3c4d")),
     )
-    assertEquals(AgentSandboxLauncher.runContainerParts("ko-agent-sandbox-run-app-0123456789ab"), None)
-    assertEquals(AgentSandboxLauncher.runContainerParts("ko-agent-self-test-app-0123456789ab-1a2b3c4d"), None)
+    assertEquals(LauncherState.runContainerParts("ko-agent-sandbox-run-app-0123456789ab"), None)
+    assertEquals(LauncherState.runContainerParts("ko-agent-self-test-app-0123456789ab-1a2b3c4d"), None)
 
   test("the directory behind an id is what the launch recorded while it exists, and nothing otherwise"):
     val root = Files.createTempDirectory("projects")
     val project = Files.createTempDirectory("app")
-    AgentSandboxLauncher.recordProjectDirectory(root, "app-0123456789ab", project)
+    LauncherState.recordProjectDirectory(root, "app-0123456789ab", project)
     // A record whose directory is gone: the row falls back to the id, the handle --reset takes.
-    AgentSandboxLauncher.recordProjectDirectory(root, "gone-0123456789ab", project.resolve("gone"))
+    LauncherState.recordProjectDirectory(root, "gone-0123456789ab", project.resolve("gone"))
     Files.createDirectories(root.resolve("odd-0123456789ab"))
     Files.writeString(root.resolve("blank-0123456789ab"), "\n")
     // A stray file under the root is not a record: its name is no id --reset would take.
@@ -261,25 +261,25 @@ class SandboxStatsTest extends munit.FunSuite:
     )
     assertEquals(ids, Vector("a-0123456789ab", "b-0123456789ab", "c-0123456789ab"))
     // The contract --stats prints and --reset reads: every id listed is one --reset accepts.
-    assertEquals(AgentSandboxLauncher.projectIdOperands("--reset", ids.toList), Right(ids))
+    assertEquals(LauncherState.projectIdOperands("--reset", ids.toList), Right(ids))
 
   test("podman's exists answers present on 0, absent on 1, and nothing on any other exit"):
-    assertEquals(AgentSandboxLauncher.existsAnswer(0), Some(true))
-    assertEquals(AgentSandboxLauncher.existsAnswer(1), Some(false))
-    assertEquals(AgentSandboxLauncher.existsAnswer(125), None)
-    assertEquals(AgentSandboxLauncher.existsAnswer(-1), None)
+    assertEquals(LauncherState.existsAnswer(0), Some(true))
+    assertEquals(LauncherState.existsAnswer(1), Some(false))
+    assertEquals(LauncherState.existsAnswer(125), None)
+    assertEquals(LauncherState.existsAnswer(-1), None)
 
   test("a reset drops the record once nothing it names remains, and keeps it while a resource does"):
     val root = Files.createTempDirectory("projects")
     val id = "app-0123456789ab"
     val kept = Files.createTempDirectory("cache")
     val absent = kept.resolve("absent")
-    AgentSandboxLauncher.recordProjectDirectory(root, id, Paths.get("/home/me/app"))
-    AgentSandboxLauncher.dropRecordUnless(root, id, Vector(absent, kept), volumeKept = false)
+    LauncherState.recordProjectDirectory(root, id, Paths.get("/home/me/app"))
+    LauncherState.dropRecordUnless(root, id, Vector(absent, kept), volumeKept = false)
     assert(Files.exists(root.resolve(id)), "kept: one of the named directories exists")
-    AgentSandboxLauncher.dropRecordUnless(root, id, Vector(absent), volumeKept = true)
+    LauncherState.dropRecordUnless(root, id, Vector(absent), volumeKept = true)
     assert(Files.exists(root.resolve(id)), "kept: the generated volume remains")
-    AgentSandboxLauncher.dropRecordUnless(root, id, Vector(absent), volumeKept = false)
+    LauncherState.dropRecordUnless(root, id, Vector(absent), volumeKept = false)
     assert(!Files.exists(root.resolve(id)), "dropped: nothing named remains")
-    AgentSandboxLauncher.dropRecordUnless(root, id, Vector.empty, volumeKept = false)
-    AgentSandboxLauncher.dropRecordUnless(root.resolve("never"), id, Vector(absent), volumeKept = false)
+    LauncherState.dropRecordUnless(root, id, Vector.empty, volumeKept = false)
+    LauncherState.dropRecordUnless(root.resolve("never"), id, Vector(absent), volumeKept = false)

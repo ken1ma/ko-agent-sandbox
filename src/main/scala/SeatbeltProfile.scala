@@ -108,7 +108,7 @@ object SeatbeltProfile:
     * one, and at any address of this host, since the "localhost" class admits a wildcard bind —
     * a grant everything the daemon forks inherits, so a build under mill can bind a listener a
     * LAN peer reaches, where one under sbt or Maven gets EPERM (SECURITY.md "Run on host");
-    * for a mill client, outbound to the daemon's one port (RunOnHostSandbox.RunnerRuntimes,
+    * for a mill client, outbound to the daemon's one port (RunnerRuntimes,
     * RunOnHostMillDaemons), and the daemon's arguments, which Mill's client reads to check the
     * daemon is the one that took its lock; for Gradle, the mill daemon's grant plus outbound to any port of this host:
     * its daemon, workers and file-lock socket bind port 0 and connect to each other's, and the
@@ -323,7 +323,7 @@ object SeatbeltProfile:
   /**
    * The host proxy's inputs (run-on-host.md "The command's egress proxy"): what it runs from —
    * the native image, or the JDK of the jar form — what it loads, the class-path entries of the
-   * jar form, and the system paths the command profile grants (RunOnHostSandbox.proxyInputs).
+   * jar form, and the system paths the command profile grants (RunOnHostProxy.proxyInputs).
    */
   case class ProxyInputs(executables: Seq[Path], reads: Seq[Path], systemPaths: SystemPaths)
 
@@ -331,7 +331,7 @@ object SeatbeltProfile:
    * The profile every host proxy runs under, or the first reason it cannot be built. Nothing of
    * the user's is granted: no project, no cache, no write anywhere — its log is its inherited
    * stderr — and no working directory: the proxy runs from `/`, which the root component grants
-   * (RunOnHostSandbox.startProxy).
+   * (RunOnHostProxy.startProxy).
    */
   def renderProxy(inputs: ProxyInputs): Either[String, String] =
     val everyPath = inputs.executables ++ inputs.reads ++ inputs.systemPaths.reads ++ inputs.systemPaths.executes

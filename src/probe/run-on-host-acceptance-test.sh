@@ -609,7 +609,7 @@ if want mill; then
     # Each supervisor row starts a daemon in the command's session — the stock bootstrap under the
     # daemon profile, ten seconds of denied connect retry — runs the client against its port, and
     # ends it with the session; out/mill-daemon is Mill's, neither cleared nor read for authority
-    # (RunOnHostSandbox.RunnerRuntimes, RunOnHostMillDaemons), beyond the `mill-daemon-classpath` file a
+    # (RunnerRuntimes, RunOnHostMillDaemons), beyond the `mill-daemon-classpath` file a
     # start deletes when it names paths the profile denies (RunOnHostMillDaemons.discardForeignClasspath).
     for command in __.compile __.test; do
         [ "$command" = __.test ] && [ "$quick" = 1 ] && { report SKIP "./mill $command" "quick mode"; continue; }
@@ -1381,7 +1381,7 @@ group: $(server_in_group "$root_server" | tr '\n' ' '), command servers: $(comma
             "record before: $root_record, after: $(runner_proxy_record "$project"), \
 command proxies: $(command_proxies | tr '\n' ' ')"; fi
 
-        # The request that starts a server gives it its -D (RunOnHostSandbox.serverCommand).
+        # The request that starts a server gives it its -D (RunOnHostSbtServer.serverCommand).
         # `shutdown` ends the server the test row started, and the next request starts one.
         probe='eval sys.props.getOrElse("acceptance.probe", "unset")'
         with_timeout 300 channel_shim chan-shutdown.log "$project" sbt shutdown
@@ -1504,7 +1504,7 @@ deny alive after root: $deny_after_root, deny reused: $deny_reused"; fi
         # A second runner on the same project: its commands attach to the first runner's server
         # and daemon when they would start one under the same confinement and environment, and
         # otherwise end them by the first's records and start their own
-        # (RunOnHostSandbox.RunnerRuntimes.attached, takeOver). The shim and the
+        # (RunnerRuntimes.attached, takeOver). The shim and the
         # runner both spell the channel directory as one constant, and the stub podman runs every
         # exec on this host, so a second runner would share the first's FIFOs: its own stub
         # rewrites the constant in each script it execs, and its shim is a copy with the constant
