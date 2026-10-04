@@ -142,12 +142,6 @@ measurement.
   connect to server" (2026-10-03). The cause is not found. `narrow` runs the same function in
   this checkout; `mach` runs it in its fixture.
 
-## `AgentSandboxLauncher.launch` as phases
-
-- [ ] `AgentSandboxLauncher.launch` is one function of about 1000 lines. Phases of it as functions
-  need their shared values passed explicitly, so the change is not a move: commit it apart from
-  the file splits, which `git diff --color-moved` shows as moved lines.
-
 ## Proxy parsing written more than once
 
 Security-relevant parsing: a merge keeps every refusal and its wording, and a test covers each
