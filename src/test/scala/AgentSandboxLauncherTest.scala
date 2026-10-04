@@ -10,11 +10,11 @@ import scala.jdk.CollectionConverters.*
 import java.time.ZoneId
 
 import AgentSandboxLauncher.*
-import HostCommands.Os
+import HostCommands.{InvisibleTypes, Os, renderArgument, shown}
 import SandboxProject.projectIdOf
 import ContainerfileSources.*
 import LauncherImages.*
-import KoAgentFs.bundledSourceId
+import LauncherImages.bundledSourceId
 import agentsandbox.egress.RulesetHelper.resolveRuleset
 
 class AgentSandboxLauncherTest extends munit.FunSuite:
@@ -217,7 +217,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assert(line.startsWith("\u001b[38;5;208m") && line.endsWith("\u001b[0m"), line)
       assertEquals(line.count(_ == '\u001b'), 2, line)
 
-  test("a program's rule file naming hosts is an orange report, one rule per line, and a control character is shown"):
+  test("a program's hosts are an orange report, one rule per line, what a terminal acts on spelled out"):
     val silent = Seq("sbt" -> Vector.empty, "mill" -> Vector.empty)
     assertEquals(runOnHostWideningLines(silent, color = false), Vector.empty)
     assertEquals(
@@ -238,6 +238,11 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         "\u001b[38;5;208mrun-on-host egress rules (.ko-agent-sandbox/run-on-host/gradle/egress/rule) widen:\u001b[0m",
         "\u001b[38;5;208m  allow https://x.example\\x1b[2K/ read\u001b[0m",
       ),
+    )
+    // A bidi override would show the line reordered, a line separator as two lines.
+    assertEquals(
+      runOnHostWideningLines(Seq("sbt" -> Vector("moc.live\u202e", "a\u2028b")), color = false).tail,
+      Vector("  allow https://moc.live\\u202e/ read", "  allow https://a\\u2028b/ read"),
     )
 
   test("the memory figure's scale is the action's: the session floor at a launch, the build check before a build"):
@@ -428,7 +433,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       val path = dir.resolve(s"podman-$running-${logs.hashCode.toHexString}-${readyOn.hashCode.toHexString}")
       // `logs` on a container `--rm` already took: podman's own complaint, and a failure.
       val relay = logs.fold("echo 'no such container' >&2; exit 125")(text => s"printf '%s' '$text' >&2")
-      val readying = readyOn.fold("")(log => s"; echo '$EgressProxyReadyLine' >> '$log'")
+      val readying = readyOn.fold("")(log => s"; echo '${agentsandbox.egress.AgentEgressProxy.ReadyLine}' >> '$log'")
       Files.writeString(
         path,
         s"""#!/bin/sh
@@ -446,7 +451,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val listened = dir.resolve("listened.log")
     Files.writeString(
       listened,
-      s"2026-08-29T00:00:00Z $EgressProxyReadyLine\n2026-08-29T00:00:00Z allow https://a/ read\n",
+      s"2026-08-29T00:00:00Z ${agentsandbox.egress.AgentEgressProxy.ReadyLine}\n" +
+        "2026-08-29T00:00:00Z allow https://a/ read\n",
     )
     // Ready before the first inspect, and after it: the proxy's networks either way.
     assertEquals(awaitProxyReady(podman(running = true), "proxy", listened, bound), Right("sandbox-net 10.89.0.2"))
@@ -474,11 +480,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       .getOrElse(fail("a stall must fail"))
     assert(silent.startsWith("the egress proxy did not report ready within 2s"), silent)
 
-  test("this build includes the proxy for --serve-proxy-on-host: resources load, spellings agree"):
+  test("this build includes the proxy for --serve-proxy-on-host: its resources load"):
     // Class initialization reads /defaults eagerly, so nonEmpty proves the resources are on this
     // classpath — the same classpath the assembled jar packages.
     assert(agentsandbox.egress.RulesetHelper.CatalogLines.nonEmpty)
-    assertEquals(agentsandbox.egress.AgentEgressProxy.ReadyLine, EgressProxyReadyLine)
 
   test("the image's Maven settings name the proxy the launcher names"):
     // Maven takes no property in <port>, so the file spells the address a second time.
@@ -1880,31 +1885,31 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val twice = projectIdOperands("--reset", List("a-0123456789ab", "b-0123456789ab", "a-0123456789ab"))
     assert(twice.left.exists(_.contains("names a-0123456789ab twice")), twice.toString)
 
-  test("a reset relays every unmount and removal the script made, a failure after them included"):
-    def ran(exit: Int, out: String) = Some(HostCommands.Run(exit, out.getBytes, ""))
-    val label = "ko-agent-fs filter on the host"
-    assertEquals(unmountReport(label, ran(0, "")), Vector.empty)
-    assertEquals(unmountReport(label, ran(0, "removed /m/a\n")), Vector(s"$label: removed /m/a"))
-    // The unmount went through; only what followed it failed, and the note must not deny it.
-    assertEquals(
-      unmountReport(label, ran(1, "unmounted /m/a/workspace\n")),
-      Vector(s"$label: unmounted /m/a/workspace", "note: the filter unmount script failed after the actions above"),
-    )
-    val skipped = Vector("note: filter unmount skipped (no machine running, or the unmount script failed)")
-    assertEquals(unmountReport(label, ran(255, "")), skipped)
-    assertEquals(unmountReport(label, None), skipped)
-
-  test("the state root must be absolute, resolves canonically, and stays outside the project"):
+  test("the state root is absolute, canonical and outside the project; an empty variable is unset"):
     // Refused rather than resolved, on every platform spelling.
     assert(stateRootOf(HostCommands.Os.Linux, Map("XDG_STATE_HOME" -> "relative/state").get).isLeft)
     assert(stateRootOf(HostCommands.Os.Linux, Map("HOME" -> "relative/home").get).isLeft)
     assert(stateRootOf(HostCommands.Os.Windows, Map("LOCALAPPDATA" -> "relative").get).isLeft)
     assert(stateRootOf(HostCommands.Os.Linux, Map.empty[String, String].get).isLeft)
+    // An empty variable is an unset one: the default, or the refusal that nothing is set.
+    assertEquals(
+      stateRootOf(HostCommands.Os.Linux, Map("HOME" -> "").get),
+      Left("error: HOME is not set"),
+      "never /.local/state",
+    )
+    assertEquals(
+      stateRootOf(HostCommands.Os.Windows, Map("LOCALAPPDATA" -> "").get),
+      Left("error: LOCALAPPDATA is not set"),
+    )
 
     val base = Files.createTempDirectory("state-root").toRealPath()
     assertEquals(
       stateRootOf(HostCommands.Os.Linux, Map("XDG_STATE_HOME" -> base.toString).get),
       Right(base.resolve("ko-agent-sandbox")),
+    )
+    assertEquals(
+      stateRootOf(HostCommands.Os.Linux, Map("XDG_STATE_HOME" -> "", "HOME" -> base.toString).get),
+      Right(base.resolve(".local/state/ko-agent-sandbox")),
     )
     val real = Files.createDirectories(base.resolve("real"))
     val linked = Files.createSymbolicLink(base.resolve("linked"), real)

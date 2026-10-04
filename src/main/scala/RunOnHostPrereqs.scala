@@ -3,7 +3,8 @@
 // directory a request from inside the sandbox may name as a working directory. run-on-host.md is
 // the reference; this file is the contract's prerequisite half, and holds no backend.
 //
-// Everything here is pure over (Os, environment, filesystem layout), so the macOS answers are
+// Everything here except readProgramRules, which reads the project's run-on-host/ tree, is pure
+// over (Os, environment, filesystem layout), so the macOS answers are
 // testable from any host — the technique AgentSandboxLauncher.stateRootOf already uses. A refusal
 // is a value rather than an exit, because the same classification serves the launch's provisioning
 // (RunOnHostProvisioning), a channel request, and the tests that prove unsupported layouts stay
@@ -11,11 +12,11 @@
 
 package agentsandbox.launcher
 
-import java.io.{IOException, StringReader}
+import java.io.StringReader
 import java.math.BigInteger
 import java.net.{URI, URISyntaxException}
 import java.nio.charset.StandardCharsets.UTF_8
-import java.nio.file.{InvalidPathException, Path, Paths}
+import java.nio.file.{Files, InvalidPathException, LinkOption, Path, Paths}
 import java.security.MessageDigest
 import java.util.{Locale, Properties}
 
@@ -28,6 +29,9 @@ object RunOnHostPrereqs:
 
     /** What a launch, a request, the rule file and the shim call it: the executable's name. */
     def name: String = toString.toLowerCase(Locale.ROOT)
+
+  object Program:
+    def named(name: String): Option[Program] = values.find(_.name == name)
 
   /**
    * Why a command cannot run, one case per category (run-on-host.md "Refusals"). A value, not a
@@ -189,18 +193,15 @@ object RunOnHostPrereqs:
    * directory, which `--reset A` removes.
    *
    * `path` must be canonical — a symlinked `run-on-host` or project directory places it wherever
-   * the link points, which the spelling never shows — and is compared under the macOS data-volume
-   * spellings as [[cacheRootOutsideProject]] compares.
+   * the link points, which the spelling never shows — and is compared in each of its spellings
+   * (SandboxProject.dataVolumeSpellings).
    */
   def cachePathClearOfStateRoot(path: Path, stateRoot: Path, os: Os): Either[Refusal, Path] =
-    val clear = spellings(os, path).forall: candidate =>
-      spellings(os, stateRoot).forall: state =>
+    val clear = SandboxProject.dataVolumeSpellings(os, Seq(path)).forall: candidate =>
+      SandboxProject.dataVolumeSpellings(os, Seq(stateRoot)).forall: state =>
         candidate.startsWith(runOnHostCachesOf(state)) ||
           (!candidate.startsWith(state) && !state.startsWith(candidate))
     if clear then Right(path) else Left(Refusal.CachePathOverlapsStateRoot(path, stateRoot))
-
-  private def spellings(os: Os, path: Path): Seq[Path] =
-    if os == Os.Mac then SandboxProject.withMacDataVolumeAliases(Seq(path)) else Seq(path)
 
   def coursierV1Of(cacheRoot: Path, projectId: String): Path =
     runOnHostCacheDir(cacheRoot, projectId).resolve("coursier").resolve("v1")
@@ -248,18 +249,13 @@ object RunOnHostPrereqs:
     canonicalize: Path => Either[String, Path],
   ): Either[Refusal, Path] =
     // Canonical before the overlap check: XDG_CACHE_HOME can be a symlink whose text is outside the
-    // project and whose target is inside it, and the lexical answer would pass it.
-    // Under the macOS data-volume spellings too: a firmlink is not a symlink, so canonicalization
-    // leaves `/System/Volumes/Data/...` and `/...` as two names of one directory
-    // (SandboxProject.withMacDataVolumeAliases). The canonical root is the answer, and every path
-    // derived from it must come from that answer, not from the spelling that was checked.
+    // project and whose target is inside it, and the lexical answer would pass it. The canonical
+    // root is the answer, and every path derived from it must come from that answer, not from
+    // cacheRoot as given.
     canonicalize(cacheRoot) match
       case Left(reason) => Left(Refusal.CacheRootUnusable(reason))
       case Right(root) =>
-        // Exact, both being canonical: folding would refuse a case-different sibling that a
-        // case-sensitive volume keeps distinct.
-        def overlapsExactly(left: Path, right: Path) = left.startsWith(right) || right.startsWith(left)
-        if spellings(os, root).exists(r => spellings(os, project).exists(p => overlapsExactly(r, p))) then
+        if SandboxProject.overlapsInAnySpelling(os, root, project) then
           Left(Refusal.CacheRootInsideProject(root, project))
         else Right(root)
 
@@ -349,8 +345,39 @@ object RunOnHostPrereqs:
       case _                   => Left(Refusal.PrereqSbtNotCoursier(candidate))
 
   /**
+   * The second half of the cs-installed `sbt`: the script execs an unpacked distribution inside the
+   * Coursier archive cache. Its path encodes the download URL of whichever sbt Coursier installed,
+   * so it is read out of the script rather than derived — and read rather than obtained by running
+   * it: running the script is executing on the host, unconfined.
+   *
+   * The longest cache path the script names, because a shorter one is a prefix of the real answer
+   * and a grant on a prefix is wider than it should be. Refused if it escapes the cache root.
+   */
+  def sbtDistribution(scriptText: String, coursierCacheRoot: Path): Option[Path] =
+    val prefix = coursierCacheRoot.toString
+    val candidates =
+      for
+        line <- scriptText.linesIterator
+        start <- indexesOf(line, prefix)
+        raw = line.drop(start).takeWhile(ch => ch != '"' && ch != '\'' && ch != ';' && ch != '\n')
+        trimmed = raw.trim
+        if trimmed.length > prefix.length
+      yield trimmed
+    candidates.toSeq.sortBy(-_.length).headOption
+      .map(text => Path.of(text).normalize())
+      .filter(_.startsWith(coursierCacheRoot))
+
+  private def indexesOf(line: String, needle: String): Seq[Int] =
+    Iterator
+      .unfold(0): from =>
+        line.indexOf(needle, from) match
+          case -1    => None
+          case index => Some((index, index + 1))
+      .toSeq
+
+  /**
    * The sbt distribution home to grant, from the distribution's `sbt` the cs-installed script execs
-   * (SeatbeltProfile.sbtDistribution names it). It is checked as the script itself is —
+   * (sbtDistribution names it). It is checked as the script itself is —
    * canonical, an executable file, still inside the cache once symlinks are followed — and its
    * layout is checked too: `<home>/bin/sbt` with the home strictly inside `arc`, where Coursier
    * unpacks archives. A grant is the home, so `arc/bin/sbt` or `v1/x/bin/sbt` would grant `arc`
@@ -664,7 +691,6 @@ object RunOnHostPrereqs:
     projectPropertiesText: Option[String],
   ): Either[Refusal, URI] =
     def unreadable(reason: String) = Left(Refusal.PrereqGradleWrapperUnreadable(reason))
-    def printable(text: String) = text.forall(ch => ch >= ' ' && ch <= '~')
     def load(name: String, text: String): Either[Refusal, Properties] =
       val properties = Properties()
       try
@@ -673,7 +699,7 @@ object RunOnHostPrereqs:
       catch case ex: IllegalArgumentException => unreadable(s"$name is malformed: ${ex.getMessage}")
     def setting(properties: Properties, key: String, default: String): Either[Refusal, String] =
       val value = Option(properties.getProperty(key)).getOrElse(default)
-      if printable(value) then Right(value) else unreadable(s"$key contains a character outside printable ASCII")
+      if isPrintableAscii(value) then Right(value) else unreadable(s"$key contains a character outside printable ASCII")
     def defaultOnly(properties: Properties, key: String, default: String): Either[Refusal, Unit] =
       setting(properties, key, default).flatMap: value =>
         if value == default then Right(())
@@ -691,7 +717,7 @@ object RunOnHostPrereqs:
           "no distributionUrl in gradle/wrapper/gradle-wrapper.properties",
         ))
       url <-
-        if printable(raw) then Right(raw)
+        if isPrintableAscii(raw) then Right(raw)
         else unreadable("distributionUrl contains a character outside printable ASCII")
       parsed <-
         try Right(URI(url))
@@ -780,12 +806,11 @@ object RunOnHostPrereqs:
         line.dropWhile(_ != '=').drop(1)
     val pattern = "/org/apache/maven/"
     val cSpace = Set(' ', '\t', '\n', '\u000b', '\f', '\r')
-    def printable(text: String) = text.forall(ch => ch >= ' ' && ch <= '~')
     def noUrl = Left(Refusal.PrereqMvnWrapperUnreadable("no distributionUrl in .mvn/wrapper/maven-wrapper.properties"))
     // A URL is quoted in a refusal only once it is printable ASCII: never a control character.
     found.lastOption match
       case None => noUrl
-      case Some(raw) if !printable(raw.filterNot(cSpace)) =>
+      case Some(raw) if !isPrintableAscii(raw.filterNot(cSpace)) =>
         Left(Refusal.PrereqMvnWrapperUnreadable("distributionUrl contains a character outside printable ASCII"))
       case Some(raw) =>
         val url = raw.filterNot(cSpace)
@@ -794,7 +819,7 @@ object RunOnHostPrereqs:
             case -1    => url
             case index => url.drop(index + pattern.length))
         if url.isEmpty then noUrl
-        else if !printable(effective) then
+        else if !isPrintableAscii(effective) then
           Left(Refusal.PrereqMvnWrapperUnreadable("MVNW_REPOURL contains a character outside printable ASCII"))
         else if url.drop(url.lastIndexOf('/') + 1).startsWith("maven-mvnd-") then
           Left(Refusal.PrereqMvnDistributionIsMvnd(url))
@@ -866,24 +891,80 @@ object RunOnHostPrereqs:
     case Program.Gradle | Program.Mvn => "repo.maven.apache.org"
 
   def programRulePath(project: Path, program: Program): Path =
-    project.resolve(".ko-agent-sandbox").resolve("run-on-host").resolve(program.name).resolve("egress").resolve("rule")
+    SandboxProject.boundaryDirOf(project).resolve("run-on-host").resolve(program.name).resolve("egress").resolve("rule")
 
-  /** The one line form the program's rule file holds, `allow https://<host>/ read`, as the refusal spells it. */
-  val ProgramRuleForm = "allow https://<host>/ read"
+  /**
+   * The program's rule file's hosts, validated to the program's rule grammar (run-on-host.md
+   * "Configuration"). The whole run-on-host/ tree is checked first, every program's egress/ as
+   * egress/ and file/ are (SandboxProject.readBoundaryRuleFiles), and only the selected program's
+   * rule file is read: an absent file contributes nothing.
+   */
+  def readProgramRules(project: Path, program: Program): Either[String, Vector[String]] =
+    def egressDir(each: Program) = programRulePath(project, each).getParent
+    val grammar = "doc/run-on-host.md"
+    for
+      _ <- programDirectoryRefusal(project).toLeft(())
+      _ <- Program.values.iterator
+        .flatMap(each => SandboxProject.ruleDirectoryRefusal(egressDir(each), Vector("rule"), grammar))
+        .nextOption().toLeft(())
+      files <- SandboxProject
+        .readBoundaryRuleFiles(egressDir(program), Vector("rule"), grammar, EgressRules.normalizeRuleText)
+      hosts <- files.headOption.fold(Right(Vector.empty)): (_, text) =>
+        programRuleHosts(text).left
+          .map(refusal => s"error: ${HostCommands.shown(s"${programRulePath(project, program)}: ${wording(refusal)}")}")
+    yield hosts
+
+  /**
+   * run-on-host/ accepts only recognized configuration entries, as does its parent directory
+   * (SandboxProject.boundaryDirRefusal): a directory per Program, and egress/ inside each. A stray
+   * name, a symlinked component, or a file where a directory belongs refuses the command rather
+   * than staying as ignored config; a file where a directory belongs would read as absent
+   * configuration.
+   */
+  private def programDirectoryRefusal(project: Path): Option[String] =
+    val dir = SandboxProject.boundaryDirOf(project).resolve("run-on-host")
+    val programs = Program.values.toVector.map(_.name)
+    val directories = dir +: programs.map(dir.resolve)
+    def strays(path: Path, allowed: Set[String]): Vector[String] =
+      if !Files.isDirectory(path) then Vector.empty
+      else
+        FileHelper.directoryEntries(path).map(_.getFileName.toString)
+          .filterNot(SandboxProject.isMetadataEntry).filterNot(allowed).sorted
+          .map(name => HostCommands.shown(s"$path/$name"))
+    def shown(path: Path) = HostCommands.shown(path.toString)
+    directories.find(Files.isSymbolicLink)
+      .map: link =>
+        s"error: ${shown(link)} must not be a symlink\n" +
+          "Refusing to read this project's boundary configuration through one."
+      .orElse(directories.find(path => Files.exists(path, LinkOption.NOFOLLOW_LINKS) && !Files.isDirectory(path))
+        .map: file =>
+          s"error: ${shown(file)} must be a directory\n" +
+            "Remove what is in its place; the directory holds this project's boundary configuration.")
+      .orElse:
+        val stray = strays(dir, programs.toSet) ++ programs.flatMap(name => strays(dir.resolve(name), Set("egress")))
+        Option.when(stray.nonEmpty):
+          s"error: ${stray.mkString(", ")}: not configuration this launcher reads — " +
+            "a typo, or a newer launcher's file; check the spelling or update the launcher"
+
+  /** The one line form the program's rule file holds, for `host`. */
+  def programRuleLine(host: String): String = s"allow https://$host/ read"
+
+  /** The line form as the refusal spells it. */
+  val ProgramRuleForm = programRuleLine("<host>")
 
   /**
    * The program's rule file grammar: `allow https://<host>/ read` lines and `#` comments, nothing
    * else — no other grant, no path, no provider, no deny. The proxy's full grammar would let one
    * `allow model-provider` line expand into endpoints that are no artifact repository, and a
    * `tunnel` or `method=` word would let a host command write to a host; anything outside the subset
-   * is refused here, never passed through for the proxy to interpret. Tokenization mirrors the
-   * proxy's — split on whitespace, a comment from the first token starting with `#`, and a `#`
-   * inside a token refused — so a line read here is the line the proxy would read, and
-   * `read#typo` is not `read`; the host is what the proxy's own parser will normalize and vet.
+   * is refused here, never passed through for the proxy to interpret. The words are the proxy's
+   * own (RulesetHelper.ruleTokens) and a `#` inside a word is refused, so a line read here is the
+   * line the proxy would read, and `read#typo` is not `read`; the host is what the proxy's own
+   * parser will normalize and vet.
    */
   def programRuleHosts(text: String): Either[Refusal, Vector[String]] =
     val lines = text.linesIterator
-      .map(_.split("\\s+").toVector.filter(_.nonEmpty).takeWhile(!_.startsWith("#")))
+      .map(agentsandbox.egress.RulesetHelper.ruleTokens)
       .filter(_.nonEmpty)
       .toVector
     def hostOf(tokens: Vector[String]): Option[String] = tokens match
@@ -901,8 +982,12 @@ object RunOnHostPrereqs:
    * Deduplicated, so a host the file restates is not warned as a redundant grant at every command.
    */
   def egressRuleText(program: Program, fileHosts: Vector[String]): String =
-    ("deny defaults" +: (centralHost(program) +: fileHosts).distinct.map(host => s"allow https://$host/ read"))
-      .mkString("\n")
+    ("deny defaults" +: programHosts(program, fileHosts).map(programRuleLine)).mkString("\n")
+
+  /** The hosts a program's proxy allows, every one of them inspected (egressRuleText): its Maven
+    * Central host, then the rule file's. A brokered credential reaches that proxy only for one of them. */
+  def programHosts(program: Program, fileHosts: Vector[String]): Vector[String] =
+    (centralHost(program) +: fileHosts).distinct
 
   // ---------------------------------------------------------------------------
   // The channel's working directory
@@ -978,19 +1063,12 @@ object RunOnHostPrereqs:
         && childParts.length >= parentParts.length
         && childParts.take(parentParts.length) == parentParts
 
-  /** Overlap in either direction: a cache above the project exposes it, one below is writable. */
-  def overlaps(left: Path, right: Path, os: Os): Boolean =
-    startsWith(left, right, os) || startsWith(right, left, os)
-
   /** macOS and Windows default to case-insensitive volumes; Linux does not. */
   def foldsCase(os: Os): Boolean = os != Os.Linux
+
+  private def isPrintableAscii(text: String): Boolean = text.forall(ch => ch >= ' ' && ch <= '~')
 
   /** A string that is not a path at all is a refusal, never an exception thrown at a caller. */
   private def parsePath(value: String): Option[Path] =
     try Some(Paths.get(value))
     catch case _: InvalidPathException => None
-
-  /** The real path, or None when it does not exist — an absence the caller classifies. */
-  def realPath(path: Path): Option[Path] =
-    try Some(path.toRealPath())
-    catch case _: IOException => None

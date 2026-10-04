@@ -54,11 +54,13 @@ object FileRules:
    * hook directory among them, come only from a launch's mount or `--resolve`.
    */
   def ofProject(project: Path): Either[String, Resolved] =
-    readRuleFile(project.resolve(".ko-agent-sandbox").resolve("file")).map: file =>
+    readRuleFile(SandboxProject.boundaryDirOf(project).resolve("file")).map: file =>
       Resolved(resolve(file.fold(Vector.empty[Line])(_(1))), Vector.empty, Vector.empty)
 
-  /** The names the filter's own rules govern, which a rule line cannot reach. */
-  val GuardedComponents: Set[String] = Set(".git", ".ko-agent-sandbox")
+  /** The names the filter's own rules govern, which a rule line cannot reach. The host command's
+    * profile guards the same names (SeatbeltProfile), and the launcher's walks of the project
+    * enter neither. */
+  val GuardedComponents: Seq[String] = Seq(".git", ".ko-agent-sandbox")
 
   /**
    * The lines of `text`, `origin` naming it in a refusal. Comments and whitespace are
@@ -90,7 +92,7 @@ object FileRules:
           "write it lowercase",
       )
     else
-      components.find(GuardedComponents).map: guarded =>
+      components.find(GuardedComponents.contains).map: guarded =>
         s"`$guarded` is the filter's own to protect, and no file rule reaches it"
 
   /** The launcher's defaults (`agentsandbox/file-rule-defaults`), before the project's lines. */

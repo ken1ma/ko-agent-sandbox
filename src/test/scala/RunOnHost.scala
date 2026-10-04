@@ -38,7 +38,7 @@ object RunOnHost:
           .flatMap(_ => RunOnHostSession.buildLockFile(root, programName.toLowerCase, Paths.get(projectName)))
           .fold(reason => { Console.err.println(s"refused: $reason"); sys.exit(2) }, println)
       case programName :: projectName :: rest if rest.sizeIs <= 1 =>
-        val program = Program.values.find(_.name == programName.toLowerCase).getOrElse:
+        val program = Program.named(programName.toLowerCase).getOrElse:
           Console.err.println(s"unknown program $programName\n$usage")
           sys.exit(2)
         val systemPaths = RunOnHostSandbox.readSystemPaths(rest.headOption.map(Paths.get(_)))

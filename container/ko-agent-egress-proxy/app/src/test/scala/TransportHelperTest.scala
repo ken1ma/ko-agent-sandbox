@@ -84,6 +84,8 @@ class TransportHelperTest extends munit.FunSuite:
     assert(refusal("http://proxy.corp.example:0").contains("port must be explicit"))
     assert(refusal("http://proxy.corp.example:65536").contains("port must be explicit"))
     assert(refusal("http://proxy.corp.example:abc").contains("port must be explicit"))
+    assert(refusal("http://proxy.corp.example:+3128").contains("port must be explicit"))
+    assert(refusal("http://proxy.corp.example:٣١٢٨").contains("port must be explicit"))
     assert(refusal("http://proxy.corp.example:3128/path").contains("path"))
     assert(refusal("http://proxy.corp.example:3128/?x").contains("query or fragment"))
     assert(refusal("http://proxy.corp.example:3128#f").contains("query or fragment"))
@@ -100,6 +102,11 @@ class TransportHelperTest extends munit.FunSuite:
     def read(values: Map[String, String]): Option[UpstreamEndpoint] = UpstreamEndpoint.configured(values.get)
     assertEquals(read(Map.empty), None)
     assertEquals(read(Map("HTTPS_PROXY" -> "")), None)
+    assertEquals(
+      read(Map("HTTPS_PROXY" -> "", "https_proxy" -> "http://lower.example:1")).map(_.host),
+      Some("lower.example"),
+      "an empty uppercase is unset, so the lowercase is read",
+    )
     assertEquals(read(Map("https_proxy" -> "http://lower.example:1")).map(_.host), Some("lower.example"))
     // The lowercase variable is diagnosed and reported as itself.
     val lower = intercept[IllegalArgumentException](read(Map("https_proxy" -> "http://lower.example"))).getMessage

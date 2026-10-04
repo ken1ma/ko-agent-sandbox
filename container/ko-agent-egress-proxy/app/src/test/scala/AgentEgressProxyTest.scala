@@ -10,6 +10,7 @@ import AgentEgressProxy.*
 import LogHelper.*
 import RulesetHelper.*
 import HTTPHelper.*
+import Refusals.*
 import IPAddrHelper.*
 import TLSHelper.*
 import TransportHelper.*
@@ -2788,6 +2789,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "127.0.0.1:x",     // not a port
         "127.0.0.1:65536", // past the port range
         "127.0.0.1:-1",    // negative
+        "127.0.0.1:+3128", // a sign
+        "127.0.0.1:٣١٢٨",  // another script's digits
       )
     do
       val ex = intercept[IllegalArgumentException](parseBind(Some(value)))

@@ -8,46 +8,14 @@
 
 package agentsandbox.launcher
 
-import java.nio.charset.StandardCharsets
+import java.io.IOException
 import java.nio.file.{Files, Path, Paths}
-import java.security.MessageDigest
-import scala.jdk.CollectionConverters.*
-import scala.util.Using
 
 import HostCommands.*
 import FileHelper.*
+import LauncherImages.{bundledSourceId, contextSourceId}
 
 object KoAgentFs:
-
-  /**
-   * The one source-identity digest, for the filter binary and the image bundle labels alike:
-   * SHA-256 over (path, content) pairs in path order, each entry framed by its path, a NUL and its
-   * big-endian length — the sort makes bundling order irrelevant, the length keeps file boundaries
-   * unambiguous, and the path makes a rename a new identity. The algorithm is only here,
-   * deliberately: a build is told the answer and repeats it, so there is no second implementation
-   * to drift from this one.
-   */
-  def bundleSourceId(entries: Seq[(String, Array[Byte])]): String =
-    val digest = MessageDigest.getInstance("SHA-256")
-    entries.sortBy(_._1).foreach: (path, content) =>
-      digest.update(path.getBytes(StandardCharsets.UTF_8))
-      digest.update(0.toByte)
-      digest.update(java.nio.ByteBuffer.allocate(8).putLong(content.length.toLong).array())
-      digest.update(content)
-    digest.digest().map(b => f"$b%02x").mkString
-
-  /**
-   * Digest one directory of the unpacked context — the literal build input,
-   * so the id describes exactly what podman build is about to see.
-   */
-  def contextSourceId(context: Path, dir: String): String =
-    val root = context.resolve(dir)
-    val entries = Using.resource(Files.walk(root)): files =>
-      files.iterator().asScala
-        .filter(Files.isRegularFile(_))
-        .map(file => (root.relativize(file).toString.replace('\\', '/'), Files.readAllBytes(file)))
-        .toVector
-    bundleSourceId(entries)
 
   /**
    * The bundled filter source's identity, passed to the image build as KO_AGENT_FS_SOURCE_ID and
@@ -89,7 +57,7 @@ object KoAgentFs:
     os match
       case Os.Linux =>
         Vector(
-          Vector(podman, "create", "--replace", "--name", "ko-agent-fs-extract", "ko-agent-fs:latest"),
+          Vector(podman, "create", "--replace", "--name", "ko-agent-fs-extract", LauncherImages.KoAgentFsImage),
           Vector(podman, "cp", "ko-agent-fs-extract:/ko-agent-fs", s"$home/$KoAgentFsBinary"),
           Vector(podman, "rm", "ko-agent-fs-extract"),
         )
@@ -97,7 +65,7 @@ object KoAgentFs:
         val script =
           s"""set -eu
              |mkdir -p $KoAgentFsInstallDir
-             |podman create --replace --name ko-agent-fs-extract ko-agent-fs:latest >/dev/null
+             |podman create --replace --name ko-agent-fs-extract ${LauncherImages.KoAgentFsImage} >/dev/null
              |podman cp ko-agent-fs-extract:/ko-agent-fs $KoAgentFsBinary
              |podman rm ko-agent-fs-extract >/dev/null""".stripMargin
         Vector(Vector(podman, "machine", "ssh", script))
@@ -247,27 +215,24 @@ object KoAgentFs:
   // ENOTCONN, never a fallthrough to the unfiltered tree.
   // ---------------------------------------------------------------------------
 
-  /**
-   * The digest of one bundle directory as this jar bundles it — the same
-   * bytes unpackBuildContext writes and contextSourceId hashes, read
-   * straight from the jar so no unpack is needed. What the filter binary's
-   * `--version` must report, and what --build stamps into the sandbox and
-   * proxy images as their bundle label (AgentSandboxLauncher.bundleMismatch).
-   */
-  def bundledSourceId(dir: String): String =
-    def resource(name: String): Array[Byte] =
-      val stream = getClass.getResourceAsStream(s"/sandbox-build/$name")
-      if stream == null then fail(s"error: the launcher jar has no bundled entry '$name'")
-      try stream.readAllBytes()
-      finally stream.close()
-    val entries =
-      String(resource("INDEX"), StandardCharsets.UTF_8).linesIterator
-        .filter(_.startsWith(s"$dir/"))
-        .map(entry => entry.stripPrefix(s"$dir/") -> resource(entry))
-        .toVector
-    bundleSourceId(entries)
-
   def bundledKoAgentFsSourceId(): String = bundledSourceId("ko-agent-fs")
+
+  /** Runs an unmount script and prints its [[unmountReport]]; true when the script acted on any filter state. */
+  def unmountKoAgentFs(os: Os, script: String): Boolean =
+    val result =
+      try Some(run(koAgentFsScriptCommand(podman, os, script)*))
+      catch case _: IOException => None
+    val lines = unmountReport(koAgentFsLabel(os), result)
+    lines.foreach(System.err.println)
+    result.exists(_.text.nonEmpty)
+
+  /** The lines reporting an unmount script's run, None when it could not start: every action it
+    * printed, even when a later one failed, then a note if the run failed. */
+  def unmountReport(label: String, result: Option[Run]): Vector[String] =
+    val done = result.toVector.flatMap(_.text.linesIterator).map(line => s"$label: $line")
+    if result.exists(_.ok) then done
+    else if done.isEmpty then Vector("note: filter unmount skipped (no machine running, or the unmount script failed)")
+    else done :+ "note: the filter unmount script failed after the actions above"
 
   def koAgentFsMountDir(projectId: String): String = s"$KoAgentFsInstallDir/mounts/$projectId"
 
@@ -295,20 +260,16 @@ object KoAgentFs:
     sandboxContainer: String,
     fileRules: String,
   ): String =
-    val encoded =
-      java.util.Base64.getEncoder.encodeToString(backing.getBytes(StandardCharsets.UTF_8))
-    val encodedRules =
-      java.util.Base64.getEncoder.encodeToString(fileRules.getBytes(StandardCharsets.UTF_8))
     withScriptPath(
       s"""set -eu
-       |backing="$$(printf %s $encoded | base64 -d)"
+       |backing="$$(${printingCommand(backing)})"
        |dir="$$HOME/${koAgentFsMountDir(projectId)}"
        |mnt="$$dir/workspace"
        |mkdir -p "$$mnt" "$$dir/sessions"
        |: > "$$dir/sessions/$sandboxContainer"
        |exec 9>"$$dir/lock"
        |flock 9 2>/dev/null || true
-       |printf %s $encodedRules | base64 -d > "$$dir/file-rules.new"
+       |${printingCommand(fileRules)} > "$$dir/file-rules.new"
        |if mountpoint -q "$$mnt"; then
        |  if [ "$$(cat "$$dir/source-id" 2>/dev/null || true)" = "$sourceId" ] \\
        |      && ls "$$mnt" >/dev/null 2>&1; then
@@ -489,9 +450,7 @@ object KoAgentFs:
       // but uses the same encoding, so daily macOS runs detect a broken wrapper before it is used on
       // Windows.
       case Os.Mac | Os.Windows =>
-        val encoded =
-          java.util.Base64.getEncoder.encodeToString(script.getBytes(StandardCharsets.UTF_8))
-        Vector(podman, "machine", "ssh", s"printf %s $encoded | base64 -d | sh")
+        Vector(podman, "machine", "ssh", s"${printingCommand(script)} | sh")
 
   /**
    * The mountpoint made ready for a `podman create` that binds it: a directory, so podman's
@@ -580,8 +539,7 @@ object KoAgentFs:
   def koAgentFsChecksScript(home: Option[String], sourceId: String): String =
     val homeLine = home match
       case Some(path) =>
-        val encoded = java.util.Base64.getEncoder.encodeToString(path.getBytes(StandardCharsets.UTF_8))
-        s"""home="$$(printf %s $encoded | base64 -d)""""
+        s"""home="$$(${printingCommand(path)})""""
       case None => """home="$(pwd)""""
     withScriptPath(
       s"""set -u
@@ -697,17 +655,13 @@ object KoAgentFs:
    * check.
    */
   def koAgentFsResolveScript(backing: String, projectId: String, sourceId: String, fileRules: String): String =
-    val encoded =
-      java.util.Base64.getEncoder.encodeToString(backing.getBytes(StandardCharsets.UTF_8))
-    val encodedRules =
-      java.util.Base64.getEncoder.encodeToString(fileRules.getBytes(StandardCharsets.UTF_8))
     withScriptPath(
       s"""set -eu
-       |backing="$$(printf %s $encoded | base64 -d)"
+       |backing="$$(${printingCommand(backing)})"
        |dir="$$HOME/${koAgentFsMountDir(projectId)}"
        |mkdir -p "$$dir"
        |rules="$$dir/file-rules.resolve.$$$$"
-       |printf %s $encodedRules | base64 -d > "$$rules"
+       |${printingCommand(fileRules)} > "$$rules"
        |case "$$("$$HOME/$KoAgentFsBinary" --version 2>/dev/null || true)" in
        |  *" source $sourceId") ;;
        |  *) rm -f "$$rules"; echo "the installed ko-agent-fs is not this launcher's build; run --build" >&2; exit 1 ;;

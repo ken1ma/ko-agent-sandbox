@@ -81,10 +81,10 @@ object RunOnHostChannel:
       case None => Right(None)
       case Some(header) =>
         header.split(" ", 2) match
-          case Array(program, count) if count.forall(_.isDigit) && count.nonEmpty =>
+          case Array(program, count) if agentsandbox.egress.HTTPHelper.isDecimal(count) =>
             count.toIntOption match
               case None =>
-                Left(s"request names $count arguments, which is no count at all")
+                Left(s"request names $count arguments, over the $MaxArguments bound")
               case Some(argc) if argc > MaxArguments =>
                 drainFields(in, argc.toLong + 1)
                 Left(s"request names $argc arguments, over the $MaxArguments bound")
@@ -196,7 +196,7 @@ object RunOnHostChannel:
       * with the request's program: what the runtime records once the command is over
       * (RunOnHostSandbox.RunnerRuntimes.commandEnded). */
     ended: String => Unit = _ => (),
-    canonicalize: Path => Option[Path] = RunOnHostPrereqs.realPath,
+    canonicalize: Path => Option[Path] = FileHelper.realPath,
     /** What the project is mounted at inside the container — its own path
       * (SandboxProject.mountPathOf): the spelling requests arrive in. */
     mount: String,
@@ -701,18 +701,18 @@ object RunOnHostChannel:
           os = Os.Mac,
           buildLock = RunOnHostSession.buildLockFile(root, _, _),
           runtime = (programName, buildDirectory, arguments) =>
-            RunOnHostPrereqs.Program.values.find(_.name == programName)
+            RunOnHostPrereqs.Program.named(programName)
               .toRight(s"unknown program $programName")
               .flatMap(runtimes.prepare(_, buildDirectory, arguments))
               .map(_.toSeq.flatMap(RunOnHostSandbox.runtimeOptions)),
           ended = programName =>
-            RunOnHostPrereqs.Program.values.find(_.name == programName).foreach(runtimes.commandEnded),
+            RunOnHostPrereqs.Program.named(programName).foreach(runtimes.commandEnded),
           mount = trailing.head,
           // A command the runner holds a runtime for uses that runtime's proxy, which the runner started.
           credentialsFrame = (programName, runtimeArguments) =>
-            RunOnHostPrereqs.Program.values.find(_.name == programName)
+            RunOnHostPrereqs.Program.named(programName)
               .filter(_ => runtimeArguments.isEmpty)
-              .flatMap(program => RunOnHostSandbox.readProgramRules(project, program).toOption.map(program -> _))
+              .flatMap(program => RunOnHostPrereqs.readProgramRules(project, program).toOption.map(program -> _))
               .map((program, hosts) => RunOnHostSandbox.credentialsFor(program, hosts, credentials))
               .filter(_.nonEmpty)
               .map(CredentialGrammar.bindingInput),

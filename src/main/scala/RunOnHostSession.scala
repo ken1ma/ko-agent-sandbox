@@ -25,6 +25,10 @@ import java.nio.file.{Files, Path, StandardCopyOption, StandardOpenOption}
 import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal
 
+import agentsandbox.egress.LogHelper.sha256Hex
+
+import RunOnHostPrereqs.Program
+
 object RunOnHostSession:
 
   val LockFile = "lock"
@@ -63,6 +67,20 @@ object RunOnHostSession:
     text.trim.split(" ", 2) match
       case Array(pid, start) if start.nonEmpty => pid.toLongOption.map(Record(_, start))
       case _                                   => None
+
+  /** The suffix of a file being written, which its rename publishes (publishByRename). */
+  val PendingSuffix = ".pending"
+
+  /** `text` at `file`, published by rename from its PendingSuffix sibling. */
+  def publishByRename(file: Path, text: String): Unit =
+    val pending = file.resolveSibling(s"${file.getFileName}$PendingSuffix")
+    Files.writeString(pending, text, UTF_8)
+    Files.move(pending, file, StandardCopyOption.ATOMIC_MOVE)
+
+  /** The record in `file`, or None when it is absent, unreadable or not a record. */
+  def readRecord(file: Path): Option[Record] =
+    try parseRecord(Files.readString(file, UTF_8))
+    catch case _: IOException => None
 
   /** What the scavenger observes and does about processes. Injected: the tests exercise the
     * decision protocol, and a real implementation runs only on macOS. */
@@ -283,16 +301,29 @@ object RunOnHostSession:
   def retirementLockFile(root: Path, name: String): Path =
     Files.createDirectories(root.resolve(RetireLockDir), ownerOnly).resolve(name)
 
-  /** `<program>-<hash>` for a runtime's record — `proxy-<program>-<hash>`, `server-sbt-<hash>`,
-    * `daemon-mill-<hash>`, a `.pending` one included — and None for every other record. */
+  /** A runtime's records, by its build directory's hash (buildHash): its proxy's, and the
+    * ownership records of the directory's sbt server and mill daemon, which another launch's
+    * runner reads to attach or take over (runtimeOwner). */
+  def proxyRecordName(program: Program, hash: String): String = s"proxy-${program.name}-$hash"
+  def serverRecordName(hash: String): String = s"server-sbt-$hash"
+  def daemonRecordName(hash: String): String = s"daemon-mill-$hash"
+
+  /** The program and hash a proxy's record name holds (proxyRecordName), or None. */
+  def proxyRecordOf(recordName: String): Option[(Program, String)] =
+    recordName match
+      case RuntimeRecordName("proxy", program, hash) => Program.named(program).map(_ -> hash)
+      case _                                         => None
+
+  /** `<program>-<hash>` for a runtime's record, a `.pending` one included, and None for every
+    * other record. */
   def retirementLockName(recordName: String): Option[String] =
-    recordName.stripSuffix(".pending") match
-      case RuntimeRecordName(program, hash) => Some(s"$program-$hash")
-      case _                               => None
+    recordName.stripSuffix(PendingSuffix) match
+      case RuntimeRecordName(_, program, hash) => Some(s"$program-$hash")
+      case _                                  => None
 
-  private val RuntimeRecordName = raw"(?:proxy|server|daemon)-([a-z]+)-([0-9a-f]{16})".r
+  private val RuntimeRecordName = raw"(proxy|server|daemon)-([a-z]+)-([0-9a-f]{16})".r
 
-  /** Past the fifteen seconds a holder's TERM, grace and KILL take at most (HostProcesses.endGroup). */
+  /** Past the fifteen seconds a holder's TERM, grace and KILL take at most (termThenKill). */
   val RetirementDeadlineMillis = 20_000L
 
   /** This process's one permit per lock file, held from the channel's open to its close. A
@@ -330,10 +361,7 @@ object RunOnHostSession:
 
   /** What names one build directory's lock and records: its canonical spelling's SHA-256, 16
     * hex digits. */
-  def buildHash(buildDirectory: Path): String =
-    java.security.MessageDigest.getInstance("SHA-256")
-      .digest(buildDirectory.toString.getBytes(UTF_8))
-      .take(8).map(byte => f"$byte%02x").mkString
+  def buildHash(buildDirectory: Path): String = sha256Hex(buildDirectory.toString).take(16)
 
   /** `build-<hash>`, the canonical build directory the records of that hash serve: published by
     * rename before the first record of the hash and removed after the last is retired, so a
@@ -346,9 +374,7 @@ object RunOnHostSession:
   def publishBuildFile(sessionDirectory: Path, hash: String, buildDirectory: Path): Either[String, Path] =
     val file = buildFile(sessionDirectory, hash)
     try
-      val pending = file.resolveSibling(s"${file.getFileName}.pending")
-      Files.writeString(pending, buildDirectory.toString + "\n", UTF_8)
-      Files.move(pending, file, StandardCopyOption.ATOMIC_MOVE)
+      publishByRename(file, buildDirectory.toString + "\n")
       Right(file)
     catch case ex: IOException => Left(s"publishing $file: ${ex.getMessage}")
 
@@ -356,7 +382,7 @@ object RunOnHostSession:
   def buildDirectories(sessionDirectory: Path): Vector[(String, Path)] =
     listDirectory(sessionDirectory).flatMap: file =>
       val name = file.getFileName.toString
-      if !name.startsWith(BuildFilePrefix) || name.endsWith(".pending") || !Files.isRegularFile(file) then None
+      if !name.startsWith(BuildFilePrefix) || name.endsWith(PendingSuffix) || !Files.isRegularFile(file) then None
       else
         try Some(name.stripPrefix(BuildFilePrefix) -> Path.of(Files.readString(file, UTF_8).trim))
         catch case _: IOException => None
@@ -424,10 +450,7 @@ object RunOnHostSession:
     * stranger's since (endRecordedGroup). A record that does not parse, and an observation ps
     * could not make, prove nothing: false. */
   def groupIsDead(record: Path, processes: Processes): Boolean =
-    val parsed =
-      try parseRecord(Files.readString(record, UTF_8))
-      catch case _: IOException => None
-    parsed.exists: known =>
+    readRecord(record).exists: known =>
       try
         processes.startOf(known.pgid) match
           case Some(start) => start != known.leaderStart
@@ -438,10 +461,7 @@ object RunOnHostSession:
     * start time, and no exit published beside the record. Neither alone answers: the leader
     * outlives its command by design, and a group killed whole publishes no exit. */
   def leaderLives(record: Path, processes: Processes): Boolean =
-    val parsed =
-      try parseRecord(Files.readString(record, UTF_8))
-      catch case _: IOException => None
-    parsed.exists(known => processes.startOf(known.pgid).contains(known.leaderStart))
+    readRecord(record).exists(known => processes.startOf(known.pgid).contains(known.leaderStart))
       && !Files.exists(exitRecord(record))
 
   // ---------------------------------------------------------------------------
@@ -621,6 +641,30 @@ object RunOnHostSession:
       if !actions.exists(_.keeps) then deleteSessionTree(condemned)
     actions
 
+  /** TERM, then up to ten seconds for `gone`; then KILL and up to five more: whether `gone` held. */
+  def termThenKill(gone: => Boolean, signal: String => Unit): Boolean =
+    def waited(polls: Int) = (1 to polls).exists(_ => gone || { Thread.sleep(100); false })
+    signal("TERM")
+    waited(100) || {
+      signal("KILL")
+      waited(50)
+    }
+
+  /** Removes the record and its exit file and answers Right(ended), unless `ended`, the group's
+    * ending (endRecordedGroup), keeps the record for the next start to retry: then Left(kept). A
+    * failed removal goes to `removalFailed`. */
+  def forgetUnlessKept(
+    record: Path, ended: Option[Collected], removalFailed: IOException => Unit,
+  ): Either[Collected, Option[Collected]] =
+    ended match
+      case Some(kept) if kept.keeps => Left(kept)
+      case _ =>
+        try
+          Files.deleteIfExists(record)
+          Files.deleteIfExists(exitRecord(record))
+        catch case ex: IOException => removalFailed(ex)
+        Right(ended)
+
   /** End every group the records name, each after checking that its leader has the recorded start time —
     * the scavenger's core. */
   def endRecordedGroups(
@@ -652,10 +696,7 @@ object RunOnHostSession:
     catch case ex: IOException => busy(s"the retirement lock: ${ex.getMessage}")
 
   private def endGroupIfLeaderMatches(file: Path, processes: Processes): Option[Collected] =
-    val parsed =
-      try parseRecord(Files.readString(file, UTF_8))
-      catch case _: IOException => None
-    parsed.map: record =>
+    readRecord(file).map: record =>
       try
         processes.startOf(record.pgid) match
           case Some(start) if start == record.leaderStart =>
@@ -824,15 +865,7 @@ object RunOnHostSession:
     def startOf(pid: Long): Option[String] =
       startFrom(lines("ps", "-o", "pid=,lstart=", "-p", s"$self,$pid"), self, pid)
 
-    def endGroup(pgid: Long): Boolean =
-      def signal(name: String): Unit =
-        java.lang.ProcessBuilder("/bin/kill", s"-$name", "--", s"-$pgid").start().waitFor()
-      signal("TERM")
-      val settled = (1 to 100).exists { _ => groupEmpty(pgid) || { Thread.sleep(100); false } }
-      settled || {
-        signal("KILL")
-        (1 to 50).exists(_ => groupEmpty(pgid) || { Thread.sleep(100); false })
-      }
+    def endGroup(pgid: Long): Boolean = termThenKill(groupEmpty(pgid), kill(_, s"-$pgid"))
 
     def groupEmpty(pgid: Long): Boolean =
       groupEmptyFrom(lines("ps", "-o", "pid=", "-p", self.toString, "-g", pgid.toString), self)
@@ -849,8 +882,10 @@ object RunOnHostSession:
       if !rows.contains(self.toString) then throw IOException(s"ps did not list $self alongside the group")
       rows.forall(_ == self.toString)
 
-    def signal(pid: Long, name: String): Unit =
-      java.lang.ProcessBuilder("/bin/kill", s"-$name", "--", pid.toString).start().waitFor()
+    def signal(pid: Long, name: String): Unit = kill(name, pid.toString)
+
+    private def kill(name: String, target: String): Unit =
+      java.lang.ProcessBuilder("/bin/kill", s"-$name", "--", target).start().waitFor()
 
     /** The trimmed, non-empty lines a host command prints; nothing when it cannot run. */
     private[launcher] def lines(command: String*): Vector[String] =

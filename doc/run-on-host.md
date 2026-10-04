@@ -396,7 +396,7 @@ A current Coursier unpacks a JDK into its archive cache, so the home is a URL-de
 - That `sbt` is two files: the 1.2 KB script on `PATH` execs a second `sbt` inside an unpacked
   distribution in the archive cache, and the profile grants the distribution's *home* — the
   distribution's `sbt` reads `sbt-launch.jar` and `conf/` relative to itself.
-- The home is read from the script's text (`SeatbeltProfile.sbtDistribution`); running the script
+- The home is read from the script's text (`RunOnHostPrereqs.sbtDistribution`); running the script
   to ask would execute what the profile exists to contain, on the host, unconfined.
 
 sbt 2 is client/server by construction — there is no one-shot mode — so the runner starts the
@@ -1550,7 +1550,7 @@ The file inherits the directory's properties:
 - it is reviewed in a pull request like any other file;
 - `run-on-host/` accepts only recognized configuration entries, as does `.ko-agent-sandbox` — a
   stray entry fails the launch instead of being ignored (`SandboxProject.boundaryDirRefusal`,
-  `RunOnHostSandbox.hostCommandStray`).
+  `RunOnHostPrereqs.readProgramRules`).
 
 No program needs a GitHub release CDN: the one download that would, the `mill` executable, is
 provisioned on the host instead.

@@ -21,8 +21,7 @@
 package agentsandbox.launcher
 
 import java.io.IOException
-import java.nio.charset.StandardCharsets.UTF_8
-import java.nio.file.{Files, Path, StandardCopyOption}
+import java.nio.file.{Files, Path}
 
 import RunOnHostSession.{HostProcesses, Processes, Record}
 
@@ -77,23 +76,17 @@ object RunOnHostGradleDaemons:
         FileHelper.directoryEntries(records).filter(_.getFileName.toString.startsWith(RecordPrefix))
       catch case _: IOException => Vector.empty
     val (alive, stale) = existing.partition: file =>
-      parsed(file).exists(record => processes.startOf(record.pgid).contains(record.leaderStart))
+      RunOnHostSession.leaderLives(file, processes)
     val deleted = stale.flatMap: file =>
       try
         Files.deleteIfExists(file)
         Some(s"forgot ${file.getFileName}: its daemon is gone")
       catch case _: IOException => None
-    val recorded = alive.flatMap(parsed).map(record => record.pgid -> record.leaderStart).toSet
+    val recorded = alive.flatMap(RunOnHostSession.readRecord).map(record => record.pgid -> record.leaderStart).toSet
     val added = found.filterNot(recorded).flatMap: (pid, start) =>
       val file = records.resolve(recordName(pid))
       try
-        val pending = file.resolveSibling(s"${file.getFileName}.pending")
-        Files.writeString(pending, RunOnHostSession.renderRecord(Record(pid, start)), UTF_8)
-        Files.move(pending, file, StandardCopyOption.ATOMIC_MOVE)
+        RunOnHostSession.publishByRename(file, RunOnHostSession.renderRecord(Record(pid, start)))
         Some(s"recorded the gradle daemon $pid")
       catch case ex: IOException => Some(s"recording the gradle daemon $pid: ${ex.getMessage}")
     deleted ++ added
-
-  private def parsed(file: Path): Option[Record] =
-    try RunOnHostSession.parseRecord(Files.readString(file, UTF_8))
-    catch case _: IOException => None

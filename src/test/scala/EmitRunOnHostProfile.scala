@@ -59,20 +59,14 @@ object EmitRunOnHostProfile:
 
     val program = args.lift(2).map(_.toLowerCase) match
       case None        => Program.Sbt
-      case Some(name)  => Program.values.find(_.name == name).getOrElse(fail(s"unknown program $name"))
+      case Some(name)  => Program.named(name).getOrElse(fail(s"unknown program $name"))
 
     val assembled = RunOnHostSandbox.assemble(project, program, env, project).fold(fail, identity)
     val sessionTmp = sessionTmpFits(newSessionTmp()).fold(fail, identity)
     val systemPaths = RunOnHostSandbox.readSystemPaths(args.lift(1).map(Paths.get(_)))
 
-    val inputs = SeatbeltProfile.ProfileInputs(
-      prereqs = assembled.prereqs,
+    val inputs = assembled.profileInputs(
       sessionTmp = sessionTmp,
-      distribution = assembled.distribution,
-      sbtGlobal = assembled.sbtGlobalGranted,
-      ivyHome = assembled.ivyHomeGranted,
-      gradleUserHome = assembled.gradleUserHomeGranted,
-      m2Repository = assembled.m2RepositoryGranted,
       proxyPort = 51234,
       // No proxy runs under the emitted profile, so nothing is here: the supervisor rows have the real one.
       trust = RunOnHostInspection.trustDirectory(sessionTmp.resolveSibling("proxy.log")),

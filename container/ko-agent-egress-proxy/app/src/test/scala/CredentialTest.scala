@@ -126,6 +126,7 @@ class CredentialTest extends munit.FunSuite:
       "" -> "the bindings ended before their count",
       "x\n" -> "the bindings' count line is 'x', not a count up to 256",
       "-1\n" -> "the bindings' count line is '-1', not a count up to 256",
+      "+1\n" -> "the bindings' count line is '+1', not a count up to 256",
       "1\n" -> "the bindings ended before their count",
       "1\nX@h.example PH\n" -> "a binding line is not <binding> <placeholder> <value>",
       "1\nX@h.example PH sec ret\n" -> "a binding line is not <binding> <placeholder> <value>",

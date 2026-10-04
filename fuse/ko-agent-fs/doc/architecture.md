@@ -255,7 +255,7 @@ how to undo it, is its `README.md` ("`--build`"). This section is the build and 
    the digest of the source it bundles (`Containerfile`, header).
 
 The digest's construction, and why the algorithm exists only on the launcher side, are with the
-code: `KoAgentFs.bundleSourceId`.
+code: `LauncherImages.bundleSourceId`.
 
 **All steps run from `--build`** (`AgentSandboxLauncher.buildCommands`,
 `KoAgentFs.koAgentFsSourceId` and `installKoAgentFs`), **and the mount lifecycle runs every

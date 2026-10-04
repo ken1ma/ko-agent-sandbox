@@ -713,9 +713,9 @@ USER nonroot
 ENTRYPOINT ["ko-sandbox-entrypoint"]
 CMD ["bash"]
 
-# The digest of this directory as the launcher bundled it (KoAgentFs.contextSourceId). A launch
+# The digest of this directory as the launcher bundled it (LauncherImages.contextSourceId). A launch
 # recomputes it from its own jar and refuses a default-named image another jar built — the
-# version lock between launcher and image (AgentSandboxLauncher.bundleMismatch).
+# version lock between launcher and image (LauncherImages.bundleMismatch).
 # Last: every RUN after an ARG is keyed on its value, and this one changes whenever a file in
 # this directory does, so declared any earlier it would rerun every RUN after it.
 ARG BUNDLE_ID

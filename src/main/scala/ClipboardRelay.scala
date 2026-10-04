@@ -278,7 +278,7 @@ object ClipboardRelay:
       else
         String(stream, offset, newline - offset, UTF_8).split(" ", 2) match
           case Array("set", count)
-              if count.nonEmpty && count.length <= MaxRequestBytes.toString.length && count.forall(_.isDigit)
+              if agentsandbox.egress.HTTPHelper.isDecimal(count) && count.length <= MaxRequestBytes.toString.length
                 && (count == "0" || !count.startsWith("0")) && newline + 1 + count.toInt <= stream.length =>
             found += Request.Set(stream.slice(newline + 1, newline + 1 + count.toInt))
             offset = newline + 1 + count.toInt

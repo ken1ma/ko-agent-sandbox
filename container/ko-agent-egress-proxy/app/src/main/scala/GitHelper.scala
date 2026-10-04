@@ -26,28 +26,24 @@ object GitHelper:
   def isUploadPack(path: String): Boolean =
     UploadPackPath.matches(path)
 
-  /**
-   * `git push`'s first request: GET .../info/refs?service=git-receive-pack.
-   * Classified on a once-percent-decoded spelling — the decode a forge's
-   * router applies — so an encoded spelling cannot slip past. Deny-side
-   * only: decoding here can widen a refusal, never a grant.
-   */
-  def isReceivePackDiscovery(head: HttpRequestHead): Boolean =
-    percentDecoded(head.path).endsWith("/info/refs") &&
-      head.query
-        .split("&", -1)
-        .exists(param => percentDecoded(param).toLowerCase(Locale.ROOT) == "service=git-receive-pack")
+  /** `git push`'s first request: GET .../info/refs?service=git-receive-pack. */
+  def isReceivePackDiscovery(head: HttpRequestHead): Boolean = isDiscovery(head, "git-receive-pack")
 
   /**
-   * `git fetch`'s first request: GET .../info/refs?service=git-upload-pack, classified as
-   * receive-pack's is. It is the `git-fetch` grant's own request, not `read`'s
-   * (RulesetHelper.authorizeInspectedRequest); the decode can only widen that refusal.
+   * `git fetch`'s first request: GET .../info/refs?service=git-upload-pack. It is the `git-fetch`
+   * grant's own request, not `read`'s (RulesetHelper.authorizeInspectedRequest); the decode can
+   * only widen that refusal.
    */
-  def isUploadPackDiscovery(head: HttpRequestHead): Boolean =
+  def isUploadPackDiscovery(head: HttpRequestHead): Boolean = isDiscovery(head, "git-upload-pack")
+
+  /**
+   * Classified on a once-percent-decoded spelling — the decode a forge's router applies — so an
+   * encoded spelling cannot slip past. Deny-side only: decoding here can widen a refusal, never a
+   * grant.
+   */
+  private def isDiscovery(head: HttpRequestHead, service: String): Boolean =
     percentDecoded(head.path).endsWith("/info/refs") &&
-      head.query
-        .split("&", -1)
-        .exists(param => percentDecoded(param).toLowerCase(Locale.ROOT) == "service=git-upload-pack")
+      head.query.split("&", -1).exists(param => percentDecoded(param).toLowerCase(Locale.ROOT) == s"service=$service")
 
   /**
    * One decode pass — the forge router's decoding, not HTTP's, which

@@ -2,6 +2,7 @@
 // correctly. The fixtures are a real macOS host's, not invented ones — the Coursier JDK home
 // contains a percent-encoded '+', a literal '+' and a directory named like an archive, and the
 // install directory contains a space, which is exactly the input a quoting or regex bug mishandles.
+// The run-on-host rule files are read from temporary projects.
 
 package agentsandbox.launcher
 
@@ -227,6 +228,30 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   test("an sbt from anywhere else is refused"):
     val other = Paths.get("/usr/local/bin/sbt")
     assert(validateSbtExecutable(other, installDir, exists(other, installDir), _ => true).isLeft)
+
+  private val distributionExec =
+    coursierCache.resolve("arc/https/github.com/sbt/sbt/releases/download/v2.0.4/sbt-2.0.4.zip/sbt/bin/sbt")
+
+  test("the distribution is read out of the script, not derived from a convention"):
+    val script =
+      s"""#!/usr/bin/env sh
+         |exec "$distributionExec" "$$@"
+         |""".stripMargin
+    assertEquals(sbtDistribution(script, coursierCache), Some(distributionExec))
+
+  test("the longest cache path wins, so a grant never applies to a prefix"):
+    val script =
+      s"""CACHE="$coursierCache"
+         |exec "$distributionExec" "$$@"
+         |""".stripMargin
+    assertEquals(sbtDistribution(script, coursierCache), Some(distributionExec))
+
+  test("a path escaping the cache root is not accepted"):
+    val escaping = s"$coursierCache/../../../etc/passwd"
+    assertEquals(sbtDistribution(s"""exec "$escaping"""", coursierCache), None)
+
+  test("a script naming no cache path yields nothing rather than a guess"):
+    assertEquals(sbtDistribution("#!/bin/sh\nexec /usr/local/bin/sbt \"$@\"\n", coursierCache), None)
 
   test("the distribution's sbt yields its home: <home>/bin/sbt, strictly inside arc"):
     val home = coursierCache.resolve("arc/sbt-2.0.4.zip/sbt")
@@ -613,11 +638,6 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
 
   test("folding does not make unrelated siblings overlap"):
     assert(!startsWith(Paths.get("/a/bc"), Paths.get("/a/b"), Os.Mac))
-    assert(!overlaps(Paths.get("/a/b"), Paths.get("/a/c"), Os.Mac))
-
-  test("overlap is symmetric"):
-    assert(overlaps(project, project.resolve("sub"), Os.Mac))
-    assert(overlaps(project.resolve("sub"), project, Os.Mac))
 
   // --------------------------------------------------------------------------
   // The program's egress rule file
@@ -925,10 +945,124 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     )
 
   // --------------------------------------------------------------------------
-  // Against the running host
+  // run-on-host/ refuses unrecognized configuration entries
   // --------------------------------------------------------------------------
 
-  test("realPath answers None for an absent path rather than throwing"):
-    assertEquals(realPath(Paths.get("/definitely/not/here")), None)
-    val real = realPath(Files.createTempDirectory("command-sandbox"))
-    assert(real.isDefined)
+  private def projectWith(paths: String*): Path =
+    val project = Files.createTempDirectory("run-on-host")
+    paths.foreach: path =>
+      val full = project.resolve(path)
+      Files.createDirectories(full.getParent)
+      Files.writeString(full, "allow https://repo.example.org/ read\n")
+    project
+
+  test("readProgramRules reads the program's file and defaults to nothing"):
+    assertEquals(readProgramRules(Files.createTempDirectory("empty"), Program.Sbt), Right(Vector.empty))
+    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    assertEquals(readProgramRules(project, Program.Sbt), Right(Vector("repo.example.org")))
+    assertEquals(readProgramRules(project, Program.Mill), Right(Vector.empty), "mill has no file here")
+
+  test("a program rule file with no rule line reads as absent"):
+    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val rule = project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    for text <- Seq("", "# allow https://repo.example.org/ read\n", "\n  \n") do
+      Files.writeString(rule, text)
+      assertEquals(readProgramRules(project, Program.Sbt), Right(Vector.empty), clue(text))
+
+  test("a line outside the program's grammar is refused, quoted with what a terminal acts on spelled out"):
+    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val rule = project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    Files.writeString(rule, "allow model-provider openai\n")
+    val refused = readProgramRules(project, Program.Sbt)
+    assert(refused.swap.exists(_.contains("allow model-provider openai")), refused.toString)
+    assert(refused.swap.exists(_.contains(ProgramRuleForm)), refused.toString)
+    Files.writeString(rule, "allow https://a.example/ read now‮\n")
+    val escaped = readProgramRules(project, Program.Sbt)
+    assert(escaped.swap.exists(reason => reason.contains("now\\u202e") && !reason.contains("‮")), escaped.toString)
+
+  test("a stray name at any level refuses another program's command too, naming itself; metadata does not"):
+    for
+      stray <- Seq(
+        ".ko-agent-sandbox/run-on-host/ant/egress/rule",
+        ".ko-agent-sandbox/run-on-host/sbt/egres/rule",
+        ".ko-agent-sandbox/run-on-host/sbt/egress/rules",
+      )
+    do
+      val refused = readProgramRules(projectWith(stray), Program.Mill)
+      assert(
+        refused.swap.exists(reason => reason.contains("update the launcher") || reason.contains("not a rule file")),
+        s"$stray: $refused",
+      )
+    val metadata = projectWith(
+      ".ko-agent-sandbox/run-on-host/.DS_Store",
+      ".ko-agent-sandbox/run-on-host/sbt/egress/.DS_Store",
+      ".ko-agent-sandbox/run-on-host/sbt/egress/rule",
+    )
+    assertEquals(readProgramRules(metadata, Program.Sbt), Right(Vector("repo.example.org")))
+
+  test("a symlinked component refuses"):
+    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    Files.createSymbolicLink(
+      project.resolve(".ko-agent-sandbox/run-on-host/mill"),
+      project.resolve(".ko-agent-sandbox/run-on-host/sbt"),
+    )
+    val refused = readProgramRules(project, Program.Sbt)
+    assert(refused.swap.exists(_.contains("symlink")), refused.toString)
+    val linkedRule = projectWith("elsewhere")
+    val elsewhere = linkedRule.resolve("elsewhere")
+    val egress = Files.createDirectories(linkedRule.resolve(".ko-agent-sandbox/run-on-host/sbt/egress"))
+    Files.createSymbolicLink(egress.resolve("rule"), elsewhere)
+    val linked = readProgramRules(linkedRule, Program.Sbt)
+    assert(linked.swap.exists(_.contains("symlink")), linked.toString)
+
+  test("a file where a directory belongs refuses instead of reading as absent config"):
+    for directory <- Seq("sbt", "sbt/egress") do
+      val project = Files.createTempDirectory("run-on-host")
+      val path = project.resolve(s".ko-agent-sandbox/run-on-host/$directory")
+      Files.createDirectories(path.getParent)
+      Files.writeString(path, "")
+      val refused = readProgramRules(project, Program.Mill)
+      assert(refused.isLeft, s"$directory: $refused")
+
+  test("a non-regular file where rule belongs refuses instead of being read"):
+    val project = Files.createTempDirectory("run-on-host")
+    val egress = project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress")
+    Files.createDirectories(egress.resolve("rule")) // a directory; a FIFO would block a read
+    val refused = readProgramRules(project, Program.Sbt)
+    assert(refused.swap.exists(r => r.contains("rule") && r.contains("not a regular file")), refused.toString)
+
+  test("only the selected program's rule file is read; another's is checked for its form alone"):
+    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val millRule = project.resolve(".ko-agent-sandbox/run-on-host/mill/egress/rule")
+    Files.createDirectories(millRule.getParent)
+    Files.write(millRule, Array[Byte](0xff.toByte, 0xfe.toByte))
+    assertEquals(readProgramRules(project, Program.Sbt), Right(Vector("repo.example.org")))
+    val malformed = readProgramRules(project, Program.Mill)
+    assert(malformed.swap.exists(reason => reason.contains("not UTF-8") && reason.contains("mill")), malformed.toString)
+
+  test("an unreadable rule file is refused by name, not thrown"):
+    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val rule = project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    Files.setPosixFilePermissions(rule, java.nio.file.attribute.PosixFilePermissions.fromString("---------"))
+    assume(!Files.isReadable(rule), "a user who reads any file (root) cannot test an unreadable one")
+    val refused = readProgramRules(project, Program.Sbt)
+    assert(refused.swap.exists(reason => reason.contains("cannot read") && reason.contains("sbt")), refused.toString)
+
+  test("every path a refusal names is spelled out where a terminal would act on it"):
+    val parent = Files.createTempDirectory("run-on-host")
+    def projectNamed(paths: String*): Path =
+      val project = Files.createDirectory(parent.resolve(s"proj\u001b[2K\r${paths.size}"))
+      paths.foreach: path =>
+        val full = project.resolve(path)
+        Files.createDirectories(full.getParent)
+        Files.writeString(full, "allow model-provider openai\n")
+      project
+    val grammar = readProgramRules(projectNamed(".ko-agent-sandbox/run-on-host/sbt/egress/rule"), Program.Sbt)
+    val stray = readProgramRules(projectNamed(".ko-agent-sandbox/run-on-host/sbt/egress/rules", "x"), Program.Sbt)
+    val wrongType = readProgramRules(projectNamed(".ko-agent-sandbox/run-on-host/sbt", "x", "y"), Program.Sbt)
+    for refused <- Seq(grammar, stray, wrongType) do
+      assert(
+        refused.swap.exists: reason =>
+          reason.contains("proj\\x1b[2K\\r") && !reason.exists(ch => ch == '\u001b' || ch == '\r'),
+        refused.toString,
+      )

@@ -175,7 +175,7 @@ object CredentialGrammar:
    */
   def readBindings(in: InputStream): Either[String, Vector[BrokeredCredential]] =
     readLine(in).flatMap: countText =>
-      countText.toIntOption.filter(count => count >= 0 && count <= MaxBindings) match
+      HTTPHelper.parseDecimal(countText).filter(_ <= MaxBindings).map(_.toInt) match
         case None => Left(s"the bindings' count line is '$countText', not a count up to $MaxBindings")
         case Some(count) =>
           val read = (1 to count).foldLeft[Either[String, Vector[BrokeredCredential]]](Right(Vector.empty)):

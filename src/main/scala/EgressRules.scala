@@ -11,6 +11,8 @@ package agentsandbox.launcher
 
 import java.nio.file.{Files, Path}
 
+import agentsandbox.egress.RulesetHelper
+
 import HostCommands.*
 import FileHelper.*
 
@@ -26,7 +28,7 @@ object EgressRules:
    */
   def normalizeRuleText(text: String): String =
     text.linesIterator
-      .map(_.trim.split("\\s+").filter(_.nonEmpty).takeWhile(!_.startsWith("#")).mkString(" "))
+      .map(RulesetHelper.ruleTokens(_).mkString(" "))
       .filter(_.nonEmpty)
       .mkString("\n")
 
@@ -43,13 +45,13 @@ object EgressRules:
    * it does not have.
    */
   def wideningLines(resolved: String): Vector[String] =
-    resolved.linesIterator.find(_.startsWith("widening lines (")).toVector.flatMap: line =>
+    resolved.linesIterator.find(_.startsWith(RulesetHelper.WideningLineHead)).toVector.flatMap: line =>
       line.drop(line.indexOf("):") + 2).trim.split("; ").toVector.filter(_.nonEmpty)
 
   /** The lines the proxy prints after the ruleset lines, describing the ruleset's size and the
     * project's file rather than the ruleset: the summary line, then the widening line. Everything
     * from the first of them on is metadata (RulesetHelper.metadataLines). */
-  val MetadataPrefixes: Vector[String] = Vector("ruleset summary:", "widening lines (")
+  val MetadataPrefixes: Vector[String] = Vector(RulesetHelper.SummaryLineHead, RulesetHelper.WideningLineHead)
 
   /** Exclude metadata about the project file from the resolved rules exported in
     * `KO_AGENT_SANDBOX_EGRESS_RULESET` and used to select the inspection certificate's hosts. */
@@ -70,8 +72,8 @@ object EgressRules:
     val lines = resolved.linesIterator.toVector
 
     val counts: Map[String, Int] =
-      lines.find(_.startsWith("ruleset summary:")).toVector
-        .flatMap(_.stripPrefix("ruleset summary:").split(";").toVector)
+      lines.find(_.startsWith(RulesetHelper.SummaryLineHead)).toVector
+        .flatMap(_.stripPrefix(RulesetHelper.SummaryLineHead).split(";").toVector)
         .flatMap: field =>
           field.trim.split(" ", 2) match
             case Array(count, name) => count.toIntOption.map(name -> _)
@@ -80,15 +82,15 @@ object EgressRules:
 
     val parsed =
       for
-        head <- lines.headOption.filter(_.startsWith("egress profile: "))
+        head <- lines.headOption.filter(_.startsWith(RulesetHelper.ProfileLineHead))
         inspected <- counts.get("inspected hosts")
         tunnel <- counts.get("tunnel hosts")
       yield
-        val profile = head.stripPrefix("egress profile: ").takeWhile(_ != ';')
+        val profile = head.stripPrefix(RulesetHelper.ProfileLineHead).takeWhile(_ != ';')
         profile match
           case "deny-unless-model" =>
             val provider = head
-              .split("model provider: ", 2)
+              .split(RulesetHelper.ModelProviderLabel, 2)
               .lift(1)
               .map(_.trim)
               .filter(_.nonEmpty)
@@ -121,7 +123,7 @@ object EgressRules:
 
   val RetainedProxyLogs = 20
 
-  val RuleFiles: Vector[(String, String)] = Vector("rule" -> "EGRESS_RULE")
+  val RuleFiles: Vector[(String, String)] = Vector(RulesetHelper.RuleFile -> RulesetHelper.RuleVariable)
 
   /**
    * Present egress rule files as (name, normalized text), under the refusals
@@ -178,19 +180,17 @@ object EgressRules:
    * The upstream proxy HTTPS_PROXY names, handed to the proxy container as the variable itself,
    * with no value: podman fills a value-less `--env` from this process's environment, so the URL
    * — its userinfo included — is in no argument and no process listing, and the proxy is its one
-   * parser (TransportHelper.UpstreamEndpoint). Uppercase then lowercase, the proxy's own order.
+   * parser (TransportHelper.UpstreamEndpoint). Selected as the proxy selects it.
    * Empty for a direct run.
    */
   def upstreamProxyArgs(read: String => Option[String]): Vector[String] =
-    agentsandbox.egress.TransportHelper.UpstreamProxyVariables
-      .find(name => read(name).exists(_.nonEmpty))
-      .map(name => s"--env=$name")
-      .toVector
+    agentsandbox.egress.TransportHelper.upstreamProxyVariable(read).map((name, _) => s"--env=$name").toVector
 
   /** The proxy's transport line out of its log, the instant stamp removed. Written before the
     * ready line (AgentEgressProxy.serve), so it is there once the launch is. */
   def transportLineOf(log: String): Option[String] =
-    log.linesIterator.map(_.dropWhile(_ != ' ').drop(1)).find(_.startsWith("egress transport: "))
+    log.linesIterator.map(_.dropWhile(_ != ' ').drop(1))
+      .find(_.startsWith(agentsandbox.egress.TransportHelper.TransportLineHead))
 
   /** The --env arguments passing the selected profile, provider and rule files to the proxy — the
     * dry run and the real container get identical ones, so what was vetted is what is enforced. */
@@ -200,8 +200,8 @@ object EgressRules:
     ruleFiles: Vector[(String, String)],
   ): Vector[String] =
     Vector(
-      s"--env=EGRESS_PROFILE=$profile",
-      s"--env=EGRESS_MODEL_PROVIDER=${provider.getOrElse("none")}",
+      s"--env=${RulesetHelper.ProfileVariable}=$profile",
+      s"--env=${RulesetHelper.ModelProviderVariable}=${provider.getOrElse("none")}",
     ) ++ ruleFiles.map: (name, text) =>
       val variable = RuleFiles.find(_(0) == name).fold(fail(s"error: no rule file $name"))(_(1))
       s"--env=$variable=$text"
@@ -226,7 +226,7 @@ object EgressRules:
    */
   def inspectedHostsOf(dryRunOutput: String): Either[String, Vector[String]] =
     val lines = dryRunOutput.linesIterator.toVector
-    if !lines.headOption.exists(_.startsWith("egress profile: ")) then
+    if !lines.headOption.exists(_.startsWith(RulesetHelper.ProfileLineHead)) then
       Left(
         "error: the proxy image's --print-ruleset has no 'egress profile' line\n" +
           "An image built by another launcher version prints another format; rebuild with --build.",

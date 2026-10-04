@@ -132,9 +132,15 @@ object RulesetHelper:
         )
     lines
 
+  /** A rule line's words: split on whitespace, up to the first word that starts with `#`.
+    * The launcher reads its rule files with the same split (EgressRules.normalizeRuleText,
+    * RunOnHostPrereqs.programRuleHosts). */
+  def ruleTokens(line: String): Vector[String] =
+    line.split("\\s+").toVector.filter(_.nonEmpty).takeWhile(!_.startsWith("#"))
+
   private def tokenized(file: String, text: String): Vector[Vector[String]] =
     text.linesIterator
-      .map(_.split("\\s+").toVector.filter(_.nonEmpty).takeWhile(!_.startsWith("#")))
+      .map(ruleTokens)
       .filter(_.nonEmpty)
       .map: tokens =>
         tokens.find(_.contains('#')).foreach: token =>
@@ -662,16 +668,23 @@ object RulesetHelper:
   def rulesetLines(resolved: ResolvedEgress): Vector[String] =
     val profileLine = resolved.profile match
       case "deny-unless-model" =>
-        s"egress profile: deny-unless-model; model provider: ${resolved.provider.getOrElse("none")}"
-      case other => s"egress profile: $other"
+        s"${ProfileLineHead}deny-unless-model; $ModelProviderLabel${resolved.provider.getOrElse("none")}"
+      case other => s"$ProfileLineHead$other"
     profileLine +: resolved.hosts.toVector.sortBy(_(0)).flatMap(ruleLines)
+
+  /** The fixed text the launcher matches in what rulesetLines and metadataLines print
+    * (EgressRules): each line's start, and the provider's label inside the profile line. */
+  val ProfileLineHead = "egress profile: "
+  val ModelProviderLabel = "model provider: "
+  val SummaryLineHead = "ruleset summary:"
+  val WideningLineHead = "widening lines ("
 
   /** The lines after the ruleset lines, outside the digest: they describe the ruleset's size and
     * how the file arrived at it, not the ruleset. The launcher splits the dry run's text at the
     * first of them (EgressRules.MetadataPrefixes). */
   def metadataLines(resolved: ResolvedEgress): Vector[String] =
     val summary =
-      s"ruleset summary: ${resolved.inspected.size} inspected hosts; ${resolved.tunnelHosts.size} tunnel hosts; " +
+      s"$SummaryLineHead ${resolved.inspected.size} inspected hosts; ${resolved.tunnelHosts.size} tunnel hosts; " +
         s"${resolved.provenance.widening.size} widening lines"
     summary +: wideningLine(resolved).toVector
 
@@ -679,7 +692,7 @@ object RulesetHelper:
     * them. */
   def wideningLine(resolved: ResolvedEgress): Option[String] =
     val widening = resolved.provenance.widening
-    Option.when(widening.nonEmpty)(s"widening lines (${widening.size}): " + widening.map(_.text).mkString("; "))
+    Option.when(widening.nonEmpty)(s"$WideningLineHead${widening.size}): " + widening.map(_.text).mkString("; "))
 
   /**
    * Each ruleset line followed by its sources — an allow line's boundary and each of its grants —

@@ -1,10 +1,12 @@
 // The egress proxy: the listening loop, the steps from CONNECT to tunnel, and the one-request
 // inspected connection. The ruleset and its decisions are in RulesetHelper.scala, the audit log's form
-// in LogHelper.scala, the refusal types and advice in Refusals.scala, HTTP handling in
-// HTTPHelper.scala, TLS handling in TLSHelper.scala, leaf issuance in X509Helper.scala, git protocol
-// knowledge in GitHelper.scala, brokered credentials in CredentialGrammar.scala and their rewrite in
-// CredentialRewrite.scala, hostname/address vetting in IPAddrHelper.scala, and how a vetted address
-// is reached — directly or through the upstream proxy HTTPS_PROXY names — in TransportHelper.scala.
+// in LogHelper.scala, the refusal types, advice and response wording in Refusals.scala, HTTP handling in
+// HTTPHelper.scala, TLS handling in TLSHelper.scala, git protocol knowledge in GitHelper.scala,
+// brokered credentials in CredentialGrammar.scala and their rewrite in CredentialRewrite.scala,
+// hostname/address vetting in IPAddrHelper.scala, and how a vetted address is reached — directly or
+// through the upstream proxy HTTPS_PROXY names — in TransportHelper.scala. The proxy issues no
+// certificate: the launcher compiles X509Helper.scala in to issue the leaf, and the file sits in
+// the proxy's sources because the proxy's tests issue their leaves with it.
 
 package agentsandbox.egress
 
@@ -21,6 +23,7 @@ import CredentialRewrite.*
 import HTTPHelper.*
 import IPAddrHelper.*
 import LogHelper.*
+import Refusals.*
 import RulesetHelper.*
 import TLSHelper.*
 import TransportHelper.*
@@ -35,8 +38,12 @@ object AgentEgressProxy:
     * (AgentSandboxLauncher.isProxyReadyLine); ProxyContainerTest holds the two together.
     * The port printed is the bound one, so a caller that set EGRESS_BIND with port 0 reads
     * its ephemeral port from this line. */
-  def readyLine(port: Int) = s"ko-agent-egress-proxy listening on :$port"
+  def readyLine(port: Int) = s"$ReadyText$port"
+  private val ReadyText = "ko-agent-egress-proxy listening on :"
   val ReadyLine = readyLine(ListenPort)
+
+  /** The port out of a ready line, stamped or not (RunOnHostSandbox.awaitProxyPort). */
+  val ReadyPort: scala.util.matching.Regex = s".*${java.util.regex.Pattern.quote(ReadyText)}(\\d+).*".r
 
   val ConnectTimeoutMillis = 10_000
   val HandshakeTimeoutMillis = 10_000
@@ -159,7 +166,7 @@ object AgentEgressProxy:
           case ex: (IllegalArgumentException | IOException) =>
             println(s"upstream proxy: refused: ${ex.getMessage}")
             sys.exit(2)
-      println(transport.summary.stripPrefix("egress transport: "))
+      println(transport.summary.stripPrefix(TransportLineHead))
       addresses.headOption.foreach: address =>
         try
           transport.connect(Vector(address), 443).close()
@@ -192,7 +199,7 @@ object AgentEgressProxy:
               case -1                       => refuse()
               case i if s.indexOf(':') != i => refuse() // an unbracketed IPv6 literal
               case i                        => (s.substring(0, i), s.substring(i + 1))
-        val port = portText.toIntOption.filter(p => 0 <= p && p <= 65535).getOrElse(refuse())
+        val port = parseDecimal(portText).filter(p => 0 <= p && p <= 65535).map(_.toInt).getOrElse(refuse())
         val literal =
           try InetAddress.ofLiteral(address)
           catch case _: IllegalArgumentException => refuse()
@@ -351,23 +358,6 @@ object AgentEgressProxy:
       case _                            => ex.getMessage
     s"cannot load the TLS inspection material: $reason"
 
-  /** The RFC 9209 proxy error type of a failure on the origin leg of an inspected connection,
-    * after the origin's address accepted the connection. */
-  def originProxyError(ex: IOException): String =
-    def certificate(cause: Throwable): Boolean =
-      cause != null && (cause.isInstanceOf[java.security.cert.CertificateException] || certificate(cause.getCause))
-    ex match
-      case _: javax.net.ssl.SSLException if certificate(ex) => "tls_certificate_error"
-      case _: javax.net.ssl.SSLException                    => "tls_protocol_error"
-      case _: java.net.SocketTimeoutException               => "http_response_timeout"
-      case _: SocketException                               => "connection_terminated"
-      case _                                                => "http_protocol_error"
-
-  /** Starts the reason of every refusal after a failed log write; the run-on-host supervisor looks for it. */
-  val AuditLogUnwritable = "audit log cannot be written"
-
-  def auditLogFailure(ex: IOException): String = s"$AuditLogUnwritable: ${ex.getMessage}"
-
   case class Run(
     resolved: ResolvedEgress,
     inspection: Option[TlsInspection],
@@ -386,7 +376,7 @@ object AgentEgressProxy:
      */
     def requireAuditLog(): Unit =
       auditLogFailure().foreach: ex =>
-        throw Refusal(AgentEgressProxy.auditLogFailure(ex), RefusalAdvice.auditLog, "proxy_internal_error")
+        throw Refusal(Refusals.auditLogFailure(ex), RefusalAdvice.auditLog, "proxy_internal_error")
 
     def inspectionSummary: String =
       inspection match
