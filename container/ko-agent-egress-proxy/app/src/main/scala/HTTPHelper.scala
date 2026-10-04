@@ -7,6 +7,7 @@ import java.util.Locale
 import scala.annotation.tailrec
 
 import IPAddrHelper.normalizeHost
+import Refusals.{proxyStatus, refusalBody}
 
 /**
  * HTTP parsing, framing and relay. Everything here refuses ambiguity rather than resolving
@@ -138,20 +139,11 @@ object HTTPHelper:
         .map(_.toInt)
         .getOrElse(throw BadRequest("invalid CONNECT port"))
 
+    /** Values go unchecked: ConnectRequest keeps only the host and port, so no CONNECT header is
+      * read or forwarded. */
     def validateHeaders(lines: Vector[String]): Unit =
       lines.foreach: line =>
-        if line.startsWith(" ") || line.startsWith("\t") then
-          throw BadRequest("obsolete folded HTTP header is not allowed")
-
-        val colon = line.indexOf(':')
-        if colon <= 0 then
-          throw BadRequest("malformed HTTP header")
-
-        val name = line.substring(0, colon)
-        if !name.forall(isHttpTokenChar) then
-          throw BadRequest("invalid HTTP header name")
-
-        name.toLowerCase(Locale.ROOT) match
+        headerName(line).toLowerCase(Locale.ROOT) match
           case "content-length" | "transfer-encoding" =>
             throw BadRequest("CONNECT request bodies are not allowed")
           case _ => ()
@@ -175,11 +167,7 @@ object HTTPHelper:
 
     def query: String = target.dropWhile(_ != '?').drop(1)
 
-    def values(name: String): Vector[String] =
-      val wanted = name.toLowerCase(Locale.ROOT)
-
-      headers.collect:
-        case (header, value) if header.toLowerCase(Locale.ROOT) == wanted => value
+    def values(name: String): Vector[String] = headerValues(headers, name)
 
     /** Ambiguous framing is refused rather than resolved, per the file
       * header. */
@@ -218,10 +206,7 @@ object HTTPHelper:
 
       builder.append(s"$method $target HTTP/1.1\r\n")
 
-      val dropped = HopByHopHeaders ++ connectionNamedHeaders(values("Connection"))
-      headers
-        .filterNot((name, _) => dropped.contains(name.toLowerCase(Locale.ROOT)))
-        .foreach((name, value) => builder.append(s"$name: $value\r\n"))
+      endToEnd(headers).foreach((name, value) => builder.append(s"$name: $value\r\n"))
 
       builder.append("Connection: close\r\n\r\n")
 
@@ -239,8 +224,28 @@ object HTTPHelper:
       "upgrade",
     )
 
+  /** The name of a header line, refusing a folded line and a name that is empty or not a token. */
+  private def headerName(line: String): String =
+    if line.startsWith(" ") || line.startsWith("\t") then throw BadRequest("obsolete folded HTTP header is not allowed")
+    val colon = line.indexOf(':')
+    if colon <= 0 then throw BadRequest("malformed HTTP header")
+    val name = line.substring(0, colon)
+    if !name.forall(isHttpTokenChar) then throw BadRequest("invalid HTTP header name")
+    name
+
+  /** The values of every `name` header, its name matched without case. */
+  def headerValues(headers: Vector[(String, String)], name: String): Vector[String] =
+    val wanted = name.toLowerCase(Locale.ROOT)
+    headers.collect:
+      case (header, value) if header.toLowerCase(Locale.ROOT) == wanted => value
+
+  /** The headers less this hop's: the fixed hop-by-hop set and whatever the Connection header names. */
+  private def endToEnd(headers: Vector[(String, String)]): Vector[(String, String)] =
+    val dropped = HopByHopHeaders ++ connectionNamedHeaders(headerValues(headers, "Connection"))
+    headers.filterNot((name, _) => dropped.contains(name.toLowerCase(Locale.ROOT)))
+
   /** The header names a message's own Connection header declares hop-by-hop (RFC 9110 §7.6.1):
-    * those are this hop's to remove too, not just the fixed set above. */
+    * those are this hop's to remove too, not just HopByHopHeaders. */
   def connectionNamedHeaders(values: Vector[String]): Set[String] =
     values
       .flatMap(_.split(','))
@@ -292,20 +297,11 @@ object HTTPHelper:
 
     def parseHeaders(lines: Vector[String]): Vector[(String, String)] =
       lines.map: line =>
-        if line.startsWith(" ") || line.startsWith("\t") then
-          throw BadRequest("obsolete folded HTTP header is not allowed")
-
-        val colon = line.indexOf(':')
-        if colon <= 0 then throw BadRequest("malformed HTTP header")
-
-        val name = line.substring(0, colon)
-        if !name.forall(isHttpTokenChar) then
-          throw BadRequest("invalid HTTP header name")
-
+        val name = headerName(line)
         // Checked before the optional whitespace is stripped: Java's `trim` removes every
         // character up to SP, so trimming first would drop an edge NUL, VT or FF where it should
         // refuse the head.
-        val raw = line.substring(colon + 1)
+        val raw = line.substring(name.length + 1)
         if raw.exists(ch => isForbiddenControl(ch) && ch != '\t') then
           throw BadRequest("control character in HTTP header value")
 
@@ -330,11 +326,7 @@ object HTTPHelper:
     reason: String,
     headers: Vector[(String, String)],
   ):
-    def values(name: String): Vector[String] =
-      val wanted = name.toLowerCase(Locale.ROOT)
-
-      headers.collect:
-        case (header, value) if header.toLowerCase(Locale.ROOT) == wanted => value
+    def values(name: String): Vector[String] = headerValues(headers, name)
 
     def interim: Boolean = status / 100 == 1
 
@@ -353,10 +345,7 @@ object HTTPHelper:
 
       builder.append(s"HTTP/1.1 $status $reason\r\n")
 
-      val dropped = HopByHopHeaders ++ connectionNamedHeaders(values("Connection"))
-      headers
-        .filterNot((name, _) => dropped.contains(name.toLowerCase(Locale.ROOT)))
-        .foreach((name, value) => builder.append(s"$name: $value\r\n"))
+      endToEnd(headers).foreach((name, value) => builder.append(s"$name: $value\r\n"))
 
       builder.append(if interim then "\r\n" else "Connection: close\r\n\r\n")
 
@@ -432,12 +421,14 @@ object HTTPHelper:
 
         case _ => malformed(s"status line '$statusLine'")
 
-  /** ASCII digits and nothing else, which is all that the grammars of Content-Length, a port and
-    * a status code allow. `toLongOption` alone also accepts a sign, and a forwarded
-    * `Content-Length: +1` leaves the origin free to read a length other than the one this proxy
-    * framed the body by. */
-  def parseDecimal(text: String): Option[Long] =
-    Option.when(text.nonEmpty && text.forall(ch => ch >= '0' && ch <= '9'))(text.toLongOption).flatten
+  /** ASCII digits and nothing else: all that the grammars of Content-Length, a port and a status
+    * code allow, and the one spelling the credential pipe, the run-on-host channel and the
+    * clipboard relay take for their counts. `toLongOption` alone also accepts a sign and any
+    * script's digits (`+1`, `١`), and a forwarded `Content-Length: +1` leaves the origin free to
+    * read a length other than the one this proxy framed the body by. */
+  def parseDecimal(text: String): Option[Long] = Option.when(isDecimal(text))(text.toLongOption).flatten
+
+  def isDecimal(text: String): Boolean = text.nonEmpty && text.forall(ch => ch >= '0' && ch <= '9')
 
   /** `HTTP/1.` and one digit, the grammar of RFC 9112 §2.3; every minor version, since the framing
     * rules cover them all. */
@@ -628,13 +619,6 @@ object HTTPHelper:
 
     loop(false)
 
-  /** The refusal's body: the audit line's tail, and under it the next step when the refusal is
-    * the ruleset's (Refusal.advice). One line each, so a client that prints the body —
-    * curl as it is, git as `remote:` lines, since the type is text/plain — prints the step. */
-  def refusalBody(detail: String, advice: Option[String]): Array[Byte] =
-    (s"ko-agent-egress-proxy: $detail\n" + advice.map(_ + "\n").getOrElse(""))
-      .getBytes(StandardCharsets.UTF_8)
-
   /** The refusal as curl and git see it: a reason inside the tunnel beats a dropped connection.
     * Socket rather than SSLSocket, like relayInspected: nothing here is TLS-specific. A response
     * to a HEAD keeps the header section and omits the body (RFC 9110 §9.3.2); the reason stays in
@@ -665,23 +649,6 @@ object HTTPHelper:
   ): Unit =
     try respond(client, status, reason, proxyError, detail, advice, bodyless, answersHead)
     catch case _: IOException => ()
-
-  /** This proxy's member of the Proxy-Status field. */
-  val ProxyStatusMember = "ko-agent-egress-proxy"
-
-  /**
-   * RFC 9209's response field, on every response this proxy generates itself and on none it
-   * relays: `error` is the registered proxy error type, which also tells a client the origin did
-   * not send this response, and `details` the audit line's `<why>`. A header, because clients
-   * that discard a failed CONNECT's body still show its header section (`curl -v`), and the
-   * run-on-host supervisor reads it (RunOnHostSandbox.unwritableProxyLog). A Structured Fields
-   * String holds printable ASCII alone, so any other character is sent as `?`.
-   */
-  def proxyStatus(proxyError: String, detail: Option[String]): String =
-    val details = detail.map: text =>
-      val printable = text.map(char => if char >= ' ' && char <= '~' then char else '?')
-      "; details=\"" + printable.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
-    s"$ProxyStatusMember; error=$proxyError${details.getOrElse("")}"
 
   def respond(
     client: Socket, status: Int, reason: String, proxyError: String, detail: Option[String], advice: Option[String],

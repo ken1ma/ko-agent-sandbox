@@ -21,10 +21,8 @@ import java.io.IOException
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, LinkOption, Path}
 
-import scala.jdk.CollectionConverters.*
-
 import RunOnHostSandbox.{DaemonStart, ServerStartSilenceMillis}
-import RunOnHostSession.{Processes, Record, Session}
+import RunOnHostSession.{daemonRecordName, Processes, Record, Session}
 import RunOnHostSession.HostProcesses.lines
 
 object RunOnHostMillDaemons:
@@ -40,7 +38,7 @@ object RunOnHostMillDaemons:
     * starter the runner did not end — its daemon never listened, or the launcher reached its own
     * retry bound first — and is the finding when the start failed. In the session directory,
     * beside the sbt servers' logs, for the same reason (serverLog). */
-  def starterLog(session: Session, hash: String): Path = session.directory.resolve(s"daemon-mill-$hash.log")
+  def starterLog(session: Session, hash: String): Path = session.directory.resolve(s"${daemonRecordName(hash)}.log")
 
   /** How long a foreign daemon may stay busy before the start is refused: the bound the user's
     * sbt server gets for its shutdown (shutdownForeignServer), for the same reason. */
@@ -78,8 +76,7 @@ object RunOnHostMillDaemons:
       assembled, session.tmp, start.runtime.proxyPort, start.runtime.trust, systemPaths, forwards,
       SeatbeltProfile.Network.MillDaemon, fileRules,
     )
-    def said =
-      s"the starter's output:\n${RunOnHostSandbox.sessionLogTail(output, 4096).getOrElse("(nothing was written)\n")}"
+    def said = s"the starter's output:\n${RunOnHostSandbox.starterOutputTail(output)}"
     def attempt(retriesLeft: Int, profileFile: Path): Either[String, Daemon] =
       for
         leader <- spawnStarter(start, profileFile, inputs.environment, output)
@@ -97,34 +94,25 @@ object RunOnHostMillDaemons:
       _ <- endForeign(start.buildDirectory, processes, log)
       profile <- SeatbeltProfile.render(inputs.profile)
       profileFile <-
-        try Right(Files.writeString(session.directory.resolve(s"daemon-mill-${start.hash}.sb"), profile, UTF_8))
+        val file = RunOnHostSandbox.runtimeProfileFile(session, daemonRecordName(start.hash))
+        try Right(Files.writeString(file, profile, UTF_8))
         catch case ex: IOException => Left(s"writing the daemon profile: ${ex.getMessage}")
       _ = discardForeignClasspath(start.buildDirectory, prereqs.coursierV1, confined(profileFile)).foreach(log)
       daemon <- attempt(retriesLeft = 1, profileFile)
     yield daemon
 
   /** `./mill version` from the build directory — the stock bootstrap, `MILL_VERSION` naming the
-    * JVM launcher — started through registeredSpawn under the daemon profile, stdin `/dev/null`, its output
-    * to the starter log, the closed environment with the runner's `tmp/` as its temporary and
-    * socket directory, which the daemon inherits. */
+    * JVM launcher — under the daemon profile (RunOnHostSandbox.startRuntimeStarter), its output to
+    * the starter log and the runner's `tmp/` its temporary and socket directory, which the daemon
+    * inherits. */
   private def spawnStarter(
     start: DaemonStart, profileFile: Path, environment: Map[String, String], output: Path,
   ): Either[String, Process] =
     try
-      val builder = ProcessBuilder(
-        RunOnHostSession.registeredSpawn(
-          start.record,
-          Seq("/usr/bin/sandbox-exec", "-f", profileFile.toString)
-            ++ Seq(start.buildDirectory.resolve("mill").toString, "version"),
-        )*,
-      )
-      builder.directory(start.buildDirectory.toFile)
-      builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
-      builder.redirectOutput(ProcessBuilder.Redirect.appendTo(output.toFile))
-      builder.redirectError(ProcessBuilder.Redirect.appendTo(output.toFile))
-      builder.environment.clear()
-      builder.environment.putAll(environment.asJava)
-      Right(builder.start())
+      Right(RunOnHostSandbox.startRuntimeStarter(
+        start.record, profileFile, Seq(start.buildDirectory.resolve("mill").toString, "version"),
+        start.buildDirectory, environment, output,
+      ))
     catch case ex: IOException => Left(s"starting the mill starter: ${ex.getMessage}")
 
   /**
@@ -141,9 +129,7 @@ object RunOnHostMillDaemons:
     leader: Process, start: DaemonStart, output: Path, processes: Processes, log: String => Unit,
   ): Either[String, Unit] =
     val exit = RunOnHostSession.exitRecord(start.record)
-    def sizes = (RunOnHostSandbox.logLength(output), RunOnHostSandbox.logLength(start.runtime.proxyLog))
-    var last = sizes
-    var since = System.nanoTime
+    val watch = RunOnHostSandbox.StartWatch(output, start.runtime.proxyLog)
     var starterEnded = false
     var polls = 0
     var result: Option[Either[String, Unit]] = None
@@ -153,19 +139,17 @@ object RunOnHostMillDaemons:
       else if leaderEnded then
         result = Some(Left(s"the mill starter's leader ended (exit ${leader.exitValue}) without registering it"))
       else
-        val now = sizes
-        if now != last then
-          last = now
-          since = System.nanoTime
-        else if System.nanoTime - since > ServerStartSilenceMillis * 1_000_000 then
-          result = Some(Left(
-            s"the mill starter neither ended nor wrote anything, and the proxy log did not grow, for " +
-              s"${ServerStartSilenceMillis / 1000}s",
-          ))
-        else
-          if !starterEnded && polls % 5 == 0 then starterEnded = endStarter(start, processes, log)
-          polls += 1
-          Thread.sleep(100)
+        watch.poll() match
+          case RunOnHostSandbox.StartProgress.Grew => ()
+          case RunOnHostSandbox.StartProgress.Silent =>
+            result = Some(Left(
+              s"the mill starter neither ended nor wrote anything, and the proxy log did not grow, for " +
+                s"${ServerStartSilenceMillis / 1000}s",
+            ))
+          case RunOnHostSandbox.StartProgress.Waiting =>
+            if !starterEnded && polls % 5 == 0 then starterEnded = endStarter(start, processes, log)
+            polls += 1
+            Thread.sleep(100)
     result.get
 
   /**
@@ -192,7 +176,7 @@ object RunOnHostMillDaemons:
   ): Boolean =
     val listeningDaemon =
       for
-        leader <- recordedLeader(record)
+        leader <- RunOnHostSession.readRecord(record)
         (daemon, launcher) <- starterOf(members(leader), leader.pgid)
         port <- listening(buildDirectory, daemon.pid)
       yield (daemon, launcher, port)
@@ -227,10 +211,6 @@ object RunOnHostMillDaemons:
   private def groupMembers(leader: Record): Vector[Member] =
     parseMembers(lines("ps", "-ww", "-o", "pid=,ppid=,lstart=,command=", "-g", leader.pgid.toString), leader)
 
-  private def recordedLeader(record: Path): Option[Record] =
-    try RunOnHostSession.parseRecord(Files.readString(record, UTF_8))
-    catch case _: IOException => None
-
   /**
    * The daemon and the launcher that spawned it, from the group's listing: the member whose
    * command line names DaemonMain, and its parent — a member of the same group other than the
@@ -249,7 +229,7 @@ object RunOnHostMillDaemons:
   /** The daemon in the record's group: the member whose command line names DaemonMain, with the
     * start time later checks compare with, from the same listing. */
   private def memberDaemon(record: Path): Option[(Long, String)] =
-    recordedLeader(record).flatMap: leader =>
+    RunOnHostSession.readRecord(record).flatMap: leader =>
       groupMembers(leader).find(_.command.contains(DaemonMain)).map(member => member.pid -> member.start)
 
   private def portFile(buildDirectory: Path): Path =
@@ -258,7 +238,7 @@ object RunOnHostMillDaemons:
   /** `out/mill-daemon/socketPort`'s candidate: an integer in port range, nothing more. */
   private def portCandidate(buildDirectory: Path): Option[Int] =
     (try Some(Files.readString(portFile(buildDirectory), UTF_8).trim) catch case _: IOException => None)
-      .flatMap(_.toIntOption).filter(port => port >= 1 && port <= 65535)
+      .flatMap(agentsandbox.egress.HTTPHelper.parseDecimal).filter(port => port >= 1 && port <= 65535).map(_.toInt)
 
   /** The candidate, once the pid listens on it: the predicate a client's one-port grant rests on,
     * and the one behind the starter's end. Not any listening port: the daemon listens before it
@@ -321,7 +301,7 @@ object RunOnHostMillDaemons:
   private def confined(profileFile: Path): Confined =
     def run(command: String*): Option[String] =
       try
-        val process = ProcessBuilder(("/usr/bin/sandbox-exec" +: "-f" +: profileFile.toString +: command)*)
+        val process = ProcessBuilder(RunOnHostSandbox.sandboxExec(profileFile, command)*)
           .redirectError(ProcessBuilder.Redirect.DISCARD).start()
         val output = String(process.getInputStream.readAllBytes(), UTF_8)
         Option.when(process.waitFor() == 0)(output)
@@ -437,13 +417,7 @@ object RunOnHostMillDaemons:
 
   /** TERM, then KILL after a grace, each after the start-time check: whether the pid went. */
   private def end(pid: Long, start: String, processes: Processes): Boolean =
-    def alive = processes.startOf(pid).contains(start)
-    signal(pid, start, "TERM", processes)
-    val settled = (1 to 100).exists(_ => !alive || { Thread.sleep(100); false })
-    settled || {
-      signal(pid, start, "KILL", processes)
-      (1 to 50).exists(_ => !alive || { Thread.sleep(100); false })
-    }
+    RunOnHostSession.termThenKill(!processes.startOf(pid).contains(start), signal(pid, start, _, processes))
 
   /** One signal to the pid, sent only while the pid bears the start time observed: the check
     * immediately before the signal, against a pid recycled since. Whether it was sent. */
@@ -458,12 +432,6 @@ object RunOnHostMillDaemons:
     * free within the bound, keeps its record, and Left refuses the leader that would rename over
     * it. */
   private def retire(root: Path, record: Path, processes: Processes): Either[String, Unit] =
-    RunOnHostSession.endRecordedGroup(root, record, processes) match
-      case Some(kept) if kept.keeps =>
-        Left(s"the mill starter's record ${record.getFileName} is kept for the next start to retry: $kept")
-      case _ =>
-        try
-          Files.deleteIfExists(record)
-          Files.deleteIfExists(RunOnHostSession.exitRecord(record))
-        catch case _: IOException => ()
-        Right(())
+    RunOnHostSession.forgetUnlessKept(record, RunOnHostSession.endRecordedGroup(root, record, processes), _ => ()).left
+      .map(kept => s"the mill starter's record ${record.getFileName} is kept for the next start to retry: $kept")
+      .map(_ => ())

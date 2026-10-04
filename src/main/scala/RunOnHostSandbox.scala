@@ -1,9 +1,10 @@
 // The supervisor: from a project and a program to a confined command's exit code, through the thirteen
 // steps — validate, scavenge, publish, runtime, profile, run, end what was started, remove — and
 // the runner's runtimes, the proxy and the sbt server or mill daemon the commands of one build
-// directory share (RunnerRuntimes). macOS only, like everything it drives; the assembly and
-// refusal logic are in RunOnHostPrereqs and are unit-tested there, so this file is the sequence
-// of steps plus the host observations no Linux test can make.
+// directory share (RunnerRuntimes), and how the launcher's own executable is re-invoked as the
+// runner, the supervisor and the proxy (selfInvocation). macOS only, like everything it drives;
+// the assembly and refusal logic are in RunOnHostPrereqs and are unit-tested there, so this file
+// is the sequence of steps plus the host observations no Linux test can make.
 
 package agentsandbox.launcher
 
@@ -16,13 +17,13 @@ import java.nio.file.attribute.{BasicFileAttributeView, BasicFileAttributes}
 import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal
 
-import agentsandbox.egress.{BrokeredCredential, CredentialGrammar}
+import agentsandbox.egress.{BrokeredCredential, CredentialGrammar, LogHelper, Refusals}
 
 import RunOnHostPrereqs.*
-import RunOnHostSession.{ServerAnswer, Session}
+import RunOnHostSession.{daemonRecordName, proxyRecordName, serverRecordName, ServerAnswer, Session}
 import HostCommands.Os
-import FileHelper.directoryEntries
-import SandboxProject.{isMetadataEntry, projectIdOf}
+import FileHelper.{directoryEntries, isExecutableFile, realPath}
+import SandboxProject.projectIdOf
 
 object RunOnHostSandbox:
 
@@ -56,7 +57,30 @@ object RunOnHostSandbox:
     /** The persistent caches an sbt command writes besides Coursier's. */
     def sbtCachesGranted: Seq[Path] = sbtGlobalGranted.toSeq ++ ivyHomeGranted
 
-  private def isExecutableFile(path: Path) = Files.isExecutable(path) && Files.isRegularFile(path)
+    /** The profile's inputs for a process of this command: what the assembly grants, and the rest
+      * as the caller has it. */
+    def profileInputs(
+      sessionTmp: Path,
+      proxyPort: Int,
+      trust: Path,
+      systemPaths: SeatbeltProfile.SystemPaths,
+      network: SeatbeltProfile.Network,
+      fileRules: FileRules.Resolved,
+    ): SeatbeltProfile.ProfileInputs =
+      SeatbeltProfile.ProfileInputs(
+        prereqs = prereqs,
+        sessionTmp = sessionTmp,
+        distribution = distribution,
+        sbtGlobal = sbtGlobalGranted,
+        ivyHome = ivyHomeGranted,
+        gradleUserHome = gradleUserHomeGranted,
+        m2Repository = m2RepositoryGranted,
+        proxyPort = proxyPort,
+        trust = trust,
+        systemPaths = systemPaths,
+        network = network,
+        fileRules = fileRules,
+      )
 
   /** A file the prerequisites cannot read, carried out of the readers — whose callers are pure
     * and take a reader that answers absent or present — to the assembly's boundary, where it is
@@ -280,8 +304,7 @@ object RunOnHostSandbox:
             // ISO-8859-1, not UTF-8: cs appends a jar to the scripts it installs, so the file is not text.
             // Every byte maps to a char, which leaves the ASCII path this searches for intact.
             inner <- context("sbt distribution")(
-              SeatbeltProfile
-                .sbtDistribution(String(readBytes(sbt), ISO_8859_1), coursierCache)
+              sbtDistribution(String(readBytes(sbt), ISO_8859_1), coursierCache)
                 .toRight(s"$sbt names no distribution inside $coursierCache"),
             )
             home <- context("sbt distribution")(
@@ -342,56 +365,6 @@ object RunOnHostSandbox:
       millDownloadDir(env),
       millLauncher,
     )
-
-  /**
-   * run-on-host/ accepts only recognized configuration entries, as does its parent directory
-   * (SandboxProject.boundaryDirRefusal): the programs this supervisor serves, egress/ inside each, rule
-   * inside that — a stray name, a symlinked component, or a component of the wrong type refuses the
-   * command, never remains as ignored config. The type rule prevents real failures: a file where a
-   * directory belongs would read as absent configuration, and a FIFO where the file belongs would
-   * block the read forever.
-   */
-  def hostCommandStray(project: Path): Option[String] =
-    val dir = project.resolve(".ko-agent-sandbox").resolve("run-on-host")
-    val programs = Program.values.toVector.map(_.name)
-    def strays(path: Path, allowed: Set[String]): Vector[String] =
-      if !Files.isDirectory(path) then Vector.empty
-      else
-        directoryEntries(path).map(_.getFileName.toString).filterNot(isMetadataEntry).filterNot(allowed).sorted
-          .map(name => s"$path/$name")
-
-    if !Files.exists(dir, java.nio.file.LinkOption.NOFOLLOW_LINKS) then None
-    else
-      val directories = dir +: programs.flatMap: name =>
-        Vector(dir.resolve(name), dir.resolve(name).resolve("egress"))
-      val ruleFiles = programs.map(name => dir.resolve(name).resolve("egress").resolve("rule"))
-      def wrongType(path: Path, directory: Boolean): Boolean =
-        Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS) &&
-          (if directory then !Files.isDirectory(path) else !Files.isRegularFile(path))
-      (directories ++ ruleFiles).find(Files.isSymbolicLink)
-        .map(link => s"$link is a symlink; boundary configuration is read plainly or not at all")
-        .orElse(directories.find(wrongType(_, directory = true))
-          .map(p => s"$p is not a directory; boundary configuration is read plainly or not at all"))
-        .orElse(ruleFiles.find(wrongType(_, directory = false))
-          .map(p => s"$p is not a regular file; boundary configuration is read plainly or not at all"))
-        .orElse:
-          val stray = strays(dir, programs.toSet) ++ programs.flatMap: name =>
-            strays(dir.resolve(name), Set("egress")) ++
-              strays(dir.resolve(name).resolve("egress"), Set("rule"))
-          Option.when(stray.nonEmpty):
-            s"${stray.mkString(", ")}: not configuration this launcher reads — " +
-              "a typo, or a newer launcher's file; check the spelling or update the launcher"
-
-  /** The project file's hosts, validated to the program's rule grammar (run-on-host.md
-    * "Configuration"); an absent file contributes nothing. */
-  def readProgramRules(project: Path, program: Program): Either[String, Vector[String]] =
-    hostCommandStray(project).toLeft(()).flatMap: _ =>
-      val file = programRulePath(project, program)
-      if !Files.exists(file) then Right(Vector.empty)
-      else
-        try
-          programRuleHosts(Files.readString(file, UTF_8)).left.map(refusal => s"$file: ${wording(refusal)}")
-        catch case ex: IOException => Left(s"$file: ${ex.getMessage}")
 
   /**
    * The grammar of SeatbeltProfile.SystemPaths.txt: one absolute path per line, `#` comments,
@@ -514,7 +487,7 @@ object RunOnHostSandbox:
       options: List[String],
       commandArgs: List[String],
     ): Unit =
-      val program = Program.values.find(_.name == programName).getOrElse:
+      val program = Program.named(programName).getOrElse:
         Console.err.println(s"--run-command-on-host: unknown program $programName")
         sys.exit(2)
       val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
@@ -600,7 +573,7 @@ object RunOnHostSandbox:
     fileHosts: Vector[String],
     credentials: Seq[BrokeredCredential],
   ): Vector[BrokeredCredential] =
-    EgressCredentials.bindingsFor(credentials, (centralHost(program) +: fileHosts).toSet)
+    EgressCredentials.bindingsFor(credentials, programHosts(program, fileHosts).toSet)
 
   /** `--channel-log=<file>`: the runner's own log, where the supervisor appends a signal-ended
     * command's logs (appendSessionLogs). */
@@ -724,7 +697,7 @@ object RunOnHostSandbox:
   /** The bound port, from the ready line the proxy prints after `bind`; its log file is its
     * stderr, so the line is written where this polls. */
   def awaitProxyPort(log: Path, deadlineMillis: Long): Either[String, Int] =
-    val Ready = raw""".*ko-agent-egress-proxy listening on :(\d+).*""".r
+    val Ready = agentsandbox.egress.AgentEgressProxy.ReadyPort
     val deadline = System.nanoTime + deadlineMillis * 1_000_000
     // Decoded leniently: the log carries what the proxy's clients asked for.
     def text = if Files.exists(log) then String(Files.readAllBytes(log), UTF_8) else ""
@@ -827,14 +800,11 @@ object RunOnHostSandbox:
    * the filesystem currently shows, so that is answered before the walk begins.
    */
   def reachableThroughCommandWritable(target: Path, project: Path, caches: Seq[Path]): Boolean =
-    def real(path: Path): Option[Path] =
-      try Some(path.toRealPath())
-      catch case _: IOException => None
-    real(project) match
+    realPath(project) match
       case None => true
       case Some(projectRoot) =>
         val roots =
-          SandboxProject.withMacDataVolumeAliases(projectRoot +: caches.flatMap(real))
+          SandboxProject.withMacDataVolumeAliases(projectRoot +: caches.flatMap(realPath))
         def inside(path: Path) = roots.exists(path.normalize.startsWith)
         if target.getRoot == null || inside(target) then true
         else
@@ -1047,20 +1017,7 @@ object RunOnHostSandbox:
   ): RuntimeInputs =
     val prereqs = assembled.prereqs
     RuntimeInputs(
-      SeatbeltProfile.ProfileInputs(
-        prereqs = prereqs,
-        sessionTmp = tmp,
-        distribution = assembled.distribution,
-        sbtGlobal = assembled.sbtGlobalGranted,
-        ivyHome = assembled.ivyHomeGranted,
-        gradleUserHome = assembled.gradleUserHomeGranted,
-        m2Repository = assembled.m2RepositoryGranted,
-        proxyPort = proxyPort,
-        trust = trust,
-        systemPaths = systemPaths,
-        network = network,
-        fileRules = fileRules,
-      ),
+      assembled.profileInputs(tmp, proxyPort, trust, systemPaths, network, fileRules),
       commandEnvironment(
         host, forwards, prereqs, assembled.sbtGlobal, assembled.ivyHome, assembled.gradleUserHome,
         assembled.m2Repository, assembled.millDownloads, assembled.millLauncherVersion, tmp, tmp, proxyPort, trust,
@@ -1163,7 +1120,7 @@ object RunOnHostSandbox:
     private val root = session.directory.getParent
 
     private def proxyRecord(program: Program, hash: String): Path =
-      session.records.resolve(s"proxy-${program.name}-$hash")
+      session.records.resolve(proxyRecordName(program, hash))
     private def serverRecord(hash: String): Path = session.records.resolve(serverRecordName(hash))
     private def daemonRecord(hash: String): Path = session.records.resolve(daemonRecordName(hash))
 
@@ -1274,7 +1231,7 @@ object RunOnHostSandbox:
     private def created(
       program: Program, buildDirectory: Path, hash: String, arguments: Seq[String],
     ): Either[String, Option[Runtime]] =
-      val name = s"proxy-${program.name}-$hash"
+      val name = proxyRecordName(program, hash)
       val proxyLog = session.directory.resolve(s"$name.log")
       // An exception after a leader registered is a failed start like any other.
       val started =
@@ -1365,8 +1322,7 @@ object RunOnHostSandbox:
       daemon: Option[RunOnHostMillDaemons.Daemon], daemonConfig: Option[String],
     ): Either[String, Unit] =
       def read(file: Path): Either[String, RunOnHostSession.Record] =
-        (try RunOnHostSession.parseRecord(Files.readString(file, UTF_8)) catch case _: IOException => None)
-          .toRight(s"${file.getFileName} does not parse as a record")
+        RunOnHostSession.readRecord(file).toRight(s"${file.getFileName} does not parse as a record")
       for
         proxy <- read(proxyRecord(program, current.hash))
         group <- read(record)
@@ -1378,7 +1334,7 @@ object RunOnHostSandbox:
           RunOnHostRuntimeDescriptor.file(session.directory, program, current.hash),
           RunOnHostRuntimeDescriptor(
             RunOnHostRuntimeDescriptor.fingerprint(inputs, egressRuleText(program, current.hosts)),
-            current.runtime.proxyPort, proxy, group, daemon, daemonConfig.map(RunOnHostRuntimeDescriptor.digest),
+            current.runtime.proxyPort, proxy, group, daemon, daemonConfig.map(LogHelper.sha256Hex),
           ),
         )
       yield ()
@@ -1501,10 +1457,9 @@ object RunOnHostSandbox:
         case _            => (SeatbeltProfile.Network.ProxyOnly, serverRecordName(hash))
       val ownerRecords = owner.resolve(RunOnHostSession.RecordsDir)
       def record(name: String): Option[RunOnHostSession.Record] =
-        try RunOnHostSession.parseRecord(Files.readString(ownerRecords.resolve(name), UTF_8))
-        catch case _: IOException => None
+        RunOnHostSession.readRecord(ownerRecords.resolve(name))
       val ownerTmp = owner.resolve(RunOnHostSession.TmpDir)
-      val proxyName = s"proxy-${program.name}-$hash"
+      val proxyName = proxyRecordName(program, hash)
       if !RunOnHostSession.liveRunnerSessions(root, session.directory).contains(owner) then
         Right(Attachment.Unattachable("that launch is ending, or gone and not yet collected"))
       else
@@ -1535,7 +1490,7 @@ object RunOnHostSandbox:
                   _ <- config match
                     case Some(present) =>
                       if !descriptor.daemon.exists(daemonLives) then Left("its daemon is gone")
-                      else if !descriptor.daemonConfig.contains(RunOnHostRuntimeDescriptor.digest(present)) then
+                      else if !descriptor.daemonConfig.contains(LogHelper.sha256Hex(present)) then
                         Left("its daemon's configuration is not the build directory's")
                       else Right(())
                     case None =>
@@ -1629,8 +1584,8 @@ object RunOnHostSandbox:
       try
         Files.deleteIfExists(proxyLog)
         Files.deleteIfExists(proxyProfileFile(proxyLog))
-        Files.deleteIfExists(session.directory.resolve(s"${serverRecordName(hash)}.sb"))
-        Files.deleteIfExists(session.directory.resolve(s"${daemonRecordName(hash)}.sb"))
+        Files.deleteIfExists(runtimeProfileFile(session, serverRecordName(hash)))
+        Files.deleteIfExists(runtimeProfileFile(session, daemonRecordName(hash)))
         val recordsOfHash =
           Program.values.map(proxyRecord(_, hash)) ++ Seq(serverRecord(hash), daemonRecord(hash))
         if !recordsOfHash.exists(Files.exists(_)) then
@@ -1653,20 +1608,10 @@ object RunOnHostSandbox:
         case ex: IOException =>
           log(s"discarding the ${program.name} runtime descriptor for hash $hash: ${ex.getMessage}")
       val ended = if Files.exists(record) then RunOnHostSession.endRecordedGroup(root, record, processes) else None
-      ended match
-        case Some(kept) if kept.keeps =>
-          Left(s"${record.getFileName} kept for the next start to retry: $kept")
-        case _ =>
-          try
-            Files.deleteIfExists(record)
-            Files.deleteIfExists(RunOnHostSession.exitRecord(record))
-          catch case ex: IOException => log(s"discarding ${record.getFileName}: ${ex.getMessage}")
-          Right(ended.map(_.toString).getOrElse("no record"))
-
-  /** The ownership records of one build directory's server and daemon, by the directory's hash:
-    * what another launch's runner reads to attach or take over (RunOnHostSession.runtimeOwner). */
-  def serverRecordName(hash: String): String = s"server-sbt-$hash"
-  def daemonRecordName(hash: String): String = s"daemon-mill-$hash"
+      RunOnHostSession
+        .forgetUnlessKept(record, ended, ex => log(s"discarding ${record.getFileName}: ${ex.getMessage}"))
+        .left.map(kept => s"${record.getFileName} kept for the next start to retry: $kept")
+        .map(_.map(_.toString).getOrElse("no record"))
 
   // The thin client's own classes of launcher flag (NetworkClient.parseArgs, v2.0.9): a value
   // flag takes the next argument or an `=` value; a no-value flag and an `=`-prefixed one are
@@ -1744,7 +1689,7 @@ object RunOnHostSandbox:
     * grants no process, rather than under `tmp/`, where the server could replace the file with a
     * link or a FIFO before the runner opens it for the next server; appendSessionLogs keeps it
     * there with the session's other logs. Appended to across the servers of one build directory. */
-  def serverLog(session: Session, hash: String): Path = session.directory.resolve(s"server-sbt-$hash.log")
+  def serverLog(session: Session, hash: String): Path = session.directory.resolve(s"${serverRecordName(hash)}.log")
 
   /** How long a starting server may make no progress — neither its log nor the proxy
     * log growing, and no portfile — before the start fails. Progress rather than time, because
@@ -1752,10 +1697,54 @@ object RunOnHostSandbox:
     * with no bound at all (doc/TODO.md, "a bound on a silent host command"). */
   val ServerStartSilenceMillis = 120_000L
 
-  /** The server (run-on-host.md "sbt"): started through registeredSpawn under the server profile, the build
-    * directory its working directory, stdin `/dev/null`, stdout and stderr to serverLog, and
-    * the closed environment with the runner's `tmp/` as its temporary and socket directory. Up
-    * when the build directory's portfile names a connectable socket under that `tmp/`. */
+  def sandboxExec(profileFile: Path, command: Seq[String]): Seq[String] =
+    Seq("/usr/bin/sandbox-exec", "-f", profileFile.toString) ++ command
+
+  /** Where the profile of the server or daemon a record names is written: beside the session's
+    * logs, named after the record. */
+  def runtimeProfileFile(session: Session, recordName: String): Path = session.directory.resolve(s"$recordName.sb")
+
+  /** The sbt server or mill's starter (`mill version`), registered under `record`
+    * (registeredSpawn). Both streams go to `output`: sbt asks on stdout whether to create a build
+    * where it finds none, and a refused start quotes what it said. */
+  def startRuntimeStarter(
+    record: Path, profileFile: Path, command: Seq[String], buildDirectory: Path, environment: Map[String, String],
+    output: Path,
+  ): Process =
+    val builder = ProcessBuilder(RunOnHostSession.registeredSpawn(record, sandboxExec(profileFile, command))*)
+    builder.directory(buildDirectory.toFile)
+    builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
+    builder.redirectOutput(ProcessBuilder.Redirect.appendTo(output.toFile))
+    builder.redirectError(ProcessBuilder.Redirect.appendTo(output.toFile))
+    builder.environment.clear()
+    builder.environment.putAll(environment.asJava)
+    builder.start()
+
+  /** The end of a starter's output, for the refusal that quotes it. */
+  def starterOutputTail(output: Path): String = sessionLogTail(output, 4096).getOrElse("(nothing was written)\n")
+
+  enum StartProgress:
+    case Grew, Waiting, Silent
+
+  /** Polled while a server or daemon starts: Grew when its output or the proxy log grew since the
+    * last poll, Silent once neither has for ServerStartSilenceMillis. */
+  final class StartWatch(output: Path, proxyLog: Path):
+    private def sizes = (logLength(output), logLength(proxyLog))
+    private var last = sizes
+    private var since = System.nanoTime
+
+    def poll(): StartProgress =
+      val now = sizes
+      if now != last then
+        last = now
+        since = System.nanoTime
+        StartProgress.Grew
+      else if System.nanoTime - since > ServerStartSilenceMillis * 1_000_000 then StartProgress.Silent
+      else StartProgress.Waiting
+
+  /** The server (run-on-host.md "sbt") under the server profile, its output to serverLog and the
+    * runner's `tmp/` its temporary and socket directory. Up when the build directory's portfile
+    * names a connectable socket under that `tmp/`. */
   private def startSbtServer(
     session: Session,
     systemPaths: SeatbeltProfile.SystemPaths,
@@ -1774,34 +1763,20 @@ object RunOnHostSandbox:
       profile <- SeatbeltProfile.render(inputs.profile)
       leader <-
         try
-          val profileFile = session.directory.resolve(s"server-sbt-${start.hash}.sb")
+          val profileFile = runtimeProfileFile(session, serverRecordName(start.hash))
           Files.writeString(profileFile, profile, UTF_8)
-          val builder = ProcessBuilder(
-            RunOnHostSession.registeredSpawn(
-              start.record,
-              Seq("/usr/bin/sandbox-exec", "-f", profileFile.toString)
-                ++ serverCommand(prereqs.executable, assembled.sbtGlobal, start.arguments),
-            )*,
-          )
-          builder.directory(start.buildDirectory.toFile)
-          builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
-          // Both streams: sbt asks on stdout whether to create a build where it finds none, and a
-          // refused start names what it said.
-          builder.redirectOutput(ProcessBuilder.Redirect.appendTo(output.toFile))
-          builder.redirectError(ProcessBuilder.Redirect.appendTo(output.toFile))
-          builder.environment.clear()
-          builder.environment.putAll(inputs.environment.asJava)
-          Right(builder.start())
+          Right(startRuntimeStarter(
+            start.record, profileFile, serverCommand(prereqs.executable, assembled.sbtGlobal, start.arguments),
+            start.buildDirectory, inputs.environment, output,
+          ))
         catch case ex: IOException => Left(s"starting the sbt server: ${ex.getMessage}")
       _ <- awaitServer(session, start, leader, output)
     yield ()
 
   private def awaitServer(session: Session, start: ServerStart, leader: Process, output: Path): Either[String, Unit] =
     val exit = RunOnHostSession.exitRecord(start.record)
-    def said = s"its output:\n${sessionLogTail(output, 4096).getOrElse("(nothing was written)\n")}"
-    def sizes = (logLength(output), logLength(start.runtime.proxyLog))
-    var last = sizes
-    var since = System.nanoTime
+    def said = s"its output:\n${starterOutputTail(output)}"
+    val watch = StartWatch(output, start.runtime.proxyLog)
     var result: Option[Either[String, Unit]] = None
     while result.isEmpty do
       val leaderEnded = !leader.isAlive // read before the file: a leader dying after its rename still answers
@@ -1822,16 +1797,14 @@ object RunOnHostSandbox:
                 "unredirected socket this launch's server derives",
             ))
           case None =>
-            val now = sizes
-            if now != last then
-              last = now
-              since = System.nanoTime
-            else if System.nanoTime - since > ServerStartSilenceMillis * 1_000_000 then
-              result = Some(Left(
-                s"the sbt server published no portfile, and neither its output nor the proxy log grew, for " +
-                  s"${ServerStartSilenceMillis / 1000}s; $said",
-              ))
-            else Thread.sleep(100)
+            watch.poll() match
+              case StartProgress.Grew => ()
+              case StartProgress.Silent =>
+                result = Some(Left(
+                  s"the sbt server published no portfile, and neither its output nor the proxy log grew, for " +
+                    s"${ServerStartSilenceMillis / 1000}s; $said",
+                ))
+              case StartProgress.Waiting => Thread.sleep(100)
     result.get
 
   private def runInSession(
@@ -1867,20 +1840,7 @@ object RunOnHostSandbox:
         case Program.Gradle => Right(SeatbeltProfile.Network.Gradle)
         case Program.Mvn    => Right(SeatbeltProfile.Network.ProxyOnly)
       profile <- SeatbeltProfile.render(
-        SeatbeltProfile.ProfileInputs(
-          prereqs = assembled.prereqs,
-          sessionTmp = tmp,
-          distribution = assembled.distribution,
-          sbtGlobal = assembled.sbtGlobalGranted,
-          ivyHome = assembled.ivyHomeGranted,
-          gradleUserHome = assembled.gradleUserHomeGranted,
-          m2Repository = assembled.m2RepositoryGranted,
-          proxyPort = runtime.proxyPort,
-          trust = runtime.trust,
-          systemPaths = systemPaths,
-          network = network,
-          fileRules = fileRules,
-        ),
+        assembled.profileInputs(tmp, runtime.proxyPort, runtime.trust, systemPaths, network, fileRules),
       )
       exit <- runCommand(session, assembled, profile, runtime, commandArgs, workingDirectory, forwards, tmp, socketDir)
     yield
@@ -2017,8 +1977,7 @@ object RunOnHostSandbox:
       val invocation = selfInvocation("--serve-proxy-on-host")
       val command = RunOnHostSession.registeredSpawn(
         record,
-        Seq("/usr/bin/sandbox-exec", "-f", profileFile.toString)
-          ++ (invocation.head +: "-Djava.net.preferIPv4Stack=true" +: invocation.tail),
+        sandboxExec(profileFile, invocation.head +: "-Djava.net.preferIPv4Stack=true" +: invocation.tail),
       )
       val builder = ProcessBuilder(command*)
       // The JVM asks for its working directory at start (SystemProps), and the profile grants
@@ -2028,11 +1987,12 @@ object RunOnHostSandbox:
       // upstream proxy as the container's copy does, the one selected variable. Nothing else of
       // the launcher's environment has a reader here.
       builder.environment.clear()
-      upstreamProxyVariable(name => Option(System.getenv(name))).foreach(builder.environment.put(_, _))
+      agentsandbox.egress.TransportHelper.upstreamProxyVariable(name => Option(System.getenv(name)))
+        .foreach(builder.environment.put(_, _))
       import agentsandbox.egress.RulesetHelper
       builder.environment.put(RulesetHelper.ProfileVariable, RulesetHelper.DefaultProfile)
       builder.environment.put(RulesetHelper.RuleVariable, egressRuleText(program, fileHosts))
-      builder.environment.put("EGRESS_BIND", "127.0.0.1:0")
+      builder.environment.put(agentsandbox.egress.AgentEgressProxy.BindVariable, "127.0.0.1:0")
       // The leaf is why `read` in the rules is enforced: a proxy given none tunnels its hosts
       // without inspecting them.
       builder.environment.put(
@@ -2119,7 +2079,7 @@ object RunOnHostSandbox:
     val record = session.records.resolve("client")
     val command = RunOnHostSession.registeredSpawn(
       record,
-      Seq("/usr/bin/sandbox-exec", "-f", profileFile.toString) ++ programCommand,
+      sandboxExec(profileFile, programCommand),
     )
     val builder = ProcessBuilder(command*)
     builder.directory(buildDirectory.toFile)
@@ -2172,13 +2132,6 @@ object RunOnHostSandbox:
     * overrides (`OutFiles.java`): the daemon's rendezvous, its port candidate and the foreign
     * daemons are all looked for under `out/`, and Mill sent elsewhere would be checked nowhere. */
   val MillOverrides = Set("MILL_VERSION", "DEFAULT_MILL_VERSION", "MILL_OUTPUT_DIR", "MILL_BSP_OUTPUT_DIR")
-
-  /** The variable the host-served proxy leaves through, as the proxy itself selects it
-    * (TransportHelper.UpstreamProxyVariables): uppercase first, an empty value as unset. */
-  def upstreamProxyVariable(read: String => Option[String]): Option[(String, String)] =
-    agentsandbox.egress.TransportHelper.UpstreamProxyVariables.iterator
-      .flatMap(name => read(name).filter(_.nonEmpty).map(name -> _))
-      .nextOption()
 
   // sbt's getPreloaded also splits JVM environment options without unquoting them. Its first
   // lookup is argv: give it the global base as one argument, before any user options.
@@ -2242,8 +2195,7 @@ object RunOnHostSandbox:
       jvmProperty("maven.repo.local", m2Repository.toString),
       // Maven's resolver ignores the JVM proxy properties unless told (run-on-host.md "Maven").
       "-Daether.connector.http.useSystemProperties=true",
-      "-Dhttps.proxyHost=127.0.0.1", s"-Dhttps.proxyPort=$proxyPort",
-      "-Dhttp.proxyHost=127.0.0.1", s"-Dhttp.proxyPort=$proxyPort",
+    ) ++ JdkTrust.proxyProperties("127.0.0.1", proxyPort).map((name, value) => s"-D$name=$value") ++ Vector(
       // The proxy answers for every host it allows under a leaf of its own CA, so that CA is the
       // whole store: the JDK's own roots would verify nothing the command can reach.
       jvmProperty("javax.net.ssl.trustStore", RunOnHostInspection.trustStore(trust).toString),
@@ -2281,23 +2233,18 @@ object RunOnHostSandbox:
       millVersion.map("MILL_VERSION" -> _) ++
       commandProxyVariables(proxyPort) ++
       // For the programs HTTPS_PROXY serves, which read no JVM property.
-      RunOnHostInspection.CaBundleVariables.map(_ -> RunOnHostInspection.caBundle(trust).toString)
+      AgentSandboxLauncher.CaBundleVariables.map(_ -> RunOnHostInspection.caBundle(trust).toString)
     passed ++ (forwards.toMap -- MillOverrides) ++ own
 
   /**
-   * The proxy variables the command's environment gets, both spellings, as the sandbox container
-   * gets its own: the command's proxy for the programs that read the environment rather than the JVM
-   * properties, loopback exempt so a test server on it is reached directly. The rest of the
-   * family — ALL_PROXY, FTP_PROXY — requires explicit forwarding. The launcher's own HTTPS_PROXY is absent: that
-   * one names an upstream proxy the confinement refuses, with a credential the command has no
-   * business reading.
+   * The proxy variables the command's environment gets (AgentSandboxLauncher.proxyVariables), for
+   * the programs that read the environment rather than the JVM properties; the loopback exemption
+   * lets a test server on it be reached directly. The rest of the family — ALL_PROXY, FTP_PROXY —
+   * requires explicit forwarding. The launcher's own HTTPS_PROXY is absent: that one names an
+   * upstream proxy the confinement refuses, with a credential the command has no business reading.
    */
   def commandProxyVariables(proxyPort: Int): Map[String, String] =
-    val proxy = s"http://127.0.0.1:$proxyPort"
-    Map(
-      "HTTPS_PROXY" -> proxy, "https_proxy" -> proxy, "HTTP_PROXY" -> proxy, "http_proxy" -> proxy,
-      "NO_PROXY" -> "localhost,127.0.0.1", "no_proxy" -> "localhost,127.0.0.1",
-    )
+    AgentSandboxLauncher.proxyVariables(s"http://127.0.0.1:$proxyPort").toMap
 
   /**
    * The cost of switching where a build runs, paid before each sbt server starts
@@ -2312,7 +2259,7 @@ object RunOnHostSandbox:
    * otherwise match nothing and the sweep would take every link.
    */
   def cleanForeignTargetLinks(project: Path, granted: Seq[Path]): Vector[Path] =
-    val roots = granted.flatMap(root => try Some(root.toRealPath()) catch case _: IOException => None)
+    val roots = granted.flatMap(realPath)
     val removed = Vector.newBuilder[Path]
     def walk(dir: Path, inTarget: Boolean): Unit =
       val entries =
@@ -2330,7 +2277,7 @@ object RunOnHostSandbox:
                 Files.delete(entry)
                 removed += entry
               catch case _: IOException => ()
-        else if Files.isDirectory(entry) && name != ".git" && name != ".ko-agent-sandbox" then
+        else if Files.isDirectory(entry) && !FileRules.GuardedComponents.contains(name) then
           walk(entry, inTarget || name == "target")
     walk(project, inTarget = false)
     removed.result()
@@ -2338,8 +2285,8 @@ object RunOnHostSandbox:
   /** The hosts the proxy refused, from its audit log's `deny <host> CONNECT` lines at byte
     * offset `from` and after. */
   def deniedHosts(proxyLog: Path, from: Long = 0): Vector[String] =
-    val Deny = raw""".*\bdeny (\S+) CONNECT.*""".r
-    proxyLogLines(proxyLog, from).collect { case Deny(host) => host }.distinct
+    proxyLogLines(proxyLog, from).flatMap(LogHelper.auditFields)
+      .collect { case LogHelper.AuditFields("deny", host, "CONNECT", _) => host }.distinct
 
   /** A request the proxy refused inside a tunnel, and the audit line's reason. */
   case class RefusedRequest(method: String, host: String, target: String, reason: String):
@@ -2350,11 +2297,14 @@ object RunOnHostSandbox:
   /** The requests the proxy refused inside a tunnel, once each (SECURITY.md, "The audit line
     * grammar"): a line with a method and a target, where a refused CONNECT has an empty target. */
   def refusedRequests(proxyLog: Path, from: Long = 0): Vector[RefusedRequest] =
-    val Deny = raw""".*\bdeny (\S+) ([A-Z]+) (\S+) (.*)""".r
-    proxyLogLines(proxyLog, from)
-      .collect { case Deny(host, method, target, reason) if method != "CONNECT" =>
-        RefusedRequest(method, host, target, reason.trim)
-      }.distinct
+    proxyLogLines(proxyLog, from).flatMap(LogHelper.auditFields)
+      .collect:
+        case LogHelper.AuditFields("deny", host, method, rest)
+            if method != "CONNECT" && method.nonEmpty && method.forall(ch => ch >= 'A' && ch <= 'Z') =>
+          rest.split(" ", 2) match
+            case Array(target, reason) => Some(RefusedRequest(method, host, target, reason.trim))
+            case _                     => None
+      .flatten.distinct
 
   private def proxyLogLines(proxyLog: Path, from: Long): Vector[String] =
     if !Files.exists(proxyLog) then Vector.empty
@@ -2365,7 +2315,7 @@ object RunOnHostSandbox:
 
   /**
    * The reason the proxy on `port` serves nothing, when a write to its log failed: the `details`
-   * of its Proxy-Status field (HTTPHelper.proxyStatus). Asked of the proxy, since the log that
+   * of its Proxy-Status field (Refusals.proxyStatus). Asked of the proxy, since the log that
    * would say so is what failed, and the programs need not print it (run-on-host.md has what
    * sbt and mill print). `OPTIONS *` is HTTP's request about the server itself, and no
    * CONNECT: a proxy still logging answers 400 and logs `deny - -`, which deniedHosts does not
@@ -2380,10 +2330,9 @@ object RunOnHostSandbox:
         socket.setSoTimeout(2_000)
         socket.getOutputStream.write("OPTIONS * HTTP/1.1\r\nHost: localhost\r\nMax-Forwards: 0\r\n\r\n".getBytes(UTF_8))
         socket.getOutputStream.flush()
-        val Details = raw"""(?i)Proxy-Status:.*; details="((?:[^"\\]|\\.)*)".*""".r
         String(socket.getInputStream.readNBytes(4096), UTF_8).linesIterator.takeWhile(_.nonEmpty)
-          .collectFirst { case Details(details) => details.replaceAll(raw"\\(.)", "$1") }
-          .filter(_.startsWith(agentsandbox.egress.AgentEgressProxy.AuditLogUnwritable))
+          .flatMap(Refusals.proxyStatusDetails).nextOption()
+          .filter(_.startsWith(Refusals.AuditLogUnwritable))
     catch case _: IOException => None
 
   private def reportUnwritableProxyLog(runtime: Runtime, log: String => Unit): Unit =

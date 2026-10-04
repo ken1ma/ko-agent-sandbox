@@ -59,6 +59,10 @@ class FileHelperTest extends munit.FunSuite:
     assert(canonicalizedFuturePath(dangling).isLeft)
     assert(canonicalizedFuturePath(dangling.resolve("tail")).isLeft)
 
+  test("realPath answers None for an absent path rather than throwing"):
+    assertEquals(realPath(Path.of("/definitely/not/here")), None)
+    assert(realPath(Files.createTempDirectory("real-path")).isDefined)
+
   test("the file lock returns the body's result and can be acquired again after release"):
     val dir = Files.createTempDirectory("file-lock").toRealPath()
     val lock = dir.resolve(".lock")

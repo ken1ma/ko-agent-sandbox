@@ -1,5 +1,5 @@
 // The workspace FUSE filter as the launcher drives it: source identity, install and consent
-// commands, and the mount and reap scripts.
+// commands, and the mount, unmount and reap scripts.
 
 package agentsandbox.launcher
 
@@ -10,6 +10,7 @@ import java.time.Instant
 import HostCommands.Os
 import FileHelper.deleteRecursively
 import KoAgentFs.*
+import LauncherImages.bundleSourceId
 
 class KoAgentFsTest extends munit.FunSuite:
 
@@ -451,6 +452,20 @@ class KoAgentFsTest extends munit.FunSuite:
       """  (/etc/fuse.conf does not exist yet; it will be created)
         |+ user_allow_other""".stripMargin
     )
+
+  test("a reset relays every unmount and removal the script made, a failure after them included"):
+    def ran(exit: Int, out: String) = Some(HostCommands.Run(exit, out.getBytes, ""))
+    val label = "ko-agent-fs filter on the host"
+    assertEquals(unmountReport(label, ran(0, "")), Vector.empty)
+    assertEquals(unmountReport(label, ran(0, "removed /m/a\n")), Vector(s"$label: removed /m/a"))
+    // The unmount went through; only what followed it failed, and the note must not deny it.
+    assertEquals(
+      unmountReport(label, ran(1, "unmounted /m/a/workspace\n")),
+      Vector(s"$label: unmounted /m/a/workspace", "note: the filter unmount script failed after the actions above"),
+    )
+    val skipped = Vector("note: filter unmount skipped (no machine running, or the unmount script failed)")
+    assertEquals(unmountReport(label, ran(255, "")), skipped)
+    assertEquals(unmountReport(label, None), skipped)
 
   test("the --version line parses to its source id, and to nothing on any other format"):
     assertEquals(koAgentFsReportedSourceId("ko-agent-fs 0.1.0 source probe"), Some("probe"))

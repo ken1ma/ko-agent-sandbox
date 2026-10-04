@@ -83,6 +83,8 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assert(readRequest(ByteArrayInputStream(bytes)).isLeft, String(bytes, UTF_8))
     refused("sbt\n".getBytes(UTF_8)) // no argument count
     refused("sbt one\n".getBytes(UTF_8)) // a count that is no number
+    refused("sbt +0\n/Users/me/app\u0000".getBytes(UTF_8)) // a sign
+    refused("sbt ٠\n/Users/me/app\u0000".getBytes(UTF_8)) // another script's digit
     refused(s"sbt ${MaxArguments + 1}\n".getBytes(UTF_8)) // over the bound
     refused("sbt 0\n".getBytes(UTF_8) ++ Array.fill(MaxRequestBytes + 1)('a'.toByte)) // too big
     refused(Array.fill(MaxLineBytes + 1)('a'.toByte)) // a header that never ends

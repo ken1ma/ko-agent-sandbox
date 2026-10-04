@@ -9,42 +9,6 @@ import SandboxStats.*
 
 class SandboxStatsTest extends munit.FunSuite:
 
-  test("sizes print as `numfmt --to=iec` prints them, the rule of df, du and ls -h"):
-    // Each expected string is numfmt's own output for the same byte count.
-    assertEquals(humanBytes(0), "0")
-    assertEquals(humanBytes(1023), "1023")
-    assertEquals(humanBytes(1024), "1.0K")
-    assertEquals(humanBytes(1025), "1.1K")
-    assertEquals(humanBytes(1536), "1.5K")
-    assertEquals(humanBytes(10188), "10K")
-    assertEquals(humanBytes(10240), "10K")
-    assertEquals(humanBytes(10241), "11K")
-    assertEquals(humanBytes(1047552), "1023K")
-    assertEquals(humanBytes(1048064), "1.0M")
-    assertEquals(humanBytes(1048575), "1.0M")
-    assertEquals(humanBytes(1073321984), "1.0G")
-    assertEquals(humanBytes(11381243904L), "11G")
-    assertEquals(humanBytes(1L << 40), "1.0T")
-    assertEquals(humanBytes(3L << 40), "3.0T")
-    assertEquals(humanBytes(3L << 50), "3.0P")
-    assertEquals(humanBytes((1L << 62) - 1), "4.0E")
-    assertEquals(humanBytes(Long.MaxValue), "8.0E")
-    // A part in its whole's unit, rounded by the same rule at that unit.
-    assertEquals(humanPair(237L << 20, 11381243904L), ("0.3", "11G"))
-    assertEquals(humanPair(8L << 20, 256L << 20), ("8.0", "256M"))
-    assertEquals(humanPair(15L << 20, 256L << 20), ("15", "256M"))
-    assertEquals(humanPair(0, 256L << 20), ("0.0", "256M"))
-    assertEquals(humanPair(1048064, 1048064), ("1.0", "1.0M"))
-
-  test("a share line says the percentage first and the figure the thresholds act on beside it"):
-    assertEquals(shareLine("storage", (9367L << 30) / 10, (16L << 40) / 10, "free"), "storage: 57% (937G) free")
-    assertEquals(shareLine("memory", 6L << 30, 8L << 30, "available"), "memory: 75% (6.0G) available")
-    // The tint wraps the figure alone, so the words hold where the escape does not.
-    assertEquals(
-      shareLine("memory", 6L << 30, 8L << 30, "available", "<" + _ + ">"),
-      "memory: <75% (6.0G)> available",
-    )
-
   test("a count line is the section over each table, and the whole section when there is nothing to tabulate"):
     assertEquals(counted(0, "live session"), "0 live sessions")
     assertEquals(counted(1, "live session"), "1 live session")

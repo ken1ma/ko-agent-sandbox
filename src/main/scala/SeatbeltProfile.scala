@@ -23,19 +23,6 @@ import RunOnHostPrereqs.{CommandPrereqs, Program}
 object SeatbeltProfile:
 
   /**
-   * `.git` and `.ko-agent-sandbox` at any depth under the project. A pattern by intent, and the
-   * only regex besides the file rules' (fileRuleFilters): everything else is a supervisor-supplied path,
-   * which a regex would mangle — the Coursier JDK home alone contains a percent-encoded `+`, a literal `+` and dots.
-   * The project itself is kept out of the pattern the same way: `(require-all (subpath …) (regex …))`
-   * conjoins a literal filter with the name pattern.
-   *
-   * The trailing `(/|$)` is what stops `.gitignore` and `.github` matching. The pattern is
-   * lowercase alone: on a case-insensitive volume it matches the other spellings measured
-   * (run-on-host.md, "The host command's filesystem rules").
-   */
-  val GuardedNames: Seq[String] = Seq(".git", ".ko-agent-sandbox")
-
-  /**
    * The root directory entry. `(subpath "/")` is not the union of `(subpath "/child")` over every
    * child — resolving `/bin/sh` authorizes `/` first, and no grant on a child covers it. Measured
    * rather than reasoned: metadata alone is *not* sufficient, `file-read*` is, and without it a
@@ -328,7 +315,7 @@ object SeatbeltProfile:
         lines += ";; and the boundary configuration a later launch would read. Scoped to the project:"
         lines += ";; a .git a test builds in the command's temporary directory is removed with it, and no"
         lines += ";; host git ever runs there."
-        GuardedNames.foreach: name =>
+        FileRules.GuardedComponents.foreach: name =>
           lines +=
             s"(deny file-write* file-read* file-link (require-all ${subpath(prereqs.project)} ${anyDepth(name)}))"
         Right(lines.result().mkString("\n") + "\n")
@@ -400,37 +387,6 @@ object SeatbeltProfile:
 
   /** The root link the resolver's client goes through to reach ResolverSocket. */
   val ResolverSocketLink: Path = Path.of("/var")
-
-  /**
-   * The second half of the cs-installed `sbt`: the script execs an unpacked distribution inside the
-   * Coursier archive cache. Its path encodes the download URL of whichever sbt Coursier installed,
-   * so it is read out of the script rather than derived — and read rather than obtained by running
-   * it: running the script is executing on the host, unconfined.
-   *
-   * The longest cache path the script names, because a shorter one is a prefix of the real answer
-   * and a grant on a prefix is wider than it should be. Refused if it escapes the cache root.
-   */
-  def sbtDistribution(scriptText: String, coursierCacheRoot: Path): Option[Path] =
-    val prefix = coursierCacheRoot.toString
-    val candidates =
-      for
-        line <- scriptText.linesIterator
-        start <- indexesOf(line, prefix)
-        raw = line.drop(start).takeWhile(ch => ch != '"' && ch != '\'' && ch != ';' && ch != '\n')
-        trimmed = raw.trim
-        if trimmed.length > prefix.length
-      yield trimmed
-    candidates.toSeq.sortBy(-_.length).headOption
-      .map(text => Path.of(text).normalize())
-      .filter(_.startsWith(coursierCacheRoot))
-
-  private def indexesOf(line: String, needle: String): Seq[Int] =
-    Iterator
-      .unfold(0): from =>
-        line.indexOf(needle, from) match
-          case -1    => None
-          case index => Some((index, index + 1))
-      .toSeq
 
   /** Absolute and already normalized. Symlink resolution happens before this, in RunOnHostPrereqs:
     * it needs the filesystem, and this stays pure. */
@@ -539,6 +495,17 @@ object SeatbeltProfile:
       case '.' => "\\."
       case ch  => ch.toString
 
-  /** The name at any depth, anchored so `.gitignore` and `.github` do not match. */
+  /**
+   * A guarded name (FileRules.GuardedComponents) at any depth under the project. A pattern by
+   * intent, and the only regex besides the file rules' (fileRuleFilters): everything else is a
+   * supervisor-supplied path, which a regex would mangle — the Coursier JDK home alone contains a
+   * percent-encoded `+`, a literal `+` and dots.
+   * The project itself is kept out of the pattern the same way: `(require-all (subpath …) (regex …))`
+   * conjoins a literal filter with the name pattern.
+   *
+   * The trailing `(/|$)` is what stops `.gitignore` and `.github` matching. The pattern is
+   * lowercase alone: on a case-insensitive volume it matches the other spellings measured
+   * (run-on-host.md, "The host command's filesystem rules").
+   */
   private def anyDepth(name: String): String =
     s"""(regex #"/${name.replace(".", "\\.")}(/|$$)")"""

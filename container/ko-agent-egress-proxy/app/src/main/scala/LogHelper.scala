@@ -1,5 +1,6 @@
 // The audit log's form: the line grammar, the per-line UTC stamp, the tee into the host file, and
-// the digest naming the enforced ruleset. What is logged when is the proxy's (AgentEgressProxy).
+// the SHA-256 digest that names the enforced ruleset and the launcher's records. What is logged
+// when is the proxy's (AgentEgressProxy).
 
 package agentsandbox.egress
 
@@ -31,6 +32,17 @@ object LogHelper:
    */
   def auditLine(action: String, host: String, method: String, target: String, tail: String): String =
     (Vector(action, host, method) ++ Vector(target, tail).filter(_.nonEmpty)).map(escapeForLogLine).mkString(" ")
+
+  /** An audit line read back past the stamp stampLines puts first; `rest` is the target and the
+    * tail, or the tail alone, as auditLine wrote them. */
+  final case class AuditFields(action: String, host: String, method: String, rest: String)
+
+  /** None for a line without a stamp, action, host and method. */
+  def auditFields(line: String): Option[AuditFields] =
+    line.split(" ", 5) match
+      case Array(_, action, host, method, rest) => Some(AuditFields(action, host, method, rest))
+      case Array(_, action, host, method)       => Some(AuditFields(action, host, method, ""))
+      case _                                    => None
 
   /** @return the content between the quotes of a Java/Scala string literal whose value is `text`.
     * Its `\u` escapes never stand for a quote, a backslash or a line break, which Java translates
@@ -128,6 +140,8 @@ object LogHelper:
     override def write(bytes: Array[Byte], offset: Int, length: Int): Unit = keeping(out.write(bytes, offset, length))
     override def flush(): Unit = keeping(out.flush())
 
+  /** The launcher, which compiles this file, also names a project's id and volumes, a build
+    * directory's records and a runtime's fingerprint by it. */
   def sha256Hex(text: String): String =
     java.security.MessageDigest
       .getInstance("SHA-256")

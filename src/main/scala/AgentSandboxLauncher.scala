@@ -3,7 +3,8 @@
 // One launcher for Linux, macOS, WSL and native Windows. This file records the decisions, the flags and the sequence
 // of steps; the threat model is SECURITY.md. Its neighbours, each the whole of one concern:
 //
-//   HostCommands.scala          host executable resolution and execution, platform selection, diagnostics
+//   HostCommands.scala          host executable resolution and execution, platform selection, diagnostics and
+//                               the sizes they print
 //   FileHelper.scala            state-file reads, replacement writes, locks, path resolution, directory scans
 //   LauncherImages.scala        the images this launcher owns: names, identity, inventory, cleanup
 //   ContainerfileSources.scala  the remote images the bundled Containerfiles name, for the refresh
@@ -75,11 +76,11 @@ package agentsandbox.launcher
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, Paths, StandardCopyOption}
-import java.nio.file.attribute.PosixFilePermissions
 import java.time.{Instant, ZoneId, ZoneOffset}
 import java.time.format.DateTimeFormatter
 import scala.jdk.CollectionConverters.*
-import agentsandbox.egress.{BrokeredCredential, CredentialBinding, CredentialGrammar}
+import agentsandbox.egress.{AgentEgressProxy, BrokeredCredential, CredentialBinding, CredentialGrammar}
+import agentsandbox.egress.LogHelper.sha256Hex
 
 import CertificateHelper.*
 import ContainerfileSources.*
@@ -158,14 +159,25 @@ object AgentSandboxLauncher:
    * because a JVM wants them as two properties rather than one (JdkTrust.jdkJavaOpts).
    */
   val EgressProxyHost = "egress-proxy"
-  val EgressProxyPort = 3128
+  val EgressProxyPort = AgentEgressProxy.ListenPort
 
-  /** The proxy's own spelling (AgentEgressProxy.ReadyLine): printed once its socket is bound. */
-  val EgressProxyReadyLine = s"ko-agent-egress-proxy listening on :$EgressProxyPort"
+  /** The proxy variables a process behind a proxy gets, in the sandbox container and in a host
+    * command alike: both spellings, since traditional programs read lowercase, and loopback exempt.
+    * HTTP_PROXY is set although plain HTTP is refused, so an http:// attempt is recorded in the
+    * proxy log instead of failing as an unexplained resolution error. */
+  def proxyVariables(proxyUrl: String): Vector[(String, String)] =
+    Vector("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy").map(_ -> proxyUrl)
+      ++ Vector("NO_PROXY", "no_proxy").map(_ -> "localhost,127.0.0.1")
+
+  /** The variables that name a PEM bundle, set in the sandbox container and in a host command
+    * alike (SECURITY.md, "Who holds the CA key"); run-on-host.md, "The command's lifetime and
+    * environment", lists which programs read each. */
+  val CaBundleVariables: Vector[String] =
+    Vector("SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO")
 
   /** The proxy stamps every line it writes with an instant and a space; the spelling follows. */
   def isProxyReadyLine(line: String): Boolean =
-    line == EgressProxyReadyLine || line.endsWith(" " + EgressProxyReadyLine)
+    line == AgentEgressProxy.ReadyLine || line.endsWith(" " + AgentEgressProxy.ReadyLine)
 
   /** A JVM start on a loaded machine; a proxy silent past this is failed, not waited for. */
   val EgressProxyReadyBound: java.time.Duration = java.time.Duration.ofSeconds(30)
@@ -175,7 +187,7 @@ object AgentSandboxLauncher:
    * up: a proxy refusing at start — a leaf naming other than its inspected set — would
    * otherwise leave a sandbox with no egress and the reason in a log
    * nobody was shown. Reads the run's host log, the file the proxy tees to before it does
-   * anything else, until EgressProxyReadyLine, or the container is no longer running, or `bound`
+   * anything else, until AgentEgressProxy.ReadyLine, or the container is no longer running, or `bound`
    * elapses; either failure reports what the proxy wrote. The file rather than `podman logs`:
    * the container is `--rm`, and a proxy refusing at once is gone, with its output, before a
    * follower attaches — the file outlives it.
@@ -401,52 +413,6 @@ object AgentSandboxLauncher:
     Option(System.console()).filter(_.isTerminal).map: console =>
       Reader(text => console.printf("%s", text), () => Option(console.readLine()))
 
-  /**
-   * One argument as the reader agrees to it: verbatim when it is one plain word, so that the
-   * usual command reads as typed, and otherwise quoted so that `program "a b"` and `program a b` render
-   * apart and a character that would drive or reorder the terminal's display — a control,
-   * a bidi or other format character, a line or paragraph separator — is spelled out instead.
-   * The spelling is the shell's: single quotes, or `$'...'` around escapes.
-   */
-  def renderArgument(argument: String): String =
-    val plain = argument.nonEmpty && argument.forall(ch => ch.isLetterOrDigit && ch < 0x80 || "_@%+=:,./-".contains(ch))
-    if plain then argument
-    else if !argument.codePoints().anyMatch(invisible(_)) then s"'${argument.replace("'", "'\\''")}'"
-    else s"$$'${shown(argument.replace("\\", "\\\\").replace("'", "\\'"))}'"
-
-  /**
-   * One line as the terminal shows it whole: a code point the terminal would act on rather than
-   * show — a control, a bidi or other format character, a line or paragraph separator — spelled
-   * out as `\n`, `\xNN`, `\uNNNN` or `\UNNNNNNNN`, so nothing the text came from can erase or
-   * redraw what the reader answers to. A backslash stays as it is: the line may already carry
-   * renderArgument's escapes, and a literal one acts on nothing.
-   */
-  def shown(line: String): String =
-    val visible = new StringBuilder
-    line.codePoints().forEach: cp =>
-      cp match
-        case '\n'                                => visible ++= "\\n"
-        case '\t'                                => visible ++= "\\t"
-        case '\r'                                => visible ++= "\\r"
-        case cp if cp < 0x80 && invisible(cp)    => visible ++= f"\\x$cp%02x"
-        case cp if invisible(cp) && cp <= 0xffff => visible ++= f"\\u$cp%04x"
-        case cp if invisible(cp)                 => visible ++= f"\\U$cp%08x"
-        case cp                                  => visible.appendAll(Character.toChars(cp))
-    visible.result()
-
-  /** Character.getType values the terminal would act on rather than show: escaped by renderArgument. */
-  val InvisibleTypes: Set[Int] = Set(
-    Character.CONTROL,
-    Character.FORMAT,
-    Character.LINE_SEPARATOR,
-    Character.PARAGRAPH_SEPARATOR,
-    Character.SURROGATE,
-    Character.PRIVATE_USE,
-    Character.UNASSIGNED,
-  ).map(_.toInt)
-
-  private def invisible(codePoint: Int): Boolean = InvisibleTypes.contains(Character.getType(codePoint))
-
   /** Bodies stream independently of their total size. Eight concurrent TLS downloads throttled to
     * 1 MiB/s peaked near 60 MB, while sequential multi-gigabyte transfers remained bounded. Even
     * if the 64 MiB heap cap were entirely additional to the measured peak, the 256 MiB limit
@@ -537,7 +503,7 @@ object AgentSandboxLauncher:
 
   def buildMemoryWarning(available: Option[Long]): Option[String] =
     available.filter(_ < BuildMemoryWarnThreshold).map: bytes =>
-      s"the machine has ${SandboxStats.humanBytes(bytes)} of memory available; a cold image build peaks near 3.3G\n" +
+      s"the machine has ${humanBytes(bytes)} of memory available; a cold image build peaks near 3.3G\n" +
         "  exit running sandbox sessions, or raise it with `podman machine set --memory` (machine stopped)"
 
   /** After requirePodman's check, every podman action says the machine's headroom once, beside the
@@ -555,7 +521,7 @@ object AgentSandboxLauncher:
     for
       totalBytes <- total
       availableBytes <- available
-    yield SandboxStats.shareLine(
+    yield shareLine(
       label,
       availableBytes,
       totalBytes,
@@ -680,10 +646,15 @@ object AgentSandboxLauncher:
   def egressRunNetwork(projectId: String, suffix: String): String =
     s"ko-agent-egress-$projectId-$suffix"
 
-  /** This run's disambiguator: always exactly eight hex characters, which
+  /** This run's disambiguator: always exactly eight hex characters (RunSuffixPattern), which
     * is what lets isRunNamed anchor on it. */
   def newRunSuffix(): String =
     java.util.UUID.randomUUID().toString.take(8)
+
+  val RunSuffixPattern = "[0-9a-f]{8}"
+
+  /** The run's directory of mount sources under the project's TLS state. */
+  def tlsRunDir(suffix: String): String = s"run-$suffix"
 
   /**
    * Whether `name` is `builder(projectId, <run suffix>)` — the anchored
@@ -696,9 +667,7 @@ object AgentSandboxLauncher:
    */
   def isRunNamed(builder: (String, String) => String, projectId: String)(name: String): Boolean =
     val prefix = builder(projectId, "")
-    name.length == prefix.length + 8 &&
-      name.startsWith(prefix) &&
-      name.drop(prefix.length).forall(ch => (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))
+    name.startsWith(prefix) && name.drop(prefix.length).matches(RunSuffixPattern)
 
   /**
    * The check every podman-talking action runs first: a client that runs, and a service that
@@ -801,20 +770,6 @@ object AgentSandboxLauncher:
         console.printf("Continue anyway? [y/N] ")
         if !consented(Option(console.readLine())) then fail("error: build not started")
 
-  private def bundleResource(name: String): Array[Byte] =
-    val stream = getClass.getResourceAsStream(s"/sandbox-build/$name")
-    if stream == null then
-      fail(
-        s"""error: the launcher jar has no bundled build-context entry '$name'
-           |
-           |Rebuild the launcher: sbt dist, from the repository root""".stripMargin
-      )
-    try stream.readAllBytes()
-    finally stream.close()
-
-  private def bundleIndex(): Vector[String] =
-    String(bundleResource("INDEX"), StandardCharsets.UTF_8).linesIterator.filter(_.nonEmpty).toVector
-
   /**
    * The build context is bundled into the jar (build.sbt) so --build works
    * with no checkout present; unpacked to a temp directory, removed by
@@ -838,55 +793,10 @@ object AgentSandboxLauncher:
 
   /** The sandbox and proxy images a launch runs, and whether an environment override chose
     * them, which is what turns a version-lock mismatch from a refusal into a warning. */
-  def sandboxImageChoice: (String, Boolean) = imageChoice("KO_AGENT_SANDBOX_IMAGE", "ko-agent-sandbox:latest")
-  def proxyImageChoice: (String, Boolean) = imageChoice("KO_AGENT_SANDBOX_PROXY_IMAGE", "ko-agent-egress-proxy:latest")
+  def sandboxImageChoice: (String, Boolean) = imageChoice("KO_AGENT_SANDBOX_IMAGE", SandboxImage)
+  def proxyImageChoice: (String, Boolean) = imageChoice("KO_AGENT_SANDBOX_PROXY_IMAGE", ProxyImage)
   private def imageChoice(variable: String, default: String): (String, Boolean) =
     env(variable).fold((default, false))(image => (image, true))
-
-  /**
-   * The version-lock verdict for one built image: None when its label
-   * holds the jar's own digest of that image's bundled sources. The only
-   * way a default-named image exists is --build, so a mismatch means a jar
-   * other than this one built it — launch refuses it. An explicitly overridden
-   * KO_AGENT_SANDBOX_*_IMAGE only warns: a custom image is a supported
-   * case, and its interface drift still fails closed at runtime (the
-   * --print-ruleset parse, the leaf's exact names).
-   *
-   * "container image", spelled out: the reader of this message is upgrading
-   * the launcher, not thinking about images at all, and the bare name reads
-   * as noise until the words say it is a container image.
-   *
-   * Both digests are printed because the mismatch alone cannot say which
-   * side is stale — an old image, or a launch through a different jar than
-   * the one that ran --build.
-   */
-  def bundleMismatch(
-    image: String,
-    expected: String,
-    label: String,
-    labelName: String = BundleLabel,
-  ): Option[String] =
-    Option.when(label.trim != expected)(
-      s"container image $image was not built from the sources this launcher bundles" +
-        (if label.trim.isEmpty then " (it has no bundle label)" else "") +
-        "; rebuild with --build" +
-        s"\n  launcher bundle digest: $expected" +
-        s"\n  image label $labelName: " +
-        (if label.trim.isEmpty then "(none)" else label.trim),
-    )
-
-  /**
-   * --update uses a base built from this jar's bundled base sources, or does not start. The
-   * identity is of the sources, not of the image's contents: the same sources install what the
-   * package repositories hold on the day of the build.
-   */
-  def requireBaseFromBundledSources(podman: String, baseImage: String, expected: String): Unit =
-    if !runOk(podman, "image", "exists", baseImage) then
-      fail(s"error: base container image not found: $baseImage\n\nBuild it first: run this launcher with --build.")
-    val inspected = run(podman, "image", "inspect", "--format", labelTemplate(BaseBundleLabel), baseImage)
-    if !inspected.ok then fail(s"error: could not inspect $baseImage\n${inspected.err}")
-    bundleMismatch(baseImage, expected, inspected.text, BaseBundleLabel).foreach: mismatch =>
-      fail(s"error: $mismatch")
 
   /**
    * Every launcher build passes this and reads its `FROM` images from local storage alone. The
@@ -930,17 +840,17 @@ object AgentSandboxLauncher:
     proxyBundleId: String,
   ): Vector[Vector[String]] =
     Vector(
-      Vector(podman, "build", NoRegistryLookup, "-t", s"debian-temurin:$version", "debian-temurin"),
+      Vector(podman, "build", NoRegistryLookup, "-t", temurinImage(version), "debian-temurin"),
       Vector(
         podman, "build", NoRegistryLookup, "--build-arg", s"IMG_TAG_VER=$version",
         "--label", s"$BaseBundleLabel=$baseBundleId",
-        "-t", s"debian-coursier:$version", "debian-coursier",
+        "-t", coursierImage(version), "debian-coursier",
       ),
       Vector(
         podman, "build", NoRegistryLookup, "--build-arg", s"IMG_TAG_VER=$version",
         "--build-arg", s"BUNDLE_ID=$sandboxBundleId",
         "--label", s"$BundleLabel=$sandboxBundleId",
-        "-t", "ko-agent-sandbox:latest", "ko-agent-sandbox",
+        "-t", SandboxImage, "ko-agent-sandbox",
       ),
       Vector(
         podman, "build", NoRegistryLookup, "--target", "build", "--build-arg", s"IMG_TAG_VER=$version",
@@ -950,7 +860,7 @@ object AgentSandboxLauncher:
         podman, "build", NoRegistryLookup, "--build-arg", s"IMG_TAG_VER=$version",
         "--build-arg", s"BUNDLE_ID=$proxyBundleId",
         "--label", s"$BundleLabel=$proxyBundleId",
-        "-t", "ko-agent-egress-proxy:latest", "ko-agent-egress-proxy",
+        "-t", ProxyImage, "ko-agent-egress-proxy",
       ),
       Vector(
         podman, "build", NoRegistryLookup, "--target", "build",
@@ -959,7 +869,7 @@ object AgentSandboxLauncher:
       ),
       Vector(
         podman, "build", NoRegistryLookup, "--build-arg", s"KO_AGENT_FS_SOURCE_ID=$fsSourceId",
-        "-t", "ko-agent-fs:latest", "ko-agent-fs",
+        "-t", KoAgentFsImage, "ko-agent-fs",
       ),
     )
 
@@ -1009,7 +919,7 @@ object AgentSandboxLauncher:
         "--build-arg", s"KO_AGENT_FS_SOURCE_ID=$fsSourceId",
         "--label", s"$BundleLabel=$selfTestBundleId",
         "-f", "ko-agent-self-test/Containerfile",
-        "-t", "ko-agent-self-test:latest", ".",
+        "-t", SelfTestImage, ".",
       ),
     )
 
@@ -1029,7 +939,7 @@ object AgentSandboxLauncher:
     Vector(podman, "run", "--rm", "--pull=never", "--network=none", "--device", "/dev/fuse",
       "--cap-add", "SYS_ADMIN")
       ++ (if asRoot then Vector("--user", "0") else Vector.empty)
-      ++ Vector("ko-agent-self-test:latest")
+      ++ Vector(SelfTestImage)
       ++ filter.toVector
 
   /**
@@ -1052,36 +962,9 @@ object AgentSandboxLauncher:
         podman, "build", NoRegistryLookup, "--no-cache", "--build-arg", s"IMG_TAG_VER=$version",
         "--build-arg", s"BUNDLE_ID=$sandboxBundleId",
         "--label", s"$BundleLabel=$sandboxBundleId",
-        "-t", "ko-agent-sandbox:latest", "ko-agent-sandbox",
+        "-t", SandboxImage, "ko-agent-sandbox",
       ),
     )
-
-  /**
-   * A build's check of what it just stamped, immediately after committing the images:
-   * the layer-cache staleness above is exactly the kind of silent drift the
-   * version lock exists for, so the freshly committed labels are read back
-   * rather than assumed. A failure here is podman misbehaving, not a wrong
-   * jar — the remediation is clearing the build cache, not --build again.
-   */
-  def verifyBuiltBundleLabels(expected: Seq[(String, String)], labelName: String = BundleLabel): Unit =
-    expected.foreach: (image, id) =>
-      val inspected = run(
-        podman, "image", "inspect", "--format", labelTemplate(labelName), image,
-      )
-      if !inspected.ok then
-        fail(s"error: could not inspect the just-built image $image\n${inspected.err}")
-      if inspected.text.trim != id then
-        fail(
-          s"""error: the image build committed $image with a stale bundle label
-             |  launcher bundle digest: $id
-             |  image label $labelName: ${
-                if inspected.text.trim.isEmpty then "(none)" else inspected.text.trim}
-             |
-             |podman's layer cache can serve a LABEL derived from a changed
-             |build arg stale (buildah #5501); this launcher passes --label to
-             |bypass that cache, so this failing means podman dropped --label
-             |too. Remove $image, then rerun the same launcher action.""".stripMargin
-        )
 
   /**
    * Each command echoed before it runs, so what follows is what podman prints for exactly that
@@ -1141,24 +1024,27 @@ object AgentSandboxLauncher:
   def withImageBuildLock[A](os: Os)(body: Path => A): A =
     requireStateRootOutside(os, workingDirectory())
     withFileLock(imageBuildLockFile(os)):
-      body(stateRoot(os).resolve("image-build").resolve("cleanup.ids"))
+      body(imageCleanupJournal(os))
 
   /** The lock every image-producing action holds, and a mount of the filter too, since the action
     * replaces the filter binary the mount executes (KoAgentFs.mountKoAgentFs). */
   def imageBuildLockFile(os: Os): Path = stateRoot(os).resolve("image-build").resolve("lock")
 
-  /**
-   * The generated tail every launcher-made name ends with: the folded directory slug, the
-   * twelve-hex path hash (SandboxProject.projectIdOf), and — for per-run resources — the
-   * eight-hex run suffix. `--reset-all` matches whole names against these patterns rather than
-   * bare prefixes: it force-removes what it matches, and a prefix alone would also take a
-   * user's own `ko-agent-sandbox-persistent-backup`. A pattern is not provenance, so the patterns
-   * are a reserved namespace, stated as such in SECURITY.md ("Silent changes to what you own"):
-   * an object hand-named inside one is removed like the launcher's own, and the one
-   * launcher-adopted name — the shared volume — is refused when it strays into it
-   * (sharedVolumeNameRefusal).
-   */
-  private val RunPattern = s"$ProjectIdPattern-[0-9a-f]{8}"
+  def imageCleanupJournal(os: Os): Path = stateRoot(os).resolve("image-build").resolve("cleanup.ids")
+
+  // The generated tail every launcher-made name ends with: the folded directory slug, the
+  // twelve-hex path hash (SandboxProject.projectIdOf), and — for per-run resources — the
+  // eight-hex run suffix. `--reset-all` matches whole names against these patterns rather than
+  // bare prefixes: it force-removes what it matches, and a prefix alone would also take a
+  // user's own `ko-agent-sandbox-persistent-backup`. A pattern is not provenance, so the patterns
+  // are a reserved namespace, stated as such in SECURITY.md ("Silent changes to what you own"):
+  // an object hand-named inside one is removed like the launcher's own, and the one
+  // launcher-adopted name — the shared volume — is refused when it strays into it
+  // (sharedVolumeNameRefusal).
+
+  /** Whether `name` is `builder(<any project id>, <run suffix>)`, matched whole. */
+  private def isAnyProjectRunNamed(builder: (String, String) => String)(name: String): Boolean =
+    name.matches(builder(ProjectIdPattern, RunSuffixPattern))
 
   /**
    * Why `name` may not serve as the shared agent-state volume, or None. The generated volume
@@ -1170,15 +1056,15 @@ object AgentSandboxLauncher:
    * metadata rather than by the user, and agreed to at the prompt.
    */
   def sharedVolumeNameRefusal(name: String): Option[String] =
-    Option.when(name.matches(s"ko-agent-sandbox-persistent-$ProjectIdPattern"))(
+    Option.when(name.matches(persistentVolumeName(ProjectIdPattern)))(
       s"KO_AGENT_SANDBOX_PERSISTENT_VOLUME is '$name', which has the launcher's generated " +
         "volume-name pattern, and --reset-all removes every volume matching it\n\n" +
-        "Choose a name outside ko-agent-sandbox-persistent-<slug>-<12 hex>.",
+        s"Choose a name outside ${persistentVolumeName("<slug>-<12 hex>")}.",
     )
 
   /** The volume a launch from `main` itself mounts (SandboxProject.mainWorktreeOf has the spelling). */
   def mainWorktreeVolume(main: Path, os: Os): String =
-    s"ko-agent-sandbox-persistent-${projectIdOf(main, os)}"
+    persistentVolumeName(projectIdOf(main, os))
 
   /** What a linked worktree's `--reset` says of the volume it leaves in place. */
   def mainWorktreeVolumeNote(main: Path, os: Os): String =
@@ -1186,7 +1072,7 @@ object AgentSandboxLauncher:
       s"run --reset in ${pathInline(main, os)} to remove it"
 
   def proxyContainers(names: Seq[String]): Seq[String] =
-    names.filter(_.matches(s"ko-agent-egress-proxy-$RunPattern"))
+    names.filter(isAnyProjectRunNamed(proxyRunContainer))
 
   /**
    * Run containers are --rm and normally remove themselves; one survives
@@ -1195,9 +1081,9 @@ object AgentSandboxLauncher:
    * primary cleanup.
    */
   def sandboxRunContainers(names: Seq[String]): Seq[String] =
-    names.filter(_.matches(s"ko-agent-sandbox-run-$RunPattern"))
+    names.filter(isAnyProjectRunNamed(sandboxRunContainer))
 
-  private val RunContainerName = s"ko-agent-(sandbox-run|egress-proxy)-($ProjectIdPattern)-([0-9a-f]{8})".r
+  private val RunContainerName = s"ko-agent-(sandbox-run|egress-proxy)-($ProjectIdPattern)-($RunSuffixPattern)".r
 
   /** The kind, project id and run suffix of a container in the namespace the two filters above
     * sweep, or None: `--stats` reads the names back one at a time. */
@@ -1211,11 +1097,11 @@ object AgentSandboxLauncher:
    * cannot match this pattern, because such a value refuses the launch (sharedVolumeNameRefusal).
    */
   def persistentVolumes(names: Seq[String]): Seq[String] =
-    names.filter(_.matches(s"ko-agent-sandbox-persistent-$ProjectIdPattern"))
+    names.filter(_.matches(persistentVolumeName(ProjectIdPattern)))
 
   def launcherNetworks(names: Seq[String]): Seq[String] =
     names.filter: name =>
-      name.matches(s"ko-agent-sandbox-$RunPattern") || name.matches(s"ko-agent-egress-$RunPattern")
+      isAnyProjectRunNamed(sandboxRunNetwork)(name) || isAnyProjectRunNamed(egressRunNetwork)(name)
 
   /**
    * The per-run TLS mount-source directories a launch may sweep: named for a run (`run-<8 hex>`)
@@ -1227,8 +1113,8 @@ object AgentSandboxLauncher:
    */
   def tlsRunDirsToPrune(names: Seq[String], liveRuns: Set[String]): Seq[String] =
     names
-      .filter(_.matches("run-[0-9a-f]{8}"))
-      .filterNot(name => liveRuns.contains(name.stripPrefix("run-")))
+      .filter(_.matches(tlsRunDir(RunSuffixPattern)))
+      .filterNot(name => liveRuns.contains(name.stripPrefix(tlsRunDir(""))))
 
   def projectNetworks(names: Seq[String], projectId: String): Seq[String] =
     names.filter: name =>
@@ -1271,7 +1157,7 @@ object AgentSandboxLauncher:
       fail("error: --self-test takes at most one operand, a test-name filter")
     val filter = operands.headOption.filter(_.nonEmpty)
 
-    if !runOk(podman, "image", "exists", "ko-agent-sandbox:latest") then
+    if !runOk(podman, "image", "exists", SandboxImage) then
       fail(
         """error: the sandbox image is not built, and --self-test does not build it
           |
@@ -1281,7 +1167,7 @@ object AgentSandboxLauncher:
     withImageBuildLock(os): journal =>
       val context = unpackBuildContext()
       val existingTags = existingImageTags(podman)
-      val sandboxImageId = requiredImageId(existingTags, "ko-agent-sandbox:latest", "self-test did not start")
+      val sandboxImageId = requiredImageId(existingTags, SandboxImage, "self-test did not start")
       val fsSourceId = koAgentFsSourceId(context)
       val rustVersion = pinnedRustVersion(context)
       val bundleId = selfTestBundleId(
@@ -1409,7 +1295,7 @@ object AgentSandboxLauncher:
            |Build it first: run this launcher with --build.""".stripMargin
       )
 
-    val boundaryDir = projectDir.resolve(".ko-agent-sandbox")
+    val boundaryDir = boundaryDirOf(projectDir)
     boundaryDirRefusal(boundaryDir).foreach(fail(_))
     val ruleFiles = readRuleFiles(boundaryDir.resolve("egress")).fold(fail(_), identity)
 
@@ -1573,7 +1459,7 @@ object AgentSandboxLauncher:
     // Only the computed per-project volume; a volume shared through KO_AGENT_SANDBOX_PERSISTENT_VOLUME belongs to other
     // projects too.
     // A failed probe is a failed step, not an absent volume, so the record below is not dropped over one.
-    val volume = s"ko-agent-sandbox-persistent-$id"
+    val volume = persistentVolumeName(id)
     val volumeExists: Option[Boolean] =
       val probe = run(podman, "volume", "exists", volume)
       val answer = existsAnswer(probe.exit)
@@ -1609,11 +1495,9 @@ object AgentSandboxLauncher:
         found = true
         remove("network", network)
 
-    deleteTree(tlsStateRoot(os).resolve(id))
-    deleteTree(rulesetStateRoot(os).resolve(id))
     // The audit trail goes with the rest of the project's state: "reset" means "as if this project had never been
     // opened". Copy the files out first if a session's refusals still matter.
-    deleteTree(logStateRoot(os).resolve(id))
+    perProjectStateRoots(os).foreach(root => deleteTree(root.resolve(id)))
     // The run-on-host cache too: it is the one store a command can poison (SECURITY.md, "Cache
     // poisoning stops at the project"), and a reset that kept it would not mean "never opened".
     // The root is checked against the directory the reset runs in, as every deletion under it is.
@@ -1658,23 +1542,6 @@ object AgentSandboxLauncher:
       echoCommand(Vector("rm", "-rf", dir.toString))
       deleteRecursively(dir)
 
-  /** Runs an unmount script and prints its [[unmountReport]]; true when the script acted on any filter state. */
-  private def unmountKoAgentFs(os: Os, script: String): Boolean =
-    val result =
-      try Some(run(koAgentFsScriptCommand(podman, os, script)*))
-      catch case _: IOException => None
-    val lines = unmountReport(koAgentFsLabel(os), result)
-    lines.foreach(System.err.println)
-    result.exists(_.text.nonEmpty)
-
-  /** The lines reporting an unmount script's run, None when it could not start: every action it
-    * printed, even when a later one failed, then a note if the run failed. */
-  def unmountReport(label: String, result: Option[Run]): Vector[String] =
-    val done = result.toVector.flatMap(_.text.linesIterator).map(line => s"$label: $line")
-    if result.exists(_.ok) then done
-    else if done.isEmpty then Vector("note: filter unmount skipped (no machine running, or the unmount script failed)")
-    else done :+ "note: the filter unmount script failed after the actions above"
-
   /** `podman container exists`, `volume exists` and `network exists` answer present with exit 0,
     * absent with 1, and any failure with another code, which is neither. */
   def existsAnswer(exit: Int): Option[Boolean] = exit match
@@ -1714,10 +1581,9 @@ object AgentSandboxLauncher:
     val caches = runOnHostCacheRoot(os, project)
       .flatMap(root => runOnHostRemoval(os, project, RunOnHostPrereqs.runOnHostCachesOf(root)))
       .fold(refusal => fail(cacheRootRefusalLine(refusal)), identity)
-    val imageState = stateRoot(os).resolve("image-build")
-    val cleanupJournal = imageState.resolve("cleanup.ids")
+    val cleanupJournal = imageCleanupJournal(os)
     if Files.exists(cleanupJournal) then
-      withFileLock(imageState.resolve("lock")):
+      withFileLock(imageBuildLockFile(os)):
         repairImageCleanupJournal(cleanupJournal)
     var failures = 0
 
@@ -1742,9 +1608,7 @@ object AgentSandboxLauncher:
     launcherNetworks(listed(podman, "network", "ls", "--format", "{{.Name}}"))
       .foreach(name => remove("network", name))
 
-    removeTree(tlsStateRoot(os))
-    removeTree(rulesetStateRoot(os))
-    removeTree(logStateRoot(os))
+    perProjectStateRoots(os).foreach(removeTree)
 
     // Every project's filter mount. Best effort, as in the per-project reset.
     unmountKoAgentFs(os, koAgentFsUnmountAllScript)
@@ -1810,9 +1674,9 @@ object AgentSandboxLauncher:
     // The generated volume is asked for as well: a shared volume or a failed step leaves it behind
     // a --reset that removed these directories. This action needs no podman, so where none answers
     // the record stays.
-    val state = Vector(tlsStateRoot(os), logStateRoot(os), rulesetStateRoot(os)).map(_.resolve(id))
+    val state = perProjectStateRoots(os).map(_.resolve(id))
     val volumeKept = findOnPath("podman", env("PATH").getOrElse(""), os).fold(true): found =>
-      existsAnswer(run(found.toString, "volume", "exists", s"ko-agent-sandbox-persistent-$id").exit)
+      existsAnswer(run(found.toString, "volume", "exists", persistentVolumeName(id)).exit)
         .getOrElse(true)
     dropRecordUnless(projectsStateRoot(os), id, state, volumeKept)
     sys.exit(0)
@@ -1826,7 +1690,9 @@ object AgentSandboxLauncher:
    * to the sandbox (and aim `--reset-all`'s recursive deletions into the project directory). It is
    * canonicalized through its nearest existing ancestor, so a symlinked spelling cannot place it
    * somewhere the outside-the-project comparison (forbiddenStateRootReason) never sees; on a first
-   * launch the directory does not exist yet, which is why a plain toRealPath is not enough.
+   * launch the directory does not exist yet, which is why a plain toRealPath is not enough. An
+   * empty variable is an unset one, as RunOnHostPrereqs.cacheRootOf reads its own: an empty HOME
+   * would otherwise place the state root at `/.local/state`.
    */
   def stateRoot(os: Os): Path = stateRootOf(os, env).fold(fail(_), identity)
 
@@ -1834,10 +1700,10 @@ object AgentSandboxLauncher:
     val (variable, configured) = os match
       case Os.Windows => ("LOCALAPPDATA", env("LOCALAPPDATA"))
       case _ =>
-        env("XDG_STATE_HOME") match
+        env("XDG_STATE_HOME").filter(_.nonEmpty) match
           case Some(value) => ("XDG_STATE_HOME", Some(value))
-          case None        => ("HOME", env("HOME").map(_ + "/.local/state"))
-    configured match
+          case None        => ("HOME", env("HOME").filter(_.nonEmpty).map(_ + "/.local/state"))
+    configured.filter(_.nonEmpty) match
       case None => Left(s"error: $variable is not set")
       case Some(value) =>
         val base =
@@ -1860,17 +1726,12 @@ object AgentSandboxLauncher:
    * Why the resolved state root may not serve this project, or None: the two overlap in either
    * direction. A state root inside the project hands the sandbox the CA signing key; a project
    * inside the state root puts the project under a reset's recursive deletions, as
-   * RunOnHostPrereqs.cacheRootOutsideProject refuses for the cache root. startsWith on two
-   * canonical paths — the project directory is toRealPath-resolved, and stateRootOf canonicalized
-   * its answer — with each compared under its macOS data-volume spellings too: a firmlink is not a
-   * symlink, so toRealPath leaves `/System/Volumes/Data/...` and its `/...` alias as two
-   * spellings of one directory (SandboxProject.withMacDataVolumeAliases).
+   * RunOnHostPrereqs.cacheRootOutsideProject refuses for the cache root. Both paths are
+   * canonical, as overlapsInAnySpelling requires: the project directory is toRealPath-resolved,
+   * and stateRootOf canonicalized its answer.
    */
   def forbiddenStateRootReason(os: Os, stateRoot: Path, projectDir: Path): Option[String] =
-    def spellings(path: Path): Seq[Path] =
-      if os == Os.Mac then withMacDataVolumeAliases(Seq(path)) else Seq(path)
-    def overlaps(root: Path, project: Path) = root.startsWith(project) || project.startsWith(root)
-    Option.when(spellings(stateRoot).exists(root => spellings(projectDir).exists(overlaps(root, _))))(
+    Option.when(overlapsInAnySpelling(os, stateRoot, projectDir))(
       s"error: the launcher's state root $stateRoot overlaps the project directory $projectDir\n" +
         "It holds the CA signing key, proxy audit logs and launch state, which the sandbox must\n" +
         "not reach and a reset removes; point XDG_STATE_HOME (or LOCALAPPDATA) at a directory\n" +
@@ -2056,6 +1917,10 @@ object AgentSandboxLauncher:
    * and `--stats` names a project by the directory its `--reset-run-on-host` runs in.
    */
   def projectsStateRoot(os: Os): Path = stateRoot(os).resolve("projects")
+
+  /** The roots holding a directory per project id, which a reset removes; the projects record is
+    * removed separately (dropRecordUnless). */
+  def perProjectStateRoots(os: Os): Vector[Path] = Vector(tlsStateRoot(os), rulesetStateRoot(os), logStateRoot(os))
 
   /** Written with the first state a launch creates, so a launch refused before that leaves no
     * record, and rewritten at every launch: the id changes with the path, so a stale record
@@ -2315,7 +2180,7 @@ object AgentSandboxLauncher:
   ): Vector[String] =
     programHosts.toVector.flatMap:
       case (program, hosts) if hosts.nonEmpty =>
-        val grants = hosts.map(host => printable(s"allow https://$host/ read"))
+        val grants = hosts.map(host => shown(RunOnHostPrereqs.programRuleLine(host)))
         val file = s".ko-agent-sandbox/run-on-host/$program/egress/rule"
         wideningReport(s"run-on-host egress rules ($file)", grants, color)
       case _ => Vector.empty
@@ -2534,10 +2399,10 @@ object AgentSandboxLauncher:
           )
           runBuilds(context, remoteImagePullCommands(podman, remoteImages) ++ commands)
           verifyBuiltBundleLabels(Seq(
-            "ko-agent-sandbox:latest" -> sandboxBundleId,
-            "ko-agent-egress-proxy:latest" -> proxyBundleId,
+            SandboxImage -> sandboxBundleId,
+            ProxyImage -> proxyBundleId,
           ))
-          verifyBuiltBundleLabels(Seq(s"debian-coursier:$ImgTagVersion" -> baseId), BaseBundleLabel)
+          verifyBuiltBundleLabels(Seq(coursierImage(ImgTagVersion) -> baseId), BaseBundleLabel)
           installKoAgentFs(podman, currentOs, fsSourceId)
           val (candidates, staleTags) = includeStaleSelfTestCleanup(
             podman,
@@ -2566,7 +2431,7 @@ object AgentSandboxLauncher:
           // before the context is unpacked, so a refusal leaves nothing behind.
           requireBaseFromBundledSources(
             podman,
-            s"debian-coursier:$ImgTagVersion",
+            coursierImage(ImgTagVersion),
             baseBundleId(bundledSourceId("debian-temurin"), bundledSourceId("debian-coursier")),
           )
           val context = unpackBuildContext()
@@ -2586,7 +2451,7 @@ object AgentSandboxLauncher:
             staleBaseTags,
           )
           runBuilds(context, remoteImagePullCommands(podman, remoteImages) ++ commands)
-          verifyBuiltBundleLabels(Seq("ko-agent-sandbox:latest" -> sandboxBundleId))
+          verifyBuiltBundleLabels(Seq(SandboxImage -> sandboxBundleId))
           val (candidates, staleTags) = includeStaleSelfTestCleanup(
             podman,
             journal,
@@ -2673,8 +2538,8 @@ object AgentSandboxLauncher:
         Vector(
           fileBind(certificate, "/etc/ko-agent-egress-proxy/leaf.crt", "ro", selinuxEnforcing),
           fileBind(key, "/etc/ko-agent-egress-proxy/leaf.key", "ro", selinuxEnforcing),
-          "--env=EGRESS_TLS_CERTIFICATE=/etc/ko-agent-egress-proxy/leaf.crt",
-          "--env=EGRESS_TLS_PRIVATE_KEY=/etc/ko-agent-egress-proxy/leaf.key",
+          s"--env=${AgentEgressProxy.CertificateVariable}=/etc/ko-agent-egress-proxy/leaf.crt",
+          s"--env=${AgentEgressProxy.PrivateKeyVariable}=/etc/ko-agent-egress-proxy/leaf.key",
         )
       case ProxyTlsMaterial.Uninspected => Vector.empty
 
@@ -2692,7 +2557,7 @@ object AgentSandboxLauncher:
     val containerLogFile = "/var/log/ko-agent-egress-proxy/proxy.log"
     Vector(
       fileBind(hostLogFile, containerLogFile, "rw", selinuxEnforcing),
-      s"--env=EGRESS_LOG_FILE=$containerLogFile",
+      s"--env=${AgentEgressProxy.LogFileVariable}=$containerLogFile",
     )
 
   val AgentDocPath = "/etc/ko-agent-sandbox/AGENTS.md"
@@ -2717,12 +2582,8 @@ object AgentSandboxLauncher:
     Vector(
       fileBind(caBundle, sandboxCaBundle, "ro", selinuxEnforcing),
       fileBind(caCertificate, SandboxEgressProxyCaPath, "ro", selinuxEnforcing),
-      s"--env=SSL_CERT_FILE=$sandboxCaBundle",
-      s"--env=CURL_CA_BUNDLE=$sandboxCaBundle",
-      s"--env=REQUESTS_CA_BUNDLE=$sandboxCaBundle",
-      s"--env=NODE_EXTRA_CA_CERTS=$sandboxCaBundle",
-      s"--env=GIT_SSL_CAINFO=$sandboxCaBundle",
-    ) ++ jdkFiles.map((file, at) => fileBind(file, at, "ro", selinuxEnforcing))
+    ) ++ CaBundleVariables.map(name => s"--env=$name=$sandboxCaBundle")
+      ++ jdkFiles.map((file, at) => fileBind(file, at, "ro", selinuxEnforcing))
       :+ fileBind(agentDoc, AgentDocPath, "ro", selinuxEnforcing)
 
   /**
@@ -2807,15 +2668,16 @@ object AgentSandboxLauncher:
       fail("error: --run-on-host is available on macOS only; on this host, run those programs in the container")
 
     val projectDir = resolveProjectDir(os)
+    // Before any read of the boundary configuration: boundaryDirRefusal has the forms, SECURITY.md the why.
+    val boundaryDir = boundaryDirOf(projectDir)
+    boundaryDirRefusal(boundaryDir).foreach(fail(_))
 
     // The selected programs' rule files, read before anything is created: a binding is checked against
     // them below, and the launch's widening report prints them (runOnHostWideningLines). The runner reads
     // them again at a program's first command.
     val programRules = RunOnHostPrereqs.Program.values.toVector.filter(program => runOnHost.contains(program.name))
       .map: program =>
-        RunOnHostSandbox.readProgramRules(projectDir, program) match
-          case Right(hosts)  => program -> hosts
-          case Left(refusal) => fail(s"error: ${printable(refusal)}")
+        RunOnHostPrereqs.readProgramRules(projectDir, program).fold(fail(_), program -> _)
 
     // -----------------------------------------------------------------------
     // Refuse obviously wrong project directories
@@ -2907,7 +2769,7 @@ object AgentSandboxLauncher:
     // The volume this session mounts ("Shared agent state", above).
     val persistentVolume = sharedVolume
       .orElse(sharedWithMain.map(mainWorktreeVolume(_, os)))
-      .getOrElse(s"ko-agent-sandbox-persistent-$projectId")
+      .getOrElse(persistentVolumeName(projectId))
 
     val machineMemory = requirePodman(os)
 
@@ -3019,12 +2881,9 @@ object AgentSandboxLauncher:
     // -----------------------------------------------------------------------
     //
     // The project's egress/ is read here on the host and handed to the proxy at startup.
-    // boundaryDirRefusal and readRuleFiles have the forms, SECURITY.md the why. What keeps a
-    // session from writing the next one's rules is the write mode itself: reject's read-only
-    // tree, or live's FUSE reserved-name rule.
-    val boundaryDir = projectDir.resolve(".ko-agent-sandbox")
-    boundaryDirRefusal(boundaryDir).foreach(fail(_))
-
+    // readRuleFiles has the forms, SECURITY.md the why. What keeps a session from writing the
+    // next one's rules is the write mode itself: reject's read-only tree, or live's FUSE
+    // reserved-name rule.
     val ruleFiles = readRuleFiles(boundaryDir.resolve("egress")).fold(fail(_), identity)
 
     // The project files a host program executes on an event (FileRules), read as the egress rules
@@ -3056,9 +2915,7 @@ object AgentSandboxLauncher:
     // Enforcement never reads this cache: the proxy re-resolves the same variables at startup, so corruption can at
     // worst misprint the banner, never widen what is enforced.
     val rulesetCacheDir = rulesetStateRoot(os).resolve(projectId)
-    Files.createDirectories(rulesetCacheDir)
-    if posixPermissions(rulesetCacheDir) then
-      Files.setPosixFilePermissions(rulesetCacheDir, PosixFilePermissions.fromString("rwx------"))
+    createPrivateDirectories(rulesetCacheDir)
     recordProjectDirectory(projectsStateRoot(os), projectId, projectDir)
     if cachedMountPath.isEmpty then cacheMountPathAnswer(mountPathAnswerFile, imageId, mountPath, mountPathProbe)
 
@@ -3100,11 +2957,11 @@ object AgentSandboxLauncher:
     val inspectedHosts = inspectedHostsOf(rulesetText).fold(fail(_), identity)
 
     // Each binding must reach a proxy that inspects its host: the session's, or a selected
-    // program's, whose proxy inspects every host of its rules (RunOnHostPrereqs.egressRuleText).
+    // program's, whose proxy inspects every host of its rules (RunOnHostPrereqs.programHosts).
     EgressCredentials.checkHosts(
       parsed.credentialBindings, inspectedHosts.toSet, tunnelHostsOf(rulesetText).toSet,
       programRules.map((program, hosts) =>
-        program.name -> (RunOnHostPrereqs.centralHost(program) +: hosts).toSet,
+        program.name -> RunOnHostPrereqs.programHosts(program, hosts).toSet,
       ).toMap,
     ).fold(fail(_), identity)
     val sessionCredentials = EgressCredentials.bindingsFor(credentials, inspectedHosts.toSet)
@@ -3129,10 +2986,8 @@ object AgentSandboxLauncher:
     // survive its source's inode being replaced, and these files have nothing behind them to fall
     // through to.
     val tlsDir = tlsStateRoot(os).resolve(projectId)
-    Files.createDirectories(tlsDir)
-    if posixPermissions(tlsDir) then
-      Files.setPosixFilePermissions(tlsDir, PosixFilePermissions.fromString("rwx------"))
-    val runFiles = tlsDir.resolve(s"run-$runSuffix")
+    createPrivateDirectories(tlsDir)
+    val runFiles = tlsDir.resolve(tlsRunDir(runSuffix))
 
     // Everything this run creates, in one place: the shutdown hook and the resident teardown both
     // run exactly this, so the two cannot drift into removing different sets.
@@ -3195,9 +3050,7 @@ object AgentSandboxLauncher:
     // would hand the proxy every previous session's record — and owner-only:
     // refusal lines carry full URLs, and a URL can carry a secret.
     val logDir = logStateRoot(os).resolve(projectId)
-    Files.createDirectories(logDir)
-    if posixPermissions(logDir) then
-      Files.setPosixFilePermissions(logDir, PosixFilePermissions.fromString("rwx------"))
+    createPrivateDirectories(logDir)
 
     val logStamp = DateTimeFormatter
       .ofPattern("uuuuMMdd-HHmmss")
@@ -3334,9 +3187,7 @@ object AgentSandboxLauncher:
           case _                       => false
 
       // This run's directory first: the copies below are written into it.
-      Files.createDirectories(runFiles)
-      if posixPermissions(runFiles) then
-        Files.setPosixFilePermissions(runFiles, PosixFilePermissions.fromString("rwx------"))
+      createPrivateDirectories(runFiles)
 
       if !certificateExpiresAfter(readIfPresent(caCertFile), reissueDeadline)
         || !coherentPair(caCertFile, caKeyFile)
@@ -3566,22 +3417,14 @@ object AgentSandboxLauncher:
     // Defence in depth, not a fix for a known hole — SECURITY.md has the
     // measurement; do not remove this believing it closes one. --add-host
     // supplies the one name that must work, read back from podman so no
-    // subnet is reserved. Both spellings of each variable: traditional
-    // programs read lowercase. HTTP_PROXY is set although plain HTTP is
-    // refused, so an http:// attempt is recorded in the proxy log instead of
-    // failing as an unexplained resolution error.
+    // subnet is reserved. proxyVariables has the variables.
     val egressProxyUrl = s"http://$EgressProxyHost:$EgressProxyPort"
 
     val egressArgs = Vector(
       s"--network=$sandboxNetwork",
       "--dns=none",
       s"--add-host=$EgressProxyHost:$proxyIp",
-      s"--env=HTTPS_PROXY=$egressProxyUrl",
-      s"--env=https_proxy=$egressProxyUrl",
-      s"--env=HTTP_PROXY=$egressProxyUrl",
-      s"--env=http_proxy=$egressProxyUrl",
-      "--env=NO_PROXY=localhost,127.0.0.1",
-      "--env=no_proxy=localhost,127.0.0.1",
+    ) ++ proxyVariables(egressProxyUrl).map((name, value) => s"--env=$name=$value") ++ Vector(
 
       // Keep the proxy's resolved rules available on demand. Metadata about the project file
       // stays with the terminal; the agent needs the grants actually in force (rulesetLinesOf).

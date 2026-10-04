@@ -31,7 +31,7 @@ object SelfTestShare:
     * removal in [[shareRows]]' finally are the primary cleanup; this is the fallback
     * match, anchored on the eight-hex run suffix like the launcher's own reserved patterns. */
   def probeContainers(names: Seq[String]): Seq[String] =
-    names.filter(_.matches(probeContainerName("[0-9a-f]{8}")))
+    names.filter(_.matches(probeContainerName(AgentSandboxLauncher.RunSuffixPattern)))
 
   val SeedName = "share-probe-data"
   val OldBytes = "AAAA"
@@ -61,7 +61,7 @@ object SelfTestShare:
       s"--userns=keep-id:uid=${AgentSandboxLauncher.ContainerUid},gid=${AgentSandboxLauncher.ContainerGid}",
       s"--user=${AgentSandboxLauncher.ContainerUid}:${AgentSandboxLauncher.ContainerGid}",
       s"--volume=$mountpoint:$ProbeMount:rw",
-      "ko-agent-sandbox:latest", "python3", "-",
+      LauncherImages.SandboxImage, "python3", "-",
     )
 
   /** The stack check the program opens with — `.git` refused at *any* depth is a property a bind
@@ -142,9 +142,8 @@ object SelfTestShare:
     * because virtiofs registers under FUSE's own statfs magic: `stat -f` answers "fuse" for it,
     * indistinguishable from the filter's mounts. */
   def machineViewScript(backing: String): String =
-    val encoded = java.util.Base64.getEncoder.encodeToString(backing.getBytes(UTF_8))
     withScriptPath(
-      s"""backing="$$(printf %s $encoded | base64 -d)"
+      s"""backing="$$(${printingCommand(backing)})"
          |printf 'kernel %s, share %s' "$$(uname -r)" \\
          |  "$$(findmnt -no FSTYPE --target "$$backing" 2>/dev/null || echo unknown)"""".stripMargin,
     )

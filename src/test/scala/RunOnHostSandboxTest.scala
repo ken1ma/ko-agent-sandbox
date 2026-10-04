@@ -82,7 +82,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     ))
     assert(environment("_JAVA_OPTIONS").contains("-Djavax.net.ssl.trustStoreType=PKCS12"))
     assert(environment("_JAVA_OPTIONS").contains("-Djavax.net.ssl.trustStorePassword=changeit"))
-    RunOnHostInspection.CaBundleVariables.foreach: name =>
+    AgentSandboxLauncher.CaBundleVariables.foreach: name =>
       assertEquals(environment(name), "/private/tmp/ko-agent-501/b/proxy-sbt-0.trust/ca.crt")
     assert(!environment("_JAVA_OPTIONS").contains("javaagent"))
     assertEquals(environment("JAVA_TOOL_OPTIONS"), "-Duser.option=value")
@@ -99,7 +99,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         "HOME", "LANG", "TOKEN", "PATH", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "TMPDIR", "XDG_RUNTIME_DIR",
         "SBT_GLOBAL_SERVER_DIR", "COURSIER_CACHE", "GRADLE_USER_HOME", "USER", "LOGNAME", "MILL_FINAL_DOWNLOAD_FOLDER",
         "MILL_VERSION",
-      ) ++ commandProxyVariables(4711).keySet ++ RunOnHostInspection.CaBundleVariables,
+      ) ++ commandProxyVariables(4711).keySet ++ AgentSandboxLauncher.CaBundleVariables,
     )
     // Without a derivable download folder the variable is absent, and so is the launcher
     // version for a program that is not mill — a forwarded one included.
@@ -273,14 +273,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       clue(denied).left.exists(text => text.contains(properties.toString) && text.contains("permission denied")),
     )
 
-  test("the host-served proxy's variable is selected as the proxy selects it: an empty uppercase is unset"):
-    val both = Map("HTTPS_PROXY" -> "", "https_proxy" -> "http://proxy.example:3128")
-    assertEquals(upstreamProxyVariable(both.get), Some("https_proxy" -> "http://proxy.example:3128"))
-    assertEquals(
-      upstreamProxyVariable(Map("HTTPS_PROXY" -> "http://a.example:1").get),
-      Some("HTTPS_PROXY" -> "http://a.example:1"),
-    )
-    assertEquals(upstreamProxyVariable(Map.empty[String, String].get), None)
+  test("a forwarded value travels under a carrier name of its own"):
     assertEquals(carrierName("TOKEN"), "KO_AGENT_RUN_ON_HOST_ENV_TOKEN")
 
   test("--env names travel as options and come back as names; nothing else is an option"):
@@ -554,87 +547,6 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     )
     // A flag the client does not know is forwarded as the client forwards it.
     assertEquals(server("-sbt-launch-repo", "https://r", "-x"), Seq("-sbt-launch-repo"))
-
-  // --------------------------------------------------------------------------
-  // run-on-host/ and its parent both refuse unrecognized configuration entries
-  // --------------------------------------------------------------------------
-
-  def projectWith(paths: String*): Path =
-    val project = Files.createTempDirectory("run-on-host")
-    paths.foreach: path =>
-      val full = project.resolve(path)
-      Files.createDirectories(full.getParent)
-      Files.writeString(full, "")
-    project
-
-  test("an absent run-on-host, or a complete one, is no stray"):
-    assertEquals(hostCommandStray(Files.createTempDirectory("empty")), None)
-    val project = projectWith(
-      ".ko-agent-sandbox/run-on-host/sbt/egress/rule",
-      ".ko-agent-sandbox/run-on-host/mill/egress/rule",
-    )
-    assertEquals(hostCommandStray(project), None)
-
-  test("a stray name at any level refuses, naming itself; metadata does not"):
-    for
-      stray <- Seq(
-        ".ko-agent-sandbox/run-on-host/ant/egress/rule",
-        ".ko-agent-sandbox/run-on-host/sbt/egres/rule",
-        ".ko-agent-sandbox/run-on-host/sbt/egress/rules",
-      )
-    do
-      val refused = hostCommandStray(projectWith(stray))
-      assert(refused.isDefined, stray)
-      assert(refused.exists(_.contains("update the launcher")), refused.toString)
-    val metadata = projectWith(
-      ".ko-agent-sandbox/run-on-host/.DS_Store",
-      ".ko-agent-sandbox/run-on-host/sbt/egress/rule",
-    )
-    assertEquals(hostCommandStray(metadata), None)
-
-  test("a symlinked component refuses by name"):
-    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
-    val dir = project.resolve(".ko-agent-sandbox/run-on-host/mill")
-    Files.createSymbolicLink(dir, project.resolve(".ko-agent-sandbox/run-on-host/sbt"))
-    val refused = hostCommandStray(project)
-    assert(refused.exists(_.contains("symlink")), refused.toString)
-
-  test("a file where a directory belongs refuses instead of reading as absent config"):
-    val project = Files.createTempDirectory("run-on-host")
-    val dir = project.resolve(".ko-agent-sandbox/run-on-host")
-    Files.createDirectories(dir)
-    Files.writeString(dir.resolve("sbt"), "")
-    val refused = hostCommandStray(project)
-    assert(refused.exists(r => r.contains("sbt") && r.contains("not a directory")), refused.toString)
-
-  test("a non-regular file where rule belongs refuses instead of being read"):
-    val project = Files.createTempDirectory("run-on-host")
-    val egress = project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress")
-    Files.createDirectories(egress.resolve("rule")) // a directory; a FIFO would block a read
-    val refused = hostCommandStray(project)
-    assert(
-      refused.exists(r => r.contains("rule") && r.contains("not a regular file")),
-      refused.toString,
-    )
-
-  test("readProgramRules reads the program's file, refuses its strays, and defaults to nothing"):
-    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
-    Files.writeString(
-      project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule"),
-      "allow https://repo.example.org/ read\n",
-      UTF_8,
-    )
-    assertEquals(readProgramRules(project, Program.Sbt), Right(Vector("repo.example.org")))
-    assertEquals(readProgramRules(project, Program.Mill), Right(Vector.empty), "mill has no file here")
-
-    Files.writeString(
-      project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule"),
-      "allow model-provider openai\n",
-      UTF_8,
-    )
-    val refused = readProgramRules(project, Program.Sbt)
-    assert(refused.swap.exists(_.contains("allow model-provider openai")), refused.toString)
-    assert(refused.swap.exists(_.contains(RunOnHostPrereqs.ProgramRuleForm)), refused.toString)
 
   // --------------------------------------------------------------------------
   // The proxy handshake pieces

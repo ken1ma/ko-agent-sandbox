@@ -71,16 +71,16 @@ class DirectoryStreamsTest extends munit.FunSuite:
     withDirectory: root =>
       val source = Files.createDirectories(root.resolve("context/nested"))
       val file = Files.writeString(source.resolve("file"), "content")
-      val expected = KoAgentFs.bundleSourceId(Vector("nested/file" -> Files.readAllBytes(file)))
+      val expected = LauncherImages.bundleSourceId(Vector("nested/file" -> Files.readAllBytes(file)))
       assertNoDescriptorGrowth("source hashing"):
-        assertEquals(KoAgentFs.contextSourceId(root, "context"), expected)
+        assertEquals(LauncherImages.contextSourceId(root, "context"), expected)
       assume(Files.getFileStore(root).supportsFileAttributeView("posix"))
       val permissions = Files.getPosixFilePermissions(file)
       try
         Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("---------"))
         assume(!Files.isReadable(file), "the test user must not bypass read permissions")
         assertNoDescriptorGrowth("failed source read"):
-          intercept[IOException](KoAgentFs.contextSourceId(root, "context"))
+          intercept[IOException](LauncherImages.contextSourceId(root, "context"))
       finally Files.setPosixFilePermissions(file, permissions)
 
   test("recursive deletion and hashing close ancestor directories when traversal fails"):
@@ -94,5 +94,5 @@ class DirectoryStreamsTest extends munit.FunSuite:
         assertNoDescriptorGrowth("failed recursive deletion"):
           intercept[IOException](deleteRecursively(root.resolve("context")))
         assertNoDescriptorGrowth("failed source traversal"):
-          intercept[UncheckedIOException](KoAgentFs.contextSourceId(root, "context"))
+          intercept[UncheckedIOException](LauncherImages.contextSourceId(root, "context"))
       finally Files.setPosixFilePermissions(blocked, permissions)

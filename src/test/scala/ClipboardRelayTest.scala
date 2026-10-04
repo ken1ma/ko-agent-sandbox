@@ -287,7 +287,7 @@ class ClipboardRelayTest extends munit.FunSuite:
     // A body the stream does not hold whole — the writer stopped, or the cut did — is refused.
     Vector(
       "types", "junk\nget image/png\n", "set\n", "set -1\nx", "set +1\nx", "set 1 2\nx", "set 6\nabc",
-      "set 03\nabc", "set 00\n",
+      "set 03\nabc", "set 00\n", "set ٣\nabc",
       s"set ${MaxRequestBytes + 1}\nx", "set 99999999999999999999\nx",
     ).foreach(text => assertEquals(requests(stream(text)), Vector.empty, text))
     val cut = stream(s"set ${MaxRequestBytes - 8}\n") ++ Array.fill[Byte](MaxRequestBytes - 13)(0)

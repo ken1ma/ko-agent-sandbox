@@ -97,8 +97,10 @@ filter refuses:
 
 Every ambiguity refuses the launch: an unknown word; a line that is not one word and one name; a
 leading or trailing `/`, an empty, `.` or `..` component; a character outside the set above,
-uppercase included; a `#` inside a token; a file with no lines; a `.git` or `.ko-agent-sandbox`
-component, which the filter's own rules protect.
+uppercase included; a `#` inside a token; a `.git` or `.ko-agent-sandbox` component, which the
+filter's own rules protect.
+
+A file holding only comments and blank lines is read as no file.
 
 The launch prints the file's lines, and every `writable` line again as a widening.
 

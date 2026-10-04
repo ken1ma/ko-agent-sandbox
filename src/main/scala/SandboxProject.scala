@@ -11,9 +11,10 @@ package agentsandbox.launcher
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, InvalidPathException, Path, Paths}
-import java.security.MessageDigest
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
+
+import agentsandbox.egress.LogHelper.sha256Hex
 
 import HostCommands.*
 import FileHelper.*
@@ -161,8 +162,8 @@ object SandboxProject:
    * home the guard refuses as /Users/me.
    */
   val MacDataVolumePrefix = "/System/Volumes/Data"
-  /** Not private: the state-root containment check compares the same firmlink spellings
-    * (AgentSandboxLauncher.forbiddenStateRootReason). */
+  /** Not private: RunOnHostSandbox.reachableThroughCommandWritable, which runs on macOS alone,
+    * compares the same spellings. */
   def withMacDataVolumeAliases(paths: Seq[Path]): Seq[Path] =
     paths.flatMap: path =>
       val text = path.toString
@@ -171,6 +172,17 @@ object SandboxProject:
         else if text.startsWith("/") && text != MacDataVolumePrefix then Some(Paths.get(MacDataVolumePrefix + text))
         else None
       path +: alias.toSeq
+
+  /** The paths plus their other data-volume spellings on macOS; elsewhere, the paths unchanged. */
+  def dataVolumeSpellings(os: Os, paths: Seq[Path]): Seq[Path] =
+    if os == Os.Mac then withMacDataVolumeAliases(paths) else paths
+
+  /** Whether either path holds the other in any of their spellings (dataVolumeSpellings). Exact,
+    * not case-folded, so both must be canonical: folding would also match a case-different
+    * sibling that a case-sensitive volume keeps distinct. */
+  def overlapsInAnySpelling(os: Os, left: Path, right: Path): Boolean =
+    dataVolumeSpellings(os, Seq(left)).exists: one =>
+      dataVolumeSpellings(os, Seq(right)).exists(other => one.startsWith(other) || other.startsWith(one))
 
   /**
    * The directories whose contents must never become a project mount, and
@@ -226,12 +238,10 @@ object SandboxProject:
 
       val (containers, wellKnownHomes) = wellKnownHomeRoots(os, env)
       val paths = resolved.flatMap(_._1) ++ publicPaths ++ containers ++ wellKnownHomes
-      val alias = (values: Seq[Path]) =>
-        if os == Os.Mac then withMacDataVolumeAliases(values) else values
       Right(
         HomeProtection(
-          alias(paths).distinct,
-          alias(containers).distinct,
+          dataVolumeSpellings(os, paths).distinct,
+          dataVolumeSpellings(os, containers).distinct,
           unsetWarnings ++ droppedWarnings ++ resolved.flatMap(_._2) ++ publicWarnings,
         ),
       )
@@ -292,13 +302,6 @@ object SandboxProject:
       else '-'
     folded.take(32)
 
-  def sha256Hex(text: String): String =
-    MessageDigest
-      .getInstance("SHA-256")
-      .digest(text.getBytes(StandardCharsets.UTF_8))
-      .map(b => f"$b%02x")
-      .mkString
-
   /**
    * Lowercased before hashing on Windows, because its paths are
    * case-insensitive: C:\Src\App and C:\src\app are one project and must
@@ -321,6 +324,11 @@ object SandboxProject:
   val ProjectIdPattern = "[A-Za-z0-9._-]{1,32}-[0-9a-f]{12}"
 
   def isProjectId(name: String): Boolean = name.matches(ProjectIdPattern)
+
+  /** A project's persistent volume; with ProjectIdPattern for the id, the pattern `--reset-all`
+    * removes (AgentSandboxLauncher.persistentVolumes). */
+  def persistentVolumeName(projectId: String): String = s"$PersistentVolumePrefix$projectId"
+  val PersistentVolumePrefix = "ko-agent-sandbox-persistent-"
 
   /**
    * Why git does not work in a session on this project directory, while the host directory the user
@@ -628,16 +636,6 @@ object SandboxProject:
   private def ancestors(dir: Path): Iterator[Path] =
     Iterator.iterate(dir.toAbsolutePath.normalize.getParent)(_.getParent).takeWhile(_ != null)
 
-  /** The path with its deepest existing ancestor resolved, so a root reached through a symlink —
-    * macOS's `/var` — compares equal to its real spelling whether or not the leaf exists. */
-  private def realized(path: Path): Path =
-    val absolute = path.toAbsolutePath.normalize
-    Iterator.iterate(absolute)(_.getParent).takeWhile(_ != null).find(Files.exists(_)) match
-      case Some(existing) =>
-        try existing.toRealPath().resolve(existing.relativize(absolute))
-        catch case _: IOException => absolute
-      case None => absolute
-
   /** The launch's warning: what is wrong, and the launch that would have git. */
   def noGitWarning(noGit: NoGit, os: Os = currentOs): String =
     val (cause, launchFrom) = noGit match
@@ -735,20 +733,21 @@ object SandboxProject:
    * a directory; or an entry that is no configuration of this launcher's — only recognized
    * configuration entries are accepted, so a typo'd `egres/` is a refused launch and not ignored
    * config, the same rule each entry applies inside itself. The files inside egress/ and file/ are
-   * vetted where they are read (readBoundaryRuleFiles), and run-on-host/ where the host command
-   * supervisor reads it (RunOnHostPrereqs.programRuleHosts). An absent directory is empty
+   * vetted where they are read (readBoundaryRuleFiles), and run-on-host/ where the launch and the
+   * host command supervisor read it (RunOnHostPrereqs.readProgramRules). An absent directory is empty
    * configuration, never a directory to create.
    */
   def boundaryDirRefusal(boundaryDir: Path): Option[String] =
     def symlinkRefusal(path: Path): String =
-      s"error: $path must not be a symlink\nRefusing to read this project's boundary configuration through one."
+      s"error: ${shown(path.toString)} must not be a symlink\n" +
+        "Refusing to read this project's boundary configuration through one."
 
     val linkedEntry = BoundaryDirEntries.toVector.sorted.map(boundaryDir.resolve).find(Files.isSymbolicLink)
     if Files.isSymbolicLink(boundaryDir) then Some(symlinkRefusal(boundaryDir))
     else if linkedEntry.isDefined then linkedEntry.map(symlinkRefusal)
     else if Files.exists(boundaryDir) && !Files.isDirectory(boundaryDir) then
       Some(
-        s"error: $boundaryDir must be a directory\n" +
+        s"error: ${shown(boundaryDir.toString)} must be a directory\n" +
           "Remove what is in its place; the directory holds this project's boundary configuration.",
       )
     else if !Files.exists(boundaryDir) then None
@@ -756,8 +755,9 @@ object SandboxProject:
       strayBoundaryEntries(boundaryDir) match
         case Vector() => None
         case stray =>
+          val named = shown(stray.mkString(", "))
           Some(
-            s"""error: $boundaryDir contains ${stray.mkString(", ")}, which this launcher does not read
+            s"""error: ${shown(boundaryDir.toString)} contains $named, which this launcher does not read
                |The directory is boundary configuration and holds only:
                |${BoundaryDirEntries.toVector.sorted.mkString(", ")}. A stray name must fail the
                |launch, never remain as ignored config — and it is either a typo or a boundary file a
@@ -766,20 +766,25 @@ object SandboxProject:
 
   val BoundaryDirEntries: Set[String] = Set("egress", "file", "run-on-host")
 
+  /** The project's boundary configuration directory, whose entries are BoundaryDirEntries. */
+  def boundaryDirOf(project: Path): Path = project.resolve(".ko-agent-sandbox")
+
   /**
    * One boundary configuration directory's rule files, as (name, normalized text) in `names`
-   * order: egress/ (EgressRules.readRuleFiles) and file/ (FileRules.readRuleFile). Refused forms,
-   * each of which could hide or misread configuration:
+   * order: egress/ (EgressRules.readRuleFiles), file/ (FileRules.readRuleFile) and each
+   * run-on-host program's egress/ (RunOnHostPrereqs.readProgramRules). A file with no rule line,
+   * empty or comments only, reads as absent. Refused forms, each of which could hide or misread
+   * configuration:
    * - A file in the directory's place would leave its rules unread because the reader expects a
    *   directory.
    * - An unknown filename could be a typo that leaves intended rules unread.
    * - A symlink at the directory or a rule file could redirect the host read. Podman resolves
    *   mount sources on the host, so this read must see the bytes the mounted directory would show.
-   * - An entry with a rule filename that is not a regular file would be skipped by the reader.
-   * - A present but empty rule file is more likely a forgotten edit than a deliberate no-op;
-   *   an intentionally empty rule file is absent.
+   * - An entry with a rule filename that is not a regular file would be skipped by the reader,
+   *   and a FIFO would block the read forever.
    * Entries follow isMetadataEntry's metadata exemption. `grammar` is where the refusal sends the
-   * reader.
+   * reader. A file that cannot be read, or is not UTF-8, is refused by name. Every path in a
+   * refusal is shown as `shown` spells it: the repository chose its names.
    */
   def readBoundaryRuleFiles(
     dir: Path,
@@ -787,42 +792,44 @@ object SandboxProject:
     grammar: String,
     normalize: String => String,
   ): Either[String, Vector[(String, String)]] =
+    ruleDirectoryRefusal(dir, names, grammar).toLeft(()).flatMap: _ =>
+      names.foldLeft(Right(Vector.empty): Either[String, Vector[(String, String)]]): (read, name) =>
+        read.flatMap: files =>
+          val file = dir.resolve(name)
+          try Right(files ++ readIfPresent(file).map(normalize).filter(_.nonEmpty).map(name -> _))
+          catch
+            case _: java.nio.charset.CharacterCodingException =>
+              Left(s"error: ${shown(file.toString)} is not UTF-8 text")
+            case ex: IOException => Left(s"error: cannot read ${shown(file.toString)}: ${shown(ex.toString)}")
+
+  /** Why `dir` cannot be read as a boundary rule directory holding `names`, or None; the forms
+    * readBoundaryRuleFiles lists, checked without reading a rule file. */
+  def ruleDirectoryRefusal(dir: Path, names: Vector[String], grammar: String): Option[String] =
     val kind = dir.getFileName.toString
     def symlinkRefusal(path: Path): String =
-      s"error: $path must not be a symlink\nRefusing to read this project's $kind rules through one."
+      s"error: ${shown(path.toString)} must not be a symlink\n" +
+        s"Refusing to read this project's $kind rules through one."
 
-    if Files.isSymbolicLink(dir) then Left(symlinkRefusal(dir))
-    else if !Files.exists(dir) then Right(Vector.empty)
+    if Files.isSymbolicLink(dir) then Some(symlinkRefusal(dir))
+    else if !Files.exists(dir) then None
     else if !Files.isDirectory(dir) then
-      Left(
-        s"""error: $dir is a file
+      Some(
+        s"""error: ${shown(dir.toString)} is a file
            |$kind is a directory holding the rule file ${names.mkString(", ")}. Move the
-           |lines there and remove the file; $grammar has the grammar.""".stripMargin
+           |lines there and remove the file; $grammar has the grammar.""".stripMargin,
       )
     else
       val entries = directoryEntries(dir)
         .filterNot(entry => isMetadataEntry(entry.getFileName.toString))
         .sortBy(_.getFileName.toString)
-
-      val refusal = entries
-        .collectFirst:
-          case entry if !names.contains(entry.getFileName.toString) =>
-            s"error: $entry is not a rule file\n$kind/ holds only " +
-              s"${names.mkString(", ")}; a stray name would be ignored config."
-          case entry if Files.isSymbolicLink(entry) => symlinkRefusal(entry)
-          case entry if !Files.isRegularFile(entry) =>
-            s"error: $entry is not a regular file\n$kind/ holds a text file per rule file; " +
-              "anything else would leave this file silently unread."
-        .orElse:
-          names.collectFirst:
-            case name if readIfPresent(dir.resolve(name)).map(normalize).contains("") =>
-              s"error: ${dir.resolve(name)} lists no lines\n" +
-                "Delete the file; an intentionally empty rule file is an absent file."
-
-      refusal.toLeft(
-        names.flatMap: name =>
-          readIfPresent(dir.resolve(name)).map(normalize).map(name -> _),
-      )
+      entries.collectFirst:
+        case entry if !names.contains(entry.getFileName.toString) =>
+          s"error: ${shown(entry.toString)} is not a rule file\n$kind/ holds only " +
+            s"${names.mkString(", ")}; a stray name would be ignored config."
+        case entry if Files.isSymbolicLink(entry) => symlinkRefusal(entry)
+        case entry if !Files.isRegularFile(entry) =>
+          s"error: ${shown(entry.toString)} is not a regular file\n$kind/ holds a text file per rule file; " +
+            "anything else would leave this file silently unread."
 
   /**
    * Dot-named entries are reserved for editor and OS metadata (.DS_Store, .gitkeep), never

@@ -12,9 +12,9 @@ import java.nio.file.{Files, LinkOption, Path}
 
 import scala.jdk.CollectionConverters.*
 
-import AgentSandboxLauncher.{renderArgument, shown, Reader}
-import FileHelper.directoryEntries
-import HostCommands.{colorStderr, consented, pathInline, warn, weakened}
+import AgentSandboxLauncher.Reader
+import FileHelper.{directoryEntries, isExecutableFile}
+import HostCommands.{colorStderr, consented, pathInline, renderArgument, shown, warn, weakened}
 import RunOnHostPrereqs.{Program, Refusal}
 import RunOnHostSandbox.StepRefusal
 
@@ -41,12 +41,9 @@ object RunOnHostProvisioning:
     /** A refusal no host run fixes. */
     case Notice(program: Program, buildDirectory: Path, wording: String)
 
-  /** Directory names the walk never enters, at any depth: the two the command may not write. */
-  private val Unentered = Set(".git", ".ko-agent-sandbox")
-
   /** Every build directory under the project for the programs, the project first and the rest in
-    * path order. The walk follows no symlink and enters neither `.git` nor `.ko-agent-sandbox`;
-    * a directory it cannot list is passed over, its build directories left to the command. */
+    * path order. The walk follows no symlink and enters no FileRules.GuardedComponents name; a
+    * directory it cannot list is passed over, its build directories left to the command. */
   def buildDirectories(project: Path, programs: Set[Program]): Vector[BuildDirectory] =
     val found = Vector.newBuilder[BuildDirectory]
     if programs(Program.Mvn) && isExecutableFile(project.resolve("mvnw")) then
@@ -59,12 +56,12 @@ object RunOnHostProvisioning:
         try directoryEntries(dir).sorted
         catch case _: IOException => Vector.empty
       entries
-        .filter(entry => Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS) && !Unentered(entry.getFileName.toString))
+        .filter: entry =>
+          Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS)
+            && !FileRules.GuardedComponents.contains(entry.getFileName.toString)
         .foreach(visit)
     visit(project)
     found.result()
-
-  private def isExecutableFile(path: Path) = Files.isExecutable(path) && Files.isRegularFile(path)
 
   /** The build directory's finding: none when its command would be granted its executable. */
   def finding(build: BuildDirectory, env: String => Option[String]): Option[Finding] =

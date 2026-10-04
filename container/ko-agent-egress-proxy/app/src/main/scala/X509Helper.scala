@@ -117,8 +117,8 @@ object X509Helper:
   /**
    * Backdated five minutes: the launcher issues on the host and the sandbox verifies inside a
    * podman Machine VM whose clock can run slightly behind the host's, where a notBefore in the
-   * future fails as an unexplained TLS error. The proxy issues inside that VM, and its leaves are
-   * backdated only so that all leaves have one profile.
+   * future fails as an unexplained TLS error. A run-on-host proxy's leaf is issued and verified on
+   * the host, and is backdated only so that all leaves have one profile.
    */
   def notBefore(now: Instant): Date = Date.from(now.minus(5, ChronoUnit.MINUTES))
 

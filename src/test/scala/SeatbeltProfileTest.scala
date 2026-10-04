@@ -145,7 +145,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
 
   test("without file rules the guard is the only regex; every supervisor-supplied path is a subpath literal"):
     val regexLines = rendered().linesIterator.filter(_.contains("(regex")).toSeq
-    assertEquals(regexLines.size, GuardedNames.size)
+    assertEquals(regexLines.size, FileRules.GuardedComponents.size)
     assert(regexLines.forall(_.startsWith("(deny")))
 
   // --------------------------------------------------------------------------
@@ -398,27 +398,6 @@ class SeatbeltProfileTest extends munit.FunSuite:
   // --------------------------------------------------------------------------
   // The cs-installed sbt script's second half
   // --------------------------------------------------------------------------
-
-  test("the distribution is read out of the script, not derived from a convention"):
-    val script =
-      s"""#!/usr/bin/env sh
-         |exec "$distributionExec" "$$@"
-         |""".stripMargin
-    assertEquals(sbtDistribution(script, cacheRoot), Some(distributionExec))
-
-  test("the longest cache path wins, so a grant never applies to a prefix"):
-    val script =
-      s"""CACHE="$cacheRoot"
-         |exec "$distributionExec" "$$@"
-         |""".stripMargin
-    assertEquals(sbtDistribution(script, cacheRoot), Some(distributionExec))
-
-  test("a path escaping the cache root is not accepted"):
-    val escaping = s"$cacheRoot/../../../etc/passwd"
-    assertEquals(sbtDistribution(s"""exec "$escaping"""", cacheRoot), None)
-
-  test("a script naming no cache path yields nothing rather than a guess"):
-    assertEquals(sbtDistribution("#!/bin/sh\nexec /usr/local/bin/sbt \"$@\"\n", cacheRoot), None)
 
   test("the distribution grant is its home, not the executable: sbt-launch.jar is beside it"):
     assert(rendered().contains(s"(subpath \"$distribution\")"))

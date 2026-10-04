@@ -142,45 +142,55 @@ measurement.
   connect to server" (2026-10-03). The cause is not found. `narrow` runs the same function in
   this checkout; `mach` runs it in its fixture.
 
-## Code in a file its header does not cover, and logic written more than once
+## Files holding several concerns
 
-Each item is a move or a merge, with no change in behaviour unless it says so. Found by reading
-each file's header against its definitions and their callers (2026-10-04).
+Each split is a move with no change in behaviour, in a change of its own, so `git diff
+--color-moved` shows it as moved lines. Measured 2026-10-04: `AgentSandboxLauncher.scala` about
+3650 lines, `RunOnHostSandbox.scala` about 2370.
 
-- [ ] Move into the file whose header covers them:
-  - `SeatbeltProfile.sbtDistribution` reads the sbt script; the header says "paths in, SBPL out".
-    To `RunOnHostPrereqs`, the one caller's next step.
-  - The bundle source ids in `KoAgentFs` (`bundleSourceId`, `contextSourceId`,
-    `bundledSourceId`) identify every image. To `LauncherImages`.
-  - The launcher re-invoking itself (`RunOnHostSandbox.selfInvocation` and its helpers) also
-    spawns the runner. To `RunOnHostChannel`, whose header names the launcher's own executable.
-  - The memory line every podman action prints (`SandboxStats.humanBytes`, `shareLine`). To
-    `HostCommands`.
-  - `isExecutableFile` (twice), `RunOnHostPrereqs.realPath` and `SandboxProject.realized`. To
-    `FileHelper`; whether `realized`'s lenient fallback matters to its caller is not checked.
-- [ ] `RunOnHostSandbox.readProgramRules` re-implements `SandboxProject.readBoundaryRuleFiles`
-  in other wording; build it on that function, in `RunOnHostPrereqs`.
-  - A behaviour change: an empty `run-on-host/<program>/egress/rule` is accepted, where an empty
-    `egress/rule` or `file/rule` is refused ("lists no lines"). Decide which holds.
-- [ ] One definition each for logic written several times:
-  - terminal escaping: `HostCommands.printable` escapes control characters only, the launcher's
-    `renderArgument` family also bidi and line separators; `RunOnHostPrereqs` defines a local
-    `printable` twice. A behaviour change: `printable` shows project-file text too, which one
-    definition would escape as `renderArgument` does;
-  - SHA-256 hex: `SandboxProject.sha256Hex`, `RunOnHostRuntimeDescriptor.digest`,
-    `RunOnHostSession.buildHash` (truncated) and `LogHelper.sha256Hex`;
-  - the upstream-proxy variable selection: `TransportHelper`, `EgressRules.upstreamProxyArgs`,
-    `RunOnHostSandbox.upstreamProxyVariable`;
-  - the proxy's ready line, spelled in `AgentEgressProxy`, `AgentSandboxLauncher` and
-    `RunOnHostSandbox.awaitProxyPort`;
-  - the audit-line grammar, which `RunOnHostSandbox.deniedHosts` and `refusedRequests` re-parse
-    beside `LogHelper.auditLine`;
-  - runtime record names (`proxy-<program>-<hash>`, server and daemon), spelled across five
-    files; to `RunOnHostSession`;
-  - `{.git, .ko-agent-sandbox}` in `FileRules`, `SeatbeltProfile` and `RunOnHostProvisioning`;
-  - `ko-agent-sandbox-persistent-`, spelled seven times; to `SandboxProject`;
-  - the macOS data-volume overlap check, three copies; `RunOnHostPrereqs.overlaps` has no caller
-    outside its test.
+- [ ] From `AgentSandboxLauncher.scala`:
+  - the egress actions (`egressLog`, `egressPreflight`, `printRuleFiles`, `printWidening`,
+    `egressEffective`, `egressCheck`) to `EgressRules.scala`, whose header names the audit log;
+  - `--build`, `--update` and `--self-test` (`buildCommands` through `imageCleanupJournal`, and
+    `selfTest`) to a new file;
+  - the state root, the resets and the run-name filters they sweep (`stateRootOf`, the
+    `*StateRoot` roots, `resetOne`, `resetAll`, `resetRunOnHost`, `isAnyProjectRunNamed`) to a new
+    file;
+  - `parseCommandLine` and its types to a new file;
+  - the agent instructions and launch banners (`appendedSection`, `runOnHostLines`,
+    `nestingLine`, `clipboardLine`) to a new file.
+- [ ] From `RunOnHostSandbox.scala`:
+  - the sbt server (`livePortfileServer` through `shutdownForeignServer`, `serverCommand`,
+    `startSbtServer`, `awaitServer`) to a new file beside `RunOnHostMillDaemons.scala`;
+  - the host proxy (`proxyInputs`, `startProxy`, `awaitProxyPort`, `projectAuditLog`,
+    `deniedHosts` and the reports after a command) to a new file;
+  - `RunnerRuntimes` to a new file.
+  - Self-invocation stays: `launchFile` is read when `RunOnHostSandbox` initializes, which the
+    supervisor does at its start.
+- [ ] `AgentSandboxLauncher.launch` is one function of about 1000 lines. Phases of it as functions
+  need their shared values passed explicitly; a separate change from the moves.
+
+## Proxy parsing written more than once
+
+Security-relevant parsing: a merge keeps every refusal and its wording, and a test covers each
+caller.
+
+- [ ] The head preamble — ends with CRLFCRLF, no bare CR or LF, split into lines, the first line
+  — three times in `HTTPHelper`: `ConnectRequest.parse`, `HttpRequestHead.parse`,
+  `HttpResponseHead.parse`. Only the exception and its message differ.
+- [ ] `bodyFraming` of the request and of the response, mirrored on purpose (the response's
+  comment: refusals as IOExceptions, a different no-framing default). Share it only if one
+  implementation with an error factory and a default reads more plainly than two.
+- [ ] The two TLS client setups, `TLSHelper.TlsInspection.connect` and the upstream proxy's
+  `secure` in `TransportHelper`: one place would set hostname verification for both legs. ALPN,
+  SNI for an address literal, autoClose and the port stay parameters.
+
+## The proxy image's build flags
+
+- [ ] The proxy image's `native-image` gets `--add-exports` for `sun.security.x509` and
+  `sun.security.util`, which only `X509Helper` uses, and the proxy itself never calls it
+  (`AgentEgressProxy`'s header). Build the image without them to see whether native-image needs
+  them.
 
 ## IDE integration through VS Code's Agent Host
 
@@ -724,7 +734,7 @@ are the image's Mach services, which the same mode measures once it starts.
 - [ ] Build the binary in CI and run the launcher suite as the binary, on both shipping
   architectures; only then does the README offer it. build.sbt's comments explain the two exports
   and the resource includes the command carries.
-- [ ] Compute the bundle digests (`KoAgentFs.bundledSourceId`) while `native-image` builds the
+- [ ] Compute the bundle digests (`LauncherImages.bundledSourceId`) while `native-image` builds the
   binary, with build-time initialization: the binary then hashes nothing at launch, and
   `bundleSourceId` stays the one implementation. Check first that the bundled resources are
   readable at that point.

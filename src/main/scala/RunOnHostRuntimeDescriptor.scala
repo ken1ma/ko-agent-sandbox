@@ -14,7 +14,9 @@ package agentsandbox.launcher
 
 import java.io.IOException
 import java.nio.charset.StandardCharsets.UTF_8
-import java.nio.file.{Files, Path, StandardCopyOption}
+import java.nio.file.{Files, Path}
+
+import agentsandbox.egress.LogHelper.sha256Hex
 
 import RunOnHostPrereqs.Program
 import RunOnHostSession.{parseRecord, Record}
@@ -81,11 +83,7 @@ object RunOnHostRuntimeDescriptor:
       yield RunOnHostRuntimeDescriptor(fingerprint, proxyPort, proxy, group, daemon, value("daemon-config"))
 
   def publish(file: Path, descriptor: RunOnHostRuntimeDescriptor): Either[String, Unit] =
-    try
-      val pending = file.resolveSibling(s"${file.getFileName}.pending")
-      Files.writeString(pending, render(descriptor), UTF_8)
-      Files.move(pending, file, StandardCopyOption.ATOMIC_MOVE)
-      Right(())
+    try Right(RunOnHostSession.publishByRename(file, render(descriptor)))
     catch case ex: IOException => Left(s"publishing ${file.getFileName}: ${ex.getMessage}")
 
   /** None when absent, unreadable or not this launcher's format. */
@@ -136,7 +134,4 @@ object RunOnHostRuntimeDescriptor:
       ) ++ reads.map(_.toString) ++ Seq("executes") ++ executes.map(_.toString)
         ++ Seq("environment") ++ inputs.environment.toSeq.sorted.flatMap((name, value) => Seq(name, value))
         ++ Seq("rules", rules, "file rules", fileRules.text)
-    digest(fields.map(field => s"${field.length}:$field").mkString)
-
-  def digest(text: String): String =
-    java.security.MessageDigest.getInstance("SHA-256").digest(text.getBytes(UTF_8)).map(byte => f"$byte%02x").mkString
+    sha256Hex(fields.map(field => s"${field.length}:$field").mkString)

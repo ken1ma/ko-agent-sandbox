@@ -55,6 +55,25 @@ object FileHelper:
       try Right(tail.foldLeft(existing.toRealPath())(_.resolve(_)))
       catch case ex: IOException => Left(s"cannot resolve $existing to a real path: $ex")
 
+  /** The path with its deepest existing ancestor resolved, so a root reached through a symlink —
+    * macOS's `/var` — compares equal to its real spelling whether or not the leaf exists. Unlike
+    * canonicalizedFuturePath, an ancestor that cannot be resolved leaves the path as spelled:
+    * for a comparison of two paths, not a containment check that grants. */
+  def realized(path: Path): Path =
+    val absolute = path.toAbsolutePath.normalize
+    Iterator.iterate(absolute)(_.getParent).takeWhile(_ != null).find(Files.exists(_)) match
+      case Some(existing) =>
+        try existing.toRealPath().resolve(existing.relativize(absolute))
+        catch case _: IOException => absolute
+      case None => absolute
+
+  /** The real path, or None when it does not exist — an absence the caller classifies. */
+  def realPath(path: Path): Option[Path] =
+    try Some(path.toRealPath())
+    catch case _: IOException => None
+
+  def isExecutableFile(path: Path): Boolean = Files.isExecutable(path) && Files.isRegularFile(path)
+
   /**
    * Run `body` holding an exclusive inter-process lock on `lockFile`.
    * What it serializes is check-then-act over shared files: two launches that both find state
@@ -105,6 +124,12 @@ object FileHelper:
 
   def posixPermissions(path: Path): Boolean =
     Files.getFileStore(path).supportsFileAttributeView("posix")
+
+  /** The directory and its missing parents, the directory itself owner-only where the volume has
+    * POSIX permissions. */
+  def createPrivateDirectories(path: Path): Unit =
+    Files.createDirectories(path)
+    if posixPermissions(path) then Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rwx------"))
 
   def writePrivate(path: Path, content: String): Unit =
     writeWithMode(path, content.getBytes(StandardCharsets.UTF_8), "rw-------")
