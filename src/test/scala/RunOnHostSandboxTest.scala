@@ -732,6 +732,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     // daemon — the process a reuse checks by pid and start time — on a port of the stand-in's choosing.
     val daemonStarts = scala.collection.mutable.ListBuffer[DaemonStart]()
     var daemonFails = false
+    var lastDaemonPid = 0L
     val daemon = (start: DaemonStart) =>
       daemonStarts += start
       standIn(start.record)
@@ -740,6 +741,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         val leader = ProcessHandle.of(RunOnHostSession.parseRecord(Files.readString(start.record, UTF_8)).get.pgid).get
         await("the sleep started")(leader.children().findFirst().isPresent)
         val sleeper = leader.children().findFirst().get.pid
+        lastDaemonPid = sleeper
         val started = RunOnHostSession.HostProcesses.startOf(sleeper).get
         Right(RunOnHostMillDaemons.Daemon(sleeper, started, 40_000 + daemonStarts.size))
     var assemblies = 0
@@ -898,7 +900,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       val serversBefore = serverStarts.size
       def daemonOf(dir: Path) = session.records.resolve(s"daemon-mill-${hashOf(dir)}")
       def millRuntime(dir: Path) =
-        Runtime(session.directory, lastPort, logOf(dir, "mill"), Some(40_000 + daemonStarts.size))
+        Runtime(session.directory, lastPort, logOf(dir, "mill"), Some(40_000 + daemonStarts.size), Some(lastDaemonPid))
       val millA = runtimes.prepare(Program.Mill, dirA, Seq("compile"))
       assertEquals(millA, Right(Some(millRuntime(dirA))))
       assertEquals(serverStarts.size, serversBefore, "mill starts no server")
