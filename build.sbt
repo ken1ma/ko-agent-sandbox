@@ -133,7 +133,7 @@ Compile / resourceGenerators += Def.task {
 }.taskValue
 
 // Bundle the build contexts into the jar so --build works with no checkout present
-// (AgentSandboxLauncher.unpackBuildContext). INDEX lists every bundled path: a jar's resource tree cannot be enumerated
+// (ImageBuilds.unpackBuildContext). INDEX lists every bundled path: a jar's resource tree cannot be enumerated
 // at runtime.
 // Native-image's resource discovery misses required files; the native-image command in doc/TODO.md must include
 // sandbox-build/ (build contexts), defaults/ (proxy rules) and agentsandbox/ (--help and Seatbelt system paths).

@@ -273,7 +273,7 @@ and the proxy appends the log to a per-run file on the host, under
   file.
 - A `--run-on-host` program's proxy has its own file there, named after its run as the container
   proxy's is: a hard link to the log in the command's session directory, so it fills as the proxy
-  writes (`RunOnHostSandbox.linkAuditLog`).
+  writes (`RunOnHostProxy.linkAuditLog`).
 - Startup lines come first; SECURITY.md, "The audit line grammar", lists them.
 - Every connection event after them is one line, with an inspected request's full target — query
   string included, which is what makes an exfiltrating `GET` visible.

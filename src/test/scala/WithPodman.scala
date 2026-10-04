@@ -289,7 +289,7 @@ object WithPodman extends munit.Assertions:
 
   /** The file `--stats` names this project's directory from. */
   def projectRecord(project: Path): Path =
-    AgentSandboxLauncher.projectsStateRoot(currentOs).resolve(launcherId(project))
+    LauncherState.projectsStateRoot(currentOs).resolve(launcherId(project))
 
   /** Each session creates project state — a volume, a CA, a ruleset cache, logs and the mount
     * tree — so a scratch project is reset before it is deleted. A scratch

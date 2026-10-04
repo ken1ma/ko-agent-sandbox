@@ -11,7 +11,7 @@
 // The project defaults to the working directory; the acceptance test's mill rows name src/probe/mill-fixture.
 // The system-paths-file grammar is RunOnHostSandbox.readSystemPaths's. The proxy form renders
 // the host proxy's own profile for the java and class path the acceptance test runs its proxy rows with; the
-// proxy-image form renders it for a native image, whose inputs RunOnHostSandbox.proxyInputs builds
+// proxy-image form renders it for a native image, whose inputs RunOnHostProxy.proxyInputs builds
 // only when it runs as one.
 
 package agentsandbox.launcher
@@ -36,7 +36,7 @@ object EmitRunOnHostProfile:
     if args.lift(2).contains("proxy") then
       if args.length != 5 then fail("the proxy form takes <out.sb> <system-paths-file> proxy <jdk> <classpath>")
       val systemPaths = RunOnHostSandbox.readSystemPaths(args.lift(1).map(Paths.get(_)))
-      val profile = RunOnHostSandbox.proxyInputs(systemPaths, javaHome = args(3), classPath = args(4))
+      val profile = RunOnHostProxy.proxyInputs(systemPaths, javaHome = args(3), classPath = args(4))
         .flatMap(SeatbeltProfile.renderProxy).fold(fail, identity)
       Files.writeString(Paths.get(args(0)), profile)
       Console.err.println(s"profile: ${args(0)}")

@@ -5,7 +5,9 @@ import java.nio.channels.ServerSocketChannel
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path}
 
+import RunOnHostProxy.*
 import RunOnHostSandbox.*
+import RunOnHostSbtServer.*
 import scala.jdk.CollectionConverters.*
 import scala.util.chaining.*
 import RunOnHostPrereqs.Program
@@ -710,7 +712,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       if serverThrows then throw IllegalStateException("boom")
       if serverFails then Left("no portfile")
       else
-        val socket = RunOnHostSandbox.expectedServerSocket(session.tmp, start.buildDirectory)
+        val socket = RunOnHostSbtServer.expectedServerSocket(session.tmp, start.buildDirectory)
         Files.createDirectories(socket.getParent)
         listeners.remove(socket).foreach(_.close())
         Files.deleteIfExists(socket)
@@ -756,7 +758,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     def pgidOf(record: Path) = RunOnHostSession.parseRecord(Files.readString(record, UTF_8)).get.pgid
     // A server gone on its own: its socket closes with it, and its leader publishes the exit.
     def serverExits(dir: Path): Unit =
-      listeners.remove(RunOnHostSandbox.expectedServerSocket(session.tmp, dir)).foreach(_.close())
+      listeners.remove(RunOnHostSbtServer.expectedServerSocket(session.tmp, dir)).foreach(_.close())
       ProcessHandle.of(pgidOf(serverOf(dir))).get.children().forEach(_.destroyForcibly())
       await("the exit published")(Files.exists(RunOnHostSession.exitRecord(serverOf(dir))))
     def current(dir: Path, program: String = "sbt") =
@@ -962,8 +964,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       // replacement start is attempted (and here the stand-in start fails) — so the client never reaches
       // dirB's server. The socket check compares spellings; the symlink guard catches the
       // redirection the spelling hides.
-      val aSock = RunOnHostSandbox.expectedServerSocket(session.tmp, dirA)
-      val bSock = RunOnHostSandbox.expectedServerSocket(session.tmp, dirB)
+      val aSock = RunOnHostSbtServer.expectedServerSocket(session.tmp, dirA)
+      val bSock = RunOnHostSbtServer.expectedServerSocket(session.tmp, dirB)
       listeners.remove(aSock).foreach(_.close())
       Files.deleteIfExists(aSock)
       Files.delete(aSock.getParent)
@@ -1346,7 +1348,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     /** A server of `session`'s for `directory`: a listener at the socket sbt derives under its
       * `tmp/`, named by the directory's portfile. */
     def listen(session: RunOnHostSession.Session, directory: Path = dir): Unit =
-      val socket = RunOnHostSandbox.expectedServerSocket(session.tmp, directory)
+      val socket = RunOnHostSbtServer.expectedServerSocket(session.tmp, directory)
       Files.createDirectories(socket.getParent)
       listeners.remove(socket).foreach(_.close())
       Files.deleteIfExists(socket)
@@ -1355,10 +1357,10 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       listeners(socket) = listener
       writePortfile(directory, socket)
     def listening(session: RunOnHostSession.Session, directory: Path = dir): Boolean =
-      listeners.get(RunOnHostSandbox.expectedServerSocket(session.tmp, directory)).exists(_.isOpen)
+      listeners.get(RunOnHostSbtServer.expectedServerSocket(session.tmp, directory)).exists(_.isOpen)
     /** The owner's server gone on its own: its socket closes with it and its leader publishes the exit. */
     def serverExits(): Unit =
-      listeners.remove(RunOnHostSandbox.expectedServerSocket(owner.tmp, dir)).foreach(_.close())
+      listeners.remove(RunOnHostSbtServer.expectedServerSocket(owner.tmp, dir)).foreach(_.close())
       Files.writeString(RunOnHostSession.exitRecord(owner.records.resolve(s"server-sbt-$hash")), "0\n", UTF_8)
     def assembled(jdk: String = "/jdk"): Assembled =
       Assembled(
@@ -1388,7 +1390,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
           serverArguments += start.arguments
           val leader = register(start.record)
           listen(session, start.buildDirectory)
-          groupSockets += leader -> RunOnHostSandbox.expectedServerSocket(session.tmp, start.buildDirectory)
+          groupSockets += leader -> RunOnHostSbtServer.expectedServerSocket(session.tmp, start.buildDirectory)
           Right(()),
         start =>
           started += start.record
@@ -1571,7 +1573,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       val otherServer = RunOnHostSession.parseRecord(
         Files.readString(owner.records.resolve(s"server-sbt-${RunOnHostSession.buildHash(other)}"), UTF_8),
       ).get.pgid
-      val otherSocket = RunOnHostSandbox.expectedServerSocket(owner.tmp, other)
+      val otherSocket = RunOnHostSbtServer.expectedServerSocket(owner.tmp, other)
       // `dir`'s portfile naming the other directory's live socket: the takeover ends the group
       // `dir`'s record names, and the start that follows refuses the live foreign socket the
       // portfile leads to (noForeignServer), the other server never signalled.
@@ -1589,10 +1591,10 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       // the group, leading to the other server: the group ended is the record's, and the start
       // that follows refuses the link's live socket as any start does.
       val second = serverLeader(owner)
-      val socketDir = RunOnHostSandbox.expectedServerSocket(owner.tmp, dir).getParent
+      val socketDir = RunOnHostSbtServer.expectedServerSocket(owner.tmp, dir).getParent
       onEnd = pgid =>
         if pgid == second then
-          listeners.remove(RunOnHostSandbox.expectedServerSocket(owner.tmp, dir)).foreach(_.close())
+          listeners.remove(RunOnHostSbtServer.expectedServerSocket(owner.tmp, dir)).foreach(_.close())
           FileHelper.directoryEntries(socketDir).foreach(Files.delete)
           Files.delete(socketDir)
           Files.createSymbolicLink(socketDir, otherSocket.getParent)

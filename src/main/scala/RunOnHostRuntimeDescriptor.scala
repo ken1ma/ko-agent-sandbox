@@ -1,5 +1,5 @@
 // What a launch's runner publishes about each runtime it owns, for another launch on the same
-// project to attach its commands to (RunOnHostSandbox.RunnerRuntimes.attached): the file
+// project to attach its commands to (RunnerRuntimes.attached): the file
 // `runtime-<program>-<hash>` in the owner's session directory, which no confined process can
 // write, since the profiles grant `tmp/` and nothing else of the session. Published by rename once
 // the server or daemon is up, deleted before any record of the runtime is discarded, and so
@@ -97,7 +97,7 @@ object RunOnHostRuntimeDescriptor:
     * fingerprints what its own proxy would get.
     *
     * Not in it: the request's own launcher flags, which an sbt server is started with
-    * (RunOnHostSandbox.serverCommand). Within one launch the warm server keeps the flags of the
+    * (RunOnHostSbtServer.serverCommand). Within one launch the warm server keeps the flags of the
     * command that started it and every later command attaches regardless, as stock sbt's thin
     * client attaches to whatever server holds the portfile; attaching across launches follows
     * the same rule. They widen nothing this fingerprint guards: the profile is rendered from the

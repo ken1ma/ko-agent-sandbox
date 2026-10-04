@@ -289,6 +289,10 @@ object HostCommands:
   def echoCommand(command: Seq[String]): Unit =
     System.err.println(renderCommand(command, announcedPodman))
 
+  def stepOk(command: String*): Boolean =
+    echoCommand(command)
+    ProcessBuilder(command*).inheritIO().start().waitFor() == 0
+
   /** The echoed line; `announcedPodman` is the path the `using:` line said, or None before it has. */
   def renderCommand(command: Seq[String], announcedPodman: Option[String]): String =
     val words = command.toVector

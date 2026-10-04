@@ -631,7 +631,7 @@ object KoAgentFs:
     fileRules: String,
   ): (Boolean, FileRules.Resolved) =
     val script = koAgentFsMountScript(backing, projectId, prepared.sourceId, sandboxContainer, fileRules)
-    val mount = withFileLock(AgentSandboxLauncher.imageBuildLockFile(os)):
+    val mount = withFileLock(ImageBuilds.imageBuildLockFile(os)):
       run(koAgentFsScriptCommand(podman, os, script)*)
     if !mount.ok then
       fail(s"error: mounting the ${koAgentFsLabel(os)} failed:\n${mount.err}", mount.exit)
@@ -681,7 +681,7 @@ object KoAgentFs:
     fileRules: String,
   ): FileRules.Resolved =
     val script = koAgentFsResolveScript(backing, projectId, bundledKoAgentFsSourceId(), fileRules)
-    val resolved = withFileLock(AgentSandboxLauncher.imageBuildLockFile(os)):
+    val resolved = withFileLock(ImageBuilds.imageBuildLockFile(os)):
       run(koAgentFsScriptCommand(podman, os, script)*)
     if !resolved.ok then
       fail(s"error: resolving the file rules with the ${koAgentFsLabel(os)} failed:\n${resolved.err}", resolved.exit)

@@ -223,7 +223,7 @@ how to undo it, is its `README.md` ("`--build`"). This section is the build and 
    (`build.sbt`) — so editing either cannot change the digest below. A jar's resource tree cannot
    be enumerated at runtime, so an `INDEX` lists what is there.
 2. **`--build`** unpacks that bundle to a temporary directory and runs `podman build` from it
-   (`AgentSandboxLauncher.unpackBuildContext`, `buildCommands`; the ko-agent-fs half is
+   (`ImageBuilds.unpackBuildContext`, `buildCommands`; the ko-agent-fs half is
    `KoAgentFs.scala`). For this image the launcher first
    digests the bundled source and passes the digest in:
 
@@ -257,7 +257,7 @@ how to undo it, is its `README.md` ("`--build`"). This section is the build and 
 The digest's construction, and why the algorithm exists only on the launcher side, are with the
 code: `LauncherImages.bundleSourceId`.
 
-**All steps run from `--build`** (`AgentSandboxLauncher.buildCommands`,
+**All steps run from `--build`** (`ImageBuilds.buildCommands`,
 `KoAgentFs.koAgentFsSourceId` and `installKoAgentFs`), **and the mount lifecycle runs every
 `--write=live` session** (`--write=reject` binds the tree read-only without it): each launch checks
 the installed binary's identity and self-test, then mounts the project through a per-project

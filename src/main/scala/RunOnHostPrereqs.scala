@@ -5,7 +5,7 @@
 //
 // Everything here except readProgramRules, which reads the project's run-on-host/ tree, is pure
 // over (Os, environment, filesystem layout), so the macOS answers are
-// testable from any host — the technique AgentSandboxLauncher.stateRootOf already uses. A refusal
+// testable from any host — the technique LauncherState.stateRootOf already uses. A refusal
 // is a value rather than an exit, because the same classification serves the launch's provisioning
 // (RunOnHostProvisioning), a channel request, and the tests that prove unsupported layouts stay
 // unsupported.
@@ -138,7 +138,7 @@ object RunOnHostPrereqs:
   // ---------------------------------------------------------------------------
 
   /**
-   * The run-on-host cache root, discovered exactly as [[AgentSandboxLauncher.stateRootOf]] discovers the
+   * The run-on-host cache root, discovered exactly as [[LauncherState.stateRootOf]] discovers the
    * state root so the two answer alike on one machine: XDG_CACHE_HOME when set and absolute,
    * otherwise $HOME/.cache. Unset is the ordinary case on macOS rather than the exception — mill's
    * own bootstrap takes the same fallback there — so the fallback is the path most runs use.
@@ -239,7 +239,7 @@ object RunOnHostPrereqs:
 
   /**
    * Refused when the cache root would be inside the project, the check
-   * [[AgentSandboxLauncher.requireStateRootOutside]] makes for the state root: a cache the
+   * [[LauncherState.requireStateRootOutside]] makes for the state root: a cache the
    * workspace can reach is a cache the sandbox can rewrite between commands.
    */
   def cacheRootOutsideProject(

@@ -466,7 +466,7 @@ is the refusal itself. After a write to the audit log failed, every refusal is a
 `Proxy-Status` names that reason (`SECURITY.md`, "Egress proxy"); the log cannot, and a program
 need not print it (`run-on-host.md`, "Refusals"). The supervisor sends no CONNECT so
 that a proxy still logging records no refused host for it, and sends `Max-Forwards: 0` for a
-recipient that is not this proxy (`RunOnHostSandbox.unwritableProxyLog`).
+recipient that is not this proxy (`RunOnHostProxy.unwritableProxyLog`).
 
 ### Proxy-Status on the proxy's own responses
 

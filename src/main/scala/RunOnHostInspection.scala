@@ -13,7 +13,7 @@ import FileHelper.{writePrivate, writeReadable}
 object RunOnHostInspection:
 
   /** The proxy's two directories, siblings of its log as its profile is
-    * (RunOnHostSandbox.proxyProfileFile), so a runtime's log names them for whoever attaches to
+    * (RunOnHostProxy.proxyProfileFile), so a runtime's log names them for whoever attaches to
     * it. Two, because each is one profile's grant: `leaf` the proxy's, `trust` the command's. */
   private def sibling(proxyLog: Path, suffix: String): Path =
     proxyLog.resolveSibling(proxyLog.getFileName.toString.stripSuffix(".log") + suffix)

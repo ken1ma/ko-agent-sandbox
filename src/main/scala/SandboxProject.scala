@@ -162,7 +162,7 @@ object SandboxProject:
    * home the guard refuses as /Users/me.
    */
   val MacDataVolumePrefix = "/System/Volumes/Data"
-  /** Not private: RunOnHostSandbox.reachableThroughCommandWritable, which runs on macOS alone,
+  /** Not private: RunOnHostSbtServer.reachableThroughCommandWritable, which runs on macOS alone,
     * compares the same spellings. */
   def withMacDataVolumeAliases(paths: Seq[Path]): Seq[Path] =
     paths.flatMap: path =>
@@ -326,7 +326,7 @@ object SandboxProject:
   def isProjectId(name: String): Boolean = name.matches(ProjectIdPattern)
 
   /** A project's persistent volume; with ProjectIdPattern for the id, the pattern `--reset-all`
-    * removes (AgentSandboxLauncher.persistentVolumes). */
+    * removes (LauncherState.persistentVolumes). */
   def persistentVolumeName(projectId: String): String = s"$PersistentVolumePrefix$projectId"
   val PersistentVolumePrefix = "ko-agent-sandbox-persistent-"
 

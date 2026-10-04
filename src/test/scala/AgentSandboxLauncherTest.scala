@@ -10,6 +10,10 @@ import scala.jdk.CollectionConverters.*
 import java.time.ZoneId
 
 import AgentSandboxLauncher.*
+import CommandLine.*
+import ImageBuilds.*
+import LauncherState.*
+import LaunchMessages.*
 import HostCommands.{InvisibleTypes, Os, renderArgument, shown}
 import SandboxProject.projectIdOf
 import ContainerfileSources.*
@@ -572,7 +576,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
   test("--build and --update refresh exactly the remote sources their Containerfiles use"):
     val readContainerfile: String => String = BundledBuildContext.resource
     val localImages = managedImageTags("1.2-3").toSet
-    val buildCommands = AgentSandboxLauncher.buildCommands(
+    val buildCommands = ImageBuilds.buildCommands(
       "podman", "1.2-3", "baseid", "sourceid", "sandboxid", "proxyid",
     )
     val buildImages = remoteImagesForBuildCommands(buildCommands, readContainerfile, localImages)
@@ -614,7 +618,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     val rustVersion = pinnedRustVersion(context)
     val buildImages = remoteImagesForBuildCommands(
-      AgentSandboxLauncher.buildCommands("podman", "1.2-3", "baseid", "sourceid", "sandboxid", "proxyid"),
+      ImageBuilds.buildCommands("podman", "1.2-3", "baseid", "sourceid", "sandboxid", "proxyid"),
       readContainerfile,
       localImages,
     )

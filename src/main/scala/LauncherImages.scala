@@ -90,7 +90,7 @@ object LauncherImages:
 
   /**
    * The digest of one bundle directory as this jar bundles it — the same
-   * bytes AgentSandboxLauncher.unpackBuildContext writes and contextSourceId hashes, read
+   * bytes ImageBuilds.unpackBuildContext writes and contextSourceId hashes, read
    * straight from the jar so no unpack is needed. What the filter binary's
    * `--version` must report, and what --build stamps into the sandbox and
    * proxy images as their bundle label (bundleMismatch).
@@ -193,7 +193,7 @@ object LauncherImages:
 
   /**
    * A build's check of what it just stamped, immediately after committing the images: the
-   * layer-cache staleness AgentSandboxLauncher.buildCommands describes is exactly the kind of
+   * layer-cache staleness ImageBuilds.buildCommands describes is exactly the kind of
    * silent drift the version lock exists for, so the freshly committed labels are read back
    * rather than assumed. A failure here is podman misbehaving, not a wrong
    * jar — the remediation is clearing the build cache, not --build again.

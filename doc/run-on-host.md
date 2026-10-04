@@ -46,7 +46,10 @@ the code that enforces each part:
 | the command lifecycle: publish, lock, scavenge | `RunOnHostSession.scala` |
 | prerequisite validation and the paths it settles | `RunOnHostPrereqs.scala` |
 | provisioning offered at the start prompt | `RunOnHostProvisioning.scala` |
-| supervisor's and runner's runtimes: proxy, sbt server, environment | `RunOnHostSandbox.scala` |
+| the supervisor's steps and a command's environment | `RunOnHostSandbox.scala` |
+| the runner's runtimes, kept across a launch's commands | `RunnerRuntimes.scala` |
+| a host command's proxy and what its log reports after a command | `RunOnHostProxy.scala` |
+| the runner's sbt server: its start, a server of yours | `RunOnHostSbtServer.scala` |
 | the runner's mill daemon: its start, its port, a daemon of yours | `RunOnHostMillDaemons.scala` |
 | the launch's Gradle daemons and their records | `RunOnHostGradleDaemons.scala` |
 | what a runner publishes for another launch to attach to | `RunOnHostRuntimeDescriptor.scala` |
@@ -302,7 +305,7 @@ container — the same rule the egress refusal follows.
   - a request the proxy refuses inside a tunnel — a `PUT`, a `POST`, a `GET` with a body — gets a
     `403` whose body the programs need not print, so the supervisor reports it the same way
     ("Command sent requests the host command sandbox refuses: …",
-    `RunOnHostSandbox.refusedRequests`), each request with the audit line's reason.
+    `RunOnHostProxy.refusedRequests`), each request with the audit line's reason.
     - A refusal the command answers by changing the request — a body framing header on a `GET`, a
       `Host` header naming another host, `Upgrade`, an absolute target, a path spelled with
       percent-encoding — also gets the step the `403` body had (`RefusalAdvice.requestStep`).
@@ -311,7 +314,7 @@ container — the same rule the egress refusal follows.
   - a proxy that serves nothing because a write to its log failed (`SECURITY.md`, "Egress proxy")
     cannot say so in that log, and the programs need not print it. After a command that exits
     non-zero the supervisor asks the proxy with `OPTIONS *` and `Max-Forwards: 0`
-    (`RunOnHostSandbox.unwritableProxyLog`), reads the reason from the response's `Proxy-Status`
+    (`RunOnHostProxy.unwritableProxyLog`), reads the reason from the response's `Proxy-Status`
     field, and reports it with the log's path. A proxy still logging answers `400` and logs
     `deny - - OPTIONS non-CONNECT request`.
     - sbt 2.0.9 and mill 1.0.6 print the status line alone, measured against a proxy answering
@@ -516,7 +519,7 @@ Mill is client/daemon by construction: the launcher starts a daemon that binds a
 kernel's choosing on the loopback address, writes it to `out/mill-daemon/socketPort`, and connects
 (`Server.scala`, `ServerLauncher.scala`, Mill 1.1.10). The runner starts the daemon itself, before
 the first `mill` command of a build directory, and every command from that directory attaches to
-it (`RunOnHostMillDaemons.scala`, `RunOnHostSandbox.RunnerRuntimes`):
+it (`RunOnHostMillDaemons.scala`, `RunnerRuntimes`):
 
 1. The **starter**: the build directory's `./mill version`, started through `registeredSpawn` in
    the runner's session (`records/daemon-mill-<hash>`) under the daemon profile — the profile
@@ -1173,7 +1176,7 @@ where the caller is not interactive.
     forwards nothing of `-J`.
   - Dropped beyond the client: `-java-home`, `-sbt-jar`, `--sbt-script`, `--sbt-launch-jar` and
     `-Dsbt.script=`, each naming the JVM, the launcher jar or the runner script, which the
-    profile's grants decide (`RunOnHostSandbox.serverCommand`).
+    profile's grants decide (`RunOnHostSbtServer.serverCommand`).
 - **`new` and `init` run through a server — the client model.** Stock sbt runs those two in the
   sbt process itself, in place, since a template is written where no build is, and every other
   command through its client; the runner has one path, a client to the server it starts, so

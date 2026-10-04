@@ -777,7 +777,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     reached.await()
     (holding, proceed)
 
-  /** What another launch's takeover does under the lock (RunOnHostSandbox.RunnerRuntimes.takeOver):
+  /** What another launch's takeover does under the lock (RunnerRuntimes.takeOver):
     * the owner's recorded group ended, the record read only once the lock is held. */
   def taker(root: Path, record: Path, groups: Groups): Option[Collected] =
     endRecordedGroup(root, record, SharedProcesses(groups))

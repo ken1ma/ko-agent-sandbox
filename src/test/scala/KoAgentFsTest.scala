@@ -523,7 +523,7 @@ class KoAgentFsTest extends munit.FunSuite:
       .findFirstMatchIn(Files.readString(Paths.get("fuse/ko-agent-fs/src/main.rs")))
       .map(_.group(1).toInt)
       .getOrElse(fail("src/main.rs declares no SELF_TEST_SETUP_EXIT"))
-    assertEquals(declared, AgentSandboxLauncher.SelfTestSetupExit)
+    assertEquals(declared, ImageBuilds.SelfTestSetupExit)
 
   test("the rig's container script parses under the bash that runs it"):
     // The script is inside rig.sh as a quoted heredoc and is executed only in the privileged

@@ -11,10 +11,8 @@ import java.nio.file.attribute.{BasicFileAttributes, FileTime}
 import java.time.{Instant, ZoneId}
 import java.time.format.DateTimeFormatter
 
-import AgentSandboxLauncher.{
-  machineMemoryAvailable, machineMemoryLine, memoryTotal, perProjectStateRoots, persistentVolumes,
-  projectsStateRoot, runContainerParts, stateRoot, buildMemoryHeadroom,
-}
+import AgentSandboxLauncher.{buildMemoryHeadroom, machineMemoryAvailable, machineMemoryLine, memoryTotal}
+import LauncherState.{perProjectStateRoots, persistentVolumes, projectsStateRoot, runContainerParts, stateRoot}
 import HostCommands.*
 import FileHelper.*
 
@@ -108,7 +106,7 @@ object SandboxStats:
   /** One live runner: its launch's run suffix, its project, and for each build directory it has
     * served, the programs whose runtime it keeps there — a proxy and the server or daemon it
     * serves, which a `shutdown` or an idle exit leaves without the latter until the next command
-    * (RunOnHostSandbox.RunnerRuntimes), so a runtime is not a process up this instant. */
+    * (RunnerRuntimes), so a runtime is not a process up this instant. */
   final case class Runner(run: String, project: String, warm: Vector[(String, Vector[String])])
 
   /**
@@ -116,7 +114,7 @@ object SandboxStats:
    * session, its `run` file naming the launch's sandbox container, its build files the
    * directories served, and its proxy records the programs kept warm there — the proxy is the
    * runtime's constant part, a server or daemon gone on its own being replaced under it
-   * (RunOnHostSandbox.RunnerRuntimes). A runner without a run file, one from a launch that
+   * (RunnerRuntimes). A runner without a run file, one from a launch that
    * predates it, has a run the report cannot name. macOS only, like the runners.
    */
   def runners(root: Path): Vector[Runner] =
