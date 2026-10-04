@@ -1,8 +1,8 @@
 // The egress proxy as the launcher deals with it: reading this project's rules, asking the proxy
 // image what they resolve to, keeping the audit log, and the actions that report on them
 // (--egress-log, --egress-effective, --egress-check). A session's proxy *container* is not
-// started here — it is a dozen flags in AgentSandboxLauncher.launch, and moving it would drag the
-// launch with it.
+// started here — it is a dozen flags in AgentSandboxLauncher.prepareRunFiles, and moving it would
+// drag the launch with it.
 //
 // The proxy owns the defaults, the profile equations and the rule resolution; nothing here
 // re-implements any of them, so there is no second opinion about what is allowed. See

@@ -21,7 +21,8 @@ object CommandLine:
   val DefaultEgressProfile = "deny-unless-allowed"
 
   /** The programs `--run-on-host` can name. Available on macOS only, which
-    * launch() enforces: the parser stays pure over the arguments. */
+    * AgentSandboxLauncher.launchSettings enforces: the parser stays pure over
+    * the arguments. */
   val RunOnHostPrograms = RunOnHostPrereqs.Program.values.toVector.map(_.name)
 
   def parseRunOnHost(value: String): Either[String, Vector[String]] =
