@@ -142,21 +142,6 @@ measurement.
   connect to server" (2026-10-03). The cause is not found. `narrow` runs the same function in
   this checkout; `mach` runs it in its fixture.
 
-## Proxy parsing written more than once
-
-Security-relevant parsing: a merge keeps every refusal and its wording, and a test covers each
-caller.
-
-- [ ] The head preamble — ends with CRLFCRLF, no bare CR or LF, split into lines, the first line
-  — three times in `HTTPHelper`: `ConnectRequest.parse`, `HttpRequestHead.parse`,
-  `HttpResponseHead.parse`. Only the exception and its message differ.
-- [ ] `bodyFraming` of the request and of the response, mirrored on purpose (the response's
-  comment: refusals as IOExceptions, a different no-framing default). Share it only if one
-  implementation with an error factory and a default reads more plainly than two.
-- [ ] The two TLS client setups, `TLSHelper.TlsInspection.connect` and the upstream proxy's
-  `secure` in `TransportHelper`: one place would set hostname verification for both legs. ALPN,
-  SNI for an address literal, autoClose and the port stay parameters.
-
 ## IDE integration through VS Code's Agent Host
 
 - [ ] `plan-ide-integration.md`, from its phase 1: the measurements step 2's "Not measured"
