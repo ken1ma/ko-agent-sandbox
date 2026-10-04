@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets
 import scala.util.Random
 
 import RulesetHelper.*
+import CredentialRewrite.*
 import HTTPHelper.*
 import IPAddrHelper.*
 import TLSHelper.*
@@ -330,7 +331,7 @@ class HostileInputTest extends munit.FunSuite:
               s"'$value' opened the unnamed $path on $host",
             )
             assert(
-              path.startsWith("/") && GitHelper.literalPathProblem(path).isEmpty,
+              path.startsWith("/") && RulePath.literalPathProblem(path).isEmpty,
               s"'$value' opened the non-canonical $path",
             )
         resolved += 1
@@ -553,3 +554,34 @@ class HostileInputTest extends munit.FunSuite:
       "allowed",
       "refused",
     ).foreach(outcome => assert(outcomes(outcome) > 0, s"no $outcome outcome was ever drawn"))
+
+  test("a substituted head re-parses as one request, with the header count and the parameter count it had"):
+    // Values are drawn from the whole value grammar, including bytes that would end a field or split a
+    // query; the substituted head must keep its framing all the same.
+    val alphabet = (0x21 to 0x7e).map(_.toChar).mkString
+    def value(): String = Vector.fill(1 + random.nextInt(40))(alphabet(random.nextInt(alphabet.length))).mkString
+    def parsed(bytes: Array[Byte]): HttpRequestHead =
+      val text = String(bytes, StandardCharsets.ISO_8859_1)
+      assertEquals(text.indexOf("\r\n\r\n"), text.length - 4, text)
+      HttpRequestHead.parse(bytes)
+    (1 to 2000).foreach: _ =>
+      def bound(name: String, place: CredentialPlace) =
+        BrokeredCredential(CredentialBinding(name, "h.example", "/", place), s"PH${name.toLowerCase}", value())
+      val credentials = Vector(
+        bound("A", CredentialGrammar.DefaultPlace),
+        bound("K", CredentialPlace.Header("x-api-key")),
+        bound("P", CredentialPlace.Parameter("sig")),
+      )
+      val basic = java.util.Base64.getEncoder.encodeToString("u:PHa".getBytes(StandardCharsets.ISO_8859_1))
+      val authorization = if random.nextBoolean() then "Bearer PHa" else s"Basic $basic"
+      val request = HttpRequestHead.parse(ascii(
+        s"GET /p?x=1&sig=PHp&y=2 HTTP/1.1\r\nHost: h.example\r\nAuthorization: $authorization\r\n" +
+          "x-api-key: PHk\r\nAccept: */*\r\n\r\n",
+      ))
+      val result = request.withCredentials("h.example", credentials)
+      assertEquals(result.injected.sorted, Vector("A", "K", "P"))
+      val before = parsed(request.toOriginBytes)
+      val after = parsed(result.head.toOriginBytes)
+      assertEquals(after.headers.size, before.headers.size)
+      assertEquals(after.query.split("&", -1).length, before.query.split("&", -1).length)
+      assertEquals(after.path, before.path)

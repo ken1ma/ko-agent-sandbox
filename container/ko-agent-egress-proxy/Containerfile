@@ -94,7 +94,7 @@ RUN set -euxo pipefail; \
 # An enforcement point should hold nothing an attacker could use:
 # distroless has no shell, package manager, interpreter or JVM, so an ad-hoc
 # command cannot run inside it. The cost is no HEALTHCHECK; liveness is the log
-# (--proxy-log). `nonroot` is a mutable tag resolving to uid 65532.
+# (--egress-log). `nonroot` is a mutable tag resolving to uid 65532.
 #
 # debian13 follows debian-temurin's DEBIAN_VERSION: the build stage above links the executable
 # against that release's glibc, which this base has to provide.

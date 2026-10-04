@@ -167,9 +167,8 @@ The test stays skipped and the run's totals do not change.
 
 ## openai/codex, anthropic-experimental/sandbox-runtime, google-gemini/gemini-cli
 
-One report for each project's macOS Seatbelt profile. This project's own profile has the same
-gap: `TODO.md`, "A host command reads other processes' environments", and `run-on-host.md`, "The
-Seatbelt profile".
+One report for each project's macOS Seatbelt profile. This project's own profile closes the gap
+with the rule below (`SeatbeltProfile.ProcessReadRule`; `run-on-host.md`, "The Seatbelt profile").
 
 ### A sandboxed command reads other processes' environment through `KERN_PROCARGS2`
 

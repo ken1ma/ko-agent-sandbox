@@ -58,17 +58,6 @@ object RulesetHelper:
         ++ Option.when(methods.nonEmpty)("method=" + methods.mkString(","))
         ++ Option.when(grants(Tunnel))(Tunnel)).mkString(" ")
 
-  /** A rule's path: `/` the root, a trailing `/` a tree, none one exact path. */
-  object RulePath:
-    val Root = "/"
-
-    def contains(path: String, request: String): Boolean =
-      if path.endsWith("/") then request.startsWith(path) else request == path
-
-    /** The longest of `scopes` containing `path`, a request's or a rule's. */
-    def longestMatch(scopes: Iterable[String], path: String): Option[String] =
-      scopes.filter(scope => contains(scope, path)).maxByOption(_.length)
-
   /** What a `deny` names: an exact host, or the apex and everything under it. */
   enum HostPattern:
     case Exact(host: String)
@@ -188,8 +177,8 @@ object RulesetHelper:
       case _ => refuse(s"is no line of the rule grammar: $GrammarForms")
 
   /** The URL's host part and path, the scheme literal `https://` already seen; refusals name what
-    * a rule cannot name — a port, userinfo, a query — and a path outside canonical form: printable
-    * ASCII, no `%`, `\`, empty, `.` or `..` segment (GitHelper.literalPathProblem). */
+    * a rule cannot name — a port, userinfo, a query — and a path outside canonical form
+    * (RulePath.literalPathProblem). */
   private def splitUrl(refuse: String => Nothing, url: String): (String, String) =
     val rest = url.drop("https://".length)
     val slash = rest.indexOf('/')
@@ -199,10 +188,9 @@ object RulesetHelper:
     if authority.isEmpty then refuse("names no host")
     Vector('@' -> "userinfo", ':' -> "a port", '[' -> "a bracket", ']' -> "a bracket").foreach: (ch, what) =>
       if authority.contains(ch) then refuse(s"carries $what in its host; a rule names an exact hostname on port 443")
-    if path.exists(ch => ch < 0x21 || ch > 0x7e) then refuse("has a character outside printable ASCII in its path")
     if path.contains('?') then refuse("has a query; a rule names a path, never a query")
-    literalPathProblem(path).foreach: problem =>
-      refuse(s"has $problem in its path; a path is written unencoded, in canonical form")
+    RulePath.literalPathProblem(path).foreach: problem =>
+      refuse(s"has $problem in its path; a path is written in canonical form, as doc/egress-proxy.md gives it")
     (authority, path)
 
   private def parseGrants(refuse: String => Nothing, words: Vector[String]): Set[String] =
@@ -733,9 +721,9 @@ object RulesetHelper:
    * upload-pack under `git-fetch` (GitHelper.isUploadPack), so a clone that could not transfer
    * fails at its first request; push discovery under a `POST` grant, where the push is the
    * project's own grant; other requests under their method grants, their paths refused for spellings a
-   * forge decodes first (requireUnambiguousPath). Where the longest match is a line other than
-   * the root, the request is first refused for `%`, a dot segment, a backslash and an empty
-   * segment, on every method: under such a line the path decides grants the root does not give.
+   * forge decodes first (RulePath.requireUnambiguousPath). Where the longest match is a line other than
+   * the root, the request is first refused for any spelling RulePath.literalPathProblem names, on
+   * every method: under such a line the path decides grants the root does not give.
    * Under the root a read may carry `%` — what keeps npm's `/@scope%2fname` reading — since it
    * gains nothing by any decoding. A path in no scope is refused.
    *
@@ -773,7 +761,7 @@ object RulesetHelper:
     val grants = matched match
       case Some(scope) => scopes(scope)
       case None        => throw Refusal("path under no line", RefusalAdvice.pathOutside(scopes.keySet))
-    if matched.get != RulePath.Root then requireLiteralPath(path)
+    if matched.get != RulePath.Root then RulePath.requireLiteralPath(path)
 
     head.method match
       case "GET" | "HEAD" =>
@@ -789,7 +777,7 @@ object RulesetHelper:
           throw Refusal("read not granted", RefusalAdvice.noRead)
 
       case method if Grant.Methods.contains(method) =>
-        requireUnambiguousPath(path)
+        RulePath.requireUnambiguousPath(path)
 
         val opened = grants(method) || (method == "POST" && grants(Grant.GitFetch) && isUploadPack(path))
         if !opened then

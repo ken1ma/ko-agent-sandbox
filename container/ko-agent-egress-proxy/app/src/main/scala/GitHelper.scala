@@ -18,7 +18,7 @@ object GitHelper:
    * never a suffix match — that would leave the proxy relying on the origin
    * router to agree where the path ends. `{2,}`: GitHub and Codeberg are
    * exactly owner/repo, gitlab.com nests subgroups deeper; a single segment
-   * is a repository nowhere. requireUnambiguousPath has already rejected
+   * is a repository nowhere. RulePath.requireUnambiguousPath has already rejected
    * percent-encoding and dot segments.
    */
   private val UploadPackPath = "(/[^/]+){2,}/git-upload-pack".r
@@ -53,8 +53,9 @@ object GitHelper:
    * One decode pass — the forge router's decoding, not HTTP's, which
    * assigns no meaning to %-escapes in a target; the forwarded bytes stay
    * as sent. Private and deny-side on purpose: in HTTPHelper as a reusable
-   * decoder it would invite allow-side use and recreate the
-   * parser-disagreement problem requireUnambiguousPath refuses. A malformed
+   * decoder it would invite allow-side use and recreate the parser-disagreement
+   * problem RulePath.requireUnambiguousPath refuses; CredentialRewrite keeps its
+   * own for the substitution, and says why one pass is safe there. A malformed
    * escape is kept as is — the most an origin would make of it.
    */
   private def percentDecoded(value: String): String =
@@ -76,47 +77,3 @@ object GitHelper:
         loop(i + 1)
 
     loop(0)
-
-  /**
-   * The spellings a forge's router decodes before routing, so that a ruleset
-   * comparing the path as sent would disagree with the origin about which
-   * path it names. Forge names never need escaping, so neither is a request
-   * git would make.
-   */
-  private val DecodedSpellings: Vector[(String, String => Boolean)] = Vector(
-    "percent-encoding" -> (_.contains('%')),
-    "a dot segment" -> (_.split("/", -1).exists(segment => segment == "." || segment == "..")),
-  )
-
-  /**
-   * The further spellings an origin may fold onto another path — a
-   * backslash, which a Windows-hosted or lenient server reads as `/`, and an
-   * empty segment, which many collapse — refused wherever the path is
-   * compared to a reviewed prefix.
-   */
-  private val FoldedSpellings: Vector[(String, String => Boolean)] = Vector(
-    "a backslash" -> (_.contains('\\')),
-    "an empty segment" -> (_.contains("//")),
-  )
-
-  private def problemOf(path: String, spellings: Vector[(String, String => Boolean)]): Option[String] =
-    spellings.collectFirst { case (name, present) if present(path) => name }
-
-  /** Why `path` cannot be compared literally to a rule's path, or None: the one
-    * rule for a rule's path at launch and for a request under one. */
-  def literalPathProblem(path: String): Option[String] =
-    problemOf(path, DecodedSpellings ++ FoldedSpellings)
-
-  private def requireSpelledPlainly(path: String, spellings: Vector[(String, String => Boolean)]): Unit =
-    problemOf(path, spellings).foreach: problem =>
-      throw Refusal(s"$problem in the path", RefusalAdvice.ambiguousPath)
-
-  /** A POST, PUT, PATCH or DELETE path, refused rather than normalized when a
-    * forge would decode it first. */
-  def requireUnambiguousPath(path: String): Unit =
-    requireSpelledPlainly(path, DecodedSpellings)
-
-  /** A path whose longest match is a line other than the root, on every
-    * method: refused for any spelling literalPathProblem names. */
-  def requireLiteralPath(path: String): Unit =
-    requireSpelledPlainly(path, DecodedSpellings ++ FoldedSpellings)

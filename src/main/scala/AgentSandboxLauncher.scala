@@ -79,6 +79,7 @@ import java.nio.file.attribute.PosixFilePermissions
 import java.time.{Instant, ZoneId, ZoneOffset}
 import java.time.format.DateTimeFormatter
 import scala.jdk.CollectionConverters.*
+import agentsandbox.egress.{BrokeredCredential, CredentialBinding, CredentialGrammar}
 
 import CertificateHelper.*
 import ContainerfileSources.*
@@ -213,7 +214,8 @@ object AgentSandboxLauncher:
             if written.nonEmpty then written
             else
               val relayed = run(podman, "logs", container)
-              if relayed.ok then relayed.err
+              if relayed.ok && relayed.err.nonEmpty then relayed.err
+              else if relayed.ok then s"nothing was written to $log or to podman's logs of $container"
               else
                 s"nothing was written to $log and podman had already removed the container: the " +
                   "proxy exited before opening its log, which is that file's mount"
@@ -221,6 +223,80 @@ object AgentSandboxLauncher:
       else if System.nanoTime() >= deadline then
         outcome = Some(Left(s"the egress proxy did not report ready within ${bound.toSeconds}s\n$said"))
       // Each pass asks podman once; the pause is how late a proxy that is ready can be noticed.
+      else Thread.sleep(50)
+    outcome.get
+
+  /**
+   * Starts the proxy container and waits for it (`awaitReady`). With bindings, the start is attached:
+   * they are written to the attached `podman start`'s standard input, which podman pipes to the proxy,
+   * and that client is ended once the proxy is ready or gone, while `--sig-proxy=false` keeps podman from
+   * passing the signal on (SECURITY.md, "Who holds a brokered value"; src/probe/podman-attach-stdin.sh).
+   * The remote client leaves `--sig-proxy` out of its help and honours it (podman's
+   * `cmd/podman/containers/start.go`). The client's output is the proxy's own, which the log has.
+   */
+  def startProxyContainer(
+    podman: String,
+    container: String,
+    credentials: Seq[BrokeredCredential],
+  )(awaitReady: => Either[String, String]): Either[String, String] =
+    if credentials.isEmpty then
+      val started = run(podman, "start", container)
+      if !started.ok then Left(s"could not start the egress proxy container\n${started.err}")
+      else awaitReady
+    else
+      val client =
+        try
+          Right(
+            ProcessBuilder(podman, "start", "--attach", "--interactive", "--sig-proxy=false", container)
+              .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+              .start(),
+          )
+        catch case ex: IOException => Left(s"could not start the egress proxy container: ${ex.getMessage}")
+      client.flatMap: process =>
+        val bindings = CredentialGrammar.bindingBytes(credentials)
+        // On its own thread: a client that never reads would hold the write, and the wait is bounded.
+        val writing = Thread.startVirtualThread: () =>
+          try
+            process.getOutputStream.write(bindings)
+            process.getOutputStream.flush()
+          catch case _: IOException => ()
+        // What podman says when the start itself fails; once attached it is the proxy's own output.
+        val said = StringBuilder()
+        val reading = Thread.startVirtualThread: () =>
+          try
+            val bytes = process.getErrorStream.readAllBytes()
+            said.synchronized(said.append(String(bytes, StandardCharsets.UTF_8).takeRight(4096)))
+          catch case _: IOException => ()
+        try awaitStarted(podman, container, process, () => said.synchronized(said.toString)).flatMap(_ => awaitReady)
+        finally
+          process.destroy()
+          process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)
+          writing.join(java.time.Duration.ofSeconds(1))
+          reading.join(java.time.Duration.ofSeconds(1))
+          try process.getOutputStream.close() catch case _: IOException => ()
+
+  /**
+   * Waits until the attached start moves the container out of `created`. The client runs on its own, and
+   * awaitProxyReady takes a container that is not running for an exited proxy, so it would misread one still
+   * `created`. A container already exited has run, and awaitProxyReady reports why from its log.
+   */
+  private def awaitStarted(
+    podman: String,
+    container: String,
+    client: Process,
+    said: () => String,
+  ): Either[String, Unit] =
+    val deadline = System.nanoTime() + EgressProxyReadyBound.toNanos
+    def created: Boolean =
+      val state = run(podman, "container", "inspect", "--format", "{{.State.Status}}", container)
+      state.ok && state.text.trim == "created"
+    var outcome: Option[Either[String, Unit]] = None
+    while outcome.isEmpty do
+      if !created then outcome = Some(Right(()))
+      else if !client.isAlive then
+        outcome = Some(Left(s"could not start the egress proxy container\n${said()}"))
+      else if System.nanoTime() >= deadline then
+        outcome = Some(Left(s"the egress proxy container did not start within ${EgressProxyReadyBound.toSeconds}s"))
       else Thread.sleep(50)
     outcome.get
 
@@ -1277,7 +1353,7 @@ object AgentSandboxLauncher:
    * container is gone. With arguments: passed through to `podman logs` on
    * the running proxies, the live view of the same lines.
    */
-  def proxyLog(os: Os, extra: List[String]): Nothing =
+  def egressLog(os: Os, extra: List[String]): Nothing =
     val projectDir = resolveProjectDir(os)
     requireStateRootOutside(os, projectDir)
     val id = projectIdOf(projectDir, os)
@@ -1304,7 +1380,7 @@ object AgentSandboxLauncher:
         fail(
           s"""no running egress proxy for this project; each run's proxy is
              |removed when its sandbox exits. Its retained logs are files:
-             |run --proxy-log without arguments, or read files under:
+             |run --egress-log without arguments, or read files under:
              |${pathLine("egress log dir", logDir, os)}""".stripMargin
         )
       val command = List(podman, "logs") ++ extra ++ proxies
@@ -1369,7 +1445,12 @@ object AgentSandboxLauncher:
    * resolvedRuleset a launch uses, under the accompanying --egress=<profile>, plus per-line
    * provenance. Data to stdout, context to stderr, so the effective lists pipe cleanly.
    */
-  def egressEffective(os: Os, profile: String, operands: List[String]): Nothing =
+  def egressEffective(
+    os: Os,
+    profile: String,
+    operands: List[String],
+    bindings: Vector[CredentialBinding] = Vector.empty,
+  ): Nothing =
     val (projectId, proxyImage, ruleFiles, provider) = egressPreflight(os, operands)
 
     val resolved = resolvedRuleset(podman, proxyImage, profile, provider, ruleFiles, provenance = true)
@@ -1377,6 +1458,8 @@ object AgentSandboxLauncher:
     System.out.flush()
     if !resolved.ok then
       fail(s"error: this project's egress rules are not valid\n${resolved.err}")
+    val inspected = inspectedHostsOf(resolved.text).fold(fail(_), identity).toSet
+    EgressCredentials.effectiveLines(bindings, inspected, tunnelHostsOf(resolved.text).toSet).foreach(println)
     resolved.err.linesIterator.filter(_.startsWith("warning:")).foreach(line => System.err.println(emphasized(line)))
 
     val caCert = tlsStateRoot(os).resolve(projectId).resolve("ca.crt")
@@ -2026,8 +2109,6 @@ object AgentSandboxLauncher:
   /** `--env=NAME` (value: the host's, read at launch) or `--env=NAME=VALUE`. */
   case class EnvForward(name: String, value: Option[String])
 
-  val EnvironmentName = "[A-Za-z_][A-Za-z0-9_]*".r
-
   /**
    * The only names `--env` refuses: the launcher's own KO_AGENT_SANDBOX_* variables, which are how
    * it tells the sandbox what is in force — the egress ruleset, the nesting, clipboard and
@@ -2080,6 +2161,7 @@ object AgentSandboxLauncher:
     command: List[String],
     env: Vector[EnvForward] = Vector.empty,
     runOnHost: Option[Vector[String]] = None,
+    credentialBindings: Vector[CredentialBinding] = Vector.empty,
   ):
     def writeMode: String = write.getOrElse(DefaultWriteMode)
     def egressProfile: String = egress.getOrElse(DefaultEgressProfile)
@@ -2087,7 +2169,7 @@ object AgentSandboxLauncher:
   val ManagementActions: Set[String] =
     Set(
       "--help", "--build", "--update", "--reset", "--reset-run-on-host", "--reset-all", "--stats",
-      "--proxy-log", "--egress-effective", "--self-test",
+      "--egress-log", "--egress-effective", "--self-test",
     )
 
   /**
@@ -2102,6 +2184,8 @@ object AgentSandboxLauncher:
       if choices.contains(value) then Right(value)
       else Left(s"error: $option=$value; the values are ${choices.mkString(", ")}, exactly")
 
+    var bindings = Vector.empty[CredentialBinding]
+
     def loop(
       rest: List[String],
       write: Option[String],
@@ -2114,6 +2198,15 @@ object AgentSandboxLauncher:
           Right(ParsedCommandLine(write, egress, None, Nil, env, runOnHost))
         case "--" :: command =>
           Right(ParsedCommandLine(write, egress, None, command, env, runOnHost))
+
+        case arg :: tail if arg.startsWith(EgressCredentials.OptionPrefix) =>
+          EgressCredentials.parseOption(arg.stripPrefix(EgressCredentials.OptionPrefix), RefusedForwardPrefix)
+            .flatMap: binding =>
+              if bindings.exists(_.name == binding.name) then
+                Left(s"error: --egress-cred=${binding.spelled}; ${binding.name} is bound twice; one name, one host")
+              else
+                bindings :+= binding
+                loop(tail, write, egress, env, runOnHost)
 
         case arg :: tail if arg.startsWith("--write=") =>
           if write.isDefined then Left("error: --write is given twice")
@@ -2132,7 +2225,7 @@ object AgentSandboxLauncher:
 
         case arg :: tail if arg.startsWith("--env=") =>
           val (name, value) = arg.stripPrefix("--env=").span(_ != '=')
-          if !EnvironmentName.matches(name) then
+          if !CredentialGrammar.environmentName(name) then
             Left(s"error: --env=$name; a variable is named [A-Za-z_][A-Za-z0-9_]*")
           else if env.exists(_.name == name) then Left(s"error: --env=$name is given twice")
           else
@@ -2141,10 +2234,10 @@ object AgentSandboxLauncher:
               env :+ EnvForward(name, Option.when(value.nonEmpty)(value.drop(1))), runOnHost,
             )
 
-        case ("--write" | "--egress" | "--env" | "--run-on-host") :: _ =>
+        case ("--write" | "--egress" | "--env" | "--run-on-host" | "--egress-cred") :: _ =>
           Left(
             "error: the launch options are spelled --write=<mode>, --egress=<profile>, " +
-              "--env=<name>[=<value>] and --run-on-host=<programs>",
+              "--env=<name>[=<value>], --egress-cred=<name>@<host> and --run-on-host=<programs>",
           )
 
         case arg :: tail if arg.startsWith("--egress-check=") =>
@@ -2165,7 +2258,12 @@ object AgentSandboxLauncher:
         case command =>
           Right(ParsedCommandLine(write, egress, None, command, env, runOnHost))
 
-    loop(args, None, None, Vector.empty, None)
+    loop(args, None, None, Vector.empty, None).flatMap: parsed =>
+      parsed.env.find(forward => bindings.exists(_.name == forward.name)) match
+        case Some(forward) =>
+          val name = forward.name
+          Left(s"error: --env=$name and --egress-cred=$name@…; pass $name to one of them")
+        case None => Right(parsed.copy(credentialBindings = bindings))
 
   // -------------------------------------------------------------------------
   // Main
@@ -2256,6 +2354,8 @@ object AgentSandboxLauncher:
     // What git cannot do in this session, in the container's words (SandboxProject.noGitInstruction
     // and readOnlyGitInstruction): the agent hears it before its first command.
     git: Option[String] = None,
+    // The --egress-cred bindings: the variables holding a placeholder, and where the proxy substitutes it.
+    brokered: Vector[CredentialBinding] = Vector.empty,
   ): String =
     val profileLine = resolved.linesIterator.next()
     val workspace = writeMode match
@@ -2336,11 +2436,25 @@ object AgentSandboxLauncher:
        |HTTP methods allowed there. On an inspected host, the rule with the longest matching
        |path decides which operations are permitted. A rule path ending in `/` matches request
        |paths with that prefix; other rule paths match exactly. A request matching no rule is
-       |refused. For rules below `/`, request paths are also refused if they contain
-       |percent-encoding, a dot segment, a backslash or an empty segment.
+       |refused. For rules below `/`, a request path is also refused unless it is printable ASCII
+       |with `%` escaping only non-ASCII text or a space, and has no dot segment, backslash, `;`,
+       |`#` or empty segment.
        |
        |$refused
-       |""".stripMargin
+       |${brokeredParagraph(brokered)}""".stripMargin
+
+  /** The agent's paragraph for a launch with bindings: a 401 from another host or place is the placeholder
+    * sent, not a wrong token. */
+  def brokeredParagraph(brokered: Vector[CredentialBinding]): String =
+    if brokered.isEmpty then ""
+    else
+      val bindings = brokered.map: binding =>
+        s"`${binding.name}` (${binding.target}, ${binding.place.shown})"
+      s"""
+         |${bindings.mkString(", ")} ${if bindings.size == 1 then "holds a placeholder" else "hold placeholders"}
+         |the proxy replaces with the real value only in the bound header or parameter on the bound host;
+         |a 401 from any other host or place means the placeholder was sent, not that the token is wrong.
+         |""".stripMargin
 
   def agentDocumentStamp(
     imageId: String,
@@ -2348,10 +2462,12 @@ object AgentSandboxLauncher:
     rulesetText: String,
     runOnHost: Vector[String] = Vector.empty,
     git: Option[String] = None,
+    brokered: Vector[CredentialBinding] = Vector.empty,
   ): String =
     s"$imageId $writeMode ${sha256Hex(rulesetText)}"
       + (if runOnHost.isEmpty then "" else s" ${runOnHost.mkString(",")}")
       + git.fold("")(paragraph => s" git:${sha256Hex(paragraph)}")
+      + (if brokered.isEmpty then "" else s" brokered:${brokered.map(_.spelled).mkString(",")}")
 
   def main(args: Array[String]): Unit =
     // The private actions, before the ordinary parse and in no usage text: they are not launch
@@ -2377,8 +2493,8 @@ object AgentSandboxLauncher:
     // that configures nothing is the silent failure mode the options must not have.
     def noSessionOptions(action: String): Unit =
       if parsed.write.isDefined || parsed.egress.isDefined || parsed.env.nonEmpty
-        || parsed.runOnHost.isDefined
-      then fail(s"error: $action reads no launch option; drop --write/--egress/--env/--run-on-host")
+        || parsed.runOnHost.isDefined || parsed.credentialBindings.nonEmpty
+      then fail(s"error: $action reads no launch option; drop --write/--egress/--env/--egress-cred/--run-on-host")
     def noWriteOption(action: String): Unit =
       if parsed.write.isDefined || parsed.env.nonEmpty || parsed.runOnHost.isDefined then
         fail(s"error: $action reads no --write, --env or --run-on-host option; drop it")
@@ -2517,11 +2633,11 @@ object AgentSandboxLauncher:
         SandboxStats.stats(currentOs)
 
       // No requirePodman() here: with no arguments this reads host files only, and the retained
-      // logs are documented as readable after every container is gone. proxyLog asks for podman on
+      // logs are documented as readable after every container is gone. egressLog asks for podman on
       // the branch that needs it.
-      case Some(("--proxy-log", rest)) =>
-        noSessionOptions("--proxy-log")
-        proxyLog(currentOs, rest)
+      case Some(("--egress-log", rest)) =>
+        noSessionOptions("--egress-log")
+        egressLog(currentOs, rest)
 
       case Some(("--self-test", rest)) =>
         noSessionOptions("--self-test")
@@ -2531,10 +2647,11 @@ object AgentSandboxLauncher:
       case Some(("--egress-effective", rest)) =>
         noWriteOption("--egress-effective")
         requirePodman(currentOs)
-        egressEffective(currentOs, parsed.egressProfile, rest)
+        egressEffective(currentOs, parsed.egressProfile, rest, parsed.credentialBindings)
 
       case Some(("--egress-check", operands)) =>
         noWriteOption("--egress-check")
+        if parsed.credentialBindings.nonEmpty then fail("error: --egress-check reads no --egress-cred option; drop it")
         val host = operands.headOption.filter(_.nonEmpty).getOrElse(
           fail("error: --egress-check=<host> names the host to check"),
         )
@@ -2560,6 +2677,16 @@ object AgentSandboxLauncher:
           "--env=EGRESS_TLS_PRIVATE_KEY=/etc/ko-agent-egress-proxy/leaf.key",
         )
       case ProxyTlsMaterial.Uninspected => Vector.empty
+
+  /** With bindings, the container is created with `--interactive`, because `podman start` cannot open its
+    * standard input later (podman-start(1)); without bindings, no arguments. */
+  def proxyCredentialArgs(credentials: Seq[BrokeredCredential]): Vector[String] =
+    if credentials.isEmpty then Vector.empty
+    else Vector("--interactive", s"--env=${CredentialGrammar.StdinVariable}=${CredentialGrammar.StdinValue}")
+
+  /** Each brokered name set to its placeholder in the sandbox: an explicit value, since the host's is the secret. */
+  def placeholderArgs(credentials: Seq[BrokeredCredential]): Vector[String] =
+    credentials.toVector.map(credential => s"--env=${credential.binding.name}=${credential.placeholder}")
 
   def proxyLogArgs(hostLogFile: Path, selinuxEnforcing: Boolean): Vector[String] =
     val containerLogFile = "/var/log/ko-agent-egress-proxy/proxy.log"
@@ -2649,6 +2776,12 @@ object AgentSandboxLauncher:
 
   def launch(parsed: ParsedCommandLine): Unit =
     val os = currentOs
+    // First, before any check that starts a process (the clipboard's `ps` below): from here the values
+    // are in this process's memory, and no process it starts inherits them (EgressCredentials.withhold).
+    val credentials =
+      EgressCredentials.resolve(parsed.credentialBindings, name => Option(System.getenv(name))).fold(fail(_), identity)
+    EgressCredentials.withhold(credentials.map(_.binding.name), os)
+
     val command = parsed.command
     val writeMode = parsed.writeMode
     val egressProfile = parsed.egressProfile
@@ -2674,6 +2807,15 @@ object AgentSandboxLauncher:
       fail("error: --run-on-host is available on macOS only; on this host, run those programs in the container")
 
     val projectDir = resolveProjectDir(os)
+
+    // The selected programs' rule files, read before anything is created: a binding is checked against
+    // them below, and the launch's widening report prints them (runOnHostWideningLines). The runner reads
+    // them again at a program's first command.
+    val programRules = RunOnHostPrereqs.Program.values.toVector.filter(program => runOnHost.contains(program.name))
+      .map: program =>
+        RunOnHostSandbox.readProgramRules(projectDir, program) match
+          case Right(hosts)  => program -> hosts
+          case Left(refusal) => fail(s"error: ${printable(refusal)}")
 
     // -----------------------------------------------------------------------
     // Refuse obviously wrong project directories
@@ -2957,6 +3099,16 @@ object AgentSandboxLauncher:
     // through leaf.sans below. Empty: no leaf, no inspection material.
     val inspectedHosts = inspectedHostsOf(rulesetText).fold(fail(_), identity)
 
+    // Each binding must reach a proxy that inspects its host: the session's, or a selected
+    // program's, whose proxy inspects every host of its rules (RunOnHostPrereqs.egressRuleText).
+    EgressCredentials.checkHosts(
+      parsed.credentialBindings, inspectedHosts.toSet, tunnelHostsOf(rulesetText).toSet,
+      programRules.map((program, hosts) =>
+        program.name -> (RunOnHostPrereqs.centralHost(program) +: hosts).toSet,
+      ).toMap,
+    ).fold(fail(_), identity)
+    val sessionCredentials = EgressCredentials.bindingsFor(credentials, inspectedHosts.toSet)
+
     // The workspace FUSE filter, checked before any volume is assembled and mounted once the
     // sandbox container exists (the lifecycle banner above koAgentFsMountScript has the layout).
     // Every live session's enforcement, on every platform.
@@ -3120,7 +3272,7 @@ object AgentSandboxLauncher:
       .map(SandboxProject.readOnlyGitInstruction(_, mountPath))
       .orElse(noGit.map(SandboxProject.noGitInstruction(_, mountPath)))
     val agentDocStamp = agentDocumentStamp(
-      imageId, writeMode, rulesetText, runOnHost, gitInstruction,
+      imageId, writeMode, rulesetText, runOnHost, gitInstruction, parsed.credentialBindings,
     )
 
     val sandboxFiles = withFileLock(tlsDir.resolve(".lock")):
@@ -3269,7 +3421,7 @@ object AgentSandboxLauncher:
           agentDocFile,
           String(imageDoc, StandardCharsets.UTF_8).stripLineEnd
             + appendedSection(
-              mountPath, writeMode, rulesetText, runOnHost, os == Os.Mac, gitInstruction,
+              mountPath, writeMode, rulesetText, runOnHost, os == Os.Mac, gitInstruction, parsed.credentialBindings,
             ),
         )
         writeReadable(agentDocStampFile, agentDocStamp + "\n")
@@ -3340,6 +3492,7 @@ object AgentSandboxLauncher:
             "--http-proxy=false",
             s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid",
           ) ++ rulesetEnvArgs(egressProfile, provider, ruleFiles) ++ upstreamProxyArgs(env)
+          ++ proxyCredentialArgs(sessionCredentials)
           ++ proxyTls ++ proxyLogArgs(hostLogFile, selinuxEnforcing) ++ Vector(proxyImageId)*
       )
       if !proxyCreated.ok then
@@ -3347,11 +3500,10 @@ object AgentSandboxLauncher:
 
       preparedSandboxFiles
 
-    val proxyStarted = run(podman, "start", proxyContainer)
-    if !proxyStarted.ok then
-      fail(s"error: could not start the egress proxy container\n${proxyStarted.err}")
-    val proxyNetworks = awaitProxyReady(podman, proxyContainer, hostLogFile, EgressProxyReadyBound)
-      .fold(reason => fail(s"error: $reason"), identity)
+    val proxyNetworks =
+      startProxyContainer(podman, proxyContainer, sessionCredentials)(
+        awaitProxyReady(podman, proxyContainer, hostLogFile, EgressProxyReadyBound),
+      ).fold(reason => fail(s"error: $reason"), identity)
     val proxyIp = addressOn(proxyNetworks, sandboxNetwork)
       .getOrElse(fail(s"error: could not determine the egress proxy's address on $sandboxNetwork"))
 
@@ -3401,6 +3553,9 @@ object AgentSandboxLauncher:
     // is said aloud, since the variable is otherwise indistinguishable from the image's own.
     if parsed.env.nonEmpty then
       System.err.println(s"forwarded environment: ${parsed.env.map(_.name).mkString(", ")}")
+    if credentials.nonEmpty then
+      EgressCredentials.bannerLines(credentials).foreach(System.err.println)
+      System.err.println(s"note: ${EgressCredentials.SubstitutionNote}")
 
     // -----------------------------------------------------------------------
     // How the sandbox reaches it
@@ -3470,12 +3625,7 @@ object AgentSandboxLauncher:
       if runOnHost.isEmpty then Vector.empty
       else
         runOnHostLines(runOnHost, writeMode).foreach(System.err.println)
-        val programHosts = RunOnHostPrereqs.Program.values.toVector.filter(program => runOnHost.contains(program.name))
-          .map: program =>
-            RunOnHostSandbox.readProgramRules(projectDir, program) match
-              case Right(hosts)  => program.name -> hosts
-              case Left(refusal) => fail(s"error: ${printable(refusal)}")
-        runOnHostWideningLines(programHosts).foreach(System.err.println)
+        runOnHostWideningLines(programRules.map((program, hosts) => program.name -> hosts)).foreach(System.err.println)
         System.err.println(pathLine("host command log", channelLogFile, os))
         Vector(s"--env=${RunOnHostChannel.RunOnHostVariable}=${runOnHost.mkString(",")}")
 
@@ -3539,7 +3689,7 @@ object AgentSandboxLauncher:
       // ships tzdata and nothing else sets a zone, so without this a commit made in the sandbox
       // carries +0000 and the agent's "today" turns over at the wrong hour.
       s"--env=TZ=${posixTz(ZoneId.systemDefault())}",
-    ) ++ forwardedEnv ++ Vector(
+    ) ++ forwardedEnv ++ placeholderArgs(credentials) ++ Vector(
 
       // The deliberate host exposure; what the agent writes here is untrusted input to host programs (SECURITY.md, "The
       // project directory").
@@ -3637,8 +3787,12 @@ object AgentSandboxLauncher:
       resolvedFileRules.foreach(resolved => writePrivate(runnerFileRules, resolved.text))
       if !RunOnHostChannel.spawnRunner(
           podman, sandboxContainer, projectDir, runOnHost, channelLogFile, mountPath,
-          forwards = parsed.env,
+          // A brokered name reaches a host command as the sandbox has it: its placeholder.
+          forwards = parsed.env ++ credentials.map(credential =>
+            EnvForward(credential.binding.name, Some(credential.placeholder)),
+          ),
           fileRules = resolvedFileRules.map(_ => runnerFileRules),
+          credentials = credentials,
         )
       then fail("error: could not spawn the command runner, which serves --run-on-host")
 

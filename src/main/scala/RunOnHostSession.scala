@@ -180,8 +180,10 @@ object RunOnHostSession:
     * runner's pipe (RunOnHostChannel.dispatch): EOF while it waits ends it, and once it holds
     * the lock it writes `LockedLine` on its stdout and reads the runner's word from the pipe —
     * `runWord`, whose arguments it inserts before the command's `--`, or `refusedWord`, whose
-    * message it prints on stderr before exiting 2, the supervisor's own refusal code. Exit 71 is
-    * the holder ending itself, as the leader does in registeredSpawn. */
+    * message it prints on stderr before exiting 2, the supervisor's own refusal code. It reads the
+    * word a byte at a time, so what the runner writes after it stays in the pipe for the command
+    * (RunOnHostSandbox.CredentialsOption). Exit 71 is the holder ending itself, as the leader does in
+    * registeredSpawn. */
   def lockedSpawn(lockFile: Path, command: Seq[String], underRunner: Boolean): Seq[String] =
     Seq("/usr/bin/perl", "-e", LockScript, lockFile.toString, if underRunner then "1" else "0") ++ command
 
@@ -226,9 +228,12 @@ object RunOnHostSession:
       |}
       |if ($runner) {
       |    syswrite(STDOUT, "locked\n") or exit 71;
-      |    my $word = <STDIN>;
-      |    exit 71 unless defined $word;
-      |    chomp $word;
+      |    my $word = '';
+      |    while (1) {
+      |        exit 71 unless sysread(STDIN, my $byte, 1);
+      |        last if $byte eq "\n";
+      |        $word .= $byte;
+      |    }
       |    my ($verdict, @fields) = split /\0/, $word, -1;
       |    s/\x01([en0])/$1 eq 'n' ? "\n" : $1 eq '0' ? "\0" : "\x01"/ge for @fields;
       |    if ($verdict ne 'run') { print STDERR "$fields[0]\n"; exit 2; }
@@ -740,7 +745,9 @@ object RunOnHostSession:
    * ends, its exit status (128+signal for a signal death, the shell's convention) is published
    * the same way as `<record>.exit`, and the leader stays until its group is ended: a group is
    * signalled only behind a live leader, and a command can fork a helper and return, so
-   * ownership must not expire with the command. A `.pending` file a kill leaves behind still
+   * ownership must not expire with the command. The leader closes its standard input after forking,
+   * so when the command exits without reading its input, the writer gets EPIPE instead of blocking
+   * (a host proxy's bindings, RunOnHostSandbox.startProxyUnder). A `.pending` file a kill leaves behind still
    * parses, and still names a group whose leader either matches (ours, ended) or is gone
    * (skipped), so the scavenger reads the records directory without special cases.
    *
@@ -770,6 +777,7 @@ object RunOnHostSession:
       |my $pid = fork;
       |exit 71 unless defined $pid;
       |if ($pid == 0) { exec { $command[0] } @command or exit 71; }
+      |open(STDIN, '<', '/dev/null') or exit 71;
       |waitpid($pid, 0);
       |my $status = ($? & 127) ? 128 + ($? & 127) : $? >> 8;
       |open($fh, '>', "$record.exit.pending") or exit 71;

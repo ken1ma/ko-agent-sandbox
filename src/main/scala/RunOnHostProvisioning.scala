@@ -149,7 +149,7 @@ object RunOnHostProvisioning:
   def runInBuildDirectory(provisionable: Finding.Provisionable): Either[String, Int] =
     try
       val builder = ProcessBuilder(provisionable.command*).directory(provisionable.buildDirectory.toFile).inheritIO()
-      builder.environment().putAll(provisionable.environment.asJava)
+      EgressCredentials.scrub(builder).environment().putAll(provisionable.environment.asJava)
       Right(builder.start().waitFor())
     catch case ex: IOException => Left(ex.getMessage)
 

@@ -449,7 +449,7 @@ mvn_home=$(sed -n 's|^executable: \(.*\)/bin/mvn$|\1|p' "$work/emit-mvn.log" 2>/
 # split mid-path. Registered before the first tree exists, so a failed second mktemp leaves
 # nothing.
 scratch_sbt=""; scratch_mill=""; scratch_gradle=""; scratch_mvn=""; sibling_repo=""; pin_saved=""; pinned_made=""
-acceptance_opts_file=""; port_saved=""; redirect_saved=""; unrelated_listener=""
+acceptance_opts_file=""; port_saved=""; redirect_saved=""; unrelated_listener=""; held_jdk=""
 marker=acceptance-marker.${work##*.}
 cleanup() {
     # The ivy fixture's pin, edited under the sbt.version row: restored on any exit.
@@ -475,6 +475,8 @@ cleanup() {
         "$HOME/.gradle/$marker" "$HOME/.m2/repository/$marker" 2>/dev/null
     # The unrelated-service row's listener is this acceptance run's.
     [ -n "$unrelated_listener" ] && kill "$unrelated_listener" 2>/dev/null
+    # So is the process-read rows' target.
+    [ -n "$held_jdk" ] && kill "$held_jdk" 2>/dev/null
     # The channel rows' runner and stubbed execs; their FIFOs are this acceptance run's alone — a real
     # session's live inside its container.
     if [ -n "${channel_runner:-}" ]; then
@@ -725,6 +727,12 @@ tries=0
 while ! grep -q port "$work/unrelated.log" && [ "$tries" -lt 50 ]; do tries=$((tries + 1)); sleep 0.1; done
 unrelated_port=$(sed -n 's/^port //p' "$work/unrelated.log")
 
+# The process-read rows' target: a JDK outside every profile holding a variable, as the launcher,
+# the runner and a supervisor are JDKs holding the launch's environment. Apple's own binaries
+# would not do: the kernel withholds their environment (run-on-host.md, "The Seatbelt profile").
+KO_AGENT_PROCARGS_PROBE=1 "$JAVA_HOME/bin/java" "$project/src/probe/ProcArgs.java" --hold >/dev/null 2>&1 &
+held_jdk=$!
+
 for p in $profiles; do
     use_profile "$p"
     scratch=$(scratch_of "$p")
@@ -850,6 +858,23 @@ EOF
     # acceptance test's is the sbt profile's project alone.
     expect_allowed "$p" "a JVM resolving a name survives it" \
         "cd '$(project_of "$p")' && '$JAVA_HOME/bin/java' '$SESSION_TMP/Resolve.java' localhost"
+
+    echo
+    echo "processes, under the $p profile"
+    # SeatbeltProfile.ProcessReadRule. A row passes only on ProcArgs's own report: a JVM that did
+    # not run fails it. Mill's client also asks info() of its daemon, which Network.MillClient's
+    # exception covers, so these rows do not check it.
+    # The reader is copied out of the project, which only the sbt profile grants.
+    cp "$project/src/probe/ProcArgs.java" "$SESSION_TMP/ProcArgs.java"
+    expect_allowed "$p" "reading another process's arguments and environment is refused" \
+        "cd '$(project_of "$p")' && '$JAVA_HOME/bin/java' --enable-native-access=ALL-UNNAMED \
+            '$SESSION_TMP/ProcArgs.java' 'target=$held_jdk' > '$SESSION_TMP/procargs.out' \
+            && grep -q '^target (pid $held_jdk): DENIED errno=1 .*; ProcessHandle.of present; info ' \
+                '$SESSION_TMP/procargs.out'"
+    expect_allowed "$p" "read a child the command starts: the same sandbox" \
+        "cd '$(project_of "$p")' && '$JAVA_HOME/bin/java' --enable-native-access=ALL-UNNAMED \
+            '$SESSION_TMP/ProcArgs.java' '--child=$SESSION_TMP/ProcArgs.java' > '$SESSION_TMP/procargs.out' \
+            && grep -q '^a child of the reader (pid [0-9]*): ENVIRONMENT READ ' '$SESSION_TMP/procargs.out'"
 
     echo
     echo "allowed writes, under the $p profile"

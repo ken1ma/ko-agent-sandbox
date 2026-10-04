@@ -10,10 +10,10 @@ inspecting every allowed host").
 Every model request is then logged with its method, path and size, so the log shows a call to an
 endpoint the session should not use and a request far larger than a conversation turn.
 
-This plan neither substitutes nor refuses a credential: that is `plan-credential-broker-proxy.md`
-and `plan-provider-credential-proxy.md`. An inspected model host is what their brokered overlay
-terminates anyway, so this plan brings that termination forward and adds the log fields; the
-overlay's own steps are unchanged.
+This plan neither substitutes nor refuses a credential: that is `--egress-cred` (`egress-proxy.md`,
+"Brokered credentials") and `plan-provider-credential-proxy.md`. An inspected model host is what the
+provider plan's brokered overlay terminates anyway, so this plan brings that termination forward and
+adds the log fields; the overlay's own steps are unchanged.
 
 ## Evidence and target
 
@@ -22,9 +22,9 @@ overlay's own steps are unchanged.
   through allowed network traffic", with two reported demonstrations). Under a tunnel the log
   holds one `CONNECT` line per connection and nothing distinguishes that upload from a turn.
 - What the proxy sees for the more valuable credential today: forge tokens pass through the
-  inspected `api.github.com` in plaintext, and the broker plan rates a forge token above a model
-  token ("Claude Code and Codex logins: excluded"). The exposure that keeps the model hosts
-  opaque is already accepted for the forge hosts.
+  inspected `api.github.com` in plaintext, and `design.md`, "Credential brokering at the egress
+  proxy", rates a forge token above a model token. The exposure that keeps the model
+  hosts opaque is already accepted for the forge hosts.
 - What inspection cannot do: read the conversation for intent (`design.md`, "No DLP/entropy/LLM
   firewall"), or refuse the foreign key, which needs the session's own key and so the brokered
   overlay (`TODO.md`, "Credential brokering", the `require-placeholder` item).
@@ -89,14 +89,16 @@ precedence among them, `https_proxy` before `HTTPS_PROXY` in Claude Code's case,
   - Reported: 0.147.0 and 0.154.0 on macOS accept the custom CA for HTTP and reject it for the
     Responses WebSocket with `UnknownIssuer` (openai/codex #46489, open), and the WebSocket
     retries run out before the HTTP fallback (openai/codex #19821, open). 0.155.1 completed both
-    handshakes against a local server (broker plan, "Claude Code and Codex logins: excluded").
+    handshakes against a local server (SECURITY.md, "Who holds the CA key").
   - Measure: one turn, then a second in the same session; the refusals and the seconds before
-    the fallback under `403`, then under `426`, against a local server as the broker plan did,
+    the fallback under `403`, then under `426`, against a local server as `design.md`, "Credential
+    brokering at the egress proxy", records,
     then through the relay.
   - Passes with refused upgrades when the first turn completes over inspected HTTP and no later
     turn in the session tries an upgrade again. The number of refusals is recorded, not
-    required: 0.155.1 sent seven over about seven seconds (broker plan, the same section).
-    Retries that end the turn, or upgrades on a later turn, leave Codex a tunnel.
+    required: 0.155.1 sent seven over about seven seconds (`design.md`, "Credential brokering at
+    the egress proxy"). Retries that end the turn, or upgrades on a later turn, leave Codex a
+    tunnel.
   - If `426` falls back on the first refusal and `403` does not, the proxy answers every refused
     `Upgrade` with `426` and the `Upgrade` header RFC 9110 requires of it.
 - `copilot` 1.0.88, `api.githubcopilot.com` and the three plan hosts.
@@ -154,7 +156,7 @@ OAuth step.
 
 One launch per agent with the agent's model hosts inspected through a project rule file
 (`deny defaults`, the defaults' other lines, the model hosts with
-`read method=POST,PUT,PATCH,DELETE`), `--proxy-log` on, and a session that exercises tool calls,
+`read method=POST,PUT,PATCH,DELETE`), `--egress-log` on, and a session that exercises tool calls,
 a subagent where the agent has one, and a compaction or long turn. Read from the log:
 
 - every host the client called, login and refresh included, and every path on an inspected host,
@@ -279,8 +281,9 @@ did not bother; they prove nothing.
 ## Deliberate exclusions
 
 - Refusing paths on a model host, such as a Files API endpoint: a per-release contract with each
-  CLI, which the broker plan declines, and a storage behavior added at an allowed endpoint
-  reopens the attack (`TODO.md`, the `require-placeholder` item, has the rejection).
+  CLI, which `design.md`, "Credential brokering at the egress proxy", declines, and a storage
+  behavior added at an allowed endpoint reopens the attack (`TODO.md`, the `require-placeholder`
+  item, has the rejection).
 - Logging a credential value, its prefix or its digest: the index gives a reader the one fact
   needed, that the credential changed.
 - Codex's and Copilot's request headers: neither agent's documentation names a request header

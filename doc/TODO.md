@@ -24,19 +24,31 @@ again.
   openai/codex #24833 (durable MCP resume). If OpenAI ships a stateful review, fix, re-review
   primitive, delete the helper's orchestration rather than maintain a duplicate.
 
-## Credential brokering — its two plans, in order
+## Credential brokering — `--egress-cred`, then the provider plan
 
-- [ ] `plan-credential-broker-proxy.md` whole, through its acceptance checklist.
-- [ ] Real sessions on it before `plan-provider-credential-proxy.md`, whose steps are taken one
-  at a time, each on a use case those sessions produced, never as the broker's automatic second
-  half: what that plan adds — storage, generations, refresh, removal — is where the field
-  failures are (docker/sbx-releases #492, a removed credential still injected after a restart),
-  and none of it is needed for a per-run static value.
-- AWS is in neither: the broker plan's "Deliberate exclusions" has why, and what a session
-  forwards instead.
+- [ ] Run `sbt "testWithPodman *ProxyContainerTest"` on Linux and Windows: the proxy's attached
+  `podman start` is measured on macOS alone, where it passes (podman 6.1.2, 2026-10-04).
+- [ ] Check `--egress-cred` under `--run-on-host` against real hosts; `egress-proxy.md`, "Brokered
+  credentials", has the GitHub session's measurement:
+  - With `--run-on-host=sbt` and `maven.pkg.github.com` allowed in
+    `.ko-agent-sandbox/run-on-host/sbt/egress/rule`,
+    `--egress-cred=GH_TOKEN@maven.pkg.github.com` resolves a private GitHub Packages artifact;
+    `env` in the command shows the placeholder; `--egress-log` shows the sbt proxy's
+    `inject=GH_TOKEN` line.
+  - With a binding, `src/probe/ProcArgs.java` finds the value in no environment or argument of
+    `podman`, the runner or a supervisor.
+- [ ] Test a host command's request reaching a local origin with the value: it needs an origin the
+  host proxy trusts, and that proxy checks origins against the JDK's own trust store.
+- [ ] Real sessions on `--egress-cred` before `plan-provider-credential-proxy.md`, whose steps are
+  taken one at a time, each on a use case those sessions produced, never as `--egress-cred`'s
+  automatic second half: what that plan adds — storage, generations, refresh, removal — is where
+  the field failures are (docker/sbx-releases #492, a removed credential still injected after a
+  restart), and none of it is needed for a per-run static value.
+- AWS is in neither: `design.md`, "Credential brokering at the egress proxy", has why, and what a
+  session forwards instead.
 - [ ] Refuse a credential that is not the session's at a model host (SECURITY.md, "Exfiltration
   through allowed network traffic", has the attack). An exception to the order above: its use
-  case came from a review of the documents, not from a session on the broker. A target of
+  case came from a review of the documents, not from a session on `--egress-cred`. A target of
   a service definition gains a property, `require-placeholder`: on a brokered target carrying it,
   a request is forwarded only if one authentication form the target declares holds this run's
   placeholder and no other declared form is present; any other request is refused with a fixed
@@ -58,18 +70,18 @@ again.
   - It protects an API-key session only. A subscription login stays a tunnel until step 6.
   - A project that tests against the provider with its own key selects no credential for that
     host, or accepts the refusal; forwarding a token that is not a placeholder stays the rule at
-    every other host (broker plan, "Substitution").
+    every other host (`egress-proxy.md`, "Where the value goes").
   - Measure first, with the model host inspected at the root: the hosts and paths the installed
     `claude` calls, login and refresh included; that a long server-sent-event stream survives the
     one-request-per-connection relay; that `claude` trusts `NODE_EXTRA_CA_CERTS` on every
     connection to the provider.
   - Rejected: exact-path grants on the model host without brokering (`/v1/messages` alone). The
-    path list is the per-release contract with the CLI the broker plan declines, and a
+    path list is the per-release contract with the CLI that brokering declines, and a
     retrievable-storage behavior added at an allowed endpoint reopens the attack. Rejecting it
     gives up path-based protection for a subscription session before step 6: exact-path grants
     refuse the storage endpoints whatever credential is sent.
   - Codex: taking this to the OpenAI hosts needs one `codex` turn to succeed with those hosts
-    inspected, read from `--proxy-log` (broker plan, "Claude Code and Codex logins: excluded",
+    inspected, read from `--egress-log` (`design.md`, "Credential brokering at the egress proxy",
     has what is measured), and a second turn in the same session, to learn whether the refused
     upgrades recur per turn. If they do, measure whether a custom `[model_providers.NAME]` with
     `supports_websockets = false` accepts the ChatGPT login; the built-in provider cannot be
@@ -92,24 +104,16 @@ again.
     `proc_pidinfo` and `proc_pidfdinfo`.
   - The registration script's `ps` runs inside the leader's shell and needs another form.
 
-## A host command reads other processes' environments
+## What a host command reads of other processes
 
-SECURITY.md, "Run on host", states the gap (the closed environment's last item);
-`run-on-host.md`, "The Seatbelt profile", has the measurement.
+`run-on-host.md`, "The Seatbelt profile", has `SeatbeltProfile.ProcessReadRule` and its
+measurement.
 
-- [ ] Deny the read in the command profile with the rule agent-safehouse uses
-  (https://github.com/eugene1g/agent-safehouse, `profiles/10-system-runtime.sb`): deny
-  `sysctl-read` of names matching `procargs`, deny `process-info-pidinfo`, and allow that again
-  for the same sandbox.
-  - `run-on-host-profile-iterate.sh procargs` shows it under the rendered profile: the call
-    refused with the JDK running, a child of the reader still read, and `ProcessHandle.of`,
-    which Mill's client calls on its daemon's pid (`ServerLauncher.scala`, Mill 1.1.10), still
-    finding processes outside the sandbox.
-  - What remains: `SeatbeltProfile.render` takes the rule, and the acceptance test runs every
-    program. The older `kern.procargs` call is not measured.
+- [ ] Measure the older `kern.procargs` call under the rule; the probe reads `kern.procargs2`
+  alone.
 - [ ] Start what the launcher starts — the runner, each supervisor, `podman` — with a controlled
   environment: a fixed set of names and the `--env` forwards, nothing else of the launching
-  shell's. The rule above is the boundary; this bounds what a miss in it exposes.
+  shell's. The profile's rule is the boundary; this bounds what a miss in it exposes.
   - `podman`'s set starts from the variables its manual documents (podman(1), "Environment
     Variables"): `CONTAINERS_CONF`, `CONTAINER_CONNECTION`, `CONTAINER_HOST`,
     `CONTAINER_SSHKEY`, `PODMAN_CONNECTIONS_CONF`, `TMPDIR` and the `XDG_*` directories among
@@ -118,8 +122,8 @@ SECURITY.md, "Run on host", states the gap (the closed environment's last item);
 - [ ] `(deny default)` leaves `process-info*`, `nvram*`, `iokit-get-properties` and
   `file-map-executable` allowed (Firefox's `SandboxPolicyContent.h`: "These are not included in
   (deny default)"; Chromium's `renderer.sb` denies the first three as "allowed by default"), and
-  the command profile names none of them. Decide each; the rule above takes
-  `process-info-pidinfo`.
+  the command profile names only `process-info-pidinfo`, which `ProcessReadRule` denies outside the
+  command's sandbox. Decide the others.
   - The probe's `ops` mode measures a family by leaving its allow out under `(deny default)`,
     which denies none of these, so it cannot say that the JDK does without `file-map-executable`
     (`run-on-host.md`, "The Seatbelt profile") or `process-info*`.
@@ -137,6 +141,46 @@ SECURITY.md, "Run on host", states the gap (the closed environment's last item);
   `target/out/jvm/scala-3.8.4/ko-agent-sandbox-build/zinc/inc_compile_3.zip`, then "failed to
   connect to server" (2026-10-03). The cause is not found. `narrow` runs the same function in
   this checkout; `mach` runs it in its fixture.
+
+## Code in a file its header does not cover, and logic written more than once
+
+Each item is a move or a merge, with no change in behaviour unless it says so. Found by reading
+each file's header against its definitions and their callers (2026-10-04).
+
+- [ ] Move into the file whose header covers them:
+  - `SeatbeltProfile.sbtDistribution` reads the sbt script; the header says "paths in, SBPL out".
+    To `RunOnHostPrereqs`, the one caller's next step.
+  - The bundle source ids in `KoAgentFs` (`bundleSourceId`, `contextSourceId`,
+    `bundledSourceId`) identify every image. To `LauncherImages`.
+  - The launcher re-invoking itself (`RunOnHostSandbox.selfInvocation` and its helpers) also
+    spawns the runner. To `RunOnHostChannel`, whose header names the launcher's own executable.
+  - The memory line every podman action prints (`SandboxStats.humanBytes`, `shareLine`). To
+    `HostCommands`.
+  - `isExecutableFile` (twice), `RunOnHostPrereqs.realPath` and `SandboxProject.realized`. To
+    `FileHelper`; whether `realized`'s lenient fallback matters to its caller is not checked.
+- [ ] `RunOnHostSandbox.readProgramRules` re-implements `SandboxProject.readBoundaryRuleFiles`
+  in other wording; build it on that function, in `RunOnHostPrereqs`.
+  - A behaviour change: an empty `run-on-host/<program>/egress/rule` is accepted, where an empty
+    `egress/rule` or `file/rule` is refused ("lists no lines"). Decide which holds.
+- [ ] One definition each for logic written several times:
+  - terminal escaping: `HostCommands.printable` escapes control characters only, the launcher's
+    `renderArgument` family also bidi and line separators; `RunOnHostPrereqs` defines a local
+    `printable` twice. A behaviour change: `printable` shows project-file text too, which one
+    definition would escape as `renderArgument` does;
+  - SHA-256 hex: `SandboxProject.sha256Hex`, `RunOnHostRuntimeDescriptor.digest`,
+    `RunOnHostSession.buildHash` (truncated) and `LogHelper.sha256Hex`;
+  - the upstream-proxy variable selection: `TransportHelper`, `EgressRules.upstreamProxyArgs`,
+    `RunOnHostSandbox.upstreamProxyVariable`;
+  - the proxy's ready line, spelled in `AgentEgressProxy`, `AgentSandboxLauncher` and
+    `RunOnHostSandbox.awaitProxyPort`;
+  - the audit-line grammar, which `RunOnHostSandbox.deniedHosts` and `refusedRequests` re-parse
+    beside `LogHelper.auditLine`;
+  - runtime record names (`proxy-<program>-<hash>`, server and daemon), spelled across five
+    files; to `RunOnHostSession`;
+  - `{.git, .ko-agent-sandbox}` in `FileRules`, `SeatbeltProfile` and `RunOnHostProvisioning`;
+  - `ko-agent-sandbox-persistent-`, spelled seven times; to `SandboxProject`;
+  - the macOS data-volume overlap check, three copies; `RunOnHostPrereqs.overlaps` has no caller
+    outside its test.
 
 ## IDE integration through VS Code's Agent Host
 

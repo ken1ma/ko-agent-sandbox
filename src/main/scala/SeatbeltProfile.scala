@@ -93,6 +93,19 @@ object SeatbeltProfile:
    */
   val MachServices: Seq[String] = Seq("com.apple.system.opendirectoryd.libinfo")
 
+  /**
+   * Keeps a command from reading another process's arguments and environment through
+   * `sysctl(KERN_PROCARGS2)`, the call behind `ps -E`, which the kernel answers for any process of
+   * the same user. The rule is agent-safehouse's (`profiles/10-system-runtime.sb`); pidinfo stays
+   * allowed inside the inherited sandbox, where a build inspects its own children. `ProcessHandle.of`
+   * still finds a process outside it, and its `info()` throws (run-on-host.md, "The Seatbelt profile").
+   */
+  val ProcessReadRule: Seq[String] = Seq(
+    """(deny sysctl-read (sysctl-name-regex #"procargs"))""",
+    "(deny process-info-pidinfo)",
+    "(allow process-info-pidinfo (target same-sandbox))",
+  )
+
   private val MachLookup: String =
     s"(allow mach-lookup ${MachServices.map(name => s"(global-name ${sbpl(name)})").mkString(" ")})"
 
@@ -109,7 +122,8 @@ object SeatbeltProfile:
     * a grant everything the daemon forks inherits, so a build under mill can bind a listener a
     * LAN peer reaches, where one under sbt or Maven gets EPERM (SECURITY.md "Run on host");
     * for a mill client, outbound to the daemon's one port (RunOnHostSandbox.RunnerRuntimes,
-    * RunOnHostMillDaemons); for Gradle, the mill daemon's grant plus outbound to any port of this host:
+    * RunOnHostMillDaemons), and the daemon's arguments, which Mill's client reads to check the
+    * daemon is the one that took its lock; for Gradle, the mill daemon's grant plus outbound to any port of this host:
     * its daemon, workers and file-lock socket bind port 0 and connect to each other's, and the
     * client starts the daemon itself, so one profile serves both. Measured:
     * src/probe/run-on-host-runner-session.sh L1–L4, G1, G7–G10. */
@@ -117,7 +131,7 @@ object SeatbeltProfile:
     case ProxyOnly
     case SbtClient(serverTmp: Path)
     case MillDaemon
-    case MillClient(daemonPort: Int)
+    case MillClient(daemonPort: Int, daemonPid: Long)
     case Gradle
 
   case class ProfileInputs(
@@ -156,13 +170,13 @@ object SeatbeltProfile:
       case Network.SbtClient(tmp) => Some(tmp)
       case _                      => None
     val networkProgram = inputs.network match
-      case Network.ProxyOnly                          => None
-      case Network.SbtClient(_)                       => Some(Program.Sbt)
-      case Network.MillDaemon | Network.MillClient(_) => Some(Program.Mill)
-      case Network.Gradle                             => Some(Program.Gradle)
-    val daemonPort = inputs.network match
-      case Network.MillClient(port) => Some(port)
-      case _                        => None
+      case Network.ProxyOnly                             => None
+      case Network.SbtClient(_)                          => Some(Program.Sbt)
+      case Network.MillDaemon | Network.MillClient(_, _) => Some(Program.Mill)
+      case Network.Gradle                                => Some(Program.Gradle)
+    val (daemonPort, daemonPid) = inputs.network match
+      case Network.MillClient(port, pid) => (Some(port), Some(pid))
+      case _                             => (None, None)
     val trustFiles = Seq(RunOnHostInspection.caBundle(inputs.trust), RunOnHostInspection.trustStore(inputs.trust))
     val everyPath =
       readOnly ++ readWriteExec ++ readWrite ++ inputs.systemPaths.reads ++ inputs.systemPaths.executes ++ serverTmp
@@ -192,6 +206,8 @@ object SeatbeltProfile:
         Left(s"a ${program.name} profile has no ${networkProgram.get.name} server or daemon to reach")
       case _ if daemonPort.exists(port => port < 1 || port > 65535) =>
         Left(s"the daemon port ${daemonPort.get} is not a port")
+      case _ if daemonPid.exists(_ < 1) =>
+        Left(s"the daemon pid ${daemonPid.get} is not a pid")
       case _ if program != Program.Sbt && inputs.sbtGlobal.isDefined =>
         Left(s"a ${program.name} profile has no sbt global base to grant")
       case _ if program != Program.Sbt && inputs.ivyHome.isDefined =>
@@ -225,6 +241,9 @@ object SeatbeltProfile:
         lines += ""
         lines += ";; A process at all: not filesystem authority, and none of it reaches user data."
         lines += "(allow process-fork sysctl-read)"
+        lines += ";; No other process's arguments and environment: the read succeeds while either"
+        lines += ";; the name or pidinfo is allowed, and (deny default) does not cover process-info*."
+        lines ++= ProcessReadRule
         lines += MachLookup
         lines += Devices
         lines += ""
@@ -277,9 +296,16 @@ object SeatbeltProfile:
             lines += ";; The mill daemon: listeners, any port, any address of this host; inherited by what the build" +
               " forks."
             lines += """(allow network-bind network-inbound (local ip "localhost:*"))"""
-          case Network.MillClient(port) =>
+          case Network.MillClient(port, pid) =>
             lines += ";; The runner's mill daemon, on the one port it was observed listening on."
             lines += s"""(allow network-outbound (remote ip "localhost:$port"))"""
+            // Mill's client checks the daemon that holds its lock with ProcessHandle.info(), which reads
+            // the daemon's arguments (PidLock.isLockValid) and throws under ProcessReadRule: the daemon
+            // runs under a sandbox-exec of its own. An allow of the one sysctl name `kern.procargs2.<pid>`,
+            // after the rule, opens that read for the daemon alone (run-on-host.md, "The Seatbelt profile").
+            lines += ";; The daemon's arguments, which Mill's client reads to check the daemon holds its lock; the" +
+              " runner gave the daemon the client's own environment."
+            lines += s"""(allow sysctl-read (sysctl-name "kern.procargs2.$pid"))"""
           case Network.Gradle =>
             // Gradle's daemon, workers and file-lock socket bind port 0 and connect to each
             // other's, TCP and UDP; the client starts the daemon, so the grant is one profile's.

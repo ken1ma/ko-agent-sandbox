@@ -2,8 +2,8 @@
 
 ## Outcome
 
-Add a host-selected service layer above the substitution primitive in
-`plan-credential-broker-proxy.md`:
+Add a host-selected service layer above the substitution primitive of `--egress-cred`
+(`egress-proxy.md`, "Brokered credentials"):
 
 ```text
 credential instance -> source and lifecycle
@@ -11,9 +11,10 @@ service definition   -> sandbox adapter and approved injection targets
 egress ruleset       -> whether each target is reachable
 ```
 
-The existing plan remains canonical for placeholder construction, exact-token substitution in a
-declared header or named query parameter, per-request auditing and the rule that a brokered value
-never enters the sandbox. This plan specifies what that primitive does not: one service spanning
+`--egress-cred`'s documents remain canonical for placeholder construction, exact-token substitution
+in a declared header or named query parameter, per-request auditing and the rule that a brokered
+value never enters the sandbox (`egress-proxy.md`, "Brokered credentials"; SECURITY.md, "Who holds a
+brokered value"). This plan specifies what that primitive does not: one service spanning
 several domains, credentials stored on the host across runs, dynamic sources, expiry and refresh,
 explicit mechanism choice and provider endpoints whose writable traffic must be TLS-terminated
 before a header or parameter can be brokered.
@@ -26,12 +27,11 @@ itself.
 
 Each fact is specified in one place:
 
-- `plan-credential-broker-proxy.md` specifies the proxy's placeholder-to-value rewrite and its
-  tests.
+- `egress-proxy.md`, "Brokered credentials", specifies the proxy's placeholder-to-value rewrite.
 - This document specifies service composition, credential sources, refresh and TLS termination at
   provider endpoints.
 - The egress ruleset defines path matching; a credential target refers to that matcher
-  (`plan-credential-broker-proxy.md`, the `PREFIX` form) and defines no other.
+  (`egress-proxy.md`, "Where the value goes", the `PREFIX` form) and defines no other.
 - The egress ruleset alone decides reachability. A credential service never adds a host.
 - `SECURITY.md` records the resulting trust model once implementation ships.
 
@@ -171,8 +171,8 @@ path /
 The serialized form is internal to the image, not project configuration. Its parser requires:
 
 - an exact normalized hostname already present in the same image's provider or host catalog;
-- a header from the base plan's closed set, or a query parameter name under its grammar (its
-  guarantee 4);
+- a header name or query parameter name the binding grammar admits (`egress-proxy.md`, "Where the
+  value goes");
 - with a header, a format containing exactly one `%s`, no other conversion, and otherwise only
   visible ASCII and space: catalog text, trusted for the space `Bearer %s` needs, and the field
   is built by placing a value that has separately passed the raw-value grammar into the format;
@@ -205,12 +205,13 @@ source kind, descriptor digest and refresh times. The secret backend contains on
 OAuth material. Project state contains neither.
 
 Validate every credential value before storing it or publishing a generation: every value
-passes the base plan's value grammar (its guarantee 4) at those two steps, whatever produced it —
-`set`, `import`, an executable result, an OAuth access token at issuance or refresh, a cached
-generation being reused. A value that fails is refused at that producer with the byte's offset
-and nothing is stored; a refresh that yields one is a refresh failure, and the current
-generation stays until its expiry. Storage therefore never holds a value the proxy will refuse,
-and the proxy's own re-check at load is a second reading of the same rule, not the first.
+passes `--egress-cred`'s value grammar (`egress-proxy.md`, "Where the value goes") at those two
+steps, whatever produced it — `set`, `import`, an executable result, an OAuth access token at
+issuance or refresh, a cached generation being reused. A value that fails is refused at that
+producer with the byte's offset and nothing is stored; a refresh that yields one is a refresh
+failure, and the current generation stays until its expiry. Storage therefore never holds a
+value the proxy will refuse, and the proxy's own re-check at load is a second reading of the same
+rule, not the first.
 
 An executable source descriptor is bounded JSON:
 
@@ -306,7 +307,7 @@ response-body interceptor imitating the CLI's token cache. If a provider can onl
 intercepted OAuth responses, specify its endpoint, bounded JSON fields, rotation and write mount
 as a provider adapter with separate security review.
 
-What the Copilot adapter must measure first, from a `--proxy-log` of a `copilot` session on the
+What the Copilot adapter must measure first, from a `--egress-log` of a `copilot` session on the
 installed CLI: which token reaches `api.githubcopilot.com`. Copilot clients generally exchange
 the GitHub OAuth token at `api.github.com/copilot_internal/v2/token` for a short-lived session
 token and present only that to the model endpoint; the exchange is on the inspected path, so the
@@ -356,7 +357,8 @@ For one brokered connection:
 4. Replace only the selected instance's complete placeholder in the declared header format or
    query parameter.
 5. Apply the configured inspected authorization to the rewritten head when the ruleset says
-   inspected (base plan, "Substitution": authorization and the origin see the same head).
+   inspected (`egress-proxy.md`, "Where the value goes": authorization and the origin see the same
+   head).
 6. Relay request and response framing without interpreting provider bodies.
 7. Emit one audit line after origin connection, with `inject=<service>/<instance>` only when
    substituted.
@@ -366,10 +368,10 @@ existing inspected path. Brokering does not support WebSocket upgrade, HTTP/2-on
 certificate-pinned clients; they do not regain a real credential inside the sandbox.
 
 The Codex client accepts the inspection CA and falls back from a refused websocket upgrade to HTTP
-requests (`plan-credential-broker-proxy.md`, "Claude Code and Codex logins: excluded", has the
-measurement). It remains excluded from OpenAI brokering until one turn succeeds over an
-inspected connection. Each other installed agent's TLS and HTTP compatibility is measured the
-same way before its service is listed as supported.
+requests (`design.md`, "Credential brokering at the egress proxy", has the measurement). It
+remains excluded from OpenAI brokering until one turn succeeds over an inspected connection. Each
+other installed agent's TLS and HTTP compatibility is measured the same way before its service is
+listed as supported.
 
 ## Failure and audit contract
 
@@ -447,8 +449,8 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 
 ### Placeholder and request path
 
-- Reuse the base plan's entire substitution suite for every supported header format and
-  parameter target.
+- Reuse `--egress-cred`'s substitution tests (`CredentialTest`) for every supported header format
+  and parameter target.
 - Generate many concurrent runs and instances; assert all placeholders are distinct, including
   multiple credentials for one host, and each selects only its own value.
 - Run every target through denial, inspected authorization and brokered relay. Assert redirects,
@@ -463,7 +465,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 - Test executable descriptor parsing, absolute-path enforcement, no shell, environment allowlist,
   closed stdin, timeout, output bounds, malformed JSON, expiry and protected stderr.
 - Test value validation at every producer — `set`, `import`, an executable result, OAuth
-  issuance, OAuth refresh, a cached generation — with each byte the base plan's value grammar
+  issuance, OAuth refresh, a cached generation — with each byte `--egress-cred`'s value grammar
   refuses: nothing is stored or published, the refusal names the offset and not
   the value, and a refreshed bad token leaves the prior generation in place. Test that a
   `Bearer %s` format with a conforming token yields one field, and that a format with `%s`

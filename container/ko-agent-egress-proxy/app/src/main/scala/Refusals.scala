@@ -95,7 +95,9 @@ object RefusalAdvice:
 
   val hostHeader = "The Host header must name the host the tunnel was opened to."
 
-  val ambiguousPath = "Spell the path without percent-encoding, dot segments, backslashes or empty segments."
+  val ambiguousPath =
+    "Spell the path in printable ASCII without dot segments, backslashes, semicolons, # or empty segments. " +
+      "Percent-encode only non-ASCII text and spaces, and nothing at all in a POST, PUT, PATCH or DELETE."
 
   /** The paths are the ruleset's own words for this host, so naming them names nothing new. */
   def pathOutside(paths: Set[String]): String =
@@ -109,7 +111,7 @@ object RefusalAdvice:
   /**
    * For a reader of the audit log, who has the line's `<why>` and no 403 body — the run-on-host supervisor,
    * reporting for a program that printed none: the step of a refusal the requester answers by changing
-   * the request, else None. Matched on the reasons authorizeInspectedRequest and GitHelper throw with;
+   * the request, else None. Matched on the reasons authorizeInspectedRequest and RulePath throw with;
    * the refusal table's test holds the two together.
    */
   def requestStep(reason: String): Option[String] =

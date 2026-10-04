@@ -1054,6 +1054,22 @@ class RunOnHostSessionTest extends munit.FunSuite:
       assert(process.isAlive, "the leader outlives its command, keeping its start time checkable")
     finally process.destroyForcibly().waitFor()
 
+  test("a command gone before reading its input makes a write larger than a pipe's buffer fail, not block"):
+    notUnderRunOnHostProfile()
+    val record = Files.createTempDirectory("leader").resolve("record")
+    val process = java.lang.ProcessBuilder(registeredSpawn(record, Seq("/bin/sh", "-c", "exit 0"))*).start()
+    try
+      assertEquals(awaitExit(exitRecord(record), process), Right(0))
+      val written = java.util.concurrent.CompletableFuture.supplyAsync: () =>
+        try
+          process.getOutputStream.write(Array.fill[Byte](4 << 20)('x'))
+          process.getOutputStream.flush()
+          "written"
+        catch case _: java.io.IOException => "failed"
+      assertEquals(written.get(10, java.util.concurrent.TimeUnit.SECONDS), "failed")
+      assert(process.isAlive, "the leader stays, holding no reader of the pipe")
+    finally process.destroyForcibly().waitFor()
+
   test("a command's signal death is published as the shell's 128+signal"):
     notUnderRunOnHostProfile()
     val record = Files.createTempDirectory("leader").resolve("record")
@@ -1140,6 +1156,22 @@ class RunOnHostSessionTest extends munit.FunSuite:
       assert(blocked.waitFor(10, java.util.concurrent.TimeUnit.SECONDS), "the holder's death frees the lock")
       assertEquals(blocked.exitValue, 7)
     finally holder.destroyForcibly().waitFor()
+
+  test("bytes the runner writes after the word reach the exec'd command's stdin whole, and none reach its arguments"):
+    // The brokered credentials' frame (RunOnHostSandbox.CredentialsOption): the holder reads its word a
+    // byte at a time, so a buffered read cannot take the frame and lose it at the exec.
+    notUnderRunOnHostProfile()
+    val lockFile = Files.createTempDirectory("lock").resolve("sbt-x")
+    val command = Seq("/bin/sh", "-c", "printf '%s\\n' \"$@\"; echo ==; cat", "sh", "--")
+    val process = java.lang.ProcessBuilder(lockedSpawn(lockFile, command, underRunner = true)*).start()
+    val out = java.io.BufferedReader(java.io.InputStreamReader(process.getInputStream, UTF_8))
+    assertEquals(out.readLine(), LockedLine)
+    val frame = "2\nA@h.example:Authorization PHa secret-a\nB@h.example?sig PHb secret-b\n"
+    process.getOutputStream.write((runWord(Seq("--credentials-on-stdin")) + frame).getBytes(UTF_8))
+    process.getOutputStream.close()
+    val lines = Iterator.continually(out.readLine()).takeWhile(_ != null).toVector
+    assertEquals(process.waitFor(), 0)
+    assertEquals(lines, Vector("--credentials-on-stdin", "--", "==") ++ frame.linesIterator)
 
   test("a lock holder under the runner reports the lock, then execs on the word, refuses on it, or ends at EOF"):
     notUnderRunOnHostProfile()

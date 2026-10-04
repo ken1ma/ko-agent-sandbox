@@ -1,7 +1,7 @@
 #!/bin/sh
 # Whether a container's standard input carries a secret to its process without the secret reaching
 # `podman inspect` or `podman logs`, and whether the podman process that carried it can end while
-# the container runs on (plan-credential-broker-proxy.md, "Where the value is held").
+# the container runs on (SECURITY.md, "Who holds a brokered value").
 #
 # The proxy image has no shell, so the measured container is an image that has one, created with
 # the proxy container's options that bear on this: a read-only root with no tmpfs, `--init`, and
