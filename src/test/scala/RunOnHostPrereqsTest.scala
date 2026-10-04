@@ -980,6 +980,23 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val escaped = readProgramRules(project, Program.Sbt)
     assert(escaped.swap.exists(reason => reason.contains("now\\u202e") && !reason.contains("‮")), escaped.toString)
 
+  test("a host the proxy refuses is refused when the file is read, naming the file and the proxy's reason"):
+    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val rule = project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val refusals = Seq(
+      "192.0.2.1" -> "contains an IP literal '192.0.2.1'",
+      "repo_a.example" -> "contains an invalid hostname 'repo_a.example'",
+      "repo.example:8443" -> "carries a port in its host",
+    )
+    for (host, said) <- refusals do
+      Files.writeString(rule, s"allow https://repo.example.org/ read\nallow https://$host/ read\n")
+      val refused = readProgramRules(project, Program.Sbt)
+      assert(refused.swap.exists(reason => reason.contains(rule.toString) && reason.contains(said)), refused.toString)
+      assertEquals(readProgramRules(project, Program.Mill), Right(Vector.empty), "mill's proxy does not read this file")
+    // A spelling the proxy resolves is read as the file spells it.
+    Files.writeString(rule, "allow https://Repo.Example.ORG./ read\n")
+    assertEquals(readProgramRules(project, Program.Sbt), Right(Vector("Repo.Example.ORG.")))
+
   test("a stray name at any level refuses another program's command too, naming itself; metadata does not"):
     for
       stray <- Seq(

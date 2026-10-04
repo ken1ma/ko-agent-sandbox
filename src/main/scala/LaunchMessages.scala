@@ -49,8 +49,8 @@ object LaunchMessages:
 
   /** One widening report per program whose rule file names hosts, each a grant beyond the
     * program's Maven Central host (RunOnHostPrereqs.egressRuleText). The launch reads the files for
-    * this report alone: the runner reads them again at a program's first command, where a refusal
-    * reaches the agent and not the user. */
+    * this report and the bindings' check (EgressCredentials.checkHosts): the runner reads them again
+    * at a program's first command, where a refusal reaches the agent and not the user. */
   def runOnHostWideningLines(
     programHosts: Seq[(String, Vector[String])],
     color: Boolean = colorStderr,

@@ -897,7 +897,9 @@ object RunOnHostPrereqs:
    * The program's rule file's hosts, validated to the program's rule grammar (run-on-host.md
    * "Configuration"). The whole run-on-host/ tree is checked first, every program's egress/ as
    * egress/ and file/ are (SandboxProject.readBoundaryRuleFiles), and only the selected program's
-   * rule file is read: an absent file contributes nothing.
+   * rule file is read: an absent file contributes nothing. A host the proxy refuses — an IP literal,
+   * a name that is no hostname — is refused here with the proxy's reason: the resolution the proxy's
+   * start runs (RunOnHostInspection.leafNames) runs here first, so the launch reports the host.
    */
   def readProgramRules(project: Path, program: Program): Either[String, Vector[String]] =
     def egressDir(each: Program) = programRulePath(project, each).getParent
@@ -910,8 +912,9 @@ object RunOnHostPrereqs:
       files <- SandboxProject
         .readBoundaryRuleFiles(egressDir(program), Vector("rule"), grammar, EgressRules.normalizeRuleText)
       hosts <- files.headOption.fold(Right(Vector.empty)): (_, text) =>
-        programRuleHosts(text).left
-          .map(refusal => s"error: ${HostCommands.shown(s"${programRulePath(project, program)}: ${wording(refusal)}")}")
+        programRuleHosts(text).left.map(wording)
+          .flatMap(hosts => RunOnHostInspection.leafNames(egressRuleText(program, hosts)).map(_ => hosts))
+          .left.map(reason => s"error: ${HostCommands.shown(s"${programRulePath(project, program)}: $reason")}")
     yield hosts
 
   /**
@@ -985,7 +988,8 @@ object RunOnHostPrereqs:
     ("deny defaults" +: programHosts(program, fileHosts).map(programRuleLine)).mkString("\n")
 
   /** The hosts a program's proxy allows, every one of them inspected (egressRuleText): its Maven
-    * Central host, then the rule file's. A brokered credential reaches that proxy only for one of them. */
+    * Central host, then the rule file's as the file spells them. A brokered credential's host is
+    * compared with the proxy's resolution of them (RunOnHostSandbox.credentialHosts). */
   def programHosts(program: Program, fileHosts: Vector[String]): Vector[String] =
     (centralHost(program) +: fileHosts).distinct
 

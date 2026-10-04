@@ -1742,12 +1742,10 @@ object AgentSandboxLauncher:
     val inspectedHosts = inspectedHostsOf(rulesetText).fold(fail(_), identity)
 
     // Each binding must reach a proxy that inspects its host: the session's, or a selected
-    // program's, whose proxy inspects every host of its rules (RunOnHostPrereqs.programHosts).
+    // program's, whose proxy inspects every host of its rules (RunOnHostSandbox.credentialHosts).
     EgressCredentials.checkHosts(
       parsed.credentialBindings, inspectedHosts.toSet, tunnelHostsOf(rulesetText).toSet,
-      programRules.map((program, hosts) =>
-        program.name -> RunOnHostPrereqs.programHosts(program, hosts).toSet,
-      ).toMap,
+      programRules.map((program, hosts) => program.name -> RunOnHostSandbox.credentialHosts(program, hosts)).toMap,
     ).fold(fail(_), identity)
     val sessionCredentials = EgressCredentials.bindingsFor(credentials, inspectedHosts.toSet)
     LaunchRules(
