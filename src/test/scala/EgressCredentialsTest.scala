@@ -1,9 +1,11 @@
 package agentsandbox.launcher
 
-import java.lang.foreign.{Arena, FunctionDescriptor, Linker, ValueLayout}
-import java.nio.charset.StandardCharsets.UTF_8
+import java.lang.foreign.{Arena, FunctionDescriptor, Linker, SymbolLookup, ValueLayout}
+import java.nio.charset.StandardCharsets.{UTF_16LE, UTF_8}
 import java.nio.file.Path
 import java.security.SecureRandom
+
+import scala.util.Using
 
 import agentsandbox.egress.{BrokeredCredential, CredentialBinding, CredentialGrammar}
 import AgentSandboxLauncher.*
@@ -176,6 +178,27 @@ class EgressCredentialsTest extends munit.FunSuite:
     )
     assertEquals(RunOnHostSandbox.credentialsFor(RunOnHostPrereqs.Program.Mvn, Vector.empty, credentials), Vector.empty)
 
+  test("a program's rule file may spell a binding's host as any name the proxy resolves to it"):
+    import RunOnHostPrereqs.Program.Sbt
+    val credentials = Vector(
+      BrokeredCredential(binding("B@maven.pkg.github.com"), "PHb", "vb"),
+      BrokeredCredential(binding("U@bücher.example"), "PHu", "vu"),
+    )
+    val spellings = Vector(
+      "MAVEN.PKG.GITHUB.COM" -> "B",
+      "maven.pkg.github.com." -> "B",
+      "BÜCHER.example" -> "U",
+      "xn--bcher-kva.example" -> "U",
+    )
+    for (fileHost, name) <- spellings do
+      val bound = credentials.filter(_.binding.name == name)
+      assertEquals(RunOnHostSandbox.credentialsFor(Sbt, Vector(fileHost), credentials), bound, fileHost)
+      val programs = Map("sbt" -> RunOnHostSandbox.credentialHosts(Sbt, Vector(fileHost)))
+      val checked = EgressCredentials.checkHosts(bound.map(_.binding), Set.empty, Set.empty, programs)
+      assertEquals(checked, Right(()), fileHost)
+    // The proxy refuses rules naming an IP literal, so it substitutes for no host.
+    assertEquals(RunOnHostSandbox.credentialHosts(Sbt, Vector("192.0.2.1", "maven.pkg.github.com")), Set.empty)
+
   test("no value in anything the launcher writes: proxy arguments, sandbox arguments, the banner, the instructions"):
     val credentials = Vector(BrokeredCredential(binding("GH_TOKEN@api.github.com"), "ghp_" + "P" * 36, ghValue))
     val said = proxyCredentialArgs(credentials) ++ placeholderArgs(credentials)
@@ -205,21 +228,32 @@ class EgressCredentialsTest extends munit.FunSuite:
 
   test("a withheld name is gone from what a started process inherits, and from an edited environment's copy"):
     val name = "KO_AGENT_EGRESS_CREDENTIALS_TEST"
+    val windows = HostCommands.currentOs == HostCommands.Os.Windows
     val linker = Linker.nativeLinker()
-    val setenv = linker.downcallHandle(
-      linker.defaultLookup().find("setenv").orElseThrow(),
-      FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT),
-    )
-    val arena = Arena.ofConfined()
-    try
-      val set: Int = setenv.invokeExact(arena.allocateFrom(name), arena.allocateFrom("held"), 1)
-      assertEquals(set, 0)
-    finally arena.close()
-    def inherited(): String = String(ProcessBuilder("/usr/bin/env").start().getInputStream.readAllBytes(), UTF_8)
+    Using.resource(Arena.ofConfined()): arena =>
+      if windows then
+        val setEnvironmentVariable = linker.downcallHandle(
+          SymbolLookup.libraryLookup("kernel32", arena).find("SetEnvironmentVariableW").orElseThrow(),
+          FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS),
+        )
+        val set: Int =
+          setEnvironmentVariable.invokeExact(arena.allocateFrom(name, UTF_16LE), arena.allocateFrom("held", UTF_16LE))
+        assert(set != 0)
+      else
+        val setenv = linker.downcallHandle(
+          linker.defaultLookup().find("setenv").orElseThrow(),
+          FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT),
+        )
+        val set: Int = setenv.invokeExact(arena.allocateFrom(name), arena.allocateFrom("held"), 1)
+        assertEquals(set, 0)
+    // Each prints its environment as NAME=value lines.
+    val printEnvironment = if windows then Seq("cmd.exe", "/c", "set") else Seq("/usr/bin/env")
+    def inherited(): String =
+      String(ProcessBuilder(printEnvironment*).start().getInputStream.readAllBytes(), UTF_8)
     assert(inherited().linesIterator.contains(s"$name=held"))
     EgressCredentials.withhold(Vector(name), HostCommands.currentOs)
     assert(!inherited().contains(name))
-    val edited = ProcessBuilder("/usr/bin/env")
+    val edited = ProcessBuilder(printEnvironment*)
     edited.environment.put(name, "copied")
     EgressCredentials.scrub(edited)
     assert(!edited.environment.containsKey(name))

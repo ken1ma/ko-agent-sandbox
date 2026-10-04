@@ -566,14 +566,22 @@ object RunOnHostSandbox:
   def readStdinCredentials(): Either[String, Vector[BrokeredCredential]] =
     CredentialGrammar.readBindings(java.io.FileInputStream(java.io.FileDescriptor.in))
 
-  /** What a program's proxy is given: the credentials whose host its rules allow, all of which it
-    * inspects (egressRuleText), and no other. */
+  /**
+   * The hosts a program's proxy substitutes credentials for: every host its rules allow, all of which it
+   * inspects (egressRuleText), as the proxy's own resolution names them (RunOnHostInspection.leafNames).
+   * A binding's host has that form (CredentialGrammar), and the proxy's start refuses a binding to any
+   * other host. Empty for rules the proxy refuses, which readProgramRules does not return.
+   */
+  def credentialHosts(program: Program, fileHosts: Vector[String]): Set[String] =
+    RunOnHostInspection.leafNames(egressRuleText(program, fileHosts)).fold(_ => Set.empty, _.toSet)
+
+  /** What a program's proxy is given: the credentials for its credentialHosts, and no other. */
   def credentialsFor(
     program: Program,
     fileHosts: Vector[String],
     credentials: Seq[BrokeredCredential],
   ): Vector[BrokeredCredential] =
-    EgressCredentials.bindingsFor(credentials, programHosts(program, fileHosts).toSet)
+    EgressCredentials.bindingsFor(credentials, credentialHosts(program, fileHosts))
 
   /** `--channel-log=<file>`: the runner's own log, where the supervisor appends a signal-ended
     * command's logs (appendSessionLogs). */
