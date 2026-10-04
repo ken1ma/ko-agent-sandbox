@@ -39,6 +39,36 @@ object TLSHelper:
       throw Refusal(s"SNI $sni differs from target", RefusalAdvice.clientHello)
 
   /**
+   * A TLS client over `transport`, its handshake done: the default trust store, and the server's
+   * certificate checked against `host`. Both TLS clients here — to an inspected origin and to an
+   * HTTPS upstream proxy — open through this. `sni` is false for an address literal.
+   */
+  def verifiedClient(
+    transport: Socket,
+    host: String,
+    port: Int,
+    autoClose: Boolean,
+    sni: Boolean,
+    applicationProtocol: Option[String],
+  ): SSLSocket =
+    val socket =
+      SSLContext.getDefault.getSocketFactory
+        .createSocket(transport, host, port, autoClose)
+        .asInstanceOf[SSLSocket]
+
+    val parameters = socket.getSSLParameters
+    applicationProtocol.foreach(protocol => parameters.setApplicationProtocols(Array(protocol)))
+    parameters.setEndpointIdentificationAlgorithm("HTTPS")
+    if sni then parameters.setServerNames(java.util.List.of[SNIServerName](SNIHostName(host)))
+    socket.setSSLParameters(parameters)
+
+    // A stalled handshake would hold this connection's slot; each caller widens the timeout once
+    // bytes flow (relayInspected, UpstreamProxy.tunnelTo), so a slow clone is unaffected.
+    socket.setSoTimeout(AgentEgressProxy.HandshakeTimeoutMillis)
+    socket.startHandshake()
+    socket
+
+  /**
    * The MITM, and the one place holding a private key: the leaf's only. The CA key never enters
    * this container, so nothing in it can issue a certificate for a name the launcher did not
    * already choose (SECURITY.md, "Who holds the CA key").
@@ -65,30 +95,9 @@ object TLSHelper:
       socket.startHandshake()
       socket
 
-    /**
-     * An ordinary verified TLS client connection: default trust store,
-     * hostname checked, SNI set. Terminating the client's TLS is no excuse
-     * to stop checking the server's.
-     */
+    /** Terminating the client's TLS is no excuse to stop checking the server's. */
     def connect(origin: Socket, host: String): SSLSocket =
-      val socket =
-        SSLContext.getDefault.getSocketFactory
-          .createSocket(origin, host, 443, false)
-          .asInstanceOf[SSLSocket]
-
-      val parameters = socket.getSSLParameters
-      parameters.setApplicationProtocols(Array("http/1.1"))
-      parameters.setEndpointIdentificationAlgorithm("HTTPS")
-      parameters.setServerNames(
-        java.util.List.of[SNIServerName](SNIHostName(host)),
-      )
-      socket.setSSLParameters(parameters)
-
-      // A stalled handshake would hold this connection's slot; relayInspected widens the timeout once bytes flow, so a
-      // slow clone is unaffected.
-      socket.setSoTimeout(AgentEgressProxy.HandshakeTimeoutMillis)
-      socket.startHandshake()
-      socket
+      verifiedClient(origin, host, 443, autoClose = false, sni = true, applicationProtocol = Some("http/1.1"))
 
   object TlsInspection:
     def load(

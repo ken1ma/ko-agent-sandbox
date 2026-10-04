@@ -65,24 +65,27 @@ object HTTPHelper:
 
     loop(0, 0)
 
+  /** A head readHttpHeader returned, as its start line and its field lines. */
+  def splitHead(bytes: Array[Byte], incomplete: => Nothing, bareCrOrLf: => Nothing): (String, Vector[String]) =
+    val text = String(bytes, StandardCharsets.ISO_8859_1)
+    if !text.endsWith("\r\n\r\n") then incomplete
+    if text.replace("\r\n", "").exists(ch => ch == '\r' || ch == '\n') then bareCrOrLf
+    // Never empty: a head with no start line splits into an empty one, which each start-line
+    // parser refuses.
+    val lines = text.dropRight(4).split("\r\n", -1).toVector
+    (lines.head, lines.tail)
+
   case class ConnectRequest(host: String, port: Int)
 
   object ConnectRequest:
     def parse(bytes: Array[Byte]): ConnectRequest =
-      val text = String(bytes, StandardCharsets.ISO_8859_1)
-
-      if !text.endsWith("\r\n\r\n") then
-        throw BadRequest("incomplete HTTP header")
-
-      val withoutCrLf = text.replace("\r\n", "")
-      if withoutCrLf.exists(ch => ch == '\r' || ch == '\n') then
-        throw BadRequest("bare CR or LF in HTTP header")
-
-      val lines = text.dropRight(4).split("\r\n", -1).toVector
-      val requestLine = lines.headOption.getOrElse(throw BadRequest("missing request line"))
-
+      val (requestLine, fieldLines) = splitHead(
+        bytes,
+        incomplete = throw BadRequest("incomplete HTTP header"),
+        bareCrOrLf = throw BadRequest("bare CR or LF in HTTP header"),
+      )
       val request = parseRequestLine(requestLine)
-      validateHeaders(lines.drop(1))
+      validateHeaders(fieldLines)
       request
 
     def parseRequestLine(line: String): ConnectRequest =
@@ -265,18 +268,11 @@ object HTTPHelper:
 
   object HttpRequestHead:
     def parse(bytes: Array[Byte]): HttpRequestHead =
-      val text = String(bytes, StandardCharsets.ISO_8859_1)
-
-      if !text.endsWith("\r\n\r\n") then
-        throw BadRequest("incomplete HTTP request head")
-
-      val withoutCrLf = text.replace("\r\n", "")
-      if withoutCrLf.exists(ch => ch == '\r' || ch == '\n') then
-        throw BadRequest("bare CR or LF in HTTP request head")
-
-      val lines = text.dropRight(4).split("\r\n", -1).toVector
-
-      val requestLine = lines.headOption.getOrElse(throw BadRequest("missing request line"))
+      val (requestLine, fieldLines) = splitHead(
+        bytes,
+        incomplete = throw BadRequest("incomplete HTTP request head"),
+        bareCrOrLf = throw BadRequest("bare CR or LF in HTTP request head"),
+      )
 
       requestLine.split(" ", -1).toList match
         case method :: target :: "HTTP/1.1" :: Nil =>
@@ -287,7 +283,7 @@ object HTTPHelper:
           if target.exists(isForbiddenControl) then
             throw BadRequest("control character in request target")
 
-          HttpRequestHead(method, target, "HTTP/1.1", parseHeaders(lines.drop(1)))
+          HttpRequestHead(method, target, "HTTP/1.1", parseHeaders(fieldLines))
 
         case _ :: _ :: "HTTP/1.0" :: Nil =>
           throw BadRequest("HTTP/1.0 is not supported")
@@ -353,7 +349,9 @@ object HTTPHelper:
 
     /** RFC 9112 §6.3 for the connections this proxy closes after one request. Mirrors the request side's
       * refusals of ambiguity, as IOExceptions; the no-framing default differs by design —
-      * UntilClose, because this proxy sends `Connection: close` to the origin. */
+      * UntilClose, because this proxy sends `Connection: close` to the origin. Kept separate from
+      * the request's: every refusal's wording differs, so one implementation would take five
+      * messages as parameters. */
     def bodyFraming(requestMethod: String): BodyFraming =
       protectedConnectionNomination(values("Connection")).foreach: name =>
         throw IOException(s"origin's Connection nominates $name, which this proxy reads")
@@ -389,15 +387,8 @@ object HTTPHelper:
       def malformed(reason: String): Nothing =
         throw IOException(s"$subject: $reason")
 
-      val text = String(bytes, StandardCharsets.ISO_8859_1)
-
-      if !text.endsWith("\r\n\r\n") then malformed("incomplete")
-
-      val withoutCrLf = text.replace("\r\n", "")
-      if withoutCrLf.exists(ch => ch == '\r' || ch == '\n') then malformed("bare CR or LF")
-
-      val lines = text.dropRight(4).split("\r\n", -1).toVector
-      val statusLine = lines.headOption.getOrElse(malformed("missing status line"))
+      val (statusLine, fieldLines) =
+        splitHead(bytes, incomplete = malformed("incomplete"), bareCrOrLf = malformed("bare CR or LF"))
 
       statusLine.split(" ", 3).toList match
         case version :: statusText :: rest if isHttp1Version(version) =>
@@ -414,7 +405,7 @@ object HTTPHelper:
             malformed("control character in reason phrase")
 
           val headers =
-            try HttpRequestHead.parseHeaders(lines.drop(1))
+            try HttpRequestHead.parseHeaders(fieldLines)
             catch case ex: BadRequest => malformed(ex.getMessage)
 
           HttpResponseHead(status, reason, headers)

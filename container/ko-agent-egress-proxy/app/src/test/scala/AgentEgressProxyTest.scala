@@ -1195,6 +1195,47 @@ class AgentEgressProxyTest extends munit.FunSuite:
     )
     assertEquals(inTunnel.getMessage, "HTTP/1.0 is not supported")
 
+  test("every head parser refuses an unterminated head, a bare CR or LF, and an empty start line, in its own words"):
+    val heads = Vector(
+      "CONNECT github.com:443 HTTP/1.1\r\n",
+      "CONNECT github.com:443 HTTP/1.1\r\nX: \r\r\n\r\n",
+      "CONNECT github.com:443 HTTP/1.1\r\nX: \n\r\n\r\n",
+      "\r\n\r\n",
+    )
+    def refusals(parse: Array[Byte] => Any): Vector[String] =
+      heads.map: head =>
+        try
+          parse(ascii(head))
+          "accepted"
+        catch case ex: Exception => s"${ex.getClass.getSimpleName}: ${ex.getMessage}"
+    assertEquals(
+      refusals(ConnectRequest.parse),
+      Vector(
+        "BadRequest: incomplete HTTP header",
+        "BadRequest: bare CR or LF in HTTP header",
+        "BadRequest: bare CR or LF in HTTP header",
+        "BadRequest: expected CONNECT authority HTTP/1.1",
+      ),
+    )
+    assertEquals(
+      refusals(HttpRequestHead.parse),
+      Vector(
+        "BadRequest: incomplete HTTP request head",
+        "BadRequest: bare CR or LF in HTTP request head",
+        "BadRequest: bare CR or LF in HTTP request head",
+        "BadRequest: malformed HTTP request line",
+      ),
+    )
+    assertEquals(
+      refusals(HttpResponseHead.parse(_)),
+      Vector(
+        "IOException: origin response head: incomplete",
+        "IOException: origin response head: bare CR or LF",
+        "IOException: origin response head: bare CR or LF",
+        "IOException: origin response head: status line ''",
+      ),
+    )
+
   test("forwardResponseBody relays complete bodies and turns early EOF into TruncatedResponse"):
     // An origin close inside a declared length must become a loggable
     // failure, never a quiet end the client can mistake for a completed response.
@@ -1546,9 +1587,31 @@ class AgentEgressProxyTest extends munit.FunSuite:
     clientContext.init(null, X509HelperTest.trusting(ca).getTrustManagers, null)
     (inspection, clientContext)
 
+  test("the origin leg's TLS client verifies the origin's certificate against the inspected host"):
+    val (inspection, clientContext) = testTls()
+    def handshake(host: String): String =
+      val (transport, peer) = socketPair()
+      val serving = Thread.startVirtualThread: () =>
+        try inspection.accept(peer, Array.emptyByteArray).close()
+        catch case _: IOException => ()
+      val saved = javax.net.ssl.SSLContext.getDefault
+      javax.net.ssl.SSLContext.setDefault(clientContext)
+      try
+        inspection.connect(transport, host)
+        "completed"
+      catch case ex: IOException => ex.getMessage
+      finally
+        javax.net.ssl.SSLContext.setDefault(saved)
+        transport.close()
+        peer.close()
+        serving.join()
+    assertEquals(handshake("docs.example"), "completed")
+    val otherName = handshake("other.example")
+    assert(otherName.contains("No subject alternative DNS name matching other.example"), otherName)
+
   /** The origin leg as production layers it: this proxy's TLS client over a socket it does not
     * own (TlsInspection.connect), the test's origin a TLS server issued for the host — and,
-    * through an HTTPS upstream proxy, that over the proxy's own TLS (TransportHelper.secure).
+    * through an HTTPS upstream proxy, that over the proxy's own TLS (UpstreamProxy.secure).
     * Returns the layer the relay uses, the OriginSocket handle() closes, and the origin's end. */
   private def tlsOrigin(
     viaTlsUpstream: Boolean = false,

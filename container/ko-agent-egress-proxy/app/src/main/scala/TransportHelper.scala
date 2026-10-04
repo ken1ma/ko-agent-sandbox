@@ -11,11 +11,12 @@ import java.net.{Inet6Address, InetAddress, InetSocketAddress, Socket, UnknownHo
 import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.util.Base64
-import javax.net.ssl.{SNIHostName, SNIServerName, SSLContext, SSLSocket}
+import javax.net.ssl.SSLSocket
 import scala.annotation.tailrec
 
 import HTTPHelper.*
 import IPAddrHelper.*
+import TLSHelper.verifiedClient
 
 object TransportHelper:
 
@@ -321,18 +322,10 @@ object TransportHelper:
     /** The endpoint's own TLS, verified against the image's public roots for the name or literal
       * HTTPS_PROXY spelled, before a byte — the credential included — is sent. */
     private def secure(socket: Socket): SSLSocket =
-      val tls =
-        SSLContext.getDefault.getSocketFactory
-          .createSocket(socket, endpoint.host, endpoint.port, true)
-          .asInstanceOf[SSLSocket]
-      val parameters = tls.getSSLParameters
-      parameters.setEndpointIdentificationAlgorithm("HTTPS")
-      if endpoint.literal.isEmpty then
-        parameters.setServerNames(java.util.List.of[SNIServerName](SNIHostName(endpoint.host)))
-      tls.setSSLParameters(parameters)
-      tls.setSoTimeout(AgentEgressProxy.HandshakeTimeoutMillis)
-      tls.startHandshake()
-      tls
+      verifiedClient(
+        socket, endpoint.host, endpoint.port, autoClose = true, sni = endpoint.literal.isEmpty,
+        applicationProtocol = None,
+      )
 
   /** The transport a run uses, from its environment: direct unless HTTPS_PROXY is set. Parse
     * refusals are IllegalArgumentException, a failed endpoint resolution IOException — both end
