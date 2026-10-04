@@ -52,6 +52,21 @@ object FFMHelper:
             accepted != 0
       catch case _: Throwable => false
 
+    /** `SetEnvironmentVariableW(name, NULL)`: the variable gone from what a process this one creates
+      * inherits. Throws on failure: a value a child should not inherit must not be left there quietly. */
+    def clearEnvironmentVariable(name: String): Unit =
+      val linker = Linker.nativeLinker()
+      val lookup = SymbolLookup.libraryLookup("kernel32", Arena.global())
+      val handle = linker.downcallHandle(
+        lookup.find("SetEnvironmentVariableW").orElseThrow(),
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS),
+      )
+      Using.resource(Arena.ofConfined()): arena =>
+        val terminated = (name + "\u0000").getBytes(java.nio.charset.StandardCharsets.UTF_16LE)
+        val wide = arena.allocateFrom(ValueLayout.JAVA_BYTE, terminated*)
+        val cleared: Int = handle.invokeExact(wide, MemorySegment.NULL)
+        if cleared == 0 then throw IOException(s"SetEnvironmentVariableW could not remove $name")
+
   object libc:
 
     /** `isatty`. The launcher asks it about the stream a line goes to — stderr for its own lines,
@@ -73,6 +88,18 @@ object FFMHelper:
         val answer: Int = handle.invokeExact(fd)
         answer != 0
       catch case _: Throwable => false
+
+    /** `unsetenv`: the variable gone from what a process this one starts inherits. Throws on failure,
+      * as kernel32.clearEnvironmentVariable does. */
+    def unsetenv(name: String): Unit =
+      val linker = Linker.nativeLinker()
+      val handle = linker.downcallHandle(
+        linker.defaultLookup().find("unsetenv").orElseThrow(),
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS),
+      )
+      Using.resource(Arena.ofConfined()): arena =>
+        val removed: Int = handle.invokeExact(arena.allocateFrom(name))
+        if removed != 0 then throw IOException(s"unsetenv could not remove $name")
 
     /** A restricted method — the build bakes `--enable-native-access=ALL-UNNAMED` into the
       * manifest and run task. Returns only by throwing (SandboxLifecycle.handOver has the fallback).

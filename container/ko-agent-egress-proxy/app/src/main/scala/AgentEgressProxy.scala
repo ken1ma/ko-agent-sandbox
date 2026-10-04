@@ -2,13 +2,13 @@
 // inspected connection. The ruleset and its decisions are in RulesetHelper.scala, the audit log's form
 // in LogHelper.scala, the refusal types and advice in Refusals.scala, HTTP handling in
 // HTTPHelper.scala, TLS handling in TLSHelper.scala, leaf issuance in X509Helper.scala, git protocol
-// knowledge in GitHelper.scala, hostname/address vetting in IPAddrHelper.scala, and how a vetted
-// address is reached — directly or through the upstream proxy HTTPS_PROXY names — in
-// TransportHelper.scala.
+// knowledge in GitHelper.scala, brokered credentials in CredentialGrammar.scala and their rewrite in
+// CredentialRewrite.scala, hostname/address vetting in IPAddrHelper.scala, and how a vetted address
+// is reached — directly or through the upstream proxy HTTPS_PROXY names — in TransportHelper.scala.
 
 package agentsandbox.egress
 
-import java.io.{FileOutputStream, IOException, InputStream, OutputStream, PrintStream}
+import java.io.{FileInputStream, FileOutputStream, IOException, InputStream, OutputStream, PrintStream}
 import java.net.{InetAddress, InetSocketAddress, ServerSocket, Socket, SocketException}
 import java.nio.file.{AccessDeniedException, NoSuchFileException, Path}
 import java.time.{Duration, Instant}
@@ -17,6 +17,7 @@ import java.util.concurrent.{CountDownLatch, Executors, Semaphore}
 import scala.annotation.tailrec
 import scala.util.control.NonFatal
 
+import CredentialRewrite.*
 import HTTPHelper.*
 import IPAddrHelper.*
 import LogHelper.*
@@ -233,6 +234,7 @@ object AgentEgressProxy:
       try
         val resolved = configuredRuleset()
         val inspection = loadInspection(resolved)
+        val credentials = readCredentials(resolved, inspection.isDefined, FileInputStream(java.io.FileDescriptor.in))
         // Last, so a variable refusal is reported before an endpoint the proxy cannot resolve is.
         val transport =
           try originTransport(variable => Option(System.getenv(variable)))
@@ -240,7 +242,10 @@ object AgentEgressProxy:
             case ex: IOException =>
               System.err.println(ex.getMessage)
               sys.exit(2)
-        (Run(resolved, inspection, transport, () => logFailure), parseBind(Option(System.getenv(BindVariable))))
+        (
+          Run(resolved, inspection, transport, () => logFailure, credentials),
+          parseBind(Option(System.getenv(BindVariable))),
+        )
       catch
         case ex: IllegalArgumentException =>
           System.err.println(ex.getMessage)
@@ -266,6 +271,8 @@ object AgentEgressProxy:
     metadataLines(run.resolved).foreach(System.err.println)
     run.resolved.warnings.foreach(warning => System.err.println(s"warning: $warning"))
     System.err.println(run.inspectionSummary)
+    if run.credentials.nonEmpty then
+      System.err.println(s"brokered credentials: ${run.credentials.map(_.binding.spelled).mkString(" ")}")
 
     logFailure.foreach: ex =>
       System.err.println(s"${auditLogFailure(ex)}; not starting")
@@ -294,6 +301,40 @@ object AgentEgressProxy:
         Some(TlsInspection.load(Path.of(certificate), Path.of(key), resolved.inspected))
       case (None, None) => None
       case _ => throw IllegalArgumentException(s"$CertificateVariable and $PrivateKeyVariable must be set together")
+
+  /**
+   * The brokered credentials, read from `in` only with EGRESS_CREDS=stdin (CredentialGrammar.readBindings), and
+   * only before the ready line. A binding whose host this proxy does not inspect is refused, as is one
+   * without the material to inspect it: either would show as a 401 inside the sandbox, with nothing in
+   * the log to explain it.
+   */
+  def readCredentials(
+    resolved: ResolvedEgress,
+    inspecting: Boolean,
+    in: => InputStream,
+    read: String => Option[String] = variable => Option(System.getenv(variable)),
+  ): Vector[BrokeredCredential] =
+    read(CredentialGrammar.StdinVariable).filter(_.nonEmpty) match
+      case None => Vector.empty
+      case Some(CredentialGrammar.StdinValue) =>
+        val credentials = CredentialGrammar.readBindings(in) match
+          case Right(bindings) => bindings
+          case Left(reason) => throw IllegalArgumentException(s"cannot read the brokered credentials: $reason")
+        credentials.find(credential => !resolved.inspected.contains(credential.binding.host)).foreach: credential =>
+          throw IllegalArgumentException(
+            s"${credential.binding.spelled}: this proxy does not inspect ${credential.binding.host}, " +
+              "so nothing would be substituted there",
+          )
+        if credentials.nonEmpty && !inspecting then
+          throw IllegalArgumentException(
+            s"brokered credentials need TLS inspection; set $CertificateVariable and $PrivateKeyVariable",
+          )
+        credentials
+      case Some(other) =>
+        throw IllegalArgumentException(
+          s"${CredentialGrammar.StdinVariable} is '$other'; " +
+            s"the only value it accepts is ${CredentialGrammar.StdinValue}",
+        )
 
   /**
    * What loadInspection throws for material that cannot be read or parsed. A missing file and a
@@ -333,6 +374,7 @@ object AgentEgressProxy:
     transport: OriginTransport,
     // serve()'s: the first write to the log that failed — the file where one is set, else stderr.
     auditLogFailure: () => Option[IOException] = () => None,
+    credentials: Vector[BrokeredCredential] = Vector.empty,
   ):
     /**
      * Refuses once a line failed to be written to the log, for the rest of the run: a log that
@@ -497,6 +539,7 @@ object AgentEgressProxy:
             run.resolved.scopesOf(connectHost),
             run.resolved.allows,
             run.requireAuditLog,
+            run.credentials,
           )
 
         case None =>
@@ -561,6 +604,7 @@ object AgentEgressProxy:
     hostScopes: Map[String, Set[String]],
     allowed: String => Boolean,
     requireAuditLog: () => Unit,
+    credentials: Vector[BrokeredCredential] = Vector.empty,
   ): Unit =
     val clientTls = inspection.accept(client, hello.wireBytes)
 
@@ -572,20 +616,25 @@ object AgentEgressProxy:
 
     try
       try
-        val head =
+        // Substituted before authorization and framing, so the decision and the origin see the same head:
+        // a bound `service` parameter is read as what it becomes (GitHelper). Keep it first: a check reading
+        // the head before it would judge a request the origin never receives.
+        val substituted =
           HttpRequestHead.parse(
             readHttpHeader(clientTls.getInputStream, MaxHttpHeaderBytes),
-          )
+          ).withCredentials(host, credentials)
+        val head = substituted.head
         method = head.method
-        target = head.target
+        target = substituted.printedTarget
 
         authorizeInspectedRequest(host, head, hostScopes, allowed)
 
         val originTls = inspection.connect(origin.socket, host)
 
         try
+          val injected = Option.when(substituted.injected.nonEmpty)(s"inject=${substituted.injected.mkString(",")} ")
           System.err.println(
-            auditLine("allow", host, method, target, s"-> ${origin.address.getHostAddress}"),
+            auditLine("allow", host, method, target, s"${injected.getOrElse("")}-> ${origin.address.getHostAddress}"),
           )
           requireAuditLog()
 

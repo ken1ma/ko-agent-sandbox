@@ -50,6 +50,9 @@ costs are described below.
     create command podman records for the container. `podman inspect` shows it in the container's
     environment, as it shows every variable. An explicit `--env=NAME=VALUE` is on the launch
     command line already and stays in the create command.
+- A credential brokered with `--egress-cred=NAME@HOST` is in neither the sandbox nor a run-on-host
+  command, which see `NAME` set to a placeholder; the proxy puts the value in requests to `HOST`,
+  where it keeps its issuer's authority ("Who holds a brokered value", below).
 
 **Project data reaching a destination nobody chose.**
 
@@ -369,7 +372,7 @@ Inspection therefore does not establish that a request contains no project infor
   results travel inside the model-endpoint tunnel, and the provider's infrastructure does the
   searching.
 - The proxy sees one connection to `api.anthropic.com` or `chatgpt.com`, so neither the ruleset
-  nor the audit log (`--proxy-log`) applies to the domains searched — a query is outbound
+  nor the audit log (`--egress-log`) applies to the domains searched — a query is outbound
   information the provider relays onward.
 - Claude Code's WebFetch is the opposite: a direct request from inside the sandbox, through the
   proxy, answered only by an allowed host and logged like any other connection.
@@ -733,7 +736,7 @@ step 6 connects through the upstream proxy with a `CONNECT` naming the validated
 Connection and inspected-request events use one log line each. The leading fields are stable for
 tooling; the trailing explanation is intended for people and may change:
 
-    <instant> allow <host> <method> [<target>] -> <ip>
+    <instant> allow <host> <method> [<target>] [inject=<names>] -> <ip>
     <instant> deny  <host> <method> [<target>] <why>
     <instant> error <host> <method> [<target>] <why>
 
@@ -750,6 +753,12 @@ timestamp, including startup lines; the examples below omit it.
     traffic", above), so the log records it whole, which is also why the log files are owner-only.
   - Whole, but not arbitrary: a C0 control character or DEL in a request target, a field value
     (HTAB excepted) or a `CONNECT` authority is refused at the parser.
+- **`inject=<names>`** marks an inspected request forwarded with a brokered credential
+  substituted, naming the bindings whose values it carries ("Who holds a brokered value", below).
+  - No value is logged. A placeholder spelled as the launch issued it, anywhere in the target, and
+    a bound parameter's value print as the binding's name, `?sig=AZURE_SAS_SIG`; a percent-escaped
+    spelling of a placeholder prints as sent.
+  - A request denied after the substitution sent no credential, and its line has no `inject`.
 - Every field, `<why>` included, spells a C0 or C1 control character, DEL, U+2028, U+2029, a
   format character (the bidi controls, zero-width characters, U+00AD), an unpaired surrogate, `"`
   and `\` as a Java/Scala string literal would (`\t`, `\u001b`, `\u202e`, `\"`, `\\`).
@@ -778,6 +787,7 @@ The stages emit the following kinds of events:
     # tunnels and inspected requests — step 11 onward
     allow api.anthropic.com CONNECT -> 160.79.104.10
     allow github.com GET /owner/repo?tab=readme -> 140.82.112.3
+    allow api.github.com GET /user inject=GH_TOKEN -> 140.82.112.5
     deny github.com POST /owner/repo.git/git-receive-pack POST not granted
     deny github.com GET /r.git/info/refs?service=git-receive-pack git push ref discovery
     deny github.com GET /r.git/info/refs?service=git-upload-pack git fetch ref discovery
@@ -817,7 +827,8 @@ Startup lines precede these events and use a separate format. They record, in or
    ruleset have the same digest;
 1. grants exceeding a host's defaults;
 1. warnings;
-1. the inspection summary.
+1. the inspection summary;
+1. the brokered credentials' bindings, when a launch has any.
 
 There is no peer-address field: the per-run internal network has one client container.
 
@@ -993,6 +1004,34 @@ Programs not covered by the launcher's prepared trust stores need separate handl
   so the proxy and CA settings travel as `-D` options in `KO_AGENT_SANDBOX_JAVA_OPTS`, which the
   agent passes by hand.
 
+### Who holds a brokered value
+
+A value bound with `--egress-cred` is held in the memory of the launcher, the runner, a
+supervisor starting a proxy, and each proxy given it:
+
+- No file holds it, and no environment or argument of a process the launcher starts: the launcher
+  removes `NAME` from the environment its processes inherit, and the value travels by pipe
+  (`doc/design.md`, "Credential brokering at the egress proxy").
+- The environment the launcher was started with keeps it as the user gave it, for as long as a
+  launcher that stays resident runs: withholding changes only what its children inherit.
+- Each proxy is given the bindings whose host it inspects, and no other.
+- A proxy is the ruleset's single point of trust and also holds the credentials sent through it:
+  compromising it compromises both.
+
+Brokering protects the value only while the rewrite is the one route a host credential takes into a
+request:
+no other host channel that authenticates — an SSH agent's socket, a key — is mounted ("Credential
+theft"; `SessionBoundaryTest`'s check of every mount).
+
+What brokering leaves open:
+
+- The agent uses the credential at the bound host, within the methods granted there, on every
+  repository or resource its issuer's scope reaches.
+- The placeholder tells the project that `NAME` exists and where the proxy substitutes it.
+- A response that echoes the credential reaches the sandbox: responses are not rewritten. A bound
+  header the service stores or sends back is such a route (`doc/egress-proxy.md`, "Where the
+  value goes").
+
 ### Why the rules are per project, in the project, and read-only
 
 A single shared rule file would combine the access requirements of otherwise unrelated projects.
@@ -1055,15 +1094,15 @@ whole-host grant. It does not prove tenant isolation for every possible origin. 
 request path's syntax and matches it literally, without reproducing the origin's handling of
 percent-escapes, `..`, backslashes, empty segments or letter case:
 
-- A rule's path must be in canonical form or the launch fails.
-- Checks on request spellings depend on the matched scope (`doc/egress-proxy.md`, "The rule file").
-  Under the root a request has the host's least grants and gains nothing by decoding, so `GET` and
-  `HEAD` are exempt from the path-spelling checks there. The other supported methods still refuse
-  percent-encoding and dot segments at the root.
-- The cost is a path the origin would have accepted and this rule refuses, and a path only
-  spellable encoded — a space, a non-ASCII name — that cannot be narrowed at all. A path in the
-  wrong case fails closed on GitHub, where `/MyOrg/` and `/myorg/` are one owner, and on GCS, where
-  they are two buckets, alike.
+- A rule's path must be in canonical form, one spelling per path, or the launch fails
+  (`doc/egress-proxy.md`, "The rule file").
+- Checks on request spellings depend on the matched scope (`doc/egress-proxy.md`, "The rule file"):
+  a read under the root is exempt, since there it has the host's least grants and gains nothing by
+  decoding.
+- The cost is a path the origin would have accepted and this rule refuses, and a path whose only
+  spelling escapes an ASCII character other than a space — `%2F` inside a Cloud Storage object
+  name — that cannot be narrowed at all. A path in the wrong case fails closed on GitHub, where
+  `/MyOrg/` and `/myorg/` are one owner, and on Cloud Storage, where they are two buckets, alike.
 - The proxy does not follow redirects. A client following one sends a new request, which must
   independently satisfy the rules for its destination and path; an earlier grant does not authorize
   the redirected request.
@@ -1331,11 +1370,13 @@ provides the confinement for these commands; they execute outside the container.
     names (`RunOnHostSandbox.carrierName`), so no unconfined helper reads an explicit value before
     the command's environment is built. The runner inherits the launcher's environment as the
     launcher's own JVM ran in it, so a name-only forward names a variable already there.
-  - The closed set keeps a value out of the command's own environment, not out of its reach: the
-    profile does not deny a command reading other processes. It reads the arguments of any
-    process of yours, and the environment of each whose binary is not Apple's — the runner, a
-    supervisor and `podman`, which carry the launching shell's, among them (`doc/run-on-host.md`,
-    "The Seatbelt profile"; `doc/TODO.md`, "A host command reads other processes' environments").
+  - A name brokered with `--egress-cred` is its placeholder in the command's environment ("Who
+    holds a brokered value").
+  - The profile denies the command reading other processes' arguments and environments — the
+    launcher's, the runner's, a supervisor's and `podman`'s, which carry the launching shell's among
+    them (`SeatbeltProfile.ProcessReadRule`; `doc/run-on-host.md`, "The Seatbelt profile").
+    - The one exception is a mill client reading its own daemon's, whose environment the runner
+      built from the same closed set.
 - **A project script runs unconfined only on your explicit yes.** Before its start prompt, the
   launch finds the mill launchers, the JDKs mill builds pin, and the Gradle and Maven
   distributions its commands would refuse for want of, and offers the run that downloads each:

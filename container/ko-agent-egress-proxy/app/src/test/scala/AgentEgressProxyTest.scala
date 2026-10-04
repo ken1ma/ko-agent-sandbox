@@ -172,9 +172,16 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "allow https://[x.example]/ read" -> "carries a bracket",
       "allow https:///a/ read" -> "names no host",
       "allow https://x.example/a?b=1 read" -> "has a query",
-      "allow https://x.example/a%20b/ read" -> "has percent-encoding in its path",
+      "allow https://x.example/a%41/ read" -> "has an escaped ASCII character other than a space in its path",
+      "allow https://x.example/a%2e%2e/ read" -> "has an escaped ASCII character other than a space in its path",
+      "allow https://x.example/a%2/ read" -> "has a malformed escape in its path",
+      "allow https://x.example/a%C0%AE/ read" -> "has an escape that is not UTF-8 in its path",
+      "allow https://x.example/a%EF%BC%8F/ read" -> "has an escape whose Unicode normalization spells a delimiter",
+      "allow https://x.example/a%CD%BE/ read" -> "has an escape whose Unicode normalization spells a delimiter",
       "allow https://x.example/a/../b/ read" -> "has a dot segment in its path",
       "allow https://x.example/./ read" -> "has a dot segment in its path",
+      "allow https://x.example/a/..;/b/ read" -> "has a semicolon in its path",
+      "allow https://x.example/a;b/ read" -> "has a semicolon in its path",
       "allow https://x.example/a//b/ read" -> "has an empty segment in its path",
       "allow https://x.example/a\\b/ read" -> "has a backslash in its path",
       "allow https://x.example/ä/ read" -> "outside printable ASCII",
@@ -568,7 +575,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     Vector(
       "/other/repo" -> "path under no line",
       "/My-Org/repo" -> "path under no line",
-      "/my-org/%2e%2e/x" -> "percent-encoding in the path",
+      "/my-org/%2e%2e/x" -> "an escaped ASCII character other than a space in the path",
       "/my-org/repo.git/info/refs?service=git-upload-pack" -> "git fetch ref discovery",
     ).foreach: (path, why) =>
       assertEquals(intercept[Refusal](get(path)).getMessage, why, path)
@@ -750,7 +757,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
         boundary.inspectedScopes("x.example"),
       )
     get("/%2e%2e/x")
-    assertEquals(intercept[Refusal](get("/api/%2e%2e/x")).getMessage, "percent-encoding in the path")
+    assertEquals(
+      intercept[Refusal](get("/api/%2e%2e/x")).getMessage,
+      "an escaped ASCII character other than a space in the path",
+    )
 
   test("deny defaults is the whole ruleset under deny-unless-allowed, and is not consulted elsewhere"):
     val own = rulesetOf(rule = "deny defaults\nallow https://docs.python.org/ read")
@@ -1840,6 +1850,122 @@ class AgentEgressProxyTest extends munit.FunSuite:
       served.join()
       assert(received.get.linesIterator.contains(forwarded), s"$sent: ${received.get}")
 
+  /**
+   * One request over the whole inspected path, brokered credentials given: the client's TLS to this proxy's
+   * leaf, the head read, rewritten and decided, the origin's TLS as production opens it. Returns the head
+   * the test's origin received, empty when none was sent, and the audit lines. The origin's TLS client
+   * trusts the default context (TlsInspection.connect), which this sets to the test CA's for the call.
+   */
+  private def brokeredExchange(
+    host: String,
+    request: String,
+    credentials: Vector[BrokeredCredential],
+    scopes: Map[String, Set[String]] = Map("/" -> Set("read")),
+  ): (String, Vector[String]) =
+    val (inspection, clientContext) = testTls()
+    val (proxySide, clientSide) = socketPair()
+    val (transport, originSide) = socketPair()
+    val received = java.util.concurrent.atomic.AtomicReference("")
+    val origin = Thread.startVirtualThread: () =>
+      try
+        val tls = inspection.accept(originSide, Array.emptyByteArray)
+        received.set(String(readHttpHeader(tls.getInputStream, 64 * 1024), StandardCharsets.ISO_8859_1))
+        tls.getOutputStream.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
+        tls.close()
+      catch case _: Exception => ()
+    val client = Thread.startVirtualThread: () =>
+      try
+        val tls = clientContext.getSocketFactory.createSocket(clientSide, host, 443, true)
+        tls.getOutputStream.write(ascii(request))
+        tls.getOutputStream.flush()
+        tls.getInputStream.readAllBytes()
+        tls.close()
+      catch case _: Exception => ()
+    val log = java.io.ByteArrayOutputStream()
+    val savedErr = System.err
+    val savedDefault = javax.net.ssl.SSLContext.getDefault
+    System.setErr(java.io.PrintStream(log, true))
+    javax.net.ssl.SSLContext.setDefault(clientContext)
+    try
+      runInspectedConnection(
+        proxySide, OriginSocket(transport, transport, InetAddress.getLoopbackAddress), host,
+        TlsClientHello(Array.emptyByteArray, Some(host), echPresent = false), inspection, scopes, _ => false,
+        () => (), credentials,
+      )
+    finally
+      javax.net.ssl.SSLContext.setDefault(savedDefault)
+      System.setErr(savedErr)
+      transport.close()
+    client.join(java.time.Duration.ofSeconds(10))
+    origin.join(java.time.Duration.ofSeconds(10))
+    (received.get, String(log.toByteArray, StandardCharsets.UTF_8).linesIterator.toVector)
+
+  private val docsToken = BrokeredCredential(
+    CredentialBinding("DOCS_TOKEN", "docs.example", RulePath.Root, CredentialGrammar.DefaultPlace),
+    "ghp_placeholder0000000000000000000000000",
+    "ghp_realvalue111111111111111111111111111",
+  )
+
+  test("a brokered placeholder reaches its bound host as the value, any other host as itself, logged once by name"):
+    def get(host: String, authorization: String) =
+      s"GET /user HTTP/1.1\r\nHost: $host\r\nAuthorization: $authorization\r\n\r\n"
+    val (atBound, boundLog) = brokeredExchange("docs.example", get("docs.example", s"Bearer ${docsToken.placeholder}"),
+      Vector(docsToken))
+    assert(atBound.contains(s"\r\nAuthorization: Bearer ${docsToken.value}\r\n"), atBound)
+    assertEquals(boundLog, Vector("allow docs.example GET /user inject=DOCS_TOKEN -> 127.0.0.1"))
+    val (elsewhere, elsewhereLog) = brokeredExchange(
+      "proxy.corp.example", get("proxy.corp.example", s"Bearer ${docsToken.placeholder}"), Vector(docsToken),
+    )
+    assert(elsewhere.contains(s"\r\nAuthorization: Bearer ${docsToken.placeholder}\r\n"), elsewhere)
+    assertEquals(elsewhereLog, Vector("allow proxy.corp.example GET /user -> 127.0.0.1"))
+    for line <- boundLog ++ elsewhereLog do
+      assert(!line.contains(docsToken.value) && !line.contains(docsToken.placeholder), line)
+
+  test("an application's own Bearer and Basic credentials to the bound host arrive as sent, without inject"):
+    // docker/sbx-releases #8: a rewriter replacing every token broke the applications' own.
+    val own = "ghp_theapplicationsown000000000000000000"
+    val basic = "Basic " + java.util.Base64.getEncoder.encodeToString(ascii(s"user:$own"))
+    for authorization <- Vector(s"Bearer $own", basic) do
+      val (received, log) = brokeredExchange(
+        "docs.example", s"GET /user HTTP/1.1\r\nHost: docs.example\r\nAuthorization: $authorization\r\n\r\n",
+        Vector(docsToken),
+      )
+      assert(received.contains(s"\r\nAuthorization: $authorization\r\n"), received)
+      assertEquals(log, Vector("allow docs.example GET /user -> 127.0.0.1"))
+
+  test("a bound parameter arrives percent-encoded and decodes to the value; the log names the binding"):
+    val sas = BrokeredCredential(
+      CredentialBinding("SAS_SIG", "docs.example", RulePath.Root, CredentialPlace.Parameter("sig")),
+      "PLACEHOLDERsig",
+      "a&b=c%d+e",
+    )
+    val (received, log) = brokeredExchange(
+      "docs.example", "GET /c/b?sv=1&sig=PLACEHOLDERsig HTTP/1.1\r\nHost: docs.example\r\n\r\n", Vector(sas),
+    )
+    val sent = received.linesIterator.next().split(" ")(1)
+    val sig = sent.dropWhile(_ != '?').drop(1).split("&").collectFirst { case s"sig=$value" => value }
+    assertEquals(sig.map(java.net.URLDecoder.decode(_, StandardCharsets.UTF_8)), Some("a&b=c%d+e"))
+    assertEquals(sent.dropWhile(_ != '?').drop(1).split("&").length, 2)
+    assertEquals(log, Vector("allow docs.example GET /c/b?sv=1&sig=SAS_SIG inject=SAS_SIG -> 127.0.0.1"))
+
+  test("a bound service parameter is decided as what it becomes: push discovery refused, fetch discovery allowed"):
+    def service(value: String) = BrokeredCredential(
+      CredentialBinding("SERVICE", "docs.example", RulePath.Root, CredentialPlace.Parameter("service")),
+      "PLACEHOLDERservice",
+      value,
+    )
+    val discovery = "GET /o/r.git/info/refs?service=PLACEHOLDERservice HTTP/1.1\r\nHost: docs.example\r\n\r\n"
+    val fetching = Map("/" -> Set("read", "git-fetch"))
+    val (pushed, pushLog) = brokeredExchange("docs.example", discovery, Vector(service("git-receive-pack")), fetching)
+    assertEquals(pushed, "")
+    assertEquals(pushLog, Vector("deny docs.example GET /o/r.git/info/refs?service=SERVICE git push ref discovery"))
+    val (fetched, fetchLog) = brokeredExchange("docs.example", discovery, Vector(service("git-upload-pack")), fetching)
+    assert(fetched.startsWith("GET /o/r.git/info/refs?service=git-upload-pack HTTP/1.1\r\n"), fetched)
+    assertEquals(
+      fetchLog,
+      Vector("allow docs.example GET /o/r.git/info/refs?service=SERVICE inject=SERVICE -> 127.0.0.1"),
+    )
+
   test("a header value edged with a control is refused on a request and a response head; SP and HTAB are stripped"):
     // Checked raw: Java's `trim` removes every character up to SP, so a check after it would let an
     // edge NUL, VT or FF through as the value's whitespace.
@@ -2009,13 +2135,17 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "/xy/z" -> "path under no line",
       "/X/y" -> "path under no line", // wrong case fails closed, whatever the origin folds
       "/x/../z/y" -> "a dot segment in the path",
-      "/x/%2e%2e/z/y" -> "percent-encoding in the path",
+      "/x/%2e%2e/z/y" -> "an escaped ASCII character other than a space in the path",
       "/x/./y" -> "a dot segment in the path",
+      "/x/..;/z/y" -> "a semicolon in the path", // a servlet container drops the ;parameter, then the ..
+      "/x/..;jsessionid=1/z/y" -> "a semicolon in the path",
+      "/x/.;/y" -> "a semicolon in the path",
+      "/x/y#/z" -> "a number sign in the path", // an origin cutting the path at # serves /x/y
       "/x\\..\\z" -> "path under no line", // matches no scope before any spelling is judged
       "/x/a\\b" -> "a backslash in the path",
       "//x/y" -> "path under no line",
       "/x//y" -> "an empty segment in the path",
-      "/x/%2Fy" -> "percent-encoding in the path",
+      "/x/%2Fy" -> "an escaped ASCII character other than a space in the path",
     ).foreach: (path, why) =>
       assertEquals(intercept[Refusal](get(path, under("/x/", "read"))).getMessage, why, path)
     // Under the root a read may carry any spelling: it has the host's least grants.
@@ -2041,10 +2171,16 @@ class AgentEgressProxyTest extends munit.FunSuite:
       )
     post("/api/x")
     assertEquals(intercept[Refusal](post("/x")).getMessage, "POST not granted")
-    assertEquals(intercept[Refusal](post("/api/%2e%2e/x")).getMessage, "percent-encoding in the path")
+    assertEquals(
+      intercept[Refusal](post("/api/%2e%2e/x")).getMessage,
+      "an escaped ASCII character other than a space in the path",
+    )
     assertEquals(intercept[Refusal](post("/%2e%2e/x")).getMessage, "percent-encoding in the path")
     get("/%2e%2e/x", two)
-    assertEquals(intercept[Refusal](get("/api/%2e%2e/x", two)).getMessage, "percent-encoding in the path")
+    assertEquals(
+      intercept[Refusal](get("/api/%2e%2e/x", two)).getMessage,
+      "an escaped ASCII character other than a space in the path",
+    )
     // The paths named in the refusal are the ruleset's own words for the host.
     assertEquals(
       intercept[Refusal](get("/q/r", under("/o/", "read") ++ under("/p/", "read"))).advice,
@@ -2310,32 +2446,83 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val grants = Set("read", "POST", "PUT", "PATCH", "DELETE")
     val root = Map("/" -> grants)
     val narrowed = root + ("/owner/" -> grants)
+    // A path, its refusal under /owner/ (empty: allowed there), and the refusal of a POST, PUT, PATCH or
+    // DELETE under /, where a read may carry any spelling.
     val spellings = Vector(
-      "/owner/%2e%2e/x" -> "percent-encoding in the path",
-      "/owner/../x" -> "a dot segment in the path",
-      "/owner/./x" -> "a dot segment in the path",
-      "/owner/a\\b" -> "a backslash in the path",
-      "/owner//x" -> "an empty segment in the path",
+      ("/owner/%2e%2e/x", "an escaped ASCII character other than a space in the path",
+        Some("percent-encoding in the path")),
+      ("/owner/../x", "a dot segment in the path", Some("a dot segment in the path")),
+      ("/owner/./x", "a dot segment in the path", Some("a dot segment in the path")),
+      ("/owner/..;/x", "a semicolon in the path", Some("a dot segment in the path")),
+      ("/owner/a;b", "a semicolon in the path", None),
+      ("/owner/a#b", "a number sign in the path", None),
+      ("/owner/a\\b", "a backslash in the path", None),
+      ("/owner//x", "an empty segment in the path", None),
+      ("/owner/%C3%A4", "", Some("percent-encoding in the path")),
     )
     for
       method <- Vector("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE")
-      (path, reason) <- spellings
+      (path, underOwner, writeUnderRoot) <- spellings
     do
       val request = head(s"$method $path HTTP/1.1\r\nHost: github.com\r\n\r\n")
-      assertEquals(
-        intercept[Refusal](authorizeInspectedRequest("github.com", request, narrowed)).getMessage,
-        reason,
-        s"$method $path under /owner/",
-      )
-      val allowedAtRoot = method == "GET" || method == "HEAD" ||
-        reason == "a backslash in the path" || reason == "an empty segment in the path"
-      if allowedAtRoot then authorizeInspectedRequest("github.com", request, root)
+      val write = method != "GET" && method != "HEAD"
+      val expected = if write && underOwner.isEmpty then writeUnderRoot.get else underOwner
+      if expected.isEmpty then authorizeInspectedRequest("github.com", request, narrowed)
       else
         assertEquals(
-          intercept[Refusal](authorizeInspectedRequest("github.com", request, root)).getMessage,
-          reason,
-          s"$method $path under /",
+          intercept[Refusal](authorizeInspectedRequest("github.com", request, narrowed)).getMessage,
+          expected,
+          s"$method $path under /owner/",
         )
+      writeUnderRoot.filter(_ => write) match
+        case Some(reason) =>
+          assertEquals(
+            intercept[Refusal](authorizeInspectedRequest("github.com", request, root)).getMessage,
+            reason,
+            s"$method $path under /",
+          )
+        case None => authorizeInspectedRequest("github.com", request, root)
+
+  test("a rule's path may escape non-ASCII text and spaces, and grants the request spelled the same way"):
+    val resolved = rulesetOf(rule = "allow https://x.example/%E3%81%82%20b/ read")
+    val scopes = resolved.inspectedScopes("x.example")
+    assertEquals(scopes.keySet, Set("/%E3%81%82%20b/"))
+    authorizeInspectedRequest("x.example", head("GET /%E3%81%82%20b/c HTTP/1.1\r\nHost: x.example\r\n\r\n"), scopes)
+    // Another spelling of the same text, a `+` for the space or the other hex case, is another path:
+    // compared literally, it is under no line.
+    for spelled <- Vector("/%E3%81%82+b/c", "/%e3%81%82%20b/c") do
+      assertEquals(
+        intercept[Refusal](
+          authorizeInspectedRequest("x.example", head(s"GET $spelled HTTP/1.1\r\nHost: x.example\r\n\r\n"), scopes),
+        ).getMessage,
+        "path under no line",
+        spelled,
+      )
+
+  test("under a line other than the root, a path is printable ASCII; non-ASCII text is escaped in UTF-8"):
+    val scopes = Map("/" -> Set("read"), "/owner/" -> Set("read"))
+    def get(target: String) =
+      authorizeInspectedRequest(
+        "github.com", HttpRequestHead("GET", target, "HTTP/1.1", Vector("Host" -> "github.com")), scopes,
+      )
+    // Raw bytes above 0x7E: RFC 3986 spells a URI in ASCII, and a server reads raw bytes as text its own way.
+    Vector("/owner/\u00e4", "/owner/\u00c4\u00ae", "/owner/\u00e3\u0081\u0082").foreach: target =>
+      val refusal = intercept[Refusal](get(target)).getMessage
+      assertEquals(refusal, "a character outside printable ASCII in the path", target)
+    get("/owner/%C3%A4")
+    get("/owner/%c3%a4")
+    get("/owner/%E3%81%82%20x.txt")
+    Vector(
+      "/owner/%C0%AE" -> "an escape that is not UTF-8 in the path",
+      "/owner/%ED%A0%80" -> "an escape that is not UTF-8 in the path",
+      "/owner/%C3" -> "an escape that is not UTF-8 in the path",
+      "/owner/%EF%BC%8F" -> "an escape whose Unicode normalization spells a delimiter in the path",
+      "/owner/%EF%BC%8E%EF%BC%8E" -> "an escape whose Unicode normalization spells a delimiter in the path",
+      "/owner/%CD%BE" -> "an escape whose Unicode normalization spells a delimiter in the path",
+      "/owner/%7E" -> "an escaped ASCII character other than a space in the path",
+      "/owner/%2" -> "a malformed escape in the path",
+    ).foreach: (target, why) =>
+      assertEquals(intercept[Refusal](get(target)).getMessage, why, target)
 
   test("the Host header must name the host the connection was authorized for"):
     intercept[Refusal]:
@@ -2754,25 +2941,25 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "authorizeInspectedRequest other method", github, methodNotGranted,
         () => inspected("OPTIONS /x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"),
       ),
-      // GitHelper's one refusal site, reached by a POST path's two spellings and, under a line
-      // other than the root, a read path's two further ones.
+      // RulePath's two refusal sites: a POST path's two spellings, and under a line other than the
+      // root a read path's further ones.
       RefusalRow(
-        "requireSpelledPlainly", github, ambiguousPath,
+        "requireUnambiguousPath", github, ambiguousPath,
         post(github, "/o/r.git/%2e%2e/git-upload-pack", fetch),
       ),
       RefusalRow(
-        "requireSpelledPlainly", github, ambiguousPath,
+        "requireUnambiguousPath", github, ambiguousPath,
         post(github, "/o/r.git/../git-upload-pack", fetch),
       ),
       RefusalRow(
-        "requireSpelledPlainly", github, ambiguousPath,
+        "requireLiteralPath", github, ambiguousPath,
         () =>
           authorizeInspectedRequest(
             github, head("GET /o/a\\r HTTP/1.1\r\nHost: github.com\r\n\r\n"), under("/o/", "read"),
           ),
       ),
       RefusalRow(
-        "requireSpelledPlainly", github, ambiguousPath,
+        "requireLiteralPath", github, ambiguousPath,
         () =>
           authorizeInspectedRequest(
             github, head("GET /o//r HTTP/1.1\r\nHost: github.com\r\n\r\n"), under("/o/", "read"),
@@ -2832,7 +3019,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
         assert(named == row.host || defaultsRuleset.hosts.contains(named), s"${row.site} names $named")
       // An inspected request's refusal is of the request's form or of a grant, and the audit
       // line's reason alone says which (RefusalAdvice.requestStep).
-      if row.site.startsWith("authorizeInspectedRequest") || row.site == "requireSpelledPlainly" then
+      if row.site.startsWith("authorizeInspectedRequest") || row.site == "requireUnambiguousPath"
+        || row.site == "requireLiteralPath"
+      then
         import RefusalAdvice.*
         val requestSteps = Set(originForm, upgrade, hostHeader, bodyFramingHeader, ambiguousPath)
         assertEquals(requestStep(refusal.getMessage), Option.when(requestSteps(advice))(advice), row.site)

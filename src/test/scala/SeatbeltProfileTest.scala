@@ -217,6 +217,13 @@ class SeatbeltProfileTest extends munit.FunSuite:
   test("/dev is in the ancestor chain, or SecureRandom cannot open /dev/urandom"):
     assert(clue(rendered()).contains("""(allow file-read-metadata file-test-existence (literal "/dev"))"""))
 
+  test("another process's arguments are denied by name and by pidinfo, after the sysctl-read grant they narrow"):
+    val lines = rendered().linesIterator.toVector
+    val grant = lines.indexOf("(allow process-fork sysctl-read)")
+    val afterGrant = lines.drop(grant + 1).filterNot(_.startsWith(";;"))
+    assertEquals(afterGrant.take(3), SeatbeltProfile.ProcessReadRule)
+    assertEquals(lines.filterNot(_.startsWith(";;")).count(_.contains("process-info")), 2)
+
   test("file-map-executable is absent: measurement says it is not needed"):
     assert(!clue(rendered()).contains("file-map-executable"))
 
@@ -272,7 +279,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
         """(allow network-bind network-inbound (local ip "localhost:*"))""",
       ),
     )
-    val clientRules = render(millInputs.copy(network = Network.MillClient(50123))).fold(fail(_), identity)
+    val clientRules = render(millInputs.copy(network = Network.MillClient(50123, 4321))).fold(fail(_), identity)
       .linesIterator.filter(_.startsWith("(allow network")).toSeq
     assertEquals(
       clientRules,
@@ -284,12 +291,24 @@ class SeatbeltProfileTest extends munit.FunSuite:
         """(allow network-outbound (remote ip "localhost:50123"))""",
       ),
     )
-    // Neither grant reaches another program, and the client's port is a port.
+    // Neither grant reaches another program, the client's port is a port, and its daemon's pid a pid.
     assert(render(inputs().copy(network = Network.MillDaemon)).isLeft)
-    assert(render(inputs().copy(network = Network.MillClient(50123))).isLeft)
-    assert(render(mvnInputs.copy(network = Network.MillClient(50123))).isLeft)
-    assert(render(millInputs.copy(network = Network.MillClient(0))).isLeft)
-    assert(render(millInputs.copy(network = Network.MillClient(70000))).isLeft)
+    assert(render(inputs().copy(network = Network.MillClient(50123, 4321))).isLeft)
+    assert(render(mvnInputs.copy(network = Network.MillClient(50123, 4321))).isLeft)
+    assert(render(millInputs.copy(network = Network.MillClient(0, 4321))).isLeft)
+    assert(render(millInputs.copy(network = Network.MillClient(70000, 4321))).isLeft)
+    assert(render(millInputs.copy(network = Network.MillClient(50123, 0))).isLeft)
+
+  test("a mill client reads its daemon's arguments alone, after the rule that denies every other process's"):
+    // Mill's client checks its daemon with ProcessHandle.info(), which reads the daemon's arguments.
+    val lines = render(millInputs.copy(network = Network.MillClient(50123, 4321))).fold(fail(_), identity)
+      .linesIterator.toVector
+    val opened = lines.filter(_.startsWith("(allow sysctl-read (sysctl-name"))
+    assertEquals(opened, Vector("""(allow sysctl-read (sysctl-name "kern.procargs2.4321"))"""))
+    assert(lines.indexOf(opened.head) > lines.indexOf(SeatbeltProfile.ProcessReadRule.head))
+    for network <- Vector(Network.MillDaemon, Network.ProxyOnly) do
+      val other = render(millInputs.copy(network = network)).fold(fail(_), identity)
+      assert(!other.contains("kern.procargs2."), network)
 
   // --------------------------------------------------------------------------
   // The host proxy's own profile

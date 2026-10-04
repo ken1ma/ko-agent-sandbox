@@ -13,6 +13,7 @@ import java.net.{ServerSocket, Socket}
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicReference
+import scala.jdk.CollectionConverters.*
 
 import HostCommands.*
 import WithPodman.*
@@ -46,6 +47,9 @@ class ProxyContainerTest extends munit.FunSuite:
         "combined memory and swap limit",
       )
       assertEquals(inspect(proxy, "{{json .HostConfig.Tmpfs}}"), "{}", "explicit tmpfs mounts")
+      // Without a binding the proxy's standard input is closed, and nothing tells it to read one.
+      assertEquals(inspect(proxy, "{{.Config.OpenStdin}}"), "false", "open standard input")
+      assert(!inspect(proxy, "{{range .Config.Env}}{{println .}}{{end}}").contains("EGRESS_CREDS"))
       assert(
         inspect(proxy, "{{json .Config.CreateCommand}}").contains("\"--read-only-tmpfs=false\""),
         "podman's implicit writable temporary filesystems are not disabled",
@@ -200,3 +204,76 @@ class ProxyContainerTest extends munit.FunSuite:
       session.foreach(stop)
       upstream.close()
       discard(project)
+
+  test("a brokered value reaches the proxy by its attached start alone, and the proxy runs on without that client"):
+    requireTestWithPodman()
+
+    val project = scratchProject()
+    var session: Option[Session] = None
+    val value = "br0kered-s3cret-value"
+    try
+      val live = launchWith(
+        project, project.resolve("session.log"),
+        Vector("--egress=deny-unless-allowed", "--egress-cred=BROKERED_TOKEN@docs.python.org"),
+        "BROKERED_TOKEN" -> value,
+      )
+      session = Some(live)
+
+      // The launcher ended the attached podman start once the proxy was ready; --sig-proxy=false kept
+      // the signal from the proxy (src/probe/podman-attach-stdin.sh measures it on macOS).
+      assertEquals(inspect(live.proxy, "{{.State.Running}}"), "true", "the proxy after its client ended")
+      assertEquals(inspect(live.proxy, "{{.Config.OpenStdin}}"), "true", "open standard input")
+      val environment = inspect(live.proxy, "{{range .Config.Env}}{{println .}}{{end}}")
+      assert(environment.linesIterator.contains("EGRESS_CREDS=stdin"), environment)
+
+      // Nowhere podman records: the containers' inspections and logs, and the launch's output.
+      for container <- Vector(live.proxy, live.container) do
+        val inspected = run(podman, "inspect", container)
+        assert(inspected.ok && !inspected.text.contains(value), s"$container's inspection holds the value")
+        val logged = run(podman, "logs", container)
+        assert(!logged.text.contains(value) && !logged.err.contains(value), s"$container's logs hold the value")
+      assert(!live.output.contains(value), live.output)
+
+      // The sandbox holds the placeholder, which the proxy substitutes on the bound host alone.
+      val placeholder = exec(live, "sh", "-c", "printf %s \"$BROKERED_TOKEN\"").text
+      assertEquals(placeholder.length, value.length)
+      assertNotEquals(placeholder, value)
+      val bannerLine =
+        s"brokered credential: BROKERED_TOKEN → docs.python.org (Authorization), placeholder $placeholder"
+      assert(live.output.contains(bannerLine), live.output)
+      val requested = exec(
+        live, "sh", "-c",
+        "curl -sS -o /dev/null -w '%{http_code}' -H \"Authorization: Bearer $BROKERED_TOKEN\" " +
+          "https://docs.python.org/3/",
+      )
+      assert(requested.ok, s"${requested.text}\n${requested.err}")
+      val audit = run(podman, "logs", live.proxy).err
+      assert(audit.contains("brokered credentials: BROKERED_TOKEN@docs.python.org:Authorization"), audit)
+      val substituted = ".* allow docs.python.org GET /3/ inject=BROKERED_TOKEN -> [0-9a-f.:]+"
+      assert(audit.linesIterator.exists(_.matches(substituted)), audit)
+      assert(!audit.contains(value) && !audit.contains(placeholder), audit)
+
+      // After the session: no file under the state root or in the project holds the value, nor does the
+      // persistent volume — the openai/codex #30971 check, over every agent's state directory.
+      stop(live)
+      session = None
+      val bytes = value.getBytes(StandardCharsets.US_ASCII)
+      def holding(root: java.nio.file.Path): Vector[java.nio.file.Path] =
+        if !java.nio.file.Files.exists(root) then Vector.empty
+        else
+          val walked = java.nio.file.Files.walk(root)
+          try
+            walked.iterator.asScala.filter(java.nio.file.Files.isRegularFile(_))
+              .filter(file => contains(java.nio.file.Files.readAllBytes(file), bytes)).toVector
+          finally walked.close()
+      assertEquals(holding(AgentSandboxLauncher.stateRoot(currentOs)), Vector.empty)
+      assertEquals(holding(project), Vector.empty)
+      val volume = run(podman, "volume", "export", s"ko-agent-sandbox-persistent-${live.id}")
+      assert(volume.ok, volume.err)
+      assert(!contains(volume.out, bytes), "the persistent volume holds the value")
+    finally
+      session.foreach(stop)
+      discard(project)
+
+  private def contains(haystack: Array[Byte], needle: Array[Byte]): Boolean =
+    haystack.indices.exists(start => haystack.startsWith(needle, start))

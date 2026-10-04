@@ -290,12 +290,15 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     )
     assertEquals(forwardedNames(Seq.empty), Vector.empty)
 
-  test("the runner's runtime travels as three options, all or none, the daemon port with them"):
+  test("the runner's runtime travels as three options, all or none, the daemon's port and pid with them"):
     val runtime = Runtime(Path.of("/b"), 4242, Path.of("/b/proxy-sbt-0.log"))
     assertEquals(runtimeOf(runtimeOptions(runtime) :+ "--env=TOKEN"), Right(Some(runtime)))
     assertEquals(runtime.tmp, Path.of("/b/tmp"))
-    val withDaemon = runtime.copy(daemonPort = Some(51000))
+    val withDaemon = runtime.copy(daemonPort = Some(51000), daemonPid = Some(4321))
     assertEquals(runtimeOf(runtimeOptions(withDaemon)), Right(Some(withDaemon)))
+    assert(runtimeOf(runtimeOptions(runtime) :+ "--daemon-port=51000").isLeft)
+    assert(runtimeOf(runtimeOptions(runtime) :+ "--daemon-pid=4321").isLeft)
+    assert(runtimeOf(runtimeOptions(runtime) ++ Seq("--daemon-port=51000", "--daemon-pid=0")).isLeft)
     assertEquals(runtimeOf(Seq("--env=TOKEN")), Right(None))
     assert(runtimeOf(Seq("--proxy-port=4242", "--proxy-log=/l")).isLeft)
     assert(runtimeOf(Seq("--runtime-session=/b", "--proxy-port=x", "--proxy-log=/l")).isLeft)
@@ -1490,10 +1493,11 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     def daemonLeader(session: RunOnHostSession.Session): Long = record(session, s"daemon-mill-$hash").pgid
     def recordNames(session: RunOnHostSession.Session): List[String] =
       FileHelper.directoryEntries(session.records).map(_.getFileName.toString).toList.sorted
-    /** The runtime `session`'s commands run against, its own or attached to. */
+    /** The runtime a prepare should give `session`'s commands, its own or attached to; with a daemon, the
+      * one the stub started last. */
     def runtime(session: RunOnHostSession.Session, daemonPort: Option[Int] = None): Either[String, Option[Runtime]] =
       val proxyLog = session.directory.resolve(s"proxy-${program.name}-$hash.log")
-      Right(Some(Runtime(session.directory, port(session), proxyLog, daemonPort)))
+      Right(Some(Runtime(session.directory, port(session), proxyLog, daemonPort, daemonPort.map(_ => daemonPid))))
     def refusal(prepared: Either[String, Option[Runtime]], why: String*): Unit =
       prepared match
         case Left(reason) => why.foreach(word => assert(reason.contains(word), s"'$word' in: $reason"))

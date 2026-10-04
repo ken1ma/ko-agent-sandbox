@@ -510,7 +510,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       .findAllMatchIn(UsageText).map(_.group(1)).toSet
     assertEquals(
       documentedActions,
-      ManagementActions ++ Set("--egress-check", "--write", "--egress", "--run-on-host", "--env"),
+      ManagementActions ++ Set("--egress-check", "--write", "--egress", "--run-on-host", "--env", "--egress-cred"),
     )
     assert(UsageText.contains(s"--write=${WriteModes.mkString("|")}"), UsageText)
     assert(UsageText.contains(s"--egress=${EgressProfiles.mkString("|")}"), UsageText)
@@ -1848,8 +1848,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("option parsing: management actions take the rest as operands"):
     assertEquals(
-      parseCommandLine(List("--proxy-log", "-f")),
-      Right(ParsedCommandLine(None, None, Some(("--proxy-log", List("-f"))), Nil)),
+      parseCommandLine(List("--egress-log", "-f")),
+      Right(ParsedCommandLine(None, None, Some(("--egress-log", List("-f"))), Nil)),
     )
     assertEquals(
       parseCommandLine(List("--egress=deny-unless-allowed", "--egress-effective", "--", "claude")),

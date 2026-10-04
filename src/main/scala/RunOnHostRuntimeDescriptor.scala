@@ -122,11 +122,11 @@ object RunOnHostRuntimeDescriptor:
     val RunOnHostPrereqs.CommandPrereqs(project, jdkHome, coursierV1, program, executable) = prereqs
     val SeatbeltProfile.SystemPaths(reads, executes) = systemPaths
     val networkName = network match
-      case SeatbeltProfile.Network.ProxyOnly        => "proxy-only"
-      case SeatbeltProfile.Network.SbtClient(tmp)   => s"sbt-client $tmp"
-      case SeatbeltProfile.Network.MillDaemon       => "mill-daemon"
-      case SeatbeltProfile.Network.MillClient(port) => s"mill-client $port"
-      case SeatbeltProfile.Network.Gradle           => "gradle"
+      case SeatbeltProfile.Network.ProxyOnly             => "proxy-only"
+      case SeatbeltProfile.Network.SbtClient(tmp)        => s"sbt-client $tmp"
+      case SeatbeltProfile.Network.MillDaemon            => "mill-daemon"
+      case SeatbeltProfile.Network.MillClient(port, pid) => s"mill-client $port $pid"
+      case SeatbeltProfile.Network.Gradle                => "gradle"
     val fields =
       Seq(
         program.name, project.toString, jdkHome.toString, coursierV1.toString, executable.toString,

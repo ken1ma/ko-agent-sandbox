@@ -58,7 +58,7 @@ The words the documents share, each defined in the document its entry names and 
   (`SandboxLifecycle.scala`).
 - **clipboard relay, runner** — host processes answering requests the sandbox makes through a
   FIFO under its `/tmp`, never a listener; "broker" is reserved for the credential sense ("No
-  general capability broker", `plan-credential-broker-proxy.md`):
+  general capability broker", "Credential brokering at the egress proxy"):
   - the clipboard relay copies between the host clipboard and the sandbox (SECURITY.md,
     "Clipboard");
   - the runner, one per session, dispatches each host command and owns the processes it starts
@@ -407,8 +407,8 @@ transport. Rejected:
 - A WebSocket matters only on an inspected host; on a tunnel it passes as bytes. Every model host
   is a tunnel under the default rules, so no installed agent meets the refusal today.
 - The one client known to open a WebSocket to its model host, the Codex CLI's built-in provider,
-  falls back to HTTP after the refusal (`doc/plan-credential-broker-proxy.md`, "Claude Code and
-  Codex logins: excluded", has the measurement). Its `supports_websockets = false` cannot be set
+  falls back to HTTP after the refusal ("Credential brokering at the egress proxy" has the
+  measurement). Its `supports_websockets = false` cannot be set
   for that provider: codex-cli 0.155.1 refuses to load an override of a built-in provider.
 - The other installed agents' binaries hold no `wss://` literal for a model host; `claude` holds
   one for its Remote Control bridge, `bridge.claudeusercontent.com`, which no default rule allows.
@@ -438,7 +438,7 @@ everywhere would, from the most serious cost:
   guarantee 12; SECURITY.md, "Not defended", "What is inside TLS", has the exposure);
 - gain nothing at an OAuth login's hosts, which the broker cannot serve before the provider plan's
   step 6 (`TODO.md`, "Credential brokering"), nor at a signed cloud API, where no header holds a
-  value to substitute (`plan-credential-broker-proxy.md`, "Deliberate exclusions"), while
+  value to substitute ("Credential brokering at the egress proxy"), while
   costing every request a handshake (SECURITY.md, "What is inside TLS").
 
 Revisit per agent, once one brokered turn through its model host is measured. Making that agent's
@@ -538,10 +538,102 @@ this project's operating model deliberately avoids:
 
 - https://github.com/mattolson/agent-sandbox/issues/122
 
-`plan-credential-broker-proxy.md` is inside this decision, not an exception to it: it moves a
-value the user forwards out of the sandbox and adds no grant word — what the value may do stays
-with its issuer's scope and the ruleset (SECURITY.md, "Why the ruleset is not a capability
-system").
+`--egress-cred` is inside this decision, not an exception to it: it moves a value the user
+forwards out of the sandbox and adds no grant word — what the value may do stays with its issuer's
+scope and the ruleset (SECURITY.md, "Why the ruleset is not a capability system").
+
+### Credential brokering at the egress proxy
+
+`--egress-cred` keeps a credential the user names out of the sandbox and the host commands
+(egress-proxy.md, "Brokered credentials"). Every comparable project that holds a credential
+converged on one design, and this one keeps its recurring rules — a placeholder inside, one host
+per secret, a rewrite in a declared header or one named parameter, never a body or a response:
+
+- Claude Code on the web: the real GitHub token in a proxy outside the VM
+  (https://code.claude.com/docs/en/cloud-environments);
+- Codex CLI: a dummy of the same prefix and length in the child's environment, swapped only for
+  the bound GitHub hosts (`codex-rs/network-proxy/src/credential_broker.rs`);
+- Docker Sandboxes: a `proxy-managed` sentinel, the value in the OS keychain
+  (https://docs.docker.com/ai/sandboxes/);
+- anthropic-experimental/sandbox-runtime's credential masking (`injectHosts`, its README),
+  GreyhavenHQ/greywall's `greyproxy:credential:v1:…` in headers and query alone,
+  89luca89/clampdown's auth-proxy container holding the real key.
+
+A forwarded SSH agent's socket is how docker/sbx-releases #121 reached a private repository under a
+public-reads ruleset: brokering protects a value only while no other channel that authenticates is
+mounted (SECURITY.md, "Who holds a brokered value").
+
+The binding:
+
+- An option of its own, not a form of `--env`, so a forgotten `@HOST` is a refusal, not the value
+  forwarded into the sandbox. Command-line-only, like `--env`: a repository file cannot bind a host.
+- No `NAME=VALUE@HOST`, though `--env` takes `NAME=VALUE`:
+  - `ps` shows a process's arguments to every user of the host, a launcher that stays resident
+    keeps them for the whole launch, and a value typed there is in the shell's history file;
+  - the value grammar admits `@`, `:`, `?` and `/`, which would end the value and start the host
+    and the place;
+  - `NAME=VALUE <launcher> --egress-cred=NAME@HOST` already sets a value for one launch.
+- One host per binding, which a proxy of the launch must inspect. A binding the proxy cannot
+  substitute is refused at launch and again at the proxy's start: it would otherwise show as a 401
+  inside the sandbox with nothing in the log to explain it.
+- The grammar is one object the launcher and the proxy compile (`CredentialGrammar`), not the
+  proxy's dry run: the dry run mounts nothing by design, a value handed to it would be one more
+  place holding the secret, and `plan-provider-credential-proxy.md`'s management actions must
+  validate before any run exists.
+
+The value travels by pipe, held in memory alone (SECURITY.md, "Who holds a brokered value"):
+
+- Not a file: a token works from anywhere until it is revoked, and a file under the state root
+  reaches backups and outlives a lost reaper. The leaf key is a file, since it serves only someone
+  between the sandbox and the proxy.
+- Not an environment or an argument of a process the launcher starts: an environment is inherited
+  by every helper, both are read by other processes of the same user (SECURITY.md, "Run on host"),
+  and on a container `podman inspect` shows the environment. An agent can persist one, as Codex's
+  shell snapshots did (openai/codex #30971, #32327); `ProxyContainerTest` checks the persistent
+  volume after a brokered session.
+- Not a podman secret, whose default driver keeps it in a file (podman-secret-create(1)). Not a
+  `podman exec` writing into the proxy container: its root is read-only with no tmpfs, and the
+  proxy would take bindings a second way.
+
+Left out:
+
+- Repository scoping, as Claude Code on the web's "attached repositories" 403: it needs path
+  knowledge per forge API, a separate increment. SECURITY.md, "Who holds a brokered value", has what
+  the credential reaches meanwhile.
+- Response and body rewriting, and rewriting every occurrence of a token in a query: the recurring
+  failure of broader rewriters is breaking applications with tokens of their own
+  (docker/sbx-releases #8); a declared header or one named parameter is the durable form.
+- Brokering at a tunnel host, where no substitution can happen, and with it the agents' own logins:
+  - Claude Code's endpoints are tunnels by design, since model traffic has to write. Its login is
+    an OAuth pair with local expiry bookkeeping and a refresh exchange; the proxy would mirror that
+    lifecycle per release. A stolen model token is a nuisance to the account holder, a stolen forge
+    token every private repository: hiding the first does not pay for a per-release contract.
+  - `ANTHROPIC_API_KEY@api.anthropic.com` would fit — a fixed header, no lifecycle — and is
+    refused because the host is a tunnel; so is `AWS_BEARER_TOKEN_BEDROCK` at a project's
+    `bedrock-runtime.<region>.amazonaws.com`. If model endpoints are ever inspected for another
+    reason, the binding works unchanged.
+  - The Codex CLI trusts the CA in `SSL_CERT_FILE`, and its built-in provider opens a websocket
+    first, which the proxy refuses on an inspected connection. Measured with codex-cli 0.155.1 on an
+    API key against a local server refusing the upgrade (2026-09-22): seven `GET /v1/responses` with
+    `Upgrade: websocket` over about seven seconds, then `POST /v1/responses`. It is not brokered
+    until one turn succeeds over an inspected connection; that, and the ChatGPT login, are not
+    measured.
+  - Which credential may reach a model host is a rule an inspected host could apply and a tunnel
+    cannot (SECURITY.md, "Exfiltration through allowed network traffic"); `TODO.md`, "Credential
+    brokering", has that item.
+- AWS SigV4 re-signing, which sandbox-runtime does: every AWS login — `aws login`, `aws sso login`,
+  a static key — ends in an access key the client signs with and never sends, so no header carries
+  a placeholder.
+  - With the hosts as tunnels the binding is refused at launch; inspected, the origin answers
+    `SignatureDoesNotMatch`.
+  - What a session forwards instead is `doc/cloud-credentials.md`.
+- A keychain or secret-manager resolver on the host (Docker's `gh auth token`, 1Password): the
+  binding reads the host environment as `--env=NAME` does, and a resolver is a shell pipeline in
+  front of it.
+- Rotation or revocation on exit: the value is in no file for an exit to leave, the issuer's own
+  revocation covers a leak, and an automatic revoke needs a provider API call the launcher does
+  not make.
+- Copilot CLI's forge-credential sign-in: `plan-provider-credential-proxy.md`, "OAuth mechanisms".
 
 ### No gVisor or microVM isolation layer
 

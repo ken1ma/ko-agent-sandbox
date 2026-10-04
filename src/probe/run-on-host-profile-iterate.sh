@@ -684,8 +684,9 @@ procargs)
     #
     # Two more for what `same-sandbox` spans: a child the reader starts, which inherits its
     # sandbox, and a JDK under a sandbox-exec of its own with the same profile, as the runner
-    # starts an sbt server and a Mill daemon apart from their clients. Each line ends with what
-    # `ProcessHandle.of` finds, which Mill's client asks of its daemon (ServerLauncher.scala).
+    # starts an sbt server and a Mill daemon apart from their clients. Each line ends with whether
+    # `ProcessHandle.of` finds the target and whether `info()` reads it, which Mill's client asks of
+    # its daemon (PidLock.isLockValid).
     #
     # The call succeeds while either sysctl-read of its name, kern.procargs2.<pid>, or
     # process-info-pidinfo is allowed, and `(deny default)` does not cover process-info*, so the
@@ -694,9 +695,10 @@ procargs)
     # rows before it deny one family each.
     #
     # Each profile is `(allow default)` plus the rule, as seatbelt-semantics.sh isolates them, then
-    # the rendered command profile without and with the rule. No build runs here: the JDK starting
-    # under the rendered profile with the rule is the row itself, and every program starting under
-    # it is the acceptance test's question. Run it on each new macOS release.
+    # the rendered command profile without the rule, with it, and with it and a mill client's one-name
+    # exception. No build runs here: the JDK starting
+    # under the rendered profile is the row itself, and every program starting under it is the
+    # acceptance test's question. Run it on each new macOS release.
     : "${JAVA_HOME:?set JAVA_HOME to the JDK the profile grants}"
     probe_source=$(pwd -P)/src/probe/ProcArgs.java
     KO_AGENT_PROCARGS_PROBE=1 "$JAVA_HOME/bin/java" "$probe_source" --hold >/dev/null 2>&1 &
@@ -737,19 +739,30 @@ procargs)
 
     emit "$system_paths" || exit 1
     . "$work/command.env"
-    read_under "the rendered command profile" "$work/command.sb" "$SESSION_TMP"
-    # Through the environment: awk's -v would read a backslash in a rule as an escape.
-    by_name="$by_name" by_pidinfo="$by_pidinfo" awk '
+    # SeatbeltProfile.ProcessReadRule's lines, taken out for the contrast.
+    awk '
+        /^\(deny sysctl-read \(sysctl-name-regex #"procargs"\)\)$/ || /process-info-pidinfo/ { found++; next }
         { print }
-        /^\(allow process-fork sysctl-read\)$/ { print ENVIRON["by_name"]; print ENVIRON["by_pidinfo"]; found = 1 }
-        END { exit found ? 0 : 3 }' "$work/command.sb" > "$work/command-deny.sb" || {
-        echo "the rendered profile has no '(allow process-fork sysctl-read)' line to put the rule after" >&2; exit 1
+        END { exit found == 3 ? 0 : 3 }' "$work/command.sb" > "$work/command-norule.sb" || {
+        echo "the rendered profile does not hold SeatbeltProfile.ProcessReadRule's three lines" >&2; exit 1
     }
-    read_under "the rendered command profile and both" "$work/command-deny.sb" "$SESSION_TMP"
+    read_under "the rendered command profile without the rule" "$work/command-norule.sb" "$SESSION_TMP"
+    read_under "the rendered command profile" "$work/command.sb" "$SESSION_TMP"
+    # The exception a mill client's profile takes for its daemon (SeatbeltProfile.Network.MillClient):
+    # the sysctl name of the held JDK's arguments alone, allowed after the rule. Expected: the held
+    # JDK read, with info read; every other target denied, with info throwing.
+    one_name="(allow sysctl-read (sysctl-name \"kern.procargs2.$held\"))"
+    one_name="$one_name" awk '
+        { print }
+        /^\(allow process-info-pidinfo \(target same-sandbox\)\)$/ { print ENVIRON["one_name"]; found = 1 }
+        END { exit found ? 0 : 3 }' "$work/command.sb" > "$work/command-one-name.sb" || {
+        echo "the rendered profile has no same-sandbox pidinfo line to put the name after" >&2; exit 1
+    }
+    read_under "the rendered command profile and $one_name" "$work/command-one-name.sb" "$SESSION_TMP"
     echo
-    echo "ENVIRONMENT READ of the held JDK under the rendered profile is what a host command reaches"
-    echo "(SECURITY.md, \"Run on host\"). DENIED (EPERM) under both, with the JDK running and listing its"
-    echo "processes, is the rule for SeatbeltProfile.render; the acceptance test then runs every program."
+    echo "ENVIRONMENT READ of the held JDK without the rule is what a host command would reach"
+    echo "(SECURITY.md, \"Run on host\"). DENIED (EPERM) under the rendered profile, with the JDK running and"
+    echo "listing its processes, is SeatbeltProfile.ProcessReadRule; the acceptance test runs every program."
     ;;
 *)
     echo "usage: $0 [checks|ops|paths|narrow|mach-route|mach|mach-proxy|procargs] [command|native-image]" >&2; exit 2 ;;

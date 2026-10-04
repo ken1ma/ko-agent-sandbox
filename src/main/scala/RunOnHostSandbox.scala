@@ -16,6 +16,8 @@ import java.nio.file.attribute.{BasicFileAttributeView, BasicFileAttributes}
 import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal
 
+import agentsandbox.egress.{BrokeredCredential, CredentialGrammar}
+
 import RunOnHostPrereqs.*
 import RunOnHostSession.{ServerAnswer, Session}
 import HostCommands.Os
@@ -499,7 +501,8 @@ object RunOnHostSandbox:
         )
 
   /** `--run-command-on-host <program> <project> <cwd> [--env=<name>...] [--channel-log=<file>]
-    * [--runtime-session=<dir> --proxy-port=<port> --proxy-log=<file> [--daemon-port=<port>]] --
+    * [--runtime-session=<dir> --proxy-port=<port> --proxy-log=<file> [--daemon-port=<port> --daemon-pid=<pid>]]
+    * [--credentials-on-stdin] --
     * <args...>`: one channel request as a process of its own, so the runner's cancel is a SIGTERM
     * whose answer is this supervisor's shutdown hook. The runtime options name the runner's runtime
     * (Runtime). */
@@ -519,7 +522,8 @@ object RunOnHostSandbox:
         option.startsWith(EnvOption) || option.startsWith(ChannelLogOption)
           || option.startsWith(RuntimeSessionOption) || option.startsWith(ProxyPortOption)
           || option.startsWith(ProxyLogOption) || option.startsWith(DaemonPortOption)
-          || option.startsWith(FileRulesOption),
+          || option.startsWith(DaemonPidOption)
+          || option.startsWith(FileRulesOption) || option == CredentialsOption,
       )
       if stray.nonEmpty then
         Console.err.println(s"--run-command-on-host: unexpected arguments: ${stray.mkString(" ")}")
@@ -532,6 +536,14 @@ object RunOnHostSandbox:
         reason => { Console.err.println(s"--run-command-on-host: $reason"); sys.exit(2) },
         identity,
       )
+      // The frame the runner wrote after its word, before anything else reads this pipe.
+      val credentials =
+        if !options.contains(CredentialsOption) then Vector.empty
+        else
+          readStdinCredentials().fold(
+            reason => { Console.err.println(s"--run-command-on-host: the brokered credentials: $reason"); sys.exit(2) },
+            identity,
+          )
       // The runner's pipe (RunOnHostChannel.dispatch): its EOF is the runner gone, and the command
       // ends with it through the shutdown hook, as it ends with the requester's ctl. The status is
       // nobody's to read. A def, not the thread's own lambda: a lambda ending in sys.exit types
@@ -552,6 +564,7 @@ object RunOnHostSandbox:
             .map(option => Path.of(option.stripPrefix(ChannelLogOption))),
           runtime = runtime,
           fileRules = fileRules,
+          credentials = credentials,
         ),
       )
     args.toList match
@@ -570,6 +583,25 @@ object RunOnHostSandbox:
   def forwardedNames(options: Seq[String]): Vector[String] =
     options.filter(_.startsWith(EnvOption)).map(_.stripPrefix(EnvOption)).toVector
 
+  /** `--credentials-on-stdin`: the process's brokered credentials follow on its standard input
+    * (CredentialGrammar.bindingInput), the runner's from the launcher and a supervisor's after the
+    * runner's word (RunOnHostChannel.dispatch). The option carries no value; values never appear in arguments. */
+  val CredentialsOption = "--credentials-on-stdin"
+
+  /** Reads one byte at a time, consuming nothing after the bindings; call it before anything else reads
+    * standard input. */
+  def readStdinCredentials(): Either[String, Vector[BrokeredCredential]] =
+    CredentialGrammar.readBindings(java.io.FileInputStream(java.io.FileDescriptor.in))
+
+  /** What a program's proxy is given: the credentials whose host its rules allow, all of which it
+    * inspects (egressRuleText), and no other. */
+  def credentialsFor(
+    program: Program,
+    fileHosts: Vector[String],
+    credentials: Seq[BrokeredCredential],
+  ): Vector[BrokeredCredential] =
+    EgressCredentials.bindingsFor(credentials, (centralHost(program) +: fileHosts).toSet)
+
   /** `--channel-log=<file>`: the runner's own log, where the supervisor appends a signal-ended
     * command's logs (appendSessionLogs). */
   val ChannelLogOption = "--channel-log="
@@ -586,28 +618,35 @@ object RunOnHostSandbox:
       case None         => FileRules.ofProject(project)
 
   /** The runner's runtime as the supervisor's options: the first three together or none, the
-    * daemon port with them for a mill runtime. */
+    * daemon's port and pid with them for a mill runtime. */
   val RuntimeSessionOption = "--runtime-session="
   val ProxyPortOption = "--proxy-port="
   val ProxyLogOption = "--proxy-log="
   val DaemonPortOption = "--daemon-port="
+  val DaemonPidOption = "--daemon-pid="
 
   def runtimeOptions(runtime: Runtime): Seq[String] =
     Seq(
       s"$RuntimeSessionOption${runtime.session}", s"$ProxyPortOption${runtime.proxyPort}",
       s"$ProxyLogOption${runtime.proxyLog}",
     ) ++ runtime.daemonPort.map(port => s"$DaemonPortOption$port")
+      ++ runtime.daemonPid.map(pid => s"$DaemonPidOption$pid")
 
   def runtimeOf(options: Seq[String]): Either[String, Option[Runtime]] =
     def value(prefix: String) = options.find(_.startsWith(prefix)).map(_.stripPrefix(prefix))
     def port(prefix: String, text: String) = text.toIntOption.toRight(s"$prefix$text is no port")
-    (value(RuntimeSessionOption), value(ProxyPortOption), value(ProxyLogOption), value(DaemonPortOption)) match
-      case (None, None, None, None) => Right(None)
-      case (Some(session), Some(proxy), Some(log), daemon) =>
+    def pid(text: String) = text.toLongOption.filter(_ > 0).toRight(s"$DaemonPidOption$text is no pid")
+    (value(RuntimeSessionOption), value(ProxyPortOption), value(ProxyLogOption), value(DaemonPortOption),
+      value(DaemonPidOption)) match
+      case (None, None, None, None, None) => Right(None)
+      case (Some(_), Some(_), Some(_), Some(_), None) | (Some(_), Some(_), Some(_), None, Some(_)) =>
+        Left(s"$DaemonPortOption and $DaemonPidOption come together")
+      case (Some(session), Some(proxy), Some(log), daemonPortText, daemonPidText) =>
         for
           proxyPort <- port(ProxyPortOption, proxy)
-          daemonPort <- daemon.map(port(DaemonPortOption, _).map(Some(_))).getOrElse(Right(None))
-        yield Some(Runtime(Path.of(session), proxyPort, Path.of(log), daemonPort))
+          daemonPort <- daemonPortText.map(port(DaemonPortOption, _).map(Some(_))).getOrElse(Right(None))
+          daemonPid <- daemonPidText.map(pid(_).map(Some(_))).getOrElse(Right(None))
+        yield Some(Runtime(Path.of(session), proxyPort, Path.of(log), daemonPort, daemonPid))
       case _ => Left(s"$RuntimeSessionOption, $ProxyPortOption and $ProxyLogOption come together")
 
   /** The last bytes of each command log appended to the channel log: a stalled command's last
@@ -894,6 +933,8 @@ object RunOnHostSandbox:
     runtime: Option[Runtime] = None,
     // The launch's resolved file rules (fileRulesOf).
     fileRules: FileRules.Resolved = FileRules.Resolved.Empty,
+    // The brokered credentials, for the proxy this command starts when the runner holds none for it.
+    credentials: Vector[BrokeredCredential] = Vector.empty,
   ): Int =
     val env: String => Option[String] = name => Option(System.getenv(name))
     val root = RunOnHostSession.root(uid)
@@ -953,6 +994,7 @@ object RunOnHostSandbox:
                     runInSession(
                       session, assembled, commandArgs, systemPaths, workingDirectory, log,
                       forwarded.flatMap(name => env(carrierName(name)).map(name -> _)), runtime, fileRules,
+                      credentials, channelLog,
                     )
               finally
                 teardown(bySignal = false)
@@ -968,12 +1010,19 @@ object RunOnHostSandbox:
     * whose `tmp/` an sbt client reaches its server's socket under — the port of its proxy, which
     * the profile and the environment name, the proxy's log, which the denied-host report
     * reads and whose name the proxy's trust directory has (RunOnHostInspection), and for mill the
-    * one port of its daemon, the port a client's profile admits.
+    * one port of its daemon, the port a client's profile admits, and its pid, whose arguments the
+    * client's profile lets it read (SeatbeltProfile.Network.MillClient).
     * Created with the program's rule file as read then, in the session whose records
     * name its groups — the runner's for its launch's sbt, mill and gradle commands, or another launch's
     * runner's when this launch attaches to its runtime (RunnerRuntimes), the command's own for
     * Maven and for the acceptance test's entry — and ended with that session. */
-  case class Runtime(session: Path, proxyPort: Int, proxyLog: Path, daemonPort: Option[Int] = None):
+  case class Runtime(
+    session: Path,
+    proxyPort: Int,
+    proxyLog: Path,
+    daemonPort: Option[Int] = None,
+    daemonPid: Option[Long] = None,
+  ):
     def tmp: Path = session.resolve(RunOnHostSession.TmpDir)
     def trust: Path = RunOnHostInspection.trustDirectory(proxyLog)
 
@@ -1020,10 +1069,15 @@ object RunOnHostSandbox:
     )
 
   /** The proxy registered at `record`, logging to `proxyLog`: its bound port. */
-  private def createProxy(systemPaths: SeatbeltProfile.SystemPaths)(
+  private def createProxy(
+    systemPaths: SeatbeltProfile.SystemPaths,
+    credentials: Seq[BrokeredCredential],
+    channelLog: Option[Path],
+  )(
     program: Program, fileHosts: Vector[String], record: Path, proxyLog: Path,
   ): Either[String, Int] =
-    startProxy(record, program, fileHosts, proxyLog, systemPaths)
+    startProxy(record, program, fileHosts, proxyLog, systemPaths, credentialsFor(program, fileHosts, credentials))
+      .map(_ => channelLog.foreach(linkAuditLog(_, proxyLog)))
       .flatMap(_ => awaitProxyPort(proxyLog, deadlineMillis = 30_000))
 
   /** What one sbt server is started from: the runtime whose proxy it uses, the request whose
@@ -1074,12 +1128,16 @@ object RunOnHostSandbox:
     systemPaths: SeatbeltProfile.SystemPaths,
     forwards: Vector[(String, String)],
     fileRules: FileRules.Resolved,
+    credentials: Vector[BrokeredCredential] = Vector.empty,
+    // The launch's channel log, beside which each proxy's audit log is linked (linkAuditLog).
+    channelLog: Option[Path] = None,
   )(
     processes: RunOnHostSession.Processes = RunOnHostSession.HostProcesses,
     assemble: (Path, Program, Path) => Either[String, Assembled] =
       (project, program, buildDirectory) =>
         RunOnHostSandbox.assemble(project, program, name => Option(System.getenv(name)), buildDirectory),
-    proxy: (Program, Vector[String], Path, Path) => Either[String, Int] = createProxy(systemPaths),
+    proxy: (Program, Vector[String], Path, Path) => Either[String, Int] =
+      createProxy(systemPaths, credentials, channelLog),
     server: ServerStart => Either[String, Unit] =
       start => startSbtServer(session, systemPaths, forwards, fileRules, start),
     daemon: DaemonStart => Either[String, RunOnHostMillDaemons.Daemon] =
@@ -1291,7 +1349,9 @@ object RunOnHostSandbox:
       started match
         case Right(found) =>
           Right(current.copy(
-            runtime = current.runtime.copy(daemonPort = Some(found.port)), daemon = Some(found), daemonConfig = config,
+            runtime = current.runtime.copy(daemonPort = Some(found.port), daemonPid = Some(found.pid)),
+            daemon = Some(found),
+            daemonConfig = config,
           ))
         case Left(reason) =>
           Left(discard(Program.Mill, current.hash, record).fold(kept => s"$reason; $kept", _ => reason))
@@ -1483,7 +1543,10 @@ object RunOnHostSandbox:
                       else if !namesDerivedSocket(buildDirectory, ownerTmp) then
                         Left("the portfile does not name its server's socket, or the socket is redirected")
                       else Right(())
-                yield Runtime(owner, descriptor.proxyPort, ownerProxyLog, descriptor.daemon.map(_.port))
+                yield Runtime(
+                  owner, descriptor.proxyPort, ownerProxyLog,
+                  descriptor.daemon.map(_.port), descriptor.daemon.map(_.pid),
+                )
               checked.fold(Attachment.Unattachable(_), Attachment.Attached(_))
 
     /**
@@ -1781,12 +1844,17 @@ object RunOnHostSandbox:
     forwards: Vector[(String, String)],
     runnerRuntime: Option[Runtime],
     fileRules: FileRules.Resolved,
+    credentials: Vector[BrokeredCredential],
+    channelLog: Option[Path],
   ): Either[String, Int] =
     val program = assembled.prereqs.program
     val buildDirectory = workingDirectory.getOrElse(assembled.prereqs.project)
     for
       runtime <- runnerRuntime.map(Right(_)).getOrElse(
-        ownRuntime(session, assembled, buildDirectory, commandArgs, systemPaths, forwards, fileRules, log),
+        ownRuntime(
+          session, assembled, buildDirectory, commandArgs, systemPaths, forwards, fileRules, credentials, channelLog,
+          log,
+        ),
       )
       // The runner's log has served earlier commands: the report reads what this one adds.
       reportFrom = logLength(runtime.proxyLog)
@@ -1794,8 +1862,8 @@ object RunOnHostSandbox:
       network <- program match
         case Program.Sbt => Right(SeatbeltProfile.Network.SbtClient(runtime.tmp))
         case Program.Mill =>
-          runtime.daemonPort.map(SeatbeltProfile.Network.MillClient(_))
-            .toRight("the mill runtime names no daemon port")
+          runtime.daemonPort.zip(runtime.daemonPid).map(SeatbeltProfile.Network.MillClient(_, _))
+            .toRight("the mill runtime names no daemon port and pid")
         case Program.Gradle => Right(SeatbeltProfile.Network.Gradle)
         case Program.Mvn    => Right(SeatbeltProfile.Network.ProxyOnly)
       profile <- SeatbeltProfile.render(
@@ -1837,10 +1905,12 @@ object RunOnHostSandbox:
     systemPaths: SeatbeltProfile.SystemPaths,
     forwards: Vector[(String, String)],
     fileRules: FileRules.Resolved,
+    credentials: Vector[BrokeredCredential],
+    channelLog: Option[Path],
     log: String => Unit,
   ): Either[String, Runtime] =
     val program = assembled.prereqs.program
-    RunnerRuntimes(session, assembled.prereqs.project, log, systemPaths, forwards, fileRules)(
+    RunnerRuntimes(session, assembled.prereqs.project, log, systemPaths, forwards, fileRules, credentials, channelLog)(
       assemble = (_, _, _) => Right(assembled),
     )
       .prepare(program, buildDirectory, commandArgs)
@@ -1849,7 +1919,9 @@ object RunOnHostSandbox:
         case None =>
           val proxyLog = session.directory.resolve("proxy.log")
           readProgramRules(assembled.prereqs.project, program)
-            .flatMap(createProxy(systemPaths)(program, _, session.records.resolve("proxy"), proxyLog))
+            .flatMap(
+              createProxy(systemPaths, credentials, channelLog)(program, _, session.records.resolve("proxy"), proxyLog),
+            )
             .map(Runtime(session.directory, _, proxyLog))
 
   private[launcher] def logLength(file: Path): Long =
@@ -1878,6 +1950,40 @@ object RunOnHostSandbox:
         realPath(Path.of(javaHome)).toRight(s"the JDK $javaHome is not readable").map: jdk =>
           SeatbeltProfile.ProxyInputs(Seq(jdk), selfClassPath(classPath).map(Path.of(_)).flatMap(realPath), systemPaths)
 
+  /**
+   * Where a host proxy's audit log is also found: beside the launch's channel log, in the project's
+   * log directory, named as `--egress-log` lists a proxy's log and the launch's pruning keeps it while
+   * its run is live (EgressRules.logsToPrune). `run-on-host-<stamp>-<run>.log` and a session's
+   * `proxy-sbt-<hash>.log` give `proxy-<stamp>-<session>-proxy-sbt-<hash>-<run>.log`.
+   */
+  def projectAuditLog(channelLog: Path, proxyLog: Path): Option[Path] =
+    channelLog.getFileName.toString match
+      case s"run-on-host-$stampAndRun.log" if stampAndRun.contains('-') =>
+        val stamp = stampAndRun.take(stampAndRun.lastIndexOf('-'))
+        val run = stampAndRun.drop(stampAndRun.lastIndexOf('-') + 1)
+        val stem = proxyLog.getFileName.toString.stripSuffix(".log")
+        Some(channelLog.resolveSibling(s"proxy-$stamp-${proxyLog.getParent.getFileName}-$stem-$run.log"))
+      case _ => None
+
+  /** A second name for the proxy's log, a hard link, so its lines are there while it writes them and stay
+    * when its session's directory goes. A link that cannot be made is reported in the channel log, where the
+    * session's end appends the log's tail (appendSessionLogs). */
+  private def linkAuditLog(channelLog: Path, proxyLog: Path): Unit =
+    projectAuditLog(channelLog, proxyLog).foreach: link =>
+      // Owner-only, as the container proxy's log is: the targets it records are what a GET carries out.
+      try
+        Files.setPosixFilePermissions(proxyLog, java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"))
+        Files.createLink(link, proxyLog)
+      catch
+        case ex: (IOException | UnsupportedOperationException) =>
+          try
+            Files.writeString(
+              channelLog,
+              s"${java.time.Instant.now()} the proxy's audit log $proxyLog is not linked as $link: ${ex.getMessage}\n",
+              UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND,
+            )
+          catch case _: IOException => ()
+
   /** The proxy's profile, beside its log. */
   private def proxyProfileFile(proxyLog: Path): Path =
     proxyLog.resolveSibling(proxyLog.getFileName.toString.stripSuffix(".log") + ".sb")
@@ -1885,7 +1991,7 @@ object RunOnHostSandbox:
   /** The proxy under its profile (SeatbeltProfile.renderProxy), beside its log. */
   private def startProxy(
     record: Path, program: Program, fileHosts: Vector[String], proxyLog: Path,
-    systemPaths: SeatbeltProfile.SystemPaths,
+    systemPaths: SeatbeltProfile.SystemPaths, credentials: Vector[BrokeredCredential],
   ): Either[String, Process] =
     for
       names <- RunOnHostInspection.leafNames(egressRuleText(program, fileHosts))
@@ -1894,11 +2000,12 @@ object RunOnHostSandbox:
       profile <- SeatbeltProfile.renderProxy(
         inputs.copy(reads = inputs.reads :+ RunOnHostInspection.leafDirectory(proxyLog)),
       )
-      started <- startProxyUnder(profile, record, program, fileHosts, proxyLog)
+      started <- startProxyUnder(profile, record, program, fileHosts, proxyLog, credentials)
     yield started
 
   private def startProxyUnder(
     profile: String, record: Path, program: Program, fileHosts: Vector[String], proxyLog: Path,
+    credentials: Vector[BrokeredCredential],
   ): Either[String, Process] =
     try
       val profileFile = proxyProfileFile(proxyLog)
@@ -1935,12 +2042,25 @@ object RunOnHostSandbox:
       builder.environment.put(
         agentsandbox.egress.AgentEgressProxy.PrivateKeyVariable, RunOnHostInspection.leafKey(proxyLog).toString,
       )
+      // The credentials by pipe, never an environment or an argument (SECURITY.md, "Who holds a brokered value").
+      if credentials.nonEmpty then
+        builder.environment.put(CredentialGrammar.StdinVariable, CredentialGrammar.StdinValue)
       builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
       // Its stderr is its log, opened here and inherited: the profile grants no write
       // (serverLog), and what sandbox-exec or the JVM says before the proxy prints anything
       // lands where the ready line is awaited.
       builder.redirectError(ProcessBuilder.Redirect.appendTo(proxyLog.toFile))
-      Right(builder.start())
+      val process = builder.start()
+      // On its own thread, so the wait for its port bounds it: up to 256 bindings exceed a pipe's
+      // buffer, and a proxy that stops before reading them would hold a blocking write. A proxy gone
+      // already is reported by that wait.
+      Thread.startVirtualThread: () =>
+        try
+          if credentials.nonEmpty then
+            process.getOutputStream.write(CredentialGrammar.bindingBytes(credentials))
+          process.getOutputStream.close()
+        catch case _: IOException => ()
+      Right(process)
     catch case ex: IOException => Left(s"starting the proxy: ${ex.getMessage}")
 
   /**

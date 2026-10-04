@@ -232,11 +232,15 @@ object EgressRules:
           "An image built by another launcher version prints another format; rebuild with --build.",
       )
     else
-      Right(
-        rulesetLinesOf(dryRunOutput).linesIterator
-          .filter(line => line.startsWith("allow https://") && !line.endsWith(" tunnel"))
-          .map(_.stripPrefix("allow https://").takeWhile(_ != '/'))
-          .toVector
-          .distinct
-          .sorted,
-      )
+      Right(allowedHostsOf(dryRunOutput, tunnel = false))
+
+  /** The hosts the dry run's ruleset tunnels, whose traffic stays opaque: no credential is substituted there. */
+  def tunnelHostsOf(dryRunOutput: String): Vector[String] = allowedHostsOf(dryRunOutput, tunnel = true)
+
+  private def allowedHostsOf(dryRunOutput: String, tunnel: Boolean): Vector[String] =
+    rulesetLinesOf(dryRunOutput).linesIterator
+      .filter(line => line.startsWith("allow https://") && line.endsWith(" tunnel") == tunnel)
+      .map(_.stripPrefix("allow https://").takeWhile(_ != '/'))
+      .toVector
+      .distinct
+      .sorted

@@ -14,6 +14,8 @@ import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 
 import scala.util.control.NonFatal
 
+import agentsandbox.egress.{BrokeredCredential, CredentialGrammar}
+
 import HostCommands.Os
 
 object RunOnHostChannel:
@@ -200,6 +202,10 @@ object RunOnHostChannel:
     mount: String,
     /** How long the runner waits for a complete request before the handshake expires. */
     requestDeadlineMillis: Long = 30_000,
+    /** Given a program and the runtime options its word carries: the brokered credentials its
+      * supervisor reads after the word, for the proxy it starts itself when the runner holds no runtime
+      * for the program (RunOnHostSandbox.CredentialsOption), as CredentialGrammar.bindingInput writes them. */
+    credentialsFrame: (String, Seq[String]) => Option[String] = (_, _) => None,
   )
 
   /**
@@ -428,7 +434,11 @@ object RunOnHostChannel:
           val word = prepared match
             case Right(arguments) if !endAsked.get =>
               phase.set(ChildPhase.Running)
-              RunOnHostSession.runWord(arguments)
+              // After the word, not in it: the lock holder makes the word's fields the supervisor's
+              // arguments, which other processes read (RunOnHostSession.LockScript).
+              service.credentialsFrame(request.program, arguments) match
+                case Some(frame) => RunOnHostSession.runWord(arguments :+ RunOnHostSandbox.CredentialsOption) + frame
+                case None        => RunOnHostSession.runWord(arguments)
             case Right(_) =>
               phase.set(ChildPhase.Ending)
               RunOnHostSession.refusedWord("refused: the command was ended before it started")
@@ -542,6 +552,9 @@ object RunOnHostChannel:
     // The launch's resolved file rules, which every profile the runner and its commands render
     // denies writes to (RunOnHostSandbox.fileRulesOf).
     fileRules: Option[Path] = None,
+    // The brokered credentials, written to the runner's standard input: by pipe, as everywhere below the
+    // launcher, never an environment or an argument (design.md, "Credential brokering at the egress proxy").
+    credentials: Seq[BrokeredCredential] = Seq.empty,
   ): Boolean =
     try
       val builder = ProcessBuilder(
@@ -551,28 +564,42 @@ object RunOnHostChannel:
               "--serve-run-on-host", podman, container, project.toString,
               programs.mkString(","), logFile.toString,
             ) ++ forwards.map(forward => RunOnHostSandbox.EnvOption + forward.name)
-              ++ fileRules.map(file => RunOnHostSandbox.FileRulesOption + file) :+ mount)*,
+              ++ fileRules.map(file => RunOnHostSandbox.FileRulesOption + file)
+              ++ Option.when(credentials.nonEmpty)(RunOnHostSandbox.CredentialsOption) :+ mount)*,
           ))*,
       )
+      EgressCredentials.scrub(builder)
       forwards.foreach: forward =>
         forward.value.orElse(Option(System.getenv(forward.name))).foreach: value =>
           builder.environment.put(RunOnHostSandbox.carrierName(forward.name), value)
-      builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
+      if credentials.isEmpty then builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
       builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
       builder.redirectError(ProcessBuilder.Redirect.DISCARD)
-      builder.start()
+      val runner = builder.start()
+      val input = runner.getOutputStream
+      try if credentials.nonEmpty then input.write(CredentialGrammar.bindingBytes(credentials))
+      finally input.close()
       true
     catch case _: IOException => false
 
   /** `--serve-run-on-host <podman> <container> <project> <programs-csv> <log-file>
-    * [--env=<name>...] [--file-rules=<file>] <mount>`: spawned by the launcher before it hands
+    * [--env=<name>...] [--file-rules=<file>] [--credentials-on-stdin] <mount>`: spawned by the launcher before it hands
     * over to podman, detached like the reaper. The trailing mount is what the project is mounted
     * at inside the container; the acceptance test's shim passes the project's path too. */
   def serveMain(args: Seq[String]): Unit =
     def isOption(arg: String) =
       arg.startsWith(RunOnHostSandbox.EnvOption) || arg.startsWith(RunOnHostSandbox.FileRulesOption)
+        || arg == RunOnHostSandbox.CredentialsOption
     args match
       case Seq(podman, container, projectArg, programsCsv, logFile, rest*) if rest.filterNot(isOption).sizeIs == 1 =>
+        // First: the launcher wrote them before the runner could read anything else.
+        val credentials =
+          if !rest.contains(RunOnHostSandbox.CredentialsOption) then Vector.empty
+          else
+            RunOnHostSandbox.readStdinCredentials().fold(
+              reason => { Console.err.println(s"--serve-run-on-host: the brokered credentials: $reason"); sys.exit(2) },
+              identity,
+            )
         val forwardedNames = RunOnHostSandbox.forwardedNames(rest)
         val trailing = rest.filterNot(isOption)
         val logPath = Path.of(logFile)
@@ -623,6 +650,8 @@ object RunOnHostChannel:
           session, project, log, RunOnHostSandbox.bundledSystemPaths(),
           forwardedNames.flatMap(name => Option(System.getenv(RunOnHostSandbox.carrierName(name))).map(name -> _)),
           fileRules,
+          credentials,
+          Some(logPath),
         )(scavenge = () =>
           RunOnHostSession
             .scavenge(
@@ -679,6 +708,14 @@ object RunOnHostChannel:
           ended = programName =>
             RunOnHostPrereqs.Program.values.find(_.name == programName).foreach(runtimes.commandEnded),
           mount = trailing.head,
+          // A command the runner holds a runtime for uses that runtime's proxy, which the runner started.
+          credentialsFrame = (programName, runtimeArguments) =>
+            RunOnHostPrereqs.Program.values.find(_.name == programName)
+              .filter(_ => runtimeArguments.isEmpty)
+              .flatMap(program => RunOnHostSandbox.readProgramRules(project, program).toOption.map(program -> _))
+              .map((program, hosts) => RunOnHostSandbox.credentialsFor(program, hosts, credentials))
+              .filter(_.nonEmpty)
+              .map(CredentialGrammar.bindingInput),
         )
         log(s"serving $programsCsv for $project in $container")
         serve(transport, service, log)

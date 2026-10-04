@@ -309,11 +309,22 @@ restore permission prompts and set the Claude Code status line.
                          Windows needs a different design to enforce the filesystem restrictions.
                          See SECURITY.md "Run on host" and doc/run-on-host.md.
       --env=<name>[=<value>]
-                         set a variable in the sandbox and --run-on-host commands.
+                         set an environment variable in the sandbox and --run-on-host
+                         commands.
                          An explicit <value> needs no export on the host.
                          Without <value>, use the host's value; an unset name fails.
                          Repeatable; KO_AGENT_SANDBOX_* names are refused.
                          Before forwarding a secret, read SECURITY.md
+      --egress-cred=<name>@<host>[/<prefix>/][:<header>|?<param>]
+                         give environment variable <name> to the egress proxy, which
+                         puts its value in Authorization, or in header <header> or
+                         query parameter <param>, of requests to <host> under
+                         /<prefix>/ alone. The sandbox and --run-on-host commands
+                         see <name> set to a placeholder, which the proxy replaces.
+                         <host> must be inspected by the session's rules or a
+                         --run-on-host program's. Repeatable, each name once.
+                         See doc/egress-proxy.md "Brokered credentials" and SECURITY.md
+                         "Who holds a brokered value".
 
     Management actions, each recognized before the command; whatever follows
     belongs to the action:
@@ -351,9 +362,9 @@ restore permission prompts and set the Claude Code status line.
                          Starts a temporary proxy container.
                          Inside a session, ko-sandbox-egress-check <host>
                          checks through the running proxy
-      --proxy-log        print this project's retained proxy audit logs;
-                         with extra args (-f, --tail 50), run podman logs on the
-                         running proxies instead
+      --egress-log       print this project's retained proxy audit logs, the
+                         run-on-host proxies' included; with extra args (-f,
+                         --tail 50), run podman logs on the running proxies instead
 
       --self-test [<filter>]
                          run the workspace filter's own suites; <filter> selects one

@@ -55,8 +55,8 @@ the code that enforces each part:
 | the generated profile | `SeatbeltProfile.scala` |
 | the exit criteria, measured | `src/probe/run-on-host-acceptance-test.sh` |
 
-The full acceptance test (`all`) reports **255 PASS, 0 FAIL, 0 SKIP** on macOS 26.4.1 arm64 with
-Temurin 25.0.4, sbt 2.0.9, Mill 1.1.9, Gradle 9.7.1 and Maven 3.9.16 (2026-09-21).
+The full acceptance test (`all`) reports **295 PASS, 0 FAIL, 0 SKIP** on macOS 26.4.1 arm64 with
+Temurin 25.0.4, sbt 2.0.9, Mill 1.1.10, Gradle 9.8.0 and Maven 3.9.16 (2026-10-04).
 
 The measurement behind the feature: an `sbt test` of this project takes about 2 GB inside the podman
 machine, whose total is fixed when the machine is created and shared with every other session on it.
@@ -1311,9 +1311,9 @@ rest, measured:
   profiles use for system frameworks; a JDK outside those paths loads without it.
 - Adopted from `system.sb` rather than re-derived: `file-test-existence`, a narrower operation than
   `file-read*` for the ancestor chain.
-- The profile lets a command read another process's arguments and environment through `sysctl`
-  `kern.procargs2`, the call behind `ps -E` (`run-on-host-profile-iterate.sh procargs`,
-  2026-10-04):
+- The profile denies a command reading another process's arguments and environment through
+  `sysctl` `kern.procargs2`, the call behind `ps -E` (`SeatbeltProfile.ProcessReadRule`;
+  `run-on-host-profile-iterate.sh procargs`, 2026-10-04):
   - the kernel answers for any process of the same user. It withholds the environment, not the
     arguments, of a code-signing restricted target, as Apple's own binaries are, unless the
     caller is that target (xnu, `sysctl_procargsx`);
@@ -1325,10 +1325,20 @@ rest, measured:
     `profiles/10-system-runtime.sb`);
   - under that rule the same sandbox is the inherited one: the read succeeds for a child the
     reader starts, and is refused for a JDK under a `sandbox-exec` of its own with the same
-    profile. `ProcessHandle.of` still finds every process, those outside included, so a client's
-    check of its server's pid is unaffected;
-  - SECURITY.md, "Run on host", states what a command reaches by it, and `TODO.md`, "A host
-    command reads other processes' environments", has the rule's adoption.
+    profile. `ProcessHandle.of` still finds every process, those outside included;
+  - `ProcessHandle.info()` of a process outside throws "Operation not permitted": the JDK reads
+    its arguments for it, and throws on any error but `EINVAL` and `EIO`
+    (`ProcessHandleImpl_macosx.c`). Mill 1.1.10's client checks its daemon that way (`PidLock`),
+    and the acceptance test's mill rows fail under the rule without the exception below
+    (2026-10-04);
+  - `(allow sysctl-read (sysctl-name "kern.procargs2.<pid>"))` after the rule opens the read, and
+    `info()`, for that one process: every other target stays denied (the probe's last row,
+    2026-10-04);
+  - a mill client's profile allows that name for its daemon (`SeatbeltProfile.Network.MillClient`):
+    the runner gave the daemon the client's own environment, so the read exposes nothing the client
+    lacks;
+  - the acceptance test's process rows read a JDK outside the profile and a child inside it,
+    under every program's profile.
 
 Prior art: Bazel sandboxes build actions on macOS with `sandbox-exec` — this feature's problem
 exactly — and its generated profile is worth reading and worth *not* copying.
@@ -1378,6 +1388,24 @@ each connection through `podman exec`, adding the VM round trip to exactly the p
 moved out of the VM to avoid. A JVM proxy client speaks TCP, so a loopback listener is unavoidable
 either way; what is worth controlling is the rules behind it: an attacker who reaches a proxy
 allowing one artifact repository can reach only that repository through it.
+
+A launch with `--egress-cred` gives each proxy its bindings (`RunOnHostSandbox.credentialsFor`;
+SECURITY.md, "Who holds a brokered value"), on its standard input under `EGRESS_CREDS=stdin`:
+
+- the runner reads the launch's bindings on its own standard input, written by the launcher;
+- a Maven supervisor reads its proxy's bindings after the runner's run word
+  (`RunOnHostSession.runWord`), which carries `--credentials-on-stdin` and no value; the lock
+  holder reads the word a byte at a time, so the bindings stay in the pipe across its `exec`
+  (`RunOnHostSession.LockScript`);
+- a proxy reads them once, at start, so a rule-file edit reaches them as it reaches the hosts
+  (below);
+- no proxy outlives the launch whose placeholders it holds, so a mill or Gradle daemon kept across
+  commands never meets a stale binding;
+- a binding widens no proxy's grants: a hostile build's route out is that proxy's hosts, as without
+  one.
+
+A proxy's audit log is also in the project's log directory, where `--egress-log` lists it
+(egress-proxy.md, "Audit what has been allowed or denied").
 
 The proxy lives as long as the session holding its record: the runner's until it retires the
 proxy or ends with the launch, the command's until the supervisor cleans up that invocation — past

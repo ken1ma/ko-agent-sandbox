@@ -8,8 +8,8 @@
 //   java ProcArgs.java <label>=<pid>...     read each target and report what came back
 //   java ProcArgs.java --child=<this file>  start a held child, read it as a target, and end it
 //
-// Each target's line ends with what `ProcessHandle.of` finds: the JDK answers it through
-// sysctl(KERN_PROC_PID), and Mill's client asks it of the daemon it attaches to.
+// Each target's line ends with whether `ProcessHandle.of` finds it, which the JDK answers through
+// sysctl(KERN_PROC_PID), and whether `info()` reads its start time.
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
@@ -75,8 +75,17 @@ public final class ProcArgs {
     private static void report(String label, long pid, MethodHandle sysctl, StructLayout state, long errnoOffset)
         throws Throwable {
         String found = ProcessHandle.of(pid).isPresent() ? "present" : "absent";
-        System.out.println(
-            label + " (pid " + pid + "): " + read(sysctl, state, errnoOffset, pid) + "; ProcessHandle.of " + found);
+        // What Mill's client asks of its daemon (PidLock.isLockValid): on macOS the JDK reads the
+        // target's arguments for info(), and throws when that read is refused.
+        String info;
+        try {
+            info = ProcessHandle.of(pid).flatMap(handle -> handle.info().startInstant()).isPresent()
+                ? "read" : "empty";
+        } catch (RuntimeException ex) {
+            info = "throws " + ex.getMessage();
+        }
+        System.out.println(label + " (pid " + pid + "): " + read(sysctl, state, errnoOffset, pid)
+            + "; ProcessHandle.of " + found + "; info " + info);
     }
 
     /** A held JDK this process starts, so it inherits this process's sandbox, with the marker variable. */
