@@ -25,6 +25,11 @@ start an independent audit of an approved tree.
     effort or instructions the user named, and the author first says it invoked the skill, quoting
     the request. Codex passes a skill no argument, so the skill takes the text after `$ko-review`
     in the user's message as one.
+- A base commit or branch in the skill's argument becomes `--base` (below): `/ko-review HEAD~1`
+  reviews the last commit and whatever is uncommitted, `/ko-review main` whatever differs from
+  `main`.
+- A reviewer of the author's product uses the sign-in the author's session has; the other
+  product's needs its own in this project's sandbox (`REVIEWER_AUTH_FAILED`, below).
 - The skill asks three questions before a new review, each skipped when the argument answers it:
   the reviewer, then, from `ko-review defaults REVIEWER`, the model and the effort. Codex has no
   question tool outside Plan mode (its `default_mode_request_user_input` feature is off in
@@ -303,10 +308,10 @@ For Claude:
   model saved with `/model` selects nothing.
   - Model: `ANTHROPIC_MODEL`, else the managed `model`, else `ANTHROPIC_DEFAULT_MODEL`.
   - Effort: `CLAUDE_CODE_EFFORT_LEVEL`, else the managed top-level `effortLevel`.
-  - A managed `env` block's value outranks the inherited variable, as Claude Code applies it; an
+  - A managed `env` block's value overrides the inherited variable, as Claude Code applies it; an
     empty one unsets the variable.
   - Managed files are `managed-settings.json` and `managed-settings.d/*.json` in `/etc/claude-code`,
-    on macOS `/Library/Application Support/ClaudeCode`; a drop-in outranks the main file, and a
+    on macOS `/Library/Application Support/ClaudeCode`; a drop-in overrides the main file, and a
     later one in alphabetical order an earlier one.
   - Not on disk: server-managed settings and a role's effort cap.
 - Managed `modelSettings`, an effort per model under Claude Code's canonical model names, are not
@@ -369,7 +374,7 @@ is kept.
   with exit status 0, `is_error` true and the error text in `result` (anthropics/claude-code
   #79500). The helper treats a `result` event with `is_error` or a `subtype` other than `success`
   as the turn's failure, and its `errors` or `result` text as the reviewer's words.
-- `CLAUDE_CODE_EFFORT_LEVEL` outranks `--effort` (code.claude.com/docs/en/env-vars), so the
+- `CLAUDE_CODE_EFFORT_LEVEL` overrides `--effort` (code.claude.com/docs/en/env-vars), so the
   helper sets the variable to the chosen effort in the reviewer's environment, on `start` and on
   every resumed round. A managed `env` block would replace it, so `start` refuses, with
   `REVIEWER_CHOICE_REFUSED`, an effort other than the one such a block sets.

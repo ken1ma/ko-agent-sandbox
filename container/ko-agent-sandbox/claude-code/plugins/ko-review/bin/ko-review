@@ -717,7 +717,7 @@ class Claude:
         ]
 
     def environment(self, state):
-        """`CLAUDE_CODE_EFFORT_LEVEL` outranks `--effort` (code.claude.com/docs/en/env-vars), so an
+        """`CLAUDE_CODE_EFFORT_LEVEL` overrides `--effort` (code.claude.com/docs/en/env-vars), so an
         inherited one would run every round at its level while the review records the chosen one."""
         if not state.get("effort"):
             return None
@@ -1610,7 +1610,7 @@ def claude_defaults(root):
     session loads no user, project or local settings file (`--setting-sources ""`), so what selects
     them is the environment and the managed settings: `ANTHROPIC_MODEL`, else the managed `model`,
     else `ANTHROPIC_DEFAULT_MODEL`; `CLAUDE_CODE_EFFORT_LEVEL`, else the managed top-level
-    `effortLevel`. A managed `env` block outranks the inherited variable. A value nothing sets stays
+    `effortLevel`. A managed `env` block overrides the inherited variable. A value nothing sets stays
     null: Claude Code's own default, which the skill leaves to it by passing no option.
 
     Managed `modelSettings`, which set an effort per model under Claude Code's canonical model names,

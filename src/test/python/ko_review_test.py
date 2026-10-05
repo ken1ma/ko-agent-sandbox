@@ -1371,7 +1371,7 @@ class ClaudeHelperTest(HelperTest):
         allowed = argv[argv.index("--allowedTools") + 1:]
         self.assertTrue(all(tool.startswith("Bash(git ") or tool in ("WebFetch", "WebSearch") for tool in allowed))
 
-    def test_the_chosen_effort_outranks_an_inherited_effort_variable(self):
+    def test_the_chosen_effort_overrides_an_inherited_effort_variable(self):
         self.environment = {"CLAUDE_CODE_EFFORT_LEVEL": "max"}
         self.plan({"result": CHANGES}, {"result": APPROVED}, {"result": APPROVED})
         chosen = self.helper("start", "claude", "--effort", "low", "--message-file", self.message())
@@ -1439,7 +1439,7 @@ class ClaudeHelperTest(HelperTest):
             "model": str(directory / "managed-settings.d/20.json"), "effort": str(directory / "managed-settings.json"),
         })
         self.assertEqual(found["recommended"]["efforts"], [])  # Haiku takes no effort
-        # the variables outrank the managed keys, and a managed env block the inherited variables
+        # the variables override the managed keys, and a managed env block the inherited variables
         self.environment = {**managed, "ANTHROPIC_MODEL": "fable", "CLAUDE_CODE_EFFORT_LEVEL": "max",
                             "ANTHROPIC_DEFAULT_MODEL": "opus"}
         found = self.helper("defaults", "claude")

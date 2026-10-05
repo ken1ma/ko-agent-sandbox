@@ -271,7 +271,7 @@ RUN set -euxo pipefail; \
     apt-get install -y --no-install-recommends \
         claude-code \
         # Claude Code's own sandbox for Bash commands, off in the managed settings below.
-        # Carried because an organization's server-managed settings, which outrank that
+        # Carried because an organization's server-managed settings, which override that
         # file, can enforce sandbox.failIfUnavailable: without these the session exits,
         # with the reason on stderr, which the TUI discards. Enabled in here it would
         # also need enableWeakerNestedSandbox: bwrap cannot mount a fresh /proc under
