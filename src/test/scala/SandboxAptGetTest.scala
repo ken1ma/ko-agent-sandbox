@@ -172,8 +172,8 @@ class SandboxAptGetTest extends munit.FunSuite:
       assert(Files.exists(f.usrBin.resolve("old-only")), "1.9 shipped old-only")
       assert(Files.exists(f.localBin.resolve("old-only")), "old-only was wrapped")
 
-      // 1.10 arrives beside 1.9 in the cache, as a mid-session `update` then `install` leaves it.
-      // 1.10 precedes 1.9 by filename, so only a version compare picks it as the newer.
+      // 1.10 arrives beside 1.9 in the cache, as a mid-session `update` then `install` leaves it,
+      // and precedes it by filename; the install resolves to 1.10 alone.
       f.install("demo", "1.10", "usr/bin/common")
       assert(!Files.exists(f.usrBin.resolve("old-only")), "the upgrade removed old-only")
       assert(!Files.exists(f.localBin.resolve("old-only")), "the upgrade swept old-only's wrapper")
@@ -183,6 +183,17 @@ class SandboxAptGetTest extends munit.FunSuite:
       // A re-run with the same cache extracts nothing new and fails nothing.
       assertEquals(f.sandboxAptGet("install", "demo"), 0)
       assert(!Files.exists(f.usrBin.resolve("old-only")), "the re-run kept old-only gone")
+
+  test("an install resolving to an older version than the one extracted replaces it"):
+    fixture: f =>
+      f.install("demo", "2.0", "usr/bin/common", "usr/bin/new-only")
+      // `install demo=1.0`: neither version is in the image's dpkg status, apt's baseline, so apt
+      // resolves to 1.0 as a new install and reports no downgrade.
+      f.install("demo", "1.0", "usr/bin/common", "usr/bin/old-only")
+      assertEquals(run(f.usrBin.resolve("common")), "demo common 1.0\n", "common is the selected version")
+      assert(Files.exists(f.localBin.resolve("old-only")), "1.0's own command is wrapped")
+      assert(!Files.exists(f.usrBin.resolve("new-only")), "the command 2.0 alone shipped is removed")
+      assert(!Files.exists(f.localBin.resolve("new-only")), "and so is its wrapper")
 
   test("a command of the same name another installer put in ~/.local/bin is left alone"):
     fixture: f =>

@@ -1,6 +1,8 @@
-"""Tests of the ko-review plugin's helper against a fake `codex` and a fake `claude` on PATH; no model
-is used."""
+"""Tests of the ko-review plugin's helper against a fake `codex` and a fake `claude` on PATH, and of its
+`stream_events` loaded into this process; no model is used."""
 
+import importlib.machinery
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -10,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import types
 import unittest
 
 
@@ -21,7 +24,7 @@ HELPER = PLUGIN / "bin/ko-review"
 # one per invocation from the file FAKE_REVIEWER_SCRIPT names; each invocation appends its argv and
 # stdin to FAKE_REVIEWER_LOG.
 FAKE_REVIEWER = r'''#!/usr/bin/env python3
-import json, os, sys, time
+import json, os, subprocess, sys, time
 name = os.path.basename(sys.argv[0])
 args = sys.argv[1:]
 if args == ["--version"]:
@@ -54,7 +57,7 @@ step = script.pop(0) if script else {}
 open(os.environ["FAKE_REVIEWER_SCRIPT"], "w").write(json.dumps(script))
 with open(os.environ["FAKE_REVIEWER_LOG"], "a") as log:
     log.write(json.dumps({
-        "argv": args, "prompt": prompt, "cwd": os.getcwd(), "pid": os.getpid(),
+        "argv": args, "prompt": prompt, "cwd": os.getcwd(), "pid": os.getpid(), "pgid": os.getpgid(0),
         "effort_variable": os.environ.get("CLAUDE_CODE_EFFORT_LEVEL"),
     }) + "\n")
 def emit(event):
@@ -75,6 +78,13 @@ else:
     started = {"type": "system", "subtype": "init", "session_id": thread_id, "model": "fake-model"}
 if step.get("touch"):
     open(step["touch"], "a").write("changed during review\n")
+if step.get("background"):
+    # stays in the reviewer's process group and holds none of its pipes, so only a kill ends it
+    subprocess.Popen(
+        [sys.executable, "-c", "import sys, time; time.sleep(float(sys.argv[1])); open(sys.argv[2], 'w').write('ran')",
+         str(step["background"]["sleep"]), step["background"]["marker"]],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
 if "raw_stdout" in step:
     sys.stdout.write(step["raw_stdout"])
     sys.stdout.flush()
@@ -434,6 +444,106 @@ class HelperTest(unittest.TestCase):
                 self.assertEqual(retried["status"], "APPROVED")
                 self.assert_resumes(self.calls()[-1]["argv"], review["threadId"])
                 self.log.write_text("")
+
+    @both_reviewers
+    def test_a_process_the_reviewer_leaves_in_its_group_is_killed_when_the_reviewer_exits(self):
+        cases = [
+            ("approved", {"result": APPROVED}, 0, "APPROVED"),
+            ("failed", {"raw_stdout": self.thread_started_line("kept"), "exit": 1, "stderr": "boom"}, 1,
+             "REVIEWER_FAILED"),
+        ]
+        markers = []
+        for label, step, status, expected in cases:
+            with self.subTest(label):
+                markers.append(self.root / f"left-running-{label}")
+                self.plan({**step, "background": {"sleep": 2, "marker": str(markers[-1])}})
+                output = self.helper("start", self.reviewer, "--message-file", self.message(), expect=status)
+                self.assertEqual(output["status"] if status == 0 else output["error"]["code"], expected, output)
+                # the group's id is not the reviewer's pid, which reaping the reviewer frees
+                call = self.calls()[-1]
+                self.assertNotEqual(call["pgid"], call["pid"])
+        threading.Event().wait(3)  # past the background process's sleep: left running, it would have written
+        self.assertEqual([marker.name for marker in markers if marker.exists()], [])
+
+    # The tests of `stream_events` in this process: the helper loaded as a module, its `os.killpg`
+    # recording the groups it signals, and a leader with a reviewer that exits at once, started as
+    # `run_reviewer` starts them.
+    def helper_module(self):
+        loader = importlib.machinery.SourceFileLoader("ko_review_helper", str(HELPER))
+        helper = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(helper)
+        signalled = []
+
+        def killpg(pgid, signum):
+            signalled.append(pgid)
+            os.killpg(pgid, signum)
+
+        helper.os = types.SimpleNamespace(**{**vars(os), "killpg": killpg})
+        return helper, signalled
+
+    def reviewer_group(self):
+        leader = subprocess.Popen(["cat"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, process_group=0)
+        process = subprocess.Popen(
+            ["sleep", "0"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, process_group=leader.pid,
+        )
+        return leader, process
+
+    REVIEW = types.SimpleNamespace(reviewer=types.SimpleNamespace(name="fake", thread_id=lambda event: None))
+
+    def test_a_timeout_firing_as_the_reviewer_exits_signals_the_group_once_and_before_the_leader_is_reaped(self):
+        """A timer callback that started before its cancellation is paused until the reviewer has exited
+        and the helper is cleaning up, where it must still find the group's leader unreaped, and the
+        helper must not signal the group a second time."""
+        helper, signalled = self.helper_module()
+        leader, process = self.reviewer_group()
+        released = threading.Event()
+        leader_unreaped_at_callback = []
+
+        class PausedTimer(threading.Thread):
+            def __init__(self, interval, function):
+                super().__init__(daemon=True)
+                self.function = function
+
+            def run(self):
+                released.wait(10)
+                leader_unreaped_at_callback.append(leader.returncode is None)
+                self.function()
+
+            def cancel(self):
+                pass
+
+        helper.threading = types.SimpleNamespace(**{**vars(threading), "Timer": PausedTimer})
+        threading.Timer(0.5, released.set).start()  # long after a cleanup that does not wait has reaped
+        events, started, bad_line, timed_out = helper.stream_events(
+            self.REVIEW, process, leader, "", None, 3600, self.root / "events.jsonl",
+        )
+        self.assertEqual((events, started, bad_line, timed_out), ([], None, None, True))
+        self.assertEqual(leader_unreaped_at_callback, [True])
+        self.assertEqual(signalled, [leader.pid])
+        self.assertIsNotNone(leader.returncode)
+
+    def test_an_interruption_after_the_leader_is_reaped_does_not_signal_the_group_again(self):
+        """An interrupt raised as the normal cleanup returns from reaping the leader: the cleanup the
+        exception handler repeats must not signal the group, whose id the reaping freed."""
+        import signal
+        helper, signalled = self.helper_module()
+        leader, process = self.reviewer_group()
+        reap = leader.wait
+
+        def reap_then_interrupt():
+            reap()
+            leader.wait = reap
+            raise KeyboardInterrupt
+
+        leader.wait = reap_then_interrupt
+        ignored = (*helper.TERMINATING_SIGNALS, signal.SIGINT)  # the handler leaves them ignored
+        handlers = {signum: signal.getsignal(signum) for signum in ignored}
+        self.addCleanup(lambda: [signal.signal(signum, handler) for signum, handler in handlers.items()])
+        with self.assertRaises(helper.ReviewError) as raised:
+            helper.stream_events(self.REVIEW, process, leader, "", None, 3600, self.root / "events.jsonl")
+        self.assertEqual(raised.exception.code, "TURN_INTERRUPTED")
+        self.assertEqual(signalled, [leader.pid])
+        self.assertIsNotNone(leader.returncode)
 
     def test_a_helper_failure_while_codex_runs_kills_codex_before_the_lock_is_released(self):
         review_id = self.start()["reviewId"]

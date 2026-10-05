@@ -189,8 +189,9 @@ edits like any other, and the user commits them when and as they choose.
     the thread. Before any round has completed, the retry sends the reviewer prompt again.
   - A round that ends in an error does not count toward `maxRounds`, so retries after a usage
     limit do not use up the review.
-  - Whatever ends the turn, the helper kills the reviewer's process group and waits for it before
-    it returns, so no reviewer turn runs on past the lock that serialized it.
+  - Whatever ends the turn, the reviewer's own exit included, the helper kills the reviewer's
+    process group and waits for the reviewer before it returns, so neither the reviewer nor a
+    process it left in that group runs on past the lock that serialized the turn.
   - Every reviewer error's `error` carries `reviewer`, the name the message uses:
     - `REVIEWER_AUTH_FAILED`: `codex login status` or `claude auth status` reports no sign-in,
       whichever credential store the CLI uses; sign in to that CLI in this project's sandbox.
@@ -409,6 +410,9 @@ fake script installed as both `codex` and `claude` on `PATH`, each imitating its
   the export, the lock, the round limit, escalation, and state namespacing.
 - The tests marked `both_reviewers` run against each fake; the rest, whose subject is the helper's
   own logic, run against the fake Codex only.
+- Two tests load the helper as a module and call `stream_events` in the test's process, with a
+  timeout callback paused into the cleanup and with an interrupt raised inside it: orderings a
+  fake reviewer cannot force.
 - Claude's own tests cover its command line, the effort variable in its environment, the effort
   a managed `env` block sets, and the sources of its defaults.
 - `KoReviewTest` also runs `claude plugin validate` on the plugin when `claude` is on `PATH`, and

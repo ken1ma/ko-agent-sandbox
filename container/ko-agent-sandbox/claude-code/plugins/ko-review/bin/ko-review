@@ -897,14 +897,16 @@ def classify_failure(reviewer, returncode, stderr, events):
     return reviewer_failed(reviewer, f"{reviewer.name} failed", stderr, events, **detail)
 
 
-def stream_events(review, process, prompt, resume_id, timeout, events_path):
+def stream_events(review, process, leader, prompt, resume_id, timeout, events_path):
     """Feeds the prompt, copies the reviewer's JSONL to the round's file and parses it as it arrives.
 
     The thread id is persisted the moment the reviewer's event names it: whatever ends the turn
     after that, a timeout, an interrupt or unparsable later output, the thread holds the request
-    and a retry resumes it. Any exception kills the reviewer and waits for it before propagating,
-    so no turn outlives the lock that serialized it. Returns the events, the first thread id or
-    None, the first line that is not JSON or None, and whether the timeout killed the reviewer."""
+    and a retry resumes it. The reviewer's process group, which `leader` leads, is killed once the
+    reviewer exits, or at once on any exception, and both are reaped, before this returns or the
+    exception propagates, so no process of that group outlives the lock that serialized the turn.
+    Returns the events, the first thread id or None, the first line that is not JSON or None, and
+    whether the timeout killed the reviewer."""
     def feed():
         try:
             process.stdin.write(prompt.encode())
@@ -914,10 +916,31 @@ def stream_events(review, process, prompt, resume_id, timeout, events_path):
 
     def kill():
         timed_out.append(True)
-        os.killpg(process.pid, signal.SIGKILL)
+        signal_group()
+
+    def signal_group():
+        try:
+            os.killpg(leader.pid, signal.SIGKILL)
+        except ProcessLookupError:  # the leader died too: the group has ended
+            pass
+        signalled.append(True)
+
+    def end_group():
+        # Repeatable, since a signal can interrupt it at any point and the handler below runs it
+        # again. A timer callback that started before cancel() runs to its end, and must find the
+        # leader unreaped. A group signalled once is not signalled again: after the leader is reaped
+        # its pid is free for another group, and macOS answers EPERM for a group of zombies.
+        if timer is not None:
+            timer.cancel()
+            timer.join()
+        if not signalled:
+            signal_group()
+        process.wait()
+        leader.wait()
 
     reviewer = review.reviewer
     timed_out = []
+    signalled = []
     timer = None
     events = []
     started = None
@@ -948,21 +971,15 @@ def stream_events(review, process, prompt, resume_id, timeout, events_path):
                         review.state["threadId"] = started
                         review.save()
         process.wait()
+        end_group()
     except BaseException as raised:
-        # A second signal here would abandon the child again.
-        for signum in TERMINATING_SIGNALS:
+        # A second signal here would abandon the group again.
+        for signum in (*TERMINATING_SIGNALS, signal.SIGINT):
             signal.signal(signum, signal.SIG_IGN)
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
+        end_group()
         if isinstance(raised, KeyboardInterrupt):
             raise ReviewError("TURN_INTERRUPTED", f"interrupted while {reviewer.name} ran")
         raise
-    finally:
-        if timer is not None:
-            timer.cancel()
     return events, started, bad_line, bool(timed_out)
 
 
@@ -975,13 +992,21 @@ def run_reviewer(review, round_number, prompt, resume_id, timeout):
     result_path = review.round_path(round_number, "result.json")
     command = reviewer.command(review.state, resume_id, result_path)
     with open(stderr_path, "wb") as stderr_stream:
+        # A process of the helper's own leads the reviewer's group and lives until the group has been
+        # killed, so the group's id stays taken until then; a reviewer leading its own group frees it
+        # the moment it is reaped, for an unrelated process to take before the kill. The leader reads
+        # the helper's pipe, so it exits with the helper at the latest. Joining its group puts the
+        # reviewer in the helper's session, with the helper's controlling terminal when it has one.
+        leader = subprocess.Popen(["cat"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, process_group=0)
         # cwd, not an option: `codex exec resume` has no `-C`, and both `codex exec` forms refuse a
         # cwd outside a trusted directory.
         process = subprocess.Popen(
             command, cwd=review.root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr_stream,
-            start_new_session=True, env=reviewer.environment(review.state),
+            process_group=leader.pid, env=reviewer.environment(review.state),
         )
-        events, started, bad_line, timed_out = stream_events(review, process, prompt, resume_id, timeout, events_path)
+        events, started, bad_line, timed_out = stream_events(
+            review, process, leader, prompt, resume_id, timeout, events_path,
+        )
     stderr = stderr_path.read_bytes().decode(errors="replace")
     if timed_out:
         raise ReviewerError(
