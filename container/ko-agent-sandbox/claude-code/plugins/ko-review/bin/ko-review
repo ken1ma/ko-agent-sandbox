@@ -8,6 +8,7 @@ volume; doc/ko-review.md describes the design and command output.
 """
 
 import argparse
+import ctypes
 import datetime
 import fcntl
 import hashlib
@@ -39,6 +40,7 @@ DEFAULT_TIMEOUT_SECONDS = 3600
 # Python turns only SIGINT into an exception; these are raised as one below so that a terminated
 # helper still kills the reviewer and reverts the review's state.
 TERMINATING_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+PR_SET_CHILD_SUBREAPER = 36  # prctl(2)
 
 
 class ReviewError(Exception):
@@ -897,14 +899,60 @@ def classify_failure(reviewer, returncode, stderr, events):
     return reviewer_failed(reviewer, f"{reviewer.name} failed", stderr, events, **detail)
 
 
+def adopt_orphans(adopt):
+    """Linux: while set, a descendant whose parent exits becomes this process's child instead of
+    init's, whatever session or group it moved to, where `kill_children` finds it. A no-op elsewhere,
+    where the reviewer's process group is all a turn's end reaches."""
+    if sys.platform != "linux":
+        return
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_SET_CHILD_SUBREAPER, int(adopt), 0, 0, 0) != 0:
+        errno = ctypes.get_errno()
+        raise OSError(errno, f"prctl(PR_SET_CHILD_SUBREAPER): {os.strerror(errno)}")
+
+
+def children_of(pid):
+    children = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            stat = Path("/proc", entry, "stat").read_bytes()
+        except OSError:  # gone meanwhile
+            continue
+        # The parent is the field after the parenthesized command, which holds any bytes, ")" included.
+        if int(stat.rsplit(b")", 1)[1].split()[1]) == pid:
+            children.append(int(entry))
+    return children
+
+
+def kill_children():
+    """Linux: kills and reaps every child of this process, in passes until none is left; the children
+    a killed one leaves are adopted and found by the next pass. A no-op elsewhere."""
+    if sys.platform != "linux":
+        return
+    while children := children_of(os.getpid()):
+        for pid in children:
+            os.kill(pid, signal.SIGKILL)
+        for pid in children:
+            os.waitpid(pid, 0)
+
+
 def stream_events(review, process, leader, prompt, resume_id, timeout, events_path):
     """Feeds the prompt, copies the reviewer's JSONL to the round's file and parses it as it arrives.
 
     The thread id is persisted the moment the reviewer's event names it: whatever ends the turn
     after that, a timeout, an interrupt or unparsable later output, the thread holds the request
-    and a retry resumes it. The reviewer's process group, which `leader` leads, is killed once the
-    reviewer exits, or at once on any exception, and both are reaped, before this returns or the
-    exception propagates, so no process of that group outlives the lock that serialized the turn.
+    and a retry resumes it.
+
+    A thread reads the output, and the turn ends with the reviewer's exit, not with the output's
+    end, which a process the reviewer left holding its stdout decides; a failure in that thread
+    ends the turn too, and is raised here once the cleanup is through. The reviewer's process
+    group, which `leader` leads, is killed once the turn ends, or at once on any exception, both
+    are reaped, and the orphans the helper adopted are killed and reaped, before this returns or
+    the exception propagates, so no process of that group, nor on Linux any descendant of the
+    reviewer, outlives the lock that serialized the turn.
+
     Returns the events, the first thread id or None, the first line that is not JSON or None, and
     whether the timeout killed the reviewer."""
     def feed():
@@ -937,19 +985,19 @@ def stream_events(review, process, leader, prompt, resume_id, timeout, events_pa
             signal_group()
         process.wait()
         leader.wait()
+        kill_children()  # once the reviewer and the leader are reaped, every child is an adopted orphan
+        if reader is not None:
+            reader.join()  # at the output's end: on Linux, every process that held the stdout is dead
+        if events_stream is not None:
+            events_stream.close()
 
-    reviewer = review.reviewer
-    timed_out = []
-    signalled = []
-    timer = None
-    events = []
-    started = None
-    bad_line = None
-    try:
-        threading.Thread(target=feed, daemon=True).start()
-        timer = threading.Timer(timeout, kill)
-        timer.start()
-        with open(events_path, "wb") as events_stream:
+    def watch():
+        process.wait()
+        turn_over.set()
+
+    def read():
+        nonlocal started, bad_line
+        try:
             for line in process.stdout:
                 events_stream.write(line)
                 events_stream.flush()
@@ -970,8 +1018,33 @@ def stream_events(review, process, leader, prompt, resume_id, timeout, events_pa
                     if resume_id is None:
                         review.state["threadId"] = started
                         review.save()
-        process.wait()
+        except BaseException as ex:  # a thread's exception reaches no one unless carried
+            reader_failure.append(ex)
+            turn_over.set()
+
+    reviewer = review.reviewer
+    timed_out = []
+    signalled = []
+    turn_over = threading.Event()
+    reader_failure = []
+    timer = None
+    events_stream = None
+    reader = None
+    events = []
+    started = None
+    bad_line = None
+    try:
+        threading.Thread(target=feed, daemon=True).start()
+        timer = threading.Timer(timeout, kill)
+        timer.start()
+        events_stream = open(events_path, "wb")
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        threading.Thread(target=watch, daemon=True).start()
+        turn_over.wait()
         end_group()
+        if reader_failure:
+            raise reader_failure[0]
     except BaseException as raised:
         # A second signal here would abandon the group again.
         for signum in (*TERMINATING_SIGNALS, signal.SIGINT):
@@ -991,22 +1064,29 @@ def run_reviewer(review, round_number, prompt, resume_id, timeout):
     stderr_path = review.round_path(round_number, reviewer.name + ".stderr")
     result_path = review.round_path(round_number, "result.json")
     command = reviewer.command(review.state, resume_id, result_path)
-    with open(stderr_path, "wb") as stderr_stream:
-        # A process of the helper's own leads the reviewer's group and lives until the group has been
-        # killed, so the group's id stays taken until then; a reviewer leading its own group frees it
-        # the moment it is reaped, for an unrelated process to take before the kill. The leader reads
-        # the helper's pipe, so it exits with the helper at the latest. Joining its group puts the
-        # reviewer in the helper's session, with the helper's controlling terminal when it has one.
-        leader = subprocess.Popen(["cat"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, process_group=0)
-        # cwd, not an option: `codex exec resume` has no `-C`, and both `codex exec` forms refuse a
-        # cwd outside a trusted directory.
-        process = subprocess.Popen(
-            command, cwd=review.root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr_stream,
-            process_group=leader.pid, env=reviewer.environment(review.state),
-        )
-        events, started, bad_line, timed_out = stream_events(
-            review, process, leader, prompt, resume_id, timeout, events_path,
-        )
+    # For the reviewer's run only, so that the orphans adopted and killed are the reviewer's, not those
+    # of the helper's own commands before and after the turn.
+    adopt_orphans(True)
+    try:
+        with open(stderr_path, "wb") as stderr_stream:
+            # A process of the helper's own leads the reviewer's group and lives until the group has
+            # been killed, so the group's id stays taken until then; a reviewer leading its own group
+            # frees it the moment it is reaped, for an unrelated process to take before the kill. The
+            # leader reads the helper's pipe, so it exits with the helper at the latest. Joining its
+            # group puts the reviewer in the helper's session, with the helper's controlling terminal
+            # when it has one.
+            leader = subprocess.Popen(["cat"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, process_group=0)
+            # cwd, not an option: `codex exec resume` has no `-C`, and both `codex exec` forms refuse a
+            # cwd outside a trusted directory.
+            process = subprocess.Popen(
+                command, cwd=review.root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr_stream,
+                process_group=leader.pid, env=reviewer.environment(review.state),
+            )
+            events, started, bad_line, timed_out = stream_events(
+                review, process, leader, prompt, resume_id, timeout, events_path,
+            )
+    finally:
+        adopt_orphans(False)
     stderr = stderr_path.read_bytes().decode(errors="replace")
     if timed_out:
         raise ReviewerError(
