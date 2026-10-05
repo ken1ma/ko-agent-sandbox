@@ -1,5 +1,5 @@
 """Tests of the ko-review plugin's helper against a fake `codex` and a fake `claude` on PATH, and of its
-`stream_events` loaded into this process; no model is used."""
+`stream_events` and `children_of` loaded into this process; no model is used."""
 
 import importlib.machinery
 import importlib.util
@@ -79,11 +79,20 @@ else:
 if step.get("touch"):
     open(step["touch"], "a").write("changed during review\n")
 if step.get("background"):
-    # stays in the reviewer's process group and holds none of its pipes, so only a kill ends it
+    # a process the reviewer leaves behind, so only a kill ends it: in the reviewer's process group,
+    # or, "escaped", as the child of a shell in a session of its own; holding none of the reviewer's
+    # pipes, or, "holds_stdout", its stdout
+    background = step["background"]
+    command = [
+        sys.executable, "-c", "import sys, time; time.sleep(float(sys.argv[1])); open(sys.argv[2], 'w').write('ran')",
+        str(background["sleep"]), background["marker"],
+    ]
+    if background.get("escaped"):
+        command = ["sh", "-c", '"$@" & wait', "sh", *command]
     subprocess.Popen(
-        [sys.executable, "-c", "import sys, time; time.sleep(float(sys.argv[1])); open(sys.argv[2], 'w').write('ran')",
-         str(step["background"]["sleep"]), step["background"]["marker"]],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        command, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=None if background.get("holds_stdout") else subprocess.DEVNULL,
+        start_new_session=bool(background.get("escaped")),
     )
 if "raw_stdout" in step:
     sys.stdout.write(step["raw_stdout"])
@@ -445,8 +454,9 @@ class HelperTest(unittest.TestCase):
                 self.assert_resumes(self.calls()[-1]["argv"], review["threadId"])
                 self.log.write_text("")
 
-    @both_reviewers
-    def test_a_process_the_reviewer_leaves_in_its_group_is_killed_when_the_reviewer_exits(self):
+    # An approved exit and a failed one, each leaving a background process behind, whose marker file
+    # must still be missing once its sleep has passed.
+    def assert_background_process_killed(self, **background):
         cases = [
             ("approved", {"result": APPROVED}, 0, "APPROVED"),
             ("failed", {"raw_stdout": self.thread_started_line("kept"), "exit": 1, "stderr": "boom"}, 1,
@@ -456,18 +466,49 @@ class HelperTest(unittest.TestCase):
         for label, step, status, expected in cases:
             with self.subTest(label):
                 markers.append(self.root / f"left-running-{label}")
-                self.plan({**step, "background": {"sleep": 2, "marker": str(markers[-1])}})
+                self.plan({**step, "background": {"sleep": 2, "marker": str(markers[-1]), **background}})
                 output = self.helper("start", self.reviewer, "--message-file", self.message(), expect=status)
                 self.assertEqual(output["status"] if status == 0 else output["error"]["code"], expected, output)
-                # the group's id is not the reviewer's pid, which reaping the reviewer frees
-                call = self.calls()[-1]
-                self.assertNotEqual(call["pgid"], call["pid"])
         threading.Event().wait(3)  # past the background process's sleep: left running, it would have written
         self.assertEqual([marker.name for marker in markers if marker.exists()], [])
 
-    # The tests of `stream_events` in this process: the helper loaded as a module, its `os.killpg`
-    # recording the groups it signals, and a leader with a reviewer that exits at once, started as
-    # `run_reviewer` starts them.
+    @both_reviewers
+    def test_a_process_the_reviewer_leaves_in_its_group_is_killed_when_the_reviewer_exits(self):
+        self.assert_background_process_killed()
+        # the group's id is not the reviewer's pid, which reaping the reviewer frees
+        call = self.calls()[-1]
+        self.assertNotEqual(call["pgid"], call["pid"])
+
+    @both_reviewers
+    @unittest.skipUnless(sys.platform == "linux", "the helper adopts orphans through prctl")
+    def test_a_process_tree_the_reviewer_leaves_in_a_session_of_its_own_is_killed_when_the_reviewer_exits(self):
+        self.assert_background_process_killed(escaped=True)
+
+    @both_reviewers
+    @unittest.skipUnless(sys.platform == "linux", "the helper adopts orphans through prctl")
+    def test_an_escaped_process_holding_the_reviewer_stdout_ends_with_the_turn(self):
+        """The turn ends with the reviewer's exit, or the timeout, not with the end of its output: the
+        escaped holder is killed then, before its sleep ends, so it never writes its marker."""
+        cases = [
+            ("approved", {"result": APPROVED}, (), 0, "APPROVED"),
+            ("timeout", {"result": APPROVED, "sleep": 5}, ("--timeout", "1"), 1, "TURN_INTERRUPTED"),
+        ]
+        markers = []
+        for label, step, options, status, expected in cases:
+            with self.subTest(label):
+                markers.append(self.root / f"holding-stdout-{label}")
+                self.plan({**step, "background": {
+                    "sleep": 3, "marker": str(markers[-1]), "escaped": True, "holds_stdout": True,
+                }})
+                output = self.helper("start", self.reviewer, *options, "--message-file", self.message(),
+                                     expect=status)
+                self.assertEqual(output["status"] if status == 0 else output["error"]["code"], expected, output)
+        threading.Event().wait(4)
+        self.assertEqual([marker.name for marker in markers if marker.exists()], [])
+
+    # The tests of `stream_events` and `children_of` in this process: the helper loaded as a module,
+    # its `os.killpg` recording the groups it signals, and a leader with a reviewer, `sleep 0` unless
+    # given, started as `run_reviewer` starts them.
     def helper_module(self):
         loader = importlib.machinery.SourceFileLoader("ko_review_helper", str(HELPER))
         helper = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
@@ -481,10 +522,10 @@ class HelperTest(unittest.TestCase):
         helper.os = types.SimpleNamespace(**{**vars(os), "killpg": killpg})
         return helper, signalled
 
-    def reviewer_group(self):
+    def reviewer_group(self, command=("sleep", "0")):
         leader = subprocess.Popen(["cat"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, process_group=0)
         process = subprocess.Popen(
-            ["sleep", "0"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, process_group=leader.pid,
+            list(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE, process_group=leader.pid,
         )
         return leader, process
 
@@ -544,6 +585,42 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, "TURN_INTERRUPTED")
         self.assertEqual(signalled, [leader.pid])
         self.assertIsNotNone(leader.returncode)
+
+    def test_a_failure_in_the_reader_kills_the_running_reviewer_and_fails_the_turn(self):
+        """The reader's exception, here from persisting the thread id, ends the turn at once and
+        propagates, rather than being lost while the main thread waits for the reviewer."""
+        helper, signalled = self.helper_module()
+        leader, process = self.reviewer_group(["sh", "-c", 'echo \'{"thread_id": "t"}\'; sleep 30'])
+
+        def save():
+            raise OSError("no space left on device")
+
+        review = types.SimpleNamespace(
+            reviewer=types.SimpleNamespace(name="fake", thread_id=lambda event: event.get("thread_id")),
+            state={}, save=save,
+        )
+        with self.assertRaises(OSError) as raised:
+            helper.stream_events(review, process, leader, "", None, 3600, self.root / "events.jsonl")
+        self.assertEqual(str(raised.exception), "no space left on device")
+        self.assertEqual(signalled, [leader.pid])
+        self.assertLess(process.returncode, 0, "the reviewer was killed, not left to its sleep")
+        self.assertIsNotNone(leader.returncode)
+
+    @unittest.skipUnless(sys.platform == "linux", "reads /proc")
+    def test_a_child_whose_command_name_is_not_utf_8_is_listed(self):
+        helper, _ = self.helper_module()
+        child = subprocess.Popen([
+            sys.executable, "-c", "import ctypes, time; ctypes.CDLL(None).prctl(15, bytes([255, 254, 253]), 0, 0, 0)"
+            "; time.sleep(30)",
+        ])  # 15: PR_SET_NAME
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        for _ in range(100):  # until the child has renamed itself
+            if Path(f"/proc/{child.pid}/comm").read_bytes().startswith(b"\xff"):
+                break
+            threading.Event().wait(0.05)
+        self.assertTrue(Path(f"/proc/{child.pid}/comm").read_bytes().startswith(b"\xff"))
+        self.assertIn(child.pid, helper.children_of(os.getpid()))
 
     def test_a_helper_failure_while_codex_runs_kills_codex_before_the_lock_is_released(self):
         review_id = self.start()["reviewId"]
