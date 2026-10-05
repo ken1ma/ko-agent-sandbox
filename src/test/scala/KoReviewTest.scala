@@ -5,6 +5,10 @@ import java.util.concurrent.TimeUnit
 
 class KoReviewTest extends munit.FunSuite:
 
+  // Longer than the longest wait a test here gives its process (`run`): munit's 30 s default would
+  // end the test first, without the process's output.
+  override val munitTimeout = scala.concurrent.duration.Duration(6, "min")
+
   private val plugin = Path.of("container/ko-agent-sandbox/claude-code/plugins/ko-review").toAbsolutePath
 
   private def run(timeoutSeconds: Long, command: String*): (Int, String) = runIn(timeoutSeconds, Map.empty, command*)

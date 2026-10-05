@@ -335,10 +335,13 @@ object TLSHelper:
         val (serverName, echPresent) = parseExtensions(extensions)
         TlsClientHello(wireBytes, serverName, echPresent)
 
+    // `serverNameSeen` and not `serverName.nonEmpty`: an extension with no host_name in it names
+    // no host, and is still the one server_name extension a ClientHello may carry.
     @tailrec
     def parseExtensions(
       cursor: Cursor,
       serverName: Option[String] = None,
+      serverNameSeen: Boolean = false,
       echPresent: Boolean = false,
     ): (Option[String], Boolean) =
       if cursor.remaining == 0 then (serverName, echPresent)
@@ -350,20 +353,21 @@ object TLSHelper:
 
         extensionType match
           case ServerNameExtension =>
-            if serverName.nonEmpty then
+            if serverNameSeen then
               throw BadTls("duplicate server_name extension")
 
             parseExtensions(
               rest,
               parseServerName(extensionData),
+              serverNameSeen = true,
               echPresent,
             )
 
           case EncryptedClientHelloExtension =>
-            parseExtensions(rest, serverName, echPresent = true)
+            parseExtensions(rest, serverName, serverNameSeen, echPresent = true)
 
           case _ =>
-            parseExtensions(rest, serverName, echPresent)
+            parseExtensions(rest, serverName, serverNameSeen, echPresent)
 
     def parseServerName(data: Array[Byte]): Option[String] =
       val initial = Cursor(data)

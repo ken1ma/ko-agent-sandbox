@@ -2072,6 +2072,28 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(hello.serverName, Some("api.anthropic.com"))
     assertEquals(hello.wireBytes.toVector, bytes.toVector)
 
+  test("TLS parser refuses a second server_name extension, whatever the first one names"):
+    val hostNameless = Vector(
+      u16(0),                                                   // an empty list
+      u16(7) ++ Array[Byte](1) ++ u16(4) ++ ascii("evil"),      // a name of another type
+    )
+    hostNameless.foreach: data =>
+      val extension = u16(0x0000) ++ u16(data.length) ++ data
+      // Alone it names no host, and before another it is the duplicate.
+      assertEquals(TlsClientHello.read(ByteArrayInputStream(clientHelloOf(extension)), 64 * 1024).serverName, None)
+      val refusal = intercept[BadTls]:
+        TlsClientHello.read(
+          ByteArrayInputStream(clientHello("api.anthropic.com", leadingExtensions = extension)),
+          64 * 1024,
+        )
+      assertEquals(refusal.getMessage, "duplicate server_name extension")
+    val twice = intercept[BadTls]:
+      TlsClientHello.read(
+        ByteArrayInputStream(clientHello("api.anthropic.com", leadingExtensions = serverNameExtension("example.com"))),
+        64 * 1024,
+      )
+    assertEquals(twice.getMessage, "duplicate server_name extension")
+
   test("TLS parser refuses bytes trailing the ClientHello in its record"):
     intercept[BadTls]:
       TlsClientHello.read(
@@ -2500,6 +2522,11 @@ class AgentEgressProxyTest extends munit.FunSuite:
       // name is not a path.
       "/x/git-upload-pack",
       "/git-upload-pack",
+      // An origin cutting the path at # serves what precedes it: the push, the LFS batch endpoint.
+      "/owner/repo.git/git-receive-pack#/git-upload-pack",
+      "/owner/repo.git/info/lfs/objects/batch#/x/git-upload-pack",
+      "/owner/repo.git/issues#/owner/repo.git/git-upload-pack",
+      "/owner#/repo.git/git-upload-pack",
     ).foreach: path =>
       intercept[Refusal]:
         inspected(
@@ -3274,7 +3301,15 @@ class AgentEgressProxyTest extends munit.FunSuite:
     ech: Boolean = false,
     splitAt: Option[Int] = None,
     trailingInRecord: Array[Byte] = Array.emptyByteArray,
+    leadingExtensions: Array[Byte] = Array.emptyByteArray,
   ): Array[Byte] =
+    val echExtension =
+      if ech then u16(0xfe0d) ++ u16(1) ++ Array[Byte](0)
+      else Array.emptyByteArray
+
+    clientHelloOf(leadingExtensions ++ serverNameExtension(serverName) ++ echExtension, splitAt, trailingInRecord)
+
+  private def serverNameExtension(serverName: String): Array[Byte] =
     val sniBytes = ascii(serverName)
 
     val serverNameEntry =
@@ -3283,17 +3318,15 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val serverNameExtensionData =
       u16(serverNameEntry.length) ++ serverNameEntry
 
-    val serverNameExtension =
-      u16(0x0000) ++
-        u16(serverNameExtensionData.length) ++
-        serverNameExtensionData
+    u16(0x0000) ++
+      u16(serverNameExtensionData.length) ++
+      serverNameExtensionData
 
-    val echExtension =
-      if ech then u16(0xfe0d) ++ u16(1) ++ Array[Byte](0)
-      else Array.emptyByteArray
-
-    val extensions = serverNameExtension ++ echExtension
-
+  private def clientHelloOf(
+    extensions: Array[Byte],
+    splitAt: Option[Int] = None,
+    trailingInRecord: Array[Byte] = Array.emptyByteArray,
+  ): Array[Byte] =
     val payload =
       u16(0x0303) ++                    // legacy_version
         Array.fill[Byte](32)(0x42) ++   // random

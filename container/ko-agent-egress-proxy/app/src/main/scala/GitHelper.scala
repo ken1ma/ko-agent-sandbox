@@ -19,9 +19,11 @@ object GitHelper:
    * router to agree where the path ends. `{2,}`: GitHub and Codeberg are
    * exactly owner/repo, gitlab.com nests subgroups deeper; a single segment
    * is a repository nowhere. RulePath.requireUnambiguousPath has already rejected
-   * percent-encoding and dot segments.
+   * percent-encoding and dot segments. No `#` in a segment: the target is
+   * forwarded as sent, and an origin whose parser cuts the path there routes
+   * `/o/r/git-receive-pack#/git-upload-pack` to the push.
    */
-  private val UploadPackPath = "(/[^/]+){2,}/git-upload-pack".r
+  private val UploadPackPath = "(/[^/#]+){2,}/git-upload-pack".r
 
   def isUploadPack(path: String): Boolean =
     UploadPackPath.matches(path)
