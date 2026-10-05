@@ -81,6 +81,27 @@ class CredentialTest extends munit.FunSuite:
     cases.foreach: (spelled, reason) =>
       assertEquals(CredentialGrammar.parseBinding(spelled), Left(reason), spelled)
 
+  /** `X@h.example/aaa…/:x-api-key`, `bytes` long as the launcher writes it. */
+  private def bindingOf(bytes: Int): String =
+    val around = "X@h.example//:x-api-key".length
+    s"X@h.example/${"a" * (bytes - around)}/:x-api-key"
+
+  test("a binding longer than a request head is refused, counted as the launcher writes it"):
+    import CredentialGrammar.MaxBindingBytes
+    assertEquals(
+      CredentialGrammar.parseBinding(bindingOf(MaxBindingBytes)).map(_.spelled.length), Right(MaxBindingBytes),
+    )
+    assertEquals(
+      CredentialGrammar.parseBinding(bindingOf(MaxBindingBytes + 1)),
+      Left(
+        s"a binding is at most $MaxBindingBytes bytes; this one is ${MaxBindingBytes + 1}, written with its host " +
+          "normalized and its place named",
+      ),
+    )
+    // `:Authorization`, which the launcher writes for a binding naming no place, counts.
+    val unnamed = s"X@h.example/${"a" * (MaxBindingBytes - "X@h.example//".length)}/"
+    assert(CredentialGrammar.parseBinding(unnamed).isLeft)
+
   test("a header the proxy reads or removes is refused, whatever its case: the value would never arrive as it"):
     val names = Vector("Host", "content-length", "Transfer-Encoding", "Connection", "Keep-Alive", "Proxy-Authorization",
       "Proxy-Authenticate", "Proxy-Connection", "TE", "Trailer", "UPGRADE")
@@ -91,7 +112,7 @@ class CredentialTest extends munit.FunSuite:
         Left(s"$name is read or removed by the proxy; bind the header the service authenticates with"),
       )
 
-  test("a value is 1–4096 bytes of visible ASCII; a refusal names the offset, never the value"):
+  test("a value is visible ASCII, at most a request head long; a refusal names the offset, never the value"):
     val refused = Vector(
       "" -> "X is empty",
       "ab\rc" -> "X contains a byte a header cannot carry, at offset 2",
@@ -101,11 +122,11 @@ class CredentialTest extends munit.FunSuite:
       "a b" -> "X contains a byte a header cannot carry, at offset 1",
       "ab\u007f" -> "X contains a byte a header cannot carry, at offset 2",
       "abcé" -> "X contains a byte a header cannot carry, at offset 3",
-      "a" * 4097 -> "X is longer than 4096 bytes",
+      "a" * 16385 -> "X is longer than 16384 bytes",
     )
     refused.foreach: (value, reason) =>
       assertEquals(CredentialGrammar.valueProblem("X", value), Some(reason), value.take(8))
-    Vector("a", "a" * 4096, "&=#%@:?/~!", "sv=1&sp=rl&sig=x%2By").foreach: value =>
+    Vector("a", "a" * 16384, "&=#%@:?/~!", "sv=1&sp=rl&sig=x%2By").foreach: value =>
       assertEquals(CredentialGrammar.valueProblem("X", value), None, value.take(8))
 
   // --------------------------------------------------------------------------
@@ -118,6 +139,12 @@ class CredentialTest extends munit.FunSuite:
     val in = ByteArrayInputStream(text.getBytes(StandardCharsets.US_ASCII))
     assertEquals(CredentialGrammar.readBindings(in), Right(credentials))
     assertEquals(String(in.readAllBytes(), StandardCharsets.US_ASCII), "after")
+
+  test("the longest binding, placeholder and value the grammar accepts read back as written"):
+    import CredentialGrammar.{MaxBindingBytes, MaxValueBytes}
+    val longest = bound(bindingOf(MaxBindingBytes), "P" * MaxValueBytes, "v" * MaxValueBytes)
+    val in = ByteArrayInputStream(CredentialGrammar.bindingBytes(Vector(longest, github)))
+    assertEquals(CredentialGrammar.readBindings(in), Right(Vector(longest, github)))
 
   test("a binding line outside the grammar refuses the whole read, naming the binding and never the value"):
     def read(text: String) =
@@ -138,7 +165,9 @@ class CredentialTest extends munit.FunSuite:
       "1\nX@h.example  secret\n" -> "the placeholder of X is empty",
       "2\nX@h.example A secret\nX@i.example B secret\n" -> "X is bound twice; one name, one host",
       "2\nX@h.example A secret\nY@i.example A secret\n" -> "two bindings share a placeholder",
-      s"1\nX@h.example PH ${"a" * 10000}\n" -> "a binding line is longer than a binding can be",
+      s"1\nX@h.example PH ${"a" * 16385}\n" -> "X is longer than 16384 bytes",
+      s"1\nX@h.example PH ${"a" * (CredentialGrammar.MaxBindingBytes + 2 * CredentialGrammar.MaxValueBytes)}\n" ->
+        "a binding line is longer than a binding can be",
     )
     cases.foreach: (text, reason) =>
       assertEquals(read(text), Left(reason), text.take(40))

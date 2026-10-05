@@ -45,7 +45,9 @@ case class BrokeredCredential(binding: CredentialBinding, placeholder: String, v
 
 object CredentialGrammar:
 
-  val MaxValueBytes = 4096
+  /** A value at its longest: it travels in a request head, and the proxy reads no head longer than this.
+    * doc/egress-proxy.md, "Where the value goes", has the tokens and the origins' limits it is set against. */
+  val MaxValueBytes: Int = AgentEgressProxy.MaxHttpHeaderBytes
 
   /** The headers this proxy reads or removes: a value bound to one would never reach the origin as that header,
     * and Host, the framing pair and Upgrade route or frame the request. */
@@ -55,15 +57,19 @@ object CredentialGrammar:
 
   val MaxBindings = 256
 
-  /** A placeholder and a value at their longest, and a binding far longer than any host and prefix. */
-  private val MaxLineBytes = 2 * MaxValueBytes + 1024
+  /** A binding as `CredentialBinding.spelled` writes it, at its longest: the head of a request a binding
+    * applies to holds its host, its prefix and its header or parameter name, and is no longer than this. */
+  val MaxBindingBytes: Int = AgentEgressProxy.MaxHttpHeaderBytes
+
+  /** A binding, a placeholder and a value at their longest, and the two spaces between them. */
+  private val MaxLineBytes = MaxBindingBytes + 2 * MaxValueBytes + 2
 
   /** Set to StdinValue in a proxy's environment, tells it its bindings follow on its standard input; without it,
     * the proxy reads nothing there. */
   val StdinVariable = "EGRESS_CREDS"
   val StdinValue = "stdin"
 
-  /** A value is 1–4096 bytes of visible ASCII, so it cannot end a field, start another, or alter framing.
+  /** A value is 1 to MaxValueBytes bytes of visible ASCII, so it cannot end a field, start another, or alter framing.
     * `subject` names the value in the refusal, which never contains the value itself. */
   def valueProblem(subject: String, value: String): Option[String] =
     if value.isEmpty then Some(s"$subject is empty")
@@ -115,7 +121,14 @@ object CredentialGrammar:
             host <- bindingHost(rest.take(hostEnd))
             _ <- prefixProblem(prefix).toLeft(())
             place <- parsePlace(placeText)
-          yield CredentialBinding(name, host, prefix, place)
+            binding = CredentialBinding(name, host, prefix, place)
+            // Every character of a parsed binding is ASCII, so its length is its bytes.
+            _ <- Either.cond(
+              binding.spelled.length <= MaxBindingBytes, (),
+              s"a binding is at most $MaxBindingBytes bytes; this one is ${binding.spelled.length}, written " +
+                "with its host normalized and its place named",
+            )
+          yield binding
 
   private def bindingHost(spelled: String): Either[String, String] =
     if spelled.isEmpty then Left("a credential needs a host after @")

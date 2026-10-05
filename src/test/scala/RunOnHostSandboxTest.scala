@@ -2067,6 +2067,101 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assert(runners.contains("==> proxy-mill-0b.log\nmill audit\n==> proxy-sbt-0a.log\nsbt audit\n"), runners)
     assert(runners.contains("==> server-sbt-0a.log\nserver said\n"), runners)
     assert(!runners.contains("==> project"), runners)
+  test("a host proxy's audit log is a file in the log directory, which the session's name links to"):
+    def names(root: Path) =
+      val logDirectory = Files.createDirectory(root.resolve("log"))
+      val session = Files.createDirectory(root.resolve("rXYZ"))
+      Files.createDirectory(session.resolve(RunOnHostSession.TmpDir))
+      (
+        logDirectory.resolve("run-on-host-20261004-120000-abcd1234.log"), session.resolve("proxy.log"),
+        logDirectory.resolve("proxy-20261004-120000-rXYZ-proxy-abcd1234.log"),
+      )
+    // As the proxy's stderr is opened (startProxyUnder): by the session's name, appending.
+    def proxyWrites(proxyLog: Path, line: String) =
+      Files.writeString(proxyLog, line, UTF_8, java.nio.file.StandardOpenOption.APPEND)
+    def permissions(file: Path) =
+      java.nio.file.attribute.PosixFilePermissions.toString(Files.getPosixFilePermissions(file))
+
+    locally:
+      val (channelLog, proxyLog, kept) = names(Files.createTempDirectory("audit-log"))
+      keepAuditLog(channelLog, proxyLog)
+      proxyWrites(proxyLog, "allow h.example CONNECT\n")
+      assertEquals(Files.readSymbolicLink(proxyLog), kept)
+      assertEquals(Files.readString(kept, UTF_8), "allow h.example CONNECT\n")
+      assertEquals(Files.readString(proxyLog, UTF_8), "allow h.example CONNECT\n")
+      assertEquals(permissions(kept), "rw-------")
+      assert(!Files.exists(channelLog), "nothing to say in the channel log")
+      // The session's end reads the file the link names, as it reads a session's own file.
+      appendSessionLogs(channelLog, proxyLog.getParent, "command rXYZ ended by signal")
+      val logged = Files.readString(channelLog, UTF_8)
+      assert(logged.contains("==> proxy.log\nallow h.example CONNECT\n"), logged)
+      // The session's name goes as a runtime's log does (RunnerRuntimes.discardRuntime), or with its directory.
+      Files.delete(proxyLog)
+      assertEquals(Files.readString(kept, UTF_8), "allow h.example CONNECT\n")
+
+    // A runtime's proxy started again in the launch: the earlier proxy's log keeps its name and its lines.
+    locally:
+      val (channelLog, proxyLog, first) = names(Files.createTempDirectory("audit-log"))
+      Files.writeString(first, "an earlier proxy's\n", UTF_8)
+      val second = first.resolveSibling("proxy-20261004-120000-rXYZ-proxy-2-abcd1234.log")
+      Files.writeString(second, "another earlier proxy's\n", UTF_8)
+      keepAuditLog(channelLog, proxyLog)
+      proxyWrites(proxyLog, "ready\n")
+      val third = first.resolveSibling("proxy-20261004-120000-rXYZ-proxy-3-abcd1234.log")
+      assertEquals(Files.readString(third, UTF_8), "ready\n")
+      assertEquals(Files.readString(first, UTF_8), "an earlier proxy's\n")
+      assertEquals(Files.readString(second, UTF_8), "another earlier proxy's\n")
+      appendSessionLogs(channelLog, proxyLog.getParent, "the runner's session rXYZ ended")
+      assert(Files.readString(channelLog, UTF_8).contains("==> proxy.log\nready\n"))
+      // Pruning keeps it while its run is live, as it keeps the first.
+      val pruned = EgressRules.logsToPrune(Vector(third.getFileName.toString), retain = 0, Set("abcd1234"))
+      assertEquals(pruned, Vector.empty)
+
+    // A link the launcher did not make names something else: never followed.
+    locally:
+      val root = Files.createTempDirectory("audit-log")
+      val (channelLog, proxyLog, kept) = names(root)
+      // The container proxy's log, the channel log, the right name in another directory, a relative link.
+      val otherRun = Files.writeString(kept.resolveSibling("proxy-20261004-120000-abcd1234.log"), "a\n", UTF_8)
+      val outside = Files.writeString(root.resolve(kept.getFileName), "b\n", UTF_8)
+      for target <- Vector(otherRun, channelLog, outside, Path.of(kept.getFileName.toString)) do
+        Files.deleteIfExists(proxyLog)
+        Files.createSymbolicLink(proxyLog, target)
+        assertEquals(keptAuditLog(channelLog, proxyLog), None, target.toString)
+        Files.writeString(channelLog, "", UTF_8)
+        appendSessionLogs(channelLog, proxyLog.getParent, "command rXYZ ended by signal")
+        val logged = Files.readString(channelLog, UTF_8)
+        assert(logged.contains("==> proxy.log\n[skipped: not a regular file]\n"), logged)
+
+    // A log directory that takes no file: no proxy is started, and the refusal says what to do.
+    locally:
+      val (channelLog, proxyLog, kept) = names(Files.createTempDirectory("audit-log"))
+      val logDirectory = channelLog.getParent
+      val record = proxyLog.resolveSibling(RunOnHostSession.RecordsDir).resolve("proxy")
+      Files.createDirectory(record.getParent)
+      val systemPaths = SeatbeltProfile.SystemPaths(Seq(Path.of("/usr/lib")), Seq(Path.of("/bin")))
+      val before = Files.getPosixFilePermissions(logDirectory)
+      Files.setPosixFilePermissions(logDirectory, java.nio.file.attribute.PosixFilePermissions.fromString("r-x------"))
+      val refused =
+        try
+          assert(keepAuditLog(channelLog, proxyLog).isLeft)
+          // Through the start, as a command's runtime is created (RunnerRuntimes.created, ownRuntime).
+          createProxy(systemPaths, Vector.empty, Some(channelLog))(Program.Sbt, Vector.empty, record, proxyLog)
+        finally Files.setPosixFilePermissions(logDirectory, before)
+      val reason = refused.swap.getOrElse(fail(s"a proxy was started: $refused"))
+      assert(
+        reason.startsWith(
+          s"The host command sandbox's proxy is not started: its audit log cannot be created in $logDirectory (",
+        ),
+        reason,
+      )
+      assert(reason.endsWith(s"Tell the user: make $logDirectory writable, then run the command again."), reason)
+      // Nothing was started: no leader registered, and no log by either name.
+      assert(!Files.exists(record), "a proxy's record")
+      assert(!Files.exists(proxyLog, java.nio.file.LinkOption.NOFOLLOW_LINKS) && !Files.exists(kept))
+      // A launch without a log directory, as the acceptance test's, keeps no log and is not refused for it.
+      assertEquals(keepAuditLog(logDirectory.resolve("other.log"), proxyLog), Right(()))
+
 object ForkJvmSettings:
   def main(args: Array[String]): Unit =
     val command = ProcessBuilder(

@@ -1,12 +1,13 @@
 // A host command's egress proxy: the launcher re-invoked under the proxy profile with the program's
-// rules, its port read from its ready line, its audit log linked into the project's log directory,
+// rules, its port read from its ready line, its audit log kept in the project's log directory,
 // and the refusals read back from that log after a command.
 
 package agentsandbox.launcher
 
 import java.io.IOException
 import java.nio.charset.StandardCharsets.UTF_8
-import java.nio.file.{Files, Path, StandardOpenOption}
+import java.nio.file.{FileAlreadyExistsException, Files, Path}
+import java.nio.file.attribute.PosixFilePermissions
 
 import agentsandbox.egress.{BrokeredCredential, CredentialGrammar, LogHelper, Refusals}
 
@@ -42,9 +43,9 @@ object RunOnHostProxy:
   )(
     program: Program, fileHosts: Vector[String], record: Path, proxyLog: Path,
   ): Either[String, Int] =
-    startProxy(record, program, fileHosts, proxyLog, systemPaths, credentialsFor(program, fileHosts, credentials))
-      .map(_ => channelLog.foreach(linkAuditLog(_, proxyLog)))
-      .flatMap(_ => awaitProxyPort(proxyLog, deadlineMillis = 30_000))
+    startProxy(
+      record, program, fileHosts, proxyLog, systemPaths, credentialsFor(program, fileHosts, credentials), channelLog,
+    ).flatMap(_ => awaitProxyPort(proxyLog, deadlineMillis = 30_000))
 
   /**
    * The proxy profile's inputs for this executable (SeatbeltProfile.ProxyInputs): the native
@@ -70,38 +71,86 @@ object RunOnHostProxy:
           SeatbeltProfile.ProxyInputs(Seq(jdk), selfClassPath(classPath).map(Path.of(_)).flatMap(realPath), systemPaths)
 
   /**
-   * Where a host proxy's audit log is also found: beside the launch's channel log, in the project's
-   * log directory, named as `--egress-log` lists a proxy's log and the launch's pruning keeps it while
-   * its run is live (EgressRules.logsToPrune). `run-on-host-<stamp>-<run>.log` and a session's
-   * `proxy-sbt-<hash>.log` give `proxy-<stamp>-<session>-proxy-sbt-<hash>-<run>.log`.
+   * The name of a host proxy's audit log in the project's log directory, as the two parts a later start's
+   * number goes between (projectAuditLog). `--egress-log` lists a name of this form as a proxy's log, and
+   * the launch's pruning keeps one while its run is live (EgressRules.logsToPrune).
+   * `run-on-host-<stamp>-<run>.log` and a session's `proxy-sbt-<hash>.log` give
+   * `proxy-<stamp>-<session>-proxy-sbt-<hash>` and `-<run>.log`.
    */
-  def projectAuditLog(channelLog: Path, proxyLog: Path): Option[Path] =
+  private def auditLogName(channelLog: Path, proxyLog: Path): Option[(String, String)] =
     channelLog.getFileName.toString match
       case s"run-on-host-$stampAndRun.log" if stampAndRun.contains('-') =>
         val stamp = stampAndRun.take(stampAndRun.lastIndexOf('-'))
         val run = stampAndRun.drop(stampAndRun.lastIndexOf('-') + 1)
         val stem = proxyLog.getFileName.toString.stripSuffix(".log")
-        Some(channelLog.resolveSibling(s"proxy-$stamp-${proxyLog.getParent.getFileName}-$stem-$run.log"))
+        Some((s"proxy-$stamp-${proxyLog.getParent.getFileName}-$stem", s"-$run.log"))
       case _ => None
 
-  /** A second name for the proxy's log, a hard link, so its lines are there while it writes them and stay
-    * when its session's directory goes. A link that cannot be made is reported in the channel log, where the
-    * session's end appends the log's tail (RunOnHostSandbox.appendSessionLogs). */
-  private def linkAuditLog(channelLog: Path, proxyLog: Path): Unit =
-    projectAuditLog(channelLog, proxyLog).foreach: link =>
-      // Owner-only, as the container proxy's log is: the targets it records are what a GET carries out.
+  /**
+   * The file in the project's log directory for the session's `proxyLog` (auditLogName).
+   *
+   * A runtime's proxy started again in the launch — the earlier one died, or its runtime's creation
+   * failed (RunnerRuntimes.prepared, created) — has a session file of the same name, and the earlier
+   * proxy's log keeps its own here: the `start`-th has `-<start>` before the run, from the second on.
+   */
+  def projectAuditLog(channelLog: Path, proxyLog: Path, start: Int = 1): Option[Path] =
+    auditLogName(channelLog, proxyLog).map: (prefix, suffix) =>
+      channelLog.resolveSibling(prefix + (if start == 1 then "" else s"-$start") + suffix)
+
+  /**
+   * Before the proxy starts, makes its log a file in the project's log directory, under the first name of
+   * projectAuditLog no earlier proxy's log has, and the session's `proxyLog` a symbolic link to it. The
+   * lines are there while the proxy writes them and stay however the session's directory is removed.
+   * A symbolic link, not a hard link: XDG_STATE_HOME can place the log directory on another filesystem
+   * than the session's.
+   *
+   * Left when the file or the link cannot be made, for the caller to start no proxy: one logging to the
+   * session's file alone loses its lines with that directory, all of them when a command's own session
+   * ends without a signal (RunOnHostSandbox.appendSessionLogs).
+   */
+  private[launcher] def keepAuditLog(channelLog: Path, proxyLog: Path): Either[String, Unit] =
+    // Owner-only, as the container proxy's log is: the targets it records are what a GET carries out.
+    val ownerOnly = PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------"))
+    def created(start: Int): Option[Path] =
+      projectAuditLog(channelLog, proxyLog, start).flatMap: kept =>
+        try Some(Files.createFile(kept, ownerOnly))
+        catch case _: FileAlreadyExistsException => created(start + 1)
+    try
+      created(start = 1).foreach: kept =>
+        try
+          Files.deleteIfExists(proxyLog)
+          Files.createSymbolicLink(proxyLog, kept)
+        catch
+          case ex: (IOException | UnsupportedOperationException) =>
+            // No line was written to it: without the link it would read as a proxy that logged nothing.
+            try Files.deleteIfExists(kept)
+            catch case _: IOException => ()
+            throw ex
+      Right(())
+    catch
+      case ex: (IOException | UnsupportedOperationException) =>
+        val directory = channelLog.getParent
+        Left(
+          s"The host command sandbox's proxy is not started: its audit log cannot be created in $directory " +
+            s"(${ex.getClass.getSimpleName}: ${ex.getMessage}).\n" +
+            s"Tell the user: make $directory writable, then run the command again.",
+        )
+
+  /**
+   * The file keepAuditLog made the session's `sessionLog` a link to, for the session's end to read in the
+   * link's place: None unless the link names an audit log of `sessionLog` in the channel log's directory.
+   * The sandboxed command cannot write where either is — the session directory outside `tmp/`, the log
+   * directory — and a link naming anything else is not followed.
+   */
+  def keptAuditLog(channelLog: Path, sessionLog: Path): Option[Path] =
+    auditLogName(channelLog, sessionLog).flatMap: (prefix, suffix) =>
       try
-        Files.setPosixFilePermissions(proxyLog, java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"))
-        Files.createLink(link, proxyLog)
-      catch
-        case ex: (IOException | UnsupportedOperationException) =>
-          try
-            Files.writeString(
-              channelLog,
-              s"${java.time.Instant.now()} the proxy's audit log $proxyLog is not linked as $link: ${ex.getMessage}\n",
-              UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND,
-            )
-          catch case _: IOException => ()
+        Some(Files.readSymbolicLink(sessionLog)).filter: kept =>
+          val name = kept.getFileName.toString
+          kept.getParent == channelLog.getParent && name.startsWith(prefix) && name.endsWith(suffix)
+            && name.length >= prefix.length + suffix.length
+            && name.substring(prefix.length, name.length - suffix.length).matches("(-[1-9][0-9]*)?")
+      catch case _: (IOException | UnsupportedOperationException) => None
 
   /** The proxy's profile, beside its log. */
   private[launcher] def proxyProfileFile(proxyLog: Path): Path =
@@ -110,7 +159,7 @@ object RunOnHostProxy:
   /** The proxy under its profile (SeatbeltProfile.renderProxy), beside its log. */
   private def startProxy(
     record: Path, program: Program, fileHosts: Vector[String], proxyLog: Path,
-    systemPaths: SeatbeltProfile.SystemPaths, credentials: Vector[BrokeredCredential],
+    systemPaths: SeatbeltProfile.SystemPaths, credentials: Vector[BrokeredCredential], channelLog: Option[Path],
   ): Either[String, Process] =
     for
       names <- RunOnHostInspection.leafNames(egressRuleText(program, fileHosts))
@@ -119,6 +168,8 @@ object RunOnHostProxy:
       profile <- SeatbeltProfile.renderProxy(
         inputs.copy(reads = inputs.reads :+ RunOnHostInspection.leafDirectory(proxyLog)),
       )
+      // Last before the start, so a start refused above leaves no empty log in the log directory.
+      _ <- channelLog.fold(Right(()))(keepAuditLog(_, proxyLog))
       started <- startProxyUnder(profile, record, program, fileHosts, proxyLog, credentials)
     yield started
 

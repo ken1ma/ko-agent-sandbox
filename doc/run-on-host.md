@@ -1102,9 +1102,12 @@ log, the file the launch printed as `host command log` (`RunOnHostSandbox.append
 
 - the tail of the proxy audit log, under Maven, and of the stderr file a thin client leaves under
   `tmp/` when it forked a server of its own, the client's answer to a socket it cannot reach;
-- the supervisor runs unconfined and the command wrote that directory, so the read comes after the
-  rename and the ending of the command's groups, refuses a link at any component, and takes the
-  tail by position rather than by the file's size;
+- the supervisor runs unconfined and the command could write `tmp/` in that directory, and replace
+  `tmp/` itself, so the read comes after the rename and the ending of the command's groups, refuses
+  a link at any component, and takes the tail by position rather than by the file's size;
+- the proxy audit log's name in that directory is the launcher's own link to the file in the
+  project's log directory, both outside what the command can write: the read follows that link
+  when it names an audit log there, and no other (`RunOnHostProxy.keptAuditLog`);
 - a command that completed leaves nothing there: its output reached the agent.
 
 The runner's session ends the same way, at the launch's end or on TERM: its proxies' audit logs
@@ -1407,7 +1410,7 @@ SECURITY.md, "Who holds a brokered value"), on its standard input under `EGRESS_
 - a binding widens no proxy's grants: a hostile build's route out is that proxy's hosts, as without
   one.
 
-A proxy's audit log is also in the project's log directory, where `--egress-log` lists it
+A proxy's audit log is a file in the project's log directory, where `--egress-log` lists it
 (egress-proxy.md, "Audit what has been allowed or denied").
 
 The proxy lives as long as the session holding its record: the runner's until it retires the

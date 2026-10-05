@@ -665,6 +665,9 @@ machine's user also runs `sudo` without a password (Fedora CoreOS 44.20260817.3.
   stderr is its log ([doc/run-on-host.md](doc/run-on-host.md)), and a failed write to it has the
   same effect as one to the file.
   - A proxy whose startup lines fail to be written exits before it accepts a connection.
+  - A host-command proxy is not started when its log cannot be created in the project's log
+    directory, and its command is refused with the reason (`RunOnHostProxy.keepAuditLog`): a log
+    in the command's own directory alone is deleted with it.
   - Every later request, a `CONNECT` or not, receives `403` with the reason,
     `audit log cannot be written: <the I/O error>`, in its body, which `ko-sandbox-egress-check`
     prints, and in its `Proxy-Status` field, which the host-command supervisor reads. The
@@ -1028,6 +1031,10 @@ What brokering leaves open:
 - The agent uses the credential at the bound host, within the methods granted there, on every
   repository or resource its issuer's scope reaches.
 - The placeholder tells the project that `NAME` exists and where the proxy substitutes it.
+- The placeholder of a value with a recognized token prefix is in the value's format: it shows
+  the value's length, where its `-`, `.`, `_` and `~` are, and whether each other character is a
+  digit, an upper- or a lower-case letter. Any other placeholder shows nothing of its value
+  (`doc/egress-proxy.md`, "Where the value goes").
 - A response that echoes the credential reaches the sandbox: responses are not rewritten. A bound
   header the service stores or sends back is such a route (`doc/egress-proxy.md`, "Where the
   value goes").
