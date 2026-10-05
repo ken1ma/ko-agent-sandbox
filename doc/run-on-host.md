@@ -288,7 +288,8 @@ silently permitted.
 
 Missing prerequisites and denied accesses fail clearly, nothing expands authority, and nothing
 falls back: a host command that cannot run is reported to the user, never re-run in the
-container — the same rule the egress refusal follows.
+container — the same rule the egress refusal follows. The one exception is a test suite that
+binds a listener under sbt or Maven, which runs in the container ("Network", above).
 
 - A prerequisite refusal before the command starts is a `RunOnHostPrereqs.Refusal` value, one
   case per category, or a sentence from the step that met it (`StepRefusal`); the supervisor, the

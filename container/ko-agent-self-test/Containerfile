@@ -38,9 +38,16 @@ ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 # <dir>/ko-agent-fs — reproduced rather than flattened. `--message-format=json` names each
 # executable; guessing at hash-suffixed filenames would silently miss a test target added later.
 # A cache mount is not a layer, hence lifting them out inside this RUN.
+#
+# The mounts are the ones ko-agent-fs/Containerfile's build step uses, and it has what the locks
+# and expire-build-cache.sh are for.
 RUN --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
     set -eux; \
+    exec 8</build/target 9</usr/local/cargo/registry; \
+    flock 8; \
+    flock 9; \
+    sh expire-build-cache.sh /build/target /usr/local/cargo/registry; \
     triple="$(uname -m)-unknown-linux-musl"; \
     mkdir -p /suite/deps; \
     cargo test --locked --no-run --target "${triple}" --message-format=json > /tmp/artifacts.json; \

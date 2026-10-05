@@ -51,10 +51,10 @@ const TTL: Duration = Duration::ZERO;
 /// mounted differently would prove nothing about a session, and an integration suite that did would
 /// be exercising a filesystem the product never runs.
 ///
-/// `SessionACL::All` is fuser's spelling of `allow_other`, which the daemon and the sandbox being
-/// different uids by construction makes unavoidable; `DefaultPermissions` is what keeps widening
-/// *who* may reach the mount from widening what they may do. `doc/architecture.md`, "Who may reach
-/// the mount", has the argument for both.
+/// `SessionACL::All` is fuser's spelling of `allow_other`. Without it no container starts: crun
+/// stats the bind as the root of the container's user namespace, which is not the daemon's uid.
+/// `DefaultPermissions` is what keeps widening *who* may reach the mount from widening what they
+/// may do. `doc/architecture.md`, "Who may reach the mount", has the argument for both.
 ///
 /// `n_threads` stays at fuser's one, and three things rest on requests being served one at a time:
 /// `write` brings the backing descriptor's `O_APPEND` into step without a lock; no request of

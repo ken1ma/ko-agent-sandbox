@@ -116,9 +116,10 @@ object KoAgentFs:
     if run(koAgentFsFuseConfCheckCommand(podman)*).ok then return
     val current = run(podman, "machine", "ssh", "cat /etc/fuse.conf 2>/dev/null || true").text
     System.err.println(
-      s"""The workspace FUSE filter mounts with allow_other, so the sandbox (a different uid) can use
-         |it, and fusermount3 refuses that until user_allow_other is set in the podman machine's
-         |/etc/fuse.conf. Your machine's configuration is not changed without asking. The change:
+      s"""The workspace FUSE filter mounts with allow_other, which the container runtime needs to bind
+         |the mount into the sandbox, and fusermount3 refuses that until user_allow_other is set in the
+         |podman machine's /etc/fuse.conf. Your machine's configuration is not changed without asking.
+         |The change:
          |
          |${fuseConfDiff(current)}
          |

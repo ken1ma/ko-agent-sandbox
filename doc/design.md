@@ -219,8 +219,9 @@ launcher does not prevent that: instruction files change no enforcement.
 
 ### No following symlinks at sandbox setup
 
-A symlinked `.ko-agent-sandbox`, `egress` or a file inside them refuses the launch
-(`boundaryDirRefusal`, `readRuleFiles`, tested). The workspace filter refuses to mount a project
+A symlinked `.ko-agent-sandbox`, a symlinked entry of it (`egress`, `file` or `run-on-host`) or a
+symlinked file inside an entry refuses the launch (`boundaryDirRefusal`, `ruleDirectoryRefusal`,
+`RunOnHostPrereqs.readProgramRules`, tested). The workspace filter refuses to mount a project
 whose `.git` is a symlink; a `.git/hooks` symlinked to a directory inside the project is served
 read-only instead (`../fuse/ko-agent-fs/doc/git-metadata.md`, "Relocated hook directories").
 
@@ -239,9 +240,9 @@ whose mount-target creation wrote through one to paths outside its root:
 - https://github.com/anthropic-experimental/sandbox-runtime/issues/221
 - https://github.com/bazelbuild/bazel/issues/28515
 
-The cost is that a repository sharing hooks through a `.git/hooks` symlinked into the project
-cannot be sandboxed writable as-is; its user replaces the link with a real directory first.
-Accept that cost rather than following links.
+The cost is that a project whose `.git` is a symlink cannot be sandboxed writable as-is, and one
+with a symlink at or inside `.ko-agent-sandbox` cannot be launched; its user replaces the link
+with a real directory or file first. Accept that cost rather than following links.
 
 ### No repository-controlled host executable resolution
 

@@ -1049,6 +1049,15 @@ class HelperTest(unittest.TestCase):
             f"ko-review export {output['reviewId']}", "ko-review list", f"ko-review delete {output['reviewId']}",
         ])
         self.assertEqual(self.helper("verify", output["reviewId"])["approvalFresh"], True)
+        for path in [git_dir, *git_dir.rglob("*")]:
+            if path.is_dir():
+                path.chmod(0o755)
+        # Staging the approved content moves the digest, and the round has no tree to compare the index with.
+        self.git("add", "untracked.txt")
+        stale = self.helper("verify", output["reviewId"], expect=1)["error"]
+        self.assertEqual(stale["staleReasons"], [{
+            "reason": "HEAD or the index changed, and the round has no snapshot tree to compare with", "paths": [],
+        }])
 
     def test_a_failed_round_still_carries_its_transcript_on_the_ref(self):
         self.plan({"exit": 1, "stderr": "boom"})
