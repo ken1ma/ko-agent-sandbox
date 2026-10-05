@@ -56,18 +56,22 @@ class FileRulesTest extends munit.FunSuite:
     Vector("CLAUDE.md", "AGENTS.md", ".cursor/rules", ".agents/skills", ".envrc")
       .foreach(name => assert(!names.contains(name), name))
 
-  test("a session gets the defaults, then the project's lines, and the launch names every writable line"):
+  test("a session gets the defaults, then the project's lines, and the launch names every line once"):
     val written = lines("writable .claude/skills\nwritable .vscode/settings.json\n")
     assertEquals(resolve(written), Defaults ++ written)
     val project = Some(("writable .claude/skills\nwritable .vscode/settings.json", written))
     assertEquals(
       launchLines(project, color = false),
       Vector(
-        "file rules (.ko-agent-sandbox/file/rule): writable .claude/skills; writable .vscode/settings.json",
-        "file rules widen:",
+        "file rules (.ko-agent-sandbox/file/rule) widen (2):",
         "  writable .claude/skills",
         "  writable .vscode/settings.json",
       ),
+    )
+    val narrowing = lines("readonly .envrc\n")
+    assertEquals(
+      launchLines(Some(("readonly .envrc", narrowing)), color = false),
+      Vector("file rules (.ko-agent-sandbox/file/rule): readonly .envrc"),
     )
     assertEquals(
       launchLines(None, color = false),
@@ -81,9 +85,9 @@ class FileRulesTest extends munit.FunSuite:
     assertEquals(
       runningLaunchLines(Defaults ++ extra, color = false),
       Vector(
-        "file rules (the running mount's): writable .claude/skills; readonly .envrc",
-        "file rules widen:",
+        "file rules (the running mount's) widen (1):",
         "  writable .claude/skills",
+        "file rules (the running mount's), other lines: readonly .envrc",
       ),
     )
     assertEquals(

@@ -102,7 +102,8 @@ filter's own rules protect.
 
 A file holding only comments and blank lines is read as no file.
 
-The launch prints the file's lines, and every `writable` line again as a widening.
+The launch prints each of the file's lines once: every `writable` line as a widening, then the
+others.
 
 `doc/file-rule-example/*/rule` holds complete files for common needs, to copy and trim:
 

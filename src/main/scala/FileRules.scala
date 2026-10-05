@@ -178,31 +178,27 @@ object FileRules:
   /** The line the mount script prints before the resolved set. */
   val ResolvedMarker = "file rules resolved:"
 
-  /** The launch lines about the rules: the project's file and its widening, every `writable` line,
-    * the only kind that can widen; what the guard added is printed once the filter has answered
-    * (guardLines). */
+  /** The launch lines about the project's file (HostCommands.ruleFileReport); its `writable`
+    * lines, the only kind that can widen, are the widening. What the guard added is printed once
+    * the filter has answered (guardLines). */
   def launchLines(
     project: Option[(String, Vector[Line])],
     color: Boolean = HostCommands.colorStderr,
   ): Vector[String] =
-    val file = project match
-      case None            => "file rules: no project rule file; the launcher-owned defaults"
-      case Some((text, _)) => s"file rules (.ko-agent-sandbox/file/rule): ${EgressRules.lineSummary(text)}"
-    file +: widening(project.fold(Vector.empty[Line])(_(1)), color)
+    project match
+      case None             => Vector("file rules: no project rule file; the launcher-owned defaults")
+      case Some((_, lines)) => report("file rules (.ko-agent-sandbox/file/rule)", lines, color)
 
   /** The launch lines about a running mount's rules a launch joins: its lines beyond the defaults,
-    * all of them when it runs under other defaults, and their widening. */
+    * all of them when it runs under other defaults, the `writable` ones as their widening. */
   def runningLaunchLines(running: Vector[Line], color: Boolean = HostCommands.colorStderr): Vector[String] =
     val beyond = if running.startsWith(Defaults) then running.drop(Defaults.size) else running
-    val file =
-      if beyond.isEmpty then "file rules (the running mount's): the launcher-owned defaults"
-      else s"file rules (the running mount's): ${beyond.map(_.text).mkString("; ")}"
-    file +: widening(beyond, color)
+    if beyond.isEmpty then Vector("file rules (the running mount's): the launcher-owned defaults")
+    else report("file rules (the running mount's)", beyond, color)
 
-  private def widening(lines: Vector[Line], color: Boolean): Vector[String] =
+  private def report(source: String, lines: Vector[Line], color: Boolean): Vector[String] =
     val writable = lines.filter(_.word == Word.Writable)
-    if writable.isEmpty then Vector.empty
-    else HostCommands.wideningReport("file rules", writable.map(_.text), color)
+    HostCommands.ruleFileReport(source, lines.map(_.text), writable.map(_.text), color)
 
   /** The rule lines of a text daemonText wrote, as a running mount serves them. */
   def parseDaemonText(text: String): Either[String, Vector[Line]] =

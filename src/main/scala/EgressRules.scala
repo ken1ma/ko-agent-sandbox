@@ -42,11 +42,11 @@ object EgressRules:
   /**
    * The rule lines the ruleset reports as granting beyond the defaults, read from its
    * `widening lines (N): ...` line, `; ` between rule lines. The launch prints them under an
-   * `egress rules widen:` heading, so that a file which only removes or narrows grants prints no
-   * such report and the report is a signal rather than a habit. The proxy classifies against the
-   * defaults it ships (resolveRuleset has the classes), so a custom image reports against its
-   * own; an image printing no such line reports nothing, never a classification against defaults
-   * it does not have.
+   * `egress rules (<file>) widen (N):` heading, so that a file which only removes or narrows grants
+   * prints no such report and the report is a signal rather than a habit. The proxy classifies
+   * against the defaults it ships (resolveRuleset has the classes), so a custom image reports
+   * against its own; an image printing no such line reports nothing, never a classification
+   * against defaults it does not have.
    */
   def wideningLines(resolved: String): Vector[String] =
     resolved.linesIterator.find(_.startsWith(RulesetHelper.WideningLineHead)).toVector.flatMap: line =>
@@ -326,20 +326,26 @@ object EgressRules:
 
     (projectId, proxyImage, ruleFiles, provider)
 
-  /** The project's rule file as written, one line. Printed by a launch and by the egress actions
-    * alike; the launch follows it with the widening report once the dry run has answered
-    * (printWidening). */
+  private def ruleFileSource(name: String): String = s"egress rules (.ko-agent-sandbox/egress/$name)"
+
+  /** The project's rule file as written, one line. Printed by the egress actions, which report no
+    * widening on stderr; a launch prints launchLines. */
   def printRuleFiles(ruleFiles: Vector[(String, String)]): Unit =
     ruleFiles.foreach: (name, text) =>
-      System.err.println(s"egress rules (.ko-agent-sandbox/egress/$name): ${lineSummary(text)}")
+      System.err.println(s"${ruleFileSource(name)}: ${lineSummary(text)}")
 
-  /** The lines the dry run reports as granting beyond the defaults (EgressRules.wideningLines),
-    * once more, alone, tinted as a weakened boundary (HostCommands.wideningReport): the lines as
-    * written print at every launch and are read as a habit; the report appears only when the
-    * file widens. */
-  def printWidening(rulesetText: String): Unit =
+  /** A launch's lines about the project's rule file, once the dry run has answered: the lines it
+    * reports as granting beyond the defaults (wideningLines) tinted as a weakened boundary, the
+    * file's other lines after them (HostCommands.ruleFileReport). The proxy reads one rule file
+    * (RuleFiles), so every widening line is that file's. */
+  def launchLines(
+    ruleFiles: Vector[(String, String)],
+    rulesetText: String,
+    color: Boolean = colorStderr,
+  ): Vector[String] =
     val widens = wideningLines(rulesetText)
-    if widens.nonEmpty then wideningReport("egress rules", widens).foreach(System.err.println)
+    ruleFiles.flatMap: (name, text) =>
+      ruleFileReport(ruleFileSource(name), text.linesIterator.toVector, widens, color)
 
   /**
    * The ruleset this project would apply, without a session: the same readRuleFiles +

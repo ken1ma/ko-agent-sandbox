@@ -144,10 +144,29 @@ object HostCommands:
 
   def weakened(text: String, color: Boolean = colorStderr): String = tinted(Orange, text, color)
 
-  /** A heading ending in `widen:`, then one indented line per rule, each tinted on its own so a
-    * line filtered out of a saved log still opens and closes its colour. */
+  /** A heading ending in `widen (<count of rules>):`, then one indented line per rule, each tinted
+    * on its own so a line filtered out of a saved log still opens and closes its colour. */
   def wideningReport(heading: String, rules: Seq[String], color: Boolean = colorStderr): Vector[String] =
-    (s"$heading widen:" +: rules.map(rule => s"  $rule")).toVector.map(weakened(_, color))
+    (s"$heading widen (${rules.size}):" +: rules.map(rule => s"  $rule")).toVector.map(weakened(_, color))
+
+  /** A launch's lines about one rule file, each of the file's lines once: a line printed twice
+    * lengthens what is read at every launch, and a longer text is skipped. The `widening` lines
+    * are a wideningReport; the file's other lines follow on one line, untinted.
+    *
+    * @param source names the rules and their file, such as `egress rules (.ko-agent-sandbox/egress/rule)`. */
+  def ruleFileReport(
+    source: String,
+    lines: Seq[String],
+    widening: Seq[String],
+    color: Boolean = colorStderr,
+  ): Vector[String] =
+    val others = lines.filterNot(widening.contains)
+    val report = if widening.isEmpty then Vector.empty else wideningReport(source, widening, color)
+    val rest =
+      if others.isEmpty then Vector.empty
+      else if widening.isEmpty then Vector(s"$source: ${others.mkString("; ")}")
+      else Vector(s"$source, other lines: ${others.mkString("; ")}")
+    report ++ rest
 
   /** What the user chose, as the line stating it says it — `live`, `deny-unless-allowed`.
     * Purple and orange are not among the theme's sixteen — its magenta is as often pink, its
