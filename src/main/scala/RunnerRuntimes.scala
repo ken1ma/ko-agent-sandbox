@@ -55,7 +55,7 @@ final class RunnerRuntimes(
   forwards: Vector[(String, String)],
   fileRules: FileRules.Resolved,
   credentials: Vector[BrokeredCredential] = Vector.empty,
-  // The launch's channel log, beside which each proxy's audit log is linked (RunOnHostProxy.linkAuditLog).
+  // The launch's channel log, beside which each proxy's audit log is kept (RunOnHostProxy.keepAuditLog).
   channelLog: Option[Path] = None,
 )(
   processes: RunOnHostSession.Processes = RunOnHostSession.HostProcesses,

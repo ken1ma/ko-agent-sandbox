@@ -45,12 +45,19 @@ class EgressCredentialsTest extends munit.FunSuite:
         "error: --egress-cred=X@a.example:Authorization?sig; a binding names one place: :HEADER or ?PARAM, not both",
       List("--egress-cred=X@a.example?a&b") ->
         "error: --egress-cred=X@a.example?a&b; 'a&b' is not a query parameter name: visible ASCII without &, =, # or +",
+      List.tabulate(CredentialGrammar.MaxBindings + 1)(index => s"--egress-cred=X$index@a.example") ->
+        "error: 257 --egress-cred options; a launch takes at most 256",
       List("--egress-cred", "X@a.example") ->
         ("error: the launch options are spelled --write=<mode>, --egress=<profile>, --env=<name>[=<value>], " +
           "--egress-cred=<name>@<host> and --run-on-host=<programs>"),
     )
     refusals.foreach: (args, refusal) =>
-      assertEquals(parseCommandLine(args), Left(refusal), args.mkString(" "))
+      assertEquals(parseCommandLine(args), Left(refusal), args.take(2).mkString(" "))
+    assertEquals(
+      parseCommandLine(List.tabulate(CredentialGrammar.MaxBindings)(index => s"--egress-cred=X$index@a.example"))
+        .map(_.credentialBindings.size),
+      Right(CredentialGrammar.MaxBindings),
+    )
     // After the command name, the option belongs to the command.
     assertEquals(
       parseCommandLine(List("claude", "--egress-cred=X@a.example")).map(_.credentialBindings),
@@ -84,7 +91,7 @@ class EgressCredentialsTest extends munit.FunSuite:
       assert(!refusal.contains("cret"), refusal)
     assertEquals(resolved(Some(ghValue)).map(_.map(_.value)), Right(Vector(ghValue)))
 
-  test("a placeholder keeps a recognized prefix, the length and the separators, each other character's class"):
+  test("a recognized token's placeholder keeps its prefix, length and separators, each other character's class"):
     val random = SecureRandom()
     def placeholder(value: String) = EgressCredentials.placeholderFor(value, Set(value), random)
     def classOf(char: Char): String =
@@ -103,42 +110,46 @@ class EgressCredentialsTest extends munit.FunSuite:
       assertEquals(made.drop(prefix.length).map(classOf), value.drop(prefix.length).map(classOf), made)
       assertNotEquals(made, value)
       assertNotEquals(placeholder(value), made)
-    // Without a recognized prefix the same holds from the first character; punctuation that would split
-    // or re-parse a query becomes a letter or a digit.
-    for value <- Vector("sv=2024&sig=abc%2F#x", "Ab1", "ghp_", "1234567890ab") do
-      val made = placeholder(value)
-      assertEquals(made.length, value.length)
-      made.zip(value).foreach: (replaced, sent) =>
-        if "-._~".contains(sent) then assertEquals(replaced, sent)
-        else if sent.isLetterOrDigit then assertEquals(classOf(replaced), classOf(sent), made)
-        else assert(replaced.isLetterOrDigit, made)
+    // Other punctuation in a kept format becomes a letter or a digit: it would split or re-parse a query.
+    val punctuated = placeholder(ghValue + "&=#%")
+    assertEquals(punctuated.length, ghValue.length + 4)
+    assert(punctuated.takeRight(4).forall(_.isLetterOrDigit), punctuated)
     val two = EgressCredentials.resolve(
       Vector(binding("A@a.example"), binding("B@b.example")),
       Map("A" -> ghValue, "B" -> ghValue).get,
     ).fold(fail(_), identity)
     assertNotEquals(two(0).placeholder, two(1).placeholder)
 
-  test("a value too short for a placeholder with 64 random bits is refused, naming the variable alone"):
-    def resolved(value: String) =
-      EgressCredentials.resolve(Vector(binding("K@a.example:x-api-key")), Map("K" -> value).get)
-    // Bits are counted for the characters replaced: 4.7 a letter, 3.3 a digit, 5.95 other punctuation;
-    // a recognized prefix and the kept separators add none.
-    assert(EgressCredentials.placeholderBits("a" * 13) < 64)
-    assert(EgressCredentials.placeholderBits("a" * 14) >= 64)
-    assert(EgressCredentials.placeholderBits("1" * 19) < 64)
-    assert(EgressCredentials.placeholderBits("1" * 20) >= 64)
-    assertEquals(EgressCredentials.placeholderBits("ghp_" + "-._~" * 10), 0.0)
-    for value <- Vector("short-secret", "1234567890123456789", "ghp_abc", "a.b.c.d.e.f.g.h.i.j.k.l.m") do
-      assertEquals(
-        resolved(value),
-        Left(
-          "error: --egress-cred=K@a.example:x-api-key; value of K is too short to be replaced by an unguessable " +
-            "placeholder, which needs 64 random bits; if the sandbox may hold it, forward it with --env=K",
-        ),
-        value,
-      )
-    assert(resolved("a" * 14).isRight)
-    assert(resolved(ghValue).isRight)
+  test("any other value's placeholder is letters and digits of one length, showing nothing of the value"):
+    import EgressCredentials.{UnformattedPlaceholderBits, UnformattedPlaceholderLength, formatBits, keepsFormat}
+    val random = SecureRandom()
+    def placeholder(value: String) = EgressCredentials.placeholderFor(value, Set(value), random)
+    // The fewest of 62 letters and digits, 5.95 bits each, that hold them.
+    assertEquals(UnformattedPlaceholderBits, 128)
+    assertEquals(UnformattedPlaceholderLength, 22)
+    val unformatted = Vector(
+      "a", "short-secret", "hunter2", "1234567890123456789", "a.b.c.d.e.f.g.h.i.j.k.l.m", "sv=2024&sig=abc%2F#x",
+      "eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiIxMjM0NSJ9.c2lnbmF0dXJl", "v" * CredentialGrammar.MaxValueBytes,
+      // A recognized prefix alone, and one whose format leaves fewer than 64 bits.
+      "ghp_", "ghp_abc", "ghp_" + "a" * 13, "glpat-" + "1" * 19, "ghp_" + "-._~" * 10,
+    )
+    for value <- unformatted do
+      assert(!keepsFormat(value), value.take(16))
+      val made = placeholder(value)
+      assertEquals(made.length, UnformattedPlaceholderLength, value.take(16))
+      assert(made.forall(char => char < 0x80 && char.isLetterOrDigit), made)
+      assertNotEquals(placeholder(value), made)
+    // In a format, bits are counted for the characters replaced: 4.7 a letter, 3.3 a digit; the prefix
+    // and the kept separators add none.
+    assert(formatBits("ghp_" + "a" * 13) < 64 && formatBits("ghp_" + "a" * 14) >= 64)
+    assert(formatBits("glpat-" + "1" * 19) < 64 && formatBits("glpat-" + "1" * 20) >= 64)
+    assertEquals(formatBits("ghp_" + "-._~" * 10), 0.0)
+    for value <- Vector("ghp_" + "a" * 14, "glpat-" + "1" * 20, ghValue) do
+      assert(keepsFormat(value), value)
+      assertEquals(placeholder(value).length, value.length)
+    // A short value is brokered.
+    val resolved = EgressCredentials.resolve(Vector(binding("K@a.example:x-api-key")), Map("K" -> "hunter2").get)
+    assertEquals(resolved.map(_.map(_.placeholder.length)), Right(Vector(UnformattedPlaceholderLength)))
 
   test("a binding must reach a proxy that inspects its host: the session's, or a selected program's"):
     val sessionInspected = Set("api.github.com")
@@ -271,3 +282,8 @@ class EgressCredentialsTest extends munit.FunSuite:
       Vector.empty,
     )
     assertEquals(RunOnHostProxy.projectAuditLog(Path.of("/s/log/p/other.log"), Path.of("/t/r/proxy.log")), None)
+    // The proxy started again for the same runtime in the launch.
+    assertEquals(
+      RunOnHostProxy.projectAuditLog(channelLog, Path.of("/tmp/ko-agent-501/rXYZ/proxy-sbt-0123456789ab.log"), 2),
+      Some(Path.of("/s/log/p/proxy-20261004-120000-rXYZ-proxy-sbt-0123456789ab-2-abcd1234.log")),
+    )

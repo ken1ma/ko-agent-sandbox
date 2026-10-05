@@ -190,4 +190,8 @@ object CommandLine:
         case Some(forward) =>
           val name = forward.name
           Left(s"error: --env=$name and --egress-cred=$name@…; pass $name to one of them")
+        case None if bindings.size > CredentialGrammar.MaxBindings =>
+          Left(
+            s"error: ${bindings.size} --egress-cred options; a launch takes at most ${CredentialGrammar.MaxBindings}",
+          )
         case None => Right(parsed.copy(credentialBindings = bindings))

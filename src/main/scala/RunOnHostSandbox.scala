@@ -642,7 +642,8 @@ object RunOnHostSandbox:
     * server's file holds. `condemned` is the session directory at its condemned pathname with
     * its groups ended (RunOnHostSession.endSession), so no process the session started can
     * change what is read; the tmp check below and sessionLogTail keep each read inside the
-    * directory. `ended` is the block's first line, naming the session and how it ended. */
+    * directory, except a proxy's audit log, which is read where the launcher keeps it
+    * (RunOnHostProxy.keptAuditLog). `ended` is the block's first line, naming the session and how it ended. */
   def appendSessionLogs(channelLog: Path, condemned: Path, ended: String): Unit =
     val block = StringBuilder()
     block.append(s"${java.time.Instant.now()} $ended; its logs follow\n")
@@ -664,7 +665,7 @@ object RunOnHostSandbox:
             .filter(_.getFileName.toString.startsWith("sbt-server-err")).sorted
         catch case _: IOException => Vector.empty
     (proxyLogs ++ clientForkedStderr).foreach: file =>
-      sessionLogTail(file).foreach: tail =>
+      sessionLogTail(RunOnHostProxy.keptAuditLog(channelLog, file).getOrElse(file)).foreach: tail =>
         block.append(s"==> ${file.getFileName}\n").append(tail)
         if !tail.endsWith("\n") then block.append('\n')
     try Files.writeString(channelLog, block.toString, UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND)

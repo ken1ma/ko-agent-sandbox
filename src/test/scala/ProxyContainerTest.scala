@@ -236,7 +236,7 @@ class ProxyContainerTest extends munit.FunSuite:
 
       // The sandbox holds the placeholder, which the proxy substitutes on the bound host alone.
       val placeholder = exec(live, "sh", "-c", "printf %s \"$BROKERED_TOKEN\"").text
-      assertEquals(placeholder.length, value.length)
+      assertEquals(placeholder.length, EgressCredentials.UnformattedPlaceholderLength)
       assertNotEquals(placeholder, value)
       val bannerLine =
         s"brokered credential: BROKERED_TOKEN → docs.python.org (Authorization), placeholder $placeholder"

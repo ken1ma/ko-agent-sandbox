@@ -39,6 +39,9 @@ again.
     `podman`, the runner or a supervisor.
 - [ ] Test a host command's request reaching a local origin with the value: it needs an origin the
   host proxy trusts, and that proxy checks origins against the JDK's own trust store.
+- [ ] Give a value without a recognized prefix a placeholder its program accepts, where the program
+  checks the value's syntax before it sends one: it refuses the 22 letters and digits
+  (`egress-proxy.md`, "Where the value goes").
 - [ ] Real sessions on `--egress-cred` before `plan-provider-credential-proxy.md`, whose steps are
   taken one at a time, each on a use case those sessions produced, never as `--egress-cred`'s
   automatic second half: what that plan adds — storage, generations, refresh, removal — is where

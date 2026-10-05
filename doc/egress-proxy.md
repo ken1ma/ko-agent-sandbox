@@ -272,8 +272,10 @@ and the proxy appends the log to a per-run file on the host, under
   and any older one whose session is still running, since a live proxy is still appending to its
   file.
 - A `--run-on-host` program's proxy has its own file there, named after its run as the container
-  proxy's is: a hard link to the log in the command's session directory, so it fills as the proxy
-  writes (`RunOnHostProxy.linkAuditLog`).
+  proxy's is. It is the file that proxy writes, so it fills during the run and stays when the
+  proxy's session directory is removed (`RunOnHostProxy.keepAuditLog`).
+- A host command whose proxy's file cannot be created there is refused, with a message naming the
+  directory to make writable.
 - Startup lines come first; SECURITY.md, "The audit line grammar", lists them.
 - Every connection event after them is one line, with an inspected request's full target — query
   string included, which is what makes an exfiltrating `GET` visible.
@@ -380,8 +382,11 @@ requested.
 
 What the binding admits, checked at launch and again where a proxy reads its bindings:
 
-- a value of 1 to 4096 bytes of visible ASCII (`0x21`–`0x7E`), which can end no field and alter no
-  framing; a refusal names the offset, never the value;
+- a value of 1 to 16384 bytes of visible ASCII (`0x21`–`0x7E`), which can end no field and alter
+  no framing; a refusal names the offset, never the value;
+- a binding of at most 16384 bytes, counted with the host normalized and the place named,
+  `:Authorization` when the binding names none;
+- at most 256 bindings in a launch (`CredentialGrammar.MaxBindings`);
 - a header name that is an HTTP token, other than `Host`, `Content-Length`, `Transfer-Encoding`
   and the hop-by-hop headers, `Connection` and `Upgrade` among them, which the proxy reads or
   removes (`CredentialGrammar.RefusedHeaders`): a value there would never reach the origin as that
@@ -389,21 +394,41 @@ What the binding admits, checked at launch and again where a proxy reads its bin
 - a parameter name without `&`, `=`, `#`, `+` or a byte outside visible ASCII: `+` is refused
   because a form parser reads it as a space, so the origin would read `a+b` as `a b`.
 
-The placeholder is fresh each launch and keeps the value's format, so a program checking a token's
-syntax before it sends one still sends it:
+16384 bytes is the longest request head the proxy reads (`AgentEgressProxy.MaxHttpHeaderBytes`). A
+request's head holds the value, and the host, the prefix and the header or parameter name of a
+binding that applies to it:
 
-- a prefix programs recognize — `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`, `glpat-` —
-  and the length;
+- a JWT with many group or role claims is longer than 4 KiB, so the value's bound is well above it;
+- a longer value is refused at the origin by an AWS Application Load Balancer, whose limit for
+  one header is 16 K, and by a Node.js server, whose default for a message's headers is 16 KiB:
+  - https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-limits.html
+  - https://nodejs.org/docs/latest-v24.x/api/cli.html#--max-http-header-sizesize
+
+The placeholder is fresh each launch and random. The project sees the placeholder once the
+session runs; the randomness keeps a string written before it, such as an application's own
+token, from equaling it and being replaced.
+
+A value starting with a prefix programs recognize — `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`,
+`github_pat_`, `glpat-` — gets a placeholder in its format, so a program checking a token's syntax
+before it sends one still sends it:
+
+- the prefix and the length;
 - `-`, `.`, `_` and `~` in place, which separate the parts of GitHub's `ghs_APPID_JWT` installation
   tokens;
 - a digit for each digit and a letter of the same case for each letter. Other punctuation becomes
   a letter or a digit: `&`, `=`, `#` and `%` would split or re-parse the query a `?PARAM`
   placeholder is composed into.
 
-A value too short for a placeholder with 64 random bits — about 14 letters or 20 digits besides
-the prefix and those separators — is refused. The project sees the placeholder once the
-session runs; the randomness keeps a string written before it, such as an application's own
-token, from equaling it and being replaced.
+Any other value gets 22 random letters and digits, the fewest that hold 128 bits; no format limits
+that placeholder's length (`EgressCredentials.placeholderFor`):
+
+- a value without such a prefix is one, and so is a prefixed value whose format leaves fewer than
+  64 random bits, about 14 letters or 20 digits besides the prefix and those separators;
+- that placeholder shows the sandbox nothing of the value. One in the value's format would show
+  its length, where its separators are and each other character's class, which narrows the
+  guesses for a password a person chose;
+- a program that checks such a value's syntax before sending it may refuse the placeholder
+  (`TODO.md`, "Credential brokering").
 
 ### Which credentials fit
 
