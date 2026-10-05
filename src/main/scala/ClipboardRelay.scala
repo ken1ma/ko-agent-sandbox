@@ -126,8 +126,8 @@ object ClipboardRelay:
       |                  { copy <&5 >/dev/null && echo ok; } | reply "$$1" "$$2"
       |                exec 3<&- 4<&- 5<&-
       |              else head -c "$$arg" >/dev/null; echo ok | reply "$$1" "$$2"; fi ;;
-      |            types) { has_image && echo image/png; } | reply "$$1" "$$2" ;;
-      |            get) { [ "$$arg" = image/png ] && png; } | reply "$$1" "$$2" ;;
+      |            types) [ "$$line" = types ] || exit $$status; { has_image && echo image/png; } | reply "$$1" "$$2" ;;
+      |            get) [ "$$line" != get ] || exit $$status; { [ "$$arg" = image/png ] && png; } | reply "$$1" "$$2" ;;
       |            *) exit $$status ;;
       |          esac
       |          status=0

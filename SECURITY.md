@@ -172,6 +172,15 @@ project entry that a symlink at `objects`, `objects/info` or an alternates file 
 Git directory outside the project. Such a link that leads out of the project, to objects kept on
 another disk, is served as it is.
 
+A project file that a command in `.git/config` names or runs stays writable:
+
+- A filter, `textconv`, merge driver or `core.fsmonitor` value such as `./tools/clean.sh` or
+  `node scripts/driver.js`: the session cannot change the value, and can rewrite the file it names.
+- Git passes each of these values to a shell when it holds a space or another shell character
+  (git 2.51.0), so the guard cannot tell which word names a file, as it can for `core.hooksPath`.
+- A `readonly tools/clean.sh` line in `.ko-agent-sandbox/file/rule` protects such a file outside
+  `node_modules` (`doc/file-rules.md`, "The rule file").
+
 A directory laid out as a gitdir *without* a `.git` name elsewhere in the tree is the gap "The
 project directory" describes.
 
@@ -861,14 +870,16 @@ each line; what stays opaque, and why, is "What is inside TLS" above.
 For each inspected request, the proxy terminates TLS and checks the grants in the resolved scope
 with the longest literal path match (`doc/egress-proxy.md`, "The rule file"):
 
-- `read`: bodyless `GET` and `HEAD`, except the Git discovery requests classified separately below.
+- `read`: bodyless `GET` and `HEAD`, except the two Git discovery requests below as spelled there;
+  another spelling of either is a `read`.
 - `git-fetch`: the ref discovery, `GET .../info/refs?service=git-upload-pack`, and the transfer
   step of `clone` and `fetch`, a `POST` to a path of at least two nonempty segments followed by
-  `/git-upload-pack`.
+  `/git-upload-pack`, with no `#` in it: an origin that ends the path at `#` would route the
+  request by what precedes it.
   - Git sends fetch-negotiation data as a `POST` and receives a packfile in the response, so
     granting only `read` would prevent cloning.
-  - Discovery also requires `git-fetch`, so a clone without the transfer grant fails at its first
-    request rather than its second.
+  - That discovery request also requires `git-fetch`, so a clone without the transfer grant fails
+    at its first request rather than its second.
 - `method=POST` on GitHub's two default login rules, `/login/device/code` and
   `/login/oauth/access_token`: GitHub's OAuth device flow, which is how Copilot CLI signs in.
   - The second is GitHub's general token endpoint, shared with the web flow's code exchange, whose
@@ -887,8 +898,9 @@ with the longest literal path match (`doc/egress-proxy.md`, "The rule file"):
     lockfile. It does not send dependency edges. Enabling install-time vulnerability warnings
     allows that disclosure.
 - Nothing else.
-  - `POST .../git-receive-pack` is the push and is refused, and so is its ref discovery — a `GET`,
-    refused anyway so that `git push` fails at its first request rather than its second.
+  - `POST .../git-receive-pack` is the push and is refused, and so is its ref discovery as git
+    sends it, `GET .../info/refs?service=git-receive-pack` — refused though it is a `GET`, so that
+    `git push` fails at its first request rather than its second.
   - The exception is a line granting `POST` at the repository, the project's own visible grant.
   - `PUT`, `PATCH` and `DELETE` are refused, and so is every other `POST`, where no line grants the
     method.

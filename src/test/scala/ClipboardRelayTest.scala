@@ -226,8 +226,12 @@ class ClipboardRelayTest extends munit.FunSuite:
       // A line outside the grammar, with a request behind it: the reading ends at the line, so
       // the `get` is never read as a request — a PNG answered to nobody would hold the relay for
       // the response writer's ten seconds, past the shim's own wait.
-      assertEquals(rawRequest("junk\nget image/png\n".getBytes(UTF_8)), 0)
-      assertEquals(String(sandboxCall(sandboxBin, Array.empty, "wl-paste", "-l")._2, UTF_8), "image/png\n")
+      // A `types` with an argument and a `get` without one are outside the grammar too, as the
+      // Windows twin reads them.
+      Vector("junk\nget image/png\n", "types x\nget image/png\n", "get\nget image/png\n").foreach: refused =>
+        assertEquals(rawRequest(refused.getBytes(UTF_8)), 0, refused)
+        val (_, types) = sandboxCall(sandboxBin, Array.empty, "wl-paste", "-l")
+        assertEquals(String(types, UTF_8), "image/png\n", refused)
       // Two requests in one stream — a writer opening before the reader saw the last one's end —
       // are both served, in order: the boundary is the line and its count, not the exec.
       assertEquals(rawRequest("types\nget image/png\n".getBytes(UTF_8)), 0)
@@ -286,7 +290,8 @@ class ClipboardRelayTest extends munit.FunSuite:
     assertEquals(bodies("types\njunk\ntypes\n"), Vector("Types"))
     // A body the stream does not hold whole — the writer stopped, or the cut did — is refused.
     Vector(
-      "types", "junk\nget image/png\n", "set\n", "set -1\nx", "set +1\nx", "set 1 2\nx", "set 6\nabc",
+      "types", "junk\nget image/png\n", "types x\n", "types \n", "get\n",
+      "set\n", "set -1\nx", "set +1\nx", "set 1 2\nx", "set 6\nabc",
       "set 03\nabc", "set 00\n", "set ٣\nabc",
       s"set ${MaxRequestBytes + 1}\nx", "set 99999999999999999999\nx",
     ).foreach(text => assertEquals(requests(stream(text)), Vector.empty, text))

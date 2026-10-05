@@ -86,6 +86,8 @@ repository's configuration files:
 - An attacker cannot introduce a new command key without either writing a protected config file
   or adding an `include.path` to one — itself a write to a protected config file.
 - Protect the config files and every command key above is out of reach, present and future.
+- A worktree file that a host-chosen command names or runs stays writable
+  (`../../../SECURITY.md`, "The host's git executing what the sandbox wrote").
 
 `.gitattributes` and `.gitmodules` stay writable worktree data:
 

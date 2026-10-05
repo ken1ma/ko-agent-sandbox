@@ -178,6 +178,23 @@ What is left:
   session-held descriptor already refuses some host writers (the coherency row above); rename and
   unlink of a held path are the unmeasured half.
 
+### A symlink target spelled with Windows separators
+
+On Linux the symlink targets `..\..\x`, `..\.git` and `C:\Windows` are one ordinary name each,
+so the filter judges each as a name in the link's directory, not as a path:
+
+- `target_has_portable_syntax` (`fs.rs`), which refuses an absolute or climbing target, accepts
+  all three;
+- `allow_symlink_target`, which refuses a target into a Git directory or a writable region,
+  finds neither.
+
+- [ ] On Windows, make a symlink with each of those targets in a session, on the WSL drive mount,
+  and record in `verification-log.md` what the host holds for each: whether it is an NT symbolic
+  link, and the path Windows resolves it to.
+- [ ] If Windows resolves any of them as a path, decide whether to refuse `\` and `:` in every
+  target. The refusal would apply on macOS and Linux too, where such a target is an ordinary
+  name; which programs write one is unmeasured.
+
 ### The platform matrix itself
 
 - [ ] linux-x86_64 and linux-aarch64 (the two architectures every image here builds for).
