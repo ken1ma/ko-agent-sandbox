@@ -47,7 +47,7 @@ class EgressRulesTest extends munit.FunSuite:
     assertEquals(transportLineOf(s"2026-08-26T11:59:38Z $line\n$ready"), Some(line))
     assertEquals(transportLineOf(ready), None)
 
-  test("the banner summary joins a file's lines on one line"):
+  test("an egress action's rule file line joins the file's lines on one line"):
     assertEquals(
       lineSummary("allow https://a.example/ read\ndeny https://b.example/"),
       "allow https://a.example/ read; deny https://b.example/",
@@ -248,6 +248,37 @@ class EgressRulesTest extends munit.FunSuite:
     )
     assertEquals(rulesetLinesOf(ruleset), ruleset)
     MetadataPrefixes.foreach(prefix => assertEquals(rulesetLinesOf(ruleset + "\n" + prefix + "x"), ruleset))
+
+  test("a launch prints each line of the rule file once, those that widen under a counted heading"):
+    def launched(file: String, widening: String*): Vector[String] =
+      val line = if widening.isEmpty then "" else s"\nwidening lines (${widening.size}): ${widening.mkString("; ")}"
+      launchLines(
+        Vector("rule" -> file),
+        "egress profile: deny-unless-allowed\n" + summary(1, 0, widening.size) + line,
+        color = false,
+      )
+    val source = "egress rules (.ko-agent-sandbox/egress/rule)"
+    assertEquals(
+      launched(
+        "allow https://a.example/ read\nallow https://b.example/ read",
+        "allow https://a.example/ read",
+        "allow https://b.example/ read",
+      ),
+      Vector(s"$source widen (2):", "  allow https://a.example/ read", "  allow https://b.example/ read"),
+    )
+    assertEquals(
+      launched("deny https://gitlab.com/\nallow https://a.example/ read", "allow https://a.example/ read"),
+      Vector(
+        s"$source widen (1):",
+        "  allow https://a.example/ read",
+        s"$source, other lines: deny https://gitlab.com/",
+      ),
+    )
+    assertEquals(
+      launched("deny https://gitlab.com/\nallow https://github.com/ read"),
+      Vector(s"$source: deny https://gitlab.com/; allow https://github.com/ read"),
+    )
+    assertEquals(launchLines(Vector.empty, "egress profile: deny-all\n" + summary(0, 0), color = false), Vector.empty)
 
   test("normalizing keeps a # inside a token, so the proxy refuses it instead of reading a wider line"):
     assertEquals(

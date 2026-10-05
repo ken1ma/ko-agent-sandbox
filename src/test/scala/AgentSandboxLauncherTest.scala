@@ -230,7 +230,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         color = false,
       ),
       Vector(
-        "run-on-host egress rules (.ko-agent-sandbox/run-on-host/sbt/egress/rule) widen:",
+        "run-on-host egress rules (.ko-agent-sandbox/run-on-host/sbt/egress/rule) widen (2):",
         "  allow https://repo.example/ read",
         "  allow https://plugins.example/ read",
       ),
@@ -239,7 +239,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(
       hostile,
       Vector(
-        "\u001b[38;5;208mrun-on-host egress rules (.ko-agent-sandbox/run-on-host/gradle/egress/rule) widen:\u001b[0m",
+        "\u001b[38;5;208mrun-on-host egress rules (.ko-agent-sandbox/run-on-host/gradle/egress/rule) widen (1):" +
+          "\u001b[0m",
         "\u001b[38;5;208m  allow https://x.example\\x1b[2K/ read\u001b[0m",
       ),
     )

@@ -2097,10 +2097,10 @@ object AgentSandboxLauncher:
     import workspace.{filteredWorkspace, joinedRules, sessionRuleLines}
     import git.{gitdirBindRefusal, mountedGitdir, noGit}
     // The workspace mode and the egress profile with their relevant state, said every launch — and
-    // rules that arrived with the repository never take effect unseen: the files as written, then
-    // the dry run's counts, the proxy's own answers to exactly what is enforced. Each line tints
-    // the mode it states; a line stating a boundary weaker than the default is tinted whole
-    // instead (HostCommands.weakened).
+    // rules that arrived with the repository never take effect unseen: each line of the files once
+    // (HostCommands.ruleFileReport), then the dry run's counts, the proxy's own answers to exactly
+    // what is enforced. Each line tints the mode it states; a line stating a boundary weaker than
+    // the default is tinted whole instead (HostCommands.weakened).
     // The mount path is said on Windows only, where it is not the project directory line's
     // spelling but the /mnt/<drive> one the agent will print.
     val mountedAt = if os == Os.Windows then s" at $mountPath" else ""
@@ -2120,8 +2120,7 @@ object AgentSandboxLauncher:
         warn(joinWarning(running))
         FileRules.runningLaunchLines(sessionRuleLines).foreach(System.err.println)
       case None => if fileRulesInForce then FileRules.launchLines(projectFileRules).foreach(System.err.println)
-    if ruleFiles.nonEmpty then printRuleFiles(ruleFiles)
-    printWidening(rulesetText)
+    EgressRules.launchLines(ruleFiles, rulesetText).foreach(System.err.println)
     System.err.println(egressBanner(rulesetText))
     // The transport, when this launch passed HTTPS_PROXY: the proxy's own line, from its own
     // parse, so what is on the screen is what is used — never a launcher-side reading of the

@@ -224,10 +224,11 @@ image adopts its hosts.
 without starting a session; inside one, `ko-sandbox-egress-check <host>` asks the running proxy.
 Every start prints, in order:
 
-1. the rule file as written, one line;
 1. when the file grants beyond the defaults — a host the defaults lack, a grant the defaults lack
-   at the line's path, `deny defaults` — the line `egress rules widen:`, then those rule lines,
-   each on its own indented line. A file that only removes grants or narrows them prints neither;
+   at the line's path, `deny defaults` — the line
+   `egress rules (.ko-agent-sandbox/egress/rule) widen (<count>):`, then those rule lines, each
+   on its own indented line. A file that only removes grants or narrows them prints neither;
+1. the file's other lines, on one line, so each line of the file prints once;
 1. the launch banner — the profile and the counts, never a host name.
 
 The ruleset itself is what the proxy prints at its start and `--egress-effective` shows whole, in
