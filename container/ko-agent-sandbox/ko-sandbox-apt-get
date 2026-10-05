@@ -120,12 +120,13 @@ sed -n 's/^Inst \([^ ]*\) \(\[[^]]*\] \)\{0,1\}(\([^ ]*\) .*/\1 \3/p' "$apt/simu
 # package into a re-download. A manifest per package, filed under the name the simulation gives it,
 # stands in for the ownership database dpkg would have kept: it names the extracted archive, its
 # version, and every path that archive holds.
-# A re-run of the same archive is skipped. A newer version extracts over $root and then deletes the
-# paths its predecessor owned that no manifest lists any more, so no command an upgrade drops stays
-# behind, while a path that moved to another package — a Debian transition, and the other package
-# may well have been extracted first — stays; an archive no newer than the one already extracted is
-# left unopened. dpkg compares the versions because a filename does not sort by version — demo_1.10
-# precedes demo_1.9. The manifest is replaced only once the extraction and the deletions are through:
+# A re-run of the same archive is skipped. Any other version the install resolved to extracts over
+# $root and then deletes the paths its predecessor owned that no manifest lists any more, so no
+# command the replaced version alone shipped stays behind, while a path that moved to another
+# package — a Debian transition, and the other package may well have been extracted first — stays.
+# An older version too: `pkg=version` selects it, and apt reports no downgrade, since its baseline,
+# the image's dpkg status, holds neither. The manifest is replaced only once the extraction and the
+# deletions are through:
 # an aborted extraction, or a deletion refused by an unwritable directory, leaves the old one, so a
 # retry deletes what remains instead of skipping the archive as done.
 unpacked=$root/.unpacked
@@ -143,10 +144,9 @@ for archive in "$apt/cache/archives"/*.deb; do
     esac
     grep -qxF -- "$package $version" "$apt/resolved" || continue
     manifest=$unpacked/$package
-    current_base= current_version=
-    [ -f "$manifest" ] && { IFS= read -r current_base; IFS= read -r current_version; } < "$manifest"
+    current_base=
+    [ -f "$manifest" ] && IFS= read -r current_base < "$manifest"
     [ "$current_base" = "$base" ] && continue
-    [ -n "$current_version" ] && dpkg --compare-versions "$version" le "$current_version" && continue
     files=$(dpkg-deb --fsys-tarfile "$archive" | tar -tf - 2>/dev/null | sed 's#^\./##')
     dpkg-deb -x "$archive" "$root"
     { printf '%s\n%s\n' "$base" "$version"; printf '%s\n' "$files"; } > "$manifest.new"
@@ -199,8 +199,8 @@ WRAP
     done
 done
 
-# A wrapper the upgrade above orphaned would still answer `command -v` for a command that is gone;
-# drop the ones whose $root target no longer exists.
+# A wrapper for a command the replacement above deleted would still answer `command -v`; drop the
+# ones whose $root target no longer exists.
 for wrapper in "$HOME/.local/bin"/*; do
     [ -f "$wrapper" ] || continue
     target=$(wrapper_target "$wrapper")
