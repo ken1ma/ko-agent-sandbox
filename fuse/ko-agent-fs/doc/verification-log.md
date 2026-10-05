@@ -468,3 +468,21 @@ succeeds anyway.
 
 This container is therefore the only one that exercises the route a real session takes. The dev
 rig runs as root, where `mount(2)` succeeds directly and the helper is reached only at teardown.
+
+### Measured: without `allow_other` no container starts (podman 6.1.2; 2026-10-06)
+
+In a podman machine on macOS (machine kernel 7.1.8-200.fc44.aarch64, libkrun, virtiofs share), a
+filter built with fuser's `SessionACL::Owner` in place of `SessionACL::All` mounts and passes every
+suite `--self-test` runs inside its container, where the daemon and the tests are one uid. The
+share probe's container, run with `--userns=keep-id:uid=65532,gid=65532`, fails before the probe
+starts:
+
+    crun: cannot stat `self/fd/5`: Permission denied: OCI permission denied
+
+A session launched on the same filter fails with the same error, at `self/fd/16`.
+
+The kernel refuses the stat: a mount without `allow_other` admits a process only when its uids and
+gids are all the mounting process's (`fs/fuse/dir.c`, `fuse_allow_current_process`). crun stats a
+bind's source after it sets its uid to the root of the container's user namespace
+(`src/libcrun/linux.c`, `set_id_init` and `do_mounts`), which keep-id maps to a subordinate uid of
+the daemon's user.

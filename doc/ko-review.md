@@ -137,13 +137,18 @@ edits like any other, and the user commits them when and as they choose.
   `NOT_APPROVED`, its `effectiveStatus` `STALE_APPROVAL`, and `staleReasons` says what changed;
   `continue` obtains a new approval.
   - The digest covers HEAD, the index and every file's raw content ("The digest", below).
-  - Staging or committing the approved changes keeps the approval, a staged deletion or rename
-    included: the digest moves, but the content digest recorded with the approval still matches
-    and the index, written as a tree, equals the approved snapshot's tree. Unreviewed staged
-    content fails that second check. A changed HEAD alone is never a reason.
+  - Staging or committing the approved changes keeps the approval when the approved round has a
+    snapshot, a staged deletion or rename included: the digest moves, but the content digest
+    recorded with the approval still matches and the index, written as a tree, equals the
+    approved snapshot's tree. Unreviewed staged content fails that second check. A changed HEAD
+    alone is then never a reason.
+  - Without a snapshot, as in a linked worktree ("Each round's tree and transcript are kept in
+    Git", below), a changed HEAD or index makes the approval stale even when every file's
+    content is the approved one.
   - `staleReasons`, in `show` and in `verify`'s error, names "working files changed" with the
     paths, from the manifest of hashes the round saved beside its snapshot; "unreviewed content
-    staged" with the paths; or that the instructions changed after the approval.
+    staged" with the paths; that HEAD or the index changed and the round has no snapshot; that
+    the index could not be compared; or that the instructions changed after the approval.
 - **Each round's tree and transcript are kept in Git**, under
   `refs/ko-review/<review id>/round-NNN`, without touching the user's index, HEAD or files.
   - The ref points at a tag object whose message is the round's transcript, the author's message
@@ -228,8 +233,11 @@ transcript and tree, which `delete` removes with the directory above.
 - State is namespaced by checkout path because a persistent volume can be shared by several
   projects (`KO_AGENT_SANDBOX_PERSISTENT_VOLUME`) or by a main worktree and its linked worktrees,
   and a review is about one checkout. The reviewers' own session files stay in `~/.codex` and
-  `~/.claude`; sharing them is safe because every continuation names its thread id. `--reset`
-  removes them all.
+  `~/.claude`; sharing them is safe because every continuation names its thread id.
+- `--reset` removes the project's own volume, and the review state and those session files with
+  it. It keeps a volume named through `KO_AGENT_SANDBOX_PERSISTENT_VOLUME` and, from a linked
+  worktree, the main worktree's volume, each with what it holds (`SECURITY.md`, "What the
+  persistent volume holds").
 - Outside the sandbox the state root is `$XDG_STATE_HOME/ko-review`, default
   `~/.local/state/ko-review`; `KO_REVIEW_STATE` overrides either.
 

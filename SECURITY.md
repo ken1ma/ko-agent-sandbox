@@ -545,11 +545,13 @@ What an auditor trusts, and how each link is checked:
   digest into the image build, and checks the installed binary's `--version` against it. A mismatch
   fails `--build`. This detects a mismatched installation; the binary reports the value, so the
   check does not independently attest its contents or the build toolchain.
-- **The filter daemon is unprivileged.** It is installed in the podman machine user's home on macOS
-  and Windows, or the host user's home on native Linux (the README names the path). The daemon runs
-  without root or capabilities and uses the existing setuid `fusermount3` helper to mount FUSE.
-  Enabling `user_allow_other` in the machine's `/etc/fuse.conf`, required for a cross-uid mount,
-  requires consent ("Silent changes to what you own", above).
+- **The filter daemon is unprivileged.** It runs without root or capabilities and uses the
+  existing setuid `fusermount3` helper to mount FUSE.
+  - It is installed in the podman machine user's home on macOS and Windows, or the host user's
+    home on native Linux (the README names the path).
+  - Enabling `user_allow_other` in the machine's `/etc/fuse.conf`, which the filter's
+    `allow_other` mount needs (`fuse/ko-agent-fs/doc/architecture.md`, "Who may reach the
+    mount"), requires consent ("Silent changes to what you own", above).
 
 What is measured, each through the whole production stack
 (`fuse/ko-agent-fs/doc/verification-log.md` has the runs):

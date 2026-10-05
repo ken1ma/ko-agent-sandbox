@@ -1195,6 +1195,31 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     commands.filter(_.containsSlice(Seq("--target", "build"))).foreach: command =>
       assert(buildOutputImages(Vector(command)).head.endsWith(":cache"), command.mkString(" "))
 
+  test("every build step with a cache mount locks its caches and expires them before its commands"):
+    // fuse/ko-agent-fs/Containerfile has what a cache deleted from file by file does to the step.
+    val filterContainerfile = Paths.get("fuse/ko-agent-fs/Containerfile")
+    val containerfiles = FileHelper.directoryEntries(Paths.get("container"))
+      .map(_.resolve("Containerfile")).filter(Files.isRegularFile(_)) :+ filterContainerfile
+    val cachedSteps = containerfiles.flatMap: path =>
+      // One line per instruction: a comment line between continued lines is not part of it.
+      Files.readString(path).linesIterator.filterNot(_.trim.startsWith("#")).mkString("\n")
+        .replaceAll("""\\\n\s*""", "")
+        .linesIterator.filter(_.contains("--mount=type=cache")).map(path -> _)
+    assertEquals(
+      cachedSteps.map((path, _) => path).toSet,
+      Set(filterContainerfile, Paths.get("container/ko-agent-self-test/Containerfile")),
+    )
+    cachedSteps.foreach: (path, step) =>
+      val targets = """--mount=type=cache,target=(\S+)""".r.findAllMatchIn(step).map(_.group(1)).toVector
+      val descriptors = targets.indices.map(_ + 8)
+      val opened = targets.zip(descriptors).map((target, descriptor) => s"$descriptor<$target").mkString(" ")
+      val locked = descriptors.map(descriptor => s"flock $descriptor; ").mkString
+      val caches = targets.mkString(" ")
+      assert(
+        step.contains(s"set -eux; exec $opened; ${locked}sh expire-build-cache.sh $caches; "),
+        s"$path: $step",
+      )
+
   test("the self-test identity covers its source, filter, and actual inherited sandbox image"):
     val original = selfTestBundleId("fs-source-1", "self-test-source-1", "sandbox-image-1")
     assert(selfTestBundleId("fs-source-2", "self-test-source-1", "sandbox-image-1") != original)

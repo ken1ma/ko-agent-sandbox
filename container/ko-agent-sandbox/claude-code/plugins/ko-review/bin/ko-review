@@ -488,7 +488,11 @@ class Review:
         By digest first. When the digest moved with HEAD or the index, as after the user stages or
         commits the reviewed changes, the approval holds if the files' raw content is still the
         approved one and the index, written as a tree, equals the approved snapshot's tree, so that
-        nothing unreviewed is staged. A changed HEAD alone is therefore never a reason."""
+        nothing unreviewed is staged. A changed HEAD alone is therefore never a reason when the
+        round has a snapshot.
+
+        Without a snapshot there is no approved tree to compare the index with, and a changed HEAD
+        or index is itself a reason."""
         observation = observation or observe(self.root)
         approved = self.state.get("approved")
         fresh = approved is not None and approved["worktreeDigest"] == observation["digest"]

@@ -59,37 +59,44 @@ Inode { parent: u64, name: OsString, nlookup: u64, git: GitContext, rule: RuleCo
   and the `.git` name rule sees the exact name.
 - **Why this is TOCTOU-safe, not a naive path join.** `RESOLVE_IN_ROOT` makes the kernel resolve the
   intermediate walk atomically with escape-proof containment — `..` is clamped to the backing root,
-  no `backing_root.join(user_path)` string is ever handed to an ordinary syscall. It
-  is the primitive intended for this (`security-research.md`, "FUSE correctness & openat2
-  semantics"). The remaining resolve flags, and the bounded `EAGAIN` retry a
-  concurrent rename forces, are stated where they are set: `fs.rs`, `open_ino`.
-- **Coherency.** Re-resolving against the live backing tree every op means the filter never serves a
-  stale view of what the host wrote — matching "correctness over caching". Its cost is a stored
-  path that stops naming its inode once the tree moves, which either side may do and no later lookup
-  repairs: the kernel goes on addressing a renamed directory by the inode it holds rather than
-  looking the new name up. `RESOLVE_NO_SYMLINKS` and an identity comparison are what make that
-  merely stale instead of wrong — the chain resolves to the object the node was classified as, or
-  it fails: `ELOOP` through a symlink, `ESTALE` at another object, which a second name of a guarded
-  entry would otherwise let an ordinary chain reach (`fs.rs`, `open_ino`). The fd-per-inode
-  alternative trades the staleness for its own mirror quirk (an fd to a renamed-away subtree keeps
-  operating on the moved inode) plus one open fd per live inode, which at 100k files is real fd
-  pressure. The path model holds one fd for the root and transient fds per op.
+  no `backing_root.join(user_path)` string is ever handed to an ordinary syscall.
+  - It is the primitive intended for this (`security-research.md`, "FUSE correctness & openat2
+    semantics").
+  - The remaining resolve flags, and the bounded `EAGAIN` retry a concurrent rename forces, are
+    stated where they are set: `fs.rs`, `open_ino`.
+- **Coherency.** Re-resolving against the live backing tree every op means a name resolves as the
+  host's tree has it at the moment of the call — matching "correctness over caching".
+  - "Coherency: zero-cache is a correctness requirement", below, has the guarantee for attributes
+    and data and its two exceptions.
+  - Its cost is a stored path that stops naming its inode once the tree moves, which either side
+    may do and no later lookup repairs: the kernel goes on addressing a renamed directory by the
+    inode it holds rather than looking the new name up.
+  - `RESOLVE_NO_SYMLINKS` and an identity comparison are what make that merely stale instead of
+    wrong — the chain resolves to the object the node was classified as, or it fails: `ELOOP`
+    through a symlink, `ESTALE` at another object, which a second name of a guarded entry would
+    otherwise let an ordinary chain reach (`fs.rs`, `open_ino`).
+  - The fd-per-inode alternative trades the staleness for its own mirror quirk (an fd to a
+    renamed-away subtree keeps operating on the moved inode) plus one open fd per live inode,
+    which at 100k files is real fd pressure. The path model holds one fd for the root and
+    transient fds per op.
 - **Backing identity, so a replacement is a new inode.** `dev`/`ino_id` are the `(st_dev, st_ino)`
   the position named when the entry was allocated. `lookup` re-stats the name and reuses the entry
   only when identity still matches; a host replacement — a different object left at the same name
   — re-points the name to a freshly allocated inode number for the new object (`inode.rs`,
-  `lookup`). This is what keeps the FUSE inode identity tracking the *object*, not just the name.
-  Without it, the kernel keeps one inode — and one page cache — across the replacement, and
-  `AUTO_INVAL_DATA` cannot save it: that mechanism invalidates on a size or mtime change, so a
-  replacement at equal size and mtime (`tar -x`, `cp -p`, `touch -r` all produce one) would serve
-  the old object's cached pages to a reader of the new one. A fresh inode gets a fresh, empty page
-  cache, so the read reflects the new object. A descriptor opened before the replacement is
-  unaffected: it reads and writes through its own backing fd (`fs.rs`, `read`/`write`), and an
-  attribute or truncate request carrying its handle acts on that fd too (`fs.rs`, `getattr`/
-  `setattr`), so it keeps addressing the object it opened — POSIX open-file semantics. The vacated
-  number is only unhooked from the name, not dropped, so that descriptor and any child it holds
-  reconstruct the path they always did (the stale-path resolution `RESOLVE_NO_SYMLINKS` guards);
-  the kernel forgets the number in its own time.
+  `lookup`).
+  - This is what keeps the FUSE inode identity tracking the *object*, not just the name. Without
+    it, the kernel keeps one inode — and one page cache — across the replacement, and
+    `AUTO_INVAL_DATA` cannot save it: that mechanism invalidates on a size or mtime change, so a
+    replacement at equal size and mtime (`tar -x`, `cp -p`, `touch -r` all produce one) would
+    serve the old object's cached pages to a reader of the new one.
+  - A fresh inode gets a fresh, empty page cache, so the read reflects the new object.
+  - A descriptor opened before the replacement is unaffected: it reads and writes through its own
+    backing fd (`fs.rs`, `read`/`write`), and an attribute or truncate request carrying its
+    handle acts on that fd too (`fs.rs`, `getattr`/`setattr`), so it keeps addressing the object
+    it opened — POSIX open-file semantics.
+  - The vacated number is only unhooked from the name, not dropped, so that descriptor and any
+    child it holds reconstruct the path they always did (the stale-path resolution
+    `RESOLVE_NO_SYMLINKS` guards); the kernel forgets the number in its own time.
 
 ### Bounded memory and the O(1) policy fast-path (the scale constraints)
 
@@ -98,11 +105,15 @@ At hundreds of thousands of files the two risks are table growth and per-op poli
 - **`forget` is honored.** Each `lookup`/`entry` reply increments `nlookup`; `forget(ino, n)`
   decrements and drops the entry at zero. The live table stays bounded to what the kernel caches —
   tens of MB, not a leak that grows with every file the compiler ever stat'd.
-- **`git` is a cached, incremental context.** `GitContext` is computed once at `lookup` from the
-  parent's context plus this name (O(1)), never by re-walking. The overwhelming majority of files in
-  a Scala build are outside any `.git`, so their context is a single "not in a gitdir" tag and the
-  policy core allows every mutation on them without a path scan. The policy core only does real
-  work inside a gitdir, which is a vanishing fraction of the op stream.
+- **`git` and `rule` are cached, incremental contexts.** Both are computed once at `lookup` from
+  the parent's context plus this name, never by re-walking, and every mutation is checked against
+  both: the Git policy first, then the file rules (`fs.rs`, `allow_child` and `allow_ino`).
+  - `GitContext` is O(1). The overwhelming majority of files in a Scala build are outside any
+    `.git`, so their context is a single "not in a gitdir" tag and the Git policy allows every
+    mutation on them without a path scan. The Git policy only does real work inside a gitdir,
+    which is a vanishing fraction of the op stream.
+  - `RuleContext` costs a lookup one name comparison per file-rule line (`policy.rs`,
+    `child_rule_context`); a mutation reads the cached context (`authorize_rule`).
   - The name is not always the one the session used: an entry that is the same backing object as
     the `.git` or `.ko-agent-sandbox` beside it takes that name's context (`fs.rs`,
     `policy_name`; `security-research.md`, "Windows 8.3 short names", has why). Outside a gitdir
@@ -168,8 +179,8 @@ measurements and `TODO.md`, "Performance", the open rows. In place:
 
 - **A directory snapshot per `opendir`** — `fs.rs`, `opendir`: a stable scan, not a cache.
 - **A minimal per-op path** — a path-based getattr is one `openat2` from the root and one `fstat`
-  on the live backing, that of the identity comparison (`fs.rs`, `open_ino`), and the O(1)
-  git-context fast-path keeps non-`.git` ops free of policy work.
+  on the live backing, that of the identity comparison (`fs.rs`, `open_ino`), and the cached
+  Git and rule contexts keep a mutation's policy check free of a path scan.
 
 The layer beneath matters: the backing tree is itself the host share (virtiofs on a Podman machine).
 TTL 0 makes *our* view re-read the backing on every access, but end-to-end coherency also needs that
@@ -183,16 +194,23 @@ repeat after a podman or macOS upgrade, not a property of the design.
 
 The mount is made with `allow_other` (fuser's `SessionACL::All`) and `default_permissions`.
 
-FUSE otherwise confines a mount to the uid that made it, and the daemon and the sandbox are
-different uids by construction — the daemon runs in the Podman machine, the container's uid is
-namespace-mapped — so the default would make every access `EACCES`. The alternative, running the
-daemon as whatever uid the container will present, would tie the daemon's identity to a container
-that does not exist yet when the mount is made.
+FUSE otherwise admits only a process whose uids and gids are all those of the process that
+mounted (`fs/fuse/dir.c`, `fuse_allow_current_process`), and the container runtime is not one:
 
-Widening *who may reach* the mount does not widen *what they may do*. `default_permissions` keeps
-the kernel applying ordinary uid/gid/mode checks against the real backing metadata, and the Git
-policy is enforced whoever is asking. Exposure is bounded by the machine running only this
-project's containers.
+- keep-id maps the session's user onto the daemon's, but the container runtime reaches the mount
+  first and as another uid.
+- crun stats the workspace bind as the root of the container's user namespace, which keep-id maps
+  to a subordinate uid of the daemon's user.
+- Without `allow_other` that stat is refused and no container starts (`verification-log.md`,
+  "Mount privilege: what a container grants").
+
+Widening *who may reach* the mount does not widen *what they may do*:
+
+- `default_permissions` keeps the kernel applying ordinary uid/gid/mode checks against the real
+  backing metadata.
+- The Git policy and the file rules are enforced whoever is asking.
+- Exposure is bounded by where the mount is bound: the launcher binds a project's mount into that
+  project's sessions alone, so another project's session on the same machine has no path to it.
 
 A project has one daemon and one mount shared by all its sessions. Concurrent sessions read and
 write the same files and can overwrite one another's changes. If the daemon dies, the project mount

@@ -78,9 +78,31 @@ ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 #
 # /usr/local/cargo is the rust image's CARGO_HOME, spelled out because a mount
 # target is not a shell word.
+#
+# The step empties a cache mount that a cleanup may have deleted from:
+#
+# - buildah keeps a cache mount under its temporary directory, /var/tmp unless
+#   TMPDIR names another.
+# - systemd-tmpfiles deletes each file there whose access, modification,
+#   change and creation times are all older than the directory's age: 30 days
+#   for /var/tmp and 10 for /tmp in systemd's own tmp.conf.
+# - Cargo reads some cached files at every build and others never: a crate's
+#   `.cargo-ok` and manifest against the sources of a Windows-only crate. A
+#   cache aged file by file then fails the build with `failed to parse
+#   manifest … no targets specified`.
+# - expire-build-cache.sh writes a marker file into an empty cache before
+#   cargo writes anything, and empties a cache whose marker is missing or more
+#   than 7 days old. Every entry of a cache the step uses is therefore younger
+#   than those ages, so no cleanup has deleted from it.
+# - The locks make a second step wait for this one rather than empty a cache
+#   under it.
 RUN --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
     set -eux; \
+    exec 8</build/target 9</usr/local/cargo/registry; \
+    flock 8; \
+    flock 9; \
+    sh expire-build-cache.sh /build/target /usr/local/cargo/registry; \
     triple="$(uname -m)-unknown-linux-musl"; \
     cargo deny --locked check licenses bans sources; \
     cargo build --locked --release --target "${triple}"; \

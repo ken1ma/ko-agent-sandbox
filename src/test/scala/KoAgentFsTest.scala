@@ -3,7 +3,7 @@
 
 package agentsandbox.launcher
 
-import java.nio.file.{Files, Paths}
+import java.nio.file.{Files, Path, Paths}
 import java.nio.file.attribute.{FileTime, PosixFilePermissions}
 import java.time.Instant
 
@@ -539,6 +539,45 @@ class KoAgentFsTest extends munit.FunSuite:
     val parsed = ProcessBuilder("/bin/bash", "-n", "-c", body).redirectErrorStream(true).start()
     val output = String(parsed.getInputStream.readAllBytes())
     assertEquals(parsed.waitFor(), 0, s"the rig's container script does not parse:\n$output")
+
+  test("a build cache is emptied unless its marker is younger than any cleanup's age"):
+    import scala.jdk.CollectionConverters.*
+    assume(!isWindows, "no /bin/sh to run expire-build-cache.sh with")
+    def expire(cache: Path): Unit =
+      val ran = ProcessBuilder("/bin/sh", "fuse/ko-agent-fs/expire-build-cache.sh", cache.toString)
+        .redirectErrorStream(true).start()
+      val output = String(ran.getInputStream.readAllBytes())
+      assertEquals(ran.waitFor(), 0, output)
+    def entries(cache: Path): Set[String] =
+      val walk = Files.walk(cache)
+      try walk.iterator.asScala.filter(_ != cache).map(cache.relativize(_).toString).toSet
+      finally walk.close()
+    def daysAgo(days: Int): FileTime = FileTime.from(Instant.now().minusSeconds(days * 86400L))
+    val cache = Files.createTempDirectory("ko-agent-fs-build-cache")
+    val marker = cache.resolve(".ko-agent-cache-created")
+    try
+      // No marker, as in a cache this script never ran on or one it was interrupted while emptying.
+      // The entries are what a cleanup left of a crate cargo never compiles: the two files cargo
+      // reads at every build.
+      val crate = Files.createDirectories(cache.resolve("src/winapi-0.3.9/src")).getParent
+      Files.writeString(crate.resolve("Cargo.toml"), "[package]")
+      Files.writeString(crate.resolve(".cargo-ok"), "ok")
+      expire(cache)
+      assertEquals(entries(cache), Set(".ko-agent-cache-created"))
+
+      // A marker younger than systemd's ages: no cleanup has deleted from the cache.
+      Files.writeString(cache.resolve("kept.rlib"), "")
+      Files.setLastModifiedTime(marker, daysAgo(6))
+      expire(cache)
+      assertEquals(entries(cache), Set(".ko-agent-cache-created", "kept.rlib"))
+      assert(Files.getLastModifiedTime(marker).compareTo(daysAgo(5)) < 0, "a kept cache's marker was rewritten")
+
+      // A marker a cleanup could have deleted, with whatever the cleanup left beside it.
+      Files.setLastModifiedTime(marker, daysAgo(8))
+      expire(cache)
+      assertEquals(entries(cache), Set(".ko-agent-cache-created"))
+      assert(Files.getLastModifiedTime(marker).compareTo(daysAgo(1)) > 0, "an emptied cache kept its old marker")
+    finally deleteRecursively(cache)
 
   test("everything that compiles the filter derives its toolchain instead of repeating it"):
     // probe/rig.sh reads the pin out of the Containerfile and the self-test image takes it as an

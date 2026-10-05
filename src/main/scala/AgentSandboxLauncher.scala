@@ -31,9 +31,9 @@
 //    |      configuration protected (mountKoAgentFs); reject is a
 //    |      read-only bind of the raw tree)
 //    |
-//    +-- .ko-agent-sandbox: the egress rules and the project's agent
-//    |      instructions, read on the host; the write mode is what keeps
-//    |      a session from writing the next one's
+//    +-- .ko-agent-sandbox: the egress rules, the file rules and each
+//    |      run-on-host program's egress rules, read on the host; the
+//    |      write mode is what keeps a session from writing the next one's
 //    |
 //    +-- podman named volume -----------> ~/persistent-volume RW/persistent
 //    |                                       (~/.claude, ~/.codex, ~/.gemini, ~/.kiro,
@@ -60,7 +60,7 @@
 //    +-- egress proxy ------------------> the hosts --egress=<profile> allows, CONNECT :443 only
 //    |                                       (EgressRules.scala; the flags are below)
 //    |                                    inspected hosts: TLS-inspected reads plus named grants;
-//    |                                       git push refused
+//    |                                       git push refused unless a line grants POST at the repository
 //    X-- everything else                    NO ROUTE
 //
 // The rest of /home/nonroot is an anonymous podman volume: build caches work, and disappear with the container.
