@@ -1070,7 +1070,7 @@ object RunOnHostSandbox:
 
   /**
    * The distribution's own `gradle`, not the project's `gradlew` (run-on-host.md "Gradle"), with
-   * its settings on the command line, where a `-D` outranks every gradle.properties. The daemon
+   * its settings on the command line, where a `-D` overrides every gradle.properties. The daemon
    * registry is the launch's own, under the runner's `tmp/`, which every Gradle process of the
    * launch is granted and which ends with the launch: `gradle --stop` stops every daemon in the
    * registry, whatever its JVM (`DaemonStopClient`), so a registry under the per-project user

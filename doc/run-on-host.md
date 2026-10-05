@@ -754,7 +754,7 @@ as `java.io.tmpdir`, a value no process outside this launch's commands was start
 
 Three properties on the command line close the toolchain inventory to the launch's JDK —
 `org.gradle.java.installations.auto-detect=false`, `auto-download=false` and `paths=<JDK>` —
-where a `-D` outranks every `gradle.properties`, so a project asking for another toolchain fails
+where a `-D` overrides every `gradle.properties`, so a project asking for another toolchain fails
 naming it rather than meeting a denial.
 
 Gradle 9.8.0 is the release measured, the one `src/probe/gradle-fixture` pins; older lines are

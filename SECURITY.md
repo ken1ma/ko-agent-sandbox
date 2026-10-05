@@ -1459,8 +1459,9 @@ provides the confinement for these commands; they execute outside the container.
       forwards a secret never serves one that does not, and a launch whose rules differ never
       resolves through the other's proxy (`doc/run-on-host.md`, "The channel and the command").
     - The request's own launcher flags are not in the fingerprint: they select settings inside a
-      process the profile confines and the supervisor's `_JAVA_OPTIONS` outranks, as they do within
-      a launch (`RunOnHostRuntimeDescriptor.fingerprint` has what they can and cannot reach).
+      process the profile confines, where the supervisor's `_JAVA_OPTIONS` overrides them, as they
+      do within a launch (`RunOnHostRuntimeDescriptor.fingerprint` has what they can and cannot
+      reach).
     - That is the one group of a live launch a runner signals that is not its own — a dead launch's
       group the scavenger collects, below — and the record alone attributes it: a file in the
       owner's session directory, which no confined process can write, never the portfile or the

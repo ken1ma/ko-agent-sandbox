@@ -1,18 +1,17 @@
 # A sandbox container for AI agents
 
-Status: Beta on macOS, alpha on Linux and Windows
+Status: Beta
 
-The AI agents in this sandbox by default
+The AI agents in this sandbox, by default
 
-1. reach no user files except the current directory (project directory)
+1. reach no user files except the project directory (current directory)
 1. reach no network destinations except:
     1. the model providers supported by the sandbox
-    1. an opinionated, customizable selection of sites, limited to reading and explicitly
-       permitted operations, such as `git clone`/`pull`
+    1. an opinionated, customizable selection of sites, read-only
 1. cannot change Git files that can hold arbitrary commands, such as hooks and rebase
-   instructions, so `git rebase` fails in the project inside the sandbox
+   instructions (`git rebase` fails in the project)
 
-The sandbox runs rootless, and its agents run as the `nonroot` user.
+The containers run rootless, and the agents run as the `nonroot` user.
 
     ┌─ macOS / Linux / Windows (with/without WSL) ─────────────────────────────────┐
     │                                                                              │
@@ -55,9 +54,8 @@ A typical workflow:
 
 1. `git clone`/`pull` on the host first — host Git credentials are not automatically forwarded.
 2. Run an agent in the sandbox: it should feel mostly like running it on the host.
+    1. The agent can `git clone` public GitHub repositories into the sandbox's `$HOME`.
 3. Review the changes, then `git commit`/`push` on the host.
-
-You can deviate, for example with `git pull` from a public remote in the sandbox.
 
 The sandbox image preinstalls:
 
@@ -69,8 +67,8 @@ The sandbox image preinstalls:
 1. [OpenCode](https://github.com/anomalyco/opencode)                    (multiple providers)
 1. plus the toolchains: Python + uv / Node.js / Rust / Java / Scala.
 
-The agents are configured to run without permission prompts to avoid training users to approve
-without reading. The sandbox enforces the boundary.
+The agents are configured to run without permission prompts, to avoid training users to approve
+without reading. The sandbox enforces the boundary; inside it, the agents can call each other.
 
 
 ## Install
@@ -81,7 +79,7 @@ without reading. The sandbox enforces the boundary.
     1. Download [the installer](https://github.com/containers/podman/releases)
         1. On macOS and Windows, run `podman machine init` after a new installation;
            on native Linux, podman runs rootless without a machine.
-        1. `podman machine start` is optional: the launcher starts a stopped machine.
+        1. `podman machine start` is optional: the launcher automatically starts a stopped machine.
     1. [Windows prerequisite](https://github.com/podman-container-tools/podman/blob/main/docs/tutorials/podman-for-windows.md):
        WSL 2 or Hyper-V. Assuming the default WSL 2 provider:
         1. `wsl --version` shows the versions if WSL is installed.
@@ -141,24 +139,22 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 1. Sign-in prints an authorization URL; open it in an external browser and paste the resulting
    code back.
-1. A prompt remains for some `rm` commands
-   ([doc/limitations.md](doc/limitations.md#permission-prompts-that-remain)).
 1. Ctrl-V pastes a copied image only when `KO_AGENT_SANDBOX_CLIPBOARD` is `paste` or
    `bidirectional`.
 1. The image keeps Claude Code's conversation in the terminal's scrollback, where you can select
    and copy it. For the fullscreen renderer, launch with `--env=CLAUDE_CODE_NO_FLICKER=1`: the
-   image's managed setting outranks `/tui fullscreen`.
+   image's managed setting overrides `/tui fullscreen`.
 1. Run `/ko-review`, the skill of the image's `ko-review` plugin, to review the working tree.
    Choose Codex or a separate Claude Code session as the reviewer. Claude fixes or disputes each
    finding on the same reviewer thread until the reviewer approves the exact tree or asks for a
    decision only you can make.
-   - Codex reviews under this project's Codex sign-in; Claude uses the session's own sign-in.
-   - Without an argument the review covers the uncommitted changes. A base commit or branch in
-     the argument brings the commits since it into the review: `/ko-review HEAD~1` reviews the
-     last commit and whatever is uncommitted, `/ko-review main` the branch's work.
+   - The review covers the uncommitted changes by default.
+   - Codex reviews under this project's Codex sign-in.
    - Each round's tree and transcript are on a ref under `refs/ko-review/` in the repository, for
      `git diff` between rounds; the raw record is under `persistent-volume/ko-review`
      ([doc/ko-review.md](doc/ko-review.md)).
+1. A prompt remains for some `rm` commands
+   ([doc/limitations.md](doc/limitations.md#permission-prompts-that-remain)).
 
 #### `codex`
 
@@ -226,8 +222,6 @@ produced, and what that costs.
 
     1. When sessions change the same file concurrently, later writes can overwrite earlier changes.
 
-1. Calling another installed agent's command or MCP server reuses that agent's login and
-   configuration. Treat the project directory as their shared trust domain.
 1. `KO_AGENT_SANDBOX_NESTING=same-uid` lets the session run containers of its own.
 
     1. Follow [AGENTS-SANDBOX.md](container/ko-agent-sandbox/AGENTS-SANDBOX.md) for the container
