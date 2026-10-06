@@ -443,16 +443,34 @@ class HelperTest(unittest.TestCase):
         for label, step, options, code in cases:
             with self.subTest(label):
                 self.plan(step, {"result": APPROVED})
-                error = self.helper("start", self.reviewer, *options, "--message-file", self.message(),
-                                    expect=1)["error"]
-                self.assertEqual(error["code"], code, error)
-                review = self.reviews()[-1]
+                failed = self.helper("start", self.reviewer, *options, "--message-file", self.message(), expect=1)
+                self.assertEqual(failed["error"]["code"], code, failed)
+                review = self.helper("show", failed["reviewId"])
                 self.assertEqual(review["status"], "NEW")
                 self.assertEqual(review["threadId"], "kept" if label != "timeout" else "thread-1")
                 retried = self.helper("continue", review["reviewId"], "--message-file", self.message())
                 self.assertEqual(retried["status"], "APPROVED")
                 self.assert_resumes(self.calls()[-1]["argv"], review["threadId"])
                 self.log.write_text("")
+
+    def test_list_is_oldest_first_within_a_second_and_deterministic_on_a_tie(self):
+        first, second = self.start()["reviewId"], self.start()["reviewId"]
+        same_second = "2026-01-01T00:00:00"
+
+        def set_created_at(review_id, milliseconds):
+            path = Path(self.helper("show", review_id)["statePath"])
+            state = json.loads(path.read_text())
+            state["createdAt"] = f"{same_second}.{milliseconds:03d}+00:00"
+            path.write_text(json.dumps(state))
+
+        def listed():
+            return [row["reviewId"] for row in self.helper("list")["reviews"]]
+
+        set_created_at(first, 200)
+        set_created_at(second, 100)
+        self.assertEqual(listed(), [second, first])
+        set_created_at(first, 100)
+        self.assertEqual(listed(), sorted([first, second]))
 
     # An approved exit and a failed one, each leaving a background process behind, whose marker file
     # must still be missing once its sleep has passed.

@@ -63,11 +63,22 @@ object SandboxProject:
    * checks, and a drive letter assigned to the share does not help, since WSL automounts fixed
    * drives only. Supporting shares would need a UNC-to-machine-path mapping, that mount arranged
    * or checked, and the filter tested on it.
+   *
+   * A POSIX path with a `:` refuses the launch too: podman reads `:` in a `--volume` value as the
+   * field separator, and the project and its Git directory are bound with that option. A Windows
+   * path has only the drive's `:`, which podman's own client translates.
    */
   def mountPathOf(os: Os, projectDir: Path): Either[String, String] =
     val text = projectDir.toString
     os match
-      case Os.Linux | Os.Mac => Right(text)
+      case Os.Linux | Os.Mac =>
+        if text.contains(':') then
+          Left(
+            s"error: cannot mount $text\n" +
+              "podman reads a `:` in a --volume value as the field separator, so a project path may not contain " +
+              "one. Work from a checkout whose path has no `:`.",
+          )
+        else Right(text)
       case Os.Windows =>
         if text.length >= 3 && text(0).isLetter && text(1) == ':'
           && (text(2) == '\\' || text(2) == '/')
@@ -678,7 +689,8 @@ object SandboxProject:
    * the container spells drives under /mnt; a relative step climbing past the drive root, which
    * the two spellings resolve differently; an absolute `commondir` in another spelling than the
    * pointer's, which the container has nothing at (git uses it as written, `get_common_dir_noenv`
-   * in setup.c); and a target inside the project mount, or holding it, which the bind would cover.
+   * in setup.c); a target inside the project mount, or holding it, which the bind would cover; and
+   * a source or target with a `:`, which a `--volume` value cannot carry (mountPathOf).
    *
    * The target is the pointer's own spelling of the common gitdir — through a symlink alias of the
    * main worktree, the alias's — and the source the real directory, so the bind is where git
@@ -700,8 +712,10 @@ object SandboxProject:
       commondir <- boundedText(gitdir.resolved.resolve("commondir")).flatMap: text =>
         try Some(gitdir.resolved.getFileSystem.getPath(text.trim)) catch case _: InvalidPathException => None
       if followable(commondir, from = gitdir.resolved, os) && gitdir.resolved.resolve(commondir).normalize == common
+      source = main.resolve(".git")
+      if mountPathOf(os, source).isRight  // its own spelling, which an alias without a `:` may hide
       target <- mountPathOf(os, common).toOption
-    yield GitdirBind(main.resolve(".git"), target)
+    yield GitdirBind(source, target)
 
   /** Whether the container, resolving `step` from its own spelling of `from`, lands where the host
     * does: an absolute step only where the container spells host paths as the host does, a relative
