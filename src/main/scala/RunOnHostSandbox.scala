@@ -31,8 +31,8 @@ object RunOnHostSandbox:
     prereqs: CommandPrereqs,
     /** The unpacked distribution the command also runs from: sbt's in the Coursier archive cache,
       * Gradle's and Maven's under their wrappers' `dists`; for mill, whose executable is one file,
-      * the JDK a pinned `mill-jvm-version` runs the daemon on (RunOnHostPrereqs.millPinnedJdk),
-      * none under `system`. */
+      * the JDK a pinned or unset `mill-jvm-version` runs the daemon on
+      * (RunOnHostPrereqs.millRecordedJdk), none under `system`. */
     distribution: Option[Path],
     /** The per-project sbt global base and Ivy home, Gradle's user home and Maven's local
       * repository: created and granted for the program that reads each (`sbtCachesGranted`,
@@ -197,8 +197,9 @@ object RunOnHostSandbox:
 
   /** Steps 1–5: everything the profile derives authority from, decided before anything runs.
     * `buildDirectory` is where the command runs, the project or a directory beneath it: mill's
-    * bootstrap, version pin and JVM pin are that directory's, as the bootstrap reads them from its
-    * working directory, so a nested build is another build; the grants stay the project's. */
+    * bootstrap, version pin and `mill-jvm-version` are that directory's, as the bootstrap reads
+    * them from its working directory, so a nested build is another build; the grants stay the
+    * project's. */
   def assemble(
     project: Path, program: Program, env: String => Option[String], buildDirectory: Path,
   ): Either[String, Assembled] =
@@ -229,29 +230,33 @@ object RunOnHostSandbox:
         case Program.Sbt    => Left(StepRefusal("sbt executable", "sbt's executable is the user's, not the project's"))
     catch case ex: Unreadable => Left(StepRefusal(program.name, ex.refusal))
 
-  /** Mill's provisioned JVM launcher, its version, `<v>-jvm`, and the JDK a pinned
+  /** Mill's provisioned JVM launcher, its version, `<v>-jvm`, and the JDK a pinned or unset
     * `mill-jvm-version` runs the daemon on. */
-  private case class MillLauncher(executable: Path, version: String, pinnedJdk: Option[Path])
+  private case class MillLauncher(executable: Path, version: String, recordedJdk: Option[Path])
 
   /** Resolved as the bootstrap and mill's launcher in `buildDirectory` resolve them. The
-    * executable before the pinned JDK: the host run that provisions the one provisions the other. */
+    * executable before the recorded JDK: the host run that provisions the one provisions the
+    * other. */
   private def millLauncher(env: String => Option[String], buildDirectory: Path): Either[StepRefusal, MillLauncher] =
+    def recordedJdk(id: Option[String], launcher: String): Either[StepRefusal, Option[Path]] =
+      for
+        cache <- context("mill jvm")(coursierCacheRoot(Os.Mac, env).toRight("no Coursier cache root"))
+        home <- context("mill jvm"):
+          millRecordedJdk(id, launcher, millJavaHomeText(buildDirectory), cache, realPath, isExecutableFile)
+      yield Some(home)
     for
       _ <- context("mill bootstrap")(validateMillBootstrap(buildDirectory, isExecutableFile))
       jvm <- context("mill jvm")(millJvm(buildDirectory, readLines))
       pinned <- context("mill version")(millVersion(buildDirectory, readLines))
       launcher <- context("mill version")(millLauncherVersion(pinned))
+      _ <- context("mill jvm")(millUnsetJvmAccepted(jvm, launcher))
       downloads <- context("mill executable")(millDownloadDir(env).toRight("no mill download folder"))
       provisioned <- context("mill executable")(millExecutable(downloads, launcher, isExecutableFile))
       real <- context("mill executable")(realPath(provisioned).toRight(s"$provisioned vanished"))
       jdk <- jvm match
-        case MillJvm.System => Right(None)
-        case MillJvm.Pinned(id) =>
-          for
-            cache <- context("mill jvm")(coursierCacheRoot(Os.Mac, env).toRight("no Coursier cache root"))
-            home <- context("mill jvm"):
-              millPinnedJdk(id, launcher, millJavaHomeText(buildDirectory), cache, realPath, isExecutableFile)
-          yield Some(home)
+        case MillJvm.System     => Right(None)
+        case MillJvm.Pinned(id) => recordedJdk(Some(id), launcher)
+        case MillJvm.Unset      => recordedJdk(None, launcher)
     yield MillLauncher(real, launcher, jdk)
 
   /** Gradle's home as the wrapper in `buildDirectory` would run it: a nested build directory with
@@ -312,7 +317,7 @@ object RunOnHostSandbox:
             )
           yield (sbt, Some(home), None)
         case Program.Mill =>
-          millLauncher(env, buildDirectory).map(mill => (mill.executable, mill.pinnedJdk, Some(mill.version)))
+          millLauncher(env, buildDirectory).map(mill => (mill.executable, mill.recordedJdk, Some(mill.version)))
         case Program.Gradle =>
           gradleDistribution(env, buildDirectory).map(real => (real.resolve("bin").resolve("gradle"), Some(real), None))
         case Program.Mvn =>

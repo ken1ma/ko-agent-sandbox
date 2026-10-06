@@ -314,7 +314,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       Right("1.1.8"),
     )
 
-  test("mill-jvm-version is system or one JVM id, wherever mill would read it"):
+  test("mill-jvm-version is system, one JVM id or unset, wherever mill would read it"):
     assertEquals(millJvm(project, files("build.mill.yaml" -> Seq("mill-jvm-version: system"))), Right(MillJvm.System))
     assertEquals(millJvm(project, files("build.mill" -> Seq("//| mill-jvm-version: system"))), Right(MillJvm.System))
     assertEquals(millJvm(project, files(".mill-jvm-version" -> Seq("system"))), Right(MillJvm.System))
@@ -326,35 +326,56 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       millJvm(project, files(".mill-jvm-version" -> Seq("graalvm-community:25.0.1"))),
       Right(MillJvm.Pinned("graalvm-community:25.0.1")),
     )
-    // Absent is mill's own default, which differs between mill versions.
-    assertEquals(millJvm(project, files("build.mill.yaml" -> Seq("extends: ScalaModule"))),
-      Left(Refusal.PrereqMillJvmUnreadable(None)))
+    assertEquals(millJvm(project, files("build.mill.yaml" -> Seq("extends: ScalaModule"))), Right(MillJvm.Unset))
+    assertEquals(millJvm(project, files("build.mill" -> Seq("//| mill-version: 1.1.10", "package build"))),
+      Right(MillJvm.Unset))
+    assertEquals(millJvm(project, files()), Right(MillJvm.Unset))
+
+  test("an unset mill-jvm-version is accepted under the launchers that resolve it to an id"):
+    for accepted <- Seq("1.1.0-jvm", "1.1.10-jvm", "1.1.10", "1.2.0-RC1-jvm", "1.10.0-jvm", "2.0.0-jvm") do
+      assertEquals(millUnsetJvmAccepted(MillJvm.Unset, accepted), Right(()), accepted)
+    // 1.0 takes `java` from PATH or its built-in id, whichever its `which java` decides; a version
+    // that is not two leading numbers is not known to be 1.1.0 or later.
+    for refused <- Seq("1.0.6-jvm", "1.0.0", "0.12.14-jvm", "0.13.0-M2-jvm", "main-jvm", "1-jvm", "1.x-jvm", "") do
+      assertEquals(
+        millUnsetJvmAccepted(MillJvm.Unset, refused), Left(Refusal.PrereqMillJvmUnset(refused)), refused,
+      )
+      // A set version is mill's to read the same way under every launcher.
+      assertEquals(millUnsetJvmAccepted(MillJvm.System, refused), Right(()), refused)
+      assertEquals(millUnsetJvmAccepted(MillJvm.Pinned("temurin:25"), refused), Right(()), refused)
+    val worded = wording(Refusal.PrereqMillJvmUnset("1.0.6-jvm"))
+    assert(clue(worded).contains("1.0.6-jvm") && worded.contains("before mill 1.1.0") && worded.contains("`system`"))
 
   test("a mill-jvm-version that is neither system nor one id is refused as found"):
     // Digits alone are a number to YAML; a `|` chain, a list and an interpolation are not one id.
     for value <- Seq("25", "17.0.6", "system|temurin:25", "temurin:25:1", "[temurin:25]", "${JVM}", "temurin 25") do
       assertEquals(
         millJvm(project, files("build.mill.yaml" -> Seq(s"mill-jvm-version: $value"))),
-        Left(Refusal.PrereqMillJvmUnreadable(Some(value))),
+        Left(Refusal.PrereqMillJvmUnreadable(value)),
       )
       assertEquals(millJvm(project, files(".mill-jvm-version" -> Seq(value))),
-        Left(Refusal.PrereqMillJvmUnreadable(Some(value))))
+        Left(Refusal.PrereqMillJvmUnreadable(value)))
 
   test("the JVM source is mill's loadMillConfig order, the first existing file authoritative"):
     assertEquals(millJvm(project, files(".config/mill-jvm-version" -> Seq("system"))), Right(MillJvm.System))
-    // .mill-jvm-version beats .config, which beats the header; an empty first file is the answer.
+    // .mill-jvm-version beats .config, which beats the header; an empty first file is the answer,
+    // and mill reads no line of it as unset.
     val dotBeatsConfig = files(".mill-jvm-version" -> Seq("temurin:25"), ".config/mill-jvm-version" -> Seq("system"))
     assertEquals(millJvm(project, dotBeatsConfig), Right(MillJvm.Pinned("temurin:25")))
     val emptyFirst = files(".mill-jvm-version" -> Seq(""), "build.mill.yaml" -> Seq("mill-jvm-version: system"))
-    assertEquals(millJvm(project, emptyFirst), Left(Refusal.PrereqMillJvmUnreadable(None)))
+    assertEquals(millJvm(project, emptyFirst), Right(MillJvm.Unset))
     // Compared as written: mill keeps the opts-file line untrimmed and tests equality.
     assertEquals(millJvm(project, files(".mill-jvm-version" -> Seq(" system "))),
-      Left(Refusal.PrereqMillJvmUnreadable(Some(" system "))))
+      Left(Refusal.PrereqMillJvmUnreadable(" system ")))
+    // A key with no value is not unset; what mill makes of it is its parser's business.
+    val noValue = millJvm(project, files("build.mill.yaml" -> Seq("mill-jvm-version:")))
+    assertEquals(noValue, Left(Refusal.PrereqMillJvmUnreadable("")))
+    assert(clue(wording(Refusal.PrereqMillJvmUnreadable(""))).endsWith("found an empty value"))
     assertEquals(millJvm(project, files(".mill-jvm-version" -> Seq("# comment", "", "system"))), Right(MillJvm.System))
     // A nested YAML key is not the key; a //| line after the header is not the header.
     assertEquals(
       millJvm(project, files("build.mill.yaml" -> Seq("mill-build:", "  mill-jvm-version: system"))),
-      Left(Refusal.PrereqMillJvmUnreadable(None)),
+      Right(MillJvm.Unset),
     )
     // Refused as a stray //| line: readBuildHeader scans the whole file and errors on it.
     assert(millJvm(project, files("build.mill" -> Seq("package build", "//| mill-jvm-version: system"))).isLeft)
@@ -365,10 +386,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     for bad <- Seq("mill-jvm-version: system#other", "mill-jvm-version: \"system", "mill-jvm-version: system'") do
       assert(millJvm(project, files("build.mill.yaml" -> Seq(bad))).isLeft, clue(bad))
     // YAML's `key:value` is one scalar, not a mapping: mill never sees the key.
-    assertEquals(
-      millJvm(project, files("build.mill.yaml" -> Seq("mill-jvm-version:system"))),
-      Left(Refusal.PrereqMillJvmUnreadable(None)),
-    )
+    assertEquals(millJvm(project, files("build.mill.yaml" -> Seq("mill-jvm-version:system"))), Right(MillJvm.Unset))
     // A malformed //| line is an error in mill's readBuildHeader, and a refusal here; so is a
     // stray //| after the header, and so are two keys, whichever mill's map would keep.
     assert(millJvm(project, files("build.mill" -> Seq("//|mill-jvm-version: system"))).isLeft)
@@ -376,21 +394,21 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assert(millJvm(project, stray).isLeft)
     // A second YAML document is one mill never reads; a marker anywhere is a refusal.
     val secondDoc = files("build.mill.yaml" -> Seq("extends: ScalaModule", "---", "mill-jvm-version: system"))
-    assertEquals(millJvm(project, secondDoc), Left(Refusal.PrereqMillJvmUnreadable(Some("multi-document YAML"))))
+    assertEquals(millJvm(project, secondDoc), Left(Refusal.PrereqMillJvmUnreadable("multi-document YAML")))
     val headerDoc = files("build.mill" -> Seq("//| mill-jvm-version: system", "//| ..."))
     assert(millJvm(project, headerDoc).isLeft)
     // A commented marker is still a marker; an indented or embedded one is not.
     val commented = files("build.mill.yaml" -> Seq("--- # next", "mill-jvm-version: system"))
-    assertEquals(millJvm(project, commented), Left(Refusal.PrereqMillJvmUnreadable(Some("multi-document YAML"))))
+    assertEquals(millJvm(project, commented), Left(Refusal.PrereqMillJvmUnreadable("multi-document YAML")))
     val dashesInValue = files("build.mill.yaml" -> Seq("mill-jvm-version: system", "x: --- y"))
     assertEquals(millJvm(project, dashesInValue), Right(MillJvm.System))
     val doubled = files("build.mill.yaml" -> Seq("mill-jvm-version: system", "mill-jvm-version: temurin:25"))
     assertEquals(millJvm(project, doubled),
-      Left(Refusal.PrereqMillJvmUnreadable(Some("duplicate mill-jvm-version keys"))))
+      Left(Refusal.PrereqMillJvmUnreadable("duplicate mill-jvm-version keys")))
     // build.mill.yaml is consulted before build.mill, and one existing root file ends the search.
     val yamlFirst =
       files("build.mill.yaml" -> Seq("extends: ScalaModule"), "build.mill" -> Seq("//| mill-jvm-version: system"))
-    assertEquals(millJvm(project, yamlFirst), Left(Refusal.PrereqMillJvmUnreadable(None)))
+    assertEquals(millJvm(project, yamlFirst), Right(MillJvm.Unset))
 
   test("no version anywhere is a refusal"):
     assertEquals(millVersion(project, files()), Left(Refusal.PrereqMillVersionUnpinned))
@@ -482,34 +500,48 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assertEquals(refusal, Left(Refusal.PrereqMillExecutableMissing("1.2.0-jvm", millDownload)))
     assert(wording(refusal.swap.toOption.get).contains("MILL_VERSION=1.2.0-jvm ./mill version"))
 
-  test("a pinned JVM runs on the JDK mill's java-home file records, checked as JAVA_HOME is"):
+  test("a pinned or unset mill-jvm-version runs on the JDK mill's java-home file records, checked as JAVA_HOME is"):
     val present = exists(jdkHome, javaBinary, coursierCache)
+    def recordedJdk(id: Option[String], recorded: Option[String], canonicalize: Path => Option[Path]) =
+      millRecordedJdk(id, "1.1.10-jvm", recorded, coursierCache, canonicalize, _ == javaBinary)
     def pinnedJdk(recorded: Option[String], canonicalize: Path => Option[Path] = present) =
-      millPinnedJdk("temurin:25", "1.1.10-jvm", recorded, coursierCache, canonicalize, _ == javaBinary)
+      recordedJdk(Some("temurin:25"), recorded, canonicalize)
+    def unsetJdk(recorded: Option[String], canonicalize: Path => Option[Path] = present) =
+      recordedJdk(None, recorded, canonicalize)
     def recorded(key: String, home: Any) = Some(s"""["$key","$home"]""")
     val key = "temurin:25:0.0.4-162-4be9be:"
     assertEquals(pinnedJdk(recorded(key, jdkHome)), Right(jdkHome))
     assertEquals(pinnedJdk(recorded("temurin:25:0.0.4-162-4be9be:https://r.example", jdkHome)), Right(jdkHome))
     // Absent, recording another id, or not the pair mill writes: the host run provisions it.
-    val missing = Left(Refusal.PrereqMillJdkMissing("temurin:25", "1.1.10-jvm"))
+    val missing = Left(Refusal.PrereqMillJdkMissing(Some("temurin:25"), "1.1.10-jvm"))
+    val unsetMissing = Left(Refusal.PrereqMillJdkMissing(None, "1.1.10-jvm"))
     assertEquals(pinnedJdk(None), missing)
+    assertEquals(unsetJdk(None), unsetMissing)
     assertEquals(pinnedJdk(recorded("temurin:21:0.0.4-162-4be9be:", jdkHome)), missing)
     assertEquals(pinnedJdk(recorded("temurin:251:0.0.4-162-4be9be:", jdkHome)), missing)
+    // The id of an unset version is the launcher's own, so the home is taken under any key.
+    for anyKey <- Seq("zulu:21:0.0.4-162-4be9be:", "zulu:21:0.0.4-125-77e06d", key) do
+      assertEquals(unsetJdk(recorded(anyKey, jdkHome)), Right(jdkHome), anyKey)
     for malformed <- Seq("", "{}", s"""["$key"]""", s"""["$key","$jdkHome"]\n""", s"""["$key","$jdkHome","x"]""",
         s"""["$key","/a\\u002fb"]""")
-    do assertEquals(pinnedJdk(Some(malformed)), missing, malformed)
+    do
+      assertEquals(pinnedJdk(Some(malformed)), missing, malformed)
+      assertEquals(unsetJdk(Some(malformed)), unsetMissing, malformed)
     // A command can write the file: a home outside the Coursier cache, a relative one, the cache's
     // own directories and a home whose bin/java leads out of it are not granted.
-    val notCoursier = Left(Refusal.PrereqMillJdkNotCoursier("temurin:25", "1.1.10-jvm", coursierCache))
+    val notCoursier = Left(Refusal.PrereqMillJdkNotCoursier(Some("temurin:25"), "1.1.10-jvm", coursierCache))
+    val unsetNotCoursier = Left(Refusal.PrereqMillJdkNotCoursier(None, "1.1.10-jvm", coursierCache))
     val planted = project.resolve("jdk")
     val everything: Path => Option[Path] = path => Some(path.normalize())
     assertEquals(pinnedJdk(recorded(key, planted), everything), notCoursier)
+    assertEquals(unsetJdk(recorded(key, planted), everything), unsetNotCoursier)
     assertEquals(pinnedJdk(recorded(key, "Library/Caches/Coursier/arc/jdk"), everything), notCoursier)
     assertEquals(pinnedJdk(recorded(key, coursierCache.resolve("arc")), everything), notCoursier)
     assertEquals(pinnedJdk(recorded(key, jdkHome), exists(coursierCache)), notCoursier)
     val escaping: Path => Option[Path] =
       path => if path == javaBinary then Some(planted.resolve("bin/java")) else Some(path.normalize())
     assertEquals(pinnedJdk(recorded(key, jdkHome), escaping), notCoursier)
+    assertEquals(unsetJdk(recorded(key, jdkHome), escaping), unsetNotCoursier)
 
   test("the daemon configuration changes with what Mill restarts on, from the source Mill selects"):
     val pinned = Seq("mill-version: 1.1.9", "mill-jvm-version: system")
@@ -541,8 +573,8 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assertNotEquals(millDaemonConfig(project, version), baseConfig)
     val jvm = files("build.mill.yaml" -> Seq("mill-version: 1.1.9", "mill-jvm-version: temurin:25"))
     assertNotEquals(millDaemonConfig(project, jvm), baseConfig)
-    // Under a pinned JVM the java-home file's text is the JDK the daemon runs on; under system
-    // mill does not read the file.
+    // Under a pinned or unset mill-jvm-version the java-home file's text is the JDK the daemon runs
+    // on; under system mill does not read the file.
     val recordedHome = Some("""["temurin:25:0.0.4:","/jdk-25"]""")
     assertNotEquals(millDaemonConfig(project, jvm, recordedHome), millDaemonConfig(project, jvm))
     assertNotEquals(
@@ -550,6 +582,12 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       millDaemonConfig(project, jvm, Some("""["temurin:25:0.0.4:","/jdk-21"]""")),
     )
     assertEquals(millDaemonConfig(project, yaml("extends: ScalaModule"), recordedHome), baseConfig)
+    val unset = files("build.mill.yaml" -> Seq("mill-version: 1.1.9"))
+    assertNotEquals(millDaemonConfig(project, unset, recordedHome), millDaemonConfig(project, unset))
+    assertNotEquals(
+      millDaemonConfig(project, unset, recordedHome),
+      millDaemonConfig(project, unset, Some("""["zulu:21:0.0.4:","/jdk-21"]""")),
+    )
     // A key in a spelling only a YAML parser recognizes changes it all the same.
     assertNotEquals(
       millDaemonConfig(project, yaml("\"mill-jvm-\\u006fpts\": [-Xmx1g]")),
@@ -899,9 +937,11 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val cases = Seq(
       Refusal.PrereqJvmNotCoursier("/usr/bin/java"), Refusal.PrereqSbtNotCoursier(Paths.get("/usr/local/bin/sbt")),
       Refusal.PrereqMillBootstrapMissing, Refusal.PrereqMillVersionUnpinned,
-      Refusal.PrereqMillExecutableMissing("1.1.8", millDownload), Refusal.PrereqMillJvmUnreadable(None),
-      Refusal.PrereqMillJdkMissing("temurin:25", "1.1.8-jvm"),
-      Refusal.PrereqMillJdkNotCoursier("temurin:25", "1.1.8-jvm", coursierCache),
+      Refusal.PrereqMillExecutableMissing("1.1.8", millDownload), Refusal.PrereqMillJvmUnreadable("25"),
+      Refusal.PrereqMillJvmUnset("1.0.6-jvm"),
+      Refusal.PrereqMillJdkMissing(Some("temurin:25"), "1.1.8-jvm"), Refusal.PrereqMillJdkMissing(None, "1.1.8-jvm"),
+      Refusal.PrereqMillJdkNotCoursier(Some("temurin:25"), "1.1.8-jvm", coursierCache),
+      Refusal.PrereqMillJdkNotCoursier(None, "1.1.8-jvm", coursierCache),
       Refusal.PrereqMillNativeLauncher("1.1.8-native"),
       Refusal.PrereqGradleWrapperMissing, Refusal.PrereqGradleWrapperUnreadable("no distributionUrl"),
       Refusal.PrereqGradleDistributionMissing(gradleUrl, project),
@@ -920,8 +960,10 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assert(wording(Refusal.PrereqMillExecutableMissing("1.1.8-jvm", millDownload))
       .contains("MILL_VERSION=1.1.8-jvm ./mill version"))
     for fixedByMillRun <- Seq(
-        Refusal.PrereqMillJdkMissing("temurin:25", "1.1.8-jvm"),
-        Refusal.PrereqMillJdkNotCoursier("temurin:25", "1.1.8-jvm", coursierCache),
+        Refusal.PrereqMillJdkMissing(Some("temurin:25"), "1.1.8-jvm"),
+        Refusal.PrereqMillJdkMissing(None, "1.1.8-jvm"),
+        Refusal.PrereqMillJdkNotCoursier(Some("temurin:25"), "1.1.8-jvm", coursierCache),
+        Refusal.PrereqMillJdkNotCoursier(None, "1.1.8-jvm", coursierCache),
       )
     do assert(clue(wording(fixedByMillRun)).contains("`MILL_VERSION=1.1.8-jvm ./mill version`"))
     assert(wording(Refusal.PrereqMvnWrapperNotOnlyScript).contains("./mvnw wrapper:wrapper -Dtype=only-script"))

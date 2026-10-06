@@ -44,9 +44,11 @@ object RunOnHostPrereqs:
     case PrereqMillVersionUnpinned
     case PrereqMillExecutableMissing(launcherVersion: String, downloadDir: Path)
     case PrereqMillNativeLauncher(pinned: String)
-    case PrereqMillJvmUnreadable(found: Option[String])
-    case PrereqMillJdkMissing(pin: String, launcherVersion: String)
-    case PrereqMillJdkNotCoursier(pin: String, launcherVersion: String, cacheRoot: Path)
+    case PrereqMillJvmUnreadable(found: String)
+    case PrereqMillJvmUnset(launcherVersion: String)
+    /** `pin` is None under an unset `mill-jvm-version`, here and in [[PrereqMillJdkNotCoursier]]. */
+    case PrereqMillJdkMissing(pin: Option[String], launcherVersion: String)
+    case PrereqMillJdkNotCoursier(pin: Option[String], launcherVersion: String, cacheRoot: Path)
     case PrereqGradleWrapperMissing
     case PrereqGradleWrapperUnreadable(reason: String)
     case PrereqGradleDistributionMissing(distributionUrl: String, directory: Path)
@@ -88,12 +90,20 @@ object RunOnHostPrereqs:
         "takes no _JAVA_OPTIONS, so its connect is the dual-stack one the profile denies; pin " +
         s"`${pinned.stripSuffix("-native")}` or `${pinned.stripSuffix("-native")}-jvm`"
     case Refusal.PrereqMillJvmUnreadable(found) =>
-      s"mill-jvm-version must be `system` or one JVM id such as `temurin:25`; found ${found.getOrElse("nothing")}"
+      s"mill-jvm-version must be `system`, one JVM id such as `temurin:25`, or unset; found " +
+        (if found.isEmpty then "an empty value" else found)
+    case Refusal.PrereqMillJvmUnset(launcherVersion) =>
+      val (major, minor) = MillResolvesUnsetJvmSince
+      s"mill-jvm-version is unset and the launcher is $launcherVersion: before mill $major.$minor.0, set it to " +
+        "`system` or one JVM id such as `temurin:25`"
     case Refusal.PrereqMillJdkMissing(pin, launcherVersion) =>
-      s"the JDK that mill-jvm-version pins, $pin, is not provisioned: $MillJavaHomeFile does not record it; run " +
+      val jdk = pin.fold("the JDK that mill runs on while mill-jvm-version is unset")(id =>
+        s"the JDK that mill-jvm-version pins, $id,")
+      s"$jdk is not provisioned: $MillJavaHomeFile does not record it; run " +
         s"`MILL_VERSION=$launcherVersion ./mill version` once on the host"
     case Refusal.PrereqMillJdkNotCoursier(pin, launcherVersion, cacheRoot) =>
-      s"$MillJavaHomeFile records no JDK inside the Coursier cache $cacheRoot for mill-jvm-version $pin; delete " +
+      val version = pin.fold("an unset mill-jvm-version")(id => s"mill-jvm-version $id")
+      s"$MillJavaHomeFile records no JDK inside the Coursier cache $cacheRoot for $version; delete " +
         s"that file, then run `MILL_VERSION=$launcherVersion ./mill version` once on the host"
     case Refusal.PrereqGradleWrapperMissing =>
       "the build directory has no gradle/wrapper/gradle-wrapper.properties; a global gradle is not used"
@@ -486,22 +496,30 @@ object RunOnHostPrereqs:
   enum MillJvm:
     /** `system`: `java` from the PATH the supervisor sets, the JDK `JAVA_HOME` names. */
     case System
-    /** A Coursier JVM id, such as `temurin:25`: the JDK a host run provisioned (millPinnedJdk). */
+    /** A Coursier JVM id, such as `temurin:25`: the JDK a host run provisioned (millRecordedJdk). */
     case Pinned(id: String)
+    /** Unset: the id built into mill's launcher, which the supervisor does not read; the JDK a
+      * host run provisioned for it (millRecordedJdk), under the launchers millUnsetJvmAccepted
+      * admits. */
+    case Unset
 
   /**
-   * `mill-jvm-version` must be `system` or one JVM id: mill resolves an id through Coursier's
-   * index into a JDK it downloads, which a command may not do, so the JDK is the one a host run
-   * provisioned (millPinnedJdk).
+   * `mill-jvm-version` must be `system`, one JVM id, or unset: mill resolves an id through
+   * Coursier's index into a JDK it downloads, which a command may not do, so the JDK is the one a
+   * host run provisioned (millRecordedJdk).
    *
    * Read as mill reads it (`MillProcessLauncher.loadMillConfig`, `mill.constants.Util.
    * readBuildHeader`): `.mill-jvm-version`, else `.config/mill-jvm-version` — the first line that is
    * not blank or a `#` comment, compared as written, so `" system "` is not `system` — else the
    * header of the first root build file that exists, `build.mill.yaml` (the whole file is YAML)
    * then `build.mill` (the initial run of `//| ` lines only), where the key is a top-level YAML
-   * key. The first source that exists is authoritative, empty or not; a value that is neither
-   * `system` nor an id is a refusal, absent included, since absent means mill's own default, which
-   * differs between mill versions.
+   * key. The first source that exists is authoritative; when it holds no value, or no source
+   * exists, the version is unset. A value that is neither `system` nor an id is a refusal.
+   *
+   * A key in a spelling this does not recognize, such as `"mill-jvm-version": system`, reads as
+   * unset here while mill reads its value. Nothing more is granted for it than for a pin, since
+   * the grant under either is the JDK the java-home file records: a `system` so spelled is refused
+   * for the JDK no host run records, and an id so spelled runs as a pin whose id is not compared.
    */
   def millJvm(
     project: Path,
@@ -546,9 +564,30 @@ object RunOnHostPrereqs:
         .orElse(header("build.mill"))
         .flatten
     found match
+      case None                           => Right(MillJvm.Unset)
       case Some("system")                 => Right(MillJvm.System)
       case Some(id) if JvmId.matches(id) => Right(MillJvm.Pinned(id))
-      case _                              => Left(Refusal.PrereqMillJvmUnreadable(found))
+      case Some(other)                    => Left(Refusal.PrereqMillJvmUnreadable(other))
+
+  /** The major and minor version of the first mill whose launcher resolves an unset
+    * `mill-jvm-version` as it resolves a pin (millUnsetJvmAccepted). */
+  private val MillResolvesUnsetJvmSince = (1, 1)
+
+  private val MajorMinor = raw"""(\d+)\.(\d+)(?:\D.*)?""".r
+
+  /**
+   * An unset `mill-jvm-version` is accepted under a launcher that resolves it as it resolves a
+   * pin, to the id built into the launcher, so that the grant is millRecordedJdk's. An earlier
+   * launcher, and one whose version does not start with two numbers, is refused (run-on-host.md
+   * "An unset `mill-jvm-version`" has what each launcher does).
+   */
+  def millUnsetJvmAccepted(jvm: MillJvm, launcherVersion: String): Either[Refusal, Unit] =
+    def resolvesUnsetAsAPin = launcherVersion match
+      case MajorMinor(major, minor) =>
+        major.toIntOption.zip(minor.toIntOption).exists(Ordering[(Int, Int)].gteq(_, MillResolvesUnsetJvmSince))
+      case _ => false
+    if jvm == MillJvm.Unset && !resolvesUnsetAsAPin then Left(Refusal.PrereqMillJvmUnset(launcherVersion))
+    else Right(())
 
   /** `---` or `...` at line start, bare or followed by whitespace and anything: both start
     * territory mill's single-document parse never reads. */
@@ -566,8 +605,8 @@ object RunOnHostPrereqs:
     * YAML, and what mill makes of one is its parser's business. */
   private val JvmId = raw"""[A-Za-z][A-Za-z0-9.+_-]*(?::[A-Za-z0-9.+_-]+)?""".r
 
-  /** Where mill's launcher writes the JDK home it resolved for a pinned `mill-jvm-version`, under
-    * the build directory (`CoursierClient.resolveJavaHome`, 1.1.10). */
+  /** Where mill's launcher writes the JDK home it resolved for a `mill-jvm-version` other than
+    * `system`, under the build directory (`CoursierClient.resolveJavaHome`, 1.1.10). */
   val MillJavaHomeFile = "out/mill-daemon/cache/java-home"
 
   /** The file's whole text: a JSON pair of strings, the key then the home, neither holding an
@@ -575,22 +614,24 @@ object RunOnHostPrereqs:
   private val RecordedJavaHome = raw"""\["([^"\\]*)","([^"\\]*)"\]""".r
 
   /**
-   * The JDK a pinned `mill-jvm-version` runs on: the home mill's launcher recorded in
+   * The JDK a pinned or unset `mill-jvm-version` runs on: the home mill's launcher recorded in
    * `MillJavaHomeFile` when a host run resolved the id, accepted when it passes the checks
-   * `JAVA_HOME` passes (resolveJdkHome). `recorded` is that file's text, None when absent.
+   * `JAVA_HOME` passes (resolveJdkHome). `id` is the pin, None when unset; `recorded` is that
+   * file's text, None when absent.
    *
    * Mill uses the recorded home while the file's key equals `<id>:<index version>:<repositories>`
    * and the home is a directory, and otherwise resolves the id again, fetching the index and the
-   * JDK — measured, src/probe/mill-pinned-jvm.sh. So a file recording another id is refused here
-   * as not provisioned. The index version is mill's own default unless the build sets one, and
-   * the repositories are a YAML list, so neither is compared: a file mill itself rejects on
-   * those fails the command at mill's fetch.
+   * JDK — measured, src/probe/mill-pinned-jvm.sh. So a file recording another id than the pin is
+   * refused here as not provisioned. The index version is mill's own default unless the build
+   * sets one, the repositories are a YAML list, and the id of an unset version is built into the
+   * launcher, so none of the three is compared: a file mill itself rejects on those fails the
+   * command at mill's fetch.
    *
    * Mill runs whatever directory the file names (the same probe), and a command can write the
    * file, so the checks here are what keep the grant a JDK the user provisioned.
    */
-  def millPinnedJdk(
-    id: String,
+  def millRecordedJdk(
+    id: Option[String],
     launcherVersion: String,
     recorded: Option[String],
     cacheRoot: Path,
@@ -598,7 +639,7 @@ object RunOnHostPrereqs:
     isExecutableFile: Path => Boolean,
   ): Either[Refusal, Path] =
     recorded match
-      case Some(RecordedJavaHome(key, home)) if key.startsWith(s"$id:") =>
+      case Some(RecordedJavaHome(key, home)) if id.forall(pin => key.startsWith(s"$pin:")) =>
         Some(home).filter(_.startsWith("/")).flatMap(jdkHomeInside(_, cacheRoot, canonicalize, isExecutableFile))
           .toRight(Refusal.PrereqMillJdkNotCoursier(id, launcherVersion, cacheRoot))
       case _ => Left(Refusal.PrereqMillJdkMissing(id, launcherVersion))
@@ -634,8 +675,8 @@ object RunOnHostPrereqs:
    * file, which Mill selects like any other, differs from an absent one, and one file's lines
    * never read as another's. The version is read as the bootstrap reads it (millVersion); the
    * JVM version as Mill reads it. `javaHome` is the text of `MillJavaHomeFile`, taken under a
-   * pinned JVM alone: it names the JDK the daemon runs on and its profile grants, so a daemon
-   * started from another text is replaced.
+   * pinned or unset `mill-jvm-version` and not under `system`: it names the JDK the daemon runs
+   * on and its profile grants, so a daemon started from another text is replaced.
    */
   def millDaemonConfig(
     buildDirectory: Path, readLines: Path => Option[Seq[String]], javaHome: Option[String] = None,
@@ -651,8 +692,8 @@ object RunOnHostPrereqs:
         .getOrElse(Seq(s"$key from the header"))
     val version = millVersion(buildDirectory, readLines).fold(_ => "", identity)
     val recordedHome = millJvm(buildDirectory, readLines) match
-      case Right(MillJvm.Pinned(_)) => Seq(s"$MillJavaHomeFile:", javaHome.getOrElse("absent"))
-      case _                        => Seq.empty
+      case Right(MillJvm.Pinned(_) | MillJvm.Unset) => Seq(s"$MillJavaHomeFile:", javaHome.getOrElse("absent"))
+      case _                                        => Seq.empty
     (version +: (Seq("mill-jvm-version", "mill-jvm-opts", "mill-repositories").flatMap(selected) ++ header
       ++ recordedHome)).mkString("\n")
 

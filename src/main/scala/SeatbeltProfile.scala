@@ -146,7 +146,7 @@ object SeatbeltProfile:
    */
   def render(inputs: ProfileInputs): Either[String, String] =
     val prereqs = inputs.prereqs
-    // Distinct: a mill build may pin the JDK that JAVA_HOME names.
+    // Distinct: a mill build's java-home file may record the JDK that JAVA_HOME names.
     val readOnly = (Seq(prereqs.jdkHome) ++ inputs.distribution ++ Seq(prereqs.executable)).distinct
     // Tests write and run stubs in the project and the command's temporary directory. Children
     // inherit the profile. Caches need no process-exec grant: the JVM loads their code by reading it.

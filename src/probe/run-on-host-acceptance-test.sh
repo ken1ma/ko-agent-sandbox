@@ -634,9 +634,10 @@ if want mill; then
     cp "$mill_project/mill" "$pinned_project/"; cp -R "$mill_project/src" "$mill_project/test" "$pinned_project/"
     sed 's/^mill-jvm-version: system$/mill-jvm-version: temurin:99\
 mill-jvm-index-version: acceptance/' "$mill_project/build.mill.yaml" > "$pinned_project/build.mill.yaml"
-    record_pinned_home() { # home
+    record_pinned_home() { # home [id]
         mkdir -p "$pinned_project/out/mill-daemon/cache" &&
-            printf '["temurin:99:acceptance:","%s"]' "$1" > "$pinned_project/out/mill-daemon/cache/java-home"
+            printf '["%s:acceptance:","%s"]' "${2:-temurin:99}" "$1" \
+                > "$pinned_project/out/mill-daemon/cache/java-home"
     }
     pinned_refused() { # label log wording: the supervisor refuses, in that wording
         if supervisor mill "$pinned_project" version >"$2" 2>&1
@@ -672,7 +673,25 @@ mill-jvm-index-version: acceptance/' "$mill_project/build.mill.yaml" > "$pinned_
     else report FAIL "$pinned_row" \
         "$pinned_which; $(grep -v 'Picked up' "$work/mill-pinned.log" | tail -1 | cut -c1-70)"
     fi
-    pinned_row="no mill daemon of the pinned build survives its command"
+
+    # An unset mill-jvm-version (doc/run-on-host.md, "An unset `mill-jvm-version`"), in the same
+    # build directory. The key these rows write names the id built into the fixture's Mill,
+    # `zulu:21` (its `default-mill-jvm-version`, 1.1.10): under another id Mill fetches, and the
+    # second row fails.
+    grep -v '^mill-jvm-version: ' "$pinned_project/build.mill.yaml" > "$work/unset-build.mill.yaml"
+    cp "$work/unset-build.mill.yaml" "$pinned_project/build.mill.yaml"
+    rm -f "$pinned_project/out/mill-daemon/cache/java-home"
+    pinned_refused "an unset JVM with no java-home file is refused, naming the host run" \
+        "$work/mill-unset-absent.log" "MILL_VERSION=$mill_version-jvm ./mill version"
+    record_pinned_home "$pinned_home" zulu:21
+    pinned_row="an unset JVM's daemon runs on the JDK the java-home file records"
+    if supervisor mill "$pinned_project" --version >"$work/mill-unset.log" 2>&1 \
+        && grep -qxF "java.home: $pinned_home" "$work/mill-unset.log"
+    then report PASS "$pinned_row" "$pinned_which"
+    else report FAIL "$pinned_row" \
+        "$pinned_which; $(grep -v 'Picked up' "$work/mill-unset.log" | tail -1 | cut -c1-70)"
+    fi
+    pinned_row="no mill daemon of the pinned or unset build survives its command"
     if [ -z "$(pinned_mill_daemons)" ]
     then report PASS "$pinned_row"
     else report FAIL "$pinned_row" "$(pinned_mill_daemons | tr '\n' ' ')"; fi

@@ -1310,10 +1310,10 @@ provides the confinement for these commands; they execute outside the container.
     writes and links are denied as well to what the launch's file rules make read-only and to
     the paths the filter's guard added;
   - its own per-project run-on-host caches;
-  - one Coursier-managed JDK, read-only; under `mill`, also the JDK a build directory's
-    `mill-jvm-version` pins, read-only, once a host run provisioned it. A command can write the
-    file that names it, and so choose among the JDKs in your Coursier cache, and nothing outside
-    that cache (`doc/run-on-host.md`, "A pinned JVM");
+  - one Coursier-managed JDK, read-only; under `mill`, also the JDK Mill's launcher resolved for
+    a build directory's pinned or unset `mill-jvm-version`, read-only, once a host run provisioned
+    it. A command can write the file that names it, and so choose among the JDKs in your Coursier
+    cache, and nothing outside that cache (`doc/run-on-host.md`, "A pinned JVM");
   - the program's own executable and distribution, read-only: the cs-installed `sbt` and the
     distribution it execs in the Coursier archive cache; the one mill launcher the user
     provisioned; the one Gradle the build directory's wrapper unpacked under
@@ -1399,8 +1399,9 @@ provides the confinement for these commands; they execute outside the container.
     - The one exception is a mill client reading its own daemon's, whose environment the runner
       built from the same closed set.
 - **A project script runs unconfined only on your explicit yes.** Before its start prompt, the
-  launch finds the mill launchers, the JDKs mill builds pin, and the Gradle and Maven
-  distributions its commands would refuse for want of, and offers the run that downloads each:
+  launch finds the mill launchers, the JDKs mill's launcher resolves for the builds, and the
+  Gradle and Maven distributions its commands would refuse for want of, and offers the run that
+  downloads each:
   the build directory's own `./mill`, `./gradlew` or `./mvnw`, a project file the agent can edit,
   shown as the full command, with any character the terminal would act on spelled out, and run,
   unconfined and in the launcher's environment, only on a `y` to a prompt that says so
