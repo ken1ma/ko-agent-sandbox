@@ -164,6 +164,39 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     Files.createSymbolicLink(javaHome, root.resolve("java-home-elsewhere"))
     assertEquals(finding(build, env.get), unprovisioned)
 
+  test("an unset mill-jvm-version is provisionable by the same run from mill 1.1.0 on, and a notice before"):
+    val root = Files.createTempDirectory("provisioning").toRealPath()
+    val project = millBuild(Files.createDirectories(root.resolve("project")))
+    def pin(version: String): Unit = Files.writeString(project.resolve("build.mill.yaml"), s"mill-version: $version\n")
+    pin("1.1.9")
+    val env = Map("HOME" -> root.toString)
+    val build = BuildDirectory(Program.Mill, project)
+    val downloads = root.resolve(".cache/mill/download")
+    val jdk = root.resolve("Library/Caches/Coursier/arc/https/cdn.azul.com/zulu21/zulu-21.jdk/Contents/Home")
+    executable(jdk.resolve("bin/java"))
+
+    assert(clue(finding(build, env.get)).exists(_.wording.startsWith("mill executable: ")))
+    executable(downloads.resolve("1.1.9"))
+    assertEquals(
+      finding(build, env.get),
+      Some(Finding.Provisionable(
+        Program.Mill, project,
+        "mill jvm: the JDK that mill runs on while mill-jvm-version is unset is not provisioned: " +
+          "out/mill-daemon/cache/java-home does not record it; run `MILL_VERSION=1.1.9-jvm ./mill version` once " +
+          "on the host",
+        Vector("./mill", "version"), Map("MILL_VERSION" -> "1.1.9-jvm"),
+      )),
+    )
+    val javaHome = Files.createDirectories(project.resolve("out/mill-daemon/cache")).resolve("java-home")
+    Files.writeString(javaHome, s"""["zulu:21:0.0.4-162-4be9be:","$jdk"]""")
+    assertEquals(finding(build, env.get), None)
+
+    // Before 1.1.0 no run provisions it, and the notice comes before the launcher is asked for.
+    pin("1.0.6")
+    val unset = finding(build, env.get)
+    assert(clue(unset).exists(_.isInstanceOf[Finding.Notice]))
+    assert(unset.exists(_.wording.startsWith("mill jvm: mill-jvm-version is unset")))
+
   test("a missing Gradle distribution is provisionable by gradlew, and a notice without one"):
     val root = Files.createTempDirectory("provisioning").toRealPath()
     val project = gradleBuild(Files.createDirectories(root.resolve("project")))

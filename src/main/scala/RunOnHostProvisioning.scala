@@ -1,9 +1,9 @@
-// Provisioning at the launch under --run-on-host: the mill launchers, the JDKs mill builds pin, and
-// the Gradle and Maven distributions the user provisions (run-on-host.md "Program prerequisites"),
-// checked for every build directory of the project before the session starts, and provisioned by
-// the stock script's own run on the user's yes. What the launch misses — a pin changed during the
-// session, a build directory a later edit creates — the first command from that directory
-// refuses, naming the same run.
+// Provisioning at the launch under --run-on-host: the mill launchers, the JDKs mill's launcher
+// resolves for the builds, and the Gradle and Maven distributions the user provisions
+// (run-on-host.md "Program prerequisites"), checked for every build directory of the project
+// before the session starts, and provisioned by the stock script's own run on the user's yes.
+// What the launch misses — a pin changed during the session, a build directory a later edit
+// creates — the first command from that directory refuses, naming the same run.
 
 package agentsandbox.launcher
 
@@ -32,7 +32,7 @@ object RunOnHostProvisioning:
     def buildDirectory: Path
     /** The refusal the supervisor would word, with the run it names. */
     def wording: String
-    /** A missing executable or pinned JDK that `command`, run in the build directory with
+    /** A missing executable or JDK that `command`, run in the build directory with
       * `environment` added to the launcher's own, provisions: the run the refusal names. */
     case Provisionable(
       program: Program, buildDirectory: Path, wording: String, command: Vector[String],
@@ -86,7 +86,7 @@ object RunOnHostProvisioning:
       case Left(refusal) => Some(Finding.Notice(build.program, build.path, refusal.worded))
 
   /** `MILL_VERSION=<v>-jvm ./mill version`: the bootstrap downloads the launcher, and the launcher
-    * resolves a pinned `mill-jvm-version` and downloads its JDK. */
+    * resolves a pinned or unset `mill-jvm-version` and downloads its JDK. */
   private def millVersionRun(build: BuildDirectory, refusal: StepRefusal, launcherVersion: String): Finding =
     Finding.Provisionable(
       build.program, build.path, refusal.worded, Vector("./mill", "version"), Map("MILL_VERSION" -> launcherVersion),

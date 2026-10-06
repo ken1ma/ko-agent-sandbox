@@ -333,15 +333,15 @@ only artifacts.**
 - `mill`'s executable *is* the fetched artifact — so it is provisioned, not fetched, and a version
   bump is an explicit host update rather than an automatic update performed by the build
   definition.
-- The JDK a `mill` build pins is an executable Mill would download, so it is provisioned too
-  ("`mill`").
+- The JDK a `mill` build's daemon runs on, unless `mill-jvm-version` is `system`, is an executable
+  Mill would download, so it is provisioned too ("`mill`").
 - Gradle's and Maven's are the distributions the projects' wrappers unpacked on the host.
 
 `RunOnHostPrereqs.scala` validates these prerequisites before a command starts; a violation is a
 refusal naming what to fix, and `src/probe/host-layout.sh` shows what a host actually has.
 
 The launch checks `mill`'s, Gradle's and Maven's before its start prompt
-(`RunOnHostProvisioning.scala`), so a launcher, pinned JDK or distribution not yet provisioned is
+(`RunOnHostProvisioning.scala`), so a launcher, JDK or distribution not yet provisioned is
 met by you at the launch, not by the agent at the first command. sbt has nothing to check: its
 executable is the one `cs install sbt` produced, whatever the project pins.
 
@@ -352,7 +352,7 @@ executable is the one `cs install sbt` produced, whatever the project pins.
   its executable resolved as its first command would resolve it; each refusal is printed in the
   command's wording. `gradlew` is only what the run below executes: a properties file without it is
   reported, with nothing to run.
-- For the refusals a host run fixes — a launcher, a pinned JDK or a distribution not yet
+- For the refusals a host run fixes — a launcher, a JDK or a distribution not yet
   provisioned — the prompt shows that run and runs it on an explicit `y`, unconfined and in the
   launcher's environment: the run the refusal asks you for, made one answer (`SECURITY.md`, "Run
   on host").
@@ -375,8 +375,8 @@ Only Coursier-managed JVMs.
 
 - `JAVA_HOME` names the JDK, and must resolve to one canonical JDK home under the user's
   Coursier cache root.
-- The one other source is the JDK a `mill` build pins, for that build's daemon and under the same
-  checks ("`mill`").
+- The one other source is the JDK Mill's launcher resolved for a `mill` build's daemon, from a
+  pinned or unset `mill-jvm-version`, under the same checks ("`mill`").
 - `java` on `PATH` is `/usr/bin/java`, a macOS stub that resolves through `JAVA_HOME` or
   `/usr/libexec/java_home`, reporting the right JVM while being the wrong path.
 - Rejected: the stub, `/Library/Java/JavaVirtualMachines`, Homebrew and SDKMAN JVMs, and a
@@ -510,11 +510,13 @@ bootstrap of its own is another build.
   the supervisor resolve alike.
 - Reading the version is a read; asking the script by running it would execute agent-authored
   shell on the host.
-- `mill-jvm-version` in the build directory is `system` or one JVM id such as `temurin:25`
-  (`RunOnHostPrereqs.millJvm`). Absent is refused: Mill's default differs between its versions.
+- `mill-jvm-version` in the build directory is `system`, one JVM id such as `temurin:25`, or
+  unset (`RunOnHostPrereqs.millJvm`).
   - `system` makes the daemon's JVM the granted JDK, the first `java` on the command's `PATH`.
-  - An id runs the daemon on the JDK a host run provisioned ("A pinned JVM" below). Mill's
-    launcher, the client, runs on the granted JDK under either.
+  - An id runs the daemon on the JDK a host run provisioned ("A pinned JVM" below).
+  - Unset runs the daemon as an id does from Mill 1.1.0 on, and is refused before ("An unset
+    `mill-jvm-version`" below).
+  - Mill's launcher, the client, runs on the granted JDK under all three.
 
 Mill is client/daemon by construction: the launcher starts a daemon that binds a port of the
 kernel's choosing on the loopback address, writes it to `out/mill-daemon/socketPort`, and connects
@@ -565,14 +567,16 @@ leader staying and ended with the group first — when:
 
 - what Mill's launcher restarts the daemon on has changed: the launcher version, the resolved
   JVM, `mill-jvm-opts` and `mill-repositories`, each from the source Mill reads it from, the
-  build file's header taken whole and, under a pinned JVM, the text of Mill's `java-home` file
-  (`RunOnHostPrereqs.millDaemonConfig`). The runner compares
-  them before each command, the launcher assembled afresh since a changed pin grants another;
-  the stock client meeting the mismatch would end the daemon and start a replacement from its own
-  profile, which cannot bind, and the command would fail;
+  build file's header taken whole and, under a pinned or unset `mill-jvm-version`, the text of
+  Mill's `java-home` file (`RunOnHostPrereqs.millDaemonConfig`);
 - the daemon is gone on its own: Mill's idle exit, thirty minutes after its last client;
   `ko-sandbox-run-on-host mill shutdown`; or a client's disconnect mid-command, on which the daemon
   shuts itself down (measured, M5), where an sbt server survives the same disconnect.
+
+The runner compares what Mill's launcher restarts the daemon on before each command, the launcher
+assembled afresh since a changed pin grants another: the stock client meeting the mismatch would
+end the daemon and start a replacement from its own profile, which cannot bind, and the command
+would fail.
 
 Mill's idle exit counts from the last client's disconnect, and a daemon no client has connected
 to yet never expires (`Server.ConnectionTracker`): a starter's daemon whose first command never
@@ -649,7 +653,7 @@ run.
   JDK nor write that cache, so the host run does both.
 - The supervisor grants the home that file records, read-only, when it passes the checks
   `JAVA_HOME` passes ("The JVM"), and refuses the command when the file is absent or records
-  another id (`RunOnHostPrereqs.millPinnedJdk`).
+  another id (`RunOnHostPrereqs.millRecordedJdk`).
 - A file recording a home that fails those checks is refused with the instruction to delete it
   first: Mill keeps a file whose key matches, so the run alone would change nothing.
 - The launch, the supervisor and the runner read the file outside any profile, while a command
@@ -682,6 +686,25 @@ What the supervisor's check leaves open:
   passes the check and the command fails at Mill's fetch; the host run rewrites the file.
 - A module's own `jvmVersion` is resolved by a task inside the daemon (`JavaHomeModule`, read in
   Mill 1.1.10's source, not measured), so its JDK is neither fetched nor granted.
+
+#### An unset `mill-jvm-version`
+
+From Mill 1.1.0 on, "A pinned JVM" applies to a build directory that sets no `mill-jvm-version`:
+the same host run provisions the JDK, and the supervisor grants the home the `java-home` file
+records under the same checks.
+
+- Before Mill 1.1.0 an unset version is refused: set `system` or an id
+  (`RunOnHostPrereqs.millUnsetJvmAccepted`).
+  - Mill 1.0.0 and 1.0.6 run `java` from `PATH` when `which java` finds one and resolve their
+    built-in id otherwise (read in their source), and no file records which of the two a run
+    took.
+- Mill's launcher resolves an unset version to the id built into it, through the call that
+  resolves a pin (`MillProcessLauncher.javaHome`, `BuildInfo.defaultJvmVersion`).
+  - The id is `zulu:21` in Mill 1.1.0, 1.1.5 and 1.1.10, read in their source and the 1.1.0
+    changelog; an unset version is not measured under the profile.
+- The supervisor does not read that id, so it accepts the `java-home` file under any key.
+  - A file that an earlier pin or another Mill version wrote passes the check; Mill resolves its
+    built-in id again, and the command fails at Mill's fetch. The host run rewrites the file.
 
 ### Gradle
 
@@ -1216,9 +1239,10 @@ where the caller is not interactive.
   confined client that replacement cannot bind, so the command would fail once. The runner
   reads the same inputs before each command and replaces the daemon first
   (`RunOnHostPrereqs.millDaemonConfig`).
-- **A pinned `mill-jvm-version` runs on the JDK a host run provisioned, and an absent one is
-  refused — confinement.** Stock Mill resolves the id, or its default, and downloads the JDK
-  itself; a command may not fetch one ("A pinned JVM").
+- **A pinned or unset `mill-jvm-version` runs on the JDK a host run provisioned, and an unset one
+  is refused before Mill 1.1.0 — confinement.** Stock Mill resolves the id, or its default, and
+  downloads the JDK itself; a command may not fetch one ("A pinned JVM", "An unset
+  `mill-jvm-version`").
 - **A request's `MILL_VERSION`, `DEFAULT_MILL_VERSION`, `MILL_OUTPUT_DIR` and
   `MILL_BSP_OUTPUT_DIR` are not read — confinement.** The supervisor's `MILL_VERSION` names the
   granted launcher, and the daemon's rendezvous is looked for under `out/` ("The command's
@@ -1614,6 +1638,12 @@ How each program reaches its cache:
   - https://github.com/com-lihaoyi/mill/blob/1.1.10/runner/launcher/src/mill/launcher/MillProcessLauncher.scala
   - https://github.com/com-lihaoyi/mill/blob/1.1.10/runner/launcher/src/mill/launcher/MillServerLauncher.scala
   - https://github.com/com-lihaoyi/mill/blob/1.1.10/runner/launcher/src/mill/launcher/CoursierClient.scala
+- Mill's JVM for an unset `mill-jvm-version` — the built-in id from 1.1.0 on, and 1.0's `java`
+  from `PATH`:
+  - https://github.com/com-lihaoyi/mill/blob/1.1.0/runner/launcher/src/mill/launcher/MillProcessLauncher.scala
+  - https://github.com/com-lihaoyi/mill/blob/1.1.10/default-mill-jvm-version
+  - https://github.com/com-lihaoyi/mill/blob/1.1.10/changelog.adoc
+  - https://github.com/com-lihaoyi/mill/blob/1.0.6/runner/launcher/src/mill/launcher/MillProcessLauncher.java
 - sbt server — domain-socket and TCP modes, the port file, discovery and the token:
   - https://www.scala-sbt.org/1.x/docs/sbt-server.html
 - sbt 1.13.0 and 2.0.9 — the thin client's server fork and its denied-connect retry, the
