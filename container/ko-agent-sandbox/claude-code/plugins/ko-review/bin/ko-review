@@ -72,7 +72,9 @@ CURRENT_REVIEW = None  # the review a command has created or opened, named in it
 
 
 def now():
-    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    """Milliseconds, so that `list`, sorting by createdAt, keeps two reviews started in the same second in
+    creation order; the id carries only the minute."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds")
 
 
 def git(root, *args, check=True):
@@ -1377,7 +1379,7 @@ def command_list(args):
                         "updatedAt": state.get("updatedAt"),
                     }
                 rows.append({key: summary[key] for key in LIST_FIELDS})
-    rows.sort(key=lambda row: row["createdAt"] or "")
+    rows.sort(key=lambda row: (row["createdAt"] or "", row["reviewId"]))
     return {"repository": str(root), "reviews": rows}
 
 

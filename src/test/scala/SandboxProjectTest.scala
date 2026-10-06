@@ -137,6 +137,13 @@ class SandboxProjectTest extends munit.FunSuite:
     assertEquals(mount(Os.Mac, "/Users/me/proj"), Right(Paths.get("/Users/me/proj").toString))
     assertEquals(mount(Os.Linux, "/home/me/proj"), Right(Paths.get("/home/me/proj").toString))
 
+  test("a POSIX project path with a colon is refused, since it would split podman's --volume value"):
+    assume(!isWindows, "a Windows JVM refuses a colon outside the drive prefix before mountPathOf runs")
+    Seq(Os.Linux, Os.Mac).foreach { os =>
+      val colon = mountPathOf(os, Paths.get("/home/me/a:b/proj"))
+      assert(colon.left.exists(_.contains("has no `:`")), colon.toString)
+    }
+
   test("a macOS launch from the data-volume alias is the same project as one from its own spelling"):
     assume(!isWindows, "a Windows JVM does not read the test's POSIX paths as absolute")
     val alias = Paths.get("/System/Volumes/Data/Users/me/src/app")
@@ -622,6 +629,16 @@ class SandboxProjectTest extends munit.FunSuite:
       linkedGitdirBind(viaAlias, main, Os.Linux),
       Some(GitdirBind(mainGitdir, alias.resolve(".git").toString)),
     )
+    // A `:` in the real main worktree's path, behind an alias without one: the source would split
+    // podman's --volume value, so there is no bind. A Windows JVM refuses the colon in the path.
+    if !isWindows then
+      val colonMain = Files.createDirectories(root.resolve("main:colon"))
+      val colonGitdir = gitdirAt(colonMain.resolve(".git"))
+      Files.writeString(gitdirAt(colonGitdir.resolve("worktrees/via-colon-alias")).resolve("commondir"), "../..\n")
+      val colonAlias = root.resolve("colon-alias")
+      Files.createSymbolicLink(colonAlias, colonMain)
+      val viaColonAlias = linkedAt("via-colon-alias", colonAlias.resolve(".git/worktrees/via-colon-alias").toString)
+      assertEquals(linkedGitdirBind(viaColonAlias, colonMain, Os.Linux), None)
     // The commondir is git's second step, used as written: absolute in the target's spelling it
     // lands on the bind, absolute in the real spelling behind an alias it names a path the
     // container lacks, and relative it climbs within the bind or not at all.

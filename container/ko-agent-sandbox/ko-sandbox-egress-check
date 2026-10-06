@@ -13,7 +13,9 @@ $SSL_CERT_FILE. The proxy inspects some hosts and answers that HEAD itself when 
 its status line and Proxy-Status are printed, and a 403 exits 1. That answer has no body, being a
 HEAD's; the agent's own refused request gets the next step for its own path. Otherwise the origin's
 status line is printed and the exit is 0. A host the ruleset allowed but the network failed — a 502
-from the proxy, a TLS failure — prints what happened and exits 2.
+from the proxy, a TLS failure — prints what happened and exits 2. So does any other answer the
+proxy makes itself, a 400 for a CONNECT it cannot parse or a 503 at its connection limit: only a
+403 is the ruleset's refusal.
 
 Each run leaves in the audit log exactly the line the agent's own program would have: one deny, or
 one allow. Python rather than openssl or curl because its ssl module wraps a socket already
