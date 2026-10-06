@@ -288,9 +288,10 @@ object EgressRules:
       sys.exit(if stepOk(command*) then 0 else 1)
 
   /** The shared front half of the egress preflights: this project's vetted rule files,
-    * the provider the given command selects, and the proxy image to consult — with the
-    * command-selection notes a launch would print. `operands` is the action's optional
-    * `[--] [command [arguments...]]`, accepted without launching anything. */
+    * the provider the given command selects, and the Id of the proxy image to consult, under the
+    * same version lock as a launch (proxyImageLock) — with the command-selection notes a launch
+    * would print. `operands` is the action's optional `[--] [command [arguments...]]`, accepted
+    * without launching anything. */
   private def egressPreflight(
     os: Os,
     operands: List[String],
@@ -301,14 +302,16 @@ object EgressRules:
     val projectDir = resolveProjectDir(os)
     requireStateRootOutside(os, projectDir)
     val projectId = projectIdOf(projectDir, os)
-    val proxyImage = proxyImageChoice._1
+    val (proxyImage, proxyImageOverridden) = proxyImageChoice
 
-    if !runOk(podman, "image", "exists", proxyImage) then
+    val proxyInspected = inspectProxyImage(proxyImage)
+    if !proxyInspected.ok then
       fail(
         s"""error: egress proxy image not found: $proxyImage
            |
-           |Build it first: run this launcher with --build.""".stripMargin
+           |Build it first: run this launcher with --build.""".stripMargin,
       )
+    val proxyImageId = versionLockedProxyImageId(proxyImage, proxyImageOverridden, proxyInspected.text)
 
     val boundaryDir = boundaryDirOf(projectDir)
     boundaryDirRefusal(boundaryDir).foreach(fail(_))
@@ -324,7 +327,7 @@ object EgressRules:
     if ruleFiles.nonEmpty then printRuleFiles(ruleFiles)
     else System.err.println("egress rules: no project rule file; the launcher-owned defaults")
 
-    (projectId, proxyImage, ruleFiles, provider)
+    (projectId, proxyImageId, ruleFiles, provider)
 
   private def ruleFileSource(name: String): String = s"egress rules (.ko-agent-sandbox/egress/$name)"
 
@@ -358,9 +361,9 @@ object EgressRules:
     operands: List[String],
     bindings: Vector[CredentialBinding] = Vector.empty,
   ): Nothing =
-    val (projectId, proxyImage, ruleFiles, provider) = egressPreflight(os, operands)
+    val (projectId, proxyImageId, ruleFiles, provider) = egressPreflight(os, operands)
 
-    val resolved = resolvedRuleset(podman, proxyImage, profile, provider, ruleFiles, provenance = true)
+    val resolved = resolvedRuleset(podman, proxyImageId, profile, provider, ruleFiles, provenance = true)
     System.out.write(resolved.out)
     System.out.flush()
     if !resolved.ok then
@@ -380,7 +383,7 @@ object EgressRules:
    * two are reported apart and why the resolver must be enforcement's).
    */
   def egressCheck(os: Os, profile: String, host: String, operands: List[String]): Nothing =
-    val (projectId, proxyImage, ruleFiles, provider) = egressPreflight(os, operands)
+    val (projectId, proxyImageId, ruleFiles, provider) = egressPreflight(os, operands)
 
     val network = egressRunNetwork(projectId, newRunSuffix())
     createNetwork(network, internal = false)
@@ -389,7 +392,7 @@ object EgressRules:
         run(
           (Vector(podman, "run", "--rm", "--pull=never", s"--network=$network")
             ++ rulesetEnvArgs(profile, provider, ruleFiles) ++ upstreamProxyArgs(env)
-            ++ Vector(proxyImage, "--check-host", host))*
+            ++ Vector(proxyImageId, "--check-host", host))*
         )
       finally
         if !runOk(podman, "network", "rm", network) then

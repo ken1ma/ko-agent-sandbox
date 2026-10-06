@@ -1248,6 +1248,26 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(unlabeled.exists(_.contains(s"$sandboxId")), unlabeled.toString)
     assert(unlabeled.exists(_.contains("(none)")), unlabeled.toString)
 
+  test("the proxy image's version lock refuses the default name, warns for an override, and answers the Id"):
+    val proxyId = bundledSourceId("ko-agent-egress-proxy")
+    val current = s"image-id\n$proxyId\n"
+    assertEquals(proxyImageLock(ProxyImage, overridden = false, current), Right(("image-id", None)))
+    assertEquals(proxyImageLock("ko-agent-egress-proxy:mine", overridden = true, current), Right(("image-id", None)))
+
+    // A label of another jar's build, and no label.
+    Vector("image-id\nstale\n", "image-id\n").foreach: inspect =>
+      val refused = proxyImageLock(ProxyImage, overridden = false, inspect)
+      assert(
+        refused.left.exists(_.startsWith(s"error: container image $ProxyImage was not built from the sources")),
+        refused.toString,
+      )
+      val warned = proxyImageLock("ko-agent-egress-proxy:mine", overridden = true, inspect)
+      assert(
+        warned.exists: (id, warning) =>
+          id == "image-id" && warning.exists(_.startsWith("container image ko-agent-egress-proxy:mine was not built")),
+        warned.toString,
+      )
+
   test("the bases have one identity over both directories, and --build labels debian-coursier with it"):
     val temurinId = bundledSourceId("debian-temurin")
     val coursierId = bundledSourceId("debian-coursier")

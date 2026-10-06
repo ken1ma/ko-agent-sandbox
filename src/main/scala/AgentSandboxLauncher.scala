@@ -769,12 +769,42 @@ object AgentSandboxLauncher:
       run(podman, "machine", "ssh", "cat /proc/meminfo"),
     )
 
-  /** The sandbox and proxy images a launch runs, and whether an environment override chose
+  /** The sandbox and proxy images the launcher runs, and whether an environment override chose
     * them, which is what turns a version-lock mismatch from a refusal into a warning. */
   def sandboxImageChoice: (String, Boolean) = imageChoice("KO_AGENT_SANDBOX_IMAGE", SandboxImage)
   def proxyImageChoice: (String, Boolean) = imageChoice("KO_AGENT_SANDBOX_PROXY_IMAGE", ProxyImage)
   private def imageChoice(variable: String, default: String): (String, Boolean) =
     env(variable).fold((default, false))(image => (image, true))
+
+  /** The proxy image's Id, then its bundle label: the answer proxyImageLock reads. */
+  def inspectProxyImage(proxyImage: String): Run =
+    run(podman, "image", "inspect", "--format", s"{{.Id}}{{println}}$BundleLabelTemplate", proxyImage)
+
+  /**
+   * The version lock on the egress proxy image, for a launch and the egress actions alike: this
+   * is the image whose --print-ruleset output and environment interface the launcher parses, so a
+   * mismatched default image must not get as far as a cryptic parse failure. Left is the refusal;
+   * Right is the Id to run the image by, and the warning an overridden image gets in place of the
+   * refusal (bundleMismatch has the refuse-versus-warn reasoning).
+   */
+  def proxyImageLock(
+    proxyImage: String,
+    overridden: Boolean,
+    inspect: String,
+  ): Either[String, (String, Option[String])] =
+    val proxyImageId = inspect.linesIterator.nextOption().getOrElse("")
+    val label = inspect.linesIterator.drop(1).nextOption().getOrElse("")
+    bundleMismatch(proxyImage, bundledSourceId("ko-agent-egress-proxy"), label) match
+      case Some(mismatch) if !overridden => Left(s"error: $mismatch")
+      case mismatch                      => Right((proxyImageId, mismatch))
+
+  /** proxyImageLock's Id, after printing its warning; its refusal ends the launcher. */
+  def versionLockedProxyImageId(proxyImage: String, overridden: Boolean, inspect: String): String =
+    proxyImageLock(proxyImage, overridden, inspect) match
+      case Left(refusal) => fail(refusal)
+      case Right((proxyImageId, warning)) =>
+        warning.foreach(warn)
+        proxyImageId
 
   /**
    * The per-run TLS mount-source directories a launch may sweep: named for a run (`run-<8 hex>`)
@@ -1587,7 +1617,7 @@ object AgentSandboxLauncher:
       fail(
         s"""error: sandbox image not found: $image
            |
-           |Build it first: run this launcher with --build.""".stripMargin
+           |Build it first: run this launcher with --build.""".stripMargin,
       )
     val imageInspect = imageInspected.text
     // Every later run of the image names this Id rather than `image`: a build or a retag can move
@@ -1610,22 +1640,16 @@ object AgentSandboxLauncher:
       inBackground("mount path probe")(probeMountPath(podman, imageId, mountPath)),
     )(answer => () => answer)
 
-    // A jar upgrade must never run silently against last month's images; checked before any
-    // resource exists. bundleMismatch has the refuse-versus-warn reasoning.
+    // A jar upgrade must never run silently against images an earlier jar built; checked before
+    // any resource exists. bundleMismatch has the refuse-versus-warn reasoning.
     bundleMismatch(image, bundledSourceId("ko-agent-sandbox"), imageLabel).foreach: mismatch =>
       if imageOverridden then warn(mismatch)
       else fail(s"error: $mismatch")
 
     val (proxyImage, proxyImageOverridden) = proxyImageChoice
 
-    // The proxy side of the version lock above: this is the image whose --print-ruleset output
-    // and environment interface the launcher parses, so a mismatched default image must not get
-    // as far as a cryptic parse failure.
-    val proxyInspected = run(
-      podman, "image", "inspect",
-      "--format", s"{{.Id}}{{println}}$BundleLabelTemplate",
-      proxyImage,
-    )
+    // The proxy side of the version lock above (proxyImageLock).
+    val proxyInspected = inspectProxyImage(proxyImage)
 
     val mountPathProbe = awaitMountPathProbe()
     if !mountPathProbe.ok then
@@ -1638,16 +1662,9 @@ object AgentSandboxLauncher:
            |
            |The sandbox has no route to the Internet of its own; this proxy is
            |what it reaches instead. Build it first: run this launcher with
-           |--build.""".stripMargin
+           |--build.""".stripMargin,
       )
-    val proxyInspect = proxyInspected.text
-    val proxyImageId = proxyInspect.linesIterator.nextOption().getOrElse("")
-    val proxyImageLabel = proxyInspect.linesIterator.drop(1).nextOption().getOrElse("")
-
-    bundleMismatch(proxyImage, bundledSourceId("ko-agent-egress-proxy"), proxyImageLabel).foreach:
-      mismatch =>
-        if proxyImageOverridden then warn(mismatch)
-        else fail(s"error: $mismatch")
+    val proxyImageId = versionLockedProxyImageId(proxyImage, proxyImageOverridden, proxyInspected.text)
     LaunchImages(imageId, imageEnv, proxyImageId, mountPathAnswerFile, cachedMountPath, mountPathProbe)
 
   private def launchRules(
