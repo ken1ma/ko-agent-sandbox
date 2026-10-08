@@ -218,9 +218,11 @@ returns `ENOTCONN` in every attached session, so none can continue accessing the
 mount. When the project's last session ends, the daemon unmounts and exits.
 
 The staged workspace also has one view per project: attached sessions share its merged view, upper
-layers, locks, cache and failure domain. Reject mode starts no `ko-agent-fs` process and creates no
-FUSE mount. The staged view is not implemented; the root `doc/plan-staged.md` plans it and the root
-`doc/TODO.md` keeps the deferred work. This topology is nevertheless fixed before that work starts:
+layers, locks, cache and failure domain. Reject mode creates no FUSE mount and runs no filter
+daemon; with `--run-on-host` it runs `ko-agent-fs --resolve` once, for the file rules the host
+commands observe (the launcher's `KoAgentFs.koAgentFsResolveScript`). The staged view is not
+implemented; the root `doc/plan-staged.md` plans it and the root `doc/TODO.md` keeps the deferred
+work. This topology is nevertheless fixed before that work starts:
 per-session mounts would make a cheap restart expensive and give collaborating sessions incoherent
 locks and caches.
 

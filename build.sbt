@@ -188,6 +188,7 @@ Compile / resourceGenerators += Def.task {
       !parts.contains(".bloop") &&
       !parts.contains(".metals") &&
       !relative.contains("project/project") &&
+      file.getName != "metals.sbt" &&
       file.getName != ".DS_Store"
 
   IO.delete(outputRoot)

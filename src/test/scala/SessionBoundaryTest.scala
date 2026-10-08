@@ -353,7 +353,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     try
       val clone = run(
         "git", "clone", "--quiet", "--depth", "1",
-        "https://github.com/octocat/Hello-World.git", into.resolve("repo").toString
+        "https://github.com/octocat/Hello-World.git", into.resolve("repo").toString,
       )
       assert(clone.ok, s"an anonymous clone failed: ${clone.err}")
     finally deleteRecursively(into)

@@ -523,10 +523,11 @@ object RunOnHostSession:
         body(bySignal)
 
   /**
-   * The supervisor's own step 11, through the scavenger's own steps: condemn the session first — the
-   * command's grants are path-based and name the original pathname, so after the rename no process
-   * it started can change what `collect`'s canonicalization resolves to — then collect it: recorded
-   * groups ended behind their live leaders, the server with them, the directory deleted.
+   * The supervisor's own teardown (RunOnHostSandbox.run), through the scavenger's own steps: condemn the
+   * session first — the command's grants are path-based and name the original pathname, so after the
+   * rename no process it started can change what `collect`'s canonicalization resolves to — then
+   * collect it: recorded groups ended behind their live leaders, the server with them, the directory
+   * deleted.
    * Asking the server by protocol is how the scavenger reaches the leaderless orphan; here the
    * leader is alive with its recorded start time, so the group is signalled, and TERM is the
    * clean end (the server flushes its portfile on TERM). The session's own lock is held through
@@ -567,7 +568,7 @@ object RunOnHostSession:
    * work an earlier, killed scavenger left — then every unlocked published entry is condemned and
    * collected, then staging litter is cleared under the root lock. A condemned entry is collected
    * only under its own lock — the same lock its session held — so two starts, or a start and the
-   * supervisor's own step 11, never signal or delete the same entry concurrently. The build locks
+   * supervisor's own teardown, never signal or delete the same entry concurrently. The build locks
    * and the retirement locks are skipped by name: a directory without a `lock` file reads as a
    * dead session here.
    *

@@ -59,7 +59,9 @@ the code that enforces each part:
 | the exit criteria, measured | `src/probe/run-on-host-acceptance-test.sh` |
 
 The full acceptance test (`all`) reports **295 PASS, 0 FAIL, 0 SKIP** on macOS 26.4.1 arm64 with
-Temurin 25.0.4, sbt 2.0.9, Mill 1.1.10, Gradle 9.8.0 and Maven 3.9.16 (2026-10-04).
+Temurin 25.0.4, sbt 2.0.9, Mill 1.1.10, Gradle 9.8.0 and Maven 3.9.16 (2026-10-04). The two rows on
+an unset `mill-jvm-version` (`src/probe/run-on-host-acceptance-test.sh`) postdate that run and are
+unmeasured.
 
 The measurement behind the feature: an `sbt test` of this project takes about 2 GB inside the podman
 machine, whose total is fixed when the machine is created and shared with every other session on it.
@@ -220,16 +222,18 @@ The command's only egress is its proxy (below):
   every port at every address of this host and everything the daemon forks inherits it
   (`SECURITY.md` "Run on host" states that cost).
 
-Per program (`SeatbeltProfile.Network` is the typed input the dispatch shows):
+Every profile grants UNIX sockets bound and connected under the command's own `tmp/` (the
+runner's, for a server or daemon it starts). Per program beyond that (`SeatbeltProfile.Network` is
+the typed input the dispatch shows):
 
 | process | network |
 |---|---|
-| sbt server | the proxy's port; UNIX sockets bound and connected under the runner's `tmp/` |
-| sbt client | the same under the command's `tmp/`, plus connects under the runner's `tmp/` |
+| sbt server | the proxy's port |
+| sbt client | the proxy's port, plus connects under the runner's `tmp/` |
 | `mill` daemon | the proxy's port; listeners, any port, any address of this host (below) |
 | `mill` client | the proxy's port, and the daemon's one port |
 | `gradle`, client and daemon | the proxy's port; listeners and connects on any port of this host |
-| Maven | the proxy's port; UNIX sockets under the command's `tmp/` |
+| Maven | the proxy's port |
 
 Gradle's row is both grants, where `mill`'s client has one port: its daemon, its workers and its
 file-lock socket (`DefaultFileLockCommunicator`, UDP) each bind port 0 and connect to each
@@ -1024,9 +1028,9 @@ transcript the user reads. It cannot inherit `ko-sandbox-apt-get`'s discoverabil
 
 So the "What this session may do" section states the instruction, and only where it can be true:
 the launcher knows the platform, so a macOS session launched without the option gets one discovery
-line, and Linux and Windows sessions hear nothing about a command they can never have. That makes
-the host command a norm rather than an enforcement: an agent that ignores the instruction gets a
-slower build, not a refusal — a deliberate difference from the egress rule, where the proxy
+paragraph, and Linux and Windows sessions hear nothing about a command they can never have. That
+makes the host command a norm rather than an enforcement: an agent that ignores the instruction
+gets a slower build, not a refusal — a deliberate difference from the egress rule, where the proxy
 actually refuses.
 
 The transport, its framing and its teardown are `RunOnHostChannel.scala`'s header and the shim's

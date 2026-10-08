@@ -282,7 +282,7 @@ object EgressRules:
           s"""no running egress proxy for this project; each run's proxy is
              |removed when its sandbox exits. Its retained logs are files:
              |run --egress-log without arguments, or read files under:
-             |${pathLine("egress log dir", logDir, os)}""".stripMargin
+             |${pathLine("egress log dir", logDir, os)}""".stripMargin,
         )
       val command = List(podman, "logs") ++ extra ++ proxies
       sys.exit(if stepOk(command*) then 0 else 1)

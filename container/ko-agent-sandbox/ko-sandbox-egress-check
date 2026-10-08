@@ -6,7 +6,7 @@ the launcher's --egress-check=<host>, answering the running proxy instead of a o
     ko-sandbox-egress-check <host>
 
 One CONNECT <host>:443 to $HTTPS_PROXY. A refusal is a 403 whose body names the reason and the next
-step, and every client discards a failed CONNECT's body, which is why this exists: it prints the
+step, and clients discard a failed CONNECT's body, which is why this exists: it prints the
 response's Proxy-Status field, which has the proxy's error type and is all a response without a
 body says, then the body, and exits 1. An allowed host gets one HEAD / inside TLS, trusting
 $SSL_CERT_FILE. The proxy inspects some hosts and answers that HEAD itself when no line grants /:

@@ -380,7 +380,7 @@ ruleset denials:
 
 ```text
 error api.example.com POST /v1 credential unavailable service/instance
-allow api.example.com POST /v1 -> <origin-ip> inject=service/instance
+allow api.example.com POST /v1 inject=service/instance -> <origin-ip>
 ```
 
 Use fixed client diagnostics for missing, expired, refresh-failed and reauthentication-required

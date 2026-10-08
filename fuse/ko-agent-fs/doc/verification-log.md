@@ -136,7 +136,8 @@ over a project whose `.git` and `node_modules` show `GIT~1` and `NODE_M~1`, `ln 
 
 ### Verified: end-to-end coherency, filtered stack (macOS 26.4.1, podman 6.0.2; 2026-08-22)
 
-`probe/coherency-probe.py` on the same machine and stack as the name-rule run: a host-side write
+A hand-run coherency probe (its checks are `--self-test`'s share rows, the launcher's
+`SelfTestShare.scala`) on the same machine and stack as the name-rule run: a host-side write
 became visible to a fresh `read()` inside the filtered session within the 10 ms polling window, and
 a page **mapped before the write** showed the new bytes 0 ms after `read()` did — `AUTO_INVAL_DATA`
 invalidating the cached page as designed. The sandbox→host direction holds on the same stack, and

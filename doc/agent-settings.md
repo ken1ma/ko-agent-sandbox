@@ -88,9 +88,9 @@ Without a program that measures, an agent checking a width limit spends tokens t
 
 1. It counts a line it has written and can still misjudge its width. Claude Fable 5.1 miscounted.
 2. The commands it improvises disagree wherever a line is not ASCII, so one check leads to
-   another. On this repository's Markdown files at a limit of 100, `awk 'length($0) > 100'`
-   reports 130 lines, because the image's `awk` counts bytes; Python's `len()` reports 24, because
-   it counts code points; 71 lines are wider than 100 columns.
+   another. On this repository's Markdown files at a limit of 100 (2026-10-07),
+   `awk 'length($0) > 100'` reports 125 lines, because the image's `awk` counts bytes; Python's
+   `len()` reports 45, because it counts code points; 65 lines are wider than 100 columns.
 3. It rewraps lines a wrong count reported, and counts again.
 
 The image has `ko-sandbox-text-width`, which the sandbox's own instructions tell every agent to

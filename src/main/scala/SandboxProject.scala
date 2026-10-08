@@ -223,7 +223,7 @@ object SandboxProject:
       val problem = parsed.collectFirst { case (_, _, Left(problem)) => problem }.get
       Left(
         s"""error: $problem
-           |Cannot determine which project directories are safe to mount.""".stripMargin
+           |Cannot determine which project directories are safe to mount.""".stripMargin,
       )
     else
       val unsetWarnings =
@@ -775,7 +775,7 @@ object SandboxProject:
                |The directory is boundary configuration and holds only:
                |${BoundaryDirEntries.toVector.sorted.mkString(", ")}. A stray name must fail the
                |launch, never remain as ignored config — and it is either a typo or a boundary file a
-               |newer launcher reads, so check the spelling or update the launcher and image.""".stripMargin
+               |newer launcher reads, so check the spelling or update the launcher and image.""".stripMargin,
           )
 
   val BoundaryDirEntries: Set[String] = Set("egress", "file", "run-on-host")

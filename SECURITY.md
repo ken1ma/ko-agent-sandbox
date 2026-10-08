@@ -16,9 +16,9 @@ costs are described below.
 - The host exposes the project directory and the agent-state volume, without exposing the user's
   home or unrelated projects.
 - The containers run rootless, and agents run as an unprivileged user with `no-new-privileges`.
-  - Every podman action but `--stats`, `--reset` and `--reset-all`, which only read or remove,
-    refuses a rootful service: a rootful service makes the agent's uid and the container's root
-    the host's own.
+  - Every podman action but `--stats`, `--reset`, `--reset-all` and `--reset-run-on-host`, which
+    only read or remove, refuses a rootful service: a rootful service makes the agent's uid and
+    the container's root the host's own.
   - The session's entrypoint refuses to start unless `/proc/self/status` shows a seccomp filter,
     `no-new-privileges` and exactly the capabilities `KO_AGENT_SANDBOX_NESTING` grants: the host's
     `containers.conf` can turn the filter off, and `podman info` reports only kernel support.
@@ -526,7 +526,7 @@ directories"):
     writable (`fuse/ko-agent-fs/doc/TODO.md`), as do the targets of symlinks at or inside listed
     entries deeper than the root's.
   - Bare layouts below the workspace root are also outside that check; a bare layout present at
-    the root at launch is refused ("The project directory").
+    the root at launch is refused ("The host's git executing what the sandbox wrote").
 - The check is a snapshot. It does not revalidate protected Git entries relocated by the host during
   a session.
   - The resolution chains it accepts consist of components the sandbox cannot write or rename, so
@@ -872,8 +872,8 @@ each line; what stays opaque, and why, is "What is inside TLS" above.
 For each inspected request, the proxy terminates TLS and checks the grants in the resolved scope
 with the longest literal path match (`doc/egress-proxy.md`, "The rule file"):
 
-- `read`: bodyless `GET` and `HEAD`, except the two Git discovery requests below as spelled there;
-  another spelling of either is a `read`.
+- `read`: bodyless `GET` and `HEAD`, except the two Git discovery requests below in any spelling
+  that percent-decodes once to one of them, as a forge's router decodes before routing.
 - `git-fetch`: the ref discovery, `GET .../info/refs?service=git-upload-pack`, and the transfer
   step of `clone` and `fetch`, a `POST` to a path of at least two nonempty segments followed by
   `/git-upload-pack`, with no `#` in it: an origin that ends the path at `#` would route the
@@ -900,8 +900,8 @@ with the longest literal path match (`doc/egress-proxy.md`, "The rule file"):
     lockfile. It does not send dependency edges. Enabling install-time vulnerability warnings
     allows that disclosure.
 - Nothing else.
-  - `POST .../git-receive-pack` is the push and is refused, and so is its ref discovery as git
-    sends it, `GET .../info/refs?service=git-receive-pack` — refused though it is a `GET`, so that
+  - `POST .../git-receive-pack` is the push and is refused, and so is its ref discovery,
+    `GET .../info/refs?service=git-receive-pack` — refused though it is a `GET`, so that
     `git push` fails at its first request rather than its second.
   - The exception is a line granting `POST` at the repository, the project's own visible grant.
   - `PUT`, `PATCH` and `DELETE` are refused, and so is every other `POST`, where no line grants the
@@ -1293,8 +1293,9 @@ provides the confinement for these commands; they execute outside the container.
     name patterns, so a `.git` created during the command inherits the project's allow.
 - **The sandbox asks; the host answers.** A host-side runner uses a FIFO channel like the clipboard
   relay's. It starts each command as its child, streams output back, and returns the exit code.
-  There is no host listener or port; the host runner initiates execution (`RunOnHostChannel`, the
-  image's `ko-sandbox-run-on-host` shim).
+  The channel has no host listener or port; the host runner initiates execution
+  (`RunOnHostChannel`, the image's `ko-sandbox-run-on-host` shim). The listeners a `mill` or
+  `gradle` build binds are a grant of its own profile, below.
 - **The profile is the boundary; the request is not.** A request names a program, a working
   directory and arguments.
   - The program must be among those `--run-on-host` named.

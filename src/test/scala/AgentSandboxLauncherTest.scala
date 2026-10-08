@@ -1536,16 +1536,26 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     Vector(readOnly, filtered).foreach: section =>
       assert(section.contains(".ko-agent-sandbox/egress/rule"), section)
       assert(section.contains("deny-unless-allowed"), section)
-    // --run-on-host adds the run-on-host instruction, naming each served program's command. Without the
-    // option, a macOS session gets one discovery line — only the launcher knows the platform —
-    // and other platforms hear nothing about a command they can never have.
-    val runOnHostSection = appendedSection(Mount, "live", resolution, Vector("sbt", "mill"))
+    // --run-on-host adds the run-on-host instruction, naming each served program's command and
+    // only the served programs' daemons and listener rules: the channel refuses the others. Without
+    // the option, a macOS session gets one discovery paragraph — only the launcher knows the
+    // platform — and other platforms hear nothing about a command they can never have.
+    val runOnHostSection = appendedSection(Mount, "live", resolution, Vector("sbt", "mill", "gradle", "mvn"))
     assert(runOnHostSection.contains("ko-sandbox-run-on-host sbt"), runOnHostSection)
     assert(runOnHostSection.contains("ko-sandbox-run-on-host mill"), runOnHostSection)
     assert(
       runOnHostSection.contains("The daemons of sbt, mill and gradle stay warm across invocations"),
       runOnHostSection,
     )
+    assert(runOnHostSection.replace('\n', ' ').contains("Under sbt and mvn the host grants no TCP"), runOnHostSection)
+    val sbtOnly = appendedSection(Mount, "live", resolution, Vector("sbt"))
+    assert(sbtOnly.contains("The daemon of sbt stays warm"), sbtOnly)
+    assert(sbtOnly.replace('\n', ' ').contains("Under sbt the host grants no TCP"), sbtOnly)
+    Vector("mill", "gradle", "mvn").foreach(other => assert(!sbtOnly.contains(other), sbtOnly))
+    val millOnly = appendedSection(Mount, "live", resolution, Vector("mill"))
+    assert(millOnly.contains("Under mill a build's processes can bind listeners"), millOnly)
+    Vector("sbt", "gradle", "mvn", "Operation not permitted").foreach: other =>
+      assert(!millOnly.contains(other), millOnly)
     // The example of several commands is quoted: the JVM client hands its arguments to sbt as one
     // command line, so `compile test` is a parse error and `'compile; test'` is two commands
     // (measured on sbt 2.0.7). And the one build the host profile cannot run — a TCP-listening

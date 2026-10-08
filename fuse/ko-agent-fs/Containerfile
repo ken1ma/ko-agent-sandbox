@@ -69,8 +69,8 @@ ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 #
 # A warm cache cannot leave a stale source id compiled into the binary, and the
 # reason is not cargo's env-var tracking. The launcher unpacks this context to a
-# new temporary directory on every --build (AgentSandboxLauncher.
-# unpackBuildContext), so every file reaches podman with a fresh mtime, and
+# new temporary directory on every --build (ImageBuilds.unpackBuildContext),
+# so every file reaches podman with a fresh mtime, and
 # cargo fingerprints a path dependency by mtime: whenever this step runs at all,
 # the crate recompiles. When nothing changed, the COPY and ENV layers are cached
 # and the step does not run. `installKoAgentFs` refusing a binary whose

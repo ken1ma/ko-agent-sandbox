@@ -1,4 +1,4 @@
-// The supervisor: from a project and a program to a confined command's exit code, through the thirteen
+// The supervisor: from a project and a program to a confined command's exit code, through its
 // steps — validate, scavenge, publish, runtime, profile, run, end what was started, remove — and how
 // the launcher's own executable is re-invoked as the runner, the supervisor and the proxy
 // (selfInvocation). The runtimes the commands of one build directory share are RunnerRuntimes.scala,
@@ -195,7 +195,7 @@ object RunOnHostSandbox:
       if !Files.isDirectory(path) then Seq.empty
       else directoryEntries(path).filter(Files.isDirectory(_))
 
-  /** Steps 1–5: everything the profile derives authority from, decided before anything runs.
+  /** The assembly: everything the profile derives authority from, decided before anything runs.
     * `buildDirectory` is where the command runs, the project or a directory beneath it: mill's
     * bootstrap, version pin and `mill-jvm-version` are that directory's, as the bootstrap reads
     * them from its working directory, so a nested build is another build; the grants stay the
@@ -207,7 +207,7 @@ object RunOnHostSandbox:
     catch case ex: Unreadable => Left(wording(ex.refusal))
 
   /** Why one step of the assembly refuses, kept typed to the assembly's boundary: the launch's
-    * provisioning (RunOnHostProvisioning) runs a script for three of the cases and words the rest. */
+    * provisioning (RunOnHostProvisioning) runs one of three scripts for four of the cases and words the rest. */
   final case class StepRefusal(step: String, refusal: Refusal | String):
     def worded: String = refusal match
       case refusal: Refusal => s"$step: ${wording(refusal)}"
@@ -709,7 +709,7 @@ object RunOnHostSandbox:
   def carrierName(name: String): String = s"KO_AGENT_RUN_ON_HOST_ENV_$name"
 
   // ---------------------------------------------------------------------------
-  // The thirteen steps
+  // The supervisor's steps
   // ---------------------------------------------------------------------------
 
   def run(

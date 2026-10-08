@@ -89,10 +89,10 @@ What a line grants is its words, and nothing is implied:
 
 - `read` — `GET` and `HEAD`, without a body or `Content-Length` or `Transfer-Encoding` headers.
   Even `Content-Length: 0` is refused.
-- `git-fetch` — a clone's two requests, the ref discovery (`GET .../info/refs?service=
-  git-upload-pack`) and the transfer (`POST .../git-upload-pack`). A `git-fetch` line without
-  `read` is clonable and not browsable; a `read` line without `git-fetch` is browsable, and a
-  clone fails at its first request. `git-fetch` never grants `git push`.
+- `git-fetch` — a clone's two requests, the ref discovery
+  (`GET .../info/refs?service=git-upload-pack`) and the transfer (`POST .../git-upload-pack`). A
+  `git-fetch` line without `read` is clonable and not browsable; a `read` line without `git-fetch`
+  is browsable, and a clone fails at its first request. `git-fetch` never grants `git push`.
 - `method=POST,PUT,...` — the listed methods, from `POST`, `PUT`, `PATCH`, `DELETE`, at that
   path, without granting general `GET` or `HEAD` access. These methods can also retrieve data,
   such as a GraphQL query sent by `POST`. `POST` at a repository also grants `git push`'s ref
