@@ -44,7 +44,7 @@ sandbox write is absent from the host after exit.
 
 The target is to remove image-managed Coursier content from the copied home while retaining its
 small seed files. Do not add `nocopy` to the home volume in this increment: that also hides the
-`.claude`, `.codex`, `.gemini` and `.copilot` symlinks. Copying only the remaining home seed keeps
+agents' symlinks into `persistent-volume`. Copying only the remaining home seed keeps
 those contracts without material startup cost.
 
 ## Cold default

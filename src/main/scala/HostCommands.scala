@@ -623,5 +623,5 @@ object HostCommands:
           s"""error: $variable is set to '$text'; the only values are ${choices.mkString(" and ")}, exactly
              |
              |This variable governs the boundary, so an unrecognized value is refused rather
-             |than guessed at. $advice""".stripMargin
+             |than guessed at. $advice""".stripMargin,
         )

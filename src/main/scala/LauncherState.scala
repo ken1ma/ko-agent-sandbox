@@ -430,7 +430,7 @@ object LauncherState:
               s"""error: $variable is '$value', which is not an absolute path
                  |The launcher's state root holds the CA signing key and audit logs; a relative
                  |value would resolve against the current directory, the repository being
-                 |sandboxed, so it is refused rather than resolved.""".stripMargin
+                 |sandboxed, so it is refused rather than resolved.""".stripMargin,
             )
           case Some(path) =>
             canonicalizedFuturePath(path.resolve("ko-agent-sandbox"))

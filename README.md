@@ -65,7 +65,7 @@ The sandbox image preinstalls:
 1. [Kiro CLI](https://kiro.dev/cli/)                                    (AWS)
 1. [Copilot CLI](https://github.com/github/copilot-cli)                 (GitHub)
 1. [OpenCode](https://github.com/anomalyco/opencode)                    (multiple providers)
-1. plus the toolchains: Python + uv / Node.js / Rust / Java / Scala.
+1. plus the toolchains: Python + uv / Node.js / Rust / Java / Scala, and the VS Code CLI.
 
 The agents are configured to run without permission prompts, to avoid training users to approve
 without reading. The sandbox enforces the boundary; inside it, the agents can call each other.
@@ -276,9 +276,9 @@ restore permission prompts and set the Claude Code status line.
       --write=reject|live
                          reject makes the project read-only; live (default)
                          lets the agent edit the shared project files, except
-                         Git config, hooks, .git files, commondir, gitdir, rebase
-                         instructions and .ko-agent-sandbox, at any depth, and
-                         what the file rules protect (SECURITY.md)
+                         Git config, hooks, .git files, commondir, gitdir, rebase,
+                         bisect and rerere state, alternates and .ko-agent-sandbox,
+                         at any depth, and what the file rules protect (SECURITY.md)
       --egress=deny-all|deny-unless-model|deny-unless-allowed
                          which hosts the session reaches; the default,
                          deny-unless-allowed, allows the launcher-owned
@@ -326,7 +326,7 @@ restore permission prompts and set the Claude Code status line.
       --build            build the container images and install the workspace filter,
                          always pulling remote base images
       --update           update the agents: rebuild only the sandbox container
-                         image, without cache
+                         image, without cache, pulling its remote base images
 
       --stats            show the resource use of the machine, the live sessions and each project.
                          Flags caches worth clearing with --reset-run-on-host

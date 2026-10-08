@@ -1,7 +1,7 @@
 #!/bin/sh
-# Does the podman machine give memory back to macOS after a build inside it? doc/run-on-host.md, "The
-# measurement behind the feature", records the answer; run this after a podman, libkrun or macOS upgrade
-# and update it.
+# Does the podman machine give memory back to macOS after a build inside it? doc/run-on-host.md's
+# startup-cost paragraph ("The measurement behind the feature: ...", under its title) records the
+# answer; run this after a podman, libkrun or macOS upgrade and update it.
 #
 #   sh src/probe/machine-memory-return.sh [<command that builds inside the sandbox...>]
 #

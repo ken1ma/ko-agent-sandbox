@@ -30,7 +30,7 @@ on your host downloads from when you check out and uploads to when you push.
 - A directory a listed name passes through, `.claude` for `.claude/settings.json`, can be created
   by `mkdir`, written in, and removed once empty, but not renamed or replaced.
 
-The launch prints what the filter's guard adds when it mounts.
+The launch prints the paths the filter's guard makes read-only when it mounts.
 
 The session's own writes fail with `Operation not permitted`. Its agent sees the lines in
 `$KO_AGENT_SANDBOX_FILE_RULES`.

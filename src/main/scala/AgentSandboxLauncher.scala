@@ -20,6 +20,18 @@
 //   CertificateHelper.scala     certificates as PEM: creating, parsing, checking
 //   JdkTrust.scala              making the image's JVM reach the proxy — locate, prepare, mount
 //   FFMHelper.scala             the downcalls into libc and kernel32
+//   FileRules.scala             the file rules: defaults, the project's rule file, grammar, resolution
+//   EgressCredentials.scala     --egress-cred: the bindings, their values, placeholders and proxies
+//   ClipboardRelay.scala        the host clipboard offered to the sandbox: the protocol and both twins
+//   SandboxStats.scala          --stats: the read-only resource report
+//   SelfTestShare.scala         --self-test's share rows, the host-writer/session-reader direction
+//   SeatbeltProfile.scala       the Seatbelt profiles of a host command and the host proxy, as SBPL
+//   RunOnHost*.scala            --run-on-host: the channel and runner (RunOnHostChannel), the
+//                               supervisor (RunOnHostSandbox), the prerequisites, provisioning,
+//                               session lifecycle, proxy, inspection files, sbt server and its
+//                               shutdown, mill and Gradle daemons, and the runtime descriptor
+//                               another launch attaches to; RunnerRuntimes.scala keeps the
+//                               runtimes a launch's commands share
 //
 // This file is the canonical description of what the boundary is made of:
 //
@@ -413,9 +425,12 @@ object AgentSandboxLauncher:
   final case class Reader(prompt: String => Unit, readLine: () => Option[String])
 
   /**
-   * The process's terminal, if stdin is one. isTerminal, not a null check: since JDK 22
-   * System.console() answers a Console for a redirected stream too, and holding a pipe open would
-   * hang a scripted launch instead of skipping the hold.
+   * The process's terminal, if stdin is one, and the one way every prompt of the launcher asks.
+   * isTerminal, not a null check: a console provider may answer a Console for a redirected stream
+   * (which is what Console.isTerminal exists to tell), and holding a pipe open would hang a
+   * scripted launch instead of skipping the hold. On Temurin 25.0.4.1's default provider,
+   * System.console() is null when stdin or stdout is redirected (measured 2026-10-08), so the two
+   * checks agree there.
    */
   def terminalReader: Option[Reader] =
     Option(System.console()).filter(_.isTerminal).map: console =>
@@ -724,7 +739,7 @@ object AgentSandboxLauncher:
                    |${started.err}
                    |
                    |Initialize it once, for example:
-                   |  podman machine init""".stripMargin
+                   |  podman machine init""".stripMargin,
               )
             (run(podman, "info", "--format", PodmanInfoFormat), probedMachineAvailable(os))
     if refuseRootful then rootfulRefusal(os, podmanInfoField(info, 0)).foreach(fail(_))
@@ -1441,11 +1456,11 @@ object AgentSandboxLauncher:
     // proxy and networks and the launch ending at once, and a launcher killed outright at the
     // prompt leaves no created container behind. The reaper right after the create, so a
     // created-but-never-started sandbox has its remover (SandboxLifecycle, ReaperScript) from the
-    // first instant — where a reaper runs: Windows, and a POSIX spawn that failed, stay resident,
-    // and a resident launcher killed outright leaves the created container, and with it the
-    // marker and the mount, to a reset, as it leaves the proxy. The mount after both, because the
-    // container is what names this session to
-    // the filter's reap, which asks podman for it by name (KoAgentFs, koAgentFsReapScript):
+    // first instant — where a reaper runs. Where none does — Windows, and a POSIX spawn that
+    // failed — the launcher stays resident, and one killed outright leaves the created container,
+    // and with it the marker and the mount, to a reset, as it leaves the proxy. The mount after
+    // both, because the container is what names this session to the filter's reap, which asks
+    // podman for it by name (KoAgentFs, koAgentFsReapScript):
     // written after the create, the session marker is never on disk without it, and a launcher
     // that dies during the mount leaves the marker to the reap that follows the reaper's removal
     // of the container. The cost is that the notes below — the reaper could not be spawned, which
@@ -1575,7 +1590,7 @@ object AgentSandboxLauncher:
            |host-metadata write that reject must not perform. Use --write=live — the filter's
            |mountpoint needs no relabel — or relabel the project yourself
            |(chcon -R -t container_file_t -l s0 <dir>; the level clears any categories a
-           |previous :Z assigned to one container) and relaunch.""".stripMargin
+           |previous :Z assigned to one container) and relaunch.""".stripMargin,
       )
 
     // -----------------------------------------------------------------------

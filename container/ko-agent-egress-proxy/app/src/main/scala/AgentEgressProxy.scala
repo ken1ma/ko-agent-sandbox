@@ -33,7 +33,8 @@ object AgentEgressProxy:
   val ListenPort = 3128
 
   /** Printed after `bind` and before any ruleset line, so a reader that saw it has a proxy
-    * accepting connections; every refusal made before then ends the process instead. The
+    * accepting connections; every refusal made before then ends the process instead, and after it
+    * only an audit log that stopped taking the startup lines ends it (serve). The
     * launcher starts the sandbox only after this spelling, after the stamp every line here starts with
     * (AgentSandboxLauncher.isProxyReadyLine); ProxyContainerTest holds the two together.
     * The port printed is the bound one, so a caller that set EGRESS_BIND with port 0 reads
@@ -473,8 +474,8 @@ object AgentEgressProxy:
 
       case ex: Refusal =>
         System.err.println(auditLine("deny", host, "CONNECT", "", ex.getMessage))
-        // A failed CONNECT may carry a body (RFC 9110 §9.3.6 forbids one on a 2xx only). No client
-        // shows it; the image's ko-sandbox-egress-check reads it, and is the only way this refusal's
+        // A failed CONNECT may carry a body (RFC 9110 §9.3.6 forbids one on a 2xx only). Clients
+        // discard it; the image's ko-sandbox-egress-check reads it, and is the way this refusal's
         // reason reaches the sandbox.
         respondQuietly(client, 403, "Forbidden", ex.proxyError, Some(ex.getMessage), Some(ex.advice))
 

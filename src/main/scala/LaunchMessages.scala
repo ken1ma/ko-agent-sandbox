@@ -103,10 +103,11 @@ object LaunchMessages:
           |with `--write=live` when project files must be written.""".stripMargin
       case "live" =>
         s"""`$mountPath` is writable and shared live with the host project directory through the
-          |`ko-agent-fs` filter. Git config, hooks, `.git` files, `commondir`, `gitdir`,
-          |rebase instructions, `.ko-agent-sandbox` and what `$$KO_AGENT_SANDBOX_FILE_RULES` makes
-          |read-only cannot be modified at any depth; in those rules the last line naming an entry or
-          |an ancestor decides. Symlink targets must be relative and remain inside the workspace.""".stripMargin
+          |`ko-agent-fs` filter. Git config, hooks, `.git` files, `commondir`, `gitdir`, rebase, bisect
+          |and rerere state, alternates, `.ko-agent-sandbox` and what `$$KO_AGENT_SANDBOX_FILE_RULES`
+          |makes read-only cannot be modified at any depth; in those rules the last line naming an
+          |entry or an ancestor decides. Symlink targets must be relative and remain inside the
+          |workspace.""".stripMargin
       case _ =>
         throw IllegalArgumentException(s"unknown write mode: $writeMode")
     val gitParagraph = git.fold("")(paragraph => s"\n\n$paragraph")
@@ -114,22 +115,44 @@ object LaunchMessages:
       if runOnHost.nonEmpty then
         val names = runOnHost.mkString(", ")
         val commands = runOnHost.map(program => s"`ko-sandbox-run-on-host $program …`").mkString(" or ")
+        // Each sentence below names only the programs this session serves: the channel refuses the others.
+        def selected(programs: String*): Vector[String] = programs.filter(runOnHost.contains).toVector
+        def listed(programs: Vector[String]): String = programs match
+          case Vector(one)     => one
+          case init :+ last    => s"${init.mkString(", ")} and $last"
+          case _               => ""
+        val withDaemon = selected("sbt", "mill", "gradle")
+        val daemons = withDaemon match
+          case Vector()    => ""
+          case Vector(one) => s"\nThe daemon of $one stays warm across invocations."
+          case many        => s"\nThe daemons of ${listed(many)} stay warm across invocations."
+        val sbtUsage =
+          if runOnHost.contains("sbt") then
+            """ To run several
+              |commands in one, quote them: `ko-sandbox-run-on-host sbt 'compile; test'`; sbt reads separate
+              |arguments as one command, and `compile test` fails to parse. The container's own `sbt` is the last
+              |resort, not an alternative: by default its output is outside the project and discarded
+              |with the session, so it compiles everything once per session, while the host keeps its
+              |build between sessions.""".stripMargin
+          else ""
+        val noListener = selected("sbt", "mvn")
+        val listenerDenied =
+          if noListener.isEmpty then ""
+          else
+            s""" Under ${listed(noListener)} the host grants no
+               |TCP listener, so a test that binds one fails there with `Operation not permitted`; that
+               |suite alone runs in the container.""".stripMargin
+        val withListener = selected("mill", "gradle")
+        val listenerGranted =
+          if withListener.isEmpty then ""
+          else s" Under ${listed(withListener)} a build's processes can bind listeners."
         s"""
            |## Run on host
            |
            |Run $names for this project as $commands: they run on the
            |host, sandboxed to the project, per-project run-on-host caches and configured artifact repositories,
            |and they may write the project except `.git`, `.ko-agent-sandbox` and what
-           |`$$KO_AGENT_SANDBOX_FILE_RULES` makes read-only.
-           |The daemons of sbt, mill and gradle stay warm across invocations. To run several
-           |commands in one, quote them: `ko-sandbox-run-on-host sbt 'compile; test'`; sbt reads separate
-           |arguments as one command, and `compile test` fails to parse. The container's own `sbt` is the last
-           |resort, not an alternative: by default its output is outside the project and discarded
-           |with the session, so it compiles everything once per session, while the host keeps its
-           |build between sessions. Under sbt and mvn the host grants no
-           |TCP listener, so a test that binds one fails there with `Operation not permitted`; that
-           |suite alone runs in the container. Under mill and gradle a build's processes can bind
-           |listeners.
+           |`$$KO_AGENT_SANDBOX_FILE_RULES` makes read-only.$daemons$sbtUsage$listenerDenied$listenerGranted
            |Any other host command that fails or is refused is reported to the user,
            |never re-run in the container.
            |The environment variable `${RunOnHostChannel.RunOnHostVariable}` holds this program list.
@@ -169,7 +192,8 @@ object LaunchMessages:
        |paths with that prefix; other rule paths match exactly. A request matching no rule is
        |refused. For rules below `/`, a request path is also refused unless it is printable ASCII
        |with `%` escaping only non-ASCII text or a space, and has no dot segment, backslash, `;`,
-       |`#` or empty segment.
+       |`#` or empty segment; a `POST`, `PUT`, `PATCH` or `DELETE` path may carry no `%` or dot
+       |segment under any rule.
        |
        |$refused
        |${brokeredParagraph(brokered)}""".stripMargin

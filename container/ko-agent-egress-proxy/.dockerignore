@@ -10,4 +10,5 @@
 **/.scala-build
 **/.bloop
 **/.metals
+**/metals.sbt
 **/.DS_Store

@@ -128,16 +128,16 @@ object KoAgentFs:
          |${KoAgentFsFuseConfEnable.linesIterator.map(line => s"  $line").mkString("\n")}
          |
          |It persists until the machine is recreated (podman machine rm + init); to undo, restore
-         |the saved original.""".stripMargin
+         |the saved original.""".stripMargin,
     )
-    val console = System.console()
-    if console == null then
+    val reader = AgentSandboxLauncher.terminalReader.getOrElse(
       fail(
-        s"error: no console to ask on; run the script above via `podman machine ssh` yourself, " +
+        s"error: no terminal to ask on; run the script above via `podman machine ssh` yourself, " +
           "then re-run --build",
-      )
-    console.printf("Apply it now? [y/N] ")
-    if !consented(Option(console.readLine())) then
+      ),
+    )
+    reader.prompt("Apply it now? [y/N] ")
+    if !consented(reader.readLine()) then
       fail("error: not applied; run the script above via `podman machine ssh` yourself, then re-run --build")
     val enable = run(koAgentFsFuseConfEnableCommand(podman)*)
     if !enable.ok then fail(s"error: enabling user_allow_other failed: ${enable.err}", enable.exit)
@@ -187,7 +187,7 @@ object KoAgentFs:
         fail(
           s"""error: the installed ko-agent-fs reports source $id, expected $expectedId
              |
-             |The image tagged ko-agent-fs:latest is not the one this --build produced.""".stripMargin
+             |The image tagged ko-agent-fs:latest is not the one this --build produced.""".stripMargin,
         )
       case None =>
         fail(s"error: unrecognized ko-agent-fs --version output: ${version.text}")
@@ -327,7 +327,7 @@ object KoAgentFs:
        |done
        |echo "the filter did not become a FUSE mount; daemon log:" >&2
        |cat "$$dir/daemon.log" >&2 || true
-       |exit 1""".stripMargin
+       |exit 1""".stripMargin,
     )
 
   /**
@@ -381,7 +381,7 @@ object KoAgentFs:
        |# the mount; one that does not exist never held a marker.
        |if sessions="$$(ls -A "$$dir/sessions" 2>/dev/null)" || [ ! -e "$$dir/sessions" ]; then
        |  [ -z "$$sessions" ] && fusermount3 -uz "$$dir/workspace" 2>/dev/null || true
-       |fi""".stripMargin
+       |fi""".stripMargin,
     )
 
   /**
@@ -426,7 +426,7 @@ object KoAgentFs:
       s"""dir="$$HOME/${koAgentFsMountDir(projectId)}"
        |[ -e "$$dir" ] || [ -L "$$dir" ] || exit 0
        |fusermount3 -uz "$$dir/workspace" 2>/dev/null && echo "unmounted $$dir/workspace"
-       |rm -rf "$$dir" && echo "removed $$dir"""".stripMargin
+       |rm -rf "$$dir" && echo "removed $$dir"""".stripMargin,
     )
 
   /** [[koAgentFsUnmountScript]] for every project. */
@@ -437,7 +437,7 @@ object KoAgentFs:
        |for mnt in "$$mounts"/*/workspace; do
        |  fusermount3 -uz "$$mnt" 2>/dev/null && echo "unmounted $$mnt"
        |done
-       |rm -rf "$$mounts" && echo "removed $$mounts"""".stripMargin
+       |rm -rf "$$mounts" && echo "removed $$mounts"""".stripMargin,
     )
 
   def koAgentFsScriptCommand(podman: String, os: Os, script: String): Vector[String] =
@@ -478,7 +478,7 @@ object KoAgentFs:
        |  done
        |  echo "$RunningRulesMarker"
        |  cat "$$dir/file-rules"
-       |fi""".stripMargin
+       |fi""".stripMargin,
     )
 
   /** The lines before a running mount's sessions and before its file rules (koAgentFsPrepareScript). */
@@ -553,7 +553,7 @@ object KoAgentFs:
        |  *) exit 0 ;;
        |esac
        |echo "$ChecksSelfTestMarker"
-       |exec "$$home/$KoAgentFsBinary" --self-test""".stripMargin
+       |exec "$$home/$KoAgentFsBinary" --self-test""".stripMargin,
     )
 
   /** The line koAgentFsChecksScript prints once the version matched, before the self-test runs. */
@@ -671,7 +671,7 @@ object KoAgentFs:
        |status=0
        |"$$HOME/$KoAgentFsBinary" --source "$$backing" --resolve --file-rules "$$rules" || status=$$?
        |rm -f "$$rules"
-       |exit $$status""".stripMargin
+       |exit $$status""".stripMargin,
     )
 
   def resolveFileRules(

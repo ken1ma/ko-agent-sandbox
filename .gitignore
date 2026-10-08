@@ -13,6 +13,7 @@ target/
 .scala-build/
 .bloop/
 .metals/
+metals.sbt
 
 # gradle
 .gradle/
@@ -31,8 +32,6 @@ __pycache__/
 
 # VS Code
 .vscode/
-.metals/
-metals.sbt
 
 # macOS
 .DS_Store

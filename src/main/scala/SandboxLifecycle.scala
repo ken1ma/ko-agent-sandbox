@@ -246,7 +246,7 @@ object SandboxLifecycle:
       |  machine) "$3" machine ssh "$7" >/dev/null 2>&1 ;;
       |  local) /bin/sh -c "$7" >/dev/null 2>&1 ;;
       |esac
-      |""".stripMargin
+      |""".stripMargin,
     )
 
   /**

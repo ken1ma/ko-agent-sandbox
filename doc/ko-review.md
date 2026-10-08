@@ -210,7 +210,8 @@ edits like any other, and the user commits them when and as they choose.
       message says to start a new review.
     - `INVALID_RESULT`: the reviewer's final message does not follow the schema exactly; the
       helper validates it before touching state, the CLI's schema option only asks.
-    - `TURN_INTERRUPTED`, when a timeout or a signal ended the reviewer.
+    - `TURN_INTERRUPTED`, when a timeout or a signal ended the reviewer. A signal that ended the
+      helper itself raises the same code without `reviewer`.
   - The helper never edits the egress rules or a reviewer's configuration.
 - **One mutation per review at a time.** `start`, `continue`, `escalate` and `delete` take `flock`
   on the review's lock file before reading the state they act on; a second one fails at once with

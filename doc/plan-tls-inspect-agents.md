@@ -265,7 +265,8 @@ did not bother; they prove nothing.
   here.
 - `egress-proxy.md`, "Choosing an egress profile": the defaults' description of the provider
   rules.
-- `README.md`, "Egress proxy": "tunnels to supported model providers" becomes accurate again.
+- `README.md`, "Egress proxy": "tunnels to supported model providers" is reworded to name the
+  inspected hosts and the hosts still tunnelled.
 
 ## Acceptance checklist
 

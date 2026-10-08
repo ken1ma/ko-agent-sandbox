@@ -153,6 +153,7 @@ An `error` is an operational failure, never a review outcome. When the reviewer 
 - `WORKTREE_CHANGED_DURING_REVIEW`: the tree changed while the reviewer read it, possibly from
   the host. Check the tree and `continue` again.
 - `LOOP_LIMIT_REACHED`: the review is over. Report what stayed open.
+- `REVIEW_CLOSED`: a `continue` on a review that ended. Start a new review.
 
 ## Do not
 

@@ -44,8 +44,11 @@ The words the documents share, each defined in the document its entry names and 
   sandbox's end; the run and the session are its two views.
 - **run** — the launch as the host sees it, the objects created for it:
   - the two networks and the proxy and sandbox containers, removed when it ends;
-  - the `run-<suffix>` directory holding the CA leaf, swept by a later launch or a reset;
-  - its audit log, written per run and kept.
+  - the `run-<suffix>` directory holding the run's mount sources — the inspection leaf and its
+    key, the CA, the assembled instructions, the JDK trust files, the resolved file rules — swept
+    by a later launch or a reset;
+  - its audit log, written per run and kept until pruned (`egress-proxy.md`, "Audit what has
+    been allowed or denied").
 - **session** — the same interval from inside: the agent's time in the sandbox container, what it
   can reach, and what outlives it — agent state kept across sessions, concurrent sessions of one
   project, what this session may do.

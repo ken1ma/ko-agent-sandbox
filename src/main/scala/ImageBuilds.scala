@@ -23,9 +23,9 @@ object ImageBuilds:
   def confirmMemoryForBuilds(os: Os): Unit =
     buildMemoryWarning(probedMachineAvailable(os)).foreach: message =>
       warn(message)
-      Option(System.console()).foreach: console =>
-        console.printf("Continue anyway? [y/N] ")
-        if !consented(Option(console.readLine())) then fail("error: build not started")
+      terminalReader.foreach: reader =>
+        reader.prompt("Continue anyway? [y/N] ")
+        if !consented(reader.readLine()) then fail("error: build not started")
 
   /**
    * The build context is bundled into the jar (build.sbt) so --build works
@@ -402,7 +402,7 @@ object ImageBuilds:
       fail(
         """error: the sandbox image is not built, and --self-test does not build it
           |
-          |Run --build first; --self-test then layers its suites on top of it.""".stripMargin
+          |Run --build first; --self-test then layers its suites on top of it.""".stripMargin,
     )
 
     withImageBuildLock(os): journal =>
@@ -429,7 +429,7 @@ object ImageBuilds:
           fail(
             s"""error: $image is not in local storage, and --self-test does not pull it
                |
-               |Run --build first; it pulls the images the self-test suites compile with.""".stripMargin
+               |Run --build first; it pulls the images the self-test suites compile with.""".stripMargin,
           )
       val images = buildOutputImages(commands)
       val candidates = prepareImageCleanupJournal(

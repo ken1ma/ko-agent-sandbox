@@ -141,7 +141,7 @@ class EgressSessionTest extends munit.FunSuite:
     // requests. One deny line takes the clone back host-wide and leaves the reads.
     val clone = Vector(
       "git", "clone", "--depth", "1", "--quiet",
-      "https://github.com/octocat/Hello-World.git", "/tmp/hello"
+      "https://github.com/octocat/Hello-World.git", "/tmp/hello",
     )
 
     withSession(Some("deny https://github.com/ git-fetch\n")): session =>
