@@ -225,5 +225,5 @@ lazy val dist = taskKey[Unit]("Assemble one self-contained jar under target/dist
 // assembly is transient; caching this wrapper would exclude its only dependency from the cache key.
 dist := Def.uncached {
   val jar = assembly.value
-  streams.value.log.info(s"dist assembled: $jar")
+  streams.value.log.info(s"dist: ${fileConverter.value.toPath(jar)}")  // expand `${BASE}` (virtual id)
 }
