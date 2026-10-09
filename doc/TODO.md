@@ -160,12 +160,15 @@ measurement.
   then `--protocol=ahp` (step 4), whose acceptance stages the same paragraph names. ACP is
   deferred; the plan keeps its reviewed design and the conditions that reopen it.
 
-## The host microphone for Claude Code's `/voice`
+## The host microphone for voice dictation
 
-- [ ] `plan-microphone.md`: the `--mic` option, the `arecord` shim and the host relay, with
-  `--clipboard=<mode>` replacing `KO_AGENT_SANDBOX_CLIPBOARD` in the same change. The plan's
-  "Tests" names what is unmeasured on the hosts; its "Latency" paragraphs name the two
-  measurements that may change the relay's shape.
+- [ ] `plan-microphone.md`: the `--mic` option, a PulseAudio daemon in the sandbox fed by a
+  host relay — a reaper job on macOS and Linux, Java Sound on Windows — with
+  `--clipboard=<mode>` replacing `KO_AGENT_SANDBOX_CLIPBOARD` in the same change. Claude Code
+  and agy are the clients it is
+  built for; Codex waits on the feasibility test the plan names. The plan's "Tests" names what
+  is unmeasured on the hosts; its "Latency" paragraphs name the two measurements that may
+  change the relay's shape.
 
 ## One list of launch refusals
 
@@ -706,6 +709,14 @@ are the image's Mach services, which the same mode measures once it starts.
   binary, with build-time initialization: the binary then hashes nothing at launch, and
   `bundleSourceId` stays the one implementation. Check first that the bundled resources are
   readable at that point.
+- [ ] The microphone relay's Windows twin (`plan-microphone.md`) records with Java Sound, which
+  the image cannot carry: native-image copies a JDK library its code loads by literal name next
+  to the binary, but the JNI metadata and `libjava` shim exports that library needs it ships for
+  AWT only, not for `libjsound` (oracle/graal, `substratevm/.../hosted/jdk/JNIRegistration*.java`,
+  read at `master` on 2026-10-09; no issue there reports Java Sound in an image). As an image
+  the Windows twin records through a host program as the POSIX twin does — SoX's Windows `rec`
+  through its `waveaudio` driver — probed at launch, with the package to install in the launch
+  error.
   - The jar hashes its three bundles in about 30 ms (a fresh JVM in a Linux container,
     2026-09-28), too little to justify an sbt step that precomputes them with the launcher's own
     classes.
