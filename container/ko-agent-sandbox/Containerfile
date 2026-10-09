@@ -277,7 +277,11 @@ RUN set -euxo pipefail; \
         # also need enableWeakerNestedSandbox: bwrap cannot mount a fresh /proc under
         # podman's masked /proc entries (measured, as for Codex below).
         bubblewrap \
-        socat; \
+        socat \
+        # `/voice`'s last-resort recorder. The container has no audio capture device, and
+        # with SoX present `/voice` says that instead of asking for the package
+        # (doc/plan-microphone.md, "Today").
+        sox; \
     rm -rf /var/lib/apt/lists/*
 
 # .claude.json defaults to $HOME; move it under ~/.claude so it persists through the symlink.

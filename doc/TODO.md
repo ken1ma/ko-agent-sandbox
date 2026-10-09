@@ -160,6 +160,13 @@ measurement.
   then `--protocol=ahp` (step 4), whose acceptance stages the same paragraph names. ACP is
   deferred; the plan keeps its reviewed design and the conditions that reopen it.
 
+## The host microphone for Claude Code's `/voice`
+
+- [ ] `plan-microphone.md`: the `--mic` option, the `arecord` shim and the host relay, with
+  `--clipboard=<mode>` replacing `KO_AGENT_SANDBOX_CLIPBOARD` in the same change. The plan's
+  "Tests" names what is unmeasured on the hosts; its "Latency" paragraphs name the two
+  measurements that may change the relay's shape.
+
 ## One list of launch refusals
 
 - [ ] Inventory every condition that stops a launch, in the launcher (`AgentSandboxLauncher.scala`,
