@@ -516,11 +516,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
 
   test("--help covers the management actions, write modes, egress profiles and host programs"):
-    val documentedActions = "(?m)^  (--[a-z-]+)(?:[ =]|$)".r
+    val documentedActions = "(?m)^  (--[a-z-]+)(?:[ =\\[]|$)".r
       .findAllMatchIn(UsageText).map(_.group(1)).toSet
     assertEquals(
       documentedActions,
-      ManagementActions ++ Set("--egress-check", "--write", "--egress", "--run-on-host", "--env", "--egress-cred"),
+      ManagementActions ++ Set(
+        "--egress-check", "--write", "--egress", "--run-on-host", "--env", AwsCredential.OptionName, "--egress-cred",
+      ),
     )
     assert(UsageText.contains(s"--write=${WriteModes.mkString("|")}"), UsageText)
     assert(UsageText.contains(s"--egress=${EgressProfiles.mkString("|")}"), UsageText)

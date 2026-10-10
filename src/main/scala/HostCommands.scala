@@ -410,8 +410,17 @@ object HostCommands:
     val relabel = if selinuxEnforcing then ",Z" else ""
     s"--volume=$source:$containerPath:$access$relabel"
 
-  def run(command: String*): Run =
-    val process = ProcessBuilder(command*).start()
+  def run(command: String*): Run = runProcess(ProcessBuilder(command*))
+
+  /** `run`, with `environment` set in the child's own: what a value-less `--env=NAME` of `podman create` reads. */
+  def runWithEnvironment(environment: Map[String, String], command: String*): Run =
+    // Scrubbed: an edited environment starts from the JVM's copy, which still holds the withheld names.
+    val builder = EgressCredentials.scrub(ProcessBuilder(command*))
+    environment.foreach(builder.environment.put(_, _))
+    runProcess(builder)
+
+  private def runProcess(builder: ProcessBuilder): Run =
+    val process = builder.start()
     // stdin is closed at once, so a child that unexpectedly prompts reads EOF and fails loudly
     // rather than hanging forever on a pipe nobody writes.
     process.getOutputStream.close()

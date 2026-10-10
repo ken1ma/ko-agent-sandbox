@@ -1,5 +1,5 @@
-# The .ko-agent-sandbox/egress/rule of a project that reads one of its own Cloud Storage
-# buckets. storage.googleapis.com serves every tenant's bucket under its own first path segment,
+# Read one of the project's own Cloud Storage buckets. storage.googleapis.com serves every
+# tenant's bucket under its own first path segment,
 # so allowing the host whole allows every public bucket on it; the tree keeps the reach to this
 # one. Reads only, and a request outside the tree — or spelled outside a rule path's canonical
 # form, doc/egress-proxy.md, "The rule file" — is refused and logged. A signed upload URL for the

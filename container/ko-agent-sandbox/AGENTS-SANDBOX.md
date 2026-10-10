@@ -44,8 +44,10 @@ Build output:
     find . \( -name .git -o -name .ko-agent-sandbox \) -prune -o \
         -type d -name target -exec find {} -xtype l -delete \;
     ```
-- When a mill build in the project is slow, run it as
-  `MILL_OUTPUT_DIR=$HOME/.cache/mill-out/<the build's absolute path> ./mill …`.
+- Run a mill build in the project as
+  `MILL_VERSION=<the build's version>-jvm _JAVA_OPTIONS="$KO_AGENT_SANDBOX_JAVA_OPTS" ./mill …`:
+  the native launcher and a JDK that `mill-jvm-version` pins have no proxy settings. When the
+  build is slow, add `MILL_OUTPUT_DIR=$HOME/.cache/mill-out/<the build's absolute path>`.
 
 
 ## Use what is already installed

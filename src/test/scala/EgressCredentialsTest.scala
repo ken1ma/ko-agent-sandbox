@@ -49,7 +49,7 @@ class EgressCredentialsTest extends munit.FunSuite:
         "error: 257 --egress-cred options; a launch takes at most 256",
       List("--egress-cred", "X@a.example") ->
         ("error: the launch options are spelled --write=<mode>, --egress=<profile>, --env=<name>[=<value>], " +
-          "--egress-cred=<name>@<host> and --run-on-host=<programs>"),
+          "--env-aws-cred[=<profile>], --egress-cred=<name>@<host> and --run-on-host=<programs>"),
     )
     refusals.foreach: (args, refusal) =>
       assertEquals(parseCommandLine(args), Left(refusal), args.take(2).mkString(" "))

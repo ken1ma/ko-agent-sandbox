@@ -19,7 +19,7 @@ For every reported or discovered problem:
    Report the requirement and exclusions, not the full inventory.
 
 Preserve scope, ownership and how work is separated for review. Before crossing or changing a
-boundary, name it and its consequence and ask.
+boundary, name it and its consequence, and ask a question; act only on its answer.
 
 Before reasoning, designing, experimenting or editing, read the relevant official documentation,
 source, issues and workspace documents, including earlier decisions on the subject. Reason and
@@ -89,8 +89,8 @@ correction; do not explain the grammar unless asked.
 
 # Coding style
 
-Documents are at most 100 characters wide; code 120, including indentation. Never split a URL
-or hide it behind a reference to fit; its line may run over.
+Documents are at most 100 characters wide; code, a config file included, 120, including
+indentation. Never split a URL or hide it behind a reference to fit; its line may run over.
 
 Use trailing comma where possible.
 

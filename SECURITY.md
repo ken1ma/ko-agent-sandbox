@@ -50,6 +50,9 @@ costs are described below.
     create command podman records for the container. `podman inspect` shows it in the container's
     environment, as it shows every variable. An explicit `--env=NAME=VALUE` is on the launch
     command line already and stays in the create command.
+  - `--env-aws-cred` forwards the three values the AWS CLI resolves on the host the same way: each
+    by name, set in the create command's own environment and in no podman argument, and printed as
+    names with the time left (`AwsCredential.scala`).
 - A credential brokered with `--egress-cred=NAME@HOST` is in neither the sandbox nor a run-on-host
   command, which see `NAME` set to a placeholder; the proxy puts the value in requests to `HOST`,
   where it keeps its issuer's authority ("Who holds a brokered value", below).

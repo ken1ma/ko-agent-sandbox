@@ -1,0 +1,55 @@
+# Allow `pulumi up` against AWS, Google Cloud and Azure with its state in Pulumi Cloud.
+# - The stacks: AWS in us-east-1 with VPC, EC2, ECS, Aurora, CloudWatch, IAM and Secrets Manager;
+#   Google Cloud with Compute Engine instances and a Cloud Storage bucket in one project; Azure
+#   with a resource group and a storage account in one subscription, through azure-native and
+#   Azure Resource Manager. Stack secrets use Pulumi Cloud's own provider, so no key service.
+# - The lines: inspected, no wildcards, one host each, every request in --egress-log. Each grants
+#   the methods its SDK sends: `read` for GET and HEAD, `method=` for the writes and for the AWS
+#   reads that travel in a POST body. A write whose path needs a `%` escape or a dot segment is
+#   refused (doc/egress-proxy.md, "The rule file").
+# - The credentials, each by --env. The launcher forwards nothing from ~/.aws, ~/.config/gcloud
+#   or ~/.azure, so the CLIs' own logins stay on the host; doc/cloud-credentials.md has the steps
+#   and what forwarding costs.
+#   - Pulumi Cloud: --env=PULUMI_ACCESS_TOKEN, an access token from app.pulumi.com/account/tokens.
+#   - AWS: --env-aws-cred[=<profile>], a login's temporary credentials.
+#   - Google Cloud: --env=GOOGLE_OAUTH_ACCESS_TOKEN --env=GOOGLE_PROJECT --env=GOOGLE_REGION; the
+#     token from `gcloud auth print-access-token` on the host lasts 3600 seconds by default, then
+#     the session relaunches with a fresh one.
+#   - Azure: --env=ARM_CLIENT_ID --env=ARM_CLIENT_SECRET --env=ARM_TENANT_ID
+#     --env=ARM_SUBSCRIPTION_ID, a service principal; azure-native's default, the Azure CLI's
+#     login, is not in the sandbox.
+# - A preview: a read-only AWS role's profile, Google account and Azure principal, the last with
+#   the Reader role since its secret is long-lived. Each permission set is its own authority: a
+#   read-only one makes `pulumi up` fail at that cloud's API, and the Pulumi Cloud token's scope
+#   decides whether the session can write state, which `--refresh` does even in a preview.
+
+# Pulumi: the installer script, and the fallback for the CLI tarball and the provider plugins,
+# which come from GitHub releases first. Then the state backend
+allow https://get.pulumi.com/                         read
+allow https://api.pulumi.com/                         read method=POST,PUT,PATCH,DELETE
+
+# AWS, one host per service and region
+allow https://sts.us-east-1.amazonaws.com/            read method=POST  # the provider's first call
+allow https://ec2.us-east-1.amazonaws.com/            read method=POST  # EC2 and VPC
+allow https://ecs.us-east-1.amazonaws.com/            read method=POST
+allow https://rds.us-east-1.amazonaws.com/            read method=POST  # Aurora
+allow https://monitoring.us-east-1.amazonaws.com/     read method=POST  # CloudWatch metrics, alarms
+allow https://logs.us-east-1.amazonaws.com/           read method=POST  # CloudWatch Logs
+allow https://iam.amazonaws.com/                      read method=POST  # global, no region
+allow https://secretsmanager.us-east-1.amazonaws.com/ read method=POST
+
+# Google Cloud, one host per service: the identity the provider logs at configuration (a refusal
+# is logged, not fatal), Compute Engine, then Cloud Storage, which serves any tenant's bucket. A
+# bucket with force_destroy deletes each object by name in the request path, where a slash is
+# percent-encoded and the DELETE is therefore refused: empty the bucket, or leave force_destroy off
+allow https://openidconnect.googleapis.com/           read
+allow https://compute.googleapis.com/                 read method=POST,PUT,PATCH,DELETE
+allow https://storage.googleapis.com/                 read method=POST,PUT,PATCH,DELETE
+
+# Azure: the token endpoint, whose instance-discovery document MSAL reads before it posts for the
+# service principal's token unless ARM_DISABLE_INSTANCE_DISCOVERY=true is forwarded, then Resource
+# Manager for every resource. Name the resource group in
+# ASCII: Azure allows any letter, but a name with another one is percent-encoded in the PUT path,
+# which is then refused; a storage account's name is lowercase ASCII by Azure's own rule
+allow https://login.microsoftonline.com/              read method=POST
+allow https://management.azure.com/                   read method=POST,PUT,PATCH,DELETE

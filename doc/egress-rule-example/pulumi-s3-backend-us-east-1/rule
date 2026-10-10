@@ -1,0 +1,64 @@
+# Allow `pulumi up` against AWS in N. Virginia.
+
+# UNCOMMENT AND EDIT THESE LINES
+# The bucket name and prefix must match backend.url in Pulumi.yaml,
+# such as s3://my-bucket-for-pulumi-state/pulumi?awssdk=v2
+# Add POST to the first line when a state file reaches 16 MiB, where pulumi switches to a multipart upload.
+#allow https://my-bucket-for-pulumi-state.s3.us-east-1.amazonaws.com/pulumi/      read method=PUT,DELETE
+#allow https://my-bucket-for-pulumi-state.s3.us-east-1.amazonaws.com/             read  # pulumi lists at the root
+
+# Launch the sandbox with --env-aws-cred[=<profile>]
+# Forward a read-only credential when only `pulumi preview` is run.
+
+# UNCOMMENT AND EDIT THESE LINES IF NEEDED
+# S3 and ECR hosts carry your bucket name and account id
+#allow https://my-bucket.s3.us-east-1.amazonaws.com/              read method=POST,PUT,DELETE        # S3 bucket
+#allow https://123456789012.dkr.ecr.us-east-1.amazonaws.com/      read method=POST,PUT,PATCH,DELETE  # Image push
+
+# AWS N. Virginia: host per service
+allow https://sts.us-east-1.amazonaws.com/                       read method=POST                   # Security Token
+allow https://ec2.us-east-1.amazonaws.com/                       read method=POST                   # VPC and EC2
+allow https://ssm.us-east-1.amazonaws.com/                       read method=POST                   # Param Store
+allow https://secretsmanager.us-east-1.amazonaws.com/            read method=POST                   # Secret
+allow https://kms.us-east-1.amazonaws.com/                       read method=POST                   # Crypto Key
+allow https://acm.us-east-1.amazonaws.com/                       read method=POST                   # Certificate
+allow https://elasticloadbalancing.us-east-1.amazonaws.com/      read method=POST                   # Load Balancer
+allow https://wafv2.us-east-1.amazonaws.com/                     read method=POST                   # WAF
+allow https://ecs.us-east-1.amazonaws.com/                       read method=POST                   # Container
+allow https://api.ecr.us-east-1.amazonaws.com/                   read method=POST                   # Image Repo
+allow https://lambda.us-east-1.amazonaws.com/                    read method=POST,PUT,DELETE        # Lambda Func
+allow https://apigateway.us-east-1.amazonaws.com/                read method=POST,PUT,PATCH,DELETE  # API Gateway
+allow https://rds.us-east-1.amazonaws.com/                       read method=POST                   # Relational DB
+allow https://elasticache.us-east-1.amazonaws.com/               read method=POST                   # ElastiCache
+allow https://appsync.us-east-1.amazonaws.com/                   read method=POST,PUT,PATCH,DELETE  # AppSync
+allow https://dynamodb.us-east-1.amazonaws.com/                  read method=POST                   # DynamoDB
+allow https://events.us-east-1.amazonaws.com/                    read method=POST                   # EventBridge
+allow https://states.us-east-1.amazonaws.com/                    read method=POST                   # Step Function
+allow https://email.us-east-1.amazonaws.com/                     read method=POST,PUT,DELETE        # Mail
+allow https://sqs.us-east-1.amazonaws.com/                       read method=POST                   # Queue
+allow https://sns.us-east-1.amazonaws.com/                       read method=POST                   # Notification
+allow https://logs.us-east-1.amazonaws.com/                      read method=POST                   # Log
+allow https://monitoring.us-east-1.amazonaws.com/                read method=POST                   # Alarm
+allow https://cloudtrail.us-east-1.amazonaws.com/                read method=POST                   # Audit Log
+allow https://cognito-idp.us-east-1.amazonaws.com/               read method=POST                   # Cognito
+allow https://firehose.us-east-1.amazonaws.com/                  read method=POST                   # Firehose
+allow https://servicediscovery.us-east-1.amazonaws.com/          read method=POST                   # Cloud Map
+#allow https://xray.us-east-1.amazonaws.com/                         read method=POST                # X-Ray
+#allow https://application-autoscaling.us-east-1.amazonaws.com/      read method=POST                # Auto Scaling
+
+# AWS global services, the same for every region
+allow https://iam.amazonaws.com/                      read method=POST             # Identity and Access Management
+allow https://organizations.us-east-1.amazonaws.com/  read method=POST             # Organizations
+allow https://ce.us-east-1.amazonaws.com/             read method=POST             # Cost Explorer
+allow https://budgets.amazonaws.com/                  read method=POST             # Budgets
+allow https://globalaccelerator.amazonaws.com/        read method=POST             # Global Accelerator
+allow https://cloudfront.amazonaws.com/               read method=POST,PUT,DELETE  # CDN
+allow https://route53.amazonaws.com/                  read method=POST,DELETE      # DNS
+#allow https://route53domains.us-east-1.amazonaws.com/ read method=POST             # domain registration
+#allow https://shield.us-east-1.amazonaws.com/         read method=POST             # Shield Advanced
+
+# Those integrated with the global services are already allowed above, unlike in other regions
+
+# pulumi installer script, and the fallback for the CLI tarball and the provider plugins
+# when a GitHub release download fails
+allow https://get.pulumi.com/ read

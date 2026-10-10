@@ -210,8 +210,9 @@ explains why.
 #### Cloud credentials
 
 The launcher forwards nothing from `~/.aws` or another cloud CLI's configuration directory.
-[doc/cloud-credentials.md](doc/cloud-credentials.md) explains how to forward the credentials a login
-produced, and what that costs.
+`--env-aws-cred[=<profile>]` forwards the temporary credentials an AWS login resolves on the host.
+[doc/cloud-credentials.md](doc/cloud-credentials.md) explains that option, how to forward the
+credentials another cloud's login produced, and what forwarding costs.
 
 #### Sessions
 
@@ -309,6 +310,14 @@ restore permission prompts and set the Claude Code status line.
                          Without <value>, use the host's value; an unset name fails.
                          Repeatable; KO_AGENT_SANDBOX_* names are refused.
                          Before forwarding a secret, read SECURITY.md
+      --env-aws-cred[=<profile>]
+                         forward the temporary credentials the AWS CLI on the host
+                         resolves for <profile>, else for AWS_PROFILE, as
+                         AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN,
+                         by name as --env does, with the profile's region as AWS_REGION;
+                         prints when they expire.
+                         Fails without a profile or aws on PATH, on an expired login,
+                         and on a static key. See doc/cloud-credentials.md
       --egress-cred=<name>@<host>[/<prefix>/][:<header>|?<param>]
                          give environment variable <name> to the egress proxy, which
                          puts its value in Authorization, or in header <header> or
