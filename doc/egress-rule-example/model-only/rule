@@ -1,4 +1,4 @@
-# Use this .ko-agent-sandbox/egress/rule with --egress=deny-unless-allowed to permit only the
+# Use with --egress=deny-unless-allowed to permit only the
 # model provider's default rules. Other dependency downloads and documentation reads will fail.
 # Choose the launched agent's provider: anthropic for claude, openai for codex, google for agy,
 # aws for kiro-cli, github for copilot.

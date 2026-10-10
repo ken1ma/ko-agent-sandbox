@@ -90,6 +90,14 @@ again.
     `supports_websockets = false` accepts the ChatGPT login; the built-in provider cannot be
     overridden (`doc/design.md`, "No WebSocket on an inspected connection").
 
+## Pulumi's `git status`
+
+- [ ] `pulumi up` and `pulumi preview` run `git status --porcelain -z` in the project, with no
+  opt-out (`pkg/cmd/pulumi/metadata/metadata.go`, `isGitWorkTreeDirty`), paying the walk that
+  `fuse/ko-agent-fs/doc/troubleshooting.md` ("Everything works but slowly") measures. A `git` on
+  `PATH` that fails `status` is logged and ignored, and brings a preview from 51 s to 12 s. Tell
+  the reader in the Pulumi examples, and ask pulumi for an opt-out.
+
 ## Host programs started by bare name
 
 - [ ] `ps`, `pgrep` and `lsof` under `--run-on-host` (`RunOnHostSession.HostProcesses`,

@@ -1,5 +1,6 @@
 // The launcher's command line: the session options, a management action with its operands, or the
 // command forwarded verbatim (parseCommandLine), and the --env forwards resolved against the host.
+// --env-aws-cred's resolution is AwsCredential.scala.
 
 package agentsandbox.launcher
 
@@ -89,6 +90,7 @@ object CommandLine:
     env: Vector[EnvForward] = Vector.empty,
     runOnHost: Option[Vector[String]] = None,
     credentialBindings: Vector[CredentialBinding] = Vector.empty,
+    awsCredential: Option[AwsCredential.Request] = None,
   ):
     def writeMode: String = write.getOrElse(DefaultWriteMode)
     def egressProfile: String = egress.getOrElse(DefaultEgressProfile)
@@ -112,6 +114,7 @@ object CommandLine:
       else Left(s"error: $option=$value; the values are ${choices.mkString(", ")}, exactly")
 
     var bindings = Vector.empty[CredentialBinding]
+    var awsCredential = Option.empty[AwsCredential.Request]
 
     def loop(
       rest: List[String],
@@ -134,6 +137,18 @@ object CommandLine:
               else
                 bindings :+= binding
                 loop(tail, write, egress, env, runOnHost)
+
+        case arg :: tail if arg == AwsCredential.OptionName || arg.startsWith(AwsCredential.OptionName + "=") =>
+          val profile = arg.drop(AwsCredential.OptionName.length).stripPrefix("=")
+          if awsCredential.isDefined then Left(s"error: ${AwsCredential.OptionName} is given twice")
+          else if arg != AwsCredential.OptionName && profile.isEmpty then
+            Left(
+              s"error: ${AwsCredential.OptionName}=; name the profile, or drop the = to use " +
+                s"${AwsCredential.ProfileVariable}",
+            )
+          else
+            awsCredential = Some(AwsCredential.Request(Option.when(profile.nonEmpty)(profile)))
+            loop(tail, write, egress, env, runOnHost)
 
         case arg :: tail if arg.startsWith("--write=") =>
           if write.isDefined then Left("error: --write is given twice")
@@ -164,7 +179,8 @@ object CommandLine:
         case ("--write" | "--egress" | "--env" | "--run-on-host" | "--egress-cred") :: _ =>
           Left(
             "error: the launch options are spelled --write=<mode>, --egress=<profile>, " +
-              "--env=<name>[=<value>], --egress-cred=<name>@<host> and --run-on-host=<programs>",
+              "--env=<name>[=<value>], --env-aws-cred[=<profile>], --egress-cred=<name>@<host> and " +
+              "--run-on-host=<programs>",
           )
 
         case arg :: tail if arg.startsWith("--egress-check=") =>
@@ -186,6 +202,7 @@ object CommandLine:
           Right(ParsedCommandLine(write, egress, None, command, env, runOnHost))
 
     loop(args, None, None, Vector.empty, None).flatMap: parsed =>
+      val awsNames = awsCredential.map(_ => AwsCredential.Names).getOrElse(Vector.empty)
       parsed.env.find(forward => bindings.exists(_.name == forward.name)) match
         case Some(forward) =>
           val name = forward.name
@@ -194,4 +211,10 @@ object CommandLine:
           Left(
             s"error: ${bindings.size} --egress-cred options; a launch takes at most ${CredentialGrammar.MaxBindings}",
           )
-        case None => Right(parsed.copy(credentialBindings = bindings))
+        case None =>
+          (parsed.env.map(forward => s"--env=${forward.name}" -> forward.name)
+            ++ bindings.map(binding => s"--egress-cred=${binding.spelled}" -> binding.name))
+            .find((_, name) => awsNames.contains(name)) match
+            case Some((option, name)) =>
+              Left(s"error: $option and ${AwsCredential.OptionName}; the option forwards $name itself")
+            case None => Right(parsed.copy(credentialBindings = bindings, awsCredential = awsCredential))

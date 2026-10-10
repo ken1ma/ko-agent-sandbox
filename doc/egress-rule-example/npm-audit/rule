@@ -1,4 +1,4 @@
-# The .ko-agent-sandbox/egress/rule of a project that opts into npm's audit service, at the
+# Opt into npm's audit service, at the
 # endpoint the image's npm POSTs at install time — measured on the bundled Node 24.19.0 /
 # npm 11.17.0, not guessed; an older npm's /-/npm/v1/security/audits/quick is refused and logged,
 # which npm treats as non-fatal. npm sends a package/version inventory to the public registry,

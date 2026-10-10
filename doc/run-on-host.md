@@ -1005,6 +1005,7 @@ Why the rows are what they are:
   granted.
 - `--env` is the same forward the sandbox gets, with the same refusal of `KO_AGENT_SANDBOX_*`; it
   replaces a pass-through, but cannot replace any setting supplied by the supervisor.
+  `--env-aws-cred`'s names travel the same way.
   `_JAVA_OPTIONS` and `HTTPS_PROXY` keep the supervisor's values; the launcher's own `HTTPS_PROXY`
   is replaced as above.
 - `MILL_VERSION` and `DEFAULT_MILL_VERSION` are never the forwarded values, because the supervisor

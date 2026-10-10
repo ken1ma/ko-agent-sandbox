@@ -1,4 +1,4 @@
-# The .ko-agent-sandbox/egress/rule of a project that reads one of its own S3 buckets. S3's
+# Read one of the project's own S3 buckets. S3's
 # virtual-hosted URL names the bucket in the host, <bucket>.s3.<region>.amazonaws.com, so the
 # exact host already allows that bucket and no other; the tree then keeps the reach to one key
 # prefix within it, and a key outside — or one spelled outside a rule path's canonical form,

@@ -174,8 +174,10 @@ A host has one treatment:
   after it (SECURITY.md, "Adding hosts, not patterns", has why).
 
 `doc/egress-rule-example/*/rule` holds complete files for common needs — a bucket, a container,
-a Pulumi AWS stack, the lockdown, npm's audit `POST` — to copy over `.ko-agent-sandbox/egress/rule`
-and trim.
+a Pulumi stack on an S3 or a Pulumi Cloud backend, the lockdown, npm's audit `POST` — to copy over
+`.ko-agent-sandbox/egress/rule` and trim. An example puts the lines a reader must edit first,
+under a comment saying so, groups the rest under a comment each with a blank line between groups,
+and aligns its columns.
 
 Every ambiguity is a failed launch with the reason and the line printed:
 

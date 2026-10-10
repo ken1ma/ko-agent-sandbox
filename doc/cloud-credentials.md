@@ -6,8 +6,10 @@ login caches there. Using the credentials a login produced takes the same steps 
 1. Log in on the host, never in the sandbox: inside, the login's token, which obtains credentials
    for every account and role you hold, would be readable by every program in the session.
 1. Export into the launching shell the short-lived credentials the login resolves, then forward
-   each name with `--env=<name>`.
-1. Grant each endpoint the session calls as a `tunnel` line, one host per service and region.
+   each name with `--env=<name>`. For AWS, `--env-aws-cred` does this step ("AWS", below).
+1. Grant each endpoint the session calls, one host per service and region, with the methods its
+   SDK sends: `read` and the `method=` writes, inspected and logged, or a `tunnel` where
+   inspection fails.
 1. The sandbox holds the real values, usable by every program in it, until they expire
    ([SECURITY.md](../SECURITY.md#defended), "Credential theft"). Forward a read-only role's
    credentials when the session reviews or previews.
@@ -16,7 +18,9 @@ login caches there. Using the credentials a login produced takes the same steps 
 ## AWS
 
 `aws login` and `aws sso login` cache their tokens under `~/.aws`. Either resolves to a set of
-three values, and exporting fixes the set the CLI would otherwise refresh:
+three values, which `--env-aws-cred[=<profile>]` exports on the host and forwards by name, as
+`--env=<name>` does, for the profile named, else for `AWS_PROFILE`. Exporting fixes the set the
+CLI would otherwise refresh:
 
 - `aws sso login` resolves role credentials valid for the role's session duration, up to twelve
   hours.
@@ -26,15 +30,26 @@ three values, and exporting fixes the set the CLI would otherwise refresh:
   set fits a session of minutes; a longer one takes `aws sso login`, or a relaunch with a fresh
   export.
 
-The export and the launch:
+The login and the launch:
 
     aws sso login --profile my-profile        # or: aws login --profile my-profile
-    eval "$(aws configure export-credentials --profile my-profile --format env)"
-    java -jar "<path-to-jar>/ko-agent-sandbox.jar" \
-        --env=AWS_ACCESS_KEY_ID --env=AWS_SECRET_ACCESS_KEY --env=AWS_SESSION_TOKEN claude
+    java -jar "<path-to-jar>/ko-agent-sandbox.jar" --env-aws-cred=my-profile claude
 
-[egress-rule-example/pulumi-aws/rule](egress-rule-example/pulumi-aws/rule) is a complete rule
-file for a session that runs Pulumi against AWS.
+The launch prints the three names and the time left; an expired login, or no `aws` on the host's
+`PATH`, refuses the launch. The option runs `aws configure export-credentials --profile <profile>`
+and refuses a profile that resolves a static key: a key without an expiry is not a login's
+credential, and forwarding one gives the session an authority no relaunch ends. A static key is its
+own `--env=<name>` forward. The region travels with the credentials: the sandbox has no
+`~/.aws/config`, so the option forwards the profile's `region` as `AWS_REGION`, unless
+`--env=AWS_REGION` names one or the profile has none.
+
+Under `egress-rule-example`,
+[pulumi-s3-backend-us-east-1/rule](egress-rule-example/pulumi-s3-backend-us-east-1/rule) is a
+complete rule file for a session that runs Pulumi against AWS with its state in S3;
+[pulumi-s3-backend-ap-northeast-1/rule](egress-rule-example/pulumi-s3-backend-ap-northeast-1/rule)
+is the same stack in Tokyo, where CloudFront, Route 53 and the certificate's ACM stay in us-east-1;
+[pulumi-cloud-backend/rule](egress-rule-example/pulumi-cloud-backend/rule) names the variables
+a Google Cloud access token and an Azure service principal travel in.
 
 A Bedrock API key is not one of these values: it is a bearer token, forwarded as
 `--env=AWS_BEARER_TOKEN_BEDROCK`, the variable the Bedrock SDKs read. No default names a Bedrock

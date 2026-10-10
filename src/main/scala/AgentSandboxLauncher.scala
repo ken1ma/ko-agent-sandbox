@@ -14,6 +14,7 @@
 //                               --egress-* actions
 //   LauncherState.scala         the state root, and the resets with the name patterns they sweep
 //   CommandLine.scala           the session options, the management actions and the --env forwards
+//   AwsCredential.scala         --env-aws-cred: the AWS CLI's temporary credentials, resolved on the host
 //   LaunchMessages.scala        the weakened-boundary lines and the agent instructions' appended section
 //   KoAgentFs.scala             the workspace FUSE filter: build, install, identity, mount lifecycle
 //   SandboxProject.scala        the project directory: real path, refusals, identity, mount guards
@@ -1020,12 +1021,16 @@ object AgentSandboxLauncher:
     // The actions that read no session option refuse one rather than ignoring it: a selection
     // that configures nothing is the silent failure mode the options must not have.
     def noSessionOptions(action: String): Unit =
-      if parsed.write.isDefined || parsed.egress.isDefined || parsed.env.nonEmpty
+      if parsed.write.isDefined || parsed.egress.isDefined || parsed.env.nonEmpty || parsed.awsCredential.isDefined
         || parsed.runOnHost.isDefined || parsed.credentialBindings.nonEmpty
-      then fail(s"error: $action reads no launch option; drop --write/--egress/--env/--egress-cred/--run-on-host")
+      then
+        fail(
+          s"error: $action reads no launch option; " +
+            "drop --write/--egress/--env/--env-aws-cred/--egress-cred/--run-on-host",
+        )
     def noWriteOption(action: String): Unit =
-      if parsed.write.isDefined || parsed.env.nonEmpty || parsed.runOnHost.isDefined then
-        fail(s"error: $action reads no --write, --env or --run-on-host option; drop it")
+      if parsed.write.isDefined || parsed.env.nonEmpty || parsed.awsCredential.isDefined || parsed.runOnHost.isDefined
+      then fail(s"error: $action reads no --write, --env, --env-aws-cred or --run-on-host option; drop it")
 
     parsed.action match
       case Some(("--help", _)) =>
@@ -1224,6 +1229,7 @@ object AgentSandboxLauncher:
     clipboard: String,
     clipboardHost: ClipboardRelay.HostBackend,
     forwardedEnv: Vector[String],
+    awsCredential: Option[AwsCredential.Resolved],
     runOnHost: Vector[String],
     projectDir: Path,
     boundaryDir: Path,
@@ -1493,6 +1499,14 @@ object AgentSandboxLauncher:
     // Raw, not HostCommands.env: that one reads an empty variable as unset, which is right for the
     // launcher's own settings and wrong here, where set-but-empty is a value to forward.
     val forwardedEnv = forwardedEnvironment(parsed.env, name => Option(System.getenv(name))).fold(fail(_), identity)
+    // The values stay in this process's memory and reach podman and the runner as a host value does
+    // (forwardedEnvironment, RunOnHostChannel.spawnRunner): in an environment, never an argument.
+    val awsCredential = parsed.awsCredential.map: request =>
+      AwsCredential.resolve(
+        request, name => Option(System.getenv(name)), name => findOnPath(name, env("PATH").getOrElse(""), os),
+        command => run(command*), Instant.now(),
+        forwardRegion = !parsed.env.exists(_.name == AwsCredential.RegionName),
+      ).fold(fail(_), identity)
 
     // macOS only (run-on-host.md "Why only macOS"): elsewhere there is no Seatbelt backend, and a
     // container build already runs at host speed on host memory.
@@ -1512,8 +1526,8 @@ object AgentSandboxLauncher:
       .map: program =>
         RunOnHostPrereqs.readProgramRules(projectDir, program).fold(fail(_), program -> _)
     LaunchSettings(
-      credentials, image, imageOverridden, nesting, sessionStartMode, clipboard, clipboardHost, forwardedEnv, runOnHost,
-      projectDir, boundaryDir, programRules,
+      credentials, image, imageOverridden, nesting, sessionStartMode, clipboard, clipboardHost, forwardedEnv,
+      awsCredential, runOnHost, projectDir, boundaryDir, programRules,
     )
 
   private def launchProject(parsed: ParsedCommandLine, settings: LaunchSettings, os: Os): LaunchProject =
@@ -2123,7 +2137,7 @@ object AgentSandboxLauncher:
     hostLogFile: Path,
     os: Os,
   ): Unit =
-    import settings.credentials
+    import settings.{awsCredential, credentials}
     import project.mountPath
     import rules.{fileRulesInForce, inspectedHosts, projectFileRules, ruleFiles, rulesetText, rulesetWarnings}
     import workspace.{filteredWorkspace, joinedRules, sessionRuleLines}
@@ -2173,6 +2187,7 @@ object AgentSandboxLauncher:
     // is said aloud, since the variable is otherwise indistinguishable from the image's own.
     if parsed.env.nonEmpty then
       System.err.println(s"forwarded environment: ${parsed.env.map(_.name).mkString(", ")}")
+    awsCredential.foreach(resolved => System.err.println(AwsCredential.bannerLine(resolved, Instant.now())))
     if credentials.nonEmpty then
       EgressCredentials.bannerLines(credentials).foreach(System.err.println)
       System.err.println(s"note: ${EgressCredentials.SubstitutionNote}")
@@ -2195,7 +2210,8 @@ object AgentSandboxLauncher:
   ): Vector[String] =
     import parsed.{command, writeMode}
     import settings.{
-      clipboard, credentials, forwardedEnv, nesting, programRules, projectDir, runOnHost, sessionStartMode,
+      awsCredential, clipboard, credentials, forwardedEnv, nesting, programRules, projectDir, runOnHost,
+      sessionStartMode,
     }
     import project.{mountPath, persistentVolume}
     import images.imageId
@@ -2327,7 +2343,8 @@ object AgentSandboxLauncher:
       // ships tzdata and nothing else sets a zone, so without this a commit made in the sandbox
       // carries +0000 and the agent's "today" turns over at the wrong hour.
       s"--env=TZ=${posixTz(ZoneId.systemDefault())}",
-    ) ++ forwardedEnv ++ placeholderArgs(credentials) ++ Vector(
+    ) ++ forwardedEnv ++ awsCredential.toVector.flatMap(_.names.map(name => s"--env=$name"))
+      ++ placeholderArgs(credentials) ++ Vector(
 
       // The deliberate host exposure; what the agent writes here is untrusted input to host programs (SECURITY.md, "The
       // project directory").
@@ -2366,12 +2383,15 @@ object AgentSandboxLauncher:
     cleanup: RunCleanup,
     os: Os,
   ): Nothing =
-    import settings.{clipboard, clipboardHost, credentials, projectDir, runOnHost}
+    import settings.{awsCredential, clipboard, clipboardHost, credentials, projectDir, runOnHost}
     import project.{mountPath, projectId}
     import rules.rejectFileRules
     import names.{egressNetwork, proxyContainer, sandboxContainer, sandboxNetwork}
     import workspace.{filteredWorkspace, sessionRulesText}
-    val created = run(createCommand*)
+    // The AWS values in the create's own environment, where its value-less `--env=NAME` reads them;
+    // checked again here, since the hold above may have outlasted them.
+    awsCredential.flatMap(AwsCredential.expiredSince(_, Instant.now())).foreach(message => fail(message))
+    val created = runWithEnvironment(awsCredential.map(_.environment).getOrElse(Map.empty), createCommand*)
     if !created.ok then
       fail(s"error: could not create the sandbox container\n${created.err}")
 
@@ -2418,7 +2438,7 @@ object AgentSandboxLauncher:
       if !RunOnHostChannel.spawnRunner(
           podman, sandboxContainer, projectDir, runOnHost, channelLogFile, mountPath,
           // A brokered name reaches a host command as the sandbox has it: its placeholder.
-          forwards = parsed.env ++ credentials.map(credential =>
+          forwards = parsed.env ++ awsCredential.toVector.flatMap(_.forwards) ++ credentials.map(credential =>
             EnvForward(credential.binding.name, Some(credential.placeholder)),
           ),
           fileRules = resolvedFileRules.map(_ => runnerFileRules),

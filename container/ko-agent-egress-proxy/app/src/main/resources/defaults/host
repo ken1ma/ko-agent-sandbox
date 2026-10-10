@@ -183,8 +183,11 @@ allow https://developers.google.com/ read  # Google APIs and sign-in: OAuth 2.0,
 allow https://learn.microsoft.com/   read  # Azure
 
 # infrastructure as code: the docs
-# doc/egress-rule-example/pulumi-aws/rule shows what `pulumi up` needs.
+# doc/egress-rule-example/pulumi-*/rule show what `pulumi up` needs on each backend and region.
 allow https://www.pulumi.com/          read
+# the CLI's update check, sent before every command whatever the backend;
+# --env=PULUMI_SKIP_UPDATE_CHECK=true stops the request instead
+allow https://api.pulumi.com/api/cli/version read
 # provider docs / registry metadata; provider downloads are not in the defaults
 allow https://registry.terraform.io/   read
 allow https://developer.hashicorp.com/ read

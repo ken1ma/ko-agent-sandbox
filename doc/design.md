@@ -633,7 +633,10 @@ Left out:
   - What a session forwards instead is `doc/cloud-credentials.md`.
 - A keychain or secret-manager resolver on the host (Docker's `gh auth token`, 1Password): the
   binding reads the host environment as `--env=NAME` does, and a resolver is a shell pipeline in
-  front of it.
+  front of it. AWS is the exception, `--env-aws-cred` (`AwsCredential.scala`): the pipeline it
+  replaces is retyped at every login, and the launcher checks what the pipeline cannot, that the
+  set expires. A GCP or Azure resolver can follow on the same terms: one CLI command, forwarded by
+  name, refused when what it resolves does not expire.
 - Rotation or revocation on exit: the value is in no file for an exit to leave, the issuer's own
   revocation covers a leak, and an automatic revoke needs a provider API call the launcher does
   not make.
