@@ -9,11 +9,13 @@ agents record from the daemon as they do on any Linux desktop.
 
 The requirement: with `--mic`, an unmodified Claude Code dictates through `/voice` in hold
 and tap mode; agy dictates and Codex converses once their own gates allow, with Codex's replies
-as transcript only; without `--mic`, nothing in the sandbox can record. The host records only
-while an agent is recording.
+as transcript only; without `--mic`, nothing in the sandbox can record. Under `--mic` the host
+microphone is open for the whole session, and its audio reaches the sandbox only while an agent
+is recording.
 
-The CLI's paths below are read from the image's `/usr/bin/claude` (2.1.295), the other agents'
-binaries and the voice dictation page on 2026-10-09; "Tests" lists what is unmeasured.
+The CLI's paths below are read from the image's `/usr/bin/claude` (2.1.295) and the other agents'
+binaries on 2026-10-09, and from the voice dictation page on 2026-10-09 and 2026-10-11; "Tests"
+lists what is unmeasured.
 
 ## Decisions
 
@@ -24,20 +26,30 @@ binaries and the voice dictation page on 2026-10-09; "Tests" lists what is unmea
   default, so every grant of a host resource is spelled in the launch command.
 - **No device passthrough.** `/dev/snd` would give every process in the sandbox the microphone
   with no host-side gate, and the macOS and Windows podman machines offer no microphone to pass
-  (unverified for the machines; the Linux case decides alone).
-- **A host recorder program on macOS and Linux, Java Sound on Windows.**
-  - On macOS and Linux the launcher hands over to the agent and no JVM stays for the session,
-    so the relay is a shell job of the reaper, as the clipboard relay is, and the microphone
-    is read by a program the host has; the launch names the package when it has none.
-  - On Windows the launcher is resident, so its thread records with the JDK's
-    `javax.sound.sampled` and the host installs nothing. Java Sound is not available in a
-    native-image launcher; doc/TODO.md's native-image item records why and what the Windows
-    relay needs there instead.
-  - A per-session JVM job recording with Java Sound on macOS too, sparing the SoX install, was
-    weighed and set aside: it trades one Homebrew package for a process alive all session and
-    a second capture implementation to own. It is reopened only if, after the Windows twin is
-    measured, the SoX dependency still matters and Java Sound's capture on macOS is tested on
-    its own, permission prompt included.
+  (measured for Windows under "Windows, measured", unverified for macOS; the Linux case decides
+  alone).
+- **A host recorder program on every OS**, read by a relay that runs where the launcher lives:
+  a shell job of the reaper on macOS and Linux, as the clipboard relay is, since the launcher
+  hands over to the agent and no JVM stays for the session; a thread of the resident launcher on
+  Windows. The launch names the package when the host has none.
+  - On Windows the program is `sox_ng`, the maintained SoX
+    (https://codeberg.org/sox_ng/sox_ng/releases, a single static `sox_ng.exe`), through its
+    `waveaudio` driver; its first period arrives about 125 ms after the start and then every
+    20 ms ("Windows, measured").
+  - Java Sound (`javax.sound.sampled`), in the launcher thread on Windows or as a session job on
+    macOS, is not used: it is a second capture implementation to own, a native-image launcher
+    cannot carry it (doc/TODO.md), and its measurements ("Windows, measured") show nothing a
+    program on `PATH` lacks.
+  - WSLg's PulseAudio server, which the podman machine on the WSL provider mounts, is not used:
+    it needs a helper container beside the socket, serves no Hyper-V machine, hangs 30 s when
+    Windows has no capture device, and delivers audio at twice its level ("Windows, measured").
+- **The host recorder runs for the whole session; the relay forwards only while an agent
+  records.** A recorder started per dictation loses its own start on top of the relay's round
+  trip, 660 to 810 ms of each dictation on macOS ("Latency"); a running recorder loses nothing
+  of its own, and the relay keeps what arrives during the round trip and forwards it first, so
+  the first word survives the round trip too.
+  - The cost is a microphone open all session, macOS's indicator lit with it; SECURITY.md says
+    so.
 - **Linux hosts: the latest stable Debian, Fedora and Ubuntu.** The recorder program and its
   package are checked on those three; another host may work and is not claimed. The plan records
   the versions each check ran on.
@@ -46,6 +58,10 @@ binaries and the voice dictation page on 2026-10-09; "Tests" lists what is unmea
   `parec`; Codex's helper through ALSA's PulseAudio plugin, the path it takes on WSLg. A stock
   daemon and a configuration file serve all three where a shim would have answered one agent's
   command lines. The daemon's microphone is a FIFO the relay writes; the daemon needs no device.
+  - A null sink's monitor as the microphone, fed by `pacat --playback` from the writer, is the
+    fallback if the boundary test ("Tests") finds samples crossing between dictations: it has no
+    FIFO and no loopback, and a client's unrendered audio dies with its stream, but its delay is
+    the sink's, where the pipe source adds none (the PulseAudio decision below).
 - **PulseAudio, not PipeWire**, for two reasons: its pipe source adds no delay, and the server
   is one daemon and one file. The clients speak the PulseAudio protocol (SoX, `parec`) or ALSA
   (Codex's helper), and either server offers both, a pipe source and a null sink; Debian 13
@@ -84,7 +100,9 @@ binaries and the voice dictation page on 2026-10-09; "Tests" lists what is unmea
 
 ### The CLI
 
-`/voice` runs these checks in order (`checkRecordingAvailability`, `checkVoiceDependencies`):
+On macOS and Windows the CLI records with its built-in module, and `arecord` and SoX are its
+Linux fallbacks (the voice dictation page, "Requirements"). On Linux, `/voice` runs these checks
+in order (`checkRecordingAvailability`, `checkVoiceDependencies`):
 
 - `CLAUDE_CODE_REMOTE` set: "no audio device is available in this environment". The launcher
   sets nothing of the kind.
@@ -132,6 +150,102 @@ spawns a recorder command as Claude Code does.
   `127.0.0.1:4713`, agy's own protocol over an SSH forward.
 - Copilot 1.0.94, kiro-cli 2.28.0 and OpenCode 1.18.35 dictate nothing.
 
+### Windows, measured
+
+Measured on 2026-10-11 on Windows Server 2025 (10.0.26100.32522) reached over Remote Desktop, WSL
+3.0.1.0 with WSLg 1.0.79 (PulseAudio 17.0), a podman machine on the WSL provider, Oracle JDK
+25.0.2, sox_ng 14.8.1 (win64 release zip) and VB-CABLE 3.3.1.7 as the capture device, since the
+instance has no microphone (below). A 440 Hz tone at 0.3 of full scale played into the cable
+stood for speech, so the timings include the cable's buffer and are not a microphone's.
+
+- `sox_ng -q --buffer 640 -d -t raw -r 16000 -e signed -b 16 -c 1 -` records the default
+  recording device at the tone's exact level (RMS 0.211, 128000 bytes for 4 s). Its process start
+  takes 17 ms; the first 640-byte period reaches the pipe about 125 ms after the start and the
+  next ones every 20 to 30 ms, in exact 640-byte pieces.
+  - Without `--buffer`, SoX writes its output in 8192-byte blocks, 256 ms of this stream, the
+    first about 490 ms after the start; `--buffer 1280` gives 1280-byte pieces at 40 ms. The
+    option sizes the output write, not the driver's period.
+  - Under each permission value at `Deny` ("The option"), and with the per-user `microphone`
+    value absent, it exits after about 330 ms with
+    `sox_ng FAIL formats: can't open input 'default': waveInOpen failed with code 1` and the
+    system's text for that code, which names neither the microphone nor the permission.
+  - With `NonPackaged` absent, or the machine-wide value absent, it records normally. On this
+    image as installed, the per-user value is `Deny`, `NonPackaged` is `Allow` and the
+    machine-wide value is `Allow`.
+  - In one run after `Disable-PnpDevice` on the only capture endpoint it did not fail: the Wave
+    Mapper opened and delivered silence at one LSB of noise (peak 0.00003) for as long as it ran,
+    so neither exit status nor byte count showed the missing microphone, and a level test cannot
+    tell that from a quiet room.
+  - In a later run of the same command the endpoint again showed `Error` in `Get-PnpDevice`
+    while the audio API still counted it active (below) and sox_ng recorded the tone at full
+    level: the PnP status is not the audio API's state.
+  - In the Remote Desktop session that hides every endpoint (below) it fails after about 350 ms
+    with `sox_ng FAIL formats: can't open input 'default': sample format negotiation failed with
+    code 2` and the system's text for a file not found: a session with no capture endpoint fails
+    fast, where the silent run above did not.
+  - `EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)`, called from PowerShell through
+    `Add-Type` COM interop ("The option"), counts 1 in a session that sees the cable and 0 in
+    the Remote Desktop session that hides it; `Add-Type` compiles the script in 150 ms and a
+    count takes 7 ms. The count and the recorder agreed in every run where both were measured.
+- The podman machine has no ALSA capture device (`/dev/snd` holds `timer`), and WSLg mounts its
+  PulseAudio server at `/mnt/wslg/PulseServer` into it, with `RDPSource` (s16le, mono, 44100 Hz)
+  as the default source and `RDPSink` as the default sink. A rootless container with `/mnt/wslg`
+  mounted reaches it with no cookie.
+  - `parecord --raw --format=s16le --rate=16000 --channels=1 --latency-msec=20` on it delivers
+    Windows's default capture device, resampled by WSLg's server, at twice the tone's level (RMS
+    0.42); the first 20 ms period arrived 47, 57 and 68 ms after the start, with the source idle
+    and the container already running.
+  - With no capture device on Windows the source stays suspended, and a stream on it fails after
+    30 s with "Connection failure: Timeout"; a launch probe needs its own bound.
+- Java Sound (`javax.sound.sampled`) lists each capture endpoint as a DirectSound mixer, grants
+  the 16000 Hz, 16-bit mono line directly, grants the requested 640-byte (20 ms) buffer, returns
+  one period per `read`, delivered the tone at its level, and a `close()` from another thread
+  returned a blocked `read` after 506 ms.
+  - With "Microphone access" off the mixers are still listed and `open` fails with
+    `LineUnavailableException: line with format ... not supported`, which names the format, not
+    the cause. That value is `Deny` on this image as installed.
+- A Remote Desktop session with sound played on the client sees only the redirected "Remote
+  Audio" playback endpoint; the machine's own endpoints, active in the device store, are hidden
+  from every program in that session. Windows App on macOS redirected no microphone to this
+  server with the server's capture policy allowing it.
+- The podman machine stops at sign-out; `podman machine start` brings it back.
+- What signals a recording on Windows, the latencies against a real microphone, and the endpoint
+  count with the only endpoint disabled in the audio API's state remain "Tests".
+
+### macOS, measured
+
+Measured on 2026-10-11 on an Apple silicon Mac (Homebrew's `arm64_tahoe` bottles) with sox_ng
+14.8.1 from Homebrew and the Mac's microphone, speaking.
+
+- `brew install sox_ng` installs the `rec` and `sox` names, with `coreaudio` as the one audio
+  device driver. Claude Code's own `/voice` on the Mac dictates with the `sox` formula
+  uninstalled, which says nothing about sox_ng: on macOS the CLI records with its built-in
+  module ("The CLI").
+- The first `rec` run from a shell raised macOS's microphone permission prompt, naming the
+  terminal application.
+- With the permission denied, in a newly installed terminal whose prompt was answered "Don't
+  Allow", `rec` neither fails nor hangs: it ran until killed at 20 s and wrote 428036 bytes with
+  a peak of 1 LSB, SoX's dither on zeros, and its first bytes came about 6.6 s after the start,
+  once the prompt was answered. With dither off (`-D`) at the device's 48000 Hz, 3 s of recording
+  were 144000 samples all exactly 0, where the dithered output had left none at 0.
+- The device runs at 48000 Hz and refuses 16000, so SoX resamples and prints `rec WARN formats:
+  can't set sample rate 16000; using 48000` on stderr even under `-q`; the output is 16000 Hz
+  (128106 bytes for 4.003 s). The relay treats stderr as a log, not as failure. Speech arrived at
+  RMS 0.0089, peak 0.068.
+- Timing, from the process start to the first bytes on the pipe, then between pieces:
+  - `rec --version` alone takes 100 ms.
+  - 48000 Hz with `--buffer 1920`, one 20 ms period: first bytes at 540 to 570 ms, then exactly
+    every 20 ms.
+  - 16000 Hz with `--buffer 640`: 560 to 710 ms, then 1280 and 640-byte pieces alternating every
+    30 ms; with `--buffer 1280`, 720 ms; with the default 8192, 1000 ms, then every 256 ms.
+  - So about 450 ms lies between the process start and the first period: SoX's CoreAudio
+    driver querying the device and trying to set its format, creating the I/O proc, starting
+    the device and filling the first buffer, and macOS's microphone permission check for the new
+    process, in unmeasured proportion; the resampler adds up to 150 ms and the output buffer the
+    rest. Runs back to back all paid it, so it is not a hardware wake-up.
+- `podman exec <sandbox> true` on the Mac's podman machine takes 100 to 120 ms, which is the
+  relay's round trip before the writer starts.
+
 ### The channel pattern
 
 The clipboard relay (`ClipboardRelay`, SECURITY.md "Clipboard"): the sandbox writes a request to
@@ -145,20 +259,62 @@ returned once. A recording is a stream that runs until a stop, which that relay 
 
 - `--mic`, a session option like `--write`, never persisted. Absent, no daemon runs, no relay
   runs, and no `PULSE_SERVER` is set.
-- At launch, before the container starts, the launcher records on the host into nothing for a
-  bounded moment with each candidate recorder in order ("The relay") and keeps the first that
-  delivers bytes; on Windows it opens the Java Sound line instead.
+- At launch, before the container starts, the relay starts each candidate recorder in order
+  ("The relay") and keeps the first that delivers bytes within a bound; that process is the
+  session's recorder, so the probe and the recorder are one start.
   - None: the launch fails with each candidate's reason, and the package to install, as
     `hostBackend` fails a Linux launch with the clipboard and no xclip.
   - A recorder's environment — `XDG_RUNTIME_DIR`, a WSLg session's preset `PULSE_SERVER` — is
     the launcher's own, and is checked by that recording, not by name.
   - On macOS the probe is where the microphone permission prompt appears, at launch rather than
-    at the first dictation.
+    at the first dictation, so its wait for the first bytes spans a prompt: after a few seconds
+    without bytes it says it is waiting for the prompt, and gives up after a minute.
+  - On macOS a denied permission records exact digital silence ("macOS, measured"), and so do
+    a muted input and a microphone with a noise gate before anyone speaks; the recorder cannot
+    tell them apart, so the probe reads its bounded moment with dither off.
+    - All-zero samples print a warning and do not fail the launch: that the microphone delivered
+      silence, that a denied permission (Privacy & Security > Microphone, for the terminal) and
+      a muted input (Sound > Input) look like this, and that a gated input is silent until spoken
+      into. The first dictation shows the rest, as for any probe that delivers bytes ("The
+      relay").
+  - On Windows the recorder decides and two diagnostics explain: in a session without a capture
+    endpoint, and under each denied or absent permission value that stops it, the recorder fails
+    within about 350 ms with a message that names neither cause ("Windows, measured"), so a
+    recorder that fails ends the launch with the diagnostics' reading, and one that records
+    proceeds, its all-zero window warning as on macOS.
+    - Capture endpoints: a `powershell` child runs a script of the launcher's that calls
+      `IMMDeviceEnumerator::EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)` and
+      `GetDefaultAudioEndpoint(eCapture, eCommunications)` through `Add-Type` COM interop and
+      prints the count and whether a default exists (`E_NOTFOUND` when none).
+      - The API filters by direction and state itself; an endpoint's instance id is a string
+        whose format Microsoft leaves undefined, not a thing to parse.
+      - It answers for the session: a Remote Desktop session with sound on the client shows its
+        programs no capture endpoint while the device store under
+        `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture` still holds the
+        machine's own at `DeviceState` 1 ("Windows, measured"), so the store is not the check.
+      - The script's count is measured with the cable visible and in the Remote Desktop session
+        ("Windows, measured"); with the only endpoint disabled in the audio API's own state, which
+        `Disable-PnpDevice` does not reliably produce, it is "Tests".
+    - Permissions, the three `Value`s under `CapabilityAccessManager\ConsentStore` in
+      `Software\Microsoft\Windows\CurrentVersion`: `microphone` under `HKCU` ("Microphone
+      access"), `microphone\NonPackaged` under `HKCU` ("Let desktop apps access your
+      microphone") and `microphone` under `HKLM` (the machine-wide policy), each `Allow`, `Deny`
+      or absent.
+      - A `Deny` in any of them, and an absent per-user `microphone` value, stop the recorder,
+        while an absent `NonPackaged` or machine-wide value leaves it recording ("Windows,
+        measured"); the diagnosis names the first such value's switch under Settings > Privacy &
+        security > Microphone. The values explain a failure and decide nothing: what they mean
+        on other Windows builds is unmeasured, and the recorder's failure is what is known.
 - `--clipboard=<mode>` parses as `--write` does. The launcher no longer reads the variable from
   its own environment, and a set one fails the launch naming the option, so a profile that still
   exports it is not silently ignored. Inside the sandbox the launcher keeps setting
   `KO_AGENT_SANDBOX_CLIPBOARD`, and sets `KO_AGENT_SANDBOX_MIC=on` and
   `PULSE_SERVER=unix:/tmp/ko-agent-sandbox/microphone/pulse` alike.
+- Under `--mic` the agent's environment also carries `SOX_OPTS=--buffer 640`, which SoX reads as
+  its default global options (sox(1)): the CLI's own `rec` in the sandbox then writes 20 ms
+  blocks where its default is 256 ms, which is audio in flight at the key's release ("Latency").
+  sox(1) warns that the variable reaches every SoX run in that environment; under `--mic` that
+  is what it is for.
 - `--env` keeps refusing `KO_AGENT_SANDBOX_*`; no variable is added.
 
 ### The daemon
@@ -178,10 +334,16 @@ script loads:
 - `module-pipe-source` on `/tmp/ko-agent-sandbox/microphone/mic`, `s16le`, 16000 Hz, one
   channel, the default source. The module makes the FIFO and holds it open for reading and
   writing, so the relay's writer opens it without waiting and its closing is not an EOF.
-- `module-null-sink`, the default sink, for Codex's speaker.
-- `module-loopback` from the pipe source to the null sink. Its stream is a permanent output
-  on the source, which keeps the source running, and a running pipe source reads its FIFO as
-  bytes arrive.
+- `module-null-sink` at the pipe source's sample spec (`format=s16le rate=16000 channels=1`),
+  the default sink, for Codex's speaker; the loopback below then has no rate, format or channel
+  difference to convert on its way to it.
+- `module-loopback` from the pipe source to the null sink, with `adjust_time=0`. Its stream is a
+  permanent output on the source, which keeps the source running, and a running pipe source
+  reads its FIFO as bytes arrive.
+  - The module makes its stream variable-rate whatever the specs (`PA_SINK_INPUT_VARIABLE_RATE`,
+    `module-loopback.c`), so its resampler runs even at matching rates, at a ratio of one;
+    `adjust_time=0` stops the rate readjustment it runs every second by default toward a latency
+    target a drop path has no use for (both read at `v17.0` on 2026-10-11).
   - So audio written while no agent records is read and dropped into the null sink as the
     source's thread gets to it, and a stream an agent opens later gets what the source posts
     after it opened.
@@ -247,9 +409,9 @@ their difference, on every event and every five seconds besides.
   - Requests the relay has not read yet queue in the FIFO, so a `start` can be read after its
     stream has closed, or several can: what a stale one costs is settled by the writer's first
     step, below, not by the controller.
-  - A stream that closes between that step and `ready` opens the microphone for one round trip
-    until the controller sees no demand and ends the writer; so the claim is that a request
-    stale when the writer checks opens no microphone, and a later closing ends it within the
+  - A stream that closes between that step and `ready` forwards audio for one round trip until
+    the controller sees no demand and ends the writer; so the claim is that a request stale
+    when the writer checks forwards nothing, and a later closing ends the forwarding within the
     bound.
 - Supply and no demand: it sends the writer `SIGTERM`, which ends the exec; the host does the
   rest ("The relay").
@@ -283,47 +445,74 @@ The channel: `/tmp/ko-agent-sandbox/microphone/req`, made by the relay's first e
 daemon's FIFO `mic` beside it.
 
 - POSIX twin: a job of the reaper beside the clipboard's, `microphone_relay <podman> <sandbox>
-  <recorder>`, with the recorder the launch probe selected and the launcher's environment. It
-  reads `start`, and nothing else, or the line is refused.
-  - Per `start` it runs
-    `podman exec -i <sandbox> ko-sandbox-mic write /tmp/ko-agent-sandbox/microphone/mic` and
-    waits, bounded, for the line `ready` on its stdout. An exec that ends before it was a
-    stale `start`; anything else before it, or the bound passing, is a failure logged with
-    what arrived; in neither case does a recorder start.
-  - On `ready` it starts the recorder, both as tracked children, copies the recorder's stdout
-    into the exec's stdin, and reads the next request only when both have ended: the loop is
+  <recorder>...`, with the candidate recorders in probe order and the launcher's environment. It
+  runs the launch probe ("The option"), and the recorder it keeps is the job's child for the
+  session, writing into a FIFO of the job's own. The job reads `start`, and nothing else, or the
+  line is refused.
+  - The job's FIFOs live in a directory it makes with mode 0700 and are made with `mkfifo -m 600`,
+    since the microphone's audio flows through them all session; the job removes the directory
+    when it ends, and the reaper removes it after a `KILL`.
+  - The job holds its FIFOs open read-write, since a read-only open of a FIFO blocks until a
+    writer exists: the recorder's for the session, so the recorder never meets a closed pipe;
+    the exec's stdin FIFO below per request, made and opened before the exec starts and closed
+    and removed once the exec and the copy have ended, so a byte the exec left unread dies with
+    its request and never reaches the next exec before its `ready`.
+    - Linux allows the read-write open where POSIX leaves it undefined (fifo(7)); macOS is
+      "Tests".
+  - While no agent records, a `cat` drains the FIFO into `/dev/null`, so nothing accumulates.
+  - Per `start` it ends the drain, so the recorder's FIFO keeps what the recorder writes from
+    then on, and runs
+    `podman exec -i <sandbox> ko-sandbox-mic write /tmp/ko-agent-sandbox/microphone/mic` with a
+    second FIFO of the job's as its stdin, which nothing writes yet, waiting, bounded, for the
+    line `ready` on the exec's stdout.
+    - An exec that ends before `ready` was a stale `start`; anything else before it, or the
+      bound passing, is a failure logged with what arrived; in both cases the drain resumes.
+    - The recorder's FIFO is never the exec's stdin: podman reads the stdin it is given as soon
+      as bytes arrive, whether or not the contained process reads them (podman-exec(1),
+      `--interactive`), so audio handed to it before `ready` would reach the sandbox on a stale
+      `start`, into a pipe any process of the one uid can open through `/proc`.
+  - On `ready` a `cat` copies the recorder's FIFO into the exec's stdin FIFO, beginning with
+    what the pipe kept during the round trip, so the audio of the round trip reaches the agent
+    too; the job reads the next request only when the exec and the copy have ended: the loop is
     sequential, as the clipboard's is, because the recording's end arrives as the exec's end,
     not as a line.
+  - The recorder FIFO's capacity bounds what a slow exec keeps: 64 KiB, 2 s of this stream, by
+    default on Linux, and pipe(7) fixes none. A full pipe blocks the recorder's write and the
+    driver drops audio until the exec's bound ends the request as a logged failure; "Tests" fills
+    the pipe on purpose and watches the recorder recover.
   - Every path on both sides is absolute: an exec's working directory is the container's, not
     the channel's.
-  - A recorder that ends without bytes, or at all, is logged with its exit status and its
-    stderr's first line to the launcher's log, which is where a permission refusal or a device
-    that disappeared is read.
-- The recording ends, and both children with it, when any of these happens:
+- A forwarding ends, and the exec and the copy with it, when any of these happens:
   - the exec ends: the controller ended the writer, or it died, or the daemon is gone;
-  - the recorder ends, or delivers no bytes for five seconds: a recorder whose backend hung
-    writes nothing;
+  - the recorder ends, or delivers no bytes for five seconds, silence being bytes too: it is
+    logged with its exit status and its stderr's first line to the launcher's log, where a
+    permission refusal or a device that disappeared is read, and started again at the next
+    request, which then pays its start;
   - the container stops, as the clipboard's loop ends;
-  - the session ends: the reaper `KILL`s the job's tree.
-  Ending is `SIGTERM`, then `SIGKILL` after a bound; the relay waits for both children before
-  it reads the next request.
-- Windows twin: a thread of the resident launcher running the same loop, the recorder a Java
-  Sound line in place of a program; unmeasured.
-  - `AudioSystem.getTargetDataLine` for 16000 Hz, 16-bit signed, mono, little-endian, opened,
-    then `start()`, without which a line delivers nothing.
-  - A mixer that offers no such line refuses it with `IllegalArgumentException`, and the
-    thread then opens the line in a format the mixer offers and converts to the required one
-    itself, resampling and mixing channels included.
-  - The line's buffer is the smallest the mixer grants, so a period is read as soon as it is
-    captured.
-  - The copy runs in its own thread, and the loop's thread closes the line when the exec ends
-    or the five-second deadline passes, which returns a `read` blocked on it; the capture
-    thread never has to notice on its own.
+  - the session ends: the reaper `KILL`s the job's tree, recorder included.
+  The drain resumes after each; ending a child is `SIGTERM`, then `SIGKILL` after a bound.
+- Windows twin: a thread of the resident launcher running the same loop, the recorder its child
+  for the session, the exec its child per request. A reading thread discards the recorder's
+  output while idle, holds it in memory from the request on, and writes nothing to the exec's
+  stdin before `ready`, for the reason the POSIX twin gives; from `ready` it forwards.
+  - Windows has no `SIGTERM`: the thread ends the exec with `Process.destroy()`
+    (`TerminateProcess`), and the recorder ends with the launcher.
 - The recorder program, writing raw signed 16-bit little-endian mono at 16000 Hz, the
   candidates in launch-probe order:
-  - macOS: SoX `rec -q -t raw -r 16000 -e signed -b 16 -c 1 -`, which `brew install sox`
-    provides and the CLI's own documentation names for macOS. macOS has no built-in recorder
-    command.
+  - Every SoX command carries `--buffer 640` and `-D`. SoX writes its output in `--buffer`-sized
+    blocks, 8192 bytes by default, which is 256 ms of this stream and arrives as such ("Windows,
+    measured"); 640 bytes is one 20 ms period. SoX dithers its 16-bit output by default, which
+    turns a silent input into samples of plus and minus one; `-D` keeps silence exact, which the
+    probe's warning reads ("macOS, measured").
+  - macOS: SoX `rec -q -D --buffer 640 -t raw -r 16000 -e signed -b 16 -c 1 -`. The launch error
+    names `brew install sox_ng`, whose formula installs the `rec` name; `brew install sox` serves
+    too, and Homebrew refuses to install both. sox_ng's CoreAudio driver and its timing are
+    measured ("macOS, measured"). macOS has no built-in recorder command.
+  - Windows: `sox_ng -q -D --buffer 640 -d -t raw -r 16000 -e signed -b 16 -c 1 -`, `-d` being the
+    Sound control panel's default recording device through the `waveaudio` driver, from the
+    release zip's `sox_ng.exe` on `PATH` or from `winget install --id sox_ng.sox_ng -e`, whose
+    manifests trail the release (14.7.1.2 against 14.8.1 on 2026-10-11); the launch error names
+    both.
   - Linux, first: `arecord -q -D default -t raw -f S16_LE -r 16000 -c 1 -B 80000 -F 20000`
     (`alsa-utils`), one command whichever server owns the microphone, if each host's desktop
     edition routes ALSA's `default` PCM to it ("Tests").
@@ -336,24 +525,34 @@ daemon's FIFO `mic` beside it.
   - A probe that delivers bytes shows a source that records, not that it is a microphone: a
     monitor or null source records silence. The launch prints which device the recorder
     opened, when the program can say, and the first dictation shows the rest.
-- What the host holds is one pipe; nothing is buffered to a file. The stream's rate is 32 kB/s.
+- What the host holds is one pipe and, between a request and `ready`, its contents; nothing is
+  buffered to a file. The stream's rate is 32 kB/s.
 
 ### Latency
 
-A client's stream opens at the key press; the controller's event, the request, one `podman
-exec` round trip on the machine and the recorder's own start come before the first audio bytes
-reach the daemon, and the daemon and SoX add their own buffers; the source itself is already
-running, so no resume is paid. Whether that loses the first syllables
-is "Tests"; the mitigation, if needed, is a relay that keeps the recorder running between
-requests and gates only the copy, which changes "The host records only while an agent is
-recording" above and is not planned until measured.
+A client's stream opens at the key press, and the relay keeps the audio from the request on, so
+what the agent never hears is what is said between the key press and the request: the
+controller's event and one FIFO write, within the controller's timer resolution.
+
+- The round trip, one `podman exec` of 100 to 120 ms on the Mac's podman machine ("macOS,
+  measured"), delays the first bytes and loses none; the daemon and SoX add their own buffers;
+  the source itself is already running, so no resume is paid.
+- The numbers behind the session-long recorder ("Decisions"): a recorder started per dictation
+  pays its own start first, 550 to 700 ms on macOS, of which about 450 is its device setup after
+  the process start and is paid on every start, and 125 ms on Windows; with the round trip, a
+  per-dictation relay would lose about 660 to 810 ms of each dictation on macOS. What the CLI's
+  own path loses on the same host, its built-in module's start, is "Tests".
 
 At the key's release the CLI sends `rec` `SIGTERM` and, in the same step, closes its stream to
 the transcription server; chunks arriving after that are dropped (`[voice_stream] Dropping
-audio chunk after CloseStream`). So nothing after the key reaches the transcript, and the word
-ending lost is the audio in flight between the host's microphone and the CLI at that moment:
-the recorder's period, the exec, the daemon and SoX's buffer. The pipeline is kept short (a
-20 ms period, no buffering in the relay) and the loss is measured.
+audio chunk after CloseStream`), so nothing after the key reaches the transcript.
+
+- The word ending lost is the audio in flight between the host's microphone and the CLI at that
+  moment: the recorder's period, the exec, the daemon and SoX's buffer. The pipeline is kept
+  short (a 20 ms period, no buffering in the relay) and the loss is measured.
+- The CLI's own `rec` in the sandbox would hold up to 8192 bytes, 256 ms, when `SIGTERM`
+  arrives; `SOX_OPTS` ("The option") makes that 640 bytes, and "Tests" measures the word ending
+  with and without it.
 
 ### Security
 
@@ -371,13 +570,15 @@ SECURITY.md gains "Microphone", with the clipboard section's form, and keeps the
   - The channel guards the host microphone's confidentiality, not the authenticity of audio
     inside the sandbox, where every process already shares the agent's files and trust;
     SECURITY.md says so beside the grant.
-- **When the host microphone is open.** At launch, for the probe's bounded moment, with no
-  agent running; then only while a stream is open on the daemon's microphone.
-  - A recording ends when the controller sees the last stream close, and also with the
-    writer's death, the exec's end, the container or the session. There is no bound on how
-    long a process keeps a stream open.
-  - macOS shows its microphone indicator while the host records; nothing else signals a
-    recording.
+- **When the host microphone is open.** From the launch probe to the session's end, whether or
+  not an agent records; the relay discards the audio as it arrives, buffering none, except
+  between a request and the writer's `ready`, and the pipes it flows through on the host are the
+  user's alone ("The relay").
+  - Audio reaches the sandbox from a request until the controller sees the last stream close,
+    or until the writer's death, the exec's end, the container or the session. There is no
+    bound on how long a process keeps a stream open.
+  - macOS shows its microphone indicator for the whole session; nothing else signals the grant,
+    and nothing signals a forwarding.
 - What leaves the host is the agent's doing: Claude Code streams the audio to Anthropic, agy to
   Google and Codex to OpenAI, under the egress rules the session already has.
 - Without `--mic`, no daemon runs and no FIFO exists; the image has no other capture path.
@@ -385,11 +586,10 @@ SECURITY.md gains "Microphone", with the clipboard section's form, and keeps the
 ## Documentation
 
 - README's Reference block (which `--help` prints): `--mic` and `--clipboard` under the
-  session options, the former with the host program each OS needs, and the variable gone from
-  the environment table; the `claude` section: `/voice` needs `--mic`; the `codex` and `agy`
-  sections: what their `/voice` does under it, as measured.
-- doc/TODO.md, the native-image item: Java Sound's absence there and the recorder program the
-  Windows relay needs instead.
+  session options, the former with the host program each OS needs and the sentence that the
+  microphone stays open for the session, and the variable gone from the environment table; the
+  `claude` section: `/voice` needs `--mic`; the `codex` and `agy` sections: what their `/voice`
+  does under it, as measured.
 - SECURITY.md "Clipboard", `doc/plan-clipboard.md`, `doc/design.md` and the clipboard shim's
   comment: the option's name where the variable's was.
 - SECURITY.md "Microphone", above.
@@ -421,27 +621,41 @@ SECURITY.md gains "Microphone", with the clipboard section's form, and keeps the
     strict boundary under those conditions, to be recorded as the design's limit, not a
     timing to tune.
 - Stale `start`: the exec's start is delayed past several resend intervals, then the stream
-  closes; each queued `start` costs one exec that ends without `ready`, and the host recorder
-  never starts; a stream closed between the writer's demand check and `ready` sees the
-  recorder end within the bound; a writer whose pid a later process reuses is not taken for
-  supply, and a pid reused after the check is not signalled.
+  closes; each queued `start` costs one exec that ends without `ready`, and nothing is
+  forwarded; a stream closed between the writer's demand check and `ready` sees the forwarding
+  end within the bound; a writer whose pid a later process reuses is not taken for supply, and a
+  pid reused after the check is not signalled.
 - `ready` is read by the host when the writer waits on stdin, which is a test that it is
   written unbuffered and after the FIFO is open; `ready` after a FIFO that fails to open
-  never appears.
+  never appears; the exec starts with its stdin FIFO as yet unwritten, which is a test that the
+  job holds that FIFO open.
+- Saturation: `ready` is delayed until the recorder's FIFO is full; the recorder's write blocks,
+  the request ends as a logged failure at the bound, the drain resumes, the recorder is running
+  or restarted, and the next request records.
 - The relay's grammar: `start` and nothing else; a refused line ends the stream's reading; a
-  `start` read during a recording is read after it; the recorder starts only on `ready`, and an
-  exec that ends without it within the bound starts none.
+  `start` read during a recording is read after it; forwarding begins only on `ready`, and an
+  exec that ends without it within the bound forwards nothing and resumes the drain.
 - Integrity: a known PCM sequence fed to a fake recorder on the host is read back from the
   daemon by `parec` at the same sample spec, sample for sample.
-- Forwarding: with the recorder running, a chunk it writes reaches the daemon's FIFO before it
-  writes the next one, so the writer holds no audio; the elapsed time from a client's stream to
-  its first byte is recorded as a distribution under "Live", not asserted here.
+- Forwarding, against a fake recorder and an exec stand-in that reads its stdin as eagerly as
+  podman does:
+  - while idle, nothing the recorder writes reaches the sandbox and nothing accumulates; from
+    `start`, what it writes is kept, and the stand-in receives no byte before `ready`;
+  - on `ready` the kept audio arrives first and whole, followed by the live stream with no gap
+    or repeat; a stale `start` discards what was kept;
+  - across two requests, identifiable audio the first exec left unread in its stdin at its end
+    reaches the second exec in no byte, before or after its `ready`;
+  - a chunk written during forwarding reaches the daemon's FIFO before the next one, so the
+    writer holds no audio; the elapsed time from a client's stream to its first byte is recorded
+    as a distribution under "Live", not asserted here.
 - Ending:
-  - the last stream's close ends the host recorder within the bound while PCM is flowing, and
-    the writer's `SIGTERM` interrupts a copy blocked in `os.write`;
-  - a recorder that writes nothing is ended after five seconds; a recorder that fails to start
-    leaves the daemon's microphone silent and the launcher's log its reason;
-  - the container's stop ends the relay; the session's end `KILL`s a recording in progress;
+  - the last stream's close ends the exec and the forwarding within the bound while PCM is
+    flowing, the recorder keeps running and the drain resumes, and the writer's `SIGTERM`
+    interrupts a copy blocked in `os.write`;
+  - a recorder that writes nothing for five seconds, idle or forwarding, is ended and logged,
+    and the next request starts a new one; a recorder that fails at launch fails the launch;
+  - the container's stop ends the relay; the session's end `KILL`s the recorder and a
+    forwarding in progress;
   - the writer refuses a path that is not a FIFO.
 - The daemon: it starts from the image's script with no device, no D-Bus and no home
   directory, reads and writes nothing under `~/.config/pulse` with the three `PULSE_*_PATH`
@@ -449,18 +663,24 @@ SECURITY.md gains "Microphone", with the clipboard section's form, and keeps the
   on the socket `PULSE_SERVER` names, refuses `pactl load-module`, and ends with the agent.
 - The controller's own listings: the client events its `pactl list` runs cause trigger no
   further listing, so an event-driven reconciliation settles after one listing.
+- Stability, an hour of the recorder running with `adjust_time=0` and the clocks of the host's
+  audio and the null sink's timer uncompensated: the pipe source stays `RUNNING`, the loopback's
+  output stays on it with its latency bounded, and a stream opened at the end records as one did
+  at the start.
 - The controller against the relay's absence: demand before the relay's first exec made `req`
   (`ENOENT`), a `req` nobody reads (`ENXIO`), and a relay that dies while demand persists: no
   blocked open, a retry on each timer tick, no three-second wait after an undelivered `start`,
   and `start` delivered on the first tick after the relay is back.
 - The launch probe: each OS's candidate order, the first that delivers bytes is kept, and the
-  launch failure names every candidate's reason and the package to install; on Windows, a
-  line that opens and delivers bytes passes, and a mixer with no line fails the launch with
-  the exception's message.
-- The Windows line's format: a fake mixer refusing 16000 Hz mono is opened in its own format
-  and the thread's conversion yields the required rate, channel count and duration, and a
-  known tone's frequency and amplitude within a tolerance, since resampling preserves no
-  sample for sample; a close from the loop's thread returns a `read` blocked on the line.
+  launch failure names every candidate's reason and the package to install.
+  - On Windows, against a stand-in for the endpoint script: a recorder stand-in that fails ends
+    the launch with the message for a count of zero, a missing default endpoint, a `Deny` in any
+    of the three permission values or an absent per-user `microphone` value, whichever the
+    diagnostics show, and a recorder stand-in that records proceeds whatever they show.
+  - On macOS, a fake recorder delivering zeros prints the silence warning and the launch
+    proceeds.
+- The Windows twin's ending: `destroy()` ends the exec, the forwarding ends with it within the
+  bound, and the recorder keeps running with its output discarded again.
 - The CLI contract: a test reads the image's `/usr/bin/claude` for the recorder order, the
   `rec --version` probe and the exact `rec` argument vector, and fails the build when a Claude
   Code release changes them, as `doc/plan-clipboard.md` rechecks each agent's clipboard
@@ -468,9 +688,14 @@ SECURITY.md gains "Microphone", with the clipboard section's form, and keeps the
 
 ### Live
 
-- macOS: the microphone permission prompt appears at the launch probe, and which application
-  it names (the terminal, as the responsible process of the launcher and of the reaper's job;
-  unverified); a denied permission fails the launch with the message, not a hang.
+- macOS: the microphone permission prompt appears at the launch probe and names the terminal
+  when the recorder is the launcher's and the reaper's child, as it does for a shell's child
+  ("macOS, measured"); the probe waits through the prompt and says so; a denied permission and
+  a muted input each print the silence warning and the launch proceeds; a microphone with a
+  noise gate, silent at launch, dictates once spoken into.
+- macOS, the job's FIFOs: the read-write opens succeed with no other process at either end, the
+  exec starts with its stdin FIFO unwritten, and a per-request FIFO is closed and removed
+  without blocking ("The relay").
 - Claude Code: hold and tap mode dictation end to end; what `/voice` says without `--mic`.
 - agy: `/voice` records through `parec` under `--mic`, with a sign-in that carries its
   permission; what it says without one.
@@ -486,23 +711,28 @@ SECURITY.md gains "Microphone", with the clipboard section's form, and keeps the
     A closed gate blocks the test, and the README then says so; the others are the daemon's
     to pass.
 - `--egress=deny-all`: the recording starts and each agent reports its own stream error.
-- Windows: the resident twin's line opens, and what signals a recording there.
+- Windows: the endpoint script's count with the only capture endpoint disabled in the audio API's
+  state, through the Sound control panel's Disable, and whether `sox_ng -D` then records exact
+  zeros, as `rec -D` does on macOS; on a real microphone, what signals a recording, and the two
+  latencies below.
+  - Measured already ("Windows, measured"): the recorder's output timing, its behavior in a
+    session without an endpoint and under each permission value present or absent, and the
+    script's count in both sessions.
 - The latest stable Debian, Fedora and Ubuntu, desktop editions: which recorder programs their
   default installs carry, whether ALSA's `default` PCM reaches the desktop's microphone, the
   package to name when none is found, and the environment the reaper's job needs to find the
   audio server's socket (`XDG_RUNTIME_DIR`, `PULSE_SERVER`).
-- The first-byte latency from a key press, with the microphone idle, which the host's server
-  may have suspended. Whether `/voice` loses the first syllables on this path more than on
-  the CLI's native one on the same host decides whether the relay keeps the recorder running.
-- Word endings on `SIGTERM`: how much audio is in flight at the key's release, against the
-  CLI's native path on the same host.
+- The first word of a dictation: with the recorder running all session and the round trip's
+  audio kept, whether it arrives whole, against the CLI's own path on the same host, whose
+  built-in module's start is unmeasured; and the delay from the key press to the first forwarded
+  byte.
+- Word endings on `SIGTERM`: how much audio is in flight at the key's release, with and without
+  `SOX_OPTS` in the agent's environment, against the CLI's own path on the same host.
 
 ## Excluded
 
 - Device passthrough, patches to the agents, and playback to the host: Codex's spoken replies
   are not heard.
-- A native-image launcher's Windows relay: Java Sound is not available there (doc/TODO.md),
-  and the recorder program it needs instead is that item's.
 - agy's `mic-serve` protocol: its `parec` path is served instead.
 - Sessions whose profile excludes an agent's transcription host: the agent's stream, not the
   relay, fails.
@@ -521,3 +751,8 @@ SECURITY.md gains "Microphone", with the clipboard section's form, and keeps the
   at `master` on 2026-10-09
 - PulseAudio's `src/pulsecore/core-util.c` (`pa_get_state_dir`), `src/pulsecore/protocol-native.c`
   (`pa_native_options_parse`) and `src/utils/pactl.c` (the subscription mask), read the same day
+- https://manpages.debian.org/trixie/pulseaudio-utils/pacat.1.en.html (`parec`, `parecord`) and
+  https://manpages.debian.org/trixie/sox/soxformat.7.en.html (`waveaudio`), read on 2026-10-11
+- https://codeberg.org/sox_ng/sox_ng/releases (14.8.1, its `README.win32` and `sox_ng.txt` for
+  `-d` and `--buffer`), Homebrew's `sox_ng` formula (`--enable-replace`) and the sox_ng wiki's
+  "Distros" page (Debian testing ships sox_ng as `sox`), read on 2026-10-11
