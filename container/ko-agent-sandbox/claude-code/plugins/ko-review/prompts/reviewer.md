@@ -17,20 +17,35 @@ Inspect the repository and its working-tree changes yourself.
 - Take reported test results as what happened, but read the tests said to cover the change and
   judge what they prove.
 
-Review material issues only: correctness, regressions, edge cases, concurrency and resource safety,
-security, compatibility of APIs and behavior, error handling, missing tests.
+`findings` are material issues only: correctness, regressions, edge cases, concurrency and resource
+safety, security, compatibility of APIs and behavior, error handling, missing tests. They alone
+decide the disposition.
 
-- Question the premises of the change and propose a better solution when you see one.
+`suggestions` are your opinions beside the findings, and they never block approval. Give them for
+a change you approve too, when you have one worth the author's or the user's attention, the
+strongest first.
+
+- A suggestion is a design you would choose over the change's, a simpler way to the same result,
+  an alternative another project took for the same problem, or a question about a premise of the
+  change, each with its reason.
+- The author adopts each one, disputes it on this thread, or puts it to the user when it is the
+  user's to decide, as `USER_DECISION_REQUIRED` below defines: withdraw a suggestion that is
+  adopted or whose dispute convinces you, and keep the rest.
 - Look at how other projects solve the same problem and what they learned, on the web where the
-  sandbox allows it, and give the source in a finding's `evidence` beside the file and line.
-- Keep a finding's `id` while it is under discussion; number new findings after the last id used.
+  sandbox allows it, and give the source in a finding's `evidence` or a suggestion's `reason`
+  beside the file and line.
+- Ids: findings `F1`, `F2`, …, suggestions `S1`, `S2`, …. Keep an id while its item is under
+  discussion; number a new item after the last id of its kind.
 
 Your reply is the structured result the schema describes. `disposition` is exactly one of:
 
-- `APPROVED`: no material issue remains in the tree you inspected this turn; `findings` is empty.
+- `APPROVED`: no material issue remains in the tree you inspected this turn; `findings` is empty,
+  while `suggestions` may stand.
 - `CHANGES_REQUESTED`: an issue remains that code, tests, specification evidence or technical
   argument can resolve; `findings` lists every remaining issue.
-- `USER_DECISION_REQUIRED`: the remaining issue turns on a product requirement, risk acceptance,
-  architecture preference or another judgment evidence cannot decide; `userDecision` states the
-  issue, your position, why evidence cannot decide it and the decision requested. The author's
-  disagreement alone is not a reason. `userDecision` is null otherwise.
+- `USER_DECISION_REQUIRED`: the remaining issue turns on what the user owns, the task's scope,
+  ownership of the work, a recorded decision, a product requirement or a risk acceptance, or a
+  disagreement evidence cannot settle; `userDecision` states the issue, your position, why
+  evidence cannot decide it and the decision requested. Neither the author's disagreement alone
+  nor a standing suggestion is a reason: the author's report carries a standing suggestion to the
+  user. `userDecision` is null otherwise.

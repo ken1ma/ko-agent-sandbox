@@ -380,7 +380,10 @@ in two roles.
 
 **The controller**, started by the entrypoint beside the daemon, is the one holder of the
 recording state inside the sandbox, level-triggered: it keeps two facts current and acts on
-their difference, on every event and every five seconds besides.
+their difference, on every event and every five seconds besides. It writes its own pid file,
+pid and start time as the writer's below, under the channel's directory, for the writer's
+watch; the entrypoint starts it again while the daemon runs, so a controller that dies costs
+the dictation in flight, not the session's microphone.
 
 - *Demand*: whether an agent has a stream open on the microphone.
   - It subscribes with `pactl subscribe` first, then lists `pactl list short source-outputs`,
@@ -425,16 +428,33 @@ their difference, on every event and every five seconds besides.
 - It writes its pid file — pid and start time, written whole to a temporary name and renamed,
   and removed by the writer alone.
 - It checks that the pipe source's path is a FIFO (`S_ISFIFO`, no following of links) and
-  opens it for writing.
+  opens it for writing, non-blocking.
 - Only then it writes `ready` and a newline to its stdout with `os.write`, the host's signal
   to start recording: after the FIFO is open, so the host never records into a writer that
   cannot take PCM, and never through Python's stdout, which a non-interactive process
   block-buffers and would hold while the writer waits on stdin.
-- It copies its stdin to the FIFO with `os.read` and `os.write`, blocking, until its stdin
-  ends or `SIGTERM` arrives. It watches nothing: the daemon reads the FIFO continuously, so a
-  write never waits longer than the pipe's capacity, and a signal is the one interruption a
-  blocking copy needs. Python's buffered streams would hold up to their buffer of audio,
-  4 KiB being 128 ms, and `-I` ignores `PYTHONUNBUFFERED`.
+- It copies its stdin to the FIFO with `os.read` and `os.write` until its stdin ends, `SIGTERM`
+  arrives, or the controller is gone: it waits in `select` on the controller's pidfd, readable
+  once the controller has exited, on its stdin while it holds no chunk, and on the FIFO for
+  writing while it holds one, so neither a full FIFO nor an idle stdin hides the controller's
+  death. The daemon reads the FIFO continuously, so the FIFO is full only when the daemon has
+  stopped reading; the writer then stops reading its stdin, podman absorbs what it reads eagerly
+  ("The relay"), and once the recorder's write blocks, five seconds without bytes end the
+  recorder and the forwarding with it. Python's buffered streams would hold up to their buffer
+  of audio, 4 KiB being 128 ms, and `-I` ignores `PYTHONUNBUFFERED`.
+  - The controller's pidfd, taken from its pid file with the start-time check the controller
+    makes on the writer's, because the controller alone ends a forwarding on the last stream's
+    close: with it dead, the writer would forward the host microphone into the sandbox with no
+    stream open until the session's end, since a recorder delivering bytes, silence included,
+    is never ended ("The relay").
+  - Whole frames only: it writes an even number of bytes, keeping an odd trailing byte for the
+    next read, in writes of at most `PIPE_BUF`, which pipe(7) keeps atomic, so the daemon's reads
+    return whole frames too. The exec transport hands the writer chunks of any length, while
+    `module-pipe-source` reads up to `PIPE_BUF` bytes at a time and posts each read's length as a
+    chunk, and `pa_source_output_push` asserts that a chunk is frame-aligned: `pa_assert` aborts
+    the daemon unless the build defines `NDEBUG`, and with it off a half frame shifts every
+    later sample (`module-pipe-source.c`, `source-output.c`, `macro.h`, read at `master` on
+    2026-10-13).
 `timeout` is not used around a stream: it bounds a whole command, which would cut a dictation
 at the bound; the clipboard's `timeout 10 sh -c "cat > rsp"` fits a reply read whole, not
 this.
@@ -483,7 +503,8 @@ daemon's FIFO `mic` beside it.
   - Every path on both sides is absolute: an exec's working directory is the container's, not
     the channel's.
 - A forwarding ends, and the exec and the copy with it, when any of these happens:
-  - the exec ends: the controller ended the writer, or it died, or the daemon is gone;
+  - the exec ends: the controller ended the writer, or the writer or the controller died, or the
+    daemon is gone;
   - the recorder ends, or delivers no bytes for five seconds, silence being bytes too: it is
     logged with its exit status and its stderr's first line to the launcher's log, where a
     permission refusal or a device that disappeared is read, and started again at the next
@@ -575,8 +596,8 @@ SECURITY.md gains "Microphone", with the clipboard section's form, and keeps the
   between a request and the writer's `ready`, and the pipes it flows through on the host are the
   user's alone ("The relay").
   - Audio reaches the sandbox from a request until the controller sees the last stream close,
-    or until the writer's death, the exec's end, the container or the session. There is no
-    bound on how long a process keeps a stream open.
+    or until the controller's or the writer's death, the exec's end, the container or the
+    session. There is no bound on how long a process keeps a stream open.
   - macOS shows its microphone indicator for the whole session; nothing else signals the grant,
     and nothing signals a forwarding.
 - What leaves the host is the agent's doing: Claude Code streams the audio to Anthropic, agy to
@@ -636,7 +657,9 @@ SECURITY.md gains "Microphone", with the clipboard section's form, and keeps the
   `start` read during a recording is read after it; forwarding begins only on `ready`, and an
   exec that ends without it within the bound forwards nothing and resumes the drain.
 - Integrity: a known PCM sequence fed to a fake recorder on the host is read back from the
-  daemon by `parec` at the same sample spec, sample for sample.
+  daemon by `parec` at the same sample spec, sample for sample; the same with the exec stand-in
+  handing the writer fragments of odd lengths, where every write to the FIFO is an even number
+  of bytes of at most `PIPE_BUF`.
 - Forwarding, against a fake recorder and an exec stand-in that reads its stdin as eagerly as
   podman does:
   - while idle, nothing the recorder writes reaches the sandbox and nothing accumulates; from
@@ -652,8 +675,15 @@ SECURITY.md gains "Microphone", with the clipboard section's form, and keeps the
   - the last stream's close ends the exec and the forwarding within the bound while PCM is
     flowing, the recorder keeps running and the drain resumes, and the writer's `SIGTERM`
     interrupts a copy blocked in `os.write`;
+  - the controller's death (`SIGKILL`) while PCM flows ends the writer, the exec and the
+    forwarding within the bound, with the daemon reading and again with the daemon `SIGSTOP`ped
+    and the FIFO full; the entrypoint starts a controller again, and the next stream gets a
+    `start`; a controller pid a later process reuses is not watched as the controller;
   - a recorder that writes nothing for five seconds, idle or forwarding, is ended and logged,
     and the next request starts a new one; a recorder that fails at launch fails the launch;
+  - a daemon `SIGSTOP`ped during a forwarding: the writer stops reading its stdin, the recorder's
+    write blocks after what podman absorbed, which is recorded, and the recorder and the
+    forwarding end within the five seconds plus that; the next request records;
   - the container's stop ends the relay; the session's end `KILL`s the recorder and a
     forwarding in progress;
   - the writer refuses a path that is not a FIFO.
@@ -751,6 +781,8 @@ SECURITY.md gains "Microphone", with the clipboard section's form, and keeps the
   at `master` on 2026-10-09
 - PulseAudio's `src/pulsecore/core-util.c` (`pa_get_state_dir`), `src/pulsecore/protocol-native.c`
   (`pa_native_options_parse`) and `src/utils/pactl.c` (the subscription mask), read the same day
+- PulseAudio's `src/pulsecore/source-output.c` (`pa_source_output_push`), `src/pulsecore/macro.h`
+  (`pa_assert`) and `core-util.c` (`pa_pipe_buf`), read at `master` on 2026-10-13
 - https://manpages.debian.org/trixie/pulseaudio-utils/pacat.1.en.html (`parec`, `parecord`) and
   https://manpages.debian.org/trixie/sox/soxformat.7.en.html (`waveaudio`), read on 2026-10-11
 - https://codeberg.org/sox_ng/sox_ng/releases (14.8.1, its `README.win32` and `sox_ng.txt` for

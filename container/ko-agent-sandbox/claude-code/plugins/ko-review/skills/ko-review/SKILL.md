@@ -2,8 +2,9 @@
 name: ko-review
 description: >-
   Have a separate Codex or Claude Code session review the working tree on one persistent thread,
-  then fix or dispute its findings on that same thread until it approves the tree or the user
-  must decide. Invoke it only when the user asks for such a review, never on your own.
+  then fix or dispute its findings and answer its suggestions on that same thread until it
+  approves the tree or the user must decide. Invoke it only when the user asks for such a review,
+  never on your own.
 argument-hint: [a review id to continue, or a reviewer, base commit, model, effort and instructions]
 ---
 
@@ -56,9 +57,9 @@ answer.
 2. Before reading the change, run `ko-review defaults REVIEWER` and ask the user for the
    reviewer's model and its reasoning effort, both questions at once, unless the argument names
    them. The user can type a value no option offers, such as a full Claude model name.
-   - Each question's first option is `recommended`'s value, labeled "(current)" when the
-     configuration set it (`model` or `effort` is not null) and "(default)" otherwise, as Codex's
-     `/model` picker labels them. A null value is a first option reading "REVIEWER's default".
+   - The model question's first option is `recommended.model`, labeled "(current)" when the
+     configuration set it (`model` is not null) and "(default)" otherwise, as Codex's `/model`
+     picker labels them. A null value is a first option reading "REVIEWER's default".
    - Model options: after the first, the catalog's other models in its order, up to four
      options, each with its `description`. For `claude` the catalog is the four aliases Claude
      Code documents, `fable`, `opus`, `sonnet` and `haiku`.
@@ -66,9 +67,12 @@ answer.
      it second, labeled "(recommended upgrade)", with its `migrationMarkdown` as the description.
    - With a null `catalog` or fewer than two models in it, leave the model question out, since
      AskUserQuestion needs two options; take `recommended.model`, and say so.
-   - Effort options: after the first, the other `recommended.efforts` in their order, up to four
-     options; with a null `efforts`, which says the model's levels are unknown, `low`, `medium`
-     and `high`.
+   - The effort question's first option is the configured effort, "(current)", when `effort` is
+     not null. Otherwise it is `high`, "(recommended)", where `efforts` list it or are null, and
+     `recommended.effort`, the model's own default, comes second as "(default)"; a null one
+     reads "REVIEWER's default". Then the other `recommended.efforts` in their order, up to four
+     options in all; with a null `efforts`, which says the model's levels are unknown, `low`,
+     `medium` and `high` less the ones already offered.
    - A model whose `efforts` is an empty list takes no effort: leave the effort question out, pass
      no `--effort`, and say so.
    - For a model other than `recommended.model`, a "(default)" effort means that model's
@@ -89,20 +93,32 @@ answer.
      reviewer, base, model and effort it names, to a second file and add
      `--instructions-file FILE`; the reviewer reads them every round, ahead of your messages.
    - If the argument names a base, add `--base REF` with it.
-5. Tell the user in one or two lines how the round went: the review outcome, the open findings,
-   each id with a few words, and what you do next. `ko-review export REVIEW_ID --round N` prints
-   the round's full text for the user who asks.
+5. Tell the user in one or two lines how the round went: the review outcome, the open findings
+   and suggestions, each id with a few words, and what you do next. `ko-review export REVIEW_ID
+   --round N` prints the round's full text for the user who asks.
 6. Evaluate every finding independently: fix the ones you accept, dispute the ones you reject with
    concrete evidence (file and line, a test result, a specification). Do not accept a finding to
    end the review, and do not reject one without evidence.
+   - A suggestion is the reviewer's opinion and never blocks approval. Adopt one you agree with
+     like a fix, and dispute one you disagree with as you dispute a finding.
+   - The user decides a finding or a suggestion that turns on what the user owns, the task's
+     scope, ownership of the work, a recorded decision, a product requirement or a risk
+     acceptance, or a disagreement evidence cannot settle. Put it to the user in your reply with
+     why evidence cannot decide it; do not adopt it. A suggestion the reviewer keeps after your
+     dispute stays in dispute while evidence can settle it, as step 9 treats a user decision.
+   - Tell the user in the step 5 lines each adopted suggestion that changes an interface, such
+     as a command, an option, a schema or a file format, or how the work is split into
+     components: the user learns of a design change from those lines, not from the transcript.
 7. Run the relevant tests and checks after your fixes.
 8. Write a response file with `## Changes since the previous review`, `## Accepted findings`
-   (what was fixed and how), `## Disputed findings` (the evidence for each rejection) and
-   `## Verification`, then run `ko-review continue REVIEW_ID --message-file FILE`.
+   (what was fixed and how), `## Disputed findings` (the evidence for each rejection),
+   `## Suggestions` (each one adopted, disputed with the reason, or put to the user with why the
+   user decides it) and `## Verification`, then run
+   `ko-review continue REVIEW_ID --message-file FILE`.
    - If the user sent instructions for the reviewer meanwhile, write them to a file and add
      `--instructions-file FILE`; they replace the standing instructions from that round on.
      Instructions for you apply at once.
-9. Repeat from step 5 until `disposition` is `APPROVED`.
+9. Repeat from step 5 until `disposition` is `APPROVED` and the round left you nothing to adopt.
    - If `disposition` is `USER_DECISION_REQUIRED`, read `userDecision`. If technical evidence can
      settle it, put that evidence in a response file and `continue` the same review.
    - Only if you agree that no technical evidence can settle it, write the question for the user
@@ -118,9 +134,13 @@ answer.
 However it ends, report:
 
 - every round, as a table from `ko-review export REVIEW_ID` with a row per round: the review
-  outcome, or the error that ended the round; the findings the reviewer raised, each id with a few
-  words; and what your next message did about each, fixed or disputed;
+  outcome, or the error that ended the round; the findings and suggestions the reviewer raised,
+  each id with a few words; and what your next message did about each: fixed, disputed or
+  answered;
 - for each disputed finding, the evidence you gave;
+- every suggestion you put to the user, with the reviewer's reason, your view and why the user
+  decides it; and every adopted suggestion that changed an interface or the split into
+  components;
 - the review id, and the `inspect` lines of the last output as a code block: the commands with
   which the user sees how the review went, lists the checkout's reviews and deletes this one. A
   failure's JSON carries them too once a review exists.

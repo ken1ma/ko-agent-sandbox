@@ -34,6 +34,7 @@ PLUGIN_VERSION = json.loads((PLUGIN_ROOT / ".claude-plugin/plugin.json").read_te
 RESULT_SCHEMA = PLUGIN_ROOT / "schemas/review-result.schema.json"
 DISPOSITIONS = {"APPROVED", "CHANGES_REQUESTED", "USER_DECISION_REQUIRED"}
 SEVERITIES = {"critical", "high", "medium", "low"}
+SUGGESTION_KINDS = {"design", "simplification", "alternative", "question"}
 TERMINAL = {"USER_DECISION_REQUIRED", "LOOP_LIMIT_REACHED"}
 DEFAULT_MAX_ROUNDS = 12
 DEFAULT_TIMEOUT_SECONDS = 3600
@@ -816,8 +817,9 @@ def egress_diagnostics(reviewer):
     return lines
 
 
-RESULT_KEYS = {"disposition", "summary", "findings", "userDecision"}
+RESULT_KEYS = {"disposition", "summary", "findings", "suggestions", "userDecision"}
 FINDING_KEYS = {"id", "severity", "location", "description", "evidence"}
+SUGGESTION_KEYS = {"id", "kind", "location", "description", "reason"}
 USER_DECISION_KEYS = {"issue", "reviewerPosition", "whyTechnicalEvidenceCannotDecide", "decisionRequested"}
 
 
@@ -846,6 +848,20 @@ def validate_result(result):
             return f"finding {finding['id']}: location is neither a string nor null"
         if not all(isinstance(finding[key], str) for key in ("description", "evidence")):
             return f"finding {finding['id']}: description and evidence must be strings"
+    suggestions = result["suggestions"]
+    if not isinstance(suggestions, list):
+        return "suggestions is not an array"
+    for suggestion in suggestions:
+        if not isinstance(suggestion, dict) or set(suggestion) != SUGGESTION_KEYS:
+            return "a suggestion's keys are not exactly " + ", ".join(sorted(SUGGESTION_KEYS))
+        if not isinstance(suggestion["id"], str):
+            return "a suggestion's id is not a string"
+        if not isinstance(suggestion["kind"], str) or suggestion["kind"] not in SUGGESTION_KINDS:
+            return f"suggestion {suggestion['id']} has no kind"
+        if suggestion["location"] is not None and not isinstance(suggestion["location"], str):
+            return f"suggestion {suggestion['id']}: location is neither a string nor null"
+        if not all(isinstance(suggestion[key], str) for key in ("description", "reason")):
+            return f"suggestion {suggestion['id']}: description and reason must be strings"
     decision = result["userDecision"]
     if result["disposition"] == "USER_DECISION_REQUIRED":
         if not isinstance(decision, dict) or set(decision) != USER_DECISION_KEYS \
@@ -1236,6 +1252,7 @@ def review_turn(review, message):
         "disposition": result["disposition"],
         "summary": result["summary"],
         "findings": result["findings"],
+        "suggestions": result["suggestions"],
         "userDecision": result["userDecision"],
     }
 
@@ -1453,6 +1470,14 @@ def render_entries(reviewer, entries, with_round_headings=True):
                 lines.append(f"- **{finding['id']}** ({finding['severity']}){where}: {finding['description']}")
                 lines.append(f"  Evidence: {finding['evidence']}")
             if result["findings"]:
+                lines.append("")
+            if result.get("suggestions"):  # a journal outlives the plugin version that wrote it
+                lines += ["Suggestions, which do not block approval:", ""]
+            for suggestion in result.get("suggestions", []):
+                where = f" `{suggestion['location']}`" if suggestion.get("location") else ""
+                lines.append(f"- **{suggestion['id']}** ({suggestion['kind']}){where}: {suggestion['description']}")
+                lines.append(f"  Reason: {suggestion['reason']}")
+            if result.get("suggestions"):
                 lines.append("")
             if result.get("userDecision"):
                 decision = result["userDecision"]

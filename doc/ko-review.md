@@ -3,7 +3,9 @@
 `/ko-review` asks a separate Codex or Claude Code session to review the working tree. The user
 chooses the reviewer. The author — the session that made the changes — fixes or disputes each
 finding on the same reviewer thread until the reviewer approves the exact tree or asks for a
-decision only the user can make.
+decision only the user can make. The reviewer's suggestions, its opinions on the design, never
+block approval; the author adopts or disputes them, and puts to the user those that are the
+user's to decide.
 
 Each new review has its own reviewer thread. Invoke the skill without an existing review id to
 start an independent audit of an approved tree.
@@ -72,10 +74,27 @@ start an independent audit of an approved tree.
      and `--effort`. The skill asks the user before every `start`, offering first what
      `ko-review defaults REVIEWER` reports ("Defaults", below).
 2. The reviewer answers with a structured result: `disposition` `APPROVED`, `CHANGES_REQUESTED` or
-   `USER_DECISION_REQUIRED`, a summary, findings with stable ids, and for the user's decision the
-   issue, the reviewer's position, why evidence cannot decide it and the decision requested.
-3. The author fixes the findings it accepts, disputes the others with evidence, runs the tests, and
-   sends both with `ko-review continue REVIEW_ID --message-file FILE` to the same thread.
+   `USER_DECISION_REQUIRED`, a summary, findings with stable ids, suggestions with their own ids,
+   and for the user's decision the issue, the reviewer's position, why evidence cannot decide it
+   and the decision requested.
+   - A finding is a material issue and decides the disposition. A suggestion is an opinion the
+     reviewer holds beside the findings, a design it prefers, a simpler way, an alternative another
+     project took or a question about a premise, with its reason; `APPROVED` may carry
+     suggestions. The two are separate because a finding blocks approval, which an opinion must
+     not.
+3. The author fixes the findings it accepts, disputes the others with evidence, adopts or
+   disputes each suggestion the same way, runs the tests, and sends all of it with
+   `ko-review continue REVIEW_ID --message-file FILE` to the same thread.
+   - The user decides an item that turns on what the user owns, the task's scope, ownership of
+     the work, a recorded decision (AGENTS.md's boundary rule), a product requirement or a risk
+     acceptance, or on a disagreement evidence cannot settle. `USER_DECISION_REQUIRED` and the
+     author's "put it to the user" apply that one condition, in the same words in the prompt and
+     the skill, which the test suite checks, so that neither side escalates what the other acts on.
+   - The author acts on every other suggestion, adopting or disputing it, rather than relay it:
+     the reviewer already judges a suggestion worth attention before raising it, and the next
+     round reviews what was adopted. The author's round report names each adopted suggestion that
+     changes an interface or the split into components, so the user learns of a design change made
+     on the reviewer's opinion without reading the transcript.
    - To send instructions the user gives during a review, add `--instructions-file FILE` to
      `continue`. They replace the standing instructions from that round on and invalidate the
      current approval, since the reviewer has not approved the tree under those instructions.
@@ -291,8 +310,18 @@ built-in default, which the skill leaves to it by passing no option.
 
 - `defaults` is marked `partial`: a layer the reviewer ranks above its files is not on disk, so the
   skill passes each chosen value explicitly rather than relying on the default it displayed.
-- The skill recommends no model or effort: nothing measured shows which one finds more in a change,
-  and a guess toward higher effort spends more of the reviewer's usage limit.
+- The skill recommends no model. It recommends `high` as the effort when the configuration sets
+  none, ahead of the model's own default, `low` for the current Codex models; a configured effort
+  stays first, since the user set it knowing the usage limit it spends.
+  - Measured on 2026-10-13 (reviews `2026-10-13-1001-7dc56e66` and `2026-10-13-1001-526190d9`):
+    the tree of the 2026-10-09 review's round 3, `plan-microphone.md` before its later
+    corrections, rebuilt from its snapshot in a clone and reviewed once per level by Codex
+    `gpt-6.1-sol` with the reviewer prompt of 2026-10-13.
+    - `low`: 6 commands, 3 web searches, 46 s, approved with no finding.
+    - `high`: 12 commands, 9 web searches, 210 s, two material findings the plan had not
+      answered (`plan-microphone.md`, "The controller and the writer", records both).
+    - Neither found the PulseAudio option that does not exist, which a review outside the sandbox
+      found; the five rounds of 2026-10-09 at `low` ran one to four commands each.
 
 For Codex:
 
@@ -311,8 +340,9 @@ For Codex:
   - With an API key rather than a ChatGPT sign-in, Codex also leaves out the models not
     `supported_in_api`, and the catalog does not. In the catalog measured with codex-cli 0.156.1,
     every model is supported.
-- The skill offers `recommended` first, labeled as the picker labels it: "(current)" when the
-  configuration set it, "(default)" otherwise.
+- The skill offers `recommended.model` first, and `recommended.effort` first when the
+  configuration set it, labeled as the picker labels them: "(current)" when the configuration set
+  it, "(default)" otherwise.
 - For a retiring model, `recommended.upgrade` names the model its catalog `upgrade` field
   recommends, which the skill offers second.
 
@@ -343,7 +373,10 @@ For Claude:
 
 `prompts/reviewer.md` is the default for every review: it asks for skepticism toward the author's
 claims, tells the reviewer not to run tests or builds but to read the tests and judge what they
-prove, and invites questions about the premises, better solutions and sources from other projects.
+prove, limits findings to material issues, and asks for suggestions beside them ("The cycle", step
+2). Findings are `F1`, `F2`, …, suggestions `S1`, `S2`, …, and an id stays while its item is
+discussed. A standing suggestion is no ground for `USER_DECISION_REQUIRED`, since the author's
+report carries it to the user.
 Instruction changes are journaled in the round they take effect, and the export shows them there.
 Both reviewers also read the repository's own instructions, AGENTS.md or CLAUDE.md, as any session
 in it would.
