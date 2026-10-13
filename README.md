@@ -148,6 +148,9 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
    Choose Codex or a separate Claude Code session as the reviewer. Claude fixes or disputes each
    finding on the same reviewer thread until the reviewer approves the exact tree or asks for a
    decision only you can make.
+   - The reviewer's suggestions, opinions on the design that do not block approval, Claude adopts
+     or disputes; it brings to you those that are yours to decide and names the adopted ones that
+     changed the design.
    - The review covers the uncommitted changes by default.
    - Codex reviews under this project's Codex sign-in.
    - Each round's tree and transcript are on a ref under `refs/ko-review/` in the repository, for

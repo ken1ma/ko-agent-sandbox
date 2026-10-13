@@ -127,11 +127,12 @@ sys.exit(step.get("exit", 0))
 CHANGES = {
     "disposition": "CHANGES_REQUESTED", "summary": "one issue",
     "findings": [{"id": "F1", "severity": "high", "location": "app.py:1", "description": "d", "evidence": "e"}],
-    "userDecision": None,
+    "suggestions": [], "userDecision": None,
 }
-APPROVED = {"disposition": "APPROVED", "summary": "fine", "findings": [], "userDecision": None}
+APPROVED = {"disposition": "APPROVED", "summary": "fine", "findings": [], "suggestions": [], "userDecision": None}
+SUGGESTION = {"id": "S1", "kind": "design", "location": "app.py:3", "description": "s", "reason": "r"}
 USER_DECIDES = {
-    "disposition": "USER_DECISION_REQUIRED", "summary": "needs a call", "findings": [],
+    "disposition": "USER_DECISION_REQUIRED", "summary": "needs a call", "findings": [], "suggestions": [],
     "userDecision": {
         "issue": "i", "reviewerPosition": "p", "whyTechnicalEvidenceCannotDecide": "w", "decisionRequested": "d",
     },
@@ -320,6 +321,33 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(Path(repository["repository"]).resolve(), self.repo.resolve())
 
     @both_reviewers
+    def test_suggestions_never_block_approval_and_are_exported(self):
+        """A suggestion is the reviewer's opinion: an approval carries it, the export shows it with its
+        reason, and a journal written without the field still exports."""
+        output = self.start({**APPROVED, "suggestions": [SUGGESTION]})
+        self.assertEqual((output["disposition"], output["status"], output["findings"]), ("APPROVED", "APPROVED", []))
+        self.assertEqual(output["suggestions"], [SUGGESTION])
+        self.assertEqual(self.helper("verify", output["reviewId"])["status"], "APPROVED")
+        result_entry = self.journal_of(output["reviewId"])[1]
+        self.assertEqual(result_entry["result"]["suggestions"], [SUGGESTION])
+        process = self.spawn("export", output["reviewId"])
+        markdown, stderr = process.communicate(timeout=60)
+        self.assertEqual(process.returncode, 0, stderr)
+        self.assertIn(f"### {self.display}: APPROVED", markdown)
+        self.assertIn("Suggestions, which do not block approval:\n\n- **S1** (design) `app.py:3`: s\n  Reason: r\n",
+                      markdown)
+        journal = Path(self.helper("show", output["reviewId"])["journalPath"])
+        legacy = [json.loads(line) for line in journal.read_text().splitlines()]
+        del legacy[1]["result"]["suggestions"]
+        journal.write_text("".join(json.dumps(entry) + "\n" for entry in legacy))
+        process = self.spawn("export", output["reviewId"])
+        markdown, stderr = process.communicate(timeout=60)
+        self.assertEqual(process.returncode, 0, stderr)
+        self.assertIn(f"### {self.display}: APPROVED", markdown)
+        self.assertNotIn("S1", markdown)
+        self.assertNotIn("Suggestions", markdown)
+
+    @both_reviewers
     def test_continue_resumes_the_same_thread_and_approval_binds_the_tree(self):
         review_id = self.start()["reviewId"]
         self.helper("verify", review_id, expect=1)
@@ -392,6 +420,12 @@ class HelperTest(unittest.TestCase):
             ({"result": {**CHANGES, "findings": [{**CHANGES["findings"][0], "location": 3}]}}, "INVALID_RESULT"),
             ({"result": {**USER_DECIDES, "userDecision": {**USER_DECIDES["userDecision"], "more": "x"}}},
              "INVALID_RESULT"),
+            ({"result": {key: value for key, value in APPROVED.items() if key != "suggestions"}}, "INVALID_RESULT"),
+            ({"result": {**APPROVED, "suggestions": {}}}, "INVALID_RESULT"),
+            ({"result": {**APPROVED, "suggestions": [{**SUGGESTION, "kind": "nit"}]}}, "INVALID_RESULT"),
+            ({"result": {**APPROVED, "suggestions": [{**SUGGESTION, "location": 3}]}}, "INVALID_RESULT"),
+            ({"result": {**APPROVED, "suggestions": [{key: value for key, value in SUGGESTION.items()
+                                                      if key != "reason"}]}}, "INVALID_RESULT"),
             ({"result": None}, "INVALID_RESULT"),
             ({"exit": 1, "emit_thread_started": False, "stderr": "boom"}, "REVIEWER_FAILED"),
             ({"exit": 1, "result": APPROVED, "stderr": "boom"}, "REVIEWER_FAILED"),
@@ -1550,6 +1584,7 @@ class HelperTest(unittest.TestCase):
         self.assertEqual([path.name for path in (PLUGIN / "skills").iterdir() if path.is_dir()], ["ko-review"])
         skill = (PLUGIN / "skills/ko-review/SKILL.md").read_text()
         self.assertIn("name: ko-review\n", skill)  # the plugin's own name, so that the bare /ko-review runs it
+        self.assertIn("`## Suggestions`", skill)  # the author answers every suggestion, the prompt says
         self.assertIn("ko-review start REVIEWER --message-file", skill)
         self.assertIn("ko-review defaults REVIEWER", skill)
         for command in ("continue", "escalate", "verify"):
@@ -1557,6 +1592,30 @@ class HelperTest(unittest.TestCase):
         for name in ("codex", "claude"):  # the reviewer question offers each name the helper takes
             self.assertIn(f"`{name}`", skill)
         self.assertTrue(os.access(HELPER, os.X_OK))
+
+    def test_schema_prompt_and_helper_agree_on_the_result_shape(self):
+        helper, _ = self.helper_module()
+        schema = json.loads((PLUGIN / "schemas/review-result.schema.json").read_text())
+        self.assertEqual(set(schema["required"]), helper.RESULT_KEYS)
+        self.assertEqual(set(schema["properties"]["disposition"]["enum"]), helper.DISPOSITIONS)
+        findings = schema["properties"]["findings"]["items"]
+        self.assertEqual(set(findings["required"]), helper.FINDING_KEYS)
+        self.assertEqual(set(findings["properties"]["severity"]["enum"]), helper.SEVERITIES)
+        suggestions = schema["properties"]["suggestions"]["items"]
+        self.assertEqual(set(suggestions["required"]), helper.SUGGESTION_KEYS)
+        self.assertEqual(set(suggestions["properties"]["kind"]["enum"]), helper.SUGGESTION_KINDS)
+        self.assertEqual(set(schema["properties"]["userDecision"]["anyOf"][1]["required"]), helper.USER_DECISION_KEYS)
+        prompt = (PLUGIN / "prompts/reviewer.md").read_text()
+        for word in ("`findings`", "`suggestions`", "`userDecision`", *helper.DISPOSITIONS):
+            self.assertIn(word, prompt)
+        self.assertIn("suggestion", (PLUGIN / "prompts/continue.md").read_text())
+        # the reviewer and the author escalate on one condition, in the same words (doc/ko-review.md, "The cycle")
+        user_decides = (
+            "what the user owns, the task's scope, ownership of the work, a recorded decision, a product requirement"
+            " or a risk acceptance, or a disagreement evidence cannot settle"
+        )
+        self.assertIn(user_decides, " ".join(prompt.split()))
+        self.assertIn(user_decides, " ".join((PLUGIN / "skills/ko-review/SKILL.md").read_text().split()))
 
 
 class ClaudeHelperTest(HelperTest):

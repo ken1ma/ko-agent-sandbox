@@ -1,7 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["disposition", "summary", "findings", "userDecision"],
+  "required": ["disposition", "summary", "findings", "suggestions", "userDecision"],
   "properties": {
     "disposition": {
       "type": "string",
@@ -20,6 +20,21 @@
           "location": {"type": ["string", "null"]},
           "description": {"type": "string"},
           "evidence": {"type": "string"}
+        }
+      }
+    },
+    "suggestions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "location", "description", "reason"],
+        "properties": {
+          "id": {"type": "string"},
+          "kind": {"type": "string", "enum": ["design", "simplification", "alternative", "question"]},
+          "location": {"type": ["string", "null"]},
+          "description": {"type": "string"},
+          "reason": {"type": "string"}
         }
       }
     },
