@@ -11,7 +11,7 @@ import java.nio.file.{Files, Path, StandardOpenOption}
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 
-import HostCommands.{ExecWithInput, Os, findOnPath, quoteFreeSh, run}
+import HostCommands.{containerRunning, ExecWithInput, Os, findOnPath, quoteFreeSh, run}
 
 object MicrophoneRelay:
 
@@ -703,9 +703,7 @@ object MicrophoneRelay:
     @volatile private var exec: Option[Process] = None
     @volatile private var stopped = false
 
-    private def running(): Boolean =
-      try run(podman, "container", "inspect", "--format", "{{.State.Running}}", sandboxContainer).text == "true"
-      catch case _: IOException => false
+    private def running(): Boolean = containerRunning(podman, sandboxContainer)
 
     def serve(): Unit =
       val watchdog = Thread(() => watch(), "ko-agent-sandbox-microphone-watchdog")

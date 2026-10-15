@@ -143,8 +143,6 @@ object LogHelper:
   /** The launcher, which compiles this file, also names a project's id and volumes, a build
     * directory's records and a runtime's fingerprint by it. */
   def sha256Hex(text: String): String =
-    java.security.MessageDigest
-      .getInstance("SHA-256")
-      .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8))
-      .map(byte => f"$byte%02x")
-      .mkString
+    java.util.HexFormat.of().formatHex(
+      java.security.MessageDigest.getInstance("SHA-256").digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+    )

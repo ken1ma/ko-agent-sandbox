@@ -137,7 +137,7 @@ object FileHelper:
   def writeReadable(path: Path, content: String): Unit =
     writeWithMode(path, content.getBytes(StandardCharsets.UTF_8), "rw-r--r--")
 
-  /** For the one state file that is not text: the JDK keystore JdkTrust merges. */
+  /** For the one state file that is not text: the trust store RunOnHostInspection writes. */
   def writeReadable(path: Path, content: Array[Byte]): Unit =
     writeWithMode(path, content, "rw-r--r--")
 
@@ -226,6 +226,11 @@ object FileHelper:
   def directoryEntries(path: Path): Vector[Path] =
     Using.resource(Files.list(path)): entries =>
       entries.iterator().asScala.toVector
+
+  /** The entries of a directory that may be absent, something else, or unreadable: none then. */
+  def directoryEntriesIfAny(path: Path): Vector[Path] =
+    try directoryEntries(path)
+    catch case _: IOException => Vector.empty
 
   /** Every failure is an IOException: `Files.walk` reports a directory it cannot open as an
     * UncheckedIOException during iteration, which a caller's IOException handling — a counted reset

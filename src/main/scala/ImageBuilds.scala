@@ -21,7 +21,7 @@ object ImageBuilds:
   /** Both build actions run this after AgentSandboxLauncher.requirePodman: --update rebuilds the leaves through the
     * same `podman build` without a memory limit, so it shares --build's memory check. */
   def confirmMemoryForBuilds(os: Os): Unit =
-    buildMemoryWarning(probedMachineAvailable(os)).foreach: message =>
+    buildMemoryWarning(probedMachineAvailable(os, podman)).foreach: message =>
       warn(message)
       terminalReader.foreach: reader =>
         reader.prompt("Continue anyway? [y/N] ")

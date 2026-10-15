@@ -8,7 +8,7 @@ import java.io.IOException
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Path
 
-import HostCommands.{ExecWithInput, Os, findOnPath, quoteFreeSh, run}
+import HostCommands.{containerRunning, ExecWithInput, Os, findOnPath, quoteFreeSh, run}
 
 object ClipboardRelay:
 
@@ -243,9 +243,7 @@ object ClipboardRelay:
    * first wait is bounded like the reaper's, for a launcher that never reaches the start.
    */
   private def serve(powershell: Path, podman: String, sandboxContainer: String, mode: String): Unit =
-    def running(): Boolean =
-      try run(podman, "container", "inspect", "--format", "{{.State.Running}}", sandboxContainer).text == "true"
-      catch case _: IOException => false
+    def running(): Boolean = containerRunning(podman, sandboxContainer)
     var waited = 0
     while !running() && waited < 600 do
       Thread.sleep(1000)

@@ -15,7 +15,7 @@ object RunOnHostInspection:
   /** The proxy's two directories, siblings of its log as its profile is
     * (RunOnHostProxy.proxyProfileFile), so a runtime's log names them for whoever attaches to
     * it. Two, because each is one profile's grant: `leaf` the proxy's, `trust` the command's. */
-  private def sibling(proxyLog: Path, suffix: String): Path =
+  private[launcher] def sibling(proxyLog: Path, suffix: String): Path =
     proxyLog.resolveSibling(proxyLog.getFileName.toString.stripSuffix(".log") + suffix)
 
   def leafDirectory(proxyLog: Path): Path = sibling(proxyLog, ".leaf")

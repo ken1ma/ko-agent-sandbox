@@ -73,7 +73,7 @@ object LauncherImages:
       digest.update(0.toByte)
       digest.update(java.nio.ByteBuffer.allocate(8).putLong(content.length.toLong).array())
       digest.update(content)
-    digest.digest().map(b => f"$b%02x").mkString
+    java.util.HexFormat.of().formatHex(digest.digest())
 
   /**
    * Digest one directory of the unpacked context — the literal build input,

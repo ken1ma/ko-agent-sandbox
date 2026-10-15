@@ -56,15 +56,6 @@ object ContainerfileSources:
    */
   case class ImageSources(remote: Vector[String], parents: Vector[String])
 
-  def remoteImagesInContainerfile(
-    name: String,
-    text: String,
-    buildArgs: Map[String, String],
-    localImages: Set[String],
-    target: Option[String],
-  ): Either[String, Vector[String]] =
-    imageSourcesInContainerfile(name, text, buildArgs, localImages, target).map(_.remote)
-
   def imageSourcesInContainerfile(
     name: String,
     text: String,

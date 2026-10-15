@@ -36,11 +36,7 @@ object CertificateHelper:
   /** The format `openssl x509 -noout -fingerprint -sha256` prints, so the
     * recorded value can be checked by hand. */
   def certificateFingerprint(der: Array[Byte]): String =
-    MessageDigest
-      .getInstance("SHA-256")
-      .digest(der)
-      .map(b => f"$b%02X")
-      .mkString(":")
+    java.util.HexFormat.ofDelimiter(":").withUpperCase().formatHex(MessageDigest.getInstance("SHA-256").digest(der))
 
   /** Whether the certificate expires after `deadline`; an absent, empty or unparsable one
     * answers as an expiring one does. */

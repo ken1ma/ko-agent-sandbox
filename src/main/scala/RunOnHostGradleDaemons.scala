@@ -72,10 +72,7 @@ object RunOnHostGradleDaemons:
    * What changed, for the log.
    */
   def record(records: Path, found: Vector[(Long, String)], processes: Processes): Vector[String] =
-    val existing =
-      try
-        FileHelper.directoryEntries(records).filter(_.getFileName.toString.startsWith(RecordPrefix))
-      catch case _: IOException => Vector.empty
+    val existing = FileHelper.directoryEntriesIfAny(records).filter(_.getFileName.toString.startsWith(RecordPrefix))
     val (alive, stale) = existing.partition: file =>
       RunOnHostSession.leaderLives(file, processes)
     val deleted = stale.flatMap: file =>

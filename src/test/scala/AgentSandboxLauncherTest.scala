@@ -25,6 +25,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   private val LauncherBuiltImages = Set("local-base:1")
 
+  /** The registry-held images alone, which most cases here are about. */
+  private def remoteImagesInContainerfile(
+    name: String, text: String, buildArgs: Map[String, String], localImages: Set[String], target: Option[String],
+  ): Either[String, Vector[String]] =
+    imageSourcesInContainerfile(name, text, buildArgs, localImages, target).map(_.remote)
+
   /** The project's mount path as the instructions receive it: the one place they name it. */
   private val Mount = "/Users/me/src/app"
 
