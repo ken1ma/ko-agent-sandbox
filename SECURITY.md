@@ -1224,8 +1224,10 @@ profile, `InetAddress.getAllByName("example.com")` answers `nodename nor servnam
 ## Clipboard
 
 Clipboard access is off by default because the host clipboard may contain sensitive information.
-`KO_AGENT_SANDBOX_CLIPBOARD` accepts `off`, `paste` or `bidirectional`; unset or empty selects
-`off`, and any other value fails the launch. The enabled channel has these properties:
+`--clipboard=` accepts `off`, `paste` or `bidirectional`; without the option the mode is `off`, and
+any other value fails the launch. The launcher reads the mode from no variable, so a shell profile
+cannot grant the clipboard to every session unseen (doc/design.md, "Host resources are granted by
+launch options, not variables"). The enabled channel has these properties:
 
 - **The sandbox asks; the host answers.** The sandbox opens no connection to the host.
   - The relay — a job of the reaper on POSIX, a thread of the resident launcher on Windows —
@@ -1276,6 +1278,44 @@ When the session must not set the clipboard, use `off` or `paste` and a terminal
 OSC 52 writes or has them turned off. When it must not read the clipboard, use `off` and a
 terminal that ignores OSC 52 reads or has them turned off. To let the terminal answer reads only
 with your consent, keep its prompt and decline one you did not expect.
+
+## Microphone
+
+The host microphone is off by default. `--mic`, given on each launch that wants it, lets the
+agents' voice dictation record it (MicrophoneRelay, the image's `ko-sandbox-mic`;
+doc/microphone.md has the design). The channel has these properties:
+
+- **The sandbox asks; the host answers.** The sandbox opens no connection to the host.
+  - A PulseAudio daemon inside the sandbox serves the agents; its microphone is a FIFO under
+    `/tmp/ko-agent-sandbox/microphone`, and its socket reaches nothing outside the container.
+  - The relay — a job of the reaper on POSIX, threads of the resident launcher on Windows — reads
+    a `start` request through a `podman exec` on the FIFO `req` there, and forwards the recording
+    through another exec into the daemon's FIFO.
+  - No host listener, no port, no proxy rule, no file in the project.
+- **The grant is to the container, for the session.** Any process in the sandbox can open a stream
+  on the daemon's microphone, as often and as long as it likes, with no per-recording consent: an
+  open stream is a process recording, which need not be the user dictating. Leave out `--mic`
+  when code in the session must not hear the room.
+- **When the host microphone is open.** From the launch, where the relay starts the recorder and
+  keeps it running, to the session's end, whether or not anything records.
+  - While nothing records, the relay discards the audio as it arrives. Between a request and the
+    writer's `ready` it keeps that audio on the host, so the first word survives the round trip;
+    from `ready` it forwards.
+  - On the host the audio passes through the relay's FIFOs, in a directory of mode 0700, or on
+    Windows through the launcher's own pipes; nothing writes it to a file.
+  - Audio reaches the sandbox from a request until the last stream on the microphone closes, the
+    controller or the writer inside the sandbox dies, or the container or the session ends.
+    Nothing bounds how long a stream stays open.
+  - macOS shows its microphone indicator for the whole session; whether Windows and the Linux
+    desktops show one is unmeasured. Nothing shows when audio is forwarded.
+- **Audio an agent transcribes may not come from the host microphone.** Any process in the sandbox
+  can write audio into the daemon's FIFO, and an agent dictating then transcribes that. The channel
+  guards the host microphone's confidentiality, not the authenticity of audio inside the sandbox,
+  where every process already shares the agent's files and trust.
+- **What leaves the host is the agent's doing.** Claude Code streams the audio to Anthropic and agy
+  to Google, under the egress rules the session already has.
+- **Without `--mic`** no daemon runs and no FIFO exists, and the image's PulseAudio clients start no
+  daemon of their own; the image has no other capture path.
 
 ## Run on host
 

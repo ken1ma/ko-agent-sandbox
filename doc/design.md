@@ -59,11 +59,13 @@ The words the documents share, each defined in the document its entry names and 
   sandbox container to stop and then removes the proxy container and the networks the run created; a
   launch that stays resident, on Windows or after a failed spawn, removes them itself
   (`SandboxLifecycle.scala`).
-- **clipboard relay, runner** — host processes answering requests the sandbox makes through a
-  FIFO under its `/tmp`, never a listener; "broker" is reserved for the credential sense ("No
-  general capability broker", "Credential brokering at the egress proxy"):
+- **clipboard relay, microphone relay, runner** — host processes answering requests the sandbox
+  makes through a FIFO under its `/tmp`, never a listener; "broker" is reserved for the credential
+  sense ("No general capability broker", "Credential brokering at the egress proxy"):
   - the clipboard relay copies between the host clipboard and the sandbox (SECURITY.md,
     "Clipboard");
+  - the microphone relay, under `--mic`, forwards the host microphone into the sandbox's audio
+    server while a process there records (SECURITY.md, "Microphone"; `microphone.md`);
   - the runner, one per session, dispatches each host command and owns the processes it starts
     (`run-on-host.md`).
 - **shim, supervisor, command** — under `--run-on-host`:
@@ -730,6 +732,14 @@ Rejected:
 Revisit if, in use, Claude regularly ends a turn with unreviewed changes after being told to review
 and the instruction fix does not hold; then the shape is a managed hook with a per-project opt-in
 marker, still a local check that never runs Codex.
+
+### Host resources are granted by launch options, not variables
+
+`--clipboard=<mode>` and `--mic` grant a host resource for one launch, spelled in the launch
+command like `--write` and `--egress`. A variable in a shell profile would hand every session the
+resource unnoticed, so the launcher reads none. It refuses `KO_AGENT_SANDBOX_CLIPBOARD` in its own
+environment, naming the option, rather than ignoring a profile that exports it; a launcher run in a
+session with the clipboard on refuses it too, until it is unset there.
 
 ## The properties verification has to separate
 

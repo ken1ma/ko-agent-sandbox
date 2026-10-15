@@ -380,6 +380,14 @@ object HostCommands:
     s"printf %s ${java.util.Base64.getEncoder.encodeToString(text.getBytes(StandardCharsets.UTF_8))} | base64 -d"
 
   /**
+   * `exec` attaching stdin, for every such exec. Podman reads an exec's stdin through its detach
+   * keys, Ctrl-P Ctrl-Q by default, whether or not a terminal is attached, and detaches when
+   * successive reads return those bytes alone (`detach.Copy` in containers/common): audio, a
+   * clipboard image or a command's output could end the exec. An empty sequence turns the keys off.
+   */
+  val ExecWithInput: Vector[String] = Vector("exec", "-i", "--detach-keys=")
+
+  /**
    * `sh -c <script> sh <arguments>` for a script the launcher passes to podman, as words holding
    * no double quote and no newline, which a Windows launcher cannot pass
    * (LauncherImages.BundleLabelTemplate has why; KoAgentFs.koAgentFsScriptCommand crosses the

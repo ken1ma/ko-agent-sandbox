@@ -82,13 +82,16 @@ class ClipboardRelayTest extends munit.FunSuite:
     val host = Files.createDirectory(dir.resolve("host"))
     val sandboxBin = Files.createDirectory(dir.resolve("sandbox"))
     Files.write(host.resolve("image.bin"), Image)
-    // "podman exec -i C sh -c S" runs S here; the container is always running.
+    // "podman exec -i --detach-keys= C sh -c S" runs S here, and an exec -i that leaves the detach keys on
+    // fails; the container is always running.
     executable(
       host.resolve("podman"),
       """#!/bin/sh
         |case "$1 $2" in
         |  "container inspect") echo true ;;
-        |  "exec -i") shift 3; exec "$@" ;;
+        |  "exec -i")
+        |    [ "$3" = --detach-keys= ] || { echo "exec -i with the detach keys on" >&2; exit 125; }
+        |    shift 4; exec "$@" ;;
         |esac
         |""".stripMargin
     )
@@ -227,7 +230,7 @@ class ClipboardRelayTest extends munit.FunSuite:
       // the `get` is never read as a request — a PNG answered to nobody would hold the relay for
       // the response writer's ten seconds, past the shim's own wait.
       // A `types` with an argument and a `get` without one are outside the grammar too, as the
-      // Windows twin reads them.
+      // Windows relay reads them.
       Vector("junk\nget image/png\n", "types x\nget image/png\n", "get\nget image/png\n").foreach: refused =>
         assertEquals(rawRequest(refused.getBytes(UTF_8)), 0, refused)
         val (_, types) = sandboxCall(sandboxBin, Array.empty, "wl-paste", "-l")
@@ -246,7 +249,7 @@ class ClipboardRelayTest extends munit.FunSuite:
       assertEquals(rawRequest("set 6\nabc".getBytes(UTF_8)), 0)
       assertEquals(rawRequest("set 03\nabc".getBytes(UTF_8)), 0)
       assertEquals(copied(), None)
-      // The count's bytes and no more, as the Windows twin reads them (`requests`). Without a
+      // The count's bytes and no more, as the Windows relay reads them (`requests`). Without a
       // response reader, the relay waits for the response writer's timeout before serving the next request.
       assertEquals(rawRequest("set 3\nabcdef".getBytes(UTF_8)), 0)
       assertEquals(String(rawResponse(), UTF_8), "ok\n")
@@ -271,7 +274,7 @@ class ClipboardRelayTest extends munit.FunSuite:
       // report success on a write that never reached the host.
       assertEquals(sandboxCall(sandboxBin, "lost".getBytes(UTF_8), "wl-copy")._1, 1)
 
-  test("the Windows twin's stream grammar is the shell twin's"):
+  test("the Windows relay's stream grammar is the POSIX relay's"):
     import ClipboardRelay.{MaxRequestBytes, Request, requests}
     def stream(text: String): Array[Byte] = text.getBytes(UTF_8)
     def bodies(text: String): Vector[String] =

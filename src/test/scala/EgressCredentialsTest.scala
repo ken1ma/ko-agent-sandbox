@@ -48,8 +48,9 @@ class EgressCredentialsTest extends munit.FunSuite:
       List.tabulate(CredentialGrammar.MaxBindings + 1)(index => s"--egress-cred=X$index@a.example") ->
         "error: 257 --egress-cred options; a launch takes at most 256",
       List("--egress-cred", "X@a.example") ->
-        ("error: the launch options are spelled --write=<mode>, --egress=<profile>, --env=<name>[=<value>], " +
-          "--env-aws-cred[=<profile>], --egress-cred=<name>@<host> and --run-on-host=<programs>"),
+        ("error: the launch options are spelled --write=<mode>, --egress=<profile>, --clipboard=<mode>, --mic, " +
+          "--env=<name>[=<value>], --env-aws-cred[=<profile>], --egress-cred=<name>@<host> and " +
+          "--run-on-host=<programs>"),
     )
     refusals.foreach: (args, refusal) =>
       assertEquals(parseCommandLine(args), Left(refusal), args.take(2).mkString(" "))

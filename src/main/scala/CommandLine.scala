@@ -21,6 +21,17 @@ object CommandLine:
   val EgressProfiles = Vector("deny-all", "deny-unless-model", "deny-unless-allowed")
   val DefaultEgressProfile = "deny-unless-allowed"
 
+  /**
+   * Each grant of a host resource is spelled in the launch command, never in an environment a
+   * shell profile sets for every session. The clipboard: off by default, and `paste` before
+   * `bidirectional`, because each step hands the agent more of the host: reading what the user
+   * last copied, then writing what the user will next paste (ClipboardRelay). `--mic` grants the
+   * host microphone for the session (MicrophoneRelay).
+   */
+  val ClipboardModes = Vector("off", "paste", "bidirectional")
+  val DefaultClipboardMode = "off"
+  val MicOption = "--mic"
+
   /** The programs `--run-on-host` can name. Available on macOS only, which
     * AgentSandboxLauncher.launchSettings enforces: the parser stays pure over
     * the arguments. */
@@ -40,7 +51,7 @@ object CommandLine:
   /**
    * The only names `--env` refuses: the launcher's own KO_AGENT_SANDBOX_* variables, which are how
    * it tells the sandbox what is in force — the egress ruleset, the nesting, clipboard and
-   * session-start modes. Forwarded, one would make what the agent is told differ from what is
+   * session-start modes, the microphone. Forwarded, one would make what the agent is told differ from what is
    * enforced, the drift the launcher exists to rule out. Every other variable the launcher or the
    * image sets (the proxy and CA-bundle variables, TZ, PAGER) is forwardable: the network has no
    * route but the proxy whatever the environment says, so an override can only fail, visibly,
@@ -91,9 +102,12 @@ object CommandLine:
     runOnHost: Option[Vector[String]] = None,
     credentialBindings: Vector[CredentialBinding] = Vector.empty,
     awsCredential: Option[AwsCredential.Request] = None,
+    clipboard: Option[String] = None,
+    mic: Boolean = false,
   ):
     def writeMode: String = write.getOrElse(DefaultWriteMode)
     def egressProfile: String = egress.getOrElse(DefaultEgressProfile)
+    def clipboardMode: String = clipboard.getOrElse(DefaultClipboardMode)
 
   val ManagementActions: Set[String] =
     Set(
@@ -115,6 +129,8 @@ object CommandLine:
 
     var bindings = Vector.empty[CredentialBinding]
     var awsCredential = Option.empty[AwsCredential.Request]
+    var clipboard = Option.empty[String]
+    var mic = false
 
     def loop(
       rest: List[String],
@@ -150,6 +166,21 @@ object CommandLine:
             awsCredential = Some(AwsCredential.Request(Option.when(profile.nonEmpty)(profile)))
             loop(tail, write, egress, env, runOnHost)
 
+        case arg :: tail if arg.startsWith("--clipboard=") =>
+          if clipboard.isDefined then Left("error: --clipboard is given twice")
+          else choose("--clipboard", arg.stripPrefix("--clipboard="), ClipboardModes).flatMap: value =>
+            clipboard = Some(value)
+            loop(tail, write, egress, env, runOnHost)
+
+        case MicOption :: tail =>
+          if mic then Left(s"error: $MicOption is given twice")
+          else
+            mic = true
+            loop(tail, write, egress, env, runOnHost)
+
+        case arg :: _ if arg.startsWith(s"$MicOption=") =>
+          Left(s"error: $arg; $MicOption takes no value")
+
         case arg :: tail if arg.startsWith("--write=") =>
           if write.isDefined then Left("error: --write is given twice")
           else choose("--write", arg.stripPrefix("--write="), WriteModes)
@@ -176,11 +207,11 @@ object CommandLine:
               env :+ EnvForward(name, Option.when(value.nonEmpty)(value.drop(1))), runOnHost,
             )
 
-        case ("--write" | "--egress" | "--env" | "--run-on-host" | "--egress-cred") :: _ =>
+        case ("--write" | "--egress" | "--env" | "--run-on-host" | "--egress-cred" | "--clipboard") :: _ =>
           Left(
             "error: the launch options are spelled --write=<mode>, --egress=<profile>, " +
-              "--env=<name>[=<value>], --env-aws-cred[=<profile>], --egress-cred=<name>@<host> and " +
-              "--run-on-host=<programs>",
+              "--clipboard=<mode>, --mic, --env=<name>[=<value>], --env-aws-cred[=<profile>], " +
+              "--egress-cred=<name>@<host> and --run-on-host=<programs>",
           )
 
         case arg :: tail if arg.startsWith("--egress-check=") =>
@@ -217,4 +248,9 @@ object CommandLine:
             .find((_, name) => awsNames.contains(name)) match
             case Some((option, name)) =>
               Left(s"error: $option and ${AwsCredential.OptionName}; the option forwards $name itself")
-            case None => Right(parsed.copy(credentialBindings = bindings, awsCredential = awsCredential))
+            case None =>
+              Right(
+                parsed.copy(
+                  credentialBindings = bindings, awsCredential = awsCredential, clipboard = clipboard, mic = mic,
+                ),
+              )

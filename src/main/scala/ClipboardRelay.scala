@@ -1,5 +1,5 @@
-// The host clipboard, offered to the sandbox on request: the protocol both twins speak, the POSIX
-// twin's shell (a job of the reaper, SandboxLifecycle), and the Windows twin (a thread of the
+// The host clipboard, offered to the sandbox on request: the protocol both relays speak, the POSIX
+// relay's shell (a job of the reaper, SandboxLifecycle), and the Windows relay (a thread of the
 // resident launcher). SECURITY.md "Clipboard" has what the channel grants and withholds.
 
 package agentsandbox.launcher
@@ -8,7 +8,7 @@ import java.io.IOException
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Path
 
-import HostCommands.{Os, findOnPath, quoteFreeSh, run}
+import HostCommands.{ExecWithInput, Os, findOnPath, quoteFreeSh, run}
 
 object ClipboardRelay:
 
@@ -49,7 +49,7 @@ object ClipboardRelay:
     s"timeout 10 sh -c \"cat > $sandboxDir/rsp\""
 
   /**
-   * The POSIX twin: `clipboard_relay <podman> <sandbox> <mode> <xclip> <wl-paste> <wl-copy>`, for
+   * The POSIX relay: `clipboard_relay <podman> <sandbox> <mode> <xclip> <wl-paste> <wl-copy>`, for
    * the reaper to run as a job. The programs are [[hostBackend]]'s, absolute — the reaper's PATH is
    * [[HostCommands.ScriptPath]], not the one they were found on — and empty where absent, or
    * everywhere on macOS, whose osascript and pbcopy are in /usr/bin. xclip is tried first and the
@@ -91,9 +91,11 @@ object ClipboardRelay:
       |      }
       |      ;;
       |  esac
-      |  reply() { "$1" exec -i "$2" sh -c '""".stripMargin + sandboxResponseWriter(sandboxDir) + """'; }
+      |  reply() { "$1" """.stripMargin + ExecWithInput.mkString(" ") + """ "$2" sh -c '""" +
+      sandboxResponseWriter(sandboxDir) + """'; }
       |  while [ "$("$1" container inspect --format '{{.State.Running}}' "$2" 2>/dev/null)" = true ]; do
-      |    "$1" exec -i "$2" sh -c '""".stripMargin + sandboxRequestReader(sandboxDir) + s"""' |
+      |    "$1" """.stripMargin + ExecWithInput.mkString(" ") + """ "$2" sh -c '""" +
+      sandboxRequestReader(sandboxDir) + s"""' |
       |      head -c $MaxRequestBytes | {
       |        # A line the grammar refuses ends the reading, the rest of the stream unread. The
       |        # status is 1 until a request is served; `|| sleep 1` reads it.
@@ -140,7 +142,7 @@ object ClipboardRelay:
       |""".stripMargin
 
   // -------------------------------------------------------------------------
-  // The Windows twin
+  // The Windows relay
   // -------------------------------------------------------------------------
   //
   // Windows has no reaper — the launcher stays resident — so the relay is a daemon thread here,
@@ -150,7 +152,7 @@ object ClipboardRelay:
   private val PowerShellArgs = Vector("-NoProfile", "-NonInteractive", "-Sta", "-Command")
 
   /**
-   * What the host runs for the mode: PowerShell for the resident twin, or the programs the shell twin
+   * What the host runs for the mode: PowerShell for the Windows relay, or the programs the POSIX relay
    * calls, each as [[findOnPath]] resolved it (a bare name would be searched for in the project directory,
    * design.md "No repository-controlled host executable resolution"). Each program is its own field rather than a name
    * the shell would classify: findOnPath canonicalizes, so the file need not be called `xclip`.
@@ -177,27 +179,28 @@ object ClipboardRelay:
     else os match
       case Os.Windows =>
         findOnPath("powershell", pathValue, os).map(path => HostBackend(powershell = Some(path)))
-          .toRight(s"error: $ClipboardVariable=$mode needs powershell.exe on PATH")
+          .toRight(s"error: --clipboard=$mode needs powershell.exe on PATH")
       case Os.Linux =>
-        probedPs(mode, os, pathValue).flatMap: ps =>
+        probedPs(s"--clipboard=$mode", os, pathValue).flatMap: ps =>
           val found =
             HostBackend(xclip = program("xclip"), wlPaste = program("wl-paste"), wlCopy = program("wl-copy"), ps = ps)
           val reads = found.xclip.nonEmpty || found.wlPaste.nonEmpty
           val writes = found.xclip.nonEmpty || (found.wlPaste.nonEmpty && found.wlCopy.nonEmpty)
           if reads && (mode == "paste" || writes) then Right(found)
-          else Left(s"error: $ClipboardVariable=$mode needs xclip or wl-clipboard installed on this host")
-      case _ => probedPs(mode, os, pathValue).map(ps => HostBackend(ps = ps))
+          else Left(s"error: --clipboard=$mode needs xclip or wl-clipboard installed on this host")
+      case _ => probedPs(s"--clipboard=$mode", os, pathValue).map(ps => HostBackend(ps = ps))
 
   /**
-   * The `ps` the reaper enumerates the relay's process tree with, proven on this host before an
-   * enabled mode is accepted: an absent `ps`, or one that answers `ps -A -o pid=,ppid=` with
-   * nothing (BusyBox's prints another format), would leave a blocked clipboard program alive after the
-   * session while the cleanup silently ended the job alone. The proof is this launcher's own row —
-   * its pid, and its parent's when the JVM knows one — in exactly the output the reaper parses.
+   * The `ps` the reaper enumerates a relay's process tree with, proven on this host before the
+   * `option` that needs a relay is accepted: an absent `ps`, or one that answers
+   * `ps -A -o pid=,ppid=` with nothing (BusyBox's prints another format), would leave a blocked
+   * clipboard program or a recorder alive after the session while the cleanup silently ended the
+   * job alone. The proof is this launcher's own row — its pid, and its parent's when the JVM knows
+   * one — in exactly the output the reaper parses.
    */
-  def probedPs(mode: String, os: Os, pathValue: String): Either[String, String] =
+  def probedPs(option: String, os: Os, pathValue: String): Either[String, String] =
     findOnPath("ps", pathValue, os).map(_.toString)
-      .toRight(s"error: $ClipboardVariable=$mode needs ps on PATH; the reaper ends the relay's processes with it")
+      .toRight(s"error: $option needs ps on PATH; the reaper ends the relay's processes with it")
       .flatMap: ps =>
         val me = ProcessHandle.current
         val listed =
@@ -207,9 +210,7 @@ object ClipboardRelay:
           row.length == 2 && row(0) == me.pid.toString
             && me.parent.map[Boolean](parent => row(1) == parent.pid.toString).orElse(row(1).forall(_.isDigit))
         if own then Right(ps)
-        else Left(s"error: $ClipboardVariable=$mode needs a ps answering `ps -A -o pid=,ppid=`, which $ps did not")
-
-  private def ClipboardVariable = AgentSandboxLauncher.ClipboardVariable
+        else Left(s"error: $option needs a ps answering `ps -A -o pid=,ppid=`, which $ps did not")
 
   private val HasImage =
     "Add-Type -AssemblyName System.Windows.Forms; " +
@@ -237,7 +238,7 @@ object ClipboardRelay:
       thread.start()
 
   /**
-   * The resident twin's loop, the shell twin's `while` in Java: wait for the sandbox to run, then
+   * The Windows relay's loop, the POSIX relay's `while` in Java: wait for the sandbox to run, then
    * an exec at a time while it runs, pausing a second after a stream with no request in it. The
    * first wait is bounded like the reaper's, for a launcher that never reaches the start.
    */
@@ -266,7 +267,7 @@ object ClipboardRelay:
    * up to the first it cannot read: a line without its newline, a line outside the grammar, or
    * a `set` whose count is not digits without a leading zero within the cap's width, or whose
    * body the stream does not hold whole, whether the writer stopped short or the cut did.
-   * Nothing past that is read. The shell twin keeps this grammar in `hostShellFunctions`.
+   * Nothing past that is read. The POSIX relay keeps this grammar in `hostShellFunctions`.
    */
   def requests(stream: Array[Byte]): Vector[Request] =
     val found = Vector.newBuilder[Request]
@@ -294,7 +295,8 @@ object ClipboardRelay:
   /** One exec's stream, its requests served in order: whether there was one. A stream that
     * reaches the cap is cut there, the exec ended under it. */
   private def serveOnce(powershell: Path, podman: String, sandboxContainer: String, mode: String): Boolean =
-    val reader = ProcessBuilder((Seq(podman, "exec", "-i", sandboxContainer) ++ quoteFreeSh(sandboxRequestReader()))*)
+    val command = (podman +: ExecWithInput :+ sandboxContainer) ++ quoteFreeSh(sandboxRequestReader())
+    val reader = ProcessBuilder(command*)
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()
     reader.getOutputStream.close()
@@ -327,7 +329,8 @@ object ClipboardRelay:
     (out, process.waitFor())
 
   private def respond(podman: String, sandboxContainer: String, body: Array[Byte]): Unit =
-    val writer = ProcessBuilder((Seq(podman, "exec", "-i", sandboxContainer) ++ quoteFreeSh(sandboxResponseWriter()))*)
+    val command = (podman +: ExecWithInput :+ sandboxContainer) ++ quoteFreeSh(sandboxResponseWriter())
+    val writer = ProcessBuilder(command*)
       .redirectOutput(ProcessBuilder.Redirect.DISCARD)
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()

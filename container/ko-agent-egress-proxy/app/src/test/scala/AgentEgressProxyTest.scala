@@ -366,78 +366,21 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(resolved.warnings, Vector.empty)
     assert(!resolved.clearsDefaults)
 
-  test("the default rules contain only the expected hosts, paths and grants"):
-    // Additional tunnel hosts would permit uninspected writes; broader forge grants would let
-    // deny-unless-model allow a push or a browse of the forge.
+  test("the default catalog grants read alone, and read git-fetch on the three Git hosts"):
+    // SECURITY.md, "Reading without being able to write": a method or a git-fetch the list there does not name
+    // would let a default session send what that section says it cannot. The proxy refuses a catalog tunnel at
+    // its start (CatalogLines), and the github provider's narrow grants have their own test ("deny-unless-model for
+    // copilot allows two login POSTs, one token read and four tunnels").
+    val gitHosts = Set("github.com", "codeberg.org", "gitlab.com")
     CatalogLines.foreach: line =>
       line.rule match
-        case Rule.Allow(_, path, grants) =>
-          assertEquals(path, "/", line.text)
-          assert(grants("read") && !grants("tunnel"), line.text)
+        case Rule.Allow(host, _, grants) =>
+          assertEquals(grants, if gitHosts(host) then Set(Grant.Read, Grant.GitFetch) else Set(Grant.Read), line.text)
         case other => fail(s"${line.text}: $other")
-    assertEquals(ModelProviderLines.keySet, ModelProviders.toSet)
-    def lines(name: String): Vector[String] = ModelProviderLines(name).map(_.text)
-    assertEquals(
-      lines("anthropic"),
-      Vector(
-        "allow https://api.anthropic.com/ tunnel",
-        "allow https://claude.ai/ tunnel",
-        "allow https://platform.claude.com/ tunnel",
-      ),
-    )
-    assertEquals(
-      lines("openai"),
-      Vector(
-        "allow https://chatgpt.com/ tunnel",
-        "allow https://api.openai.com/ tunnel",
-        "allow https://auth.openai.com/ tunnel",
-      ),
-    )
-    assertEquals(
-      lines("google"),
-      Vector(
-        "allow https://cloudcode-pa.googleapis.com/ tunnel",
-        "allow https://daily-cloudcode-pa.googleapis.com/ tunnel",
-        "allow https://generativelanguage.googleapis.com/ tunnel",
-        "allow https://businessaicode.googleapis.com/ tunnel",
-        "allow https://aiplatform.googleapis.com/ tunnel",
-        "allow https://aiplatform.us.rep.googleapis.com/ tunnel",
-        "allow https://aiplatform.eu.rep.googleapis.com/ tunnel",
-        "allow https://accounts.google.com/ tunnel",
-        "allow https://oauth2.googleapis.com/ tunnel",
-        "allow https://www.googleapis.com/oauth2/v2/userinfo read",
-        "allow https://lh3.googleusercontent.com/ read",
-      ),
-    )
-    assertEquals(
-      lines("aws"),
-      Vector(
-        "allow https://runtime.us-east-1.kiro.dev/ tunnel",
-        "allow https://management.us-east-1.kiro.dev/ tunnel",
-        "allow https://q.us-east-1.amazonaws.com/ tunnel",
-        "allow https://runtime.eu-central-1.kiro.dev/ tunnel",
-        "allow https://management.eu-central-1.kiro.dev/ tunnel",
-        "allow https://q.eu-central-1.amazonaws.com/ tunnel",
-        "allow https://prod.us-east-1.auth.desktop.kiro.dev/ tunnel",
-        "allow https://cognito-identity.us-east-1.amazonaws.com/ tunnel",
-        "allow https://oidc.us-east-1.amazonaws.com/ tunnel",
-      ),
-    )
-    assertEquals(
-      lines("github"),
-      Vector(
-        "allow https://api.githubcopilot.com/ tunnel",
-        "allow https://api.individual.githubcopilot.com/ tunnel",
-        "allow https://api.business.githubcopilot.com/ tunnel",
-        "allow https://api.enterprise.githubcopilot.com/ tunnel",
-        "allow https://github.com/login/device/code method=POST",
-        "allow https://github.com/login/oauth/access_token method=POST",
-        "allow https://api.github.com/copilot_internal/v2/token read",
-      ),
-    )
-    assertEquals(builtinGitHosts, Set("github.com", "codeberg.org", "gitlab.com"))
+    assertEquals(builtinGitHosts, gitHosts)
     // Resource lookup cannot enumerate this directory inside a jar, so ModelProviders is declared
     // separately. Check for both missing provider files and files the provider list would leave unread.
+    assertEquals(ModelProviderLines.keySet, ModelProviders.toSet)
     val dir = java.nio.file.Paths.get("src/main/resources/defaults/model-provider")
     val files = Using.resource(java.nio.file.Files.list(dir)): entries =>
       entries.iterator.asScala.map(_.getFileName.toString).toSet

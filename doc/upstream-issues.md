@@ -165,6 +165,42 @@ The test stays skipped and the run's totals do not change.
 
 **Not verified:** reproduced under sbt only, not under Mill, Gradle or Maven.
 
+## containers/libkrun
+
+Found when MicrophoneRelayTest, run in a sandbox session, kept FIFOs in the project, which on the
+macOS podman machine is the `/Users` share. This project keeps the test's FIFOs out of the project;
+what a session can do with a FIFO of its own is open (doc/TODO.md).
+
+### Setting a FIFO's times blocks the macOS virtio-fs server
+
+**Title:** macOS passthrough `setattr` opens the file without `O_NONBLOCK`, so a time change on a
+FIFO hangs the whole share
+
+**Versions:** podman 6.1.2 with the libkrun provider (krunkit), macOS on Apple silicon; libkrun's
+`main` read on 2026-10-14.
+
+**Reproducer (inferred, not run, since it hangs every process that touches the share):** in the
+guest, on a virtio-fs share of a macOS directory:
+
+```sh
+mkfifo f && touch f
+```
+
+**What happens:** a test that created FIFOs on the share and wrote through one hung the machine,
+four times out of four: every process touching `/Users` blocked unkillably, `podman kill` timed
+out waiting for the container's exit file, and `podman machine stop` fell back to a hard stop.
+The timing matches the guest writing back the FIFO's changed times, as the source below explains;
+the request itself was not traced.
+
+**Why:** `setattr` (`src/devices/src/virtio/fs/macos/passthrough.rs`) changes times on an inode
+it holds by path with `libc::open(c_path, O_SYMLINK | O_CLOEXEC)` and `futimens`. On macOS a
+read-only open of a FIFO waits for a writer; the guest's readers and writers use the guest's own
+pipe, so none ever opens the host's FIFO. One `fs worker` thread serves each share (`worker.rs`),
+so every later request on the share waits behind it.
+
+**Expected:** open with `O_NONBLOCK` there, as `grab_unlinked_fd` and the truncate path already
+do, or change the times by path (`utimensat` with `AT_SYMLINK_NOFOLLOW`) without opening.
+
 ## openai/codex, anthropic-experimental/sandbox-runtime, google-gemini/gemini-cli
 
 One report for each project's macOS Seatbelt profile. This project's own profile closes the gap

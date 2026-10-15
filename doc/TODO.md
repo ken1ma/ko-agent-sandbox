@@ -162,14 +162,34 @@ measurement.
 
 ## The host microphone for voice dictation
 
-- [ ] `plan-microphone.md`: the `--mic` option, a PulseAudio daemon in the sandbox fed by a
-  host relay — a reaper job on macOS and Linux, a thread of the resident launcher on Windows,
-  each running a recorder program — with
-  `--clipboard=<mode>` replacing `KO_AGENT_SANDBOX_CLIPBOARD` in the same change. Claude Code
-  and agy are the clients it is
-  built for; Codex waits on the feasibility test the plan names. The plan's "Tests" names what
-  is unmeasured on the hosts; its "Latency" section holds the measurements behind the
-  session-long recorder.
+`microphone.md` has the design and what is measured.
+
+- [ ] On the latest stable Debian, Fedora and Ubuntu desktops, check the recorder programs their
+  default installs carry, whether ALSA's `default` PCM reaches the microphone, the package to name,
+  and the environment the reaper's job needs to find the audio server's socket (`XDG_RUNTIME_DIR`,
+  `PULSE_SERVER`).
+
+## Codex's `/voice`: WebRTC media through the egress proxy
+
+- [ ] Serve Codex's `/voice` (`microphone.md`, "Codex"): find what its WebRTC media connection
+  needs, UDP to the host and port the call's setup names or TCP or TURN on 443, and give the proxy
+  a way to carry it.
+  - The proxy can read the setup only by inspecting `chatgpt.com`, which its defaults tunnel.
+  - A grant by address and port would be a new kind of egress rule, for the ruleset and
+    SECURITY.md.
+  - Then Codex's helper on the daemon: whether it opens ALSA's `default` through the PulseAudio
+    plugin with no card to list and takes the null sink as its speaker; whether capture and
+    playback run together for minutes (openai/codex#47370's code 37), tried on `pipewire-alsa` if
+    alsa-plugins' pulse PCM fails (`microphone.md`, "Decisions"); whether the reply appears as
+    transcript; and whether its feature gate opens for the sign-in.
+
+## A FIFO in the project hangs the podman machine
+
+- [ ] Decide what keeps a session's FIFO from hanging a libkrun podman machine
+  (`upstream-issues.md`, containers/libkrun): `mkfifo` in a `--write=live` project, then a change
+  of its times, would block the machine's `/Users` share and every session on it (read from
+  libkrun's source; the reproducer was not run). Candidates: ko-agent-fs refuses `mknod` of FIFOs,
+  or refuses time changes on them, until libkrun fixes it.
 
 ## One list of launch refusals
 
@@ -715,7 +735,7 @@ are the image's Mach services, which the same mode measures once it starts.
   needs it ships for AWT only, not for `libjsound` (oracle/graal,
   `substratevm/.../hosted/jdk/JNIRegistration*.java`, read at `master` on 2026-10-09; no issue
   there reports Java Sound in an image). Nothing in the launcher uses it; the microphone relay's
-  Windows twin records through `sox_ng` (`plan-microphone.md`, "Decisions").
+  Windows relay records through `sox_ng` (`microphone.md`, "Decisions").
   - The jar hashes its three bundles in about 30 ms (a fresh JVM in a Linux container,
     2026-09-28), too little to justify an sbt step that precomputes them with the launcher's own
     classes.

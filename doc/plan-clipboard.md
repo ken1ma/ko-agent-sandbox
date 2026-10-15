@@ -147,7 +147,7 @@ run `wl-copy`.
   `XDG_RUNTIME_DIR` is unset in the container, and wayland-client 0.31 connects to an absolute
   `WAYLAND_DISPLAY` without it (`src/conn.rs`).
 - It talks to the relay through the FIFOs under the shims' lock, as one more caller. The relay
-  gains one request, `primary` ("Copies to the primary selection"), in both twins and on each host;
+  gains one request, `primary` ("Copies to the primary selection"), in both relays and on each host;
   its other requests and its limits are unchanged.
 
 ### Offers without polling
@@ -243,9 +243,9 @@ run `wl-copy`.
   - On Linux hosts it sets the host's primary selection, for middle-click paste.
   - On macOS and Windows hosts it copies nothing, since each selection would replace the
     clipboard; use `/copy`.
-- README's Reference block, which `--help` prints, and `clipboardMode`'s error message
-  (`AgentSandboxLauncher.scala`): `paste` "lets the agent read a copied image" names the agents it
-  holds for — Claude Code, Codex, Copilot and OpenCode, agy as measured — and not kiro-cli.
+- README's Reference block, which `--help` prints: `--clipboard=paste` "lets the agent read a
+  copied image" names the agents it holds for — Claude Code, Codex, Copilot and OpenCode, agy as
+  measured — and not kiro-cli.
 - SECURITY.md "Clipboard": the service's socket beside the FIFOs, and that `bidirectional` also
   sets the primary selection on Linux hosts.
 - The relay's code records that `primary` follows Copilot's own build for each host.
@@ -307,7 +307,7 @@ Specific checks:
   `bidirectional` it sets the primary selection through xclip, through wl-copy on a Wayland-only
   host, and through wl-copy when both are installed and xclip fails, and leaves the clipboard
   unchanged.
-- `ClipboardRelayTest` covers `primary` in both twins' grammar and, on a Linux host, through xclip,
+- `ClipboardRelayTest` covers `primary` in both relays' grammar and, on a Linux host, through xclip,
   through wl-copy on a Wayland-only host, and through wl-copy when an installed xclip fails; its
   existing cases keep covering the other requests.
 - Live: the "Before building" matrix again, on macOS first, then one Linux and one Windows host;

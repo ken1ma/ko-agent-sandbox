@@ -23,7 +23,8 @@
 //   FFMHelper.scala             the downcalls into libc and kernel32
 //   FileRules.scala             the file rules: defaults, the project's rule file, grammar, resolution
 //   EgressCredentials.scala     --egress-cred: the bindings, their values, placeholders and proxies
-//   ClipboardRelay.scala        the host clipboard offered to the sandbox: the protocol and both twins
+//   ClipboardRelay.scala        the host clipboard offered to the sandbox: the protocol and both relays
+//   MicrophoneRelay.scala       the host microphone under --mic: the recorders, the probe and both relays
 //   SandboxStats.scala          --stats: the read-only resource report
 //   SelfTestShare.scala         --self-test's share rows, the host-writer/session-reader direction
 //   SeatbeltProfile.scala       the Seatbelt profiles of a host command and the host proxy, as SBPL
@@ -343,22 +344,16 @@ object AgentSandboxLauncher:
   val SessionStartVariable = "KO_AGENT_SANDBOX_SESSION_START"
 
   /**
-   * Whether the host clipboard is offered to the sandbox (ClipboardRelay). Off by default, and
-   * `paste` before `bidirectional`, because each step hands the agent more of the host: reading
-   * what the user last copied, then writing what the user will next paste.
+   * The clipboard mode inside the sandbox, which `--clipboard` selects (CommandLine.ClipboardModes).
+   * The launcher refuses the variable in its own environment: a profile exporting it would
+   * otherwise configure nothing, silently.
    */
   val ClipboardVariable = "KO_AGENT_SANDBOX_CLIPBOARD"
 
-  def clipboardMode(value: Option[String]): Either[String, String] =
-    closedChoice(
-      ClipboardVariable,
-      value,
-      Vector("off", "paste", "bidirectional"),
-      "off",
-      "Unset it (or set it to off) to keep the clipboard out; set it to paste to let the\nagent " +
-        "read an image you copied, or to bidirectional to also let it set your clipboard\n" +
-        "(SECURITY.md).",
-    )
+  def clipboardVariableRefusal(value: Option[String]): Option[String] =
+    value.map: mode =>
+      val keep = if ClipboardModes.contains(mode) then s", and pass --clipboard=$mode to keep that mode" else ""
+      s"error: the launcher does not read $ClipboardVariable; --clipboard=<mode> selects the mode. Unset it$keep"
 
   def sessionStart(value: Option[String]): Either[String, String] =
     closedChoice(
@@ -581,10 +576,11 @@ object AgentSandboxLauncher:
           Vector(s"--memory=$bytes", s"--memory-swap=$bytes")
 
   /**
-   * The KO_AGENT_SANDBOX_* names this launcher reads — plus KO_AGENT_SANDBOX_EGRESS_RULESET,
-   * KO_AGENT_SANDBOX_FILE_RULES, KO_AGENT_SANDBOX_JAVA_OPTS and KO_AGENT_SANDBOX_RUN_ON_HOST,
-   * which it sets inside the sandbox rather than reads, so a launcher nested in a sandbox session
-   * is not warned about the variables that session legitimately has set.
+   * The KO_AGENT_SANDBOX_* names this launcher reads, KO_AGENT_SANDBOX_CLIPBOARD only to refuse it —
+   * plus KO_AGENT_SANDBOX_EGRESS_RULESET, KO_AGENT_SANDBOX_FILE_RULES, KO_AGENT_SANDBOX_JAVA_OPTS,
+   * KO_AGENT_SANDBOX_RUN_ON_HOST and KO_AGENT_SANDBOX_MIC, which it sets inside the sandbox rather
+   * than reads, so a launcher nested in a sandbox session is not warned about the variables that
+   * session legitimately has set.
    */
   val KnownSandboxVariables: Set[String] = Set(
     "KO_AGENT_SANDBOX_JAVA_OPTS",
@@ -595,6 +591,7 @@ object AgentSandboxLauncher:
     NestingVariable,
     SessionStartVariable,
     ClipboardVariable,
+    MicrophoneRelay.MicVariable,
     "KO_AGENT_SANDBOX_EGRESS_RULESET",
     "KO_AGENT_SANDBOX_FILE_RULES",
     RunOnHostChannel.RunOnHostVariable,
@@ -1022,15 +1019,20 @@ object AgentSandboxLauncher:
     // that configures nothing is the silent failure mode the options must not have.
     def noSessionOptions(action: String): Unit =
       if parsed.write.isDefined || parsed.egress.isDefined || parsed.env.nonEmpty || parsed.awsCredential.isDefined
-        || parsed.runOnHost.isDefined || parsed.credentialBindings.nonEmpty
+        || parsed.runOnHost.isDefined || parsed.credentialBindings.nonEmpty || parsed.clipboard.isDefined || parsed.mic
       then
         fail(
           s"error: $action reads no launch option; " +
-            "drop --write/--egress/--env/--env-aws-cred/--egress-cred/--run-on-host",
+            "drop --write/--egress/--clipboard/--mic/--env/--env-aws-cred/--egress-cred/--run-on-host",
         )
     def noWriteOption(action: String): Unit =
       if parsed.write.isDefined || parsed.env.nonEmpty || parsed.awsCredential.isDefined || parsed.runOnHost.isDefined
-      then fail(s"error: $action reads no --write, --env, --env-aws-cred or --run-on-host option; drop it")
+        || parsed.clipboard.isDefined || parsed.mic
+      then
+        fail(
+          s"error: $action reads no --write, --clipboard, --mic, --env, --env-aws-cred or --run-on-host option; " +
+            "drop it",
+        )
 
     parsed.action match
       case Some(("--help", _)) =>
@@ -1228,6 +1230,8 @@ object AgentSandboxLauncher:
     sessionStartMode: String,
     clipboard: String,
     clipboardHost: ClipboardRelay.HostBackend,
+    /** The recorder candidates under --mic, in probe order. */
+    microphone: Option[Vector[MicrophoneRelay.Recorder]],
     forwardedEnv: Vector[String],
     awsCredential: Option[AwsCredential.Resolved],
     runOnHost: Vector[String],
@@ -1427,6 +1431,7 @@ object AgentSandboxLauncher:
       .format(Instant.now())
     val hostLogFile = logDir.resolve(s"proxy-$logStamp-$runSuffix.log")
     val channelLogFile = logDir.resolve(s"run-on-host-$logStamp-$runSuffix.log")
+    val microphoneLogFile = logDir.resolve(s"microphone-$logStamp-$runSuffix.log")
 
     val git = gitAccess(settings, project, images, rules, os)
     val sandboxFiles =
@@ -1443,7 +1448,7 @@ object AgentSandboxLauncher:
     printLaunchLines(parsed, settings, project, rules, workspace, git, hostLogFile, os)
     val createCommand = sandboxCreateCommand(
       parsed, settings, project, images, rules, names, workspace, git, proxyIp, sandboxFiles, machineMemory,
-      channelLogFile, os,
+      channelLogFile, microphoneLogFile, os,
     )
 
     // Before the hold, what the first mill, gradle or mvn command would refuse for want of an
@@ -1477,7 +1482,7 @@ object AgentSandboxLauncher:
 
     startSandbox(
       parsed, settings, project, rules, names, workspace, createCommand, filterReap, runFiles, channelLogFile,
-      cleanup, os,
+      microphoneLogFile, cleanup, os,
     )
 
   private def launchSettings(parsed: ParsedCommandLine, os: Os): LaunchSettings =
@@ -1493,9 +1498,16 @@ object AgentSandboxLauncher:
     // the boundary must not be discovered halfway through a launch that has already made resources.
     val nesting = nestingMode(env(NestingVariable)).fold(fail(_), identity)
     val sessionStartMode = sessionStart(env(SessionStartVariable)).fold(fail(_), identity)
-    val clipboard = clipboardMode(env(ClipboardVariable)).fold(fail(_), identity)
+    clipboardVariableRefusal(env(ClipboardVariable)).foreach(fail(_))
+    val clipboard = parsed.clipboardMode
+    val pathValue = env("PATH").getOrElse("")
+    val microphone = Option.when(parsed.mic)(MicrophoneRelay.recorders(os, pathValue).fold(fail(_), identity))
+    // The reaper ends the microphone relay's tree with the same proven ps as the clipboard's.
     val clipboardHost =
-      ClipboardRelay.hostBackend(clipboard, os, env("PATH").getOrElse("")).fold(fail(_), identity)
+      ClipboardRelay.hostBackend(clipboard, os, pathValue).fold(fail(_), identity) match
+        case backend if microphone.nonEmpty && os != Os.Windows && backend.ps.isEmpty =>
+          backend.copy(ps = ClipboardRelay.probedPs(MicOption, os, pathValue).fold(fail(_), identity))
+        case backend => backend
     // Raw, not HostCommands.env: that one reads an empty variable as unset, which is right for the
     // launcher's own settings and wrong here, where set-but-empty is a value to forward.
     val forwardedEnv = forwardedEnvironment(parsed.env, name => Option(System.getenv(name))).fold(fail(_), identity)
@@ -1526,8 +1538,8 @@ object AgentSandboxLauncher:
       .map: program =>
         RunOnHostPrereqs.readProgramRules(projectDir, program).fold(fail(_), program -> _)
     LaunchSettings(
-      credentials, image, imageOverridden, nesting, sessionStartMode, clipboard, clipboardHost, forwardedEnv,
-      awsCredential, runOnHost, projectDir, boundaryDir, programRules,
+      credentials, image, imageOverridden, nesting, sessionStartMode, clipboard, clipboardHost, microphone,
+      forwardedEnv, awsCredential, runOnHost, projectDir, boundaryDir, programRules,
     )
 
   private def launchProject(parsed: ParsedCommandLine, settings: LaunchSettings, os: Os): LaunchProject =
@@ -2206,11 +2218,12 @@ object AgentSandboxLauncher:
     sandboxFiles: Vector[String],
     machineMemory: Option[Long],
     channelLogFile: Path,
+    microphoneLogFile: Path,
     os: Os,
   ): Vector[String] =
     import parsed.{command, writeMode}
     import settings.{
-      awsCredential, clipboard, credentials, forwardedEnv, nesting, programRules, projectDir, runOnHost,
+      awsCredential, clipboard, credentials, forwardedEnv, microphone, nesting, programRules, projectDir, runOnHost,
       sessionStartMode,
     }
     import project.{mountPath, persistentVolume}
@@ -2272,6 +2285,14 @@ object AgentSandboxLauncher:
         System.err.println(clipboardLine(mode))
         Vector(s"--env=$ClipboardVariable=$mode") ++
           (if mode == "bidirectional" then Vector("--env=WAYLAND_DISPLAY=ko-sandbox-clipboard") else Vector.empty)
+
+    // Loud for the same reason; the entrypoint starts the daemon these variables name.
+    val microphoneArgs =
+      if microphone.isEmpty then Vector.empty
+      else
+        System.err.println(micLine())
+        System.err.println(pathLine("microphone log", microphoneLogFile, os))
+        MicrophoneRelay.sandboxEnvironment().map((name, value) => s"--env=$name=$value")
 
     // Loud for the same reason: host-native execution is authority a container session alone does
     // not have. SECURITY.md "Run on host" is what bounds it.
@@ -2337,7 +2358,7 @@ object AgentSandboxLauncher:
 
       // Do not inherit the host's proxy variables; egressArgs passes the sandbox's own explicitly.
       "--http-proxy=false",
-    ) ++ nestedArgs ++ clipboardArgs ++ runOnHostArgs ++ egressArgs ++ fileRuleArgs ++ Vector(
+    ) ++ nestedArgs ++ clipboardArgs ++ microphoneArgs ++ runOnHostArgs ++ egressArgs ++ fileRuleArgs ++ Vector(
 
       // The host's zone, because the JVM resolves it on every platform the launcher runs on. The image
       // ships tzdata and nothing else sets a zone, so without this a commit made in the sandbox
@@ -2380,10 +2401,11 @@ object AgentSandboxLauncher:
     filterReap: Option[String],
     runFiles: Path,
     channelLogFile: Path,
+    microphoneLogFile: Path,
     cleanup: RunCleanup,
     os: Os,
   ): Nothing =
-    import settings.{awsCredential, clipboard, clipboardHost, credentials, projectDir, runOnHost}
+    import settings.{awsCredential, clipboard, clipboardHost, credentials, microphone, projectDir, runOnHost}
     import project.{mountPath, projectId}
     import rules.rejectFileRules
     import names.{egressNetwork, proxyContainer, sandboxContainer, sandboxNetwork}
@@ -2395,6 +2417,10 @@ object AgentSandboxLauncher:
     if !created.ok then
       fail(s"error: could not create the sandbox container\n${created.err}")
 
+    // In this run's own directory: the reaper's microphone job reports its probe here.
+    val microphoneJob = microphone.filter(_ => os != Os.Windows).map: recorders =>
+      MicrophoneJob(runFiles.resolve("microphone.status"), microphoneLogFile, recorders)
+
     // A failed spawn is not fatal: the handover takes the resident path (handOver), the model Windows
     // always uses.
     val reaperArmed =
@@ -2405,15 +2431,43 @@ object AgentSandboxLauncher:
           filterReap.getOrElse(""),
           clipboard,
           clipboardHost,
+          microphoneJob,
         )
     if os != Os.Windows && !reaperArmed then
-      // Except when the clipboard was asked for: the sandbox would wait the shim's bound
-      // on every paste for a relay that never comes. The cleanup hook removes what was created,
-      // the never-started sandbox included (removeRunResources).
+      // Except when a relay was asked for: the sandbox would wait the clipboard shim's bound on
+      // every paste, or dictate nothing, for a relay that never comes. The cleanup hook removes
+      // what was created, the never-started sandbox included (removeRunResources).
       if clipboard != "off" then
-        fail(s"error: could not spawn the proxy reaper, which serves $ClipboardVariable=$clipboard")
+        fail(
+          s"error: could not spawn the proxy reaper, which serves --clipboard=$clipboard; launch again, or without it",
+        )
+      if microphone.nonEmpty then
+        fail(s"error: could not spawn the proxy reaper, which serves $MicOption; launch again, or without it")
       System.err.println("note: could not spawn the proxy reaper; staying resident to remove the proxy on exit")
     clipboardHost.powershell.foreach(ClipboardRelay.startResident(_, podman, sandboxContainer, clipboard))
+
+    // The launch probe, before the sandbox starts: the recorder that delivers is the session's.
+    // A launch whose microphone cannot record fails here, its cleanup hook removing what was made.
+    microphone.foreach: recorders =>
+      val notice = () =>
+        System.err.println("microphone: answer macOS's microphone permission prompt; the launch waits up to a minute")
+      def recording(label: String, silent: Boolean): Unit =
+        System.err.println(s"microphone: recording with $label")
+        if silent then warn(MicrophoneRelay.silenceWarning(os))
+      microphoneJob match
+        case Some(job) =>
+          MicrophoneRelay.awaitProbe(job.status, os, notice) match
+            case MicrophoneRelay.ProbeOutcome.Recording(label, silent) => recording(label, silent)
+            case MicrophoneRelay.ProbeOutcome.Failed(reasons) => fail(MicrophoneRelay.failureMessage(reasons, os))
+        case None =>
+          MicrophoneRelay.probeResident(recorders, MicrophoneRelay.probeBoundSeconds(os), microphoneLogFile) match
+            case Right(kept) =>
+              recording(kept.recorder.label, kept.silent)
+              MicrophoneRelay.startResident(kept, podman, sandboxContainer, microphoneLogFile)
+            case Left(reasons) =>
+              val diagnosis = findOnPath("powershell", env("PATH").getOrElse(""), os)
+                .map(MicrophoneRelay.windowsDiagnostics).getOrElse(Vector.empty)
+              fail(MicrophoneRelay.failureMessage(reasons, os, diagnosis))
 
     // Said here, not on the workspace line above: the user should not have to infer "joined" from
     // silence, and which branch the mount took is known only now.

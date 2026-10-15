@@ -165,7 +165,7 @@ object RunOnHostChannel:
 
   /**
    * How the runner reaches the sandbox, as data so the acceptance test and the tests can substitute a local
-   * shell for `podman exec -i <container>`: the transport is what they stub, never the protocol.
+   * shell for `podman exec` (HostCommands.ExecWithInput): the transport is what they stub, never the protocol.
    */
   final case class Transport(
     execPrefix: Seq[String],
@@ -677,7 +677,7 @@ object RunOnHostChannel:
           endCurrentCommand()
           teardown(bySignal = true)))
         val transport = Transport(
-          execPrefix = Seq(podman, "exec", "-i", container),
+          execPrefix = podman +: HostCommands.ExecWithInput :+ container,
           sandboxRunning = () =>
             try
               HostCommands

@@ -278,11 +278,37 @@ RUN set -euxo pipefail; \
         # podman's masked /proc entries (measured, as for Codex below).
         bubblewrap \
         socat \
-        # `/voice`'s last-resort recorder. The container has no audio capture device, and
-        # with SoX present `/voice` says that instead of asking for the package
-        # (doc/plan-microphone.md, "Today").
+        # `/voice`'s recorder under --mic, through its PulseAudio backend below
+        # (doc/microphone.md).
         sox; \
     rm -rf /var/lib/apt/lists/*
+
+
+# ---------------------------------------------------------------------------
+# The host microphone under --mic
+# ---------------------------------------------------------------------------
+#
+# A PulseAudio daemon whose microphone is a FIFO the launcher's relay fills
+# (ko-sandbox-entrypoint starts it; doc/microphone.md, "The daemon"), and
+# its clients' paths to it: libsox-fmt-pulse for Claude Code's `rec`,
+# pulseaudio-utils for agy's `parec`, libasound2-plugins and asound.conf for
+# Codex's voice helper, which opens ALSA's default PCM; that helper's call
+# cannot leave the sandbox (doc/TODO.md). alsa-utils stays out:
+# Claude Code tries `arecord` before SoX, and one path is enough.
+# pulse-client.conf turns autospawn off, so without --mic no client starts a
+# daemon of its own.
+RUN set -euxo pipefail; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        pulseaudio \
+        pulseaudio-utils \
+        libsox-fmt-pulse \
+        libasound2-plugins; \
+    rm -rf /var/lib/apt/lists/*
+COPY --chmod=0644 microphone/microphone.pa /etc/ko-agent-sandbox/microphone.pa
+COPY --chmod=0644 microphone/asound.conf /etc/asound.conf
+COPY --chmod=0644 microphone/pulse-client.conf /etc/pulse/client.conf.d/99-ko-agent-sandbox.conf
+COPY --chmod=0755 microphone/ko-sandbox-mic /usr/local/bin/ko-sandbox-mic
 
 # .claude.json defaults to $HOME; move it under ~/.claude so it persists through the symlink.
 ENV CLAUDE_CONFIG_DIR=/home/nonroot/.claude

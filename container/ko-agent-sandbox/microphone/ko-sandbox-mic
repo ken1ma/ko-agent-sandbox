@@ -1,0 +1,367 @@
+#!/usr/local/bin/python3 -I
+"""The sandbox side of the microphone relay under --mic (SECURITY.md "Microphone",
+doc/microphone.md): the PulseAudio daemon's microphone is a FIFO the host relay writes, and
+this program decides when it writes.
+
+  ko-sandbox-mic control [DIR]   the controller the entrypoint starts beside the daemon: asks the
+                                 host for audio while an agent records, ends the writer when the
+                                 last recording stream closes
+  ko-sandbox-mic write FIFO      the writer the host relay's `podman exec` runs: copies its stdin,
+                                 the host microphone, into the daemon's FIFO
+
+DIR, the FIFO's directory, holds the relay's request FIFO `req` and the controller's and the
+writer's pid files.
+"""
+
+import os
+import select
+import signal
+import stat
+import subprocess
+import sys
+import time
+from typing import NamedTuple
+
+DIRECTORY = "/tmp/ko-agent-sandbox/microphone"
+# The pipe source's name in /etc/ko-agent-sandbox/microphone.pa: module-pipe-source's default.
+SOURCE = "fifo_input"
+# The driver of a client's stream; the loopback's output is module-loopback.c's.
+CLIENT_DRIVER = "protocol-native.c"
+WRITER_PID_FILE = "writer.pid"
+CONTROLLER_PID_FILE = "controller.pid"
+
+TICK_SECONDS = 5.0
+# A delivered `start` waits this long for a writer before the next one, so a slow exec gets one.
+START_WAIT_SECONDS = 3.0
+# A `start` the relay did not take — no FIFO yet, or nobody reading it, as between two of the
+# relay's execs — is retried this soon rather than at the next tick.
+UNDELIVERED_RETRY_SECONDS = 0.2
+DAEMON_WAIT_SECONDS = 30.0
+
+
+def pactl(*arguments):
+    """pactl's stdout, or None when it failed: the daemon is not up, or is gone."""
+    try:
+        result = subprocess.run(
+            ["pactl", *arguments], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def source_index():
+    listing = pactl("list", "short", "sources")
+    if listing is None:
+        return None
+    for line in listing.splitlines():
+        fields = line.split("\t")
+        if len(fields) >= 2 and fields[1] == SOURCE:
+            return fields[0]
+    return None
+
+
+def recording_streams(source):
+    """How many clients have a stream open on the microphone, or None when the listing failed.
+    Corked streams count: the short listing has no cork column."""
+    listing = pactl("list", "short", "source-outputs")
+    if listing is None:
+        return None
+    count = 0
+    for line in listing.splitlines():
+        fields = line.split("\t")
+        if len(fields) >= 4 and fields[1] == source and fields[3] == CLIENT_DRIVER:
+            count += 1
+    return count
+
+
+def start_time(pid):
+    """Field 22 of /proc/<pid>/stat, which with the pid names one process: a pid alone outlives
+    its process in a file and is reused."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as file:
+            text = file.read()
+    except OSError:
+        return None
+    # The command name is parenthesized and may hold spaces or parentheses itself.
+    fields = text[text.rindex(b")") + 2:].split()
+    return fields[19].decode() if len(fields) > 19 else None
+
+
+def write_pid_file(path):
+    """This process's pid and start time, renamed into place so a reader never sees a partial line."""
+    temporary = f"{path}.{os.getpid()}"
+    with open(temporary, "w") as file:
+        file.write(f"{os.getpid()} {start_time(os.getpid())}\n")
+    os.rename(temporary, path)
+
+
+def recorded_pidfd(path):
+    """A pidfd for the process a pid file names, or None: no file, no such process, or a process
+    the pid was reused for. The start time is checked after the pidfd is open, so the process
+    checked is the one the pidfd holds, and a pid reused later is never signalled or watched."""
+    try:
+        with open(path) as file:
+            pid_text, recorded = file.read().split()
+        pid = int(pid_text)
+    except (OSError, ValueError):
+        return None, None
+    try:
+        pidfd = os.pidfd_open(pid)
+    except OSError:
+        return None, None
+    if start_time(pid) != recorded:
+        os.close(pidfd)
+        return None, None
+    return pidfd, (pid, recorded)
+
+
+def exited(pidfd):
+    """A pidfd reads as readable once its process has exited."""
+    return bool(select.select([pidfd], [], [], 0)[0])
+
+
+def frame_prefix(pending):
+    """How many of the pending bytes to write at once: whole 16-bit frames, at most PIPE_BUF,
+    which pipe(7) keeps atomic. module-pipe-source posts each read's length as a chunk, and
+    PulseAudio asserts a chunk is frame-aligned (doc/microphone.md, "The controller and the
+    writer")."""
+    whole = len(pending) - len(pending) % 2
+    return min(whole, select.PIPE_BUF - select.PIPE_BUF % 2)
+
+
+class Writer(NamedTuple):
+    pid: int
+    start_time: str
+    pidfd: int
+
+
+class Controller:
+    """The one holder of the recording state inside the sandbox, level-triggered: demand (a client
+    stream on the microphone) and supply (a live writer), reconciled on every source-output event
+    and on the timer."""
+
+    def __init__(self, directory, source, clock=time.monotonic):
+        self.directory = directory
+        self.source = source
+        self.clock = clock
+        # When the last delivered `start` was written, while its wait lasts.
+        self.started_at = None
+        self.undelivered = False
+        self.writer = None  # a Writer, the one last seen alive
+        self.reconciled_at = clock()
+
+    def deadline(self):
+        """Seconds until the next reconciliation the timer owes, counted from the last one, so a
+        wakeup that reconciles nothing does not postpone it; zero or less when it is due."""
+        due = self.reconciled_at + (UNDELIVERED_RETRY_SECONDS if self.undelivered else TICK_SECONDS)
+        if self.started_at is not None:
+            due = min(due, self.started_at + START_WAIT_SECONDS)
+        return due - self.clock()
+
+    def woken(self, lines):
+        """One wakeup: the subscription's `lines`, or None when the wait ran out. Only stream events
+        and the timer reconcile: every listing is a client of its own, so reconciling on client
+        events would list forever."""
+        if lines is None or self.deadline() <= 0 or any(b" on source-output " in line for line in lines):
+            self.reconcile()
+
+    def supply(self):
+        """The live writer's pidfd, or None. Held as a pidfd, so a pid reused between this check
+        and a signal is never signalled."""
+        try:
+            with open(os.path.join(self.directory, WRITER_PID_FILE)) as file:
+                named = tuple(file.read().split())
+        except OSError:
+            named = None
+        if self.writer is not None and named != (str(self.writer.pid), self.writer.start_time):
+            os.close(self.writer.pidfd)
+            self.writer = None
+        if self.writer is None:
+            pidfd, identity = recorded_pidfd(os.path.join(self.directory, WRITER_PID_FILE))
+            if pidfd is None:
+                return None
+            self.writer = Writer(*identity, pidfd)
+        if exited(self.writer.pidfd):
+            os.close(self.writer.pidfd)
+            self.writer = None
+            return None
+        return self.writer.pidfd
+
+    def send_start(self):
+        """Whether `start` reached a reader of the relay's FIFO."""
+        try:
+            fd = os.open(os.path.join(self.directory, "req"), os.O_WRONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        except OSError:
+            # ENOENT: the relay's first exec has not made it; ENXIO: nobody reads it.
+            return False
+        try:
+            return os.write(fd, b"start\n") == 6
+        except OSError:
+            return False
+        finally:
+            os.close(fd)
+
+    def reconcile(self):
+        self.reconciled_at = self.clock()
+        streams = recording_streams(self.source)
+        if streams is None:
+            return
+        demand = streams > 0
+        writer = self.supply()
+        if writer is not None:
+            self.started_at = None
+            self.undelivered = False
+            if not demand:
+                try:
+                    signal.pidfd_send_signal(writer, signal.SIGTERM)
+                except OSError:
+                    pass
+        elif not demand:
+            self.started_at = None
+            self.undelivered = False
+        elif self.started_at is None or self.clock() - self.started_at >= START_WAIT_SECONDS:
+            if self.send_start():
+                self.started_at = self.clock()
+                self.undelivered = False
+            else:
+                self.started_at = None
+                self.undelivered = True
+
+
+def await_subscription(subscription, give_up):
+    """The subscription's first bytes, which arrive once it is registered: `pactl subscribe` prints
+    nothing when it registers, and from then on reports each listing's client. None if the daemon ended
+    it, or it reported nothing before `give_up`."""
+    while time.monotonic() < give_up:
+        source_index()
+        ready, _, _ = select.select([subscription.stdout], [], [], 0.2)
+        if ready:
+            return os.read(subscription.stdout.fileno(), 4096) or None
+    return None
+
+
+def control(directory):
+    # The writer watches this process through it, and ends its forwarding when it is gone.
+    write_pid_file(os.path.join(directory, CONTROLLER_PID_FILE))
+    give_up = time.monotonic() + DAEMON_WAIT_SECONDS
+    source = source_index()
+    while source is None:
+        if time.monotonic() > give_up:
+            print("ko-sandbox-mic: the daemon's microphone did not appear", file=sys.stderr)
+            return 1
+        time.sleep(0.2)
+        source = source_index()
+    subscription = subprocess.Popen(
+        ["pactl", "subscribe"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    try:
+        # Registered before the first listing, so no stream opens unseen between the two.
+        first = await_subscription(subscription, time.monotonic() + DAEMON_WAIT_SECONDS)
+        if first is None:
+            print("ko-sandbox-mic: the daemon's events did not arrive", file=sys.stderr)
+            return 1
+        *_, pending = first.split(b"\n")
+        controller = Controller(directory, source)
+        controller.reconcile()
+        while True:
+            # Never zero: a reconciliation whose listing failed keeps the wait, and would spin.
+            ready, _, _ = select.select([subscription.stdout], [], [], max(0.05, controller.deadline()))
+            lines = None
+            if ready:
+                chunk = os.read(subscription.stdout.fileno(), 4096)
+                if not chunk:
+                    # The subscription ended with the daemon: no demand, and nothing left to serve.
+                    return 0
+                *lines, pending = (pending + chunk).split(b"\n")
+            controller.woken(lines)
+    finally:
+        subscription.kill()
+
+
+def write(fifo):
+    directory = os.path.dirname(fifo)
+    source = source_index()
+    streams = recording_streams(source) if source is not None else None
+    if not streams:
+        # A `start` read after its stream closed: one exec, and no microphone.
+        return 0
+    pid_file = os.path.join(directory, WRITER_PID_FILE)
+    write_pid_file(pid_file)
+    try:
+        # The controller alone ends a forwarding when the last stream closes: without it, this
+        # writer would forward the host microphone until the session's end.
+        controller, _ = recorded_pidfd(os.path.join(directory, CONTROLLER_PID_FILE))
+        if controller is None or exited(controller):
+            print("ko-sandbox-mic: no controller is running", file=sys.stderr)
+            return 1
+        if not stat.S_ISFIFO(os.lstat(fifo).st_mode):
+            print(f"ko-sandbox-mic: {fifo} is not a FIFO", file=sys.stderr)
+            return 1
+        # Non-blocking: a FIFO whose daemon is gone fails with ENXIO instead of waiting for a
+        # reader, and a full one leaves the copy below free to see the controller's death.
+        target = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+        # After the FIFO is open, and unbuffered: the host records into this writer from here on,
+        # and Python's stdout would hold the line while the copy below waits on stdin.
+        os.write(1, b"ready\n")
+        return copy(target, controller)
+    finally:
+        # Removed by the writer alone; the controller only reads it.
+        try:
+            with open(pid_file) as file:
+                ours = file.read().split()[:1] == [str(os.getpid())]
+            if ours:
+                os.unlink(pid_file)
+        except OSError:
+            pass
+
+
+def copy(target, controller):
+    """Stdin into the FIFO until stdin ends or the controller is gone, waiting on the controller
+    and on stdin while no frame is pending, on the controller and the FIFO while one is. os.read
+    and os.write, not Python's buffered streams, which would hold up to their buffer of audio;
+    -I ignores PYTHONUNBUFFERED."""
+    pending = bytearray()
+    ended = False
+    while not (ended and len(pending) < 2):
+        writing = frame_prefix(pending) > 0
+        readers = [controller] if writing or ended else [controller, 0]
+        readable, writable, _ = select.select(readers, [target] if writing else [], [])
+        if controller in readable:
+            return 0
+        if 0 in readable:
+            chunk = os.read(0, 65536)
+            if chunk:
+                pending += chunk
+            else:
+                ended = True
+        if target in writable:
+            try:
+                written = os.write(target, pending[:frame_prefix(pending)])
+            except BlockingIOError:
+                written = 0
+            del pending[:written]
+    return 0
+
+
+def terminate(signum, frame):
+    # Raised, not returned: PEP 475 would resume a blocked os.read or os.write after a handler that
+    # returns.
+    raise SystemExit(0)
+
+
+def main(arguments):
+    signal.signal(signal.SIGTERM, terminate)
+    match arguments:
+        case ["control"]:
+            return control(DIRECTORY)
+        case ["control", directory]:
+            return control(directory)
+        case ["write", fifo]:
+            return write(fifo)
+    print("usage: ko-sandbox-mic control [DIR] | write FIFO", file=sys.stderr)
+    return 64
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

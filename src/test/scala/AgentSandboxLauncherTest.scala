@@ -206,7 +206,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assert(runOnHostLines(Seq("gradle"), "reject", color = true)(1).startsWith("\u001b[38;5;208m"))
 
-  test("a boundary an environment variable weakens is an orange line naming the variable"):
+  test("a boundary an environment variable or option weakens is an orange line naming it"):
     assertEquals(
       nestingLine("same-uid", color = false),
       "nested containers: same-uid by KO_AGENT_SANDBOX_NESTING; /proc unmasked, SELinux label disabled and " +
@@ -214,10 +214,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assertEquals(
       clipboardLine("paste", color = false),
-      "clipboard: paste by KO_AGENT_SANDBOX_CLIPBOARD; the agent can read an image you copy",
+      "clipboard: paste by --clipboard=paste; the agent can read an image you copy",
     )
     assert(clipboardLine("bidirectional", color = false).endsWith("you copy and set your clipboard"))
-    for line <- Seq(nestingLine("same-uid", color = true), clipboardLine("paste", color = true)) do
+    assert(
+      micLine(color = false).startsWith("microphone: on by --mic; the host microphone is open for the whole session"),
+    )
+    for line <- Seq(nestingLine("same-uid", color = true), clipboardLine("paste", color = true), micLine(color = true))
+    do
       assert(line.startsWith("\u001b[38;5;208m") && line.endsWith("\u001b[0m"), line)
       assertEquals(line.count(_ == '\u001b'), 2, line)
 
@@ -374,14 +378,28 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(mainWorktreeVolumeNote(main, Os.Linux).contains(mainWorktreeVolume(main, Os.Linux)))
     assert(mainWorktreeVolumeNote(main, Os.Linux).contains("run --reset in /src/app"))
 
-  test("the clipboard defaults to off and fails closed on anything else"):
-    assertEquals(clipboardMode(None), Right("off"))
-    assertEquals(clipboardMode(Some("")), Right("off"))
-    assertEquals(clipboardMode(Some("off")), Right("off"))
-    assertEquals(clipboardMode(Some("paste")), Right("paste"))
-    assertEquals(clipboardMode(Some("bidirectional")), Right("bidirectional"))
-    Vector("on", "true", "1", "read", "copy", "both", "PASTE", " paste ").foreach: value =>
-      assert(clipboardMode(Some(value)).isLeft, s"'$value' was not refused")
+  test("the clipboard defaults to off, is selected once, and fails closed on anything else"):
+    assertEquals(parseCommandLine(List("claude")).map(_.clipboardMode), Right("off"))
+    Vector("off", "paste", "bidirectional").foreach: mode =>
+      assertEquals(parseCommandLine(List(s"--clipboard=$mode", "claude")).map(_.clipboardMode), Right(mode))
+    Vector("", "on", "true", "1", "read", "copy", "both", "PASTE", " paste ").foreach: value =>
+      assert(parseCommandLine(List(s"--clipboard=$value")).isLeft, s"'$value' was not refused")
+    assert(parseCommandLine(List("--clipboard=paste", "--clipboard=off")).swap.exists(_.contains("twice")))
+    assert(parseCommandLine(List("--clipboard", "paste")).swap.exists(_.contains("--clipboard=<mode>")))
+    // After the command, it is the command's.
+    assertEquals(parseCommandLine(List("claude", "--clipboard=paste")).map(_.clipboard), Right(None))
+
+  test("KO_AGENT_SANDBOX_CLIPBOARD fails the launch, naming the option and the mode it held"):
+    assertEquals(clipboardVariableRefusal(None), None)
+    val refusal = clipboardVariableRefusal(Some("paste"))
+    assert(refusal.exists(message => message.contains("--clipboard=<mode>") && message.contains("--clipboard=paste")))
+
+  test("--mic is a flag, given once"):
+    assertEquals(parseCommandLine(List("claude")).map(_.mic), Right(false))
+    assertEquals(parseCommandLine(List("--mic", "claude")).map(_.mic), Right(true))
+    assert(parseCommandLine(List("--mic", "--mic")).swap.exists(_.contains("twice")))
+    assert(parseCommandLine(List("--mic=on")).swap.exists(_.contains("takes no value")))
+    assertEquals(parseCommandLine(List("claude", "--mic")).map(_.mic), Right(false))
 
   test("a clipboard mode is refused where the host cannot serve it"):
     import ClipboardRelay.{hostBackend, HostBackend}
@@ -506,12 +524,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val documented = "KO_AGENT_SANDBOX_[A-Z_]+".r.findAllIn(UsageText).toSet
     assertEquals(unknownSandboxVariables(documented), Vector.empty)
     // The ones the launcher sets rather than reads are documented where their reader is — the
-    // agent instructions, and for RUN_ON_HOST also the image's shim.
+    // agent instructions, for RUN_ON_HOST also the image's shim, for MIC the entrypoint. The
+    // launcher reads the clipboard's only to refuse it (design.md, "Host resources are granted by
+    // launch options, not variables").
     assertEquals(
       KnownSandboxVariables -- documented,
       Set(
         "KO_AGENT_SANDBOX_EGRESS_RULESET", "KO_AGENT_SANDBOX_FILE_RULES", "KO_AGENT_SANDBOX_JAVA_OPTS",
-        RunOnHostChannel.RunOnHostVariable,
+        RunOnHostChannel.RunOnHostVariable, ClipboardVariable, MicrophoneRelay.MicVariable,
       ),
     )
 
@@ -522,9 +542,11 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       documentedActions,
       ManagementActions ++ Set(
         "--egress-check", "--write", "--egress", "--run-on-host", "--env", AwsCredential.OptionName, "--egress-cred",
+        "--clipboard", MicOption,
       ),
     )
     assert(UsageText.contains(s"--write=${WriteModes.mkString("|")}"), UsageText)
+    assert(UsageText.contains(s"--clipboard=${ClipboardModes.mkString("|")}"), UsageText)
     assert(UsageText.contains(s"--egress=${EgressProfiles.mkString("|")}"), UsageText)
     assert(UsageText.contains(RunOnHostPrograms.mkString(" / ")), UsageText)
 
@@ -1860,8 +1882,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // no value, which no sandbox receives.
     assertEquals(interpolated, Set("SessionStartVariable", "NestingVariable", "ClipboardVariable", "variable", "name"))
     Vector(
-      SessionStartVariable, NestingVariable, ClipboardVariable, "KO_AGENT_SANDBOX_EGRESS_RULESET",
-      "KO_AGENT_SANDBOX_FILE_RULES",
+      SessionStartVariable, NestingVariable, ClipboardVariable, MicrophoneRelay.MicVariable,
+      "KO_AGENT_SANDBOX_EGRESS_RULESET", "KO_AGENT_SANDBOX_FILE_RULES",
     ).foreach: name =>
       assert(name.startsWith(RefusedForwardPrefix), name)
     // The variable holds the ruleset lines alone: the dry run's metadata after them describes the
