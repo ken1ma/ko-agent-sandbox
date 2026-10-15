@@ -1,0 +1,26 @@
+# The PulseAudio daemon under --mic, loaded with `pulseaudio -n --file=` and nothing else
+# (ko-sandbox-entrypoint; doc/microphone.md, "The daemon"). The FIFO's path is under
+# MicrophoneRelay.SandboxDir.
+.fail
+
+# The microphone: a FIFO the host relay's writer fills. The module makes the FIFO and holds it
+# open read-write, so the writer opens it without waiting and its close is not an EOF. Its source
+# keeps the module's default name, fifo_input, which ko-sandbox-mic looks for.
+load-module module-pipe-source file=/tmp/ko-agent-sandbox/microphone/mic format=s16le rate=16000 channels=1
+
+# Codex's speaker, at the source's sample spec so the loopback converts nothing.
+load-module module-null-sink sink_name=speaker format=s16le rate=16000 channels=1
+
+# A permanent output on the microphone, which keeps the pipe source running and reading its FIFO:
+# audio written while no agent records is dropped here instead of reaching the next recording.
+# adjust_time=0 stops the rate readjustment toward a latency target this drop path has no use for.
+load-module module-loopback source=fifo_input sink=speaker adjust_time=0 source_dont_move=true
+
+# The socket PULSE_SERVER names: the module's default, `native` under PULSE_RUNTIME_PATH. No
+# cookie: every process in the container is one uid and the socket reaches nothing outside it.
+# auth-cookie-enabled=0 is what stops the module from making one; anonymous access alone leaves
+# cookie handling on.
+load-module module-native-protocol-unix auth-anonymous=1 auth-cookie-enabled=0
+
+set-default-source fifo_input
+set-default-sink speaker

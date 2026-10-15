@@ -139,8 +139,8 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 1. Sign-in prints an authorization URL; open it in an external browser and paste the resulting
    code back.
-1. Ctrl-V pastes a copied image only when `KO_AGENT_SANDBOX_CLIPBOARD` is `paste` or
-   `bidirectional`.
+1. Ctrl-V pastes a copied image only under `--clipboard=paste` or `--clipboard=bidirectional`.
+1. `/voice` needs `--mic`.
 1. The image keeps Claude Code's conversation in the terminal's scrollback, where you can select
    and copy it. For the fullscreen renderer, launch with `--env=CLAUDE_CODE_NO_FLICKER=1`: the
    image's managed setting overrides `/tui fullscreen`.
@@ -166,8 +166,10 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 1. The image keeps Codex's conversation in the terminal's scrollback, where you can select and copy
    it. To restore Codex's default, pass `-c tui.fullscreen_transcript=true` for one launch, or set
    `tui.fullscreen_transcript = true` in `~/.codex/config.toml`.
-1. Ctrl-V pastes no image in any `KO_AGENT_SANDBOX_CLIPBOARD` mode
+1. Ctrl-V pastes no image in any `--clipboard` mode
    ([clipboard plan](doc/plan-clipboard.md)).
+1. `/voice` under `--mic` reports "voice transport could not connect"
+   ([doc/microphone.md](doc/microphone.md#codex)).
 1. `$ko-review` runs the same review as [`/ko-review`](#claude), with Codex fixing or disputing
    the findings. Codex asks its questions in replies, since it has no question tool outside Plan
    mode.
@@ -175,6 +177,7 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 #### `agy`
 
 1. Sign in with the URL and pasted code, as for [`claude`](#claude).
+1. `/voice` needs `--mic`.
 
 #### `kiro-cli`
 
@@ -192,7 +195,7 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 1. Its fullscreen TUI cannot be turned off, so use `/copy` to copy text out. It writes OSC 52,
    which sets the clipboard on a terminal that honors it
    ([SECURITY.md](SECURITY.md#terminal-clipboard-requests-osc-52)); on another terminal it needs
-   `KO_AGENT_SANDBOX_CLIPBOARD=bidirectional`.
+   `--clipboard=bidirectional`.
 
 #### `opencode`
 
@@ -288,6 +291,20 @@ restore permission prompts and set the Claude Code status line.
                          deny-unless-allowed, allows the launcher-owned
                          defaults modified by .ko-agent-sandbox/egress/rule.
                          Each profile: doc/egress-proxy.md
+      --clipboard=off|paste|bidirectional
+                         off (default) keeps the host clipboard out; paste lets
+                         the agent read a copied image; bidirectional also lets
+                         it set your clipboard (SECURITY.md). A Linux host needs
+                         xclip or wl-clipboard
+      --mic              let the agents' voice dictation record the host microphone.
+                         The microphone stays open on the host for the whole session,
+                         and its audio reaches the sandbox while any process there
+                         records (SECURITY.md "Microphone"). Needs a recorder on the
+                         host: rec from sox_ng or sox on macOS (brew install sox_ng);
+                         arecord (alsa-utils) or parecord (pulseaudio-utils) on Linux;
+                         sox_ng.exe on PATH on Windows. On macOS the terminal needs the
+                         microphone permission (System Settings > Privacy & Security >
+                         Microphone)
       --run-on-host=<programs>
                          macOS only: select sbt / mill / gradle / mvn, separated by commas.
                          Adds the ko-sandbox-run-on-host command inside the sandbox, to run
@@ -386,10 +403,6 @@ restore permission prompts and set the Claude Code status line.
                                           http[s]://[user:password@]host:port; the lowercase
                                           name is read when the uppercase is unset or empty.
                                           NO_PROXY is ignored (doc/egress-proxy.md)
-      KO_AGENT_SANDBOX_CLIPBOARD          "off" (default) keeps the host clipboard out; "paste"
-                                          lets the agent read a copied image; "bidirectional"
-                                          also lets it set your clipboard (SECURITY.md). A
-                                          Linux host needs xclip or wl-clipboard
       KO_AGENT_SANDBOX_NESTING            "none" (default) allows no container runtime; "same-uid"
                                           allows rootless containers with one uid, host networking
                                           and session-only storage, but unmasks /proc, disables

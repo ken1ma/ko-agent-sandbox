@@ -57,6 +57,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     project: Path = Project,
     // KO_AGENT_SANDBOX_NESTING as the launcher sets it; None for a container run by hand.
     nesting: Option[String] = Some("none"),
+    environment: Map[String, String] = Map.empty,
   ): Process =
     val builder =
       ProcessBuilder(sh.toString, script.toString, "sh", "-c", "printf '%s ' \"$0\" \"$@\"", "a", "b c")
@@ -68,6 +69,9 @@ class SandboxEntrypointTest extends munit.FunSuite:
       builder.environment.put("KO_AGENT_SANDBOX_NESTING", _),
     )
     path.foreach(dir => builder.environment.put("PATH", dir.toString + ":" + System.getenv("PATH")))
+    // A suite run inside a --mic session inherits its microphone variables; a test gives its own.
+    MicrophoneRelay.sandboxEnvironment().foreach((name, _) => builder.environment.remove(name))
+    environment.foreach(builder.environment.put(_, _))
     builder.redirectErrorStream(true)
     builder.start()
 
@@ -473,3 +477,62 @@ class SandboxEntrypointTest extends munit.FunSuite:
     assertEquals(status, 0, output)
     val (claude, antigravity, copilot, codex) = trustFiles(home)
     Vector(claude, antigravity, copilot, codex).foreach(file => assert(!Files.exists(file), file.toString))
+
+  test("under --mic the daemon starts from the image's script, the controller restarts only while it runs, " +
+    "and the directories are private"):
+    val (seed, home) = fixture()
+    val bin = Files.createTempDirectory("ko-sandbox-entrypoint-mic-bin")
+    val records = Files.createTempDirectory("ko-sandbox-entrypoint-mic-records")
+    // The daemon runs for three seconds; the controller exits at once, each run a line.
+    Files.writeString(
+      bin.resolve("pulseaudio"),
+      s"#!/bin/sh\necho \"$$*\" > '${records.resolve("pulseaudio")}'\nexec sleep 3\n",
+    )
+    Files.writeString(
+      bin.resolve("ko-sandbox-mic"),
+      s"#!/bin/sh\necho \"$$*\" >> '${records.resolve("ko-sandbox-mic")}'\n",
+    )
+    for name <- Vector("pulseaudio", "ko-sandbox-mic") do bin.resolve(name).toFile.setExecutable(true)
+    val microphone = Files.createTempDirectory("ko-sandbox-entrypoint-mic").resolve("microphone")
+    val environment = MicrophoneRelay.sandboxEnvironment(microphone.toString).toMap
+    val (status, output) = finish(start(seed, home, path = Some(bin), environment = environment))
+    assertEquals(status, 0, output)
+    assertEquals(output, "a b c ")
+    def recorded(name: String): String =
+      val file = records.resolve(name)
+      val deadline = System.nanoTime() + 5_000_000_000L
+      while !Files.exists(file) && System.nanoTime() < deadline do Thread.sleep(20)
+      Files.readString(file).trim
+    assertEquals(
+      recorded("pulseaudio"),
+      "-n --file=/etc/ko-agent-sandbox/microphone.pa --daemonize=no --disallow-module-loading=yes " +
+        "--disallow-exit=yes --exit-idle-time=-1 --realtime=no --high-priority=no",
+    )
+    def runs(): Vector[String] = Files.readAllLines(records.resolve("ko-sandbox-mic")).asScala.toVector
+    val deadline = System.nanoTime() + 5_000_000_000L
+    while runs().size < 2 && System.nanoTime() < deadline do Thread.sleep(50)
+    assert(runs().size >= 2, s"the controller was not started again: ${runs()}")
+    assert(runs().forall(_ == s"control $microphone"), runs().toString)
+    // Once the daemon is gone, no controller is started again.
+    Thread.sleep(4000)
+    val settled = runs().size
+    Thread.sleep(1500)
+    assertEquals(runs().size, settled, "a controller was started after the daemon ended")
+    for directory <- Vector("", "pulse-config", "pulse-state", "pulse-runtime") do
+      val made = microphone.resolve(directory)
+      assertEquals(
+        java.nio.file.attribute.PosixFilePermissions.toString(Files.getPosixFilePermissions(made)), "rwx------",
+        made.toString,
+      )
+
+  test("without --mic no audio program starts"):
+    val (seed, home) = fixture()
+    val bin = Files.createTempDirectory("ko-sandbox-entrypoint-nomic-bin")
+    val started = bin.resolve("started")
+    for name <- Vector("pulseaudio", "ko-sandbox-mic") do
+      Files.writeString(bin.resolve(name), s"#!/bin/sh\necho $$0 >> '$started'\n")
+      bin.resolve(name).toFile.setExecutable(true)
+    val (status, output) = finish(start(seed, home, path = Some(bin)))
+    assertEquals(status, 0, output)
+    Thread.sleep(300)
+    assert(!Files.exists(started), Files.readString(started))

@@ -7,9 +7,9 @@
 #
 # One transaction: take the lock, write a request line (plus body for `set`) to the request FIFO,
 # read the whole response FIFO. The relay's absence is a missing FIFO: an immediate failure in a
-# session launched without KO_AGENT_SANDBOX_CLIPBOARD, a short wait in one launched with it, since
-# the relay makes the FIFO only once the container runs. A relay that has died leaves the FIFO,
-# which is the bounded wait further down.
+# session launched without --clipboard, and a short wait in one launched with it, where the
+# launcher sets KO_AGENT_SANDBOX_CLIPBOARD, since the relay makes the FIFO only once the container
+# runs. A relay that has died leaves the FIFO, which is the bounded wait further down.
 set -eu
 
 dir=/tmp/ko-agent-sandbox/clipboard

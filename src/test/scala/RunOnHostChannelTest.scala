@@ -186,7 +186,9 @@ class RunOnHostChannelTest extends munit.FunSuite:
       host.resolve("podman"),
       """#!/bin/sh
         |case "$1 $2" in
-        |  "exec -i") shift 3
+        |  "exec -i")
+        |    [ "$3" = --detach-keys= ] || { echo "exec -i with the detach keys on" >&2; exit 125; }
+        |    shift 4
         |    case "$*" in
         |      *"/exit."*) "$@"; sleep 0.3 ;;
         |      *) exec "$@" ;;
@@ -197,7 +199,9 @@ class RunOnHostChannelTest extends munit.FunSuite:
     deleteRecursively(FifoDir)
     val running = AtomicBoolean(true)
     val transport =
-      Transport(Seq(host.resolve("podman").toString, "exec", "-i", "C"), () => running.get, FifoDir.toString)
+      Transport(
+        host.resolve("podman").toString +: HostCommands.ExecWithInput :+ "C", () => running.get, FifoDir.toString,
+      )
     val log = StringBuilder()
     val runner = Thread(() =>
       serve(

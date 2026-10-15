@@ -314,12 +314,12 @@ built-in default, which the skill leaves to it by passing no option.
   none, ahead of the model's own default, `low` for the current Codex models; a configured effort
   stays first, since the user set it knowing the usage limit it spends.
   - Measured on 2026-10-13 (reviews `2026-10-13-1001-7dc56e66` and `2026-10-13-1001-526190d9`):
-    the tree of the 2026-10-09 review's round 3, `plan-microphone.md` before its later
-    corrections, rebuilt from its snapshot in a clone and reviewed once per level by Codex
-    `gpt-6.1-sol` with the reviewer prompt of 2026-10-13.
+    the tree of the 2026-10-09 review's round 3, the microphone plan, rebuilt from its snapshot in
+    a clone and reviewed once per level by Codex `gpt-6.1-sol` with the reviewer prompt of
+    2026-10-13.
     - `low`: 6 commands, 3 web searches, 46 s, approved with no finding.
     - `high`: 12 commands, 9 web searches, 210 s, two material findings the plan had not
-      answered (`plan-microphone.md`, "The controller and the writer", records both).
+      answered (`microphone.md`, "The controller and the writer", records both).
     - Neither found the PulseAudio option that does not exist, which a review outside the sandbox
       found; the five rounds of 2026-10-09 at `low` ran one to four commands each.
 

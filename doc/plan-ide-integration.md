@@ -179,7 +179,9 @@ default egress profile.
   ```
 
   The command above is tested with the CLI installed under `~/.local/bin`; with the image's CLI
-  the path is `/usr/local/bin/code`, untested, as is the form without absolute paths.
+  the path is `/usr/local/bin/code`, untested, as is the form without absolute paths. A relay the
+  launcher runs adds `--detach-keys=`, which the launcher passes to every exec that attaches stdin
+  (`HostCommands.ExecWithInput`).
   `code agent endpoints` in the sandbox prints the instance id and the token. The listener
   accepts any local process; the connection token is what refuses them, and VS Code keeps it in
   the profile's settings under `chat.remoteAgentHosts`. The published-port candidate is untried.

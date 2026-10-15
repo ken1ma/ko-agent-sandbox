@@ -145,12 +145,30 @@ object SandboxLifecycle:
     }
 
   /**
+   * A process and its descendants, through the ps the launcher proved answers exactly these
+   * arguments (ClipboardRelay.probedPs), named by `$ps_command`: one answering nothing would leave
+   * every job childless here and the cleanup ending the job alone, silently. STOP and KILL, the two
+   * signals no disposition can refuse — the tree inherits the reaper's ignores. A stopped process
+   * cannot reap, so between stop_tree and end_tree no pid under it changes hands; KILL needs no CONT.
+   */
+  val TreeFunctions: String =
+    """children_of() {
+      |  "$ps_command" -A -o pid=,ppid= | while read -r pid ppid; do [ "$ppid" = "$1" ] && echo "$pid"; done
+      |}
+      |stop_tree() { kill -STOP "$1" 2>/dev/null; for child in $(children_of "$1"); do stop_tree "$child"; done; }
+      |end_tree() { for child in $(children_of "$1"); do end_tree "$child"; done; kill -KILL "$1" 2>/dev/null; }
+      |
+      |""".stripMargin
+
+  /**
    * sh, because it must outlive the launcher's exec and /bin/sh is the one
    * interpreter Linux and macOS both guarantee. $1 this run's sandbox, $2
    * its proxy, $3 the resolved podman path (findOnPath has the why), $4 $5
    * its networks, $6 $7 the workspace filter's teardown mode and script
    * (documented at the step that reads them), $8 the clipboard mode, $9
-   * to ${11} its host programs, ${12} the ps its cleanup walks the tree with.
+   * to ${11} its host programs, ${12} the ps its cleanup walks the tree with,
+   * ${13} the microphone probe's status file, empty without --mic, ${14} the
+   * microphone log, and from ${15} the recorder candidates.
    *
    * The trap is necessary: the reaper shares the launcher's process
    * group, and a terminal SIGINT or SIGHUP would otherwise kill it first.
@@ -163,26 +181,36 @@ object SandboxLifecycle:
    * outlives the container it serves. ClipboardRelay has the protocol it
    * speaks and the Windows counterpart; the sandbox side is the image's
    * ko-sandbox-clipboard shim.
+   *
+   * The microphone relay is likewise a job, started before the wait for the
+   * sandbox to run, since its launch probe precedes the sandbox's start
+   * (MicrophoneRelay); its directory, which holds the microphone's audio
+   * on its way, is this script's to make and to remove after the KILL.
    */
   val ReaperScript: String =
     withScriptPath(
       "trap '' INT HUP TERM\n\n" +
-      """# A process and its descendants, through the ps the launcher proved answers this exact
-      |# command arguments (ClipboardRelay.probedPs): one answering nothing would leave every job
-      |# childless here and the cleanup ending the job alone, silently. ${12} is read at top
-      |# level; inside a function the positionals are the function's. STOP and KILL, the two
-      |# signals no disposition can refuse — the tree inherits this shell's ignores. A stopped
-      |# process cannot reap, so between stop_tree and end_tree no pid under it changes hands;
-      |# KILL needs no CONT.
+      """# ${12} is read at top level; inside a function the positionals are the function's.
       |ps_command=${12}
-      |children_of() {
-      |  "$ps_command" -A -o pid=,ppid= | while read -r pid ppid; do [ "$ppid" = "$1" ] && echo "$pid"; done
-      |}
-      |stop_tree() { kill -STOP "$1" 2>/dev/null; for child in $(children_of "$1"); do stop_tree "$child"; done; }
-      |end_tree() { for child in $(children_of "$1"); do end_tree "$child"; done; kill -KILL "$1" 2>/dev/null; }
+      |""".stripMargin + TreeFunctions + ClipboardRelay.hostShellFunctions() + MicrophoneRelay.hostShellFunctions() +
+      """# The microphone relay, from before the sandbox starts: its probe is what the launcher
+      |# waits on before the start. An `if`, and the job holding its pid, for the clipboard relay's
+      |# reasons below.
+      |microphone=
+      |microphone_dir=
+      |if [ -n "${13}" ]; then
+      |  microphone_dir=$(mktemp -d "${TMPDIR:-/tmp}/ko-agent-sandbox-microphone.XXXXXX") ||
+      |    printf 'failed relay: could not make a directory in %s\nnone\n' "${TMPDIR:-/tmp}" >> "${13}"
+      |fi
+      |if [ -n "$microphone_dir" ]; then
+      |  ( engine=$3 sandbox=$1 status=${13} log=${14}
+      |    shift 14
+      |    microphone_relay "$engine" "$sandbox" "$microphone_dir" "$status" "$log" "$@"
+      |    while kill -0 "$$" 2>/dev/null; do sleep 1; done ) &
+      |  microphone=$!
+      |fi
       |
-      |""".stripMargin + ClipboardRelay.hostShellFunctions() +
-      """# Wait for the sandbox to be running before waiting for it to stop:
+      |# Wait for the sandbox to be running before waiting for it to stop:
       |# `podman wait` alone would bind a created-but-never-started container
       |# (launcher killed between create and start) forever. After ten
       |# minutes of that, remove the stray and fall through. A container
@@ -219,6 +247,11 @@ object SandboxLifecycle:
       |  stop_tree "$relay"
       |  end_tree "$relay"
       |fi
+      |if [ -n "$microphone" ]; then
+      |  stop_tree "$microphone"
+      |  end_tree "$microphone"
+      |  rm -rf "$microphone_dir"
+      |fi
       |
       |# Unconditional: the proxy is this run's own. --time 2, because it
       |# holds no state worth draining; its audit log is a host file.
@@ -249,9 +282,16 @@ object SandboxLifecycle:
       |""".stripMargin,
     )
 
+  /** What the reaper passes the microphone relay, as ${13} onward (MicrophoneRelay.hostShellFunctions). */
+  final case class MicrophoneJob(
+    status: java.nio.file.Path,
+    log: java.nio.file.Path,
+    recorders: Vector[MicrophoneRelay.Recorder],
+  )
+
   /**
    * The argument after the script is $0, naming the reaper for ps; the rest
-   * travel as $1-${12} rather than interpolated, keeping the script a constant
+   * travel as $1 onward rather than interpolated, keeping the script a constant
    * and the rest data.
    */
   def reaperCommand(
@@ -264,13 +304,15 @@ object SandboxLifecycle:
     teardownScript: String,
     clipboardMode: String,
     clipboard: ClipboardRelay.HostBackend,
+    microphone: Option[MicrophoneJob] = None,
   ): Vector[String] =
     Vector(
       "/bin/sh", "-c", ReaperScript,
       "ko-agent-sandbox-reaper", sandboxContainer, proxyContainer, podman,
       sandboxNetwork, egressNetwork, teardownMode, teardownScript, clipboardMode,
       clipboard.xclip, clipboard.wlPaste, clipboard.wlCopy, clipboard.ps,
-    )
+      microphone.fold("")(_.status.toString), microphone.fold("")(_.log.toString),
+    ) ++ microphone.toVector.flatMap(_.recorders.map(MicrophoneRelay.encodedCandidate))
 
   /**
    * Detached: stdio to /dev/null, because the tty belongs to podman and the
@@ -289,12 +331,13 @@ object SandboxLifecycle:
     teardownScript: String,
     clipboardMode: String,
     clipboard: ClipboardRelay.HostBackend,
+    microphone: Option[MicrophoneJob],
   ): Boolean =
     try
       val builder = ProcessBuilder(
         reaperCommand(
           podman, sandboxContainer, proxyContainer, sandboxNetwork, egressNetwork,
-          teardownMode, teardownScript, clipboardMode, clipboard,
+          teardownMode, teardownScript, clipboardMode, clipboard, microphone,
         )*
       )
       builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))

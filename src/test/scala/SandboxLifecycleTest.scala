@@ -99,8 +99,26 @@ class SandboxLifecycleTest extends munit.FunSuite:
       Vector(
         "run-container", "proxy-container", "/usr/bin/podman",
         "net-sandbox", "net-egress", "machine", "reap-script", "paste",
-        "/usr/bin/xclip", "/usr/bin/wl-paste", "", "",
+        "/usr/bin/xclip", "/usr/bin/wl-paste", "", "", "", "",
       ),
+    )
+    // Under --mic: the status file, the log, then each candidate as one argument.
+    val withMicrophone = reaperCommand(
+      "/usr/bin/podman", "run-container", "proxy-container", "net-sandbox", "net-egress",
+      "machine", "reap-script", "off", ClipboardRelay.HostBackend(ps = "/bin/ps"),
+      Some(
+        MicrophoneJob(
+          java.nio.file.Paths.get("/run/status"), java.nio.file.Paths.get("/log/microphone.log"),
+          Vector(
+            MicrophoneRelay.Recorder("arecord", Vector("/usr/bin/aplay", "-C")),
+            MicrophoneRelay.Recorder("parecord", Vector("/usr/bin/pacat", "--record")),
+          ),
+        ),
+      ),
+    )
+    assertEquals(
+      withMicrophone.drop(4 + 12),
+      Vector("/run/status", "/log/microphone.log", "/usr/bin/aplay\u001f-C", "/usr/bin/pacat\u001f--record"),
     )
     // The names travel as arguments, never interpolated into the script.
     assert(!ReaperScript.contains("run-container"))
@@ -149,22 +167,8 @@ class SandboxLifecycleTest extends munit.FunSuite:
     hungChildAlive: Boolean,
   )
 
-  /** This host's `ps`, which the lifecycle tests hand the reaper as the launcher would, probed for
-    * the exact arguments the harness itself parses — `-A -o pid=,ppid=,stat=`, the launcher's own
-    * plus `stat=` — so an incompatible one (BusyBox) skips the suite rather than failing it. */
-  private def hostPs(): String =
-    val found = HostCommands.findOnPath("ps", sys.env.getOrElse("PATH", ""), HostCommands.currentOs)
-    assume(found.isDefined, "needs ps on PATH")
-    val ps = found.get.toString
-    val me = ProcessHandle.current.pid.toString
-    val answers =
-      try HostCommands.run(ps, "-A", "-o", "pid=,ppid=,stat=").text.linesIterator
-          .exists(line => line.trim.split("\\s+").toList match
-            case pid :: _ :: stat :: Nil => pid == me && stat.nonEmpty
-            case _ => false)
-      catch case _: java.io.IOException => false
-    assume(answers, s"needs a ps answering `ps -A -o pid=,ppid=,stat=`; $ps did not")
-    ps
+  /** This host's `ps` (HostPs.answering), which the lifecycle tests hand the reaper as the launcher would. */
+  private def hostPs(): String = HostPs.answering()
 
   /**
    * The reaper run for real under /bin/sh against a fake podman, the clipboard mode as given. The

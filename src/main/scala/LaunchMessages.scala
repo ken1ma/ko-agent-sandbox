@@ -42,8 +42,17 @@ object LaunchMessages:
 
   def clipboardLine(mode: String, color: Boolean = colorStderr): String =
     weakened(
-      s"clipboard: $mode by $ClipboardVariable; the agent can read an image you copy" +
+      s"clipboard: $mode by --clipboard=$mode; the agent can read an image you copy" +
         (if mode == "bidirectional" then " and set your clipboard" else ""),
+      color,
+    )
+
+  /** Said before the hold, so the user agrees to it: the probe that opens the microphone runs
+    * after the hold, before the sandbox starts. */
+  def micLine(color: Boolean = colorStderr): String =
+    weakened(
+      "microphone: on by --mic; the host microphone is open for the whole session, and its audio reaches " +
+        "the sandbox while any process there records",
       color,
     )
 
