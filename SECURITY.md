@@ -527,8 +527,8 @@ The tree is also shared live with the host:
 - The project reaches the sandbox through `ko-agent-fs` (`fuse/ko-agent-fs/`), a FUSE mount
   enforcing the policy stated under "The host's git executing what the sandbox wrote".
 - The filter refuses new `.git` entries and protects the listed Git entries at any depth;
-  `doc/design.md`, "No writable session without the workspace filter", has why read-only bind
-  mounts cannot.
+  `doc/design.md`, "Read-only mounts over the protected entries are not a backend", has why
+  read-only bind mounts cannot.
 - The design uses FUSE to mediate the VM's filesystem view across host platforms;
   `fuse/ko-agent-fs/doc/architecture.md` ("Mediation mechanism") compares the alternatives.
 

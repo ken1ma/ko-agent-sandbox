@@ -329,11 +329,10 @@ cancels an earlier `readonly` line of the same name, closes the limit and costs:
 Revisit when `../src/probe/seatbelt-semantics.sh` E13-E16 find a rule refusing a move out of
 `node_modules` that leaves npm's renames and `rmdir` there, which would close the limit.
 
-### No writable session without the workspace filter
+### Read-only mounts over the protected entries are not a backend
 
-A faster `--write=live` would bind the project directly and mount `.git/config`, `.git/hooks` and
-`.ko-agent-sandbox` back over themselves read-only; the filter costs 6–18× on metadata operations
-(`../fuse/ko-agent-fs/doc/verification-log.md`, "The cost of a path walk"). A read-only bind mount
+The cheapest writable session would bind the project directly and mount `.git/config`,
+`.git/hooks` and `.ko-agent-sandbox` back over themselves read-only. A read-only bind mount
 protects the path it is mounted at, from the moment of the launch, which leaves:
 
 - A host program that replaces a mounted file — a rename over it, which is how `git config` and
@@ -342,7 +341,8 @@ protects the path it is mounted at, from the moment of the launch, which leaves:
   mount stays listed in the session's mount table. No mount prevents this.
 - The mounts are chosen at launch, for the repository at the workspace root. A repository nested
   deeper, by the host or by the session, has none, and one the session creates mid-session cannot
-  get one. The filter refuses the names at any depth.
+  get one. A policy judging each operation refuses the names at any depth, as the filter does
+  and as the backend of `plan-bpf-lsm-cgroup.md` does.
 - On an NTFS volume with 8.3 names, `.git` is also `GIT~1` and `.ko-agent-sandbox` `KO-AGE~1`, and
   a path through the short name does not pass the mount. Measured on Windows Server 2025 with
   podman 6.1.0: appends to `.git/config` and `.ko-agent-sandbox/egress/rule` and a `touch` under
@@ -358,10 +358,11 @@ protects the path it is mounted at, from the moment of the launch, which leaves:
 - On an SELinux-enforcing host the container reads a bind mount only under `:Z`, which relabels
   the project tree recursively.
 
-`--write=reject` is the session without the filter, read-only. The probes that need an
+`--write=reject` is the read-only session, with no policy to enforce. The probes that need an
 unfiltered writable control run one outside the launcher
-(`../fuse/ko-agent-fs/probe/unfiltered.sh`). The filter's cost is reduced in the filter
-(`../fuse/ko-agent-fs/doc/TODO.md`, "Performance").
+(`../fuse/ko-agent-fs/probe/unfiltered.sh`). The filter's cost is measured in
+`../fuse/ko-agent-fs/doc/verification-log.md` ("The cost of a path walk"), and
+`plan-bpf-lsm-cgroup.md` is the backend planned to replace it.
 
 ### No DLP/entropy/LLM firewall
 
