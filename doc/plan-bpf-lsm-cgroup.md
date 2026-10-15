@@ -11,9 +11,9 @@ On macOS and Windows that kernel is the podman machine's; on native Linux it is 
 the supported set "Native Linux" states.
 
 Status: the environment prerequisites and the cgroup placement are measured on both machines
-("Environment evidence"); no BPF program has been loaded, attached or shown to deny anything. The
-filter stays the default until "Acceptance" passes, and no launch ever binds the project writable
-without the policy attached and verified.
+("Environment evidence"), and Phase 0 is done ("Inventory"); no BPF program has been loaded,
+attached or shown to deny anything. The filter stays the default until "Acceptance" passes, and
+no launch ever binds the project writable without the policy attached and verified.
 
 The reader acting on this plan starts at "Phases" and "What is gained and what is lost". The
 sections before them are what the phases rest on.
@@ -105,9 +105,9 @@ fact below is to be re-read before Phase 2 relies on it.
   its hook alone; no check against `BPF_LSM_CGROUP` was found, and `trampoline.c` enters such a
   program under `rcu_read_lock`. The design needs no sleepable program: `fs/bpf_fs_kfuncs.c`
   tags `bpf_path_d_path` without `KF_SLEEPABLE`, and the policy below does not call it.
-- Hooks under `CONFIG_SECURITY_PATH` (`include/linux/lsm_hook_defs.h`) are compiled into the
-  Fedora CoreOS kernel: its BTF at `/sys/kernel/btf/vmlinux` lists every `bpf_lsm_path_*` hook
-  this plan names, read from inside a session.
+- Hooks under `CONFIG_SECURITY_PATH` (`include/linux/lsm_hook_defs.h`) are compiled into both
+  kernels: the BTF at `/sys/kernel/btf/vmlinux` of each lists the `bpf_lsm_path_*` hooks of
+  "Inventory"'s table.
 
 ### The hooks
 
@@ -141,10 +141,18 @@ every xattr and ACL operation by not implementing `setxattr` and `removexattr`
     `fuse_fill_super`), and `fuse_set_acl` forwards the ACL to the server as an xattr, so whether
     the macOS share stores one is the server's to answer; ext4, xfs and btrfs store both routes
     (`fs/{ext4,btrfs}/acl.c`, `fs/xfs/xfs_acl.c`).
-- `path_rmdir`. Without it a session can remove a protected directory that is empty or that it
-  can empty, such as `objects/info` holding only git's own files; `.git/hooks` with a hook in it
-  stays, since unlinking a hook is refused. The removed name cannot be refilled: creating it or
-  renaming onto it stays refused. Phase 0 confirms this reading against `policy.rs`.
+- `path_rmdir`. Without it a session can remove, leaves first, a protected directory whose tree
+  holds no protected non-directory; one holding such an entry stays, since unlinking it is
+  refused (`policy.rs` at the commit "Inventory" pins).
+  - Such a directory is `.git/hooks` holding no hook, empty directories at most; a gitdir whose
+    protected entries are such directories, which the session empties first, since in the git
+    rules a gitdir's root is the one protected directory whose entries can be operational
+    (`classify_within_gitdir`); or a `readonly` directory whose non-directories later `writable`
+    lines all lift (`child_rule_context`).
+  - The removed name cannot be refilled: `mkdir`, creation and a rename onto it stay refused
+    (`authorize_create`, `authorize_rule_create`).
+  - `objects` and `objects/info` are pinned, not protected: the filter removes them too, since
+    only `mkdir` can create them again, which starts them empty (`is_pinned_within_gitdir`).
 
 Five hooks for two slots. No other hook stands in for them: `inode_permission` sees neither an
 ACL change, whose `may_write_xattr` checks only the immutable and append flags and the id
@@ -164,7 +172,7 @@ returns before any permission check. What holds them:
   each route's consequence stated there. Phase 2's gate stays unmet for that mode until it is
   taken.
 
-All hooks named here are in this kernel's BTF.
+Both kernels' BTF lists every hook this section takes ("Inventory").
 
 Hooks the plan does not take, and the fact that excuses each:
 
@@ -373,14 +381,119 @@ Build the BPF objects and the controller in a builder container with clang and l
 the machine; the machine keeps its images and installs no toolchain.
 
 
+## Inventory
+
+The policy transcribes `fuse/ko-agent-fs` at commit `0fe166a159c1f3cc75dd966a8b0e2d4faae5aa31`,
+the last to change `src/{policy,fs,guard,rulefile}.rs`. A later change to those files reopens the
+rows it touches. Phase 2 fills the macOS and WSL columns with the answer under the attached
+programs.
+
+| #  | syscalls                  | filter            | hooks v7.1 calls             | macOS | WSL |
+| -- | ------------------------- | ----------------- | ---------------------------- | ----- | --- |
+| 1  | open* O_CREAT, creat      | name              | path_mknod, inode_create     |       |     |
+| 2  | mknod*, Unix socket bind  | name              | path_mknod, inode_mknod      |       |     |
+| 3  | mkdir*                    | name              | path_mkdir, inode_mkdir      |       |     |
+| 4  | symlink*                  | name, syntax      | path_symlink, inode_symlink  |       |     |
+| 5  | link*                     | entry, name, move | path_link, inode_link        |       |     |
+| 6  | rename*, RENAME_WHITEOUT  | entry, name, move | path_rename, inode_rename    |       |     |
+| 7  | renameat2 RENAME_EXCHANGE | row 6 both ways   | path_rename, inode_rename ×2 |       |     |
+| 8  | unlink*                   | entry             | path_unlink, inode_unlink    |       |     |
+| 9  | rmdir, AT_REMOVEDIR       | entry             | path_rmdir, inode_rmdir      |       |     |
+| 10 | open* O_WRONLY, O_RDWR    | entry             | file_open                    |       |     |
+| 11 | open* O_TRUNC, any mode   | entry             | file_open, inode_setattr     |       |     |
+| 12 | write*, splice, mmap, …   | row 10's open     | row 10's open                |       |     |
+| 13 | fallocate, FICLONE*       | none              | row 10's open                |       |     |
+| 14 | chmod*, chown*, truncate  | entry             | inode_setattr                |       |     |
+| 15 | setxattr*, removexattr*   | none              | inode_setxattr, …removexattr |       |     |
+| 16 | row 15 on ACL names       | none              | inode_set_acl, …remove_acl   |       |     |
+| 17 | file_setattr, 2 ioctls    | none              | inode_file_setattr           |       |     |
+| 18 | other ioctl commands      | none              | file_ioctl, …_compat         |       |     |
+| 19 | open* O_TMPFILE           | none              | file_open                    |       |     |
+| 20 | overlayfs upper layer     | not measured      | inode_*, file_open           |       |     |
+| 21 | a second path             | as by the first   | as by the first              |       |     |
+| 22 | io_uring_*                | not reached       | not reached                  |       |     |
+
+The filter column names `fs.rs`'s checks:
+
+- `name`: the new name's classification and the name rule (`allow_create`);
+- `entry`: the existing entry's classification (`allow_child`, `allow_ino`);
+- `move`: a directory or symlink leaving a writable region or a gitdir (`allow_region_move`);
+- `syntax`: the target-syntax, region, gitdir and short-name refusals of `symlink`;
+- `none`: the operation is unimplemented, so nothing reaches the backing store.
+
+The rows, where the table does not say it all:
+
+- Row 1: `may_o_create` calls both hooks, for `atomic_open` filesystems too (`fs/namei.c`).
+- Row 5: `AT_EMPTY_PATH`, a `/proc/self/fd` source and an `O_TMPFILE` file (row 19) included.
+- Row 7: `security_inode_rename` calls the hook twice for `RENAME_EXCHANGE`, operands swapped
+  (`security/security.c`); `path_rename` receives the flags.
+- Row 9: "The hooks" has what removing a protected directory allows; read in `policy.rs`.
+- Row 11: `do_dentry_open` calls `security_file_open` before it clears `O_TRUNC` from `f_flags`
+  (`fs/open.c`), so `file_open` sees an `O_RDONLY | O_TRUNC` open, which has no `FMODE_WRITE`;
+  `handle_truncate` then reaches `inode_setattr`. The filter counts it as a write.
+- Rows 12 and 13: each operation needs a descriptor with `FMODE_WRITE`
+  (`fs/{read_write,open,splice,remap_range}.c`, `mm/mmap.c`).
+  - Row 12 is `write*`, `copy_file_range`, `splice` and `sendfile` to the file, and a shared
+    writable `mmap`. The filter implements no `copy_file_range`; FUSE then copies through
+    `splice_copy_file_range`, which writes through the open (`fs/fuse/file.c`).
+  - Row 13 is `fallocate`, `FICLONE` and `FICLONERANGE`. FUSE answers a server's `ENOSYS` to
+    `fallocate` with `EOPNOTSUPP` and has no `remap_file_range` (`fs/fuse/file.c`).
+  - `FIDEDUPERANGE` accepts a read-only destination the caller may write, and changes no
+    content (`may_dedupe_file`).
+- Row 14: `ftruncate`, `fchmod`, `fchmodat2`, `lchown`, `utimensat`, `utimes` and `futimesat`
+  too; each reaches `notify_change` (`fs/attr.c`).
+- Row 17: a route "The hooks" does not list.
+  - `FS_IOC_SETFLAGS` and `FS_IOC_FSSETXATTR` take a read-only descriptor
+    (`fs/file_attr.c`, `ioctl_fssetxattr`), and `vfs_fileattr_set` admits the owner.
+  - Only the append-only and immutable flags need `CAP_LINUX_IMMUTABLE` in the initial user
+    namespace, and a project id is refused outside it.
+  - Seccomp can refuse `file_setattr` and the two ioctl commands by the command argument.
+- Row 18: commands a filesystem implements itself, outside `vfs_fileattr_set`; "The hooks" does
+  not list them either. The ones read in v7.1 take a read-only descriptor:
+  - ext4's `EXT4_IOC_SETVERSION`, refused under `metadata_csum`, sets the generation and ctime
+    directly; it, `EXT4_IOC_MIGRATE` and `EXT4_IOC_ALLOC_DA_BLKS` check the owner
+    (`fs/ext4/ioctl.c`).
+  - `FS_IOC_SET_ENCRYPTION_POLICY` sets a policy on an empty directory the caller owns
+    (`fscrypt_ioctl_set_policy`).
+  - `FS_IOC_ENABLE_VERITY` makes a file permanently read-only, checking write permission through
+    `inode_permission` (`fsverity_ioctl_enable`).
+  - xfs's and btrfs's commands are not read. FUSE answers a server's `ENOSYS` with `ENOTTY`
+    (`fs/fuse/ioctl.c`).
+- Row 19: `vfs_tmpfile` calls no hook before the inode exists, and the file has no name until
+  row 5 links it. The filter implements no `tmpfile`, and FUSE answers a server's `ENOSYS` there
+  with `EOPNOTSUPP` (`fs/fuse/dir.c`).
+- Row 20: no `path_*` hook runs. Measured in a session on 2026-10-15: after `unshare -Urm`,
+  `mount -t overlay` with `userxattr` and layers on `tmpfs` succeeds, and `mkdir merged/.git`
+  lands in the upper layer.
+  - overlayfs changes the upper layer through `vfs_create`, `vfs_mkdir`, `vfs_rename` and
+    their siblings, `notify_change` and `vfs_setxattr` (`fs/overlayfs/overlayfs.h`), which call
+    the `inode_*` hooks only; `fs/namei.c` calls the `path_*` hooks from the syscalls' paths.
+  - It opens an upper file through `backing_file_open`, which reaches `file_open`.
+  - It accepts an upper layer whose dentries revalidate, FUSE's and virtiofs's among them, only
+    with `d_type`, `RENAME_WHITEOUT` and xattrs (`fs/overlayfs/super.c`). By that reading the
+    filter, which implements no xattrs, cannot be one; whether each share can, Phase 2 measures.
+- Row 21: a bind mount in a mount namespace of the session's own, or `open_by_handle_at`. The
+  hooks judge dentries ("The policy"). Without `CAP_DAC_READ_SEARCH` in the initial user
+  namespace, `open_by_handle_at` decodes directories only (`fs/fhandle.c`, `may_decode_fh`).
+- Row 22: `io_uring_setup` answers `ENOSYS` in a session.
+
+The source read is Linux v7.1. Upstream v6.18 makes the same calls for rows 1, 11 and 17, has
+row 20's check of an upper layer, and its `bpf_lsm_disabled_hooks` lacks only
+`file_alloc_security`; Microsoft's `6.18.54.1` is not read.
+
+Both kernels' BTF lists every hook named in the table. The macOS kernel's is read from a session
+on 2026-10-15 with `grep -aoE 'bpf_lsm_[a-z0-9_]+' /sys/kernel/btf/vmlinux`; the WSL kernel's
+through `podman machine ssh` on 2026-10-16, with a `grep -aoE` for the table's 24 names.
+
+
 ## Phases
 
 Each phase ends at its gate; a failed gate leaves the launcher as it is.
 
 0. **Inventory.** Pin the repository commit the policy transcribes. Produce one table: operation,
-   its syscalls, the filter's behavior, the hook above, the measured result on each kernel. The
-   BTF inventory on macOS is done ("The mechanism"); read the WSL kernel's. Confirm the
-   `path_rmdir` reading against `policy.rs`.
+   its syscalls, the filter's behavior, the hook above, the measured result on each kernel. Read
+   both kernels' BTF. Confirm the `path_rmdir` reading against `policy.rs`. Done in "Inventory",
+   whose measured results Phase 2 fills.
 1. **One hook, one denial.** A `lsm_cgroup/file_open` program denying the open for writing of
    one marker name, the controller attaching it to a disposable cgroup of each shape in
    "Lifecycle",
@@ -397,7 +510,7 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    Also measure whether a nested podman under `NESTING=same-uid` needs the xattr syscalls, and
    whether each share stores a `security.capability` set and removed from a user namespace the
    session creates, before the decision on open routes is put.
-   Gate: the inventory's measured column is complete, every route covered within the slots or
+   Gate: the inventory's macOS and WSL columns are complete, every route covered within the slots or
    by the seccomp rule "The hooks" names, or a decision taken for each route that is not, and
    the walk's cost recorded beside the unfiltered bind's.
 3. **The policy.** The classifier in the programs, the map compiler in the guard, and the
