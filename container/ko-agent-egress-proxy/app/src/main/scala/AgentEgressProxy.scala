@@ -60,9 +60,14 @@ object AgentEgressProxy:
    */
   val InspectedIdleTimeoutMillis = 300_000
 
-  /** Interim responses read past before a CONNECT's final one (TransportHelper). A count, because
-    * HandshakeTimeoutMillis bounds each read and not the handshake. */
+  /** Interim responses read past before a final one: a CONNECT's (TransportHelper) or an inspected
+    * request's (relayInspected). A count, because the timeouts bound each read and not the exchange. */
   val MaxInterimResponses = 8
+
+  /** The pause after a failed accept, before the next. A failure that persists — the process at its
+    * descriptor limit — is then a line per pause in the audit log and no CPU, while connections wait
+    * in the listen backlog; one that passes delays the next accept by this much. */
+  val AcceptFailurePauseMillis = 100
 
   val CertificateVariable = "EGRESS_TLS_CERTIFICATE"
   val PrivateKeyVariable = "EGRESS_TLS_PRIVATE_KEY"
@@ -270,7 +275,6 @@ object AgentEgressProxy:
     server.setReuseAddress(true)
     server.bind(bind)
 
-    System.err.println(readyLine(server.getLocalPort))
     val lines = rulesetLines(run.resolved)
     lines.foreach(System.err.println)
     // The digest gives the audit log one stable, grep-able line naming which ruleset this run
@@ -285,6 +289,11 @@ object AgentEgressProxy:
     logFailure.foreach: ex =>
       System.err.println(s"${auditLogFailure(ex)}; not starting")
       sys.exit(2)
+
+    // Last: the launcher (AgentSandboxLauncher.awaitProxyReady) and the host runner
+    // (RunOnHostProxy.awaitProxyPort) act on this line as soon as it is written, so it comes after
+    // every line whose failed write exits above.
+    System.err.println(readyLine(server.getLocalPort))
 
     acceptForever(server, run)
 
@@ -399,6 +408,7 @@ object AgentEgressProxy:
       catch
         case ex: IOException =>
           System.err.println(s"accept failed: ${ex.getMessage}")
+          if !server.isClosed then Thread.sleep(AcceptFailurePauseMillis)
           None
 
     accepted.foreach(client => dispatch(client, run))
@@ -714,17 +724,19 @@ object AgentEgressProxy:
       * is refused before it is forwarded: the origin never received an Upgrade, and what follows
       * one is no longer HTTP. */
     @tailrec
-    def finalResponseHead(): HttpResponseHead =
+    def finalResponseHead(interimRead: Int = 0): HttpResponseHead =
       val response = responseHead()
       if response.status == 101 then
         throw IOException("origin answered 101 Switching Protocols to a request sent without Upgrade")
       if !response.interim then
         upload.foreach(_.originAnswered())
         response
+      else if interimRead == MaxInterimResponses then
+        throw IOException(s"origin sent more than $MaxInterimResponses interim responses")
       else
         toClient.write(response.toClientBytes)
         toClient.flush()
-        finalResponseHead()
+        finalResponseHead(interimRead + 1)
 
     try
       val response = finalResponseHead()

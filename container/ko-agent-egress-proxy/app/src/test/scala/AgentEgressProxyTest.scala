@@ -1803,6 +1803,27 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(received.contains("HTTP/1.1 200 OK\r\n"), received)
     assert(received.endsWith("Connection: close\r\n\r\ndata"), received)
 
+  test("relayInspected forwards interim heads up to a count, as the CONNECT does, then fails the request"):
+    val (client, clientPeer) = socketPair()
+    val (origin, originPeer) = socketPair()
+    val served = playOrigin(
+      originPeer,
+      ascii(
+        "HTTP/1.1 100 Continue\r\n\r\n" * (MaxInterimResponses + 1) + "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+      ),
+    )
+    clientPeer.shutdownOutput()
+
+    val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
+    val failure = intercept[IOException](relayInspected(client, origin, origin, head))
+    assertEquals(failure.getMessage, s"origin sent more than $MaxInterimResponses interim responses")
+    client.close()
+    served.join()
+
+    // The count's heads reached the client; the final one never did.
+    val received = String(clientPeer.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)
+    assertEquals(received, "HTTP/1.1 100 Continue\r\n\r\n" * MaxInterimResponses)
+
   /** An origin that records the request head it received and answers an empty 200: what reaches
     * the origin is the test's subject, so the head is captured before the reply. */
   private def recordingOrigin(socket: java.net.Socket): (Thread, java.util.concurrent.atomic.AtomicReference[String]) =
@@ -2830,6 +2851,52 @@ class AgentEgressProxyTest extends munit.FunSuite:
   test("the ready line spells the bound port, and the fixed-port form is the launcher's"):
     assertEquals(readyLine(51234), "ko-agent-egress-proxy listening on :51234")
     assertEquals(ReadyLine, readyLine(ListenPort))
+
+  test("serve() writes no ready line when a startup line failed to reach the log"):
+    // The proxy as a process, its log /dev/full: every write there fails, and the stderr copy
+    // shows what it wrote before not starting. The class path from where this JVM loaded the
+    // proxy and the two Scala libraries: sbt's forked JVM does not name them in java.class.path.
+    val full = java.nio.file.Path.of("/dev/full")
+    assume(java.nio.file.Files.exists(full), "needs /dev/full")
+    val javaBinary = java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java").toString
+    val classPath = Seq(AgentEgressProxy.getClass, classOf[scala.CanEqual[?, ?]], classOf[scala.Predef.type])
+      .map(kind => java.nio.file.Path.of(kind.getProtectionDomain.getCodeSource.getLocation.toURI).toString)
+      .distinct.mkString(java.io.File.pathSeparator)
+    val builder = ProcessBuilder(javaBinary, "-cp", classPath, "agentsandbox.egress.AgentEgressProxy")
+    builder.environment.remove("HTTPS_PROXY")
+    builder.environment.remove("https_proxy")
+    builder.environment.put(BindVariable, "127.0.0.1:0")
+    builder.environment.put(LogFileVariable, full.toString)
+    builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
+    val process = builder.start()
+    // Drained beside the wait, which is bounded: a proxy that serves instead of exiting is ended
+    // and reported with what it wrote, not a test that never returns.
+    val written = java.util.concurrent.atomic.AtomicReference(Array.emptyByteArray)
+    val draining = Thread.startVirtualThread(() => written.set(process.getErrorStream.readAllBytes()))
+    val exited =
+      try process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+      finally process.destroyForcibly()
+    draining.join()
+    val said = String(written.get, StandardCharsets.UTF_8)
+    assert(exited, s"the proxy did not exit within 30 s:\n$said")
+    assertEquals(process.exitValue, 2, said)
+    assert(said.contains("not starting"), said)
+    assert(said.contains("ruleset digest: "), said)
+    assert(!said.linesIterator.exists(ReadyPort.matches), said)
+
+  test("acceptForever pauses after a failed accept, and ends with the listener closed"):
+    val failures = java.util.concurrent.atomic.AtomicInteger(3)
+    val server = new java.net.ServerSocket() {
+      override def accept(): java.net.Socket =
+        if failures.decrementAndGet() >= 0 then throw IOException("Too many open files")
+        close()
+        throw java.net.SocketException("Socket closed")
+    }
+    val started = System.nanoTime()
+    acceptForever(server, Run(defaultsRuleset, None, Direct))
+    val elapsedMillis = (System.nanoTime() - started) / 1_000_000
+    assert(elapsedMillis >= 3 * AcceptFailurePauseMillis, elapsedMillis)
+    assert(elapsedMillis < 10 * AcceptFailurePauseMillis, elapsedMillis)
 
   // ---------------------------------------------------------------------------
   // Refusal advice: the 403 body's second line, RefusalAdvice's table

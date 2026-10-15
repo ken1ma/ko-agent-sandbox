@@ -457,17 +457,28 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assume(!scala.util.Properties.isWin, "the fake podman is a /bin/sh script")
     val dir = Files.createTempDirectory("proxy-ready").toRealPath()
     // `readyOn`: the log the proxy's ready line reaches as the fake answers an inspect, so the
-    // wait has asked podman before it reads the line.
-    def podman(running: Boolean, logs: Option[String] = None, readyOn: Option[Path] = None): String =
-      val path = dir.resolve(s"podman-$running-${logs.hashCode.toHexString}-${readyOn.hashCode.toHexString}")
+    // wait has asked podman before it reads the line. `stopsOn`: running at the first inspect,
+    // stopped at the next, whose answer the ready line reaches that log with.
+    def podman(
+      running: Boolean, logs: Option[String] = None, readyOn: Option[Path] = None, stopsOn: Option[Path] = None,
+    ): String =
+      val path = dir.resolve(
+        s"podman-$running-${logs.hashCode.toHexString}-${readyOn.hashCode.toHexString}-${stopsOn.hashCode.toHexString}",
+      )
       // `logs` on a container `--rm` already took: podman's own complaint, and a failure.
       val relay = logs.fold("echo 'no such container' >&2; exit 125")(text => s"printf '%s' '$text' >&2")
-      val readying = readyOn.fold("")(log => s"; echo '${agentsandbox.egress.AgentEgressProxy.ReadyLine}' >> '$log'")
+      val readyLine = agentsandbox.egress.AgentEgressProxy.ReadyLine
+      val readying = readyOn.fold("")(log => s"; echo '$readyLine' >> '$log'")
+      val inspect = stopsOn match
+        case Some(log) =>
+          s"if [ -e '$path.asked' ]; then echo false; echo '$readyLine' >> '$log'; " +
+            s"else touch '$path.asked'; echo true; echo 'sandbox-net 10.89.0.2'; fi"
+        case None => s"echo $running; echo 'sandbox-net 10.89.0.2'$readying"
       Files.writeString(
         path,
         s"""#!/bin/sh
            |case "$$1 $$2" in
-           |  'container inspect') echo $running; echo 'sandbox-net 10.89.0.2'$readying ;;
+           |  'container inspect') $inspect ;;
            |  'logs proxy') $relay ;;
            |  *) exit 9 ;;
            |esac
@@ -476,15 +487,28 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       path.toFile.setExecutable(true)
       path.toString
     val bound = java.time.Duration.ofSeconds(2)
-    // Stamped as the proxy writes it, and with a ruleset line after it: the line, not the last line.
+    // Stamped as the proxy writes it, between its ruleset lines and an audit line: the line, not
+    // the first or the last.
     val listened = dir.resolve("listened.log")
     Files.writeString(
       listened,
-      s"2026-08-29T00:00:00Z ${agentsandbox.egress.AgentEgressProxy.ReadyLine}\n" +
-        "2026-08-29T00:00:00Z allow https://a/ read\n",
+      "2026-08-29T00:00:00Z allow https://a/ read\n" +
+        s"2026-08-29T00:00:00Z ${agentsandbox.egress.AgentEgressProxy.ReadyLine}\n" +
+        "2026-08-29T00:00:01Z allow a CONNECT -> 192.0.2.1\n",
     )
     // Ready before the first inspect, and after it: the proxy's networks either way.
     assertEquals(awaitProxyReady(podman(running = true), "proxy", listened, bound), Right("sandbox-net 10.89.0.2"))
+    // The line written, and the proxy gone: its log, not an empty address list.
+    val goneAfterReady = awaitProxyReady(podman(running = false), "proxy", listened, bound).swap
+      .getOrElse(fail("a proxy gone after its ready line must fail"))
+    assert(goneAfterReady.startsWith("the egress proxy exited after reporting ready\n"), goneAfterReady)
+    assert(goneAfterReady.contains("allow https://a/ read"), goneAfterReady)
+    // Running at one inspect and stopped at the next, the line arriving with that answer: the
+    // networks the first inspect read are not a readiness.
+    val stopped = dir.resolve("stopped.log")
+    Files.writeString(stopped, "")
+    val cached = awaitProxyReady(podman(running = true, stopsOn = Some(stopped)), "proxy", stopped, bound)
+    assert(cached.swap.exists(_.startsWith("the egress proxy exited after reporting ready\n")), cached.toString)
     val later = dir.resolve("later.log")
     Files.writeString(later, "")
     assertEquals(

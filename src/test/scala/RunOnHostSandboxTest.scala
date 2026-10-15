@@ -572,6 +572,20 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val refused = awaitProxyPort(log, deadlineMillis = 300)
     assert(refused.swap.exists(_.contains("+junk")), refused.toString)
 
+  test("awaitProxyPort reports a proxy that ended at once, before or after its ready line"):
+    val log = Files.createTempDirectory("proxy").resolve("proxy.log")
+    Files.writeString(log, "rule: '+junk' is no line of the rule grammar\n", UTF_8)
+    val started = System.nanoTime()
+    val refused = awaitProxyPort(log, deadlineMillis = 10_000, ended = () => Some("exit 2"))
+    assert((System.nanoTime() - started) / 1_000_000 < 5_000, "waited for the deadline")
+    val reason = refused.swap.getOrElse(fail(s"a proxy that ended was ready: $refused"))
+    assert(reason.startsWith("the proxy ended (exit 2) before reporting ready:\n"), reason)
+    assert(reason.contains("+junk"), reason)
+    Files.writeString(log, "2026-08-31T01:08:25Z ko-agent-egress-proxy listening on :51234\n", UTF_8)
+    val gone = awaitProxyPort(log, deadlineMillis = 10_000, ended = () => Some("exit 2"))
+    assert(gone.swap.exists(_.startsWith("the proxy ended (exit 2) after reporting ready:\n")), gone.toString)
+    assertEquals(awaitProxyPort(log, deadlineMillis = 1_000, ended = () => None), Right(51234))
+
   test("the relaunch classpath walked from the loaders includes these classes and their deps"):
     // What emit prints for the acceptance test: inside sbt's layered loaders java.class.path is sbt's own,
     // so the walk is what has to find the test classes and munit.

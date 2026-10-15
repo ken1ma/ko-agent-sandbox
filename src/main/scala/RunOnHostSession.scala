@@ -837,19 +837,23 @@ object RunOnHostSession:
    * after losing a condemnation race.
    */
   def awaitExit(exitFile: Path, leader: Process): Either[String, Int] =
-    var result: Option[Either[String, Int]] = None
+    var result = exitSoFar(exitFile, leader)
     while result.isEmpty do
-      val leaderEnded = !leader.isAlive // read before the file: a leader dying after its rename still answers
-      if Files.exists(exitFile) then
-        result = Some(
-          try Files.readString(exitFile, UTF_8).trim.toIntOption.toRight(s"$exitFile holds no status")
-          catch case ex: IOException => Left(s"$exitFile: ${ex.getMessage}"),
-        )
-      else if leaderEnded then
-        result =
-          Some(Left(s"the leader ended (exit ${leader.exitValue}) without publishing an exit status"))
-      else Thread.sleep(20)
+      Thread.sleep(20)
+      result = exitSoFar(exitFile, leader)
     result.get
+
+  /** awaitExit's answer if the command has ended, without waiting: None while it runs. */
+  def exitSoFar(exitFile: Path, leader: Process): Option[Either[String, Int]] =
+    val leaderEnded = !leader.isAlive // read before the file: a leader dying after its rename still answers
+    if Files.exists(exitFile) then
+      Some(
+        try Files.readString(exitFile, UTF_8).trim.toIntOption.toRight(s"$exitFile holds no status")
+        catch case ex: IOException => Left(s"$exitFile: ${ex.getMessage}"),
+      )
+    else if leaderEnded then
+      Some(Left(s"the leader ended (exit ${leader.exitValue}) without publishing an exit status"))
+    else None
 
   /**
    * The observations on the real host: `ps` spellings that exist on macOS, where alone this
