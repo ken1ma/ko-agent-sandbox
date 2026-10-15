@@ -389,7 +389,7 @@ object LauncherState:
     // a --reset that removed these directories. This action needs no podman, so where none answers
     // the record stays.
     val state = perProjectStateRoots(os).map(_.resolve(id))
-    val volumeKept = findOnPath("podman", env("PATH").getOrElse(""), os).fold(true): found =>
+    val volumeKept = findOnPath("podman", os).fold(true): found =>
       existsAnswer(run(found.toString, "volume", "exists", persistentVolumeName(id)).exit)
         .getOrElse(true)
     dropRecordUnless(projectsStateRoot(os), id, state, volumeKept)

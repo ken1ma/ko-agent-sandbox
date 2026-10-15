@@ -11,7 +11,7 @@ import java.nio.file.attribute.{BasicFileAttributes, FileTime}
 import java.time.{Instant, ZoneId}
 import java.time.format.DateTimeFormatter
 
-import AgentSandboxLauncher.{buildMemoryHeadroom, machineMemoryAvailable, machineMemoryLine, memoryTotal}
+import AgentSandboxLauncher.{buildMemoryHeadroom, machineMemoryLine, memoryTotal, probedMachineAvailable}
 import LauncherState.{perProjectStateRoots, persistentVolumes, projectsStateRoot, runContainerParts, stateRoot}
 import HostCommands.*
 import FileHelper.*
@@ -308,11 +308,7 @@ object SandboxStats:
         machineMemoryLine(
           os,
           memoryTotal(run(podman, "info", "--format", "{{.Host.MemTotal}}")),
-          machineMemoryAvailable(
-            os,
-            readIfPresent(Paths.get("/proc/meminfo")).getOrElse(""),
-            run(podman, "machine", "ssh", "cat /proc/meminfo"),
-          ),
+          probedMachineAvailable(os, podman),
           color = colorStdout,
           scale = buildMemoryHeadroom,
         ).foreach(System.out.println)
@@ -370,7 +366,7 @@ object SandboxStats:
   /** The podman to ask, or why the live figures are not queried: a missing podman or a stopped
     * machine is a note, never a start. */
   private def podmanService(os: Os): Either[String, String] =
-    findOnPath("podman", env("PATH").getOrElse(""), os).map(_.toString) match
+    findOnPath("podman", os).map(_.toString) match
       case None => Left("podman is not on PATH")
       case Some(found) =>
         val machineDown = os != Os.Linux && {

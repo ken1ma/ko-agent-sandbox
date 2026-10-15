@@ -163,7 +163,6 @@ object HTTPHelper:
   case class HttpRequestHead(
     method: String,
     target: String,
-    version: String,
     headers: Vector[(String, String)],
   ):
     def path: String = target.takeWhile(_ != '?')
@@ -283,7 +282,7 @@ object HTTPHelper:
           if target.exists(isForbiddenControl) then
             throw BadRequest("control character in request target")
 
-          HttpRequestHead(method, target, "HTTP/1.1", parseHeaders(fieldLines))
+          HttpRequestHead(method, target, parseHeaders(fieldLines))
 
         case _ :: _ :: "HTTP/1.0" :: Nil =>
           throw BadRequest("HTTP/1.0 is not supported")
@@ -505,7 +504,7 @@ object HTTPHelper:
             throw TruncatedResponse(s"origin chunking unparseable: ${ex.getMessage}")
 
       case BodyFraming.UntilClose =>
-        copyUntilEof(in, out)
+        in.transferTo(out)
 
   def copyExactly(in: InputStream, out: OutputStream, count: Long): Unit =
     copyExactly(in, out, count, new Array[Byte](RelayBufferBytes))
@@ -578,18 +577,6 @@ object HTTPHelper:
         catch case _: NumberFormatException => throw BadRequest("invalid chunk size")
       case _ => throw BadRequest("invalid chunk size")
 
-  def copyUntilEof(in: InputStream, out: OutputStream): Unit =
-    val buffer = new Array[Byte](RelayBufferBytes)
-
-    @tailrec
-    def loop(): Unit =
-      val read = in.read(buffer)
-      if read >= 0 then
-        out.write(buffer, 0, read)
-        loop()
-
-    loop()
-
   def readCrLfLine(in: InputStream, maxBytes: Int): String =
     val out = ByteArrayOutputStream()
 
@@ -638,25 +625,20 @@ object HTTPHelper:
     bodyless: Boolean = false,
     answersHead: Boolean = false,
   ): Unit =
-    try respond(client, status, reason, proxyError, detail, advice, bodyless, answersHead)
-    catch case _: IOException => ()
-
-  def respond(
-    client: Socket, status: Int, reason: String, proxyError: String, detail: Option[String], advice: Option[String],
-    bodyless: Boolean, answersHead: Boolean,
-  ): Unit =
     val body = detail.filterNot(_ => bodyless).fold(Array.emptyByteArray)(refusalBody(_, advice))
-    val out = client.getOutputStream
-    writeAscii(
-      out,
-      s"HTTP/1.1 $status $reason\r\n" +
-        s"Proxy-Status: ${proxyStatus(proxyError, detail)}\r\n" +
-        (if body.isEmpty then "" else "Content-Type: text/plain; charset=utf-8\r\n") +
-        s"Content-Length: ${body.length}\r\n" +
-        "Connection: close\r\n\r\n",
-    )
-    if !answersHead then out.write(body)
-    out.flush()
+    try
+      val out = client.getOutputStream
+      writeAscii(
+        out,
+        s"HTTP/1.1 $status $reason\r\n" +
+          s"Proxy-Status: ${proxyStatus(proxyError, detail)}\r\n" +
+          (if body.isEmpty then "" else "Content-Type: text/plain; charset=utf-8\r\n") +
+          s"Content-Length: ${body.length}\r\n" +
+          "Connection: close\r\n\r\n",
+      )
+      if !answersHead then out.write(body)
+      out.flush()
+    catch case _: IOException => ()
 
   def writeAscii(out: OutputStream, value: String): Unit =
     out.write(value.getBytes(StandardCharsets.US_ASCII))

@@ -22,7 +22,7 @@ import RunOnHostPrereqs.*
 import RunOnHostProxy.*
 import RunOnHostSession.Session
 import HostCommands.Os
-import FileHelper.{directoryEntries, isExecutableFile, realPath}
+import FileHelper.{directoryEntries, directoryEntriesIfAny, isExecutableFile, realPath}
 import SandboxProject.projectIdOf
 
 object RunOnHostSandbox:
@@ -653,10 +653,8 @@ object RunOnHostSandbox:
     val block = StringBuilder()
     block.append(s"${java.time.Instant.now()} $ended; its logs follow\n")
     val proxyLogs =
-      try
-        directoryEntries(condemned)
-          .filter(file => file.getFileName.toString.matches("(proxy|server|daemon).*\\.log")).sorted
-      catch case _: IOException => Vector.empty
+      directoryEntriesIfAny(condemned)
+        .filter(file => file.getFileName.toString.matches("(proxy|server|daemon).*\\.log")).sorted
     // The command's write grant includes tmp itself, so the command can replace it with a symlink
     // that survives the session directory's rename.
     val tmp = condemned.resolve(RunOnHostSession.TmpDir)
@@ -664,11 +662,7 @@ object RunOnHostSandbox:
       if !Files.isDirectory(tmp, LinkOption.NOFOLLOW_LINKS) then
         block.append(s"==> ${RunOnHostSession.TmpDir}\n[skipped: not a directory]\n")
         Vector.empty
-      else
-        try
-          directoryEntries(tmp)
-            .filter(_.getFileName.toString.startsWith("sbt-server-err")).sorted
-        catch case _: IOException => Vector.empty
+      else directoryEntriesIfAny(tmp).filter(_.getFileName.toString.startsWith("sbt-server-err")).sorted
     (proxyLogs ++ clientForkedStderr).foreach: file =>
       sessionLogTail(RunOnHostProxy.keptAuditLog(channelLog, file).getOrElse(file)).foreach: tail =>
         block.append(s"==> ${file.getFileName}\n").append(tail)
@@ -756,15 +750,15 @@ object RunOnHostSandbox:
                 log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}")
       yield assembled
 
+    def refused(reason: String): Int =
+      log(s"refused: $reason")
+      2
+
     prepared match
-      case Left(reason) =>
-        log(s"refused: $reason")
-        2
+      case Left(reason) => refused(reason)
       case Right(assembled) =>
         RunOnHostSession.publish(root, assembled.prereqs.project) match
-          case Left(reason) =>
-            log(s"refused: $reason")
-            2
+          case Left(reason) => refused(reason)
           case Right(session) =>
             // Also on a shutdown hook (RunOnHostSession.Teardown): the registered groups are
             // outside the terminal's own, so nothing but this would end them on a Ctrl-C.
@@ -798,10 +792,8 @@ object RunOnHostSandbox:
                 try java.lang.Runtime.getRuntime.removeShutdownHook(hook)
                 catch case _: IllegalStateException => () // already shutting down; the hook ran
             outcome match
-              case Left(reason) =>
-                log(s"refused: $reason")
-                2
-              case Right(exit) => exit
+              case Left(reason) => refused(reason)
+              case Right(exit)  => exit
 
   /** One program's runtime, as a command runs against it: the session holding its records —
     * whose `tmp/` an sbt client reaches its server's socket under — the port of its proxy, which
@@ -825,10 +817,10 @@ object RunOnHostSandbox:
 
   /** What a runtime's server or daemon is started with: its profile's inputs and its
     * environment, derived from the assembly, the runtime's `tmp/` and proxy port, and the
-    * launch's forwards. One derivation for the starters (RunOnHostSbtServer.startSbtServer,
-    * RunOnHostMillDaemons.start) and for the fingerprint another launch compares before attaching
-    * (RunOnHostRuntimeDescriptor), so that equal fingerprints mean a start under the same confinement and
-    * environment. */
+    * launch's forwards. Derived once per start (RunnerRuntimes), carried in the RuntimeStart to
+    * the starter and to the descriptor's fingerprint, and derived again by a launch deciding
+    * whether to attach (RunOnHostRuntimeDescriptor), so that equal fingerprints mean a start
+    * under the same confinement and environment. */
   case class RuntimeInputs(profile: SeatbeltProfile.ProfileInputs, environment: Map[String, String])
 
   def runtimeInputs(
@@ -843,25 +835,19 @@ object RunOnHostSandbox:
     host: String => Option[String] = name => Option(System.getenv(name)),
     userName: String = System.getProperty("user.name"),
   ): RuntimeInputs =
-    val prereqs = assembled.prereqs
     RuntimeInputs(
       assembled.profileInputs(tmp, proxyPort, trust, systemPaths, network, fileRules),
-      commandEnvironment(
-        host, forwards, prereqs, assembled.sbtGlobal, assembled.ivyHome, assembled.gradleUserHome,
-        assembled.m2Repository, assembled.millDownloads, assembled.millLauncherVersion, tmp, tmp, proxyPort, trust,
-        userName,
-      ),
+      commandEnvironment(host, forwards, assembled, tmp, tmp, proxyPort, trust, userName),
     )
 
-  /** What one sbt server is started from: the runtime whose proxy it uses, the request whose
-    * launcher flags it takes (RunOnHostSbtServer.serverCommand), and the record its group is registered at. */
-  case class ServerStart(
-    assembled: Assembled, buildDirectory: Path, hash: String, arguments: Seq[String], record: Path, runtime: Runtime,
+  /** What one sbt server or mill daemon is started from: the runtime whose proxy it uses, the
+    * record its group — the daemon's, for mill — is registered at (RunOnHostSbtServer.startSbtServer,
+    * RunOnHostMillDaemons.start), its inputs, and for sbt the request's launcher flags
+    * (RunOnHostSbtServer.serverCommand). */
+  case class RuntimeStart(
+    assembled: Assembled, buildDirectory: Path, hash: String, record: Path, runtime: Runtime, inputs: RuntimeInputs,
+    arguments: Seq[String] = Seq.empty,
   )
-
-  /** What one mill daemon is started from: the runtime whose proxy it uses, and the record its
-    * starter's group — the daemon's — is registered at (RunOnHostMillDaemons.start). */
-  case class DaemonStart(assembled: Assembled, buildDirectory: Path, hash: String, record: Path, runtime: Runtime)
 
   /** How long a starting server may make no progress — neither its log nor the proxy
     * log growing, and no portfile — before the start fails. Progress rather than time, because
@@ -875,6 +861,13 @@ object RunOnHostSandbox:
   /** Where the profile of the server or daemon a record names is written: beside the session's
     * logs, named after the record. */
   def runtimeProfileFile(session: Session, recordName: String): Path = session.directory.resolve(s"$recordName.sb")
+
+  /** That profile, rendered from the start's inputs and written. */
+  def writeRuntimeProfile(session: Session, recordName: String, inputs: RuntimeInputs): Either[String, Path] =
+    SeatbeltProfile.render(inputs.profile).flatMap: profile =>
+      val file = runtimeProfileFile(session, recordName)
+      try Right(Files.writeString(file, profile, UTF_8))
+      catch case ex: IOException => Left(s"writing $file: ${ex.getMessage}")
 
   /** The sbt server or mill's starter (`mill version`), registered under `record`
     * (registeredSpawn). Both streams go to `output`: sbt asks on stdout whether to create a build
@@ -1062,9 +1055,8 @@ object RunOnHostSandbox:
     builder.environment.clear()
     builder.environment.putAll(
       commandEnvironment(
-        name => Option(System.getenv(name)), forwards, prereqs, assembled.sbtGlobal, assembled.ivyHome,
-        assembled.gradleUserHome, assembled.m2Repository, assembled.millDownloads, assembled.millLauncherVersion,
-        tmp, socketDir, runtime.proxyPort, runtime.trust, System.getProperty("user.name"),
+        name => Option(System.getenv(name)), forwards, assembled, tmp, socketDir, runtime.proxyPort, runtime.trust,
+        System.getProperty("user.name"),
       ).asJava,
     )
 
@@ -1128,14 +1120,7 @@ object RunOnHostSandbox:
   def commandEnvironment(
     host: String => Option[String],
     forwards: Vector[(String, String)],
-    prereqs: CommandPrereqs,
-    sbtGlobal: Path,
-    ivyHome: Path,
-    gradleUserHome: Path,
-    m2Repository: Path,
-    millDownloads: Option[Path],
-    // The launcher version a mill command's bootstrap runs, `<v>-jvm`; None for the other programs.
-    millVersion: Option[String],
+    assembled: Assembled,
     sessionTmp: Path,
     // Where sbt's server binds its sockets and its clients find them: the runtime's `tmp/` for
     // sbt, mill and gradle, the command's own for Maven.
@@ -1145,6 +1130,7 @@ object RunOnHostSandbox:
     trust: Path,
     userName: String,
   ): Map[String, String] =
+    import assembled.{gradleUserHome, ivyHome, m2Repository, millDownloads, millLauncherVersion, prereqs, sbtGlobal}
     val passed = PassedThrough.flatMap(name => host(name).map(name -> _)).toMap
     // The settings must reach the JVMs the command forks — a forked test or `run` — and such a JVM
     // inherits the environment and nothing else: its options come from the build definition, so
@@ -1202,7 +1188,7 @@ object RunOnHostSandbox:
       millDownloads.map(dir => "MILL_FINAL_DOWNLOAD_FOLDER" -> dir.toString) ++
       // The bootstrap's own override, set to the JVM launcher of the pinned version: the
       // bootstrap would run the native image for a bare pin (RunOnHostPrereqs.millLauncherVersion).
-      millVersion.map("MILL_VERSION" -> _) ++
+      millLauncherVersion.map("MILL_VERSION" -> _) ++
       commandProxyVariables(proxyPort) ++
       // For the programs HTTPS_PROXY serves, which read no JVM property.
       AgentSandboxLauncher.CaBundleVariables.map(_ -> RunOnHostInspection.caBundle(trust).toString)

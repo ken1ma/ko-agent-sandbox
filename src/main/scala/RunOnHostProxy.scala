@@ -153,8 +153,7 @@ object RunOnHostProxy:
       catch case _: (IOException | UnsupportedOperationException) => None
 
   /** The proxy's profile, beside its log. */
-  private[launcher] def proxyProfileFile(proxyLog: Path): Path =
-    proxyLog.resolveSibling(proxyLog.getFileName.toString.stripSuffix(".log") + ".sb")
+  private[launcher] def proxyProfileFile(proxyLog: Path): Path = RunOnHostInspection.sibling(proxyLog, ".sb")
 
   /** The proxy under its profile (SeatbeltProfile.renderProxy), beside its log. */
   private def startProxy(

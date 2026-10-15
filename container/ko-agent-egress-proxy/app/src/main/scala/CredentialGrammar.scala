@@ -85,7 +85,7 @@ object CredentialGrammar:
 
   /** A parameter frames nothing, so its name is free within the value grammar, but for what would split or
     * end the query, and `+`, which a form parser reads as a space: the origin would read `a+b` as `a b`. */
-  def parameterProblem(name: String): Option[String] =
+  private def parameterProblem(name: String): Option[String] =
     Option.when(name.isEmpty || name.exists(char => char < 0x21 || char > 0x7e || "&=#+".contains(char)))(
       s"'$name' is not a query parameter name: visible ASCII without &, =, # or +",
     )
@@ -170,7 +170,7 @@ object CredentialGrammar:
     else Right(CredentialPlace.Header(name))
 
   /** One binding's line: the binding, the placeholder and the value, each without a space. */
-  def bindingLine(credential: BrokeredCredential): String =
+  private def bindingLine(credential: BrokeredCredential): String =
     s"${credential.binding.spelled} ${credential.placeholder} ${credential.value}"
 
   /** The whole input a proxy reads: a count line, then one line per binding, nothing after them. */

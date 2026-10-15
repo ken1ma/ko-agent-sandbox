@@ -64,13 +64,9 @@ final class RunnerRuntimes(
       RunOnHostSandbox.assemble(project, program, name => Option(System.getenv(name)), buildDirectory),
   proxy: (Program, Vector[String], Path, Path) => Either[String, Int] =
     createProxy(systemPaths, credentials, channelLog),
-  server: ServerStart => Either[String, Unit] =
-    start => startSbtServer(session, systemPaths, forwards, fileRules, start),
-  daemon: DaemonStart => Either[String, RunOnHostMillDaemons.Daemon] =
-    start =>
-      RunOnHostMillDaemons.start(
-        session, systemPaths, forwards, fileRules, RunOnHostSession.HostProcesses, log, start,
-      ),
+  server: RuntimeStart => Either[String, Unit] = start => startSbtServer(session, start),
+  daemon: RuntimeStart => Either[String, RunOnHostMillDaemons.Daemon] =
+    start => RunOnHostMillDaemons.start(session, RunOnHostSession.HostProcesses, log, start),
   scavenge: () => Unit = () => (),
   // The daemons holding the launch's registry under the given tmp/ (RunOnHostGradleDaemons.daemons).
   gradleDaemons: Path => Vector[(Long, String)] = RunOnHostGradleDaemons.daemons(_, RunOnHostSession.HostProcesses),
@@ -231,6 +227,19 @@ final class RunnerRuntimes(
         // would be read as that attempt's.
         Left(discardRuntime(program, hash, proxyLog).fold(kept => s"$reason; $kept", _ => reason))
 
+  /** What `current`'s server or daemon is started from, registered at `record`, under `network`. */
+  private def runtimeStart(
+    current: Live, record: Path, network: SeatbeltProfile.Network, arguments: Seq[String] = Seq.empty,
+  ): RuntimeStart =
+    RuntimeStart(
+      current.assembled, current.buildDirectory, current.hash, record, current.runtime,
+      runtimeInputs(
+        current.assembled, session.tmp, current.runtime.proxyPort, current.runtime.trust, systemPaths, forwards,
+        network, fileRules,
+      ),
+      arguments,
+    )
+
   /** The server of a runtime whose proxy is up, no other launch owning the build directory's
     * server (foreignRuntime, decided by every caller first), once no foreign server holds its
     * portfile; up, it is described for other launches (publishDescriptor). A start that fails,
@@ -239,6 +248,7 @@ final class RunnerRuntimes(
     * rename over it. */
   private def startServer(current: Live, arguments: Seq[String]): Either[String, Unit] =
     val record = serverRecord(current.hash)
+    val start = runtimeStart(current, record, SeatbeltProfile.Network.ProxyOnly, arguments)
     val started =
       try
         discard(Program.Sbt, current.hash, record).flatMap(_ => noForeignServer(current)).flatMap: _ =>
@@ -246,10 +256,8 @@ final class RunnerRuntimes(
           // user's build to finish, and sweeping its `target/` links mid-build would corrupt
           // it. Before the start: our server fails loading on a link into a denied store.
           sweepTargetLinks(current.assembled)
-          server(ServerStart(
-            current.assembled, current.buildDirectory, current.hash, arguments, record, current.runtime,
-          ))
-        .flatMap(_ => publishDescriptor(Program.Sbt, current, record, SeatbeltProfile.Network.ProxyOnly, None, None))
+          server(start)
+        .flatMap(_ => publishDescriptor(Program.Sbt, current, start, None, None))
       catch case NonFatal(ex) => Left(s"starting the sbt server: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
     started.left.map: reason =>
       discard(Program.Sbt, current.hash, record).fold(kept => s"$reason; $kept", _ => reason)
@@ -263,14 +271,11 @@ final class RunnerRuntimes(
     * does. */
   private def startDaemon(current: Live, config: String): Either[String, Live] =
     val record = daemonRecord(current.hash)
+    val start = runtimeStart(current, record, SeatbeltProfile.Network.MillDaemon)
     val started =
       try
-        discard(Program.Mill, current.hash, record).flatMap: _ =>
-          daemon(DaemonStart(current.assembled, current.buildDirectory, current.hash, record, current.runtime))
-        .flatMap: found =>
-          publishDescriptor(
-            Program.Mill, current, record, SeatbeltProfile.Network.MillDaemon, Some(found), Some(config),
-          ).map(_ => found)
+        discard(Program.Mill, current.hash, record).flatMap(_ => daemon(start)).flatMap: found =>
+          publishDescriptor(Program.Mill, current, start, Some(found), Some(config)).map(_ => found)
       catch case NonFatal(ex) => Left(s"starting the mill daemon: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
     started match
       case Right(found) =>
@@ -287,22 +292,18 @@ final class RunnerRuntimes(
     * server's or daemon's records as they now read. A descriptor that cannot be published is a
     * failed start, discarded by the caller. */
   private def publishDescriptor(
-    program: Program, current: Live, record: Path, network: SeatbeltProfile.Network,
+    program: Program, current: Live, start: RuntimeStart,
     daemon: Option[RunOnHostMillDaemons.Daemon], daemonConfig: Option[String],
   ): Either[String, Unit] =
     def read(file: Path): Either[String, RunOnHostSession.Record] =
       RunOnHostSession.readRecord(file).toRight(s"${file.getFileName} does not parse as a record")
     for
       proxy <- read(proxyRecord(program, current.hash))
-      group <- read(record)
-      inputs = runtimeInputs(
-        current.assembled, session.tmp, current.runtime.proxyPort, current.runtime.trust, systemPaths, forwards,
-        network, fileRules,
-      )
+      group <- read(start.record)
       _ <- RunOnHostRuntimeDescriptor.publish(
         RunOnHostRuntimeDescriptor.file(session.directory, program, current.hash),
         RunOnHostRuntimeDescriptor(
-          RunOnHostRuntimeDescriptor.fingerprint(inputs, egressRuleText(program, current.hosts)),
+          RunOnHostRuntimeDescriptor.fingerprint(start.inputs, egressRuleText(program, current.hosts)),
           current.runtime.proxyPort, proxy, group, daemon, daemonConfig.map(LogHelper.sha256Hex),
         ),
       )

@@ -184,7 +184,6 @@ object RunOnHostChannel:
     /** The supervisor under the build lock (RunOnHostSession.lockedSpawn, under the runner): dispatch
       * speaks the lock holder's protocol. */
     supervisorCommand: (String, Path, Path, Seq[String]) => Seq[String],
-    os: Os,
     /** The build lock file of a program and build directory (RunOnHostSession.buildLockFile),
       * which the supervisor holds for its life. */
     buildLock: (String, Path) => Either[String, Path],
@@ -196,7 +195,6 @@ object RunOnHostChannel:
       * with the request's program: what the runtime records once the command is over
       * (RunnerRuntimes.commandEnded). */
     ended: String => Unit = _ => (),
-    canonicalize: Path => Option[Path] = FileHelper.realPath,
     /** What the project is mounted at inside the container — its own path
       * (SandboxProject.mountPathOf): the spelling requests arrive in. */
     mount: String,
@@ -521,7 +519,7 @@ object RunOnHostChannel:
     else
       RunOnHostPrereqs
         .workingDirectory(
-          request.workingDirectory, service.mount, service.project, service.canonicalize, service.os,
+          request.workingDirectory, service.mount, service.project, FileHelper.realPath, Os.Mac,
         )
         .left.map(_ =>
           s"CHANNEL_UNAVAILABLE: working directory ${request.workingDirectory} is not the " +
@@ -681,12 +679,7 @@ object RunOnHostChannel:
           teardown(bySignal = true)))
         val transport = Transport(
           execPrefix = podman +: HostCommands.ExecWithInput :+ container,
-          sandboxRunning = () =>
-            try
-              HostCommands
-                .run(podman, "container", "inspect", "--format", "{{.State.Running}}", container)
-                .text.trim == "true"
-            catch case _: IOException => false,
+          sandboxRunning = () => HostCommands.containerRunning(podman, container),
         )
         val service = Service(
           project = project,
@@ -701,7 +694,6 @@ object RunOnHostChannel:
               ) ++ arguments,
               underRunner = true,
             ),
-          os = Os.Mac,
           buildLock = RunOnHostSession.buildLockFile(root, _, _),
           runtime = (programName, buildDirectory, arguments) =>
             RunOnHostPrereqs.Program.named(programName)

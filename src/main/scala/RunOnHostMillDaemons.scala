@@ -21,7 +21,7 @@ import java.io.IOException
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, LinkOption, Path}
 
-import RunOnHostSandbox.{DaemonStart, ServerStartSilenceMillis}
+import RunOnHostSandbox.{RuntimeStart, ServerStartSilenceMillis}
 import RunOnHostSession.{daemonRecordName, Processes, Record, Session}
 import RunOnHostSession.HostProcesses.{lines, Lsof, Pgrep, Ps}
 
@@ -61,25 +61,13 @@ object RunOnHostMillDaemons:
    * leaves no group behind its record (the caller discards it).
    */
   def start(
-    session: Session,
-    systemPaths: SeatbeltProfile.SystemPaths,
-    forwards: Vector[(String, String)],
-    fileRules: FileRules.Resolved,
-    processes: Processes,
-    log: String => Unit,
-    start: DaemonStart,
+    session: Session, processes: Processes, log: String => Unit, start: RuntimeStart,
   ): Either[String, Daemon] =
-    val assembled = start.assembled
-    val prereqs = assembled.prereqs
     val output = starterLog(session, start.hash)
-    val inputs = RunOnHostSandbox.runtimeInputs(
-      assembled, session.tmp, start.runtime.proxyPort, start.runtime.trust, systemPaths, forwards,
-      SeatbeltProfile.Network.MillDaemon, fileRules,
-    )
     def said = s"the starter's output:\n${RunOnHostSandbox.starterOutputTail(output)}"
     def attempt(retriesLeft: Int, profileFile: Path): Either[String, Daemon] =
       for
-        leader <- spawnStarter(start, profileFile, inputs.environment, output)
+        leader <- spawnStarter(start, profileFile, output)
         _ <- awaitStarter(leader, start, output, processes, log)
         daemon <- memberDaemon(start.record) match
           case Some((pid, daemonStart)) =>
@@ -92,12 +80,9 @@ object RunOnHostMillDaemons:
       yield daemon
     for
       _ <- endForeign(start.buildDirectory, processes, log)
-      profile <- SeatbeltProfile.render(inputs.profile)
-      profileFile <-
-        val file = RunOnHostSandbox.runtimeProfileFile(session, daemonRecordName(start.hash))
-        try Right(Files.writeString(file, profile, UTF_8))
-        catch case ex: IOException => Left(s"writing the daemon profile: ${ex.getMessage}")
-      _ = discardForeignClasspath(start.buildDirectory, prereqs.coursierV1, confined(profileFile)).foreach(log)
+      profileFile <- RunOnHostSandbox.writeRuntimeProfile(session, daemonRecordName(start.hash), start.inputs)
+      _ = discardForeignClasspath(start.buildDirectory, start.assembled.prereqs.coursierV1, confined(profileFile))
+        .foreach(log)
       daemon <- attempt(retriesLeft = 1, profileFile)
     yield daemon
 
@@ -105,13 +90,11 @@ object RunOnHostMillDaemons:
     * JVM launcher — under the daemon profile (RunOnHostSandbox.startRuntimeStarter), its output to
     * the starter log and the runner's `tmp/` its temporary and socket directory, which the daemon
     * inherits. */
-  private def spawnStarter(
-    start: DaemonStart, profileFile: Path, environment: Map[String, String], output: Path,
-  ): Either[String, Process] =
+  private def spawnStarter(start: RuntimeStart, profileFile: Path, output: Path): Either[String, Process] =
     try
       Right(RunOnHostSandbox.startRuntimeStarter(
         start.record, profileFile, Seq(start.buildDirectory.resolve("mill").toString, "version"),
-        start.buildDirectory, environment, output,
+        start.buildDirectory, start.inputs.environment, output,
       ))
     catch case ex: IOException => Left(s"starting the mill starter: ${ex.getMessage}")
 
@@ -126,7 +109,7 @@ object RunOnHostMillDaemons:
    * bound is on progress, not time.
    */
   private def awaitStarter(
-    leader: Process, start: DaemonStart, output: Path, processes: Processes, log: String => Unit,
+    leader: Process, start: RuntimeStart, output: Path, processes: Processes, log: String => Unit,
   ): Either[String, Unit] =
     val exit = RunOnHostSession.exitRecord(start.record)
     val watch = RunOnHostSandbox.StartWatch(output, start.runtime.proxyLog)
@@ -163,7 +146,7 @@ object RunOnHostMillDaemons:
    * survives the launcher's exit (measured, run-on-host-runner-session.sh M8). The observations
    * are parameters so that the tests can interleave them.
    */
-  private def endStarter(start: DaemonStart, processes: Processes, log: String => Unit): Boolean =
+  private def endStarter(start: RuntimeStart, processes: Processes, log: String => Unit): Boolean =
     endStarter(start.record, start.buildDirectory, processes, log, groupMembers, listeningCandidate)
 
   def endStarter(
@@ -345,9 +328,7 @@ object RunOnHostMillDaemons:
     val daemonDir = out.resolve("mill-daemon")
     val entries =
       if !Files.isDirectory(daemonDir, LinkOption.NOFOLLOW_LINKS) then Vector.empty
-      else
-        try FileHelper.directoryEntries(daemonDir)
-        catch case _: IOException => Vector.empty
+      else FileHelper.directoryEntriesIfAny(daemonDir)
     def refused(path: Path, what: String) =
       Left(
         s"$path is $what; a redirected mill daemon directory is refused, since Mill's launcher would act on " +

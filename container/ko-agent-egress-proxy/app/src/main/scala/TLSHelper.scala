@@ -73,7 +73,7 @@ object TLSHelper:
    * this container, so nothing in it can issue a certificate for a name the launcher did not
    * already choose (SECURITY.md, "Who holds the CA key").
    */
-  class TlsInspection private (val context: SSLContext):
+  class TlsInspection private (context: SSLContext):
 
     /**
      * `consumed` replays the already-read ClientHello ahead of the socket. ALPN is restricted to

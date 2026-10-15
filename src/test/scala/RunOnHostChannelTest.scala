@@ -19,7 +19,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
-import HostCommands.Os
 import RunOnHostChannel.*
 
 class RunOnHostChannelTest extends munit.FunSuite:
@@ -121,7 +120,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
   /** The project mounted at its own path, as a launch has it. */
   private def service(project: Path, deadline: Long = 30_000): Service =
     Service(
-      project, Set("sbt"), (_, _, _, _) => Seq("true"), Os.Mac,
+      project, Set("sbt"), (_, _, _, _) => Seq("true"),
       buildLock = (_, _) => Right(Path.of("/unused")),
       runtime = (_, _, _) => Right(Seq.empty),
       mount = project.toString, requestDeadlineMillis = deadline,

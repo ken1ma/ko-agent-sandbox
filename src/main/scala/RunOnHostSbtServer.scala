@@ -70,7 +70,7 @@ object RunOnHostSbtServer:
       env(name).filter(_.nonEmpty).map(value => file(value.trim))
     val uri = buildDirectory.resolve("project").resolve("target").resolve("active.json").toUri.toString
     val digest = java.security.MessageDigest.getInstance("SHA-1").digest(uri.getBytes(UTF_8))
-    val hash = digest.map(byte => f"$byte%02x").mkString.take(20)
+    val hash = java.util.HexFormat.of().formatHex(digest).take(20)
     val globalBase =
       trimmed("SBT_CONFIG_HOME")
         .orElse(trimmed("XDG_CONFIG_HOME").map(_ / "sbt"))
@@ -266,35 +266,23 @@ object RunOnHostSbtServer:
   /** The server (run-on-host.md "sbt") under the server profile, its output to serverLog and the
     * runner's `tmp/` its temporary and socket directory. Up when the build directory's portfile
     * names a connectable socket under that `tmp/`. */
-  private[launcher] def startSbtServer(
-    session: Session,
-    systemPaths: SeatbeltProfile.SystemPaths,
-    forwards: Vector[(String, String)],
-    fileRules: FileRules.Resolved,
-    start: ServerStart,
-  ): Either[String, Unit] =
+  private[launcher] def startSbtServer(session: Session, start: RuntimeStart): Either[String, Unit] =
     val assembled = start.assembled
-    val prereqs = assembled.prereqs
     val output = serverLog(session, start.hash)
-    val inputs = runtimeInputs(
-      assembled, session.tmp, start.runtime.proxyPort, start.runtime.trust, systemPaths, forwards,
-      SeatbeltProfile.Network.ProxyOnly, fileRules,
-    )
     for
-      profile <- SeatbeltProfile.render(inputs.profile)
+      profileFile <- writeRuntimeProfile(session, serverRecordName(start.hash), start.inputs)
       leader <-
         try
-          val profileFile = runtimeProfileFile(session, serverRecordName(start.hash))
-          Files.writeString(profileFile, profile, UTF_8)
           Right(startRuntimeStarter(
-            start.record, profileFile, serverCommand(prereqs.executable, assembled.sbtGlobal, start.arguments),
-            start.buildDirectory, inputs.environment, output,
+            start.record, profileFile,
+            serverCommand(assembled.prereqs.executable, assembled.sbtGlobal, start.arguments),
+            start.buildDirectory, start.inputs.environment, output,
           ))
         catch case ex: IOException => Left(s"starting the sbt server: ${ex.getMessage}")
       _ <- awaitServer(session, start, leader, output)
     yield ()
 
-  private def awaitServer(session: Session, start: ServerStart, leader: Process, output: Path): Either[String, Unit] =
+  private def awaitServer(session: Session, start: RuntimeStart, leader: Process, output: Path): Either[String, Unit] =
     val exit = RunOnHostSession.exitRecord(start.record)
     def said = s"its output:\n${starterOutputTail(output)}"
     val watch = StartWatch(output, start.runtime.proxyLog)

@@ -527,6 +527,9 @@ object HostCommands:
   def findOnPath(name: String, pathValue: String, os: Os): Option[Path] =
     findOnPath(name, pathValue, os, workingDirectory())
 
+  /** On the host's own PATH. */
+  def findOnPath(name: String, os: Os): Option[Path] = findOnPath(name, env("PATH").getOrElse(""), os)
+
   /** @param ignoreUnder a candidate under this path is treated as unresolved. */
   def findOnPath(name: String, pathValue: String, os: Os, ignoreUnder: Path): Option[Path] =
     val separator = if os == Os.Windows then ';' else ':'
@@ -586,8 +589,13 @@ object HostCommands:
   def podmanVersion(): String =
     podmanResolution._2.filter(_.ok).map(_.text.trim).getOrElse("podman version unknown")
 
+  /** Whether the container runs; a podman that cannot be asked answers no. */
+  def containerRunning(podman: String, container: String): Boolean =
+    try run(podman, "container", "inspect", "--format", "{{.State.Running}}", container).text.trim == "true"
+    catch case _: IOException => false
+
   private lazy val podmanResolution: (String, Option[Run]) =
-    val found = findOnPath("podman", env("PATH").getOrElse(""), currentOs)
+    val found = findOnPath("podman", currentOs)
       .map(_.toString)
       .getOrElse(
         fail(

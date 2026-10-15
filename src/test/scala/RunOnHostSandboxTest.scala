@@ -14,6 +14,10 @@ import RunOnHostPrereqs.Program
 
 class RunOnHostSandboxTest extends munit.FunSuite:
 
+  /** An assembly for an environment test: paths nothing reads, and no mill derivation. */
+  private def assembledFor(prereqs: RunOnHostPrereqs.CommandPrereqs): Assembled =
+    Assembled(prereqs, None, Path.of("/s"), Path.of("/i"), Path.of("/g"), Path.of("/m"), None, None)
+
   test("the measured system paths ship in the artifact, and parse"):
     val systemPaths = RunOnHostSandbox.bundledSystemPaths()
     assert(systemPaths.executes.nonEmpty, "the bundled file grants no executable roots")
@@ -48,9 +52,11 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         "MILL_OUTPUT_DIR" -> "elsewhere", "_JAVA_OPTIONS" -> "-javaagent:/tmp/agent.jar",
         "JAVA_TOOL_OPTIONS" -> "-Duser.option=value",
       ),
-      prereqs, sbtGlobal = Path.of("/cache/sbt"), ivyHome = Path.of("/cache/ivy"),
-      gradleUserHome = Path.of("/cache/gradle"), m2Repository = Path.of("/cache/m2"),
-      millDownloads = Some(Path.of("/Users/u/.cache/mill/download")), millVersion = Some("1.1.9-jvm"),
+      Assembled(
+        prereqs, None, sbtGlobal = Path.of("/cache/sbt"), ivyHome = Path.of("/cache/ivy"),
+        gradleUserHome = Path.of("/cache/gradle"), m2Repository = Path.of("/cache/m2"),
+        millDownloads = Some(Path.of("/Users/u/.cache/mill/download")), millLauncherVersion = Some("1.1.9-jvm"),
+      ),
       sessionTmp = Path.of("/private/tmp/ko-agent-501/s"), socketDir = Path.of("/private/tmp/ko-agent-501/b/tmp"),
       proxyPort = 4711, trust = Path.of("/private/tmp/ko-agent-501/b/proxy-sbt-0.trust"), userName = "u",
     )
@@ -107,8 +113,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     // version for a program that is not mill — a forwarded one included.
     val noFolder =
       commandEnvironment(
-        host.get, Vector("MILL_VERSION" -> "1.0.0"), prereqs, Path.of("/s"), Path.of("/i"), Path.of("/g"),
-        Path.of("/m"), None, None, Path.of("/t"), Path.of("/t"), 1, Path.of("/trust"), "u",
+        host.get, Vector("MILL_VERSION" -> "1.0.0"), assembledFor(prereqs), Path.of("/t"), Path.of("/t"), 1,
+        Path.of("/trust"), "u",
       )
     assert(!noFolder.contains("MILL_FINAL_DOWNLOAD_FOLDER"))
     assert(!noFolder.contains("MILL_VERSION"))
@@ -122,9 +128,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     for program <- Program.values do
       def withForwards(forwards: Vector[(String, String)]): Map[String, String] =
         commandEnvironment(
-          optIn.toMap.get, forwards, prereqs.copy(program = program),
-          Path.of("/s"), Path.of("/i"), Path.of("/g"), Path.of("/m"), None, None,
-          Path.of("/t"), Path.of("/t"), 1, Path.of("/trust"), "u",
+          optIn.toMap.get, forwards, assembledFor(prereqs.copy(program = program)), Path.of("/t"), Path.of("/t"), 1,
+          Path.of("/trust"), "u",
         )
       val inherited = withForwards(Vector.empty)
       val explicit = withForwards(optIn)
@@ -165,9 +170,11 @@ class RunOnHostSandboxTest extends munit.FunSuite:
           "JDK_JAVA_OPTIONS" -> "-Djava.io.tmpdir=/jdk-option -Dforward.jdk=value",
           "_JAVA_OPTIONS" -> "-Djava.io.tmpdir=/forward",
         ),
-        prereqs, root.resolve("sbt"), root.resolve("ivy"), root.resolve("gradle"),
-        root.resolve("m2"), None, None, root.resolve("tmp"), root.resolve("sockets"), 4711, root.resolve("trust"),
-        "u",
+        Assembled(
+          prereqs, None, root.resolve("sbt"), root.resolve("ivy"), root.resolve("gradle"), root.resolve("m2"), None,
+          None,
+        ),
+        root.resolve("tmp"), root.resolve("sockets"), 4711, root.resolve("trust"), "u",
       )
       val expected = Map(
         "java.io.tmpdir" -> root.resolve("tmp"), "java.util.prefs.userRoot" -> root.resolve("tmp"),
@@ -703,10 +710,10 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       if throwsAfterRegistering then throw java.io.IOException("log unreadable")
       lastPort = leaders.size
       if neverReady then Left("never ready") else Right(lastPort)
-    val serverStarts = scala.collection.mutable.ListBuffer[ServerStart]()
+    val serverStarts = scala.collection.mutable.ListBuffer[RuntimeStart]()
     var serverFails = false
     var serverThrows = false
-    val server = (start: ServerStart) =>
+    val server = (start: RuntimeStart) =>
       serverStarts += start
       standIn(start.record)
       if serverThrows then throw IllegalStateException("boom")
@@ -730,10 +737,10 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val systemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
     // The daemon stand-in: a leader running a sleep, the sleep itself standing for the
     // daemon — the process a reuse checks by pid and start time — on a port of the stand-in's choosing.
-    val daemonStarts = scala.collection.mutable.ListBuffer[DaemonStart]()
+    val daemonStarts = scala.collection.mutable.ListBuffer[RuntimeStart]()
     var daemonFails = false
     var lastDaemonPid = 0L
-    val daemon = (start: DaemonStart) =>
+    val daemon = (start: RuntimeStart) =>
       daemonStarts += start
       standIn(start.record)
       if daemonFails then Left("no daemon in the group")
@@ -1022,13 +1029,13 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     def recordOnly(record: Path): Unit =
       Files.writeString(record, RunOnHostSession.renderRecord(RunOnHostSession.Record(1, "S")), UTF_8)
     val started = scala.collection.mutable.ListBuffer[Path]()
-    val server = (start: ServerStart) =>
+    val server = (start: RuntimeStart) =>
       started += start.buildDirectory
       recordOnly(start.record)
       Right(())
     val emptySystemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
     val daemonStarts = scala.collection.mutable.ListBuffer[Path]()
-    val daemon = (start: DaemonStart) =>
+    val daemon = (start: RuntimeStart) =>
       daemonStarts += start.buildDirectory
       recordOnly(start.record)
       Right(RunOnHostMillDaemons.Daemon(1, "S", 40_001))
@@ -1125,7 +1132,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       register(record)
       Files.writeString(proxyLog, "listening\n", UTF_8)
       Right(1)
-    val server = (start: ServerStart) =>
+    val server = (start: RuntimeStart) =>
       register(start.record)
       Right(())
     val systemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)
@@ -1247,7 +1254,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       register(record)
       Files.writeString(proxyLog, "listening\n", UTF_8)
       Right(1)
-    val server = (start: ServerStart) =>
+    val server = (start: RuntimeStart) =>
       register(start.record)
       Right(())
     val systemPaths = SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty)

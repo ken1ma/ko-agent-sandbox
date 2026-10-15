@@ -715,7 +715,7 @@ object AgentSandboxLauncher:
            |Reinstall it: https://podman.io/docs/installation""".stripMargin,
         127,
       )
-    val awaitAvailable = inBackground("machine memory probe")(probedMachineAvailable(os))
+    val awaitAvailable = inBackground("machine memory probe")(probedMachineAvailable(os, podman))
     val answered = run(podman, "info", "--format", PodmanInfoFormat)
     val (info, available) =
       if answered.ok then (answered, awaitAvailable())
@@ -739,7 +739,7 @@ object AgentSandboxLauncher:
                    |Initialize it once, for example:
                    |  podman machine init""".stripMargin,
               )
-            (run(podman, "info", "--format", PodmanInfoFormat), probedMachineAvailable(os))
+            (run(podman, "info", "--format", PodmanInfoFormat), probedMachineAvailable(os, podman))
     if refuseRootful then rootfulRefusal(os, podmanInfoField(info, 0)).foreach(fail(_))
     val total = memoryTotal(podmanInfoField(info, 1))
     machineMemoryLine(os, total, available, scale = memoryScale).foreach(System.err.println)
@@ -775,7 +775,7 @@ object AgentSandboxLauncher:
             "  podman machine set --rootful=false"
       s"error: $what\nThe sandbox needs rootless podman (SECURITY.md). $fix"
 
-  def probedMachineAvailable(os: Os): Option[Long] =
+  def probedMachineAvailable(os: Os, podman: String): Option[Long] =
     machineMemoryAvailable(
       os,
       readIfPresent(Paths.get("/proc/meminfo")).getOrElse(""),
@@ -1017,22 +1017,20 @@ object AgentSandboxLauncher:
 
     // The actions that read no session option refuse one rather than ignoring it: a selection
     // that configures nothing is the silent failure mode the options must not have.
-    def noSessionOptions(action: String): Unit =
-      if parsed.write.isDefined || parsed.egress.isDefined || parsed.env.nonEmpty || parsed.awsCredential.isDefined
-        || parsed.runOnHost.isDefined || parsed.credentialBindings.nonEmpty || parsed.clipboard.isDefined || parsed.mic
-      then
-        fail(
-          s"error: $action reads no launch option; " +
-            "drop --write/--egress/--clipboard/--mic/--env/--env-aws-cred/--egress-cred/--run-on-host",
-        )
+    val launchOptions = Vector(
+      "--write" -> parsed.write.isDefined, "--egress" -> parsed.egress.isDefined,
+      "--egress-cred" -> parsed.credentialBindings.nonEmpty, "--clipboard" -> parsed.clipboard.isDefined,
+      "--mic" -> parsed.mic, "--env" -> parsed.env.nonEmpty, "--env-aws-cred" -> parsed.awsCredential.isDefined,
+      "--run-on-host" -> parsed.runOnHost.isDefined,
+    )
+    def refuseGiven(action: String, options: Vector[(String, Boolean)]): Unit =
+      val named = options.collect { case (option, true) => option }
+      if named.nonEmpty then
+        val them = if named.size == 1 then "it" else "them"
+        fail(s"error: $action reads no ${named.mkString(" or ")} option; drop $them")
+    def noSessionOptions(action: String): Unit = refuseGiven(action, launchOptions)
     def noWriteOption(action: String): Unit =
-      if parsed.write.isDefined || parsed.env.nonEmpty || parsed.awsCredential.isDefined || parsed.runOnHost.isDefined
-        || parsed.clipboard.isDefined || parsed.mic
-      then
-        fail(
-          s"error: $action reads no --write, --clipboard, --mic, --env, --env-aws-cred or --run-on-host option; " +
-            "drop it",
-        )
+      refuseGiven(action, launchOptions.filterNot((option, _) => option == "--egress" || option == "--egress-cred"))
 
     parsed.action match
       case Some(("--help", _)) =>
@@ -1193,7 +1191,7 @@ object AgentSandboxLauncher:
    * exists, and the working directory is the project directory.
    */
   def selinuxContainerReadable(dir: Path): Boolean =
-    findOnPath("stat", env("PATH").getOrElse(""), Os.Linux).exists: stat =>
+    findOnPath("stat", Os.Linux).exists: stat =>
       val context = run(stat.toString, "-c", "%C", dir.toString)
       val parts = if context.ok then context.text.trim.split(":") else Array.empty[String]
       parts.length == 4 && parts.lift(2).exists(Set("container_file_t", "container_share_t"))
@@ -1515,7 +1513,7 @@ object AgentSandboxLauncher:
     // (forwardedEnvironment, RunOnHostChannel.spawnRunner): in an environment, never an argument.
     val awsCredential = parsed.awsCredential.map: request =>
       AwsCredential.resolve(
-        request, name => Option(System.getenv(name)), name => findOnPath(name, env("PATH").getOrElse(""), os),
+        request, name => Option(System.getenv(name)), name => findOnPath(name, os),
         command => run(command*), Instant.now(),
         forwardRegion = !parsed.env.exists(_.name == AwsCredential.RegionName),
       ).fold(fail(_), identity)
@@ -1602,7 +1600,7 @@ object AgentSandboxLauncher:
     // permissive and disabled hosts read every mount unrelabeled, so relabeling there would be
     // a host-metadata write with no benefit.
     val selinuxEnforcing = os == Os.Linux &&
-      findOnPath("getenforce", env("PATH").getOrElse(""), os)
+      findOnPath("getenforce", os)
         .exists(path => run(path.toString).text.trim == "Enforcing")
 
     // An unfiltered bind mount on an SELinux-enforcing host is readable to the container only after
@@ -2466,7 +2464,7 @@ object AgentSandboxLauncher:
               recording(kept.recorder.label, kept.silent)
               MicrophoneRelay.startResident(kept, podman, sandboxContainer, microphoneLogFile)
             case Left(reasons) =>
-              val diagnosis = findOnPath("powershell", env("PATH").getOrElse(""), os)
+              val diagnosis = findOnPath("powershell", os)
                 .map(MicrophoneRelay.windowsDiagnostics).getOrElse(Vector.empty)
               fail(MicrophoneRelay.failureMessage(reasons, os, diagnosis))
 

@@ -22,7 +22,7 @@ class CredentialTest extends munit.FunSuite:
   private val github = bound("GH_TOKEN@api.github.com", GhPlaceholder, GhValue)
 
   private def head(target: String, headers: (String, String)*): HttpRequestHead =
-    HttpRequestHead("GET", target, "HTTP/1.1", ("Host" -> "api.github.com") +: headers.toVector)
+    HttpRequestHead("GET", target, ("Host" -> "api.github.com") +: headers.toVector)
 
   private def basic(pair: String): String =
     "Basic " + Base64.getEncoder.encodeToString(pair.getBytes(StandardCharsets.ISO_8859_1))
@@ -284,7 +284,7 @@ class CredentialTest extends munit.FunSuite:
   test("under a prefix, only requests whose literal path is under it"):
     val packages = bound("GH_TOKEN@maven.pkg.github.com/owner/", GhPlaceholder, GhValue)
     def sent(path: String) =
-      HttpRequestHead("GET", path, "HTTP/1.1", Vector("Authorization" -> s"Bearer $GhPlaceholder"))
+      HttpRequestHead("GET", path, Vector("Authorization" -> s"Bearer $GhPlaceholder"))
         .withCredentials("maven.pkg.github.com", Vector(packages)).injected
     assertEquals(sent("/owner/repo/a.jar"), Vector("GH_TOKEN"))
     Vector("/other/repo/a.jar", "/owner", "/owner/%2e%2e/other/a.jar", "/owner/../other/a.jar", "/owner//a",
@@ -296,7 +296,7 @@ class CredentialTest extends munit.FunSuite:
     assertEquals(sent("/owner/%c3%a4.jar"), Vector("GH_TOKEN"))
     val named = bound("GH_TOKEN@h.example/%E3%81%82/", GhPlaceholder, GhValue)
     val underNamed =
-      HttpRequestHead("GET", "/%E3%81%82/x", "HTTP/1.1", Vector("Authorization" -> s"Bearer $GhPlaceholder"))
+      HttpRequestHead("GET", "/%E3%81%82/x", Vector("Authorization" -> s"Bearer $GhPlaceholder"))
     assertEquals(underNamed.withCredentials("h.example", Vector(named)).injected, Vector("GH_TOKEN"))
     val otherCase = underNamed.copy(target = "/%e3%81%82/x")
     assertEquals(otherCase.withCredentials("h.example", Vector(named)).injected, Vector.empty)
@@ -304,7 +304,7 @@ class CredentialTest extends munit.FunSuite:
   test("a bound parameter: its decoded value equal to the placeholder, the value written percent-encoded"):
     val sas = bound("SAS_SIG@acct.blob.core.windows.net?sig", "PLACEHOLDERsig", "a&b=c%d#e+f/g")
     def substituted(target: String) =
-      HttpRequestHead("GET", target, "HTTP/1.1", Vector.empty)
+      HttpRequestHead("GET", target, Vector.empty)
         .withCredentials("acct.blob.core.windows.net", Vector(sas))
     val one = substituted("/c/b?sv=1&sig=PLACEHOLDERsig&sp=r")
     assertEquals(one.head.target, "/c/b?sv=1&sig=a%26b%3Dc%25d%23e%2Bf%2Fg&sp=r")
@@ -330,7 +330,7 @@ class CredentialTest extends munit.FunSuite:
   test("authorization reads the rewritten head: a bound service parameter is classified as what it becomes"):
     val push = bound("SERVICE@github.com?service", "PLACEHOLDERservice", "git-receive-pack")
     val request = HttpRequestHead(
-      "GET", "/o/r.git/info/refs?service=PLACEHOLDERservice", "HTTP/1.1", Vector("Host" -> "github.com"),
+      "GET", "/o/r.git/info/refs?service=PLACEHOLDERservice", Vector("Host" -> "github.com"),
     )
     val substituted = request.withCredentials("github.com", Vector(push))
     assertEquals(substituted.printedTarget, "/o/r.git/info/refs?service=SERVICE")

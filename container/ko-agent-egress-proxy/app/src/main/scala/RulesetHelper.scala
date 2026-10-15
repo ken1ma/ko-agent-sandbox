@@ -496,16 +496,8 @@ object RulesetHelper:
     ruleset: Ruleset,
     provenance: Provenance,
     warnings: Vector[String],
-    clearsDefaults: Boolean,
   ):
-    def profile: String = ruleset.profile
-    def provider: Option[String] = ruleset.provider
-    def hosts: Map[String, Treatment] = ruleset.hosts
-    def inspectedScopes: Map[String, Map[String, Set[String]]] = ruleset.inspectedScopes
-    def tunnelHosts: Set[String] = ruleset.tunnelHosts
-    def inspected: Set[String] = ruleset.inspected
-    def allows(host: String): Boolean = ruleset.allows(host)
-    def scopesOf(host: String): Map[String, Set[String]] = ruleset.scopesOf(host)
+    export ruleset.{allows, hosts, inspected, inspectedScopes, profile, provider, scopesOf, tunnelHosts}
 
   /**
    * The variables resolved to the ruleset in force.
@@ -643,7 +635,6 @@ object RulesetHelper:
       ruleset,
       Provenance(scopes.toMap, patterns, widening),
       validated.warnings ++ takenBack ++ reachability,
-      clearsDefaults,
     )
 
   // ---------------------------------------------------------------------------

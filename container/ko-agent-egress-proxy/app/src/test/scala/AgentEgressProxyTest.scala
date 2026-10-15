@@ -364,7 +364,6 @@ class AgentEgressProxyTest extends munit.FunSuite:
     )
     assertEquals(resolved.hosts("api.githubcopilot.com"), Treatment.Tunnel)
     assertEquals(resolved.warnings, Vector.empty)
-    assert(!resolved.clearsDefaults)
 
   test("the default catalog grants read alone, and read git-fetch on the three Git hosts"):
     // SECURITY.md, "Reading without being able to write": a method or a git-fetch the list there does not name
@@ -709,7 +708,6 @@ class AgentEgressProxyTest extends munit.FunSuite:
   test("deny defaults is the whole ruleset under deny-unless-allowed, and is not consulted elsewhere"):
     val own = rulesetOf(rule = "deny defaults\nallow https://docs.python.org/ read")
     assertEquals(own.hosts, Map("docs.python.org" -> Treatment.Inspected(Map("/" -> Set("read")))))
-    assert(own.clearsDefaults)
     assertEquals(own.warnings, Vector.empty)
     assertEquals(
       rulesetOf(profile = "deny-unless-model", provider = "anthropic", rule = "deny defaults").ruleset,
@@ -1223,7 +1221,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
     val largeBody = Array.fill[Byte](RelayBufferBytes * 2 + 1)(0x5a)
     assertOneBuffer(largeBody)((in, out) => copyExactly(in, out, largeBody.length))
-    assertOneBuffer(largeBody)(copyUntilEof)
+    assertOneBuffer(largeBody)((in, out) => forwardResponseBody(in, out, BodyFraming.UntilClose))
     assertOneBuffer(ascii("3\r\none\r\n3\r\ntwo\r\n0\r\n\r\n"))(copyChunked)
 
   // ---------------------------------------------------------------------------
@@ -2537,7 +2535,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val scopes = Map("/" -> Set("read"), "/owner/" -> Set("read"))
     def get(target: String) =
       authorizeInspectedRequest(
-        "github.com", HttpRequestHead("GET", target, "HTTP/1.1", Vector("Host" -> "github.com")), scopes,
+        "github.com", HttpRequestHead("GET", target, Vector("Host" -> "github.com")), scopes,
       )
     // Raw bytes above 0x7E: RFC 3986 spells a URI in ASCII, and a server reads raw bytes as text its own way.
     Vector("/owner/\u00e4", "/owner/\u00c4\u00ae", "/owner/\u00e3\u0081\u0082").foreach: target =>
