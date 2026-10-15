@@ -57,7 +57,8 @@ class TabWithoutWidth(Exception):
 
 
 def line_widths(path, tab_width):
-    with open(path, encoding="utf-8", newline="") as file:
+    # newline="" would end a line at a lone CR too, which editors and git do not.
+    with open(path, encoding="utf-8", newline="\n") as file:
         for number, line in enumerate(file, start=1):
             if tab_width is None and "\t" in line:
                 raise TabWithoutWidth(f"line {number} has a tab; pass --tab-width COLUMNS to measure this file")

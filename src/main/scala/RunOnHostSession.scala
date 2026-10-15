@@ -809,7 +809,7 @@ object RunOnHostSession:
   val RegistrationScript: String =
     """setpgrp(0, 0) or exit 71;
       |my ($record, @command) = @ARGV;
-      |my $start = `ps -o lstart= -p $$`;
+      |my $start = `/bin/ps -o lstart= -p $$`;
       |chomp $start;
       |exit 71 unless $start;
       |open(my $fh, '>', "$record.pending") or exit 71;
@@ -861,15 +861,21 @@ object RunOnHostSession:
    * and for a failed allocation. A listing without this process is no observation.
    */
   object HostProcesses extends Processes:
+    /** macOS's own, by absolute path like `/bin/kill`: a bare name would be found through the
+      * runner's inherited `PATH` (design.md, "No repository-controlled host executable resolution"). */
+    val Ps = "/bin/ps"
+    val Pgrep = "/usr/bin/pgrep"
+    val Lsof = "/usr/sbin/lsof"
+
     private def self: Long = ProcessHandle.current.pid
 
     def startOf(pid: Long): Option[String] =
-      startFrom(lines("ps", "-o", "pid=,lstart=", "-p", s"$self,$pid"), self, pid)
+      startFrom(lines(Ps, "-o", "pid=,lstart=", "-p", s"$self,$pid"), self, pid)
 
     def endGroup(pgid: Long): Boolean = termThenKill(groupEmpty(pgid), kill(_, s"-$pgid"))
 
     def groupEmpty(pgid: Long): Boolean =
-      groupEmptyFrom(lines("ps", "-o", "pid=", "-p", self.toString, "-g", pgid.toString), self)
+      groupEmptyFrom(lines(Ps, "-o", "pid=", "-p", self.toString, "-g", pgid.toString), self)
 
     /** `pid lstart` rows: the pid's start, None when the pid is not listed; IOException when
       * `self` is not either, which is a listing that did not happen. */

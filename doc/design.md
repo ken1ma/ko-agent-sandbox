@@ -259,8 +259,9 @@ search.
 
 - The `sh` scripts the launcher prefixes with `HostCommands.withScriptPath` find what they run
   through a fixed `PATH` of system directories (`ScriptPath`).
-- Some host programs are started by bare name, `ps` among them, and found through the `PATH`
-  their caller has (`TODO.md`, "Host programs started by bare name").
+- `--run-on-host` starts the macOS programs it observes processes with, `ps`, `pgrep` and
+  `lsof`, by absolute path (`RunOnHostSession.HostProcesses`), as it does `/bin/kill` and
+  `/usr/bin/sandbox-exec`.
 
 Absoluteness is not consent, and a repository must never be what supplies the host's container
 runtime: both halves of that filter are necessary, and `findOnPath`'s comment has why. Prior

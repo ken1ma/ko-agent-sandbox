@@ -59,9 +59,10 @@ object RunOnHostGradleDaemons:
     val real =
       try tmp.toRealPath()
       catch case _: IOException => tmp
-    HostProcesses.lines("pgrep", "-f", "--", DaemonMain).flatMap(_.toLongOption).flatMap: pid =>
+    HostProcesses.lines(HostProcesses.Pgrep, "-f", "--", DaemonMain).flatMap(_.toLongOption).flatMap: pid =>
       processes.startOf(pid).filter: start =>
-        val ours = HostProcesses.lines("ps", "-wwE", "-o", "command=", "-p", pid.toString).exists(carriesTmp(_, real))
+        val ours = HostProcesses.lines(HostProcesses.Ps, "-wwE", "-o", "command=", "-p", pid.toString)
+          .exists(carriesTmp(_, real))
         ours && processes.startOf(pid).contains(start)
       .map(pid -> _)
 

@@ -1952,11 +1952,12 @@ object AgentSandboxLauncher:
         logsToPrune(retainedLogs(logDir).map(_.getFileName.toString), RetainedProxyLogs, live)
           .foreach(name => Files.deleteIfExists(logDir.resolve(name)))
 
-      // The channel runner's log family, same retention — pruned by whole-run liveness, because the
-      // runner lives with the sandbox container rather than the proxy.
+      // The channel runner's and the microphone relay's log families, same retention — pruned by
+      // whole-run liveness, because both live with the sandbox container rather than the proxy.
       liveRuns.foreach: live =>
-        logsToPrune(retainedLogs(logDir, "run-on-host-").map(_.getFileName.toString), RetainedProxyLogs, live)
-          .foreach(name => Files.deleteIfExists(logDir.resolve(name)))
+        for prefix <- Seq("run-on-host-", "microphone-") do
+          logsToPrune(retainedLogs(logDir, prefix).map(_.getFileName.toString), RetainedProxyLogs, live)
+            .foreach(name => Files.deleteIfExists(logDir.resolve(name)))
 
       // Run copies whose runs are gone leave with this launch rather than accumulating; the resets
       // take the rest.

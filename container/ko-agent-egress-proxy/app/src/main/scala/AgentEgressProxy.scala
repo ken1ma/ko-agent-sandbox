@@ -610,10 +610,11 @@ object AgentEgressProxy:
         // Substituted before authorization and framing, so the decision and the origin see the same head:
         // a bound `service` parameter is read as what it becomes (GitHelper). Keep it first: a check reading
         // the head before it would judge a request the origin never receives.
-        val substituted =
-          HttpRequestHead.parse(
-            readHttpHeader(clientTls.getInputStream, MaxHttpHeaderBytes),
-          ).withCredentials(host, credentials)
+        // Rethrown as handle() rethrows an unreadable CONNECT: the failure is the client's, not an origin's.
+        val raw =
+          try readHttpHeader(clientTls.getInputStream, MaxHttpHeaderBytes)
+          catch case ex: IOException => throw BadRequest(s"unreadable request head: ${ex.getMessage}")
+        val substituted = HttpRequestHead.parse(raw).withCredentials(host, credentials)
         val head = substituted.head
         method = head.method
         target = substituted.printedTarget

@@ -93,6 +93,9 @@ exec 8> "$dir/ctl.$pid"
 # Opened by this shell, where the watchdog's signal lands, and handed to the readers below.
 exec 3< "$dir/out.$pid" 4< "$dir/err.$pid"
 stop_watchdog
+# The watchdog can be ended between leaving its marker and sending its signal; a signal it did
+# send runs finish() before this line, which then still finds the marker.
+rm -f "$unanswered"
 
 # 3<&- 4<&- 8>&- 9>&-: the jobs outlive an interrupt that kills only this shell, and holding its
 # ctl or lock descriptor would stall the cancel, or the next command, until the runner ends them.
