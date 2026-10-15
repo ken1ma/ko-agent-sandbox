@@ -18,22 +18,28 @@ import FileHelper.realPath
 object RunOnHostProxy:
 
   /** The bound port, from the ready line the proxy prints after `bind`; its log file is its
-    * stderr, so the line is written where this polls. */
-  def awaitProxyPort(log: Path, deadlineMillis: Long): Either[String, Int] =
+    * stderr, so the line is written where this polls. `ended` says how the proxy ended, once it
+    * has: a proxy refusing at start is then reported at once, with its log, instead of after the
+    * deadline, and one gone after its ready line is not a port. */
+  def awaitProxyPort(log: Path, deadlineMillis: Long, ended: () => Option[String] = () => None): Either[String, Int] =
     val Ready = agentsandbox.egress.AgentEgressProxy.ReadyPort
     val deadline = System.nanoTime + deadlineMillis * 1_000_000
     // Decoded leniently: the log carries what the proxy's clients asked for.
     def text = if Files.exists(log) then String(Files.readAllBytes(log), UTF_8) else ""
-    var found: Option[Int] = None
-    while found.isEmpty && System.nanoTime < deadline do
-      text.linesIterator.collectFirst { case Ready(port) => port.toInt } match
-        case Some(port) => found = Some(port)
-        case None       => Thread.sleep(50)
-    found.toRight:
-      val said =
-        if Files.exists(log) then text.linesIterator.take(5).mkString("\n")
-        else "(no log was written)"
-      s"the proxy did not report ready within ${deadlineMillis / 1000}s:\n$said"
+    def said =
+      if Files.exists(log) then text.linesIterator.take(5).mkString("\n")
+      else "(no log was written)"
+    var outcome: Option[Either[String, Int]] = None
+    while outcome.isEmpty && System.nanoTime < deadline do
+      val port = text.linesIterator.collectFirst { case Ready(port) => port.toInt }
+      // After the log: a proxy ending right after its ready line is seen ended, not ready.
+      ended() match
+        case Some(how) =>
+          val when = if port.isDefined then "after" else "before"
+          outcome = Some(Left(s"the proxy ended ($how) $when reporting ready:\n$said"))
+        case None if port.isDefined => outcome = Some(Right(port.get))
+        case None                   => Thread.sleep(50)
+    outcome.getOrElse(Left(s"the proxy did not report ready within ${deadlineMillis / 1000}s:\n$said"))
 
   /** The proxy registered at `record`, logging to `proxyLog`: its bound port. */
   private[launcher] def createProxy(
@@ -45,7 +51,13 @@ object RunOnHostProxy:
   ): Either[String, Int] =
     startProxy(
       record, program, fileHosts, proxyLog, systemPaths, credentialsFor(program, fileHosts, credentials), channelLog,
-    ).flatMap(_ => awaitProxyPort(proxyLog, deadlineMillis = 30_000))
+    ).flatMap: leader =>
+      // The leader stays after its command (RunOnHostSession.registeredSpawn): the exit record and
+      // not the handle says whether the proxy ended.
+      def ended(): Option[String] =
+        RunOnHostSession.exitSoFar(RunOnHostSession.exitRecord(record), leader)
+          .map(_.fold(identity, status => s"exit $status"))
+      awaitProxyPort(proxyLog, deadlineMillis = 30_000, ended)
 
   /**
    * The proxy profile's inputs for this executable (SeatbeltProfile.ProxyInputs): the native

@@ -209,8 +209,8 @@ object AgentSandboxLauncher:
    * up: a proxy refusing at start — a leaf naming other than its inspected set — would
    * otherwise leave a sandbox with no egress and the reason in a log
    * nobody was shown. Reads the run's host log, the file the proxy tees to before it does
-   * anything else, until AgentEgressProxy.ReadyLine, or the container is no longer running, or `bound`
-   * elapses; either failure reports what the proxy wrote. The file rather than `podman logs`:
+   * anything else, until AgentEgressProxy.ReadyLine from a proxy still running, or the container is no
+   * longer running, or `bound` elapses; each failure reports what the proxy wrote. The file rather than `podman logs`:
    * the container is `--rm`, and a proxy refusing at once is gone, with its output, before a
    * follower attaches — the file outlives it.
    *
@@ -231,15 +231,19 @@ object AgentSandboxLauncher:
       val running = state.ok && lines.nextOption().exists(_.trim == "true")
       if running then networks = Some(lines.mkString("\n"))
       running
+    // The line, and the proxy still running: one gone after writing it is a failure with its log,
+    // not an address the launch cannot find.
+    def exitedAfterReady: Either[String, String] = Left(s"the egress proxy exited after reporting ready\n$said")
     def readied: Either[String, String] =
-      if networks.isEmpty then inspected
-      Right(networks.getOrElse(""))
+      if networks.isEmpty && !inspected then exitedAfterReady
+      else Right(networks.getOrElse(""))
     var outcome: Option[Either[String, String]] = None
     while outcome.isEmpty do
       if ready then outcome = Some(readied)
       else if !inspected then
-        // The last write may arrive after the liveness answer; read once more, then report.
-        if ready then outcome = Some(readied)
+        // The last write may arrive after the liveness answer; read once more to name which exit
+        // this is. Not `readied`: it would answer with the networks of an earlier inspect.
+        if ready then outcome = Some(exitedAfterReady)
         else
           val written = said
           // If the proxy could not open its log, the refusal may appear only in podman's logs — and
