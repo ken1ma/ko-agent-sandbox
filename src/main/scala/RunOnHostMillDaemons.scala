@@ -23,7 +23,7 @@ import java.nio.file.{Files, LinkOption, Path}
 
 import RunOnHostSandbox.{DaemonStart, ServerStartSilenceMillis}
 import RunOnHostSession.{daemonRecordName, Processes, Record, Session}
-import RunOnHostSession.HostProcesses.lines
+import RunOnHostSession.HostProcesses.{lines, Lsof, Pgrep, Ps}
 
 object RunOnHostMillDaemons:
 
@@ -209,7 +209,7 @@ object RunOnHostMillDaemons:
           Member(pid, ppid, rest.take(width), rest.drop(width + 1))
 
   private def groupMembers(leader: Record): Vector[Member] =
-    parseMembers(lines("ps", "-ww", "-o", "pid=,ppid=,lstart=,command=", "-g", leader.pgid.toString), leader)
+    parseMembers(lines(Ps, "-ww", "-o", "pid=,ppid=,lstart=,command=", "-g", leader.pgid.toString), leader)
 
   /**
    * The daemon and the launcher that spawned it, from the group's listing: the member whose
@@ -264,7 +264,7 @@ object RunOnHostMillDaemons:
 
   /** The TCP ports `lsof` shows the pid listening on. */
   private def listeningPorts(pid: Long): Vector[Int] =
-    lines("lsof", "-a", "-p", pid.toString, "-iTCP", "-sTCP:LISTEN", "-nP", "-Fn")
+    lines(Lsof, "-a", "-p", pid.toString, "-iTCP", "-sTCP:LISTEN", "-nP", "-Fn")
       .collect { case Listener(port) => port.toInt }
 
   private val Listener = raw"n(?:127\.0\.0\.1|localhost|\[::1\]):(\d+)".r
@@ -277,7 +277,7 @@ object RunOnHostMillDaemons:
    */
   private def idle(pid: Long): Option[Boolean] =
     try
-      val process = ProcessBuilder("lsof", "-a", "-p", pid.toString, "-iTCP", "-nP", "-FT").start()
+      val process = ProcessBuilder(Lsof, "-a", "-p", pid.toString, "-iTCP", "-nP", "-FT").start()
       val output = String(process.getInputStream.readAllBytes(), UTF_8)
       val errors = String(process.getErrorStream.readAllBytes(), UTF_8)
       val states = output.linesIterator.filter(_.startsWith("TST=")).map(_.drop(4)).toVector
@@ -373,8 +373,8 @@ object RunOnHostMillDaemons:
     * with their start times. The pid is the process table's, never a file's. */
   def foreignDaemons(buildDirectory: Path, processes: Processes): Vector[(Long, String)] =
     val daemonDir = buildDirectory.resolve("out").resolve("mill-daemon")
-    lines("pgrep", "-f", "--", DaemonMain).flatMap(_.toLongOption).flatMap: pid =>
-      val cwd = lines("lsof", "-a", "-p", pid.toString, "-d", "cwd", "-Fn").collectFirst {
+    lines(Pgrep, "-f", "--", DaemonMain).flatMap(_.toLongOption).flatMap: pid =>
+      val cwd = lines(Lsof, "-a", "-p", pid.toString, "-d", "cwd", "-Fn").collectFirst {
         case line if line.startsWith("n") => Path.of(line.drop(1))
       }
       Option.when(cwd.exists(_.startsWith(daemonDir)))(pid).flatMap(pid => processes.startOf(pid).map(pid -> _))

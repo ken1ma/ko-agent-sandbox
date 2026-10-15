@@ -179,7 +179,7 @@ object SelfTestShare:
       Files.delete(scratch.resolve("case-probe"))
       val backing = SandboxProject.mountPathOf(os, scratch).fold(fail(_), identity)
       val machineView = os match
-        case Os.Linux => s"kernel ${run("uname", "-r").text.trim}, share local"
+        case Os.Linux => s"kernel ${sys.props("os.version")}, share local"
         case _ =>
           val provider = run(podman, "machine", "info", "--format", "{{.Host.VMType}}")
           run(koAgentFsScriptCommand(podman, os, machineViewScript(backing))*).text.trim +

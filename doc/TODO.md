@@ -98,22 +98,15 @@ again.
   `PATH` that fails `status` is logged and ignored, and brings a preview from 51 s to 12 s. Tell
   the reader in the Pulumi examples, and ask pulumi for an opt-out.
 
-## Host programs started by bare name
+## Host process observations without helper processes
 
-- [ ] `ps`, `pgrep` and `lsof` under `--run-on-host` (`RunOnHostSession.HostProcesses`,
-  `RunOnHostMillDaemons`, `RunOnHostGradleDaemons`) and `uname` in `--self-test`
-  (`SelfTestShare`) are started by bare name, so the JVM finds them through the inherited
-  `PATH`, which `findOnPath` exists to avoid (`design.md`, "No repository-controlled host
-  executable resolution"). The run-on-host registration script runs a bare `ps` too
-  (`RunOnHostSession.RegistrationScript`), through the leader's `PATH`, which for a command starts
-  with the JDK's `bin`. Resolve them as `podman` is resolved, or start them by absolute path as
-  `/bin/kill` and `/usr/bin/sandbox-exec` are.
-- [ ] Or start none of them: make the kernel calls behind them through the JDK's foreign-function
-  API, as `src/probe/ProcArgs.java` calls `sysctl`. A helper inherits the environment of the
-  runner or supervisor that starts it, and a call does not.
+- [ ] Start no `ps`, `pgrep` or `lsof` under `--run-on-host` (`RunOnHostSession.HostProcesses`
+  starts them by absolute path): make the kernel calls behind them through the JDK's
+  foreign-function API, as `src/probe/ProcArgs.java` calls `sysctl`. A helper inherits the
+  environment of the runner or supervisor that starts it, and a call does not.
   - `ps` and `pgrep` read `sysctl` `kern.proc` and `kern.procargs2`; `lsof` reads libproc's
     `proc_pidinfo` and `proc_pidfdinfo`.
-  - The registration script's `ps` runs inside the leader's shell and needs another form.
+  - The registration script's `ps` runs inside the leader's perl and needs another form.
 
 ## What a host command reads of other processes
 

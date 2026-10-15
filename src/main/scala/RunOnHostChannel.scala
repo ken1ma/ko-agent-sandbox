@@ -331,8 +331,11 @@ object RunOnHostChannel:
       end(ctl)
       ctl.waitFor(10, TimeUnit.SECONDS)
 
+  /** `dd conv=nocreat`, which opens without `O_CREAT`: a requester that died mid-request removed its
+    * FIFOs, and a shell `>` would leave a regular file where the next shim of that pid expects to
+    * make one. Each read's bytes are written as they come, as `cat` writes them. */
   private def writer(transport: Transport, id: String, name: String): Process =
-    sandboxShell(transport, s"cat > ${transport.sandboxDir}/$name.$id")
+    sandboxShell(transport, s"dd of=${transport.sandboxDir}/$name.$id conv=nocreat bs=65536 status=none")
       .redirectOutput(ProcessBuilder.Redirect.DISCARD)
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()

@@ -429,6 +429,22 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assertEquals(again, 0)
       assertEquals(out, s"built in $project\n")
 
+  test("a refusal to a requester whose FIFOs are gone leaves no regular files behind"):
+    channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd")): (project, _, runnerLog) =>
+      // A request ending mid-frame, from a requester that then removed its output FIFOs, as a
+      // shim killed mid-request does; the refusal's writers must not create them as files.
+      ProcessBuilder("sh", "-c",
+        s"mkfifo -m 600 $FifoDir/ctl.4300; echo 4300 > $FifoDir/req; printf 'sbt 1\\n' > $FifoDir/ctl.4300",
+      ).start().waitFor()
+      // Cycles are serial: the next request served means the refusal is over, writers included.
+      val (exit, out, _) = shimCall(project, "sbt")
+      assertEquals(exit, 0)
+      assertEquals(out, s"built in $project\n")
+      assert(runnerLog().contains("ended inside a request"), runnerLog())
+      val left = FileHelper.directoryEntries(FifoDir).map(_.getFileName.toString).filter(_.endsWith(".4300")).toSet
+      assertEquals(left, Set("ctl.4300"))
+      Files.delete(FifoDir.resolve("ctl.4300"))
+
   test("a handshake queued behind a dying predecessor's is consumed, never discarded"):
     channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd")): (project, _, runnerLog) =>
       // Both ids through one writer connection — the same cat — as when a shim dies right after
@@ -546,6 +562,25 @@ class RunOnHostChannelTest extends munit.FunSuite:
     unanswered(None)
     // A runner that took the handshake and the request, then died before opening the streams.
     unanswered(Some(s"id=$$(head -n 1 $FifoDir/req); cat $FifoDir/ctl.$$id > /dev/null"))
+
+  test("a watchdog marker left without its signal does not turn the command's exit into 70"):
+    assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
+    deleteRecursively(FifoDir)
+    Files.createDirectories(FifoDir)
+    ProcessBuilder("sh", "-c", s"rm -f $FifoDir/req; mkfifo -m 600 $FifoDir/req").start().waitFor()
+    val project = Files.createTempDirectory("channel-marker")
+    // The watchdog's marker arriving between the request and the streams' opening, with no TERM
+    // behind it: the state a watchdog ended between its two steps leaves.
+    val standIn = ProcessBuilder("sh", "-c",
+      s"id=$$(head -n 1 $FifoDir/req); exec 6< $FifoDir/ctl.$$id; : > $FifoDir/unanswered.$$id;" +
+        s" echo answered > $FifoDir/out.$$id; : > $FifoDir/err.$$id; echo 5 > $FifoDir/exit.$$id",
+    ).start()
+    val (exit, out, err) = shimCall(project, "sbt", "test")
+    assertEquals(exit, 5, err)
+    assertEquals(out, "answered\n")
+    assert(standIn.waitFor(5, java.util.concurrent.TimeUnit.SECONDS), "the stand-in outlived the shim")
+    val left = FileHelper.directoryEntries(FifoDir).map(_.getFileName.toString).toSet
+    assertEquals(left, Set("req", "lock"))
 
   for (ending, expectedExit) <- Vector(
     "HUP" -> 129,

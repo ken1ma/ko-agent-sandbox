@@ -779,7 +779,12 @@ REVIEWERS = {reviewer.name: reviewer for reviewer in (Codex(), Claude())}
 def check_signed_in(reviewer):
     if shutil.which(reviewer.name) is None:
         raise ReviewerError(reviewer, "REVIEWER_FAILED", f"{reviewer.name} is not on PATH")
-    signed_in, status = reviewer.signed_in()
+    try:
+        signed_in, status = reviewer.signed_in()
+    except subprocess.TimeoutExpired as ex:  # outside review_turn's handler: uncaught, main() ends in a traceback
+        raise ReviewerError(
+            reviewer, "REVIEWER_FAILED", f"{reviewer.name}'s sign-in status did not answer within {ex.timeout}s",
+        )
     if not signed_in:
         raise ReviewerError(
             reviewer, "REVIEWER_AUTH_FAILED", f"{reviewer.name} is not signed in: {reviewer.sign_in_advice}",

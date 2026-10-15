@@ -148,7 +148,8 @@ PY
 # volume, record entries into the same files at once: unserialized, a read-modify-rename loses
 # the other's entry and two appends leave Codex two tables.
 if [ -d "$volume" ] && [ "$project" != / ]; then
-    if exec 9<"$volume" && flock 9; then
+    # `command`: a failed redirection on the special builtin would exit the shell, not take the else.
+    if command exec 9<"$volume" && flock 9; then
         merge_json "$volume/claude/.claude.json" \
             '.projects[$project] |= ((. // {}) + {hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true})' \
             claude

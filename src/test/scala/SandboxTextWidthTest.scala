@@ -63,9 +63,11 @@ class SandboxTextWidthTest extends munit.FunSuite:
     assertEquals(width(directory, "🇯🇵"), 2, "flag")
     assertEquals(width(directory, "👍🏽"), 2, "skin tone")
 
-  directory.test("neither line ending is measured"): directory =>
+  directory.test("neither line ending is measured, and a lone CR ends no line"): directory =>
     val path = file(directory, "endings.txt", "ab\r\nabcd\nabc")
     assertEquals(textWidth("--over", "0", path).text, s"$path:1:2\n$path:2:4\n$path:3:3")
+    val cr = file(directory, "cr.txt", "ab\rcd\nef\n")
+    assertEquals(textWidth("--over", "0", cr).text.linesIterator.size, 2)
 
   directory.test("without --over, each file's widest line is printed: the first of that width"): directory =>
     val twice = file(directory, "twice.txt", "ab\nabcd\nabc\nwxyz\n")
