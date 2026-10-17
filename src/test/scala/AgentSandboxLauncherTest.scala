@@ -572,7 +572,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       documentedActions,
       ManagementActions ++ Set(
         "--egress-check", "--write", "--egress", "--run-on-host", "--env", AwsCredential.OptionName, "--egress-cred",
-        "--clipboard", MicOption,
+        "--clipboard", MicOption, ClaudePlugins.OptionName,
       ),
     )
     assert(UsageText.contains(s"--write=${WriteModes.mkString("|")}"), UsageText)
@@ -1876,6 +1876,17 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(parseCommandLine(List("--env", "SBT_OPTS")).swap.exists(_.contains("--env=<name>")))
     // After the command, it is the command's.
     assertEquals(parseCommandLine(List("claude", "--env=X")).map(_.env), Right(Vector.empty))
+
+  test("option parsing: --claude-plugin-dir names a directory, repeatable, as spelled"):
+    assertEquals(
+      parseCommandLine(List("--claude-plugin-dir=mods/status-band", "--claude-plugin-dir=/opt/questions", "claude"))
+        .map(_.claudePlugins),
+      Right(Vector("mods/status-band", "/opt/questions")),
+    )
+    assertEquals(parseCommandLine(List("claude")).map(_.claudePlugins), Right(Vector.empty))
+    assert(parseCommandLine(List("--claude-plugin-dir=")).swap.exists(_.contains("name a plugin directory")))
+    assert(parseCommandLine(List("--claude-plugin-dir", "x")).swap.exists(_.contains("--claude-plugin-dir=<dir>")))
+    assertEquals(parseCommandLine(List("claude", "--claude-plugin-dir=x")).map(_.claudePlugins), Right(Vector.empty))
 
   test("a forward reads the host at launch, fails on an unset name, and never replaces a boundary variable"):
     val host = Map("SBT_OPTS" -> "-Xmx2g", "EMPTY" -> "")

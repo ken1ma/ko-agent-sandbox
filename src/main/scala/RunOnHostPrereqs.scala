@@ -12,11 +12,11 @@
 
 package agentsandbox.launcher
 
-import java.io.StringReader
+import java.io.{IOException, StringReader}
 import java.math.BigInteger
 import java.net.{URI, URISyntaxException}
 import java.nio.charset.StandardCharsets.UTF_8
-import java.nio.file.{Files, InvalidPathException, LinkOption, Path, Paths}
+import java.nio.file.{Files, InvalidPathException, LinkOption, NoSuchFileException, Path, Paths}
 import java.security.MessageDigest
 import java.util.{Locale, Properties}
 
@@ -246,6 +246,35 @@ object RunOnHostPrereqs:
     * denies. Maven stores every artifact and plugin it resolves here. */
   def m2RepositoryOf(cacheRoot: Path, projectId: String): Path =
     runOnHostCacheDir(cacheRoot, projectId).resolve("m2").resolve("repository")
+
+  /** The project's caches host commands write, as laid out; where each lies is [[writtenCacheDirectories]]. */
+  def cacheDirectoriesOf(cacheRoot: Path, projectId: String): Vector[Path] =
+    Vector(
+      coursierV1Of(cacheRoot, projectId), sbtGlobalOf(cacheRoot, projectId), ivyHomeOf(cacheRoot, projectId),
+      gradleUserHomeOf(cacheRoot, projectId), m2RepositoryOf(cacheRoot, projectId),
+    )
+
+  /**
+   * Where every project's caches under the cache root lie, each canonicalized as the runner grants
+   * it (RunOnHostSandbox.assemble): a symlink at the cache, at the project's directory or at
+   * `run-on-host` places a cache wherever the link points, outside the cache root. For a launch's
+   * refusal of a plugin host commands could write; every project's, as another project's session
+   * writes its own. A tree not yet created has no caches; one that cannot be listed, or a cache
+   * that cannot be canonicalized, is the Left: the runner grants a cache without listing the tree,
+   * so an unreadable tree says nothing about where the caches lie.
+   */
+  def writtenCacheDirectories(cacheRoot: Path): Either[String, Vector[Path]] =
+    val tree = runOnHostCachesOf(cacheRoot)
+    val projects =
+      try Right(FileHelper.directoryEntries(tree).filter(Files.isDirectory(_)))
+      catch
+        case _: NoSuchFileException => Right(Vector.empty)
+        case ex: IOException        => Left(s"the run-on-host caches $tree cannot be listed: ${ex.getMessage}")
+    projects.flatMap: dirs =>
+      dirs.flatMap(project => cacheDirectoriesOf(cacheRoot, project.getFileName.toString))
+        .foldLeft[Either[String, Vector[Path]]](Right(Vector.empty)): (found, dir) =>
+          found.flatMap(caches => FileHelper.canonicalizedFuturePath(dir).map(caches :+ _))
+        .map(_.distinct)
 
   /**
    * Refused when the cache root would be inside the project, the check

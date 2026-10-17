@@ -82,6 +82,55 @@ stay as-is.
 4. The command accepts at most 2 MiB of status JSON, runs no external tools or network requests,
    and writes no files.
 
+## Claude Code plugins and mods
+
+The image's `allowManagedHooksOnly` runs the hooks and the mod of a plugin only when managed
+settings force-enable it from a marketplace directory. A plugin installed in a session, or loaded
+through `--plugin-dir` or `CLAUDE_CODE_PLUGIN_DIRS`, loads with its hooks and mod inert. To run
+one, name its directory on the launch command line, once per plugin, in the order the mods run:
+
+```sh
+java -jar ko-agent-sandbox.jar --claude-plugin-dir=$HOME/src/dotclaude/mods/questions \
+    --claude-plugin-dir=$HOME/src/dotclaude/mods/status-band claude
+```
+
+What to expect:
+
+1. The launch prints `claude plugins: questions@host, status-band@host; their hooks and mods run as
+   managed`. The plugin's name is its directory's name.
+2. `/plugin` lists them under the marketplace `host`, and `claude --debug` logs each one's
+   `hooks module` line with `tier prepend`.
+3. The directory is mounted read-only. Edit it on the host and run `/reload-plugins`.
+4. A plugin that draws a status band duplicates the image's status line; hide that line by setting
+   `KO_CLAUDE_STATUSLINE_FORMAT` to `""` ([above](#claude-code-status-line)).
+5. The launch refuses a directory that holds or is inside the project or a directory
+   `--run-on-host` commands write (the launcher's cache directory, a cache a symlink redirects
+   out of it, `/private/tmp/ko-agent-<uid>`),
+   one with a symlink, a hard-linked file, a junction or a pipe under it, one named like an image
+   plugin (`ko-review`) by its directory or its manifest, two plugins whose manifests share a
+   name, and, on an SELinux-enforcing host, one the container cannot read.
+6. An organization's remote managed settings, where the session's sign-in receives them, replace
+   the image's managed files, the drop-in included, under the default `managedSourcesBehavior`,
+   first-wins, so the plugins do not load; under `merge` the organization has opted the image's
+   files in. `/status` names the sources in use.
+
+To check the mechanism before naming a mod of your own, launch with a copy of this repository's
+[`src/test/claude-plugins/managed-probe`](../src/test/claude-plugins/managed-probe/README.md):
+its one hook draws a band above the prompt, and draws nothing where the hooks are inert.
+
+The plugin runs inside Claude Code with the session's reach and no permission prompt: review it
+with `claude plugin validate <dir>` before naming it, reading its `hooks:` and `calls:` lines
+(https://code.claude.com/docs/en/plugins/mods/admin#review-what-a-mod-can-do). Why a session can
+neither add nor change one is in [SECURITY.md](../SECURITY.md#defended), under hooks.
+
+Mechanism: the launcher generates a marketplace root with a `marketplace.json` listing each plugin
+by a relative path, binds each directory under it at `/etc/claude-code/host-plugins/<name>`, and
+mounts a drop-in at `/etc/claude-code/managed-settings.d/50-host-plugins.json` naming the
+marketplace under `extraKnownMarketplaces`, each plugin under `enabledPlugins` and the order under
+`prependPlugins`, `sec-default@builtin` last. Those are the conditions under which Claude Code
+counts a mod as the organization's
+(https://code.claude.com/docs/en/plugins/mods/admin#install-your-organizations-mods).
+
 ## Holding agents to a line width
 
 Without a program that measures, an agent checking a width limit spends tokens three ways:

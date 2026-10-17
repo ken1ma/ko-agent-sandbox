@@ -92,6 +92,15 @@ costs are described below.
 
 - Claude Code's user and project hooks are blocked (the sandbox Containerfile's
   `allowManagedHooksOnly` note has the reasoning and exceptions).
+- A plugin the launch names with `--claude-plugin-dir` runs as a managed plugin, hooks and mod
+  included: code that runs inside Claude Code without a tool call, with the reach the session's
+  own commands have ([agent-settings.md](doc/agent-settings.md#claude-code-plugins-and-mods)).
+  - The host user names it on the launch command line, like a `--env` forward; a project file
+    cannot name one.
+  - The directory is mounted read-only, and refused when it holds or is inside the project
+    directory or a directory `--run-on-host` commands write, or has a symlink, a hard-linked file,
+    a junction or a pipe under it, so a session can neither add a plugin nor change one it runs,
+    through the project, through a host command or through a second name of a plugin file.
 - `allowManagedHooksOnly` also restricts `statusLine`, `subagentStatusLine` and `fileSuggestion`
   to managed settings, so refreshing a display or suggesting a file cannot run a command from
   user or project settings.
