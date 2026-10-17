@@ -1184,6 +1184,32 @@ def review_turn(review, message):
         "Review the working tree's changes against HEAD: `git diff HEAD` plus untracked files."
     )
     prompt += "\n---\n\n# Scope\n\n" + scope + "\n"
+    if not first:
+        # The reviewer last read the tree in the round it last answered, whatever failed since.
+        last_answered = max(answered)
+        previous = review.manifest_of(last_answered)
+        if previous is not None:
+            changed = manifest_changes(previous, before["manifest"])
+            entered = []
+            if state["lastReviewed"].get("tree"):
+                in_scope_then = reviewed_paths(review.root, base, state["lastReviewed"])
+                entered = [
+                    path for path in scope_paths(review.root, base) if path not in changed and path not in in_scope_then
+                ]
+            sentences = [
+                f"Since your turn of round {last_answered}, the content of these paths changed: "
+                + ", ".join(f"`{path}`" for path in changed) + "."
+                if changed else
+                f"No file's content changed since your turn of round {last_answered}."
+            ]
+            if entered:
+                sentences.append(
+                    "These paths entered the scope since then without a content change, as when HEAD moves under a"
+                    " file: " + ", ".join(f"`{path}`" for path in entered) + "."
+                )
+            if changed or entered:
+                sentences.append("Every other path is as you read it then.")
+            prompt += "\n---\n\n# Changes since your last turn\n\n" + " ".join(sentences) + "\n"
     # A failed turn may or may not have left the author's message in the reviewer's thread, and the author
     # writes the next message as a sequel, so the next turn sends the unanswered ones again.
     unanswered = [
@@ -1292,6 +1318,81 @@ def check_scope(root, base):
         f"the working tree equals {base['ref'] if base else 'HEAD'}, so nothing is in the review's scope"
         + ("" if base else "; to review commits made since a branch or commit, pass `--base REF`"),
     )
+
+
+def scope_paths(root, base):
+    """The paths the reviewer is told to look at: those differing from the base commit, HEAD without
+    `--base`, plus the untracked ones; every listed file when HEAD is unborn."""
+    untracked = {
+        path.decode("utf-8", "surrogateescape") for path, record in status_records(root) if record[:1] == b"?"
+    }
+    if base is None and git(root, "rev-parse", "--verify", "--quiet", "HEAD", check=False).returncode != 0:
+        listed = git(root, "ls-files", "-z").stdout
+    else:
+        listed = git(
+            root, "diff", "--name-only", "-z", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none",
+            base["commit"] if base else "HEAD",
+        ).stdout
+    return sorted(untracked | {field.decode("utf-8", "surrogateescape") for field in listed.split(b"\0") if field})
+
+
+def reviewed_paths(root, base, reviewed):
+    """The paths the reviewer of the round `reviewed` records was told to look at: the round's tree
+    against the review's base commit, or against HEAD as it was then; every path of the tree when
+    HEAD was unborn."""
+    against = base["commit"] if base else reviewed["head"]
+    if against == "unborn":
+        listed = git(root, "ls-tree", "-r", "-z", "--name-only", reviewed["tree"]).stdout
+    else:
+        listed = git(root, "diff-tree", "-r", "-z", "--name-only", against, reviewed["tree"]).stdout
+    return {field.decode("utf-8", "surrogateescape") for field in listed.split(b"\0") if field}
+
+
+def command_coverage(args):
+    """The approved reviews of this checkout whose approval covers part of the current scope, so that
+    the author can continue one on its thread, where the reviewer reads the new paths with the earlier
+    discussion in context, instead of starting anew.
+
+    A path is covered when the approved round's reviewer was told to look at it and its content is
+    the approved one; staging or committing it changes neither. A candidate has the same base as
+    the review the author would start, and a snapshot tree, which names the reviewed paths."""
+    root = repository_root(args.repository)
+    base = resolve_base(root, args.base) if args.base else None
+    observation = observe(root)
+    scope = scope_paths(root, base)
+    approvals = []
+    reviews_dir = repository_dir(root) / "reviews"
+    for entry in sorted(reviews_dir.iterdir()) if reviews_dir.exists() else []:
+        if not (entry / "state.json").exists():
+            continue
+        try:
+            review = Review(root, entry.name).load()
+        except ReviewError:
+            continue
+        state = review.state
+        approved = state.get("approved")
+        if state["status"] != "APPROVED" or not approved or not approved.get("tree"):
+            continue
+        if (state.get("base") or {}).get("commit") != (base or {}).get("commit"):
+            continue
+        manifest = review.manifest_of(approved["round"])
+        if manifest is None:
+            continue
+        reviewed = reviewed_paths(root, state.get("base"), approved)
+        covered = [
+            path for path in scope if path in reviewed and observation["manifest"].get(path) == manifest.get(path)
+        ]
+        if not covered:
+            continue
+        _, fresh, _, _ = review.freshness(observation)
+        approvals.append({
+            "reviewId": review.id, "reviewer": state["reviewer"], "model": state.get("model"),
+            "effort": state.get("effort"), "round": approved["round"], "approvedAt": approved["at"],
+            "approvalFresh": fresh, "coveredPaths": covered,
+            "newPaths": [path for path in scope if path not in covered],
+        })
+    approvals.sort(key=lambda row: (row["approvedAt"], row["reviewId"]), reverse=True)
+    return {"repository": str(root), "base": base, "scopePaths": scope, "approvals": approvals}
 
 
 def read_message(path):
@@ -1859,6 +1960,11 @@ def build_parser():
         "print the model and reasoning effort the reviewer would use, and the models it offers", reviewer=True,
     )
     add("digest", command_digest, "print the working-tree digest")
+    coverage = add(
+        "coverage", command_coverage,
+        "list the approved reviews whose approval covers part of the current scope, to continue one of them",
+    )
+    coverage.add_argument("--base", help="the base the new review would have, as `start --base`")
     return parser
 
 

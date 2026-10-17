@@ -1288,6 +1288,7 @@ class HelperTest(unittest.TestCase):
             f"ko-review export {output['reviewId']}", "ko-review list", f"ko-review delete {output['reviewId']}",
         ])
         self.assertEqual(self.helper("verify", output["reviewId"])["approvalFresh"], True)
+        self.assertEqual(self.helper("coverage")["approvals"], [])  # no tree names the reviewed paths
         for path in [git_dir, *git_dir.rglob("*")]:
             if path.is_dir():
                 path.chmod(0o755)
@@ -1465,6 +1466,51 @@ class HelperTest(unittest.TestCase):
         self.plan({"result": APPROVED})
         self.helper("continue", review_id, "--message-file", self.message())
         self.assertEqual(self.helper("show", review_id)["staleReasons"], [])
+
+    def test_coverage_names_the_paths_an_earlier_approval_still_covers(self):
+        """An approved review covers the paths its reviewer was told to look at whose content is still the
+        approved one; a continued review tells the reviewer which paths changed since its last answer."""
+        self.assertEqual(self.helper("coverage")["approvals"], [])
+        review_id = self.start(APPROVED)["reviewId"]
+        self.write("app.py", "print('edited')\n")
+        self.write("new.py", "print('new')\n")
+        coverage = self.helper("coverage")
+        self.assertEqual(coverage["scopePaths"], ["app.py", "new.py", "work.py"])
+        self.assertEqual(
+            [(row["reviewId"], row["round"], row["coveredPaths"], row["newPaths"], row["approvalFresh"])
+             for row in coverage["approvals"]],
+            [(review_id, 1, ["work.py"], ["app.py", "new.py"], False)],
+        )
+        self.assertEqual(self.helper("coverage", "--base", "HEAD")["approvals"], [])  # the review has no base
+        self.plan({"result": APPROVED})
+        self.helper("continue", review_id, "--message-file", self.message("more work\n"))
+        prompt = self.calls()[-1]["prompt"]
+        self.assertIn("Since your turn of round 1, the content of these paths changed: `app.py`, `new.py`. Every other"
+                      " path is as you read it then.", prompt)
+        self.assertLess(prompt.index("# Scope"), prompt.index("# Changes since your last turn"))
+        self.assertLess(prompt.index("# Changes since your last turn"),
+                        prompt.index("# The author's response, round 2"))
+        coverage = self.helper("coverage")
+        self.assertEqual(
+            [(row["round"], row["coveredPaths"], row["newPaths"], row["approvalFresh"])
+             for row in coverage["approvals"]],
+            [(2, ["app.py", "new.py", "work.py"], [], True)],
+        )
+        # A path the reviewer was not told to look at is new, however long its content has been the approved one.
+        self.write(".gitignore", "ignored/\nbuild/\n")
+        self.git("commit", "-q", "-m", "ignore more", "--", ".gitignore")
+        self.git("checkout", "-q", "HEAD~1", "--", ".gitignore")
+        coverage = self.helper("coverage")
+        self.assertEqual([(row["coveredPaths"], row["newPaths"]) for row in coverage["approvals"]],
+                         [(["app.py", "new.py", "work.py"], [".gitignore"])])
+        self.plan({"result": APPROVED})
+        self.helper("continue", review_id, "--message-file", self.message("ignore list\n"))
+        self.assertIn("No file's content changed since your turn of round 2. These paths entered the scope since"
+                      " then without a content change, as when HEAD moves under a file: `.gitignore`. Every other"
+                      " path is as you read it then.", self.calls()[-1]["prompt"])
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "approved work")
+        self.assertEqual((self.helper("coverage")["scopePaths"], self.helper("coverage")["approvals"]), ([], []))
 
     def test_new_instructions_void_the_approval_until_codex_approves_again(self):
         review_id = self.start(APPROVED)["reviewId"]
