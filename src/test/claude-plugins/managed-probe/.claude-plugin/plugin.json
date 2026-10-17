@@ -1,0 +1,8 @@
+{
+  "name": "managed-probe",
+  "version": "0.1.0",
+  "description": "Draws a band above the prompt only where its hooks run; see doc/agent-settings.md",
+  "author": {
+    "name": "ko-agent-sandbox"
+  }
+}

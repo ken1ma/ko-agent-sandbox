@@ -341,6 +341,11 @@ ENV CLAUDE_CONFIG_DIR=/home/nonroot/.claude
 # Managed hooks, SDK hooks and hooks from plugins force-enabled by managed
 # settings remain allowed:
 # https://code.claude.com/docs/en/settings-reference#allowmanagedhooksonly
+# The launcher's --claude-plugin-dir uses that exception: it mounts a host
+# plugin directory and a managed-settings.d drop-in force-enabling it
+# (ClaudePlugins.scala). The image's own plugins below load through
+# CLAUDE_CODE_PLUGIN_DIRS as `@inline` plugins, which the key leaves
+# unmanaged, and carry no hooks.
 #
 # Host verification with Claude Code 2.1.274 shows that a project's
 # SessionStart hook is blocked under this image and runs under a variant

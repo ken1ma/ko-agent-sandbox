@@ -1,6 +1,6 @@
 // The launcher's command line: the session options, a management action with its operands, or the
 // command forwarded verbatim (parseCommandLine), and the --env forwards resolved against the host.
-// --env-aws-cred's resolution is AwsCredential.scala.
+// --env-aws-cred's resolution is AwsCredential.scala, --claude-plugin-dir's ClaudePlugins.scala.
 
 package agentsandbox.launcher
 
@@ -104,6 +104,7 @@ object CommandLine:
     awsCredential: Option[AwsCredential.Request] = None,
     clipboard: Option[String] = None,
     mic: Boolean = false,
+    claudePlugins: Vector[String] = Vector.empty,
   ):
     def writeMode: String = write.getOrElse(DefaultWriteMode)
     def egressProfile: String = egress.getOrElse(DefaultEgressProfile)
@@ -131,6 +132,7 @@ object CommandLine:
     var awsCredential = Option.empty[AwsCredential.Request]
     var clipboard = Option.empty[String]
     var mic = false
+    var claudePlugins = Vector.empty[String]
 
     def loop(
       rest: List[String],
@@ -181,6 +183,14 @@ object CommandLine:
         case arg :: _ if arg.startsWith(s"$MicOption=") =>
           Left(s"error: $arg; $MicOption takes no value")
 
+        // Spelled paths only here; ClaudePlugins.resolve reads them against the host at launch.
+        case arg :: tail if arg.startsWith(ClaudePlugins.OptionName + "=") =>
+          val directory = arg.stripPrefix(ClaudePlugins.OptionName + "=")
+          if directory.isEmpty then Left(s"error: ${ClaudePlugins.OptionName}=; name a plugin directory")
+          else
+            claudePlugins :+= directory
+            loop(tail, write, egress, env, runOnHost)
+
         case arg :: tail if arg.startsWith("--write=") =>
           if write.isDefined then Left("error: --write is given twice")
           else choose("--write", arg.stripPrefix("--write="), WriteModes)
@@ -207,11 +217,14 @@ object CommandLine:
               env :+ EnvForward(name, Option.when(value.nonEmpty)(value.drop(1))), runOnHost,
             )
 
-        case ("--write" | "--egress" | "--env" | "--run-on-host" | "--egress-cred" | "--clipboard") :: _ =>
+        case (
+              "--write" | "--egress" | "--env" | "--run-on-host" | "--egress-cred" | "--clipboard" |
+              ClaudePlugins.OptionName
+            ) :: _ =>
           Left(
             "error: the launch options are spelled --write=<mode>, --egress=<profile>, " +
               "--clipboard=<mode>, --mic, --env=<name>[=<value>], --env-aws-cred[=<profile>], " +
-              "--egress-cred=<name>@<host> and --run-on-host=<programs>",
+              s"--egress-cred=<name>@<host>, --run-on-host=<programs> and ${ClaudePlugins.OptionName}=<dir>",
           )
 
         case arg :: tail if arg.startsWith("--egress-check=") =>
@@ -252,5 +265,6 @@ object CommandLine:
               Right(
                 parsed.copy(
                   credentialBindings = bindings, awsCredential = awsCredential, clipboard = clipboard, mic = mic,
+                  claudePlugins = claudePlugins,
                 ),
               )

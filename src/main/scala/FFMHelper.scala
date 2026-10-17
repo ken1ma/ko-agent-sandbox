@@ -1,6 +1,7 @@
 package agentsandbox.launcher
 
 import java.io.IOException
+import java.nio.file.Path
 import java.lang.foreign.{
   Arena, FunctionDescriptor, Linker, MemoryLayout, MemorySegment, StructLayout, SymbolLookup, ValueLayout,
 }
@@ -8,6 +9,7 @@ import scala.util.Using
 
 object FFMHelper:
 
+  /** Windows. */
   object kernel32:
 
     // ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING: SetConsoleMode's documentation
@@ -62,11 +64,78 @@ object FFMHelper:
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS),
       )
       Using.resource(Arena.ofConfined()): arena =>
-        val terminated = (name + "\u0000").getBytes(java.nio.charset.StandardCharsets.UTF_16LE)
-        val wide = arena.allocateFrom(ValueLayout.JAVA_BYTE, terminated*)
-        val cleared: Int = handle.invokeExact(wide, MemorySegment.NULL)
+        val cleared: Int = handle.invokeExact(wide(arena, name), MemorySegment.NULL)
         if cleared == 0 then throw IOException(s"SetEnvironmentVariableW could not remove $name")
 
+    // CreateFileW arguments: no access right, which opens a file for its attributes alone; every
+    // share mode; OPEN_EXISTING; FILE_FLAG_BACKUP_SEMANTICS, which a directory handle needs, and
+    // FILE_FLAG_OPEN_REPARSE_POINT, which opens a link itself rather than its target.
+    private val ShareAll = 0x1 | 0x2 | 0x4
+    private val OpenExisting = 3
+    private val BackupSemantics = 0x02000000
+    private val OpenReparsePoint = 0x00200000
+    // BY_HANDLE_FILE_INFORMATION: nNumberOfLinks is the eleventh DWORD, after the attributes, three
+    // FILETIMEs, the volume serial and the two size halves.
+    private val ByHandleFileInformationSize = 52L
+    private val NumberOfLinksOffset = 40L
+
+    /**
+     * How many names the file has (`nNumberOfLinks`), or None where the file cannot be opened or
+     * asked: Windows' `basic` and `dos` attribute views carry no link count, so `unix:nlink` has no
+     * counterpart in java.nio there. Every failure answers None; the caller refuses what it cannot count.
+     */
+    def numberOfLinks(file: Path): Option[Int] =
+      try
+        val linker = Linker.nativeLinker()
+        val lookup = SymbolLookup.libraryLookup("kernel32", Arena.global())
+        def function(name: String, descriptor: FunctionDescriptor) =
+          linker.downcallHandle(lookup.find(name).orElseThrow(), descriptor)
+        val createFile = function(
+          "CreateFileW",
+          FunctionDescriptor.of(
+            ValueLayout.ADDRESS,
+            ValueLayout.ADDRESS,
+            ValueLayout.JAVA_INT,
+            ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS,
+            ValueLayout.JAVA_INT,
+            ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS,
+          ),
+        )
+        val getFileInformation = function(
+          "GetFileInformationByHandle",
+          FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS),
+        )
+        val closeHandle =
+          function("CloseHandle", FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS))
+        Using.resource(Arena.ofConfined()): arena =>
+          val handle: MemorySegment = createFile.invokeExact(
+            wide(arena, file.toAbsolutePath.toString),
+            0,
+            ShareAll,
+            MemorySegment.NULL,
+            OpenExisting,
+            BackupSemantics | OpenReparsePoint,
+            MemorySegment.NULL,
+          )
+          // INVALID_HANDLE_VALUE is all bits set.
+          if handle.address() == -1L then None
+          else
+            try
+              val information = arena.allocate(ByHandleFileInformationSize, ValueLayout.JAVA_INT.byteAlignment())
+              val answered: Int = getFileInformation.invokeExact(handle, information)
+              Option.when(answered != 0)(information.get(ValueLayout.JAVA_INT, NumberOfLinksOffset))
+            finally
+              val _: Int = closeHandle.invokeExact(handle)
+      catch case _: Throwable => None
+
+    /** `text` as the NUL-terminated UTF-16 string the `W` entry points read. */
+    private def wide(arena: Arena, text: String): MemorySegment =
+      val terminated = (text + "\u0000").getBytes(java.nio.charset.StandardCharsets.UTF_16LE)
+      arena.allocateFrom(ValueLayout.JAVA_BYTE, terminated*)
+
+  /** macOS and Linux. */
   object libc:
 
     /** `isatty`. The launcher asks it about the stream a line goes to — stderr for its own lines,

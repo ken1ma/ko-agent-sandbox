@@ -5,7 +5,7 @@ package agentsandbox.launcher
 
 import java.io.{IOException, UncheckedIOException}
 import java.nio.charset.StandardCharsets
-import java.nio.file.{Files, Path, StandardCopyOption}
+import java.nio.file.{Files, LinkOption, Path, StandardCopyOption}
 import java.nio.file.attribute.{PosixFilePermission, PosixFilePermissions}
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
@@ -222,6 +222,21 @@ object FileHelper:
           Thread.sleep(25)
           false
     if !moved then moveReplacing(temp, path, attempts - 1)
+
+  /**
+   * Whether the regular file has another name (a hard link), or None where the host cannot say:
+   * the file cannot be read, or kernel32 cannot open it. A write through the other name changes
+   * this one in place. Windows has no `unix` attribute view, so kernel32 counts the names there.
+   */
+  def hasSecondName(file: Path): Option[Boolean] =
+    try
+      if !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) then Some(false)
+      else if scala.util.Properties.isWin then FFMHelper.kernel32.numberOfLinks(file).map(_ > 1)
+      else
+        Files.getAttribute(file, "unix:nlink", LinkOption.NOFOLLOW_LINKS) match
+          case links: Integer => Some(links > 1)
+          case _              => Some(false)
+    catch case _: (IOException | UnsupportedOperationException | IllegalArgumentException) => None
 
   def directoryEntries(path: Path): Vector[Path] =
     Using.resource(Files.list(path)): entries =>

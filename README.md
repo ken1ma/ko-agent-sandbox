@@ -349,6 +349,17 @@ restore permission prompts and set the Claude Code status line.
                          See doc/egress-proxy.md "Brokered credentials" and SECURITY.md
                          "Who holds a brokered value".
 
+    Claude Code options, selected on every launch like the session options and configuring
+    the session's claude rather than the sandbox:
+      --claude-plugin-dir=<dir>
+                         load a host plugin directory into the session's claude as a managed
+                         plugin, the only kind whose hooks and mod the image lets run. Mounted
+                         read-only as <dir's name>@host. Repeatable, in the order the mods run;
+                         refused when it holds or is inside the project or a directory that
+                         --run-on-host commands write; an organization's remote policy can keep
+                         it from loading. See doc/agent-settings.md "Claude Code plugins and
+                         mods"
+
     Management actions, each recognized before the command; whatever follows
     belongs to the action:
 

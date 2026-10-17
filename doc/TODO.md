@@ -661,6 +661,23 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
 - Under `KO_AGENT_SANDBOX_CLIPBOARD=paste`, `xclip -selection clipboard -t image/png -o` in the
   session reads a copied image, 15498 bytes, through both wrapped clipboard execs.
 
+## Claude Code plugins (`--claude-plugin-dir`)
+
+- [ ] On Windows, a plugin holding a file with a second name (`mklink /H`) must be refused with
+  "has a second name", and one without accepted: `FFMHelper.kernel32.numberOfLinks` has never
+  run; its struct offset and flags come from the Windows API reference.
+- [ ] On Windows, a plugin holding a directory junction (`mklink /J`) must be refused as "a
+  junction, device or pipe": the walk's `isOther` check is measured on POSIX with a pipe alone.
+- [ ] Inside a session launched with the probe (`src/test/claude-plugins/managed-probe/README.md`),
+  run `sbt testFull`: `SessionBoundaryTest`'s plugin-mount test runs only there; not yet run.
+- [ ] `claude plugin test src/test/claude-plugins/managed-probe` on the host; not run, as the
+  sandbox turns the test kit off under `allowManagedHooksOnly`.
+- [ ] Under an organization's remote managed settings with `managedSourcesBehavior: merge`, how
+  `enabledPlugins`, `extraKnownMarketplaces` and `prependPlugins` combine across sources is unread
+  (https://code.claude.com/docs/en/settings-reference#managedsourcesbehavior names the keys);
+  doc/agent-settings.md "Claude Code plugins and mods" item 6 says only that the organization
+  opted the image's files in.
+
 ## Deferred — readable session directory names under `--run-on-host`
 
 - [ ] Name the sessions `runner-<random>` and `command-<random>` instead of `r<random>` and

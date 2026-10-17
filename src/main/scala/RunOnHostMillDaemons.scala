@@ -337,17 +337,9 @@ object RunOnHostMillDaemons:
     (Seq(out, daemonDir) ++ entries).find(Files.isSymbolicLink) match
       case Some(link) => refused(link, "a symlink")
       case None =>
-        entries.find(hasSecondName) match
+        entries.find(FileHelper.hasSecondName(_).contains(true)) match
           case Some(file) => refused(file, "a file with more than one name")
           case None       => Right(())
-
-  private def hasSecondName(file: Path): Boolean =
-    try
-      Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) &&
-        (Files.getAttribute(file, "unix:nlink", LinkOption.NOFOLLOW_LINKS) match
-          case links: Integer => links > 1
-          case _              => false)
-    catch case _: (IOException | UnsupportedOperationException | IllegalArgumentException) => false
 
   /** The mill daemons on the host working in the build directory's `out/mill-daemon` — the
     * daemon's cwd is its `sandbox` beneath it (MillProcessLauncher.configureRunMillProcess) —

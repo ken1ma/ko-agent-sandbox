@@ -418,8 +418,10 @@ class SessionBoundaryTest extends munit.FunSuite:
     // which the launcher mounts at `$JAVA_HOME/lib/security/cacerts` (JdkTrust) but which ends up
     // here, because Temurin's Debian packaging symlinks that path to
     // /etc/ssl/certs/adoptium/cacerts and podman resolves a bind target before mounting it.
+    // The --claude-plugin-dir mounts: the generated marketplace root, each plugin under it, the drop-in.
+    val pluginMounts = raw"^/etc/claude-code/(host-plugins($$|/)|managed-settings\.d/50-host-plugins\.json$$)"
     val alsoExpected =
-      raw"^/etc/(hosts|hostname|resolv\.conf)$$|^/etc/(ko-agent-sandbox|ssl/certs)($$|/)".r.unanchored
+      (raw"^/etc/(hosts|hostname|resolv\.conf)$$|^/etc/(ko-agent-sandbox|ssl/certs)($$|/)|" + pluginMounts).r.unanchored
     // The JDK's proxy configuration, the other half of jdkMounts' technique. Unlike `cacerts`
     // this one is a real file, so its mount stays where the launcher put it and is named from
     // JAVA_HOME rather than matched by a fixed prefix.
@@ -427,6 +429,25 @@ class SessionBoundaryTest extends munit.FunSuite:
     val unexpected = mountPoints.distinct.filterNot: at =>
       expected.matches(at) || alsoExpected.matches(at) || netProperties.contains(at)
     assertEquals(unexpected, Vector.empty[String], "a mount outside the launcher's set is present")
+
+  test("a plugin the launch named is mounted read-only where the managed drop-in says, in place"):
+    inSession()
+    val dropIn = Paths.get(ClaudePlugins.DropInPath)
+    assume(Files.exists(dropIn), s"the launch named no ${ClaudePlugins.OptionName}")
+    def readOnly(at: String): Boolean = mountOptions(at).exists(_.split(',').contains("ro"))
+    assert(readOnly(ClaudePlugins.DropInPath), "the drop-in is not a read-only mount")
+    assert(readOnly(ClaudePlugins.MountRoot), "the marketplace root is not a read-only mount")
+    val names = """"([^"]+)@host": true""".r.findAllMatchIn(Files.readString(dropIn)).map(_.group(1)).toVector
+    assert(names.nonEmpty, "the drop-in enables no plugin")
+    val marketplace = Files.readString(Paths.get(ClaudePlugins.MountRoot, ClaudePlugins.MarketplaceFile))
+    names.foreach: name =>
+      assert(marketplace.contains(s""""source": "./$name""""), s"the marketplace does not list $name in place")
+      val at = s"${ClaudePlugins.MountRoot}/$name"
+      assert(readOnly(at), s"$name is not a read-only mount of its own")
+      assert(Files.isRegularFile(Paths.get(at, ClaudePlugins.ManifestFile)), s"$name has no manifest at $at")
+      val refused = intercept[java.nio.file.FileSystemException]:
+        Files.newOutputStream(Paths.get(at, "probe")).close()
+      assert(refused.getMessage.contains("Read-only file system"), s"a write under $at: '${refused.getMessage}'")
 
   test("no private key is mounted into the session"):
     inSession()

@@ -15,6 +15,7 @@
 //   LauncherState.scala         the state root, and the resets with the name patterns they sweep
 //   CommandLine.scala           the session options, the management actions and the --env forwards
 //   AwsCredential.scala         --env-aws-cred: the AWS CLI's temporary credentials, resolved on the host
+//   ClaudePlugins.scala         --claude-plugin-dir: host plugin directories run as Claude Code's managed plugins
 //   LaunchMessages.scala        the weakened-boundary lines and the agent instructions' appended section
 //   KoAgentFs.scala             the workspace FUSE filter: build, install, identity, mount lifecycle
 //   SandboxProject.scala        the project directory: real path, refusals, identity, mount guards
@@ -1025,7 +1026,7 @@ object AgentSandboxLauncher:
       "--write" -> parsed.write.isDefined, "--egress" -> parsed.egress.isDefined,
       "--egress-cred" -> parsed.credentialBindings.nonEmpty, "--clipboard" -> parsed.clipboard.isDefined,
       "--mic" -> parsed.mic, "--env" -> parsed.env.nonEmpty, "--env-aws-cred" -> parsed.awsCredential.isDefined,
-      "--run-on-host" -> parsed.runOnHost.isDefined,
+      "--run-on-host" -> parsed.runOnHost.isDefined, ClaudePlugins.OptionName -> parsed.claudePlugins.nonEmpty,
     )
     def refuseGiven(action: String, options: Vector[(String, Boolean)]): Unit =
       val named = options.collect { case (option, true) => option }
@@ -1250,6 +1251,7 @@ object AgentSandboxLauncher:
     projectSlug: String,
     projectId: String,
     persistentVolume: String,
+    claudePlugins: Vector[ClaudePlugins.Plugin],
   )
 
   private case class LaunchImages(
@@ -1638,7 +1640,49 @@ object AgentSandboxLauncher:
     val persistentVolume = sharedVolume
       .orElse(sharedWithMain.map(mainWorktreeVolume(_, os)))
       .getOrElse(persistentVolumeName(projectId))
-    LaunchProject(homeProtection, mainWorktree, mountPath, selinuxEnforcing, projectSlug, projectId, persistentVolume)
+    // Read against the host here, before anything is created, like the rule files: the directories
+    // are bound into the sandbox unrelabeled, so an enforcing host is asked whether the container
+    // can read them, as it is about the project.
+    val claudePlugins =
+      if parsed.claudePlugins.isEmpty then Vector.empty
+      else
+        ClaudePlugins.resolve(
+          parsed.claudePlugins,
+          ClaudePlugins.SessionWritten(projectDir, "the project directory, which the session writes")
+            +: hostCommandWrites(os).fold(fail(_), identity),
+          os,
+          directory => !selinuxEnforcing || selinuxContainerReadable(directory),
+        ).fold(fail(_), identity)
+    LaunchProject(
+      homeProtection, mainWorktree, mountPath, selinuxEnforcing, projectSlug, projectId, persistentVolume,
+      claudePlugins,
+    )
+
+  /**
+   * The directories outside the project that `--run-on-host` commands write (SeatbeltProfile.render's
+   * grants): the caches under the launcher's cache root, where each lies once a symlink is
+   * followed (RunOnHostPrereqs.writtenCacheDirectories), and every session's `tmp/` under the host
+   * commands' root. The cache root and the host commands' root are named whole, as a reset removes
+   * the cache tree and the root holds every session's directory. Named whether or not the launch
+   * runs host commands: a plugin there is also under a reset's removal. The Left, where the caches
+   * cannot be found, refuses every plugin: none can be shown to lie outside them.
+   */
+  private def hostCommandWrites(os: Os): Either[String, Vector[ClaudePlugins.SessionWritten]] =
+    val caches = RunOnHostPrereqs.cacheRootOf(os, env).toOption match
+      case None => Right(Vector.empty)
+      case Some(cacheRoot) =>
+        RunOnHostPrereqs.writtenCacheDirectories(cacheRoot)
+          .left.map: reason =>
+            s"error: ${ClaudePlugins.OptionName}; $reason, so no plugin can be shown to lie outside them"
+          .map: written =>
+            ClaudePlugins.SessionWritten(
+              cacheRoot, s"the launcher's cache directory $cacheRoot, which --run-on-host commands write",
+            ) +: written.map: cache =>
+              ClaudePlugins.SessionWritten(cache, s"the --run-on-host cache $cache, which host commands write")
+    val sessions = Option.when(os == Os.Mac):
+      val root = RunOnHostSession.root(com.sun.security.auth.module.UnixSystem().getUid.toInt)
+      ClaudePlugins.SessionWritten(root, s"the host commands' directory $root, which --run-on-host commands write")
+    caches.map(_ ++ sessions)
 
   private def launchImages(settings: LaunchSettings, project: LaunchProject, os: Os): LaunchImages =
     import settings.{image, imageOverridden, projectDir}
@@ -1874,7 +1918,7 @@ object AgentSandboxLauncher:
   ): Vector[String] =
     import parsed.{egressProfile, writeMode}
     import settings.{image, runOnHost}
-    import project.{mountPath, projectId, projectSlug, selinuxEnforcing}
+    import project.{claudePlugins, mountPath, projectId, projectSlug, selinuxEnforcing}
     import images.{imageEnv, imageId, proxyImageId}
     import rules.{inspectedHosts, provider, ruleFiles, rulesetCacheDir, rulesetText, sessionCredentials}
     import names.{egressNetwork, proxyContainer, sandboxNetwork}
@@ -2094,11 +2138,22 @@ object AgentSandboxLauncher:
         selinuxEnforcing,
       )
 
+      // The host plugins' marketplace manifest and managed drop-in, this run's own files
+      // (ClaudePlugins.scala has the layout); the plugin directories are bound where they are.
+      val marketplaceRoot = runFiles.resolve(ClaudePlugins.RunFilesDirectory)
+      val pluginDropIn = runFiles.resolve(ClaudePlugins.DropInFile)
+      if claudePlugins.nonEmpty then
+        val manifest = marketplaceRoot.resolve(ClaudePlugins.MarketplaceFile)
+        Files.createDirectories(manifest.getParent)
+        writeReadable(manifest, ClaudePlugins.marketplaceText(claudePlugins))
+        writeReadable(pluginDropIn, ClaudePlugins.dropInText(claudePlugins))
+
       val preparedSandboxFiles = sandboxFileArgs(
         carried(bundleFile), carried(caCertFile),
         jdkFileMounts.map((file, at) => (carried(file), at)), carried(agentDocFile),
         selinuxEnforcing,
       )
+        ++ ClaudePlugins.mountArgs(marketplaceRoot, pluginDropIn, claudePlugins, selinuxEnforcing)
         // The JDK files' facts once more, as `-D` words, for the JVMs that read no file (JdkTrust.scala).
         ++ javaHomeOf(imageEnv).map(home =>
           s"--env=KO_AGENT_SANDBOX_JAVA_OPTS=${jdkJavaOpts(home, EgressProxyHost, EgressProxyPort)}"
@@ -2203,6 +2258,9 @@ object AgentSandboxLauncher:
     if parsed.env.nonEmpty then
       System.err.println(s"forwarded environment: ${parsed.env.map(_.name).mkString(", ")}")
     awsCredential.foreach(resolved => System.err.println(AwsCredential.bannerLine(resolved, Instant.now())))
+    // Loud as a loosening: code that runs in the session without a tool call, which the image's
+    // allowManagedHooksOnly otherwise keeps out, chosen on the host (SECURITY.md).
+    if project.claudePlugins.nonEmpty then System.err.println(weakened(ClaudePlugins.bannerLine(project.claudePlugins)))
     if credentials.nonEmpty then
       EgressCredentials.bannerLines(credentials).foreach(System.err.println)
       System.err.println(s"note: ${EgressCredentials.SubstitutionNote}")
