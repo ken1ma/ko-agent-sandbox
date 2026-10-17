@@ -45,6 +45,7 @@ The containers run rootless, and the programs run as the `nonroot` user.
     │  per run, and when the sandbox exits       │  outlives the run         │  │
     │  they are all removed                      └───────────────────────────┘  │
     │                                                                           │
+    │                                                                           │
     │  ┌─ macOS only: --run-on-host for resource-intensive commands ─────────┐  │
     │  │  sbt/mill/gradle/mvn run in a Seatbelt sandbox                      │  │
     │  └─────────────────────────────────────────────────────────────────────┘  │

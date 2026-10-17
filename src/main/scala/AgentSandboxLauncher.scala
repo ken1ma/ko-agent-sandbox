@@ -1337,6 +1337,16 @@ object AgentSandboxLauncher:
     import project.projectId
     val machineMemory = requirePodman(os)
 
+    // One suffix ties this run's containers, networks and log directory together in podman output and the retained
+    // logs.
+    val runSuffix = newRunSuffix()
+    val logDir = logStateRoot(os).resolve(projectId)
+    val runLogs = logDir.resolve(runLogDir(logStamp(Instant.now()), runSuffix))
+    // Named before it exists: prepareRunFiles creates it after pruning, and a launch refused earlier has written
+    // nothing there. Creating it here would let each refused launch's empty directory count toward the RetainedRuns
+    // that pruning keeps.
+    System.err.println(pathLine("log dir", runLogs, os, tint = lookedUp(_)))
+
     // The filter's read-only checks run beside the image and rule checks below; prepareKoAgentFs
     // reads their answer once this run's cleanup is armed.
     val startedKoAgentFsChecks = Option.when(writeMode == "live"):
@@ -1357,9 +1367,6 @@ object AgentSandboxLauncher:
     // access, it just makes the failure harder to diagnose. All per run (SandboxLifecycle, "Removing what the run
     // created").
 
-    // One suffix ties this run's containers, networks and log directory together in podman output and the retained
-    // logs.
-    val runSuffix = newRunSuffix()
     val names = RunNames(
       proxyRunContainer(projectId, runSuffix),
       sandboxRunContainer(projectId, runSuffix),
@@ -1454,10 +1461,8 @@ object AgentSandboxLauncher:
     // other logs, and the project's directory every previous session's
     // record — and owner-only: refusal lines carry full URLs, and a URL can
     // carry a secret.
-    val logDir = logStateRoot(os).resolve(projectId)
     createPrivateDirectories(logDir)
 
-    val runLogs = logDir.resolve(runLogDir(logStamp(Instant.now()), runSuffix))
     val hostLogFile = runLogs.resolve("proxy.log")
     val channelLogFile = runLogs.resolve("run-on-host.log")
     val microphoneLogFile = runLogs.resolve("microphone.log")
@@ -1476,7 +1481,7 @@ object AgentSandboxLauncher:
       .getOrElse(fail(s"error: could not determine the egress proxy's address on $sandboxNetwork"))
 
     val workspace = LaunchWorkspace(filteredWorkspace, joinedRules, sessionRuleLines, sessionRulesText)
-    printLaunchLines(parsed, settings, project, rules, workspace, git, runLogs, hostLogFile, os)
+    printLaunchLines(parsed, settings, project, rules, workspace, git, hostLogFile, os)
     val createCommand = sandboxCreateCommand(
       parsed, settings, project, images, rules, names, workspace, git, proxyIp, sandboxFiles, machineMemory, os,
     )
@@ -2022,7 +2027,8 @@ object AgentSandboxLauncher:
         val entries = directoryEntries(tlsDir).map(_.getFileName.toString)
         tlsRunDirsToPrune(entries, live).foreach(name => deleteRecursively(tlsDir.resolve(name)))
 
-      // After the pruning, so this run's directory is the one that makes RetainedRuns.
+      // After the pruning, which keeps one fewer than RetainedRuns: this run's directory brings the count to
+      // RetainedRuns.
       createPrivateDirectories(runLogs)
       writePrivate(hostLogFile, "")
 
@@ -2217,7 +2223,6 @@ object AgentSandboxLauncher:
     rules: LaunchRules,
     workspace: LaunchWorkspace,
     git: GitAccess,
-    runLogs: Path,
     hostLogFile: Path,
     os: Os,
   ): Unit =
@@ -2266,7 +2271,6 @@ object AgentSandboxLauncher:
     if rulesetWarnings.nonEmpty then System.err.println(emphasized(rulesetWarnings))
     if inspectedHosts.isEmpty then
       System.err.println("egress tls inspection: this ruleset inspects no hosts; no leaf issued")
-    System.err.println(pathLine("log dir", runLogs, os, tint = lookedUp(_)))
     // Names only: a forwarded value may be a secret, and this line is the one place the forward
     // is said aloud, since the variable is otherwise indistinguishable from the image's own.
     if parsed.env.nonEmpty then
