@@ -5,25 +5,6 @@ whose benefit is uncertain, each with the condition that decides whether to buil
 examined and found without benefit is recorded in design.md with its reason, so it is not proposed
 again.
 
-## Review plugin (`ko-review.md`)
-
-- [ ] Use Codex's `request_user_input` for reviewer, model and effort selection once it supports
-  more than three options per question. Its three-option limit leaves out choices such as `high`
-  after the default, `low` and `medium`; free-form entry does not replace a selectable option.
-  Enable `default_mode_request_user_input` in the image's Codex defaults when adopting the menu.
-- [ ] A linked worktree whose main Git directory is mounted read-only: the reviewer's own `git`
-  commands and the helper's digest against that tree; unverified.
-- [ ] `--egress=deny-unless-model claude` fails a Codex review, and `deny-unless-model codex` a
-  Claude review, with `REVIEWER_EGRESS_DENIED` before the reviewer runs; unverified in a session.
-- [ ] A `codex exec` reviewer started from a Codex author's shell, which passes it the author's
-  `CODEX_THREAD_ID`, driven to approval in the image; unmeasured.
-- A regression test for a fix in this plugin is run against the helper without the fix and shown
-  to fail before it counts: a fake reviewer that dies on its own once the helper exits lets a test
-  for an orphaned reviewer pass without the fix, and only that run shows it.
-- Watch openai/codex-plugin-cc (#557 persists review threads, open as of 2026-09-23) and
-  openai/codex #24833 (durable MCP resume). If OpenAI ships a stateful review, fix, re-review
-  primitive, delete the helper's orchestration rather than maintain a duplicate.
-
 ## Credential brokering — `--egress-cred`, then the provider plan
 
 - [ ] Run `sbt "testWithPodman *ProxyContainerTest"` on Linux and Windows: the proxy's attached
@@ -752,6 +733,25 @@ are the image's Mach services, which the same mode measures once it starts.
     classes.
 - [ ] Decide it together with the published identity: whether the binary is a release artifact at
   all, or `java -jar` and a Coursier command are the two forms.
+
+## Review plugin (`ko-review.md`)
+
+- [ ] Have a Codex author ask the skill's three questions, reviewer, model and effort, as
+  selectable menus, as a Claude author does with AskUserQuestion, instead of in its reply with
+  numbered options the user types back (`ko-review.md`). Codex's `request_user_input` is that menu
+  once Codex's default mode offers it as a stable feature and it allows more than three options per
+  question; either condition alone keeps the current prose question.
+  - `default_mode_request_user_input` is under development (`ko-review.md` has the measurement);
+    once stable and still off, the image's Codex defaults enable it.
+  - Its schema asks for "2-3 mutually exclusive choices" (openai/codex `main`, 2026-10-18), which
+    leaves out choices such as `high` after the default, `low` and `medium`; free-form entry does
+    not replace a selectable option. The option limit of `request_user_input_async` is unverified.
+  - Codex's default-mode prompt reserves the tool for optional questions and has required ones
+    asked in plain text, so the menu words each question as optional with the recommended choice
+    first.
+- [ ] A linked worktree whose main Git directory is mounted read-only: the helper's path is covered
+  by the test suite (`ko-review.md`, "Tests") and the session's git reads by `SECURITY.md`; one
+  session launched from such a worktree and driven to approval closes this.
 
 ## Before the first release — continuous integration
 

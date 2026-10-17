@@ -5,7 +5,9 @@ description: >-
   then fix or dispute its findings and answer its suggestions on that same thread until it
   approves the tree or the user must decide. Invoke it only when the user asks for such a review,
   never on your own.
-argument-hint: [a review id to continue, or a reviewer, base commit, model, effort and instructions]
+argument-hint: >-
+  [codex|claude] [model] [effort] [base-commit] [instructions] |
+  [review-id-to-continue]
 ---
 
 # Independent review cycle
@@ -33,6 +35,10 @@ session's.
 - With a review id as the argument, the continued review keeps the scope it recorded.
 - Otherwise, without a base and with a clean `git status`, tell the user there is nothing to
   review and that a base in the argument brings committed work into scope, and stop.
+- Otherwise `ko-review coverage`, with `--base REF` when the argument names a base, lists the
+  approved reviews of this checkout whose approval still covers part of the scope: `coveredPaths`
+  were reviewed and are unchanged since, `newPaths` are the rest. Continuing such a review keeps
+  its thread, so the reviewer reads the new paths with the earlier discussion in context.
 - With a base, the step 3 summary still reports only what this session did, and says so.
 
 In Claude Code the argument is the text after the skill's name. Codex passes a skill no argument,
@@ -52,6 +58,14 @@ answer.
    - If the argument is a review id, skip to step 6 with it instead: a continuation keeps
      the review's reviewer, model and effort.
    - Without a base, first run `git status --porcelain` and stop on an empty output as above.
+   - Then run `ko-review coverage`, with the argument's base if any. An entry counts only when
+     the argument names no instructions and no reviewer, model or effort other than the entry's:
+     a continuation keeps those, so the review the user asked for would not happen. When the
+     first counting entry has `approvalFresh` true and an empty `newPaths`, tell the user that
+     review, by its id, already approves this tree, and stop. Otherwise offer each counting entry
+     ahead of the reviewers, as "continue REVIEW_ID (REVIEWER, MODEL, EFFORT): it approved N of
+     the M paths in scope"; that choice skips step 2, and step 4 runs `continue` instead of
+     `start`.
    - The options are `codex` (Codex, under this project's Codex sign-in and usage limit) and
      `claude` (Claude Code, under this project's Claude Code sign-in and usage).
 2. Before reading the change, run `ko-review defaults REVIEWER` and ask the user for the
@@ -80,12 +94,18 @@ answer.
      effort alone, from those efforts, its `defaultEffort` first.
    - Where you cannot ask, as in a non-interactive session, take `codex` and `recommended` and
      say so.
-3. Write a Markdown file outside the repository, since a file inside it joins the reviewed tree:
-   in your scratchpad, else in a `mktemp -d` directory. Its sections are `## Task` (what was
-   requested), `## Changes` (what you changed), `## Verification` (checks run and their results),
-   `## Notes` (ambiguities and known tradeoffs).
+3. Re-read every changed hunk together with the unchanged lines around it against `AGENTS.md`, as
+   the reviewer will, and fix what you find: the reviewer's round then goes to what you cannot see
+   yourself. Then write a Markdown file outside the repository, since a file inside it joins the
+   reviewed tree: in your scratchpad, else in a `mktemp -d` directory. Its sections are `## Task`
+   (what was requested), `## Changes` (what you changed), `## Verification` (checks run and their
+   results), `## Notes` (ambiguities and known tradeoffs). For a review continued from step 1,
+   they describe the work since its approval.
 4. Run `ko-review start REVIEWER --message-file FILE` from inside the repository, and note
-   `reviewId` from the output.
+   `reviewId` from the output. For a review continued from step 1, run
+   `ko-review continue REVIEW_ID --message-file FILE` instead: it keeps the review's reviewer,
+   model, effort, base and instructions, and tells the reviewer which paths changed since its
+   approval. The three options below are `start`'s; `continue` takes none of them.
    - Pass each selected value from step 2 explicitly with `--model NAME` and `--effort LEVEL`,
      since `defaults` reads only the local configuration. For a null value, omit the option so
      the reviewer uses its default.

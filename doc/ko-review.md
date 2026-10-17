@@ -8,7 +8,9 @@ block approval; the author adopts or disputes them, and puts to the user those t
 user's to decide.
 
 Each new review has its own reviewer thread. Invoke the skill without an existing review id to
-start an independent audit of an approved tree.
+start an independent audit of an approved tree; before opening one, the skill offers to continue
+an approved review whose approval still covers part of the scope (`coverage`, below), unless the
+argument asks for instructions, or a reviewer, model or effort, that a continuation would not keep.
 
 - The author and reviewer may use the same product. A Claude session reviewing another Claude
   session's changes has its own thread and none of the author's context; the same applies to Codex.
@@ -34,8 +36,9 @@ start an independent audit of an approved tree.
   product's needs its own in this project's sandbox (`REVIEWER_AUTH_FAILED`, below).
 - The skill asks three questions before a new review, each skipped when the argument answers it:
   the reviewer, then, from `ko-review defaults REVIEWER`, the model and the effort. Codex has no
-  question tool outside Plan mode (its `default_mode_request_user_input` feature is off in
-  codex-cli 0.159.0), so a Codex author asks in its reply and waits for the answer.
+  question tool outside Plan mode (its `default_mode_request_user_input` feature is under
+  development and off in codex-cli 0.162.1), so a Codex author asks in its reply and waits for the
+  answer.
 - The plugin `ko-review` (`container/ko-agent-sandbox/claude-code/plugins/ko-review`) holds the
   skill, the helper `ko-review`, whose `start` takes the reviewer's name so that another reviewer
   can join as another name, the reviewer prompts and the result schema.
@@ -52,10 +55,15 @@ start an independent audit of an approved tree.
 
 ## The cycle
 
-1. The author writes a Markdown summary of the task, its changes and its verification, and runs
-   `ko-review start REVIEWER --message-file FILE`, REVIEWER being `codex` or `claude`. The helper
-   opens a reviewer thread with the reviewer prompt and that summary; the reviewer reads the
-   repository itself.
+1. The author re-reads every changed hunk with the unchanged lines around it against `AGENTS.md`,
+   fixes what it finds, writes a Markdown summary of the task, its changes and its verification,
+   and runs `ko-review start REVIEWER --message-file FILE`, REVIEWER being `codex` or `claude`.
+   The helper opens a reviewer thread with the reviewer prompt and that summary; the reviewer
+   reads the repository itself.
+   - The re-read comes first because the reviewer prompt limits findings to material issues, so
+     conformance to the project's instructions is the author's to check, and a round spent on it
+     costs reviewer quota. Claude Code reads `AGENTS.md` from 2.1.277, or through a `CLAUDE.md`
+     import.
    - `--base REF` has the reviewer review the changes since that commit or branch, committed since
      then or not, by the commit id the ref resolved to at `start`, so a branch that moves during
      the review does not move the scope. Without it the reviewer reviews the working tree against
@@ -63,6 +71,11 @@ start an independent audit of an approved tree.
      - The skill passes a base only from its argument, for the reason its scope paragraph gives.
      - The reviewer compares the working tree with the base's tree, so commits merged or pulled
        since the base are in scope too.
+     - The scope is one diff ending at the working tree, never a range ending at an earlier
+       commit. A fix is an edit on top of HEAD, so for such a range the reviewer would read the
+       finding in one diff and its fix in another, with the commits between them as context it
+       did not review. To review commits in the middle of the history, check out the last of them
+       in a clone and pass the parent of the first as the base.
    - An empty scope is refused with `NOTHING_TO_REVIEW` before a review exists: the working tree
      equals the base commit, HEAD without `--base`, and no file is untracked. A dirty checkout
      whose edits restore the base's content counts as empty. A reviewer turn on nothing would
@@ -139,6 +152,16 @@ the command has loaded the review's state as a JSON object, carries the review i
 - `defaults REVIEWER`: the model and effort the reviewer's local configuration selects for this
   repository, the models to offer with each one's efforts, and the `recommended` pair
   ("Defaults", below).
+- `coverage [--base REF]`: the approved reviews whose approval still covers part of the scope a
+  `start` with that base would have, newest approval first, each with `coveredPaths` and
+  `newPaths`, so that the skill can offer to continue one instead of opening a thread.
+  - A path is covered when the approved round's reviewer was told to look at it, by the approved
+    tree against the review's base or the HEAD of that round, and its content is the one in that
+    round's manifest. Content decides, so staging or committing the approved paths keeps them
+    covered; a path no reviewer was told to look at is not, however long its content has been
+    the approved one, as when HEAD moves under an untouched file.
+  - A candidate has the same base as the new review would, and a snapshot tree; an approval
+    without one, as in a linked worktree, is never offered.
 
 The helper never commits, stages or moves HEAD: the author's fixes during a review are working-tree
 edits like any other, and the user commits them when and as they choose.
@@ -377,6 +400,10 @@ prove, limits findings to material issues, and asks for suggestions beside them 
 2). Findings are `F1`, `F2`, …, suggestions `S1`, `S2`, …, and an id stays while its item is
 discussed. A standing suggestion is no ground for `USER_DECISION_REQUIRED`, since the author's
 report carries it to the user.
+Every round after the first names the paths whose content changed since the round the reviewer last
+answered, from the rounds' manifests, and those that entered the scope without changing, as when
+HEAD moves under a file, from that round's snapshot tree; it says the rest of the tree is as it
+read it, so a continued review after an approval sends the reviewer to the new work first.
 Instruction changes are journaled in the round they take effect, and the export shows them there.
 Both reviewers also read the repository's own instructions, AGENTS.md or CLAUDE.md, as any session
 in it would.
@@ -393,7 +420,9 @@ in it would.
   be re-reviewed with the earlier debate in context (openai/codex-plugin-cc #375 found the same and
   fell back to ordinary turns). `codex mcp-server` resolves `codex-reply` threads only in the live
   server's memory (openai/codex #24833), and `codex app-server` would add JSON-RPC lifecycle
-  handling for no gain over `codex exec`.
+  handling for no gain over `codex exec`. A persistent review primitive from Codex would replace
+  the helper's Codex transport alone: the digest binding, the snapshots and the retries serve
+  Claude reviews the same way.
 - Measured with codex-cli 0.155.1: `exec` and `exec resume` both accept `--json`,
   `--output-schema` and `--output-last-message`; the resumed turn emits the persisted id and
   answers from the earlier turn's context; a made-up id fails with `no rollout found for thread id`
@@ -401,6 +430,9 @@ in it would.
 - Measured with codex-cli 0.156.1 on a real usage limit: `codex exec resume` emits an `error` event
   whose `message` and a `turn.failed` event whose `error.message` both hold Codex's text, "You’ve
   hit your usage limit. … try again at" and the reset time, and exits with status 1.
+- Measured with codex-cli 0.162.1: `codex exec` run with `CODEX_THREAD_ID` in its environment, as
+  a Codex author's shell sets it, opens a thread of its own, so a Codex author's Codex reviewer
+  never lands on the author's thread; the helper records the variable as `authorSessionId` only.
 
 ### Claude Code as it is called
 
@@ -446,7 +478,8 @@ fake script installed as both `codex` and `claude` on `PATH`, each imitating its
 
 - It covers thread continuity and mismatch, every failure class, the digest over each kind of
   change, the snapshot refs and their absence under a read-only Git directory, the base range,
-  the export, the lock, the round limit, escalation, and state namespacing.
+  the coverage of an earlier approval and the changed paths each round names, the export, the
+  lock, the round limit, escalation, and state namespacing.
 - The tests marked `both_reviewers` run against each fake; the rest, whose subject is the helper's
   own logic, run against the fake Codex only.
 - Tests in the test's own process load the helper as a module: `stream_events` with a timeout
@@ -460,6 +493,9 @@ fake script installed as both `codex` and `claude` on `PATH`, each imitating its
 - With `codex` on `PATH`, it has `codex debug prompt-input`, which calls no model, list a copy of
   the skill; the test fails unless Codex names it `ko-review`. Inside the image, it checks that
   Codex's copy equals the plugin's and that `/usr/local/bin/ko-review` resolves to the helper.
+- A regression test for a fix is run against the helper without the fix and shown to fail before it
+  counts: the fake reviewer exits on its own once the helper exits, so a test for an orphaned
+  reviewer passes without the fix, and only that run shows it.
 - A run against a real reviewer spends model quota, so it is done by hand.
 - Measured with codex-cli 0.156.1 in a session of the image: the skill in Claude Code drove a Codex
   review through fixes, re-reviews and a retry after a usage limit to an approval on one thread,
