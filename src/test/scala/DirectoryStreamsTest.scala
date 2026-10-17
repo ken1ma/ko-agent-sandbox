@@ -47,8 +47,11 @@ class DirectoryStreamsTest extends munit.FunSuite:
         val channelLog = root.resolve("channel.log")
         if contents != "empty" then
           Files.writeString(rules.resolve("rule"), "deny defaults\n")
-          Files.writeString(logs.resolve("proxy-run.log"), "proxy log\n")
-          Files.writeString(logs.resolve("run-on-host-run.log"), "channel log\n")
+          val runLogs = Files.createDirectory(logs.resolve("run-20261004T120000Z-abcd1234"))
+          Files.writeString(runLogs.resolve("proxy.log"), "proxy log\n")
+          Files.writeString(runLogs.resolve("proxy-r1.log"), "host proxy log\n")
+          Files.writeString(runLogs.resolve("run-on-host.log"), "channel log\n")
+          if contents == "stray" then Files.writeString(runLogs.resolve("unknown"), "stray entry\n")
           Files.createDirectory(tls.resolve("run"))
           Files.writeString(session.resolve("proxy.log"), "session proxy log\n")
           Files.writeString(temporary.resolve("sbt-server-err1.log"), "client log\n")
@@ -59,8 +62,8 @@ class DirectoryStreamsTest extends munit.FunSuite:
         val scans: Vector[(String, () => Unit)] = Vector(
           "egress rules" -> (() => { EgressRules.readRuleFiles(rules); () }),
           "boundary entries" -> (() => { SandboxProject.boundaryDirRefusal(boundary); () }),
-          "proxy logs" -> (() => { EgressRules.retainedLogs(logs); () }),
-          "channel logs" -> (() => { EgressRules.retainedLogs(logs, "run-on-host-"); () }),
+          "run log directories" -> (() => { EgressRules.runLogDirs(logs); () }),
+          "proxy logs" -> (() => { EgressRules.retainedProxyLogs(logs); () }),
           "TLS entries" -> (() => { directoryEntries(tls).map(_.getFileName.toString); () }),
           "session logs" -> (() => RunOnHostSandbox.appendSessionLogs(channelLog, session, "ended")),
         )

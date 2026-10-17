@@ -1,5 +1,5 @@
 // A host command's egress proxy: the launcher re-invoked under the proxy profile with the program's
-// rules, its port read from its ready line, its audit log kept in the project's log directory,
+// rules, its port read from its ready line, its audit log kept in the run's log directory,
 // and the refusals read back from that log after a command.
 
 package agentsandbox.launcher
@@ -83,34 +83,29 @@ object RunOnHostProxy:
           SeatbeltProfile.ProxyInputs(Seq(jdk), selfClassPath(classPath).map(Path.of(_)).flatMap(realPath), systemPaths)
 
   /**
-   * The name of a host proxy's audit log in the project's log directory, as the two parts a later start's
-   * number goes between (projectAuditLog). `--egress-log` lists a name of this form as a proxy's log, and
-   * the launch's pruning keeps one while its run is live (EgressRules.logsToPrune).
-   * `run-on-host-<stamp>-<run>.log` and a session's `proxy-sbt-<hash>.log` give
-   * `proxy-<stamp>-<session>-proxy-sbt-<hash>` and `-<run>.log`.
+   * The name of a host proxy's audit log in the run's log directory, as the two parts a later start's
+   * number goes between (projectAuditLog): a session `r123`'s `proxy-sbt-<hash>.log` gives
+   * `proxy-sbt-<hash>-r123` and `.log`. The session's name tells apart the runner's and a command's
+   * proxy logs of the same name, and `--egress-log` lists a name beginning `proxy` as a proxy's log
+   * (EgressRules.proxyLogsOf).
    */
-  private def auditLogName(channelLog: Path, proxyLog: Path): Option[(String, String)] =
-    channelLog.getFileName.toString match
-      case s"run-on-host-$stampAndRun.log" if stampAndRun.contains('-') =>
-        val stamp = stampAndRun.take(stampAndRun.lastIndexOf('-'))
-        val run = stampAndRun.drop(stampAndRun.lastIndexOf('-') + 1)
-        val stem = proxyLog.getFileName.toString.stripSuffix(".log")
-        Some((s"proxy-$stamp-${proxyLog.getParent.getFileName}-$stem", s"-$run.log"))
-      case _ => None
+  private def auditLogName(proxyLog: Path): Option[(String, String)] =
+    Option(proxyLog.getParent).flatMap(session => Option(session.getFileName)).map: session =>
+      (s"${proxyLog.getFileName.toString.stripSuffix(".log")}-$session", ".log")
 
   /**
-   * The file in the project's log directory for the session's `proxyLog` (auditLogName).
+   * The file for the session's `proxyLog` in the channel log's directory, the run's log directory (auditLogName).
    *
    * A runtime's proxy started again in the launch — the earlier one died, or its runtime's creation
    * failed (RunnerRuntimes.prepared, created) — has a session file of the same name, and the earlier
-   * proxy's log keeps its own here: the `start`-th has `-<start>` before the run, from the second on.
+   * proxy's log keeps its own here: the `start`-th has `-<start>` before `.log`, from the second on.
    */
   def projectAuditLog(channelLog: Path, proxyLog: Path, start: Int = 1): Option[Path] =
-    auditLogName(channelLog, proxyLog).map: (prefix, suffix) =>
+    auditLogName(proxyLog).map: (prefix, suffix) =>
       channelLog.resolveSibling(prefix + (if start == 1 then "" else s"-$start") + suffix)
 
   /**
-   * Before the proxy starts, makes its log a file in the project's log directory, under the first name of
+   * Before the proxy starts, makes its log a file in the run's log directory, under the first name of
    * projectAuditLog no earlier proxy's log has, and the session's `proxyLog` a symbolic link to it. The
    * lines are there while the proxy writes them and stay however the session's directory is removed.
    * A symbolic link, not a hard link: XDG_STATE_HOME can place the log directory on another filesystem
@@ -155,7 +150,7 @@ object RunOnHostProxy:
    * directory — and a link naming anything else is not followed.
    */
   def keptAuditLog(channelLog: Path, sessionLog: Path): Option[Path] =
-    auditLogName(channelLog, sessionLog).flatMap: (prefix, suffix) =>
+    auditLogName(sessionLog).flatMap: (prefix, suffix) =>
       try
         Some(Files.readSymbolicLink(sessionLog)).filter: kept =>
           val name = kept.getFileName.toString
@@ -297,11 +292,19 @@ object RunOnHostProxy:
           .filter(_.startsWith(Refusals.AuditLogUnwritable))
     catch case _: IOException => None
 
-  private[launcher] def reportUnwritableProxyLog(runtime: Runtime, log: String => Unit): Unit =
+  /** The file the proxy writing to the session's `proxyLog` appends to: the one in the run's log
+    * directory (keptAuditLog), not the session's link to it, which goes with the session. */
+  private[launcher] def proxyLogFile(channelLog: Option[Path], proxyLog: Path): Path =
+    channelLog.flatMap(keptAuditLog(_, proxyLog)).getOrElse(proxyLog)
+
+  // Relaunch: a proxy that cannot log keeps running, so the runner keeps reusing its runtime (RunnerRuntimes.prepared).
+  private[launcher] def reportUnwritableProxyLog(
+    runtime: Runtime, channelLog: Option[Path], log: String => Unit,
+  ): Unit =
     unwritableProxyLog(runtime.proxyPort).foreach: reason =>
       log(
         s"The host command sandbox's proxy serves no new connection: $reason.\n" +
-          s"Tell the user: make ${runtime.proxyLog} writable again, then relaunch.",
+          s"Tell the user: make ${proxyLogFile(channelLog, runtime.proxyLog)} writable again, then relaunch.",
       )
 
   /** The denied-host report, once per refused host, and the refused requests, after the command — never an

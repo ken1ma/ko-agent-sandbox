@@ -110,22 +110,28 @@ object EgressRules:
     parsed.getOrElse(s"egress: ${lines.headOption.getOrElse("(empty resolution)")}")
 
   /**
-   * Everything but the newest retain-1, so the new file makes retain; names
-   * embed a UTC stamp and sort chronologically.
+   * Which of the project log directory's entries `names` to delete: every run directory
+   * (runLogDir) but the newest retain-1, so `retain` remain with the new run's. A run directory's
+   * name sorts chronologically by its UTC stamp.
    *
-   * A run still holding its log open is never pruned, however old the file
-   * is: its proxy is appending to that inode, and unlinking it would leave
-   * the session writing where nothing can read, losing the whole record at
-   * exit — which is what a retention rule counting sessions rather than
-   * liveness does to a project running more than `retain` of them at once.
-   * More than `retain` logs can remain while their runs are live.
+   * A live run's directory is never pruned, however old: its proxy, runner and relay are appending
+   * to its files, and unlinking them would leave the session writing where nothing can read, losing
+   * the whole record at exit — which is what a retention rule counting sessions rather than
+   * liveness does to a project running more than `retain` of them at once. More than `retain`
+   * directories can remain while their runs are live.
+   *
+   * Also the flat files of the layout before run directories, unless their run is live. That branch
+   * can go after the first release.
    */
-  def logsToPrune(names: Seq[String], retain: Int, liveRuns: Set[String]): Seq[String] =
-    names.sorted
+  def runLogDirsToPrune(names: Seq[String], retain: Int, liveRuns: Set[String]): Seq[String] =
+    val runDirs = names.filter(_.matches(RunLogDirPattern)).sorted
       .dropRight((retain - 1).max(0))
+      .filterNot(name => liveRuns.exists(run => name.endsWith(s"-$run")))
+    val flatLogs = names.filter(_.matches("(proxy|run-on-host|microphone)-.*\\.log"))
       .filterNot(name => liveRuns.exists(run => name.endsWith(s"-$run.log")))
+    runDirs ++ flatLogs
 
-  val RetainedProxyLogs = 20
+  val RetainedRuns = 20
 
   val RuleFiles: Vector[(String, String)] = Vector(RulesetHelper.RuleFile -> RulesetHelper.RuleVariable)
 
@@ -210,13 +216,25 @@ object EgressRules:
       val variable = RuleFiles.find(_(0) == name).fold(fail(s"error: no rule file $name"))(_(1))
       s"--env=$variable=$text"
 
-  def retainedLogs(logDir: Path, prefix: String = "proxy-"): Vector[Path] =
+  /** The project log directory's run directories (runLogDir), oldest first. */
+  def runLogDirs(logDir: Path): Vector[Path] =
     if !Files.isDirectory(logDir) then Vector.empty
     else
       directoryEntries(logDir)
-        .filter(p => p.getFileName.toString.startsWith(prefix))
-        .filter(p => p.getFileName.toString.endsWith(".log"))
+        .filter(path => path.getFileName.toString.matches(RunLogDirPattern) && Files.isDirectory(path))
         .sortBy(_.getFileName.toString)
+
+  /** A run directory's proxy audit logs: the container proxy's `proxy.log` first, then the host
+    * proxies' (RunOnHostProxy.projectAuditLog) in name order. */
+  def proxyLogsOf(runLogs: Path): Vector[Path] =
+    val (container, host) = directoryEntries(runLogs)
+      .filter(path => path.getFileName.toString.matches("proxy.*\\.log"))
+      .sortBy(_.getFileName.toString)
+      .partition(_.getFileName.toString == "proxy.log")
+    container ++ host
+
+  /** What `--egress-log` prints with no arguments: each run's proxy audit logs, oldest run first. */
+  def retainedProxyLogs(logDir: Path): Vector[Path] = runLogDirs(logDir).flatMap(proxyLogsOf)
 
   /**
    * The inspected hosts out of a --print-ruleset answer: the hosts of its `allow https://` lines,
@@ -261,7 +279,7 @@ object EgressRules:
     val logDir = logStateRoot(os).resolve(id)
 
     if extra.isEmpty then
-      val files = retainedLogs(logDir)
+      val files = retainedProxyLogs(logDir)
       if files.isEmpty then fail("no proxy logs for this project\n" + pathLine("egress log dir", logDir, os))
       files.foreach: file =>
         System.err.println(pathLine("==>", file, os, separator = " "))

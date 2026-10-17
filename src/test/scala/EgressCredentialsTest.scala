@@ -270,21 +270,20 @@ class EgressCredentialsTest extends munit.FunSuite:
     EgressCredentials.scrub(edited)
     assert(!edited.environment.containsKey(name))
 
-  test("a host proxy's audit log is named after the channel log, so --egress-log lists it and pruning keeps it"):
-    val channelLog = Path.of("/s/log/p/run-on-host-20261004-120000-abcd1234.log")
+  test("a host proxy's audit log is named after its session's log, in the channel log's directory"):
+    val channelLog = Path.of("/s/log/p/run-20261004T120000Z-abcd1234/run-on-host.log")
     assertEquals(
       RunOnHostProxy.projectAuditLog(channelLog, Path.of("/tmp/ko-agent-501/rXYZ/proxy-sbt-0123456789ab.log")),
-      Some(Path.of("/s/log/p/proxy-20261004-120000-rXYZ-proxy-sbt-0123456789ab-abcd1234.log")),
+      Some(Path.of("/s/log/p/run-20261004T120000Z-abcd1234/proxy-sbt-0123456789ab-rXYZ.log")),
     )
     assertEquals(
-      EgressRules.logsToPrune(
-        Vector("proxy-20261004-120000-rXYZ-proxy-sbt-0123456789ab-abcd1234.log"), retain = 0, Set("abcd1234"),
-      ),
-      Vector.empty,
+      RunOnHostProxy.projectAuditLog(channelLog, Path.of("/tmp/ko-agent-501/s42/proxy.log")),
+      Some(Path.of("/s/log/p/run-20261004T120000Z-abcd1234/proxy-s42.log")),
     )
-    assertEquals(RunOnHostProxy.projectAuditLog(Path.of("/s/log/p/other.log"), Path.of("/t/r/proxy.log")), None)
+    // No session directory to name it after.
+    assertEquals(RunOnHostProxy.projectAuditLog(channelLog, Path.of("/proxy.log")), None)
     // The proxy started again for the same runtime in the launch.
     assertEquals(
       RunOnHostProxy.projectAuditLog(channelLog, Path.of("/tmp/ko-agent-501/rXYZ/proxy-sbt-0123456789ab.log"), 2),
-      Some(Path.of("/s/log/p/proxy-20261004-120000-rXYZ-proxy-sbt-0123456789ab-2-abcd1234.log")),
+      Some(Path.of("/s/log/p/run-20261004T120000Z-abcd1234/proxy-sbt-0123456789ab-rXYZ-2.log")),
     )

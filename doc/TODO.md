@@ -578,7 +578,8 @@ runner, whose writers die only with their requester, and not the shim, which rea
 One form would, and it waits on a measurement:
 
 - [ ] Generic, in the runner: no output for N seconds ends the command through the same SIGTERM,
-  so the command's logs are kept, with a stderr line naming the bound and the host command log.
+  so the command's logs are kept, with a stderr line naming the bound and the run's
+  `run-on-host.log`.
   - Silence is measured where the command's bytes are read, and time the pump spends blocked on a
     slow requester does not count.
   - N must exceed a healthy silence — a module compiling, a large download, which the proxy logs

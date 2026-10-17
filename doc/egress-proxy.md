@@ -266,17 +266,25 @@ the full ruleset there avoids including the host list in every prompt.
 ## Audit what has been allowed or denied
 
 Run with `--egress-log` from the project directory. Every proxy connection is logged,
-and the proxy appends the log to a per-run file on the host, under
+and the proxy appends the log to a file in the run's directory on the host, which the launch's
+`log dir` line names:
 
     ~/.local/state/ko-agent-sandbox/log/<project>/     # Linux / macOS / WSL
     %LOCALAPPDATA%\ko-agent-sandbox\log\<project>\     # native Windows
+      run-<start>-<run>/           <start> in UTC, as 20261017T022446Z; <run> its containers' suffix
+        proxy.log                  the container proxy's audit log
+        run-on-host.log            the host command runner's log; only with --run-on-host
+        microphone.log             the relay's log; only with --mic
+        <proxy log>-<session>.log  a host program proxy's audit log
 
-- With no arguments, `--egress-log` prints the retained files oldest first — the newest 20 runs,
-  and any older one whose session is still running, since a live proxy is still appending to its
-  file.
-- A `--run-on-host` program's proxy has its own file there, named after its run as the container
-  proxy's is. It is the file that proxy writes, so it fills during the run and stays when the
-  proxy's session directory is removed (`RunOnHostProxy.keepAuditLog`).
+- With no arguments, `--egress-log` prints each run's proxy audit logs, oldest run first and
+  `proxy.log` first within a run.
+- A launch keeps the newest 20 run directories, and any older one while either container of its
+  run exists, running or not, since its proxy, runner or relay may still append to its files.
+- A `--run-on-host` program's proxy has its own file there, named after its session's log
+  (`proxy-sbt-<hash>-r123.log`), with `-2`, `-3` and so on before `.log` when the runtime's proxy
+  starts again in the run. It is the file that proxy writes, so it fills during the run and stays
+  when the proxy's session directory is removed (`RunOnHostProxy.keepAuditLog`).
 - A host command whose proxy's file cannot be created there is refused, with a message naming the
   directory to make writable.
 - Startup lines come first; SECURITY.md, "The audit line grammar", lists them.
@@ -291,8 +299,9 @@ SECURITY.md, "The audit line grammar", has every field and reason.
 
 If a log line cannot be written, the proxy refuses every new connection for the rest of the
 session, and `ko-sandbox-egress-check <host>` prints
-`audit log cannot be written: <the I/O error>`. Make the file on the launch's `egress log` line
-writable again — usually by freeing disk space — and relaunch (SECURITY.md, "Egress proxy").
+`audit log cannot be written: <the I/O error>`. Make `proxy.log` in the directory on the launch's
+`log dir` line writable again — usually by freeing disk space — and relaunch (SECURITY.md, "Egress
+proxy").
 
 ## TLS inspection
 

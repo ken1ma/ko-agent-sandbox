@@ -124,7 +124,7 @@ object HostCommands:
    *   - purple: what the user chose where it weakens nothing — the project directory, the
    *     workspace mode, the egress profile, an upstream proxy (chosen) — a hue of its own so it
    *     is never read as a severity.
-   *   - gray: what is there to look up, not to read — the egress log's long path (lookedUp).
+   *   - gray: what is there to look up, not to read — the long path of the run's log directory (lookedUp).
    *     Text that is skipped on every ordinary launch, tinted so the reader learns to skip it
    *     without learning to skip the lines around it.
    *   - green, orange and red on a headroom figure: a measurement's scale, outside this ranking
