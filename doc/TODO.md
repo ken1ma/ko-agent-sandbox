@@ -176,47 +176,130 @@ measurement.
   each refusal's message, what the user does, and the document that records its reason, which
   stays where it was decided.
 
-## Deferred — refuse user namespaces under `NESTING=none`
+## Refuse user namespaces and mounts under `NESTING=none`
 
-- [ ] A launcher-owned seccomp profile for `NESTING=none` that refuses a user namespace, only if
-  a kernel vulnerability reachable from an unprivileged user namespace enters the threat model.
-  Measured in a default session (2026-09-22): `unshare -Ur true` returns 0, so the
-  containers-common default profile allows it; `io_uring_setup` returns `ENOSYS`, so that
-  interface needs no rule.
-  - Two rules, not one: `clone` and `unshare` carry their flags in a register, so the filter
-    refuses `CLONE_NEWUSER` and passes the rest. `clone3` carries them in a `struct clone_args`
-    the filter cannot read (a seccomp filter sees register values only,
-    https://www.kernel.org/doc/html/latest/userspace-api/seccomp_filter.html), and it reaches the
-    kernel here (`EINVAL` on a zero-size argument), so the profile answers every `clone3` with
-    `ENOSYS`. That refuses each caller without a fallback to `clone`; measure that the image's
-    libc, Node, the JVM, Python and each installed agent still spawn processes under the profile.
-  - SECURITY.md, "Container, runtime and kernel escape", answers a kernel exploit with a stronger
-    isolation layer, "not more flags here". This profile claims no containment of a running
-    exploit; it removes a kernel interface. Adopt it only after measurements confirm that no
-    installed agent, as the image configures it, creates a user namespace, and record that
-    distinction in that paragraph. `same-uid` keeps the default profile: rootless podman inside
-    the session creates user namespaces.
-  - Cost: every unprivileged `bwrap` call fails at its first step. In this image `bwrap`
-    (bubblewrap 0.12.0) with `--unshare-user`, bind mounts and a tmpfs works today; `--proc` and
-    `--dev` fail with `Permission denied` (a fresh `/proc` under podman's masked entries, and
-    devpts). Claude Code's Bash-command sandbox is off in the managed settings and Codex runs
-    `danger-full-access` (`container/ko-agent-sandbox/Containerfile` has the reasons), so
-    neither calls it as configured. `agy` 1.2.7 in print mode runs a shell command in the
-    session's own user, pid and mount namespaces (the command's `/proc/self/ns/*` inodes equal
-    the session shell's; measured 2026-09-22). Measure `kiro-cli`, `copilot` and `opencode` the
-    same way, and whether Chromium's own sandbox (Playwright) then needs `--no-sandbox`. A
-    project's own bubblewrap or `unshare -Ur` step fails with `Operation not permitted`, so the
+- [ ] A launcher-owned seccomp profile for `NESTING=none` that refuses creating a user namespace,
+  so a session holds no capability in any namespace and reaches no kernel interface one unlocks.
+  `same-uid` keeps the default profile: rootless podman inside the session creates user
+  namespaces and mounts.
+  - Measured in a default session: `unshare -Ur true` returns 0, so the containers-common
+    default profile allows it, and `io_uring_setup` returns `ENOSYS`, so that interface needs no
+    rule (2026-09-22); after `unshare -Urm`, `CapEff` is `000001ffffffffff` and mounting `tmpfs`,
+    a bind and overlayfs succeeds (2026-10-17).
+  - `clone` and `unshare` carry their flags in a register, so the filter refuses `CLONE_NEWUSER`
+    and passes the rest.
+  - `clone3` carries them in a `struct clone_args` the filter cannot read (a seccomp filter sees
+    register values only, https://www.kernel.org/doc/html/latest/userspace-api/seccomp_filter.html),
+    and it reaches the kernel here (`EINVAL` on a zero-size argument), so the profile answers
+    every `clone3` with `ENOSYS`. A caller with no fallback to `clone` then fails:
+    - glibc 2.41, the image's, retries with `clone` on `ENOSYS`
+      (`sysdeps/unix/sysv/linux/clone-internal.c`, `__clone_internal`), and so does
+      `posix_spawn`, except with `POSIX_SPAWN_SETCGROUP`, which then fails with `ENOTSUP`
+      (`spawni.c`, `__spawnix`).
+    - Go calls `clone3` with no fallback for a launch that sets `SysProcAttr.UseCgroupFD` or
+      `CLONE_NEWTIME` in `Cloneflags`, and `clone` for any other (`src/syscall/exec_linux.go`,
+      `forkAndExecInChild1`, read on `master`).
+  - Measured 2026-10-17 with these rules installed by hand on one shell: `unshare -Ur` and
+    `bwrap --unshare-user` are refused; a thread and a child process in Python 3.14, Node 24 and
+    Java 25, `git status`, `rg` and `uv run` work; `claude`, `codex`, `kiro-cli`, `copilot`,
+    `opencode` and `agy` start (`--version`).
+  - Joining an existing namespace needs no rule: the containers-common profile allows `setns`
+    only with `CAP_SYS_ADMIN` (`includes.caps`), which the session lacks.
+- [ ] Before shipping, measure each installed agent, as the image configures it, running a
+  command under the profile, and report one that fails to the user.
+  - `agy` 1.2.7 in print mode runs a shell command in the session's own user, pid and mount
+    namespaces (the command's `/proc/self/ns/*` inodes equal the session shell's; measured
+    2026-09-22). Measure `kiro-cli`, `copilot` and `opencode` the same way.
+  - Measure whether Playwright's Chromium starts.
+- [ ] The same profile refuses the mount syscalls by number: `mount`, `fsopen`, `fsconfig`,
+  `fsmount`, `fspick`, `move_mount`, `open_tree`, `open_tree_attr`, `mount_setattr`, `umount2` and
+  `pivot_root` (Linux v7.1, `scripts/syscall.tbl`). Without a user namespace each fails already
+  for want of a capability; the rules keep a mistake in the namespace rules from reopening a
+  mount, which `plan-bpf-lsm-cgroup.md` ("Mounts") relies on.
+  - The whole family, not `mount` and `fsopen` alone: a mount that `fsmount` or `open_tree` with
+    `OPEN_TREE_CLONE` returns is usable through its descriptor before `move_mount` attaches it.
+    Measured 2026-10-17: a file created through such a detached clone lands in the cloned
+    directory.
+- [ ] In the same change, `SECURITY.md`'s "Container, runtime and kernel escape", which answers a
+  kernel exploit with a stronger isolation layer, "not more flags here", records the distinction:
+  this profile removes kernel interfaces and claims no containment of a running exploit.
+- [ ] Build the profile:
+  - Derive it from the installed containers-common default at `--build`, and test that it differs
+    only in the added rules; a copied profile drifts on a podman upgrade.
+  - The podman server, not the launcher, reads the profile file, so on macOS and Windows it must
+    sit under a host share the machine mounts; the launcher's state root is under one today,
+    since the server resolves the audit log's bind at a path there.
+  - It joins the session's `createCommand` beside `--cap-drop=ALL` on the branch that skips it
+    for `same-uid` (`nestedArgs`), not the proxy container's.
+  - Ship the loosening in the same change: a variable in the `KO_AGENT_SANDBOX_NESTING` style,
+    exported into the session and printed every session as the nesting loosening is, so the
+    first `Operation not permitted` has its switch.
+    - It lifts the mount rules with the user-namespace rules, since a tool that creates a user
+      namespace to sandbox, such as `bwrap`, mounts too. `plan-bpf-lsm-cgroup.md` ("Mounts")
+      judges such a session's mounts as it judges `same-uid`'s.
+  - Test the generated profile in a session (`SessionBoundaryTest.scala`), not a hand-installed
+    filter: `clone` and `unshare` with `CLONE_NEWUSER` fail with `EPERM`, `clone3` with
+    `ENOSYS`, each mount syscall is refused, and a thread and a child process still start; with
+    the loosening set, `unshare -Ur` succeeds. Run it on each architecture the launcher supports.
+- Cost:
+  - Every unprivileged `bwrap` call fails at its first step. In this image `bwrap` (bubblewrap
+    0.12.0) with `--unshare-user`, bind mounts and a tmpfs works today; `--proc` and `--dev` fail
+    with `Permission denied` (a fresh `/proc` under podman's masked entries, and devpts).
+  - Claude Code's Bash-command sandbox is off in the managed settings and Codex runs
+    `danger-full-access` (`container/ko-agent-sandbox/Containerfile` has the reasons), so neither
+    calls `bwrap` as configured.
+  - A project's own bubblewrap or `unshare -Ur` step fails with `Operation not permitted`, so the
     container instructions name the refusal.
-  - Derive the profile from the installed containers-common default at `--build`, and test that
-    it differs only in the added rules; a copied profile drifts on a podman upgrade. The podman
-    server, not the launcher, reads the profile file, so on macOS and Windows it must sit under a
-    host share the machine mounts; the launcher's state root is under one today, since the
-    server resolves the audit log's bind at a path there. It joins the session's `createCommand`
-    beside `--cap-drop=ALL` on the branch that skips it for `same-uid` (`nestedArgs`), not the
-    proxy container's. Ship the loosening in the same change: a variable in the
-    `KO_AGENT_SANDBOX_NESTING` style, exported into the session and printed every session as the
-    nesting loosening is, so the first `Operation not permitted` has its switch. Measure the
-    `clone3` fallback before any of this: a runtime without one ends the item.
+
+## Capabilities a `NESTING=none` session could keep
+
+- [ ] Decide whether `NESTING=none` keeps `CAP_SYS_CHROOT`, which the session's `--cap-drop=ALL`
+  removes (`AgentSandboxLauncher.scala`). Without it, containers-common's seccomp profile answers
+  `chroot` with `EPERM`, in a user namespace the session creates too (measured 2026-10-17:
+  `unshare -Ur chroot / true` fails with `Operation not permitted`).
+  - Grant it only for a tool the sessions run that needs it. Chromium's namespace sandbox is not
+    one: it also needs a user namespace, which "Refuse user namespaces and mounts under
+    `NESTING=none`" refuses.
+  - Record each risk of `chroot` with what removes it, starting from `SECURITY.md` ("No
+    containers inside the sandbox by default"), which judges it for `same-uid`: nothing in the
+    sandbox is chroot-confined, and `no-new-privileges` leaves no setuid program for a crafted
+    root to confuse. podman grants the capability to every process in the session.
+- [ ] Look for other capabilities a session could hold without weakening a boundary, and grant
+  only those a tool the sessions run needs. For each:
+  - the kernel checks that test it, and in which user namespace: podman grants it in the rootless
+    container's user namespace, so a check against the initial namespace still fails, as for
+    `CAP_LINUX_IMMUTABLE` and `CAP_DAC_READ_SEARCH` in `plan-bpf-lsm-cgroup.md` ("Inventory",
+    rows 17 and 21);
+  - the syscalls the seccomp profile allows only with it, such as `chroot` for `CAP_SYS_CHROOT`
+    and `open_by_handle_at` for `CAP_DAC_READ_SEARCH` (`includes.caps` in
+    https://github.com/containers/container-libs/blob/main/common/pkg/seccomp/seccomp.json; read
+    the copy the podman machine's containers-common package installs);
+  - which boundary in `SECURITY.md` or `plan-bpf-lsm-cgroup.md` relies on its absence.
+- [ ] A capability granted changes, in the same change, the set the entrypoint's check
+  (`ko-sandbox-entrypoint`) and `SessionBoundaryTest.scala` expect, and the statements of it: the
+  first section of `container/ko-agent-sandbox/AGENTS-SANDBOX.md`, and, for `CAP_SYS_CHROOT`, the
+  `same-uid` launch line (`LaunchMessages.scala`, `nestingLine`) and `README.md`'s
+  `KO_AGENT_SANDBOX_NESTING` entry, which name it as what `same-uid` adds.
+
+## Claude Code's auto mode, as a launcher option
+
+- [ ] A launcher option that starts `claude` in auto mode instead of the image's managed
+  `"defaultMode": "bypassPermissions"` (`container/ko-agent-sandbox/Containerfile`), so a
+  classifier blocks actions that appear driven by hostile content Claude read
+  (https://code.claude.com/docs/en/permission-modes.md). Name it like the README's other options.
+  - The option must reach every `claude` the session starts, a `claude` typed in the session's
+    shell included, so it sets the session's managed settings, not a command-line flag. `/etc` is
+    read-only in a session and `CLAUDE_CODE_MANAGED_SETTINGS_PATH` is a stub in 2.1.274
+    (`Containerfile`); a read-only bind of a second settings file over
+    `/etc/claude-code/managed-settings.json` is the candidate. Read whether managed settings can
+    also keep the session from switching back to `bypassPermissions`.
+  - Measure, under each egress profile, that the classifier works through the proxy: its review
+    rides on the model requests, or Claude Code sends its own classifier requests when a proxy
+    drops them; and what a session shows when the server rejects auto mode for the account.
+  - Decide whether the option covers `ko-review`'s `claude` reviewer, which `doc/ko-review.md`
+    describes under the managed `bypassPermissions`, and update `doc/limitations.md`'s prompts
+    that remain.
+  - Check whether Codex, `agy` and the other agents have a counterpart worth the same option.
 
 ## Deferred — executable agent configuration in the persistent volume
 

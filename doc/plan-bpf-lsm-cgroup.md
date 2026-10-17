@@ -23,9 +23,11 @@ sections before them are what the phases rest on.
 
 - The property `../fuse/ko-agent-fs/doc/git-metadata.md` states: no sandbox write makes a later
   host `git` run a program the sandbox chose or open an object directory it chose. The immutable
-  set, the name rule and the double-sided rename and link rules are that document's.
-- `.ko-agent-sandbox` is neither created at any depth nor written (`../SECURITY.md`, "A project
-  loosening its own confinement").
+  set, the name rule and the double-sided rename and link rules are that document's, except that
+  a directory may be created and removed at any name, under the rules "Directories" adds.
+- No non-directory entry is created inside a `.ko-agent-sandbox` at any depth, and nothing under
+  one is written (`../SECURITY.md`, "A project loosening its own confinement"; "Directories" has
+  why directories there may be created).
 - The file rules keep the host-executed files read-only, with the launcher-resolved
   `readonly-path` lines for relocated hooks and symlink aliases (`file-rules.md`).
 - The policy is effective for the sandbox's cgroup before any program of the image runs in the
@@ -61,16 +63,21 @@ reason, and its answer here:
 - Read-only mounts protect a path, not a name: a host rename over the file takes the protection
   away, a nested repository has none, an NTFS short name passes beside the mount, and an absent
   `.git` needs a mount target created in the project. The hooks here judge the name and the
-  object at every mutation, at any depth, and create nothing in the project; the proof's
-  fixture lives under the launcher's state directory ("Lifecycle").
+  object at every mutation but a directory's creation and removal, at any depth, and create
+  nothing in the project; the proof's fixture lives under the launcher's state directory
+  ("Lifecycle").
 
-`design.md`'s principle "Do not trade security for performance" stands: the backend is built to
-hold the same property and the same file rules, and Phase 2's gate is where every route of the
-inventory is shown covered by the ten slots or the launcher's seccomp rule ("The hooks"). What
-else it changes is "What is gained and what is lost", and no protection is dropped for speed: a
-route neither the slots nor the rule holds is a pending decision in "Decisions still open", never
-a recorded loss that a gate passes. The two documents above are updated in the change that adds
-the backend.
+`design.md`'s principle "Do not trade security for performance" stands: the backend is built to hold
+the same property and the same file rules, and Phase 2's gate is where every route of the inventory
+is shown covered by the hooks, the launcher's seccomp rules ("Attributes, flags and ioctls",
+"Mounts") or "Directories". What else it changes is "What is gained and what is lost", and no
+protection is dropped for speed: a route neither a hook nor the rules hold is the user's decision,
+taken in "Directories" or pending in "Decisions still open", never a recorded loss that a gate
+passes. The change that adds the backend updates the two documents above, and the statements that
+refuse a directory at a guarded name: `../SECURITY.md`, "A project loosening its own confinement"
+and "The host's git executing what the sandbox wrote", `git-metadata.md`, "The immutable set" and
+"The name rule", and `file-rules.md`, where no line applies in a Git directory's operational state.
+It also names what the seccomp rules refuse in `../container/ko-agent-sandbox/AGENTS-SANDBOX.md`.
 
 
 ## The mechanism
@@ -112,43 +119,96 @@ fact below is to be re-read before Phase 2 relies on it.
 
 ### The hooks
 
-The ten hooks below take all ten slots `CGROUP_LSM_NUM` gives, and hold the names and the writes
-at the VFS, whatever the backing. The name hooks are the `inode_*` hooks, not the `path_*` hooks
-the syscalls call first, because overlayfs changes its upper layer through the `inode_*` hooks
-alone ("Inventory", row 20); each hook judges row 20's changes of its kind as well.
+Eight hooks take eight of the ten slots `CGROUP_LSM_NUM` gives, and hold the writes and the names of
+everything but directories at the VFS, whatever the backing. The name hooks are the `inode_*` hooks,
+not the `path_*` hooks the syscalls call first, because overlayfs, which a session can mount where
+"Mounts" allows it, changes its upper layer through the `inode_*` hooks alone ("Inventory", row 20);
+each hook judges row 20's changes of its kind as well. Slots 9 and 10 stay free for what "Decisions
+still open" may give them.
 
 | slot | hook            | decides                                                   | rows      |
 | ---- | --------------- | --------------------------------------------------------- | --------- |
 | 1    | `inode_create`  | a new file's name and parent: `creat`, `O_CREAT`, `mknod` | 1         |
 | 2    | `inode_mknod`   | a new FIFO's, socket's or device's name and parent        | 2         |
-| 3    | `inode_mkdir`   | a new directory's name and parent                         | 3         |
-| 4    | `inode_symlink` | a new symlink's name, parent and target syntax            | 4         |
-| 5    | `inode_link`    | the source object and the new name                        | 5         |
-| 6    | `inode_rename`  | both names and parents, each way for `RENAME_EXCHANGE`    | 6, 7      |
-| 7    | `inode_unlink`  | removal of a protected entry                              | 8         |
-| 8    | `inode_rmdir`   | removal of a protected directory                          | 9         |
-| 9    | `file_open`     | an open for writing of a protected object                 | 10–13, 19 |
-| 10   | `inode_setattr` | `chmod`, `chown`, times, `truncate`, `O_TRUNC`            | 11, 14    |
+| 3    | `inode_symlink` | a new symlink's name, parent and target syntax            | 4         |
+| 4    | `inode_link`    | the source object and the new name                        | 5         |
+| 5    | `inode_rename`  | both names and parents, each way for `RENAME_EXCHANGE`    | 6, 7      |
+| 6    | `inode_unlink`  | removal of a protected entry                              | 8         |
+| 7    | `file_open`     | an open for writing of a protected object                 | 10–13, 19 |
+| 8    | `inode_setattr` | `chmod`, `chown`, times, `truncate`, `O_TRUNC`            | 11, 14    |
 
 `inode_create` judges a `mknod` of a regular file; the other types reach `inode_mknod`
 (`fs/namei.c`, `filename_mknodat`).
 
-`inode_rmdir`'s slot is the one "Decisions still open" weighs under `NESTING=same-uid`. Read in
-`policy.rs` at the commit "Inventory" pins: without the hook, a session can remove, leaves first,
-a protected directory whose tree holds no protected non-directory; one holding such an entry
-stays, since unlinking it is refused.
+### Directories
 
-- Such a directory is `.git/hooks` holding no hook, empty directories at most; a gitdir whose
-  protected entries are such directories, which the session empties first, since in the git rules
-  a gitdir's root is the one protected directory whose entries can be operational
-  (`classify_within_gitdir`); or a `readonly` directory whose non-directories later `writable`
-  lines all lift (`child_rule_context`).
-- The removed name cannot be refilled: `mkdir`, creation and a rename onto it stay refused
-  (`authorize_create`, `authorize_rule_create`).
-- `objects` and `objects/info` are pinned, not protected: the filter removes them too, since only
-  `mkdir` can create them again, which starts them empty (`is_pinned_within_gitdir`).
+The plan judges neither `mkdir` nor `rmdir` (rows 3 and 9): a session creates and removes
+directories at any name, `.git` and `.ko-agent-sandbox` included. Every non-directory put into a
+new directory is still judged at the position it lands at, by `inode_create`, `inode_mknod`,
+`inode_symlink`, `inode_link` or `inode_rename`. A directory filled elsewhere cannot take a guarded
+name, since `inode_rename` refuses a rename onto one (`authorize_create`).
 
-No slot is left for rows 15–18. The filter refuses each under the whole workspace, since it does
+A new `.git` or `.ko-agent-sandbox` would still change how the classifier judges what lands below
+it, so three rules depart from `policy.rs`:
+
+- **No non-directory `HEAD` comes to be directly in a directory whose folded name is `.git`, at any
+  position, unless it replaces a non-directory `HEAD`.** Git's own update, renaming `HEAD.lock`
+  over `HEAD`, stays allowed.
+  - A directory placeholder does not count: `mkdir sub/.git/HEAD` followed by a
+    `RENAME_EXCHANGE` with a `HEAD.lock` file is refused, since the entry replaced is a directory
+    (rename(2) lets the two operands of an exchange differ in type).
+  - Git v2.51 accepts a gitdir only when its `HEAD` is a regular file or a symlink naming a ref
+    (`setup.c`, `is_git_directory`, `validate_headref`), and walks past a `.git` directory that
+    fails, to the parent (`setup_git_directory_gently_1`). A `.git` the session makes therefore
+    never becomes a repository.
+  - Without the rule, a planted `sub/.git` holding `HEAD`, `objects/` and `refs/` would be a
+    repository for host `git` in `sub/`: a global relative `core.hooksPath` would then resolve to
+    a writable `sub/` path and run a hook the session wrote, also on a host whose
+    `safe.bareRepository=explicit` refuses a bare layout there.
+  - Applying it at any position covers a `.git` inside a gitdir's operational trees, such as
+    `.git/objects/x/.git`, where `classify_within_gitdir` admits every name, `config` included.
+  - Cost: a session that removes a `HEAD` cannot restore it. The commands that create one,
+    `git init`, `git clone` and `git worktree add`, are already blocked.
+- **A `readonly` line keeps applying below a `.git` entry.** `policy.rs` lets no line apply in git
+  state (`file-rules.md`), so without the rule a `.git` made under `readonly locked` would make
+  `locked/.git/objects/payload` writable. Cost: a host repository below a `readonly` line is
+  read-only to the session's `git`.
+- **A `.ko-agent-sandbox` component protects everything below it in git state too.**
+  `child_context` recognizes the name only outside git state, so `.git/objects/x/.ko-agent-sandbox`
+  would otherwise accept files. No name git writes collides: `git check-ref-format` refuses a ref
+  component that begins with a dot, and the other operational trees hold git's own names.
+
+What else a session can do with directories, and why each is safe:
+
+- An empty `.git` or `.ko-agent-sandbox`, or a tree of empty directories in one: no file can be
+  created in it but what the classifier admits, and a `.git` without `HEAD` is no repository.
+- An empty directory where a host program acts on a name's existence:
+  - `rr-cache` switches rerere on in host merges (`classify_within_gitdir`); every entry under it
+    stays protected, so rerere replays only resolutions the host recorded;
+  - a directory at a hook's name passes git's `access(X_OK)` test and then fails to start, which
+    counts as a failed hook (git v2.51, `hook.c`, `find_hook`, `notify_start_failure`): a `pre-*`
+    hook's command stops, and a `post-*` hook's failure is reported;
+  - in `.ko-agent-sandbox`, a directory at a rule file's name or at a name the launcher does not
+    read refuses the next launch, and a directory holding no rule reads as absent
+    (`SandboxProject.readBoundaryRuleFiles`).
+  - The last two fail closed and cost availability, which `../SECURITY.md` ("Resource
+    exhaustion") does not bound.
+- The removal of a protected directory the session can empty, leaves first, read in `policy.rs`
+  at the commit "Inventory" pins. One holding a protected non-directory stays, since unlinking it
+  is refused.
+  - Such a directory is `.git/hooks` holding no hook, empty directories at most; a gitdir whose
+    protected entries are such directories, which the session empties first, since in the git
+    rules a gitdir's root is the one protected directory whose entries can be operational
+    (`classify_within_gitdir`); or a `readonly` directory whose non-directories later `writable`
+    lines all lift (`child_rule_context`).
+  - Only `mkdir` refills the name, and it starts the directory empty, which returns it to the
+    cases above; a removed gitdir's `HEAD` stays refused.
+  - `objects` and `objects/info` are pinned, not protected: the filter removes them too, since
+    only `mkdir` can create them again (`is_pinned_within_gitdir`).
+
+### Attributes, flags and ioctls
+
+No taken slot holds rows 15–18. The filter refuses each under the whole workspace, since it does
 not implement the operation ("Inventory", filter column `none`; for xattrs,
 `../fuse/ko-agent-fs/doc/verification-log.md`, "Extended attributes"). The routes:
 
@@ -177,8 +237,8 @@ nor a `security.` or `system.` xattr, for which `xattr_permission` returns befor
 check, nor a flag change, which `vfs_fileattr_set` admits by ownership (`fs/file_attr.c`,
 `inode_owner_or_capable`). What holds them:
 
-- Under `NESTING=none`, a seccomp rule in the launcher's profile, which takes no slot and
-  refuses:
+- Under `NESTING=none`, a seccomp rule added to the launcher's profile ("Mounts"), which takes no
+  slot and refuses:
   - the `setxattr` and `removexattr` syscall families, `setxattrat` and `removexattrat`
     included;
   - `file_setattr`;
@@ -187,15 +247,14 @@ check, nor a flag change, which `vfs_fileattr_set` admits by ownership (`fs/file
     32-bit forms included.
 - Under `NESTING=same-uid`, whether a nested podman's storage needs the xattr syscalls,
   `file_setattr` or the refused ioctl commands is a Phase 2 measurement. The rule cannot refuse a
-  family the nested podman needs, no slot is free, and which routes then stay open on such
-  sessions is a user decision in "Decisions still open", with each route's consequence stated
-  there. Phase 2's gate stays unmet for that mode until it is taken.
+  family the nested podman needs; the two free slots can hold two of its hooks, and which routes
+  stay open on such sessions is a user decision in "Decisions still open", with each route's
+  consequence stated there. Phase 2's gate stays unmet for that mode until it is taken.
 
 What the seccomp rule reaches and what it misses:
 
 - Every xattr, ACL and flag change a process requests enters through those syscalls;
-  `io_uring_setup` already answers `ENOSYS` in a session (`TODO.md`, "Deferred — refuse user
-  namespaces under `NESTING=none`").
+  `io_uring_setup` already answers `ENOSYS` in a session ("Inventory", row 22).
 - Row 18 is a list of commands, not a syscall family: the rule refuses the commands the row lists.
   xfs's and btrfs's are listed before Phase 2's gate, and a kernel change reopens the row
   ("Environment evidence").
@@ -203,7 +262,8 @@ What the seccomp rule reaches and what it misses:
   `ENOTSUP` to the xattr syscalls, so that `cp -a` drops attributes silently as through the
   filter, and `ENOTTY` to the ioctl commands, as FUSE answers for the filter (`fs/fuse/ioctl.c`).
 - overlayfs's own writes to its upper layer reach `inode_setxattr` without those syscalls
-  (row 20). Neither a slot nor the rule holds them: a pending decision in "Decisions still open".
+  (row 20). Where "Mounts" refuses the overlay mount, none is made; elsewhere neither a slot nor
+  the rule holds them, a pending decision in "Decisions still open".
   - overlayfs sets its `user.overlay.*` names on existing directories of the upper layer,
     protected ones included: `uuid` on the upper root at its first mount and `impure` on a
     parent (`fs/overlayfs/util.c`, `ovl_init_uuid_xattr`, `ovl_set_impure`).
@@ -212,9 +272,11 @@ What the seccomp rule reaches and what it misses:
 
 Hooks the plan does not need, and the fact that excuses each:
 
-- `path_mknod`, `path_mkdir`, `path_symlink`, `path_link`, `path_rename`, `path_unlink`,
-  `path_rmdir`: each syscall of rows 1–9 also calls the `inode_*` hook of its row, and overlayfs's
-  changes to its upper layer call the `inode_*` hook alone (row 20).
+- `path_mknod`, `path_symlink`, `path_link`, `path_rename`, `path_unlink`: each syscall of rows
+  1, 2 and 4–8 also calls the `inode_*` hook of its row, and overlayfs's changes to its upper layer
+  call the `inode_*` hook alone (row 20).
+- `inode_mkdir`, `inode_rmdir`, `path_mkdir`, `path_rmdir`: directories are not judged
+  ("Directories").
 - `path_truncate`, `file_truncate`, `path_chmod`, `path_chown`: `fs/open.c` routes `do_truncate`,
   `chmod_common` and `chown_common` through `notify_change`, whose one security call is
   `security_inode_setattr`.
@@ -225,6 +287,20 @@ Hooks the plan does not need, and the fact that excuses each:
   predates it, and the launcher passes no host descriptor into the container: it never uses
   `--preserve-fds`.
 
+### Mounts
+
+Under `NESTING=none`, the launcher's seccomp profile refuses creating a user namespace and every
+mount syscall (`TODO.md`, "Refuse user namespaces and mounts under `NESTING=none`"). That item
+ships before this backend, and the backend does not ship without it.
+
+- It removes row 20's overlay mount, whose `user.overlay.*` writes no taken slot holds, and row
+  21's bind of the workspace at a second path: without a user namespace the session holds no
+  capability to mount with.
+- The profile has neither rule under `NESTING=same-uid`, where a nested podman creates user
+  namespaces and mounts, nor on a `NESTING=none` session that sets the profile's loosening
+  variable. On both, the hooks judge rows 20 and 21 ("The policy"), and overlayfs's
+  `user.overlay.*` names are the decision "Decisions still open" holds for them.
+
 
 ## The policy
 
@@ -234,9 +310,9 @@ The program classifies by object and position, never by a path string:
   controller from the VM's own `stat` of the bind source. The program walks `d_parent` from the
   target dentry, bounded, folding each name as `policy.rs` folds (`git-metadata.md`, "The name
   rule"), until it meets the root or the filesystem root. Outside the root, everything is allowed.
-- A string from `bpf_path_d_path` is not an identity: unprivileged user namespaces work inside a
-  session (`unshare -Ur` succeeds), so a task can bind the workspace at a second path in a mount
-  namespace of its own.
+- A string from `bpf_path_d_path` is not an identity: where "Mounts" allows them, unprivileged user
+  namespaces work inside a session, so a task can bind the workspace at a second path
+  in a mount namespace of its own.
 - Inside the root, the walk's names give the position the filter's classifier uses: a `.git`
   component, the entries under it, `modules/<name>` and `worktrees/<name>`, `.ko-agent-sandbox`,
   and a file-rule line. The sandbox's policy also names the proof fixture's root as a second
@@ -249,6 +325,8 @@ The program classifies by object and position, never by a path string:
   controller records the roots under `modules/` at launch; a namespace without a recorded root
   stays wholly protected, the filter's own strict default, and the sandbox cannot add a root
   since the `.git` pointer its worktree needs is refused.
+- "Directories" adds three rules to the classifier: no new `HEAD` in a `.git`, a `readonly` line
+  applying below a `.git`, and a `.ko-agent-sandbox` protected in git state too.
 - A second name of a guarded entry, a hard link to a `.git` pointer file or an NTFS short name,
   is the same object, which the filter recognizes by comparing every ordinary entry with its
   guarded siblings on each lookup (`fs.rs`, `policy_name`), a lookup a program cannot make.
@@ -325,8 +403,8 @@ For each session:
 3. Prove the enforcement without trusting step 2's report, in two parts, both before any
    container exists.
    - A read-back by a separate program, with the controller's privileges and none of its code:
-     for each hook of the machine's set, the ten of "The hooks" unless the `NESTING=same-uid`
-     decision changes one, `BPF_PROG_QUERY` on the attach cgroup with `BPF_LSM_CGROUP`
+     for each hook of the session's set, the eight of "The hooks" and those a decision in
+     "Decisions still open" adds, `BPF_PROG_QUERY` on the attach cgroup with `BPF_LSM_CGROUP`
      lists the attached programs by id, as the kernel's own test does
      (`prog_tests/lsm_cgroup.c`, `query_prog_cnt`).
      - For each program, `BPF_OBJ_GET_INFO_BY_FD` gives its tag and its `map_ids`
@@ -341,10 +419,10 @@ For each session:
        hook, a `.ko-agent-sandbox`, and one entry per resolved rule line, and the sandbox's
        policy records that tree's root as a second root.
      - The launcher places a process of its own in the attach cgroup and runs one refused
-       operation per hook of that set against the fixture: `creat`, `mkfifo`, `mkdir`, `symlink`,
-       `link` and `rename` to a guarded name, `unlink` and `rmdir` of guarded entries, an open
-       for writing and a `chmod` of a guarded file, with a substituted hook's operation in place
-       of `rmdir`; then one write per rule-line entry and one write to an ordinary entry.
+       operation per hook of that set against the fixture: `creat`, `mkfifo`, `symlink`, `link`
+       and `rename` to a guarded name, an `unlink` of a guarded entry, an open for writing and a
+       `chmod` of a guarded file, and one operation per hook a decision adds; then one write per
+       rule-line entry and one write to an ordinary entry.
      - Each write's expected answer is derived from the whole ordered rule set, as the filter
        decides it (`file-rules.md`, "The rule file"): refused under a `readonly` line, allowed
        under a `writable` line such as the defaults' `writable node_modules`, and the later
@@ -465,7 +543,7 @@ The rows, where the table does not say it all:
 - Row 5: `AT_EMPTY_PATH`, a `/proc/self/fd` source and an `O_TMPFILE` file (row 19) included.
 - Row 7: `security_inode_rename` calls the hook twice for `RENAME_EXCHANGE`, operands swapped
   (`security/security.c`); `path_rename` receives the flags.
-- Row 9: "The hooks" has what removing a protected directory allows; read in `policy.rs`.
+- Row 9: "Directories" has what removing a protected directory allows; read in `policy.rs`.
 - Row 11: `do_dentry_open` calls `security_file_open` before it clears `O_TRUNC` from `f_flags`
   (`fs/open.c`), so `file_open` sees an `O_RDONLY | O_TRUNC` open, which has no `FMODE_WRITE`;
   `handle_truncate` then reaches `inode_setattr`. The filter counts it as a write.
@@ -480,14 +558,15 @@ The rows, where the table does not say it all:
     content (`may_dedupe_file`).
 - Row 14: `ftruncate`, `fchmod`, `fchmodat2`, `lchown`, `utimensat`, `utimes` and `futimesat`
   too; each reaches `notify_change` (`fs/attr.c`).
-- Row 17: no slot holds it; "The hooks" names the seccomp rule that does.
+- Row 17: no slot holds it; "Attributes, flags and ioctls" names the seccomp rule that does.
   - `FS_IOC_SETFLAGS` and `FS_IOC_FSSETXATTR` take a read-only descriptor
     (`fs/file_attr.c`, `ioctl_fssetxattr`), and `vfs_fileattr_set` admits the owner.
   - Only the append-only and immutable flags need `CAP_LINUX_IMMUTABLE` in the initial user
     namespace, and a project id is refused outside it.
   - Seccomp can refuse `file_setattr`, and the two ioctl commands by their command argument.
 - Row 18: commands a filesystem implements itself, outside `vfs_fileattr_set`; the seccomp rule
-  "The hooks" names refuses those listed here. The ones read in v7.1 take a read-only descriptor:
+  "Attributes, flags and ioctls" names refuses those listed here. The ones read in v7.1 take a
+  read-only descriptor:
   - ext4's `EXT4_IOC_SETVERSION` and `EXT4_IOC_SETVERSION_OLD`, refused under `metadata_csum`,
     set the generation and ctime directly; `ext4_compat_ioctl` maps `EXT4_IOC32_SETVERSION` and
     `EXT4_IOC32_SETVERSION_OLD` to them. They, `EXT4_IOC_MIGRATE` and `EXT4_IOC_ALLOC_DA_BLKS`
@@ -503,7 +582,8 @@ The rows, where the table does not say it all:
   with `EOPNOTSUPP` (`fs/fuse/dir.c`).
 - Row 20: no `path_*` hook runs. Measured in a session on 2026-10-15: after `unshare -Urm`,
   `mount -t overlay` with `userxattr` and layers on `tmpfs` succeeds, and `mkdir merged/.git`
-  lands in the upper layer.
+  lands in the upper layer. "Mounts" refuses the mount under `NESTING=none` unless the session
+  loosens the profile.
   - overlayfs changes the upper layer through `vfs_create`, `vfs_mkdir`, `vfs_rename` and
     their siblings, `notify_change` and `vfs_setxattr` (`fs/overlayfs/overlayfs.h`), which call
     the `inode_*` hooks only; `fs/namei.c` calls the `path_*` hooks from the syscalls' paths.
@@ -511,9 +591,10 @@ The rows, where the table does not say it all:
   - It accepts an upper layer whose dentries revalidate, FUSE's and virtiofs's among them, only
     with `d_type`, `RENAME_WHITEOUT` and xattrs (`fs/overlayfs/super.c`). By that reading the
     filter, which implements no xattrs, cannot be one; whether each share can, Phase 2 measures.
-- Row 21: a bind mount in a mount namespace of the session's own, or `open_by_handle_at`. The
-  hooks judge dentries ("The policy"). Without `CAP_DAC_READ_SEARCH` in the initial user
-  namespace, `open_by_handle_at` decodes directories only (`fs/fhandle.c`, `may_decode_fh`).
+- Row 21: a bind mount in a mount namespace of the session's own, which "Mounts" refuses where it
+  refuses row 20's, or `open_by_handle_at`. The hooks judge dentries ("The policy"). Without
+  `CAP_DAC_READ_SEARCH` in the initial user namespace, `open_by_handle_at` decodes directories only
+  (`fs/fhandle.c`, `may_decode_fh`).
 - Row 22: `io_uring_setup` answers `ENOSYS` in a session.
 
 The source read is Linux v7.1. Upstream v6.18 makes the same calls for rows 1, 11 and 17, has
@@ -549,13 +630,12 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    Also read xfs's and btrfs's ioctl commands into row 18; measure whether a nested podman under
    `NESTING=same-uid` needs the xattr syscalls, `file_setattr` or the refused ioctl commands
    while it pulls and extracts an image, creates, runs and execs into a container, and removes
-   both, and
-   whether each share stores a `security.capability` set and removed from a user namespace the
-   session creates, before the decisions on open routes are put.
-   Gate: the inventory's macOS and WSL columns are complete; every route, row 20's
-   `user.overlay.*` names included, is held by its slot or by the seccomp rule "The hooks"
-   names, or covered by a decision taken for it; and the walk's cost is recorded beside the
-   unfiltered bind's.
+   both, and whether each share stores a `security.capability` set and removed from a user
+   namespace the session creates, before the decisions on open routes are put.
+   Gate: the inventory's macOS and WSL columns are complete; every route, row 20's `user.overlay.*`
+   names included, is held by its slot or by the seccomp rules "Attributes, flags and ioctls" and
+   "Mounts" name, or covered by a decision taken for it, such as "Directories"; and the walk's cost
+   is recorded beside the unfiltered bind's.
 3. **The policy.** The classifier in the programs, the map compiler in the guard, and the
    filter's test corpus run against the bind: the name-rule corpus, the pointer rewrite, the
    second-name cases, hooks, config, alternates, operational writability, the blocked git
@@ -565,11 +645,17 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    short-name form on a real NTFS volume; a nested mount holding a `.git`; a linked git worktree,
    whose main gitdir the launcher binds read-only (`TODO.md`, "Deferred — writable git from a
    linked worktree").
-   Also: the session binds the workspace and a nested filesystem at other paths in a mount
-   namespace of its own and mutates through the aliases; a host hard link to a nested `.git`
-   pointer file, made before and after launch.
-   Gate: each row ENFORCED, or an existing filter residual, or covered by a decision the user
-   has taken in "Decisions still open". A listed loss passes nothing.
+   Also: under `NESTING=same-uid` and on a `NESTING=none` session with the profile loosened, the
+   session binds the workspace and a nested filesystem at other paths in a mount namespace of its
+   own and mutates through the aliases, and through an overlay mount; under `NESTING=none`
+   otherwise, `unshare -Ur` and each mount syscall are refused; a host hard link to a nested `.git`
+   pointer file, made before and after launch; a `HEAD` by each creating syscall in a `.git` the
+   session makes in `sub/` and in `.git/objects/x/`, and by a rename or `RENAME_EXCHANGE` over a
+   directory placeholder; an exchange of a filled directory with a session-made `.git`; host `git`
+   in `sub/` under a global relative `core.hooksPath`; writes below a `.git` made under a `readonly`
+   line; a file in `.git/objects/x/.ko-agent-sandbox`. Gate: each row ENFORCED, or an existing
+   filter residual, or covered by a decision the user has taken, "Directories" or one in "Decisions
+   still open". A listed loss passes nothing.
 4. **Lifecycle.** The ordering of "Lifecycle" on rootless podman: first-process denial, restart,
    recreate, `podman exec`, stop and kill, controller exit, machine restart, link loss; and the
    proof's catches, a controller that attaches a subset of the hooks, one that attaches another
@@ -584,13 +670,14 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
 6. **Integration.** A backend selector with a capability probe, `--write=reject` and the printed
    host requirements where the probe fails, the launch line naming the backend and the accepted
    differences, the removal of the filter, and the documentation changes "The recorded decisions
-   this answers" names.
+   this answers" names. It needs the profile "Mounts" relies on to have shipped.
 
 
 ## What is gained and what is lost
 
-The git property, the name rule, the file rules and the blocked git commands are in neither
-list: the hooks hold them as the filter does. The lists are what else changes.
+The git property, the file rules and the blocked git commands are in neither list: the hooks
+hold them as the filter does. The name rule is held too, except for directories, which "Lost"
+lists. The lists are what else changes.
 
 Gained:
 
@@ -647,10 +734,13 @@ Lost, stated as what becomes possible that the filter does not allow:
   writable and says what the host lacks. A lost session, never a weaker one.
 - **No session write through an NTFS short name on Windows.** Refused by form ("The policy"), a
   form no project is known to use. No protection is weakened.
-- **No `setfattr`, `setfacl`, `chattr` or row 18's ioctl commands anywhere in the container
-  under `NESTING=none`.** The seccomp rule ("The hooks") refuses them under `~` too, where the
-  filter refuses them in the workspace alone, and `cp -a` drops xattrs and ACLs there. No
-  protection is weakened.
+- **A directory at any name, `.git` and `.ko-agent-sandbox` included.** The session can create
+  and remove empty directories at a guarded name or position, which the filter refuses.
+  "Directories" has the rules that keep this from weakening any protection.
+- **Under `NESTING=none`, nothing in the container sets xattrs (`setfattr`), ACLs (`setfacl`) or
+  `chattr` flags, or runs row 18's ioctl commands.** The seccomp rule ("Attributes, flags and
+  ioctls") refuses them under `~` too, where the filter refuses them in the workspace alone, and
+  `cp -a` drops xattrs and ACLs there. No protection is weakened.
 
 Decisions still open, each the user's, taken after Phase 2's table:
 
@@ -659,11 +749,10 @@ Decisions still open, each the user's, taken after Phase 2's table:
 - **Native Linux, SELinux enforcing: relabel or `label=disable`.** "Native Linux" states both;
   the relabel is the plan's default, and `label=disable` a per-host choice.
 - **The routes under `NESTING=same-uid` whose syscalls a nested podman needs.** The seccomp
-  rule cannot refuse those syscalls and no slot is free ("The hooks"). Pending, between:
-  - leaving each such route open on such sessions;
-  - giving `inode_rmdir`'s slot to one of their hooks, which opens the rmdir route on every
-    session of that machine, `NESTING=none` included: a slot holds one hook for every cgroup in
-    the VM ("The mechanism"), and both sets at once need eleven slots, refused with `-E2BIG`.
+  rule cannot refuse those syscalls, and the two free slots ("The hooks") can hold two of their
+  hooks. Which two, and so which routes stay open on such sessions, is this decision.
+  - A `NESTING=none` session attaches eight hooks and such a session ten, so both fit the
+    machine's ten slots at once, unless something else in the VM holds one ("The mechanism").
   Each route's consequence, read in v7.1:
   - `inode_set_acl` open: an ACL set on a protected file rewrites its mode bits
     (`posix_acl_update_mode`), a `chmod` the hooks never see;
@@ -686,18 +775,15 @@ Decisions still open, each the user's, taken after Phase 2's table:
     ("Inventory", row 17);
   - `file_ioctl` and `file_ioctl_compat` open: row 18's commands reach a protected entry, which
     can have its ext4 generation and ctime set, get an encryption policy if it is an empty
-    directory, or be made permanently read-only;
-  - `inode_rmdir` open: a protected directory the session can empty can be removed and not
-    refilled ("The hooks").
+    directory, or be made permanently read-only.
   Nothing is pre-accepted.
-- **overlayfs's `user.overlay.*` names on protected directories.** No slot holds
-  `inode_setxattr`, and the seccomp rule does not see overlayfs's own writes ("The hooks").
-  Pending, between:
+- **overlayfs's `user.overlay.*` names on protected directories, where the session can mount:
+  under `NESTING=same-uid`, and on a `NESTING=none` session with the profile loosened
+  ("Mounts").** No taken slot holds `inode_setxattr`, and the seccomp rule does not see
+  overlayfs's own writes ("Attributes, flags and ioctls"). Pending, between:
   - accepting them: a `user.` xattr on a protected directory, which no host program here reads;
-  - under `NESTING=none`, the user-namespace refusal `TODO.md` defers ("Deferred — refuse user
-    namespaces under `NESTING=none`"), which removes the user namespace row 20's mount needs, at
-    that entry's costs. Under `NESTING=same-uid` a nested podman creates user namespaces, so
-    only acceptance applies there.
+  - `inode_setxattr` in a free slot on such sessions, which holds row 15 there too and leaves one
+    free slot to the decision above.
 - **A hard link the host makes to a nested `.git` pointer file or `.ko-agent-sandbox` entry,
   below the root or after launch.** The filter catches it by comparing siblings on every lookup;
   the program catches only objects recorded at launch ("The policy"). Pending, between:
@@ -749,22 +835,26 @@ Hosts without SELinux need the first two and the last.
 
 Landlock would need no privilege and no kernel option, and is active on both machines' kernels,
 but a Landlock rule's object is a file hierarchy named by an open descriptor
-(https://man7.org/linux/man-pages/man7/landlock.7.html), so a `.git` that does not exist yet
-is not an object it can refuse, and a new one at any depth would stay creatable. It is not a
-backend for this policy.
+(https://man7.org/linux/man-pages/man7/landlock.7.html), so neither a `.git` file nor the
+`config` of a new `.git` directory, before it exists, is an object it can refuse, at any depth.
+It is not a backend for this policy.
 
 
 ## Acceptance
 
 - Two sandboxes share the hook slots and differ in policy; a third container, the egress proxy
   and the machine's own processes are never judged.
-- A `.git` or `.ko-agent-sandbox` by any folded spelling cannot appear by `mkdir`, `creat`,
-  `mknod`, `symlink`, `link`, `rename` or exchange, at any depth, directly or through an overlay
-  mount the session makes.
+- A `.git` or `.ko-agent-sandbox` by any folded spelling cannot appear by `creat`, `mknod`,
+  `symlink`, `link`, `rename` or exchange, at any depth, directly or through an overlay mount the
+  session makes; one that `mkdir` makes never gains a `HEAD`, a `readonly` line still covers what
+  lies below it, and nothing but directories enters a `.ko-agent-sandbox` at any position.
 - A protected entry cannot be opened for writing, truncated, re-attributed by `chmod`, `chown`,
-  times, an xattr, an ACL or a `chattr` flag, changed by a filesystem ioctl, unlinked, renamed,
-  exchanged, hard-linked out, or replaced, through any name, descriptor, mapping, nested mount or
-  overlay mount, beyond what a decision taken in "Decisions still open" accepts.
+  times, an xattr, an ACL or a `chattr` flag, changed by a filesystem ioctl, unlinked, removed
+  unless it is an empty directory, renamed, exchanged, hard-linked out, or replaced, through any
+  name, descriptor, mapping, nested mount or overlay mount, beyond what a decision taken in
+  "Decisions still open" accepts.
+- Under `NESTING=none`, unless the session loosens the profile, it creates no user namespace and
+  no mount syscall succeeds.
 - Git's everyday commands work; the commands the filter blocks stay blocked and listed.
 - The file rules hold at any depth, with the resolved `readonly-path` lines.
 - No container process runs before the policy, proven by the read-back of every attachment,

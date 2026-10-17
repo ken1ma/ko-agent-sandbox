@@ -19,7 +19,9 @@ For every reported or discovered problem:
    Report the requirement and exclusions, not the full inventory.
 
 Preserve scope, ownership and how work is separated for review. Before crossing or changing a
-boundary, name it and its consequence, and ask a question; act only on its answer.
+boundary, name it and its consequence, and ask a question; act only on its answer. Weigh options by
+everything they gain and cost, not only what the current task or plan needs, and report an
+improvement found beyond it.
 
 Before reasoning, designing, experimenting or editing, read the relevant official documentation,
 source, issues and workspace documents, including earlier decisions on the subject. Reason and
