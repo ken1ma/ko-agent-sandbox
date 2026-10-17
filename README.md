@@ -2,59 +2,59 @@
 
 Status: Beta
 
-The AI agents in this sandbox, by default
+The programs in this sandbox, by default
 
-1. reach no user files except the project directory (current directory)
+1. reach no host files outside the project directory
+    1. except from a Git linked worktree
 1. reach no network destinations except:
     1. the model providers supported by the sandbox
     1. an opinionated, customizable selection of sites, read-only
 1. cannot change Git files that can hold arbitrary commands, such as hooks and rebase
-   instructions (`git rebase` fails in the project)
+   instructions, so `git rebase` fails in the project directory
 
-The containers run rootless, and the agents run as the `nonroot` user.
+The containers run rootless, and the programs run as the `nonroot` user.
 
-    ┌─ macOS / Linux / Windows (with/without WSL) ─────────────────────────────────┐
-    │                                                                              │
-    │  ┌─ launcher ──────────────────────────────────────────────────────────┐     │
-    │  │  runs podman to manage the containers, volumes, and networks        │     │
-    │  └─────────────────────────────────────────────────────────────────────┘     │
-    │                                                                              │
-    │  ┌─ project directory ───────────┐     ┌─ named volume (per project) ──┐     │
-    │  │  the only user files          │     │  agents' auth and config,     │     │
-    │  │  shared with the sandbox      │     │  kept across sessions;        │     │
-    │  │                               │     │  ~/.claude ~/.codex ~/.gemini │     │
-    │  │                               │     │  ... point into it            │     │
-    │  └─────┬─────────────────────────┘     └───────┬───────────────────────┘     │
-    │        │ mounted at its own path: RW (--write= │ at ~/persistent-volume, RW  │
-    │        │ live, the default) with protected     │                             │
-    │        │ Git entries frozen at every depth     │                             │
-    │        │                                       │                             │
-    │        │                  ┌────────────────────┘                             │
-    │        │                  │                                                  │
-    │  ┏━ sandbox container ━━━━┷━━━━━━┓     ┌─ egress proxy container ──────┐     │
-    │  ┃  runs claude/codex/agy/...    ┃     │  https only, stateless,       │     │
-    │  ┃  capabilities dropped,        ┃ (a) │  TLS-inspects except model    │ (b) │
-    │  ┃  read-only rootfs,            ┠────>│  providers                    ├─────┼─> Internet
-    │  ┃  ephemeral /tmp and $HOME,    ┃     │                               │     │
-    │  ┃  no outbound DNS              ┃     │                               │     │
-    │  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛     └────┬──────────────────────────┘     │
-    │      (a) internal network, no gateway       │   (b) the only egress network  │
-    │                                             │                                │
-    │                                           ┌─┴─ proxy log (audit) ─────┐      │
-    │  the containers and networks are created  │  every allow and refusal; │      │
-    │  per run, and when the sandbox exits      │  outlives the run         │      │
-    │  they are all removed                     └───────────────────────────┘      │
-    │                                                                              │
-    │  ┌─ macOS: --run-on-host sandbox for resource-intensive commands ───────┐    │
-    │  │  sbt/mill/gradle/mvn run under Seatbelt                              │    │
-    │  └──────────────────────────────────────────────────────────────────────┘    │
-    └──────────────────────────────────────────────────────────────────────────────┘
+    ┌─ macOS / Linux / Windows ─────────────────────────────────────────────────┐
+    │                                                                           │
+    │  ┌─ sandbox launcher ──────────────────────────────────────────────────┐  │
+    │  │  manages the containers, volumes, and networks                      │  │
+    │  └─────────────────────────────────────────────────────────────────────┘  │
+    │                                                                           │
+    │  ┌─ project directory ───────────┐     ┌─ named volume (per project) ──┐  │
+    │  │  files shared between host    │     │  agents' auth and config,     │  │
+    │  │  and sandbox                  │     │  kept across sessions;        │  │
+    │  │                               │     │  ~/.claude ~/.codex ~/.gemini │  │
+    │  │                               │     │  ... point into it            │  │
+    │  └────┬──────────────────────────┘     └───────┬───────────────────────┘  │
+    │       │ mounted at the same path               │ at ~/persistent-volume   │
+    │       │ (at WSL's path on Windows)             │ writable                 │
+    │       │ writable by default                    │                          │
+    │       │                      ┌─────────────────┘                          │
+    │       │                      │                                            │
+    │  ┏━ sandbox container ━━━━━━━┷━━━┓     ┌─ egress proxy container ──────┐  │
+    │  ┃  runs claude/codex/agy/...    ┃     │  https only, stateless,       │  │
+    │  ┃  capabilities dropped,        ┃     │  TLS-inspects except model    │  │
+    │  ┃  read-only rootfs,            ┠────>│  providers                    ├──┼─> Internet
+    │  ┃  ephemeral /tmp and $HOME     ┃     │                               │  │
+    │  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛     └─────┬─────────────────────────┘  │
+    │              only internal network,          │                            │
+    │              no gateway, no outbound DNS     │                            │
+    │                                              │                            │
+    │                                            ┌─┴─ proxy log (audit) ─────┐  │
+    │  the containers and networks are created   │  every allow and refusal; │  │
+    │  per run, and when the sandbox exits       │  outlives the run         │  │
+    │  they are all removed                      └───────────────────────────┘  │
+    │                                                                           │
+    │  ┌─ macOS only: --run-on-host for resource-intensive commands ─────────┐  │
+    │  │  sbt/mill/gradle/mvn run in a Seatbelt sandbox                      │  │
+    │  └─────────────────────────────────────────────────────────────────────┘  │
+    └───────────────────────────────────────────────────────────────────────────┘
 
 A typical workflow:
 
 1. `git clone`/`pull` on the host first — host Git credentials are not automatically forwarded.
-2. Run an agent in the sandbox: it should feel mostly like running it on the host.
-    1. The agent can `git clone` public GitHub repositories into the sandbox's `$HOME`.
+2. Run a program in the sandbox: it should feel mostly like running it on the host.
+    1. The program can `git clone` public GitHub repositories into the sandbox's `$HOME`.
 3. Review the changes, then `git commit`/`push` on the host.
 
 The sandbox image preinstalls:
@@ -125,6 +125,8 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 ### Running `<command>`
 
+1. The current directory is the project directory; the sandbox mounts it at the same path (on
+   Windows, at the path WSL gives it).
 1. To change `--write=` or `--egress=`, quit, then relaunch with the new option and the agent's
    resume arguments:
 
@@ -229,17 +231,22 @@ credentials another cloud's login produced, and what forwarding costs.
 
     1. When sessions change the same file concurrently, later writes can overwrite earlier changes.
 
+1. From a Git linked worktree, the launch asks whether to share the main worktree's agent state,
+   and where the container can follow the worktree's `.git` pointer (a relative one anywhere, an
+   absolute one on macOS and Linux) the session also mounts the main worktree's Git directory,
+   read-only, so `git` works there ([SECURITY.md](SECURITY.md#defended), "The host's git executing
+   what the sandbox wrote").
 1. `KO_AGENT_SANDBOX_NESTING=same-uid` lets the session run containers of its own.
 
     1. Follow [AGENTS-SANDBOX.md](container/ko-agent-sandbox/AGENTS-SANDBOX.md) for the container
-       limits: `distroless` and `alpine` images work.
+       limits: `debian` and `alpine` images work.
     1. Stock `postgres` and `nginx` need multiple uids and fail.
 
 
 ### Egress proxy
 
-Every session accesses the network through one HTTPS proxy. The `--egress=` profile and the
-project's `.ko-agent-sandbox/egress/rule` determine which destinations and operations are
+Every session accesses the network through the launcher's HTTPS proxy. The `--egress=` profile
+and the project's `.ko-agent-sandbox/egress/rule` determine which destinations and operations are
 allowed. The defaults include tunnels to supported model providers and TLS-inspected access
 to selected documentation sites, package registries, and Git hosting services.
 
@@ -282,10 +289,11 @@ restore permission prompts and set the Claude Code status line.
     Session options, selected on every launch and never persisted:
       --write=reject|live
                          reject makes the project read-only; live (default)
-                         lets the agent edit the shared project files, except
-                         Git config, hooks, .git files, commondir, gitdir, rebase,
-                         bisect and rerere state, alternates and .ko-agent-sandbox,
-                         at any depth, and what the file rules protect (SECURITY.md)
+                         lets the agent edit the shared project files and the
+                         Git state the filter lists (refs, objects, the index,
+                         HEAD and the like); every other Git entry, such as
+                         config and hooks, .ko-agent-sandbox and what the file
+                         rules protect are frozen at any depth (SECURITY.md)
       --egress=deny-all|deny-unless-model|deny-unless-allowed
                          which hosts the session reaches; the default,
                          deny-unless-allowed, allows the launcher-owned
@@ -309,10 +317,9 @@ restore permission prompts and set the Claude Code status line.
                          macOS only: select sbt / mill / gradle / mvn, separated by commas.
                          Adds the ko-sandbox-run-on-host command inside the sandbox, to run
                          those programs on the host under Seatbelt. Host commands can write
-                         the project even under --write=reject; access is
-                         confined to the project (excluding .git, .ko-agent-sandbox
-                         and what the file rules protect),
-                         per-project caches, and a dedicated egress proxy.
+                         the project even under --write=reject, except what the file rules
+                         protect; access is confined to the project (excluding .git and
+                         .ko-agent-sandbox), per-project caches, and a dedicated egress proxy.
                          Before the start prompt, offers to run the project's ./mill,
                          ./gradlew or ./mvnw when its launcher, JDK or
                          distribution is not yet provisioned.
@@ -366,7 +373,7 @@ restore permission prompts and set the Claude Code status line.
       --build            build the container images and install the workspace filter,
                          always pulling remote base images
       --update           update the agents: rebuild only the sandbox container
-                         image, without cache, pulling its remote base images
+                         image, without cache, on the base images --build built
 
       --stats            show the resource use of the machine, the live sessions and each project.
                          Flags caches worth clearing with --reset-run-on-host
@@ -398,7 +405,7 @@ restore permission prompts and set the Claude Code status line.
                          checks through the running proxy
       --egress-log       print this project's retained proxy audit logs, the
                          run-on-host proxies' included; with extra args (-f,
-                         --tail 50), run podman logs on the running proxies instead
+                         --tail 50), run podman logs on the running session proxies instead
 
       --self-test [<filter>]
                          run the workspace filter's own suites; <filter> selects one
@@ -441,8 +448,8 @@ restore permission prompts and set the Claude Code status line.
     (doc/egress-proxy.md).
 
     .ko-agent-sandbox/file/rule modifies which project files a session cannot change because a
-    host program runs commands from them: readonly and writable lines naming files or directories
-    at any depth, applied in order over the launcher-owned defaults (doc/file-rules.md).
+    host program takes a command or a server from them: readonly and writable lines naming files or
+    directories at any depth, applied in order over the launcher-owned defaults (doc/file-rules.md).
 
 
 ### `--build`
