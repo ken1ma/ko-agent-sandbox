@@ -112,11 +112,12 @@ object LaunchMessages:
           |with `--write=live` when project files must be written.""".stripMargin
       case "live" =>
         s"""`$mountPath` is writable and shared live with the host project directory through the
-          |`ko-agent-fs` filter. Git config, hooks, `.git` files, `commondir`, `gitdir`, rebase, bisect
-          |and rerere state, alternates, `.ko-agent-sandbox` and what `$$KO_AGENT_SANDBOX_FILE_RULES`
-          |makes read-only cannot be modified at any depth; in those rules the last line naming an
-          |entry or an ancestor decides. Symlink targets must be relative and remain inside the
-          |workspace.""".stripMargin
+          |`ko-agent-fs` filter. The Git state the filter lists (refs, objects, the index, HEAD and the
+          |like) is writable; every other `.git` entry is frozen at any depth, among them config, hooks, `.git`
+          |pointer files, `commondir`, `gitdir`, rebase, bisect and rerere state and alternates, as are
+          |`.ko-agent-sandbox` and what `$$KO_AGENT_SANDBOX_FILE_RULES` makes read-only; in those rules
+          |the last line naming an entry or an ancestor decides. Symlink targets must be relative and
+          |remain inside the workspace.""".stripMargin
       case _ =>
         throw IllegalArgumentException(s"unknown write mode: $writeMode")
     val gitParagraph = git.fold("")(paragraph => s"\n\n$paragraph")

@@ -79,8 +79,9 @@ Read history freely. `add`, `commit`, `checkout`, `switch`, `fetch` and `merge` 
 
 The `ko-agent-fs` filter refuses these operations. Report refusals; do not work around them.
 
-- Writing `config`, `hooks/`, rebase, bisect or rerere state, or `objects/info/alternates`, in any
-  repository under the project.
+- Writing `.git` entries other than the state the filter lists (refs, objects, the index, HEAD and
+  the like), in any repository under the project: `config`, `hooks/`, `.git` pointer files,
+  `commondir`, `gitdir`, rebase, bisect or rerere state, `objects/info/alternates`.
   - `git remote add`, `branch -m` and `--set-upstream-to` write `config`; `branch -m` renames the
     branch, then fails.
   - `git bisect` fails: bisect on the host, or on a clone under `~`.
