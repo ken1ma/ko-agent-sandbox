@@ -186,7 +186,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val live = runOnHostLines(Seq("sbt", "mill"), "live", color = false)
     assertEquals(live, Vector(
       "ko-sandbox-run-on-host: sbt, mill on host",
-      "your own sbt server or mill daemon in the build directory is stopped when the agent runs that program",
+      "  your own sbt server or mill daemon in the build directory is stopped when the agent runs that program",
     ))
     for
       selected <- Seq(Seq("sbt"), Seq("mill"), Seq("sbt", "gradle"), Seq("mill", "mvn"), Seq("gradle", "mvn"))
@@ -194,7 +194,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     do
       val lines = runOnHostLines(selected, writeMode, color = false)
       assertEquals(lines.head, s"ko-sandbox-run-on-host: ${selected.mkString(", ")} on host")
-      val shutdown = lines.find(_.startsWith("your own"))
+      val shutdown = lines.find(_.startsWith("  your own"))
       assertEquals(shutdown.exists(_.contains("sbt server")), selected.contains("sbt"))
       assertEquals(shutdown.exists(_.contains("mill daemon")), selected.contains("mill"))
       assertEquals(lines.exists(_.contains("--write=reject")), writeMode == "reject")
