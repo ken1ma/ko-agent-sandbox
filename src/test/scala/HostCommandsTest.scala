@@ -84,7 +84,7 @@ class HostCommandsTest extends munit.FunSuite:
     do
       val path = directory.resolve(name)
       val displayed = displayPath(path, os, environment.get)
-      for label <- Seq("egress log", "host command log", "egress log dir", "egress tls ca") do
+      for label <- Seq("log dir", "egress log dir", "egress tls ca") do
         assertEquals(pathLine(label, path, os, environment.get), s"$label: $displayed")
       assertEquals(pathLine("==>", path, os, environment.get, separator = " "), s"==> $displayed")
       val builder = ProcessBuilder("/bin/sh", "-c", s"set -- $displayed; printf '%s\\n' \"$$#\"; printf '%s' \"$$1\"")
@@ -97,7 +97,7 @@ class HostCommandsTest extends munit.FunSuite:
       assertEquals(output, s"1\n$path", displayed)
     assertEquals(displayPath(home.resolve("host command.log"), Os.Mac, environment.get), "~/'host command.log'")
     val posix = Paths.get("/var/log/$USER.log")
-    assertEquals(pathLine("egress log", posix, Os.Linux, _ => None), "egress log: '/var/log/$USER.log'")
+    assertEquals(pathLine("log dir", posix, Os.Linux, _ => None), "log dir: '/var/log/$USER.log'")
 
   test("Windows log paths quote spaces and separators for cmd.exe and PowerShell"):
     for
@@ -108,7 +108,7 @@ class HostCommandsTest extends munit.FunSuite:
       val path = Paths.get(s"$home\\AppData\\Local\\ko-agent-sandbox\\log\\$name")
       val expected = if user == "kenichi" then path.toString else s"\"$path\""
       assertEquals(displayPath(path, Os.Windows, _ => Some(home)), expected)
-      for label <- Seq("egress log", "host command log", "egress log dir", "egress tls ca") do
+      for label <- Seq("log dir", "egress log dir", "egress tls ca") do
         assertEquals(pathLine(label, path, Os.Windows, _ => Some(home)), s"$label: $expected")
       assertEquals(pathLine("==>", path, Os.Windows, separator = " "), s"==> $expected")
 
@@ -124,7 +124,7 @@ class HostCommandsTest extends munit.FunSuite:
         "\u2018\u2019\u201a\u201b$USER.log" -> "\u2018\u2018\u2019\u2019\u201a\u201a\u201b\u201b$USER.log",
         "\u201c\u201d\u201e.log" -> "\u201c\u201d\u201e.log",
       )
-      label <- Seq("egress log", "host command log", "egress log dir", "egress tls ca")
+      label <- Seq("log dir", "egress log dir", "egress tls ca")
     do
       val path = Paths.get(s"C:\\logs\\$name")
       val expected = s"'C:\\logs\\$escaped'"

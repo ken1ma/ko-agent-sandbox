@@ -2088,15 +2088,12 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assert(runners.contains("==> proxy-mill-0b.log\nmill audit\n==> proxy-sbt-0a.log\nsbt audit\n"), runners)
     assert(runners.contains("==> server-sbt-0a.log\nserver said\n"), runners)
     assert(!runners.contains("==> project"), runners)
-  test("a host proxy's audit log is a file in the log directory, which the session's name links to"):
+  test("a host proxy's audit log is a file in the run's log directory, which the session's name links to"):
     def names(root: Path) =
-      val logDirectory = Files.createDirectory(root.resolve("log"))
+      val logDirectory = Files.createDirectory(root.resolve("run-20261004T120000Z-abcd1234"))
       val session = Files.createDirectory(root.resolve("rXYZ"))
       Files.createDirectory(session.resolve(RunOnHostSession.TmpDir))
-      (
-        logDirectory.resolve("run-on-host-20261004-120000-abcd1234.log"), session.resolve("proxy.log"),
-        logDirectory.resolve("proxy-20261004-120000-rXYZ-proxy-abcd1234.log"),
-      )
+      (logDirectory.resolve("run-on-host.log"), session.resolve("proxy.log"), logDirectory.resolve("proxy-rXYZ.log"))
     // As the proxy's stderr is opened (startProxyUnder): by the session's name, appending.
     def proxyWrites(proxyLog: Path, line: String) =
       Files.writeString(proxyLog, line, UTF_8, java.nio.file.StandardOpenOption.APPEND)
@@ -2112,6 +2109,9 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assertEquals(Files.readString(proxyLog, UTF_8), "allow h.example CONNECT\n")
       assertEquals(permissions(kept), "rw-------")
       assert(!Files.exists(channelLog), "nothing to say in the channel log")
+      // A report of an unwritable log names this file, not the session's link; without a channel log, the session's.
+      assertEquals(proxyLogFile(Some(channelLog), proxyLog), kept)
+      assertEquals(proxyLogFile(None, proxyLog), proxyLog)
       // The session's end reads the file the link names, as it reads a session's own file.
       appendSessionLogs(channelLog, proxyLog.getParent, "command rXYZ ended by signal")
       val logged = Files.readString(channelLog, UTF_8)
@@ -2124,31 +2124,29 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     locally:
       val (channelLog, proxyLog, first) = names(Files.createTempDirectory("audit-log"))
       Files.writeString(first, "an earlier proxy's\n", UTF_8)
-      val second = first.resolveSibling("proxy-20261004-120000-rXYZ-proxy-2-abcd1234.log")
+      val second = first.resolveSibling("proxy-rXYZ-2.log")
       Files.writeString(second, "another earlier proxy's\n", UTF_8)
       keepAuditLog(channelLog, proxyLog)
       proxyWrites(proxyLog, "ready\n")
-      val third = first.resolveSibling("proxy-20261004-120000-rXYZ-proxy-3-abcd1234.log")
+      val third = first.resolveSibling("proxy-rXYZ-3.log")
       assertEquals(Files.readString(third, UTF_8), "ready\n")
       assertEquals(Files.readString(first, UTF_8), "an earlier proxy's\n")
       assertEquals(Files.readString(second, UTF_8), "another earlier proxy's\n")
       appendSessionLogs(channelLog, proxyLog.getParent, "the runner's session rXYZ ended")
       assert(Files.readString(channelLog, UTF_8).contains("==> proxy.log\nready\n"))
-      // Pruning keeps it while its run is live, as it keeps the first.
-      val pruned = EgressRules.logsToPrune(Vector(third.getFileName.toString), retain = 0, Set("abcd1234"))
-      assertEquals(pruned, Vector.empty)
 
     // A link the launcher did not make names something else: never followed.
     locally:
       val root = Files.createTempDirectory("audit-log")
       val (channelLog, proxyLog, kept) = names(root)
       // The container proxy's log, the channel log, the right name in another directory, a relative link.
-      val otherRun = Files.writeString(kept.resolveSibling("proxy-20261004-120000-abcd1234.log"), "a\n", UTF_8)
+      val containerProxy = Files.writeString(kept.resolveSibling("proxy.log"), "a\n", UTF_8)
       val outside = Files.writeString(root.resolve(kept.getFileName), "b\n", UTF_8)
-      for target <- Vector(otherRun, channelLog, outside, Path.of(kept.getFileName.toString)) do
+      for target <- Vector(containerProxy, channelLog, outside, Path.of(kept.getFileName.toString)) do
         Files.deleteIfExists(proxyLog)
         Files.createSymbolicLink(proxyLog, target)
         assertEquals(keptAuditLog(channelLog, proxyLog), None, target.toString)
+        assertEquals(proxyLogFile(Some(channelLog), proxyLog), proxyLog, target.toString)
         Files.writeString(channelLog, "", UTF_8)
         appendSessionLogs(channelLog, proxyLog.getParent, "command rXYZ ended by signal")
         val logged = Files.readString(channelLog, UTF_8)
@@ -2180,8 +2178,6 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       // Nothing was started: no leader registered, and no log by either name.
       assert(!Files.exists(record), "a proxy's record")
       assert(!Files.exists(proxyLog, java.nio.file.LinkOption.NOFOLLOW_LINKS) && !Files.exists(kept))
-      // A launch without a log directory, as the acceptance test's, keeps no log and is not refused for it.
-      assertEquals(keepAuditLog(logDirectory.resolve("other.log"), proxyLog), Right(()))
 
 object ForkJvmSettings:
   def main(args: Array[String]): Unit =

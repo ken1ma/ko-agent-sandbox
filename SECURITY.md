@@ -678,17 +678,17 @@ machine's user also runs `sudo` without a password (Fedora CoreOS 44.20260817.3.
   connections must pass through the proxy.
 - Its container is created for each run and removed afterward, using the reserved names described
   under "Silent changes to what you own".
-- The audit log is appended through a bind mount to a per-run file in the launcher's host state
-  directory and survives container removal.
+- The audit log is appended through a bind mount of one file, in the run's directory under the
+  launcher's host state, and survives container removal.
 - Every line is written to that file and to the proxy's stderr, a copy podman removes with the
   container. After the first write to the file that fails — a full disk, a file made
   read-only — the proxy serves no new connection for the rest of the run, even if later writes
   succeed: a log that resumed would lack the lines between, and nothing in it would say so. A
-  failed write to the stderr copy has no effect. A host-command proxy has no such file: its
-  stderr is its log ([doc/run-on-host.md](doc/run-on-host.md)), and a failed write to it has the
-  same effect as one to the file.
+  failed write to the stderr copy has no effect. A host-command proxy has no second copy: its
+  stderr is its log, a file in the run's directory ([doc/run-on-host.md](doc/run-on-host.md)), and
+  a failed write to it has the same effect as one to the file.
   - A proxy whose startup lines fail to be written exits before it accepts a connection.
-  - A host-command proxy is not started when its log cannot be created in the project's log
+  - A host-command proxy is not started when its log cannot be created in the run's log
     directory, and its command is refused with the reason (`RunOnHostProxy.keepAuditLog`): a log
     in the command's own directory alone is deleted with it.
   - Every later request, a `CONNECT` or not, receives `403` with the reason,

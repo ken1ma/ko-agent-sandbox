@@ -63,9 +63,10 @@ object RefusalAdvice:
 
   val port = "Only port 443 is reachable."
 
+  // The directory, not the file: a host command's proxy sends this body too, and its log has its session's name.
   val auditLog =
-    "This proxy serves no new connection for the rest of the session. Tell the user: the launch's " +
-      "`egress log` line names the file; make it writable again, then relaunch."
+    "This proxy serves no new connection for the rest of the session. Tell the user: this proxy's audit log " +
+      "is in the directory on the launch's `log dir` line; make it writable again, then relaunch."
 
   val ipLiteral = "Connect by hostname; addresses are refused."
 

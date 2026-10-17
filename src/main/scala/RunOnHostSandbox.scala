@@ -950,7 +950,7 @@ object RunOnHostSandbox:
         val found = RunOnHostGradleDaemons.daemons(runtime.tmp, processes)
         RunOnHostGradleDaemons.record(session.records, found, processes).foreach(log)
       reportDenied(runtime.proxyLog, reportFrom, program, log)
-      if exit != 0 then reportUnwritableProxyLog(runtime, log)
+      if exit != 0 then reportUnwritableProxyLog(runtime, channelLog, log)
       exit
 
   /** The runtime a command without the runner's runs against: the acceptance test's entry, and Maven under

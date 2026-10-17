@@ -320,8 +320,8 @@ binds a listener under sbt or Maven, which runs in the container ("Network", abo
     cannot say so in that log, and the programs need not print it. After a command that exits
     non-zero the supervisor asks the proxy with `OPTIONS *` and `Max-Forwards: 0`
     (`RunOnHostProxy.unwritableProxyLog`), reads the reason from the response's `Proxy-Status`
-    field, and reports it with the log's path. A proxy still logging answers `400` and logs
-    `deny - - OPTIONS non-CONNECT request`.
+    field, and reports it with the path of the proxy's file in the run's log directory. A proxy
+    still logging answers `400` and logs `deny - - OPTIONS non-CONNECT request`.
     - sbt 2.0.9 and mill 1.0.6 print the status line alone, measured against a proxy answering
       `403` with a marked `Proxy-Status` and body; Gradle and Maven are not measured:
 
@@ -1127,7 +1127,8 @@ The runner's cancel carries no reason: the shim's descriptor closes the same way
 changed its mind or gave up on a command that sat silent.
 
 Before removing that command's directory, the supervisor appends the command's logs to the channel's
-log, the file the launch printed as `host command log` (`RunOnHostSandbox.appendSessionLogs`):
+log, `run-on-host.log` in the directory the launch printed as `log dir`
+(`RunOnHostSandbox.appendSessionLogs`):
 
 - the tail of the proxy audit log, under Maven, and of the stderr file a thin client leaves under
   `tmp/` when it forked a server of its own, the client's answer to a socket it cannot reach;
@@ -1135,7 +1136,7 @@ log, the file the launch printed as `host command log` (`RunOnHostSandbox.append
   `tmp/` itself, so the read comes after the rename and the ending of the command's groups, refuses
   a link at any component, and takes the tail by position rather than by the file's size;
 - the proxy audit log's name in that directory is the launcher's own link to the file in the
-  project's log directory, both outside what the command can write: the read follows that link
+  run's log directory, both outside what the command can write: the read follows that link
   when it names an audit log there, and no other (`RunOnHostProxy.keptAuditLog`);
 - a command that completed leaves nothing there: its output reached the agent.
 
@@ -1440,7 +1441,7 @@ SECURITY.md, "Who holds a brokered value"), on its standard input under `EGRESS_
 - a binding widens no proxy's grants: a hostile build's route out is that proxy's hosts, as without
   one.
 
-A proxy's audit log is a file in the project's log directory, where `--egress-log` lists it
+A proxy's audit log is a file in the run's log directory, where `--egress-log` lists it
 (egress-proxy.md, "Audit what has been allowed or denied").
 
 The proxy lives as long as the session holding its record: the runner's until it retires the

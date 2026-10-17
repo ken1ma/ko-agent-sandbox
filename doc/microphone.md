@@ -208,7 +208,7 @@ Read from the image's binaries on 2026-10-09.
     - Sharing the device is not the cause: one launch beside another `--mic` session warned and
       the next did not, and a `rec` run from the shell beside that session delivered sound in its
       first piece, at 137 to 141 ms, in three runs.
-    - Each launch's microphone log says how far into the recorder's audio its first sound came,
+    - Each launch's `microphone.log` says how far into the recorder's audio its first sound came,
       or that none came in its first 30 s.
 - On Windows the recorder decides and two diagnostics explain. In a session without a capture
   endpoint, and under each permission value that stops it, the recorder fails within about 350 ms

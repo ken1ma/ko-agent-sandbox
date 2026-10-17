@@ -2096,6 +2096,28 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(tlsRunDirsToPrune(names, Set.empty), Seq("run-1a2b3c4d", "run-ffffffff"))
     assertEquals(tlsRunDirsToPrune(names, Set("1a2b3c4d", "ffffffff")), Seq())
 
+  test("a run is live while its proxy or its sandbox container exists, and unknown when the listing failed"):
+    val project = "p-0123456789ab"
+    val listing = Vector(
+      proxyRunContainer(project, "1a2b3c4d"),
+      // A sandbox whose proxy crashed: its run keeps its files.
+      sandboxRunContainer(project, "ffffffff"),
+      sandboxRunContainer(project, "1a2b3c4d"),
+      // Another project's, one whose id extends this one's, and a name that is no run's.
+      proxyRunContainer("q-0123456789ab", "eeeeeeee"),
+      proxyRunContainer(s"$project-x", "dddddddd"),
+      "ko-agent-egress-proxy-p-0123456789ab-short",
+    )
+    assertEquals(liveRunsOf(project, Some(listing)), Some(Set("1a2b3c4d", "ffffffff")))
+    assertEquals(liveRunsOf(project, Some(Vector.empty)), Some(Set.empty[String]))
+    // Unknown liveness: the launch prunes nothing, not everything.
+    assertEquals(liveRunsOf(project, None), None)
+
+  test("a run's log directory is named by its UTC start, then its run, in the pattern pruning matches"):
+    val name = runLogDir(logStamp(java.time.Instant.parse("2026-10-17T02:24:46.789Z")), "8a5c5989")
+    assertEquals(name, "run-20261017T022446Z-8a5c5989")
+    assert(name.matches(RunLogDirPattern))
+
   test("reset removes exactly this project's per-run networks"):
     val names = Seq(
       "ko-agent-sandbox-app-abc123-1a2b3c4d",

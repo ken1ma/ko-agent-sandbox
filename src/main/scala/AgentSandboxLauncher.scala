@@ -683,6 +683,23 @@ object AgentSandboxLauncher:
   def tlsRunDir(suffix: String): String = s"run-$suffix"
 
   /**
+   * The run's directory of logs under the project's log directory. The launch's start (logStamp)
+   * comes first, so a sorted listing is chronological (runLogDirsToPrune), and the run suffix last,
+   * so pruning matches a live run by the name's end, as tlsRunDirsToPrune does.
+   */
+  def runLogDir(stamp: String, suffix: String): String = s"run-$stamp-$suffix"
+
+  val RunLogDirPattern: String = runLogDir("[0-9]{8}T[0-9]{6}Z", RunSuffixPattern)
+
+  /**
+   * The launch's start in its run's log directory name, in UTC: the audit lines in that directory's
+   * `proxy.log` are UTC (SECURITY.md, "The audit line grammar"), and a local stamp sorts an older
+   * run after a newer one across the end of daylight saving or a change of the host's zone.
+   */
+  def logStamp(now: Instant): String =
+    DateTimeFormatter.ofPattern("uuuuMMdd'T'HHmmss'Z'").withZone(ZoneOffset.UTC).format(now)
+
+  /**
    * Whether `name` is `builder(projectId, <run suffix>)` — the anchored
    * form of a bare prefix check. The anchor matters because hex is
    * slug-legal and a slug may be 32 characters: a directory literally named
@@ -836,6 +853,14 @@ object AgentSandboxLauncher:
     names
       .filter(_.matches(tlsRunDir(RunSuffixPattern)))
       .filterNot(name => liveRuns.contains(name.stripPrefix(tlsRunDir(""))))
+
+  /** The run suffixes of `projectId` that a container in `containerNames` names, its proxy or its sandbox; None
+    * when the listing failed, so that nothing is pruned (prepareRunFiles has why either container counts). */
+  def liveRunsOf(projectId: String, containerNames: Option[Vector[String]]): Option[Set[String]] =
+    containerNames.map: names =>
+      Vector(proxyRunContainer, sandboxRunContainer)
+        .flatMap(builder => names.filter(isRunNamed(builder, projectId)).map(_.stripPrefix(builder(projectId, ""))))
+        .toSet
 
   /**
    * Created fresh every run: the name includes a random run suffix, so
@@ -1332,7 +1357,8 @@ object AgentSandboxLauncher:
     // access, it just makes the failure harder to diagnose. All per run (SandboxLifecycle, "Removing what the run
     // created").
 
-    // One suffix ties this run's containers, networks and log file together in podman output and the retained logs.
+    // One suffix ties this run's containers, networks and log directory together in podman output and the retained
+    // logs.
     val runSuffix = newRunSuffix()
     val names = RunNames(
       proxyRunContainer(projectId, runSuffix),
@@ -1418,28 +1444,29 @@ object AgentSandboxLauncher:
     createNetwork(egressNetwork, internal = false)
 
     // -----------------------------------------------------------------------
-    // This run's audit log
+    // This run's logs
     // -----------------------------------------------------------------------
     //
-    // Appended by the proxy through a bind-mounted host file, so the record
-    // outlives the per-run container. Not --log-opt path=: conmon interprets
-    // that inside the podman-machine VM. A single-file mount — the directory
-    // would hand the proxy every previous session's record — and owner-only:
-    // refusal lines carry full URLs, and a URL can carry a secret.
+    // The audit log is appended by the proxy through a bind-mounted host
+    // file, so the record outlives the per-run container. Not --log-opt
+    // path=: conmon interprets that inside the podman-machine VM. A
+    // single-file mount — the run's directory would hand the proxy this run's
+    // other logs, and the project's directory every previous session's
+    // record — and owner-only: refusal lines carry full URLs, and a URL can
+    // carry a secret.
     val logDir = logStateRoot(os).resolve(projectId)
     createPrivateDirectories(logDir)
 
-    val logStamp = DateTimeFormatter
-      .ofPattern("uuuuMMdd-HHmmss")
-      .withZone(ZoneOffset.UTC)
-      .format(Instant.now())
-    val hostLogFile = logDir.resolve(s"proxy-$logStamp-$runSuffix.log")
-    val channelLogFile = logDir.resolve(s"run-on-host-$logStamp-$runSuffix.log")
-    val microphoneLogFile = logDir.resolve(s"microphone-$logStamp-$runSuffix.log")
+    val runLogs = logDir.resolve(runLogDir(logStamp(Instant.now()), runSuffix))
+    val hostLogFile = runLogs.resolve("proxy.log")
+    val channelLogFile = runLogs.resolve("run-on-host.log")
+    val microphoneLogFile = runLogs.resolve("microphone.log")
 
     val git = gitAccess(settings, project, images, rules, os)
     val sandboxFiles =
-      prepareRunFiles(parsed, settings, project, images, rules, names, git, tlsDir, runFiles, logDir, hostLogFile, os)
+      prepareRunFiles(
+        parsed, settings, project, images, rules, names, git, tlsDir, runFiles, logDir, runLogs, hostLogFile, os,
+      )
 
     val proxyNetworks =
       startProxyContainer(podman, proxyContainer, sessionCredentials)(
@@ -1449,10 +1476,9 @@ object AgentSandboxLauncher:
       .getOrElse(fail(s"error: could not determine the egress proxy's address on $sandboxNetwork"))
 
     val workspace = LaunchWorkspace(filteredWorkspace, joinedRules, sessionRuleLines, sessionRulesText)
-    printLaunchLines(parsed, settings, project, rules, workspace, git, hostLogFile, os)
+    printLaunchLines(parsed, settings, project, rules, workspace, git, runLogs, hostLogFile, os)
     val createCommand = sandboxCreateCommand(
-      parsed, settings, project, images, rules, names, workspace, git, proxyIp, sandboxFiles, machineMemory,
-      channelLogFile, microphoneLogFile, os,
+      parsed, settings, project, images, rules, names, workspace, git, proxyIp, sandboxFiles, machineMemory, os,
     )
 
     // Before the hold, what the first mill, gradle or mvn command would refuse for want of an
@@ -1913,6 +1939,7 @@ object AgentSandboxLauncher:
     tlsDir: Path,
     runFiles: Path,
     logDir: Path,
+    runLogs: Path,
     hostLogFile: Path,
     os: Os,
   ): Vector[String] =
@@ -1964,46 +1991,30 @@ object AgentSandboxLauncher:
 
     withFileLock(tlsDir.resolve(".lock")):
       // Which of this project's runs a container still names, for every pruning decision this
-      // launch makes. Listed under the lock and in every state, because a run's files — its audit
-      // log, its run directory — are written under this lock and its proxy created before the
+      // launch makes. Listed under the lock and in every state, because a run's directories — of
+      // logs, of mount copies — are created under this lock and its proxy created before the
       // lock is released: a run whose files another launch can see has a container in that
       // launch's listing, or died before creating one. A launcher dead between its create and
       // start left a created container, which keeps the files until a reset removes it. A failed
       // listing prunes nothing — unknown liveness must not read as "no live runs" and delete a
-      // running session's files out from under it. Two liveness notions: a proxy audit log is kept while
-      // its proxy container exists, since only the proxy writes it; a channel log and a run directory are kept
-      // while either container exists, since the runner and the mount copies serve the sandbox container too,
-      // and a run whose proxy crashed while its sandbox lives on must keep them.
-      val proxyPrefix = proxyRunContainer(projectId, "")
-      val sandboxPrefix = sandboxRunContainer(projectId, "")
+      // running session's files out from under it. A run is live while either of its containers
+      // exists: the proxy writes its logs, and so do the runner and the relay, which serve the
+      // sandbox container; the mount copies serve both containers. A run whose proxy crashed
+      // while its sandbox lives on must keep them.
       val containers = run(podman, "ps", "--all", "--format", "{{.Names}}")
       val containerNames: Option[Vector[String]] =
         Option.when(containers.ok)(containers.text.linesIterator.map(_.trim).toVector)
-      def runsNamed(prefix: String): Option[Set[String]] =
-        containerNames.map(_.filter(_.startsWith(prefix)).map(_.stripPrefix(prefix)).toSet)
-      val liveProxyRuns = runsNamed(proxyPrefix)
-      val liveRuns =
-        for
-          proxies <- liveProxyRuns
-          sandboxes <- runsNamed(sandboxPrefix)
-        yield proxies ++ sandboxes
+      val liveRuns = liveRunsOf(projectId, containerNames)
       if containerNames.isEmpty then
         System.err.println(
           "note: could not list this project's containers; keeping every retained log and run file\n"
             + containers.err,
         )
 
-      // A log names its run in the same suffix as its proxy container.
-      liveProxyRuns.foreach: live =>
-        logsToPrune(retainedLogs(logDir).map(_.getFileName.toString), RetainedProxyLogs, live)
-          .foreach(name => Files.deleteIfExists(logDir.resolve(name)))
-
-      // The channel runner's and the microphone relay's log families, same retention — pruned by
-      // whole-run liveness, because both live with the sandbox container rather than the proxy.
+      // A run's log directory names its run in the same suffix as its containers.
       liveRuns.foreach: live =>
-        for prefix <- Seq("run-on-host-", "microphone-") do
-          logsToPrune(retainedLogs(logDir, prefix).map(_.getFileName.toString), RetainedProxyLogs, live)
-            .foreach(name => Files.deleteIfExists(logDir.resolve(name)))
+        val entries = directoryEntries(logDir).map(_.getFileName.toString)
+        runLogDirsToPrune(entries, RetainedRuns, live).foreach(name => deleteRecursively(logDir.resolve(name)))
 
       // Run copies whose runs are gone leave with this launch rather than accumulating; the resets
       // take the rest.
@@ -2011,6 +2022,8 @@ object AgentSandboxLauncher:
         val entries = directoryEntries(tlsDir).map(_.getFileName.toString)
         tlsRunDirsToPrune(entries, live).foreach(name => deleteRecursively(tlsDir.resolve(name)))
 
+      // After the pruning, so this run's directory is the one that makes RetainedRuns.
+      createPrivateDirectories(runLogs)
       writePrivate(hostLogFile, "")
 
       // Coherence, not just expiry: a launch that died between writing the key and the
@@ -2204,6 +2217,7 @@ object AgentSandboxLauncher:
     rules: LaunchRules,
     workspace: LaunchWorkspace,
     git: GitAccess,
+    runLogs: Path,
     hostLogFile: Path,
     os: Os,
   ): Unit =
@@ -2252,7 +2266,7 @@ object AgentSandboxLauncher:
     if rulesetWarnings.nonEmpty then System.err.println(emphasized(rulesetWarnings))
     if inspectedHosts.isEmpty then
       System.err.println("egress tls inspection: this ruleset inspects no hosts; no leaf issued")
-    System.err.println(pathLine("egress log", hostLogFile, os, tint = lookedUp(_)))
+    System.err.println(pathLine("log dir", runLogs, os, tint = lookedUp(_)))
     // Names only: a forwarded value may be a secret, and this line is the one place the forward
     // is said aloud, since the variable is otherwise indistinguishable from the image's own.
     if parsed.env.nonEmpty then
@@ -2278,8 +2292,6 @@ object AgentSandboxLauncher:
     proxyIp: String,
     sandboxFiles: Vector[String],
     machineMemory: Option[Long],
-    channelLogFile: Path,
-    microphoneLogFile: Path,
     os: Os,
   ): Vector[String] =
     import parsed.{command, writeMode}
@@ -2352,7 +2364,6 @@ object AgentSandboxLauncher:
       if microphone.isEmpty then Vector.empty
       else
         System.err.println(micLine())
-        System.err.println(pathLine("microphone log", microphoneLogFile, os))
         MicrophoneRelay.sandboxEnvironment().map((name, value) => s"--env=$name=$value")
 
     // Loud for the same reason: host-native execution is authority a container session alone does
@@ -2362,7 +2373,6 @@ object AgentSandboxLauncher:
       else
         runOnHostLines(runOnHost, writeMode).foreach(System.err.println)
         runOnHostWideningLines(programRules.map((program, hosts) => program.name -> hosts)).foreach(System.err.println)
-        System.err.println(pathLine("host command log", channelLogFile, os))
         Vector(s"--env=${RunOnHostChannel.RunOnHostVariable}=${runOnHost.mkString(",")}")
 
     // -----------------------------------------------------------------------

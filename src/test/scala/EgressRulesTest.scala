@@ -300,29 +300,67 @@ class EgressRulesTest extends munit.FunSuite:
     assertEquals(inspectedHostsOf(resolution), Right(Vector("github.com", "pypi.org", "storage.googleapis.com")))
     assertEquals(egressBanner(resolution, color = false), "egress: deny-unless-allowed; 3 inspected, 1 tunnel")
 
-  test("log pruning keeps the newest files and leaves room for the new one"):
+  test("log pruning keeps the newest run directories and leaves room for the new one"):
     val names = Vector(
-      "proxy-20260810-090000-aaaaaaaa.log",
-      "proxy-20260812-110000-cccccccc.log",
-      "proxy-20260811-100000-bbbbbbbb.log",
+      "run-20260810T090000Z-aaaaaaaa",
+      "run-20260812T110000Z-cccccccc",
+      "run-20260811T100000Z-bbbbbbbb",
     )
-    // retain 2: the new file plus the newest existing one survive.
+    // retain 2: the new directory plus the newest existing one survive.
     assertEquals(
-      logsToPrune(names, 2, Set.empty),
-      Seq("proxy-20260810-090000-aaaaaaaa.log", "proxy-20260811-100000-bbbbbbbb.log"),
+      runLogDirsToPrune(names, 2, Set.empty),
+      Seq("run-20260810T090000Z-aaaaaaaa", "run-20260811T100000Z-bbbbbbbb"),
     )
     // Enough room already: nothing is pruned.
-    assertEquals(logsToPrune(names, 4, Set.empty), Seq())
-    assertEquals(logsToPrune(Vector(), 20, Set.empty), Seq())
+    assertEquals(runLogDirsToPrune(names, 4, Set.empty), Seq())
+    assertEquals(runLogDirsToPrune(Vector(), 20, Set.empty), Seq())
 
     assertEquals(
-      logsToPrune(names, 2, Set("aaaaaaaa")),
-      Seq("proxy-20260811-100000-bbbbbbbb.log"),
+      runLogDirsToPrune(names, 2, Set("aaaaaaaa")),
+      Seq("run-20260811T100000Z-bbbbbbbb"),
     )
-    assertEquals(logsToPrune(names, 1, Set("aaaaaaaa", "bbbbbbbb", "cccccccc")), Seq())
+    assertEquals(runLogDirsToPrune(names, 1, Set("aaaaaaaa", "bbbbbbbb", "cccccccc")), Seq())
 
     // The suffix has to be the whole one: a run whose name is another's tail keeps nothing alive.
     assertEquals(
-      logsToPrune(names, 2, Set("aaaaaaa")),
-      Seq("proxy-20260810-090000-aaaaaaaa.log", "proxy-20260811-100000-bbbbbbbb.log"),
+      runLogDirsToPrune(names, 2, Set("aaaaaaa")),
+      Seq("run-20260810T090000Z-aaaaaaaa", "run-20260811T100000Z-bbbbbbbb"),
     )
+
+    // A name outside the run directories' pattern is not a run's, however old it sorts.
+    val strays = Vector("run-20260810-090000-aaaaaaaa", "run-20260810T090000Z-AAAAAAAA", "notes.txt", "proxy.log")
+    assertEquals(runLogDirsToPrune(strays ++ names, 2, Set.empty), runLogDirsToPrune(names, 2, Set.empty))
+
+    // The flat files of the layout before run directories go whatever the count, unless their run is live.
+    val flat = Vector(
+      "proxy-20260812-110000-dddddddd.log",
+      "proxy-20260812-110000-r123-proxy-sbt-0a-dddddddd.log",
+      "run-on-host-20260812-110000-dddddddd.log",
+      "microphone-20260812-110000-eeeeeeee.log",
+    )
+    assertEquals(runLogDirsToPrune(flat, 20, Set.empty), flat)
+    assertEquals(runLogDirsToPrune(flat, 20, Set("dddddddd")), Seq("microphone-20260812-110000-eeeeeeee.log"))
+
+  test("--egress-log lists each run's proxy logs, oldest run first and the container proxy's first within a run"):
+    val logDir = Files.createTempDirectory("egress-log")
+    try
+      def run(name: String, files: String*) =
+        val directory = Files.createDirectory(logDir.resolve(name))
+        files.foreach(file => Files.writeString(directory.resolve(file), file))
+      run("run-20261005T080000Z-bbbbbbbb", "proxy.log", "proxy-r2.log", "run-on-host.log", "microphone.log")
+      run("run-20261004T120000Z-aaaaaaaa", "proxy-sbt-0a-r1.log", "proxy.log", "proxy-r1-2.log", "proxy-r1.log")
+      // Not a run's: an old layout's flat file and a directory outside the pattern.
+      Files.writeString(logDir.resolve("proxy-20261003-120000-cccccccc.log"), "old")
+      run("run-elsewhere", "proxy.log")
+      assertEquals(
+        retainedProxyLogs(logDir).map(file => logDir.relativize(file).toString),
+        Vector(
+          "run-20261004T120000Z-aaaaaaaa/proxy.log",
+          "run-20261004T120000Z-aaaaaaaa/proxy-r1-2.log",
+          "run-20261004T120000Z-aaaaaaaa/proxy-r1.log",
+          "run-20261004T120000Z-aaaaaaaa/proxy-sbt-0a-r1.log",
+          "run-20261005T080000Z-bbbbbbbb/proxy.log",
+          "run-20261005T080000Z-bbbbbbbb/proxy-r2.log",
+        ),
+      )
+    finally FileHelper.deleteRecursively(logDir)
