@@ -22,7 +22,7 @@ object LaunchMessages:
       case "sbt" => "sbt server"
       case "mill" => "mill daemon"
     val shutdown = Option.when(displaced.nonEmpty)(
-      s"your own ${displaced.mkString(" or ")} in the build directory is stopped when the agent runs that program",
+      s"  your own ${displaced.mkString(" or ")} in the build directory is stopped when the agent runs that program",
     )
     val reject = Option.when(writeMode == "reject")(
       weakened(
