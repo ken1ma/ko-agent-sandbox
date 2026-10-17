@@ -341,8 +341,8 @@ protects the path it is mounted at, from the moment of the launch, which leaves:
   mount stays listed in the session's mount table. No mount prevents this.
 - The mounts are chosen at launch, for the repository at the workspace root. A repository nested
   deeper, by the host or by the session, has none, and one the session creates mid-session cannot
-  get one. A policy judging each operation refuses the names at any depth, as the filter does
-  and as the backend of `plan-bpf-lsm-cgroup.md` does.
+  get one. A policy judging each operation protects every repository's entries at any depth, as
+  the filter does and as the backend of `plan-bpf-lsm-cgroup.md` does.
 - On an NTFS volume with 8.3 names, `.git` is also `GIT~1` and `.ko-agent-sandbox` `KO-AGE~1`, and
   a path through the short name does not pass the mount. Measured on Windows Server 2025 with
   podman 6.1.0: appends to `.git/config` and `.ko-agent-sandbox/egress/rule` and a `touch` under
