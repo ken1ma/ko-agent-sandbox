@@ -71,14 +71,6 @@ again.
     `supports_websockets = false` accepts the ChatGPT login; the built-in provider cannot be
     overridden (`doc/design.md`, "No WebSocket on an inspected connection").
 
-## Pulumi's `git status`
-
-- [ ] `pulumi up` and `pulumi preview` run `git status --porcelain -z` in the project, with no
-  opt-out (`pkg/cmd/pulumi/metadata/metadata.go`, `isGitWorkTreeDirty`), paying the walk that
-  `fuse/ko-agent-fs/doc/troubleshooting.md` ("Everything works but slowly") measures. A `git` on
-  `PATH` that fails `status` is logged and ignored, and brings a preview from 51 s to 12 s. Tell
-  the reader in the Pulumi examples, and ask pulumi for an opt-out.
-
 ## Host process observations without helper processes
 
 - [ ] Start no `ps`, `pgrep` or `lsof` under `--run-on-host` (`RunOnHostSession.HostProcesses`
@@ -737,11 +729,6 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
   run `sbt testFull`: `SessionBoundaryTest`'s plugin-mount test runs only there; not yet run.
 - [ ] `claude plugin test src/test/claude-plugins/managed-probe` on the host; not run, as the
   sandbox turns the test kit off under `allowManagedHooksOnly`.
-- [ ] Under an organization's remote managed settings with `managedSourcesBehavior: merge`, how
-  `enabledPlugins`, `extraKnownMarketplaces` and `prependPlugins` combine across sources is unread
-  (https://code.claude.com/docs/en/settings-reference#managedsourcesbehavior names the keys);
-  doc/agent-settings.md "Claude Code plugins and mods" item 6 says only that the organization
-  opted the image's files in.
 
 ## Deferred — readable session directory names under `--run-on-host`
 

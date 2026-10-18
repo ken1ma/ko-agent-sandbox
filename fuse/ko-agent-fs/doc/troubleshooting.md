@@ -133,7 +133,8 @@ macOS, and 5–30 times on Windows. If your slowdown is much greater, check the 
 in the next section.
 
 `git status` is where it usually shows first — Claude Code runs one at startup, so a large tree
-appears as a long silence before its first word. git stats every tracked file by its full path and
+appears as a long silence before its first word. `pulumi up` and `pulumi preview` run one each, to
+record whether the tree is dirty. git stats every tracked file by its full path and
 each path component is a round trip, so the cost is tracked files × depth: ~9 ms per file at
 depth 7 and nearly as much again for the untracked walk, 72 s for 4,200 files. What shortens it,
 set on the host (a session cannot write `.git/config`):
