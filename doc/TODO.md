@@ -836,6 +836,28 @@ are the image's Mach services, which the same mode measures once it starts.
   by the test suite (`ko-review.md`, "Tests") and the session's git reads by `SECURITY.md`; one
   session launched from such a worktree and driven to approval closes this.
 
+## Before the first release — the workspace vocabulary (`plan-workspace-rename.md`)
+
+- [ ] Call the mounted directory the workspace and select its mode with
+  `--workspace=read-only|live|staged`, in the four commits the plan lists.
+
+## Deferred — `--add-dir`, a further host directory in the workspace
+
+- [ ] `--add-dir=<path>` exposes another host directory to the sandbox beside the workspace root,
+  as the `--add-dir` of Claude Code, Codex, Antigravity and Copilot widens their own file access.
+  It follows `plan-workspace-rename.md`, which keeps `--workspace` for the mode and names the
+  single directory the workspace root, so added directories need no rename. To settle before
+  building:
+  - whether an added directory follows the workspace mode or carries its own;
+  - where its file rules and egress rules come from, since `.ko-agent-sandbox` is read at the
+    workspace root;
+  - whether it may be a repository of its own, and which Git entries the filter then protects;
+  - whether the launcher refuses the home directory and its credential directories there as it
+    does for the workspace root;
+  - whether exposing a directory also records it as trusted for each agent and loads its
+    instructions and skills, as Copilot's `--add-dir` loads the directory's `.github/skills`;
+    `ko-sandbox-entrypoint` records trust for the workspace root only.
+
 ## Before the first release — continuous integration
 
 There is no CI. [development.md](development.md#tests) gives the launcher, proxy and filter

@@ -124,10 +124,6 @@ Insert these options before the agent command (`claude` above):
 1. On macOS, use `--run-on-host=sbt,mill,gradle,mvn`, selecting the programs the agent needs,
    to build at host speed without consuming the podman machine's memory.
 
-    1. These host commands can write the project even with `--write=reject`. See
-       [doc/run-on-host.md](doc/run-on-host.md#program-prerequisites) for requirements and
-       [SECURITY.md](SECURITY.md#run-on-host) for the access it grants.
-
 1. Use `--write=reject` to make the project read-only inside the sandbox.
 
 The launcher refuses to use your home directory as the project because it would expose credentials
@@ -346,7 +342,8 @@ restore permission prompts and set the Claude Code status line.
                          confined daemon. Gradle's session daemons stay separate from yours.
                          Linux gains nothing: container builds already use host speed and memory.
                          Windows needs a different design to enforce the filesystem restrictions.
-                         See SECURITY.md "Run on host" and doc/run-on-host.md.
+                         See SECURITY.md "Run on host" and doc/run-on-host.md
+                         "Program prerequisites".
       --env=<name>[=<value>]
                          set an environment variable in the sandbox and --run-on-host
                          commands.
