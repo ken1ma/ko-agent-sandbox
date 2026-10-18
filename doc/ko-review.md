@@ -120,10 +120,11 @@ argument asks for instructions, or a reviewer, model or effort, that a continuat
    `ko-review verify REVIEW_ID`. It succeeds only when the approval covers the current working tree.
 
 The skill has the author report each round's outcome in a line or two, and, when the review ends, a
-table of every round and the `inspect` lines: the commands with which the user sees how the review
-went, lists the checkout's reviews and deletes this one. The table comes from `ko-review export`,
-since the session's context may have been summarized by then. The author's own model and effort
-are its session's, set with `/model` or the launch options; the skill runs in that session.
+table of every round, then `ko-review export REVIEW_ID`: that reader uses at most the transcript,
+whose footer lists the other `inspect` lines, and `start` deletes the review eight weeks after its
+last update ("Where the state is"). The table comes from `ko-review export`, since the session's
+context may have been summarized by then. The author's own model and effort are its session's, set
+with `/model` or the launch options; the skill runs in that session.
 
 
 ## Commands
@@ -146,9 +147,10 @@ the command has loaded the review's state as a JSON object, carries the review i
 - `diff REVIEW_ID [--round N] [-- git options]`: the working tree, untracked files included,
   against a round's snapshot; the approved round unless one is named, the last round when none is
   approved.
-- `delete REVIEW_ID`: the review's state and its refs, on the user's request only, whatever
-  `schemaVersion` its state has. The tag and tree objects nothing else points to become eligible
-  for a later garbage collection, which by default keeps recent unreachable objects for two weeks.
+- `delete REVIEW_ID`: the review's state and its refs, whatever `schemaVersion` its state has; the
+  author runs it on the user's request only. The tag and tree objects nothing else points to
+  become eligible for a later garbage collection, which by default keeps recent unreachable
+  objects for two weeks.
 - `defaults REVIEWER`: the model and effort the reviewer's local configuration selects for this
   repository, the models to offer with each one's efforts, and the `recommended` pair
   ("Defaults", below).
@@ -277,6 +279,11 @@ $HOME/persistent-volume/ko-review/repositories/<sha256 of the checkout path>/
 and, in the repository's own Git directory, `refs/ko-review/<review id>/round-NNN` for each round's
 transcript and tree, which `delete` removes with the directory above.
 
+- `start` deletes the checkout's reviews whose last update, `updatedAt`, is 56 days or more old,
+  state and refs as `delete` does, and names them in its output's `expiredReviews`. One it cannot
+  delete, as under a read-only Git directory, is in `expiryFailures` with the error, and the new
+  review starts regardless; one another command holds stays silently. For a state the helper
+  cannot read, the start minute in the id counts as the last update.
 - A review id is its local start minute, `2026-09-24-1005-`, plus eight hex digits: the state
   directory and the refs group by start minute, in an arbitrary order within one, and the id can
   be typed.
@@ -480,7 +487,7 @@ fake script installed as both `codex` and `claude` on `PATH`, each imitating its
 - It covers thread continuity and mismatch, every failure class, the digest over each kind of
   change, the snapshot refs and their absence under a read-only Git directory, the base range,
   the coverage of an earlier approval and the changed paths each round names, the export, the
-  lock, the round limit, escalation, and state namespacing.
+  lock, the round limit, escalation, state namespacing, and the deletion of old reviews at `start`.
 - The tests marked `both_reviewers` run against each fake; the rest, whose subject is the helper's
   own logic, run against the fake Codex only.
 - Tests in the test's own process load the helper as a module: `stream_events` with a timeout
