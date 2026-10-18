@@ -53,13 +53,13 @@ Record a standing practice or fact once, in the document that made the decision 
 enforcing it, and reference it elsewhere. Record a deliberate absence and its reason once; do not
 repeat the explanation elsewhere.
 
-After inserting, trimming or rewriting, compare the old and new meanings, then re-read the whole
-passage and check each sentence against Writing style. Unless the user authorized the change, ask
-before removing a recorded reason or intent or changing its meaning; code alone cannot establish
-why a choice was made. Account for removed expectations, reasons, conditions and actions in the
-working list: preserve them, link to where the reader needs them, or, when the removal is allowed,
-give a concrete reason they do not belong. Check for duplication and clauses more specific or
-general than their neighbors: those belong in a different document.
+Compare each edit's old and new meanings, then re-read the whole passage and check each sentence
+against Writing style. Unless the user authorized the change, ask before removing a recorded reason
+or intent or changing its meaning; code alone cannot establish why a choice was made. Account for
+removed expectations, reasons, conditions and actions in the working list: preserve them, link to
+where the reader needs them, or, when the removal is allowed, give a concrete reason they do not
+belong. Check for duplication and clauses more specific or general than their neighbors: those
+belong in a different document.
 
 In a completeness checklist — a security boundary, list of refused operations or test checklist —
 each element states its contribution. Restatement there serves the audit.

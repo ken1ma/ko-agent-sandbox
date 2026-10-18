@@ -1049,6 +1049,7 @@ object AgentSandboxLauncher:
     // that configures nothing is the silent failure mode the options must not have.
     val launchOptions = Vector(
       "--write" -> parsed.write.isDefined, "--egress" -> parsed.egress.isDefined,
+      CommandLine.ModelProviderOption -> parsed.modelProvider.isDefined,
       "--egress-cred" -> parsed.credentialBindings.nonEmpty, "--clipboard" -> parsed.clipboard.isDefined,
       "--mic" -> parsed.mic, "--env" -> parsed.env.nonEmpty, "--env-aws-cred" -> parsed.awsCredential.isDefined,
       "--run-on-host" -> parsed.runOnHost.isDefined, ClaudePlugins.OptionName -> parsed.claudePlugins.nonEmpty,
@@ -1059,8 +1060,9 @@ object AgentSandboxLauncher:
         val them = if named.size == 1 then "it" else "them"
         fail(s"error: $action reads no ${named.mkString(" or ")} option; drop $them")
     def noSessionOptions(action: String): Unit = refuseGiven(action, launchOptions)
+    val egressOptions = Set("--egress", "--egress-cred", CommandLine.ModelProviderOption)
     def noWriteOption(action: String): Unit =
-      refuseGiven(action, launchOptions.filterNot((option, _) => option == "--egress" || option == "--egress-cred"))
+      refuseGiven(action, launchOptions.filterNot((option, _) => egressOptions(option)))
 
     parsed.action match
       case Some(("--help", _)) =>
@@ -1124,7 +1126,7 @@ object AgentSandboxLauncher:
       case Some(("--egress-effective", rest)) =>
         noWriteOption("--egress-effective")
         requirePodman(currentOs)
-        egressEffective(currentOs, parsed.egressProfile, rest, parsed.credentialBindings)
+        egressEffective(currentOs, parsed.egressProfile, parsed.modelProvider, rest, parsed.credentialBindings)
 
       case Some(("--egress-check", operands)) =>
         noWriteOption("--egress-check")
@@ -1133,7 +1135,7 @@ object AgentSandboxLauncher:
           fail("error: --egress-check=<host> names the host to check"),
         )
         requirePodman(currentOs)
-        egressCheck(currentOs, parsed.egressProfile, host, operands.tail)
+        egressCheck(currentOs, parsed.egressProfile, parsed.modelProvider, host, operands.tail)
 
       // CommandLine.ManagementActions and this match drifted.
       case Some((action, _)) => fail(s"error: unhandled action $action")
@@ -1818,16 +1820,10 @@ object AgentSandboxLauncher:
       resolveFileRules(podman, os, projectId, mountPath, fileRulesText),
     )
 
-    // The provider the launched command selects, and the one warning that is the launcher's to
-    // print: the proxy never sees the command, so "this command selects no provider" cannot come
-    // from its resolution.
-    val provider = commandProvider(command.headOption)
-    if egressProfile == "deny-unless-model" && provider.isEmpty then
-      warn(
-        s"'${command.headOption.getOrElse("bash")}' is not a recognized agent command, " +
-          "so deny-unless-model selects no model provider and allows no host; " +
-          "the default --egress=deny-unless-allowed applies the project's rule file instead",
-      )
+    // The providers the launch selects (EgressRules.selectedProvider), and the one warning that is
+    // the launcher's to print.
+    val provider = selectedProvider(parsed.modelProvider, command.headOption, egressProfile).fold(fail(_), identity)
+    if provider.isEmpty then noProviderLine(command.headOption.orElse(Some("bash")), egressProfile).foreach(warn)
 
     // Validated before anything is created: invalid rules would otherwise appear as "could not determine the
     // egress proxy's address" after the --rm proxy died, the reason buried in its log. Cached like the CA bundle below,
@@ -1842,13 +1838,14 @@ object AgentSandboxLauncher:
     val resolvedHostsFile = rulesetCacheDir.resolve("resolved.hosts")
     val resolvedWarningsFile = rulesetCacheDir.resolve("resolved.warnings")
     // The stamp covers everything the dry run reads: the image, the selected options — the
-    // profile and the command-classified provider both determine the resolution — and the files,
+    // profile and the provider variable's value as the proxy receives it, so no selection and a
+    // value the proxy would refuse never share a stamp — and the files,
     // hashed into its one line because they are multi-part. It is the first line of each cached
     // file rather than a file of its own, and a hit needs both to hold it: concurrent launches of
     // one project under different session options write here without a lock, and a stamp
     // beside the content can end up describing the other launch's (FileHelper.stampedEntry).
     val rulesetStamp =
-      s"$proxyImageId $egressProfile ${provider.getOrElse("none")} " +
+      s"$proxyImageId $egressProfile ${provider.getOrElse("")} " +
         sha256Hex(ruleFiles.map((name, text) => s"$name: $text").mkString("\n"))
 
     // The dry run's warnings are cached beside the hosts, so an idle denial or an unreachable
@@ -1866,7 +1863,7 @@ object AgentSandboxLauncher:
         case _ =>
           val resolved = resolvedRuleset(podman, proxyImageId, egressProfile, provider, ruleFiles)
           if !resolved.ok then
-            fail(s"error: this project's egress rules are not valid\n${resolved.err}")
+            fail(rulesetRefusal(resolved.err))
           val warnings = resolved.err.linesIterator.filter(_.startsWith("warning:")).mkString("\n")
           writeStamped(resolvedHostsFile, rulesetStamp, resolved.text)
           writeStamped(resolvedWarningsFile, rulesetStamp, warnings)

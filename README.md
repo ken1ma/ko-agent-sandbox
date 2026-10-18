@@ -4,11 +4,11 @@ Status: Beta
 
 The programs in this sandbox, by default
 
+1. reach no network destinations except:
+    1. the model provider of the agent you launch
+    1. a customizable selection of sites, read-only
 1. reach no host files outside the project directory
     1. except from a Git linked worktree
-1. reach no network destinations except:
-    1. the model providers supported by the sandbox
-    1. an opinionated, customizable selection of sites, read-only
 1. cannot change Git files that can hold arbitrary commands, such as hooks and rebase
    instructions, so `git rebase` fails in the project directory
 
@@ -111,15 +111,24 @@ Start an agent in a trusted project directory, such as `~/my-project`:
 
 Insert these options before the agent command (`claude` above):
 
-1. Use `--write=reject` to make the project read-only inside the sandbox.
-1. Use `--egress=deny-unless-model` to limit network access to the agent's provider; for
-   `opencode`, that is all the default providers.
+1. Use `--model-provider=<names>` to reach other model providers than the agent's own:
+   `anthropic`, `openai`, `google`, `aws` or `github`, separated by commas. `opencode` has no
+   fixed provider and is refused without the option.
+
+    1. For example, to run `claude` and review with `codex` through `/ko-review`:
+
+           java -jar "<path-to-jar>/ko-agent-sandbox.jar" --model-provider=anthropic,openai claude
+
+1. Use `--egress=deny-unless-model` to limit network access to the selected model providers,
+   dropping the read-only sites.
 1. On macOS, use `--run-on-host=sbt,mill,gradle,mvn`, selecting the programs the agent needs,
    to build at host speed without consuming the podman machine's memory.
 
     1. These host commands can write the project even with `--write=reject`. See
        [doc/run-on-host.md](doc/run-on-host.md#program-prerequisites) for requirements and
        [SECURITY.md](SECURITY.md#run-on-host) for the access it grants.
+
+1. Use `--write=reject` to make the project read-only inside the sandbox.
 
 The launcher refuses to use your home directory as the project because it would expose credentials
 in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
@@ -128,12 +137,12 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 1. The current directory is the project directory; the sandbox mounts it at the same path (on
    Windows, at the path WSL gives it).
-1. To change `--write=` or `--egress=`, quit, then relaunch with the new option and the agent's
-   resume arguments:
+1. To change a session option such as `--egress=`, quit, then relaunch with the new options and
+   the agent's resume arguments:
 
-        java -jar "<path-to-jar>/ko-agent-sandbox.jar" --write=reject claude --resume
+        java -jar "<path-to-jar>/ko-agent-sandbox.jar" --egress=deny-unless-model claude --continue
 
-    1. The resume arguments are `claude --resume`, `codex resume`, `agy --continue`,
+    1. The resume arguments are `claude --continue`, `codex resume --last`, `agy --continue`,
        `kiro-cli chat --resume`, `copilot --continue` or `opencode --continue`.
 
 1. Use Ctrl-C to quit.
@@ -151,6 +160,7 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
    Choose Codex or a separate Claude Code session as the reviewer. Claude fixes or disputes each
    finding on the same reviewer thread until the reviewer approves the exact tree or asks for a
    decision only you can make.
+   - A Codex reviewer needs `--model-provider` to name `openai` as well (the launch example above).
    - The reviewer's suggestions, opinions on the design that do not block approval, Claude adopts
      or disputes; it brings to you those that are yours to decide and names the adopted ones that
      changed the design.
@@ -175,7 +185,7 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
    ([doc/microphone.md](doc/microphone.md#codex)).
 1. `$ko-review` runs the same review as [`/ko-review`](#claude), with Codex fixing or disputing
    the findings. Codex asks its questions in replies, since it has no question tool outside Plan
-   mode.
+   mode. For a Claude reviewer, launch with `--model-provider=openai,anthropic`.
 
 #### `agy`
 
@@ -202,6 +212,7 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 #### `opencode`
 
+1. Launch with `--model-provider=<names>` naming the providers you will connect.
 1. Run `/connect`, then `/models` to pick a model from the connected provider.
     1. Anthropic and Google take an API key.
     1. For a ChatGPT plan, choose the headless method, not the browser method.
@@ -300,6 +311,11 @@ restore permission prompts and set the Claude Code status line.
                          deny-unless-allowed, allows the launcher-owned
                          defaults modified by .ko-agent-sandbox/egress/rule.
                          Each profile: doc/egress-proxy.md
+      --model-provider=<names>
+                         the model providers the session reaches instead of the
+                         agent's own: anthropic, openai, google, aws or github,
+                         separated by commas. Required for opencode, which has no
+                         fixed provider; refused under --egress=deny-all
       --clipboard=off|paste|bidirectional
                          off (default) keeps the host clipboard out; paste lets
                          the agent read a copied image; bidirectional also lets
@@ -396,8 +412,8 @@ restore permission prompts and set the Claude Code status line.
       --egress-effective [--] [<command> [args...]]
                          print the ruleset the accompanying --egress=<profile>
                          resolves to for this project, with per-line
-                         provenance; the command selects the model provider
-                         without being launched
+                         provenance; the command, or --model-provider, selects
+                         the model providers without launching anything
       --egress-check=<host> [--] [<command> [args...]]
                          print the host's rule decision and DNS result using the proxy's
                          resolver; with HTTPS_PROXY, also check the upstream proxy's tunnel.

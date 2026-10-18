@@ -32,6 +32,14 @@ object CommandLine:
   val DefaultClipboardMode = "off"
   val MicOption = "--mic"
 
+  /**
+   * `--model-provider=<names>` selects the model providers the session's egress admits, in place of
+   * the one the command's name selects (EgressRules.selectedProvider). The value goes to the proxy
+   * as written: the proxy image defines the provider names, and its refusal of a value it does not
+   * define fails the launch (EgressRules.rulesetRefusal). The launcher keeps no list of providers.
+   */
+  val ModelProviderOption = "--model-provider"
+
   /** The programs `--run-on-host` can name. Available on macOS only, which
     * AgentSandboxLauncher.launchSettings enforces: the parser stays pure over
     * the arguments. */
@@ -105,6 +113,7 @@ object CommandLine:
     clipboard: Option[String] = None,
     mic: Boolean = false,
     claudePlugins: Vector[String] = Vector.empty,
+    modelProvider: Option[String] = None,
   ):
     def writeMode: String = write.getOrElse(DefaultWriteMode)
     def egressProfile: String = egress.getOrElse(DefaultEgressProfile)
@@ -133,6 +142,7 @@ object CommandLine:
     var clipboard = Option.empty[String]
     var mic = false
     var claudePlugins = Vector.empty[String]
+    var modelProvider = Option.empty[String]
 
     def loop(
       rest: List[String],
@@ -191,6 +201,14 @@ object CommandLine:
             claudePlugins :+= directory
             loop(tail, write, egress, env, runOnHost)
 
+        case arg :: tail if arg.startsWith(ModelProviderOption + "=") =>
+          val value = arg.stripPrefix(ModelProviderOption + "=")
+          if modelProvider.isDefined then Left(s"error: $ModelProviderOption is given twice")
+          else if value.isEmpty then Left(s"error: $ModelProviderOption=; name the providers, separated by commas")
+          else
+            modelProvider = Some(value)
+            loop(tail, write, egress, env, runOnHost)
+
         case arg :: tail if arg.startsWith("--write=") =>
           if write.isDefined then Left("error: --write is given twice")
           else choose("--write", arg.stripPrefix("--write="), WriteModes)
@@ -218,13 +236,14 @@ object CommandLine:
             )
 
         case (
-              "--write" | "--egress" | "--env" | "--run-on-host" | "--egress-cred" | "--clipboard" |
-              ClaudePlugins.OptionName
+              "--write" | "--egress" | ModelProviderOption | "--env" | "--run-on-host" | "--egress-cred" |
+              "--clipboard" | ClaudePlugins.OptionName
             ) :: _ =>
           Left(
             "error: the launch options are spelled --write=<mode>, --egress=<profile>, " +
-              "--clipboard=<mode>, --mic, --env=<name>[=<value>], --env-aws-cred[=<profile>], " +
-              s"--egress-cred=<name>@<host>, --run-on-host=<programs> and ${ClaudePlugins.OptionName}=<dir>",
+              s"$ModelProviderOption=<names>, --clipboard=<mode>, --mic, --env=<name>[=<value>], " +
+              "--env-aws-cred[=<profile>], --egress-cred=<name>@<host>, --run-on-host=<programs> and " +
+              s"${ClaudePlugins.OptionName}=<dir>",
           )
 
         case arg :: tail if arg.startsWith("--egress-check=") =>
@@ -265,6 +284,6 @@ object CommandLine:
               Right(
                 parsed.copy(
                   credentialBindings = bindings, awsCredential = awsCredential, clipboard = clipboard, mic = mic,
-                  claudePlugins = claudePlugins,
+                  claudePlugins = claudePlugins, modelProvider = modelProvider,
                 ),
               )

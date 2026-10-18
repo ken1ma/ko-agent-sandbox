@@ -284,6 +284,43 @@ class EgressSessionTest extends munit.FunSuite:
       refusedAtConnect(session, "https://pypi.org/", "a defaults host survived `deny defaults`")
       refusedAtConnect(session, "https://github.com/", "a defaults host survived `deny defaults`")
 
+  test("--model-provider selects the providers a session reaches, over the catalog"):
+    requireTestWithPodman()
+
+    // The suite's command, `sleep`, selects no provider, so the option alone names one: the
+    // launcher passes it to the image as written, and the image resolves it.
+    val project = scratchProject()
+    var live: Option[Session] = None
+    try
+      val session = launchWith(project, project.resolve("session.log"), Vector("--model-provider=openai"))
+      live = Some(session)
+      assert(
+        curl(session, "-o", "/dev/null", "https://api.openai.com/").ok,
+        "the selected provider's endpoint is unreachable",
+      )
+      refusedAtConnect(session, "https://api.anthropic.com/", "an unselected provider's endpoint was admitted")
+      assertEquals(status(session, "https://github.com/"), "200", "the catalog's forge read is lost")
+    finally
+      live.foreach(stop)
+      discard(project)
+
+    // A name the image does not define fails the launch under the option's name, before a session;
+    // also after a launch without the option warmed the project's ruleset cache, where a stamp
+    // shared between no selection and the refused value would skip the dry run and fail at the
+    // proxy's start instead.
+    val refused = scratchProject()
+    try
+      def refusal(value: String): Unit =
+        val (exit, output) = launchOutcome(refused, refused.resolve("launch.log"), Vector(s"--model-provider=$value"))
+        assertNotEquals(exit, 0, output)
+        assert(output.contains("error: --model-provider is not valid"), output)
+        assert(output.contains(s"'$value'"), output)
+      refusal("meta")
+      val (warmed, output) = launchOutcome(refused, refused.resolve("launch.log"))
+      assertEquals(warmed, 0, output)
+      refusal("none")
+    finally discard(refused)
+
   test("the npm audit line allows the audit POST beside an install with a scoped package"):
     requireTestWithPodman()
 

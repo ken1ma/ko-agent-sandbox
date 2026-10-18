@@ -95,7 +95,8 @@ spells out:
 - four grant words;
 - no pattern but the taking-away subtree;
 - no open vocabulary;
-- no selected-provider-plus-extras profile variant.
+- no profile per provider set: a launch selects its providers with `--model-provider`, over the
+  same three profiles.
 
 Its model is a small part of OpenBSD's policy languages, chosen as precedent, not as a
 compatibility target:

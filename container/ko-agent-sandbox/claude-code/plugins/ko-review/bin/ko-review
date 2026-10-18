@@ -805,8 +805,8 @@ def check_egress(reviewer):
     if hosts_allowed(reviewer) is False:
         raise ReviewerError(
             reviewer, "REVIEWER_EGRESS_DENIED",
-            f"the egress ruleset allows none of {', '.join(reviewer.hosts)}: relaunch the session under an egress"
-            " profile that allows both providers, normally the default, and retry",
+            f"the egress ruleset allows none of {', '.join(reviewer.hosts)}: relaunch the session with"
+            " --model-provider naming both agents' providers, such as --model-provider=anthropic,openai, and retry",
             profile=os.environ["KO_AGENT_SANDBOX_EGRESS_RULESET"].splitlines()[0],
         )
 

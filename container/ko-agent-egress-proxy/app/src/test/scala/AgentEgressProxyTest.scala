@@ -146,6 +146,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     def opt(value: String) = Option(value).filter(_.nonEmpty)
     resolveRuleset(Some(profile), opt(provider), opt(rule))
 
+  /** Every provider the proxy defines, as a launch spells it. */
+  private val Every = ModelProviders.mkString(",")
+
   private def refusalOf(rule: String): String =
     intercept[IllegalArgumentException](rulesetOf(rule = rule)).getMessage
 
@@ -224,7 +227,11 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[IllegalArgumentException](rulesetOf(profile = "deny-unless-model", provider = "meta"))
 
   test("the configured ruleset is the defaults, changed by the rule variable's lines"):
-    assertEquals(configuredRuleset(_ => None).hosts, DefaultHosts)
+    assertEquals(configuredRuleset(_ => None).hosts, rulesetOf().hosts)
+    assertEquals(
+      configuredRuleset(name => Option.when(name == ModelProviderVariable)(Every)).hosts,
+      DefaultHosts,
+    )
     assert(
       !configuredRuleset(name => Option.when(name == RuleVariable)("deny https://pypi.org/")).hosts
         .contains("pypi.org"),
@@ -348,7 +355,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
   // ---------------------------------------------------------------------------
 
   test("deny-unless-allowed with no rule file preserves every default rule's host, path and grants"):
-    val resolved = rulesetOf()
+    val resolved = rulesetOf(provider = Every)
     assertEquals(resolved.hosts, DefaultHosts)
     assertEquals(
       resolved.inspectedScopes("github.com"),
@@ -364,6 +371,45 @@ class AgentEgressProxyTest extends munit.FunSuite:
     )
     assertEquals(resolved.hosts("api.githubcopilot.com"), Treatment.Tunnel)
     assertEquals(resolved.warnings, Vector.empty)
+
+  test("deny-unless-allowed starts from the catalog and the selected providers alone"):
+    val catalog = rulesetOf()
+    assertEquals(catalog.hosts.keySet, CatalogLines.map(_.rule).collect { case Rule.Allow(host, _, _) => host }.toSet)
+    assertEquals(catalog.tunnelHosts, Set.empty)
+    assertEquals(rulesetLines(catalog).head, "egress profile: deny-unless-allowed; model provider: none")
+    // The catalog's own grants on a provider's shared host stay whichever provider is selected.
+    assertEquals(catalog.inspectedScopes("github.com"), Map("/" -> Set("read", "git-fetch")))
+    val anthropic = rulesetOf(provider = "anthropic")
+    val anthropicOnly = rulesetOf(profile = "deny-unless-model", provider = "anthropic")
+    assertEquals(anthropic.hosts, catalog.hosts ++ anthropicOnly.hosts)
+    assertEquals(rulesetLines(anthropic).head, "egress profile: deny-unless-allowed; model provider: anthropic")
+    assert(!anthropic.hosts.contains("api.openai.com"))
+    assert(!anthropic.hosts.contains("api.githubcopilot.com"))
+    assertEquals(anthropic.warnings, Vector.empty)
+    // Several, in the launch's spelling; the selection is in the ruleset, so it is in the digest.
+    val two = rulesetOf(provider = "aws,anthropic")
+    assertEquals(two.hosts, catalog.hosts ++ rulesetOf(profile = "deny-unless-model", provider = "aws,anthropic").hosts)
+    assertEquals(rulesetLines(two).head, "egress profile: deny-unless-allowed; model provider: aws,anthropic")
+    assertNotEquals(two.ruleset, rulesetOf(provider = "anthropic,aws").ruleset)
+    assertEquals(two.hosts, rulesetOf(provider = "anthropic,aws").hosts)
+    // The file's provider lines work as before: a selected provider's allow is a restatement, an
+    // unselected one's adds it and is reported as widening.
+    assertEquals(rulesetOf(provider = "anthropic", rule = "allow model-provider anthropic").hosts, anthropic.hosts)
+    val added = rulesetOf(provider = "anthropic", rule = "allow model-provider openai")
+    assertEquals(added.hosts, rulesetOf(provider = "anthropic,openai").hosts)
+    assertEquals(added.provenance.widening.map(_.text), Vector("allow model-provider openai"))
+    assertEquals(
+      rulesetOf(provider = "anthropic", rule = "deny model-provider anthropic").hosts,
+      catalog.hosts,
+    )
+    // The variable's forms: an empty name, a name twice, an unknown name.
+    Vector("anthropic,", ",aws", "aws,aws", "meta").foreach: value =>
+      val ex = intercept[IllegalArgumentException](rulesetOf(provider = value))
+      assert(ex.getMessage.startsWith("EGRESS_MODEL_PROVIDER "), s"$value: ${ex.getMessage}")
+    // Unset and empty select none alike: the launcher passes the variable empty.
+    Profiles.foreach: profile =>
+      val unset = resolveRuleset(Some(profile), None, None)
+      assertEquals(resolveRuleset(Some(profile), Some(""), None).ruleset, unset.ruleset, profile)
 
   test("the default catalog grants read alone, and read git-fetch on the three Git hosts"):
     // SECURITY.md, "Reading without being able to write": a method or a git-fetch the list there does not name
@@ -425,25 +471,23 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(none.hosts, Map.empty[String, Treatment])
     assertEquals(rulesetLines(none), Vector("egress profile: deny-unless-model; model provider: none"))
 
-  test("deny-unless-model under `all` allows every provider the proxy defines, and no catalog host"):
-    val every = rulesetOf(profile = "deny-unless-model", provider = AllProviders)
+  test("deny-unless-model under every provider's name allows every provider, and no catalog host"):
+    val every = rulesetOf(profile = "deny-unless-model", provider = Every)
     // The same hosts that `deny defaults` followed by every provider's allow line resolves to.
     val spelled = ("deny defaults" +: ModelProviders.map(name => s"allow model-provider $name")).mkString("\n")
     assertEquals(every.hosts, rulesetOf(rule = spelled).hosts)
     assert(!every.hosts.contains("pypi.org"))
-    assertEquals(rulesetLines(every).head, "egress profile: deny-unless-model; model provider: all")
+    assertEquals(rulesetLines(every).head, s"egress profile: deny-unless-model; model provider: $Every")
     // A provider deny blocks its listed hosts, leaving the other providers' distinct hosts
     // reachable.
     val github = rulesetOf(profile = "deny-unless-model", provider = "github").hosts.keySet
     assertEquals(
-      rulesetOf(profile = "deny-unless-model", provider = AllProviders, rule = "deny model-provider github").hosts,
+      rulesetOf(profile = "deny-unless-model", provider = Every, rule = "deny model-provider github").hosts,
       every.hosts -- github,
     )
-    // Every other profile ignores the selection, as it does a named provider.
-    Vector("deny-all", "deny-unless-allowed").foreach: profile =>
-      assertEquals(rulesetOf(profile, AllProviders).ruleset, rulesetOf(profile).ruleset, profile)
-    // The variable's word, not the grammar's.
-    assert(refusalOf("allow model-provider all").contains("names the model provider 'all'"))
+    // deny-all ignores the selection, as it does a named provider; deny-unless-allowed admits it.
+    assertEquals(rulesetOf("deny-all", Every).ruleset, rulesetOf("deny-all").ruleset)
+    assertEquals(rulesetOf("deny-unless-allowed", Every).hosts, DefaultHosts)
 
   test("deny-unless-model for copilot allows two login POSTs, one token read and four tunnels"):
     val resolved = rulesetOf(profile = "deny-unless-model", provider = "github")
@@ -527,37 +571,38 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(!denied.hosts.contains("github.com"))
 
   test("deny takes by host, by subtree, by grant and by provider, each what it names and no more"):
-    val host = rulesetOf(rule = "deny https://gitlab.com/")
+    def every(rule: String): ResolvedEgress = rulesetOf(provider = Every, rule = rule)
+    val host = every("deny https://gitlab.com/")
     assert(!host.hosts.contains("gitlab.com"))
     assertEquals(
       intercept[Refusal](authorize("gitlab.com", 443, host)).getMessage,
       "host denied (rule: deny https://gitlab.com/)",
     )
     // A subtree: a label boundary, not a suffix match, crossing treatments.
-    val subtree = rulesetOf(rule = "deny https://**.github.com/")
+    val subtree = every("deny https://**.github.com/")
     Vector("github.com", "api.github.com", "codeload.github.com").foreach(h => assert(!subtree.hosts.contains(h), h))
     assert(subtree.hosts.contains("raw.githubusercontent.com"))
-    val claude = rulesetOf(rule = "deny https://**.claude.com/")
+    val claude = every("deny https://**.claude.com/")
     assert(!claude.hosts.contains("code.claude.com"))
     assert(!claude.hosts.contains("platform.claude.com"))
     // A grant: read taken leaves a forge clonable and not browsable; git-fetch taken leaves it readable.
-    val unreadable = rulesetOf(rule = "deny https://github.com/ read")
+    val unreadable = every("deny https://github.com/ read")
     assertEquals(unreadable.inspectedScopes("github.com")("/"), Set("git-fetch"))
     assertEquals(unreadable.inspectedScopes("github.com")("/login/device/code"), Set("git-fetch", "POST"))
-    val unclonable = rulesetOf(rule = "deny https://github.com/ git-fetch")
+    val unclonable = every("deny https://github.com/ git-fetch")
     assertEquals(unclonable.inspectedScopes("github.com")("/"), Set("read"))
     assertEquals(
-      rulesetOf(rule = "deny https://**.github.com/ git-fetch").inspectedScopes("github.com")("/"),
+      every("deny https://**.github.com/ git-fetch").inspectedScopes("github.com")("/"),
       Set("read"),
     )
     assertEquals(
-      rulesetOf(rule = "deny https://github.com/ method=POST").inspectedScopes("github.com")("/login/device/code"),
+      every("deny https://github.com/ method=POST").inspectedScopes("github.com")("/login/device/code"),
       Set("read", "git-fetch"),
     )
     // The tunnel word takes the treatment.
-    assert(!rulesetOf(rule = "deny https://api.anthropic.com/ tunnel").hosts.contains("api.anthropic.com"))
+    assert(!every("deny https://api.anthropic.com/ tunnel").hosts.contains("api.anthropic.com"))
     // Provider denials also remove catalog grants on the same hosts.
-    val noGithub = rulesetOf(rule = "deny model-provider github")
+    val noGithub = every("deny model-provider github")
     Vector("github.com", "api.github.com", "api.githubcopilot.com").foreach: host =>
       assert(!noGithub.hosts.contains(host), host)
       assertEquals(
@@ -565,7 +610,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "host denied (rule: deny model-provider github)",
       )
     assert(noGithub.hosts.contains("raw.githubusercontent.com"))
-    val noGoogle = rulesetOf(rule = "deny model-provider google")
+    val noGoogle = every("deny model-provider google")
     ModelProviderLines("google").map(_.rule).foreach:
       case Rule.Allow(h, _, _) => assert(!noGoogle.hosts.contains(h), h)
       case other               => fail(other.toString)
@@ -606,8 +651,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
       val expanded = hosts.map(host => s"deny https://$host/").mkString("\n")
       Profiles.foreach: profile =>
         Vector("", "deny defaults\n").foreach: prefix =>
-          val resolved = rulesetOf(profile, AllProviders, prefix + deny)
-          assertEquals(resolved.ruleset, rulesetOf(profile, AllProviders, prefix + expanded).ruleset)
+          val resolved = rulesetOf(profile, Every, prefix + deny)
+          assertEquals(resolved.ruleset, rulesetOf(profile, Every, prefix + expanded).ruleset)
           assertEquals(
             resolved.warnings.count(_ == s"rule: $deny matches nothing at its position"),
             if prefix.isEmpty then 0 else 1,
@@ -750,13 +795,11 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "deny https://api.anthropic.com/\ndeny https://**.github.com/\ndeny https://docs.python.org/ read",
       "deny https://docs.python.org/ read\ndeny https://**.github.com/\ndeny https://api.anthropic.com/",
     )
-    // The provider selected and unselected: one ruleset under every profile but deny-unless-model.
-    Vector("deny-all", "deny-unless-allowed").foreach: profile =>
-      assertEquals(rulesetOf(profile, "google").ruleset, rulesetOf(profile).ruleset, profile)
-    assertNotEquals(
-      rulesetOf("deny-unless-model", "google").ruleset,
-      rulesetOf("deny-unless-model", "anthropic").ruleset,
-    )
+    // The provider selected and unselected: one ruleset under deny-all alone.
+    assertEquals(rulesetOf("deny-all", "google").ruleset, rulesetOf("deny-all").ruleset)
+    Vector("deny-unless-model", "deny-unless-allowed").foreach: profile =>
+      assertNotEquals(rulesetOf(profile, "google").ruleset, rulesetOf(profile).ruleset, profile)
+      assertNotEquals(rulesetOf(profile, "google").ruleset, rulesetOf(profile, "anthropic").ruleset, profile)
     // One file under two profiles: two line sets, so two digests and two texts.
     val texts = Vector("deny-unless-allowed", "deny-unless-model")
       .map: profile =>
@@ -766,6 +809,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("the widening line names the project lines granting beyond the defaults at their path, and only those"):
     val resolved = rulesetOf(
+      provider = Every,
       rule =
         "allow https://html.spec.whatwg.org/ read      # a host the defaults lack: a new recipient\n" +
           "allow https://storage.googleapis.com/b/ read   # narrowed, and still a new recipient\n" +
@@ -801,6 +845,18 @@ class AgentEgressProxyTest extends munit.FunSuite:
       ).provenance.widening.map(_.text),
       Vector("deny defaults", "allow https://github.com/ tunnel"),
     )
+    // Against the launch's own defaults: a provider the launch did not select is a new recipient,
+    // by its line or by its hosts, and the selected one's restated rules are not.
+    assertEquals(
+      rulesetOf(
+        provider = "anthropic",
+        rule =
+          "allow https://api.anthropic.com/ tunnel\nallow model-provider anthropic\n" +
+            "allow https://api.openai.com/ tunnel\nallow model-provider openai\n" +
+            "allow https://github.com/ read git-fetch",
+      ).provenance.widening.map(_.text),
+      Vector("allow https://api.openai.com/ tunnel", "allow model-provider openai"),
+    )
     // Nothing widens under a profile the file cannot widen; a file that only takes prints no line.
     Vector("deny-all", "deny-unless-model").foreach: profile =>
       assertEquals(
@@ -813,9 +869,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(metadataLines(narrowing).size, 1)
 
   test("--print-ruleset is the rule grammar, one line per resolved scope, sorted: what the leaf's names derive from"):
-    val resolved = rulesetOf()
+    val resolved = rulesetOf(provider = Every)
     val lines = rulesetLines(resolved)
-    assertEquals(lines(0), "egress profile: deny-unless-allowed")
+    assertEquals(lines(0), s"egress profile: deny-unless-allowed; model provider: $Every")
     val scopes = DefaultHosts.values.map {
       case Treatment.Inspected(scopes) => scopes.size
       case Treatment.Tunnel       => 1
@@ -844,6 +900,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
   test("provenance names each scope's boundary and each grant's contributions, a pattern's lines, and a denied host's"):
     val lines = provenanceLines(
       rulesetOf(
+        provider = Every,
         rule = "deny https://codeberg.org/ git-fetch\nallow https://codeberg.org/my-org/ git-fetch\n" +
           "deny https://gitlab.com/",
       ),
@@ -906,7 +963,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("--check-host spells a host's treatment as its resolved lines, one per scope"):
     assertEquals(
-      ruleLines("github.com", rulesetOf().hosts("github.com")),
+      ruleLines("github.com", rulesetOf(provider = "github").hosts("github.com")),
       Vector(
         "allow https://github.com/ read git-fetch",
         "allow https://github.com/login/device/code read git-fetch method=POST",
@@ -2337,7 +2394,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     request("GET /@scope%2fname HTTP/1.1\r\nHost: registry.npmjs.org\r\n\r\n", npm, "registry.npmjs.org")
     // The github provider's login lines beside the catalog's root: the device-flow pair and nothing
     // beside it.
-    val github = rulesetOf().inspectedScopes("github.com")
+    val github = rulesetOf(provider = "github").inspectedScopes("github.com")
     request("POST /login/device/code HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n", github)
     request("POST /login/oauth/access_token HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n", github)
     request("GET /login/device/code HTTP/1.1\r\nHost: github.com\r\n\r\n", github)

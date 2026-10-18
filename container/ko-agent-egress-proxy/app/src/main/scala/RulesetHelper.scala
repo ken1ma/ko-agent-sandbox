@@ -98,11 +98,23 @@ object RulesetHelper:
 
   val ModelProviders: Vector[String] = Vector("anthropic", "openai", "google", "aws", "github")
 
-  /** The EGRESS_MODEL_PROVIDER value that selects every provider above. The launcher sends it for an
-    * agent with no fixed provider, opencode, and this file alone expands it, so the launcher keeps
-    * no list of providers. A rule file's `model-provider` lines require a provider name and reject
-    * `all`. */
-  val AllProviders = "all"
+  /** The providers an EGRESS_MODEL_PROVIDER value selects — the launcher's `--model-provider`
+    * value as written, provider names separated by commas — in its order, each once; unset or
+    * empty selects none. This file alone defines the names, so the launcher keeps no list of
+    * providers. A name the proxy does not define, an empty name beside a comma or a name twice is
+    * refused: a selection that half-parses would be a half-opened ruleset. */
+  def selectedProviders(value: Option[String]): Vector[String] =
+    value.filter(_.nonEmpty) match
+      case None => Vector.empty
+      case Some(spelled) =>
+        val names = spelled.split(",", -1).toVector
+        names.find(_.isEmpty).foreach: _ =>
+          throw IllegalArgumentException(
+            s"$ModelProviderVariable is '$spelled'; the value is provider names separated by commas",
+          )
+        names.diff(names.distinct).headOption.foreach: twice =>
+          throw IllegalArgumentException(s"$ModelProviderVariable is '$spelled'; it names $twice twice")
+        names.map(requireProvider(ModelProviderVariable, _))
 
   // ---------------------------------------------------------------------------
   // The grammar
@@ -294,8 +306,16 @@ object RulesetHelper:
     CatalogLines.map(line => contributionOf(line, Source(line, None)))
       ++ ModelProviders.flatMap(name => providerContributions(name, None))
 
-  /** The defaults resolved on their own: what deny-unless-allowed enforces with no project file. */
+  /** The launcher-owned defaults resolved whole, every provider included: what deny-unless-allowed
+    * enforces with every provider selected and no project file, and what every file is validated
+    * over. */
   val DefaultHosts: Map[String, Treatment] = hostsOf(start(DefaultContributions))
+
+  /** What a launch starts from under deny-unless-allowed: the catalog and the selected providers'
+    * rules. */
+  private def launchDefaults(selected: Vector[String]): Vector[Contribution] =
+    CatalogLines.map(line => contributionOf(line, Source(line, None)))
+      ++ selected.flatMap(name => providerContributions(name, None))
 
   // ---------------------------------------------------------------------------
   // Resolution
@@ -447,8 +467,9 @@ object RulesetHelper:
    * The ruleset in force: the whole of what enforcement reads, and the whole of what the digest
    * names. Equality of this structure is what "one ruleset" means: two files resolving to it print
    * one digest and the same lines, and the same file under two profiles never does — the profile
-   * is in it, and the selected provider under deny-unless-model alone, where it changes authority.
-   * The host map embodies every denial, and none is kept.
+   * is in it, and the selected providers under the two profiles where they change authority,
+   * deny-unless-model and deny-unless-allowed. The host map embodies every denial, and none is
+   * kept.
    */
   case class Ruleset(
     profile: String,
@@ -505,12 +526,14 @@ object RulesetHelper:
    * Every profile runs the same fold, from its own start and consulting its own lines:
    *
    *   deny-all            = nothing
-   *   deny-unless-model   = the selected providers' lines — one provider, or every provider under
-   *                         AllProviders — then the file's deny lines
-   *   deny-unless-allowed = the defaults — none after `deny defaults` — then every line
+   *   deny-unless-model   = the selected providers' lines (selectedProviders) — then the file's
+   *                         deny lines
+   *   deny-unless-allowed = the catalog and the selected providers' lines — none after
+   *                         `deny defaults` — then every line
    *
-   * Refusals and warnings come from one further fold, every line over the defaults, so that a file
-   * valid under one profile is valid under every one.
+   * Refusals and warnings come from one further fold, every line over the whole defaults, every
+   * provider included, so that a file valid under one profile and selection is valid under every
+   * one.
    *
    * The internal-network denials of the security model are not rules here: they are IPAddrHelper's
    * address vetting, applied to every resolved destination at connection time, so no rule file
@@ -523,7 +546,8 @@ object RulesetHelper:
    * silently — a redundant grant, a line every grant of which a later line takes back, and a
    * selected provider's host the resolved ruleset does not allow. An
    * empty ruleset is valid and reported as such — deny-all resolves empty by design, as
-   * does deny-unless-model with no provider selected.
+   * does deny-unless-model with no provider selected; deny-unless-allowed with none selected is
+   * the catalog alone.
    */
   def resolveRuleset(
     profileValue: Option[String],
@@ -533,10 +557,8 @@ object RulesetHelper:
     val profile = profileValue.getOrElse(DefaultProfile)
     if !Profiles.contains(profile) then
       throw IllegalArgumentException(s"$ProfileVariable is '$profile'; the profiles are ${Profiles.mkString(", ")}")
-    val provider = providerValue.filterNot(_ == "none").map: value =>
-      if value == AllProviders then value else requireProvider(ModelProviderVariable, value)
-    val selectedProviders =
-      provider.toVector.flatMap(name => if name == AllProviders then ModelProviders else Vector(name))
+    val selected = selectedProviders(providerValue)
+    val provider = Option.when(selected.nonEmpty)(selected.mkString(","))
 
     val lines = parseRules(RuleFile, ruleText.getOrElse(""))
     val clearsDefaults = lines.headOption.exists(_.rule == Rule.DenyDefaults)
@@ -553,8 +575,8 @@ object RulesetHelper:
           )
         case _ => ()
 
-    val defaults = if clearsDefaults then Vector.empty else DefaultContributions
-    val validated = lines.foldLeft(start(defaults))((state, line) => step(state, line, _ => true, check = true))
+    val validated = lines.foldLeft(start(if clearsDefaults then Vector.empty else DefaultContributions)):
+      (state, line) => step(state, line, _ => true, check = true)
     // Per file line, by reference: a repeated line is its own line, and a provider line's expanded
     // contributions all name it.
     val takenBack = lines.flatMap: line =>
@@ -567,10 +589,11 @@ object RulesetHelper:
       case Rule.Deny(_, _) | Rule.DenyProvider(_) => true
       case _                                      => false
 
+    val starting = if clearsDefaults then Vector.empty else launchDefaults(selected)
     val (initial, consult) = profile match
       case "deny-all"            => (Vector.empty[Contribution], (_: Rule) => false)
-      case "deny-unless-model"   => (selectedProviders.flatMap(providerContributions(_, None)), isDeny)
-      case "deny-unless-allowed" => (defaults, (_: Rule) => true)
+      case "deny-unless-model"   => (selected.flatMap(providerContributions(_, None)), isDeny)
+      case "deny-unless-allowed" => (starting, (_: Rule) => true)
     val enforced =
       if profile == "deny-all" then State()
       else lines.foldLeft(start(initial))((state, line) => step(state, line, consult, check = false))
@@ -587,7 +610,7 @@ object RulesetHelper:
         .map((pattern, sources) => pattern -> sources.distinct)
         .sortBy(_(0).spelled)
 
-    val ruleset = Ruleset(profile, Option.when(profile == "deny-unless-model")(provider).flatten, hosts)
+    val ruleset = Ruleset(profile, Option.when(profile != "deny-all")(provider).flatten, hosts)
 
     val scopes = hosts.toVector.flatMap: (host, treatment) =>
       val own = enforced.contributions.filter(_.host == host)
@@ -604,14 +627,18 @@ object RulesetHelper:
           grant -> supplying.filter(_.grants(grant)).map(_.source.spelled)
         (host, path) -> ScopeProvenance(boundary.distinct, grants.toMap)
 
+    // Against what this launch starts from, not the whole defaults: a provider the launch did not
+    // select is a new recipient for this session, however familiar its host.
+    val launchHosts = hostsOf(start(launchDefaults(selected)))
     val widening =
       if profile != "deny-unless-allowed" then Vector.empty
       else
         lines.filter: line =>
           line.rule match
             case Rule.DenyDefaults => true
+            case Rule.AllowProvider(name) => !selected.contains(name)
             case Rule.Allow(host, path, grants) =>
-              DefaultHosts.get(host) match
+              launchHosts.get(host) match
                 case None                   => true
                 case Some(Treatment.Tunnel) => false
                 case Some(Treatment.Inspected(scopes)) =>
@@ -621,13 +648,13 @@ object RulesetHelper:
             case _ => false
 
     val reachability =
-      selectedProviders.flatMap: selected =>
-        val unreachable = ModelProviderLines(selected).map(_.rule)
+      selected.flatMap: name =>
+        val unreachable = ModelProviderLines(name).map(_.rule)
           .collect { case Rule.Allow(host, _, _) => host }
           .distinct.sorted
           .filterNot(hosts.contains)
         Option.when(unreachable.nonEmpty)(
-          s"the selected model provider '$selected' is not fully reachable under $profile: " +
+          s"the selected model provider '$name' is not fully reachable under $profile: " +
             unreachable.mkString(" "),
         )
 
@@ -658,9 +685,8 @@ object RulesetHelper:
    */
   def rulesetLines(resolved: ResolvedEgress): Vector[String] =
     val profileLine = resolved.profile match
-      case "deny-unless-model" =>
-        s"${ProfileLineHead}deny-unless-model; $ModelProviderLabel${resolved.provider.getOrElse("none")}"
-      case other => s"$ProfileLineHead$other"
+      case "deny-all" => s"${ProfileLineHead}deny-all"
+      case other      => s"$ProfileLineHead$other; $ModelProviderLabel${resolved.provider.getOrElse("none")}"
     profileLine +: resolved.hosts.toVector.sortBy(_(0)).flatMap(ruleLines)
 
   /** The fixed text the launcher matches in what rulesetLines and metadataLines print

@@ -91,21 +91,12 @@ object EgressRules:
         tunnel <- counts.get("tunnel hosts")
       yield
         val profile = head.stripPrefix(RulesetHelper.ProfileLineHead).takeWhile(_ != ';')
-        profile match
-          case "deny-unless-model" =>
-            val provider = head
-              .split(RulesetHelper.ModelProviderLabel, 2)
-              .lift(1)
-              .map(_.trim)
-              .filter(_.nonEmpty)
-              .getOrElse("none")
-            val selected = provider match
-              case "none" => "no provider selected"
-              case "all"  => "every model provider"
-              case name   => s"model provider $name"
-            s"egress: ${chosen(profile, color)}; $selected; $inspected inspected, $tunnel tunnel"
-          case _ =>
-            s"egress: ${chosen(profile, color)}; $inspected inspected, $tunnel tunnel"
+        val selected = head.split(RulesetHelper.ModelProviderLabel, 2).lift(1).map(_.trim).filter(_.nonEmpty).map:
+          case "none"                       => "no provider selected"
+          case names if names.contains(",") => s"model providers ${names.replace(",", ", ")}"
+          case name                         => s"model provider $name"
+        (Vector(s"egress: ${chosen(profile, color)}") ++ selected :+ s"$inspected inspected, $tunnel tunnel")
+          .mkString("; ")
 
     parsed.getOrElse(s"egress: ${lines.headOption.getOrElse("(empty resolution)")}")
 
@@ -145,10 +136,9 @@ object EgressRules:
   /**
    * Only the basename of the directly launched command is classified; the launcher does not inspect
    * a script's arguments or guess what it may later execute — a script that starts an agent selects
-   * no provider and, under deny-unless-model, gets the startup warning instead of a guessed grant.
-   * opencode has no fixed provider and selects `all`, the proxy's word for every provider it
-   * defines (RulesetHelper.AllProviders); the proxy expands it, so this file keeps no list of
-   * providers.
+   * no provider and gets the startup warning instead of a guessed grant, unless the launch names
+   * its providers (selectedProvider). The names are the proxy's (RulesetHelper.ModelProviders), and
+   * the proxy checks them, so this file keeps no list of providers.
    */
   val AgentProviders: Map[String, String] =
     Map(
@@ -157,11 +147,58 @@ object EgressRules:
       "agy" -> "google",
       "kiro-cli" -> "aws",
       "copilot" -> "github",
-      "opencode" -> "all",
     )
 
-  def commandProvider(command: Option[String]): Option[String] =
-    command.map(name => name.split("[/\\\\]").last).flatMap(AgentProviders.get)
+  /** The agents that run against any provider, so no classification stands for a choice: a
+    * launch of one names its providers or is refused. */
+  val ProviderlessAgents: Set[String] = Set("opencode")
+
+  private def commandName(command: Option[String]): Option[String] = command.map(_.split("[/\\\\]").last)
+
+  def commandProvider(command: Option[String]): Option[String] = commandName(command).flatMap(AgentProviders.get)
+
+  /**
+   * The provider selection a launch hands the proxy (RulesetHelper.selectedProviders): the
+   * `--model-provider` value when given, else the command's classification, else none. The option
+   * is refused under deny-all, where it would select nothing; a providerless agent without it is
+   * refused under the other profiles, where every other agent's launch selects a provider and
+   * that one's would silently select none.
+   */
+  def selectedProvider(
+    option: Option[String],
+    command: Option[String],
+    profile: String,
+  ): Either[String, Option[String]] =
+    val name = commandName(command)
+    if profile == "deny-all" && option.isDefined then
+      Left(s"error: ${CommandLine.ModelProviderOption} selects no host under --egress=deny-all; drop it")
+    else
+      option.orElse(commandProvider(command)) match
+        case None if profile != "deny-all" && name.exists(ProviderlessAgents) =>
+          Left(
+            s"error: ${name.get} has no fixed model provider; name the session's providers with " +
+              s"${CommandLine.ModelProviderOption}=<names>, separated by commas",
+          )
+        case selected => Right(selected)
+
+  /** The launch's warning that no provider is selected, under a profile where one could be: the
+    * proxy never sees the command or the option, so the line cannot come from its resolution.
+    * `command` is the command's first word; a launch with none runs the image's default. */
+  def noProviderLine(command: Option[String], profile: String): Option[String] =
+    Option.when(profile != "deny-all"):
+      val subject = command.fold("no command is given")(name => s"'$name' is not a recognized agent command")
+      val effect =
+        if profile == "deny-unless-model" then "allows no host"
+        else "starts from the catalog alone; the project's rule file applies after it"
+      s"$subject and no ${CommandLine.ModelProviderOption} is given, so $profile selects no model provider and $effect"
+
+  /** The launch's failure when the dry run refuses: the proxy names the variable it refused, and
+    * the launcher names the option or file that variable carries. */
+  def rulesetRefusal(err: String): String =
+    val subject =
+      if err.contains(RulesetHelper.ModelProviderVariable) then s"${CommandLine.ModelProviderOption} is not valid"
+      else "this project's egress rules are not valid"
+    s"error: $subject\n$err"
 
   /**
    * A --print-ruleset dry run of the proxy image (--rm, --network=none,
@@ -211,7 +248,7 @@ object EgressRules:
   ): Vector[String] =
     Vector(
       s"--env=${RulesetHelper.ProfileVariable}=$profile",
-      s"--env=${RulesetHelper.ModelProviderVariable}=${provider.getOrElse("none")}",
+      s"--env=${RulesetHelper.ModelProviderVariable}=${provider.getOrElse("")}",
     ) ++ ruleFiles.map: (name, text) =>
       val variable = RuleFiles.find(_(0) == name).fold(fail(s"error: no rule file $name"))(_(1))
       s"--env=$variable=$text"
@@ -312,6 +349,8 @@ object EgressRules:
     * without launching anything. */
   private def egressPreflight(
     os: Os,
+    profile: String,
+    modelProvider: Option[String],
     operands: List[String],
   ): (String, String, Vector[(String, String)], Option[String]) =
     val command = operands match
@@ -335,12 +374,9 @@ object EgressRules:
     boundaryDirRefusal(boundaryDir).foreach(fail(_))
     val ruleFiles = readRuleFiles(boundaryDir.resolve("egress")).fold(fail(_), identity)
 
-    val provider = commandProvider(command.headOption)
-    command.headOption match
-      case None       => System.err.println("egress: no command given, so no model provider is selected")
-      case Some(name) if provider.isEmpty =>
-        System.err.println(s"egress: '$name' is not a recognized agent command; it selects no model provider")
-      case Some(_) => ()
+    val provider = selectedProvider(modelProvider, command.headOption, profile).fold(fail(_), identity)
+    if provider.isEmpty then
+      noProviderLine(command.headOption, profile).foreach(line => System.err.println(s"egress: $line"))
 
     if ruleFiles.nonEmpty then printRuleFiles(ruleFiles)
     else System.err.println("egress rules: no project rule file; the launcher-owned defaults")
@@ -376,16 +412,17 @@ object EgressRules:
   def egressEffective(
     os: Os,
     profile: String,
+    modelProvider: Option[String],
     operands: List[String],
     bindings: Vector[CredentialBinding] = Vector.empty,
   ): Nothing =
-    val (projectId, proxyImageId, ruleFiles, provider) = egressPreflight(os, operands)
+    val (projectId, proxyImageId, ruleFiles, provider) = egressPreflight(os, profile, modelProvider, operands)
 
     val resolved = resolvedRuleset(podman, proxyImageId, profile, provider, ruleFiles, provenance = true)
     System.out.write(resolved.out)
     System.out.flush()
     if !resolved.ok then
-      fail(s"error: this project's egress rules are not valid\n${resolved.err}")
+      fail(rulesetRefusal(resolved.err))
     val inspected = inspectedHostsOf(resolved.text).fold(fail(_), identity).toSet
     EgressCredentials.effectiveLines(bindings, inspected, tunnelHostsOf(resolved.text).toSet).foreach(println)
     resolved.err.linesIterator.filter(_.startsWith("warning:")).foreach(line => System.err.println(emphasized(line)))
@@ -400,8 +437,14 @@ object EgressRules:
    * per-run network built like a session's egress network (AgentEgressProxy.checkHost has why the
    * two are reported apart and why the resolver must be enforcement's).
    */
-  def egressCheck(os: Os, profile: String, host: String, operands: List[String]): Nothing =
-    val (projectId, proxyImageId, ruleFiles, provider) = egressPreflight(os, operands)
+  def egressCheck(
+    os: Os,
+    profile: String,
+    modelProvider: Option[String],
+    host: String,
+    operands: List[String],
+  ): Nothing =
+    val (projectId, proxyImageId, ruleFiles, provider) = egressPreflight(os, profile, modelProvider, operands)
 
     val network = egressRunNetwork(projectId, newRunSuffix())
     createNetwork(network, internal = false)

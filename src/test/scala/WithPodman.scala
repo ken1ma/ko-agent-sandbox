@@ -40,12 +40,15 @@ object WithPodman extends munit.Assertions:
   /** The distribution jar must contain every class and resource compiled for this test JVM, byte
     * for byte. Otherwise a stale parser or source digest fails only after launch begins, with the
     * reason at the bottom of its log. Check before starting any session; sbt may expose compiled
-    * output as a directory or jar, so both are read. */
+    * output as a directory or jar, so both are read. A hidden entry, such as the `.DS_Store`
+    * Finder writes into a directory it opened, is skipped: sbt packages no hidden file, so the jar
+    * can never hold it. */
   private def requireJarCurrent(): Unit =
     val built = Paths.get(AgentSandboxLauncher.getClass.getProtectionDomain.getCodeSource.getLocation.toURI)
     Using.resource(JarFile(jar.toFile)): distJar =>
+      def hidden(name: String): Boolean = name.split("/").last.startsWith(".")
       def missingOrDifferent(name: String, bytes: => Array[Byte]): Boolean =
-        !name.startsWith("META-INF/") && !Option(distJar.getJarEntry(name)).exists: entry =>
+        !name.startsWith("META-INF/") && !hidden(name) && !Option(distJar.getJarEntry(name)).exists: entry =>
           java.util.Arrays.equals(Using.resource(distJar.getInputStream(entry))(_.readAllBytes()), bytes)
       val stale =
         if Files.isDirectory(built) then

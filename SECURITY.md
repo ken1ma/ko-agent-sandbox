@@ -61,8 +61,9 @@ costs are described below.
 
 - Outbound HTTPS traffic passes through the proxy, which enforces the resolved egress rules and
   records protocol and policy decisions ("Egress proxy", below).
-- The default profile starts from every model provider's default rules and the inspected catalog.
-  The project's rule file can remove or extend those grants.
+- The default profile starts from the inspected catalog and the default rules of the model
+  providers the launch selects: the agent's own, or those `--model-provider` names. The
+  project's rule file can remove or extend those grants.
 
 **Writing to remote hosts**, subject to the resolved egress rules.
 
@@ -376,8 +377,10 @@ instructions. It limits the actions available to the compromised agent.
   (https://embracethered.com/blog/posts/2025/claude-abusing-network-access-and-anthropic-api-for-data-exfiltration/)
   and against Cowork (https://www.promptarmor.com/resources/claude-cowork-exfiltrates-files).
   - `--egress=deny-unless-model` does not help: the model host is the receiving host.
-  - A project that uses one provider can close the other providers' tunnels with
-    `deny model-provider NAME` lines.
+  - Another provider's API is a receiving host only when the launch selects that provider or the
+    project's rule file allows it: a launch admits the agent's own provider alone unless
+    `--model-provider` names more, and a file's `allow model-provider` line for a provider the
+    launch did not select is reported as widening at every launch.
   - Refusing a credential that is not the session's needs the proxy to terminate TLS at the model
     host (`doc/TODO.md`, "Credential brokering").
 - At inspected hosts, the proxy constrains methods, paths and HTTP framing, but does not validate
