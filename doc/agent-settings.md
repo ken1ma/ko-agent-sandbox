@@ -111,8 +111,13 @@ What to expect:
    name, and, on an SELinux-enforcing host, one the container cannot read.
 6. An organization's remote managed settings, where the session's sign-in receives them, replace
    the image's managed files, the drop-in included, under the default `managedSourcesBehavior`,
-   first-wins, so the plugins do not load; under `merge` the organization has opted the image's
-   files in. `/status` names the sources in use.
+   first-wins, so the plugins do not load. `/status` names the sources in use.
+   - Under `merge` the organization has opted the image's files in, and each key combines by its
+     kind (https://code.claude.com/docs/en/settings-reference#managedsourcesbehavior, whose table
+     names none of these three keys; read 2026-10-18): `prependPlugins` is a list, whose entries
+     from every source combine; `enabledPlugins` and `extraKnownMarketplaces` fall under its
+     "every other key" row, taken from the highest-ranked source that sets them, so an
+     organization that sets either key hides the drop-in's value.
 
 To check the mechanism before naming a mod of your own, launch with a copy of this repository's
 [`src/test/claude-plugins/managed-probe`](../src/test/claude-plugins/managed-probe/README.md):
