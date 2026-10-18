@@ -142,13 +142,14 @@ class EgressRulesTest extends munit.FunSuite:
       assert(banner.startsWith(s"egress: $profile; "), banner)
       assert(banner.endsWith(s"${resolved.inspected.size} inspected, ${resolved.tunnelHosts.size} tunnel"), banner)
 
-  test("a terminal reads the profile as the mode it is, and never in the severity hue"):
+  test("a terminal reads the profile and the provider selection as chosen, and never in the severity hue"):
+    val (on, off) = ("\u001b[38;5;207m", "\u001b[0m")
     assertEquals(
       egressBanner(
         "egress profile: deny-unless-allowed; model provider: none\nallow https://a/ read\n" + summary(1, 0),
         color = true,
       ),
-      Right("egress: \u001b[38;5;207mdeny-unless-allowed\u001b[0m; no provider selected; 1 inspected, 0 tunnel"),
+      Right(s"egress: ${on}deny-unless-allowed$off; ${on}no provider$off selected; 1 inspected, 0 tunnel"),
     )
     // The counts are what the profile resolved to, not a mode of their own.
     assertEquals(
@@ -156,7 +157,18 @@ class EgressRulesTest extends munit.FunSuite:
         "egress profile: deny-unless-model; model provider: anthropic\nallow https://a/ tunnel\n" + summary(0, 1),
         color = true,
       ),
-      Right("egress: \u001b[38;5;207mdeny-unless-model\u001b[0m; model provider anthropic; 0 inspected, 1 tunnel"),
+      Right(s"egress: ${on}deny-unless-model$off; model provider ${on}anthropic$off; 0 inspected, 1 tunnel"),
+    )
+    // Where an option came from is not what was chosen.
+    assertEquals(
+      egressBanner(
+        "egress profile: deny-unless-allowed; model provider: anthropic,openai\n" + summary(9, 2),
+        profileSource = " (from F)", providerSource = " (from G)", color = true,
+      ),
+      Right(
+        s"egress: ${on}deny-unless-allowed$off (from F); model providers ${on}anthropic, openai$off (from G); " +
+          "9 inspected, 2 tunnel",
+      ),
     )
 
   test("only the basename of a recognized agent command selects a provider"):

@@ -117,22 +117,25 @@ object HostCommands:
    *
    *   - red: the launch stopped. On the `error:` label only (stopped).
    *   - orange: the launch goes on, and there is something to know. On the `warning:` label
-   *     (caution); on a whole line, a boundary is weaker than the default (weakened), by an option
-   *     or environment variable of this launch, by a rule file of the workspace, or by
-   *     the unconfined host run a prompt offers (RunOnHostProvisioning) — a reminder and not an
-   *     alarm, and the line or the one before it says what weakened it.
-   *   - purple: what the user chose where it weakens nothing — the workspace root, the
-   *     workspace mode, the egress profile, an upstream proxy (chosen) — a hue of its own so it
-   *     is never read as a severity.
-   *   - gray: what is there to look up, not to read — the long path of the run's log directory (lookedUp).
-   *     Text that is skipped on every ordinary launch, tinted so the reader learns to skip it
-   *     without learning to skip the lines around it.
+   *     (caution); on a grant, a boundary is weaker than the default (weakened), by an option of
+   *     this launch, by a rule file of the workspace, or by the unconfined host run a prompt
+   *     offers (RunOnHostProvisioning) — a reminder and not an alarm, and the line or the one
+   *     before it says what weakened it. A grant is the label and what it grants, `audio: mic`,
+   *     with the explanation after it plain; a widening rule and the prompt are grants whole.
+   *   - purple: what the user chose on a line that states no weakened boundary — the workspace
+   *     root and mode, the egress profile and model providers, an upstream proxy, the forwarded
+   *     variables, brokered credentials and AWS profile, the value of an option the options file
+   *     supplied (chosen) — a hue of its own so it is never read as a severity.
+   *   - gray: what is there to look up, not to read — the long path of the run's log directory, and
+   *     the options file's `(from …)` after an option it supplied (lookedUp). Text that is skipped
+   *     on every ordinary launch, tinted so the reader learns to skip it without learning to skip
+   *     the lines around it.
    *   - green, orange and red on a headroom figure: a measurement's scale, outside this ranking
    *     (Headroom).
    *
-   * A label is tinted alone, as sbt and mill tint `[warn]` and `[error]` and leave the message; a
-   * weakened boundary is tinted as a whole line and holds no tinted word, since a word's reset
-   * would end the line's colour. So no line has two colours.
+   * A label is tinted alone, as sbt and mill tint `[warn]` and `[error]` and leave the message, and
+   * a grant alike. A span inside a tinted one, as a gray source among a grant's plugins, reopens
+   * the outer colour after it (tinted).
    *
    * Colour adds nothing the words do not say. These lines are read back from a redirected stream, from a
    * pasted transcript, and — for the workspace and egress lines — from the instructions the agent is
@@ -213,8 +216,11 @@ object HostCommands:
   private final val Red = "31"
   private final val Orange = "38;5;208"
 
+  /** A span tinted inside `text`, such as a gray source among a grant's plugins, ends with a reset;
+    * the colour is reopened after it, so the rest of `text` keeps its tint. */
   private def tinted(code: String, text: String, color: Boolean): String =
-    if color then s"$Esc[${code}m$text$Esc[0m" else text
+    val reset = s"$Esc[0m"
+    if color then s"$Esc[${code}m${text.replace(reset, s"$reset$Esc[${code}m")}$reset" else text
 
   /**
    * `isatty(2)` and not `System.console()`, which answers for stdin: stderr is where these lines

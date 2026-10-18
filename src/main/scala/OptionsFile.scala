@@ -12,7 +12,7 @@ import java.nio.file.{Files, NoSuchFileException, Path}
 
 import CommandLine.*
 import FileHelper.canonicalizedFuturePath
-import HostCommands.{displayPath, Os}
+import HostCommands.{colorStderr, displayPath, lookedUp, Os}
 import SandboxWorkspace.overlapsInAnySpelling
 
 object OptionsFile:
@@ -73,8 +73,10 @@ object OptionsFile:
 
   def shown(path: Path, os: Os): String = displayPath(path, os)
 
-  /** What a startup line adds after an option the file supplied. */
-  def fromFile(path: Path, os: Os): String = s" (from ${shown(path, os)})"
+  /** What a startup line adds after an option the file supplied: a path to look up, not to read
+    * (HostCommands.lookedUp). */
+  def fromFile(path: Path, os: Os, color: Boolean = colorStderr): String =
+    s" ${lookedUp(s"(from ${shown(path, os)})", color)}"
 
   /**
    * The file's options as one source of arguments, or why the file fails the launch, naming it as
@@ -221,15 +223,24 @@ case class OptionsInForce(
   file: Option[Path],
 ):
   /** What the line saying `option` adds when the file supplied it, else nothing. */
-  def from(option: String, os: HostCommands.Os = HostCommands.currentOs): String =
-    file.filter(_ => supplied.exists(_.option == option)).fold("")(OptionsFile.fromFile(_, os))
+  def from(
+    option: String, os: HostCommands.Os = HostCommands.currentOs, color: Boolean = HostCommands.colorStderr,
+  ): String =
+    file.filter(_ => supplied.exists(_.option == option)).fold("")(OptionsFile.fromFile(_, os, color))
 
   /** The values the file supplied for `option`, a repeatable option's each. */
   def fileValues(option: String): Vector[String] =
     supplied.filter(_.option == option).map(_.spelled.stripPrefix(option + "="))
 
   /** The startup line of each option the file supplied, but those in `covered`, whose own lines
-    * name the file (from). */
-  def fileLines(covered: Set[String] = Set.empty, os: HostCommands.Os = HostCommands.currentOs): Vector[String] =
+    * name the file (from), with its value tinted as what the user chose (HostCommands.chosen). */
+  def fileLines(
+    covered: Set[String] = Set.empty,
+    os: HostCommands.Os = HostCommands.currentOs,
+    color: Boolean = HostCommands.colorStderr,
+  ): Vector[String] =
     file.toVector.flatMap: path =>
-      supplied.filterNot(entry => covered(entry.option)).map(entry => entry.spelled + OptionsFile.fromFile(path, os))
+      supplied.filterNot(entry => covered(entry.option)).map: entry =>
+        val (name, value) = entry.spelled.span(_ != '=')
+        val tinted = if value.isEmpty then name else s"$name=${HostCommands.chosen(value.drop(1), color)}"
+        tinted + OptionsFile.fromFile(path, os, color)

@@ -224,12 +224,21 @@ class EgressCredentialsTest extends munit.FunSuite:
     assertEquals(proxyCredentialArgs(Vector.empty), Vector.empty)
     assertEquals(placeholderArgs(credentials), Vector(s"--env=GH_TOKEN=ghp_${"P" * 36}"))
     assertEquals(
-      EgressCredentials.bannerLines(credentials),
+      EgressCredentials.bannerLines(credentials, color = false),
       Vector(s"brokered credential: GH_TOKEN → api.github.com (Authorization), placeholder ghp_${"P" * 36}"),
     )
     assertEquals(
-      EgressCredentials.bannerLines(credentials, _ => " (from F)"),
+      EgressCredentials.bannerLines(credentials, _ => " (from F)", color = false),
       Vector(s"brokered credential: GH_TOKEN → api.github.com (Authorization), placeholder ghp_${"P" * 36} (from F)"),
+    )
+    // The variable and where it goes are what the user chose; the source is not.
+    val (on, off) = ("\u001b[38;5;207m", "\u001b[0m")
+    assertEquals(
+      EgressCredentials.bannerLines(credentials, _ => " (from F)", color = true),
+      Vector(
+        s"brokered credential: ${on}GH_TOKEN$off → ${on}api.github.com$off (Authorization), " +
+          s"placeholder ghp_${"P" * 36} (from F)",
+      ),
     )
     // The placeholder changes each launch; the instructions, cached by their stamp, name the binding alone.
     val other = credentials.map(_.copy(placeholder = "ghp_" + "Q" * 36))

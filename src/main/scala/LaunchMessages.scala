@@ -6,66 +6,71 @@ package agentsandbox.launcher
 import agentsandbox.egress.CredentialBinding
 import agentsandbox.egress.LogHelper.sha256Hex
 
-import CommandLine.MicOption
 import HostCommands.*
 
-/** Each grant's line takes `source`, what the line adds when the options file supplied the option
-  * (OptionsInForce.from). */
+/** Each grant's line tints its label and what it grants (HostCommands.weakened), and takes `source`,
+  * what the line adds when the options file supplied the option (OptionsInForce.from). */
 object LaunchMessages:
 
   /** The launch's host-command lines: the programs chosen — authority a container session alone
-    * does not have, so tinted as a weakened boundary (HostCommands.weakened) — and what
-    * running them on the host costs the user; under `--workspace=read-only` an extra line, tinted
-    * alike as a boundary weaker than the option says, since a host command writes the workspace as
-    * its program does while the session's own writes are refused (SECURITY.md "Run on host"). */
+    * does not have, so a weakened boundary's grant (HostCommands.weakened) — and what running them
+    * on the host costs the user; under `--workspace=read-only` an extra line under the same label,
+    * a boundary weaker than the option says, since a host command writes the workspace as its
+    * program does while the session's own writes are refused (SECURITY.md "Run on host"). */
   def runOnHostLines(
     runOnHost: Seq[String],
     workspaceMode: String,
     source: String = "",
     color: Boolean = colorStderr,
   ): Vector[String] =
-    val programs = weakened(s"ko-sandbox-run-on-host: ${runOnHost.mkString(", ")} on host$source", color)
+    val programs = weakened(s"run-on-host: ${runOnHost.mkString(", ")}", color) + s" on host$source"
     val displaced = runOnHost.collect:
       case "sbt" => "sbt server"
       case "mill" => "mill daemon"
     val shutdown = Option.when(displaced.nonEmpty)(
-      s"  your own ${displaced.mkString(" or ")} in the build directory is stopped when the agent runs that program",
+      s"  stops your own ${displaced.mkString(" or ")} in the build directory when used",
     )
     val readOnly = Option.when(workspaceMode == "read-only")(
-      weakened(
-        "run on host: --workspace=read-only refuses the session's own writes, not a host command's: " +
-          "a build writes the workspace as its program does",
-        color,
-      ),
+      weakened("run-on-host:", color) +
+        " --workspace=read-only refuses the session's own writes, not a host command's: " +
+        "a build writes the workspace as its program does",
     )
     Vector(programs) ++ shutdown ++ readOnly
 
+  /** What the workspace root line says after the root: the workspace mode, and on Windows the mount
+    * path, which is not the root's spelling but the /mnt/<drive> one the agent will print. */
+  def workspaceModeClause(
+    mode: String, source: String, mountPath: String, os: Os, color: Boolean = colorStderr,
+  ): String =
+    val mountedAt = if os == Os.Windows then s" at $mountPath" else ""
+    s" (${chosen(mode, color)}$mountedAt)$source"
+
+  /** The forwarded variables by name, each what the user chose; `source` follows those the options
+    * file supplied (`fromFile`). */
+  def forwardedEnvironmentLine(
+    names: Seq[String], fromFile: String => Boolean, source: String, color: Boolean = colorStderr,
+  ): String =
+    val said = names.map(name => chosen(name, color) + (if fromFile(name) then source else ""))
+    s"forwarded environment: ${said.mkString(", ")}"
+
   def nestingLine(mode: String, source: String = "", color: Boolean = colorStderr): String =
-    weakened(
-      s"nested containers: $mode by --nesting=$mode$source; /proc unmasked, SELinux label " +
-        "disabled and CAP_SYS_CHROOT added, for the whole session",
-      color,
-    )
+    weakened(s"nesting: $mode", color) +
+      s"$source; /proc unmasked, SELinux label disabled and CAP_SYS_CHROOT added, for the whole session"
 
   /** The shared agent-state volume, said whichever source named it. */
   def sharedVolumeLine(volume: String, source: String = "", color: Boolean = colorStderr): String =
     s"agent state: volume $volume, ${chosen("shared", color)} by --persistent-volume=$volume$source"
 
   def clipboardLine(mode: String, source: String = "", color: Boolean = colorStderr): String =
-    weakened(
-      s"clipboard: $mode by --clipboard=$mode$source; the agent can read an image you copy" +
-        (if mode == "bidirectional" then " and set your clipboard" else ""),
-      color,
-    )
+    weakened(s"clipboard: $mode", color) + s"$source; the agent can read an image you copy" +
+      (if mode == "bidirectional" then " and set your clipboard" else "")
 
   /** Said before the hold, so the user agrees to it: the probe that opens the microphone runs
     * after the hold, before the sandbox starts. */
   def micLine(source: String = "", color: Boolean = colorStderr): String =
-    weakened(
-      s"microphone: on by $MicOption$source; the host microphone is open for the whole session, and its audio " +
-        "reaches the sandbox while any process there records",
-      color,
-    )
+    weakened("audio: mic", color) +
+      s"$source; the host microphone is open for the whole session, and its audio reaches the sandbox " +
+      "while any process there records"
 
   /** One widening report per program whose rule file names hosts, each a grant beyond the
     * program's Maven Central host (RunOnHostPrereqs.egressRuleText). The launch reads the files for

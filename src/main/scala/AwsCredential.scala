@@ -7,7 +7,7 @@ import java.nio.file.Path
 import java.time.{Duration, Instant, OffsetDateTime}
 import java.time.format.DateTimeParseException
 
-import HostCommands.Run
+import HostCommands.{chosen, colorStderr, Run}
 
 object AwsCredential:
 
@@ -122,13 +122,15 @@ object AwsCredential:
 
   /**
    * The launch's line for the forward: the credential names, since the values are secrets, how long
-   * they serve, and the region, which is no secret.
+   * they serve, and the region, which is no secret. The profile is what the user chose
+   * (HostCommands.chosen).
    */
-  def bannerLine(resolved: Resolved, now: Instant): String =
+  def bannerLine(resolved: Resolved, now: Instant, color: Boolean = colorStderr): String =
     val expires = expiry(resolved.expiration).map(instant => Duration.between(now, instant)).fold(
       s"expire at ${resolved.expiration}",
     ): duration =>
       val minutes = duration.toMinutes
       if minutes >= 60 then s"expire in ${minutes / 60}h ${minutes % 60}m" else s"expire in ${minutes}m"
     val region = resolved.region.fold(s"; the profile names no region")(value => s"; $RegionName=$value")
-    s"aws credential: ${resolved.values.map(_._1).mkString(", ")} from profile ${resolved.profile}, $expires$region"
+    val names = resolved.values.map(_._1).mkString(", ")
+    s"aws credential: $names from profile ${chosen(resolved.profile, color)}, $expires$region"

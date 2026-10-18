@@ -74,7 +74,7 @@ object EgressRules:
    *
    * @param profileSource follows the profile, and `providerSource` the provider selection: what the
    *   line adds when the options file supplied `--egress` or `--model-provider` (OptionsInForce.from).
-   * @param color tints the profile (HostCommands.chosen).
+   * @param color tints the profile and the provider selection (HostCommands.chosen).
    */
   def egressBanner(
     resolved: String, profileSource: String = "", providerSource: String = "", color: Boolean = colorStderr,
@@ -99,9 +99,9 @@ object EgressRules:
       tunnel <- counts.get("tunnel hosts").toRight(NoSummaryCounts)
     yield
       val selected = provider.map:
-        case "none"                       => "no provider selected"
-        case names if names.contains(",") => s"model providers ${names.replace(",", ", ")}"
-        case name                         => s"model provider $name"
+        case "none"                       => s"${chosen("no provider", color)} selected"
+        case names if names.contains(",") => s"model providers ${chosen(names.replace(",", ", "), color)}"
+        case name                         => s"model provider ${chosen(name, color)}"
       (Vector(s"egress: ${chosen(profile, color)}$profileSource") ++ selected.map(_ + providerSource)
         :+ s"$inspected inspected, $tunnel tunnel")
         .mkString("; ")

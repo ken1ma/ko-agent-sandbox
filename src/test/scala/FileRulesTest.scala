@@ -73,10 +73,7 @@ class FileRulesTest extends munit.FunSuite:
       launchLines(Some(("readonly .envrc", narrowing)), color = false),
       Vector("file rules (.ko-agent-sandbox/file/rule): readonly .envrc"),
     )
-    assertEquals(
-      launchLines(None, color = false),
-      Vector("file rules: no workspace rule file; the launcher-owned defaults"),
-    )
+    assertEquals(launchLines(None, color = false), Vector.empty)
 
   test("a joined mount's rules are described beyond the defaults, and read back from the daemon's text"):
     val extra = lines("writable .claude/skills\nreadonly .envrc\n")

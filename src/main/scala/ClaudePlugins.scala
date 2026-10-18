@@ -10,7 +10,7 @@ import java.nio.file.attribute.BasicFileAttributes
 import scala.jdk.CollectionConverters.*
 
 import FileHelper.{hasSecondName, realPath}
-import HostCommands.{fileBind, Os}
+import HostCommands.{colorStderr, fileBind, Os, weakened}
 import SandboxWorkspace.overlapsInAnySpelling
 
 object ClaudePlugins:
@@ -239,10 +239,11 @@ object ClaudePlugins:
         +: plugins.map(plugin => s"--volume=${plugin.directory}:${plugin.mountPath}:ro")
         :+ fileBind(dropIn, DropInPath, "ro", selinuxEnforcing)
 
-  /** What the launch says: the plugins run under managed status, hooks and mods included. */
-  def bannerLine(plugins: Vector[Plugin], source: Plugin => String = _ => ""): String =
+  /** What the launch says: the plugins run under managed status, hooks and mods included, a
+    * loosening whose grant is the plugins (HostCommands.weakened). */
+  def bannerLine(plugins: Vector[Plugin], source: Plugin => String = _ => "", color: Boolean = colorStderr): String =
     val ids = plugins.map(plugin => plugin.id + source(plugin))
-    s"claude plugins: ${ids.mkString(", ")}; their hooks and mods run as managed"
+    weakened(s"claude plugins: ${ids.mkString(", ")}", color) + "; their hooks and mods run as managed"
 
   private def quoted(text: String): String =
     val escaped = text.flatMap:
