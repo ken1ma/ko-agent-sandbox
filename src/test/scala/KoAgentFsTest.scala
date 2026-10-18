@@ -202,7 +202,7 @@ class KoAgentFsTest extends munit.FunSuite:
     assertEquals(joinUnderOtherRules(Some(running), running.rules, prompted = false), Right(None))
     assertEquals(joinUnderOtherRules(Some(running), "host-view /\n", prompted = true), Right(Some(running)))
     val refusal = joinUnderOtherRules(Some(running), "host-view /\n", prompted = false).swap.getOrElse(fail("joined"))
-    assert(refusal.contains("run-a, run-b") && refusal.contains("KO_AGENT_SANDBOX_SESSION_START"), refusal)
+    assert(refusal.contains("run-a, run-b") && refusal.contains("without --session-start=immediate"), refusal)
     val warning = joinWarning(running)
     assert(!warning.contains("\n"), warning)
     assert(warning.indexOf("do not take effect") < warning.indexOf("until"), warning)

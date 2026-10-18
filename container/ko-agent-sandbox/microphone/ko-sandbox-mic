@@ -1,5 +1,5 @@
 #!/usr/local/bin/python3 -I
-"""The sandbox side of the microphone relay under --mic (SECURITY.md "Microphone",
+"""The sandbox side of the microphone relay under --audio=mic (SECURITY.md "Microphone",
 doc/microphone.md): the PulseAudio daemon's microphone is a FIFO the host relay writes, and
 this program decides when it writes.
 

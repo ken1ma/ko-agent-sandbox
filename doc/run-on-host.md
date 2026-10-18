@@ -67,7 +67,7 @@ The measurement behind the feature: an `sbt test` of this project takes about 2 
 machine, whose total is fixed when the machine is created and shared with every other session on it.
 podman's built-in default for a macOS machine is 2048 MiB, which containers.conf (`[machine]`
 `memory`) or `--memory` changes; a WSL machine has WSL's memory, half the host's by default. A
-session gets the machine's memory minus 1 GiB (README, `KO_AGENT_SANDBOX_MEMORY`): about 1 GiB on
+session gets the machine's memory minus 1 GiB (README, `--memory`): about 1 GiB on
 podman's default, 3 GiB on a 4 GiB machine, shared by the agent, the build and the session's other
 processes.
 Whether the machine gives memory back to macOS depends on libkrun: from 1.19.0 it frees the pages
@@ -368,7 +368,7 @@ executable is the one `cs install sbt` produced, whatever the workspace pins.
     directories share is asked once.
   - The check repeats after the run, so a script that exits zero without provisioning is reported
     at once.
-- A launch that holds nothing — no terminal, or `KO_AGENT_SANDBOX_SESSION_START=immediate` —
+- A launch that holds nothing — no terminal, or `--session-start=immediate` —
   prints the refusals and runs nothing.
 - What the launch cannot see — a pin changed during the session, a build directory created
   later — the first command refuses, naming the same run; a relaunch prompts for it.

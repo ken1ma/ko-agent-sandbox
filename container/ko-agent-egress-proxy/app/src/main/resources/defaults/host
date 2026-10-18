@@ -192,7 +192,7 @@ allow https://api.pulumi.com/api/cli/version read
 allow https://registry.terraform.io/   read
 allow https://developer.hashicorp.com/ read
 
-# container-image pulls, for nested sessions (KO_AGENT_SANDBOX_NESTING). The CDN hosts are
+# container-image pulls, for nested sessions (--nesting=same-uid). The CDN hosts are
 # convention, not contract: when a provider moves one, pulls stall and the log names the successor.
 allow https://registry-1.docker.io/             read  # Docker Hub API
 allow https://auth.docker.io/                   read  # token issuer; anonymous pulls need it too

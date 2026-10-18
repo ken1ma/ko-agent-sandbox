@@ -281,7 +281,7 @@ and the proxy appends the log to a file in the run's directory on the host, whic
       run-<start>-<run>/           <start> in UTC, as 20261017T022446Z; <run> its containers' suffix
         proxy.log                  the container proxy's audit log
         run-on-host.log            the host command runner's log; only with --run-on-host
-        microphone.log             the relay's log; only with --mic
+        microphone.log             the relay's log; only with --audio=mic
         <proxy log>-<session>.log  a host program proxy's audit log
 
 - With no arguments, `--egress-log` prints each run's proxy audit logs, oldest run first and

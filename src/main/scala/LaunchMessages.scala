@@ -6,9 +6,11 @@ package agentsandbox.launcher
 import agentsandbox.egress.CredentialBinding
 import agentsandbox.egress.LogHelper.sha256Hex
 
-import AgentSandboxLauncher.*
+import CommandLine.MicOption
 import HostCommands.*
 
+/** Each grant's line takes `source`, what the line adds when the options file supplied the option
+  * (OptionsInForce.from). */
 object LaunchMessages:
 
   /** The launch's host-command lines: the programs chosen — authority a container session alone
@@ -16,8 +18,13 @@ object LaunchMessages:
     * running them on the host costs the user; under `--workspace=read-only` an extra line, tinted
     * alike as a boundary weaker than the option says, since a host command writes the workspace as
     * its program does while the session's own writes are refused (SECURITY.md "Run on host"). */
-  def runOnHostLines(runOnHost: Seq[String], workspaceMode: String, color: Boolean = colorStderr): Vector[String] =
-    val programs = weakened(s"ko-sandbox-run-on-host: ${runOnHost.mkString(", ")} on host", color)
+  def runOnHostLines(
+    runOnHost: Seq[String],
+    workspaceMode: String,
+    source: String = "",
+    color: Boolean = colorStderr,
+  ): Vector[String] =
+    val programs = weakened(s"ko-sandbox-run-on-host: ${runOnHost.mkString(", ")} on host$source", color)
     val displaced = runOnHost.collect:
       case "sbt" => "sbt server"
       case "mill" => "mill daemon"
@@ -33,26 +40,30 @@ object LaunchMessages:
     )
     Vector(programs) ++ shutdown ++ readOnly
 
-  def nestingLine(mode: String, color: Boolean = colorStderr): String =
+  def nestingLine(mode: String, source: String = "", color: Boolean = colorStderr): String =
     weakened(
-      s"nested containers: $mode by $NestingVariable; /proc unmasked, SELinux label " +
+      s"nested containers: $mode by --nesting=$mode$source; /proc unmasked, SELinux label " +
         "disabled and CAP_SYS_CHROOT added, for the whole session",
       color,
     )
 
-  def clipboardLine(mode: String, color: Boolean = colorStderr): String =
+  /** The shared agent-state volume, said whichever source named it. */
+  def sharedVolumeLine(volume: String, source: String = "", color: Boolean = colorStderr): String =
+    s"agent state: volume $volume, ${chosen("shared", color)} by --persistent-volume=$volume$source"
+
+  def clipboardLine(mode: String, source: String = "", color: Boolean = colorStderr): String =
     weakened(
-      s"clipboard: $mode by --clipboard=$mode; the agent can read an image you copy" +
+      s"clipboard: $mode by --clipboard=$mode$source; the agent can read an image you copy" +
         (if mode == "bidirectional" then " and set your clipboard" else ""),
       color,
     )
 
   /** Said before the hold, so the user agrees to it: the probe that opens the microphone runs
     * after the hold, before the sandbox starts. */
-  def micLine(color: Boolean = colorStderr): String =
+  def micLine(source: String = "", color: Boolean = colorStderr): String =
     weakened(
-      "microphone: on by --mic; the host microphone is open for the whole session, and its audio reaches " +
-        "the sandbox while any process there records",
+      s"microphone: on by $MicOption$source; the host microphone is open for the whole session, and its audio " +
+        "reaches the sandbox while any process there records",
       color,
     )
 

@@ -240,8 +240,9 @@ object ClaudePlugins:
         :+ fileBind(dropIn, DropInPath, "ro", selinuxEnforcing)
 
   /** What the launch says: the plugins run under managed status, hooks and mods included. */
-  def bannerLine(plugins: Vector[Plugin]): String =
-    s"claude plugins: ${plugins.map(_.id).mkString(", ")}; their hooks and mods run as managed"
+  def bannerLine(plugins: Vector[Plugin], source: Plugin => String = _ => ""): String =
+    val ids = plugins.map(plugin => plugin.id + source(plugin))
+    s"claude plugins: ${ids.mkString(", ")}; their hooks and mods run as managed"
 
   private def quoted(text: String): String =
     val escaped = text.flatMap:

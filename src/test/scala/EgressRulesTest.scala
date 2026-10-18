@@ -66,15 +66,15 @@ class EgressRulesTest extends munit.FunSuite:
           "\nwidening lines (1): allow https://secret.example/ read",
         color = false,
       ),
-      "egress: deny-unless-allowed; model provider anthropic; 2 inspected, 1 tunnel",
+      Right("egress: deny-unless-allowed; model provider anthropic; 2 inspected, 1 tunnel"),
     )
     assertEquals(
       egressBanner("egress profile: deny-unless-allowed; model provider: aws,google\n" + summary(9, 2), color = false),
-      "egress: deny-unless-allowed; model providers aws, google; 9 inspected, 2 tunnel",
+      Right("egress: deny-unless-allowed; model providers aws, google; 9 inspected, 2 tunnel"),
     )
     assertEquals(
       egressBanner("egress profile: deny-unless-allowed; model provider: none\n" + summary(9, 0), color = false),
-      "egress: deny-unless-allowed; no provider selected; 9 inspected, 0 tunnel",
+      Right("egress: deny-unless-allowed; no provider selected; 9 inspected, 0 tunnel"),
     )
     assertEquals(
       egressBanner(
@@ -82,29 +82,48 @@ class EgressRulesTest extends munit.FunSuite:
           "allow https://a/ tunnel\nallow https://b/ tunnel\nallow https://c/ tunnel\n" + summary(0, 3),
         color = false,
       ),
-      "egress: deny-unless-model; model provider anthropic; 0 inspected, 3 tunnel",
+      Right("egress: deny-unless-model; model provider anthropic; 0 inspected, 3 tunnel"),
     )
     assertEquals(
       egressBanner("egress profile: deny-unless-model; model provider: none\n" + summary(0, 0), color = false),
-      "egress: deny-unless-model; no provider selected; 0 inspected, 0 tunnel",
+      Right("egress: deny-unless-model; no provider selected; 0 inspected, 0 tunnel"),
     )
     assertEquals(
       egressBanner("egress profile: deny-all\n" + summary(0, 0), color = false),
-      "egress: deny-all; 0 inspected, 0 tunnel",
+      Right("egress: deny-all; 0 inspected, 0 tunnel"),
     )
-    assertEquals(egressBanner("some reason instead", color = false), "egress: some reason instead")
+    // The options file's options name it after the part each states.
     assertEquals(
-      egressBanner("egress profile: deny-all\nallow https://secret.example/ read", color = false),
-      "egress: egress profile: deny-all",
+      egressBanner(
+        "egress profile: deny-unless-allowed; model provider: anthropic,openai\n" + summary(9, 2),
+        profileSource = " (from F)", providerSource = " (from G)", color = false,
+      ),
+      Right("egress: deny-unless-allowed (from F); model providers anthropic, openai (from G); 9 inspected, 2 tunnel"),
     )
-    assertEquals(egressBanner(summary(1, 0), color = false), "egress: " + summary(1, 0))
     // Keep the banner concise by showing counts rather than the resolved host list.
     assert(
       !egressBanner(
         "egress profile: deny-all\nallow https://secret.example/ read\n" + summary(1, 0, 0),
         color = false,
-      ).contains("secret.example"),
+      ).exists(_.contains("secret.example")),
     )
+
+  test("a dry run without the profile line, the provider field or both summary counts is refused, not shown"):
+    for resolved <- Vector("some reason instead", summary(1, 0)) do
+      assert(clue(egressBanner(resolved, color = false)).swap.exists(_.contains("no 'egress profile' line")))
+    for resolved <- Vector(
+        "egress profile: deny-all\nallow https://secret.example/ read",
+        "egress profile: deny-all\nruleset summary: 1 inspected hosts; widening lines",
+      )
+    do
+      val refused = egressBanner(resolved, profileSource = " (from F)", color = false)
+      assert(clue(refused).swap.exists(_.contains("no 'ruleset summary:' line with both host counts")))
+      assert(!refused.swap.exists(_.contains("secret.example")))
+    // Every profile but deny-all states its providers, "none" included.
+    for head <- Vector("egress profile: deny-unless-model", "egress profile: deny-unless-allowed; model provider: ")
+    do
+      val refused = egressBanner(s"$head\n" + summary(0, 0), providerSource = " (from G)", color = false)
+      assert(clue(refused).swap.exists(_.contains("names no model provider under the deny-unless")))
 
   test("the launch banner reads the proxy's summary across profiles and provider selections"):
     import agentsandbox.egress.RulesetHelper.{Profiles, metadataLines, resolveRuleset, rulesetLines}
@@ -119,14 +138,17 @@ class EgressRulesTest extends munit.FunSuite:
     do
       val resolved = resolveRuleset(Some(profile), provider, workspaceFile)
       val output = (rulesetLines(resolved) ++ metadataLines(resolved)).mkString("\n")
-      val banner = egressBanner(output, color = false)
+      val banner = egressBanner(output, color = false).fold(fail(_), identity)
       assert(banner.startsWith(s"egress: $profile; "), banner)
       assert(banner.endsWith(s"${resolved.inspected.size} inspected, ${resolved.tunnelHosts.size} tunnel"), banner)
 
   test("a terminal reads the profile as the mode it is, and never in the severity hue"):
     assertEquals(
-      egressBanner("egress profile: deny-unless-allowed\nallow https://a/ read\n" + summary(1, 0), color = true),
-      "egress: \u001b[38;5;207mdeny-unless-allowed\u001b[0m; 1 inspected, 0 tunnel",
+      egressBanner(
+        "egress profile: deny-unless-allowed; model provider: none\nallow https://a/ read\n" + summary(1, 0),
+        color = true,
+      ),
+      Right("egress: \u001b[38;5;207mdeny-unless-allowed\u001b[0m; no provider selected; 1 inspected, 0 tunnel"),
     )
     // The counts are what the profile resolved to, not a mode of their own.
     assertEquals(
@@ -134,7 +156,7 @@ class EgressRulesTest extends munit.FunSuite:
         "egress profile: deny-unless-model; model provider: anthropic\nallow https://a/ tunnel\n" + summary(0, 1),
         color = true,
       ),
-      "egress: \u001b[38;5;207mdeny-unless-model\u001b[0m; model provider anthropic; 0 inspected, 1 tunnel",
+      Right("egress: \u001b[38;5;207mdeny-unless-model\u001b[0m; model provider anthropic; 0 inspected, 1 tunnel"),
     )
 
   test("only the basename of a recognized agent command selects a provider"):
@@ -333,12 +355,15 @@ class EgressRulesTest extends munit.FunSuite:
     // The proxy prints one line per scope; the leaf names the host, and a host under two scopes
     // is one name.
     val resolution =
-      "egress profile: deny-unless-allowed\n" +
+      "egress profile: deny-unless-allowed; model provider: anthropic\n" +
         "allow https://api.anthropic.com/ tunnel\n" +
         "allow https://github.com/login/ read method=POST\nallow https://github.com/owner/ read git-fetch\n" +
         "allow https://pypi.org/ read\nallow https://storage.googleapis.com/my-bucket/ read\n" + summary(3, 1, 0)
     assertEquals(inspectedHostsOf(resolution), Right(Vector("github.com", "pypi.org", "storage.googleapis.com")))
-    assertEquals(egressBanner(resolution, color = false), "egress: deny-unless-allowed; 3 inspected, 1 tunnel")
+    assertEquals(
+      egressBanner(resolution, color = false),
+      Right("egress: deny-unless-allowed; model provider anthropic; 3 inspected, 1 tunnel"),
+    )
 
   test("log pruning keeps the newest run directories and leaves room for the new one"):
     val names = Vector(

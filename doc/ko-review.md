@@ -288,11 +288,11 @@ transcript and tree, which `delete` removes with the directory above.
   directory and the refs group by start minute, in an arbitrary order within one, and the id can
   be typed.
 - State is namespaced by checkout path because a persistent volume can be shared by several
-  workspaces (`KO_AGENT_SANDBOX_PERSISTENT_VOLUME`) or by a main worktree and its linked worktrees,
+  workspaces (`--persistent-volume`) or by a main worktree and its linked worktrees,
   and a review is about one checkout. The reviewers' own session files stay in `~/.codex` and
   `~/.claude`; sharing them is safe because every continuation names its thread id.
 - `--reset` removes the workspace's own volume, and the review state and those session files with
-  it. It keeps a volume named through `KO_AGENT_SANDBOX_PERSISTENT_VOLUME` and, from a linked
+  it. It keeps a volume named through `--persistent-volume` and, from a linked
   worktree, the main worktree's volume, each with what it holds (`SECURITY.md`, "What the
   persistent volume holds").
 - Outside the sandbox the state root is `$XDG_STATE_HOME/ko-review`, default

@@ -102,7 +102,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
         "/usr/bin/xclip", "/usr/bin/wl-paste", "", "", "", "",
       ),
     )
-    // Under --mic: the status file, the log, then each candidate as one argument.
+    // Under --audio=mic: the status file, the log, then each candidate as one argument.
     val withMicrophone = reaperCommand(
       "/usr/bin/podman", "run-container", "proxy-container", "net-sandbox", "net-egress",
       "machine", "reap-script", "off", ClipboardRelay.HostBackend(ps = "/bin/ps"),

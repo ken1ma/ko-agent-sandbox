@@ -41,8 +41,8 @@ allow https://oauth2.googleapis.com/              tunnel  # code exchange and to
 allow https://www.googleapis.com/oauth2/v2/userinfo read
 allow https://lh3.googleusercontent.com/            read
 
-# `/voice` under --mic streams the recording over gRPC, which needs HTTP/2 and so a tunnel; the
-# host is the one the proxy refused in agy 1.3.4's "Could not start transcription" error.
+# `/voice` under --audio=mic streams the recording over gRPC, which needs HTTP/2 and so a tunnel;
+# the host is the one the proxy refused in agy 1.3.4's "Could not start transcription" error.
 allow https://aicode.googleapis.com/              tunnel
 
 # play.googleapis.com — telemetry and experiment polling — is absent, as ab.chatgpt.com is in

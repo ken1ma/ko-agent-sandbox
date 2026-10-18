@@ -624,29 +624,3 @@ object HostCommands:
   private val PodmanVersion = "podman version ([0-9][A-Za-z0-9.+-]*)".r
 
   @volatile private var announcedPodman: Option[String] = None
-
-  /**
-   * A variable governing the boundary — or whether its reader sees it — takes exactly one of a
-   * closed value set, case-sensitive: never a bare presence test, and no alternate spellings
-   * (`1`, `true`, `yes`, …). An unclear value must refuse the launch rather than be read as
-   * either side of the choice (design.md, "Security configuration must fail closed"), and each
-   * accepted spelling must be handled consistently everywhere it is parsed. Unset and
-   * empty mean the default, which is always the choice that weakens nothing.
-   */
-  def closedChoice(
-      variable: String,
-      value: Option[String],
-      choices: Vector[String],
-      default: String,
-      advice: String,
-  ): Either[String, String] =
-    value match
-      case None | Some("")                      => Right(default)
-      case Some(text) if choices.contains(text) => Right(text)
-      case Some(text) =>
-        Left(
-          s"""error: $variable is set to '$text'; the only values are ${choices.mkString(" and ")}, exactly
-             |
-             |This variable governs the boundary, so an unrecognized value is refused rather
-             |than guessed at. $advice""".stripMargin,
-        )

@@ -167,7 +167,7 @@ object SandboxLifecycle:
    * its networks, $6 $7 the workspace filter's teardown mode and script
    * (documented at the step that reads them), $8 the clipboard mode, $9
    * to ${11} its host programs, ${12} the ps its cleanup walks the tree with,
-   * ${13} the microphone probe's status file, empty without --mic, ${14} the
+   * ${13} the microphone probe's status file, empty without --audio=mic, ${14} the
    * microphone log, and from ${15} the recorder candidates.
    *
    * The trap is necessary: the reaper shares the launcher's process

@@ -87,7 +87,7 @@ The words the documents share, each defined in the document its entry names and 
   sense ("No general capability broker", "Credential brokering at the egress proxy"):
   - the clipboard relay copies between the host clipboard and the sandbox (SECURITY.md,
     "Clipboard");
-  - the microphone relay, under `--mic`, forwards the host microphone into the sandbox's audio
+  - the microphone relay, under `--audio=mic`, forwards the host microphone into the sandbox's audio
     server while a process there records (SECURITY.md, "Microphone"; `microphone.md`);
   - the runner, one per session, dispatches each host command and owns the processes it starts
     (`run-on-host.md`).
@@ -695,7 +695,7 @@ are excluded for the same reason: they address container escape, which is outsid
 
 ### Services run as processes, not as multi-uid nested containers
 
-Under `KO_AGENT_SANDBOX_NESTING=same-uid` a nested container maps one uid, because
+Under `--nesting=same-uid` a nested container maps one uid, because
 `no-new-privileges` denies `newuidmap` its setuid privilege (SECURITY.md, "No containers inside the
 sandbox by default"). Stock `postgres` and `nginx` switch to a second uid and fail. A session that
 needs such a service runs it as a process bound to 127.0.0.1 (AGENTS-SANDBOX.md, "Containers in
@@ -762,11 +762,28 @@ marker, still a local check that never runs Codex.
 
 ### Host resources are granted by launch options, not variables
 
-`--clipboard=<mode>` and `--mic` grant a host resource for one launch, spelled in the launch command
-like `--workspace` and `--egress`. A variable in a shell profile would hand every session the
-resource unnoticed, so the launcher reads none. It refuses `KO_AGENT_SANDBOX_CLIPBOARD` in its own
-environment, naming the option, rather than ignoring a profile that exports it; a launcher run in a
-session with the clipboard on refuses it too, until it is unset there.
+A grant of a host resource, such as `--clipboard=<mode>`, `--audio=mic` or `--nesting=same-uid`,
+comes from a launcher option, never from a variable. The launcher reads its options from its command
+line and from its options file (README, "Options file"), and from no `KO_AGENT_SANDBOX_*` variable.
+Every launch prints each grant and each option the file supplies.
+
+- A variable a shell profile exports reaches every child process: IDE terminals, scripts, and a
+  launcher run inside a session, which would take that session's `KO_AGENT_SANDBOX_NESTING=same-uid`
+  as its own input. An option reaches only the launch that names it, on its command line or in its
+  file.
+- The file is under the configuration roots, `XDG_CONFIG_HOME` and `%APPDATA%`, rather than the
+  state root's, since the user writes it. A file inside the workspace is refused, as the state root
+  is there: a repository must not choose its own launch's grants.
+- The launcher refuses each variable an option replaced in its environment, naming the option,
+  rather than ignoring a profile that exports it (`AgentSandboxLauncher.ReplacedVariables`). It
+  refuses `KO_AGENT_SANDBOX_NESTING`, `_SESSION_START` and `_CLIPBOARD` on the host alone: the
+  launcher sets them inside the sandbox, so a launcher run in a session inherits them.
+- `KO_AGENT_SANDBOX_*` names only the variables the launcher sets inside the sandbox, which the
+  agent and the image's scripts read; `--env` refuses the prefix
+  (`CommandLine.RefusedForwardPrefix`).
+- Every option the file can hold has a value that returns it to its default for one launch. A closed
+  choice names its default and keeps refusing an empty value, which a script's unset variable
+  produces: `--workspace=$MODE` would otherwise launch `live`.
 
 ## The properties verification has to separate
 

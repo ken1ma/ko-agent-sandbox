@@ -21,8 +21,7 @@ Run the commands in this section from the repository root.
 
 1. On the host, start a sandbox with the default egress rules:
 
-       KO_AGENT_SANDBOX_SESSION_START=immediate \
-           java -jar target/dist/ko-agent-sandbox.jar bash
+       java -jar target/dist/ko-agent-sandbox.jar --no-options-file --session-start=immediate bash
 
    Inside that session, run `sbt testFull`, which also runs `SessionBoundaryTest`.
 

@@ -97,7 +97,7 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
       missing,
       Some(Finding.Provisionable(
         Program.Mill, workspace,
-        s"mill executable: mill's JVM launcher 1.1.9-jvm is not provisioned under $downloads; run " +
+        "mill executable: mill's JVM launcher 1.1.9-jvm is not provisioned under ~/.cache/mill/download; run " +
           "`MILL_VERSION=1.1.9-jvm ./mill version` once on the host",
         Vector("./mill", "version"), Map("MILL_VERSION" -> "1.1.9-jvm"),
       )),
@@ -154,7 +154,7 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     record(planted)
     val notCoursier = finding(build, env.get)
     assert(clue(notCoursier).exists(_.isInstanceOf[Finding.Notice]))
-    assert(notCoursier.exists(_.wording.contains(s"no JDK inside the Coursier cache $coursier")))
+    assert(notCoursier.exists(_.wording.contains("no JDK inside the Coursier cache ~/Library/Caches/Coursier ")))
 
     // Read only as the build's own file: through a link it is absent.
     record(jdk)
@@ -213,7 +213,7 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
       Some(Finding.Provisionable(
         Program.Gradle, workspace,
         "gradle distribution: Gradle from https://services.gradle.org/distributions/gradle-9.7.1-bin.zip is not " +
-          s"unpacked at ${root.resolve(GradleDistributionDir)}; run `./gradlew --version` once on the host",
+          s"unpacked at ~/$GradleDistributionDir; run `./gradlew --version` once on the host",
         Vector("./gradlew", "--version"), Map.empty,
       )),
     )
@@ -237,8 +237,8 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
       finding(build, env.get),
       Some(Finding.Provisionable(
         Program.Mvn, workspace,
-        s"mvn distribution: Maven from $MvnDistributionUrl is not unpacked at $distribution; run " +
-          "`./mvnw --version` once on the host",
+        s"mvn distribution: Maven from $MvnDistributionUrl is not unpacked at ~/${root.relativize(distribution)}; " +
+          "run `./mvnw --version` once on the host",
         Vector("./mvnw", "--version"), Map.empty,
       )),
     )

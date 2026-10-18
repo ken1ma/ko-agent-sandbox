@@ -1,9 +1,9 @@
-# The host microphone — `--mic` for the agents' voice dictation
+# The host microphone — `--audio=mic` for the agents' voice dictation
 
 The sandbox has no audio capture device: no `/dev/snd`, no `/proc/asound`, and the launcher passes
-no `--device`. Under `--mic` a host relay records the host microphone and streams it into a
+no `--device`. Under `--audio=mic` a host relay records the host microphone and streams it into a
 PulseAudio daemon inside the sandbox, and the agents record from the daemon as they do on any
-Linux desktop. Without `--mic`, nothing in the sandbox can record.
+Linux desktop. Without `--audio=mic`, nothing in the sandbox can record.
 
 - README's Reference names what each host needs; SECURITY.md, "Microphone", states what the grant
   allows and when the microphone is open.
@@ -91,8 +91,8 @@ Linux desktop. Without `--mic`, nothing in the sandbox can record.
     TUI shows (unverified).
   - One direction keeps the relay as it is; playback would be a pipe sink and a second relay
     direction, added without changing the first.
-  - Playback would be its own option, never a default: sound a sandbox process puts on the host
-    can imitate the user's tools or a person in the room, and reaches any microphone nearby,
+  - Playback would be its own `--audio` value, never a default: sound a sandbox process puts on the
+    host can imitate the user's tools or a person in the room, and reaches any microphone nearby,
     another device's included; with the microphone it also closes a loop from the host's speaker
     back into the sandbox.
 
@@ -134,15 +134,15 @@ order (`checkRecordingAvailability`, `checkVoiceDependencies`, read from the ima
   install sox"; with it, "Voice mode requires a microphone, but SoX could not open an audio
   capture device".
 
-The image installs SoX and its PulseAudio backend, so under `--mic` `rec --version` exits 0 and
-the CLI takes its SoX branch (the Containerfile says why `alsa-utils` stays out). Without the
+The image installs SoX and its PulseAudio backend, so under `--audio=mic` `rec --version` exits 0
+and the CLI takes its SoX branch (the Containerfile says why `alsa-utils` stays out). Without the
 backend, `rec --version` fails with "Sorry, there is no default audio device configured" (measured
 in the sandbox).
 
-Without `--mic`, the CLI 2.1.296 answers `/voice tap` with the last check's "Voice mode requires a
-microphone, but SoX could not open an audio capture device", adding that the host may have none
-(measured on macOS). A bare `/voice` toggles: with voice on in the settings, it answers "Voice mode
-disabled." before any check.
+Without `--audio=mic`, the CLI 2.1.296 answers `/voice tap` with the last check's "Voice mode
+requires a microphone, but SoX could not open an audio capture device", adding that the host may
+have none (measured on macOS). A bare `/voice` toggles: with voice on in the settings, it answers
+"Voice mode disabled." before any check.
 
 - Recording through `rec`: `rec -q --buffer 1024 -t raw -r 16000 -e signed -b 16 -c 1 -`, from the
   default device, stdout read as audio, `SIGTERM` to stop, with a SoX `silence` effect appended when
@@ -178,7 +178,7 @@ Read from the image's binaries on 2026-10-09.
 
 ## The launch
 
-- Without `--mic` no daemon or relay runs, and no `PULSE_SERVER` is set.
+- Without `--audio=mic` no daemon or relay runs, and no `PULSE_SERVER` is set.
 - Before the container starts, the relay starts each candidate recorder in order ("The recorder")
   and keeps the first that delivers bytes within a bound; that process is the session's recorder,
   so the probe and the recorder are one start.
@@ -200,14 +200,14 @@ Read from the image's binaries on 2026-10-09.
   apart.
   - The probe reads its moment with dither off, so silence is exact zeros.
   - All-zero samples print a warning naming the permission and the input setting, and do not fail
-    the launch: in Ghostty, whose permission was denied, a `--mic` launch raised no prompt, warned,
-    and started the agent (2026-10-14).
+    the launch: in Ghostty, whose permission was denied, a `--audio=mic` launch raised no prompt,
+    warned, and started the agent (2026-10-14).
   - A launch can warn and then dictate: on macOS, at ten reads and again at fifty, some launches'
     first moment was exact silence while the microphone worked (2026-10-14). The cause is
     unmeasured.
-    - Sharing the device is not the cause: one launch beside another `--mic` session warned and
-      the next did not, and a `rec` run from the shell beside that session delivered sound in its
-      first piece, at 137 to 141 ms, in three runs.
+    - Sharing the device is not the cause: one launch beside another `--audio=mic` session warned
+      and the next did not, and a `rec` run from the shell beside that session delivered sound in
+      its first piece, at 137 to 141 ms, in three runs.
     - Each launch's `microphone.log` says how far into the recorder's audio its first sound came,
       or that none came in its first 30 s.
 - On Windows the recorder decides and two diagnostics explain. In a session without a capture
@@ -232,12 +232,12 @@ Read from the image's binaries on 2026-10-09.
     - The diagnosis names the switch, under Settings > Privacy & security > Microphone, of the
       first value that stops the recorder ("Windows, measured" has which do). The values explain a
       failure and decide nothing: what they mean on other Windows builds is unmeasured.
-- Inside the sandbox the launcher sets `KO_AGENT_SANDBOX_MIC=on`, `PULSE_SERVER`, the three
+- Inside the sandbox the launcher sets `KO_AGENT_SANDBOX_AUDIO=mic`, `PULSE_SERVER`, the three
   `PULSE_*_PATH` variables and `PULSE_COOKIE` ("The daemon"), and no `SOX_OPTS` ("Latency").
 
 ## The daemon
 
-Under `--mic`, `ko-sandbox-entrypoint` starts PulseAudio before the agent from the image's
+Under `--audio=mic`, `ko-sandbox-entrypoint` starts PulseAudio before the agent from the image's
 `microphone.pa` alone, whose comments give each module's reason.
 
 - `-n` skips the default script, and `--disallow-module-loading` applies once the script's

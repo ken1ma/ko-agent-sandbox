@@ -13,7 +13,9 @@
 //   EgressRules.scala           the workspace's egress rules, their resolution, the audit log, and the
 //                               --egress-* actions
 //   LauncherState.scala         the state root, and the resets with the name patterns they sweep
-//   CommandLine.scala           the session options, the management actions and the --env forwards
+//   CommandLine.scala           the session options, the management actions, the merge of the options
+//                               file's under the command line's, and the --env forwards
+//   OptionsFile.scala           the options file: location, syntax, refusals
 //   AwsCredential.scala         --env-aws-cred: the AWS CLI's temporary credentials, resolved on the host
 //   ClaudePlugins.scala         --claude-plugin-dir: host plugin directories run as Claude Code's managed plugins
 //   LaunchMessages.scala        the weakened-boundary lines and the agent instructions' appended section
@@ -25,7 +27,7 @@
 //   FileRules.scala             the file rules: defaults, the workspace's rule file, grammar, resolution
 //   EgressCredentials.scala     --egress-cred: the bindings, their values, placeholders and proxies
 //   ClipboardRelay.scala        the host clipboard offered to the sandbox: the protocol and both relays
-//   MicrophoneRelay.scala       the host microphone under --mic: the recorders, the probe and both relays
+//   MicrophoneRelay.scala       the host microphone under --audio=mic: the recorders, the probe and both relays
 //   SandboxStats.scala          --stats: the read-only resource report
 //   SelfTestShare.scala         --self-test's share rows, the host-writer/session-reader direction
 //   SeatbeltProfile.scala       the Seatbelt profiles of a host command and the host proxy, as SBPL
@@ -88,7 +90,7 @@
 // podman arguments are not accepted: podman merges rather than replaces
 // most flags, so a caller-supplied --volume or --cap-add could silently
 // reopen the boundary. The launcher parses only its session options and
-// management actions (CommandLine.parseCommandLine); the first non-option is the command,
+// management actions (CommandLine.parseArguments); the first non-option is the command,
 // and from there everything is forwarded verbatim to the container.
 
 package agentsandbox.launcher
@@ -98,7 +100,6 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, Paths, StandardCopyOption}
 import java.time.{Instant, ZoneId, ZoneOffset}
 import java.time.format.DateTimeFormatter
-import scala.jdk.CollectionConverters.*
 import agentsandbox.egress.{AgentEgressProxy, BrokeredCredential, CredentialGrammar}
 import agentsandbox.egress.LogHelper.sha256Hex
 
@@ -134,8 +135,8 @@ object AgentSandboxLauncher:
   // -------------------------------------------------------------------------
 
   /**
-   * Whether a container runtime may run inside the sandbox: `none` — the default, what an unset
-   * variable means — or `same-uid`, which grants the listed loosenings for the whole session,
+   * Whether a container runtime may run inside the sandbox, as `--nesting` selects it: `none` — the
+   * default — or `same-uid`, which grants the listed loosenings for the whole session,
    * at the cost SECURITY.md's "No containers inside the sandbox by default" section describes. `unmask=ALL`
    * because a nested pid namespace must mount a fresh /proc, and the kernel refuses that while
    * the masked entries remain mounted on it (measured: EPERM from a bare unshare with the masks in
@@ -161,20 +162,9 @@ object AgentSandboxLauncher:
    * images that switch USER or chown to a second uid fail by design, this repository's own among
    * them.
    */
-  val NestingVariable = "KO_AGENT_SANDBOX_NESTING"
+  final val NestingVariable = "KO_AGENT_SANDBOX_NESTING"
   val NestingLoosenings =
     Vector("--security-opt=unmask=ALL", "--security-opt=label=disable", "--cap-add=SYS_CHROOT")
-
-  def nestingMode(value: Option[String]): Either[String, String] =
-    closedChoice(
-      NestingVariable,
-      value,
-      Vector("none", "same-uid"),
-      "none",
-      "Unset it (or set it to none) to allow no runtime; set it to same-uid to unmask\n/proc, " +
-        "disable SELinux labeling and add SYS_CHROOT so a container runtime installed\nin the " +
-        "session can run (SECURITY.md).",
-    )
 
   /**
    * How the sandbox addresses the proxy: a name `--add-host` puts in /etc/hosts, so no resolver is
@@ -343,33 +333,49 @@ object AgentSandboxLauncher:
    * Everything a launch prints — the workspace mode, the egress rules, every
    * warning — is on screen for as long as it takes the agent to start, and claude's fullscreen TUI
    * and codex both clear the screen as they do. So the launcher waits for input after printing the
-   * launch information and before starting the agent. `immediate` skips that wait, for whoever has
-   * read the lines enough times; without a terminal the launcher cannot wait for input.
+   * launch information and before starting the agent. `--session-start=immediate` skips that wait,
+   * for whoever has read the lines enough times; without a terminal the launcher cannot wait for
+   * input. The variable tells the session the mode: the entrypoint holds its own warning under it.
    */
-  val SessionStartVariable = "KO_AGENT_SANDBOX_SESSION_START"
+  final val SessionStartVariable = "KO_AGENT_SANDBOX_SESSION_START"
+
+  /** The clipboard mode inside the sandbox, which `--clipboard` selects (CommandLine.ClipboardModes). */
+  final val ClipboardVariable = "KO_AGENT_SANDBOX_CLIPBOARD"
 
   /**
-   * The clipboard mode inside the sandbox, which `--clipboard` selects (CommandLine.ClipboardModes).
-   * The launcher refuses the variable in its own environment: a profile exporting it would
-   * otherwise configure nothing, silently.
+   * The variables an option replaced, with that option. A shell profile exporting one would
+   * otherwise configure nothing, silently, so the launcher refuses each in its environment. Those
+   * the launcher sets inside the sandbox (`inSandbox`) are refused on the host alone: a launcher run
+   * in a session inherits them from it. The option names are CommandLine's `final val` constants,
+   * inlined here: initializing CommandLine from this object's initializer would read
+   * LauncherVariablePrefix before it is set (CommandLine.RefusedForwardPrefix).
    */
-  val ClipboardVariable = "KO_AGENT_SANDBOX_CLIPBOARD"
+  val ReplacedVariables: Vector[(String, String, Boolean)] = Vector(
+    ("KO_AGENT_SANDBOX_MEMORY", "--memory", false),
+    ("KO_AGENT_SANDBOX_PERSISTENT_VOLUME", PersistentVolumeOption, false),
+    ("KO_AGENT_SANDBOX_IMAGE", "--image", false),
+    ("KO_AGENT_SANDBOX_PROXY_IMAGE", ProxyImageOption, false),
+    (NestingVariable, "--nesting", true),
+    (SessionStartVariable, "--session-start", true),
+    (ClipboardVariable, "--clipboard", true),
+  )
 
-  def clipboardVariableRefusal(value: Option[String]): Option[String] =
-    value.map: mode =>
-      val keep = if ClipboardModes.contains(mode) then s", and pass --clipboard=$mode to keep that mode" else ""
-      s"error: the launcher does not read $ClipboardVariable; --clipboard=<mode> selects the mode. Unset it$keep"
+  /** Why the environment fails every invocation of the launcher, naming each replaced variable it
+    * sets and the option to pass instead; a value is offered back only when the option takes it.
+    * `env` is the raw environment: an exported empty variable is refused too, since it configures
+    * nothing either. */
+  def replacedVariablesRefusal(env: String => Option[String], inSession: Boolean): Option[String] =
+    val refused = ReplacedVariables.filterNot((_, _, inSandbox) => inSession && inSandbox).flatMap:
+      (variable, option, _) =>
+        env(variable).map: value =>
+          val valid = value.nonEmpty && parseArguments(List(s"$option=$value")).isRight && !value.contains('\n')
+          val keep = if valid then s", and pass $option=$value to keep that value" else ""
+          s"error: the launcher does not read $variable; $option=${ValuedOptions(option)} replaces it. Unset it$keep"
+    Option.when(refused.nonEmpty)(refused.mkString("\n"))
 
-  def sessionStart(value: Option[String]): Either[String, String] =
-    closedChoice(
-      SessionStartVariable,
-      value,
-      Vector("pause", "immediate"),
-      "pause",
-      "Unset it (or set it to pause) to keep the prompt, where n exits without starting;\nset it " +
-        "to immediate to start the agent at once, leaving what the launch printed to be\nread " +
-        "from the scrollback afterwards.",
-    )
+  /** Whether this process runs inside a sandbox session: the image's `/etc/ko-agent-sandbox`, which a
+    * host does not have (src/probe/machine-memory-return.sh asks the same). */
+  def inSandboxSession(os: Os): Boolean = os == Os.Linux && Files.isDirectory(Paths.get("/etc/ko-agent-sandbox"))
 
   /**
    * The decision the reader takes on the workspace and egress lines above: Enter or y starts, n
@@ -454,7 +460,7 @@ object AgentSandboxLauncher:
    * than the machine had available at launch, where that is known (hostMemoryAvailable), since a
    * native host is already running everything else and a VM that is short is short. What one
    * limit cannot bound is the sum: two sessions on one machine, or a host workload that increases
-   * after the launch, still add up past it — KO_AGENT_SANDBOX_MEMORY is for that.
+   * after the launch, still add up past it — `--memory` is for that.
    *
    * The one exception to the available bound is MinimumMemoryLimit (or the total, on a machine
    * smaller than that), below which the limit never goes: podman reads `--memory=0` as no limit
@@ -581,56 +587,12 @@ object AgentSandboxLauncher:
           Vector(s"--memory=$bytes", s"--memory-swap=$bytes")
 
   /**
-   * The KO_AGENT_SANDBOX_* names this launcher reads, KO_AGENT_SANDBOX_CLIPBOARD only to refuse it —
-   * plus KO_AGENT_SANDBOX_EGRESS_RULESET, KO_AGENT_SANDBOX_FILE_RULES, KO_AGENT_SANDBOX_JAVA_OPTS,
-   * KO_AGENT_SANDBOX_RUN_ON_HOST and KO_AGENT_SANDBOX_MIC, which it sets inside the sandbox rather
-   * than reads, so a launcher nested in a sandbox session is not warned about the variables that
-   * session legitimately has set.
+   * The prefix of the variables the launcher sets inside the sandbox to say what is in force
+   * (CommandLine.RefusedForwardPrefix); no variable of it configures the launcher. A variable the
+   * launcher sets for one of its own components has another: `KO_AGENT_<component>_`, as
+   * KO_AGENT_FS_SOURCE_ID and RunOnHostSandbox.carrierName have.
    */
-  val KnownSandboxVariables: Set[String] = Set(
-    "KO_AGENT_SANDBOX_JAVA_OPTS",
-    "KO_AGENT_SANDBOX_IMAGE",
-    "KO_AGENT_SANDBOX_PROXY_IMAGE",
-    "KO_AGENT_SANDBOX_PERSISTENT_VOLUME",
-    "KO_AGENT_SANDBOX_MEMORY",
-    NestingVariable,
-    SessionStartVariable,
-    ClipboardVariable,
-    MicrophoneRelay.MicVariable,
-    "KO_AGENT_SANDBOX_EGRESS_RULESET",
-    "KO_AGENT_SANDBOX_FILE_RULES",
-    RunOnHostChannel.RunOnHostVariable,
-  )
-
-  /**
-   * The prefix of the variables the user gives this launcher and of those it sets inside the
-   * sandbox to say what is in force (CommandLine.RefusedForwardPrefix). A variable the launcher sets for one
-   * of its own components has another: `KO_AGENT_<component>_`, as KO_AGENT_FS_SOURCE_ID and
-   * RunOnHostSandbox.carrierName have.
-   */
-  val LauncherVariablePrefix = "KO_AGENT_SANDBOX_"
-
-  /** The prefix of the variables the sandbox image sets for its own scripts
-    * (container/ko-agent-sandbox/Containerfile). */
-  private val ImageVariablePrefix = "KO_SANDBOX_"
-
-  /**
-   * Environment names that look like this launcher's but are not: almost certainly a misspelling
-   * of one above, and a misspelled variable silently configuring nothing — no memory limit, the
-   * wrong volume — is the failure mode the warning in main closes. A warning rather than a refused
-   * launch, because a shell profile legitimately sets variables for a newer or older launcher.
-   *
-   * A known variable's name under the image's prefix is such a misspelling. The image's other
-   * variables are not reported: a launcher run inside a session inherits them.
-   */
-  def unknownSandboxVariables(names: Iterable[String]): Vector[String] =
-    names.toVector
-      .filter: name =>
-        if name.startsWith(LauncherVariablePrefix) then !KnownSandboxVariables(name)
-        else
-          name.startsWith(ImageVariablePrefix)
-          && KnownSandboxVariables(LauncherVariablePrefix + name.stripPrefix(ImageVariablePrefix))
-      .sorted
+  final val LauncherVariablePrefix = "KO_AGENT_SANDBOX_"
 
   /**
    * The proxy's address on one named network, out of the per-network listing
@@ -804,12 +766,12 @@ object AgentSandboxLauncher:
       run(podman, "machine", "ssh", "cat /proc/meminfo"),
     )
 
-  /** The sandbox and proxy images the launcher runs, and whether an environment override chose
+  /** The sandbox and proxy images the launcher runs, and whether `--image` or `--proxy-image` chose
     * them, which is what turns a version-lock mismatch from a refusal into a warning. */
-  def sandboxImageChoice: (String, Boolean) = imageChoice("KO_AGENT_SANDBOX_IMAGE", SandboxImage)
-  def proxyImageChoice: (String, Boolean) = imageChoice("KO_AGENT_SANDBOX_PROXY_IMAGE", ProxyImage)
-  private def imageChoice(variable: String, default: String): (String, Boolean) =
-    env(variable).fold((default, false))(image => (image, true))
+  def sandboxImageChoice(chosen: Option[String]): (String, Boolean) = imageChoice(chosen, SandboxImage)
+  def proxyImageChoice(chosen: Option[String]): (String, Boolean) = imageChoice(chosen, ProxyImage)
+  private def imageChoice(chosen: Option[String], default: String): (String, Boolean) =
+    chosen.fold((default, false))(image => (image, true))
 
   /** The proxy image's Id, then its bundle label: the answer proxyImageLock reads. */
   def inspectProxyImage(proxyImage: String): Run =
@@ -1039,32 +1001,38 @@ object AgentSandboxLauncher:
       case Some("--run-command-on-host")  => RunOnHostSandbox.runCommandMain(args.toSeq.drop(1))
       case _                            => launcherMain(args)
 
-  private def launcherMain(args: Array[String]): Unit =
-    unknownSandboxVariables(System.getenv().keySet().asScala).foreach: name =>
-      warn(s"$name is not a variable this launcher reads; a misspelling configures nothing")
+  /**
+   * The options an action reads, from the command line and the options file alike; it ignores the
+   * file's others, and refuses the others on its command line. `--reset` leaves the shared volume
+   * in place, as a launch mounts it. `--egress-check` sends no credential, so it reads no
+   * `--egress-cred`.
+   */
+  val ResetReads: Set[String] = Set(PersistentVolumeOption)
+  val EgressEffectiveReads: Set[String] = Set("--egress", ModelProviderOption, "--egress-cred", ProxyImageOption)
+  val EgressCheckReads: Set[String] = EgressEffectiveReads - "--egress-cred"
 
-    val parsed = parseCommandLine(args.toList).fold(fail(_), identity)
+  private def launcherMain(args: Array[String]): Unit =
+    replacedVariablesRefusal(name => Option(System.getenv(name)), inSandboxSession(currentOs)).foreach(fail(_))
+
+    val commandLine = parseArguments(args.toList).fold(fail(_), identity)
+
+    // The action refusals below read the command line alone.
+    def inForce(used: Set[String]): OptionsInForce =
+      OptionsFile.inForce(commandLine, used)(
+        OptionsFile.load(currentOs, resolveWorkspaceRoot(currentOs), name => Option(System.getenv(name))),
+      ).fold(fail(_), identity)
 
     // The actions that read no session option refuse one rather than ignoring it: a selection
     // that configures nothing is the silent failure mode the options must not have.
-    val launchOptions = Vector(
-      "--workspace" -> parsed.workspace.isDefined, "--egress" -> parsed.egress.isDefined,
-      CommandLine.ModelProviderOption -> parsed.modelProvider.isDefined,
-      "--egress-cred" -> parsed.credentialBindings.nonEmpty, "--clipboard" -> parsed.clipboard.isDefined,
-      "--mic" -> parsed.mic, "--env" -> parsed.env.nonEmpty, "--env-aws-cred" -> parsed.awsCredential.isDefined,
-      "--run-on-host" -> parsed.runOnHost.isDefined, ClaudePlugins.OptionName -> parsed.claudePlugins.nonEmpty,
-    )
-    def refuseGiven(action: String, options: Vector[(String, Boolean)]): Unit =
-      val named = options.collect { case (option, true) => option }
+    val givenOnCommandLine = givenOptions(commandLine)
+    def refuseGiven(action: String, readable: Set[String] = Set.empty): Unit =
+      val named = givenOnCommandLine.filterNot(readable)
       if named.nonEmpty then
         val them = if named.size == 1 then "it" else "them"
         fail(s"error: $action reads no ${named.mkString(" or ")} option; drop $them")
-    def noSessionOptions(action: String): Unit = refuseGiven(action, launchOptions)
-    val egressOptions = Set("--egress", "--egress-cred", CommandLine.ModelProviderOption)
-    def noWriteOption(action: String): Unit =
-      refuseGiven(action, launchOptions.filterNot((option, _) => egressOptions(option)))
+    def noSessionOptions(action: String): Unit = refuseGiven(action)
 
-    parsed.action match
+    commandLine.action match
       case Some(("--help", _)) =>
         noSessionOptions("--help")
         usage()
@@ -1084,12 +1052,13 @@ object AgentSandboxLauncher:
         update(currentOs)
 
       case Some(("--reset", rest)) =>
-        noSessionOptions("--reset")
+        refuseGiven("--reset", ResetReads)
         val givenIds = workspaceIdOperands("--reset", rest).fold(fail(_), identity)
+        val options = inForce(ResetReads)
         // The resets only remove what carries this launcher's names, so they run against a
         // rootful service too.
         requirePodman(currentOs, refuseRootful = false)
-        resetWorkspace(currentOs, givenIds)
+        resetWorkspace(currentOs, givenIds, options.parsed.persistentVolume, options.from(PersistentVolumeOption))
 
       // No id form: a gone workspace's cache goes with `--reset <id>`, and this action exists for the
       // live one, whose directory is there to run from.
@@ -1098,6 +1067,8 @@ object AgentSandboxLauncher:
         if rest.nonEmpty then fail("error: --reset-run-on-host takes no further arguments")
         resetRunOnHost(currentOs)
 
+      // No options file: the reset removes only volumes the launcher named (persistentVolumes), so
+      // no shared volume is there to leave in place.
       case Some(("--reset-all", rest)) =>
         noSessionOptions("--reset-all")
         if rest.nonEmpty then fail("error: --reset-all takes no further arguments")
@@ -1124,23 +1095,30 @@ object AgentSandboxLauncher:
         selfTest(currentOs, rest)
 
       case Some(("--egress-effective", rest)) =>
-        noWriteOption("--egress-effective")
+        refuseGiven("--egress-effective", EgressEffectiveReads)
+        val options = inForce(EgressEffectiveReads)
+        options.fileLines().foreach(System.err.println)
+        import options.parsed
         requirePodman(currentOs)
-        egressEffective(currentOs, parsed.egressProfile, parsed.modelProvider, rest, parsed.credentialBindings)
+        egressEffective(
+          currentOs, parsed.egressProfile, parsed.modelProvider, parsed.proxyImage, rest, parsed.credentialBindings,
+        )
 
       case Some(("--egress-check", operands)) =>
-        noWriteOption("--egress-check")
-        if parsed.credentialBindings.nonEmpty then fail("error: --egress-check reads no --egress-cred option; drop it")
+        refuseGiven("--egress-check", EgressCheckReads)
         val host = operands.headOption.filter(_.nonEmpty).getOrElse(
           fail("error: --egress-check=<host> names the host to check"),
         )
+        val options = inForce(EgressCheckReads)
+        options.fileLines().foreach(System.err.println)
+        import options.parsed
         requirePodman(currentOs)
-        egressCheck(currentOs, parsed.egressProfile, parsed.modelProvider, host, operands.tail)
+        egressCheck(currentOs, parsed.egressProfile, parsed.modelProvider, parsed.proxyImage, host, operands.tail)
 
       // CommandLine.ManagementActions and this match drifted.
       case Some((action, _)) => fail(s"error: unhandled action $action")
 
-      case None => launch(parsed)
+      case None => launch(inForce(FileOptionNames.toSet))
 
   /** The TLS material a proxy mounts: the leaf and its key when the ruleset inspects a host. */
   enum ProxyTlsMaterial:
@@ -1250,17 +1228,20 @@ object AgentSandboxLauncher:
         if magnitude == 0 then "UTC"
         else s"UTC$sign${magnitude / 60}" + (if magnitude % 60 == 0 then "" else f":${magnitude % 60}%02d")
 
-  /** What a launch reads and refuses before it checks the workspace root: the options, the
-    * variables that decide the boundary, and the run-on-host rule files. */
+  /** What a launch reads and refuses before it checks the workspace root: the options and where
+    * each came from, what they select on the host, and the run-on-host rule files. */
   private case class LaunchSettings(
+    options: OptionsInForce,
     credentials: Vector[BrokeredCredential],
     image: String,
     imageOverridden: Boolean,
+    proxyImage: String,
+    proxyImageOverridden: Boolean,
     nesting: String,
     sessionStartMode: String,
     clipboard: String,
     clipboardHost: ClipboardRelay.HostBackend,
-    /** The recorder candidates under --mic, in probe order. */
+    /** The recorder candidates under --audio=mic, in probe order. */
     microphone: Option[Vector[MicrophoneRelay.Recorder]],
     forwardedEnv: Vector[String],
     awsCredential: Option[AwsCredential.Resolved],
@@ -1302,6 +1283,7 @@ object AgentSandboxLauncher:
     rulesetText: String,
     rulesetWarnings: String,
     inspectedHosts: Vector[String],
+    egressLine: String,
     sessionCredentials: Vector[BrokeredCredential],
   )
 
@@ -1330,9 +1312,13 @@ object AgentSandboxLauncher:
   /** The launch, phase by phase: each phase takes the earlier phases' results and imports by name the
     * values its body reads from them. The cleanup and the hold stay here: the cleanup reads
     * `heldLineClosed`, and the hold sets it. */
-  def launch(parsed: ParsedCommandLine): Unit =
+  def launch(options: OptionsInForce): Unit =
     val os = currentOs
-    val settings = launchSettings(parsed, os)
+    val parsed = options.parsed
+    val settings = launchSettings(options, os)
+    // First of the launch's lines: the options the file supplied, but those another line states
+    // (ownLines), so each is printed once.
+    options.fileLines(ownLines(settings, parsed), os).foreach(System.err.println)
     val workspace = launchWorkspace(parsed, settings, os)
     import parsed.{command, workspaceMode}
     import settings.{workspaceRoot, runOnHost, sessionStartMode}
@@ -1522,23 +1508,41 @@ object AgentSandboxLauncher:
       microphoneLogFile, cleanup, os,
     )
 
-  private def launchSettings(parsed: ParsedCommandLine, os: Os): LaunchSettings =
+  /** The options another launch line states when in force, which names the options file when the
+    * option came from it: the grants' orange lines, the shared agent-state volume's line, the
+    * workspace and egress lines, and the forwarded names and credentials. */
+  private def ownLines(settings: LaunchSettings, parsed: ParsedCommandLine): Set[String] =
+    Set(
+      Some("--workspace"),
+      Some("--egress"),
+      Some(ModelProviderOption),
+      Option.when(parsed.env.nonEmpty)("--env"),
+      Option.when(settings.credentials.nonEmpty)("--egress-cred"),
+      Option.when(settings.awsCredential.nonEmpty)(AwsCredential.OptionName),
+      Option.when(settings.clipboard != "off")("--clipboard"),
+      Option.when(settings.microphone.nonEmpty)(AudioOption),
+      Option.when(settings.nesting != "none")("--nesting"),
+      Option.when(settings.runOnHost.nonEmpty)("--run-on-host"),
+      Option.when(parsed.persistentVolume.nonEmpty)(PersistentVolumeOption),
+      Option.when(parsed.claudePlugins.nonEmpty)(ClaudePlugins.OptionName),
+    ).flatten
+
+  private def launchSettings(options: OptionsInForce, os: Os): LaunchSettings =
+    val parsed = options.parsed
     // First, before any check that starts a process (the clipboard's `ps` below): from here the values
     // are in this process's memory, and no process it starts inherits them (EgressCredentials.withhold).
     val credentials =
       EgressCredentials.resolve(parsed.credentialBindings, name => Option(System.getenv(name))).fold(fail(_), identity)
     EgressCredentials.withhold(credentials.map(_.binding.name), os)
 
-    val (image, imageOverridden) = sandboxImageChoice
+    val (image, imageOverridden) = sandboxImageChoice(parsed.image)
+    val (proxyImage, proxyImageOverridden) = proxyImageChoice(parsed.proxyImage)
 
-    // Read before anything is created, like the egress rules below: a variable that would weaken
-    // the boundary must not be discovered halfway through a launch that has already made resources.
-    val nesting = nestingMode(env(NestingVariable)).fold(fail(_), identity)
-    val sessionStartMode = sessionStart(env(SessionStartVariable)).fold(fail(_), identity)
-    clipboardVariableRefusal(env(ClipboardVariable)).foreach(fail(_))
+    val nesting = parsed.nestingMode
+    val sessionStartMode = parsed.sessionStartMode
     val clipboard = parsed.clipboardMode
     val pathValue = env("PATH").getOrElse("")
-    val microphone = Option.when(parsed.mic)(MicrophoneRelay.recorders(os, pathValue).fold(fail(_), identity))
+    val microphone = Option.when(parsed.microphone)(MicrophoneRelay.recorders(os, pathValue).fold(fail(_), identity))
     // The reaper ends the microphone relay's tree with the same proven ps as the clipboard's.
     val clipboardHost =
       ClipboardRelay.hostBackend(clipboard, os, pathValue).fold(fail(_), identity) match
@@ -1575,7 +1579,8 @@ object AgentSandboxLauncher:
       .map: program =>
         RunOnHostPrereqs.readProgramRules(workspaceRoot, program).fold(fail(_), program -> _)
     LaunchSettings(
-      credentials, image, imageOverridden, nesting, sessionStartMode, clipboard, clipboardHost, microphone,
+      options, credentials, image, imageOverridden, proxyImage, proxyImageOverridden, nesting, sessionStartMode,
+      clipboard, clipboardHost, microphone,
       forwardedEnv, awsCredential, runOnHost, workspaceRoot, boundaryDir, programRules,
     )
 
@@ -1597,20 +1602,23 @@ object AgentSandboxLauncher:
     //
     // Separate volumes keep settings and MCP commands written by one workspace out of another workspace's sessions
     // (SECURITY.md, "What the persistent volume holds"). This requires signing in separately for each workspace.
-    // KO_AGENT_SANDBOX_PERSISTENT_VOLUME opts into sharing that state across workspaces using the named volume.
+    // --persistent-volume opts into sharing that state across workspaces using the named volume, and
+    // says so on a line of its own, whichever source gave it.
     // A linked worktree may instead share its main worktree's volume, which the reader agrees to
     // right here, under the two lines naming both directories and before podman announces
     // itself: the question is about those two lines and nothing that follows. A launch that
-    // holds nothing keeps this worktree's own volume and says so, naming the variable a launch
+    // holds nothing keeps this worktree's own volume and says so, naming the option a launch
     // without the prompt shares through: after a launch that agreed, a scripted one would
     // otherwise seem to have lost the main worktree's logins.
-    val sharedVolume = env("KO_AGENT_SANDBOX_PERSISTENT_VOLUME").map: shared =>
+    val sharedVolume = parsed.persistentVolume.map: shared =>
       sharedVolumeNameRefusal(shared).foreach(reason => fail(s"error: $reason"))
       shared
-    // Named under the variable too, where nothing is asked: the read-only git mount reads it.
+    // Named under the option too, where nothing is asked: the read-only git mount reads it.
     val mainWorktree = SandboxWorkspace.mainWorktreeOf(workspaceRoot, homeProtection, os)
     System.err.println(pathLine("workspace root", workspaceRoot, os, tint = chosen(_)))
     mainWorktree.foreach(main => System.err.println(pathLine("main git worktree", main, os)))
+    sharedVolume.foreach: shared =>
+      System.err.println(sharedVolumeLine(shared, settings.options.from(PersistentVolumeOption, os)))
     // The answer said back as the workspace and egress lines say their modes: an answer is a
     // choice, and either continues the launch.
     val sharedWithMain: Option[Path] = mainWorktree.filter(_ => sharedVolume.isEmpty).filter: _ =>
@@ -1624,7 +1632,7 @@ object AgentSandboxLauncher:
         case None =>
           System.err.println(
             "agent state: this worktree's own; a launch without the prompt shares agent state " +
-              "through KO_AGENT_SANDBOX_PERSISTENT_VOLUME",
+              s"through $PersistentVolumeOption",
           )
           false
 
@@ -1766,7 +1774,7 @@ object AgentSandboxLauncher:
       if imageOverridden then warn(mismatch)
       else fail(s"error: $mismatch")
 
-    val (proxyImage, proxyImageOverridden) = proxyImageChoice
+    import settings.{proxyImage, proxyImageOverridden}
 
     // The proxy side of the version lock above (proxyImageLock).
     val proxyInspected = inspectProxyImage(proxyImage)
@@ -1872,6 +1880,10 @@ object AgentSandboxLauncher:
     // The leaf's names, from the dry run (inspectedHostsOf); a ruleset change reissues the leaf
     // through leaf.sans below. Empty: no leaf, no inspection material.
     val inspectedHosts = inspectedHostsOf(rulesetText).fold(fail(_), identity)
+    // Read now, so a dry run the banner cannot state fails the launch before its proxy starts.
+    val egressLine = egressBanner(
+      rulesetText, settings.options.from("--egress", os), settings.options.from(ModelProviderOption, os),
+    ).fold(fail(_), identity)
 
     // Each binding must reach a proxy that inspects its host: the session's, or a selected
     // program's, whose proxy inspects every host of its rules (RunOnHostSandbox.credentialHosts).
@@ -1882,7 +1894,7 @@ object AgentSandboxLauncher:
     val sessionCredentials = EgressCredentials.bindingsFor(credentials, inspectedHosts.toSet)
     LaunchRules(
       ruleFiles, workspaceFileRules, fileRuleLines, fileRulesInForce, fileRulesText, readOnlyFileRules, provider,
-      rulesetCacheDir, rulesetText, rulesetWarnings, inspectedHosts, sessionCredentials,
+      rulesetCacheDir, rulesetText, rulesetWarnings, inspectedHosts, egressLine, sessionCredentials,
     )
 
   private def gitAccess(
@@ -2225,7 +2237,9 @@ object AgentSandboxLauncher:
   ): Unit =
     import settings.{awsCredential, credentials}
     import workspace.mountPath
-    import rules.{fileRulesInForce, inspectedHosts, workspaceFileRules, ruleFiles, rulesetText, rulesetWarnings}
+    import rules.{
+      egressLine, fileRulesInForce, inspectedHosts, workspaceFileRules, ruleFiles, rulesetText, rulesetWarnings,
+    }
     import mount.{filteredWorkspace, joinedRules, sessionRuleLines}
     import git.{gitdirBindRefusal, mountedGitdir, noGit}
     // The workspace mode and the egress profile with their relevant state, said every launch — and
@@ -2236,9 +2250,11 @@ object AgentSandboxLauncher:
     // The mount path is said on Windows only, where it is not the workspace root line's
     // spelling but the /mnt/<drive> one the agent will print.
     val mountedAt = if os == Os.Windows then s" at $mountPath" else ""
+    val options = settings.options
+    val workspaceSource = options.from("--workspace", os)
     System.err.println(filteredWorkspace match
-      case Some(_) => s"workspace: ${chosen("live")}; ${koAgentFsLabel(os)}$mountedAt"
-      case None    => s"workspace: ${chosen("read-only")} this session$mountedAt")
+      case Some(_) => s"workspace: ${chosen("live")}$workspaceSource; ${koAgentFsLabel(os)}$mountedAt"
+      case None    => s"workspace: ${chosen("read-only")} this session$workspaceSource$mountedAt")
     // Qualifies the line above: the mount is sound, and git is not there, or reads the main
     // worktree's Git directory and writes nothing. Every mode, since what git needs is absent from
     // the container under each.
@@ -2253,7 +2269,7 @@ object AgentSandboxLauncher:
         FileRules.runningLaunchLines(sessionRuleLines).foreach(System.err.println)
       case None => if fileRulesInForce then FileRules.launchLines(workspaceFileRules).foreach(System.err.println)
     EgressRules.launchLines(ruleFiles, rulesetText).foreach(System.err.println)
-    System.err.println(egressBanner(rulesetText))
+    System.err.println(egressLine)
     // The transport, when this launch passed HTTPS_PROXY: the proxy's own line, from its own
     // parse, so what is on the screen is what is used — never a launcher-side reading of the
     // variable.
@@ -2271,14 +2287,28 @@ object AgentSandboxLauncher:
     // Names only: a forwarded value may be a secret, and this line is the one place the forward
     // is said aloud, since the variable is otherwise indistinguishable from the image's own.
     if parsed.env.nonEmpty then
-      System.err.println(s"forwarded environment: ${parsed.env.map(_.name).mkString(", ")}")
-    awsCredential.foreach(resolved => System.err.println(AwsCredential.bannerLine(resolved, Instant.now())))
+      val fromFile = options.fileValues("--env").toSet
+      val source = options.from("--env", os)
+      val names = parsed.env.map(forward => forward.name + (if fromFile(forward.name) then source else ""))
+      System.err.println(s"forwarded environment: ${names.mkString(", ")}")
+    awsCredential.foreach: resolved =>
+      System.err.println(AwsCredential.bannerLine(resolved, Instant.now()) + options.from(AwsCredential.OptionName, os))
     // Loud as a loosening: code that runs in the session without a tool call, which the image's
     // allowManagedHooksOnly otherwise keeps out, chosen on the host (SECURITY.md).
+    // A plugin is the file's when the file names its directory: a directory both sources spell alike
+    // the command line supplies (CommandLine.merge), and one spelled otherwise is a second plugin of
+    // that name, which ClaudePlugins.resolve refuses.
     if workspace.claudePlugins.nonEmpty then
-      System.err.println(weakened(ClaudePlugins.bannerLine(workspace.claudePlugins)))
+      val fromFile =
+        options.fileValues(ClaudePlugins.OptionName).flatMap(spelled => realPath(Path.of(spelled))).toSet
+      val source = options.from(ClaudePlugins.OptionName, os)
+      val sourceOf = (plugin: ClaudePlugins.Plugin) => if fromFile(plugin.directory) then source else ""
+      System.err.println(weakened(ClaudePlugins.bannerLine(workspace.claudePlugins, sourceOf)))
     if credentials.nonEmpty then
-      EgressCredentials.bannerLines(credentials).foreach(System.err.println)
+      val fromFile = options.fileValues("--egress-cred").toSet
+      val source = options.from("--egress-cred", os)
+      val sourceOf = (credential: BrokeredCredential) => if fromFile(credential.binding.spelled) then source else ""
+      EgressCredentials.bannerLines(credentials, sourceOf).foreach(System.err.println)
       System.err.println(s"note: ${EgressCredentials.SubstitutionNote}")
 
   /** The sandbox container's `podman create`, saying aloud each loosening it carries. */
@@ -2348,7 +2378,7 @@ object AgentSandboxLauncher:
     val nestedArgs = nesting match
       case "none" => Vector(nestingEnv)
       case mode =>
-        System.err.println(nestingLine(mode))
+        System.err.println(nestingLine(mode, settings.options.from("--nesting", os)))
         NestingLoosenings :+ nestingEnv
 
     // Loud for the same reason. WAYLAND_DISPLAY, because Claude Code and Copilot copy through
@@ -2357,7 +2387,7 @@ object AgentSandboxLauncher:
     val clipboardArgs = clipboard match
       case "off" => Vector.empty
       case mode =>
-        System.err.println(clipboardLine(mode))
+        System.err.println(clipboardLine(mode, settings.options.from("--clipboard", os)))
         Vector(s"--env=$ClipboardVariable=$mode") ++
           (if mode == "bidirectional" then Vector("--env=WAYLAND_DISPLAY=ko-sandbox-clipboard") else Vector.empty)
 
@@ -2365,7 +2395,7 @@ object AgentSandboxLauncher:
     val microphoneArgs =
       if microphone.isEmpty then Vector.empty
       else
-        System.err.println(micLine())
+        System.err.println(micLine(settings.options.from(AudioOption, os)))
         MicrophoneRelay.sandboxEnvironment().map((name, value) => s"--env=$name=$value")
 
     // Loud for the same reason: host-native execution is authority a container session alone does
@@ -2373,7 +2403,7 @@ object AgentSandboxLauncher:
     val runOnHostArgs =
       if runOnHost.isEmpty then Vector.empty
       else
-        runOnHostLines(runOnHost, workspaceMode).foreach(System.err.println)
+        runOnHostLines(runOnHost, workspaceMode, settings.options.from("--run-on-host", os)).foreach(System.err.println)
         runOnHostWideningLines(programRules.map((program, hosts) => program.name -> hosts)).foreach(System.err.println)
         Vector(s"--env=${RunOnHostChannel.RunOnHostVariable}=${runOnHost.mkString(",")}")
 
@@ -2389,7 +2419,7 @@ object AgentSandboxLauncher:
     // The Coursier OOM in container/debian-coursier/Containerfile demonstrates why memoryLimit
     // reserves memory for Podman's service, which every session needs. For diagnosis, see
     // "The whole machine degrades" in fuse/ko-agent-fs/doc/troubleshooting.md.
-    val explicitMemory = env("KO_AGENT_SANDBOX_MEMORY").map(_.trim).filter(_.nonEmpty)
+    val explicitMemory = parsed.memory.map(_.trim).filter(_.nonEmpty)
     val availableMemory = hostMemoryAvailable(os, readIfPresent(Paths.get("/proc/meminfo")).getOrElse(""))
     if machineMemory.isEmpty && explicitMemory.isEmpty then
       warn("podman info reports no machine memory; the sandbox runs without a memory limit")

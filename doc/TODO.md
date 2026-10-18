@@ -223,8 +223,8 @@ measurement.
     since the server resolves the audit log's bind at a path there.
   - It joins the session's `createCommand` beside `--cap-drop=ALL` on the branch that skips it
     for `same-uid` (`nestedArgs`), not the proxy container's.
-  - Ship the loosening in the same change: a variable in the `KO_AGENT_SANDBOX_NESTING` style,
-    exported into the session and printed every session as the nesting loosening is, so the
+  - Ship the loosening in the same change: an option in the `--nesting` style, its mode set in
+    the session's environment and printed every session as the nesting loosening is, so the
     first `Operation not permitted` has its switch.
     - It lifts the mount rules with the user-namespace rules, since a tool that creates a user
       namespace to sandbox, such as `bwrap`, mounts too. `plan-bpf-lsm-cgroup.md` ("Mounts")
@@ -271,7 +271,7 @@ measurement.
   (`ko-sandbox-entrypoint`) and `SessionBoundaryTest.scala` expect, and the statements of it: the
   first section of `container/ko-agent-sandbox/AGENTS-SANDBOX.md`, and, for `CAP_SYS_CHROOT`, the
   `same-uid` launch line (`LaunchMessages.scala`, `nestingLine`) and `README.md`'s
-  `KO_AGENT_SANDBOX_NESTING` entry, which name it as what `same-uid` adds.
+  `--nesting` entry, which name it as what `same-uid` adds.
 
 ## Claude Code's auto mode, as a launcher option
 

@@ -297,8 +297,8 @@ ships before this backend, and the backend does not ship without it.
   21's bind of the workspace at a second path: without a user namespace the session holds no
   capability to mount with.
 - The profile has neither rule under `NESTING=same-uid`, where a nested podman creates user
-  namespaces and mounts, nor on a `NESTING=none` session that sets the profile's loosening
-  variable. On both, the hooks judge rows 20 and 21 ("The policy"), and overlayfs's
+  namespaces and mounts, nor on a `NESTING=none` session launched with the profile's loosening
+  option. On both, the hooks judge rows 20 and 21 ("The policy"), and overlayfs's
   `user.overlay.*` names are the decision "Decisions still open" holds for them.
 
 

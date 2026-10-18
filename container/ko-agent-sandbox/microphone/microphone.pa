@@ -1,4 +1,4 @@
-# The PulseAudio daemon under --mic, loaded with `pulseaudio -n --file=` and nothing else
+# The PulseAudio daemon under --audio=mic, loaded with `pulseaudio -n --file=` and nothing else
 # (ko-sandbox-entrypoint; doc/microphone.md, "The daemon"). The FIFO's path is under
 # MicrophoneRelay.SandboxDir.
 .fail

@@ -20,7 +20,7 @@ costs are described below.
     only read or remove, refuses a rootful service: a rootful service makes the agent's uid and
     the container's root the host's own.
   - The session's entrypoint refuses to start unless `/proc/self/status` shows a seccomp filter,
-    `no-new-privileges` and exactly the capabilities `KO_AGENT_SANDBOX_NESTING` grants: the host's
+    `no-new-privileges` and exactly the capabilities `--nesting` grants: the host's
     `containers.conf` can turn the filter off, and `podman info` reports only kernel support.
   - The check shows that a filter is loaded, not what it allows: a permissive `seccomp_profile`
     in `containers.conf` passes.
@@ -319,7 +319,7 @@ and volume matching the generated name patterns:
 - the self-test probe container `ko-agent-self-test-share-` followed by that suffix alone.
 
 Those patterns are reserved: an object created by hand inside one is removed like the launcher's
-own, and a `KO_AGENT_SANDBOX_PERSISTENT_VOLUME` naming one is a refused launch.
+own, and a `--persistent-volume` naming one is a refused launch.
 
 **Accidentally exposing an over-broad workspace.** Before creating any resource, the
 launcher refuses:
@@ -611,10 +611,11 @@ Implementation, policy derivation and test evidence: `fuse/ko-agent-fs/doc/`.
   definitions, names commands to execute. `--reset` removes the workspace's default agent-state
   volume; use it if that state is suspect. Nothing signals when it is;
   `doc/plan-executable-agent-configuration.md` closes that in two phases.
-- `KO_AGENT_SANDBOX_PERSISTENT_VOLUME` lets workspaces share a named volume: state written by one
-  workspace becomes input to every other workspace using that volume. `--reset` deliberately
-  preserves this explicitly shared volume, so it does not remove credentials or suspect state stored
-  there.
+- `--persistent-volume` lets workspaces share a named volume: state written by one workspace becomes
+  input to every other workspace using that volume. Each launch with it says so, naming the options
+  file when the option came from there. `--reset` deliberately preserves this explicitly shared
+  volume, named on its command line or in the options file, so it does not remove credentials or
+  suspect state stored there.
 - A launch from a Git linked worktree may, at its prompt, share the main worktree's volume: the
   worktree's own `.git` metadata names that checkout, and the launch shows it before asking.
   State a session in either checkout writes — provider credentials, history, configuration and
@@ -623,7 +624,7 @@ Implementation, policy derivation and test evidence: `fuse/ko-agent-fs/doc/`.
   main worktree removes the shared volume and signs every worktree out; while a linked
   worktree's session still mounts it, podman refuses the removal, the reset reports that failed
   step, and the reset is run again after that session ends. A launch that holds no prompt
-  (`KO_AGENT_SANDBOX_SESSION_START=immediate`, or no terminal) mounts the worktree's own volume
+  (`--session-start=immediate`, or no terminal) mounts the worktree's own volume
   and says so.
 - Removing a stored credential does not revoke copies already held elsewhere; revocation remains the
   provider's operation.
@@ -1242,8 +1243,9 @@ profile, `InetAddress.getAllByName("example.com")` answers `nodename nor servnam
 Clipboard access is off by default because the host clipboard may contain sensitive information.
 `--clipboard=` accepts `off`, `paste` or `bidirectional`; without the option the mode is `off`, and
 any other value fails the launch. The launcher reads the mode from no variable, so a shell profile
-cannot grant the clipboard to every session unseen (doc/design.md, "Host resources are granted by
-launch options, not variables"). The enabled channel has these properties:
+cannot grant the clipboard to every process it starts; the options file may set it, and the launch
+prints it (doc/design.md, "Host resources are granted by launch options, not variables"). The
+enabled channel has these properties:
 
 - **The sandbox asks; the host answers.** The sandbox opens no connection to the host.
   - The relay — a job of the reaper on POSIX, a thread of the resident launcher on Windows —
@@ -1297,9 +1299,9 @@ with your consent, keep its prompt and decline one you did not expect.
 
 ## Microphone
 
-The host microphone is off by default. `--mic`, given on each launch that wants it, lets the
-agents' voice dictation record it (MicrophoneRelay, the image's `ko-sandbox-mic`;
-doc/microphone.md has the design). The channel has these properties:
+The host microphone is off by default. `--audio=mic`, given on the command line or in the options
+file, lets the agents' voice dictation record it, and the launch prints it (MicrophoneRelay, the
+image's `ko-sandbox-mic`; doc/microphone.md has the design). The channel has these properties:
 
 - **The sandbox asks; the host answers.** The sandbox opens no connection to the host.
   - A PulseAudio daemon inside the sandbox serves the agents; its microphone is a FIFO under
@@ -1310,8 +1312,9 @@ doc/microphone.md has the design). The channel has these properties:
   - No host listener, no port, no proxy rule, no file in the workspace.
 - **The grant is to the container, for the session.** Any process in the sandbox can open a stream
   on the daemon's microphone, as often and as long as it likes, with no per-recording consent: an
-  open stream is a process recording, which need not be the user dictating. Leave out `--mic`
-  when code in the session must not hear the room.
+  open stream is a process recording, which need not be the user dictating. Leave out
+  `--audio=mic`, or pass `--audio=off` over the options file's, when code in the session must not
+  hear the room.
 - **When the host microphone is open.** From the launch, where the relay starts the recorder and
   keeps it running, to the session's end, whether or not anything records.
   - While nothing records, the relay discards the audio as it arrives. Between a request and the
@@ -1330,8 +1333,8 @@ doc/microphone.md has the design). The channel has these properties:
   where every process already shares the agent's files and trust.
 - **What leaves the host is the agent's doing.** Claude Code streams the audio to Anthropic and agy
   to Google, under the egress rules the session already has.
-- **Without `--mic`** no daemon runs and no FIFO exists, and the image's PulseAudio clients start no
-  daemon of their own; the image has no other capture path.
+- **Without `--audio=mic`** no daemon runs and no FIFO exists, and the image's PulseAudio clients
+  start no daemon of their own; the image has no other capture path.
 
 ## Run on host
 
@@ -1649,8 +1652,8 @@ Test services can instead run as ordinary processes inside the sandbox, with the
 capabilities and egress confinement: PostgreSQL through `initdb`/`pg_ctl`, for example, or an S3
 endpoint through a JVM mock such as Adobe S3Mock.
 
-**The opt-in, and the controls it relaxes.** `KO_AGENT_SANDBOX_NESTING` accepts `none` or
-`same-uid`; unset or empty selects `none`, and any other value fails the launch. Selecting
+**The opt-in, and the controls it relaxes.** `--nesting` accepts `none` or `same-uid`; without the
+option it is `none`, and any other value fails the launch. Selecting
 `same-uid` relaxes these controls for every process in the session, including untrusted repository
 code. `NestingLoosenings` records why each change is required:
 
