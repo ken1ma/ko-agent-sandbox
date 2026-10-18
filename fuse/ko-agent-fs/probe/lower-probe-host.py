@@ -3,7 +3,7 @@
 `lower-probe.py`, running inside a sandbox session, has the procedure and prints the results; this
 side acts on the real backing filesystem when asked and reports what it observed.
 
-    python3 lower-probe-host.py        # in the project directory, beside a running lower-probe.py
+    python3 lower-probe-host.py        # in the workspace root, beside a running lower-probe.py
 
 Stdlib only, and it exits when the session half says it is done. The rename flags are the one place
 the platforms genuinely differ: Linux has `renameat2`, macOS `renamex_np`, and Windows neither — a

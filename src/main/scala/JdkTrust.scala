@@ -48,7 +48,7 @@ object JdkTrust:
   val SandboxEgressProxyCaPath = "/etc/ko-agent-sandbox/egress-proxy-ca.crt"
 
   /**
-   * The mounts that make the image's JDK trust this project's CA and reach the proxy — the
+   * The mounts that make the image's JDK trust this workspace's CA and reach the proxy — the
    * bundle's technique one layer over: take the image's own files, add this session's part, mount
    * the results back over them. The adding is `ko-sandbox-jdk-use-proxy`'s, run in a throwaway
    * container of the image as root so the image's files are writable.

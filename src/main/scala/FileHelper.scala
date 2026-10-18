@@ -145,7 +145,7 @@ object FileHelper:
    * Written beside the target and renamed onto it, never written at the target itself. Nearly
    * every file written through here feeds a container mount — as the shared source the per-run
    * copies are taken from (AgentSandboxLauncher, the locked TLS derivation), or per-run itself,
-   * like the audit log — and a launch of the same project may be copying or assembling at this
+   * like the audit log — and a launch of the same workspace may be copying or assembling at this
    * moment: a name that disappears even briefly fails that launch, and a name that exists holding
    * half a file is worse. Rename is what leaves neither state visible. The temporary has a
    * generated name, so two launches racing here cannot collide on it.

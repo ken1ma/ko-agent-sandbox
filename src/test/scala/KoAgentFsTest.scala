@@ -128,7 +128,7 @@ class KoAgentFsTest extends munit.FunSuite:
   test("the mount script has the backing path only base64-encoded, and every lifecycle step"):
     val backing = "/Users/some one's ~dir/proj; rm -rf $HOME"
     val script = koAgentFsMountScript(backing, "app-abc123def456", "d" * 64, "run-container-1", "host-view /\n")
-    // The build check runs under the project lock and right before the daemon start; the
+    // The build check runs under the workspace lock and right before the daemon start; the
     // image-build lock mountKoAgentFs holds around the whole script is what keeps a --build out.
     val check = script.indexOf(s"""*" source ${"d" * 64}") ;;""")
     assert(check > script.indexOf("flock 9"), script)
@@ -170,7 +170,7 @@ class KoAgentFsTest extends munit.FunSuite:
     // User-controlled, like the backing path: base64 only.
     assert(!script.contains("readonly .vscode"), script)
     assert(script.contains(s"printf %s $encoded | base64 -d > \"$$dir/file-rules.new\""), script)
-    // Compared under the project lock, inside the reuse branch, before the launch joins.
+    // Compared under the workspace lock, inside the reuse branch, before the launch joins.
     val compare = script.indexOf("\"$(cat \"$dir/file-rules.new\")\" != \"$(cat \"$dir/file-rules\"")
     assert(compare > script.indexOf("flock 9"), script)
     assert(compare < script.indexOf("echo \"reusing the existing mount\""), script)
@@ -300,7 +300,7 @@ class KoAgentFsTest extends munit.FunSuite:
       Set("live"),
     )
 
-  test("a reap after a reset leaves the project's filter directory gone"):
+  test("a reap after a reset leaves the workspace's filter directory gone"):
     // The reaper of a session that has just ended can run after a --reset removed the directory.
     assume(!isWindows, "the reap script runs under /bin/sh")
     val home = Files.createTempDirectory("ko-agent-fs-reap-reset")

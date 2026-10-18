@@ -1,5 +1,5 @@
 // The certificates of TLS inspection, from one builder so that every chain has one profile: the CA
-// the launcher creates for a project and the leaf it issues for the inspected hosts (the launcher
+// the launcher creates for a workspace and the leaf it issues for the inspected hosts (the launcher
 // compiles this file in; its CertificateHelper.scala calls it). The builder is the JDK's own
 // internal one — the classes keytool and CertificateFactory run — because JCA has no public
 // certificate builder and every library that has one is a dependency neither program carries:
@@ -63,7 +63,7 @@ object X509Helper:
    * A leaf naming `hosts` and nothing else, signed by `ca` with `caKey`: P-256, `serverAuth`, and
    * a fresh key of its own, so the leaf key the launcher mounts into the proxy cannot issue
    * certificates. Its lifetime is clamped to the CA's, so a
-   * ten-year project CA's last years are not a launch failure; the launcher's reissue margin
+   * ten-year workspace CA's last years are not a launch failure; the launcher's reissue margin
    * normally keeps the clamp inactive under that CA.
    */
   def issueLeaf(

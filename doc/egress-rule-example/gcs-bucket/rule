@@ -1,4 +1,4 @@
-# Read one of the project's own Cloud Storage buckets. storage.googleapis.com serves every
+# Read one of your own Cloud Storage buckets. storage.googleapis.com serves every
 # tenant's bucket under its own first path segment,
 # so allowing the host whole allows every public bucket on it; the tree keeps the reach to this
 # one. Reads only, and a request outside the tree — or spelled outside a rule path's canonical

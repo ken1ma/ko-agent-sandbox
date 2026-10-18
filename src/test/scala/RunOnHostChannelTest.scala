@@ -117,34 +117,34 @@ class RunOnHostChannelTest extends munit.FunSuite:
   // The boundary
   // ---------------------------------------------------------------------------
 
-  /** The project mounted at its own path, as a launch has it. */
-  private def service(project: Path, deadline: Long = 30_000): Service =
+  /** The workspace root mounted at its own path, as a launch has it. */
+  private def service(workspace: Path, deadline: Long = 30_000): Service =
     Service(
-      project, Set("sbt"), (_, _, _, _) => Seq("true"),
+      workspace, Set("sbt"), (_, _, _, _) => Seq("true"),
       buildLock = (_, _) => Right(Path.of("/unused")),
       runtime = (_, _, _) => Right(Seq.empty),
-      mount = project.toString, requestDeadlineMillis = deadline,
+      mount = workspace.toString, requestDeadlineMillis = deadline,
     )
 
-  test("the working directory is translated, and checked to resolve inside the project"):
-    val project = Files.createTempDirectory("channel-project").toRealPath()
-    val sub = Files.createDirectory(project.resolve("sub"))
+  test("the working directory is translated, and checked to resolve inside the workspace root"):
+    val workspace = Files.createTempDirectory("channel-workspace").toRealPath()
+    val sub = Files.createDirectory(workspace.resolve("sub"))
     val outside = Files.createTempDirectory("channel-outside").toRealPath()
-    val svc = service(project)
-    assertEquals(validated(svc, Request("sbt", project.toString, Vector.empty)), Right(project))
-    assertEquals(validated(svc, Request("sbt", s"$project/sub", Vector.empty)), Right(sub))
+    val svc = service(workspace)
+    assertEquals(validated(svc, Request("sbt", workspace.toString, Vector.empty)), Right(workspace))
+    assertEquals(validated(svc, Request("sbt", s"$workspace/sub", Vector.empty)), Right(sub))
     def refused(workingDirectory: String): Unit =
       val answer = validated(svc, Request("sbt", workingDirectory, Vector.empty))
       assert(answer.left.exists(_.startsWith("CHANNEL_UNAVAILABLE")), s"$workingDirectory: $answer")
     refused(outside.toString) // an unrelated host path
-    refused(s"$project/../escape") // climbing out
-    refused(s"$project/absent") // nothing to canonicalize
-    Files.createSymbolicLink(project.resolve("link"), outside)
-    refused(s"$project/link") // a symlink leaving the project
+    refused(s"$workspace/../escape") // climbing out
+    refused(s"$workspace/absent") // nothing to canonicalize
+    Files.createSymbolicLink(workspace.resolve("link"), outside)
+    refused(s"$workspace/link") // a symlink leaving the workspace
 
   test("a program the launch did not name is refused, not run"):
-    val project = Files.createTempDirectory("channel-project").toRealPath()
-    val answer = validated(service(project), Request("mill", project.toString, Vector.empty))
+    val workspace = Files.createTempDirectory("channel-workspace").toRealPath()
+    val answer = validated(service(workspace), Request("mill", workspace.toString, Vector.empty))
     assert(answer.left.exists(_.contains("does not name mill")), answer.toString)
 
   // ---------------------------------------------------------------------------
@@ -162,9 +162,9 @@ class RunOnHostChannelTest extends munit.FunSuite:
 
   /**
    * The runner served like production — same exec argument pattern, `podman` a script running the
-   * exec locally — with the shim's mount spelled as the project itself, so the shim's own $PWD is
-   * a request every host can make. The supervisor command is the test's, under the real lock
-   * holder, since dispatch speaks its protocol; `runtime` is what the runner's word carries.
+   * exec locally — with the shim's mount spelled as the workspace root itself, so the shim's own
+   * $PWD is a request every host can make. The supervisor command is the test's, under the real
+   * lock holder, since dispatch speaks its protocol; `runtime` is what the runner's word carries.
    */
   private def channel(
     supervisorCommand: (String, Path, Seq[String]) => Seq[String],
@@ -175,7 +175,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
     assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
     val dir = Files.createTempDirectory("channel")
     val host = Files.createDirectory(dir.resolve("host"))
-    val project = Files.createDirectory(dir.resolve("project")).toRealPath()
+    val workspace = Files.createDirectory(dir.resolve("workspace")).toRealPath()
     val lockFile = host.resolve("build-lock")
     // On the host `podman exec` returns tens of milliseconds after the container-side process
     // ends (measured in a session's channel log). The exit writer's lateness is the one the
@@ -205,7 +205,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
     val runner = Thread(() =>
       serve(
         transport,
-        service(project, deadline = deadline).copy(
+        service(workspace, deadline = deadline).copy(
           buildLock = (_, _) => Right(lockFile),
           supervisorCommand = (program, directory, _, arguments) =>
             RunOnHostSession.lockedSpawn(
@@ -221,7 +221,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
     while !Files.exists(FifoDir.resolve("req")) && waited < 100 do
       Thread.sleep(100)
       waited += 1
-    try check(project, host, () => log.synchronized(log.toString))
+    try check(workspace, host, () => log.synchronized(log.toString))
     finally
       running.set(false)
       // A handshake that is no transaction id ends the cycle empty and, with running now false,
@@ -249,10 +249,10 @@ class RunOnHostChannelTest extends munit.FunSuite:
       (program, cwd, args) =>
         Seq("sh", "-c", s"echo ran $program ${args.mkString(" ")} in $cwd; echo complaint >&2; exit 7"),
       ended = endedPrograms.add(_),
-    ): (project, _, runnerLog) =>
-      val (exit, out, err) = shimCall(project, "sbt", "test", "-v")
+    ): (workspace, _, runnerLog) =>
+      val (exit, out, err) = shimCall(workspace, "sbt", "test", "-v")
       assertEquals(exit, 7)
-      assertEquals(out, s"ran sbt test -v in $project\n")
+      assertEquals(out, s"ran sbt test -v in $workspace\n")
       assertEquals(err, "complaint\n")
       // The service hears of the command's end with its program, once the child is gone.
       assertEquals(endedPrograms.asScala.toList, List("sbt"))
@@ -270,11 +270,11 @@ class RunOnHostChannelTest extends munit.FunSuite:
   test("small stdout and stderr writes arrive before the command can finish"):
     channel((_, cwd, _) =>
       Seq("sh", "-c", s"printf ready; printf 'waiting\\n' >&2; while [ ! -f '$cwd/release' ]; do sleep 0.1; done"),
-    ): (project, host, _) =>
+    ): (workspace, host, _) =>
       val out = host.resolve("stdout")
       val err = host.resolve("stderr")
       val process = ProcessBuilder(Shim.toString, "sbt")
-        .directory(project.toFile)
+        .directory(workspace.toFile)
         .redirectOutput(out.toFile)
         .redirectError(err.toFile)
         .start()
@@ -288,7 +288,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
         assertEquals(Files.readString(out), "ready")
         assertEquals(Files.readString(err), "waiting\n")
       finally
-        Files.writeString(project.resolve("release"), "")
+        Files.writeString(workspace.resolve("release"), "")
         if !process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS) then process.destroyForcibly()
 
   test("the banner the injected _JAVA_OPTIONS causes is dropped, and nothing else is"):
@@ -299,8 +299,8 @@ class RunOnHostChannelTest extends munit.FunSuite:
         s"echo '$banner' >&2; echo complaint >&2; echo 'Picked up JAVA_TOOL_OPTIONS: -Dx=1' >&2; " +
           s"echo '[warn] $banner' >&2; echo '$banner'",
       ),
-    ): (project, _, _) =>
-      val (exit, out, err) = shimCall(project, "sbt")
+    ): (workspace, _, _) =>
+      val (exit, out, err) = shimCall(workspace, "sbt")
       assertEquals(exit, 0)
       // Only what the supervisor's own injection causes is hidden: another VM-options variable is the
       // host environment's to explain, a line that merely quotes the banner is the command's, and
@@ -309,13 +309,13 @@ class RunOnHostChannelTest extends munit.FunSuite:
       assertEquals(out, s"$banner\n")
 
   test("a refused request answers on stderr with exit 2, and the channel keeps serving"):
-    channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd")): (project, _, _) =>
-      val (exit, _, err) = shimCall(project, "mill", "build")
+    channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd")): (workspace, _, _) =>
+      val (exit, _, err) = shimCall(workspace, "mill", "build")
       assertEquals(exit, 2)
       assert(err.contains("CHANNEL_UNAVAILABLE"), err)
-      val (again, out, _) = shimCall(project, "sbt")
+      val (again, out, _) = shimCall(workspace, "sbt")
       assertEquals(again, 0)
-      assertEquals(out, s"built in $project\n")
+      assertEquals(out, s"built in $workspace\n")
 
   test("an end asked for during preparation waits for the word, so the build lock is held throughout"):
     // The runtime's preparation, slow enough to be interrupted: it records whether the build
@@ -327,7 +327,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
       val held = ProcessBuilder("flock", "-n", lockFile.toString, "true").start().waitFor() != 0
       Files.writeString(buildDirectory.resolve(if held then "held" else "free"), "")
       Right(Seq.empty)
-    channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd"), runtime = runtime): (project, host, runnerLog) =>
+    channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd"), runtime = runtime): (workspace, host, runnerLog) =>
       def await(what: String)(condition: => Boolean): Unit =
         var waited = 0
         while !condition && waited < 100 do
@@ -337,26 +337,26 @@ class RunOnHostChannelTest extends munit.FunSuite:
       def lockFree = ProcessBuilder("flock", "-n", host.resolve("build-lock").toString, "true").start().waitFor() == 0
       // The requester leaves mid-preparation.
       val shim = ProcessBuilder(Shim.toString, "sbt", "test")
-        .directory(project.toFile)
+        .directory(workspace.toFile)
         .redirectOutput(ProcessBuilder.Redirect.DISCARD)
         .redirectError(ProcessBuilder.Redirect.DISCARD)
         .start()
-      await("preparation started")(Files.exists(project.resolve("preparing")))
+      await("preparation started")(Files.exists(workspace.resolve("preparing")))
       shim.destroyForcibly()
-      await("preparation finished")(Files.exists(project.resolve("held")) || Files.exists(project.resolve("free")))
-      assert(Files.exists(project.resolve("held")), "the lock was freed while the runtime was prepared")
+      await("preparation finished")(Files.exists(workspace.resolve("held")) || Files.exists(workspace.resolve("free")))
+      assert(Files.exists(workspace.resolve("held")), "the lock was freed while the runtime was prepared")
       await("the transaction ended")(runnerLog().contains("for a requester already gone"))
       assert(lockFree, "the lock is freed once the word is out")
       assert(!runnerLog().contains("exit 0"), "the supervisor never ran: the word was the refusal")
       // The runner's own end mid-preparation, as its TERM hook asks for it: it returns after
       // the preparation, and the requester gets the refusal.
-      Files.delete(project.resolve("preparing"))
-      Files.delete(project.resolve("held"))
-      val second = ProcessBuilder(Shim.toString, "sbt", "test").directory(project.toFile).start()
+      Files.delete(workspace.resolve("preparing"))
+      Files.delete(workspace.resolve("held"))
+      val second = ProcessBuilder(Shim.toString, "sbt", "test").directory(workspace.toFile).start()
       second.getOutputStream.close()
-      await("preparation started again")(Files.exists(project.resolve("preparing")))
+      await("preparation started again")(Files.exists(workspace.resolve("preparing")))
       endCurrentCommand()
-      assert(Files.exists(project.resolve("held")), "the end returned before the preparation finished")
+      assert(Files.exists(workspace.resolve("held")), "the end returned before the preparation finished")
       val err = String(second.getErrorStream.readAllBytes(), UTF_8)
       assertEquals(second.waitFor(), 2)
       assertEquals(err, "refused: the command was ended before it started\n")
@@ -372,18 +372,18 @@ class RunOnHostChannelTest extends munit.FunSuite:
           case "sub"    => Left("no runtime for sub")
           case "broken" => throw java.nio.charset.MalformedInputException(1)
           case _        => Right(Seq("--proxy-port=1")),
-    ): (project, host, runnerLog) =>
-      val (exit, out, _) = shimCall(project, "sbt", "compile")
+    ): (workspace, host, runnerLog) =>
+      val (exit, out, _) = shimCall(workspace, "sbt", "compile")
       assertEquals(exit, 0)
       assertEquals(out, "--proxy-port=1\n--\ncompile\n")
-      assertEquals(prepared.get, ("sbt", project, Seq("compile")))
-      val sub = Files.createDirectory(project.resolve("sub"))
+      assertEquals(prepared.get, ("sbt", workspace, Seq("compile")))
+      val sub = Files.createDirectory(workspace.resolve("sub"))
       val (refused, _, err) = shimCall(sub, "sbt", "compile")
       assertEquals(refused, 2)
       assertEquals(err, "refused: no runtime for sub\n")
       assert(runnerLog().contains("refused: no runtime for sub"), runnerLog())
       // An exception is answered the same way, and the child ends with the lock released.
-      val broken = Files.createDirectory(project.resolve("broken"))
+      val broken = Files.createDirectory(workspace.resolve("broken"))
       val (thrown, _, thrownErr) = shimCall(broken, "sbt", "compile")
       assertEquals(thrown, 2)
       assertEquals(thrownErr, "refused: preparing the runtime: MalformedInputException: Input length = 1\n")
@@ -398,66 +398,66 @@ class RunOnHostChannelTest extends munit.FunSuite:
         s"echo started > $cwd/started; trap 'echo 143 > $cwd/ended; exit 143' TERM; " +
           "while :; do sleep 0.1; done",
       ),
-    ): (project, _, _) =>
+    ): (workspace, _, _) =>
       val shim = ProcessBuilder(Shim.toString, "sbt", "test")
-        .directory(project.toFile)
+        .directory(workspace.toFile)
         .redirectOutput(ProcessBuilder.Redirect.DISCARD)
         .redirectError(ProcessBuilder.Redirect.DISCARD)
         .start()
       var waited = 0
-      while !Files.exists(project.resolve("started")) && waited < 100 do
+      while !Files.exists(workspace.resolve("started")) && waited < 100 do
         Thread.sleep(100)
         waited += 1
-      assert(Files.exists(project.resolve("started")), "the command never started")
+      assert(Files.exists(workspace.resolve("started")), "the command never started")
       shim.destroyForcibly()
       waited = 0
-      while !Files.exists(project.resolve("ended")) && waited < 100 do
+      while !Files.exists(workspace.resolve("ended")) && waited < 100 do
         Thread.sleep(100)
         waited += 1
-      assert(Files.exists(project.resolve("ended")), "the shim died and the command kept running")
+      assert(Files.exists(workspace.resolve("ended")), "the shim died and the command kept running")
 
   test("a request the runner cannot frame is answered, not left hanging"):
-    channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd")): (project, _, _) =>
+    channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd")): (workspace, _, _) =>
       // Over the argument bound — reachable with a legitimate shim, since ARG_MAX allows it —
       // and past the FIFO-plus-pipe capacity, so without the drain the shim would still be
       // blocked writing, never reaching the streams the refusal answers on.
-      val (exit, _, err) = shimCall(project, ("sbt" +: Seq.fill(MaxArguments + 1)("x" * 100))*)
+      val (exit, _, err) = shimCall(workspace, ("sbt" +: Seq.fill(MaxArguments + 1)("x" * 100))*)
       assertEquals(exit, 2)
       assert(err.contains("could not be read"), err)
-      val (again, out, _) = shimCall(project, "sbt")
+      val (again, out, _) = shimCall(workspace, "sbt")
       assertEquals(again, 0)
-      assertEquals(out, s"built in $project\n")
+      assertEquals(out, s"built in $workspace\n")
 
   test("a refusal to a requester whose FIFOs are gone leaves no regular files behind"):
-    channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd")): (project, _, runnerLog) =>
+    channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd")): (workspace, _, runnerLog) =>
       // A request ending mid-frame, from a requester that then removed its output FIFOs, as a
       // shim killed mid-request does; the refusal's writers must not create them as files.
       ProcessBuilder("sh", "-c",
         s"mkfifo -m 600 $FifoDir/ctl.4300; echo 4300 > $FifoDir/req; printf 'sbt 1\\n' > $FifoDir/ctl.4300",
       ).start().waitFor()
       // Cycles are serial: the next request served means the refusal is over, writers included.
-      val (exit, out, _) = shimCall(project, "sbt")
+      val (exit, out, _) = shimCall(workspace, "sbt")
       assertEquals(exit, 0)
-      assertEquals(out, s"built in $project\n")
+      assertEquals(out, s"built in $workspace\n")
       assert(runnerLog().contains("ended inside a request"), runnerLog())
       val left = FileHelper.directoryEntries(FifoDir).map(_.getFileName.toString).filter(_.endsWith(".4300")).toSet
       assertEquals(left, Set("ctl.4300"))
       Files.delete(FifoDir.resolve("ctl.4300"))
 
   test("a handshake queued behind a dying predecessor's is consumed, never discarded"):
-    channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd")): (project, _, runnerLog) =>
+    channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd")): (workspace, _, runnerLog) =>
       // Both ids through one writer connection — the same cat — as when a shim dies right after
       // its handshake and the next one connects before that reader sees EOF.
       ProcessBuilder("sh", "-c", s"printf '9998\\n9999\\n' > $FifoDir/req").start().waitFor()
-      val (exit, out, _) = shimCall(project, "sbt")
+      val (exit, out, _) = shimCall(workspace, "sbt")
       assertEquals(exit, 0)
-      assertEquals(out, s"built in $project\n")
+      assertEquals(out, s"built in $workspace\n")
       val logged = runnerLog()
       assert(logged.contains("9998"), logged)
       assert(logged.contains("9999"), logged)
 
   test("a transaction whose requester died without a request expires: no command, and the channel keeps serving"):
-    channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd"), deadline = 1500): (project, _, _) =>
+    channel((_, cwd, _) => Seq("sh", "-c", s"echo built in $cwd"), deadline = 1500): (workspace, _, _) =>
       // A handshake whose ctl exists but is never opened — the shim died between its two steps —
       // and one whose ctl never existed at all. Neither may start a command or leave the runner blocked on a FIFO.
       ProcessBuilder("sh", "-c", s"mkfifo -m 600 $FifoDir/ctl.4242; echo 4242 > $FifoDir/req")
@@ -465,9 +465,9 @@ class RunOnHostChannelTest extends munit.FunSuite:
       ProcessBuilder("sh", "-c", s"echo 4243 > $FifoDir/req").start().waitFor()
       // Serving the next transaction proves both incomplete transactions expired; cycles are serial,
       // so a transaction still blocked on its FIFO would prevent it.
-      val (exit, out, _) = shimCall(project, "sbt")
+      val (exit, out, _) = shimCall(workspace, "sbt")
       assertEquals(exit, 0)
-      assertEquals(out, s"built in $project\n")
+      assertEquals(out, s"built in $workspace\n")
 
   test("a competing shim waits its turn, and is served after the first one's death"):
     channel((_, cwd, args) =>
@@ -477,32 +477,32 @@ class RunOnHostChannelTest extends munit.FunSuite:
           "sh", "-c",
           s"echo started > $cwd/started; trap 'exit 143' TERM; while :; do sleep 0.1; done",
         ),
-    ): (project, _, _) =>
+    ): (workspace, _, _) =>
       val first = ProcessBuilder(Shim.toString, "sbt", "slow")
-        .directory(project.toFile)
+        .directory(workspace.toFile)
         .redirectOutput(ProcessBuilder.Redirect.DISCARD)
         .redirectError(ProcessBuilder.Redirect.DISCARD)
         .start()
       var waited = 0
-      while !Files.exists(project.resolve("started")) && waited < 100 do
+      while !Files.exists(workspace.resolve("started")) && waited < 100 do
         Thread.sleep(100)
         waited += 1
-      assert(Files.exists(project.resolve("started")), "the first command never started")
-      val second = ProcessBuilder(Shim.toString, "sbt", "quick").directory(project.toFile).start()
+      assert(Files.exists(workspace.resolve("started")), "the first command never started")
+      val second = ProcessBuilder(Shim.toString, "sbt", "quick").directory(workspace.toFile).start()
       second.getOutputStream.close()
       Thread.sleep(500)
       assert(second.isAlive, "the second shim did not wait for the first")
       first.destroyForcibly()
       val out = String(second.getInputStream.readAllBytes(), UTF_8)
       assertEquals(second.waitFor(), 0)
-      assertEquals(out, s"done in $project\n")
+      assertEquals(out, s"done in $workspace\n")
 
   test("output arrives whole, however large"):
     val payload = 1 << 20
     channel((_, _, _) =>
       Seq("sh", "-c", s"i=0; while [ $$i -lt ${payload / 1024} ]; do printf '%01024d' $$i; i=$$((i+1)); done"),
-    ): (project, _, _) =>
-      val (exit, out, _) = shimCall(project, "sbt")
+    ): (workspace, _, _) =>
+      val (exit, out, _) = shimCall(workspace, "sbt")
       assertEquals(exit, 0)
       assertEquals(out.length, payload)
 
@@ -513,7 +513,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
         "sh", "-c",
         s"i=0; while [ $$i -lt ${payload / 1024} ]; do printf '%01024d' $$i; i=$$((i+1)); done; exit 5",
       ),
-    ): (project, host, _) =>
+    ): (workspace, host, _) =>
       // A hand-rolled requester that opens its readers only after fifteen seconds — past the
       // ten-second writer bound a truncating implementation had — with output past the pipes'
       // capacity, so the runner's pumps are genuinely blocked while it sleeps.
@@ -528,7 +528,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
            |mkfifo -m 600 "$$d/ctl.$$id" "$$d/out.$$id" "$$d/err.$$id" "$$d/exit.$$id"
            |printf '%s\\n' "$$id" > "$$d/req"
            |exec 8> "$$d/ctl.$$id"
-           |{ printf 'sbt 0\\n'; printf '%s\\0' "$project"; } >&8
+           |{ printf 'sbt 0\\n'; printf '%s\\0' "$workspace"; } >&8
            |sleep 15
            |cat "$$d/out.$$id" > "$host/slow.out" 8>&-
            |cat "$$d/err.$$id" > /dev/null 8>&-
@@ -545,11 +545,11 @@ class RunOnHostChannelTest extends munit.FunSuite:
     assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
     deleteRecursively(FifoDir)
     Files.createDirectories(FifoDir)
-    val project = Files.createTempDirectory("channel-gone")
+    val workspace = Files.createTempDirectory("channel-gone")
     def unanswered(standIn: Option[String]): Unit =
       ProcessBuilder("sh", "-c", s"rm -f $FifoDir/req; mkfifo -m 600 $FifoDir/req").start().waitFor()
       val runner = standIn.map(script => ProcessBuilder("sh", "-c", script).start())
-      val (exit, _, err) = shimCall(project, "sbt", "test")
+      val (exit, _, err) = shimCall(workspace, "sbt", "test")
       assertEquals(exit, 70, err)
       assert(err.contains("did not answer"), err)
       // The stand-in ends with the shim: its ctl closed, so nothing of the transaction is held.
@@ -567,14 +567,14 @@ class RunOnHostChannelTest extends munit.FunSuite:
     deleteRecursively(FifoDir)
     Files.createDirectories(FifoDir)
     ProcessBuilder("sh", "-c", s"rm -f $FifoDir/req; mkfifo -m 600 $FifoDir/req").start().waitFor()
-    val project = Files.createTempDirectory("channel-marker")
+    val workspace = Files.createTempDirectory("channel-marker")
     // The watchdog's marker arriving between the request and the streams' opening, with no TERM
     // behind it: the state a watchdog ended between its two steps leaves.
     val standIn = ProcessBuilder("sh", "-c",
       s"id=$$(head -n 1 $FifoDir/req); exec 6< $FifoDir/ctl.$$id; : > $FifoDir/unanswered.$$id;" +
         s" echo answered > $FifoDir/out.$$id; : > $FifoDir/err.$$id; echo 5 > $FifoDir/exit.$$id",
     ).start()
-    val (exit, out, err) = shimCall(project, "sbt", "test")
+    val (exit, out, err) = shimCall(workspace, "sbt", "test")
     assertEquals(exit, 5, err)
     assertEquals(out, "answered\n")
     assert(standIn.waitFor(5, java.util.concurrent.TimeUnit.SECONDS), "the stand-in outlived the shim")
@@ -639,8 +639,8 @@ class RunOnHostChannelTest extends munit.FunSuite:
 
   test("opening the streams disarms the startup deadline for a longer running command"):
     channel((_, _, _) => Seq("sh", "-c", s"sleep ${ShimBound + 1}; echo completed; exit 7")):
-      (project, _, _) =>
-        val (exit, out, _) = shimCall(project, "sbt", "test")
+      (workspace, _, _) =>
+        val (exit, out, _) = shimCall(workspace, "sbt", "test")
         assertEquals(exit, 7)
         assertEquals(out, "completed\n")
         val entries = FileHelper.directoryEntries(FifoDir).map(_.getFileName.toString).toSet
@@ -649,9 +649,9 @@ class RunOnHostChannelTest extends munit.FunSuite:
   test("without a runner the shim fails at once, naming the launch option"):
     assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
     deleteRecursively(FifoDir)
-    val project = Files.createTempDirectory("channel-none")
-    val (exit, _, err) = shimCall(project, "sbt", "test")
+    val workspace = Files.createTempDirectory("channel-none")
+    val (exit, _, err) = shimCall(workspace, "sbt", "test")
     assertEquals(exit, 1)
     assert(err.contains("--run-on-host"), err)
     // An unknown program is a usage error before the channel is consulted.
-    assertEquals(shimCall(project, "ant", "build")._1, 64)
+    assertEquals(shimCall(workspace, "ant", "build")._1, 64)

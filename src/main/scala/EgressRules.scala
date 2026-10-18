@@ -1,4 +1,4 @@
-// The egress proxy as the launcher deals with it: reading this project's rules, asking the proxy
+// The egress proxy as the launcher deals with it: reading this workspace's rules, asking the proxy
 // image what they resolve to, keeping the audit log, and the actions that report on them
 // (--egress-log, --egress-effective, --egress-check). A session's proxy *container* is not
 // started here — it is a dozen flags in AgentSandboxLauncher.prepareRunFiles, and moving it would
@@ -18,7 +18,7 @@ import AgentSandboxLauncher.*
 import HostCommands.*
 import FileHelper.*
 import LauncherState.*
-import SandboxProject.*
+import SandboxWorkspace.*
 
 object EgressRules:
 
@@ -53,11 +53,11 @@ object EgressRules:
       line.drop(line.indexOf("):") + 2).trim.split("; ").toVector.filter(_.nonEmpty)
 
   /** The lines the proxy prints after the ruleset lines, describing the ruleset's size and the
-    * project's file rather than the ruleset: the summary line, then the widening line. Everything
+    * workspace's file rather than the ruleset: the summary line, then the widening line. Everything
     * from the first of them on is metadata (RulesetHelper.metadataLines). */
   val MetadataPrefixes: Vector[String] = Vector(RulesetHelper.SummaryLineHead, RulesetHelper.WideningLineHead)
 
-  /** Exclude metadata about the project file from the resolved rules exported in
+  /** Exclude metadata about the workspace's file from the resolved rules exported in
     * `KO_AGENT_SANDBOX_EGRESS_RULESET` and used to select the inspection certificate's hosts. */
   def rulesetLinesOf(resolved: String): String =
     resolved.linesIterator.takeWhile(line => !MetadataPrefixes.exists(line.startsWith)).mkString("\n")
@@ -101,14 +101,14 @@ object EgressRules:
     parsed.getOrElse(s"egress: ${lines.headOption.getOrElse("(empty resolution)")}")
 
   /**
-   * Which of the project log directory's entries `names` to delete: every run directory
+   * Which of `names`, the entries of the workspace's log directory, to delete: every run directory
    * (runLogDir) but the newest retain-1, so `retain` remain with the new run's. A run directory's
    * name sorts chronologically by its UTC stamp.
    *
    * A live run's directory is never pruned, however old: its proxy, runner and relay are appending
    * to its files, and unlinking them would leave the session writing where nothing can read, losing
    * the whole record at exit — which is what a retention rule counting sessions rather than
-   * liveness does to a project running more than `retain` of them at once. More than `retain`
+   * liveness does to a workspace running more than `retain` of them at once. More than `retain`
    * directories can remain while their runs are live.
    *
    * Also the flat files of the layout before run directories, unless their run is live. That branch
@@ -128,10 +128,10 @@ object EgressRules:
 
   /**
    * Present egress rule files as (name, normalized text), under the refusals
-   * SandboxProject.readBoundaryRuleFiles lists.
+   * SandboxWorkspace.readBoundaryRuleFiles lists.
    */
   def readRuleFiles(egressDir: Path): Either[String, Vector[(String, String)]] =
-    SandboxProject.readBoundaryRuleFiles(egressDir, RuleFiles.map(_(0)), "doc/egress-proxy.md", normalizeRuleText)
+    SandboxWorkspace.readBoundaryRuleFiles(egressDir, RuleFiles.map(_(0)), "doc/egress-proxy.md", normalizeRuleText)
 
   /**
    * Only the basename of the directly launched command is classified; the launcher does not inspect
@@ -189,7 +189,7 @@ object EgressRules:
       val subject = command.fold("no command is given")(name => s"'$name' is not a recognized agent command")
       val effect =
         if profile == "deny-unless-model" then "allows no host"
-        else "starts from the catalog alone; the project's rule file applies after it"
+        else "starts from the catalog alone; the workspace's rule file applies after it"
       s"$subject and no ${CommandLine.ModelProviderOption} is given, so $profile selects no model provider and $effect"
 
   /** The launch's failure when the dry run refuses: the proxy names the variable it refused, and
@@ -197,13 +197,13 @@ object EgressRules:
   def rulesetRefusal(err: String): String =
     val subject =
       if err.contains(RulesetHelper.ModelProviderVariable) then s"${CommandLine.ModelProviderOption} is not valid"
-      else "this project's egress rules are not valid"
+      else "this workspace's egress rules are not valid"
     s"error: $subject\n$err"
 
   /**
    * A --print-ruleset dry run of the proxy image (--rm, --network=none,
    * nothing mounted): the ruleset, or the reason it is invalid. The
-   * proxy combines its defaults, the profile and the project's rules; both
+   * proxy combines its defaults, the profile and the workspace's rules; both
    * --egress-effective and every launch use this one dry run's result — for
    * the banner and for the leaf certificate's names alike. `provenance`
    * additionally reports every line's sources (--egress-effective's view).
@@ -253,7 +253,7 @@ object EgressRules:
       val variable = RuleFiles.find(_(0) == name).fold(fail(s"error: no rule file $name"))(_(1))
       s"--env=$variable=$text"
 
-  /** The project log directory's run directories (runLogDir), oldest first. */
+  /** The run directories (runLogDir) in the workspace's log directory, oldest first. */
   def runLogDirs(logDir: Path): Vector[Path] =
     if !Files.isDirectory(logDir) then Vector.empty
     else
@@ -262,7 +262,7 @@ object EgressRules:
         .sortBy(_.getFileName.toString)
 
   /** A run directory's proxy audit logs: the container proxy's `proxy.log` first, then the host
-    * proxies' (RunOnHostProxy.projectAuditLog) in name order. */
+    * proxies' (RunOnHostProxy.workspaceAuditLog) in name order. */
   def proxyLogsOf(runLogs: Path): Vector[Path] =
     val (container, host) = directoryEntries(runLogs)
       .filter(path => path.getFileName.toString.matches("proxy.*\\.log"))
@@ -278,7 +278,7 @@ object EgressRules:
    * one line per resolved scope, a `tunnel` line never among them — the host is the URL's part
    * between the scheme and its first `/`, and a host under several scopes is one name. This is
    * how the launcher learns which names the leaf certificate must list — the proxy image's own
-   * answer under this project's rules, so no second copy of any list exists to drift, and a proxy
+   * answer under this workspace's rules, so no second copy of any list exists to drift, and a proxy
    * image or rules of the user's choosing get a matching leaf too. Empty means the ruleset
    * inspects nothing; the launcher then issues no leaf and hands the proxy no inspection material.
    * A resolution without its profile line is another launcher version's format, refused.
@@ -310,14 +310,14 @@ object EgressRules:
    * the running proxies, the live view of the same lines.
    */
   def egressLog(os: Os, extra: List[String]): Nothing =
-    val projectDir = resolveProjectDir(os)
-    requireStateRootOutside(os, projectDir)
-    val id = projectIdOf(projectDir, os)
+    val workspaceRoot = resolveWorkspaceRoot(os)
+    requireStateRootOutside(os, workspaceRoot)
+    val id = workspaceIdOf(workspaceRoot, os)
     val logDir = logStateRoot(os).resolve(id)
 
     if extra.isEmpty then
       val files = retainedProxyLogs(logDir)
-      if files.isEmpty then fail("no proxy logs for this project\n" + pathLine("egress log dir", logDir, os))
+      if files.isEmpty then fail("no proxy logs for this workspace\n" + pathLine("egress log dir", logDir, os))
       files.foreach: file =>
         System.err.println(pathLine("==>", file, os, separator = " "))
         Files.copy(file, System.out)
@@ -334,7 +334,7 @@ object EgressRules:
         .toList
       if proxies.isEmpty then
         fail(
-          s"""no running egress proxy for this project; each run's proxy is
+          s"""no running egress proxy for this workspace; each run's proxy is
              |removed when its sandbox exits. Its retained logs are files:
              |run --egress-log without arguments, or read files under:
              |${pathLine("egress log dir", logDir, os)}""".stripMargin,
@@ -342,7 +342,7 @@ object EgressRules:
       val command = List(podman, "logs") ++ extra ++ proxies
       sys.exit(if stepOk(command*) then 0 else 1)
 
-  /** The shared front half of the egress preflights: this project's vetted rule files,
+  /** The shared front half of the egress preflights: this workspace's vetted rule files,
     * the provider the given command selects, and the Id of the proxy image to consult, under the
     * same version lock as a launch (proxyImageLock) — with the command-selection notes a launch
     * would print. `operands` is the action's optional `[--] [command [arguments...]]`, accepted
@@ -356,9 +356,9 @@ object EgressRules:
     val command = operands match
       case "--" :: rest => rest
       case rest         => rest
-    val projectDir = resolveProjectDir(os)
-    requireStateRootOutside(os, projectDir)
-    val projectId = projectIdOf(projectDir, os)
+    val workspaceRoot = resolveWorkspaceRoot(os)
+    requireStateRootOutside(os, workspaceRoot)
+    val workspaceId = workspaceIdOf(workspaceRoot, os)
     val (proxyImage, proxyImageOverridden) = proxyImageChoice
 
     val proxyInspected = inspectProxyImage(proxyImage)
@@ -370,7 +370,7 @@ object EgressRules:
       )
     val proxyImageId = versionLockedProxyImageId(proxyImage, proxyImageOverridden, proxyInspected.text)
 
-    val boundaryDir = boundaryDirOf(projectDir)
+    val boundaryDir = boundaryDirOf(workspaceRoot)
     boundaryDirRefusal(boundaryDir).foreach(fail(_))
     val ruleFiles = readRuleFiles(boundaryDir.resolve("egress")).fold(fail(_), identity)
 
@@ -379,19 +379,19 @@ object EgressRules:
       noProviderLine(command.headOption, profile).foreach(line => System.err.println(s"egress: $line"))
 
     if ruleFiles.nonEmpty then printRuleFiles(ruleFiles)
-    else System.err.println("egress rules: no project rule file; the launcher-owned defaults")
+    else System.err.println("egress rules: no workspace rule file; the launcher-owned defaults")
 
-    (projectId, proxyImageId, ruleFiles, provider)
+    (workspaceId, proxyImageId, ruleFiles, provider)
 
   private def ruleFileSource(name: String): String = s"egress rules (.ko-agent-sandbox/egress/$name)"
 
-  /** The project's rule file as written, one line. Printed by the egress actions, which report no
+  /** The workspace's rule file as written, one line. Printed by the egress actions, which report no
     * widening on stderr; a launch prints launchLines. */
   def printRuleFiles(ruleFiles: Vector[(String, String)]): Unit =
     ruleFiles.foreach: (name, text) =>
       System.err.println(s"${ruleFileSource(name)}: ${lineSummary(text)}")
 
-  /** A launch's lines about the project's rule file, once the dry run has answered: the lines it
+  /** A launch's lines about the workspace's rule file, once the dry run has answered: the lines it
     * reports as granting beyond the defaults (wideningLines) tinted as a weakened boundary, the
     * file's other lines after them (HostCommands.ruleFileReport). The proxy reads one rule file
     * (RuleFiles), so every widening line is that file's. */
@@ -405,7 +405,7 @@ object EgressRules:
       ruleFileReport(ruleFileSource(name), text.linesIterator.toVector, widens, color)
 
   /**
-   * The ruleset this project would apply, without a session: the same readRuleFiles +
+   * The ruleset this workspace would apply, without a session: the same readRuleFiles +
    * resolvedRuleset a launch uses, under the accompanying --egress=<profile>, plus per-line
    * provenance. Data to stdout, context to stderr, so the effective lists pipe cleanly.
    */
@@ -416,7 +416,7 @@ object EgressRules:
     operands: List[String],
     bindings: Vector[CredentialBinding] = Vector.empty,
   ): Nothing =
-    val (projectId, proxyImageId, ruleFiles, provider) = egressPreflight(os, profile, modelProvider, operands)
+    val (workspaceId, proxyImageId, ruleFiles, provider) = egressPreflight(os, profile, modelProvider, operands)
 
     val resolved = resolvedRuleset(podman, proxyImageId, profile, provider, ruleFiles, provenance = true)
     System.out.write(resolved.out)
@@ -427,9 +427,9 @@ object EgressRules:
     EgressCredentials.effectiveLines(bindings, inspected, tunnelHostsOf(resolved.text).toSet).foreach(println)
     resolved.err.linesIterator.filter(_.startsWith("warning:")).foreach(line => System.err.println(emphasized(line)))
 
-    val caCert = tlsStateRoot(os).resolve(projectId).resolve("ca.crt")
+    val caCert = tlsStateRoot(os).resolve(workspaceId).resolve("ca.crt")
     if Files.isRegularFile(caCert) then System.err.println(pathLine("egress tls ca", caCert, os))
-    System.err.println(pathLine("egress log dir", logStateRoot(os).resolve(projectId), os))
+    System.err.println(pathLine("egress log dir", logStateRoot(os).resolve(workspaceId), os))
     sys.exit(0)
 
   /**
@@ -444,9 +444,9 @@ object EgressRules:
     host: String,
     operands: List[String],
   ): Nothing =
-    val (projectId, proxyImageId, ruleFiles, provider) = egressPreflight(os, profile, modelProvider, operands)
+    val (workspaceId, proxyImageId, ruleFiles, provider) = egressPreflight(os, profile, modelProvider, operands)
 
-    val network = egressRunNetwork(projectId, newRunSuffix())
+    val network = egressRunNetwork(workspaceId, newRunSuffix())
     createNetwork(network, internal = false)
     val checked =
       try

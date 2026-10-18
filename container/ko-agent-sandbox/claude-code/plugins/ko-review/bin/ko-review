@@ -3,7 +3,7 @@
 
 A cycle is one reviewer thread, Codex's or Claude Code's: `start` opens it with a fresh review,
 `continue` sends the author's fixes or reasons for disagreeing to the same thread, and `verify`
-confirms the approval covers the current working tree. State lives in the project's persistent
+confirms the approval covers the current working tree. State lives in the workspace's persistent
 volume; doc/ko-review.md describes the design and command output.
 """
 
@@ -312,7 +312,7 @@ def resolve_base(root, ref):
 
 
 def state_root():
-    """Inside ko-agent-sandbox the project's persistent volume; elsewhere the user's state directory."""
+    """Inside ko-agent-sandbox the workspace's persistent volume; elsewhere the user's state directory."""
     override = os.environ.get("KO_REVIEW_STATE")
     if override:
         return Path(override)
@@ -626,7 +626,7 @@ class Codex:
     # Both hosts: a ChatGPT login talks to chatgpt.com, an API key to api.openai.com.
     hosts = ("api.openai.com", "chatgpt.com")
     lost_thread = "no rollout found"
-    sign_in_advice = "run `codex` in this project's sandbox, sign in, and retry"
+    sign_in_advice = "run `codex` in this workspace's sandbox, sign in, and retry"
 
     def version(self):
         return program_version("codex")
@@ -691,7 +691,7 @@ class Claude:
     # Model traffic, and the OAuth token refresh a claude.ai login makes.
     hosts = ("api.anthropic.com", "platform.claude.com")
     lost_thread = "no conversation found with session id"
-    sign_in_advice = "run `claude` in this project's sandbox, sign in with /login, and retry"
+    sign_in_advice = "run `claude` in this workspace's sandbox, sign in with /login, and retry"
     tools = "Bash,Read,Grep,Glob,WebFetch,WebSearch"
     allowed_tools = (
         "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git status:*)", "Bash(git ls-files:*)",

@@ -66,8 +66,8 @@ answer.
      ahead of the reviewers, as "continue REVIEW_ID (REVIEWER, MODEL, EFFORT): it approved N of
      the M paths in scope"; that choice skips step 2, and step 4 runs `continue` instead of
      `start`.
-   - The options are `codex` (Codex, under this project's Codex sign-in and usage limit) and
-     `claude` (Claude Code, under this project's Claude Code sign-in and usage).
+   - The options are `codex` (Codex, under this workspace's Codex sign-in and usage limit) and
+     `claude` (Claude Code, under this workspace's Claude Code sign-in and usage).
 2. Before reading the change, run `ko-review defaults REVIEWER` and ask the user for the
    reviewer's model and its reasoning effort, both questions at once, unless the argument names
    them. The user can type a value no option offers, such as a full Claude model name.

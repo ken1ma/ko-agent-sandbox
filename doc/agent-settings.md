@@ -103,7 +103,7 @@ What to expect:
 3. The directory is mounted read-only. Edit it on the host and run `/reload-plugins`.
 4. A plugin that draws a status band duplicates the image's status line; hide that line by setting
    `KO_CLAUDE_STATUSLINE_FORMAT` to `""` ([above](#claude-code-status-line)).
-5. The launch refuses a directory that holds or is inside the project or a directory
+5. The launch refuses a directory that holds or is inside the workspace or a directory
    `--run-on-host` commands write (the launcher's cache directory, a cache a symlink redirects
    out of it, `/private/tmp/ko-agent-<uid>`),
    one with a symlink, a hard-linked file, a junction or a pipe under it, one named like an image
@@ -191,8 +191,8 @@ summary: files 8; local references 40: valid 37, broken 2, unchecked 1; external
 ```
 
 1. [lychee](https://lychee.cli.rs) finds and checks the links; the program chooses its options
-   and shortens its report. A project's own `lychee.toml` and `.lycheeignore` are not read: either
-   can exclude a broken link, and the summary would count it as external.
+   and shortens its report. The repository's own `lychee.toml` and `.lycheeignore` are not read:
+   either can exclude a broken link, and the summary would count it as external.
 2. Anchors follow lychee's rules; the program's `--help` says how far they are GitHub's. Another
    renderer can build anchors differently.
 3. The working tree is checked, not the commit: a link to an untracked or ignored file is valid.

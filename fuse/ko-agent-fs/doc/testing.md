@@ -32,7 +32,7 @@ in a container with no host bind mounts, removed on exit. It retains the current
 compile-cache images and removes those they replace.
 
 Without a case filter, it also checks whether host writes reach the session through the real
-share. This check creates a scratch directory in the project, removes it on success, and reports
+share. This check creates a scratch directory in the workspace, removes it on success, and reports
 its retained path on failure (`SelfTestShare.scala`). The container-only suites cannot test that
 direction.
 

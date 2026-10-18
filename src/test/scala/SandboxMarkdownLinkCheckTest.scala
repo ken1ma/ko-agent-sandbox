@@ -170,10 +170,10 @@ class SandboxMarkdownLinkCheckTest extends munit.FunSuite:
 
   test("run in the image: the same reports from the installed program and lychee"):
     requireTestWithPodman()
-    val project = scratchProject()
+    val workspaceRoot = scratchWorkspace()
     try
-      writeFixtures(project)
-      val session = launch(project, project.resolve("session.log"))
+      writeFixtures(workspaceRoot)
+      val session = launch(workspaceRoot, workspaceRoot.resolve("session.log"))
       try assertReports((directory, args) => exec(session, runIn(directory, "ko-sandbox-markdown-link-check" +: args)*))
       finally stop(session)
-    finally discard(project)
+    finally discard(workspaceRoot)

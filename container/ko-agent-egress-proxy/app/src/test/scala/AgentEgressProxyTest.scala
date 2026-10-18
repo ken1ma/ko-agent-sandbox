@@ -665,7 +665,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
                 s"host denied (rule: $deny)",
               )
 
-      // Project grants include operations and paths absent from the provider's defaults.
+      // Workspace grants include operations and paths absent from the provider's defaults.
       hosts.foreach: host =>
         Vector("read", "git-fetch", "method=POST,PUT,PATCH,DELETE", "tunnel").foreach: grant =>
           val path = if grant == "tunnel" then "/" else "/project/"
@@ -807,7 +807,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(texts.distinct.size, 2)
     assertEquals(texts.map(sha256Hex).distinct.size, 2)
 
-  test("the widening line names the project lines granting beyond the defaults at their path, and only those"):
+  test("the widening line names the workspace lines granting beyond the defaults at their path, and only those"):
     val resolved = rulesetOf(
       provider = Every,
       rule =
@@ -3015,7 +3015,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "authorizeRequest not allowed", github, hostNotAllowed(github, "deny-all"),
         () => authorize(github, 443, rulesetOf(profile = "deny-all")),
       ),
-      // The same step with the project's file denying the host: the relaunch is named as
+      // The same step with the workspace's file denying the host: the relaunch is named as
       // necessary, and the denial the default profile would apply is the user's to see.
       RefusalRow(
         "authorizeRequest not allowed", github, hostNotAllowed(github, "deny-all"),
@@ -3186,10 +3186,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
         assertEquals(grantRefused(refusal.getMessage), !requestSteps(advice), s"${row.site}: ${refusal.getMessage}")
 
   test("the host-not-allowed step names a configuration that can allow the host, or none"):
-    // The named line, in a clean project file, allows the host; a defaults host is refused under the
+    // The named line, in a clean workspace rule file, allows the host; a defaults host is refused under the
     // default profile only through `deny defaults`, and the step says so rather than naming a line
     // the defaults already have. The relaunch is named as possible only ("can allow"), since the
-    // project's file may deny the host under the default profile (the deny-all row above).
+    // workspace's file may deny the host under the default profile (the deny-all row above).
     import RefusalAdvice.hostNotAllowed
     val addition = "'allow https://tracker.example/ read' in .ko-agent-sandbox/egress/rule"
     Vector(DefaultProfile, "deny-all", "deny-unless-model").foreach: profile =>

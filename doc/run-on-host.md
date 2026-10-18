@@ -1,6 +1,6 @@
 # Run on Host — sbt, `mill`, Gradle and Maven commands outside the container
 
-`--run-on-host=<programs>` (macOS only, off by default) sends this project's sbt, `mill`, Gradle
+`--run-on-host=<programs>` (macOS only, off by default) sends the workspace's sbt, `mill`, Gradle
 and Maven commands to the host, where each runs under a Seatbelt profile of its own.
 
     ┌─ macOS host ───────────────────────────────────────────────────────────────────────┐
@@ -20,7 +20,7 @@ and Maven commands to the host, where each runs under a Seatbelt profile of its 
     │  │ mill or gradle client → its daemon       │    │ allows only listed hosts     │  │
     │  │ Maven starts a JVM for each command      │    │ on port 443                  │  │
     │  │ dependency downloads                     ├───→│ inspects: GET and HEAD only  │  │
-    │  │ writes project files, except             │    │ cannot read project or cache │  │
+    │  │ writes workspace files, except           │    │ reads no workspace or cache  │  │
     │  │ .git and .ko-agent-sandbox;              │    │ logs allowed/denied requests │  │
     │  │ also writes its caches and temp files    │    │                              │  │
     │  └──────────────────────────────────────────┘    └──────────────────────────────┘  │
@@ -144,7 +144,7 @@ On Windows, AppContainer expresses the grants perfectly well:
 
 What it cannot express is the denies. ACL inheritance has no name patterns, so "deny `.git` at any
 depth" can only be an enumerated set of deny ACEs placed by a launch-time scan, and a `.git`
-created *during* the command inherits the project's allow — a race where the deny must hold at
+created *during* the command inherits the workspace's allow — a race where the deny must hold at
 every access. A Windows backend needs an equivalent of access-time path filters — a filesystem
 minifilter, or a design that does not put the guard in ACLs at all — before it is worth
 reconsidering.
@@ -153,7 +153,7 @@ reconsidering.
 
 The filesystem rules define what a host command can access:
 
-- **Commands can start programs they write in the project or their temporary directory.** A
+- **Commands can start programs they write in the workspace or their temporary directory.** A
   child inherits the profile, so running those programs adds no authority. Tests routinely write
   and run stubs. The run-on-host cache permits reads and writes but not direct process execution;
   the JVM can still load and execute code from cached JARs.
@@ -173,7 +173,7 @@ The filesystem rules define what a host command can access:
   - A spelling the volume resolves to the name and no row creates is unmeasured.
 - **Writes to what the file rules protect are denied the same way, in the rules' order**
   (`doc/file-rules.md`): each `readonly` line a deny and each `writable` line an allow, as a regex
-  anchored after the project's path; each directory a line passes through a deny on the entry
+  anchored after the workspace root's path; each directory a line passes through a deny on the entry
   itself, at the line's position; what the filter's guard added by path, after the lines; and
   below a directory a symlink makes part of a listed name, the rest of each `readonly` line.
   - SBPL checks a rename's source as `file-write-unlink`, as it checks `rmdir` and `unlink`, and
@@ -196,9 +196,9 @@ The filesystem rules define what a host command can access:
     apply under the target's own name: with `.claude -> .vscode/claude`, it would lift part of
     `readonly .vscode`.
 - **The `.git` and `.ko-agent-sandbox` denials cover link creation, not only writes.** Without them,
-  a command could create `link(PROJECT/.git/config, PROJECT/x)` and write through `x` to modify
+  a command could create `link(WORKSPACE/.git/config, WORKSPACE/x)` and write through `x` to modify
   `.git/config`.
-  Both paths are on the host's project filesystem, so a filesystem boundary does not prevent this.
+  Both paths are on the workspace's host filesystem, so a filesystem boundary does not prevent this.
 - **Commands can create a bare Git layout from ordinary names in the writable tree.** Neither the
   Seatbelt profile nor the workspace filter refuses those names. Running host `git` inside a
   directory the agent created is running the agent's output, the same gap `SECURITY.md` records
@@ -339,7 +339,7 @@ only artifacts.**
   definition.
 - The JDK a `mill` build's daemon runs on, unless `mill-jvm-version` is `system`, is an executable
   Mill would download, so it is provisioned too ("`mill`").
-- Gradle's and Maven's are the distributions the projects' wrappers unpacked on the host.
+- Gradle's and Maven's are the distributions the workspace's wrappers unpacked on the host.
 
 `RunOnHostPrereqs.scala` validates these prerequisites before a command starts; a violation is a
 refusal naming what to fix, and `src/probe/host-layout.sh` shows what a host actually has.
@@ -347,15 +347,15 @@ refusal naming what to fix, and `src/probe/host-layout.sh` shows what a host act
 The launch checks `mill`'s, Gradle's and Maven's before its start prompt
 (`RunOnHostProvisioning.scala`), so a launcher, JDK or distribution not yet provisioned is
 met by you at the launch, not by the agent at the first command. sbt has nothing to check: its
-executable is the one `cs install sbt` produced, whatever the project pins.
+executable is the one `cs install sbt` produced, whatever the workspace pins.
 
 - Every build directory of the selected programs is found — each directory holding a `mill`
   bootstrap or a Gradle wrapper's properties file, the files the supervisor keys a build
-  directory on ("`mill`", "Gradle"), anywhere under the project except inside `.git`,
-  `.ko-agent-sandbox` or a symlink, and for Maven the project alone, holding `mvnw` ("Maven") — and
-  its executable resolved as its first command would resolve it; each refusal is printed in the
-  command's wording. `gradlew` is only what the run below executes: a properties file without it is
-  reported, with nothing to run.
+  directory on ("`mill`", "Gradle"), anywhere under the workspace except inside `.git`,
+  `.ko-agent-sandbox` or a symlink, and for Maven the workspace root alone, holding `mvnw`
+  ("Maven") — and its executable resolved as its first command would resolve it; each refusal is
+  printed in the command's wording. `gradlew` is only what the run below executes: a properties
+  file without it is reported, with nothing to run.
 - For the refusals a host run fixes — a launcher, a JDK or a distribution not yet
   provisioned — the prompt shows that run and runs it on an explicit `y`, unconfined and in the
   launcher's environment: the run the refusal asks you for, made one answer (`SECURITY.md`, "Run
@@ -392,7 +392,7 @@ A current Coursier unpacks a JDK into its archive cache, so the home is a URL-de
 - The grant is that resolved home: granting the `arc` root instead would hand the command every
   archive Coursier ever extracted.
 - The JDK is read-only to the command, so sharing the user's copy exposes no write path, and
-  duplicating one per project would cost hundreds of megabytes for nothing.
+  duplicating one per workspace would cost hundreds of megabytes for nothing.
 
 ### sbt
 
@@ -425,7 +425,7 @@ server so forked inherits three things a server outliving the command must not:
 - its environment, whose `java.io.tmpdir` and `XDG_RUNTIME_DIR` name that directory;
 - its process group, which a cancel ends.
 
-The server's state follows `-Dsbt.global.base` into the project's run-on-host cache.
+The server's state follows `-Dsbt.global.base` into the workspace's run-on-host cache.
 
 - The base must persist across commands: sbt 2 leaves `target/` outputs as symlinks into its
   content-addressed store, so removing that base when the command ends would leave the build's
@@ -480,7 +480,7 @@ again, not by an acceptance-test run.
 
 ### `mill`
 
-A project-local bootstrap script, the build directory's own `mill`; no globally installed `mill`.
+A workspace-local bootstrap script, the build directory's own `mill`; no globally installed `mill`.
 
 - The bootstrap is run with `MILL_VERSION` naming the JVM launcher of the pinned version,
   `<v>-jvm` (`RunOnHostPrereqs.millLauncherVersion`).
@@ -601,9 +601,9 @@ below, and reads only the port candidate and that file.
   build code running in the daemon, neither of which the build lock excludes — is not caught, and
   no check before the command closes that. What bounds it is the profile: the launcher writes
   only where the command may write, so the daemon it can end that way is one whose
-  `out/mill-daemon` lies under the command's writable roots — this project, its run-on-host
+  `out/mill-daemon` lies under the command's writable roots — this workspace, its run-on-host
   caches, the runner's `tmp/` — that is, this launch's for another build directory, another
-  launch's on this project, or yours; and the one-port rule keeps the client from attaching to
+  launch's on this workspace, or yours; and the one-port rule keeps the client from attaching to
   it.
 - `MILL_OUTPUT_DIR` and `MILL_BSP_OUTPUT_DIR` are never forwarded, since every check looks under
   `out/`.
@@ -613,7 +613,7 @@ below, and reads only the port candidate and that file.
   (`RunOnHostMillDaemons.discardForeignClasspath`).
   - Seatbelt answers an existence test for a path it denies reading — measured, `Files.exists`
     true and the open denied — so a file from an unconfined run, or from this directory served
-    as another project's build directory, would start a daemon on jars it cannot open, and the
+    as another workspace's build directory, would start a daemon on jars it cannot open, and the
     daemon dies before it listens.
   - With the file deleted, Mill's launcher resolves the classpath afresh through the proxy into
     the granted cache.
@@ -737,16 +737,16 @@ would download. The supervisor computes the directory exactly as Gradle's wrappe
 
 `distributionBase` and `distributionPath` must be the wrapper's defaults, and the build
 directory's `gradle.properties` must not set `systemProp.gradle.user.home`: each moves the
-distribution to a place the project chooses, and the executable is the user's to provision.
+distribution to a place the workspace chooses, and the executable is the user's to provision.
 
 - The command's own `GRADLE_USER_HOME` is under the run-on-host cache ("The run-on-host cache"),
-  so Gradle's caches are the project's own.
+  so Gradle's caches are the workspace's own.
 - The daemon registry is the launch's own, not the home's: `org.gradle.daemon.registry.base` on
   the command line names a directory under the runner's `tmp/`, which every Gradle process of the
   launch is granted and which ends with the launch (`RunOnHostSandbox.gradleCommand`).
   `gradle --stop` stops every daemon in a registry, whatever its JVM (`DaemonStopClient`), so a
-  registry under the per-project home would let one launch's `--stop` end another launch's builds
-  on the project.
+  registry under the per-workspace home would let one launch's `--stop` end another launch's builds
+  on the workspace.
 - Attaching is the launch's own either way: the client's `java.io.tmpdir`, the runner's `tmp/`,
   is among the immutable properties Gradle's daemon compatibility compares
   (`InitialPropertiesConverter`, `DaemonCompatibilitySpec`), so a daemon started under another
@@ -770,7 +770,7 @@ What identifies a daemon as the launch's is its initial environment, which the c
 (`DefaultProcessForkOptions`), read with `ps -E`: its `_JAVA_OPTIONS` names the runner's `tmp/`
 as `java.io.tmpdir`, a value no process outside this launch's commands was started with.
 
-- No path identifies it: the build writes across `tmp/` and the project, and a file a daemon of
+- No path identifies it: the build writes across `tmp/` and the workspace, and a file a daemon of
   yours holds open, renamed into the registry under any name — the daemon log's included — is
   reported by the kernel at that name.
 - `ps -E` reads the strings from the daemon's own memory (`sysctl_procargsx`), so build code in
@@ -804,7 +804,7 @@ The acceptance test's Gradle rows (`src/probe/run-on-host-acceptance-test.sh`) m
 
 ### Maven
 
-The project's own wrapper script, `<PROJECT>/mvnw`; a `mvn` installed globally is not used.
+The workspace's own wrapper script, `<WORKSPACE>/mvnw`; a `mvn` installed globally is not used.
 
 - Run `./mvnw --version` once on the host, and again whenever `distributionUrl` in
   `.mvn/wrapper/maven-wrapper.properties` changes: that run downloads Maven into
@@ -816,7 +816,7 @@ The project's own wrapper script, `<PROJECT>/mvnw`; a `mvn` installed globally i
 
 Only the `only-script` wrapper type is served, the default that `mvn wrapper:wrapper` generates.
 
-- A project with any other wrapper type is refused, and the refusal names the command that
+- A workspace with any other wrapper type is refused, and the refusal names the command that
   converts it.
 - The supervisor recognizes the type from the script's `hash_string` function, reading the script
   and never running it.
@@ -848,7 +848,7 @@ An mvnd distribution is refused: mvnd is a daemon.
   way and is unmeasured.
 - The user's `~/.m2/settings.xml` and `toolchains.xml` are denied, and Maven treats them as
   absent, so a mirror or credential there never reaches a confined command.
-- `.mvn/maven.config`, `jvm.config` and `extensions.xml` are project files the agent already
+- `.mvn/maven.config`, `jvm.config` and `extensions.xml` are workspace files the agent already
   controls, like `sbt 'set …'`.
 
 ## The command's lifetime and environment
@@ -877,7 +877,7 @@ Two locks:
 
 - Each command the runner dispatches holds a build lock — one per program and build directory,
   under `build-lock/` — for the command's life, and the runner's own work on the runtime before a
-  command runs under it, so two launches on one project queue behind each other's commands; the
+  command runs under it, so two launches on one workspace queue behind each other's commands; the
   waiting one says so on its stderr.
 - Ending a runtime's recorded group — the runner replacing or retiring its own, its teardown, the
   scavenger, another launch taking the runtime over — runs under a retirement lock,
@@ -975,8 +975,8 @@ The placeholders:
   runner's sbt server, and every `mill` and `gradle` process, have the runner's `tmp/` for every
   row naming one;
 - `<cache home>` is `${XDG_CACHE_HOME:-$HOME/.cache}` from the launcher's environment;
-- `<run-on-host cache>` is the project's own run-on-host cache root,
-  `<cache home>/ko-agent-sandbox/run-on-host/<projectId>` ("The run-on-host cache" below).
+- `<run-on-host cache>` is the workspace's own run-on-host cache root,
+  `<cache home>/ko-agent-sandbox/run-on-host/<workspaceId>` ("The run-on-host cache" below).
 
 One environment serves every program:
 
@@ -1180,8 +1180,8 @@ where the caller is not interactive.
 - **The environment is a closed set — confinement.** The command sees the supervisor's set and not
   the launching shell's ("The command's lifetime and environment"): `HOME` passed and nothing
   under it granted, `preferIPv4Stack` set for the loopback rule ("Network"), no destination off
-  this host but the proxy, and the project writable even under `--write=reject` (`SECURITY.md`,
-  "Run on host").
+  this host but the proxy, and the workspace writable even under `--workspace=read-only`
+  (`SECURITY.md`, "Run on host").
 - **A repository takes reads alone — confinement.** Stock sbt, Mill, Gradle and Maven publish
   to a repository with a `PUT`. A host command's proxy refuses
   every request but a `GET` or `HEAD` without a body ("The command's egress proxy"), and the rule
@@ -1221,7 +1221,7 @@ where the caller is not interactive.
   supervisor passes `--jvm-client`, and an acceptance-test row keeps measuring `sbtn` ("sbt").
 - **`target/` links into a denied store are swept before a server starts — confinement.** A tree
   the user's unconfined sbt built links into a store the profile denies ("sbt").
-- **The global base and the Ivy home are the project's own — confinement.** Redirected into the
+- **The global base and the Ivy home are the workspace's own — confinement.** Redirected into the
   run-on-host cache, where stock uses `~/.sbt` and `~/.ivy2` ("sbt", "The run-on-host cache").
 - **While the launch's server lives, your terminal's `sbt` in the build directory runs on it, and
   `sbt shutdownall` does not end it — ownership.** Run `sbt shutdown` there first to end it.
@@ -1270,18 +1270,18 @@ where the caller is not interactive.
   ("Gradle").
 - **The distribution's `bin/gradle` runs, never `gradlew` — confinement.** The wrapper script
   downloads; a `distributionBase`, `distributionPath` or `systemProp.gradle.user.home` moving
-  the distribution to a place the project chooses is refused ("Gradle").
+  the distribution to a place the workspace chooses is refused ("Gradle").
 - **The toolchain inventory is the launch's JDK alone — confinement.** Auto-detection and
   auto-provisioning are off on the command line, so a project asking for another toolchain
   fails naming it ("Gradle").
-- **The user home is the project's own — confinement.** Under the run-on-host cache, where stock
+- **The user home is the workspace's own — confinement.** Under the run-on-host cache, where stock
   uses `~/.gradle` ("The run-on-host cache").
 
 ### Under Maven
 
 - **The distribution's `bin/mvn` runs, never `mvnw` — confinement.** The wrapper script
   downloads ("Maven").
-- **The local repository is the project's own, and the resolver is told to honor the proxy —
+- **The local repository is the workspace's own, and the resolver is told to honor the proxy —
   confinement.** `maven.repo.local` under the run-on-host cache, where stock uses
   `~/.m2/repository`, and `aether.connector.http.useSystemProperties`, without which Maven's
   resolver ignores the proxy the profile leaves as the one route out ("The command's lifetime
@@ -1491,7 +1491,7 @@ launcher starts on the host, since one `startProxy` starts them all. The profile
   `/private/var/run/mDNSResponder`, which `InetAddress.getAllByName` reaches, with the root link
   `/var` its client spells the path through (measured: without that one link every lookup fails);
   and a listener of the `localhost` class for its port;
-- nothing else of the user's: no project, no cache, no write anywhere;
+- nothing else of the user's: no workspace, no cache, no write anywhere;
 - of the operation families, `sysctl-read` and `mach-lookup` of the resolver's service alone
   ("The Seatbelt profile", the measured findings), measured with
   `src/probe/run-on-host-profile-iterate.sh ops` and the proxy under its profile with each family
@@ -1526,7 +1526,7 @@ every proxy start):
   environment names them ("The command's lifetime and environment"). They are outside `tmp/`, so
   no command replaces what the next one trusts.
 - The sandbox container trusts none of these CAs, and a host command does not trust the
-  project's: a leaf's key serves one proxy's host commands and nothing else.
+  workspace's: a leaf's key serves one proxy's host commands and nothing else.
 - A launch attaching to another launch's runtime names that runtime's trust directory, as it
   names its `tmp/` and proxy port, so its commands trust the proxy they use
   (`RunnerRuntimes`, the attachment).
@@ -1561,7 +1561,7 @@ loopback helper on the host is reachable from here, unlike from the container.
 
 ## Configuration
 
-To allow artifact downloads beyond Maven Central, add repository hosts to this project file:
+To allow artifact downloads beyond Maven Central, add repository hosts to this workspace file:
 
 ```text
 .ko-agent-sandbox/run-on-host/<program>/egress/rule
@@ -1588,7 +1588,7 @@ The file inherits the directory's properties:
 - the launcher reads it on the host;
 - it is reviewed in a pull request like any other file;
 - `run-on-host/` accepts only recognized configuration entries, as does `.ko-agent-sandbox` — a
-  stray entry fails the launch instead of being ignored (`SandboxProject.boundaryDirRefusal`,
+  stray entry fails the launch instead of being ignored (`SandboxWorkspace.boundaryDirRefusal`,
   `RunOnHostPrereqs.readProgramRules`).
 
 No program needs a GitHub release CDN: the one download that would, the `mill` executable, is
@@ -1599,23 +1599,24 @@ Derived paths come from Coursier conventions and environment APIs; advanced over
 
 ## The run-on-host cache
 
-Host commands get their own cache root, per project:
-`${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/run-on-host/<projectId>/`.
+Host commands get their own cache root, per workspace:
+`${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/run-on-host/<workspaceId>/`.
 
 - It holds Coursier's `v1`, sbt's global base and Ivy home, Gradle's user home and Maven's local
   repository under one directory, so `--reset-run-on-host` is a single removal, `--reset` takes it
-  with the project's other state, and a further cache kind can join without moving anything.
+  with the workspace's other state, and a further cache kind can join without moving anything.
 - It is discovered exactly as the launcher's state root is, so the two answer alike on one
   machine.
 - A relative override is refused because it would resolve against the repository being sandboxed,
-  and a root overlapping the project is refused outright.
+  and a root overlapping the workspace is refused outright.
 - A cache directory whose canonical path lies over or under the launcher's state root is refused
   too: `XDG_STATE_HOME` or a symlinked `run-on-host` can nest the two, so the separation argued
   below is checked on every command and reset rather than assumed
   (`RunOnHostPrereqs.cachePathClearOfStateRoot`).
 
-Why not the user's cache: `SECURITY.md` "Cache poisoning stops at the project" has the security
-argument. The cost is a cold cache on a project's first agent command, warm from the second onward.
+Why not the user's cache: `SECURITY.md` "Cache poisoning stops at the workspace" has the security
+argument. The cost is a cold cache on a workspace's first agent command, warm from the second
+onward.
 
 Why not the launcher state root:
 

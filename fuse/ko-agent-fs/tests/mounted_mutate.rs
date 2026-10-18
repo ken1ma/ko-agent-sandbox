@@ -1084,7 +1084,7 @@ fn an_ordinary_repository_passes_the_startup_guard() {
 }
 
 // ---------------------------------------------------------------------------
-// The file rules: project files a host program executes on an event
+// The file rules: workspace files a host program executes on an event
 // ---------------------------------------------------------------------------
 
 /// A mount serving `rule_lines` — resolved lines, as the launcher writes them — with the guard's
@@ -1288,7 +1288,7 @@ fn a_gitdir_keeps_the_listed_names_it_holds() {
         symlink("x/.vscode", mount.at(".git/objects/l")),
     );
     denied(
-        "move the directory into the project",
+        "move the directory into the workspace",
         fs::rename(mount.at(".git/objects/x"), mount.at("apps/x")),
     );
     allowed("stage a directory", fs::create_dir(mount.at("apps/y")));
@@ -1298,15 +1298,15 @@ fn a_gitdir_keeps_the_listed_names_it_holds() {
         rename_exchange(&root, "apps/y", ".git/objects/x"),
     );
     denied(
-        "move the symlink into the project",
+        "move the symlink into the workspace",
         fs::rename(mount.at(".git/objects/l"), mount.at("apps/l")),
     );
     denied(
-        "hard-link the symlink into the project",
+        "hard-link the symlink into the workspace",
         fs::hard_link(mount.at(".git/objects/l"), mount.at("apps/l")),
     );
     denied(
-        "link to it from the project",
+        "link to it from the workspace",
         symlink("../.git/objects/x", mount.at("apps/web")),
     );
     denied(
@@ -1390,7 +1390,7 @@ fn a_writable_line_frees_one_file_below_a_read_only_directory() {
 
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
-fn ordinary_project_work_is_unaffected() {
+fn ordinary_workspace_work_is_unaffected() {
     let mount = TestMount::new(repository);
 
     allowed(

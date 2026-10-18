@@ -496,17 +496,22 @@ class DaemonTest(ReapingTest):
         return subprocess.run(["pactl", *arguments], env=self.env, capture_output=True)
 
     def stream(self):
-        """A client recording the microphone, as agy's `parec` does."""
-        return self.reaped(subprocess.Popen(
-            ["parecord", "--raw", "--format=s16le", "--rate=16000", "--channels=1", "--latency-msec=20",
-             "--device=fifo_input"],
-            env=self.env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        ))
+        """A client recording the microphone, as agy's `parec` does. Into a file, which nothing has to
+        read while it records: a pipe read only at the stop fills, and then the stream stops taking
+        samples (doc/limitations.md, "Pipes as small as 8 KiB")."""
+        with tempfile.NamedTemporaryFile(dir=self.root, suffix=".pcm", delete=False) as recording:
+            stream = self.reaped(subprocess.Popen(
+                ["parecord", "--raw", "--format=s16le", "--rate=16000", "--channels=1", "--latency-msec=20",
+                 "--device=fifo_input"],
+                env=self.env, stdout=recording, stderr=subprocess.DEVNULL,
+            ))
+        stream.recording = Path(recording.name)
+        return stream
 
     def stopped(self, stream):
         stream.send_signal(signal.SIGINT)
-        out, _ = stream.communicate(timeout=10)
-        return pcm_values(out)
+        stream.wait(timeout=10)
+        return pcm_values(stream.recording.read_bytes())
 
     def burst(self, value, samples):
         """Up to `samples` samples of `value` at once, as many as the FIFO takes without blocking: a

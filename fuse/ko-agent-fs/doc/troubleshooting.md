@@ -5,10 +5,10 @@ directly on the host, using the same paths under your own home.
 
 ## State and log locations
 
-All filter state is stored in the daemon user's home, per project:
+All filter state is stored in the daemon user's home, per workspace:
 
     ~/.local/share/ko-agent-sandbox/ko-agent-fs             the installed binary
-    ~/.local/share/ko-agent-sandbox/mounts/<project>/
+    ~/.local/share/ko-agent-sandbox/mounts/<workspace-id>/
         workspace                                           the mountpoint the container binds
         daemon.log                                          the running daemon's log
         daemon.log.1                                        the previous daemon's log — the one
@@ -53,14 +53,14 @@ The matching `DENY` line in `daemon.log` names the operation, the target and the
   rules refused it: `../../../doc/file-rules.md` says how to change a listed file on the host or
   add a `writable` line.
 - `reason=nonportable-target-syntax` on a `symlink` — use a relative target that stays inside the
-  workspace, or put the program's cache inside the project.
+  workspace, or put the program's cache inside the workspace.
 
   - Absolute targets and targets that climb above the workspace root are refused (`fs.rs`,
     `target_has_portable_syntax`).
   - sbt 2 falls back to copying from its cache after the first refusal, where a build keeps
-    its output in the project ("Everything works but slowly" has where the image puts it).
+    its output in the workspace ("Everything works but slowly" has where the image puts it).
   - For `python3 -m venv`, create the environment under `~`, or use `--copies` if it must be in
-    the project. A virtualenv created in the container still names container paths in
+    the workspace. A virtualenv created in the container still names container paths in
     `pyvenv.cfg` and shebangs; copying does not make it usable on the host.
 
 If there is no matching DENY line, first check whether the log has reached its cap. If it has
@@ -80,7 +80,7 @@ classified as (`fs.rs`, `open_ino`). There is no DENY line.
 
 ## "Transport endpoint is not connected" (ENOTCONN)
 
-The daemon died; only the project mount is inaccessible, including to a shell whose current
+The daemon died; only the workspace mount is inaccessible, including to a shell whose current
 directory is inside it. Read the logs on the host, then quit the session and relaunch:
 
     podman machine ssh "tail -20 .local/share/ko-agent-sandbox/mounts/*/daemon.log*"
@@ -101,28 +101,28 @@ keeps the previous log as `daemon.log.1`.
   If setup succeeds but a check fails, report that failure; more mount privileges will not fix it.
 - `refusing to serve ...` — follow the message's remedy on the host. Naming a path `inside the
   workspace`, or saying a symlink `leads into the workspace`, a protected Git path resolves through
-  writable project files; naming a `bare repository`, the project root has a layout the filter
+  writable workspace files; naming a `bare repository`, the workspace root has a layout the filter
   cannot protect (`guard.rs`).
 - `refusing to serve ...` naming a path `outside the directories the podman machine shares` — a
   Git setting or a symlink below a listed entry leads where the machine does not see the host's
-  files, on Windows to another drive than the project's. Replace the link or setting with a real
-  file or directory inside the project or under a shared directory.
+  files, on Windows to another drive than the workspace's. Replace the link or setting with a real
+  file or directory inside the workspace or under a shared directory.
 - `refusing to serve ...` saying something `resolves to the workspace root itself` or to a
   directory that `holds the workspace` — a hook setting such as `core.hooksPath = .`, or a listed
-  entry's symlink such as `.vscode -> ..`, points at the project's top level or above it, which the
+  entry's symlink such as `.vscode -> ..`, points at the workspace root or above it, which the
   filter cannot hold read-only. Point it at a directory of its own.
-- `this project's concurrent sessions (...) run under other file rules` —
+- `this workspace's concurrent sessions (...) run under other file rules` —
   `.ko-agent-sandbox/file/rule` was edited while the named sessions run, and no start prompt asked
   to join them under their rules. Launch from a terminal with the prompt, or once they end.
-- `this project is mounted for sessions under other file rules` — the running mount's rules
+- `this workspace is mounted for sessions under other file rules` — the running mount's rules
   changed between the start prompt and the mount. Launch again.
 - `mountpoint ... is not empty; refusing` — an entry was created in the mountpoint directory while
   no filter was mounted. Inspect it in the machine before deleting; nothing legitimate writes there.
 
-## The project mount is empty inside the container
+## The workspace mount is empty inside the container
 
 Quit and relaunch. The container may have started after the filter mount disappeared, leaving
-it attached to the empty mountpoint. The project files remain in the backing directory. Mount
+it attached to the empty mountpoint. The workspace's files remain in the backing directory. Mount
 and cleanup races are described beside `KoAgentFs.koAgentFsReapScript`.
 
 ## Everything works but slowly
@@ -145,12 +145,12 @@ set on the host (a session cannot write `.git/config`):
 - The tracked-file pass itself shortens only with fewer or shallower tracked files; the rest is
   the filter's per-operation cost, and `TODO.md`, "Performance", is where that is being worked.
 
-A build in the session that writes its output into the project pays that cost per file written,
+A build in the session that writes its output into the workspace pays that cost per file written,
 and a compiler writes deep: this repository's sbt compile takes 604 s into `target/out` and 28 s
 into a directory outside the mount (`verification-log.md`, "an sbt build"). The image moves what
 an sbt 2 build derives from `rootOutputDirectory` to `~/.cache/sbt-out`, so by default a jar
 `sbt package` builds in a session is there, not under `target/`, and is discarded with the
-session; a build that names an output path itself still writes the project, and can fail there
+session; a build that names an output path itself still writes the workspace, and can fail there
 with `NoSuchFileException` on links the host's sbt left
 (`container/ko-agent-sandbox/AGENTS-SANDBOX.md` has the cleanup). For another build program, point
 its output directory under `~/.cache` the same way, or run it on the host with `--run-on-host`
@@ -177,9 +177,9 @@ For gradle the image sets nothing either. An init script can move every project'
 
 The image does not ship it because a gradle build, and the scripts around one, often name
 `build/` literally — `file("build/libs/…")`, a Containerfile's `COPY build/libs` — and those
-break with the directory moved. Check the project for such paths before using it. It also saves less
-than sbt's setting: a generated 202-class build takes 75 s with `build/` in the mount, 44 s with
-it moved, and 4.5 s wholly outside the mount, so most of the extra build time remains after
+break with the directory moved. Check the workspace for such paths before using it. It also saves
+less than sbt's setting: a generated 202-class build takes 75 s with `build/` in the mount, 44 s
+with it moved, and 4.5 s wholly outside the mount, so most of the extra build time remains after
 moving the persistent output outside the mount (`verification-log.md`, "a gradle build").
 `--project-cache-dir` for the project's `.gradle/` takes off 3 s more.
 
@@ -236,7 +236,7 @@ Keep large builds under `~` in the container: `/tmp` uses RAM.
 The launch warning reports low memory or disk space; resolve that shortage before another build.
 
 After a hard stop, relaunch to replace the filter mount. If stray containers or networks remain,
-use `--reset`; it also ends this project's sessions and removes its saved state.
+use `--reset`; it also ends this workspace's sessions and removes its saved state.
 
 ## Stale state after crashes
 
@@ -245,8 +245,8 @@ containers are gone are removed during cleanup.
 
 If the launcher died before its container started, allow ten minutes for the reaper to remove
 it. On Windows or after a failed reaper spawn, use `--reset` instead. Reset also removes the
-project's filter state, ends its sessions and removes saved agent state; see the
+workspace's filter state, ends its sessions and removes saved agent state; see the
 [README.md](../../../README.md#reference).
 
-After repeated crashes, compare `pgrep -a ko-agent-fs` with the projects that have live sessions.
-Report daemons left over for projects with no sessions.
+After repeated crashes, compare `pgrep -a ko-agent-fs` with the workspaces that have live sessions.
+Report daemons left over for workspaces with no sessions.

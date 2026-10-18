@@ -7,7 +7,7 @@
 // a daemon as the launch's is its initial environment: the client starts it with its own
 // (`DefaultProcessForkOptions.getInheritableEnvironment`), whose `_JAVA_OPTIONS` names the
 // runner's `tmp/` as `java.io.tmpdir`, a value no process outside this launch's commands was
-// started with. No path identifies it: the build writes across `tmp/` and the project, and a file a
+// started with. No path identifies it: the build writes across `tmp/` and the workspace, and a file a
 // daemon of yours holds open, renamed into the registry under any name, is reported by the kernel
 // at that name. `ps -E` reads the strings from the daemon's own memory (`KERN_PROCARGS2`,
 // `sysctl_procargsx`), so build code in the daemon can rewrite them and hide the daemon from its

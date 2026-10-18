@@ -209,22 +209,22 @@ Widening *who may reach* the mount does not widen *what they may do*:
 - `default_permissions` keeps the kernel applying ordinary uid/gid/mode checks against the real
   backing metadata.
 - The Git policy and the file rules are enforced whoever is asking.
-- Exposure is bounded by where the mount is bound: the launcher binds a project's mount into that
-  project's sessions alone, so another project's session on the same machine has no path to it.
+- Exposure is bounded by where the mount is bound: the launcher binds a workspace's mount into
+  that workspace's sessions alone, so another workspace's session on the same machine has no path
+  to it.
 
-A project has one daemon and one mount shared by all its sessions. Concurrent sessions read and
-write the same files and can overwrite one another's changes. If the daemon dies, the project mount
-returns `ENOTCONN` in every attached session, so none can continue accessing the files through the
-mount. When the project's last session ends, the daemon unmounts and exits.
+A workspace has one daemon and one mount shared by all its sessions. Concurrent sessions read and
+write the same files and can overwrite one another's changes. If the daemon dies, the workspace
+mount returns `ENOTCONN` in every attached session, so none can continue accessing the files through
+the mount. When the workspace's last session ends, the daemon unmounts and exits.
 
-The staged workspace also has one view per project: attached sessions share its merged view, upper
-layers, locks, cache and failure domain. Reject mode creates no FUSE mount and runs no filter
-daemon; with `--run-on-host` it runs `ko-agent-fs --resolve` once, for the file rules the host
-commands observe (the launcher's `KoAgentFs.koAgentFsResolveScript`). The staged view is not
-implemented; the root `doc/plan-staged.md` plans it and the root `doc/TODO.md` keeps the deferred
-work. This topology is nevertheless fixed before that work starts:
-per-session mounts would make a cheap restart expensive and give collaborating sessions incoherent
-locks and caches.
+Staged mode also has one view per workspace: attached sessions share its merged view, upper layers,
+locks, cache and failure domain. Read-only mode creates no FUSE mount and runs no filter daemon;
+with `--run-on-host` it runs `ko-agent-fs --resolve` once, for the file rules the host commands
+observe (the launcher's `KoAgentFs.koAgentFsResolveScript`). The staged view is not implemented; the
+root `doc/plan-staged.md` plans it and the root `doc/TODO.md` keeps the deferred work. This topology
+is nevertheless fixed before that work starts: per-session mounts would make a cheap restart
+expensive and give collaborating sessions incoherent locks and caches.
 
 `allow_other` from an unprivileged user additionally requires `user_allow_other` in
 `/etc/fuse.conf`, which stock images do not set. The launcher adds it only with the user's
@@ -277,13 +277,12 @@ how to undo it, is its `README.md` ("`--build`"). This section is the build and 
 The digest's construction, and why the algorithm exists only on the launcher side, are with the
 code: `LauncherImages.bundleSourceId`.
 
-**All steps run from `--build`** (`ImageBuilds.buildCommands`,
-`KoAgentFs.koAgentFsSourceId` and `installKoAgentFs`), **and the mount lifecycle runs every
-`--write=live` session** (`--write=reject` binds the tree read-only without it): each launch checks
-the installed binary's identity and self-test, then mounts the project through a per-project
-daemon shared by its sessions and binds the mountpoint at the project's own path. The lifecycle's
-design and reasoning are with the code — `KoAgentFs.scala`, "The workspace FUSE filter's mount
-lifecycle".
+**All steps run from `--build`** (`ImageBuilds.buildCommands`, `KoAgentFs.koAgentFsSourceId` and
+`installKoAgentFs`), **and the mount lifecycle runs every `--workspace=live` session**
+(`--workspace=read-only` binds the tree read-only without it): each launch checks the installed
+binary's identity and self-test, then mounts the workspace through a per-workspace daemon shared by
+its sessions and binds the mountpoint at the workspace root's own path. The lifecycle's design and
+reasoning are with the code — `KoAgentFs.scala`, "The workspace FUSE filter's mount lifecycle".
 
 The daemon needs no privileges to mount: fuser's pure-Rust mode falls back to the setuid
 `fusermount3` when direct `mount(2)` is denied, so an ordinary VM user's mount appears in their

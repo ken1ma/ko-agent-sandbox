@@ -81,8 +81,8 @@ object CertificateHelper:
       toPem("PRIVATE KEY", issued.privateKey.getEncoded),
     )
 
-  /** `slug` names the project inside a common name of at most X509Helper.MaxCommonNameLength
-    * characters: the wording leaves 42 for a 32-character project slug. */
+  /** `slug` names the workspace inside a common name of at most X509Helper.MaxCommonNameLength
+    * characters: the wording leaves 42 for a 32-character workspace slug. */
   def createCa(slug: String, now: Instant = Instant.now(), days: Long = 3650): CertificateMaterial =
     material(X509Helper.createCa(s"ko-agent-sandbox CA ($slug)", now, days))
 

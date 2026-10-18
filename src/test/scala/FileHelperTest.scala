@@ -14,7 +14,7 @@ class FileHelperTest extends munit.FunSuite:
     PosixFilePermissions.toString(Files.getPosixFilePermissions(path))
 
   test("a stamped entry is its own validation, so an interleaved pair misses rather than mixes"):
-    // Concurrent launches of one project under different session options write the ruleset
+    // Concurrent launches of one workspace under different session options write the ruleset
     // cache without a lock. With the stamp in a file of its own, one launch's content could end up
     // under the other's stamp and stay there; with it inside each file, the pairing a caller
     // requires does not match and the cache re-derives.
@@ -116,7 +116,7 @@ class FileHelperTest extends munit.FunSuite:
     writeReadable(mounted, "FIRST")
 
     // The failure this rules out: a rewrite that unlinks first leaves the name missing for as long
-    // as it takes to produce the new content, and a launch of the same project assembling its
+    // as it takes to produce the new content, and a launch of the same workspace assembling its
     // containers in that window dies on `statfs <path>: no such file or directory`.
     val seenMissing = java.util.concurrent.atomic.AtomicBoolean(false)
     val watcher = Thread: () =>

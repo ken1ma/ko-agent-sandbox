@@ -1,10 +1,10 @@
-// The egress rules a project ships, end to end. A session reads its rules once at startup, so
+// The egress rules a workspace ships, end to end. A session reads its rules once at startup, so
 // each test here launches its own.
 //
 // Two of these are the refusals no session can demonstrate about itself, because both happen on the
 // proxy's *origin* leg, which inspection moves out of the client's sight: an origin whose
 // certificate does not verify, and a name that resolves into private address space. Skipping either
-// check is invisible in normal operation — the sandbox sees a valid leaf issued by this project's
+// check is invisible in normal operation — the sandbox sees a valid leaf issued by this workspace's
 // CA whatever the origin presented — which is the classic TLS-interception failure.
 //
 // Runs only under testWithPodman, like the other container-launching suites (WithPodman has the condition):
@@ -31,9 +31,9 @@ class EgressSessionTest extends munit.FunSuite:
 
   override val munitTimeout = scala.concurrent.duration.Duration(20, "min")
 
-  /** Write this project's rule file, as a repository would ship it. */
-  private def ruleFile(project: Path, rule: Option[String]): Unit =
-    val egress = project.resolve(".ko-agent-sandbox").resolve("egress")
+  /** Write this workspace's rule file, as a repository would ship it. */
+  private def ruleFile(workspace: Path, rule: Option[String]): Unit =
+    val egress = workspace.resolve(".ko-agent-sandbox").resolve("egress")
     Files.createDirectories(egress)
     rule.foreach(text => Files.writeString(egress.resolve("rule"), text))
 
@@ -80,16 +80,16 @@ class EgressSessionTest extends munit.FunSuite:
     )
 
   private def withSession(rule: Option[String])(body: Session => Unit): Unit =
-    val project = scratchProject()
+    val workspace = scratchWorkspace()
     var live: Option[Session] = None
     try
-      ruleFile(project, rule)
-      val session = launch(project, project.resolve("session.log"))
+      ruleFile(workspace, rule)
+      val session = launch(workspace, workspace.resolve("session.log"))
       live = Some(session)
       body(session)
     finally
       live.foreach(stop)
-      discard(project)
+      discard(workspace)
 
   test("a read line is inspected, verified at the origin, and opens nothing else"):
     requireTestWithPodman()
@@ -105,11 +105,11 @@ class EgressSessionTest extends munit.FunSuite:
     ): session =>
       assertEquals(status(session, "https://example.com/"), "200", "the added host is not reachable")
 
-      // Inspected on the project's own CA, like a catalog host: one leaf, issued at launch
+      // Inspected on the workspace's own CA, like a catalog host: one leaf, issued at launch
       // from the ruleset, or the addition would be a treatment the proxy does not police.
       assertEquals(
         issuer(session, "example.com"), issuer(session, "pypi.org"),
-        "the added host is not inspected by this project's CA",
+        "the added host is not inspected by this workspace's CA",
       )
       assertEquals(status(session, "-X", "POST", "https://example.com/"), "403", "the addition allowed a write")
 
@@ -158,7 +158,7 @@ class EgressSessionTest extends munit.FunSuite:
       )
 
     // The control, without which the refusal above is not evidence: the same clone under
-    // the defaults, which the project did not touch.
+    // the defaults, which the workspace did not touch.
     withSession(None): session =>
       assert(exec(session, clone*).ok, "the clone fails under the defaults too; this fixture proves nothing")
 
@@ -289,10 +289,10 @@ class EgressSessionTest extends munit.FunSuite:
 
     // The suite's command, `sleep`, selects no provider, so the option alone names one: the
     // launcher passes it to the image as written, and the image resolves it.
-    val project = scratchProject()
+    val workspace = scratchWorkspace()
     var live: Option[Session] = None
     try
-      val session = launchWith(project, project.resolve("session.log"), Vector("--model-provider=openai"))
+      val session = launchWith(workspace, workspace.resolve("session.log"), Vector("--model-provider=openai"))
       live = Some(session)
       assert(
         curl(session, "-o", "/dev/null", "https://api.openai.com/").ok,
@@ -302,13 +302,13 @@ class EgressSessionTest extends munit.FunSuite:
       assertEquals(status(session, "https://github.com/"), "200", "the catalog's forge read is lost")
     finally
       live.foreach(stop)
-      discard(project)
+      discard(workspace)
 
     // A name the image does not define fails the launch under the option's name, before a session;
-    // also after a launch without the option warmed the project's ruleset cache, where a stamp
+    // also after a launch without the option warmed the workspace's ruleset cache, where a stamp
     // shared between no selection and the refused value would skip the dry run and fail at the
     // proxy's start instead.
-    val refused = scratchProject()
+    val refused = scratchWorkspace()
     try
       def refusal(value: String): Unit =
         val (exit, output) = launchOutcome(refused, refused.resolve("launch.log"), Vector(s"--model-provider=$value"))

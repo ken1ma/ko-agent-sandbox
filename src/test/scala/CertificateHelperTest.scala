@@ -35,7 +35,7 @@ class CertificateHelperTest extends munit.FunSuite:
   // The profile asserted here is the one the egress proxy accepts and the
   // sandbox verifies.
 
-  test("the CA is a signing-only CA with the project in its name"):
+  test("the CA is a signing-only CA with the workspace in its name"):
     val ca = parse(createCa("myproj").certificatePem)
     assertEquals(ca.getBasicConstraints, 0) // CA:TRUE, pathlen 0
     val keyUsage = ca.getKeyUsage

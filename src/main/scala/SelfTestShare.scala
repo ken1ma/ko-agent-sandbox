@@ -45,7 +45,7 @@ object SelfTestShare:
   private val MmapVisible = "mmap-visible"
   private val Abort = "abort: "
 
-  /** Where the probe container has the scratch project. A fixed path of the probe's own, not the
+  /** Where the probe container has the scratch workspace. A fixed path of the probe's own, not the
     * scratch's host path a session would use: the probe is not a session, and no agent sees it. */
   val ProbeMount = "/mnt/share-probe"
 
@@ -177,7 +177,7 @@ object SelfTestShare:
       Files.write(scratch.resolve("case-probe"), Array.emptyByteArray)
       val lowerCase = if Files.exists(scratch.resolve("CASE-PROBE")) then "folding" else "sensitive"
       Files.delete(scratch.resolve("case-probe"))
-      val backing = SandboxProject.mountPathOf(os, scratch).fold(fail(_), identity)
+      val backing = SandboxWorkspace.mountPathOf(os, scratch).fold(fail(_), identity)
       val machineView = os match
         case Os.Linux => s"kernel ${sys.props("os.version")}, share local"
         case _ =>

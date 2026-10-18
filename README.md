@@ -7,10 +7,10 @@ The programs in this sandbox, by default
 1. reach no network destinations except:
     1. the model provider of the agent you launch
     1. a customizable selection of sites, read-only
-1. reach no host files outside the project directory
+1. reach no host files outside the workspace
     1. except from a Git linked worktree
 1. cannot change Git files that can hold arbitrary commands, such as hooks and rebase
-   instructions, so `git rebase` fails in the project directory
+   instructions, so `git rebase` fails in the workspace
 
 The containers run rootless, and the programs run as the `nonroot` user.
 
@@ -20,7 +20,7 @@ The containers run rootless, and the programs run as the `nonroot` user.
     │  │  manages the containers, volumes, and networks                      │  │
     │  └─────────────────────────────────────────────────────────────────────┘  │
     │                                                                           │
-    │  ┌─ project directory ───────────┐     ┌─ named volume (per project) ──┐  │
+    │  ┌─ workspace ───────────────────┐     ┌─ named volume (per workspace) ┐  │
     │  │  files shared between host    │     │  agents' auth and config,     │  │
     │  │  and sandbox                  │     │  kept across sessions;        │  │
     │  │                               │     │  ~/.claude ~/.codex ~/.gemini │  │
@@ -105,7 +105,7 @@ Build the container images once, and again after upgrading the jar:
 
     java -jar "<path-to-jar>/ko-agent-sandbox.jar" --build
 
-Start an agent in a trusted project directory, such as `~/my-project`:
+Start an agent from a trusted directory, such as `~/my-project`, which becomes the workspace:
 
     java -jar "<path-to-jar>/ko-agent-sandbox.jar" claude
 
@@ -123,14 +123,14 @@ Insert these launcher options before the agent command (`claude` above):
 1. On macOS, use `--run-on-host=sbt,mill,gradle,mvn`, selecting the programs the agent needs,
    to build at host speed without consuming the podman machine's memory.
 
-1. Use `--write=reject` to make the project read-only inside the sandbox.
+1. Use `--workspace=read-only` to make the workspace read-only inside the sandbox.
 
-The launcher refuses to use your home directory as the project because it would expose credentials
+The launcher refuses to use your home directory as the workspace because it would expose credentials
 in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 ### Running `<command>`
 
-1. The current directory is the project directory; the sandbox mounts it at the same path.
+1. The current directory is the workspace root; the sandbox mounts it at the same path.
 1. To change a session option such as `--egress=`, quit, then relaunch with the new options and
    the agent's resume arguments:
 
@@ -159,7 +159,7 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
      or disputes; it brings to you those that are yours to decide and names the adopted ones that
      changed the design.
    - The review covers the uncommitted changes by default.
-   - Codex reviews under this project's Codex sign-in.
+   - Codex reviews under this workspace's Codex sign-in.
    - Each round's tree and transcript are on a Git ref under `refs/ko-review/` in the repository,
      for `git diff` between rounds ([doc/ko-review.md](doc/ko-review.md)).
 1. A prompt remains for some `rm` commands
@@ -197,7 +197,7 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
     1. Unlike the other sign-ins, the stored token grants access to your private repositories
        (SECURITY.md, "The web reached through the model provider").
 
-1. Prompts for paths outside the project and for URLs remain unless you run `copilot --yolo`.
+1. Prompts for paths outside the workspace and for URLs remain unless you run `copilot --yolo`.
 1. Its fullscreen TUI cannot be turned off, so use `/copy` to copy text out. It writes OSC 52,
    which sets the clipboard on a terminal that honors it
    ([SECURITY.md](SECURITY.md#terminal-clipboard-requests-osc-52)); on another terminal it needs
@@ -231,7 +231,7 @@ credentials another cloud's login produced, and what forwarding costs.
 
 1. Each launch prints the workspace mode and the resolved egress profile, plus the rule files and
    any warning.
-1. More than one session can run at once from the same project directory; they share the
+1. More than one session can run at once from the same workspace; they share the
    workspace mount and the agent-state volume.
 
     1. When sessions change the same file concurrently, later writes can overwrite earlier changes.
@@ -251,7 +251,7 @@ credentials another cloud's login produced, and what forwarding costs.
 ### Egress proxy
 
 Every session accesses the network through the launcher's HTTPS proxy. The `--egress=` profile
-and the project's `.ko-agent-sandbox/egress/rule` determine which destinations and operations are
+and the workspace's `.ko-agent-sandbox/egress/rule` determine which destinations and operations are
 allowed. The defaults include tunnels to supported model providers and TLS-inspected access
 to selected documentation sites, package registries, and Git hosting services.
 
@@ -282,7 +282,7 @@ restore permission prompts and set the Claude Code status line.
 
     Run an AI agent inside the sandbox container.
 
-    Usage, from a project directory, mounted in the sandbox at the same path
+    Usage, from the workspace root, mounted in the sandbox at the same path
     (on Windows, at the path WSL gives it: /mnt/<drive>/...):
 
       java -jar ko-agent-sandbox.jar [options] [--] [<command> [args...]]
@@ -292,13 +292,14 @@ restore permission prompts and set the Claude Code status line.
     Use -- before a command whose name looks like a launcher option.
 
     Session options, selected on every launch and never persisted:
-      --write=reject|live
-                         reject makes the project read-only; live (default)
-                         lets the agent edit the shared project files and the
-                         Git state the filter lists (refs, objects, the index,
-                         HEAD and the like); every other Git entry, such as
-                         config and hooks, .ko-agent-sandbox and what the file
-                         rules protect are frozen at any depth (SECURITY.md)
+      --workspace=read-only|live
+                         read-only makes the workspace read-only to the
+                         sandbox's processes; live (default) lets the agent
+                         edit the shared workspace files and the Git state the
+                         filter lists (refs, objects, the index, HEAD and the
+                         like); every other Git entry, such as config and
+                         hooks, .ko-agent-sandbox and what the file rules
+                         protect are frozen at any depth (SECURITY.md)
       --egress=deny-all|deny-unless-model|deny-unless-allowed
                          which hosts the session reaches; the default,
                          deny-unless-allowed, allows the launcher-owned
@@ -327,10 +328,10 @@ restore permission prompts and set the Claude Code status line.
                          macOS only: select sbt / mill / gradle / mvn, separated by commas.
                          Adds the ko-sandbox-run-on-host command inside the sandbox, to run
                          those programs on the host under Seatbelt. Host commands can write
-                         the project even under --write=reject, except what the file rules
-                         protect; access is confined to the project (excluding .git and
-                         .ko-agent-sandbox), per-project caches, and a dedicated egress proxy.
-                         Before the start prompt, offers to run the project's ./mill,
+                         the workspace even under --workspace=read-only, except what the file
+                         rules protect; access is confined to the workspace (excluding .git and
+                         .ko-agent-sandbox), per-workspace caches, and a dedicated egress proxy.
+                         Before the start prompt, offers to run the workspace's ./mill,
                          ./gradlew or ./mvnw when its launcher, JDK or
                          distribution is not yet provisioned.
                          The session keeps one sbt/mill daemon warm per build directory.
@@ -373,7 +374,7 @@ restore permission prompts and set the Claude Code status line.
                          load a host plugin directory into the session's claude as a managed
                          plugin, the only kind whose hooks and mod the image lets run. Mounted
                          read-only as <dir's name>@host. Repeatable, in the order the mods run;
-                         refused when it holds or is inside the project or a directory that
+                         refused when it holds or is inside the workspace or a directory that
                          --run-on-host commands write; an organization's remote policy can keep
                          it from loading. See doc/agent-settings.md "Claude Code plugins and
                          mods"
@@ -386,26 +387,26 @@ restore permission prompts and set the Claude Code status line.
       --update           update the agents: rebuild only the sandbox container
                          image, without cache, on the base images --build built
 
-      --stats            show the resource use of the machine, the live sessions and each project.
+      --stats            show the resource use of the machine, the live sessions and each workspace.
                          Flags caches worth clearing with --reset-run-on-host
 
       --reset-run-on-host
-                         clear this project's host build caches; keep its sessions
+                         clear this workspace's host build caches; keep its sessions
                          and other state
-      --reset [<id>...]  in addition to --reset-run-on-host, remove this project's
+      --reset [<id>...]  in addition to --reset-run-on-host, remove this workspace's
                          containers (ending any live session), volume (signing its
                          agents out), networks, TLS inspection CA, cached ruleset
                          resolution, logs and workspace-filter mount;
                          images and any shared volume are left untouched. From a
                          linked worktree, the main worktree's volume is left
                          untouched too.
-                         Ids, as --stats prints them, name projects whose
+                         Ids, as --stats prints them, name workspaces whose
                          directories are gone instead of the current one
-      --reset-all        the same as --reset, for every project
+      --reset-all        the same as --reset, for every workspace
 
       --egress-effective [--] [<command> [args...]]
                          print the ruleset the accompanying --egress=<profile>
-                         resolves to for this project, with per-line
+                         resolves to for this workspace, with per-line
                          provenance; the command, or --model-provider, selects
                          the model providers without launching anything
       --egress-check=<host> [--] [<command> [args...]]
@@ -414,14 +415,14 @@ restore permission prompts and set the Claude Code status line.
                          Starts a temporary proxy container.
                          Inside a session, ko-sandbox-egress-check <host>
                          checks through the running proxy
-      --egress-log       print this project's retained proxy audit logs, the
+      --egress-log       print this workspace's retained proxy audit logs, the
                          run-on-host proxies' included; with extra args (-f,
                          --tail 50), run podman logs on the running session proxies instead
 
       --self-test [<filter>]
                          run the workspace filter's own suites; <filter> selects one
                          case or family. Without a filter, also check the host share;
-                         its scratch directory in the project is removed on success
+                         its scratch directory in the workspace is removed on success
                          and retained on failure. Removes replaced self-test images
                          (fuse/ko-agent-fs/doc/testing.md)
 
@@ -448,17 +449,17 @@ restore permission prompts and set the Claude Code status line.
                                           and on Linux no more than was available at launch;
                                           at least 1 GiB, or all memory if less than 1 GiB.
                                           The sandbox never swaps
-      KO_AGENT_SANDBOX_PERSISTENT_VOLUME  a podman volume name; every project launched with it
+      KO_AGENT_SANDBOX_PERSISTENT_VOLUME  a podman volume name; every workspace launched with it
                                           shares that volume as its agent state, and --reset
                                           leaves it alone
       KO_AGENT_SANDBOX_IMAGE              sandbox image (default ko-agent-sandbox:latest)
       KO_AGENT_SANDBOX_PROXY_IMAGE        egress proxy image (default ko-agent-egress-proxy:latest)
 
-    .ko-agent-sandbox/egress/rule in the project directory modifies the egress ruleset: allow
+    .ko-agent-sandbox/egress/rule in the workspace root modifies the egress ruleset: allow
     and deny lines naming URLs, applied in order over the launcher-owned defaults
     (doc/egress-proxy.md).
 
-    .ko-agent-sandbox/file/rule modifies which project files a session cannot change because a
+    .ko-agent-sandbox/file/rule modifies which workspace files a session cannot change because a
     host program takes a command or a server from them: readonly and writable lines naming files or
     directories at any depth, applied in order over the launcher-owned defaults (doc/file-rules.md).
 

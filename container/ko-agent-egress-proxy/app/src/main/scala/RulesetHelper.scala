@@ -12,7 +12,7 @@ import IPAddrHelper.*
 
 object RulesetHelper:
   /*
-   * A rule is a line of the project's `rule` file; the ruleset is what a launch enforces — the
+   * A rule is a line of the workspace's `rule` file; the ruleset is what a launch enforces — the
    * defaults, the profile and the file resolved together (resolveRuleset).
    *
    * A line grants exactly its words, under the path it names, and nothing else on the
@@ -31,7 +31,7 @@ object RulesetHelper:
    * and the audit events for both treatments.
    *
    * Which lines count is the selected profile's answer (resolveRuleset): the defaults — every
-   * provider's default rules plus the inspected catalog — modified by the project's file. Whichever
+   * provider's default rules plus the inspected catalog — modified by the workspace's file. Whichever
    * ruleset is in force is printed at startup and every denial is logged, which is how you find out
    * what an agent actually wanted.
    *
@@ -79,7 +79,7 @@ object RulesetHelper:
     case Deny(pattern: HostPattern, grants: Set[String])
     case DenyProvider(name: String)
 
-  /** One parsed line, with where it was written — `rule` for the project's file, `defaults/…` for
+  /** One parsed line, with where it was written — `rule` for the workspace's file, `defaults/…` for
     * the launcher-owned files — and its text as written, tokens joined by one space. */
   case class Line(file: String, text: String, rule: Rule):
     def spelled: String = s"$file: $text"
@@ -251,7 +251,7 @@ object RulesetHelper:
 
   /**
    * The defaults are rules, so they are written as rules: resource files in the grammar,
-   * read through the parser a project's file goes through, with the reasoning for each host as a
+   * read through the parser a workspace's file goes through, with the reasoning for each host as a
    * comment beside it. `defaults/host` lists inspected hosts; `defaults/model-provider/<name>`
    * supplies the rules for `allow model-provider <name>`. Provider rules cover model,
    * authentication and control-plane endpoints, including GitHub's inspected login and token
@@ -307,8 +307,8 @@ object RulesetHelper:
       ++ ModelProviders.flatMap(name => providerContributions(name, None))
 
   /** The launcher-owned defaults resolved whole, every provider included: what deny-unless-allowed
-    * enforces with every provider selected and no project file, and what every file is validated
-    * over. */
+    * enforces with every provider selected and no workspace rule file, and what every file is
+    * validated over. */
   val DefaultHosts: Map[String, Treatment] = hostsOf(start(DefaultContributions))
 
   /** What a launch starts from under deny-unless-allowed: the catalog and the selected providers'
@@ -329,7 +329,7 @@ object RulesetHelper:
     case Inspected(scopes: Map[String, Set[String]])
     case Tunnel
 
-  /** Preserve both the default rule and the project rule that included it in diagnostics. */
+  /** Preserve both the default rule and the workspace rule that included it in diagnostics. */
   private case class Source(line: Line, via: Option[Line]):
     def spelled: String = via.fold(line.spelled)(expanded => s"${expanded.spelled} (${line.spelled})")
 
@@ -365,7 +365,7 @@ object RulesetHelper:
   /**
    * An allow line's step. A host has one treatment, checked at each line: an inspected grant added
    * to a host holding `tunnel`, or `tunnel` to a host holding an inspected grant, is the refusal,
-   * naming the deny that would clear the way. With `check`, the project's line is warned when it
+   * naming the deny that would clear the way. With `check`, the workspace's line is warned when it
    * grants nothing its enclosing scope lacks — a redundant grant whose path still defines a boundary — unless a
    * defaults line at the same path already grants it, the restatement that is how a file stays
    * valid as the image adopts its hosts.
@@ -499,7 +499,7 @@ object RulesetHelper:
    * Kept beside the ruleset, never in it: what the structure's equality must not see. `scopes` per
    * inspected scope; `patterns` per whole-host or `read` deny and per host a deny emptied, under
    * every profile, so a refusal can say `host denied (<line>)` where a file line matched the host;
-   * `widening`, the project lines granting beyond the defaults — a host the defaults lack, a
+   * `widening`, the workspace lines granting beyond the defaults — a host the defaults lack, a
    * grant the defaults lack at the line's path, `deny defaults` — for the summary line's count
    * and `--egress-effective`'s listing.
    */
@@ -564,7 +564,7 @@ object RulesetHelper:
     val clearsDefaults = lines.headOption.exists(_.rule == Rule.DenyDefaults)
 
     // Widening to a tunnel is global: it reads the defaults, not the file's state, because an opaque
-    // tunnel ends inspection and the audit record for a host every project has.
+    // tunnel ends inspection and the audit record for a host every workspace has.
     lines.foreach: line =>
       line.rule match
         case Rule.Allow(host, _, grants)
@@ -705,7 +705,7 @@ object RulesetHelper:
         s"${resolved.provenance.widening.size} widening lines"
     summary +: wideningLine(resolved).toVector
 
-  /** The project lines reaching past the defaults (Provenance.widening); lines, so `; ` separates
+  /** The workspace lines reaching past the defaults (Provenance.widening); lines, so `; ` separates
     * them. */
   def wideningLine(resolved: ResolvedEgress): Option[String] =
     val widening = resolved.provenance.widening
@@ -750,7 +750,7 @@ object RulesetHelper:
    * of its longest literal match: GET and HEAD under `read`, bodyless; fetch discovery and
    * upload-pack under `git-fetch` (GitHelper.isUploadPack), so a clone that could not transfer
    * fails at its first request; push discovery under a `POST` grant, where the push is the
-   * project's own grant; other requests under their method grants, their paths refused for spellings a
+   * workspace's own grant; other requests under their method grants, their paths refused for spellings a
    * forge decodes first (RulePath.requireUnambiguousPath). Where the longest match is a line other than
    * the root, the request is first refused for any spelling RulePath.literalPathProblem names, on
    * every method: under such a line the path decides grants the root does not give.

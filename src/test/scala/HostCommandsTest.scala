@@ -313,12 +313,12 @@ class HostCommandsTest extends munit.FunSuite:
     assertEquals(findOnPath("absent", dir.toString, Os.Linux), None)
     assertEquals(findOnPath("myprogram", "", Os.Linux), None)
 
-  test("an absolute PATH entry inside the project is skipped, not preferred"):
+  test("an absolute PATH entry inside the workspace is skipped, not preferred"):
     assume(!isWindows, "POSIX PATH strings cannot hold drive-letter directories")
-    // The absolute-entry-inside-the-project case (HostCommands.findOnPath's doc, design.md "No
+    // The absolute-entry-inside-the-workspace case (HostCommands.findOnPath's doc, design.md "No
     // repository-controlled host executable resolution").
-    val project = Files.createTempDirectory("untrusted-project").toRealPath()
-    val shipped = Files.createDirectories(project.resolve("node_modules/.bin"))
+    val workspace = Files.createTempDirectory("untrusted-workspace").toRealPath()
+    val shipped = Files.createDirectories(workspace.resolve("node_modules/.bin"))
     val planted = shipped.resolve("podman")
     Files.createFile(planted)
     planted.toFile.setExecutable(true)
@@ -329,27 +329,27 @@ class HostCommandsTest extends munit.FunSuite:
     real.toFile.setExecutable(true)
 
     // Ahead of the system directory, which is exactly where it would otherwise win.
-    assertEquals(findOnPath("podman", s"$shipped:$system", Os.Linux, project), Some(real))
+    assertEquals(findOnPath("podman", s"$shipped:$system", Os.Linux, workspace), Some(real))
     // Skipped rather than merely deprioritized: with nothing else on PATH there is no fallback.
-    assertEquals(findOnPath("podman", shipped.toString, Os.Linux, project), None)
-    // A directory that merely shares a prefix with the project is not inside it.
-    val sibling = Files.createDirectories(project.resolveSibling(s"${project.getFileName}x"))
+    assertEquals(findOnPath("podman", shipped.toString, Os.Linux, workspace), None)
+    // A directory that merely shares a prefix with the workspace is not inside it.
+    val sibling = Files.createDirectories(workspace.resolveSibling(s"${workspace.getFileName}x"))
     val neighbour = sibling.resolve("podman")
     Files.createFile(neighbour)
     neighbour.toFile.setExecutable(true)
-    assertEquals(findOnPath("podman", sibling.toString, Os.Linux, project), Some(neighbour))
+    assertEquals(findOnPath("podman", sibling.toString, Os.Linux, workspace), Some(neighbour))
 
-  test("an executable symlinked out of the project is skipped, and the real path is returned"):
+  test("an executable symlinked out of the workspace is skipped, and the real path is returned"):
     assume(!isWindows, "POSIX PATH strings cannot hold drive-letter directories")
-    val project = Files.createTempDirectory("untrusted-project").toRealPath()
-    val shipped = Files.createDirectories(project.resolve("bin"))
+    val workspace = Files.createTempDirectory("untrusted-workspace").toRealPath()
+    val shipped = Files.createDirectories(workspace.resolve("bin"))
     val planted = shipped.resolve("podman")
     Files.createFile(planted)
     planted.toFile.setExecutable(true)
 
     val outside = Files.createTempDirectory("outside-bin").toRealPath()
     Files.createSymbolicLink(outside.resolve("podman"), planted)
-    assertEquals(findOnPath("podman", outside.toString, Os.Linux, project), None)
+    assertEquals(findOnPath("podman", outside.toString, Os.Linux, workspace), None)
 
     val elsewhere = Files.createTempDirectory("real-bin").toRealPath()
     val real = elsewhere.resolve("podman")
@@ -357,7 +357,7 @@ class HostCommandsTest extends munit.FunSuite:
     real.toFile.setExecutable(true)
     val shim = Files.createTempDirectory("shim-bin").toRealPath()
     Files.createSymbolicLink(shim.resolve("podman"), real)
-    assertEquals(findOnPath("podman", shim.toString, Os.Linux, project), Some(real))
+    assertEquals(findOnPath("podman", shim.toString, Os.Linux, workspace), Some(real))
 
   test("Windows resolution appends executable extensions and splits on ;"):
     val dir = Files.createTempDirectory("path-resolve-win").toRealPath()

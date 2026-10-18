@@ -34,7 +34,7 @@ object RunOnHostSession:
   val LockFile = "lock"
   val TmpDir = "tmp"
   val RecordsDir = "records"
-  val ProjectFile = "project"
+  val WorkspaceFile = "workspace"
   /** The runner's: the launch's sandbox container, by which `--stats` joins the runner to its session. */
   val RunFile = "run"
   val StagingDir = "staging"
@@ -481,14 +481,14 @@ object RunOnHostSession:
    * staging entry through the rename — the scavenger's staging cleanup takes the same lock, so it
    * can never delete a directory whose creator has not locked it yet.
    */
-  def publish(root: Path, project: Path, kind: Kind = Kind.Command): Either[String, Session] =
+  def publish(root: Path, workspaceRoot: Path, kind: Kind = Kind.Command): Either[String, Session] =
     try
       withRootLock(root):
         val staging = Files.createDirectories(root.resolve(StagingDir), ownerOnly)
         val entry = Files.createTempDirectory(staging, kind.prefix, ownerOnly)
         Files.createDirectory(entry.resolve(TmpDir), ownerOnly)
         Files.createDirectory(entry.resolve(RecordsDir), ownerOnly)
-        Files.writeString(entry.resolve(ProjectFile), project.toString + "\n", UTF_8)
+        Files.writeString(entry.resolve(WorkspaceFile), workspaceRoot.toString + "\n", UTF_8)
         val channel = FileChannel.open(
           entry.resolve(LockFile),
           StandardOpenOption.CREATE_NEW,
@@ -713,7 +713,7 @@ object RunOnHostSession:
 
   /**
    * The portfile attribution, for each build directory the session's build files name — the
-   * directories its servers ran in — or, for a session without one, its recorded project: the
+   * directories its servers ran in — or, for a session without one, its recorded workspace root: the
    * directory's `project/target/active.json` names a `local://` socket, and one under the
    * session's *original* path is our server and no other. The socket moved with the
    * condemnation rename, so the portfile's spelling is remapped before the shutdown is sent to
@@ -723,14 +723,14 @@ object RunOnHostSession:
    */
   def collectServers(root: Path, condemned: Path, shutdown: Path => ServerAnswer): Vector[Collected] =
     val builds = buildDirectories(condemned).map(_(1))
-    val projectFile = condemned.resolve(ProjectFile)
+    val workspaceFile = condemned.resolve(WorkspaceFile)
     val directories =
       if builds.nonEmpty then builds
-      else if !Files.isRegularFile(projectFile) then Vector.empty
+      else if !Files.isRegularFile(workspaceFile) then Vector.empty
       else
-        try Vector(Path.of(Files.readString(projectFile, UTF_8).trim))
+        try Vector(Path.of(Files.readString(workspaceFile, UTF_8).trim))
         catch case _: IOException => Vector.empty
-    if directories.isEmpty then Vector(Collected.ServerSkipped("no recorded project"))
+    if directories.isEmpty then Vector(Collected.ServerSkipped("no recorded workspace root"))
     else directories.map(collectServer(root.resolve(condemned.getFileName), condemned, _, shutdown))
 
   private def collectServer(

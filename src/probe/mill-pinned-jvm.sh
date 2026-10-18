@@ -11,7 +11,7 @@
 #
 #   sh src/probe/mill-pinned-jvm.sh [pin]     # a Coursier JVM id; temurin:21 when omitted
 #
-# Run it on macOS from the repository root, with no sandbox session on this project. A pin that
+# Run it on macOS from the repository root, with no sandbox session on this workspace. A pin that
 # resolves to the JDK JAVA_HOME names measures no second grant, so pass one that differs.
 #
 # The provisioning run is yours: Mill's launcher, unconfined, in your environment. It downloads the
@@ -30,8 +30,8 @@ case "$pin" in
     ""|system|*[!A-Za-z0-9.:+_-]*)
         echo "usage: $0 [pin]   a Coursier JVM id other than system, such as temurin:21" >&2; exit 2 ;;
 esac
-project=$(pwd -P)
-source_fixture=$project/src/probe/mill-fixture
+workspace=$(pwd -P)
+source_fixture=$workspace/src/probe/mill-fixture
 [ -x "$source_fixture/mill" ] || { echo "Run this from the repository root." >&2; exit 2; }
 jdk_home=$(cd "${JAVA_HOME:-/nonexistent}" 2>/dev/null && pwd -P) && [ -x "$jdk_home/bin/java" ] ||
     { echo "JAVA_HOME must name the granted JDK." >&2; exit 2; }
@@ -45,13 +45,13 @@ safe_path() { # what value
         *[\'\"\\]*) echo "$1 contains a quote or backslash and cannot be interpolated safely: $2" >&2; exit 2 ;;
     esac
 }
-safe_path "the checkout path" "$project"
+safe_path "the checkout path" "$workspace"
 safe_path "JAVA_HOME" "$jdk_home"
-acceptance_require_idle "/private/tmp/ko-agent-$(id -u)" "$project" || exit 1
+acceptance_require_idle "/private/tmp/ko-agent-$(id -u)" "$workspace" || exit 1
 
-# A fixed path: the run-on-host cache is per project path, so a path new to each run would leave
+# A fixed path: the run-on-host cache is per workspace path, so a path new to each run would leave
 # a cache behind each time.
-work=$project/target/mill-pinned-jvm
+work=$workspace/target/mill-pinned-jvm
 fixture=$work/pinned-jvm-fixture
 java_home_file=$fixture/out/mill-daemon/cache/java-home
 rm -rf "$work"; mkdir -p "$fixture" || exit 1
@@ -68,7 +68,7 @@ printf '  mill %s, pin %s\n' "$(grep -m1 -o '"[0-9][^"]*"' "$fixture/mill" | tr 
 SESSION_TMP=""
 cleanup() {
     case "$SESSION_TMP" in /private/tmp/ko-agent-*-accept/*/tmp) rm -rf "${SESSION_TMP%/tmp}" ;; esac
-    # A build directory left under the project would be met by the next launch's provisioning.
+    # A build directory left under the workspace would be met by the next launch's provisioning.
     rm -rf "$fixture"
 }
 trap cleanup EXIT

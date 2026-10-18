@@ -33,8 +33,8 @@ case-sensitive sparse-image volume mounted under `$HOME` — `probe/name-rule-cs
 the whole run, host-side checks included:
 
 - All 14 denied spellings failed with exactly `EPERM`, and all six allowed names were created.
-- Afterwards the host-side `lstat(".git")` found nothing and git discovered no repository at the
-  project — the property itself, on this variant's fold table.
+- Afterwards the host-side `lstat(".git")` found nothing and git discovered no repository in the
+  workspace — the property itself, on this variant's fold table.
 
 ### Verified: NTFS (Windows Server 24H2; 2026-08-19)
 
@@ -52,7 +52,7 @@ found nothing afterwards.
 
 ### Measured: two letters APFS resolves to `.ko-agent-sandbox`'s (macOS 26.4.1; 2026-09-19)
 
-On the case-insensitive project volume, beside an existing `.ko-agent-sandbox`, the spellings
+On the workspace's case-insensitive volume, beside an existing `.ko-agent-sandbox`, the spellings
 `.<U+212A>o-agent-sandbox` (KELVIN SIGN) and `.ko-agent-<U+017F>andbox` (LONG S) resolve to it
 (`src/probe/seatbelt-semantics.sh` E11, the launcher's probe). Through a filtered session whose
 filter folds neither letter, `mkdir` of each spelling succeeds and `.ko-agent-sandbox` then
@@ -61,14 +61,14 @@ resolves to the new directory, while `.KO-AGENT-SANDBOX` meets `EPERM`.
 ### Verified: the `.ko-agent-sandbox` rows, APFS case-insensitive (macOS 26.4.1; 2026-09-19)
 
 `probe/apfs-name-rule-probe.py` through the production stack — filtered session → FUSE filter →
-virtiofs → APFS — in a subdirectory of a project, the rule holding at any depth:
+virtiofs → APFS — in a subdirectory of a workspace, the rule holding at any depth:
 
 - All 21 denied spellings failed with exactly `EPERM`: the 14 `.git` rows, and
   `.ko-agent-sandbox` itself, its two ASCII case variants, the KELVIN SIGN and LONG S spellings,
   the soft-hyphen form and the trailing dot.
 - All seven allowed names were created, `.ko-agent-sandbox-notes` among them, and afterwards the
   host's `ls .git` and `ls .ko-agent-sandbox` found nothing there and git discovered only the
-  enclosing project's repository.
+  enclosing workspace's repository.
 - The mounted suite's rows for both letters pass (`--self-test`, `probe/rig.sh`).
 
 ### Verified: the `.ko-agent-sandbox` rows, NTFS (Windows Server 2025, 10.0.26100.32522; 2026-09-19)
@@ -85,17 +85,17 @@ podman machine → the host's `C:` NTFS volume served at `/mnt/c`, podman 6.1.0:
 
 ### Verified: NTFS 8.3 short names (Windows Server 2025, podman 6.1.0; 2026-09-19)
 
-On a `C:` volume with 8.3 name generation on (`fsutil 8dot3name query C:`), a scratch project
+On a `C:` volume with 8.3 name generation on (`fsutil 8dot3name query C:`), a scratch workspace
 whose `.git` (`git init`) and `.ko-agent-sandbox/egress/rule` the host created shows, in
 `cmd /c dir /x /a`, the short names `GIT~1` and `KO-AGE~1`.
 
 The WSL drive mount resolves a short name to the entry and gives it the long name's identity: in
-the podman machine, `stat -c '%d:%i'` at `/mnt/c/<project>` prints one pair for `.git` and
+the podman machine, `stat -c '%d:%i'` at `/mnt/c/<workspace>` prints one pair for `.git` and
 `GIT~1` (`69:5910974511087336`), one for `.ko-agent-sandbox` and `KO-AGE~1`, and one for
 `.git/config` and `GIT~1/config`. 1000 `stat` processes over `.git` and `.ko-agent-sandbox` took
 6.7 s where both exist and 2.6 s in a directory with neither.
 
-Inside a filtered session over that project (`security-research.md`, "Windows 8.3 short names",
+Inside a filtered session over that workspace (`security-research.md`, "Windows 8.3 short names",
 has the check):
 
 - `echo x >> GIT~1/config`, `echo x >> KO-AGE~1/egress/rule` and
@@ -109,13 +109,13 @@ has the check):
 - Afterwards the host's `Get-Content` shows `.git\config` and `egress\rule` as the host wrote
   them, and `cmd /c dir /x /a .ko-agent-sandbox\egress` lists `rule` alone.
 
-The create side, in a filtered session over a new, empty project: `mkdir GIT~1` exits 0, and the
+The create side, in a filtered session over a new, empty workspace: `mkdir GIT~1` exits 0, and the
 host's `cmd /c dir /x /a` afterwards lists one directory, long name `GIT~1`, no short name, and
 no `.git`.
 
 ### Verified: a listed name's NTFS 8.3 short name (Windows Server 2025, podman 6.1.0; 2026-09-27)
 
-On a `C:` volume with 8.3 name generation on, a project whose `.vscode/tasks.json`,
+On a `C:` volume with 8.3 name generation on, a workspace whose `.vscode/tasks.json`,
 `.claude/settings.json` and `node_modules/p` the host created shows, in `cmd /c dir /x /a`, the
 short names `VSCODE~1`, `CLAUDE~1`, `NODE_M~1` and `GIT~1`. In a filtered session under the
 default file rules:
@@ -129,7 +129,7 @@ A symlink the session makes is one the host follows: `ln -s GIT~1 gitlink` in th
 NTFS `SymbolicLink` whose target is `GIT~1`, and the host's `Get-Content gitlink\HEAD` printed
 `ref: refs/heads/master`. So a symlink target that spells a short name is refused, whatever the
 name holds when the link is made (`fs.rs`, `allow_symlink_target`). With that check, in a session
-over a project whose `.git` and `node_modules` show `GIT~1` and `NODE_M~1`, `ln -s GIT~1 gitlink`,
+over a workspace whose `.git` and `node_modules` show `GIT~1` and `NODE_M~1`, `ln -s GIT~1 gitlink`,
 `ln -s NODE_M~1 nm` and `ln -s .git gitlink2` each fail, and `ln -s src srclink` succeeds.
 
 ## End-to-end coherency through the host share
@@ -144,7 +144,7 @@ invalidating the cached page as designed. The sandbox→host direction holds on 
 is tested at the filter's own layer by the rig suite.
 
 The virtiofs premise, as observed on the same machine: the host shares (`/Users`, `/private`,
-`/var/folders` — the first is the one project directories are under) mount in the VM as
+`/var/folders` — the first is the one workspace roots are under) mount in the VM as
 `virtiofs (rw,relatime,context=system_u:object_r:nfs_t:s0)` — **no `cache=` option appears**, so
 the caching mode is decided host-side by the hypervisor (vfkit/applehv) and is not introspectable
 from the guest. The premise is therefore behavioral, not declarative: the coherency result above,
@@ -156,7 +156,7 @@ machine-shared sources.)
 ### Verified: the same coherency, launcher-driven (same machine, libkrun, fc44 kernel; 2026-09-01)
 
 The run above repeated by `--self-test`'s own share rows (the launcher's `SelfTestShare.scala`),
-with the launcher playing the host writer over a scratch lower in the project directory: the
+with the launcher playing the host writer over a scratch lower in the workspace: the
 guard's refusal held through the whole stack, the host write was visible to `read()` 1 ms after
 it was written, and the established mmap showed it 0 ms behind `read()`. Every later re-run
 follows this procedure.
@@ -195,7 +195,7 @@ measured against host-side observations at every step:
 So a host write to a mapped file succeeds on Windows too. Whether the mapping shows it is
 `--self-test`'s `mmap` row, which has not run there (`TODO.md`, "End-to-end coherency through the
 real host share"). What the lock costs is co-editing with the writers it refuses, and SECURITY.md
-("The project directory") records it.
+("The workspace") records it.
 
 The Windows 8.3 short name `GIT~1` is in the empirical corpus to be *confirmed* rather than assumed,
 not because it is evidence of a git-side gap: the 8.3 leg of CVE-2014-9390 was **Mercurial's**, not
@@ -364,7 +364,7 @@ already in `~/.m2`.
 | in the mount | `~/.cache`, by `<build><directory>` in the parent POM | 47 s |
 | under `~` | under `~` | 1.9 s |
 
-Maven ignores the property: each module keeps its `target/` in the project, and nothing appears
+Maven ignores the property: each module keeps its `target/` in the workspace, and nothing appears
 at the path given. The POM's `<directory>`, keyed by `${project.artifactId}`, moves both modules'
 output, and no `target/` remains in the mount. That run still takes 45 s more than the build
 outside the mount: as with gradle, most of the extra build time remains after moving the
@@ -372,7 +372,7 @@ persistent output outside the mount. What the remaining time is spent on is not 
 
 ### Measured: sbt over dangling cache links (macOS 26.4.1, podman 6.1.1, sbt 2.0.8; 2026-09-20)
 
-A one-source sbt 2.0.8 project that keeps its output in the project. On the host, a build, then
+A one-source sbt 2.0.8 project that keeps its output in the workspace. On the host, a build, then
 `rm -rf target project/target`, then a build again: the second is a build-cache hit, and it leaves
 35 symlinks under `target/` into `~/Library/Caches/sbt/v2/cas`, the 5 class files among them; a
 build that compiles leaves class files as regular files. In a filtered session all 35 dangle.
@@ -400,8 +400,8 @@ build succeeds.
 
 ### Measured: the staged lower on APFS (macOS 26.4.1, podman 6.0.2; 2026-08-22)
 
-`probe/lower-probe.py` and its host half, in a filtered session over a case-insensitive APFS project
-directory (host Darwin 25.4.0 arm64, machine kernel 7.1.3-200.fc44.aarch64):
+`probe/lower-probe.py` and its host half, in a filtered session over a workspace on case-insensitive
+APFS (host Darwin 25.4.0 arm64, machine kernel 7.1.3-200.fc44.aarch64):
 
 - **Hardlink identity does not survive the filter, and the filter is the whole of why.** A
   host-made pair reads back through the mount as two inode numbers with `st_nlink` 2, while a

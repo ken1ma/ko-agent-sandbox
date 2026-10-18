@@ -121,7 +121,7 @@ class SandboxTextWidthTest extends munit.FunSuite:
   directory.test("the image's wcwidth takes precedence over PYTHONPATH and virtual-environment packages"): directory =>
     assume(Files.isDirectory(Path.of("/opt/ko-sandbox/python/wcwidth")), "needs the image's bundled wcwidth")
     val shadow = Files.createDirectory(directory.resolve("shadow"))
-    file(shadow, "wcwidth.py", "raise RuntimeError('project wcwidth was imported')\n")
+    file(shadow, "wcwidth.py", "raise RuntimeError('shadowing wcwidth was imported')\n")
     val plain = file(directory, "plain.txt", "全角\n")
     val environment = directory.resolve("venv")
     val created = run("python3", "-m", "venv", "--without-pip", environment.toString)

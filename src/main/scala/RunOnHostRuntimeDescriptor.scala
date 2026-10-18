@@ -1,5 +1,5 @@
 // What a launch's runner publishes about each runtime it owns, for another launch on the same
-// project to attach its commands to (RunnerRuntimes.attached): the file
+// workspace to attach its commands to (RunnerRuntimes.attached): the file
 // `runtime-<program>-<hash>` in the owner's session directory, which no confined process can
 // write, since the profiles grant `tmp/` and nothing else of the session. Published by rename once
 // the server or daemon is up, deleted before any record of the runtime is discarded, and so
@@ -117,7 +117,7 @@ object RunOnHostRuntimeDescriptor:
       prereqs, sessionTmp, distribution, sbtGlobal, ivyHome, gradleUserHome, m2Repository, proxyPort, trust,
       systemPaths, network, fileRules,
     ) = inputs.profile
-    val RunOnHostPrereqs.CommandPrereqs(project, jdkHome, coursierV1, program, executable) = prereqs
+    val RunOnHostPrereqs.CommandPrereqs(workspaceRoot, jdkHome, coursierV1, program, executable) = prereqs
     val SeatbeltProfile.SystemPaths(reads, executes) = systemPaths
     val networkName = network match
       case SeatbeltProfile.Network.ProxyOnly             => "proxy-only"
@@ -127,7 +127,7 @@ object RunOnHostRuntimeDescriptor:
       case SeatbeltProfile.Network.Gradle                => "gradle"
     val fields =
       Seq(
-        program.name, project.toString, jdkHome.toString, coursierV1.toString, executable.toString,
+        program.name, workspaceRoot.toString, jdkHome.toString, coursierV1.toString, executable.toString,
         distribution.fold("")(_.toString), sbtGlobal.fold("")(_.toString), ivyHome.fold("")(_.toString),
         gradleUserHome.fold("")(_.toString), m2Repository.fold("")(_.toString), sessionTmp.toString,
         proxyPort.toString, trust.toString, networkName,

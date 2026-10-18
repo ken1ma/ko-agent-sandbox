@@ -1,14 +1,14 @@
-// The generated Seatbelt profile for the project this runs in, so a real build can be driven
+// The generated Seatbelt profile for the workspace this runs in, so a real build can be driven
 // under it by hand.
 //
 // Test scope on purpose: src/probe/run-on-host-acceptance-test.sh and src/probe/run-on-host-profile-iterate.sh are its
 // only callers, and a profile emitter in the shipped jar would be a command nobody documented.
 //
-//   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> [system-paths-file] [<program>] [project]"
+//   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> [system-paths-file] [<program>] [workspace]"
 //   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> <system-paths-file> proxy <jdk> <classpath>"
 //   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> <system-paths-file> proxy-image <binary>"
 //
-// The project defaults to the working directory; the acceptance test's mill rows name src/probe/mill-fixture.
+// The workspace defaults to the working directory; the acceptance test's mill rows name src/probe/mill-fixture.
 // The system-paths-file grammar is RunOnHostSandbox.readSystemPaths's. The proxy form renders
 // the host proxy's own profile for the java and class path the acceptance test runs its proxy rows with; the
 // proxy-image form renders it for a native image, whose inputs RunOnHostProxy.proxyInputs builds
@@ -24,7 +24,7 @@ object EmitRunOnHostProfile:
 
   def main(args: Array[String]): Unit =
     if args.isEmpty then
-      Console.err.println("usage: EmitRunOnHostProfile <out.sb> [system-paths-file] [sbt|mill|gradle|mvn] [project]")
+      Console.err.println("usage: EmitRunOnHostProfile <out.sb> [system-paths-file] [sbt|mill|gradle|mvn] [workspace]")
       Console.err.println("       EmitRunOnHostProfile <out.sb> <system-paths-file> proxy <jdk> <classpath>")
       Console.err.println("       EmitRunOnHostProfile <out.sb> <system-paths-file> proxy-image <binary>")
       sys.exit(2)
@@ -55,13 +55,13 @@ object EmitRunOnHostProfile:
       sys.exit(0)
 
     val env: String => Option[String] = name => Option(System.getenv(name))
-    val project = Paths.get(args.lift(3).getOrElse("")).toAbsolutePath.toRealPath()
+    val workspace = Paths.get(args.lift(3).getOrElse("")).toAbsolutePath.toRealPath()
 
     val program = args.lift(2).map(_.toLowerCase) match
       case None        => Program.Sbt
       case Some(name)  => Program.named(name).getOrElse(fail(s"unknown program $name"))
 
-    val assembled = RunOnHostSandbox.assemble(project, program, env, project).fold(fail, identity)
+    val assembled = RunOnHostSandbox.assemble(workspace, program, env, workspace).fold(fail, identity)
     val sessionTmp = sessionTmpFits(newSessionTmp()).fold(fail, identity)
     val systemPaths = RunOnHostSandbox.readSystemPaths(args.lift(1).map(Paths.get(_)))
 
@@ -74,8 +74,8 @@ object EmitRunOnHostProfile:
       network = program match
         case Program.Gradle => SeatbeltProfile.Network.Gradle
         case _              => SeatbeltProfile.Network.ProxyOnly,
-      // The project's lines, as a command the acceptance test starts without a launch gets.
-      fileRules = FileRules.ofProject(project).fold(fail, identity),
+      // The workspace's lines, as a command the acceptance test starts without a launch gets.
+      fileRules = FileRules.ofWorkspace(workspace).fold(fail, identity),
     )
 
     val profile = SeatbeltProfile.render(inputs).fold(fail, identity)
@@ -94,7 +94,7 @@ object EmitRunOnHostProfile:
     Console.err.println(s"gradle user home: ${assembled.gradleUserHome}")
     Console.err.println(s"m2 repository: ${assembled.m2Repository}")
     // The acceptance test re-runs this classpath as RunOnHost, plain java with no sbt in front, because a
-    // supervisor driven through `sbt Test/runMain` would find its own server holding the project's
+    // supervisor driven through `sbt Test/runMain` would find its own server holding the workspace's
     // portfile and end it (one server per build directory). Walked from the class loaders, not
     // java.class.path — runMain ran this inside the build JVM, whose own classpath is sbt's — and
     // copied beside the profile,

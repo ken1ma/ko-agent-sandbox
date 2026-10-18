@@ -233,7 +233,7 @@ impl KoAgentFs {
     /// kernel resolves the sandbox's own symlinks — it reads the link and looks up each resolved
     /// component in turn — so every component of a live chain is a directory and a symlink can
     /// only appear in one that has gone stale. Following one there is exactly what would let
-    /// writable project data resolve into a gitdir. A stale chain fails closed with `ELOOP` — no
+    /// writable workspace data resolve into a gitdir. A stale chain fails closed with `ELOOP` — no
     /// `DENY` line, because no policy decision was reached. The callers that must see a link still
     /// do: openat2 exempts `O_PATH | O_NOFOLLOW`, which is how `getattr` and `setattr` stat one
     /// and `link` links one, and `readlink` goes through its parent's fd instead.
@@ -549,7 +549,7 @@ impl KoAgentFs {
                     return Err(deny(
                         "symlink",
                         &format!("{link_name:?}"),
-                        "file-rule-region: refusing a symlink into a Git directory from the project",
+                        "file-rule-region: refusing a symlink into a Git directory from the workspace",
                     ));
                 }
                 continue;
@@ -773,7 +773,7 @@ fn long_name_sibling(parentfd: &OwnedFd, name: &OsStr, st: &FileStat) -> Option<
 ///   - the access mode, so the handle is no wider than what was asked and a newly created
 ///     write-only file does not fail the daemon's own read permission;
 ///   - `O_EXCL`, which is what makes `open(O_CREAT | O_EXCL)` a lock at all. Dropping it lets every
-///     contender succeed, and `<gitdir>/index.lock` is exactly that pattern — two of a project's
+///     contender succeed, and `<gitdir>/index.lock` is exactly that pattern — two of a workspace's
 ///     concurrent sessions would each believe they held the index;
 ///   - `O_TRUNC`, the caller's own request to start from an empty file;
 ///   - `O_APPEND`, without which an append is not one. The kernel computes an appending write's
@@ -895,9 +895,9 @@ fn to_errno(err: NixErrno) -> Errno {
 ///
 ///   - it accepts a target whose own components are symlinks the host may resolve differently,
 ///     since it walks the target lexically and resolves nothing;
-///   - it refuses every absolute target, including one under the project's own path — which is
-///     right where the host has the project at another path (Windows, `/mnt/<drive>/...` in here),
-///     and needlessly strict where the project is mounted at its host path.
+///   - it refuses every absolute target, including one under the workspace root's own path — which
+///     is right where the host has the workspace root at another path (Windows, `/mnt/<drive>/...`
+///     in here), and needlessly strict where the workspace root is mounted at its host path.
 ///
 /// Syntax is what a filter serving an unknown host layout can judge. The rule earns its place on the
 /// second direction anyway: what a caching program plants is the container's own store path, which
@@ -1514,9 +1514,9 @@ impl Filesystem for KoAgentFs {
         // below) — but a symlink target is the only session-written content the host's own
         // kernel later follows as a path, with the user's privileges and nothing having to run.
         // `target_has_portable_syntax` has the syntax this accepts and how far that syntax is only
-        // an approximation; SECURITY.md, "The project directory", has the threat.
+        // an approximation; SECURITY.md, "The workspace", has the threat.
         //
-        // This affects programs that cache outside the project and link into it, and sbt 2 is the
+        // This affects programs that cache outside the workspace and link into it, and sbt 2 is the
         // measured case. Unrefused, it writes a build-cache hit as links into its own store,
         // the class files included — `~/.cache/sbt/v2/cas` in here, `~/Library/Caches/sbt/v2/cas`
         // on the host — and neither side has the other's. Measured in the direction the refusal

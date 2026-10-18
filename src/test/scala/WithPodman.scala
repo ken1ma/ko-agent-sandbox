@@ -1,4 +1,4 @@
-// What the container-launching suites share: the testWithPodman condition, a scratch project of their
+// What the container-launching suites share: the testWithPodman condition, a scratch workspace of their
 // own, and starting and stopping real sessions.
 //
 // Split out so each suite reads as its assertions rather than its setup — and so a run's
@@ -78,7 +78,7 @@ object WithPodman extends munit.Assertions:
         LauncherImages.bundleMismatch(image, LauncherImages.bundledSourceId(context), label).foreach: mismatch =>
           assert(overridden, mismatch)
 
-  /** One scratch project as the registry records it: the id the launcher gives its directory, the
+  /** One scratch workspace as the registry records it: the id the launcher gives its directory, the
     * JVM that created it — its pid and start time, since a pid alone is reused — and the directory
     * itself, so it is deleted even when no launch ever wrote state for it. */
   case class Scratch(id: String, ownerPid: Long, ownerStart: Long, directory: Path)
@@ -96,12 +96,12 @@ object WithPodman extends munit.Assertions:
       handle.isAlive && (entry.ownerStart == 0L || start == 0L || start == entry.ownerStart)
     .orElse(false)
 
-  /** The scratch projects the suites created and have not discarded: the sweep's evidence that
-    * an id is theirs, since a name matching the id pattern is one a real project could carry. Under target/ so
+  /** The scratch workspaces the suites created and have not discarded: the sweep's evidence that
+    * an id is theirs, since a name matching the id pattern is one a real workspace could carry. Under target/ so
     * it outlives the scratch directory and the run, and goes with `sbt clean`, after which a
     * leftover is the user's `--reset <id>`. */
-  private val ScratchRegistry = Paths.get("target/ko-agent-scratch-projects").toAbsolutePath
-  private val ScratchRegistryLock = ScratchRegistry.resolveSibling("ko-agent-scratch-projects.lock")
+  private val ScratchRegistry = Paths.get("target/ko-agent-scratch-workspaces").toAbsolutePath
+  private val ScratchRegistryLock = ScratchRegistry.resolveSibling("ko-agent-scratch-workspaces.lock")
 
   private def registered(): Vector[Scratch] =
     if !Files.exists(ScratchRegistry) then Vector.empty
@@ -121,15 +121,16 @@ object WithPodman extends munit.Assertions:
       writeReadable(ScratchRegistry, lines.mkString("", "\n", "\n"))
 
   /** The id the launcher gives a directory: the real path, less the macOS data-volume alias
-    * (SandboxProject.canonicalProjectDir), hashed. */
-  private def launcherId(project: Path): String =
-    SandboxProject.projectIdOf(SandboxProject.canonicalProjectDir(project.toRealPath(), currentOs), currentOs)
+    * (SandboxWorkspace.canonicalWorkspaceRoot), hashed. */
+  private def launcherId(workspace: Path): String =
+    val workspaceRoot = SandboxWorkspace.canonicalWorkspaceRoot(workspace.toRealPath(), currentOs)
+    SandboxWorkspace.workspaceIdOf(workspaceRoot, currentOs)
 
-  private def scratchId(project: Path): String = launcherId(project)
+  private def scratchId(workspace: Path): String = launcherId(workspace)
 
   private def forget(id: String): Unit = updateRegistry(_.filterNot(_.id == id))
 
-  /** The registered scratch projects a sweep may delete: the orphans, whose owning JVM is gone, and
+  /** The registered scratch workspaces a sweep may delete: the orphans, whose owning JVM is gone, and
     * this JVM's own, whose test runs are sequential — never another live JVM's, whichever of its
     * sessions are running at the moment. `alive` reports whether an entry's recorded owner still runs. */
   def orphanScratch(entries: Vector[Scratch], selfPid: Long, alive: Scratch => Boolean): Vector[Scratch] =
@@ -137,7 +138,7 @@ object WithPodman extends munit.Assertions:
 
   private var swept = false
 
-  /** Scratch projects an earlier run left — the test failed before `discard` removed them, or a
+  /** Scratch workspaces an earlier run left — the test failed before `discard` removed them, or a
     * launch wrote after its poll ended and after the reset — are discarded now: reset by id
     * where state remains, and the registered directory deleted where it remains. Once per JVM,
     * before this run's first launch; marked done only when it succeeded, so a failed sweep fails
@@ -145,15 +146,15 @@ object WithPodman extends munit.Assertions:
   private def sweepEarlierRuns(): Unit =
     if !swept then
       val volumes = listed(podman, "volume", "ls", "--format", "{{.Name}}")
-      val known = SandboxStats.projectIds(currentOs, volumes).toSet
+      val known = SandboxStats.workspaceIds(currentOs, volumes).toSet
       val orphans = orphanScratch(registered(), ProcessHandle.current.pid, ownerAlive)
       val stale = orphans.map(_.id).filter(known)
       if stale.nonEmpty then
-        val from = scratchProject()
+        val from = scratchWorkspace()
         val fromId = scratchId(from)
         try
           val (ok, output) = resetIds(from, stale*)
-          assert(ok, s"--reset ${stale.mkString(" ")}, sweeping earlier runs' scratch projects, failed:\n$output")
+          assert(ok, s"--reset ${stale.mkString(" ")}, sweeping earlier runs' scratch workspaces, failed:\n$output")
         finally
           deleteRecursively(from)
           forget(fromId)
@@ -175,7 +176,7 @@ object WithPodman extends munit.Assertions:
   /** One live session, the names of everything its run created, and the launcher process that
     * performs its teardown. */
   case class Session(
-    container: String, id: String, suffix: String, project: Path, log: Path, launcher: Process,
+    container: String, id: String, suffix: String, workspaceRoot: Path, log: Path, launcher: Process,
   ):
     def proxy: String = AgentSandboxLauncher.proxyRunContainer(id, suffix)
     def sandboxNetwork: String = AgentSandboxLauncher.sandboxRunNetwork(id, suffix)
@@ -194,12 +195,12 @@ object WithPodman extends munit.Assertions:
 
   def networks(): Vector[String] = listed(podman, "network", "ls", "--format", "{{.Name}}")
 
-  /** A scratch project, registered by the id the launcher will give it ([[ScratchRegistry]]). */
-  def scratchProject(): Path =
-    val project = Files.createTempDirectory("ko-agent-scratch").toRealPath()
+  /** A scratch workspace, registered by the id the launcher will give it ([[ScratchRegistry]]). */
+  def scratchWorkspace(): Path =
+    val workspace = Files.createTempDirectory("ko-agent-scratch").toRealPath()
     val (pid, start) = owner(ProcessHandle.current)
-    updateRegistry(_ :+ Scratch(SandboxProject.projectIdOf(project, currentOs), pid, start, project))
-    project
+    updateRegistry(_ :+ Scratch(SandboxWorkspace.workspaceIdOf(workspace, currentOs), pid, start, workspace))
+    workspace
 
   /**
    * The shared sessions state --egress=deny-unless-allowed rather than inheriting it as the
@@ -207,11 +208,11 @@ object WithPodman extends munit.Assertions:
    * with the default. A suite asserting a profile's own behavior launches through launchWith
    * and passes its own options.
    */
-  def launch(project: Path, log: Path, extra: (String, String)*): Session =
-    launchWith(project, log, Vector("--egress=deny-unless-allowed"), extra*)
+  def launch(workspace: Path, log: Path, extra: (String, String)*): Session =
+    launchWith(workspace, log, Vector("--egress=deny-unless-allowed"), extra*)
 
   def launchWith(
-    project: Path,
+    workspace: Path,
     log: Path,
     options: Vector[String],
     extra: (String, String)*
@@ -219,7 +220,7 @@ object WithPodman extends munit.Assertions:
     // The id the launcher will compute for this directory, derived through its own function rather
     // than parsed back out of whatever container turns up. Waiting for *any* new session instead
     // could select one another suite started concurrently.
-    val id = launcherId(project)
+    val id = launcherId(workspace)
     val prefix = AgentSandboxLauncher.sandboxRunContainer(id, "")
 
     val before = running()
@@ -228,7 +229,7 @@ object WithPodman extends munit.Assertions:
     )
     builder.environment().put(AgentSandboxLauncher.SessionStartVariable, "immediate")
     extra.foreach((name, value) => builder.environment().put(name, value))
-    builder.directory(project.toFile)
+    builder.directory(workspace.toFile)
     builder.redirectErrorStream(true)
     builder.redirectOutput(log.toFile)
     val launcher = builder.start()
@@ -245,7 +246,7 @@ object WithPodman extends munit.Assertions:
     assert(appeared.nonEmpty, s"a session never started$ended; its output:\n${Files.readString(log)}")
     val container = appeared.head
 
-    Session(container, id, container.stripPrefix(prefix), project, log, launcher)
+    Session(container, id, container.stripPrefix(prefix), workspace, log, launcher)
 
   def stop(session: Session): Unit =
     run(podman, "stop", "--time", "2", session.container)
@@ -268,48 +269,48 @@ object WithPodman extends munit.Assertions:
       fail(s"a launch from $from did not end; its output:\n${Files.readString(log)}")
     (launcher.exitValue, Files.readString(log))
 
-  /** `--reset` in a project, as the user runs it after a crash: whether it succeeded, and its own
+  /** `--reset` in a workspace, as the user runs it after a crash: whether it succeeded, and its own
     * output, all that is worth printing when it did not. */
-  def reset(project: Path, extra: (String, String)*): (Boolean, String) = action(project, Vector("--reset"), extra*)
+  def reset(workspace: Path, extra: (String, String)*): (Boolean, String) = action(workspace, Vector("--reset"), extra*)
 
-  /** `--reset <id>...`, run from `from`: the projects' own directories are gone. */
+  /** `--reset <id>...`, run from `from`: the workspaces' own directories are gone. */
   def resetIds(from: Path, ids: String*): (Boolean, String) = action(from, Vector("--reset") ++ ids)
 
-  def resetRunOnHost(project: Path): (Boolean, String) = action(project, Vector("--reset-run-on-host"))
+  def resetRunOnHost(workspace: Path): (Boolean, String) = action(workspace, Vector("--reset-run-on-host"))
 
   /** `--reset-all`, run from `from`, under the roots `extra` names: never the test host's own. */
   def resetAll(from: Path, extra: (String, String)*): (Boolean, String) = action(from, Vector("--reset-all"), extra*)
 
-  private def action(project: Path, action: Vector[String], extra: (String, String)*): (Boolean, String) =
-    val log = project.resolve(s"${action.head.stripPrefix("--")}.log")
+  private def action(workspace: Path, action: Vector[String], extra: (String, String)*): (Boolean, String) =
+    val log = workspace.resolve(s"${action.head.stripPrefix("--")}.log")
     val builder = ProcessBuilder((Vector("java", "-jar", jar.toString) ++ action)*)
     extra.foreach((name, value) => builder.environment().put(name, value))
-    builder.directory(project.toFile)
+    builder.directory(workspace.toFile)
     builder.redirectErrorStream(true)
     builder.redirectOutput(log.toFile)
     val ok = builder.start().waitFor() == 0
     (ok, Files.readString(log))
 
-  /** The file `--stats` names this project's directory from. */
-  def projectRecord(project: Path): Path =
-    LauncherState.projectsStateRoot(currentOs).resolve(launcherId(project))
+  /** The file `--stats` names this workspace's root from. */
+  def workspaceRecord(workspace: Path): Path =
+    LauncherState.workspacesStateRoot(currentOs).resolve(launcherId(workspace))
 
-  /** Each session creates project state — a volume, a CA, a ruleset cache, logs and the mount
-    * tree — so a scratch project is reset before it is deleted. A scratch
-    * project never builds on the host, so the reset removes its --stats record with the rest. */
-  def discard(project: Path): Unit =
+  /** Each session creates workspace state — a volume, a CA, a ruleset cache, logs and the mount
+    * tree — so a scratch workspace is reset before it is deleted. A scratch
+    * workspace never builds on the host, so the reset removes its --stats record with the rest. */
+  def discard(workspace: Path): Unit =
     try
-      val (ok, output) = reset(project)
+      val (ok, output) = reset(workspace)
       assert(ok, s"--reset failed; its output:\n$output")
-      val record = projectRecord(project)
-      assert(!Files.exists(record), s"--reset left the project's --stats record $record; its output:\n$output")
-      forget(scratchId(project))
-    finally deleteRecursively(project)
+      val record = workspaceRecord(workspace)
+      assert(!Files.exists(record), s"--reset left the workspace's --stats record $record; its output:\n$output")
+      forget(scratchId(workspace))
+    finally deleteRecursively(workspace)
 
-  /** Where the session has its project: the project's own path, as the launcher spells it. */
+  /** Where the session has its workspace: the workspace root's own path, as the launcher spells it. */
   def mountPath(session: Session): String =
-    val project = SandboxProject.canonicalProjectDir(session.project, currentOs)
-    SandboxProject.mountPathOf(currentOs, project).fold(reason => throw AssertionError(reason), identity)
+    val workspaceRoot = SandboxWorkspace.canonicalWorkspaceRoot(session.workspaceRoot, currentOs)
+    SandboxWorkspace.mountPathOf(currentOs, workspaceRoot).fold(reason => throw AssertionError(reason), identity)
 
   /** A command inside a live session, run the way the agent in it would. */
   def exec(session: Session, command: String*): Run =

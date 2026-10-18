@@ -175,11 +175,11 @@ object RunOnHostChannel:
     sandboxDir: String = SandboxDir,
   )
 
-  /** Everything one session's runner serves with: the launcher's canonical project root, the
+  /** Everything one session's runner serves with: the launcher's canonical workspace root, the
     * programs `--run-on-host` named, and how a validated request — program, working directory,
     * build lock file, arguments — becomes a supervisor command. */
   final case class Service(
-    project: Path,
+    workspaceRoot: Path,
     programs: Set[String],
     /** The supervisor under the build lock (RunOnHostSession.lockedSpawn, under the runner): dispatch
       * speaks the lock holder's protocol. */
@@ -195,8 +195,8 @@ object RunOnHostChannel:
       * with the request's program: what the runtime records once the command is over
       * (RunnerRuntimes.commandEnded). */
     ended: String => Unit = _ => (),
-    /** What the project is mounted at inside the container — its own path
-      * (SandboxProject.mountPathOf): the spelling requests arrive in. */
+    /** What the workspace root is mounted at inside the container — its own path
+      * (SandboxWorkspace.mountPathOf): the spelling requests arrive in. */
     mount: String,
     /** How long the runner waits for a complete request before the handshake expires. */
     requestDeadlineMillis: Long = 30_000,
@@ -509,7 +509,7 @@ object RunOnHostChannel:
 
   /** The channel's boundary work: the program must be among those `--run-on-host` named, and the working
     * directory — the one value arriving from inside the sandbox — is translated and checked to resolve inside the
-    * project before anything is derived from it. */
+    * workspace before anything is derived from it. */
   def validated(service: Service, request: Request): Either[String, Path] =
     if !service.programs(request.program) then
       Left(
@@ -519,11 +519,11 @@ object RunOnHostChannel:
     else
       RunOnHostPrereqs
         .workingDirectory(
-          request.workingDirectory, service.mount, service.project, FileHelper.realPath, Os.Mac,
+          request.workingDirectory, service.mount, service.workspaceRoot, FileHelper.realPath, Os.Mac,
         )
         .left.map(_ =>
           s"CHANNEL_UNAVAILABLE: working directory ${request.workingDirectory} is not the " +
-            "project or beneath it",
+            "workspace root or beneath it",
         )
 
   // ---------------------------------------------------------------------------
@@ -540,7 +540,7 @@ object RunOnHostChannel:
   def spawnRunner(
     podman: String,
     container: String,
-    project: Path,
+    workspaceRoot: Path,
     programs: Seq[String],
     logFile: Path,
     mount: String,
@@ -562,7 +562,7 @@ object RunOnHostChannel:
         (Seq("/bin/sh", "-c", "trap '' INT HUP; exec \"$@\"", "ko-agent-run-on-host-runner")
           ++ RunOnHostSandbox.selfInvocation(
             (Seq(
-              "--serve-run-on-host", podman, container, project.toString,
+              "--serve-run-on-host", podman, container, workspaceRoot.toString,
               programs.mkString(","), logFile.toString,
             ) ++ forwards.map(forward => RunOnHostSandbox.EnvOption + forward.name)
               ++ fileRules.map(file => RunOnHostSandbox.FileRulesOption + file)
@@ -583,16 +583,16 @@ object RunOnHostChannel:
       true
     catch case _: IOException => false
 
-  /** `--serve-run-on-host <podman> <container> <project> <programs-csv> <log-file>
+  /** `--serve-run-on-host <podman> <container> <workspace-root> <programs-csv> <log-file>
     * [--env=<name>...] [--file-rules=<file>] [--credentials-on-stdin] <mount>`: spawned by the launcher before it hands
-    * over to podman, detached like the reaper. The trailing mount is what the project is mounted
-    * at inside the container; the acceptance test's shim passes the project's path too. */
+    * over to podman, detached like the reaper. The trailing mount is what the workspace root is
+    * mounted at inside the container; the acceptance test's shim passes the root's own path too. */
   def serveMain(args: Seq[String]): Unit =
     def isOption(arg: String) =
       arg.startsWith(RunOnHostSandbox.EnvOption) || arg.startsWith(RunOnHostSandbox.FileRulesOption)
         || arg == RunOnHostSandbox.CredentialsOption
     args match
-      case Seq(podman, container, projectArg, programsCsv, logFile, rest*) if rest.filterNot(isOption).sizeIs == 1 =>
+      case Seq(podman, container, workspaceArg, programsCsv, logFile, rest*) if rest.filterNot(isOption).sizeIs == 1 =>
         // First: the launcher wrote them before the runner could read anything else.
         val credentials =
           if !rest.contains(RunOnHostSandbox.CredentialsOption) then Vector.empty
@@ -613,11 +613,11 @@ object RunOnHostChannel:
               java.nio.file.StandardOpenOption.APPEND,
             )
           catch case _: IOException => ()
-        val project =
-          try Path.of(projectArg).toRealPath()
+        val workspaceRoot =
+          try Path.of(workspaceArg).toRealPath()
           catch
             case ex: IOException =>
-              log(s"project $projectArg: ${ex.getMessage}")
+              log(s"workspace root $workspaceArg: ${ex.getMessage}")
               sys.exit(1)
         val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
         val root = RunOnHostSession.root(uid)
@@ -629,7 +629,7 @@ object RunOnHostChannel:
             RunOnHostSession
               .scavenge(root, RunOnHostSession.HostProcesses, RunOnHostSbtServerShutdown.shutdown(_))
               .foreach((entry, actions) => log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}"))
-            RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner)
+            RunOnHostSession.publish(root, workspaceRoot, RunOnHostSession.Kind.Runner)
           }.flatMap: session =>
             RunOnHostPrereqs.sessionTmpFits(session.tmp).map(_ => session).left.map(RunOnHostPrereqs.wording)
           match
@@ -640,7 +640,7 @@ object RunOnHostChannel:
         try java.nio.file.Files.writeString(session.directory.resolve(RunOnHostSession.RunFile), container + "\n")
         catch case ex: IOException => log(s"the runner's run file: ${ex.getMessage}")
         val fileRulesOption = rest.filter(_.startsWith(RunOnHostSandbox.FileRulesOption))
-        val fileRules = RunOnHostSandbox.fileRulesOf(fileRulesOption, project) match
+        val fileRules = RunOnHostSandbox.fileRulesOf(fileRulesOption, workspaceRoot) match
           case Right(resolved) => resolved
           case Left(reason) =>
             log(s"the file rules: $reason")
@@ -648,7 +648,7 @@ object RunOnHostChannel:
         // The forwarded values, from this process's environment under their carrier names, as
         // the supervisor reads them; the system paths the artifact bundles, as the supervisor's.
         val runtimes = RunnerRuntimes(
-          session, project, log, RunOnHostSandbox.bundledSystemPaths(),
+          session, workspaceRoot, log, RunOnHostSandbox.bundledSystemPaths(),
           forwardedNames.flatMap(name => Option(System.getenv(RunOnHostSandbox.carrierName(name))).map(name -> _)),
           fileRules,
           credentials,
@@ -682,13 +682,13 @@ object RunOnHostChannel:
           sandboxRunning = () => HostCommands.containerRunning(podman, container),
         )
         val service = Service(
-          project = project,
+          workspaceRoot = workspaceRoot,
           programs = programsCsv.split(",").toSet,
           supervisorCommand = (program, workingDirectory, lockFile, arguments) =>
             RunOnHostSession.lockedSpawn(
               lockFile,
               RunOnHostSandbox.selfInvocation(
-                (Seq("--run-command-on-host", program, project.toString, workingDirectory.toString)
+                (Seq("--run-command-on-host", program, workspaceRoot.toString, workingDirectory.toString)
                   ++ forwardedNames.map(RunOnHostSandbox.EnvOption + _) ++ fileRulesOption
                   ++ Seq(RunOnHostSandbox.ChannelLogOption + logPath, "--"))*,
               ) ++ arguments,
@@ -707,12 +707,12 @@ object RunOnHostChannel:
           credentialsFrame = (programName, runtimeArguments) =>
             RunOnHostPrereqs.Program.named(programName)
               .filter(_ => runtimeArguments.isEmpty)
-              .flatMap(program => RunOnHostPrereqs.readProgramRules(project, program).toOption.map(program -> _))
+              .flatMap(program => RunOnHostPrereqs.readProgramRules(workspaceRoot, program).toOption.map(program -> _))
               .map((program, hosts) => RunOnHostSandbox.credentialsFor(program, hosts, credentials))
               .filter(_.nonEmpty)
               .map(CredentialGrammar.bindingInput),
         )
-        log(s"serving $programsCsv for $project in $container")
+        log(s"serving $programsCsv for $workspaceRoot in $container")
         serve(transport, service, log)
         teardown(bySignal = false)
         log("the sandbox is gone; exiting")

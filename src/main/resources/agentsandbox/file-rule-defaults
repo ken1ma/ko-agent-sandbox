@@ -1,5 +1,5 @@
-# The launcher's default file rules: project files a program on your host runs a command from
-# when you start an agent in the project, commit, open it in an editor, enter its directory, or
+# The launcher's default file rules: workspace files a program on your host runs a command from
+# when you start an agent in the workspace, commit, open it in an editor, enter its directory, or
 # reopen it in a Dev Container, and the file git-lfs on your host takes its server from when you
 # check out or push. A session cannot change them at any depth, except inside node_modules (the
 # last line). Build files, scripts and package.json stay writable, because you run those yourself.
@@ -9,12 +9,12 @@
 #   direnv does for .envrc (doc/file-rule-example/direnv/rule lists it).
 # - A command meant to change a listed file, such as `pre-commit autoupdate`, `mise use` or
 #   `claude mcp add --scope project`, runs on the host, as `--update` does for the agents.
-# - Editors are assumed to run on the host. A project whose editor or agent maintains a listed
+# - Editors are assumed to run on the host. A workspace whose editor or agent maintains a listed
 #   file in the sandbox adds a `writable` line for it to .ko-agent-sandbox/file/rule.
 #
 # The reasons, source by source: doc/file-rules.md, "Why these files".
 
-# Agents on the host: hooks, helper commands and the MCP servers their project files name.
+# Agents on the host: hooks, helper commands and the MCP servers their files in the workspace name.
 readonly .claude/settings.json          # Claude Code, Copilot CLI
 readonly .claude/settings.local.json
 readonly .claude/skills                 # Claude Code: hooks and !`command` lines

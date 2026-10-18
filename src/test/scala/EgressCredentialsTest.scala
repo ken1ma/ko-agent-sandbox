@@ -48,9 +48,9 @@ class EgressCredentialsTest extends munit.FunSuite:
       List.tabulate(CredentialGrammar.MaxBindings + 1)(index => s"--egress-cred=X$index@a.example") ->
         "error: 257 --egress-cred options; a launch takes at most 256",
       List("--egress-cred", "X@a.example") ->
-        ("error: the launch options are spelled --write=<mode>, --egress=<profile>, --clipboard=<mode>, --mic, " +
-          "--env=<name>[=<value>], --env-aws-cred[=<profile>], --egress-cred=<name>@<host>, " +
-          "--run-on-host=<programs> and --claude-plugin-dir=<dir>"),
+        ("error: the launch options are spelled --workspace=<mode>, --egress=<profile>, --model-provider=<names>, " +
+          "--clipboard=<mode>, --mic, --env=<name>[=<value>], --env-aws-cred[=<profile>], " +
+          "--egress-cred=<name>@<host>, --run-on-host=<programs> and --claude-plugin-dir=<dir>"),
     )
     refusals.foreach: (args, refusal) =>
       assertEquals(parseCommandLine(args), Left(refusal), args.take(2).mkString(" "))
@@ -273,17 +273,17 @@ class EgressCredentialsTest extends munit.FunSuite:
   test("a host proxy's audit log is named after its session's log, in the channel log's directory"):
     val channelLog = Path.of("/s/log/p/run-20261004T120000Z-abcd1234/run-on-host.log")
     assertEquals(
-      RunOnHostProxy.projectAuditLog(channelLog, Path.of("/tmp/ko-agent-501/rXYZ/proxy-sbt-0123456789ab.log")),
+      RunOnHostProxy.workspaceAuditLog(channelLog, Path.of("/tmp/ko-agent-501/rXYZ/proxy-sbt-0123456789ab.log")),
       Some(Path.of("/s/log/p/run-20261004T120000Z-abcd1234/proxy-sbt-0123456789ab-rXYZ.log")),
     )
     assertEquals(
-      RunOnHostProxy.projectAuditLog(channelLog, Path.of("/tmp/ko-agent-501/s42/proxy.log")),
+      RunOnHostProxy.workspaceAuditLog(channelLog, Path.of("/tmp/ko-agent-501/s42/proxy.log")),
       Some(Path.of("/s/log/p/run-20261004T120000Z-abcd1234/proxy-s42.log")),
     )
     // No session directory to name it after.
-    assertEquals(RunOnHostProxy.projectAuditLog(channelLog, Path.of("/proxy.log")), None)
+    assertEquals(RunOnHostProxy.workspaceAuditLog(channelLog, Path.of("/proxy.log")), None)
     // The proxy started again for the same runtime in the launch.
     assertEquals(
-      RunOnHostProxy.projectAuditLog(channelLog, Path.of("/tmp/ko-agent-501/rXYZ/proxy-sbt-0123456789ab.log"), 2),
+      RunOnHostProxy.workspaceAuditLog(channelLog, Path.of("/tmp/ko-agent-501/rXYZ/proxy-sbt-0123456789ab.log"), 2),
       Some(Path.of("/s/log/p/run-20261004T120000Z-abcd1234/proxy-sbt-0123456789ab-rXYZ-2.log")),
     )

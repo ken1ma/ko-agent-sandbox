@@ -109,15 +109,15 @@ class EgressRulesTest extends munit.FunSuite:
   test("the launch banner reads the proxy's summary across profiles and provider selections"):
     import agentsandbox.egress.RulesetHelper.{Profiles, metadataLines, resolveRuleset, rulesetLines}
 
-    val projectRules =
+    val workspaceRules =
       "allow https://artifact.example/releases/ read\nallow https://model.example/ tunnel\n" +
         "deny https://**.blocked.example/"
     for
       profile <- Profiles
       provider <- Vector(None, Some("openai"), Some("anthropic,google"))
-      project <- Vector(None, Some(projectRules))
+      workspaceFile <- Vector(None, Some(workspaceRules))
     do
-      val resolved = resolveRuleset(Some(profile), provider, project)
+      val resolved = resolveRuleset(Some(profile), provider, workspaceFile)
       val output = (rulesetLines(resolved) ++ metadataLines(resolved)).mkString("\n")
       val banner = egressBanner(output, color = false)
       assert(banner.startsWith(s"egress: $profile; "), banner)
@@ -227,11 +227,11 @@ class EgressRulesTest extends munit.FunSuite:
     Files.writeString(dir.resolve("rule"), "")
     assertEquals(readRuleFiles(dir), Right(Vector.empty))
 
-  test("a dry run's refusal names the option when the proxy refused its variable, else the project's rules"):
+  test("a dry run's refusal names the option when the proxy refused its variable, else the workspace's rules"):
     val refused = rulesetRefusal("EGRESS_MODEL_PROVIDER is 'meta'; ...")
     assert(refused.startsWith("error: --model-provider is not valid\n"), refused)
     val rules = rulesetRefusal("rule: allow https://x/ frob has the word ...")
-    assert(rules.startsWith("error: this project's egress rules"), rules)
+    assert(rules.startsWith("error: this workspace's egress rules"), rules)
 
   test("the ruleset env args pass the selected profile, provider and each file's variable"):
     assertEquals(

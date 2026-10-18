@@ -140,7 +140,7 @@ object LogHelper:
     override def write(bytes: Array[Byte], offset: Int, length: Int): Unit = keeping(out.write(bytes, offset, length))
     override def flush(): Unit = keeping(out.flush())
 
-  /** The launcher, which compiles this file, also names a project's id and volumes, a build
+  /** The launcher, which compiles this file, also names a workspace's id and volumes, a build
     * directory's records and a runtime's fingerprint by it. */
   def sha256Hex(text: String): String =
     java.util.HexFormat.of().formatHex(

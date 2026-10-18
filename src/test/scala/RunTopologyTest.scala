@@ -58,9 +58,9 @@ class RunTopologyTest extends munit.FunSuite:
   test("a run's networks are created by its launch and removed when its sandbox exits"):
     requireTestWithPodman()
 
-    val project = scratchProject()
+    val workspace = scratchWorkspace()
     try
-      val session = launch(project, project.resolve("session.log"))
+      val session = launch(workspace, workspace.resolve("session.log"))
       val expected = Vector(session.sandboxNetwork, session.egressNetwork)
       expected.foreach: network =>
         assert(networks().contains(network), s"$network was not created by the launch")
@@ -70,21 +70,21 @@ class RunTopologyTest extends munit.FunSuite:
       // mid-removal, so this is a wait rather than a check.
       expected.foreach: network =>
         eventually(assert(!networks().contains(network), s"$network outlived the session that created it"))
-    finally discard(project)
+    finally discard(workspace)
 
   test("a session reaches its own proxy and no other session's"):
     requireTestWithPodman()
 
-    // Two projects rather than two sessions of one, because that also settles the cross-*project*
-    // claim. The run suffix is fresh per launch, so two sessions of one project are separated the
+    // Two workspaces rather than two sessions of one, because that also settles the cross-*workspace*
+    // claim. The run suffix is fresh per launch, so two sessions of one workspace are separated the
     // same way — by their own networks and their own proxy — and would test the narrower half.
-    val projectA = scratchProject()
-    val projectB = scratchProject()
+    val workspaceA = scratchWorkspace()
+    val workspaceB = scratchWorkspace()
     var live = Vector.empty[Session]
     try
-      val a = launch(projectA, projectA.resolve("a.log"))
+      val a = launch(workspaceA, workspaceA.resolve("a.log"))
       live = live :+ a
-      val b = launch(projectB, projectB.resolve("b.log"))
+      val b = launch(workspaceB, workspaceB.resolve("b.log"))
       live = live :+ b
 
       assertNotEquals(a.sandboxNetwork, b.sandboxNetwork, "the two runs shared a network")
@@ -104,8 +104,8 @@ class RunTopologyTest extends munit.FunSuite:
       )
     finally
       live.foreach(stop)
-      discard(projectA)
-      discard(projectB)
+      discard(workspaceA)
+      discard(workspaceB)
 
   test("a run whose reaper died strands its resources, and --reset sweeps them"):
     requireTestWithPodman()
@@ -113,9 +113,9 @@ class RunTopologyTest extends munit.FunSuite:
     // which the first test verifies — and pkill is not a Windows program either way.
     assume(currentOs != Os.Windows, "no reaper exists on Windows")
 
-    val project = scratchProject()
+    val workspace = scratchWorkspace()
     try
-      val session = launch(project, project.resolve("session.log"))
+      val session = launch(workspace, workspace.resolve("session.log"))
       val stranded = Vector(session.sandboxNetwork, session.egressNetwork)
 
       // The crash --reset exists for: the reaper gone first, so the sandbox's exit is observed by
@@ -132,10 +132,10 @@ class RunTopologyTest extends munit.FunSuite:
         assert(networks().contains(network), s"$network was removed before --reset")
       assert(exists(session.proxy), s"${session.proxy} was removed before --reset")
 
-      val (ok, output) = reset(project)
+      val (ok, output) = reset(workspace)
       assert(ok, s"--reset failed:\n$output")
 
       stranded.foreach: network =>
         assert(!networks().contains(network), s"--reset left $network behind:\n$output")
       assert(!exists(session.proxy), s"--reset left ${session.proxy} behind:\n$output")
-    finally discard(project)
+    finally discard(workspace)

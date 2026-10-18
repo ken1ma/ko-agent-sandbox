@@ -13,7 +13,7 @@ allow https://q.eu-central-1.amazonaws.com/     tunnel
 # the tokens are polled for and refreshed at a host by account kind. Google and GitHub accounts
 # use Kiro's own, plus the Cognito federation the same page lists for them; Builder ID and IAM
 # Identity Center use AWS SSO OIDC in the instance's region — Builder ID's is us-east-1. An
-# Identity Center in another region is a project's own
+# Identity Center in another region is a workspace's own
 # `allow https://oidc.<region>.amazonaws.com/ tunnel` line: its sign-in fails with
 # `error: dispatch failure`, and the proxy log names the refused host.
 allow https://prod.us-east-1.auth.desktop.kiro.dev/     tunnel

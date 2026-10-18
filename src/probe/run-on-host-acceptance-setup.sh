@@ -8,13 +8,13 @@ acceptance_require_idle() (
         [ -f "$acceptance_session/lock" ] || continue
         acceptance_pids=$(lsof -t "$acceptance_session/lock" 2>/dev/null | paste -sd ' ' -)
         [ -n "$acceptance_pids" ] || continue
-        for acceptance_claim in "$acceptance_session/project" "$acceptance_session"/build-*; do
+        for acceptance_claim in "$acceptance_session/workspace" "$acceptance_session"/build-*; do
             case "$acceptance_claim" in *.pending) continue ;; esac
             [ -f "$acceptance_claim" ] || continue
             acceptance_directory=$(cat "$acceptance_claim") || return 1
             [ -n "$acceptance_directory" ] || continue
-            for acceptance_project do
-                case "$acceptance_project/" in
+            for acceptance_workspace do
+                case "$acceptance_workspace/" in
                     "$acceptance_directory/"*)
                         echo "a sandbox session has a run-on-host runner (pid $acceptance_pids)" \
                             "for $acceptance_directory" >&2
@@ -29,7 +29,7 @@ acceptance_require_idle() (
                                 ;;
                         esac
                         echo "While this probe runs, omit --run-on-host" \
-                            "(including --run-on-host=sbt,mill) for this project." >&2
+                            "(including --run-on-host=sbt,mill) for this workspace." >&2
                         return 1
                         ;;
                 esac

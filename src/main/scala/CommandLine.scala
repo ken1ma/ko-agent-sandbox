@@ -14,10 +14,10 @@ object CommandLine:
    * The independent session options, selected on every launch and never persisted by a
    * stage or an agent resume. The writable default is `live` (doc/plan-staged.md has the staged
    * mode and the default flip that follow it); no distributable build may make launches with no
-   * `--write` option read-only before the staged workflow is usable.
+   * `--workspace` option read-only before the staged workflow is usable.
    */
-  val WriteModes = Vector("reject", "live")
-  val DefaultWriteMode = "live"
+  val WorkspaceModes = Vector("read-only", "live")
+  val DefaultWorkspaceMode = "live"
   val EgressProfiles = Vector("deny-all", "deny-unless-model", "deny-unless-allowed")
   val DefaultEgressProfile = "deny-unless-allowed"
 
@@ -102,7 +102,7 @@ object CommandLine:
   /** Parsed launcher invocation: the session options as given (None when defaulted), then
     * either one management action with its operands, or the command forwarded verbatim. */
   case class ParsedCommandLine(
-    write: Option[String],
+    workspace: Option[String],
     egress: Option[String],
     action: Option[(String, List[String])],
     command: List[String],
@@ -115,7 +115,7 @@ object CommandLine:
     claudePlugins: Vector[String] = Vector.empty,
     modelProvider: Option[String] = None,
   ):
-    def writeMode: String = write.getOrElse(DefaultWriteMode)
+    def workspaceMode: String = workspace.getOrElse(DefaultWorkspaceMode)
     def egressProfile: String = egress.getOrElse(DefaultEgressProfile)
     def clipboardMode: String = clipboard.getOrElse(DefaultClipboardMode)
 
@@ -146,16 +146,16 @@ object CommandLine:
 
     def loop(
       rest: List[String],
-      write: Option[String],
+      workspace: Option[String],
       egress: Option[String],
       env: Vector[EnvForward],
       runOnHost: Option[Vector[String]],
     ): Either[String, ParsedCommandLine] =
       rest match
         case Nil =>
-          Right(ParsedCommandLine(write, egress, None, Nil, env, runOnHost))
+          Right(ParsedCommandLine(workspace, egress, None, Nil, env, runOnHost))
         case "--" :: command =>
-          Right(ParsedCommandLine(write, egress, None, command, env, runOnHost))
+          Right(ParsedCommandLine(workspace, egress, None, command, env, runOnHost))
 
         case arg :: tail if arg.startsWith(EgressCredentials.OptionPrefix) =>
           EgressCredentials.parseOption(arg.stripPrefix(EgressCredentials.OptionPrefix), RefusedForwardPrefix)
@@ -164,7 +164,7 @@ object CommandLine:
                 Left(s"error: --egress-cred=${binding.spelled}; ${binding.name} is bound twice; one name, one host")
               else
                 bindings :+= binding
-                loop(tail, write, egress, env, runOnHost)
+                loop(tail, workspace, egress, env, runOnHost)
 
         case arg :: tail if arg == AwsCredential.OptionName || arg.startsWith(AwsCredential.OptionName + "=") =>
           val profile = arg.drop(AwsCredential.OptionName.length).stripPrefix("=")
@@ -176,19 +176,19 @@ object CommandLine:
             )
           else
             awsCredential = Some(AwsCredential.Request(Option.when(profile.nonEmpty)(profile)))
-            loop(tail, write, egress, env, runOnHost)
+            loop(tail, workspace, egress, env, runOnHost)
 
         case arg :: tail if arg.startsWith("--clipboard=") =>
           if clipboard.isDefined then Left("error: --clipboard is given twice")
           else choose("--clipboard", arg.stripPrefix("--clipboard="), ClipboardModes).flatMap: value =>
             clipboard = Some(value)
-            loop(tail, write, egress, env, runOnHost)
+            loop(tail, workspace, egress, env, runOnHost)
 
         case MicOption :: tail =>
           if mic then Left(s"error: $MicOption is given twice")
           else
             mic = true
-            loop(tail, write, egress, env, runOnHost)
+            loop(tail, workspace, egress, env, runOnHost)
 
         case arg :: _ if arg.startsWith(s"$MicOption=") =>
           Left(s"error: $arg; $MicOption takes no value")
@@ -199,7 +199,7 @@ object CommandLine:
           if directory.isEmpty then Left(s"error: ${ClaudePlugins.OptionName}=; name a plugin directory")
           else
             claudePlugins :+= directory
-            loop(tail, write, egress, env, runOnHost)
+            loop(tail, workspace, egress, env, runOnHost)
 
         case arg :: tail if arg.startsWith(ModelProviderOption + "=") =>
           val value = arg.stripPrefix(ModelProviderOption + "=")
@@ -207,22 +207,22 @@ object CommandLine:
           else if value.isEmpty then Left(s"error: $ModelProviderOption=; name the providers, separated by commas")
           else
             modelProvider = Some(value)
-            loop(tail, write, egress, env, runOnHost)
+            loop(tail, workspace, egress, env, runOnHost)
 
-        case arg :: tail if arg.startsWith("--write=") =>
-          if write.isDefined then Left("error: --write is given twice")
-          else choose("--write", arg.stripPrefix("--write="), WriteModes)
+        case arg :: tail if arg.startsWith("--workspace=") =>
+          if workspace.isDefined then Left("error: --workspace is given twice")
+          else choose("--workspace", arg.stripPrefix("--workspace="), WorkspaceModes)
             .flatMap(value => loop(tail, Some(value), egress, env, runOnHost))
 
         case arg :: tail if arg.startsWith("--egress=") =>
           if egress.isDefined then Left("error: --egress is given twice")
           else choose("--egress", arg.stripPrefix("--egress="), EgressProfiles)
-            .flatMap(value => loop(tail, write, Some(value), env, runOnHost))
+            .flatMap(value => loop(tail, workspace, Some(value), env, runOnHost))
 
         case arg :: tail if arg.startsWith("--run-on-host=") =>
           if runOnHost.isDefined then Left("error: --run-on-host is given twice")
           else parseRunOnHost(arg.stripPrefix("--run-on-host="))
-            .flatMap(programs => loop(tail, write, egress, env, Some(programs)))
+            .flatMap(programs => loop(tail, workspace, egress, env, Some(programs)))
 
         case arg :: tail if arg.startsWith("--env=") =>
           val (name, value) = arg.stripPrefix("--env=").span(_ != '=')
@@ -231,16 +231,16 @@ object CommandLine:
           else if env.exists(_.name == name) then Left(s"error: --env=$name is given twice")
           else
             loop(
-              tail, write, egress,
+              tail, workspace, egress,
               env :+ EnvForward(name, Option.when(value.nonEmpty)(value.drop(1))), runOnHost,
             )
 
         case (
-              "--write" | "--egress" | ModelProviderOption | "--env" | "--run-on-host" | "--egress-cred" |
+              "--workspace" | "--egress" | ModelProviderOption | "--env" | "--run-on-host" | "--egress-cred" |
               "--clipboard" | ClaudePlugins.OptionName
             ) :: _ =>
           Left(
-            "error: the launch options are spelled --write=<mode>, --egress=<profile>, " +
+            "error: the launch options are spelled --workspace=<mode>, --egress=<profile>, " +
               s"$ModelProviderOption=<names>, --clipboard=<mode>, --mic, --env=<name>[=<value>], " +
               "--env-aws-cred[=<profile>], --egress-cred=<name>@<host>, --run-on-host=<programs> and " +
               s"${ClaudePlugins.OptionName}=<dir>",
@@ -249,20 +249,20 @@ object CommandLine:
         case arg :: tail if arg.startsWith("--egress-check=") =>
           Right(
             ParsedCommandLine(
-              write, egress,
+              workspace, egress,
               Some(("--egress-check", arg.stripPrefix("--egress-check=") :: tail)),
               Nil, env, runOnHost,
             ),
           )
 
         case action :: tail if ManagementActions(action) =>
-          Right(ParsedCommandLine(write, egress, Some((action, tail)), Nil, env, runOnHost))
+          Right(ParsedCommandLine(workspace, egress, Some((action, tail)), Nil, env, runOnHost))
 
         case arg :: _ if arg.startsWith("--") =>
           Left(s"error: unknown option $arg\nRun --help for the launcher actions.")
 
         case command =>
-          Right(ParsedCommandLine(write, egress, None, command, env, runOnHost))
+          Right(ParsedCommandLine(workspace, egress, None, command, env, runOnHost))
 
     loop(args, None, None, Vector.empty, None).flatMap: parsed =>
       val awsNames = awsCredential.map(_ => AwsCredential.Names).getOrElse(Vector.empty)

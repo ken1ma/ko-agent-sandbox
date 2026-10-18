@@ -1,9 +1,10 @@
 // The --stats record across the resets that can leave a generated volume behind: a --reset under
-// a configured shared volume keeps this project's generated volume and, with it, the record; a
+// a configured shared volume keeps this workspace's generated volume and, with it, the record; a
 // --reset-run-on-host after it asks podman for that volume rather than inferring its absence from the
 // state directories the reset removed; the plain --reset then takes both. discard covers the
-// common case, a reset with nothing kept, in every suite's teardown. The last test is the project
-// whose directory went before any reset: --stats can only name it by id, and --reset takes that.
+// common case, a reset with nothing kept, in every suite's teardown. The last test is the workspace
+// whose root went before any reset: --stats can only name it by id, and --reset takes that.
+// --reset-all also takes the records launchers that called the workspace a project kept.
 // A --reset-run-on-host or --reset that finds nothing left echoes no removal.
 //
 // Runs only under testWithPodman, like the other container-launching suites (WithPodman has the condition):
@@ -26,32 +27,32 @@ class ResetRecordTest extends munit.FunSuite:
   test("the record outlives a generated volume a shared one left behind, and no longer"):
     requireTestWithPodman()
 
-    val project = scratchProject()
+    val workspaceRoot = scratchWorkspace()
     try
-      val session = launch(project, project.resolve("launch.log"))
+      val session = launch(workspaceRoot, workspaceRoot.resolve("launch.log"))
       stop(session)
-      val record = projectRecord(project)
+      val record = workspaceRecord(workspaceRoot)
       val volume = s"ko-agent-sandbox-persistent-${session.id}"
-      assert(Files.exists(record), "the launch recorded the project")
+      assert(Files.exists(record), "the launch recorded the workspace")
       assert(runOk(podman, "volume", "exists", volume), "the launch created the generated volume")
 
       val (sharedOk, sharedOutput) =
-        reset(project, "KO_AGENT_SANDBOX_PERSISTENT_VOLUME" -> "reset-record-test-shared")
+        reset(workspaceRoot, "KO_AGENT_SANDBOX_PERSISTENT_VOLUME" -> "reset-record-test-shared")
       assert(sharedOk, s"--reset under a shared volume failed; its output:\n$sharedOutput")
       assert(runOk(podman, "volume", "exists", volume), "the reset removed the generated volume it was to keep")
       assert(Files.exists(record), "the record went while the generated volume remained")
 
-      val (cacheOk, cacheOutput) = resetRunOnHost(project)
+      val (cacheOk, cacheOutput) = resetRunOnHost(workspaceRoot)
       assert(cacheOk, s"--reset-run-on-host failed; its output:\n$cacheOutput")
       assert(!cacheOutput.contains("+ rm"), s"--reset-run-on-host echoed a removal of nothing:\n$cacheOutput")
       assert(Files.exists(record), "--reset-run-on-host dropped the record with the generated volume still there")
 
-      val (ok, output) = reset(project)
+      val (ok, output) = reset(workspaceRoot)
       assert(ok, s"--reset failed; its output:\n$output")
       assert(!runOk(podman, "volume", "exists", volume), "the reset left the generated volume")
       assert(!Files.exists(record), "the record outlived everything it named")
     finally
-      discard(project)
+      discard(workspaceRoot)
 
   test("--reset-all refuses a state root under the run-on-host tree before removing anything"):
     requireTestWithPodman()
@@ -60,10 +61,10 @@ class ResetRecordTest extends munit.FunSuite:
     assume(!scala.util.Properties.isWin, "the nested layout is an XDG one")
 
     // XDG_STATE_HOME can name a directory under the tree --reset-all removes whole; the reset must
-    // refuse rather than take the images' cleanup journal and the project records with it. The
+    // refuse rather than take the images' cleanup journal and the workspace records with it. The
     // podman it finds passes the check every podman action runs first and fails every other
     // command, and its home is a temporary one: a reset that did not refuse would otherwise sweep
-    // the workstation's containers, volumes and networks, and on Linux unmount every project's
+    // the workstation's containers, volumes and networks, and on Linux unmount every workspace's
     // filter under the real home through /bin/sh, which no temporary root confines.
     val roots = Files.createTempDirectory("reset-all-nested").toRealPath()
     val bin = Files.createDirectories(roots.resolve("bin"))
@@ -81,12 +82,12 @@ class ResetRecordTest extends munit.FunSuite:
     val state = roots.resolve("ko-agent-sandbox/run-on-host/ko-agent-sandbox")
     val journal = Files.createDirectories(state.resolve("image-build")).resolve("cleanup.ids")
     Files.writeString(journal, "")
-    val record = Files.createDirectories(state.resolve("projects")).resolve("kept-0123456789ab")
+    val record = Files.createDirectories(state.resolve("workspaces")).resolve("kept-0123456789ab")
     Files.writeString(record, roots.toString)
-    val project = scratchProject()
+    val workspaceRoot = scratchWorkspace()
     try
       val (ok, output) = resetAll(
-        project,
+        workspaceRoot,
         "XDG_CACHE_HOME" -> roots.toString,
         "XDG_STATE_HOME" -> state.getParent.toString,
         "PATH" -> s"$bin:${sys.env("PATH")}",
@@ -95,25 +96,61 @@ class ResetRecordTest extends munit.FunSuite:
       assert(!ok, s"--reset-all ran under a state root inside the tree it removes; its output:\n$output")
       assert(output.contains("overlaps the launcher's state root"), output)
       assert(Files.exists(journal), "the cleanup journal was removed")
-      assert(Files.exists(record), "the project record was removed")
+      assert(Files.exists(record), "the workspace record was removed")
     finally
-      discard(project)
+      discard(workspaceRoot)
       deleteRecursively(roots)
 
-  test("a project whose directory is gone is listed by its id, which --reset takes from anywhere"):
+  test("--reset-all removes the records launchers that called the workspace a project kept"):
+    requireTestWithPodman()
+    assume(!scala.util.Properties.isWin, "the roots are XDG ones")
+
+    // A podman that lists nothing, so the reset succeeds without touching the workstation's
+    // resources, under a temporary home for the same reason as the test above.
+    val roots = Files.createTempDirectory("reset-all-former").toRealPath()
+    val bin = Files.createDirectories(roots.resolve("bin"))
+    Files.writeString(
+      bin.resolve("podman"),
+      """#!/bin/sh
+        |case "$1" in
+        |  --version) echo "podman version 6.1.1" ;;
+        |esac
+        |exit 0
+        |""".stripMargin,
+    )
+    Files.setPosixFilePermissions(bin.resolve("podman"), PosixFilePermissions.fromString("rwxr-xr-x"))
+    val state = Files.createDirectories(roots.resolve("state"))
+    val former = Files.createDirectories(state.resolve("ko-agent-sandbox/projects"))
+    Files.writeString(former.resolve("kept-0123456789ab"), roots.toString)
+    val workspaceRoot = scratchWorkspace()
+    try
+      val (ok, output) = resetAll(
+        workspaceRoot,
+        "XDG_CACHE_HOME" -> Files.createDirectories(roots.resolve("cache")).toString,
+        "XDG_STATE_HOME" -> state.toString,
+        "PATH" -> s"$bin:${sys.env("PATH")}",
+        "HOME" -> Files.createDirectories(roots.resolve("home")).toString,
+      )
+      assert(ok, s"--reset-all failed; its output:\n$output")
+      assert(!Files.exists(former), s"--reset-all left the former records; its output:\n$output")
+    finally
+      discard(workspaceRoot)
+      deleteRecursively(roots)
+
+  test("a workspace whose root is gone is listed by its id, which --reset takes from anywhere"):
     requireTestWithPodman()
 
-    val project = scratchProject()
-    val elsewhere = scratchProject()
+    val workspaceRoot = scratchWorkspace()
+    val elsewhere = scratchWorkspace()
     try
-      val session = launch(project, project.resolve("launch.log"))
+      val session = launch(workspaceRoot, workspaceRoot.resolve("launch.log"))
       stop(session)
-      val record = projectRecord(project)
+      val record = workspaceRecord(workspaceRoot)
       val volume = s"ko-agent-sandbox-persistent-${session.id}"
       assertEquals(
-        SandboxStats.projectDirectories(record.getParent).get(session.id),
-        Some(project.toRealPath().toString),
-        "the launch recorded the project's directory",
+        SandboxStats.workspaceDirectories(record.getParent).get(session.id),
+        Some(workspaceRoot.toRealPath().toString),
+        "the launch recorded the workspace root",
       )
 
       // A cache as a host command would leave, since --reset takes it with the rest.
@@ -124,29 +161,29 @@ class ResetRecordTest extends munit.FunSuite:
       Files.writeString(cache.resolve("planted"), "")
 
       // The reported case: the directory removed before any reset, so the row can only name the id.
-      deleteRecursively(project)
+      deleteRecursively(workspaceRoot)
       assertEquals(
-        SandboxStats.projectDirectories(record.getParent).get(session.id), None, "the gone directory still named",
+        SandboxStats.workspaceDirectories(record.getParent).get(session.id), None, "the gone directory still named",
       )
       assert(Files.exists(record), "the record itself stays until a reset")
 
       // Several ids at once, each reset before any is reported: the unknown one fails the
       // invocation, and the known one is gone all the same.
       val (ok, output) = resetIds(elsewhere, session.id, "never-000000000000")
-      assert(!ok && output.contains("no project never-000000000000"), output)
+      assert(!ok && output.contains("no workspace never-000000000000"), output)
       assert(!runOk(podman, "volume", "exists", volume), "the reset left the generated volume")
       assert(!Files.exists(record), "the reset left the record")
       assert(!Files.exists(cache), "the reset left the run-on-host cache")
       assert(
-        !SandboxStats.projectIds(currentOs, Vector.empty).contains(session.id), "the reset left state under the id",
+        !SandboxStats.workspaceIds(currentOs, Vector.empty).contains(session.id), "the reset left state under the id",
       )
 
       // Again, with nothing left: the reset reports no removal.
       val (againOk, again) = resetIds(elsewhere, session.id)
-      assert(!againOk && again.contains(s"no project ${session.id}"), again)
+      assert(!againOk && again.contains(s"no workspace ${session.id}"), again)
       assert(!again.contains("+ ") && !again.contains("filter"), s"a removal of nothing was reported:\n$again")
     finally
       // The same path is the same id, so a failure above is reset from the recreated directory.
-      Files.createDirectories(project)
-      discard(project)
+      Files.createDirectories(workspaceRoot)
+      discard(workspaceRoot)
       deleteRecursively(elsewhere)

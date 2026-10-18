@@ -14,7 +14,7 @@ profile=${1:?usage: sh src/probe/jvm-proxy-rule.sh <acceptance-sbt.sb>}
 [ -f "$profile" ] || { echo "$profile does not exist" >&2; exit 2; }
 JAVA="${JAVA_HOME:?JAVA_HOME must name the granted JDK}/bin/java"
 
-# Under the project, not /tmp: the profile grants reads here, and the JVM must read F.java
+# Under the workspace, not /tmp: the profile grants reads here, and the JVM must read F.java
 # through it (an unreadable path silently degrades to class-name interpretation).
 mkdir -p target/acceptance && work=$(mktemp -d target/acceptance/jvm-proxy.XXXXXX)
 cat > "$work/F.java" <<'EOF'

@@ -12,12 +12,12 @@
 # Before seeding, it refuses a session whose container lacks its seccomp filter, no-new-privileges
 # or exact capabilities.
 #
-# Then each agent's trust entry for the project, keyed by the path it is mounted at: the working
-# directory, which the launcher sets to the project's own path. Per launch rather than seeded,
-# because the entry is per project while a seeded directory is never touched again and the volume
-# may be shared (KO_AGENT_SANDBOX_PERSISTENT_VOLUME). Merged into the agent's own file, which the
-# agent rewrites: user state, in the volume. The keys are the agents' internals and may change
-# between releases; an entry that cannot be written is said, and the agent then asks.
+# Then each agent's trust entry for the workspace, keyed by the path it is mounted at: the working
+# directory, which the launcher sets to the workspace root's own path. Per launch rather than
+# seeded, because the entry is per workspace while a seeded directory is never touched again and
+# the volume may be shared (KO_AGENT_SANDBOX_PERSISTENT_VOLUME). Merged into the agent's own file,
+# which the agent rewrites: user state, in the volume. The keys are the agents' internals and may
+# change between releases; an entry that cannot be written is said, and the agent then asks.
 #
 # Then the machine's health, read from here rather than by the launcher: /proc/meminfo and
 # /proc/pressure are the VM's own, not the container's, and the same read serves a podman machine
@@ -73,10 +73,10 @@ if [ -d "$volume" ]; then
     done
 fi
 
-# A container run by hand starts at /, which is no project.
-project=$PWD
-trust_warning() { echo "warning: could not record $project as trusted in $1; $2 may ask" >&2; }
-# Rewrite a JSON file through a jq filter over $project, creating an empty object where the agent
+# A container run by hand starts at /, which is no workspace.
+workspace=$PWD
+trust_warning() { echo "warning: could not record $workspace as trusted in $1; $2 may ask" >&2; }
+# Rewrite a JSON file through a jq filter over $workspace, creating an empty object where the agent
 # has written none yet. Replaced whole by rename, so a session or agent reading it sees one
 # version or the other. Copilot writes two `//` comment lines above its JSON, which jq does not
 # read; whole-line comments are dropped before the merge, and Copilot restores its own on its next
@@ -95,7 +95,7 @@ merge_json() {
             && stripped=$(mktemp "$file.XXXXXX") \
             && staging=$(mktemp "$file.XXXXXX") \
             && sed '/^[[:space:]]*\/\//d' "$file" > "$stripped" \
-            && jq --arg project "$project" "$filter" "$stripped" > "$staging" \
+            && jq --arg workspace "$workspace" "$filter" "$stripped" > "$staging" \
             && [ -s "$staging" ] \
             && mv -f "$staging" "$file"
     } 2>/dev/null || trust_warning "$file" "$agent"
@@ -104,26 +104,26 @@ merge_json() {
     return 0
 }
 # Codex's user layer over the image's /etc/codex/config.toml. The file is read, judged and
-# extended by a TOML parser, since the project's key has several spellings ([projects."/p"],
+# extended by a TOML parser, since the workspace root's key has several spellings ([projects."/p"],
 # [projects.'/p'], an inline table under [projects]) and a second definition makes the file
 # invalid; a table Codex or the user wrote with another trust level is left as it is. The table
 # is appended only after the document it would make has parsed: an inline `projects = {…}` cannot
 # take a table outside its braces, and is left as written.
 record_codex() {
     config=$volume/codex/config.toml
-    state=$(mkdir -p "$volume/codex" && python3 - "$config" "$project" 2>/dev/null <<'PY'
+    state=$(mkdir -p "$volume/codex" && python3 - "$config" "$workspace" 2>/dev/null <<'PY'
 import sys, tomllib
-path, project = sys.argv[1], sys.argv[2]
+path, workspace = sys.argv[1], sys.argv[2]
 try:
     with open(path, "rb") as file:
         text = file.read().decode()
 except FileNotFoundError:
     text = ""
-entry = tomllib.loads(text).get("projects", {}).get(project)
+entry = tomllib.loads(text).get("projects", {}).get(workspace)
 if entry is not None:
     print(entry.get("trust_level", "unset"))
     sys.exit()
-key = project.replace("\\", "\\\\").replace('"', '\\"')
+key = workspace.replace("\\", "\\\\").replace('"', '\\"')
 table = f'\n[projects."{key}"]\ntrust_level = "trusted"\n'
 try:
     tomllib.loads(text + table)
@@ -140,29 +140,30 @@ PY
         unreadable) trust_warning "$config" codex ;;
         unextendable)
             echo "warning: $config defines projects as an inline table, which cannot take" \
-                "$project; codex may ask" >&2 ;;
-        *) echo "warning: $config marks $project $state; codex may ask" >&2 ;;
+                "$workspace; codex may ask" >&2 ;;
+        *) echo "warning: $config marks $workspace $state; codex may ask" >&2 ;;
     esac
 }
-# Under a lock on the volume, since launches of one project, and of several projects sharing a
+# Under a lock on the volume, since launches of one workspace, and of several workspaces sharing a
 # volume, record entries into the same files at once: unserialized, a read-modify-rename loses
 # the other's entry and two appends leave Codex two tables.
-if [ -d "$volume" ] && [ "$project" != / ]; then
+if [ -d "$volume" ] && [ "$workspace" != / ]; then
     # `command`: a failed redirection on the special builtin would exit the shell, not take the else.
     if command exec 9<"$volume" && flock 9; then
         merge_json "$volume/claude/.claude.json" \
-            '.projects[$project] |= ((. // {}) + {hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true})' \
+            '.projects[$workspace] |=
+                ((. // {}) + {hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true})' \
             claude
         merge_json "$volume/antigravity/antigravity-cli/settings.json" \
-            '.trustedWorkspaces |= ((. // []) | if index($project) then . else . + [$project] end)' \
+            '.trustedWorkspaces |= ((. // []) | if index($workspace) then . else . + [$workspace] end)' \
             agy
         merge_json "$volume/copilot/config.json" \
-            '.trustedFolders |= ((. // []) | if index($project) then . else . + [$project] end)' \
+            '.trustedFolders |= ((. // []) | if index($workspace) then . else . + [$workspace] end)' \
             copilot
         record_codex
         exec 9<&-
     else
-        echo "warning: could not lock $volume to record $project as trusted; the agents may ask" >&2
+        echo "warning: could not lock $volume to record $workspace as trusted; the agents may ask" >&2
     fi
 fi
 

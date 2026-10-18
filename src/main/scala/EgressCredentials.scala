@@ -59,7 +59,7 @@ object EgressCredentials:
                 Right(done :+ BrokeredCredential(binding, placeholderFor(value, taken, random), value))
 
   /**
-   * The floor on the randomness of a placeholder in its value's format. The project sees the placeholder
+   * The floor on the randomness of a placeholder in its value's format. Code in the workspace sees the placeholder
    * once the session runs, so randomness guards against a coincidence before it: an application's own
    * token, or a string written into the repository in advance, equal to the placeholder, which the proxy
    * would then replace.

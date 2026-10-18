@@ -18,11 +18,11 @@ class ManagedHelpersTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="claude-managed-helpers-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        self.project = self.root / "project"
-        self.project.mkdir()
+        self.workspace = self.root / "workspace"
+        self.workspace.mkdir()
 
     def write(self, relative, content):
-        path = self.project / relative
+        path = self.workspace / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
         return path
@@ -31,7 +31,7 @@ class ManagedHelpersTest(unittest.TestCase):
         return subprocess.run(
             [sys.executable, "-I", str(SCRIPTS / name), *args],
             input=data if raw else json.dumps(data),
-            cwd=self.project,
+            cwd=self.workspace,
             env={
                 **{name: value for name, value in os.environ.items() if not name.startswith("KO_CLAUDE_")},
                 **(environment or {}),
@@ -110,7 +110,7 @@ class ManagedHelpersTest(unittest.TestCase):
                 result = self.run_script("command/statusLine.py", {}, {"KO_CLAUDE_STATUSLINE_FORMAT": template})
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.rstrip("\n"), template)
-                self.assertFalse((self.project / "executed").exists())
+                self.assertFalse((self.workspace / "executed").exists())
 
     def test_project_format_handles_initial_and_reported_context_usage(self):
         settings = json.loads((PROJECT / ".claude/settings.json").read_text())
@@ -123,13 +123,13 @@ class ManagedHelpersTest(unittest.TestCase):
                 self.assertEqual(result.stdout, f"Fable 5.1 high · context {expected}%\n")
 
     def test_template_cannot_execute_or_access_environment(self):
-        marker = self.project / "executed"
-        self.write("sitecustomize.py", "raise RuntimeError('project startup code ran')")
-        self.write("json.py", "raise RuntimeError('project import ran')")
+        marker = self.workspace / "executed"
+        self.write("sitecustomize.py", "raise RuntimeError('workspace startup code ran')")
+        self.write("json.py", "raise RuntimeError('workspace import ran')")
         template = "$(touch executed) ${SECRET} ${__import__('os').system('touch executed')} ${model.id}"
         result = self.run_script(
             "command/statusLine.py", {"model": {"id": "opus"}},
-            {"KO_CLAUDE_STATUSLINE_FORMAT": template, "SECRET": "hidden", "PYTHONPATH": str(self.project)},
+            {"KO_CLAUDE_STATUSLINE_FORMAT": template, "SECRET": "hidden", "PYTHONPATH": str(self.workspace)},
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("$(touch executed)", result.stdout)

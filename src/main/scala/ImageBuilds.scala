@@ -14,7 +14,7 @@ import FileHelper.*
 import KoAgentFs.*
 import LauncherImages.*
 import LauncherState.*
-import SandboxProject.*
+import SandboxWorkspace.*
 
 object ImageBuilds:
 
@@ -453,7 +453,7 @@ object ImageBuilds:
     // stays fast.
     def finish(suiteExit: Int): Nothing =
       if suiteExit != 0 || filter.isDefined then sys.exit(suiteExit)
-      sys.exit(SelfTestShare.shareRows(podman, os, resolveProjectDir(os)))
+      sys.exit(SelfTestShare.shareRows(podman, os, resolveWorkspaceRoot(os)))
 
     val unprivileged = selfTestRunCommand(podman, filter, asRoot = false)
     echoCommand(unprivileged)

@@ -21,7 +21,7 @@ VS Code and AHP:
 - The spec release is 0.9.0 of 2026-08-28, and breaking changes may land in minor versions until
   1.0.0.
 - The user guide describes VS Code reaching a remote Agent Host through SSH, where VS Code
-  installs its own CLI on the remote machine, through a dev tunnel, or inside the project's Dev
+  installs its own CLI on the remote machine, through a dev tunnel, or inside the workspace's Dev
   Container. The source has more: the Agents window's command "Add Remote Agent Host..." takes a
   host, `host:port` or a WebSocket URL such as `ws://127.0.0.1:8080?tkn=abc-123`, stores it under
   the `chat.remoteAgentHosts` setting with an optional `connectionToken`, and connects to it. The
@@ -108,9 +108,9 @@ The launcher:
   FIFOs through `podman exec` (SECURITY.md, "Clipboard" and "Run on host"). The listeners
   SECURITY.md documents, the per-program egress proxy and the mill and Gradle daemons' ports,
   serve host processes.
-- The project is mounted at its real path on macOS and Linux, and on Windows at
-  `/mnt/<drive>/...`, the spelling `SandboxProject.mountPathOf` derives from `C:\...`. An IDE that
-  opened the project through a symbolic link sees a different spelling from the sandbox's;
+- The workspace root is mounted at its real path on macOS and Linux, and on Windows at
+  `/mnt/<drive>/...`, the spelling `SandboxWorkspace.mountPathOf` derives from `C:\...`. An IDE that
+  opened the workspace through a symbolic link sees a different spelling from the sandbox's;
   design.md, "Prior-art references worth retaining", records that open item.
 
 ## Decision: AHP is the active investigation; ACP is deferred
@@ -201,7 +201,7 @@ default egress profile.
   setting step 2 names. The host advertises `protectedResources` for both of its agents, GitHub
   required for Copilot and optional for Claude. The log holds no `authenticate` request, no
   `auth/required` notification and no `AuthRequired` error: no bearer token crossed in this
-  signed-out attachment. No message carries the project path, and no session exists.
+  signed-out attachment. No message carries the workspace root's path, and no session exists.
 
 ## Step 2: enforcement outside the sandbox
 
@@ -221,7 +221,7 @@ setting prevents, and what remains:
   relay, where the evidence is the relay's report of the `authenticate` it refused on the client
   side and the hostile host's log holding no token;
 - a client tool call, VS Code's own and an extension's;
-- `browseDirectory` and `fetchContent` on host paths outside the project;
+- `browseDirectory` and `fetchContent` on host paths outside the workspace;
 - a forwarded MCP server, and a tool call routed to it;
 - every other client-executed operation the spec's channels define; the list above is what the
   source read so far shows, not the whole surface.
@@ -333,7 +333,7 @@ it.
 For a harness with a credential the sandbox owns, the Claude harness on
 `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`:
 
-- the session "Add Remote Agent Host..." opens on the project, measured here rather than in
+- the session "Add Remote Agent Host..." opens on the workspace, measured here rather than in
   step 1 because a session needs an agent with credentials in the host;
 - authentication: the credential's source and place in the volume, whether the CLI's login there
   is reused, and what VS Code pushes although the credential is in the volume;
@@ -365,17 +365,17 @@ The launcher prints the address and token for "Add Remote Agent Host...", or wri
 their meaning. The launcher stays resident, on the path Windows uses, for as long as it owns the
 listener or the filter.
 
-Acceptance: the hostile host of step 2 obtains nothing on the host through VS Code, in the
-launch matrix of `--write=reject` and `live`, `--egress=deny-unless-model`, the protected `.git`
+Acceptance: the hostile host of step 2 obtains nothing on the host through VS Code, in the launch
+matrix of `--workspace=read-only` and `live`, `--egress=deny-unless-model`, the protected `.git`
 entries and `.ko-agent-sandbox`, `--run-on-host` and every ending of step 3. The token routes step 2
 leaves without a positive control get one stage each, on a fresh connection, with the credential
-step 2 names for it: a connection made while a throwaway account is signed in, for the
-connect-time route; then one challenge per remaining route, fired alone, against a resource the
-connection has not pushed, so that the relay's timestamped report of the `authenticate` it refused
-belongs to that challenge. In every stage the hostile host's log holds no token. The stage for
-`AuthRequired`, which must reach the chat handler's retry path and draw a push the token cache
-does not suppress, is settled in the relay's tests. The exact VS Code and AHP versions tested are
-recorded in the documentation.
+step 2 names for it: a connection made while a throwaway account is signed in, for the connect-time
+route; then one challenge per remaining route, fired alone, against a resource the connection has
+not pushed, so that the relay's timestamped report of the `authenticate` it refused belongs to that
+challenge. In every stage the hostile host's log holds no token. The stage for `AuthRequired`, which
+must reach the chat handler's retry path and draw a push the token cache does not suppress, is
+settled in the relay's tests. The exact VS Code and AHP versions tested are recorded in the
+documentation.
 
 ## Phases
 
@@ -392,7 +392,7 @@ recorded in the documentation.
 - The IDE's file system, terminals, browser or MCP servers reachable from the sandbox.
 - The IDE's credentials forwarded into the sandbox, on any route, without a credential-selection
   decision of its own.
-- More than one project root, or a project other than the launch directory.
+- More than one workspace root, or a workspace root other than the launch directory.
 - An SSH daemon, a dev tunnel or a Dev Container conversion for IDE integration; the Dev Container
   path gets a design of its own if wanted, since VS Code would own the container's start.
 - A session server written here.
@@ -406,8 +406,8 @@ The design as reviewed, for when the track is reopened.
     java -jar ko-agent-sandbox.jar [options] --protocol=acp -- opencode acp
     java -jar ko-agent-sandbox.jar [options] --protocol=acp -- copilot --acp
 
-The IDE's custom-agent entry runs one of these lines, with the project directory as the working
-directory: the launcher takes the project from it, as for a terminal launch. `--protocol` selects
+The IDE's custom-agent entry runs one of these lines, with the workspace root as the working
+directory: the launcher takes the workspace from it, as for a terminal launch. `--protocol` selects
 the transport and the relay's policy; the command after `--` selects the agent and, as for a
 terminal launch, the providers its egress admits, unless `--model-provider` names them. The
 other session options keep their meaning.
@@ -471,7 +471,7 @@ Why each refusal:
 - The client's file system and terminals are the host's. A `terminal/create` from the sandbox is
   the shortcut `--run-on-host` exists to prevent (SECURITY.md, "Run on host"): a host command with
   the IDE's authority, not a confined one.
-- `additionalDirectories` widens the root set past the project, which only the mount decides.
+- `additionalDirectories` widens the root set past the workspace, which only the mount decides.
 - A stdio MCP entry names a host path and environment for the agent to run; an `http` entry
   carries the IDE's headers, so its credentials, to a host the ruleset may or may not admit. A
   sandbox-owned MCP configuration is `plan-executable-agent-configuration.md`'s subject, not the
@@ -493,8 +493,8 @@ The IDE spells paths as the host does; the sandbox spells them as the mount does
 translates in the fields it knows and refuses what does not translate:
 
 - Into the sandbox: `cwd`, and the paths in `session/prompt` content. Each is canonicalized on the
-  host, must be the project directory or inside it, and is respelled with `mountPathOf` (identity
-  on macOS and Linux, `C:\...` to `/mnt/c/...` on Windows). A path outside the project refuses the
+  host, must be the workspace root or inside it, and is respelled with `mountPathOf` (identity
+  on macOS and Linux, `C:\...` to `/mnt/c/...` on Windows). A path outside the workspace refuses the
   message with both spellings.
 - Out of the sandbox: tool call `locations[].path` and diff `path` in `session/update`, respelled
   by the inverse. On macOS and Linux that is the real path, which differs from an IDE's symbolic
@@ -517,7 +517,7 @@ the IDE side:
 - `terminal` authentication methods and `_meta.terminal-auth` absent from the result the client
   sees, and `_meta` stripped from a `session/update` while its trace keys survive;
 - `additionalDirectories` and `mcpServers` refused on each of `session/new`, `session/load` and
-  `session/resume`; `cwd` outside the project refused; `cwd` inside it arriving as the mount path;
+  `session/resume`; `cwd` outside the workspace refused; `cwd` inside it arriving as the mount path;
 - a `session/update` path respelled for the IDE; an unknown notification dropped.
 
 The fake agent, in the test sources and launched as the backend command, reports what each session
@@ -525,8 +525,8 @@ request carried and attempts the refused calls.
 
 The launch matrix through the relay:
 
-- `--write=reject` and `live`; a protected `.git` entry and `.ko-agent-sandbox` refused as in a
-  terminal session;
+- `--workspace=read-only` and `live`; a protected `.git` entry and `.ko-agent-sandbox` refused as
+  in a terminal session;
 - `--egress=deny-unless-model` with the backend's providers named by `--model-provider`;
 - a credential from a terminal-launch sign-in found by the protocol launch;
 - `--run-on-host` through the relay, its provisioning offer declined without a terminal;

@@ -1,9 +1,9 @@
-// What a host command is allowed to touch, decided before any of it runs: where this project's
+// What a host command is allowed to touch, decided before any of it runs: where this workspace's
 // disposable run-on-host caches are stored, which JDK and sbt are the Coursier-managed ones, and which
 // directory a request from inside the sandbox may name as a working directory. run-on-host.md is
 // the reference; this file is the contract's prerequisite half, and holds no backend.
 //
-// Everything here except readProgramRules, which reads the project's run-on-host/ tree, is pure
+// Everything here except readProgramRules, which reads the workspace's run-on-host/ tree, is pure
 // over (Os, environment, filesystem layout), so the macOS answers are
 // testable from any host — the technique LauncherState.stateRootOf already uses. A refusal
 // is a value rather than an exit, because the same classification serves the launch's provisioning
@@ -59,11 +59,11 @@ object RunOnHostPrereqs:
     case PrereqMvnDistributionMissing(distributionUrl: String, home: Path)
     case PrerequisiteFileUnreadable(path: Path, reason: String)
     case CacheRootUnusable(reason: String)
-    /** Apart from [[CacheRootUnusable]] because it alone proves the project's commands never wrote
+    /** Apart from [[CacheRootUnusable]] because it alone proves the workspace's commands never wrote
       * under this root: they refuse it by this same check. */
-    case CacheRootInsideProject(root: Path, project: Path)
+    case CacheRootInsideWorkspace(root: Path, workspaceRoot: Path)
     case CachePathOverlapsStateRoot(path: Path, stateRoot: Path)
-    case WorkingDirectoryOutsideProject(requested: String)
+    case WorkingDirectoryOutsideWorkspace(requested: String)
     case SessionTmpTooLong(path: Path, max: Int)
     case RuleOutsideProgramGrammar(line: String)
 
@@ -78,9 +78,9 @@ object RunOnHostPrereqs:
     case Refusal.PrereqSbtNotCoursier(found) =>
       s"sbt must be the one `cs install sbt` produced; found $found"
     case Refusal.PrereqMillBootstrapMissing =>
-      "the project has no executable `mill` bootstrap script; a global mill is not used"
+      "the build directory has no executable `mill` bootstrap script; a global mill is not used"
     case Refusal.PrereqMillVersionUnpinned =>
-      "no mill version is pinned in the project: .mill-version, .config/mill-version, build.mill.yaml " +
+      "no mill version is pinned in the build directory: .mill-version, .config/mill-version, build.mill.yaml " +
         "or the build script's header"
     case Refusal.PrereqMillExecutableMissing(launcherVersion, downloadDir) =>
       s"mill's JVM launcher $launcherVersion is not provisioned under $downloadDir; run " +
@@ -111,7 +111,7 @@ object RunOnHostPrereqs:
     case Refusal.PrereqGradleDistributionMissing(url, directory) =>
       s"Gradle from $url is not unpacked at $directory; run `./gradlew --version` once on the host"
     case Refusal.PrereqMvnWrapperMissing =>
-      "the project has no executable `mvnw` wrapper script; a global mvn is not used"
+      "the workspace root has no executable `mvnw` wrapper script; a global mvn is not used"
     case Refusal.PrereqMvnWrapperNotOnlyScript =>
       "the mvnw wrapper is not the only-script type; run `./mvnw wrapper:wrapper -Dtype=only-script` on the host"
     case Refusal.PrereqMvnWrapperUnreadable(reason) => reason
@@ -122,13 +122,13 @@ object RunOnHostPrereqs:
       s"Maven from $url is not unpacked at $home; run `./mvnw --version` once on the host"
     case Refusal.PrerequisiteFileUnreadable(path, reason) => s"$path cannot be read: $reason"
     case Refusal.CacheRootUnusable(reason)            => s"cache root: $reason"
-    case Refusal.CacheRootInsideProject(root, project) =>
-      s"cache root $root overlaps the project directory $project"
+    case Refusal.CacheRootInsideWorkspace(root, workspaceRoot) =>
+      s"cache root $root overlaps the workspace root $workspaceRoot"
     case Refusal.CachePathOverlapsStateRoot(path, stateRoot) =>
       s"the run-on-host cache path $path overlaps the launcher's state root $stateRoot; the cache root " +
         "must be the state root itself or a directory outside it: point XDG_CACHE_HOME or XDG_STATE_HOME accordingly"
-    case Refusal.WorkingDirectoryOutsideProject(requested) =>
-      s"the working directory $requested is not inside the project"
+    case Refusal.WorkingDirectoryOutsideWorkspace(requested) =>
+      s"the working directory $requested is not inside the workspace"
     case Refusal.SessionTmpTooLong(path, max) =>
       s"the command's temporary directory $path is longer than $max characters, sbt's socket path budget"
     case Refusal.RuleOutsideProgramGrammar(line) =>
@@ -136,7 +136,7 @@ object RunOnHostPrereqs:
 
   /** Everything settled before a command is asked for; every path canonical. */
   case class CommandPrereqs(
-    project: Path,
+    workspaceRoot: Path,
     jdkHome: Path,
     coursierV1: Path,
     program: Program,
@@ -174,21 +174,21 @@ object RunOnHostPrereqs:
           case Some(path) => Right(path.resolve("ko-agent-sandbox").normalize())
 
   /**
-   * This project's run-on-host caches, under one directory so `--reset-run-on-host` for a project is a
+   * This workspace's run-on-host caches, under one directory so `--reset-run-on-host` for a workspace is a
    * single removal and a further cache kind can join without moving anything.
    *
    * Coursier's, sbt's global base and Ivy home, Gradle's user home and Maven's local repository.
    * mill's executable is provisioned by the user rather than fetched here, so it has no writable
    * home (RunOnHostPrereqs.millExecutable).
    */
-  def runOnHostCacheDir(cacheRoot: Path, projectId: String): Path =
-    runOnHostCachesOf(cacheRoot).resolve(projectId)
+  def runOnHostCacheDir(cacheRoot: Path, workspaceId: String): Path =
+    runOnHostCachesOf(cacheRoot).resolve(workspaceId)
 
   /**
-   * Every project's run-on-host caches, the one tree under the cache root the launcher owns:
+   * Every workspace's run-on-host caches, the one tree under the cache root the launcher owns:
    * `--reset-all` removes it whole. The cache root itself is shared — on Windows it is the state
    * root, `%LOCALAPPDATA%\ko-agent-sandbox`, and on POSIX `XDG_CACHE_HOME` and `XDG_STATE_HOME`
-   * can name one directory — so the built images' journal and the project records beside this
+   * can name one directory — so the built images' journal and the workspace records beside this
    * tree are never this tree's. Where the tree may lie is [[cachePathClearOfStateRoot]].
    */
   def runOnHostCachesOf(cacheRoot: Path): Path = cacheRoot.resolve("run-on-host")
@@ -197,105 +197,105 @@ object RunOnHostPrereqs:
    * A path under the run-on-host tree that host commands write or a reset removes, refused unless
    * it is disjoint from the launcher's state root or under the state root's own run-on-host tree,
    * the shared-root layout. A path holding the state root, which `XDG_STATE_HOME` can place there,
-   * hands the CA signing key, the built images' journal and the project records to the commands and
+   * hands the CA signing key, the built images' journal and the workspace records to the commands and
    * to `--reset-all`. A path under a state subtree goes with that subtree's reset:
-   * `XDG_CACHE_HOME=<state root>/tls/A` puts every project's caches under project A's TLS
+   * `XDG_CACHE_HOME=<state root>/tls/A` puts every workspace's caches under workspace A's TLS
    * directory, which `--reset A` removes.
    *
-   * `path` must be canonical — a symlinked `run-on-host` or project directory places it wherever
+   * `path` must be canonical — a symlinked `run-on-host` or per-workspace directory places it wherever
    * the link points, which the spelling never shows — and is compared in each of its spellings
-   * (SandboxProject.dataVolumeSpellings).
+   * (SandboxWorkspace.dataVolumeSpellings).
    */
   def cachePathClearOfStateRoot(path: Path, stateRoot: Path, os: Os): Either[Refusal, Path] =
-    val clear = SandboxProject.dataVolumeSpellings(os, Seq(path)).forall: candidate =>
-      SandboxProject.dataVolumeSpellings(os, Seq(stateRoot)).forall: state =>
+    val clear = SandboxWorkspace.dataVolumeSpellings(os, Seq(path)).forall: candidate =>
+      SandboxWorkspace.dataVolumeSpellings(os, Seq(stateRoot)).forall: state =>
         candidate.startsWith(runOnHostCachesOf(state)) ||
           (!candidate.startsWith(state) && !state.startsWith(candidate))
     if clear then Right(path) else Left(Refusal.CachePathOverlapsStateRoot(path, stateRoot))
 
-  def coursierV1Of(cacheRoot: Path, projectId: String): Path =
-    runOnHostCacheDir(cacheRoot, projectId).resolve("coursier").resolve("v1")
+  def coursierV1Of(cacheRoot: Path, workspaceId: String): Path =
+    runOnHostCacheDir(cacheRoot, workspaceId).resolve("coursier").resolve("v1")
 
   /**
-   * The confined command's `sbt.global.base`. Persistent and project-scoped on purpose, not in the
+   * The confined command's `sbt.global.base`. Persistent and workspace-scoped on purpose, not in the
    * command's temporary directory: sbt 2 writes a content-addressed store under its global base
    * (`cache/v2/{cas,ac}`) and leaves `target/` outputs as symlinks into it — measured on this
    * host, where a build against a temporary base would have its own outputs dangle the
    * moment the command's directory is removed. Beside the Coursier cache, it shares that cache's poison
-   * scope (later commands of the same project, themselves sandboxed) and `--reset-run-on-host`'s removal.
+   * scope (later commands of the same workspace, themselves sandboxed) and `--reset-run-on-host`'s removal.
    */
-  def sbtGlobalOf(cacheRoot: Path, projectId: String): Path =
-    runOnHostCacheDir(cacheRoot, projectId).resolve("sbt-global")
+  def sbtGlobalOf(cacheRoot: Path, workspaceId: String): Path =
+    runOnHostCacheDir(cacheRoot, workspaceId).resolve("sbt-global")
 
   /**
    * The confined command's `sbt.ivy.home`, which the launcher otherwise derives as `~/.ivy2`, a path
    * the profile denies. What sbt writes there, and when the redirect may be retired, is
    * run-on-host.md "sbt". Beside the global base for the same reasons it is there.
    */
-  def ivyHomeOf(cacheRoot: Path, projectId: String): Path =
-    runOnHostCacheDir(cacheRoot, projectId).resolve("ivy-home")
+  def ivyHomeOf(cacheRoot: Path, workspaceId: String): Path =
+    runOnHostCacheDir(cacheRoot, workspaceId).resolve("ivy-home")
 
   /** The confined command's `GRADLE_USER_HOME`, otherwise `~/.gradle`, a path the profile denies.
     * Gradle keeps its caches here; the daemon registry is the launch's own
     * (RunOnHostSandbox.gradleCommand), and the wrapper's distribution store is the user's own
     * (gradleUserHome), granted one distribution read-only. */
-  def gradleUserHomeOf(cacheRoot: Path, projectId: String): Path =
-    runOnHostCacheDir(cacheRoot, projectId).resolve("gradle-user-home")
+  def gradleUserHomeOf(cacheRoot: Path, workspaceId: String): Path =
+    runOnHostCacheDir(cacheRoot, workspaceId).resolve("gradle-user-home")
 
   /** The confined command's `maven.repo.local`, otherwise `~/.m2/repository`, a path the profile
     * denies. Maven stores every artifact and plugin it resolves here. */
-  def m2RepositoryOf(cacheRoot: Path, projectId: String): Path =
-    runOnHostCacheDir(cacheRoot, projectId).resolve("m2").resolve("repository")
+  def m2RepositoryOf(cacheRoot: Path, workspaceId: String): Path =
+    runOnHostCacheDir(cacheRoot, workspaceId).resolve("m2").resolve("repository")
 
-  /** The project's caches host commands write, as laid out; where each lies is [[writtenCacheDirectories]]. */
-  def cacheDirectoriesOf(cacheRoot: Path, projectId: String): Vector[Path] =
+  /** The workspace's caches host commands write, as laid out; where each lies is [[writtenCacheDirectories]]. */
+  def cacheDirectoriesOf(cacheRoot: Path, workspaceId: String): Vector[Path] =
     Vector(
-      coursierV1Of(cacheRoot, projectId), sbtGlobalOf(cacheRoot, projectId), ivyHomeOf(cacheRoot, projectId),
-      gradleUserHomeOf(cacheRoot, projectId), m2RepositoryOf(cacheRoot, projectId),
+      coursierV1Of(cacheRoot, workspaceId), sbtGlobalOf(cacheRoot, workspaceId), ivyHomeOf(cacheRoot, workspaceId),
+      gradleUserHomeOf(cacheRoot, workspaceId), m2RepositoryOf(cacheRoot, workspaceId),
     )
 
   /**
-   * Where every project's caches under the cache root lie, each canonicalized as the runner grants
-   * it (RunOnHostSandbox.assemble): a symlink at the cache, at the project's directory or at
+   * Where every workspace's caches under the cache root lie, each canonicalized as the runner grants
+   * it (RunOnHostSandbox.assemble): a symlink at the cache, at the workspace's directory or at
    * `run-on-host` places a cache wherever the link points, outside the cache root. For a launch's
-   * refusal of a plugin host commands could write; every project's, as another project's session
+   * refusal of a plugin host commands could write; every workspace's, as another workspace's session
    * writes its own. A tree not yet created has no caches; one that cannot be listed, or a cache
    * that cannot be canonicalized, is the Left: the runner grants a cache without listing the tree,
    * so an unreadable tree says nothing about where the caches lie.
    */
   def writtenCacheDirectories(cacheRoot: Path): Either[String, Vector[Path]] =
     val tree = runOnHostCachesOf(cacheRoot)
-    val projects =
+    val workspaces =
       try Right(FileHelper.directoryEntries(tree).filter(Files.isDirectory(_)))
       catch
         case _: NoSuchFileException => Right(Vector.empty)
         case ex: IOException        => Left(s"the run-on-host caches $tree cannot be listed: ${ex.getMessage}")
-    projects.flatMap: dirs =>
-      dirs.flatMap(project => cacheDirectoriesOf(cacheRoot, project.getFileName.toString))
+    workspaces.flatMap: dirs =>
+      dirs.flatMap(workspace => cacheDirectoriesOf(cacheRoot, workspace.getFileName.toString))
         .foldLeft[Either[String, Vector[Path]]](Right(Vector.empty)): (found, dir) =>
           found.flatMap(caches => FileHelper.canonicalizedFuturePath(dir).map(caches :+ _))
         .map(_.distinct)
 
   /**
-   * Refused when the cache root would be inside the project, the check
+   * Refused when the cache root would be inside the workspace, the check
    * [[LauncherState.requireStateRootOutside]] makes for the state root: a cache the
    * workspace can reach is a cache the sandbox can rewrite between commands.
    */
-  def cacheRootOutsideProject(
+  def cacheRootOutsideWorkspace(
     cacheRoot: Path,
-    project: Path,
+    workspaceRoot: Path,
     os: Os,
     canonicalize: Path => Either[String, Path],
   ): Either[Refusal, Path] =
     // Canonical before the overlap check: XDG_CACHE_HOME can be a symlink whose text is outside the
-    // project and whose target is inside it, and the lexical answer would pass it. The canonical
+    // workspace and whose target is inside it, and the lexical answer would pass it. The canonical
     // root is the answer, and every path derived from it must come from that answer, not from
     // cacheRoot as given.
     canonicalize(cacheRoot) match
       case Left(reason) => Left(Refusal.CacheRootUnusable(reason))
       case Right(root) =>
-        if SandboxProject.overlapsInAnySpelling(os, root, project) then
-          Left(Refusal.CacheRootInsideProject(root, project))
+        if SandboxWorkspace.overlapsInAnySpelling(os, root, workspaceRoot) then
+          Left(Refusal.CacheRootInsideWorkspace(root, workspaceRoot))
         else Right(root)
 
   /** The user's Coursier cache root — read for the JDK, never granted whole
@@ -439,15 +439,15 @@ object RunOnHostPrereqs:
       case _                     => Left(Refusal.PrereqSbtNotCoursier(inner))
 
   /**
-   * mill's bootstrap, which is the project's own file rather than an installed command: a global
+   * mill's bootstrap, which is the workspace's own file rather than an installed command: a global
    * mill is not supported, so its absence is a prerequisite failure and not a reason to look
    * elsewhere.
    */
   def validateMillBootstrap(
-    project: Path,
+    buildDirectory: Path,
     isExecutableFile: Path => Boolean,
   ): Either[Refusal, Path] =
-    val bootstrap = project.resolve("mill")
+    val bootstrap = buildDirectory.resolve("mill")
     if isExecutableFile(bootstrap) then Right(bootstrap)
     else Left(Refusal.PrereqMillBootstrapMissing)
 
@@ -467,25 +467,25 @@ object RunOnHostPrereqs:
 
   /**
    * The mill version, read the way the bootstrap reads it — and only *read*. The script's own
-   * dry-run mode would report the executable's path exactly, but running the project's script is
+   * dry-run mode would report the executable's path exactly, but running the workspace's script is
    * executing agent-authored shell on the host, which is what the sandbox exists to prevent.
    *
    * The fallback is the assignment at the top of the script, which mill documents as the
    * recommended way to manage the version (`./mill updateMillScripts`). The script also honours
    * `MILL_VERSION` and `DEFAULT_MILL_VERSION` from its environment, and this deliberately does
    * not: the command's environment is a closed set (RunOnHostSandbox.commandEnvironment) that carries
-   * neither, so the script resolves from the project alone, and reading them here would grant an
+   * neither, so the script resolves from the build directory alone, and reading them here would grant an
    * executable the script then does not run.
    */
   def millVersion(
-    project: Path,
+    buildDirectory: Path,
     readLines: Path => Option[Seq[String]],
   ): Either[Refusal, String] =
     // The script's `elif` chain: the first file that *exists* decides, and what it yields is the
     // answer even when empty — there is no fall-through to the next file. A version file gives
     // its first line as is; a marker file gives every matching line, trimmed, so two markers give
     // a value with a newline in it, which is no version.
-    def lines(name: String): Option[Seq[String]] = readLines(project.resolve(name))
+    def lines(name: String): Option[Seq[String]] = readLines(buildDirectory.resolve(name))
     def versionFile(name: String): Option[Option[String]] = lines(name).map(_.headOption)
     def markerFile(name: String, marker: String => Boolean): Option[Option[String]] =
       lines(name).map(all => Some(all.filter(marker).map(trimValue).mkString("\n")))
@@ -551,10 +551,10 @@ object RunOnHostPrereqs:
    * for the JDK no host run records, and an id so spelled runs as a pin whose id is not compared.
    */
   def millJvm(
-    project: Path,
+    buildDirectory: Path,
     readLines: Path => Option[Seq[String]],
   ): Either[Refusal, MillJvm] =
-    def lines(name: String): Option[Seq[String]] = readLines(project.resolve(name))
+    def lines(name: String): Option[Seq[String]] = readLines(buildDirectory.resolve(name))
     // No environment interpolation, though mill's reader does it: a value that needs the
     // environment to become `system` is not literally `system`, and refusing it fails closed.
     def optsFile(name: String): Option[Option[String]] =
@@ -749,9 +749,9 @@ object RunOnHostPrereqs:
    * `java.util.Properties` loads them, so `https\://` and `https://` are one URL; `distributionUrl`
    * is required; a URL without a scheme is a file relative to the properties file's directory.
    * `distributionBase` and `distributionPath` must be the wrapper's defaults, `GRADLE_USER_HOME`
-   * and `wrapper/dists`: `PROJECT` as the base puts the distribution under the project, where the
+   * and `wrapper/dists`: `PROJECT` as the base puts the distribution in the workspace, where the
    * command writes, and the executable the profile grants is the user's to provision
-   * (run-on-host.md "Program prerequisites"). `systemProp.gradle.user.home` in the project's
+   * (run-on-host.md "Program prerequisites"). `systemProp.gradle.user.home` in the build directory's
    * `gradle.properties` moves the wrapper's home the same way and is refused too. A value is
    * quoted in a refusal only once it is printable ASCII: never a control character.
    */
@@ -839,10 +839,10 @@ object RunOnHostPrereqs:
       case Seq(home) if isExecutableFile(home.resolve("bin").resolve("gradle")) => Right(home)
       case _ => Left(Refusal.PrereqGradleDistributionMissing(distribution.toString, distributionDir))
 
-  /** Maven's wrapper, the project's own `mvnw`, under the rule mill's bootstrap follows
+  /** Maven's wrapper, the workspace's own `mvnw`, under the rule mill's bootstrap follows
     * (run-on-host.md "Maven"); a `mvn` from PATH is not a fallback. */
-  def validateMvnWrapper(project: Path, isExecutableFile: Path => Boolean): Either[Refusal, Path] =
-    val wrapper = project.resolve("mvnw")
+  def validateMvnWrapper(workspaceRoot: Path, isExecutableFile: Path => Boolean): Either[Refusal, Path] =
+    val wrapper = workspaceRoot.resolve("mvnw")
     if isExecutableFile(wrapper) then Right(wrapper) else Left(Refusal.PrereqMvnWrapperMissing)
 
   /**
@@ -960,59 +960,60 @@ object RunOnHostPrereqs:
     case Program.Sbt | Program.Mill   => "repo1.maven.org"
     case Program.Gradle | Program.Mvn => "repo.maven.apache.org"
 
-  def programRulePath(project: Path, program: Program): Path =
-    SandboxProject.boundaryDirOf(project).resolve("run-on-host").resolve(program.name).resolve("egress").resolve("rule")
+  def programRulePath(workspaceRoot: Path, program: Program): Path =
+    SandboxWorkspace.boundaryDirOf(workspaceRoot)
+      .resolve("run-on-host").resolve(program.name).resolve("egress").resolve("rule")
 
   /**
    * The program's rule file's hosts, validated to the program's rule grammar (run-on-host.md
    * "Configuration"). The whole run-on-host/ tree is checked first, every program's egress/ as
-   * egress/ and file/ are (SandboxProject.readBoundaryRuleFiles), and only the selected program's
+   * egress/ and file/ are (SandboxWorkspace.readBoundaryRuleFiles), and only the selected program's
    * rule file is read: an absent file contributes nothing. A host the proxy refuses — an IP literal,
    * a name that is no hostname — is refused here with the proxy's reason: the resolution the proxy's
    * start runs (RunOnHostInspection.leafNames) runs here first, so the launch reports the host.
    */
-  def readProgramRules(project: Path, program: Program): Either[String, Vector[String]] =
-    def egressDir(each: Program) = programRulePath(project, each).getParent
+  def readProgramRules(workspaceRoot: Path, program: Program): Either[String, Vector[String]] =
+    def egressDir(each: Program) = programRulePath(workspaceRoot, each).getParent
     val grammar = "doc/run-on-host.md"
     for
-      _ <- programDirectoryRefusal(project).toLeft(())
+      _ <- programDirectoryRefusal(workspaceRoot).toLeft(())
       _ <- Program.values.iterator
-        .flatMap(each => SandboxProject.ruleDirectoryRefusal(egressDir(each), Vector("rule"), grammar))
+        .flatMap(each => SandboxWorkspace.ruleDirectoryRefusal(egressDir(each), Vector("rule"), grammar))
         .nextOption().toLeft(())
-      files <- SandboxProject
+      files <- SandboxWorkspace
         .readBoundaryRuleFiles(egressDir(program), Vector("rule"), grammar, EgressRules.normalizeRuleText)
       hosts <- files.headOption.fold(Right(Vector.empty)): (_, text) =>
         programRuleHosts(text).left.map(wording)
           .flatMap(hosts => RunOnHostInspection.leafNames(egressRuleText(program, hosts)).map(_ => hosts))
-          .left.map(reason => s"error: ${HostCommands.shown(s"${programRulePath(project, program)}: $reason")}")
+          .left.map(reason => s"error: ${HostCommands.shown(s"${programRulePath(workspaceRoot, program)}: $reason")}")
     yield hosts
 
   /**
    * run-on-host/ accepts only recognized configuration entries, as does its parent directory
-   * (SandboxProject.boundaryDirRefusal): a directory per Program, and egress/ inside each. A stray
+   * (SandboxWorkspace.boundaryDirRefusal): a directory per Program, and egress/ inside each. A stray
    * name, a symlinked component, or a file where a directory belongs refuses the command rather
    * than staying as ignored config; a file where a directory belongs would read as absent
    * configuration.
    */
-  private def programDirectoryRefusal(project: Path): Option[String] =
-    val dir = SandboxProject.boundaryDirOf(project).resolve("run-on-host")
+  private def programDirectoryRefusal(workspaceRoot: Path): Option[String] =
+    val dir = SandboxWorkspace.boundaryDirOf(workspaceRoot).resolve("run-on-host")
     val programs = Program.values.toVector.map(_.name)
     val directories = dir +: programs.map(dir.resolve)
     def strays(path: Path, allowed: Set[String]): Vector[String] =
       if !Files.isDirectory(path) then Vector.empty
       else
         FileHelper.directoryEntries(path).map(_.getFileName.toString)
-          .filterNot(SandboxProject.isMetadataEntry).filterNot(allowed).sorted
+          .filterNot(SandboxWorkspace.isMetadataEntry).filterNot(allowed).sorted
           .map(name => HostCommands.shown(s"$path/$name"))
     def shown(path: Path) = HostCommands.shown(path.toString)
     directories.find(Files.isSymbolicLink)
       .map: link =>
         s"error: ${shown(link)} must not be a symlink\n" +
-          "Refusing to read this project's boundary configuration through one."
+          "Refusing to read this workspace's boundary configuration through one."
       .orElse(directories.find(path => Files.exists(path, LinkOption.NOFOLLOW_LINKS) && !Files.isDirectory(path))
         .map: file =>
           s"error: ${shown(file)} must be a directory\n" +
-            "Remove what is in its place; the directory holds this project's boundary configuration.")
+            "Remove what is in its place; the directory holds this workspace's boundary configuration.")
       .orElse:
         val stray = strays(dir, programs.toSet) ++ programs.flatMap(name => strays(dir.resolve(name), Set("egress")))
         Option.when(stray.nonEmpty):
@@ -1071,25 +1072,25 @@ object RunOnHostPrereqs:
    * Translate a working directory the sandbox supplied into a host path.
    *
    * This is the one value in the design that arrives from inside the container, so it is validated
-   * rather than trusted. It never becomes the profile's PROJECT parameter — that is always the
-   * launcher's canonical root — and reaches the backend only as the child's cwd. Validating it
+   * rather than trusted. It never becomes the workspace the profile grants — that is always the
+   * launcher's canonical workspace root — and reaches the backend only as the child's cwd. Validating it
    * anyway is what turns a request naming somewhere else into one answer instead of a wall of
    * denials.
    *
-   * `mount` is what the project is mounted at inside the container: its own path
-   * (SandboxProject.mountPathOf), so the requested directory and the host directory are one
+   * `mount` is what the workspace root is mounted at inside the container: its own path
+   * (SandboxWorkspace.mountPathOf), so the requested directory and the host directory are one
    * string, and the validation stays because the value still arrives from inside. A request that
-   * is not under it, that climbs out with `..`, or whose canonical form leaves the project, is
+   * is not under it, that climbs out with `..`, or whose canonical form leaves the workspace, is
    * refused; nothing is clamped back to the root.
    */
   def workingDirectory(
     requested: String,
     mount: String,
-    project: Path,
+    workspaceRoot: Path,
     canonicalize: Path => Option[Path],
     os: Os,
   ): Either[Refusal, Path] =
-    def refuse = Left(Refusal.WorkingDirectoryOutsideProject(requested))
+    def refuse = Left(Refusal.WorkingDirectoryOutsideWorkspace(requested))
     val relative =
       if requested == mount then Some("")
       else if requested.startsWith(mount + "/") then Some(requested.drop(mount.length + 1))
@@ -1098,20 +1099,20 @@ object RunOnHostPrereqs:
       case None => refuse
       case Some(suffix) =>
         parsePath(suffix) match
-          // An absolute suffix would resolve away from the project entirely; `..` is normalized
+          // An absolute suffix would resolve away from the workspace entirely; `..` is normalized
           // first so a textual prefix test cannot be fooled, and the canonical form is then
-          // re-checked because a symlink inside the project can still leave it.
+          // re-checked because a symlink inside the workspace can still leave it.
           case Some(part) if part.isAbsolute => refuse
           case Some(part) =>
-            val joined = project.resolve(part).normalize()
-            if !startsWith(joined, project, os) then refuse
+            val joined = workspaceRoot.resolve(part).normalize()
+            if !startsWith(joined, workspaceRoot, os) then refuse
             else
               canonicalize(joined) match
-                // Exact: `real` and `project` are both canonical, so their spellings are the
+                // Exact: `real` and `workspaceRoot` are both canonical, so their spellings are the
                 // volume's own, and folding would allow a case-different sibling on a
                 // case-sensitive volume.
-                case Some(real) if real.startsWith(project) => Right(real)
-                case _                                           => refuse
+                case Some(real) if real.startsWith(workspaceRoot) => Right(real)
+                case _                                                 => refuse
           case None => refuse
 
   // ---------------------------------------------------------------------------

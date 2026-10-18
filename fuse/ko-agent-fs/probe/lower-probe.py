@@ -5,12 +5,12 @@ folding between two names, and how far an open-file hold reaches. Each decides a
 representation choice, and only the backing filesystem and the share answer any of them.
 
 Every row is two-party — the host acts and the session observes, or the reverse — so this half runs
-INSIDE a sandbox session and `lower-probe-host.py` runs on the HOST, in the same project directory.
+INSIDE a sandbox session and `lower-probe-host.py` runs on the HOST, in the same workspace root.
 The two rendezvous through files under lower-probe-work/.
 
-Run in a SCRATCH project; it creates and deletes files:
+Run in a SCRATCH workspace; it creates and deletes files:
 
-    cp .../lower-probe.py .../lower-probe-host.py <scratch-project>/
+    cp .../lower-probe.py .../lower-probe-host.py <scratch-workspace>/
     java -jar ko-agent-sandbox.jar python3 lower-probe.py
     .../probe/unfiltered.sh python3 lower-probe.py      # the control, a second run
 
@@ -265,7 +265,7 @@ def main() -> int:
     print(f"stack under test: {stack()}")
     print(f"session: {platform.system()} {platform.release()} {platform.machine()}")
     print()
-    print("READY. In a HOST terminal, in this project directory, run:")
+    print("READY. In a HOST terminal, in this workspace root, run:")
     print("    python3 lower-probe-host.py")
     print(f"waiting up to {WAIT}s per step ...")
     sys.stdout.flush()
@@ -296,7 +296,7 @@ def main() -> int:
         print(f"{WORK}/ is left in place — the request and answer files, and what the host left")
         print("behind, are how a failed row is told apart from a row that measured a refusal.")
         return 1
-    # A clean run leaves nothing: the scratch project is the user's, and a stale directory is what
+    # A clean run leaves nothing: the scratch workspace is the user's, and a stale directory is what
     # makes a later run stall on a request the host half answered for an earlier one.
     shutil.rmtree(WORK, ignore_errors=True)
     return 0

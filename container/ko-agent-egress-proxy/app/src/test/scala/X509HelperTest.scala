@@ -15,7 +15,7 @@ import X509Helper.*
 import X509HelperTest.*
 
 object X509HelperTest:
-  /** A CA of the kind the launcher creates for a project. */
+  /** A CA of the kind the launcher creates for a workspace. */
   def testCa(now: Instant, days: Long): (X509Certificate, PrivateKey) =
     val ca = createCa("ko-agent-sandbox egress CA (test)", now, days)
     (ca.certificate, ca.privateKey)

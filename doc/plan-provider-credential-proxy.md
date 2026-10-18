@@ -39,12 +39,12 @@ Each fact is specified in one place:
 
 1. Store or resolve one GitHub credential once, select it for a run and use it at the exact GitHub
    API and Git HTTPS targets its service definition names.
-2. Give two projects or concurrent runs the same stored instance without sharing a proxy,
+2. Give two workspaces or concurrent runs the same stored instance without sharing a proxy,
    placeholder or audit log.
 3. Resolve a short-lived access token with a host executable, refresh it before expiry and keep the
    refresh token or provider login outside the sandbox.
 4. Select one credential mechanism for a model provider without an unrelated stored service or
-   project file changing that choice.
+   workspace file changing that choice.
 5. Broker an API-key or OAuth-backed model provider only when the installed client accepts the
    launch CA and the host explicitly accepts plaintext proxy visibility for that run.
 
@@ -116,7 +116,7 @@ The launcher consumes that answer and does not keep a second provider-domain tab
 
 ## Launcher command-line contract
 
-Management actions operate outside a project and consume no launch options:
+Management actions operate outside a workspace and consume no launch options:
 
 ```text
 --credential-set=<service>[/<instance>]
@@ -150,7 +150,7 @@ A launch selects instances explicitly and repeatably:
 ```
 
 Do not infer credential selection from the agent command, selected model provider, environment,
-project directory or presence in the store. A stored credential is unused until the host selects it.
+workspace or presence in the store. A stored credential is unused until the host selects it.
 
 `--egress-effective` accepts `--credential` and shows every allowed injection target, excluded
 target and TLS treatment without resolving a source. `--egress-check=<host>` may test reachability
@@ -168,7 +168,7 @@ methods GET,HEAD
 path /
 ```
 
-The serialized form is internal to the image, not project configuration. Its parser requires:
+The serialized form is internal to the image, not workspace configuration. Its parser requires:
 
 - an exact normalized hostname already present in the same image's provider or host catalog;
 - a header name or query parameter name the binding grammar admits (`egress-proxy.md`, "Where the
@@ -202,7 +202,7 @@ the same account would not add a boundary.
 
 Source metadata and values are separate. Metadata contains the service, instance, mechanism,
 source kind, descriptor digest and refresh times. The secret backend contains only the value or
-OAuth material. Project state contains neither.
+OAuth material. Workspace state contains neither.
 
 Validate every credential value before storing it or publishing a generation: every value
 passes `--egress-cred`'s value grammar (`egress-proxy.md`, "Where the value goes") at those two
@@ -225,7 +225,7 @@ An executable source descriptor is bounded JSON:
 }
 ```
 
-- No shell interprets `argv`; element zero is an absolute regular executable outside the project.
+- No shell interprets `argv`; element zero is an absolute regular executable outside the workspace.
 - The child receives a fixed empty working directory, a minimal launcher-owned environment plus
   the exact named host variables, closed stdin and captured bounded stdout and stderr.
 - No request host, path, header, account string or sandbox byte becomes an argument or environment
@@ -289,7 +289,7 @@ shadow a newly selected mechanism.
 ## OAuth mechanisms
 
 OAuth is a provider implementation behind the same source interface, not a generic collection of
-URLs in a project file. A shipped flow fixes its authorization server, public-client identity,
+URLs in a workspace file. A shipped flow fixes its authorization server, public-client identity,
 grant, scopes, token fields, refresh behavior and revocation semantics. The browser or device step
 runs on the host; access and refresh tokens enter the host backend, never the sandbox.
 
@@ -393,11 +393,11 @@ header contents, OAuth subject or executable output.
 
 Retained audit lines make credential use attributable but not replayable. A refresh event is a
 host lifecycle line in the protected credential log, not a synthetic network request in the
-project's proxy log.
+workspace's proxy log.
 
 ## Lifecycle and cleanup
 
-Global credential records are stored outside every project's state. Project `--reset` and
+Global credential records are stored outside every workspace's state. Workspace `--reset` and
 `--reset-all` remove per-run generations and agent state but do not silently revoke or delete global
 credentials; only `--credential-remove` deletes one.
 
@@ -413,7 +413,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
 
 - **Automatic provider selection:** command-name inference selects a model provider, but a
   credential is stronger authority and requires explicit `--credential` selection.
-- **Project or kit service declarations:** repository-controlled target or host-exec declarations
+- **Workspace or kit service declarations:** repository-controlled target or host-exec declarations
   would let untrusted input choose where a credential is spent or what runs on the host.
 - **Wildcard targets:** every recipient is exact and reviewable; provider-controlled redirects do
   not extend the list.
@@ -442,7 +442,7 @@ launcher dry run, credential metadata, proxy image and mounted generation disagr
   targets, header formats, path matchers and duplicate entries.
 - Assert every target exists in the proxy's own host or provider catalog and every active target is
   allowed after denials; no service adds reachability.
-- Test absent, repeated, unknown and colliding `--credential` selections and prove the project,
+- Test absent, repeated, unknown and colliding `--credential` selections and prove the workspace,
   agent command and stored-state presence cannot select one.
 - Assert one service's source and mechanism are unchanged by adding, removing or resolving every
   other service.

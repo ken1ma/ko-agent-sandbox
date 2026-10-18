@@ -139,7 +139,7 @@ fingerprint_of() {
 # keytool is invoked rather than whichever one is on PATH.
 #
 # Idempotence must compare the certificate, not just find the alias: a JDK kept on a volume shared
-# across projects can hold this alias for another project's CA, and "already trusted" over the
+# across workspaces can hold this alias for another workspace's CA, and "already trusted" over the
 # wrong certificate would be exactly the unexplained TLS failure this program exists to end.
 want=$("$JAVA_HOME/bin/keytool" -printcert -file "$CA" | fingerprint_of)
 have=$("$JAVA_HOME/bin/keytool" -list -cacerts -storepass "$STOREPASS" -alias "$ALIAS" 2>/dev/null \
@@ -158,7 +158,7 @@ if [ "$have" = "$want" ]; then
 fi
 
 if [ -n "$have" ]; then
-    echo "alias $ALIAS holds a different certificate (another project's CA?); replacing it"
+    echo "alias $ALIAS holds a different certificate (another workspace's CA?); replacing it"
     "$JAVA_HOME/bin/keytool" -delete -cacerts -storepass "$STOREPASS" -alias "$ALIAS" >/dev/null
 fi
 

@@ -1,7 +1,7 @@
 # Plan: optional Coursier cache overlay
 
 `--run-on-host` (`run-on-host.md`) meets part of this plan's goal: an agent's sbt and `mill`
-builds run on the host against a per-project cache of their own, so they neither warm nor need the
+builds run on the host against a per-workspace cache of their own, so they neither warm nor need the
 container's. What this plan still covers is the container's own Scala tooling — which runs
 `scala`, `scalafmt`, `cs install`, and sbt when the host channel is not in force — and the
 image-home relocation that removes the copy-up cost.
@@ -77,7 +77,7 @@ this plan.
    reading the lower are outside this claim.
 6. The overlay upper is private to one sandbox run. It is removed on normal exit, create/start
    failure, Ctrl-C and `--reset`; no new named volume or launcher state is introduced.
-7. One project cannot name a cache path overlapping its workspace, launcher-owned state, podman
+7. A launch cannot name a cache path overlapping its workspace, launcher-owned state, podman
    storage or an over-broad host directory and thereby create a second path around an existing
    boundary.
 8. The option works with `KO_AGENT_SANDBOX_IMAGE`: it changes the mount, not the selected image.
@@ -108,15 +108,16 @@ future reviewed cache kinds do not require a comma-list grammar.
   Different recognized kinds may repeat the option.
 - Resolve symlinks and aliases to the canonical existing directory before boundary checks and
   before constructing the podman argument. This follows a path the user supplied at launch, like
-  project-directory canonicalization; it does not follow a repository-controlled symlink while
-  discovering the boundary configuration. Any overlap with the canonical project is refused below.
+  the workspace root's canonicalization; it does not follow a repository-controlled symlink while
+  discovering the boundary configuration. Any overlap with the canonical workspace root is refused
+  below.
 - Management actions reject this launch-only option, as they reject the session options they do
   not read.
 - Once the sandbox command starts, a token with the same spelling is passed to that command rather
   than parsed by the launcher.
 - Do not accept `src:dst` or any caller-selected container destination. podman's volume shorthand
   has Windows drive-colon ambiguity, and an arbitrary destination could shadow managed settings,
-  the project mount, installed programs or persistent agent state.
+  the workspace mount, installed programs or persistent agent state.
 
 Absent `COURSIER_CACHE`, bare `coursier` discovery uses:
 
@@ -138,8 +139,8 @@ for each path relationship after canonicalization:
 - refuse a filesystem root;
 - refuse the configured user home, a well-known parent of user homes such as `/home` or `/Users`,
   or any ancestor of them;
-- refuse any overlap with the project directory in either direction: a cache below the workspace
-  is writable through the project mount, while a cache above it exposes unrelated host files;
+- refuse any overlap with the workspace in either direction: a cache below the workspace root is
+  writable through the workspace mount, while a cache above it exposes unrelated host files;
 - refuse any overlap with the launcher state root in either direction; it contains the inspection
   CA key and audit state;
 - refuse any overlap with the launcher's install directory in either direction;
@@ -150,7 +151,7 @@ for each path relationship after canonicalization:
   cannot be determined. A podman machine keeps its graph in the VM rather than the client path
   namespace; reject the client-side storage paths above, and do not compare unrelated path
   spellings from the two namespaces;
-- on macOS, compare both data-volume spellings as `SandboxProject` already does;
+- on macOS, compare both data-volume spellings as `SandboxWorkspace` already does;
 - on Windows, reject UNC paths unless the existing podman-volume path handling has an independently
   tested mapping; do not guess one;
 - accept a narrower directory inside the user's home, including each default above, only after all
@@ -259,7 +260,7 @@ contract.
 
 ## Security model
 
-The lower cache is readable executable input shared across projects. The sandbox can inspect and
+The lower cache is readable executable input shared across workspaces. The sandbox can inspect and
 exfiltrate private artifacts, repository URLs, metadata and any accidentally stored file when its
 egress profile permits a destination. State that at the option and in `SECURITY.md`.
 
@@ -301,8 +302,8 @@ inline command that can omit or reorder it.
 - prove every management action rejects the launch-only option;
 - test `COURSIER_CACHE` precedence and default `v1` discovery for Linux, macOS and Windows without
   depending on the test host;
-- test canonical path overlap against project, launcher state and install directories, podman
-  storage, filesystem roots, home and macOS aliases;
+- test canonical path overlap against the workspace root, launcher state and install directories,
+  podman storage, filesystem roots, home and macOS aliases;
 - test that an explicit cache outside home is accepted when it overlaps no protected root;
 - assert the complete create command has one anonymous home, one persistent volume, and exactly
   the selected cache overlays in registry-defined order;
@@ -365,7 +366,7 @@ Update each claim in the place that records it:
 | mount and cleanup mechanism | launcher source | `testWithPodman` lifecycle suites |
 | platform qualification | README option text | platform verification record |
 
-The README's opening claim that the sandbox reaches no user files except the project must become a
+The README's opening claim that the sandbox reaches no user files except the workspace must become a
 default-mode claim with the opt-in cache exception named. Its diagram must show a one-way optional
 host-cache lower and disposable per-run upper. Do not repeat the full threat analysis there; point
 to `SECURITY.md`.

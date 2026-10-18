@@ -1,10 +1,10 @@
-// The project directory — the directory the container mounts at its own path — and everything the
+// The workspace root — the directory the container mounts at its own path — and everything the
 // launcher decides about it before any resource exists: the real path it resolves to, the
-// directories refused as projects outright, the identity its path hashes to (which names every
-// per-project resource), the path it is mounted at, and the mount guards that protect or refuse
-// its .git and .ko-agent-sandbox layouts.
+// directories refused as workspace roots outright, the identity its path hashes to (which names
+// every per-workspace resource), the path it is mounted at, and the mount guards that protect or
+// refuse its .git and .ko-agent-sandbox layouts.
 // The session's configuration variables are deliberately not here — they describe a launch, not the
-// project, and are beside the --help text they must stay in step with.
+// workspace, and are beside the --help text they must stay in step with.
 
 package agentsandbox.launcher
 
@@ -19,16 +19,16 @@ import agentsandbox.egress.LogHelper.sha256Hex
 import HostCommands.*
 import FileHelper.*
 
-object SandboxProject:
+object SandboxWorkspace:
 
   /**
    * The current directory, symlinks resolved (like `pwd -P`) — what the container mounts, and the
-   * path every per-project resource is named after. A directory that cannot be canonicalized
-   * fails the command: falling back to the symbolic spelling would hash to a different project id
+   * path every per-workspace resource is named after. A directory that cannot be canonicalized
+   * fails the command: falling back to the symbolic spelling would hash to a different workspace id
    * than the launches that resolved it, and the symlink guards assume a real path.
    */
-  def resolveProjectDir(os: Os): Path =
-    try canonicalProjectDir(Paths.get("").toAbsolutePath.toRealPath(), os)
+  def resolveWorkspaceRoot(os: Os): Path =
+    try canonicalWorkspaceRoot(Paths.get("").toAbsolutePath.toRealPath(), os)
     catch
       case ex: IOException =>
         fail(s"error: cannot resolve the current directory to a real path\n$ex")
@@ -36,17 +36,17 @@ object SandboxProject:
   /**
    * One spelling per directory. macOS exposes the data volume at / and at /System/Volumes/Data,
    * and toRealPath keeps whichever the user typed (withMacDataVolumeAliases has why), so a launch
-   * from the alias would hash to a second project id, back the filter and the raw bind by a path
+   * from the alias would hash to a second workspace id, back the filter and the raw bind by a path
    * the podman machine does not share — its default share is the home at its own spelling — and
-   * mount the project at a path the host does not name. The alias is stripped once, here.
+   * mount the workspace root at a path the host does not name. The alias is stripped once, here.
    */
-  def canonicalProjectDir(realPath: Path, os: Os): Path =
+  def canonicalWorkspaceRoot(realPath: Path, os: Os): Path =
     val text = realPath.toString
     if os == Os.Mac && text.startsWith(MacDataVolumePrefix + "/") then Paths.get(text.stripPrefix(MacDataVolumePrefix))
     else realPath
 
   /**
-   * The path the container mounts the project at, which is the path the host — or on Windows the
+   * The path the container mounts the workspace root at, which is the path the host — or on Windows the
    * podman machine — has it at, so a path an agent prints or an IDE passes in needs no translation
    * (design.md, prior art, has what the sandboxes doing the same ran into). It is also the one
    * host path that reaches the workspace filter's daemon bypassing podman: every `--volume` source
@@ -57,7 +57,7 @@ object SandboxProject:
    * Docker Sandboxes and Gemini CLI spell a drive `/c/...`, Git Bash's form; this follows the
    * machine, whose spelling a launch from inside WSL shares.
    *
-   * A path with no drive letter (UNC) refuses the launch, in every write mode. That is scope, not
+   * A path with no drive letter (UNC) refuses the launch, in every workspace mode. That is scope, not
    * a limit of the machine: a share reaches the WSL distro only through an explicit DrvFs mount
    * there (`mount -t drvfs //server/share /mnt/share`), which the launcher neither arranges nor
    * checks, and a drive letter assigned to the share does not help, since WSL automounts fixed
@@ -65,18 +65,18 @@ object SandboxProject:
    * or checked, and the filter tested on it.
    *
    * A POSIX path with a `:` refuses the launch too: podman reads `:` in a `--volume` value as the
-   * field separator, and the project and its Git directory are bound with that option. A Windows
+   * field separator, and the workspace root and its Git directory are bound with that option. A Windows
    * path has only the drive's `:`, which podman's own client translates.
    */
-  def mountPathOf(os: Os, projectDir: Path): Either[String, String] =
-    val text = projectDir.toString
+  def mountPathOf(os: Os, workspaceRoot: Path): Either[String, String] =
+    val text = workspaceRoot.toString
     os match
       case Os.Linux | Os.Mac =>
         if text.contains(':') then
           Left(
             s"error: cannot mount $text\n" +
-              "podman reads a `:` in a --volume value as the field separator, so a project path may not contain " +
-              "one. Work from a checkout whose path has no `:`.",
+              "podman reads a `:` in a --volume value as the field separator, so a workspace root's path may not " +
+              "contain one. Work from a checkout whose path has no `:`.",
           )
         else Right(text)
       case Os.Windows =>
@@ -86,12 +86,12 @@ object SandboxProject:
         else
           Left(
             s"error: cannot map $text into the podman machine\n" +
-              "The sandbox mounts the project at the path the machine has it at, /mnt/<drive>/..., " +
+              "The sandbox mounts the workspace root at the path the machine has it at, /mnt/<drive>/..., " +
               "which only drive-letter paths (C:\\...) have. Work from a checkout on a fixed drive.",
           )
 
   /** The container user's home: the anonymous home volume, the persistent volume and the agents'
-    * state are mounted there (AgentSandboxLauncher's create command), so no project may be. */
+    * state are mounted there (AgentSandboxLauncher's create command), so no workspace root may be. */
   val ContainerHome = "/home/nonroot"
 
   private def normalizedAndCanonical(path: Path): Seq[Path] =
@@ -100,7 +100,7 @@ object SandboxProject:
     catch case _: IOException => Seq(normalized)
 
   /**
-   * The outcome of home discovery: the directories refused as projects,
+   * The outcome of home discovery: the directories refused as workspace roots,
    * which of them are *containers* of homes rather than homes — their direct
    * children are refused too, because a child of /home is somebody's home and
    * exposes that account's credentials exactly as this one's would — and
@@ -116,7 +116,7 @@ object SandboxProject:
    * Right with the normalized and (best-effort) canonical spellings. A value
    * that fails toRealPath is still protected by its exact spelling, but with
    * a warning — silently keeping only the symbolic form while the candidate
-   * project dir is always canonical would disable the comparison unnoticed.
+   * workspace root is always canonical would disable the comparison unnoticed.
    */
   private def parseHomeVariable(name: String, value: String): Either[String, (Seq[Path], Seq[String])] =
     try
@@ -132,7 +132,7 @@ object SandboxProject:
                 Seq(normalized),
                 Seq(
                   s"$name ($value) does not resolve to a real path; " +
-                    "only this exact spelling is refused as a project",
+                    "only this exact spelling is refused as a workspace root",
                 ),
               ),
             )
@@ -196,7 +196,7 @@ object SandboxProject:
       dataVolumeSpellings(os, Seq(right)).exists(other => one.startsWith(other) || other.startsWith(one))
 
   /**
-   * The directories whose contents must never become a project mount, and
+   * The directories whose contents must never become a workspace mount, and
    * the warnings describing any degradation in deriving them. PUBLIC is the
    * shared Windows profile. A home variable that is set but invalid refuses
    * the launch on POSIX; on Windows it is dropped with a warning as long as
@@ -223,7 +223,7 @@ object SandboxProject:
       val problem = parsed.collectFirst { case (_, _, Left(problem)) => problem }.get
       Left(
         s"""error: $problem
-           |Cannot determine which project directories are safe to mount.""".stripMargin,
+           |Cannot determine which directories are safe to mount as a workspace.""".stripMargin,
       )
     else
       val unsetWarnings =
@@ -231,7 +231,7 @@ object SandboxProject:
           val missing = os match
             case Os.Linux | Os.Mac => "HOME is not set"
             case Os.Windows        => "neither USERPROFILE nor HOME is set"
-          Seq(s"$missing; only the well-known home directories are refused as projects")
+          Seq(s"$missing; only the well-known home directories are refused as workspace roots")
         else Seq.empty
       val droppedWarnings = parsed.collect { case (_, _, Left(problem)) =>
         s"$problem; dropped, since the remaining home variables cover the boundary"
@@ -258,23 +258,23 @@ object SandboxProject:
       )
 
   /**
-   * Why dir must not be mounted as the project, or None if it may. The reason is
+   * Why dir must not be mounted as the workspace root, or None if it may. The reason is
    * user-facing and names the rule that fired: telling someone inside
-   * ~/.config to "change into a project directory" would send them deeper
-   * into a tree the dot rule refuses everywhere. A project at <home>/project
+   * ~/.config to "change into a directory to use as the workspace" would send them deeper
+   * into a tree the dot rule refuses everywhere. A workspace root at <home>/project
    * remains valid (HomeProtection has what is refused). The container's own home is refused at
-   * any depth: mounted at its own path, a project there would sit among the session's home, the
+   * any depth: mounted at its own path, a workspace there would sit among the session's home, the
    * persistent volume and the agents' state. Only a POSIX host can spell it; a Windows path never
    * starts with it.
    */
-  def forbiddenProjectDirReason(dir: Path, homes: HomeProtection): Option[String] =
+  def forbiddenWorkspaceRootReason(dir: Path, homes: HomeProtection): Option[String] =
     val candidate = dir.normalize()
     val dotDirectory = candidate.iterator().asScala.map(_.toString).find(_.startsWith("."))
 
     if candidate.getRoot == candidate || candidate.toString.isEmpty then
       Some(
         "It is a filesystem root: the whole system would be exposed to the agent.\n" +
-          "Change into a project directory and run this again.",
+          "Change into a directory to use as the workspace and run this again.",
       )
     else
       dotDirectory match
@@ -283,7 +283,7 @@ object SandboxProject:
             s"The resolved path contains the dot-prefixed directory '$name'. Dot directories hold\n" +
               "configuration and credentials (~/.ssh, ~/.aws, ~/.config), so nothing beneath one is\n" +
               "mounted; symlinks are resolved first, so the dot directory may come from where a link\n" +
-              "leads rather than from the path as typed. Move the project outside dot-prefixed\n" +
+              "leads rather than from the path as typed. Move the workspace outside dot-prefixed\n" +
               "directories and run this again.",
           )
         case None =>
@@ -292,13 +292,13 @@ object SandboxProject:
             Some(
               "It is a home directory, or a directory containing one: anything like .aws, .ssh or\n" +
                 ".config beneath it would be exposed to the agent.\n" +
-                "Change into a project directory and run this again.",
+                "Change into a directory to use as the workspace and run this again.",
             )
           else if candidate.startsWith(Paths.get(ContainerHome)) then
             Some(
               s"It is inside $ContainerHome, the sandbox user's home in the container, where the session's\n" +
-                "home, the persistent volume and the agents' state are mounted; the project is mounted at its\n" +
-                "own path and would sit among them. Move the project elsewhere and run this again.",
+                "home, the persistent volume and the agents' state are mounted; the workspace root is mounted at\n" +
+                "its own path and would sit among them. Move the workspace elsewhere and run this again.",
             )
           else None
 
@@ -315,43 +315,43 @@ object SandboxProject:
 
   /**
    * Lowercased before hashing on Windows, because its paths are
-   * case-insensitive: C:\Src\App and C:\src\app are one project and must
+   * case-insensitive: C:\Src\App and C:\src\app are one workspace and must
    * produce one set of resources. POSIX paths are hashed as spelled.
    * Locale.ROOT, because the machine's locale must not decide identity: the
    * Turkish fold of I to dotless ı would hash the same path differently, and
-   * a locale change would orphan every project's volume and sign it out.
+   * a locale change would orphan every workspace's volume and sign it out.
    */
-  def projectHash(absolutePath: String, os: Os): String =
+  def workspaceHash(absolutePath: String, os: Os): String =
     val canonical =
       if os == Os.Windows then absolutePath.toLowerCase(java.util.Locale.ROOT) else absolutePath
     sha256Hex(canonical).take(12)
 
-  def projectIdOf(dir: Path, os: Os): String =
-    s"${slugOf(dir.getFileName.toString)}-${projectHash(dir.toString, os)}"
+  def workspaceIdOf(dir: Path, os: Os): String =
+    s"${slugOf(dir.getFileName.toString)}-${workspaceHash(dir.toString, os)}"
 
-  /** What [[projectIdOf]] generates, and the one definition of a project id's pattern: `--stats` lists a
+  /** What [[workspaceIdOf]] generates, and the one definition of a workspace id's pattern: `--stats` lists a
     * name under a state or cache root only when it matches, and `--reset <id>` accepts only what
     * matches, so every id `--stats` prints is one `--reset` takes. */
-  val ProjectIdPattern = "[A-Za-z0-9._-]{1,32}-[0-9a-f]{12}"
+  val WorkspaceIdPattern = "[A-Za-z0-9._-]{1,32}-[0-9a-f]{12}"
 
-  def isProjectId(name: String): Boolean = name.matches(ProjectIdPattern)
+  def isWorkspaceId(name: String): Boolean = name.matches(WorkspaceIdPattern)
 
-  /** A project's persistent volume; with ProjectIdPattern for the id, the pattern `--reset-all`
+  /** A workspace's persistent volume; with WorkspaceIdPattern for the id, the pattern `--reset-all`
     * removes (LauncherState.persistentVolumes). */
-  def persistentVolumeName(projectId: String): String = s"$PersistentVolumePrefix$projectId"
+  def persistentVolumeName(workspaceId: String): String = s"$PersistentVolumePrefix$workspaceId"
   val PersistentVolumePrefix = "ko-agent-sandbox-persistent-"
 
   /**
-   * Why git does not work in a session on this project directory, while the host directory the user
-   * launched from is part of a repository. The container has the project directory and nothing
-   * above or beside it, so git works there only when the repository's Git directory is inside the
-   * project: a `.git` directory, or a pointer file whose relative target stays within it. Every
-   * other form leaves the project's `.git` naming a path the container does not have — a
+   * Why git does not work in a session on this workspace, while the host directory the user
+   * launched from is part of a repository. The container has the workspace and nothing above or
+   * beside it, so git works there only when the repository's Git directory is inside the
+   * workspace: a `.git` directory, or a pointer file whose relative target stays within it. Every
+   * other form leaves the workspace root's `.git` naming a path the container does not have — a
    * submodule checkout (`gitdir: ../.git/modules/<name>`), a linked worktree, a
    * `--separate-git-dir` repository, an absolute pointer or symlink wherever it leads, a launch
    * from a subdirectory of the repository — and every git command fails with `not a git
    * repository`, which an agent reads as breakage. A linked worktree is the one form the launch
-   * can serve, read-only, by binding its main worktree's Git directory beside the project
+   * can serve, read-only, by binding its main worktree's Git directory beside the workspace
    * (linkedGitdirBind). Lack of Git access alone does not require refusal; the mount-time guard
    * still checks whether the host's configuration or hooks are exposed.
    *
@@ -361,8 +361,8 @@ object SandboxProject:
    * Two questions of one resolution (repositoryAt): whether the host has a repository rooted at a
    * directory — a nested worktree or submodule is one, its Git directory elsewhere — and
    * whether the container can follow `.git` to that Git directory from a given base. A
-   * `launchFrom` is the nearest directory holding the project from which the repository git uses
-   * there is reachable, so `that whole tree is then the project` is true of it: the superproject
+   * `launchFrom` is the nearest directory holding the workspace from which the repository git uses
+   * there is reachable, so `that whole tree is then the workspace` is true of it: the superproject
    * over a submodule, the repository root over a subdirectory. A separate git dir has none — nor
    * has any parent of one, under which the pointer stays as absolute — and neither has a linked
    * worktree, whose main worktree is a different checkout, not this one's tree.
@@ -375,22 +375,22 @@ object SandboxProject:
     case Gitdir(named: String, resolved: Path, launchFrom: Option[Path])
     case Above(repository: Path, launchFrom: Option[Path])
 
-  def noGit(projectDir: Path, homes: HomeProtection, os: Os): Option[NoGit] =
-    repositoryAt(projectDir, os) match
+  def noGit(workspaceRoot: Path, homes: HomeProtection, os: Os): Option[NoGit] =
+    repositoryAt(workspaceRoot, os) match
       case Some(gitdir) if gitdir.reachable => None
-      case Some(gitdir) => Some(NoGit.Gitdir(gitdir.named, gitdir.resolved, launchWithGit(projectDir, homes, os)))
+      case Some(gitdir) => Some(NoGit.Gitdir(gitdir.named, gitdir.resolved, launchWithGit(workspaceRoot, homes, os)))
       // A `.git` directory git rejects, or none at all, leaves it searching above, where the
       // container cannot follow. A pointer file it rejects ends the search instead — here as at
       // any ancestor the search would otherwise pass (searched).
-      case None if Files.isRegularFile(projectDir.resolve(".git")) => None
+      case None if Files.isRegularFile(workspaceRoot.resolve(".git")) => None
       case None =>
-        searched(projectDir, os)
+        searched(workspaceRoot, os)
           .find(dir => repositoryAt(dir, os).isDefined)
           .map(repository => NoGit.Above(repository, launchWithGit(repository, homes, os)))
 
   /**
    * The repository rooted at a directory, as the host has it, and whether the container would
-   * reach its Git directory with `base` as the project it mounts.
+   * reach its Git directory with `base` as the workspace root it mounts.
    *
    * A test of form, and deliberately not git's own discovery (`is_git_directory` in setup.c reads
    * `HEAD`, `objects` and `refs`, the last two through a linked worktree's `commondir`): the
@@ -416,8 +416,8 @@ object SandboxProject:
    * (`read_gitfile_gently`). So there are two steps at most, and one base for both.
    *
    * `reachable` is the container's side of those steps, and deliberately approximate: each must
-   * never climb above `base` — the directory that would be the project — and must resolve inside
-   * it. The container has the project at its own path and nothing above or beside it, so a step
+   * never climb above `base` — the directory that would be the workspace root — and must resolve
+   * inside it. The container has the workspace at its own path and nothing above or beside it, so a step
    * that leaves the base and re-enters the host's path by name (`../foo/x` under `/root/foo`)
    * leads nowhere there, and an absolute step is taken only where the container spells the base as
    * the host does (mountPathOf) — never on Windows, whose `C:\...` the container has at
@@ -491,19 +491,19 @@ object SandboxProject:
    *       - the gitdir's file counts even without `extensions.worktreeConfig`, which git needs to
    *         read it: git writes the file only while the extension is set and keeps it once unset;
    *   - the directory holding that `.git`, resolved as a launch from it resolves it, is one the
-   *     launcher accepts as a project.
+   *     launcher accepts as a workspace root.
    *
    * A bare common gitdir, a main worktree with `--separate-git-dir`, and a missing, unreadable or
    * malformed `commondir` name no main worktree: the linked worktree's metadata does not say
    * where the main checkout is.
    *
-   * Spelled as resolveProjectDir spells a launch from it, so that projectIdOf names the volume
+   * Spelled as resolveWorkspaceRoot spells a launch from it, so that workspaceIdOf names the volume
    * that launch uses: any other spelling hashes to a different id and silently creates an empty
    * volume under the main worktree's slug.
    */
-  def mainWorktreeOf(projectDir: Path, homes: HomeProtection, os: Os): Option[Path] =
+  def mainWorktreeOf(workspaceRoot: Path, homes: HomeProtection, os: Os): Option[Path] =
     for
-      gitdir <- repositoryAt(projectDir, os).map(_.resolved)
+      gitdir <- repositoryAt(workspaceRoot, os).map(_.resolved)
       commondir <- boundedText(gitdir.resolve("commondir")).flatMap: text =>
         try Some(gitdir.resolve(text.trim).normalize)
         catch case _: InvalidPathException => None
@@ -517,9 +517,9 @@ object SandboxProject:
       if (config +: configWorktree.toSeq).forall(text => scanBare(text).contains(false))
       main <- Option(commondir.getParent)
       canonical <-
-        try Some(canonicalProjectDir(main.toRealPath(), os))
+        try Some(canonicalWorkspaceRoot(main.toRealPath(), os))
         catch case _: IOException => None
-      if forbiddenProjectDirReason(canonical, homes).isEmpty
+      if forbiddenWorkspaceRootReason(canonical, homes).isEmpty
     yield canonical
 
   /** A metadata file that may be absent: Some(None) when it is, Some(text) when read, and None
@@ -624,24 +624,24 @@ object SandboxProject:
   private val BareTrue = Set("true", "yes", "on", "1")
   private val BareFalse = Set("false", "no", "off", "0", "")
 
-  /** The nearest directory holding the project from which the repository git uses there is
+  /** The nearest directory holding the workspace from which the repository git uses there is
     * reachable — judged on that repository's own `.git` chain, never on the candidate's: a parent
     * whose own `.git` is fine holds a nested absolute pointer exactly as absolute as before, and a
     * parent with no repository of its own still serves a pointer into a sibling. A directory the
-    * launcher would refuse as the project (forbiddenProjectDirReason) is passed over, not stopped
+    * launcher would refuse as the workspace root (forbiddenWorkspaceRootReason) is passed over, not stopped
     * at: it is no launch at all, and what lies above it may still be one. */
   private def launchWithGit(repository: Path, homes: HomeProtection, os: Os): Option[Path] =
     (Iterator(repository.toAbsolutePath.normalize) ++ ancestors(repository))
-      .filter(base => forbiddenProjectDirReason(base, homes).isEmpty)
+      .filter(base => forbiddenWorkspaceRootReason(base, homes).isEmpty)
       .find(base => repositoryAt(repository, base, os).exists(_.reachable))
 
   /** The ancestors host git's search from this directory reaches: a `.git` file it rejects is a
     * failure there, not a step passed over, so the search — and every answer drawn from it — ends
     * at that directory (`setup_git_directory_gently_1`). A repository whose Git directory the
     * container cannot reach is not such a stop: git works there, and a launch above it still
-    * holds the project. */
-  private def searched(projectDir: Path, os: Os): Iterator[Path] =
-    ancestors(projectDir).takeWhile: dir =>
+    * holds the workspace. */
+  private def searched(workspaceRoot: Path, os: Os): Iterator[Path] =
+    ancestors(workspaceRoot).takeWhile: dir =>
       repositoryAt(dir, os).isDefined || !Files.isRegularFile(dir.resolve(".git"))
 
   private def ancestors(dir: Path): Iterator[Path] =
@@ -659,12 +659,12 @@ object SandboxProject:
         val gitdir = if isThePath then pathInline(resolved, os) else s"$named (${pathInline(resolved, os)})"
         (s".git names $gitdir, a gitdir the container does not have", launchFrom)
       case NoGit.Above(repository, launchFrom) =>
-        (s"the repository at ${pathInline(repository, os)} is above the project directory, which is all the " +
+        (s"the repository at ${pathInline(repository, os)} is above the workspace, which is all the " +
           "container has", launchFrom)
     s"git will not work in this session: $cause." +
       launchFrom.fold(" Git operations stay on the host.")(path =>
         s" To have git, launch from ${pathInline(path, os)}, which holds this directory; " +
-          "that whole tree is then the project.",
+          "that whole tree is then the workspace.",
       )
 
   /** The same fact in the container's words, for the agent's instructions. */
@@ -673,7 +673,7 @@ object SandboxProject:
       case NoGit.Gitdir(named, _, _) =>
         s"`$mountPath/.git` names `$named`, a gitdir the sandbox does not have"
       case NoGit.Above(_, _) =>
-        "the repository's `.git` lies above the project directory, which is all the sandbox has"
+        "the repository's `.git` lies above the workspace, which is all the sandbox has"
     s"""Git does not work in this session: $cause. Do not `git init` or clone in place; leave
        |the work as uncommitted changes and tell the user, whose git runs on the host.""".stripMargin
 
@@ -689,7 +689,7 @@ object SandboxProject:
    * the container spells drives under /mnt; a relative step climbing past the drive root, which
    * the two spellings resolve differently; an absolute `commondir` in another spelling than the
    * pointer's, which the container has nothing at (git uses it as written, `get_common_dir_noenv`
-   * in setup.c); a target inside the project mount, or holding it, which the bind would cover; and
+   * in setup.c); a target inside the workspace mount, or holding it, which the bind would cover; and
    * a source or target with a `:`, which a `--volume` value cannot carry (mountPathOf).
    *
    * The target is the pointer's own spelling of the common gitdir — through a symlink alias of the
@@ -698,17 +698,17 @@ object SandboxProject:
    */
   final case class GitdirBind(source: Path, target: String)
 
-  def linkedGitdirBind(projectDir: Path, main: Path, os: Os): Option[GitdirBind] =
-    val dotGit = projectDir.resolve(".git")
-    val project = projectDir.toAbsolutePath.normalize
+  def linkedGitdirBind(workspaceRoot: Path, main: Path, os: Os): Option[GitdirBind] =
+    val dotGit = workspaceRoot.resolve(".git")
+    val normalizedRoot = workspaceRoot.toAbsolutePath.normalize
     for
       _ <- Option.when(Files.isRegularFile(dotGit) && !Files.isSymbolicLink(dotGit))(())
-      gitdir <- repositoryAt(projectDir, os)
-      pointer <- try Some(projectDir.getFileSystem.getPath(gitdir.named)) catch case _: InvalidPathException => None
+      gitdir <- repositoryAt(workspaceRoot, os)
+      pointer <- try Some(workspaceRoot.getFileSystem.getPath(gitdir.named)) catch case _: InvalidPathException => None
       common <- Option(gitdir.resolved.getParent).flatMap(worktrees => Option(worktrees.getParent))
       if realized(common) == realized(main.resolve(".git"))
-      if !common.startsWith(project) && !project.startsWith(common)
-      if followable(pointer, from = project, os)
+      if !common.startsWith(normalizedRoot) && !normalizedRoot.startsWith(common)
+      if followable(pointer, from = normalizedRoot, os)
       commondir <- boundedText(gitdir.resolved.resolve("commondir")).flatMap: text =>
         try Some(gitdir.resolved.getFileSystem.getPath(text.trim)) catch case _: InvalidPathException => None
       if followable(commondir, from = gitdir.resolved, os) && gitdir.resolved.resolve(commondir).normalize == common
@@ -740,10 +740,10 @@ object SandboxProject:
        |user, whose git runs on the host.""".stripMargin
 
   /**
-   * Why .ko-agent-sandbox cannot serve as this project's boundary directory, or None. Checked in
-   * every write mode before the rules are read — the read is a host-side read either way. Refused
+   * Why .ko-agent-sandbox cannot serve as this workspace's boundary directory, or None. Checked in
+   * every workspace mode before the rules are read — the read is a host-side read either way. Refused
    * forms: a symlink of the directory or of an entry (the host read would follow a link the
-   * repository controls to rules outside the project); anything that is not
+   * repository controls to rules outside the workspace); anything that is not
    * a directory; or an entry that is no configuration of this launcher's — only recognized
    * configuration entries are accepted, so a typo'd `egres/` is a refused launch and not ignored
    * config, the same rule each entry applies inside itself. The files inside egress/ and file/ are
@@ -754,7 +754,7 @@ object SandboxProject:
   def boundaryDirRefusal(boundaryDir: Path): Option[String] =
     def symlinkRefusal(path: Path): String =
       s"error: ${shown(path.toString)} must not be a symlink\n" +
-        "Refusing to read this project's boundary configuration through one."
+        "Refusing to read this workspace's boundary configuration through one."
 
     val linkedEntry = BoundaryDirEntries.toVector.sorted.map(boundaryDir.resolve).find(Files.isSymbolicLink)
     if Files.isSymbolicLink(boundaryDir) then Some(symlinkRefusal(boundaryDir))
@@ -762,7 +762,7 @@ object SandboxProject:
     else if Files.exists(boundaryDir) && !Files.isDirectory(boundaryDir) then
       Some(
         s"error: ${shown(boundaryDir.toString)} must be a directory\n" +
-          "Remove what is in its place; the directory holds this project's boundary configuration.",
+          "Remove what is in its place; the directory holds this workspace's boundary configuration.",
       )
     else if !Files.exists(boundaryDir) then None
     else
@@ -780,8 +780,8 @@ object SandboxProject:
 
   val BoundaryDirEntries: Set[String] = Set("egress", "file", "run-on-host")
 
-  /** The project's boundary configuration directory, whose entries are BoundaryDirEntries. */
-  def boundaryDirOf(project: Path): Path = project.resolve(".ko-agent-sandbox")
+  /** The workspace's boundary configuration directory, whose entries are BoundaryDirEntries. */
+  def boundaryDirOf(workspaceRoot: Path): Path = workspaceRoot.resolve(".ko-agent-sandbox")
 
   /**
    * One boundary configuration directory's rule files, as (name, normalized text) in `names`
@@ -822,7 +822,7 @@ object SandboxProject:
     val kind = dir.getFileName.toString
     def symlinkRefusal(path: Path): String =
       s"error: ${shown(path.toString)} must not be a symlink\n" +
-        s"Refusing to read this project's $kind rules through one."
+        s"Refusing to read this workspace's $kind rules through one."
 
     if Files.isSymbolicLink(dir) then Some(symlinkRefusal(dir))
     else if !Files.exists(dir) then None

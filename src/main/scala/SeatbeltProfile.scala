@@ -135,7 +135,7 @@ object SeatbeltProfile:
     trust: Path,
     systemPaths: SystemPaths,
     network: Network,
-    // The file rules and the filter guard's paths (FileRules.Resolved): the project files a host
+    // The file rules and the filter guard's paths (FileRules.Resolved): the workspace files a host
     // program executes on an event, which the command must not write either.
     fileRules: FileRules.Resolved,
   )
@@ -148,9 +148,9 @@ object SeatbeltProfile:
     val prereqs = inputs.prereqs
     // Distinct: a mill build's java-home file may record the JDK that JAVA_HOME names.
     val readOnly = (Seq(prereqs.jdkHome) ++ inputs.distribution ++ Seq(prereqs.executable)).distinct
-    // Tests write and run stubs in the project and the command's temporary directory. Children
+    // Tests write and run stubs in the workspace and the command's temporary directory. Children
     // inherit the profile. Caches need no process-exec grant: the JVM loads their code by reading it.
-    val readWriteExec = Seq(prereqs.project, inputs.sessionTmp)
+    val readWriteExec = Seq(prereqs.workspaceRoot, inputs.sessionTmp)
     val readWrite =
       Seq(prereqs.coursierV1) ++ inputs.sbtGlobal ++ inputs.ivyHome ++ inputs.gradleUserHome ++ inputs.m2Repository
     val serverTmp = inputs.network match
@@ -170,7 +170,7 @@ object SeatbeltProfile:
         :+ inputs.trust
 
     val program = prereqs.program
-    val fileRuleFilters = SeatbeltProfile.fileRuleFilters(prereqs.project, inputs.fileRules)
+    val fileRuleFilters = SeatbeltProfile.fileRuleFilters(prereqs.workspaceRoot, inputs.fileRules)
     everyPath.find(path => !isAbsoluteNormalized(path)) match
       case _ if program == Program.Sbt && inputs.distribution.isEmpty =>
         Left(
@@ -302,7 +302,7 @@ object SeatbeltProfile:
             lines += """(allow network-outbound (remote ip "localhost:*"))"""
           case Network.ProxyOnly | Network.SbtClient(_) => ()
         lines += ""
-        lines += ";; Project files a host program executes on an event, and the components their names"
+        lines += ";; Workspace files a host program executes on an event, and the components their names"
         lines += ";; pass through: the file rules in order, then the filter guard's paths and the rules' rests"
         lines += ";; below where symlinks lead. Reads stay allowed."
         for (protection, filter) <- fileRuleFilters.getOrElse(Vector.empty) do
@@ -312,12 +312,12 @@ object SeatbeltProfile:
             case Protection.Pinned   => lines += s"(deny file-write-create file-write-unlink file-link $filter)"
         lines += ""
         lines += ";; The guard, last: repository state a later host git command would execute,"
-        lines += ";; and the boundary configuration a later launch would read. Scoped to the project:"
+        lines += ";; and the boundary configuration a later launch would read. Scoped to the workspace:"
         lines += ";; a .git a test builds in the command's temporary directory is removed with it, and no"
         lines += ";; host git ever runs there."
         FileRules.GuardedComponents.foreach: name =>
           lines +=
-            s"(deny file-write* file-read* file-link (require-all ${subpath(prereqs.project)} ${anyDepth(name)}))"
+            s"(deny file-write* file-read* file-link (require-all ${subpath(prereqs.workspaceRoot)} ${anyDepth(name)}))"
         Right(lines.result().mkString("\n") + "\n")
 
   /**
@@ -329,7 +329,7 @@ object SeatbeltProfile:
 
   /**
    * The profile every host proxy runs under, or the first reason it cannot be built. Nothing of
-   * the user's is granted: no project, no cache, no write anywhere — its log is its inherited
+   * the user's is granted: no workspace, no cache, no write anywhere — its log is its inherited
    * stderr — and no working directory: the proxy runs from `/`, which the root component grants
    * (RunOnHostProxy.startProxy).
    */
@@ -419,9 +419,9 @@ object SeatbeltProfile:
    * reason they cannot be written. SBPL's last matching filter decides, as the filter's last
    * matching line does:
    *
-   *   - each line as a regex anchored after the project's own path, so a directory above the
-   *     project bearing a listed name — a checkout named `mise` — cannot match, with `*` as any
-   *     run within one component: a `readonly` line a deny, a `writable` line an allow;
+   *   - each line as a regex anchored after the workspace root's own path, so a directory above
+   *     the workspace root bearing a listed name — a checkout named `mise` — cannot match, with
+   *     `*` as any run within one component: a `readonly` line a deny, a `writable` line an allow;
    *   - before it, each interior component of the line as a deny on the entry alone, which a later
    *     line matching the entry or an ancestor overrides as the filter's pruning does. It denies
    *     `file-write-create` and `file-write-unlink`, which a rename's two sides and both sides of a
@@ -434,12 +434,12 @@ object SeatbeltProfile:
    *     components pinned. A `writable` line lifting part of a rest under the symlink's name
    *     stays unlifted here, although the filter lifts it (doc/run-on-host.md).
    *
-   * An allow grants `file-write*` alone, the project's own grant, so it never widens the profile;
+   * An allow grants `file-write*` alone, the workspace's own grant, so it never widens the profile;
    * a hard link to a file a `writable` line lifts inside a read-only directory stays denied.
    */
-  def fileRuleFilters(project: Path, resolved: FileRules.Resolved): Either[String, Vector[(Protection, String)]] =
-    val root = project.toString
-    if root.contains('"') then Left(s"$project holds a double quote, which no SBPL regex can spell")
+  def fileRuleFilters(workspaceRoot: Path, resolved: FileRules.Resolved): Either[String, Vector[(Protection, String)]] =
+    val root = workspaceRoot.toString
+    if root.contains('"') then Left(s"$workspaceRoot holds a double quote, which no SBPL regex can spell")
     else
       val prefix = "^" + escapeRegex(root) + "/(.*/)?"
       val lineFilters = resolved.lines.flatMap: line =>
@@ -461,9 +461,11 @@ object SeatbeltProfile:
           (interiors ++ resolved.pinnedPaths).map(Protection.Pinned -> _)
       val underDirectories = resolved.readOnlyUnder.map(_(0))
       (paths.map(_(1)) ++ underDirectories)
-        .map(relative => (relative, project.resolve(relative)))
-        .find((relative, path) => relative.isEmpty || !isAbsoluteNormalized(path) || !path.startsWith(project)) match
-        case Some((relative, _)) => Left(s"the filter's guard named '$relative', which is no path below $project")
+        .map(relative => (relative, workspaceRoot.resolve(relative)))
+        .find((relative, path) =>
+          relative.isEmpty || !isAbsoluteNormalized(path) || !path.startsWith(workspaceRoot),
+        ) match
+        case Some((relative, _)) => Left(s"the filter's guard named '$relative', which is no path below $workspaceRoot")
         case None =>
           underDirectories.find(_.contains('"')) match
             case Some(relative) =>
@@ -474,10 +476,10 @@ object SeatbeltProfile:
             case None =>
               val pathFilters = paths.map: (protection, relative) =>
                 protection match
-                  case Protection.ReadOnly => protection -> subpath(project.resolve(relative))
-                  case _                   => protection -> literal(project.resolve(relative))
+                  case Protection.ReadOnly => protection -> subpath(workspaceRoot.resolve(relative))
+                  case _                   => protection -> literal(workspaceRoot.resolve(relative))
               val underFilters = resolved.readOnlyUnder.flatMap: (relative, rest) =>
-                val under = "^" + escapeRegex(project.resolve(relative).toString) + "/"
+                val under = "^" + escapeRegex(workspaceRoot.resolve(relative).toString) + "/"
                 val components = rest.split("/").toVector.map(globToRegex)
                 val restInteriors = (1 until components.size).map: count =>
                   Protection.Pinned -> s"""(regex #"$under${components.take(count).mkString("/")}$$")"""
@@ -496,11 +498,11 @@ object SeatbeltProfile:
       case ch  => ch.toString
 
   /**
-   * A guarded name (FileRules.GuardedComponents) at any depth under the project. A pattern by
+   * A guarded name (FileRules.GuardedComponents) at any depth under the workspace root. A pattern by
    * intent, and the only regex besides the file rules' (fileRuleFilters): everything else is a
    * supervisor-supplied path, which a regex would mangle — the Coursier JDK home alone contains a
    * percent-encoded `+`, a literal `+` and dots.
-   * The project itself is kept out of the pattern the same way: `(require-all (subpath …) (regex …))`
+   * The workspace root itself is kept out of the pattern the same way: `(require-all (subpath …) (regex …))`
    * conjoins a literal filter with the name pattern.
    *
    * The trailing `(/|$)` is what stops `.gitignore` and `.github` matching. The pattern is

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// The binary under test. `env!("CARGO_BIN_EXE_...")` bakes an absolute path at *compile* time,
-/// and this project compiles in the hardened sandbox (at the project's host path) but runs mounted
+/// and this project compiles in the hardened sandbox (at its host path) but runs mounted
 /// tests in the privileged rig (`/work/...`) — so resolve relative to the running test executable
 /// (`target/debug/deps/<test>` → `target/debug/ko-agent-fs`), which holds wherever the tree is.
 fn binary() -> PathBuf {

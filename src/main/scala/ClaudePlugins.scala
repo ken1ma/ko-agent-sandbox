@@ -11,7 +11,7 @@ import scala.jdk.CollectionConverters.*
 
 import FileHelper.{hasSecondName, realPath}
 import HostCommands.{fileBind, Os}
-import SandboxProject.overlapsInAnySpelling
+import SandboxWorkspace.overlapsInAnySpelling
 
 object ClaudePlugins:
 
@@ -59,7 +59,7 @@ object ClaudePlugins:
 
   /**
    * A directory the session writes, itself or through a host command `--run-on-host` lets it run,
-   * and `what` it is, as the refusal names it: "the project directory, which the session writes".
+   * and `what` it is, as the refusal names it: "the workspace, which the session writes".
    */
   case class SessionWritten(directory: Path, what: String)
 
@@ -74,7 +74,7 @@ object ClaudePlugins:
    *     the launch has: Claude Code loads one hooks module per manifest name and leaves the other's
    *     out (the loading reference, "Hooks when two enabled plugins share a name");
    *   - a directory that holds or is inside one of `written`, in any of the host's spellings of
-   *     either: the project, and the directories `--run-on-host` commands write, where a mod would
+   *     either: the workspace, and the directories `--run-on-host` commands write, where a mod would
    *     be the session's to change and the next launch's to run;
    *   - a symlink under the directory, which Claude Code does not follow out of a plugin either;
    *   - an entry that is neither a regular file nor a directory: a Windows junction, which Java

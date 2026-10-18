@@ -12,7 +12,7 @@ class SandboxStatsTest extends munit.FunSuite:
   test("a count line is the section over each table, and the whole section when there is nothing to tabulate"):
     assertEquals(counted(0, "live session"), "0 live sessions")
     assertEquals(counted(1, "live session"), "1 live session")
-    assertEquals(counted(2, "project"), "2 projects")
+    assertEquals(counted(2, "workspace"), "2 workspaces")
 
   test("the live rows are this launcher's containers only, read as raw figures"):
     val id = "app-0123456789ab"
@@ -48,7 +48,7 @@ class SandboxStatsTest extends munit.FunSuite:
     assertEquals(
       rendered,
       """2 live sessions
-        |  run       sandbox     proxy        cpu  project
+        |  run       sandbox     proxy        cpu  workspace
         |  5e6f7a8b  2.0 / 6.7G  50 / 256M  42.5%  /home/me/big
         |  1a2b3c4d  0.1 / 6.7G  40 / 256M   8.2%  small-0123456789ab
         |""".stripMargin,
@@ -61,36 +61,37 @@ class SandboxStatsTest extends munit.FunSuite:
 
   test("runners are the locked runner sessions, each named by its run file, one row per directory served"):
     val root = Files.createTempDirectory("ko-agent")
-    val project = Files.createTempDirectory("project")
-    val nested = project.resolve("nested")
-    val live = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
+    val workspaceRoot = Files.createTempDirectory("workspace")
+    val nested = workspaceRoot.resolve("nested")
+    val live = RunOnHostSession.publish(root, workspaceRoot, RunOnHostSession.Kind.Runner).toOption.get
     def named(session: RunOnHostSession.Session, run: String): Unit =
       Files.writeString(
         session.directory.resolve(RunOnHostSession.RunFile), s"ko-agent-sandbox-run-app-0123456789ab-$run\n",
       )
     named(live, "5e6f7a8b")
-    for (directory, records) <- Seq(project -> Seq("proxy-gradle", "proxy-sbt", "server-sbt"), nested -> Seq.empty) do
+    val served = Seq(workspaceRoot -> Seq("proxy-gradle", "proxy-sbt", "server-sbt"), nested -> Seq.empty)
+    for (directory, records) <- served do
       val hash = RunOnHostSession.buildHash(directory)
       RunOnHostSession.publishBuildFile(live.directory, hash, directory)
       records.foreach(record => Files.writeString(live.records.resolve(s"$record-$hash"), "1 x\n"))
     Files.writeString(live.records.resolve("daemon-gradle-4242"), "4242 x\n")
     // A runner that has served nothing yet, and one whose launch predates the run file.
-    val fresh = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
+    val fresh = RunOnHostSession.publish(root, workspaceRoot, RunOnHostSession.Kind.Runner).toOption.get
     named(fresh, "1a2b3c4d")
-    RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
+    RunOnHostSession.publish(root, workspaceRoot, RunOnHostSession.Kind.Runner).toOption.get
     // A dead runner's session, unlocked, is the scavenger's, not the report's; a command's is no runner.
-    val dead = RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Runner).toOption.get
+    val dead = RunOnHostSession.publish(root, workspaceRoot, RunOnHostSession.Kind.Runner).toOption.get
     dead.close()
-    RunOnHostSession.publish(root, project, RunOnHostSession.Kind.Command).toOption.get
+    RunOnHostSession.publish(root, workspaceRoot, RunOnHostSession.Kind.Command).toOption.get
     assertEquals(
       runners(root),
       Vector(
-        Runner("1a2b3c4d", project.toString, Vector.empty),
+        Runner("1a2b3c4d", workspaceRoot.toString, Vector.empty),
         Runner(
-          "5e6f7a8b", project.toString,
-          Vector(project.toString -> Vector("sbt", "gradle"), nested.toString -> Vector.empty),
+          "5e6f7a8b", workspaceRoot.toString,
+          Vector(workspaceRoot.toString -> Vector("sbt", "gradle"), nested.toString -> Vector.empty),
         ),
-        Runner("?", project.toString, Vector.empty),
+        Runner("?", workspaceRoot.toString, Vector.empty),
       ),
     )
     assertEquals(
@@ -170,15 +171,15 @@ class SandboxStatsTest extends munit.FunSuite:
     )
     assertEquals(storageLines(Os.Windows, Vector.empty, None), Vector.empty)
 
-  test("projects order largest first by total, volumes included, dated, and flag only a cache over 1% of free space"):
-    val rendered = projectTable(
+  test("workspaces order largest first by total, volumes included, dated, and flag only a cache over 1% of free space"):
+    val rendered = workspaceTable(
       Vector(
-        ProjectUsage(
+        WorkspaceUsage(
           "small-000000000000", Some("/home/me/small"), 1024, 10 * 1024, Some(0),
           Some(Instant.parse("2026-09-01T00:00:00Z")),
         ),
-        ProjectUsage("big-000000000000", None, 0, 2L << 30, Some(0), None),
-        ProjectUsage(
+        WorkspaceUsage("big-000000000000", None, 0, 2L << 30, Some(0), None),
+        WorkspaceUsage(
           "agents-000000000000",
           Some("/home/me/agents"),
           (15L << 20) / 10,
@@ -190,20 +191,20 @@ class SandboxStatsTest extends munit.FunSuite:
       100L << 30,
       ZoneOffset.UTC,
     )
-    // A project with no record, last launched before records existed, is named by its id.
+    // A workspace with no record, last launched before records existed, is named by its id.
     val flag = "  <- cache over 1% of free space; a --reset-run-on-host candidate"
-    val expected = s"""3 projects
-    |  total  state  cache  volume  last write        project
+    val expected = s"""3 workspaces
+    |  total  state  cache  volume  last write        workspace
     |   2.0G      0   2.0G       0  -                 big-000000000000$flag
     |   1.7G   1.5M   445M    1.2G  2026-09-10 08:05  /home/me/agents
     |    11K   1.0K    10K       0  2026-09-01 00:00  /home/me/small
     |""".stripMargin
     assertEquals(rendered, expected)
     // At exactly 1% nothing is flagged, and an unsized volume reads as unknown, not as empty.
-    val edge = projectTable(Vector(ProjectUsage("p-0", None, 0, 1L << 30, None, None)), 100L << 30)
+    val edge = workspaceTable(Vector(WorkspaceUsage("p-0", None, 0, 1L << 30, None, None)), 100L << 30)
     assert(!edge.contains("--reset-run-on-host"), edge)
     assert(edge.contains("  -  -           p-0"), edge)
-    assertEquals(projectTable(Vector.empty, 5L << 30), "0 projects\n")
+    assertEquals(workspaceTable(Vector.empty, 5L << 30), "0 workspaces\n")
 
   test("a tree's usage is its files' bytes and its newest write, a directory's entries changing included"):
     val root = Files.createTempDirectory("tree")
@@ -219,7 +220,7 @@ class SandboxStatsTest extends munit.FunSuite:
     Files.setLastModifiedTime(sub, FileTime.from(newer))
     assertEquals(treeUsage(root), TreeUsage(8L, Some(newer)))
 
-  test("a run container's name reads back as kind, project id and run suffix"):
+  test("a run container's name reads back as kind, workspace id and run suffix"):
     assertEquals(
       LauncherState.runContainerParts("ko-agent-sandbox-run-app-0123456789ab-1a2b3c4d"),
       Some(("sandbox-run", "app-0123456789ab", "1a2b3c4d")),
@@ -232,36 +233,36 @@ class SandboxStatsTest extends munit.FunSuite:
     assertEquals(LauncherState.runContainerParts("ko-agent-self-test-app-0123456789ab-1a2b3c4d"), None)
 
   test("the directory behind an id is what the launch recorded while it exists, and nothing otherwise"):
-    val root = Files.createTempDirectory("projects")
-    val project = Files.createTempDirectory("app")
-    LauncherState.recordProjectDirectory(root, "app-0123456789ab", project)
+    val root = Files.createTempDirectory("workspaces")
+    val workspaceRoot = Files.createTempDirectory("app")
+    LauncherState.recordWorkspaceRoot(root, "app-0123456789ab", workspaceRoot)
     // A record whose directory is gone: the row falls back to the id, the handle --reset takes.
-    LauncherState.recordProjectDirectory(root, "gone-0123456789ab", project.resolve("gone"))
+    LauncherState.recordWorkspaceRoot(root, "gone-0123456789ab", workspaceRoot.resolve("gone"))
     Files.createDirectories(root.resolve("odd-0123456789ab"))
     Files.writeString(root.resolve("blank-0123456789ab"), "\n")
     // A stray file under the root is not a record: its name is no id --reset would take.
-    Files.writeString(root.resolve(".DS_Store"), project.toString)
-    assertEquals(projectDirectories(root), Map("app-0123456789ab" -> project.toString))
+    Files.writeString(root.resolve(".DS_Store"), workspaceRoot.toString)
+    assertEquals(workspaceDirectories(root), Map("app-0123456789ab" -> workspaceRoot.toString))
     if FileHelper.posixPermissions(root) then
       assertEquals(Files.getPosixFilePermissions(root.resolve("app-0123456789ab")).size, 2)
-    assertEquals(projectDirectories(root.resolve("absent")), Map.empty)
+    assertEquals(workspaceDirectories(root.resolve("absent")), Map.empty)
 
-  test("the project rows are every id holding state, a cache or a volume, once each, sorted"):
+  test("the workspace rows are every id holding state, a cache or a volume, once each, sorted"):
     val tls = Files.createTempDirectory("tls")
     val cache = Files.createTempDirectory("cache")
     Files.createDirectories(tls.resolve("b-0123456789ab"))
     Files.createDirectories(cache.resolve("b-0123456789ab"))
     Files.createDirectories(cache.resolve("a-0123456789ab"))
-    // Strays a root accumulates — Finder metadata, a hand-made directory — are no projects.
+    // Strays a root accumulates — Finder metadata, a hand-made directory — are no workspaces.
     Files.writeString(tls.resolve(".DS_Store"), "")
     Files.createDirectories(cache.resolve("scratch"))
-    val ids = projectIdsUnder(
+    val ids = workspaceIdsUnder(
       Vector(tls, cache, tls.resolve("absent")),
       Vector("ko-agent-sandbox-persistent-c-0123456789ab", "ko-agent-sandbox-persistent-backup", "other"),
     )
     assertEquals(ids, Vector("a-0123456789ab", "b-0123456789ab", "c-0123456789ab"))
     // The contract --stats prints and --reset reads: every id listed is one --reset accepts.
-    assertEquals(LauncherState.projectIdOperands("--reset", ids.toList), Right(ids))
+    assertEquals(LauncherState.workspaceIdOperands("--reset", ids.toList), Right(ids))
 
   test("podman's exists answers present on 0, absent on 1, and nothing on any other exit"):
     assertEquals(LauncherState.existsAnswer(0), Some(true))
@@ -270,11 +271,11 @@ class SandboxStatsTest extends munit.FunSuite:
     assertEquals(LauncherState.existsAnswer(-1), None)
 
   test("a reset drops the record once nothing it names remains, and keeps it while a resource does"):
-    val root = Files.createTempDirectory("projects")
+    val root = Files.createTempDirectory("workspaces")
     val id = "app-0123456789ab"
     val kept = Files.createTempDirectory("cache")
     val absent = kept.resolve("absent")
-    LauncherState.recordProjectDirectory(root, id, Paths.get("/home/me/app"))
+    LauncherState.recordWorkspaceRoot(root, id, Paths.get("/home/me/app"))
     LauncherState.dropRecordUnless(root, id, Vector(absent, kept), volumeKept = false)
     assert(Files.exists(root.resolve(id)), "kept: one of the named directories exists")
     LauncherState.dropRecordUnless(root, id, Vector(absent), volumeKept = true)

@@ -41,7 +41,7 @@ pub enum Decision {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitPathClass {
-    /// Writable Git metadata and ordinary project data.
+    /// Writable Git metadata and ordinary workspace data.
     Operational,
     /// Entries the sandbox cannot modify, including Git hooks and launcher configuration.
     Protected,
@@ -53,7 +53,7 @@ pub enum GitPathClass {
 /// [`is_sandbox_config_name`] gives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GitContext {
-    /// Not inside any gitdir — ordinary writable project data.
+    /// Not inside any gitdir — ordinary writable workspace data.
     NotGit,
     /// Inside a gitdir; the path components relative to that gitdir's root. An empty vector is the
     /// gitdir entry itself — the `.git` directory root or a `.git` pointer file — which is
@@ -127,7 +127,7 @@ pub fn is_dotgit_name(name: &[u8]) -> bool {
 
 /// Whether `name` must be refused as a new `.ko-agent-sandbox` entry — the launcher's own
 /// boundary configuration, which a session must never write because the *next* launch reads it
-/// (`SECURITY.md`, "A project loosening its own confinement"). This rule is the whole protection
+/// (`SECURITY.md`, "A workspace loosening its own confinement"). This rule is the whole protection
 /// in a writable session: the launcher mounts nothing over the directory.
 ///
 /// At any depth, not only the workspace root, because a launch takes its policy from whatever
@@ -257,7 +257,7 @@ pub fn classify_relative_path(rel: &[u8], gitdir_roots: &[&[u8]]) -> GitPathClas
 }
 
 /// [`classify_relative_path`]'s walk, returning the context itself: the guard tells ordinary
-/// project data ([`GitContext::NotGit`]) from a gitdir's writable state by it.
+/// workspace data ([`GitContext::NotGit`]) from a gitdir's writable state by it.
 pub fn context_of_relative_path(rel: &[u8], gitdir_roots: &[&[u8]]) -> GitContext {
     let mut context = GitContext::root();
     let mut walked: Vec<u8> = Vec::new();
@@ -388,7 +388,7 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
 /// - `alternates` names further object directories, and host git opens each one — a network path on
 ///   a host that reaches one by name, such as a Windows UNC path. Git writes it only when it
 ///   creates a repository (`git clone --shared` or `--reference`), which the session cannot do in
-///   the project.
+///   the workspace.
 /// - `http-alternates` names object stores by URL for a client fetching this repository over dumb
 ///   HTTP; git never writes it.
 ///
@@ -512,7 +512,7 @@ pub fn authorize(ctx: &GitContext, op: Mutation) -> Decision {
 
 // --- File rules ---------------------------------------------------------------
 //
-// The project files a host program executes on an event, not when the user builds or runs the project
+// The workspace files a host program executes on an event, not when the user builds or runs the workspace
 // (`.ko-agent-sandbox/file/rule` over the launcher's defaults), decided for ordinary entries only:
 // under a `.git` or `.ko-agent-sandbox` entry the rules above decide alone.
 
@@ -539,7 +539,7 @@ pub struct RuleLine {
     pub anchored: bool,
 }
 
-/// The ordered lines, the defaults first, the project's next and the guard's last, so a line the
+/// The ordered lines, the defaults first, the workspace's next and the guard's last, so a line the
 /// guard found decides over every rule line.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileRules {
@@ -842,7 +842,7 @@ pub fn authorize_region_move(
         } else {
             Decision::Deny(
                 "file-rule-region: refusing to move a directory or symlink out of a Git \
-                 directory into the project",
+                 directory into the workspace",
             )
         };
     }
@@ -1101,7 +1101,7 @@ mod tests {
             classify_relative_path(b".ko-agent-sandbox/.git/objects/ab/cdef", &[]),
             GitPathClass::Protected
         );
-        // The name remains writable project data everywhere it is not that name.
+        // The name remains writable workspace data everywhere it is not that name.
         assert_eq!(
             classify_relative_path(b"docs/ko-agent-sandbox/notes.md", &[]),
             GitPathClass::Operational
@@ -1775,7 +1775,7 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_or_symlink_does_not_leave_a_gitdir_for_the_project_under_file_rules() {
+    fn a_directory_or_symlink_does_not_leave_a_gitdir_for_the_workspace_under_file_rules() {
         let staged = GitContext::InGit(vec![b"objects".to_vec(), b"x".to_vec()]);
         let packed = GitContext::InGit(vec![b"objects".to_vec(), b"pack".to_vec()]);
         let ordinary = GitContext::NotGit;
