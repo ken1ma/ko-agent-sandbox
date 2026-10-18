@@ -140,13 +140,14 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
        `kiro-cli chat --resume`, `copilot --continue` or `opencode --continue`.
 
 1. Use Ctrl-C to quit.
+1. Put the options you give every launch in the [options file](#options-file).
 
 #### `claude`
 
 1. Sign-in prints an authorization URL; open it in an external browser and paste the resulting
    code back.
 1. Ctrl-V pastes a copied image only under `--clipboard=paste` or `--clipboard=bidirectional`.
-1. `/voice` needs the `--mic` launcher option.
+1. `/voice` needs the `--audio=mic` launcher option.
 1. The image keeps Claude Code's conversation in the terminal's scrollback, where you can select
    and copy it. For the fullscreen renderer, launch with `--env=CLAUDE_CODE_NO_FLICKER=1`: the
    image's managed setting overrides `/tui fullscreen`.
@@ -174,7 +175,7 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
    `tui.fullscreen_transcript = true` in `~/.codex/config.toml`.
 1. Ctrl-V pastes no image in any `--clipboard` mode
    ([clipboard plan](doc/plan-clipboard.md)).
-1. `/voice` under `--mic` reports "voice transport could not connect"
+1. `/voice` under `--audio=mic` reports "voice transport could not connect"
    ([doc/microphone.md](doc/microphone.md#codex)).
 1. `$ko-review` runs the same review as [`/ko-review`](#claude), with Codex fixing or disputing
    the findings. Codex asks its questions in replies, since it has no question tool outside Plan
@@ -183,7 +184,7 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 #### `agy`
 
 1. Sign in with the URL and pasted code, as for [`claude`](#claude).
-1. `/voice` needs `--mic`.
+1. `/voice` needs `--audio=mic`.
 
 #### `kiro-cli`
 
@@ -229,8 +230,8 @@ credentials another cloud's login produced, and what forwarding costs.
 
 #### Sessions
 
-1. Each launch prints the workspace mode and the resolved egress profile, plus the rule files and
-   any warning.
+1. Each launch prints the workspace mode and the resolved egress profile, plus the rule files, each
+   option the options file supplied, and any warning.
 1. More than one session can run at once from the same workspace; they share the
    workspace mount and the agent-state volume.
 
@@ -241,7 +242,7 @@ credentials another cloud's login produced, and what forwarding costs.
    absolute one on macOS and Linux) the session also mounts the main worktree's Git directory,
    read-only, so `git` works there ([SECURITY.md](SECURITY.md#defended), "The host's git executing
    what the sandbox wrote").
-1. `KO_AGENT_SANDBOX_NESTING=same-uid` lets the session run containers of its own.
+1. `--nesting=same-uid` lets the session run containers of its own.
 
     1. Follow [AGENTS-SANDBOX.md](container/ko-agent-sandbox/AGENTS-SANDBOX.md) for the container
        limits: `debian` and `alpine` images work.
@@ -291,7 +292,9 @@ restore permission prompts and set the Claude Code status line.
     The first non-option starts the command; all remaining arguments pass through unchanged.
     Use -- before a command whose name looks like a launcher option.
 
-    Session options, selected on every launch and never persisted:
+    Session options, selected on every launch and never persisted, on the command line or in the
+    options file below. An empty value, as in --memory=, returns an option to its default; a closed
+    choice such as --clipboard names its default instead:
       --workspace=read-only|live
                          read-only makes the workspace read-only to the
                          sandbox's processes; live (default) lets the agent
@@ -315,15 +318,38 @@ restore permission prompts and set the Claude Code status line.
                          the agent read a copied image; bidirectional also lets
                          it set your clipboard (SECURITY.md). A Linux host needs
                          xclip or wl-clipboard
-      --mic              let the agents' voice dictation record the host microphone.
-                         The microphone stays open on the host for the whole session,
-                         and its audio reaches the sandbox while any process there
-                         records (SECURITY.md "Microphone"). Needs a recorder on the
-                         host: rec from sox_ng or sox on macOS (brew install sox_ng);
-                         arecord (alsa-utils) or parecord (pulseaudio-utils) on Linux;
+      --audio=off|<devices>
+                         off (default) keeps the host's audio out; mic lets the agents' voice
+                         dictation record the host microphone. The microphone stays open on
+                         the host for the whole session, and its audio reaches the sandbox
+                         while any process there records (SECURITY.md "Microphone"). Needs a
+                         recorder on the host: rec from sox_ng or sox on macOS (brew install
+                         sox_ng); arecord (alsa-utils) or parecord (pulseaudio-utils) on Linux;
                          sox_ng.exe on PATH on Windows. On macOS the terminal needs the
                          microphone permission (System Settings > Privacy & Security >
                          Microphone)
+      --nesting=none|same-uid
+                         none (default) allows no container runtime; same-uid allows rootless
+                         containers with one uid, host networking and session-only storage,
+                         but unmasks /proc, disables SELinux labeling and adds SYS_CHROOT for
+                         the whole session (SECURITY.md)
+      --session-start=pause|immediate
+                         pause (default) holds a launch's startup lines on screen, because the
+                         agent TUIs clear it: Enter or y starts, n or EOF at the prompt exits
+                         without starting; from a Git linked worktree, it first asks whether to
+                         share the main worktree's agent state. immediate starts the agent at
+                         once
+      --memory=<size>    container memory limit, e.g. 8g. Default: the podman machine's memory
+                         (on Linux, the host's) minus 1 GiB, and on Linux no more than was
+                         available at launch; at least 1 GiB, or all memory if less than 1 GiB.
+                         The sandbox never swaps
+      --persistent-volume=<name>
+                         a podman volume name; every workspace launched with it shares that
+                         volume as its agent state, and --reset leaves it alone
+      --image=<reference>
+                         sandbox image (default ko-agent-sandbox:latest)
+      --proxy-image=<reference>
+                         egress proxy image (default ko-agent-egress-proxy:latest)
       --run-on-host=<programs>
                          macOS only: select sbt / mill / gradle / mvn, separated by commas.
                          Adds the ko-sandbox-run-on-host command inside the sandbox, to run
@@ -348,7 +374,8 @@ restore permission prompts and set the Claude Code status line.
                          An explicit <value> needs no export on the host.
                          Without <value>, use the host's value; an unset name fails.
                          Repeatable; KO_AGENT_SANDBOX_* names are refused.
-                         Before forwarding a secret, read SECURITY.md
+                         Before forwarding a secret, read SECURITY.md; in the options file,
+                         name it without its value
       --env-aws-cred[=<profile>]
                          forward the temporary credentials the AWS CLI on the host
                          resolves for <profile>, else for AWS_PROFILE, as
@@ -378,6 +405,16 @@ restore permission prompts and set the Claude Code status line.
                          --run-on-host commands write; an organization's remote policy can keep
                          it from loading. See doc/agent-settings.md "Claude Code plugins and
                          mods"
+
+    Options file, $XDG_CONFIG_HOME/ko-agent-sandbox/options, by default
+    ~/.config/ko-agent-sandbox/options (%APPDATA%\ko-agent-sandbox\options on Windows): one
+    session or Claude Code option per line, spelled as above; # starts a comment, "..." quotes a
+    value, ${NAME} expands a variable of the launcher's environment. Every launch prints each
+    option it supplies. A command-line option replaces the file's; --env and --egress-cred replace
+    the file's entry of the same name. --reset reads its --persistent-volume, --egress-effective
+    and --egress-check its egress options and --proxy-image; the other actions read none. See
+    README.md "Options file"
+      --no-options-file  before the command: skip the options file for this launch or action
 
     Management actions, each recognized before the command; whatever follows
     belongs to the action:
@@ -429,31 +466,10 @@ restore permission prompts and set the Claude Code status line.
       --help             this text
 
     Environment variables:
-      HTTPS_PROXY / https_proxy           an upstream proxy the session's egress leaves through,
-                                          http[s]://[user:password@]host:port; the lowercase
-                                          name is read when the uppercase is unset or empty.
-                                          NO_PROXY is ignored (doc/egress-proxy.md)
-      KO_AGENT_SANDBOX_NESTING            "none" (default) allows no container runtime; "same-uid"
-                                          allows rootless containers with one uid, host networking
-                                          and session-only storage, but unmasks /proc, disables
-                                          SELinux labeling and adds SYS_CHROOT for the whole
-                                          session (SECURITY.md)
-      KO_AGENT_SANDBOX_SESSION_START      "pause" (default) holds a launch's startup lines on
-                                          screen, because the agent TUIs clear it: Enter or y
-                                          starts, n or EOF at the prompt exits without starting;
-                                          from a Git linked worktree, it first asks whether to
-                                          share the main worktree's agent state. "immediate"
-                                          starts the agent at once
-      KO_AGENT_SANDBOX_MEMORY             container memory limit, e.g. 8g. Default: the podman
-                                          machine's memory (on Linux, the host's) minus 1 GiB,
-                                          and on Linux no more than was available at launch;
-                                          at least 1 GiB, or all memory if less than 1 GiB.
-                                          The sandbox never swaps
-      KO_AGENT_SANDBOX_PERSISTENT_VOLUME  a podman volume name; every workspace launched with it
-                                          shares that volume as its agent state, and --reset
-                                          leaves it alone
-      KO_AGENT_SANDBOX_IMAGE              sandbox image (default ko-agent-sandbox:latest)
-      KO_AGENT_SANDBOX_PROXY_IMAGE        egress proxy image (default ko-agent-egress-proxy:latest)
+      HTTPS_PROXY / https_proxy  an upstream proxy the session's egress leaves through,
+                                 http[s]://[user:password@]host:port; the lowercase name is read
+                                 when the uppercase is unset or empty. NO_PROXY is ignored
+                                 (doc/egress-proxy.md)
 
     .ko-agent-sandbox/egress/rule in the workspace root modifies the egress ruleset: allow
     and deny lines naming URLs, applied in order over the launcher-owned defaults
@@ -484,6 +500,53 @@ restore permission prompts and set the Claude Code status line.
 1. For workspace-filter failures, see [troubleshooting.md](fuse/ko-agent-fs/doc/troubleshooting.md).
 1. `--build`, `--update` and `--self-test` all end by removing the container images they
    superseded, never a pulled image.
+
+
+### Options file
+
+Put the options you give every launch in the options file, one per line, spelled as on the
+command line:
+
+    # ~/.config/ko-agent-sandbox/options
+    --model-provider=anthropic,openai
+    --memory=8g
+    --clipboard=paste
+    --env=GH_TOKEN          # forwards the host's value, read at each launch
+
+1. The file is `$XDG_CONFIG_HOME/ko-agent-sandbox/options`, by default
+   `~/.config/ko-agent-sandbox/options`; on Windows, `%APPDATA%\ko-agent-sandbox\options`. An
+   absent file supplies nothing.
+1. Every launch prints each option the file supplies, naming the file:
+   `--memory=8g (from ~/.config/ko-agent-sandbox/options)`. A line that already states the option,
+   such as a grant's orange line or the `egress:` line, names the file instead.
+1. An option on the command line replaces the file's for that launch.
+
+    1. `--env` and `--egress-cred` replace the file's entry of the same name;
+       `--claude-plugin-dir` loads a directory both spell alike once.
+    1. An empty value returns an option to its default: `--memory=`, `--run-on-host=`. A closed
+       choice names its default instead: `--clipboard=off`, `--nesting=none`.
+    1. The empty value of `--env`, `--egress-cred` or `--claude-plugin-dir` drops the file's entries
+       of that option; those after it on the command line still add.
+
+1. `--no-options-file`, before the command, skips the file for one launch or action.
+1. `--reset` reads the file's `--persistent-volume`. `--egress-effective` reads its `--egress`,
+   `--model-provider`, `--egress-cred` and `--proxy-image`, and `--egress-check` the same but
+   for `--egress-cred`. The other actions read none.
+1. Forward a secret as `--env=NAME`, with the value in the launcher's environment. A value in the
+   file, as `--env=NAME=VALUE` or `--env=NAME=${SECRET}`, is in podman's arguments and in the create
+   command podman records for the container.
+
+The file's format:
+
+- `#` outside double quotes starts a comment, inside a word too. Whitespace around the line, the
+  name and the value is removed.
+- A value in double quotes keeps its whitespace and `#`, and takes the escapes `\"`, `\\` and `\$`.
+  Outside quotes every backslash is literal, so a Windows path needs no quotes.
+- `${NAME}` in a value, quoted or not, expands to the launcher's environment variable `NAME`. An
+  unset variable fails the launch, and so does a `$` that starts no `${`.
+- The launch fails naming the file and the line on invalid UTF-8 or syntax, a command, `--`, a
+  management action, `--no-options-file` or an unknown option. It also fails on a file inside the
+  workspace: a repository must not choose its own launch's grants.
 
 
 ## Development

@@ -228,7 +228,7 @@ Check the machine's available memory, disk space and OOM reports:
 An observed sbt cross-build exhausted the VM's memory, killed the podman service and left API
 calls returning `EOF`. Memory pressure can therefore appear as a podman API failure.
 
-If memory is short, lower each session's `KO_AGENT_SANDBOX_MEMORY` limit or stop some sessions;
+If memory is short, lower each session's `--memory` limit or stop some sessions;
 their combined limits can exceed the VM's memory.
 [README.md](../../../README.md#reference) gives the default limit and no-swap behavior.
 To give the machine more memory, stop it and run `podman machine set --memory ...`.

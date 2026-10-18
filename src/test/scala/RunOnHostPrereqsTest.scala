@@ -503,6 +503,12 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assertEquals(refusal, Left(Refusal.PrereqMillExecutableMissing("1.2.0-jvm", millDownload)))
     assert(wording(refusal.swap.toOption.get).contains("MILL_VERSION=1.2.0-jvm ./mill version"))
 
+  test("a refusal spells host paths absolute for the agent, and as the launcher's terminal shows them on request"):
+    val refusal = Refusal.PrereqMillExecutableMissing("1.2.0-jvm", Paths.get("/home/me/.cache/mill/download"))
+    assert(clue(wording(refusal)).contains("under /home/me/.cache/mill/download;"))
+    val shown = HostCommands.displayPath(_, Os.Linux, Map("HOME" -> "/home/me").get)
+    assert(clue(wording(refusal, shown)).contains("under ~/.cache/mill/download;"))
+
   test("a pinned or unset mill-jvm-version runs on the JDK mill's java-home file records, checked as JAVA_HOME is"):
     val present = exists(jdkHome, javaBinary, coursierCache)
     def recordedJdk(id: Option[String], recorded: Option[String], canonicalize: Path => Option[Path]) =

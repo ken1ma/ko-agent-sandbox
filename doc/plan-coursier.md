@@ -80,7 +80,7 @@ this plan.
 7. A launch cannot name a cache path overlapping its workspace, launcher-owned state, podman
    storage or an over-broad host directory and thereby create a second path around an existing
    boundary.
-8. The option works with `KO_AGENT_SANDBOX_IMAGE`: it changes the mount, not the selected image.
+8. The option works with `--image`: it changes the mount, not the selected image.
 9. Host-cache reuse does not imply offline operation. `.sbt`, Ivy and other non-Coursier caches
    remain session-local unless separately designed later.
 

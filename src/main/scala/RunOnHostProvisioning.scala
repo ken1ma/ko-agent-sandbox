@@ -14,7 +14,7 @@ import scala.jdk.CollectionConverters.*
 
 import AgentSandboxLauncher.Reader
 import FileHelper.{directoryEntries, isExecutableFile}
-import HostCommands.{colorStderr, consented, pathInline, renderArgument, shown, warn, weakened}
+import HostCommands.{colorStderr, consented, displayPath, pathInline, renderArgument, shown, warn, weakened}
 import RunOnHostPrereqs.{Program, Refusal}
 import RunOnHostSandbox.StepRefusal
 
@@ -30,7 +30,8 @@ object RunOnHostProvisioning:
   enum Finding:
     def program: Program
     def buildDirectory: Path
-    /** The refusal the supervisor would word, with the run it names. */
+    /** The refusal the supervisor would word, with the run it names, its paths spelled for the
+      * launcher's terminal. */
     def wording: String
     /** A missing executable or JDK that `command`, run in the build directory with
       * `environment` added to the launcher's own, provisions: the run the refusal names. */
@@ -65,31 +66,34 @@ object RunOnHostProvisioning:
 
   /** The build directory's finding: none when its command would be granted its executable. */
   def finding(build: BuildDirectory, env: String => Option[String]): Option[Finding] =
+    def worded(refusal: StepRefusal): String = refusal.wordedShowing(displayPath(_, environment = env))
     RunOnHostSandbox.provisionedExecutable(build.program, env, build.path) match
       case Right(_) => None
       case Left(refusal @ StepRefusal(_, Refusal.PrereqMillExecutableMissing(launcherVersion, _))) =>
-        Some(millVersionRun(build, refusal, launcherVersion))
+        Some(millVersionRun(build, worded(refusal), launcherVersion))
       case Left(refusal @ StepRefusal(_, Refusal.PrereqMillJdkMissing(_, launcherVersion))) =>
-        Some(millVersionRun(build, refusal, launcherVersion))
+        Some(millVersionRun(build, worded(refusal), launcherVersion))
       case Left(refusal @ StepRefusal(_, Refusal.PrereqGradleDistributionMissing(_, _))) =>
         if isExecutableFile(build.path.resolve("gradlew")) then
           Some(Finding.Provisionable(
-            build.program, build.path, refusal.worded, Vector("./gradlew", "--version"), Map.empty,
+            build.program, build.path, worded(refusal), Vector("./gradlew", "--version"), Map.empty,
           ))
         else
           Some(Finding.Notice(
             build.program, build.path,
-            s"${refusal.worded}, and the build directory has no executable `gradlew` to run",
+            s"${worded(refusal)}, and the build directory has no executable `gradlew` to run",
           ))
       case Left(refusal @ StepRefusal(_, Refusal.PrereqMvnDistributionMissing(_, _))) =>
-        Some(Finding.Provisionable(build.program, build.path, refusal.worded, Vector("./mvnw", "--version"), Map.empty))
-      case Left(refusal) => Some(Finding.Notice(build.program, build.path, refusal.worded))
+        Some(Finding.Provisionable(
+          build.program, build.path, worded(refusal), Vector("./mvnw", "--version"), Map.empty,
+        ))
+      case Left(refusal) => Some(Finding.Notice(build.program, build.path, worded(refusal)))
 
   /** `MILL_VERSION=<v>-jvm ./mill version`: the bootstrap downloads the launcher, and the launcher
     * resolves a pinned or unset `mill-jvm-version` and downloads its JDK. */
-  private def millVersionRun(build: BuildDirectory, refusal: StepRefusal, launcherVersion: String): Finding =
+  private def millVersionRun(build: BuildDirectory, wording: String, launcherVersion: String): Finding =
     Finding.Provisionable(
-      build.program, build.path, refusal.worded, Vector("./mill", "version"), Map("MILL_VERSION" -> launcherVersion),
+      build.program, build.path, wording, Vector("./mill", "version"), Map("MILL_VERSION" -> launcherVersion),
     )
 
   /** The command as the reader agrees to it, `NAME=value` assignments first, each word rendered

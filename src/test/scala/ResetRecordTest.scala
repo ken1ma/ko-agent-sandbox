@@ -37,7 +37,7 @@ class ResetRecordTest extends munit.FunSuite:
       assert(runOk(podman, "volume", "exists", volume), "the launch created the generated volume")
 
       val (sharedOk, sharedOutput) =
-        reset(workspaceRoot, "KO_AGENT_SANDBOX_PERSISTENT_VOLUME" -> "reset-record-test-shared")
+        reset(workspaceRoot, Vector("--persistent-volume=reset-record-test-shared"))
       assert(sharedOk, s"--reset under a shared volume failed; its output:\n$sharedOutput")
       assert(runOk(podman, "volume", "exists", volume), "the reset removed the generated volume it was to keep")
       assert(Files.exists(record), "the record went while the generated volume remained")

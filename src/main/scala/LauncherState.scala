@@ -42,7 +42,7 @@ object LauncherState:
    */
   def sharedVolumeNameRefusal(name: String): Option[String] =
     Option.when(name.matches(persistentVolumeName(WorkspaceIdPattern)))(
-      s"KO_AGENT_SANDBOX_PERSISTENT_VOLUME is '$name', which has the launcher's generated " +
+      s"--persistent-volume=$name has the launcher's generated " +
         "volume-name pattern, and --reset-all removes every volume matching it\n\n" +
         s"Choose a name outside ${persistentVolumeName("<slug>-<12 hex>")}.",
     )
@@ -78,7 +78,7 @@ object LauncherState:
       case _                                         => None
 
   /**
-   * Volumes named through KO_AGENT_SANDBOX_PERSISTENT_VOLUME are deliberately left alone — and
+   * Volumes named through --persistent-volume are deliberately left alone — and
    * cannot match this pattern, because such a value refuses the launch (sharedVolumeNameRefusal).
    */
   def persistentVolumes(names: Seq[String]): Seq[String] =
@@ -112,7 +112,7 @@ object LauncherState:
    * reset before any failure is reported, so one workspace's failed step does not leave the next
    * untouched.
    */
-  def resetWorkspace(os: Os, givenIds: Vector[String]): Nothing =
+  def resetWorkspace(os: Os, givenIds: Vector[String], sharedVolume: Option[String], sharedFrom: String): Nothing =
     val workspaceRoot = resolveWorkspaceRoot(os)
     // Before the deletions below: a state root overlapping the workspace root must refuse here,
     // not aim `rm -rf` at it.
@@ -125,7 +125,7 @@ object LauncherState:
     val outcomes = ids.map: id =>
       // A podman that stopped answering mid-way is one failed step of this id, not the run's end.
       id -> (
-        try resetOne(os, workspaceRoot, id, named = givenIds.nonEmpty, mainWorktree)
+        try resetOne(os, workspaceRoot, id, named = givenIds.nonEmpty, mainWorktree, sharedVolume, sharedFrom)
         catch
           case ex: IOException =>
             System.err.println(s"$id: $ex")
@@ -145,7 +145,15 @@ object LauncherState:
   /** `named`: the id came from the command line rather than from `workspaceRoot`, the directory the
     * reset runs in. Every failure is a counted step, never an exception, so the ids after this one
     * are still reset. */
-  private def resetOne(os: Os, workspaceRoot: Path, id: String, named: Boolean, mainWorktree: Option[Path]): Reset =
+  private def resetOne(
+    os: Os,
+    workspaceRoot: Path,
+    id: String,
+    named: Boolean,
+    mainWorktree: Option[Path],
+    sharedVolume: Option[String],
+    sharedFrom: String,
+  ): Reset =
     var failures = 0
     var found = false
     def remove(kind: String, name: String): Unit = if !resetRemoved(podman, kind, name) then failures += 1
@@ -171,7 +179,7 @@ object LauncherState:
         found = true
         remove("container", name)
 
-    // Only the computed per-workspace volume; a volume shared through KO_AGENT_SANDBOX_PERSISTENT_VOLUME belongs to
+    // Only the computed per-workspace volume; a volume shared through --persistent-volume belongs to
     // other workspaces too.
     // A failed probe is a failed step, not an absent volume, so the record below is not dropped over one.
     val volume = persistentVolumeName(id)
@@ -182,9 +190,9 @@ object LauncherState:
         failures += 1
         System.err.println(s"podman volume exists $volume: exit ${probe.exit} ${probe.err}".stripTrailing)
       answer
-    val volumeKept = env("KO_AGENT_SANDBOX_PERSISTENT_VOLUME") match
+    val volumeKept = sharedVolume match
       case Some(shared) =>
-        System.err.println(s"note: leaving shared volume $shared in place")
+        System.err.println(s"note: leaving shared volume $shared in place$sharedFrom")
         volumeExists.contains(true)
       case None =>
         if volumeExists.contains(true) then
@@ -227,10 +235,10 @@ object LauncherState:
     match
       case Right(caches) => deleteTree(caches)
       case Left(refusal @ RunOnHostPrereqs.Refusal.CacheRootInsideWorkspace(_, _)) if !named =>
-        System.err.println(s"note: run-on-host cache not removed; ${cacheRootRefusalLine(refusal)}")
+        System.err.println(s"note: run-on-host cache not removed; ${cacheRootRefusalLine(refusal, os)}")
       case Left(refusal) =>
         failures += 1
-        System.err.println(cacheRootRefusalLine(refusal))
+        System.err.println(cacheRootRefusalLine(refusal, os))
         if named then System.err.println(s"Run --reset $id from a directory the cache root is not inside.")
 
     // The workspace's filter daemon and mountpoint, where the feature has been used. Best effort by
@@ -295,7 +303,7 @@ object LauncherState:
     // only the directory records follow them.
     val caches = runOnHostCacheRoot(os, workspaceRoot)
       .flatMap(root => runOnHostRemoval(os, workspaceRoot, RunOnHostPrereqs.runOnHostCachesOf(root)))
-      .fold(refusal => fail(cacheRootRefusalLine(refusal)), identity)
+      .fold(refusal => fail(cacheRootRefusalLine(refusal, os)), identity)
     val cleanupJournal = imageCleanupJournal(os)
     if Files.exists(cleanupJournal) then
       withFileLock(imageBuildLockFile(os)):
@@ -371,8 +379,8 @@ object LauncherState:
       _ <- RunOnHostPrereqs.cachePathClearOfStateRoot(canonical, stateRoot(os), os)
     yield target
 
-  private def cacheRootRefusalLine(refusal: RunOnHostPrereqs.Refusal): String =
-    s"error: ${RunOnHostPrereqs.wording(refusal)}"
+  private def cacheRootRefusalLine(refusal: RunOnHostPrereqs.Refusal, os: Os): String =
+    s"error: ${RunOnHostPrereqs.wording(refusal, HostCommands.displayPath(_, os))}"
 
   /**
    * `--reset-run-on-host`: this workspace's run-on-host caches — what its `--run-on-host` commands
@@ -385,7 +393,7 @@ object LauncherState:
     val id = workspaceIdOf(workspaceRoot, os)
     val caches = runOnHostCacheRoot(os, workspaceRoot)
       .flatMap(root => runOnHostRemoval(os, workspaceRoot, RunOnHostPrereqs.runOnHostCacheDir(root, id)))
-      .fold(refusal => fail(cacheRootRefusalLine(refusal)), identity)
+      .fold(refusal => fail(cacheRootRefusalLine(refusal, os)), identity)
     removeTree(caches)
     // The generated volume is asked for as well: a shared volume or a failed step leaves it behind
     // a --reset that removed these directories. This action needs no podman, so where none answers
@@ -413,12 +421,33 @@ object LauncherState:
   def stateRoot(os: Os): Path = stateRootOf(os, env).fold(fail(_), identity)
 
   def stateRootOf(os: Os, env: String => Option[String]): Either[String, Path] =
+    userRootOf(
+      os, env, "LOCALAPPDATA", "XDG_STATE_HOME", ".local/state",
+      "The launcher's state root holds the CA signing key and audit logs",
+    ).flatMap: (variable, root) =>
+      canonicalizedFuturePath(root.resolve("ko-agent-sandbox")).left.map(reason => s"error: $variable: $reason")
+
+  /**
+   * A per-user root as the XDG Base Directory specification and Windows place it, and the variable
+   * it came from: `windowsVariable` on Windows, else `xdgVariable`, else `homeRelative` under HOME.
+   * An empty variable is an unset one. A relative value is refused, since it would resolve against
+   * the current directory, the workspace root; `holds` says what the root holds, which the
+   * refusal names. The callers canonicalize what they resolve under it.
+   */
+  def userRootOf(
+    os: Os,
+    env: String => Option[String],
+    windowsVariable: String,
+    xdgVariable: String,
+    homeRelative: String,
+    holds: String,
+  ): Either[String, (String, Path)] =
     val (variable, configured) = os match
-      case Os.Windows => ("LOCALAPPDATA", env("LOCALAPPDATA"))
+      case Os.Windows => (windowsVariable, env(windowsVariable))
       case _ =>
-        env("XDG_STATE_HOME").filter(_.nonEmpty) match
-          case Some(value) => ("XDG_STATE_HOME", Some(value))
-          case None        => ("HOME", env("HOME").filter(_.nonEmpty).map(_ + "/.local/state"))
+        env(xdgVariable).filter(_.nonEmpty) match
+          case Some(value) => (xdgVariable, Some(value))
+          case None        => ("HOME", env("HOME").filter(_.nonEmpty).map(_ + "/" + homeRelative))
     configured.filter(_.nonEmpty) match
       case None => Left(s"error: $variable is not set")
       case Some(value) =>
@@ -430,13 +459,11 @@ object LauncherState:
           case Some(path) if !path.isAbsolute =>
             Left(
               s"""error: $variable is '$value', which is not an absolute path
-                 |The launcher's state root holds the CA signing key and audit logs; a relative
+                 |$holds; a relative
                  |value would resolve against the current directory, the repository being
                  |sandboxed, so it is refused rather than resolved.""".stripMargin,
             )
-          case Some(path) =>
-            canonicalizedFuturePath(path.resolve("ko-agent-sandbox"))
-              .left.map(reason => s"error: $variable: $reason")
+          case Some(path) => Right((variable, path))
 
   /**
    * Why the resolved state root may not serve this workspace, or None: the two overlap in either
@@ -456,12 +483,13 @@ object LauncherState:
 
   /**
    * Whether a launch could accept `dir` as this workspace's root — the exemption the containment checks
-   * ([[requireStateRootOutside]], [[runOnHostCacheRoot]]) share: a directory a launch itself refuses,
-   * a home or a filesystem root, cannot be a workspace root, and the default state and cache layouts
-   * (`~/.local/state`, `~/.cache`) are inside a home as the normal case, not a breach. An
-   * unanswerable home discovery keeps the checks, the fail-closed side.
+   * ([[requireStateRootOutside]], [[runOnHostCacheRoot]], OptionsFile.refusal) share: a directory a
+   * launch itself refuses, a home or a filesystem root, cannot be a workspace root, and the default
+   * state, cache and configuration layouts (`~/.local/state`, `~/.cache`, `~/.config`) are inside a
+   * home as the normal case, not a breach. An unanswerable home discovery keeps the checks, the
+   * fail-closed side.
    */
-  private def couldBeAWorkspace(os: Os, dir: Path): Boolean =
+  def couldBeAWorkspace(os: Os, dir: Path): Boolean =
     protectedHomeDirectories(os, env) match
       case Right(protection) => forbiddenWorkspaceRootReason(dir, protection).isEmpty
       case Left(_)           => true

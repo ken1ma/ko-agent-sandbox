@@ -209,8 +209,10 @@ object RunOnHostSandbox:
   /** Why one step of the assembly refuses, kept typed to the assembly's boundary: the launch's
     * provisioning (RunOnHostProvisioning) runs one of three scripts for four of the cases and words the rest. */
   final case class StepRefusal(step: String, refusal: Refusal | String):
-    def worded: String = refusal match
-      case refusal: Refusal => s"$step: ${wording(refusal)}"
+    def worded: String = wordedShowing(_.toString)
+    /** As [[RunOnHostPrereqs.wording]] words it with `shown`. */
+    def wordedShowing(shown: Path => String): String = refusal match
+      case refusal: Refusal => s"$step: ${wording(refusal, shown)}"
       case reason: String   => s"$step: $reason"
 
   private def context[A](step: String)(value: Either[Refusal | String, A]): Either[StepRefusal, A] =

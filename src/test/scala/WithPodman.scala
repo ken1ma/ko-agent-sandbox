@@ -65,18 +65,14 @@ object WithPodman extends munit.Assertions:
 
   /** The launch's version lock, applied before any launch: the launcher rejects images another jar
     * built, which each test would otherwise wait for, one poll at a time, with the refusal at
-    * the bottom of its log. The digests are the jar's, by the check above; an overridden image
-    * only warns at launch, and this preflight accepts overrides just as the launcher does. */
+    * the bottom of its log. The digests are the jar's, by the check above. The suites launch the
+    * default images (launcherCommand reads no options file), so each must be current. */
   private def requireImagesCurrent(): Unit =
-    Seq(
-      AgentSandboxLauncher.sandboxImageChoice -> "ko-agent-sandbox",
-      AgentSandboxLauncher.proxyImageChoice -> "ko-agent-egress-proxy",
-    ).foreach:
-      case ((image, overridden), context) =>
+    Seq(LauncherImages.SandboxImage -> "ko-agent-sandbox", LauncherImages.ProxyImage -> "ko-agent-egress-proxy")
+      .foreach: (image, context) =>
         assert(runOk(podman, "image", "exists", image), s"$image is not built; run `java -jar $jar --build` first")
         val label = inspect(image, LauncherImages.BundleLabelTemplate)
-        LauncherImages.bundleMismatch(image, LauncherImages.bundledSourceId(context), label).foreach: mismatch =>
-          assert(overridden, mismatch)
+        LauncherImages.bundleMismatch(image, LauncherImages.bundledSourceId(context), label).foreach(fail(_))
 
   /** One scratch workspace as the registry records it: the id the launcher gives its directory, the
     * JVM that created it — its pid and start time, since a pid alone is reused — and the directory
@@ -224,10 +220,7 @@ object WithPodman extends munit.Assertions:
     val prefix = AgentSandboxLauncher.sandboxRunContainer(id, "")
 
     val before = running()
-    val builder = ProcessBuilder(
-      (Vector("java", "-jar", jar.toString) ++ options ++ Vector("sleep", Linger))*
-    )
-    builder.environment().put(AgentSandboxLauncher.SessionStartVariable, "immediate")
+    val builder = ProcessBuilder((launchCommand ++ options ++ Vector("sleep", Linger))*)
     extra.foreach((name, value) => builder.environment().put(name, value))
     builder.directory(workspace.toFile)
     builder.redirectErrorStream(true)
@@ -258,8 +251,7 @@ object WithPodman extends munit.Assertions:
   /** A launch expected to end on its own, a refusal, from `from`: its exit status and output. A
     * launch that ran instead ends with its command, `true`, and answers 0. */
   def launchOutcome(from: Path, log: Path, options: Vector[String] = Vector.empty): (Int, String) =
-    val builder = ProcessBuilder((Vector("java", "-jar", jar.toString) ++ options ++ Vector("--", "true"))*)
-    builder.environment().put(AgentSandboxLauncher.SessionStartVariable, "immediate")
+    val builder = ProcessBuilder((launchCommand ++ options ++ Vector("--", "true"))*)
     builder.directory(from.toFile)
     builder.redirectErrorStream(true)
     builder.redirectOutput(log.toFile)
@@ -271,19 +263,35 @@ object WithPodman extends munit.Assertions:
 
   /** `--reset` in a workspace, as the user runs it after a crash: whether it succeeded, and its own
     * output, all that is worth printing when it did not. */
-  def reset(workspace: Path, extra: (String, String)*): (Boolean, String) = action(workspace, Vector("--reset"), extra*)
+  def reset(workspace: Path, options: Vector[String] = Vector.empty): (Boolean, String) =
+    action(workspace, Vector("--reset"), options)
 
   /** `--reset <id>...`, run from `from`: the workspaces' own directories are gone. */
-  def resetIds(from: Path, ids: String*): (Boolean, String) = action(from, Vector("--reset") ++ ids)
+  def resetIds(from: Path, ids: String*): (Boolean, String) = action(from, Vector("--reset") ++ ids, Vector.empty)
 
-  def resetRunOnHost(workspace: Path): (Boolean, String) = action(workspace, Vector("--reset-run-on-host"))
+  def resetRunOnHost(workspace: Path): (Boolean, String) =
+    action(workspace, Vector("--reset-run-on-host"), Vector.empty)
 
   /** `--reset-all`, run from `from`, under the roots `extra` names: never the test host's own. */
-  def resetAll(from: Path, extra: (String, String)*): (Boolean, String) = action(from, Vector("--reset-all"), extra*)
+  def resetAll(from: Path, extra: (String, String)*): (Boolean, String) =
+    action(from, Vector("--reset-all"), Vector.empty, extra*)
 
-  private def action(workspace: Path, action: Vector[String], extra: (String, String)*): (Boolean, String) =
+  /** The launcher as the suites run it: never under the test host's options file, which would give
+    * each run the options a user chose for theirs. */
+  val launcherCommand: Vector[String] = Vector("java", "-jar", jar.toString, "--no-options-file")
+
+  /** A launch that holds nothing: the suites read its lines from the log, and no one answers the prompt. */
+  val launchCommand: Vector[String] = launcherCommand :+ "--session-start=immediate"
+
+  /** `action` with its arguments, the launch `options` before it. */
+  private def action(
+    workspace: Path,
+    action: Vector[String],
+    options: Vector[String],
+    extra: (String, String)*
+  ): (Boolean, String) =
     val log = workspace.resolve(s"${action.head.stripPrefix("--")}.log")
-    val builder = ProcessBuilder((Vector("java", "-jar", jar.toString) ++ action)*)
+    val builder = ProcessBuilder((launcherCommand ++ options ++ action)*)
     extra.foreach((name, value) => builder.environment().put(name, value))
     builder.directory(workspace.toFile)
     builder.redirectErrorStream(true)

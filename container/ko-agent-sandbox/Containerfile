@@ -278,14 +278,14 @@ RUN set -euxo pipefail; \
         # podman's masked /proc entries (measured, as for Codex below).
         bubblewrap \
         socat \
-        # `/voice`'s recorder under --mic, through its PulseAudio backend below
+        # `/voice`'s recorder under --audio=mic, through its PulseAudio backend below
         # (doc/microphone.md).
         sox; \
     rm -rf /var/lib/apt/lists/*
 
 
 # ---------------------------------------------------------------------------
-# The host microphone under --mic
+# The host microphone under --audio=mic
 # ---------------------------------------------------------------------------
 #
 # A PulseAudio daemon whose microphone is a FIFO the launcher's relay fills
@@ -295,7 +295,7 @@ RUN set -euxo pipefail; \
 # Codex's voice helper, which opens ALSA's default PCM; that helper's call
 # cannot leave the sandbox (doc/TODO.md). alsa-utils stays out:
 # Claude Code tries `arecord` before SoX, and one path is enough.
-# pulse-client.conf turns autospawn off, so without --mic no client starts a
+# pulse-client.conf turns autospawn off, so without --audio=mic no client starts a
 # daemon of its own.
 RUN set -euxo pipefail; \
     apt-get update; \

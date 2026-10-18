@@ -26,7 +26,7 @@ object JdkTrust:
   /**
    * The JDK's home as the image itself declares it, out of `podman image inspect`'s `Config.Env`.
    * Read rather than agreed: the launcher needs somewhere to mount a merged trust store, and the
-   * image already says where its JDK is. An image of the user's own (KO_AGENT_SANDBOX_IMAGE) that
+   * image already says where its JDK is. An image of the user's own (--image) that
    * declares a JDK must also ship ko-sandbox-jdk-use-proxy, which prepares it; the launch fails saying
    * so rather than mounting nothing over a JDK that then cannot reach the proxy.
    *
@@ -111,7 +111,7 @@ object JdkTrust:
    * --entrypoint=: this container depends on nothing but sh and the script. The stock
    * ko-sandbox-entrypoint would come through — it skips seeding when the root this runs as has
    * no $HOME/persistent-volume — but that guard is the stock image's, and a
-   * KO_AGENT_SANDBOX_IMAGE promises only to ship ko-sandbox-jdk-use-proxy, not an ENTRYPOINT
+   * --image promises only to ship ko-sandbox-jdk-use-proxy, not an ENTRYPOINT
    * that tolerates this container or execs its arguments at all. Nothing an entrypoint does
    * is for this container anyway.
    */

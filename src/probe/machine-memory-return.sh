@@ -64,9 +64,7 @@ if [ $# -eq 0 ]; then
     fi
     # The launcher's start prompt would otherwise wait inside the "build" phase, on a user reading a
     # sampler's output rather than the launch's lines.
-    KO_AGENT_SANDBOX_SESSION_START=immediate
-    export KO_AGENT_SANDBOX_SESSION_START
-    set -- java -jar target/dist/ko-agent-sandbox.jar sbt test
+    set -- java -jar target/dist/ko-agent-sandbox.jar --no-options-file --session-start=immediate sbt test
 fi
 
 say() { printf '%-28s %s\n' "$1" "$2"; }

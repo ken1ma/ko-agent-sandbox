@@ -34,7 +34,8 @@ class AwsCredentialTest extends munit.FunSuite:
       Right(Some(Request(Some("team")))),
     )
     assertEquals(parseCommandLine(List("--env-aws-cred", "claude")).map(_.awsCredential), Right(Some(Request(None))))
-    assert(parseCommandLine(List("--env-aws-cred=", "claude")).swap.exists(_.contains("name the profile")))
+    // The empty value is the default: no credential, rather than AWS_PROFILE's.
+    assertEquals(parseCommandLine(List("--env-aws-cred=", "claude")).map(_.awsCredential), Right(None))
     assert(parseCommandLine(List("--env-aws-cred", "--env-aws-cred=team")).swap.exists(_.contains("twice")))
     // The names it forwards are its own: a second route for one of them is a refusal, not a race.
     assert(

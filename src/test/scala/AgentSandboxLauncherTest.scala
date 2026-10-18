@@ -1,6 +1,6 @@
 // What the launcher itself owns: the run/reset naming that keeps workspaces apart, the configuration
 // flags, the build actions, and the documents the code must stay in step with (the --help text's
-// Environment section, SECURITY.md's forge list against the proxy's source, the bundled context).
+// options, SECURITY.md's forge list against the proxy's source, the bundled context).
 
 package agentsandbox.launcher
 
@@ -84,17 +84,45 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assertEquals(workspaceBind(None, workspaceRoot, "/home/user/app"), s"$workspaceRoot:/home/user/app:ro")
 
-  test("a misspelled launcher variable is reported, a foreign or known one is not"):
+  test("a variable an option replaced fails every invocation naming the option; the session's own pass in a session"):
+    val host = Map("KO_AGENT_SANDBOX_MEMORY" -> "8g", "KO_AGENT_SANDBOX_NESTING" -> "same-uid").get
     assertEquals(
-      unknownSandboxVariables(Seq("KO_AGENT_SANDBOX_MEMROY", "PATH", "KO_AGENT_SANDBOX_MEMORY")),
-      Vector("KO_AGENT_SANDBOX_MEMROY"),
+      replacedVariablesRefusal(host, inSession = false),
+      Some(
+        "error: the launcher does not read KO_AGENT_SANDBOX_MEMORY; --memory=<size> replaces it. Unset it, and " +
+          "pass --memory=8g to keep that value\n" +
+          "error: the launcher does not read KO_AGENT_SANDBOX_NESTING; --nesting=none|same-uid replaces it. Unset " +
+          "it, and pass --nesting=same-uid to keep that value",
+      ),
     )
-    assertEquals(unknownSandboxVariables(KnownSandboxVariables), Vector.empty)
-    assertEquals(unknownSandboxVariables(Seq("HOME", "JAVA_HOME")), Vector.empty)
+    // A session sets these for the agent, and a launcher run in it inherits them.
     assertEquals(
-      unknownSandboxVariables(Seq("KO_SANDBOX_MEMORY", "KO_SANDBOX_VOLUME_SEED", "KO_SANDBOX_TOOLCHAIN_PATH")),
-      Vector("KO_SANDBOX_MEMORY"),
+      replacedVariablesRefusal(host, inSession = true),
+      Some(
+        "error: the launcher does not read KO_AGENT_SANDBOX_MEMORY; --memory=<size> replaces it. Unset it, and " +
+          "pass --memory=8g to keep that value",
+      ),
     )
+    val session = Map(
+      "KO_AGENT_SANDBOX_NESTING" -> "none", "KO_AGENT_SANDBOX_SESSION_START" -> "pause",
+      "KO_AGENT_SANDBOX_CLIPBOARD" -> "paste", "KO_AGENT_SANDBOX_EGRESS_RULESET" -> "allow",
+    ).get
+    assertEquals(replacedVariablesRefusal(session, inSession = true), None)
+    // A value the option would refuse is not offered back.
+    val refusal = replacedVariablesRefusal(Map("KO_AGENT_SANDBOX_CLIPBOARD" -> "on").get, inSession = false)
+    assert(refusal.exists(message => message.contains("--clipboard=<mode>") && !message.contains("to keep")), refusal)
+    // An exported empty variable configures nothing either, so it is refused, with no value to keep.
+    assertEquals(
+      replacedVariablesRefusal(Map("KO_AGENT_SANDBOX_NESTING" -> "", "KO_AGENT_SANDBOX_MEMORY" -> "").get, false),
+      Some(
+        "error: the launcher does not read KO_AGENT_SANDBOX_MEMORY; --memory=<size> replaces it. Unset it\n" +
+          "error: the launcher does not read KO_AGENT_SANDBOX_NESTING; --nesting=none|same-uid replaces it. Unset it",
+      ),
+    )
+    Vector("KO_AGENT_SANDBOX_PERSISTENT_VOLUME", "KO_AGENT_SANDBOX_IMAGE", "KO_AGENT_SANDBOX_PROXY_IMAGE").foreach:
+      variable =>
+        val refused = replacedVariablesRefusal(Map(variable -> "x").get, inSession = true)
+        assert(refused.exists(_.contains(variable)), s"$variable: $refused")
 
   test("the sandbox gets a memory limit below the machine's total, and never swaps"):
     assertEquals(memoryLimit(8L << 30, None), 7L << 30)
@@ -212,11 +240,22 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assert(runOnHostLines(Seq("gradle"), "read-only", color = true)(1).startsWith("\u001b[38;5;208m"))
 
-  test("a boundary an environment variable or option weakens is an orange line naming it"):
+  test("a boundary an option weakens is an orange line naming it, and the options file when it came from there"):
     assertEquals(
       nestingLine("same-uid", color = false),
-      "nested containers: same-uid by KO_AGENT_SANDBOX_NESTING; /proc unmasked, SELinux label disabled and " +
+      "nested containers: same-uid by --nesting=same-uid; /proc unmasked, SELinux label disabled and " +
         "CAP_SYS_CHROOT added, for the whole session",
+    )
+    val source = " (from ~/.config/ko-agent-sandbox/options)"
+    assert(
+      nestingLine("same-uid", source, color = false)
+        .startsWith(s"nested containers: same-uid by --nesting=same-uid$source; "),
+    )
+    assert(clipboardLine("paste", source, color = false).startsWith(s"clipboard: paste by --clipboard=paste$source; "))
+    assert(micLine(source, color = false).startsWith(s"microphone: on by --audio=mic$source; "))
+    assertEquals(
+      runOnHostLines(Seq("mvn"), "live", source, color = false),
+      Vector(s"ko-sandbox-run-on-host: mvn on host$source"),
     )
     assertEquals(
       clipboardLine("paste", color = false),
@@ -224,7 +263,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assert(clipboardLine("bidirectional", color = false).endsWith("you copy and set your clipboard"))
     assert(
-      micLine(color = false).startsWith("microphone: on by --mic; the host microphone is open for the whole session"),
+      micLine(color = false)
+        .startsWith("microphone: on by --audio=mic; the host microphone is open for the whole session"),
     )
     for line <- Seq(nestingLine("same-uid", color = true), clipboardLine("paste", color = true), micLine(color = true))
     do
@@ -285,15 +325,16 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
 
   test("the nesting opt-in fails closed and its loosenings are exactly the priced ones"):
-    assertEquals(nestingMode(None), Right("none"))
-    assertEquals(nestingMode(Some("")), Right("none"))
-    assertEquals(nestingMode(Some("none")), Right("none"))
-    assertEquals(nestingMode(Some("same-uid")), Right("same-uid"))
-    Vector("on", "off", "ON", "1", "true", "single-uid", "SAME-UID", " same-uid ").foreach: value =>
-      assert(nestingMode(Some(value)).isLeft, s"'$value' was not refused")
-    val refused = nestingMode(Some("on")).swap.getOrElse("")
-    assert(refused.contains("the only values are none and same-uid, exactly"), refused)
-    assert(refused.contains("Unset it (or set it to none) to allow no runtime"), refused)
+    assertEquals(parseCommandLine(Nil).map(_.nestingMode), Right("none"))
+    assertEquals(parseCommandLine(List("--nesting=none")).map(_.nestingMode), Right("none"))
+    assertEquals(parseCommandLine(List("--nesting=same-uid")).map(_.nestingMode), Right("same-uid"))
+    Vector("", "on", "off", "ON", "1", "true", "single-uid", "SAME-UID", " same-uid ").foreach: value =>
+      assert(parseCommandLine(List(s"--nesting=$value")).isLeft, s"'$value' was not refused")
+    assertEquals(
+      parseCommandLine(List("--nesting=on")),
+      Left("error: --nesting=on; the values are none, same-uid, exactly"),
+    )
+    assert(parseCommandLine(List("--nesting=none", "--nesting=none")).swap.exists(_.contains("twice")))
     // What a nesting-enabled session loosens is these three flags and nothing else; SECURITY.md
     // describes the cost of exactly this set, so a fourth entry here is a doc change too.
     assertEquals(
@@ -302,14 +343,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
 
   test("the session start defaults to pausing and fails closed on anything else"):
-    // `none` among the refusals: it is the other two variables' off-switch, and nothing here is
-    // spelled by analogy with a neighbouring variable.
-    assertEquals(sessionStart(None), Right("pause"))
-    assertEquals(sessionStart(Some("")), Right("pause"))
-    assertEquals(sessionStart(Some("pause")), Right("pause"))
-    assertEquals(sessionStart(Some("immediate")), Right("immediate"))
-    Vector("none", "off", "0", "false", "no", "PAUSE", " pause ", "now", "skip").foreach: value =>
-      assert(sessionStart(Some(value)).isLeft, s"'$value' was not refused")
+    // `none` among the refusals: it is --nesting's off-switch, and nothing here is spelled by
+    // analogy with a neighbouring option.
+    assertEquals(parseCommandLine(Nil).map(_.sessionStartMode), Right("pause"))
+    assertEquals(parseCommandLine(List("--session-start=pause")).map(_.sessionStartMode), Right("pause"))
+    assertEquals(parseCommandLine(List("--session-start=immediate")).map(_.sessionStartMode), Right("immediate"))
+    Vector("", "none", "off", "0", "false", "no", "PAUSE", " pause ", "now", "skip").foreach: value =>
+      assert(parseCommandLine(List(s"--session-start=$value")).isLeft, s"'$value' was not refused")
 
   test("the hold starts on Enter or y, declines on n or EOF, and asks again on anything else"):
     // Every terminal outcome, over a scripted reader: the answers are consumed in order, and the
@@ -395,17 +435,21 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // After the command, it is the command's.
     assertEquals(parseCommandLine(List("claude", "--clipboard=paste")).map(_.clipboard), Right(None))
 
-  test("KO_AGENT_SANDBOX_CLIPBOARD fails the launch, naming the option and the mode it held"):
-    assertEquals(clipboardVariableRefusal(None), None)
-    val refusal = clipboardVariableRefusal(Some("paste"))
-    assert(refusal.exists(message => message.contains("--clipboard=<mode>") && message.contains("--clipboard=paste")))
-
-  test("--mic is a flag, given once"):
-    assertEquals(parseCommandLine(List("claude")).map(_.mic), Right(false))
-    assertEquals(parseCommandLine(List("--mic", "claude")).map(_.mic), Right(true))
-    assert(parseCommandLine(List("--mic", "--mic")).swap.exists(_.contains("twice")))
-    assert(parseCommandLine(List("--mic=on")).swap.exists(_.contains("takes no value")))
-    assertEquals(parseCommandLine(List("claude", "--mic")).map(_.mic), Right(false))
+  test("--audio grants each device it names once, off grants none, and fails closed on anything else"):
+    assertEquals(parseCommandLine(List("claude")).map(_.microphone), Right(false))
+    assertEquals(parseCommandLine(List("--audio=mic", "claude")).map(_.microphone), Right(true))
+    assertEquals(parseCommandLine(List("--audio=off", "claude")).map(_.audio), Right(Some(Vector.empty)))
+    assertEquals(parseCommandLine(List("--audio=off", "claude")).map(_.microphone), Right(false))
+    assertEquals(parseCommandLine(List("--audio=mic,mic")), Left("error: --audio=mic,mic names a device twice"))
+    Vector("", "speaker", "on", "MIC", "off,mic", "mic,", " mic").foreach: value =>
+      assertEquals(
+        parseCommandLine(List(s"--audio=$value")),
+        Left(s"error: --audio=$value; the values are off, or mic separated by commas"),
+      )
+    assert(parseCommandLine(List("--audio=mic", "--audio=off")).swap.exists(_.contains("twice")))
+    assert(parseCommandLine(List("--audio", "mic")).swap.exists(_.contains("--audio=off|<devices>")))
+    assert(parseCommandLine(List("--mic")).swap.exists(_.contains("unknown option --mic")))
+    assertEquals(parseCommandLine(List("claude", "--audio=mic")).map(_.microphone), Right(false))
 
   test("a clipboard mode is refused where the host cannot serve it"):
     import ClipboardRelay.{hostBackend, HostBackend}
@@ -547,36 +591,23 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(element("port"), Vector(EgressProxyPort.toString))
     assertEquals(element("protocol"), Vector("https"))
 
-  test("--help's Environment section and KnownSandboxVariables cannot drift apart"):
-    // A variable in one but not the other is either undocumented or warned about as a typo. This
-    // is also why the pair is beside UsageText rather than in HostCommands, whose contract is
-    // to know nothing of the sandbox.
-    val documented = "KO_AGENT_SANDBOX_[A-Z_]+".r.findAllIn(UsageText).toSet
-    assertEquals(unknownSandboxVariables(documented), Vector.empty)
-    // The ones the launcher sets rather than reads are documented where their reader is — the
-    // agent instructions, for RUN_ON_HOST also the image's shim, for MIC the entrypoint. The
-    // launcher reads the clipboard's only to refuse it (design.md, "Host resources are granted by
-    // launch options, not variables").
-    assertEquals(
-      KnownSandboxVariables -- documented,
-      Set(
-        "KO_AGENT_SANDBOX_EGRESS_RULESET", "KO_AGENT_SANDBOX_FILE_RULES", "KO_AGENT_SANDBOX_JAVA_OPTS",
-        RunOnHostChannel.RunOnHostVariable, ClipboardVariable, MicrophoneRelay.MicVariable,
-      ),
-    )
+  test("--help documents every option the options file can hold, and no KO_AGENT_SANDBOX_* variable"):
+    FileOptionNames.foreach(option => assert(UsageText.contains(s"  $option"), option))
+    // The launcher reads none: those it sets are documented where their reader is, the agent
+    // instructions, for RUN_ON_HOST also the image's shim, for MIC the entrypoint.
+    assertEquals("KO_AGENT_SANDBOX_[A-Z_]+".r.findAllIn(UsageText).toSet, Set.empty[String])
 
   test("--help covers the management actions, workspace modes, egress profiles and host programs"):
     val documentedActions = "(?m)^  (--[a-z-]+)(?:[ =\\[]|$)".r
       .findAllMatchIn(UsageText).map(_.group(1)).toSet
     assertEquals(
       documentedActions,
-      ManagementActions ++ Set(
-        "--egress-check", "--workspace", "--egress", ModelProviderOption, "--run-on-host", "--env",
-        AwsCredential.OptionName, "--egress-cred", "--clipboard", MicOption, ClaudePlugins.OptionName,
-      ),
+      ManagementActions ++ Set("--egress-check", NoOptionsFileOption) ++ FileOptionNames,
     )
     assert(UsageText.contains(s"--workspace=${WorkspaceModes.mkString("|")}"), UsageText)
     assert(UsageText.contains(s"--clipboard=${ClipboardModes.mkString("|")}"), UsageText)
+    assert(UsageText.contains(s"--nesting=${NestingModes.mkString("|")}"), UsageText)
+    assert(UsageText.contains(s"--session-start=${SessionStartModes.mkString("|")}"), UsageText)
     assert(UsageText.contains(s"--egress=${EgressProfiles.mkString("|")}"), UsageText)
     assert(UsageText.contains(RunOnHostPrograms.mkString(" / ")), UsageText)
 
@@ -1850,9 +1881,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       Right(Some("anthropic,github")),
     )
     assertEquals(parseCommandLine(List("claude")).map(_.modelProvider), Right(None))
-    // The proxy image defines the names; the launcher refuses only the empty value.
+    // The proxy image defines the names; the empty value is the command's own provider.
     assertEquals(parseCommandLine(List("--model-provider=meta")).map(_.modelProvider), Right(Some("meta")))
-    assert(parseCommandLine(List("--model-provider=")).swap.exists(_.contains("--model-provider=;")))
+    assertEquals(parseCommandLine(List("--model-provider=")).map(_.modelProvider), Right(None))
     assert(parseCommandLine(List("--model-provider=aws", "--model-provider=aws")).swap.exists(_.contains("twice")))
     assert(parseCommandLine(List("--model-provider", "aws")).swap.exists(_.contains("--model-provider=<names>")))
 
@@ -1867,7 +1898,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       Right(Some(Vector("gradle"))),
     )
     assert(parseCommandLine(List("--run-on-host=ant")).swap.exists(_.contains("sbt, mill, gradle, mvn")))
-    assert(parseCommandLine(List("--run-on-host=")).isLeft)
+    assertEquals(parseCommandLine(List("--run-on-host=")).map(_.runOnHost), Right(None))
     assert(parseCommandLine(List("--run-on-host=sbt,sbt")).swap.exists(_.contains("twice")))
     assert(
       parseCommandLine(List("--run-on-host=sbt", "--run-on-host=mill")).swap
@@ -1886,7 +1917,15 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assert(parseCommandLine(List("--env=SBT_OPTS", "--env=SBT_OPTS=x")).swap.exists(_.contains("twice")))
     assert(parseCommandLine(List("--env=1BAD")).swap.exists(_.contains("[A-Za-z_]")))
-    assert(parseCommandLine(List("--env=")).isLeft)
+    // The empty value drops the entries before it; the later ones still add.
+    assertEquals(
+      parseCommandLine(List("--env=A", "--env=", "--env=FOO")).map(_.env),
+      Right(Vector(EnvForward("FOO", None))),
+    )
+    assertEquals(
+      parseCommandLine(List("--env=A", "--env=", "--env=A=x")).map(_.env),
+      Right(Vector(EnvForward("A", Some("x")))),
+    )
     assert(parseCommandLine(List("--env", "SBT_OPTS")).swap.exists(_.contains("--env=<name>")))
     // After the command, it is the command's.
     assertEquals(parseCommandLine(List("claude", "--env=X")).map(_.env), Right(Vector.empty))
@@ -1898,8 +1937,16 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       Right(Vector("mods/status-band", "/opt/questions")),
     )
     assertEquals(parseCommandLine(List("claude")).map(_.claudePlugins), Right(Vector.empty))
-    assert(parseCommandLine(List("--claude-plugin-dir=")).swap.exists(_.contains("name a plugin directory")))
+    assertEquals(
+      parseCommandLine(List("--claude-plugin-dir=a", "--claude-plugin-dir=", "--claude-plugin-dir=b"))
+        .map(_.claudePlugins),
+      Right(Vector("b")),
+    )
     assert(parseCommandLine(List("--claude-plugin-dir", "x")).swap.exists(_.contains("--claude-plugin-dir=<dir>")))
+    assertEquals(
+      parseCommandLine(List("--claude-plugin-dir=/a", "--claude-plugin-dir=/a")),
+      Left("error: --claude-plugin-dir=/a is given twice"),
+    )
     assertEquals(parseCommandLine(List("claude", "--claude-plugin-dir=x")).map(_.claudePlugins), Right(Vector.empty))
 
   test("a forward reads the host at launch, fails on an unset name, and never replaces a boundary variable"):
@@ -1937,7 +1984,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // no value, which no sandbox receives.
     assertEquals(interpolated, Set("SessionStartVariable", "NestingVariable", "ClipboardVariable", "variable", "name"))
     Vector(
-      SessionStartVariable, NestingVariable, ClipboardVariable, MicrophoneRelay.MicVariable,
+      SessionStartVariable, NestingVariable, ClipboardVariable, MicrophoneRelay.AudioVariable,
       "KO_AGENT_SANDBOX_EGRESS_RULESET", "KO_AGENT_SANDBOX_FILE_RULES",
     ).foreach: name =>
       assert(name.startsWith(RefusedForwardPrefix), name)

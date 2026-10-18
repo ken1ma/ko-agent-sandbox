@@ -156,12 +156,15 @@ object EgressCredentials:
     credentials.filter(credential => inspected(credential.binding.host)).toVector
 
   /** The banner's line per binding: the variable as the sandbox sees it, where its value goes, and the
-    * placeholder, which is in the sandbox anyway. */
-  def bannerLines(credentials: Seq[BrokeredCredential]): Vector[String] =
+    * placeholder, which is in the sandbox anyway; `source` is what the line adds when the options file
+    * supplied the binding (OptionsInForce.from). */
+  def bannerLines(
+    credentials: Seq[BrokeredCredential], source: BrokeredCredential => String = _ => "",
+  ): Vector[String] =
     credentials.toVector.map: credential =>
       val binding = credential.binding
       s"brokered credential: ${binding.name} → ${binding.target} (${binding.place.shown}), " +
-        s"placeholder ${credential.placeholder}"
+        s"placeholder ${credential.placeholder}${source(credential)}"
 
   /** `--egress-effective`'s line per binding: where its value would go under this ruleset. A binding the
     * session's proxy does not inspect is refused at launch unless a selected program's rules allow it;

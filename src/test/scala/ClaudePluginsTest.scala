@@ -219,6 +219,12 @@ class ClaudePluginsTest extends munit.FunSuite:
     )
     assertEquals(mountArgs(Path.of("/run/x"), Path.of("/run/y"), Vector.empty, selinuxEnforcing = true), Vector.empty)
     assertEquals(bannerLine(plugins), "claude plugins: status-band@host; their hooks and mods run as managed")
+    // A plugin the options file named carries the file after its id; the others, nothing.
+    val two = plugins :+ Plugin("questions", Path.of("/h/questions"))
+    assertEquals(
+      bannerLine(two, plugin => if plugin.name == "questions" then " (from ~/options)" else ""),
+      "claude plugins: status-band@host, questions@host (from ~/options); their hooks and mods run as managed",
+    )
 
   test("the image plugin names are the Containerfile's plugin directories, and their manifests' names"):
     val directories = FileHelper.directoryEntries(Path.of("container/ko-agent-sandbox/claude-code/plugins"))

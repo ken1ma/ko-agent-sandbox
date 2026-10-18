@@ -6,7 +6,7 @@
 #     export XDG_RUNTIME_DIR=/tmp/xdg          # in every shell that runs podman
 #     podman run --rm docker.io/library/alpine:latest echo hello
 #
-# Refuses unless the session was launched with KO_AGENT_SANDBOX_NESTING=same-uid: at the default
+# Refuses unless the session was launched with --nesting=same-uid: at the default
 # `none` the container deliberately lacks what a runtime needs, every pull dies at layer unpack,
 # and the failure reads like a podman bug rather than the decision it is.
 #

@@ -149,7 +149,7 @@ resolved.
 - A launch after an edit of the rule file, while other sessions of the workspace run, joins their
   mount under their rules. It prints a warning naming them, and its start prompt is the consent;
   the edit takes effect at a launch after they end.
-- Without the start prompt, `KO_AGENT_SANDBOX_SESSION_START=immediate` or no terminal, that launch
+- Without the start prompt, `--session-start=immediate` or no terminal, that launch
   is refused, since the running rules may be weaker than the edit.
 
 ## Why these files

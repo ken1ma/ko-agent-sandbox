@@ -515,8 +515,7 @@ object KoAgentFs:
         Left(
           s"error: this workspace's concurrent sessions (${other.sessions.mkString(", ")}) run under other " +
             "file rules than .ko-agent-sandbox/file/rule gives, and joining them needs the start " +
-            "prompt's consent. Launch from a terminal with " +
-            s"${AgentSandboxLauncher.SessionStartVariable} unset or pause, or once they end.",
+            "prompt's consent. Launch from a terminal without --session-start=immediate, or once they end.",
         )
       case joined => Right(joined)
 

@@ -38,15 +38,8 @@ class BundleLockTest extends munit.FunSuite:
 
   /** The launcher run to completion, for the paths that end without a session: its exit status
     * and output. */
-  private def launcherOutcome(
-    workspace: Path,
-    log: Path,
-    arguments: Vector[String],
-    extra: (String, String)*,
-  ): (Int, String) =
-    val builder = ProcessBuilder((Vector("java", "-jar", jar.toString) ++ arguments)*)
-    builder.environment().put(AgentSandboxLauncher.SessionStartVariable, "immediate")
-    extra.foreach((name, value) => builder.environment().put(name, value))
+  private def launcherOutcome(workspace: Path, log: Path, arguments: Vector[String]): (Int, String) =
+    val builder = ProcessBuilder((launcherCommand ++ arguments)*)
     builder.directory(workspace.toFile)
     builder.redirectErrorStream(true)
     builder.redirectOutput(log.toFile)
@@ -76,7 +69,8 @@ class BundleLockTest extends munit.FunSuite:
       retagged = true
       assert(runOk(podman, "tag", Mislabelled, Latest))
 
-      val (exit, output) = launcherOutcome(workspace, workspace.resolve("refused.log"), Vector("sleep", "5"))
+      val (exit, output) =
+        launcherOutcome(workspace, workspace.resolve("refused.log"), Vector("--session-start=immediate", "sleep", "5"))
       assert(exit != 0, s"the launch was not refused:\n$output")
       assert(output.contains(LockRefusal), s"the refusal does not name the version lock:\n$output")
       assert(output.contains("rebuild with --build"), s"no rebuild hint:\n$output")
@@ -85,9 +79,8 @@ class BundleLockTest extends munit.FunSuite:
       assert(runOk(podman, "tag", Backup, Latest))
       retagged = false
 
-      val session = launch(
-        workspace, workspace.resolve("warned.log"),
-        "KO_AGENT_SANDBOX_IMAGE" -> Mislabelled,
+      val session = launchWith(
+        workspace, workspace.resolve("warned.log"), Vector("--egress=deny-unless-allowed", s"--image=$Mislabelled"),
       )
       live = Some(session)
       assert(
@@ -115,7 +108,7 @@ class BundleLockTest extends munit.FunSuite:
       assert(runOk(podman, "tag", ProxyMislabelled, ProxyLatest))
 
       Vector(
-        "launch" -> Vector("sleep", "5"),
+        "launch" -> Vector("--session-start=immediate", "sleep", "5"),
         "egress-effective" -> Vector("--egress-effective"),
         "egress-check" -> Vector("--egress-check=unlisted.invalid"),
       ).foreach: (name, arguments) =>
@@ -131,12 +124,12 @@ class BundleLockTest extends munit.FunSuite:
       assert(runOk(podman, "tag", ProxyBackup, ProxyLatest))
       retagged = false
 
-      val overridden = "KO_AGENT_SANDBOX_PROXY_IMAGE" -> ProxyMislabelled
+      val overridden = s"--proxy-image=$ProxyMislabelled"
       def warned(output: String): Boolean =
         output.contains("warning:") && output.contains(s"container image $ProxyMislabelled $LockRefusal")
 
       val (effectiveExit, effective) = launcherOutcome(
-        workspace, workspace.resolve("warned-egress-effective.log"), Vector("--egress-effective"), overridden,
+        workspace, workspace.resolve("warned-egress-effective.log"), Vector(overridden, "--egress-effective"),
       )
       assertEquals(effectiveExit, 0, s"--egress-effective failed on the overridden image:\n$effective")
       assert(warned(effective), s"no warning from --egress-effective:\n$effective")
@@ -145,7 +138,7 @@ class BundleLockTest extends munit.FunSuite:
       // not asserted: with HTTPS_PROXY set, the proxy exits 2 when it cannot set up the upstream
       // proxy (AgentEgressProxy.checkHost).
       val (_, checked) = launcherOutcome(
-        workspace, workspace.resolve("warned-egress-check.log"), Vector("--egress-check=unlisted.invalid"), overridden,
+        workspace, workspace.resolve("warned-egress-check.log"), Vector(overridden, "--egress-check=unlisted.invalid"),
       )
       assert(warned(checked), s"no warning from --egress-check:\n$checked")
       assert(
@@ -153,7 +146,8 @@ class BundleLockTest extends munit.FunSuite:
         s"--egress-check did not run the overridden image:\n$checked",
       )
 
-      val session = launch(workspace, workspace.resolve("warned.log"), overridden)
+      val session =
+        launchWith(workspace, workspace.resolve("warned.log"), Vector("--egress=deny-unless-allowed", overridden))
       live = Some(session)
       assert(warned(session.output), s"no warning for the explicitly overridden image:\n${session.output}")
     finally

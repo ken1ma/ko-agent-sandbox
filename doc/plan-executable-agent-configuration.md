@@ -47,7 +47,7 @@ the agent starts:
   none.
 - Print every replaced definition with its command line before the entrypoint's pause, so the
   user can stop and reach for `--reset`, or for `podman volume rm` on a volume named through
-  `KO_AGENT_SANDBOX_PERSISTENT_VOLUME`, which `--reset` preserves.
+  `--persistent-volume`, which `--reset` preserves.
 - Refuse the launch on a file that does not parse.
 - A reviewed definition names a program in the image or one `npx` fetches at start; a path
   under the volume it names is phase 2's.

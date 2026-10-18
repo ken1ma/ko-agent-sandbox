@@ -1,4 +1,4 @@
-// The host microphone under --mic: the recorder programs each host runs, the launch probe, the
+// The host microphone under --audio=mic: the recorder programs each host runs, the launch probe, the
 // POSIX relay's shell (a job of the reaper, SandboxLifecycle), and the Windows relay (threads of the
 // resident launcher). The sandbox side is the image's ko-sandbox-mic and its PulseAudio daemon;
 // SECURITY.md "Microphone" has what the channel grants, doc/microphone.md the design.
@@ -22,16 +22,17 @@ object MicrophoneRelay:
    */
   val SandboxDir = "/tmp/ko-agent-sandbox/microphone"
 
-  val MicVariable = "KO_AGENT_SANDBOX_MIC"
+  /** The devices `--audio` granted, as the option spells them: `mic`. */
+  val AudioVariable = "KO_AGENT_SANDBOX_AUDIO"
 
   /**
-   * The variables the sandbox gets under --mic; doc/microphone.md, "The daemon", has why the
+   * The variables the sandbox gets under --audio=mic; doc/microphone.md, "The daemon", has why the
    * PULSE_* ones. No SOX_OPTS: the CLI's `rec` overrides its `--buffer`, and the image's SoX writes
    * 4096 bytes at a time either way (doc/microphone.md, "Latency").
    */
   def sandboxEnvironment(sandboxDir: String = SandboxDir): Vector[(String, String)] =
     Vector(
-      MicVariable -> "on",
+      AudioVariable -> "mic",
       "PULSE_SERVER" -> s"unix:$sandboxDir/pulse-runtime/native",
       "PULSE_CONFIG_PATH" -> s"$sandboxDir/pulse-config",
       "PULSE_STATE_PATH" -> s"$sandboxDir/pulse-state",
@@ -114,12 +115,12 @@ object MicrophoneRelay:
             ),
           )
         .toVector
-    if candidates.isEmpty then Left(s"error: --mic needs a recorder on this host; ${packageHint(os)}")
+    if candidates.isEmpty then Left(s"error: --audio=mic needs a recorder on this host; ${packageHint(os)}")
     else
       candidates.find(_.command.exists(word => word.contains(WordSeparator) || word.contains('\n'))) match
         case Some(recorder) =>
           Left(
-            s"error: --mic cannot run ${recorder.command.head}: its path holds a control character; " +
+            s"error: --audio=mic cannot run ${recorder.command.head}: its path holds a control character; " +
               "move or link the recorder to a path without one, ahead on PATH",
           )
         case None           => Right(candidates)
@@ -216,7 +217,7 @@ object MicrophoneRelay:
       case Os.Linux =>
         "To record, check that the desktop's microphone works, or install the other of alsa-utils (arecord) " +
           "and pulseaudio-utils (parecord), and launch again."
-    (Vector("error: --mic found no recorder that records on this host:") ++ reasons.map(reason => s"  $reason")
+    (Vector("error: --audio=mic found no recorder that records on this host:") ++ reasons.map(reason => s"  $reason")
       ++ diagnosis.map(line => s"  $line") :+ s"  $next").mkString("\n")
 
   def silenceWarning(os: Os): String =

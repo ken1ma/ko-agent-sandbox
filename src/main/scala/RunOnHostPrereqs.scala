@@ -70,20 +70,22 @@ object RunOnHostPrereqs:
   /**
    * The refusal as the blocked reader sees it: what stopped the command, and what to do next.
    * Every case is worded here, so a case the supervisor prints through its enum spelling is a
-   * compile error, not a message with a class name in it.
+   * compile error, not a message with a class name in it. `shown` spells each host path: the
+   * launcher's terminal takes HostCommands.displayPath, while the agent, whose `~` is the
+   * container's home, takes the absolute path.
    */
-  def wording(refusal: Refusal): String = refusal match
+  def wording(refusal: Refusal, shown: Path => String = _.toString): String = refusal match
     case Refusal.PrereqJvmNotCoursier(found) =>
       s"JAVA_HOME must name a JDK Coursier installed (`cs java --jvm <name> --setup`); found $found"
     case Refusal.PrereqSbtNotCoursier(found) =>
-      s"sbt must be the one `cs install sbt` produced; found $found"
+      s"sbt must be the one `cs install sbt` produced; found ${shown(found)}"
     case Refusal.PrereqMillBootstrapMissing =>
       "the build directory has no executable `mill` bootstrap script; a global mill is not used"
     case Refusal.PrereqMillVersionUnpinned =>
       "no mill version is pinned in the build directory: .mill-version, .config/mill-version, build.mill.yaml " +
         "or the build script's header"
     case Refusal.PrereqMillExecutableMissing(launcherVersion, downloadDir) =>
-      s"mill's JVM launcher $launcherVersion is not provisioned under $downloadDir; run " +
+      s"mill's JVM launcher $launcherVersion is not provisioned under ${shown(downloadDir)}; run " +
         s"`MILL_VERSION=$launcherVersion ./mill version` once on the host"
     case Refusal.PrereqMillNativeLauncher(pinned) =>
       s"the pinned mill version $pinned names the native launcher, which cannot reach the launch's daemon: it " +
@@ -103,13 +105,13 @@ object RunOnHostPrereqs:
         s"`MILL_VERSION=$launcherVersion ./mill version` once on the host"
     case Refusal.PrereqMillJdkNotCoursier(pin, launcherVersion, cacheRoot) =>
       val version = pin.fold("an unset mill-jvm-version")(id => s"mill-jvm-version $id")
-      s"$MillJavaHomeFile records no JDK inside the Coursier cache $cacheRoot for $version; delete " +
+      s"$MillJavaHomeFile records no JDK inside the Coursier cache ${shown(cacheRoot)} for $version; delete " +
         s"that file, then run `MILL_VERSION=$launcherVersion ./mill version` once on the host"
     case Refusal.PrereqGradleWrapperMissing =>
       "the build directory has no gradle/wrapper/gradle-wrapper.properties; a global gradle is not used"
     case Refusal.PrereqGradleWrapperUnreadable(reason) => reason
     case Refusal.PrereqGradleDistributionMissing(url, directory) =>
-      s"Gradle from $url is not unpacked at $directory; run `./gradlew --version` once on the host"
+      s"Gradle from $url is not unpacked at ${shown(directory)}; run `./gradlew --version` once on the host"
     case Refusal.PrereqMvnWrapperMissing =>
       "the workspace root has no executable `mvnw` wrapper script; a global mvn is not used"
     case Refusal.PrereqMvnWrapperNotOnlyScript =>
@@ -119,18 +121,19 @@ object RunOnHostPrereqs:
       s"distributionUrl in .mvn/wrapper/maven-wrapper.properties names mvnd, a daemon: '$url'; " +
         "point it at an apache-maven-…-bin.zip URL"
     case Refusal.PrereqMvnDistributionMissing(url, home) =>
-      s"Maven from $url is not unpacked at $home; run `./mvnw --version` once on the host"
-    case Refusal.PrerequisiteFileUnreadable(path, reason) => s"$path cannot be read: $reason"
+      s"Maven from $url is not unpacked at ${shown(home)}; run `./mvnw --version` once on the host"
+    case Refusal.PrerequisiteFileUnreadable(path, reason) => s"${shown(path)} cannot be read: $reason"
     case Refusal.CacheRootUnusable(reason)            => s"cache root: $reason"
     case Refusal.CacheRootInsideWorkspace(root, workspaceRoot) =>
-      s"cache root $root overlaps the workspace root $workspaceRoot"
+      s"cache root ${shown(root)} overlaps the workspace root ${shown(workspaceRoot)}"
     case Refusal.CachePathOverlapsStateRoot(path, stateRoot) =>
-      s"the run-on-host cache path $path overlaps the launcher's state root $stateRoot; the cache root " +
-        "must be the state root itself or a directory outside it: point XDG_CACHE_HOME or XDG_STATE_HOME accordingly"
+      s"the run-on-host cache path ${shown(path)} overlaps the launcher's state root ${shown(stateRoot)}; " +
+        "the cache root must be the state root itself or a directory outside it: point XDG_CACHE_HOME or " +
+        "XDG_STATE_HOME accordingly"
     case Refusal.WorkingDirectoryOutsideWorkspace(requested) =>
       s"the working directory $requested is not inside the workspace"
     case Refusal.SessionTmpTooLong(path, max) =>
-      s"the command's temporary directory $path is longer than $max characters, sbt's socket path budget"
+      s"the command's temporary directory ${shown(path)} is longer than $max characters, sbt's socket path budget"
     case Refusal.RuleOutsideProgramGrammar(line) =>
       s"'$line' is outside the program's rule grammar — one `$ProgramRuleForm` per line"
 
@@ -983,7 +986,7 @@ object RunOnHostPrereqs:
       files <- SandboxWorkspace
         .readBoundaryRuleFiles(egressDir(program), Vector("rule"), grammar, EgressRules.normalizeRuleText)
       hosts <- files.headOption.fold(Right(Vector.empty)): (_, text) =>
-        programRuleHosts(text).left.map(wording)
+        programRuleHosts(text).left.map(wording(_))
           .flatMap(hosts => RunOnHostInspection.leafNames(egressRuleText(program, hosts)).map(_ => hosts))
           .left.map(reason => s"error: ${HostCommands.shown(s"${programRulePath(workspaceRoot, program)}: $reason")}")
     yield hosts

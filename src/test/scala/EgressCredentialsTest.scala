@@ -49,8 +49,10 @@ class EgressCredentialsTest extends munit.FunSuite:
         "error: 257 --egress-cred options; a launch takes at most 256",
       List("--egress-cred", "X@a.example") ->
         ("error: the launch options are spelled --workspace=<mode>, --egress=<profile>, --model-provider=<names>, " +
-          "--clipboard=<mode>, --mic, --env=<name>[=<value>], --env-aws-cred[=<profile>], " +
-          "--egress-cred=<name>@<host>, --run-on-host=<programs> and --claude-plugin-dir=<dir>"),
+          "--clipboard=<mode>, --audio=off|<devices>, --nesting=none|same-uid, --session-start=pause|immediate, " +
+          "--memory=<size>, --persistent-volume=<name>, --image=<reference>, --proxy-image=<reference>, " +
+          "--env=<name>[=<value>], --env-aws-cred[=<profile>], --egress-cred=<name>@<host>, " +
+          "--run-on-host=<programs> and --claude-plugin-dir=<dir>"),
     )
     refusals.foreach: (args, refusal) =>
       assertEquals(parseCommandLine(args), Left(refusal), args.take(2).mkString(" "))
@@ -224,6 +226,10 @@ class EgressCredentialsTest extends munit.FunSuite:
     assertEquals(
       EgressCredentials.bannerLines(credentials),
       Vector(s"brokered credential: GH_TOKEN → api.github.com (Authorization), placeholder ghp_${"P" * 36}"),
+    )
+    assertEquals(
+      EgressCredentials.bannerLines(credentials, _ => " (from F)"),
+      Vector(s"brokered credential: GH_TOKEN → api.github.com (Authorization), placeholder ghp_${"P" * 36} (from F)"),
     )
     // The placeholder changes each launch; the instructions, cached by their stamp, name the binding alone.
     val other = credentials.map(_.copy(placeholder = "ghp_" + "Q" * 36))

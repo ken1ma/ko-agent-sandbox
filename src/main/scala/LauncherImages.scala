@@ -151,7 +151,7 @@ object LauncherImages:
    * holds the jar's own digest of that image's bundled sources. The only
    * way a default-named image exists is --build, so a mismatch means a jar
    * other than this one built it — launch refuses it. An explicitly overridden
-   * KO_AGENT_SANDBOX_*_IMAGE only warns: a custom image is a supported
+   * --image or --proxy-image only warns: a custom image is a supported
    * case, and its interface drift still fails closed at runtime (the
    * --print-ruleset parse, the leaf's exact names).
    *

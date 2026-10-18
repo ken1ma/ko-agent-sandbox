@@ -53,8 +53,7 @@ cp "$here/apfs-name-rule-probe.py" "$workspace/"
 # the mounted volume — `podman machine ssh ls "$workspace"` shows what the VM sees.
 (
     cd "$workspace"
-    KO_AGENT_SANDBOX_SESSION_START=immediate \
-        java -jar "$jar" python3 apfs-name-rule-probe.py
+    java -jar "$jar" --no-options-file --session-start=immediate python3 apfs-name-rule-probe.py
 )
 
 # The property itself, on the host against the real fold table.

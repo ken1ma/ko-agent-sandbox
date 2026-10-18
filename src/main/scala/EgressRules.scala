@@ -68,11 +68,17 @@ object EgressRules:
    * source alone insufficient. The full lines are one `--egress-effective` away, and the proxy
    * writes them into this session's own log; a thousand characters of hostnames in the banner is
    * a line people learn to skip, and skipping it is how a ruleset nobody expected goes unnoticed.
-   * On parse failure, show only the first line to avoid dumping the resolved host list.
+   * A dry run without the profile line, the provider field every profile but deny-all carries
+   * (RulesetHelper.rulesetLines) or the summary's counts is refused, so no launch starts without
+   * this line stating its egress.
    *
+   * @param profileSource follows the profile, and `providerSource` the provider selection: what the
+   *   line adds when the options file supplied `--egress` or `--model-provider` (OptionsInForce.from).
    * @param color tints the profile (HostCommands.chosen).
    */
-  def egressBanner(resolved: String, color: Boolean = colorStderr): String =
+  def egressBanner(
+    resolved: String, profileSource: String = "", providerSource: String = "", color: Boolean = colorStderr,
+  ): Either[String, String] =
     val lines = resolved.linesIterator.toVector
 
     val counts: Map[String, Int] =
@@ -84,21 +90,21 @@ object EgressRules:
             case _                  => None
         .toMap
 
-    val parsed =
-      for
-        head <- lines.headOption.filter(_.startsWith(RulesetHelper.ProfileLineHead))
-        inspected <- counts.get("inspected hosts")
-        tunnel <- counts.get("tunnel hosts")
-      yield
-        val profile = head.stripPrefix(RulesetHelper.ProfileLineHead).takeWhile(_ != ';')
-        val selected = head.split(RulesetHelper.ModelProviderLabel, 2).lift(1).map(_.trim).filter(_.nonEmpty).map:
-          case "none"                       => "no provider selected"
-          case names if names.contains(",") => s"model providers ${names.replace(",", ", ")}"
-          case name                         => s"model provider $name"
-        (Vector(s"egress: ${chosen(profile, color)}") ++ selected :+ s"$inspected inspected, $tunnel tunnel")
-          .mkString("; ")
-
-    parsed.getOrElse(s"egress: ${lines.headOption.getOrElse("(empty resolution)")}")
+    for
+      head <- lines.headOption.filter(_.startsWith(RulesetHelper.ProfileLineHead)).toRight(NoProfileLine)
+      profile = head.stripPrefix(RulesetHelper.ProfileLineHead).takeWhile(_ != ';')
+      provider = head.split(RulesetHelper.ModelProviderLabel, 2).lift(1).map(_.trim).filter(_.nonEmpty)
+      _ <- Either.cond(profile == "deny-all" || provider.nonEmpty, (), noProviderField(profile))
+      inspected <- counts.get("inspected hosts").toRight(NoSummaryCounts)
+      tunnel <- counts.get("tunnel hosts").toRight(NoSummaryCounts)
+    yield
+      val selected = provider.map:
+        case "none"                       => "no provider selected"
+        case names if names.contains(",") => s"model providers ${names.replace(",", ", ")}"
+        case name                         => s"model provider $name"
+      (Vector(s"egress: ${chosen(profile, color)}$profileSource") ++ selected.map(_ + providerSource)
+        :+ s"$inspected inspected, $tunnel tunnel")
+        .mkString("; ")
 
   /**
    * Which of `names`, the entries of the workspace's log directory, to delete: every run directory
@@ -273,6 +279,14 @@ object EgressRules:
   /** What `--egress-log` prints with no arguments: each run's proxy audit logs, oldest run first. */
   def retainedProxyLogs(logDir: Path): Vector[Path] = runLogDirs(logDir).flatMap(proxyLogsOf)
 
+  private val OtherFormat = "An image built by another launcher version prints another format; rebuild with --build."
+  private val NoProfileLine = s"error: the proxy image's --print-ruleset has no 'egress profile' line\n$OtherFormat"
+  private def noProviderField(profile: String): String =
+    s"error: the proxy image's --print-ruleset names no model provider under the $profile profile\n$OtherFormat"
+  private val NoSummaryCounts =
+    s"error: the proxy image's --print-ruleset has no '${RulesetHelper.SummaryLineHead}' line with both host counts\n" +
+      OtherFormat
+
   /**
    * The inspected hosts out of a --print-ruleset answer: the hosts of its `allow https://` lines,
    * one line per resolved scope, a `tunnel` line never among them — the host is the URL's part
@@ -285,11 +299,7 @@ object EgressRules:
    */
   def inspectedHostsOf(dryRunOutput: String): Either[String, Vector[String]] =
     val lines = dryRunOutput.linesIterator.toVector
-    if !lines.headOption.exists(_.startsWith(RulesetHelper.ProfileLineHead)) then
-      Left(
-        "error: the proxy image's --print-ruleset has no 'egress profile' line\n" +
-          "An image built by another launcher version prints another format; rebuild with --build.",
-      )
+    if !lines.headOption.exists(_.startsWith(RulesetHelper.ProfileLineHead)) then Left(NoProfileLine)
     else
       Right(allowedHostsOf(dryRunOutput, tunnel = false))
 
@@ -351,6 +361,7 @@ object EgressRules:
     os: Os,
     profile: String,
     modelProvider: Option[String],
+    proxyImageOption: Option[String],
     operands: List[String],
   ): (String, String, Vector[(String, String)], Option[String]) =
     val command = operands match
@@ -359,7 +370,7 @@ object EgressRules:
     val workspaceRoot = resolveWorkspaceRoot(os)
     requireStateRootOutside(os, workspaceRoot)
     val workspaceId = workspaceIdOf(workspaceRoot, os)
-    val (proxyImage, proxyImageOverridden) = proxyImageChoice
+    val (proxyImage, proxyImageOverridden) = proxyImageChoice(proxyImageOption)
 
     val proxyInspected = inspectProxyImage(proxyImage)
     if !proxyInspected.ok then
@@ -413,10 +424,12 @@ object EgressRules:
     os: Os,
     profile: String,
     modelProvider: Option[String],
+    proxyImage: Option[String],
     operands: List[String],
     bindings: Vector[CredentialBinding] = Vector.empty,
   ): Nothing =
-    val (workspaceId, proxyImageId, ruleFiles, provider) = egressPreflight(os, profile, modelProvider, operands)
+    val (workspaceId, proxyImageId, ruleFiles, provider) =
+      egressPreflight(os, profile, modelProvider, proxyImage, operands)
 
     val resolved = resolvedRuleset(podman, proxyImageId, profile, provider, ruleFiles, provenance = true)
     System.out.write(resolved.out)
@@ -441,10 +454,12 @@ object EgressRules:
     os: Os,
     profile: String,
     modelProvider: Option[String],
+    proxyImage: Option[String],
     host: String,
     operands: List[String],
   ): Nothing =
-    val (workspaceId, proxyImageId, ruleFiles, provider) = egressPreflight(os, profile, modelProvider, operands)
+    val (workspaceId, proxyImageId, ruleFiles, provider) =
+      egressPreflight(os, profile, modelProvider, proxyImage, operands)
 
     val network = egressRunNetwork(workspaceId, newRunSuffix())
     createNetwork(network, internal = false)

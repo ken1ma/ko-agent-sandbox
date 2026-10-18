@@ -631,7 +631,7 @@ object RunOnHostChannel:
               .foreach((entry, actions) => log(s"scavenged ${entry.getFileName}: ${actions.mkString(", ")}"))
             RunOnHostSession.publish(root, workspaceRoot, RunOnHostSession.Kind.Runner)
           }.flatMap: session =>
-            RunOnHostPrereqs.sessionTmpFits(session.tmp).map(_ => session).left.map(RunOnHostPrereqs.wording)
+            RunOnHostPrereqs.sessionTmpFits(session.tmp).map(_ => session).left.map(RunOnHostPrereqs.wording(_))
           match
             case Right(session) => session
             case Left(reason) =>

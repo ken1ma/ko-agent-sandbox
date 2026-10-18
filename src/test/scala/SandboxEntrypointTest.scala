@@ -69,7 +69,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
       builder.environment.put("KO_AGENT_SANDBOX_NESTING", _),
     )
     path.foreach(dir => builder.environment.put("PATH", dir.toString + ":" + System.getenv("PATH")))
-    // A suite run inside a --mic session inherits its microphone variables; a test gives its own.
+    // A suite run inside a --audio=mic session inherits its microphone variables; a test gives its own.
     MicrophoneRelay.sandboxEnvironment().foreach((name, _) => builder.environment.remove(name))
     environment.foreach(builder.environment.put(_, _))
     builder.redirectErrorStream(true)
@@ -478,7 +478,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val (claude, antigravity, copilot, codex) = trustFiles(home)
     Vector(claude, antigravity, copilot, codex).foreach(file => assert(!Files.exists(file), file.toString))
 
-  test("under --mic the daemon starts from the image's script, the controller restarts only while it runs, " +
+  test("under --audio=mic the daemon starts from the image's script, the controller restarts only while it runs, " +
     "and the directories are private"):
     val (seed, home) = fixture()
     val bin = Files.createTempDirectory("ko-sandbox-entrypoint-mic-bin")
@@ -525,7 +525,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
         made.toString,
       )
 
-  test("without --mic no audio program starts"):
+  test("without --audio=mic no audio program starts"):
     val (seed, home) = fixture()
     val bin = Files.createTempDirectory("ko-sandbox-entrypoint-nomic-bin")
     val started = bin.resolve("started")

@@ -15,7 +15,7 @@
 # Then each agent's trust entry for the workspace, keyed by the path it is mounted at: the working
 # directory, which the launcher sets to the workspace root's own path. Per launch rather than
 # seeded, because the entry is per workspace while a seeded directory is never touched again and
-# the volume may be shared (KO_AGENT_SANDBOX_PERSISTENT_VOLUME). Merged into the agent's own file,
+# the volume may be shared (the launcher's --persistent-volume). Merged into the agent's own file,
 # which the agent rewrites: user state, in the volume. The keys are the agents' internals and may
 # change between releases; an entry that cannot be written is said, and the agent then asks.
 #
@@ -167,14 +167,15 @@ if [ -d "$volume" ] && [ "$workspace" != / ]; then
     fi
 fi
 
-# Under --mic, the PulseAudio daemon whose microphone the host relay feeds, and the controller that
-# asks the relay for audio while an agent records (ko-sandbox-mic; doc/microphone.md). Their
+# Under --audio=mic, the PulseAudio daemon whose microphone the host relay feeds, and the controller
+# that asks the relay for audio while an agent records (ko-sandbox-mic; doc/microphone.md). Their
 # directory holds the launcher's PULSE_RUNTIME_PATH, where the daemon makes its socket. setsid, so
 # no signal from the terminal reaches either; both end with the container, whose main process is
 # the agent exec'd below. The daemon is that shell's child, so the shell sees its end; the
 # controller is started again while the daemon runs, since a writer ends its forwarding when the
 # controller is gone, and a controller that died would leave every later dictation unserved.
-if [ "${KO_AGENT_SANDBOX_MIC-}" = on ]; then
+case ",${KO_AGENT_SANDBOX_AUDIO-}," in *,mic,*) mic=on ;; *) mic= ;; esac
+if [ -n "$mic" ]; then
     microphone=${PULSE_RUNTIME_PATH%/*}
     mkdir -p -m 700 "$microphone" "$PULSE_CONFIG_PATH" "$PULSE_STATE_PATH" "$PULSE_RUNTIME_PATH"
     setsid sh -c '
@@ -250,7 +251,7 @@ if [ -n "$warnings" ]; then
     case "$memory_limit" in
         ''|max) memory_limit= ;;
         *) memory_limit=" This session may use up to $(human "$memory_limit") of it"
-           memory_limit="$memory_limit (KO_AGENT_SANDBOX_MEMORY)." ;;
+           memory_limit="$memory_limit (the launcher's --memory)." ;;
     esac
     {
         printf 'warning: the machine podman runs on is under pressure; '
