@@ -9,6 +9,8 @@ import java.security.SecureRandom
 
 import agentsandbox.egress.{BrokeredCredential, CredentialBinding, CredentialGrammar}
 
+import HostCommands.{chosen, colorStderr}
+
 object EgressCredentials:
 
   val OptionPrefix = "--egress-cred="
@@ -156,14 +158,18 @@ object EgressCredentials:
     credentials.filter(credential => inspected(credential.binding.host)).toVector
 
   /** The banner's line per binding: the variable as the sandbox sees it, where its value goes, and the
-    * placeholder, which is in the sandbox anyway; `source` is what the line adds when the options file
-    * supplied the binding (OptionsInForce.from). */
+    * placeholder, which is in the sandbox anyway; the variable and where it goes are what the user
+    * chose (HostCommands.chosen). `source` is what the line adds when the options file supplied the
+    * binding (OptionsInForce.from). */
   def bannerLines(
-    credentials: Seq[BrokeredCredential], source: BrokeredCredential => String = _ => "",
+    credentials: Seq[BrokeredCredential],
+    source: BrokeredCredential => String = _ => "",
+    color: Boolean = colorStderr,
   ): Vector[String] =
     credentials.toVector.map: credential =>
       val binding = credential.binding
-      s"brokered credential: ${binding.name} → ${binding.target} (${binding.place.shown}), " +
+      s"brokered credential: ${chosen(binding.name, color)} → ${chosen(binding.target, color)} " +
+        s"(${binding.place.shown}), " +
         s"placeholder ${credential.placeholder}${source(credential)}"
 
   /** `--egress-effective`'s line per binding: where its value would go under this ruleset. A binding the

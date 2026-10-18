@@ -1615,11 +1615,19 @@ object AgentSandboxLauncher:
       shared
     // Named under the option too, where nothing is asked: the read-only git mount reads it.
     val mainWorktree = SandboxWorkspace.mainWorktreeOf(workspaceRoot, homeProtection, os)
-    System.err.println(pathLine("workspace root", workspaceRoot, os, tint = chosen(_)))
+    // Where the container has the workspace: the same path, so nothing on either side translates
+    // (SandboxWorkspace.mountPathOf). What the image has there is asked, or read from the cache of
+    // an earlier answer, once the image is known, below, still before any per-workspace resource
+    // exists.
+    val mountPath = mountPathOf(os, workspaceRoot).fold(fail(_), identity)
+    System.err.println(
+      pathLine("workspace root", workspaceRoot, os, tint = chosen(_)) +
+        workspaceModeClause(workspaceMode, settings.options.from("--workspace", os), mountPath, os),
+    )
     mainWorktree.foreach(main => System.err.println(pathLine("main git worktree", main, os)))
     sharedVolume.foreach: shared =>
       System.err.println(sharedVolumeLine(shared, settings.options.from(PersistentVolumeOption, os)))
-    // The answer said back as the workspace and egress lines say their modes: an answer is a
+    // The answer said back as the workspace root and egress lines say their modes: an answer is a
     // choice, and either continues the launch.
     val sharedWithMain: Option[Path] = mainWorktree.filter(_ => sharedVolume.isEmpty).filter: _ =>
       confirmSharedVolume(sessionStartMode, terminalReader) match
@@ -1635,12 +1643,6 @@ object AgentSandboxLauncher:
               s"through $PersistentVolumeOption",
           )
           false
-
-    // Where the container has the workspace: the same path, so nothing on either side translates
-    // (SandboxWorkspace.mountPathOf). What the image has there is asked, or read from the cache of
-    // an earlier answer, once the image is known, below, still before any per-workspace resource
-    // exists.
-    val mountPath = mountPathOf(os, workspaceRoot).fold(fail(_), identity)
 
     // Detected this early because the read-only mode's refusal below must come before any resource exists;
     // every fileBind reads it again further down. Enforcing specifically:
@@ -2236,28 +2238,21 @@ object AgentSandboxLauncher:
     os: Os,
   ): Unit =
     import settings.{awsCredential, credentials}
-    import workspace.mountPath
     import rules.{
       egressLine, fileRulesInForce, inspectedHosts, workspaceFileRules, ruleFiles, rulesetText, rulesetWarnings,
     }
-    import mount.{filteredWorkspace, joinedRules, sessionRuleLines}
+    import mount.{joinedRules, sessionRuleLines}
     import git.{gitdirBindRefusal, mountedGitdir, noGit}
-    // The workspace mode and the egress profile with their relevant state, said every launch — and
-    // rules that arrived with the repository never take effect unseen: each line of the files once
-    // (HostCommands.ruleFileReport), then the dry run's counts, the proxy's own answers to exactly
-    // what is enforced. Each line tints the mode it states; a line stating a boundary weaker than
-    // the default is tinted whole instead (HostCommands.weakened).
-    // The mount path is said on Windows only, where it is not the workspace root line's
-    // spelling but the /mnt/<drive> one the agent will print.
-    val mountedAt = if os == Os.Windows then s" at $mountPath" else ""
+    // The egress profile with its relevant state, said every launch, as the workspace root line
+    // says the workspace mode: first the dry run's counts, the proxy's own answers to exactly what is
+    // enforced, then each line of the egress rule file once (HostCommands.ruleFileReport), so rules
+    // that arrived with the repository never take effect unseen.
+    // Each line tints what the user chose; a line stating a boundary weaker than the default tints
+    // its grant instead (HostCommands.weakened).
     val options = settings.options
-    val workspaceSource = options.from("--workspace", os)
-    System.err.println(filteredWorkspace match
-      case Some(_) => s"workspace: ${chosen("live")}$workspaceSource; ${koAgentFsLabel(os)}$mountedAt"
-      case None    => s"workspace: ${chosen("read-only")} this session$workspaceSource$mountedAt")
-    // Qualifies the line above: the mount is sound, and git is not there, or reads the main
-    // worktree's Git directory and writes nothing. Every mode, since what git needs is absent from
-    // the container under each.
+    // Qualifies the workspace root line's mode: the mount is sound, and git is not there, or reads
+    // the main worktree's Git directory and writes nothing. Every mode, since what git needs is
+    // absent from the container under each.
     mountedGitdir match
       case Some(bind) => warn(readOnlyGitWarning(bind, os))
       case None       => noGit.foreach(cause => warn(noGitWarning(cause, os)))
@@ -2268,8 +2263,8 @@ object AgentSandboxLauncher:
         warn(joinWarning(running))
         FileRules.runningLaunchLines(sessionRuleLines).foreach(System.err.println)
       case None => if fileRulesInForce then FileRules.launchLines(workspaceFileRules).foreach(System.err.println)
-    EgressRules.launchLines(ruleFiles, rulesetText).foreach(System.err.println)
     System.err.println(egressLine)
+    EgressRules.launchLines(ruleFiles, rulesetText).foreach(System.err.println)
     // The transport, when this launch passed HTTPS_PROXY: the proxy's own line, from its own
     // parse, so what is on the screen is what is used — never a launcher-side reading of the
     // variable.
@@ -2289,8 +2284,7 @@ object AgentSandboxLauncher:
     if parsed.env.nonEmpty then
       val fromFile = options.fileValues("--env").toSet
       val source = options.from("--env", os)
-      val names = parsed.env.map(forward => forward.name + (if fromFile(forward.name) then source else ""))
-      System.err.println(s"forwarded environment: ${names.mkString(", ")}")
+      System.err.println(forwardedEnvironmentLine(parsed.env.map(_.name), fromFile, source))
     awsCredential.foreach: resolved =>
       System.err.println(AwsCredential.bannerLine(resolved, Instant.now()) + options.from(AwsCredential.OptionName, os))
     // Loud as a loosening: code that runs in the session without a tool call, which the image's
@@ -2303,7 +2297,7 @@ object AgentSandboxLauncher:
         options.fileValues(ClaudePlugins.OptionName).flatMap(spelled => realPath(Path.of(spelled))).toSet
       val source = options.from(ClaudePlugins.OptionName, os)
       val sourceOf = (plugin: ClaudePlugins.Plugin) => if fromFile(plugin.directory) then source else ""
-      System.err.println(weakened(ClaudePlugins.bannerLine(workspace.claudePlugins, sourceOf)))
+      System.err.println(ClaudePlugins.bannerLine(workspace.claudePlugins, sourceOf))
     if credentials.nonEmpty then
       val fromFile = options.fileValues("--egress-cred").toSet
       val source = options.from("--egress-cred", os)

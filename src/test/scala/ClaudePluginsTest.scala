@@ -218,12 +218,22 @@ class ClaudePluginsTest extends munit.FunSuite:
       Vector("ro", "ro", "ro"),
     )
     assertEquals(mountArgs(Path.of("/run/x"), Path.of("/run/y"), Vector.empty, selinuxEnforcing = true), Vector.empty)
-    assertEquals(bannerLine(plugins), "claude plugins: status-band@host; their hooks and mods run as managed")
+    assertEquals(
+      bannerLine(plugins, color = false),
+      "claude plugins: status-band@host; their hooks and mods run as managed",
+    )
     // A plugin the options file named carries the file after its id; the others, nothing.
     val two = plugins :+ Plugin("questions", Path.of("/h/questions"))
     assertEquals(
-      bannerLine(two, plugin => if plugin.name == "questions" then " (from ~/options)" else ""),
+      bannerLine(two, plugin => if plugin.name == "questions" then " (from ~/options)" else "", color = false),
       "claude plugins: status-band@host, questions@host (from ~/options); their hooks and mods run as managed",
+    )
+    // The plugins are the grant, orange, with a gray source among them; the explanation is plain.
+    val (orange, gray, off) = ("\u001b[38;5;208m", "\u001b[38;5;245m", "\u001b[0m")
+    assertEquals(
+      bannerLine(two.reverse, plugin => if plugin.name == "questions" then s" $gray(from F)$off" else "", color = true),
+      s"${orange}claude plugins: questions@host $gray(from F)$off$orange, status-band@host$off; " +
+        "their hooks and mods run as managed",
     )
 
   test("the image plugin names are the Containerfile's plugin directories, and their manifests' names"):

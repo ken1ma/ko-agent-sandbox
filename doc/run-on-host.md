@@ -362,8 +362,8 @@ executable is the one `cs install sbt` produced, whatever the workspace pins.
   on host").
   - The run is `MILL_VERSION=<v>-jvm ./mill version`, `./gradlew --version` or `./mvnw --version`
     in the build directory, shown in full.
-  - The question is tinted orange, as every line stating a weakened boundary is
-    (`HostCommands.weakened`).
+  - The question is tinted orange whole: it is the grant, as `run-on-host: sbt` is on the launch's
+    line (`HostCommands.weakened`).
   - Each build directory is judged when its turn comes, so one run that provisions a version two
     directories share is asked once.
   - The check repeats after the run, so a script that exits zero without provisioning is reported

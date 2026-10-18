@@ -213,63 +213,95 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
   test("the run-on-host lines name the programs in orange, and under --workspace=read-only say a host command writes"):
     val live = runOnHostLines(Seq("sbt", "mill"), "live", color = false)
     assertEquals(live, Vector(
-      "ko-sandbox-run-on-host: sbt, mill on host",
-      "  your own sbt server or mill daemon in the build directory is stopped when the agent runs that program",
+      "run-on-host: sbt, mill on host",
+      "  stops your own sbt server or mill daemon in the build directory when used",
     ))
     for
       selected <- Seq(Seq("sbt"), Seq("mill"), Seq("sbt", "gradle"), Seq("mill", "mvn"), Seq("gradle", "mvn"))
       workspaceMode <- Seq("live", "read-only")
     do
       val lines = runOnHostLines(selected, workspaceMode, color = false)
-      assertEquals(lines.head, s"ko-sandbox-run-on-host: ${selected.mkString(", ")} on host")
-      val shutdown = lines.find(_.startsWith("  your own"))
+      assertEquals(lines.head, s"run-on-host: ${selected.mkString(", ")} on host")
+      val shutdown = lines.find(_.startsWith("  stops your own"))
       assertEquals(shutdown.exists(_.contains("sbt server")), selected.contains("sbt"))
       assertEquals(shutdown.exists(_.contains("mill daemon")), selected.contains("mill"))
       assertEquals(lines.exists(_.contains("--workspace=read-only")), workspaceMode == "read-only")
     assertEquals(
       runOnHostLines(Seq("sbt"), "live", color = true).head,
-      "\u001b[38;5;208mko-sandbox-run-on-host: sbt on host\u001b[0m",
+      "\u001b[38;5;208mrun-on-host: sbt\u001b[0m on host",
     )
     val readOnly = runOnHostLines(Seq("gradle"), "read-only", color = false)
     assertEquals(readOnly.size, 2)
-    assert(!readOnly.head.contains("your own"), readOnly.head)
+    assert(!readOnly.exists(_.contains("your own")), readOnly)
     assertEquals(
       readOnly(1),
-      "run on host: --workspace=read-only refuses the session's own writes, not a host command's: " +
+      "run-on-host: --workspace=read-only refuses the session's own writes, not a host command's: " +
         "a build writes the workspace as its program does",
     )
-    assert(runOnHostLines(Seq("gradle"), "read-only", color = true)(1).startsWith("\u001b[38;5;208m"))
+    assert(
+      runOnHostLines(Seq("gradle"), "read-only", color = true)(1)
+        .startsWith("\u001b[38;5;208mrun-on-host:\u001b[0m --workspace=read-only refuses"),
+    )
 
-  test("a boundary an option weakens is an orange line naming it, and the options file when it came from there"):
+  test("a boundary an option weakens is an orange grant, its explanation plain, and the options file named after it"):
     assertEquals(
       nestingLine("same-uid", color = false),
-      "nested containers: same-uid by --nesting=same-uid; /proc unmasked, SELinux label disabled and " +
+      "nesting: same-uid; /proc unmasked, SELinux label disabled and " +
         "CAP_SYS_CHROOT added, for the whole session",
     )
     val source = " (from ~/.config/ko-agent-sandbox/options)"
     assert(
       nestingLine("same-uid", source, color = false)
-        .startsWith(s"nested containers: same-uid by --nesting=same-uid$source; "),
+        .startsWith(s"nesting: same-uid$source; "),
     )
-    assert(clipboardLine("paste", source, color = false).startsWith(s"clipboard: paste by --clipboard=paste$source; "))
-    assert(micLine(source, color = false).startsWith(s"microphone: on by --audio=mic$source; "))
+    assert(clipboardLine("paste", source, color = false).startsWith(s"clipboard: paste$source; "))
+    assert(micLine(source, color = false).startsWith(s"audio: mic$source; "))
     assertEquals(
       runOnHostLines(Seq("mvn"), "live", source, color = false),
-      Vector(s"ko-sandbox-run-on-host: mvn on host$source"),
+      Vector(s"run-on-host: mvn on host$source"),
     )
     assertEquals(
       clipboardLine("paste", color = false),
-      "clipboard: paste by --clipboard=paste; the agent can read an image you copy",
+      "clipboard: paste; the agent can read an image you copy",
     )
     assert(clipboardLine("bidirectional", color = false).endsWith("you copy and set your clipboard"))
     assert(
       micLine(color = false)
-        .startsWith("microphone: on by --audio=mic; the host microphone is open for the whole session"),
+        .startsWith("audio: mic; the host microphone is open for the whole session"),
     )
-    for line <- Seq(nestingLine("same-uid", color = true), clipboardLine("paste", color = true), micLine(color = true))
+    // The label and what it grants are orange; the source and the explanation are outside it.
+    val (orange, gray, off) = ("\u001b[38;5;208m", "\u001b[38;5;245m", "\u001b[0m")
+    for (line, grant) <- Seq(
+        nestingLine("same-uid", color = true) -> "nesting: same-uid",
+        clipboardLine("paste", color = true) -> "clipboard: paste",
+        micLine(color = true) -> "audio: mic",
+      )
     do
-      assert(line.startsWith("\u001b[38;5;208m") && line.endsWith("\u001b[0m"), line)
+      assert(line.startsWith(s"$orange$grant$off; "), line)
       assertEquals(line.count(_ == '\u001b'), 2, line)
+    assertEquals(
+      clipboardLine("paste", s" ${gray}(from F)$off", color = true),
+      s"${orange}clipboard: paste$off $gray(from F)$off; the agent can read an image you copy",
+    )
+
+  test("the workspace root line states the mode, and each line tints what the user chose but never its source"):
+    val source = " (from ~/.config/ko-agent-sandbox/options)"
+    assertEquals(workspaceModeClause("live", "", "/w", Os.Mac, color = false), " (live)")
+    assertEquals(
+      workspaceModeClause("read-only", source, "/w", Os.Linux, color = false),
+      s" (read-only)$source",
+    )
+    assertEquals(workspaceModeClause("live", "", "/mnt/c/w", Os.Windows, color = false), " (live at /mnt/c/w)")
+    val (on, off) = ("\u001b[38;5;207m", "\u001b[0m")
+    assertEquals(workspaceModeClause("live", source, "/w", Os.Mac, color = true), s" (${on}live$off)$source")
+    assertEquals(
+      forwardedEnvironmentLine(Vector("GH_TOKEN", "TERM"), Set("TERM"), source, color = false),
+      s"forwarded environment: GH_TOKEN, TERM$source",
+    )
+    assertEquals(
+      forwardedEnvironmentLine(Vector("GH_TOKEN", "TERM"), Set("TERM"), source, color = true),
+      s"forwarded environment: ${on}GH_TOKEN$off, ${on}TERM$off$source",
+    )
 
   test("a program's hosts are an orange report, one rule per line, what a terminal acts on spelled out"):
     val silent = Seq("sbt" -> Vector.empty, "mill" -> Vector.empty)

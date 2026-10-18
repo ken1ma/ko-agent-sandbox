@@ -75,12 +75,15 @@ class AwsCredentialTest extends munit.FunSuite:
     assertEquals(resolved.map(_.environment), Right(values.toMap + ("AWS_REGION" -> "ap-northeast-1")))
     assertEquals(resolved.map(_.forwards.map(_.name).sorted), Right((Names :+ "AWS_REGION").sorted))
     assertEquals(
-      resolved.map(bannerLine(_, now)),
+      resolved.map(bannerLine(_, now, color = false)),
       Right(
         "aws credential: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN from profile team, " +
           "expire in 11h 58m; AWS_REGION=ap-northeast-1",
       ),
     )
+    // The profile is what the user chose.
+    val tinted = resolved.map(bannerLine(_, now, color = true))
+    assert(tinted.exists(_.contains(" from profile \u001b[38;5;207mteam\u001b[0m, ")), tinted)
     // A profile named on the option wins over the host's.
     assertEquals(
       resolve(Request(Some("other")), Map("AWS_PROFILE" -> "team").get, _ => Some(aws), host(0, output), now)

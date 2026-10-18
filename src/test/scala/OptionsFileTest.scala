@@ -275,12 +275,20 @@ class OptionsFileTest extends munit.FunSuite:
     val (parsed, supplied) =
       merged("--memory=8g\n--env=SECRET=hunter2\n--nesting=same-uid\n--image=i", "--image=j").fold(fail(_), identity)
     val options = OptionsInForce(parsed, supplied, Some(Path.of("/home/me/.config/ko-agent-sandbox/options")))
-    val lines = options.fileLines(Set("--nesting"), Os.Linux).map(_.replace("/home/me/.config", "~/.config"))
-    assertEquals(lines, Vector(s"--memory=8g$FromFile", s"--env=SECRET$FromFile"))
-    assert(!options.fileLines(os = Os.Linux).exists(_.contains("hunter2")))
-    assertEquals(options.from("--nesting", Os.Linux).replace("/home/me/.config", "~/.config"), FromFile)
-    assertEquals(options.from("--image", Os.Linux), "")
-    assertEquals(OptionsInForce(parsed, Vector.empty, None).fileLines(), Vector.empty)
+    def lines(color: Boolean) =
+      options.fileLines(Set("--nesting"), Os.Linux, color).map(_.replace("/home/me/.config", "~/.config"))
+    assertEquals(lines(color = false), Vector(s"--memory=8g$FromFile", s"--env=SECRET$FromFile"))
+    // The value is what the user chose, and the source is there to look up, parentheses included.
+    val (chosen, gray, off) = ("\u001b[38;5;207m", "\u001b[38;5;245m", "\u001b[0m")
+    val source = s" $gray(from $Shown)$off"
+    assertEquals(
+      lines(color = true),
+      Vector(s"--memory=${chosen}8g$off$source", s"--env=${chosen}SECRET$off$source"),
+    )
+    assert(!options.fileLines(os = Os.Linux, color = false).exists(_.contains("hunter2")))
+    assertEquals(options.from("--nesting", Os.Linux, color = false).replace("/home/me/.config", "~/.config"), FromFile)
+    assertEquals(options.from("--image", Os.Linux, color = false), "")
+    assertEquals(OptionsInForce(parsed, Vector.empty, None).fileLines(color = false), Vector.empty)
     assertEquals(
       LaunchMessages.sharedVolumeLine("team", FromFile, color = false),
       s"agent state: volume team, shared by --persistent-volume=team$FromFile",

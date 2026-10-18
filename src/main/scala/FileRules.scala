@@ -178,16 +178,14 @@ object FileRules:
   /** The line the mount script prints before the resolved set. */
   val ResolvedMarker = "file rules resolved:"
 
-  /** The launch lines about the workspace's file (HostCommands.ruleFileReport); its `writable`
-    * lines, the only kind that can widen, are the widening. What the guard added is printed once
-    * the filter has answered (guardLines). */
+  /** The launch lines about the workspace's file (HostCommands.ruleFileReport), none without one:
+    * the defaults are every launch's. Its `writable` lines, the only kind that can widen, are the
+    * widening. What the guard added is printed once the filter has answered (guardLines). */
   def launchLines(
     workspaceFile: Option[(String, Vector[Line])],
     color: Boolean = HostCommands.colorStderr,
   ): Vector[String] =
-    workspaceFile match
-      case None             => Vector("file rules: no workspace rule file; the launcher-owned defaults")
-      case Some((_, lines)) => report("file rules (.ko-agent-sandbox/file/rule)", lines, color)
+    workspaceFile.toVector.flatMap((_, lines) => report("file rules (.ko-agent-sandbox/file/rule)", lines, color))
 
   /** The launch lines about a running mount's rules a launch joins: its lines beyond the defaults,
     * all of them when it runs under other defaults, the `writable` ones as their widening. */

@@ -218,6 +218,14 @@ class HostCommandsTest extends munit.FunSuite:
     // The label is a prefix, never a word found mid-line: this one is a subprocess's text quoted.
     assertEquals(emphasized("the proxy said warning: x", color = true), "the proxy said warning: x")
 
+  test("a span tinted inside another ends its own tint, and the outer one resumes after it"):
+    val (orange, gray, off) = ("\u001b[38;5;208m", "\u001b[38;5;245m", "\u001b[0m")
+    assertEquals(
+      weakened(s"a ${lookedUp("b", color = true)} c ${lookedUp("d", color = true)}", color = true),
+      s"${orange}a ${gray}b$off$orange c ${gray}d$off$orange$off",
+    )
+    assertEquals(weakened(s"a ${lookedUp("b", color = false)}", color = false), "a b")
+
   test("a refusal raised while the JVM is shutting down names the interruption first, and waits"):
     assert(!shuttingDown, "a JVM with no shutdown under way reported one")
     // The true case needs a shutdown under way, so it runs in a JVM of its own on this test's
