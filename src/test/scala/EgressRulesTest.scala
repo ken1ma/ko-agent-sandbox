@@ -60,13 +60,21 @@ class EgressRulesTest extends munit.FunSuite:
   test("the launch banner names the profile off the profile line and the counts off the summary line, never a host"):
     assertEquals(
       egressBanner(
-        "egress profile: deny-unless-allowed\n" +
+        "egress profile: deny-unless-allowed; model provider: anthropic\n" +
           "allow https://github.com/ read git-fetch\nallow https://secret.example/ read\n" +
           "allow https://a.example/ tunnel\n" + summary(2, 1, 1) +
           "\nwidening lines (1): allow https://secret.example/ read",
         color = false,
       ),
-      "egress: deny-unless-allowed; 2 inspected, 1 tunnel",
+      "egress: deny-unless-allowed; model provider anthropic; 2 inspected, 1 tunnel",
+    )
+    assertEquals(
+      egressBanner("egress profile: deny-unless-allowed; model provider: aws,google\n" + summary(9, 2), color = false),
+      "egress: deny-unless-allowed; model providers aws, google; 9 inspected, 2 tunnel",
+    )
+    assertEquals(
+      egressBanner("egress profile: deny-unless-allowed; model provider: none\n" + summary(9, 0), color = false),
+      "egress: deny-unless-allowed; no provider selected; 9 inspected, 0 tunnel",
     )
     assertEquals(
       egressBanner(
@@ -79,10 +87,6 @@ class EgressRulesTest extends munit.FunSuite:
     assertEquals(
       egressBanner("egress profile: deny-unless-model; model provider: none\n" + summary(0, 0), color = false),
       "egress: deny-unless-model; no provider selected; 0 inspected, 0 tunnel",
-    )
-    assertEquals(
-      egressBanner("egress profile: deny-unless-model; model provider: all\n" + summary(4, 17), color = false),
-      "egress: deny-unless-model; every model provider; 4 inspected, 17 tunnel",
     )
     assertEquals(
       egressBanner("egress profile: deny-all\n" + summary(0, 0), color = false),
@@ -103,14 +107,14 @@ class EgressRulesTest extends munit.FunSuite:
     )
 
   test("the launch banner reads the proxy's summary across profiles and provider selections"):
-    import agentsandbox.egress.RulesetHelper.{AllProviders, Profiles, metadataLines, resolveRuleset, rulesetLines}
+    import agentsandbox.egress.RulesetHelper.{Profiles, metadataLines, resolveRuleset, rulesetLines}
 
     val projectRules =
       "allow https://artifact.example/releases/ read\nallow https://model.example/ tunnel\n" +
         "deny https://**.blocked.example/"
     for
       profile <- Profiles
-      provider <- Vector(None, Some("openai"), Some(AllProviders))
+      provider <- Vector(None, Some("openai"), Some("anthropic,google"))
       project <- Vector(None, Some(projectRules))
     do
       val resolved = resolveRuleset(Some(profile), provider, project)
@@ -139,10 +143,40 @@ class EgressRulesTest extends munit.FunSuite:
     assertEquals(commandProvider(Some("C:\\programs\\agy")), Some("google"))
     assertEquals(commandProvider(Some("kiro-cli")), Some("aws"))
     assertEquals(commandProvider(Some("copilot")), Some("github"))
-    assertEquals(commandProvider(Some("opencode")), Some("all"))
+    assertEquals(commandProvider(Some("opencode")), None)
     assertEquals(commandProvider(Some("bash")), None)
     assertEquals(commandProvider(Some("./run-claude.sh")), None)
     assertEquals(commandProvider(None), None)
+
+  test("the launch's selection is the option, else the command's provider; opencode needs the option"):
+    val profiles = Vector("deny-unless-allowed", "deny-unless-model")
+    profiles.foreach: profile =>
+      assertEquals(selectedProvider(None, Some("claude"), profile), Right(Some("anthropic")))
+      assertEquals(selectedProvider(Some("aws"), Some("claude"), profile), Right(Some("aws")))
+      assertEquals(selectedProvider(Some("anthropic,aws"), Some("bash"), profile), Right(Some("anthropic,aws")))
+      assertEquals(selectedProvider(Some("aws,github"), Some("/opt/bin/opencode"), profile), Right(Some("aws,github")))
+      assertEquals(selectedProvider(None, Some("bash"), profile), Right(None))
+      assertEquals(selectedProvider(None, None, profile), Right(None))
+      val refused = selectedProvider(None, Some("/opt/bin/opencode"), profile)
+      assert(refused.swap.exists(_.startsWith("error: opencode has no fixed model provider")), refused.toString)
+      assert(refused.swap.exists(_.contains("--model-provider=<names>")), refused.toString)
+    // deny-all admits nothing, so the option is refused there and opencode needs none.
+    assertEquals(selectedProvider(None, Some("opencode"), "deny-all"), Right(None))
+    assertEquals(selectedProvider(None, Some("claude"), "deny-all"), Right(Some("anthropic")))
+    assert(selectedProvider(Some("aws"), Some("claude"), "deny-all").swap.exists(_.contains("deny-all")))
+    // The warning names the command and the profile's effect, under the two profiles that admit providers.
+    assertEquals(noProviderLine(Some("bash"), "deny-all"), None)
+    assert(
+      noProviderLine(None, "deny-unless-model").exists(_.startsWith("no command is given and no --model-provider")),
+    )
+    assertEquals(
+      noProviderLine(Some("bash"), "deny-unless-model"),
+      Some(
+        "'bash' is not a recognized agent command and no --model-provider is given, " +
+          "so deny-unless-model selects no model provider and allows no host",
+      ),
+    )
+    assert(noProviderLine(Some("./run.sh"), "deny-unless-allowed").exists(_.endsWith("rule file applies after it")))
 
   test("the egress directory reads the rule file, normalized"):
     val dir = Files.createTempDirectory("egress")
@@ -193,6 +227,12 @@ class EgressRulesTest extends munit.FunSuite:
     Files.writeString(dir.resolve("rule"), "")
     assertEquals(readRuleFiles(dir), Right(Vector.empty))
 
+  test("a dry run's refusal names the option when the proxy refused its variable, else the project's rules"):
+    val refused = rulesetRefusal("EGRESS_MODEL_PROVIDER is 'meta'; ...")
+    assert(refused.startsWith("error: --model-provider is not valid\n"), refused)
+    val rules = rulesetRefusal("rule: allow https://x/ frob has the word ...")
+    assert(rules.startsWith("error: this project's egress rules"), rules)
+
   test("the ruleset env args pass the selected profile, provider and each file's variable"):
     assertEquals(
       rulesetEnvArgs(
@@ -208,7 +248,7 @@ class EgressRulesTest extends munit.FunSuite:
     )
     assertEquals(
       rulesetEnvArgs("deny-unless-model", None, Vector.empty),
-      Vector("--env=EGRESS_PROFILE=deny-unless-model", "--env=EGRESS_MODEL_PROVIDER=none"),
+      Vector("--env=EGRESS_PROFILE=deny-unless-model", "--env=EGRESS_MODEL_PROVIDER="),
     )
 
   test("the inspected hosts are the allow lines' hosts, a tunnel line never among them"):

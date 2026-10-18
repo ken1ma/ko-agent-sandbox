@@ -36,16 +36,23 @@ The proxy's default rules, listed in the proxy image's `defaults/host` and
 - inspected documentation, package-registry and forge hosts, with `read` on every line and
   `git-fetch` on the three forges.
 
+A launch selects the model providers whose default rules it admits:
+
+- `--model-provider=<names>` names them: the providers under `defaults/model-provider/`,
+  separated by commas. It is refused under `deny-all`, where nothing is admitted.
+- Without the option, the command's first word selects one: `claude` selects `anthropic`,
+  `codex` selects `openai`, `agy` selects `google`, `kiro-cli` selects `aws`, `copilot` selects
+  `github`. `opencode` has no fixed provider, and a launch of it without the option is refused.
+- Only the basename of the directly launched command is classified; anything else selects no
+  provider and says so at startup.
+
 The profiles:
 
-1. `deny-unless-allowed` (the default) — the defaults, then every line of the project's file.
-1. `deny-unless-model` — default rules for the launched agent's provider, then the file's URL
-   and model-provider denials. It ignores `allow` and `deny defaults` lines.
-   - `claude` selects `anthropic`, `codex` selects `openai`, `agy` selects `google`, `kiro-cli`
-     selects `aws`, `copilot` selects `github`; `opencode`, which has no fixed provider, selects
-     every provider under `defaults/model-provider/`.
-   - Only the basename of the directly launched command is classified; anything else selects no
-     provider, allows no host, and says so at startup.
+1. `deny-unless-allowed` (the default) — the inspected catalog and the selected providers' rules,
+   then every line of the project's file.
+1. `deny-unless-model` — the selected providers' rules, then the file's URL and model-provider
+   denials. It ignores `allow` and `deny defaults` lines. With no provider selected it allows no
+   host.
 1. `deny-all` — nothing.
 
 ## The rule file
@@ -226,8 +233,8 @@ image adopts its hosts.
 without starting a session; inside one, `ko-sandbox-egress-check <host>` asks the running proxy.
 Every start prints, in order:
 
-1. when the file grants beyond the defaults — a host the defaults lack, a grant the defaults lack
-   at the line's path, `deny defaults` — the line
+1. when the file grants beyond the launch's defaults — a host they lack, a grant they lack at the
+   line's path, a provider the launch did not select, `deny defaults` — the line
    `egress rules (.ko-agent-sandbox/egress/rule) widen (<count>):`, then those rule lines, each
    on its own indented line. A file that only removes grants or narrows them prints neither;
 1. the file's other lines, on one line, so each line of the file prints once;
@@ -236,11 +243,11 @@ Every start prints, in order:
 The ruleset itself is what the proxy prints at its start and `--egress-effective` shows whole, in
 the rule grammar, hosts and paths sorted:
 
-1. the profile line;
+1. the profile line, naming the selected providers under the two profiles that admit any;
 1. one `allow` line per resolved scope, with the scope's whole grant set.
 
 ```text
-egress profile: deny-unless-allowed
+egress profile: deny-unless-allowed; model provider: anthropic
 allow https://api.anthropic.com/ tunnel
 allow https://github.com/ read git-fetch
 allow https://github.com/login/device/code read git-fetch method=POST
@@ -308,8 +315,8 @@ proxy").
 The proxy terminates TLS for every inspected host and checks each request against its grants.
 Only hosts with the `tunnel` treatment stay opaque:
 
-- under `deny-unless-allowed`, the hosts with model-provider tunnel rules, unless a project
-  removes them or adds more;
+- under `deny-unless-allowed`, the selected providers' tunnel hosts, unless a project removes
+  them or adds more;
 - under `deny-unless-model`, the selected providers' remaining tunnel hosts;
 - under `deny-all`, none.
 

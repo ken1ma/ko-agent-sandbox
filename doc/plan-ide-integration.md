@@ -101,8 +101,9 @@ The launcher:
   (`SandboxLifecycle.handOver`).
 - Every launch line is written to stderr, as are the entrypoint's warnings; the entrypoint's start
   pause needs a terminal on stdin.
-- The model provider a launch admits under egress is selected by the command's first word
-  (`EgressRules`); `opencode` and `copilot` are recognized.
+- The model providers a launch admits under egress are selected by `--model-provider`, else by
+  the command's first word (`EgressRules.selectedProvider`); `copilot` is recognized, and
+  `opencode` is refused without the option.
 - No host process accepts a connection from the sandbox: the clipboard relay and the runner read
   FIFOs through `podman exec` (SECURITY.md, "Clipboard" and "Run on host"). The listeners
   SECURITY.md documents, the per-program egress proxy and the mill and Gradle daemons' ports,
@@ -348,17 +349,16 @@ Built only when steps 1 to 3 pass. The shape, to be settled then:
     java -jar ko-agent-sandbox.jar [options] --protocol=ahp -- code agent host ...
 
 `--protocol` selects the transport, the token and the filter; the command selects the host. The
-provider its egress admits needs a decision of its own: `EgressRules.AgentProviders` maps the
-agent commands to their providers and `code` is not among them. Under `deny-unless-model` a
-launch of `code agent host` therefore selects no provider and allows no host, project allow lines
-included; under the default profile the defaults admit every supported provider, and the
-project's file follows (egress-proxy.md, "Choosing an egress profile"). Neither the command nor
-the harness determines the provider: the Claude harness offers Anthropic-native and
-Copilot-routed models and switches between them within a session. Under `deny-unless-model` the
-launch therefore names the permitted provider route or routes explicitly, in an option settled
-in this step, and a harness's models on any other route fail at the proxy; under the default
-profile the ruleset decides as it does for any agent. The destinations each route needs are step
-3's measurement.
+providers its egress admits come from `--model-provider`: `EgressRules.AgentProviders` maps
+the agent commands to their providers and `code` is not among them, so a launch of
+`code agent host` without the option selects no provider, which allows no host under
+`deny-unless-model` and the catalog alone under the default profile (egress-proxy.md, "Choosing
+an egress profile"). Neither the command nor the harness could determine the provider: the
+Claude harness offers Anthropic-native and Copilot-routed models and switches between them within
+a session. The launch therefore names the permitted provider route or routes with the option,
+and a harness's models on any other route fail at the proxy. Whether this step refuses
+`code agent host` without the option, as a providerless agent (`EgressRules.ProviderlessAgents`),
+is settled here. The destinations each route needs are step 3's measurement.
 
 The launcher prints the address and token for "Add Remote Agent Host...", or writes the
 `chat.remoteAgentHosts` entry when that is measured to be safe. The other session options keep
@@ -409,7 +409,8 @@ The design as reviewed, for when the track is reopened.
 The IDE's custom-agent entry runs one of these lines, with the project directory as the working
 directory: the launcher takes the project from it, as for a terminal launch. `--protocol` selects
 the transport and the relay's policy; the command after `--` selects the agent and, as for a
-terminal launch, the provider its egress admits. The other session options keep their meaning.
+terminal launch, the providers its egress admits, unless `--model-provider` names them. The
+other session options keep their meaning.
 
 There is no launcher-owned alias from an agent name to its ACP command line. The agent's own
 documented invocation is what the user configures, its first word is what selects the provider,
@@ -526,7 +527,7 @@ The launch matrix through the relay:
 
 - `--write=reject` and `live`; a protected `.git` entry and `.ko-agent-sandbox` refused as in a
   terminal session;
-- `--egress=deny-unless-model` with the backend's provider selected by the command's first word;
+- `--egress=deny-unless-model` with the backend's providers named by `--model-provider`;
 - a credential from a terminal-launch sign-in found by the protocol launch;
 - `--run-on-host` through the relay, its provisioning offer declined without a terminal;
 - end of file on stdin ending the session and the reaper removing the run; the IDE process killed

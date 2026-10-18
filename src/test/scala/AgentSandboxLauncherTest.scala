@@ -571,8 +571,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(
       documentedActions,
       ManagementActions ++ Set(
-        "--egress-check", "--write", "--egress", "--run-on-host", "--env", AwsCredential.OptionName, "--egress-cred",
-        "--clipboard", MicOption, ClaudePlugins.OptionName,
+        "--egress-check", "--write", "--egress", ModelProviderOption, "--run-on-host", "--env",
+        AwsCredential.OptionName, "--egress-cred", "--clipboard", MicOption, ClaudePlugins.OptionName,
       ),
     )
     assert(UsageText.contains(s"--write=${WriteModes.mkString("|")}"), UsageText)
@@ -1545,7 +1545,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(baseInstructions.contains("no line grants at its path"), baseInstructions)
 
   test("agent instructions retain the profile and consult the full ruleset without embedding it"):
-    import agentsandbox.egress.RulesetHelper.{AllProviders, metadataLines, rulesetLines}
+    import agentsandbox.egress.RulesetHelper.{metadataLines, rulesetLines}
 
     val projectRules =
       "allow https://artifact.example/releases/ read git-fetch method=POST\n" +
@@ -1553,7 +1553,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         "deny https://**.blocked.example/"
     for
       profile <- EgressProfiles
-      provider <- Vector(None, Some("openai"), Some(AllProviders))
+      provider <- Vector(None, Some("openai"), Some("anthropic,google"))
       project <- Vector(None, Some(projectRules))
     do
       val resolved = resolveRuleset(Some(profile), provider, project)
@@ -1841,6 +1841,19 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(parseCommandLine(List("--write=live", "--write=reject")).swap.exists(_.contains("twice")))
     assert(parseCommandLine(List("--write", "live")).swap.exists(_.contains("--write=<mode>")))
     assert(parseCommandLine(List("--frobnicate")).swap.exists(_.contains("unknown option")))
+
+  test("option parsing: --model-provider passes its value to the proxy as written, selected once"):
+    assertEquals(parseCommandLine(List("--model-provider=aws", "claude")).map(_.modelProvider), Right(Some("aws")))
+    assertEquals(
+      parseCommandLine(List("--model-provider=anthropic,github", "opencode")).map(_.modelProvider),
+      Right(Some("anthropic,github")),
+    )
+    assertEquals(parseCommandLine(List("claude")).map(_.modelProvider), Right(None))
+    // The proxy image defines the names; the launcher refuses only the empty value.
+    assertEquals(parseCommandLine(List("--model-provider=meta")).map(_.modelProvider), Right(Some("meta")))
+    assert(parseCommandLine(List("--model-provider=")).swap.exists(_.contains("--model-provider=;")))
+    assert(parseCommandLine(List("--model-provider=aws", "--model-provider=aws")).swap.exists(_.contains("twice")))
+    assert(parseCommandLine(List("--model-provider", "aws")).swap.exists(_.contains("--model-provider=<names>")))
 
   test("option parsing: --run-on-host names programs from a closed set, each once, selected once"):
     assertEquals(

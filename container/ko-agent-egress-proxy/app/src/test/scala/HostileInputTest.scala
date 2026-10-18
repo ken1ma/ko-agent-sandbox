@@ -398,9 +398,6 @@ class HostileInputTest extends munit.FunSuite:
     case Rule.Allow(host, path, grants) => Given(host, path, grants)
     case other                          => throw IllegalStateException(other.toString)
 
-  private lazy val defaultsGiven: Vector[Given] =
-    CatalogLines.map(givenOf) ++ ModelProviders.flatMap(providerGiven)
-
   private def providerGiven(name: String): Vector[Given] = ModelProviderLines(name).map(givenOf)
 
   /** What a request is, hand-labelled: the evaluator classifies nothing. */
@@ -446,11 +443,10 @@ class HostileInputTest extends munit.FunSuite:
     import Drawn.*
     val clears = lines.headOption.contains(DenyDefaults)
     if profile == "deny-all" then return "refused"
+    val selected = provider.toVector.flatMap(_.split(",").toVector)
     var contributions: Vector[Given] = profile match
-      case "deny-unless-model" =>
-        provider.fold(Vector.empty): selected =>
-          (if selected == AllProviders then ModelProviders else Vector(selected)).flatMap(providerGiven)
-      case _                   => if clears then Vector.empty else defaultsGiven
+      case "deny-unless-model" => selected.flatMap(providerGiven)
+      case _ => if clears then Vector.empty else CatalogLines.map(givenOf) ++ selected.flatMap(providerGiven)
     def consult(line: Drawn): Boolean = (profile, line) match
       case ("deny-unless-model", Deny(_, _, _) | DenyProvider(_)) => true
       case ("deny-unless-model", _)                            => false
@@ -521,7 +517,8 @@ class HostileInputTest extends munit.FunSuite:
         ++ Vector(Deny("github.com", subtree = true, Set.empty), Deny("new.example", subtree = true, Set.empty),
           Deny("new.example", subtree = true, Set("tunnel")), Deny("github.com", subtree = true, Set("read")))
         ++ ModelProviders.flatMap(name => Vector(AllowProvider(name), DenyProvider(name)))
-    val providers = Vector(None, Some(AllProviders)) ++ ModelProviders.map(Some(_))
+    val providers =
+      Vector(None, Some(ModelProviders.mkString(",")), Some("anthropic,google")) ++ ModelProviders.map(Some(_))
     val outcomes = scala.collection.mutable.Map.empty[String, Int].withDefaultValue(0)
     var files = 0
     var refusedFiles = 0

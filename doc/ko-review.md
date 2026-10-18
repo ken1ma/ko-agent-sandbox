@@ -244,8 +244,9 @@ edits like any other, and the user commits them when and as they choose.
       whichever credential store the CLI uses; sign in to that CLI in this project's sandbox.
     - `REVIEWER_EGRESS_DENIED`: the ruleset in `KO_AGENT_SANDBOX_EGRESS_RULESET` allows none of
       the reviewer's hosts, `api.openai.com` and `chatgpt.com` for Codex, `api.anthropic.com` and
-      `platform.claude.com` for Claude, as under `--egress=deny-unless-model` with the other
-      agent; relaunch under the default profile.
+      `platform.claude.com` for Claude, as when the launch admitted the author's provider alone;
+      relaunch with `--model-provider` naming both providers, such as
+      `--model-provider=anthropic,openai`.
     - `REVIEWER_FAILED`: any other failure of the reviewer. When it said why, `message` ends with
       its words, such as a usage limit and when it resets, from its last failure event, else its
       last line of stderr. A thread the reviewer no longer has is also `REVIEWER_FAILED`, and its
