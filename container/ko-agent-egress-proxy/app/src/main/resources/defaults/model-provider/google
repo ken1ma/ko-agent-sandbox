@@ -21,7 +21,7 @@ allow https://generativelanguage.googleapis.com/  tunnel
 # The multi-region hosts: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/learn/locations
 # SECURITY.md, "Not defended", has what the aiplatform tunnels open to the credential.
 # Advanced WIF sign-in's token exchange, at sts.googleapis.com and iamcredentials.googleapis.com,
-# is a project's own setup, added in .ko-agent-sandbox/egress/rule when the proxy's 403 names it.
+# is a workspace's own setup, added in .ko-agent-sandbox/egress/rule when the proxy's 403 names it.
 allow https://businessaicode.googleapis.com/      tunnel
 allow https://aiplatform.googleapis.com/          tunnel  # global
 allow https://aiplatform.us.rep.googleapis.com/   tunnel  # us

@@ -5,7 +5,7 @@
 #
 #   sh src/probe/machine-memory-return.sh [<command that builds inside the sandbox...>]
 #
-# Run it on macOS from the project directory, right after `podman machine restart`, with no session on the
+# Run it on macOS from the repository root, right after `podman machine restart`, with no session on the
 # machine. The probe checks both: an uptime under ten minutes, which shows a recent start and not that
 # nothing ran since, and no running container.
 # Default command: java -jar target/dist/ko-agent-sandbox.jar sbt test — the build the premise measured.

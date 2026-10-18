@@ -12,7 +12,7 @@ import java.time.{Instant, ZoneId}
 import java.time.format.DateTimeFormatter
 
 import AgentSandboxLauncher.{buildMemoryHeadroom, machineMemoryLine, memoryTotal, probedMachineAvailable}
-import LauncherState.{perProjectStateRoots, persistentVolumes, projectsStateRoot, runContainerParts, stateRoot}
+import LauncherState.{perWorkspaceStateRoots, persistentVolumes, workspacesStateRoot, runContainerParts, stateRoot}
 import HostCommands.*
 import FileHelper.*
 
@@ -22,7 +22,7 @@ object SandboxStats:
   // Counts
   // -------------------------------------------------------------------------
 
-  /** `0 live sessions`, `1 project`, `3 projects`: the line over each table, and the whole
+  /** `0 live sessions`, `1 workspace`, `3 workspaces`: the line over each table, and the whole
     * section when there is nothing to tabulate. */
   def counted(count: Int, noun: String, plural: String = ""): String =
     if count == 1 then s"1 $noun" else s"$count ${if plural.isEmpty then noun + "s" else plural}"
@@ -33,7 +33,7 @@ object SandboxStats:
 
   /** One of this launcher's containers as `podman stats` sees it. */
   final case class LiveContainer(
-    projectId: String,
+    workspaceId: String,
     run: String,
     role: String,
     memoryBytes: Long,
@@ -55,19 +55,19 @@ object SandboxStats:
       line.trim.split("\\s+") match
         case Array(name, usage, limit, cpu) =>
           for
-            (kind, projectId, run) <- runContainerParts(name)
+            (kind, workspaceId, run) <- runContainerParts(name)
             usageBytes <- usage.toLongOption
             limitBytes <- limit.toLongOption
             cpuPercent <- cpu.toDoubleOption
           yield
             val role = if kind == "sandbox-run" then "sandbox" else "proxy"
-            LiveContainer(projectId, run, role, usageBytes, limitBytes, cpuPercent)
+            LiveContainer(workspaceId, run, role, usageBytes, limitBytes, cpuPercent)
         case _ => None
 
   /**
    * One row per session, largest combined memory first: the sandbox's memory, its proxy's, and
-   * the cpu the two use together, the session's cost to the machine. A project is named as the
-   * project table names it: by its recorded directory, or by its id where none is recorded.
+   * the cpu the two use together, the session's cost to the machine. A workspace is named as the
+   * workspace table names it: by its recorded directory, or by its id where none is recorded.
    * Each memory column aligns on its slash, so used and limit each read down as a column; a
    * session missing one of its containers shows a dash there.
    */
@@ -77,7 +77,7 @@ object SandboxStats:
 
   private def liveRows(containers: Vector[LiveContainer], directories: Map[String, String]): String =
     val sessions = containers
-      .groupBy(container => (container.projectId, container.run))
+      .groupBy(container => (container.workspaceId, container.run))
       .toVector
       .sortBy((session, group) => (-group.map(_.memoryBytes).sum, session))
     def memoryColumn(role: String): Vector[String] =
@@ -88,26 +88,26 @@ object SandboxStats:
     val sandbox = memoryColumn("sandbox")
     val proxy = memoryColumn("proxy")
     val rows = sessions.zipWithIndex.map:
-      case (((projectId, run), group), index) =>
+      case (((workspaceId, run), group), index) =>
         Vector(
           run,
           sandbox(index),
           proxy(index),
           f"${group.map(_.cpuPercent).sum}%.1f%%",
-          directories.getOrElse(projectId, projectId),
+          directories.getOrElse(workspaceId, workspaceId),
         )
     counted(sessions.size, "live session") + "\n" +
-      table(Vector("run", "sandbox", "proxy", "cpu", "project"), rows, rightAligned = Set(3))
+      table(Vector("run", "sandbox", "proxy", "cpu", "workspace"), rows, rightAligned = Set(3))
 
   // -------------------------------------------------------------------------
   // Run-on-host runners
   // -------------------------------------------------------------------------
 
-  /** One live runner: its launch's run suffix, its project, and for each build directory it has
+  /** One live runner: its launch's run suffix, its workspace root, and for each build directory it has
     * served, the programs whose runtime it keeps there — a proxy and the server or daemon it
     * serves, which a `shutdown` or an idle exit leaves without the latter until the next command
     * (RunnerRuntimes), so a runtime is not a process up this instant. */
-  final case class Runner(run: String, project: String, warm: Vector[(String, Vector[String])])
+  final case class Runner(run: String, workspaceRoot: String, warm: Vector[(String, Vector[String])])
 
   /**
    * The live runners under the session root (`RunOnHostSession.root`): each a locked runner
@@ -122,14 +122,14 @@ object SandboxStats:
     RunOnHostSession.liveRunnerSessions(root, except = root).map: session =>
       def file(name: String): Option[String] = readIfPresent(session.resolve(name)).map(_.trim).filter(_.nonEmpty)
       val run = file(RunOnHostSession.RunFile).flatMap(runContainerParts).map(_._3).getOrElse("?")
-      val project = file(RunOnHostSession.ProjectFile).getOrElse("-")
+      val workspaceRoot = file(RunOnHostSession.WorkspaceFile).getOrElse("-")
       val programsByHash = childNames(session.resolve(RunOnHostSession.RecordsDir))
         .flatMap(name => RunOnHostSession.proxyRecordOf(name).map((program, hash) => hash -> program))
         .groupMap(_._1)(_._2)
       val warm = RunOnHostSession.buildDirectories(session).map: (hash, directory) =>
         directory.toString -> programsByHash.getOrElse(hash, Vector.empty).sortBy(_.ordinal).map(_.name)
-      Runner(run, project, warm.sortBy(_._1))
-    .sortBy(runner => (runner.run, runner.project))
+      Runner(run, workspaceRoot, warm.sortBy(_._1))
+    .sortBy(runner => (runner.run, runner.workspaceRoot))
 
   /** One row per directory a runner has served, by run, `runtime` the programs whose runtime
     * the runner keeps there. A runner that has served none yet has no row: its session is in the
@@ -201,17 +201,17 @@ object SandboxStats:
     hostLines ++ machine.map((free, total) => shareLine("podman machine storage", free, total, "free"))
 
   // -------------------------------------------------------------------------
-  // Projects
+  // Workspaces
   // -------------------------------------------------------------------------
 
   /**
-   * One project's disk use: the launcher's state and build-cache roots, and its agents' volume —
+   * One workspace's disk use: the launcher's state and build-cache roots, and its agents' volume —
    * None when podman was not there to size it. `directory` is the recorded one where it still
-   * exists; None for a project last launched before the record existed, or whose directory is gone.
-   * `lastWrite` is the newest modification under the project's state and cache trees — the
+   * exists; None for a workspace last launched before the record existed, or whose directory is gone.
+   * `lastWrite` is the newest modification under the workspace's state and cache trees — the
    * volume is in podman's store, out of the walk — and None where neither tree exists.
    */
-  final case class ProjectUsage(
+  final case class WorkspaceUsage(
     id: String,
     directory: Option[String],
     stateBytes: Long,
@@ -222,46 +222,50 @@ object SandboxStats:
     def totalBytes: Long = stateBytes + cacheBytes + volumeBytes.getOrElse(0L)
 
   /**
-   * Each project's recorded directory, by id, where the directory still exists. When the recorded
+   * Each workspace's recorded directory, by id, where the directory still exists. When the recorded
    * directory is missing, the table prints the id instead: a missing directory may be on an
    * unmounted filesystem, and `--reset <id>` accepts the id without that directory.
    */
-  def projectDirectories(projectsRoot: Path): Map[String, String] =
-    childNames(projectsRoot).filter(SandboxProject.isProjectId).flatMap: id =>
-      readIfPresent(projectsRoot.resolve(id)).map(_.trim).filter(_.nonEmpty)
+  def workspaceDirectories(workspacesRoot: Path): Map[String, String] =
+    childNames(workspacesRoot).filter(SandboxWorkspace.isWorkspaceId).flatMap: id =>
+      readIfPresent(workspacesRoot.resolve(id)).map(_.trim).filter(_.nonEmpty)
         .filter(directory => Files.isDirectory(Paths.get(directory)))
         .map(id -> _)
     .toMap
 
-  /** The roots holding one directory per project id, sized into the state column. */
+  /** The roots holding one directory per workspace id, sized into the state column. */
   private def stateDirs(os: Os): Vector[Path] =
-    perProjectStateRoots(os) :+ projectsStateRoot(os)
+    perWorkspaceStateRoots(os) :+ workspacesStateRoot(os)
 
   private def cacheDir(os: Os): Option[Path] =
     RunOnHostPrereqs.cacheRootOf(os, env).toOption.map(RunOnHostPrereqs.runOnHostCachesOf)
 
-  /** Project ids found under the state or cache roots, or extracted from persistent-volume names. */
-  def projectIds(os: Os, volumeNames: Seq[String]): Vector[String] =
-    projectIdsUnder(stateDirs(os) ++ cacheDir(os), volumeNames)
+  /** Workspace ids found under the state or cache roots, or extracted from persistent-volume names. */
+  def workspaceIds(os: Os, volumeNames: Seq[String]): Vector[String] =
+    workspaceIdsUnder(stateDirs(os) ++ cacheDir(os), volumeNames)
 
-  /** Names matching the id's pattern only (SandboxProject.ProjectIdPattern): a stray file under a root is
-    * not a project, and would be a row `--reset <id>` refuses. */
-  def projectIdsUnder(roots: Seq[Path], volumeNames: Seq[String]): Vector[String] =
-    val volumeIds = persistentVolumes(volumeNames).map(_.stripPrefix(SandboxProject.PersistentVolumePrefix))
-    (roots.flatMap(childNames) ++ volumeIds).filter(SandboxProject.isProjectId).distinct.sorted.toVector
+  /** Names matching the id's pattern only (SandboxWorkspace.WorkspaceIdPattern): a stray file under a root is
+    * not a workspace, and would be a row `--reset <id>` refuses. */
+  def workspaceIdsUnder(roots: Seq[Path], volumeNames: Seq[String]): Vector[String] =
+    val volumeIds = persistentVolumes(volumeNames).map(_.stripPrefix(SandboxWorkspace.PersistentVolumePrefix))
+    (roots.flatMap(childNames) ++ volumeIds).filter(SandboxWorkspace.isWorkspaceId).distinct.sorted.toVector
 
   private val WriteFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
   /**
-   * Largest first, each project named by its directory — where `--reset-run-on-host` runs — and
+   * Largest first, each workspace named by its directory — where `--reset-run-on-host` runs — and
    * by its id, which `--reset <id>` takes, where none is recorded or the recorded one is gone,
    * dated by its newest write in the reader's zone, to the minute. The flag threshold is 1% of
-   * the cache filesystem's free space, so the report says which project to
+   * the cache filesystem's free space, so the report says which workspace to
    * `--reset-run-on-host` rather than leaving a column of numbers to compare by eye; it reads
    * only cache usage because `--reset-run-on-host` removes only that cache.
    */
-  def projectTable(usages: Vector[ProjectUsage], cacheFreeBytes: Long, zone: ZoneId = ZoneId.systemDefault): String =
-    if usages.isEmpty then counted(0, "project") + "\n"
+  def workspaceTable(
+    usages: Vector[WorkspaceUsage],
+    cacheFreeBytes: Long,
+    zone: ZoneId = ZoneId.systemDefault,
+  ): String =
+    if usages.isEmpty then counted(0, "workspace") + "\n"
     else
       val rows = usages.sortBy(usage => (-usage.totalBytes, usage.id)).map: usage =>
         val flag =
@@ -276,9 +280,9 @@ object SandboxStats:
           usage.lastWrite.fold("-")(write => WriteFormat.format(write.atZone(zone))),
           usage.directory.getOrElse(usage.id) + flag,
         )
-      counted(usages.size, "project") + "\n" +
+      counted(usages.size, "workspace") + "\n" +
         table(
-          Vector("total", "state", "cache", "volume", "last write", "project"), rows, rightAligned = Set(0, 1, 2, 3),
+          Vector("total", "state", "cache", "volume", "last write", "workspace"), rows, rightAligned = Set(0, 1, 2, 3),
         )
 
   /** Columns padded to their widest cell, the header included; rows indented two spaces. */
@@ -300,7 +304,7 @@ object SandboxStats:
   // -------------------------------------------------------------------------
 
   def stats(os: Os): Nothing =
-    val directories = projectDirectories(projectsStateRoot(os))
+    val directories = workspaceDirectories(workspacesStateRoot(os))
     val service = podmanService(os)
     service match
       case Left(reason) => System.out.print(s"live sessions and volumes: not queried; $reason\n")
@@ -347,20 +351,20 @@ object SandboxStats:
       yield space
     storageLines(os, hostRoots, machineSpace).foreach(System.out.println)
 
-    val ids = projectIdsUnder(stateDirs ++ cacheDir, volumes.toVector.flatMap(_.keys))
+    val ids = workspaceIdsUnder(stateDirs ++ cacheDir, volumes.toVector.flatMap(_.keys))
     val usages = ids.map: id =>
       val state = stateDirs.map(dir => treeUsage(dir.resolve(id)))
       val cache = cacheDir.map(dir => treeUsage(dir.resolve(id)))
-      ProjectUsage(
+      WorkspaceUsage(
         id,
         directories.get(id),
         state.map(_.bytes).sum,
         cache.map(_.bytes).getOrElse(0L),
-        volumes.map(_.getOrElse(SandboxProject.persistentVolumeName(id), 0L)),
+        volumes.map(_.getOrElse(SandboxWorkspace.persistentVolumeName(id), 0L)),
         (state ++ cache).flatMap(_.newestWrite).maxOption,
       )
     val cacheFreeBytes = cacheDir.flatMap(hostRoot).map(_.freeBytes).getOrElse(0L)
-    System.out.print(projectTable(usages, cacheFreeBytes))
+    System.out.print(workspaceTable(usages, cacheFreeBytes))
     sys.exit(0)
 
   /** The podman to ask, or why the live figures are not queried: a missing podman or a stopped

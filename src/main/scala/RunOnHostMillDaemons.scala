@@ -1,4 +1,4 @@
-// The launch's mill daemon (run-on-host.md "mill"): started by the project's stock bootstrap under
+// The launch's mill daemon (run-on-host.md "mill"): started by the workspace's stock bootstrap under
 // the daemon profile — whose denied connect leaves the daemon behind in the starter's group —
 // identified there by its command line, checked by pid and start time, and granted the one
 // port `lsof` shows it listening on, which `out/mill-daemon/socketPort` may name but
@@ -299,8 +299,8 @@ object RunOnHostMillDaemons:
    * grants, so the launcher resolves afresh into that cache. Mill reuses the file while every path
    * it names exists (`CoursierClient.resolveMillDaemon`, `os.exists`), and Seatbelt answers an
    * existence test for a path it denies reading — measured: `Files.exists` true, the open `EPERM`
-   * — so a file from an unconfined run, or from this directory served as another project's build directory,
-   * would start a daemon on jars its JVM cannot open, which dies before it listens. Read and
+   * — so a file from an unconfined run, or from this directory served as another workspace's build
+   * directory, would start a daemon on jars its JVM cannot open, which dies before it listens. Read and
    * deleted through `confined`, and only as a regular file. What was done, for the log.
    */
   def discardForeignClasspath(buildDirectory: Path, coursierV1: Path, confined: Confined): Option[String] =

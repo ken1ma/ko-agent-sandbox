@@ -12,7 +12,7 @@ import SeatbeltProfile.*
 class SeatbeltProfileTest extends munit.FunSuite:
 
   private val home = "/Users/kenichi"
-  private val project = Paths.get(s"$home/ko-agent-sandbox")
+  private val workspace = Paths.get(s"$home/ko-agent-sandbox")
   private val cacheRoot = Paths.get(s"$home/Library/Caches/Coursier")
   private val jdkHome = cacheRoot.resolve(
     "arc/https/github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4%252B7/" +
@@ -24,7 +24,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
   private val distribution = distributionExec.getParent.getParent
 
   private val prereqs = CommandPrereqs(
-    project = project,
+    workspaceRoot = workspace,
     jdkHome = jdkHome,
     coursierV1 = Paths.get(s"$home/.cache/ko-agent-sandbox/run-on-host/abc123/coursier/v1"),
     program = Program.Sbt,
@@ -62,7 +62,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
 
   test("every profile path must be absolute and normalized"):
     val fields: Seq[(String, Path => ProfileInputs)] = Seq(
-      "project" -> (path => inputs().copy(prereqs = prereqs.copy(project = path))),
+      "workspace root" -> (path => inputs().copy(prereqs = prereqs.copy(workspaceRoot = path))),
       "JDK" -> (path => inputs().copy(prereqs = prereqs.copy(jdkHome = path))),
       "executable" -> (path => inputs().copy(prereqs = prereqs.copy(executable = path))),
       "Coursier cache" -> (path => inputs().copy(prereqs = prereqs.copy(coursierV1 = path))),
@@ -130,17 +130,17 @@ class SeatbeltProfileTest extends munit.FunSuite:
   // The guard
   // --------------------------------------------------------------------------
 
-  test("both guarded names are denied at any depth under the project, with their dots escaped"):
+  test("both guarded names are denied at any depth under the workspace root, with their dots escaped"):
     val text = rendered()
-    val scope = "(deny file-write* file-read* file-link (require-all (subpath \"" + project + "\") "
+    val scope = "(deny file-write* file-read* file-link (require-all (subpath \"" + workspace + "\") "
     assert(clue(text).contains(scope + """(regex #"/\.git(/|$)")))"""))
     assert(text.contains(scope + """(regex #"/\.ko-agent-sandbox(/|$)")))"""))
 
   test("the guard does not reach the command's temporary directory: a test's throwaway .git is under it"):
-    // The project path is the only path in the guard, and it is a subpath filter, never part of
+    // The workspace root is the only path in the guard, and it is a subpath filter, never part of
     // the regex.
     val guard = rendered().linesIterator.filter(_.startsWith("(deny file")).toSeq
-    assert(guard.forall(_.contains(s"""(subpath "$project")""")))
+    assert(guard.forall(_.contains(s"""(subpath "$workspace")""")))
     assert(guard.forall(line => !line.contains("/tmp/")))
 
   test("without file rules the guard is the only regex; every supervisor-supplied path is a subpath literal"):
@@ -168,25 +168,25 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(!writable.contains(distribution.toString))
     assert(!writable.contains(jdkHome.toString))
 
-  test("only the project, its caches and the command's temporary directory are writable"):
+  test("only the workspace, its caches and the command's temporary directory are writable"):
     val writable = rendered().linesIterator
       .filter(line => line.startsWith("(allow") && line.contains("file-write*"))
       .toSeq
     assertEquals(writable.size, 5)
-    assert(writable.exists(_.contains(project.toString)))
+    assert(writable.exists(_.contains(workspace.toString)))
     assert(writable.exists(_.contains("coursier/v1")))
     assert(writable.exists(_.contains("sbt-global")))
     assert(writable.exists(_.contains("ivy-home")))
     assert(writable.exists(_.contains("/tmp/")))
 
-  test("every program permits direct execution from writable project and temporary paths, but not caches"):
+  test("every program permits direct execution from the writable workspace and temporary paths, but not caches"):
     for profile <- Seq(inputs(), millInputs, gradleInputs, mvnInputs) do
       val writable = rendered(profile).linesIterator
         .filter(line => line.startsWith("(allow") && line.contains("file-write*"))
         .toVector
       val executable = writable.filter(_.contains("process-exec*"))
       assertEquals(executable.size, 2, profile.prereqs.program.name)
-      assert(executable.exists(_.contains(s"(subpath \"$project\")")))
+      assert(executable.exists(_.contains(s"(subpath \"$workspace\")")))
       assert(executable.exists(_.contains(s"(subpath \"${profile.sessionTmp}\")")))
       val caches = Seq(prereqs.coursierV1) ++ profile.sbtGlobal ++ profile.ivyHome ++ profile.gradleUserHome ++
         profile.m2Repository
@@ -486,10 +486,10 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(!clue(text).contains("sbt-2.0.4.zip"))
     assert(text.contains(millPrereqs.executable.toString))
 
-  test("mill's bootstrap needs no grant of its own: it is a project file, and the project runs"):
+  test("mill's bootstrap needs no grant of its own: it is a workspace file, and workspace files run"):
     val text = millText
-    assert(!clue(text).contains(project.resolve("mill").toString))
-    assert(text.contains(s"""(allow file-read* file-write* process-exec* (subpath "$project"))"""))
+    assert(!clue(text).contains(workspace.resolve("mill").toString))
+    assert(text.contains(s"""(allow file-read* file-write* process-exec* (subpath "$workspace"))"""))
 
   // --------------------------------------------------------------------------
   // File rules
@@ -506,9 +506,9 @@ class SeatbeltProfileTest extends munit.FunSuite:
     Vector("tools"),
   )
 
-  test("the file rules render in their order between the other allows and the guard, anchored below the project"):
+  test("the file rules render in order between the other allows and the guard, anchored below the workspace root"):
     val text = rendered(inputs(fileRules = fileRules))
-    val escaped = project.toString.replace(".", "\\.")
+    val escaped = workspace.toString.replace(".", "\\.")
     val rules = Seq(
       s"""(deny file-write* file-link (regex #"^$escaped/(.*/)?\\.vscode(/|$$)"))""",
       s"""(deny file-write-create file-write-unlink file-link (regex #"^$escaped/(.*/)?\\.kiro$$"))""",
@@ -516,9 +516,9 @@ class SeatbeltProfileTest extends munit.FunSuite:
       s"""(deny file-write* file-link (regex #"^$escaped/(.*/)?\\.kiro/settings/mcp\\.json(/|$$)"))""",
       s"""(deny file-write* file-link (regex #"^$escaped/(.*/)?[^/]*\\.code-workspace(/|$$)"))""",
       s"""(allow file-write* (regex #"^$escaped/(.*/)?node_modules(/|$$)"))""",
-      s"""(deny file-write* file-link (subpath "$project/.husky/_"))""",
-      s"""(deny file-write-create file-write-unlink file-link (literal "$project/.husky"))""",
-      s"""(deny file-write-create file-write-unlink file-link (literal "$project/tools"))""",
+      s"""(deny file-write* file-link (subpath "$workspace/.husky/_"))""",
+      s"""(deny file-write-create file-write-unlink file-link (literal "$workspace/.husky"))""",
+      s"""(deny file-write-create file-write-unlink file-link (literal "$workspace/tools"))""",
     )
     val textLines = text.linesIterator.toVector
     val positions = rules.map(rule => textLines.indexOf(rule))
@@ -539,11 +539,11 @@ class SeatbeltProfileTest extends munit.FunSuite:
       Vector.empty,
       Vector.empty,
     )
-    val filters = fileRuleFilters(project, lifted).fold(reason => fail(reason), identity)
+    val filters = fileRuleFilters(workspace, lifted).fold(reason => fail(reason), identity)
     assertEquals(filters.map(_(0)), Vector(Protection.Writable, Protection.Pinned, Protection.ReadOnly))
-    assertEquals(conformanceAnswer(filters, s"$project/.claude"), "pinned")
-    assertEquals(conformanceAnswer(filters, s"$project/.claude/settings.json"), "readonly")
-    assertEquals(conformanceAnswer(filters, s"$project/.claude/notes.md"), "free")
+    assertEquals(conformanceAnswer(filters, s"$workspace/.claude"), "pinned")
+    assertEquals(conformanceAnswer(filters, s"$workspace/.claude/settings.json"), "readonly")
+    assertEquals(conformanceAnswer(filters, s"$workspace/.claude/notes.md"), "free")
 
   test("a readonly-under rest renders last, anchored at its directory, its interiors pinned"):
     val under = FileRules.Resolved(
@@ -555,37 +555,37 @@ class SeatbeltProfileTest extends munit.FunSuite:
       Vector("shared/claude"),
       Vector("shared/claude" -> "skills/*.md"),
     )
-    val filters = fileRuleFilters(project, under).fold(reason => fail(reason), identity)
-    assertEquals(conformanceAnswer(filters, s"$project/shared/claude/skills/new.md"), "readonly")
-    assertEquals(conformanceAnswer(filters, s"$project/shared/claude/skills"), "pinned")
-    assertEquals(conformanceAnswer(filters, s"$project/shared/claude"), "pinned")
-    assertEquals(conformanceAnswer(filters, s"$project/shared"), "pinned")
-    assertEquals(conformanceAnswer(filters, s"$project/shared/claude/notes.md"), "free")
-    assertEquals(conformanceAnswer(filters, s"$project/shared/other/skills/new.md"), "free")
+    val filters = fileRuleFilters(workspace, under).fold(reason => fail(reason), identity)
+    assertEquals(conformanceAnswer(filters, s"$workspace/shared/claude/skills/new.md"), "readonly")
+    assertEquals(conformanceAnswer(filters, s"$workspace/shared/claude/skills"), "pinned")
+    assertEquals(conformanceAnswer(filters, s"$workspace/shared/claude"), "pinned")
+    assertEquals(conformanceAnswer(filters, s"$workspace/shared"), "pinned")
+    assertEquals(conformanceAnswer(filters, s"$workspace/shared/claude/notes.md"), "free")
+    assertEquals(conformanceAnswer(filters, s"$workspace/shared/other/skills/new.md"), "free")
     for directory <- Vector("../x", "", "/etc", "a\"b") do
-      assert(fileRuleFilters(project, under.copy(readOnlyUnder = Vector(directory -> "a"))).isLeft, directory)
+      assert(fileRuleFilters(workspace, under.copy(readOnlyUnder = Vector(directory -> "a"))).isLeft, directory)
     val odd = under.copy(pinnedPaths = Vector.empty, readOnlyUnder = Vector("c++ (x)/claude" -> "skills/*.md"))
-    val oddFilters = fileRuleFilters(project, odd).fold(reason => fail(reason), identity)
-    assertEquals(conformanceAnswer(oddFilters, s"$project/c++ (x)/claude/skills/new.md"), "readonly")
-    assertEquals(conformanceAnswer(oddFilters, s"$project/cxx (x)/claude/skills/new.md"), "free")
+    val oddFilters = fileRuleFilters(workspace, odd).fold(reason => fail(reason), identity)
+    assertEquals(conformanceAnswer(oddFilters, s"$workspace/c++ (x)/claude/skills/new.md"), "readonly")
+    assertEquals(conformanceAnswer(oddFilters, s"$workspace/cxx (x)/claude/skills/new.md"), "free")
 
   test("what the filter prints for a symlinked directory renders as the filter decides it"):
     // rulefile.rs, an_alias_prints_the_read_only_rests_it_carries_and_decides_below_its_path.
     val printed = "readonly .claude/settings.json\nreadonly .claude/skills\npinned-path Shared/claude\n" +
       "readonly-under Shared/claude settings.json\nreadonly-under Shared/claude skills\n"
     val resolved = FileRules.parseResolved(printed).fold(reason => fail(reason), identity)
-    val filters = fileRuleFilters(project, resolved).fold(reason => fail(reason), identity)
-    assertEquals(conformanceAnswer(filters, s"$project/Shared/claude/skills/new.md"), "readonly")
-    assertEquals(conformanceAnswer(filters, s"$project/Shared/claude/settings.json"), "readonly")
-    assertEquals(conformanceAnswer(filters, s"$project/Shared/claude/notes.md"), "free")
+    val filters = fileRuleFilters(workspace, resolved).fold(reason => fail(reason), identity)
+    assertEquals(conformanceAnswer(filters, s"$workspace/Shared/claude/skills/new.md"), "readonly")
+    assertEquals(conformanceAnswer(filters, s"$workspace/Shared/claude/settings.json"), "readonly")
+    assertEquals(conformanceAnswer(filters, s"$workspace/Shared/claude/notes.md"), "free")
 
-  test("a project path SBPL cannot spell, and a guard path leaving the project, are refused"):
+  test("a workspace root SBPL cannot spell, and a guard path leaving the workspace, are refused"):
     assert(fileRuleFilters(Paths.get("/Users/a\"b/p"), fileRules).isLeft)
-    assert(fileRuleFilters(project, fileRules.copy(readOnlyPaths = Vector("../outside"))).isLeft)
-    assert(fileRuleFilters(project, fileRules.copy(pinnedPaths = Vector(""))).isLeft)
+    assert(fileRuleFilters(workspace, fileRules.copy(readOnlyPaths = Vector("../outside"))).isLeft)
+    assert(fileRuleFilters(workspace, fileRules.copy(pinnedPaths = Vector(""))).isLeft)
     assert(render(inputs(fileRules = fileRules.copy(readOnlyPaths = Vector("a/../../b")))).isLeft)
 
-  test("regex metacharacters in the project's own path are literal"):
+  test("regex metacharacters in the workspace root's own path are literal"):
     val odd = Paths.get("/Users/u/c++ (work)/p.1")
     val filters = fileRuleFilters(odd, fileRules).fold(reason => fail(reason), identity)
     val vscode = filters.collectFirst { case (Protection.ReadOnly, filter) if filter.contains("vscode") => filter }.get
@@ -638,8 +638,8 @@ class SeatbeltProfileTest extends munit.FunSuite:
         testCase.lines.collect { case ("readonly-path", path) => path },
         testCase.lines.collect { case ("pinned-path", path) => path },
       )
-      val filters = fileRuleFilters(project, resolved).fold(reason => fail(reason), identity)
+      val filters = fileRuleFilters(workspace, resolved).fold(reason => fail(reason), identity)
       testCase.rows.flatMap: (path, expected) =>
-        val got = conformanceAnswer(filters, s"$project/$path")
+        val got = conformanceAnswer(filters, s"$workspace/$path")
         Option.when(got != expected)(s"${testCase.name}: $path: expected $expected, got $got")
     assert(failures.isEmpty, failures.mkString("\n"))

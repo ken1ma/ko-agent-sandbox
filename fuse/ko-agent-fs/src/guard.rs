@@ -4,7 +4,7 @@
 //! The binding rule and the snapshot argument are `doc/git-metadata.md`, "Relocated hook
 //! directories"; the scope gap — root repository only, once, before the mount — is `SECURITY.md`.
 //! What the walk below listed entries protects is `../../doc/file-rules.md`, "What is
-//! read-only", and `SECURITY.md`, "A host program executing a project file on an event".
+//! read-only", and `SECURITY.md`, "A host program executing a workspace file on an event".
 
 use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::ffi::OsString;
@@ -851,7 +851,7 @@ impl Workspace {
                     "{subject} resolves to {:?}, which holds the workspace",
                     chain.end,
                 ),
-                remedy: "The host would read project files under its name, which the filter \
+                remedy: "The host would read workspace files under its name, which the filter \
                          cannot protect there. Point it at a directory of its own."
                     .to_string(),
             });
@@ -929,7 +929,7 @@ impl Workspace {
         };
         let first = text.lines().next().unwrap_or("").trim();
         // git's validate_headref: a symref must aim under refs/ — `ref: nonsense` is a file git
-        // does not recognize, and refusing on it would call a non-repository project a repository.
+        // does not recognize, and refusing on it would call a non-repository workspace a repository.
         let head_valid = match first.strip_prefix("ref:") {
             Some(target) => target.trim_start().starts_with("refs/"),
             None => {
@@ -1849,8 +1849,8 @@ mod tests {
         refused_with(&root, "bare");
         let _ = fs::remove_dir_all(&root);
 
-        // The recognition is git's own triple, so a partial or invalid layout stays an ordinary
-        // project: a HEAD without refs, and a HEAD git would not validate.
+        // The recognition is git's own triple, so a partial or invalid layout stays ordinary
+        // workspace data: a HEAD without refs, and a HEAD git would not validate.
         let root = scratch("bare-near-miss");
         fs::write(root.join("HEAD"), b"ref: refs/heads/main\n").unwrap();
         fs::create_dir_all(root.join("objects")).unwrap();

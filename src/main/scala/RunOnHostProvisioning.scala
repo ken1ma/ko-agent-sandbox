@@ -1,6 +1,6 @@
 // Provisioning at the launch under --run-on-host: the mill launchers, the JDKs mill's launcher
 // resolves for the builds, and the Gradle and Maven distributions the user provisions
-// (run-on-host.md "Program prerequisites"), checked for every build directory of the project
+// (run-on-host.md "Program prerequisites"), checked for every build directory of the workspace
 // before the session starts, and provisioned by the stock script's own run on the user's yes.
 // What the launch misses — a pin changed during the session, a build directory a later edit
 // creates — the first command from that directory refuses, naming the same run.
@@ -22,7 +22,7 @@ object RunOnHostProvisioning:
 
   /** A directory a command of the program would run in as its own build: one holding a `mill`
     * bootstrap, or a Gradle wrapper's properties file, the file the supervisor keys a Gradle
-    * build directory on and reads the distribution from; for Maven the project alone, holding `mvnw`
+    * build directory on and reads the distribution from; for Maven the workspace root alone, holding `mvnw`
     * (run-on-host.md "`mill`", "Gradle", "Maven"). */
   final case class BuildDirectory(program: Program, path: Path)
 
@@ -41,13 +41,13 @@ object RunOnHostProvisioning:
     /** A refusal no host run fixes. */
     case Notice(program: Program, buildDirectory: Path, wording: String)
 
-  /** Every build directory under the project for the programs, the project first and the rest in
+  /** Every build directory under the workspace root for the programs, the root first and the rest in
     * path order. The walk follows no symlink and enters no FileRules.GuardedComponents name; a
     * directory it cannot list is passed over, its build directories left to the command. */
-  def buildDirectories(project: Path, programs: Set[Program]): Vector[BuildDirectory] =
+  def buildDirectories(workspaceRoot: Path, programs: Set[Program]): Vector[BuildDirectory] =
     val found = Vector.newBuilder[BuildDirectory]
-    if programs(Program.Mvn) && isExecutableFile(project.resolve("mvnw")) then
-      found += BuildDirectory(Program.Mvn, project)
+    if programs(Program.Mvn) && isExecutableFile(workspaceRoot.resolve("mvnw")) then
+      found += BuildDirectory(Program.Mvn, workspaceRoot)
     def visit(dir: Path): Unit =
       if programs(Program.Mill) && isExecutableFile(dir.resolve("mill")) then found += BuildDirectory(Program.Mill, dir)
       val properties = dir.resolve("gradle").resolve("wrapper").resolve("gradle-wrapper.properties")
@@ -60,7 +60,7 @@ object RunOnHostProvisioning:
           Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS)
             && !FileRules.GuardedComponents.contains(entry.getFileName.toString)
         .foreach(visit)
-    visit(project)
+    visit(workspaceRoot)
     found.result()
 
   /** The build directory's finding: none when its command would be granted its executable. */
@@ -103,7 +103,7 @@ object RunOnHostProvisioning:
    * provision several directories sharing a version — reports the finding as a warning in the
    * supervisor's wording, so the run it names is the one the first command would name, and for a
    * provisionable one, given a reader, asks whether to run it now. The run is the user's own act
-   * on a project script, unconfined and in the launcher's environment, as the manual run the
+   * on a workspace script, unconfined and in the launcher's environment, as the manual run the
    * refusal asks for is (SECURITY.md "Run on host"): the prompt says so, tinted as a weakened
    * boundary is (HostCommands.weakened), only an explicit yes
    * runs it, and no reader — no terminal, or a start mode that holds nothing — leaves the warning
@@ -152,5 +152,5 @@ object RunOnHostProvisioning:
 
   /** The whole of a launch's provisioning: every build directory of the programs through the
     * provisioning above. */
-  def run(project: Path, programs: Set[Program], env: String => Option[String], reader: Option[Reader]): Unit =
-    provision(buildDirectories(project, programs), finding(_, env), reader, runInBuildDirectory)
+  def run(workspaceRoot: Path, programs: Set[Program], env: String => Option[String], reader: Option[Reader]): Unit =
+    provision(buildDirectories(workspaceRoot, programs), finding(_, env), reader, runInBuildDirectory)

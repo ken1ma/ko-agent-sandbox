@@ -491,8 +491,8 @@ mach-route)
     # starts nothing — an approval prompt, a changed default application — leaves its row undecided.
     emit "$system_paths" || exit 1
     . "$work/command.env"
-    project=$(pwd -P)
-    route=$project/target/mach-route
+    workspace=$(pwd -P)
+    route=$workspace/target/mach-route
     rm -rf "$route"; mkdir -p "$route"
     confined() { /usr/bin/sandbox-exec -f "$work/command.sb" /bin/sh -c "$1" >"$work/route.out" 2>&1; }
     await() { # seconds condition...
@@ -524,7 +524,7 @@ mach-route)
 
     # R2: a program the command wrote, run by Terminal, which no profile confines. The marker is
     # where the profile denies a write, so its existence is the program having run outside it.
-    echo "R2 open PROJECT/target/mach-route/<script>.command (it opens Terminal windows; close them after)"
+    echo "R2 open WORKSPACE/target/mach-route/<script>.command (it opens Terminal windows; close them after)"
     script_text() { printf '#!/bin/sh\n: > "%s"\n' "$1"; }
     for kind in control confined; do
         marker=$work/mach-route-marker-$kind
@@ -558,7 +558,7 @@ mach)
     # emit's own sbt server holds this project's portfile (the acceptance test ends it for the same reason).
     sbt --jvm-client -batch shutdown >/dev/null 2>&1
     run_bound=${MACH_BOUND:-600}
-    # A build of its own inside the project the profile grants: this checkout's target/ links into
+    # A build of its own inside the workspace the profile grants: this checkout's target/ links into
     # the store of the unconfined sbt that emit ran, which the profile denies (run-on-host.md,
     # the sbt server's state), and the runner's sweep of those links is not this probe's to run.
     fixture=$(pwd -P)/target/mach-fixture

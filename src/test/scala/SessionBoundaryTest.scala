@@ -2,8 +2,8 @@
 //
 // It runs itself: `sbt testFull` from inside a session executes it, and `assume` skips it
 // everywhere else, so there is no separate command to remember. KO_AGENT_SANDBOX_EGRESS_RULESET is
-// the condition because the launcher sets it for every session and nothing else does. The project is
-// the working directory: the launcher starts the session there, at the project's own path.
+// the condition because the launcher sets it for every session and nothing else does. The workspace root
+// is the working directory: the launcher starts the session there, at the workspace root's own path.
 //
 // The network checks drive `curl` and `getent` as processes rather than Java's own HTTP and TLS:
 // the proxy meets those clients in practice, and a JDK client would be testing a different one.
@@ -199,7 +199,7 @@ class SessionBoundaryTest extends munit.FunSuite:
   test("the two treatments are told apart by the certificate each host presents"):
     inSession()
     // The decisive in-session test for "a tunnel host is still opaque": an
-    // inspected host presents a leaf this project's CA signed, an opaque one the origin's own chain.
+    // inspected host presents a leaf this workspace's CA signed, an opaque one the origin's own chain.
     val ca = run("openssl", "x509", "-noout", "-subject", "-in", "/etc/ko-agent-sandbox/egress-proxy-ca.crt")
       .text.stripPrefix("subject=").trim
 
@@ -322,16 +322,16 @@ class SessionBoundaryTest extends munit.FunSuite:
       )
     finally deleteRecursively(probe)
 
-  test("the image JDK's trust store holds this project's CA beside every root it shipped"):
+  test("the image JDK's trust store holds this workspace's CA beside every root it shipped"):
     inSession()
     // Dropping a shipped root would be the silent half of preparing the store wrong: the sandbox
     // would keep working until a request needed a public CA. The shipped store is under the
-    // mount, so the check is for a root every Temurin ships and for a count no per-project
+    // mount, so the check is for a root every Temurin ships and for a count no per-workspace
     // addition could reach on its own.
     val listing = run("keytool", "-list", "-cacerts", "-storepass", "changeit")
     assert(listing.ok, s"keytool could not read the mounted store: ${listing.err}")
     val aliases = listing.text.linesIterator.filter(_.contains("trustedCertEntry")).map(_.takeWhile(_ != ',')).toVector
-    assert(aliases.contains("ko-agent-sandbox-egress"), "this project's CA is not in the store")
+    assert(aliases.contains("ko-agent-sandbox-egress"), "this workspace's CA is not in the store")
     assert(aliases.exists(_.contains("isrgrootx1")), s"a shipped root is gone: ${aliases.take(5)}")
     assert(aliases.size > 100, s"the store holds ${aliases.size} roots, not the image's set")
 
@@ -347,7 +347,7 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("a git host serves an anonymous clone"):
     inSession()
-    // Under /tmp, never the project: cloning into the workspace is refused by the filter itself,
+    // Under /tmp, never the workspace: cloning into it is refused by the filter itself,
     // which would make this a test of the wrong boundary.
     val into = Files.createTempDirectory("clone-probe")
     try
@@ -383,9 +383,9 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("the session cannot write the boundary directory governing the next launch"):
     inSession()
-    // Which mechanism refuses depends on the session's write mode: the filter's reserved-name
+    // Which mechanism refuses depends on the session's workspace mode: the filter's reserved-name
     // rule answers EPERM for `.ko-agent-sandbox` at any depth, creation of the directory itself
-    // included; --write=reject's read-only tree answers EROFS. Either way the write must
+    // included; --workspace=read-only's read-only tree answers EROFS. Either way the write must
     // fail — a session able to create or edit the directory writes the rules governing the
     // *next* session (SECURITY.md).
     val boundaryDir = workspace.resolve(".ko-agent-sandbox")
@@ -410,10 +410,10 @@ class SessionBoundaryTest extends munit.FunSuite:
            "/var/run/docker.sock", "/run/podman/podman.sock")
       .foreach(path => assert(!mountPoints.contains(path), s"$path is mounted into the session"))
 
-    // The project at its own path, and the guard mounts beneath it.
-    val project = java.util.regex.Pattern.quote(workspace.toString)
+    // The workspace root at its own path, and the guard mounts beneath it.
+    val quotedWorkspace = java.util.regex.Pattern.quote(workspace.toString)
     val expected =
-      raw"^/$$|^/(proc|sys|dev|run|tmp|var/tmp|home/nonroot)($$|/)|^$project($$|/)".r.unanchored
+      raw"^/$$|^/(proc|sys|dev|run|tmp|var/tmp|home/nonroot)($$|/)|^$quotedWorkspace($$|/)".r.unanchored
     // `/etc/ssl/certs` covers two mounts, not one: the PEM bundle, and the merged JDK trust store —
     // which the launcher mounts at `$JAVA_HOME/lib/security/cacerts` (JdkTrust) but which ends up
     // here, because Temurin's Debian packaging symlinks that path to

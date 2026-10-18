@@ -4,9 +4,9 @@
 reports which were denied, with which errno. The corpus in doc/TODO.md carries rows this script
 does not — the Windows 8.3 short names — because they mean nothing off NTFS; run those by hand
 there.
-Run INSIDE a filtered sandbox session, from the root of a scratch project:
+Run INSIDE a filtered sandbox session, from the root of a scratch workspace:
 
-    cp .../apfs-name-rule-probe.py <scratch-project>/
+    cp .../apfs-name-rule-probe.py <scratch-workspace>/
     java -jar ko-agent-sandbox.jar bash          # filtered unless you opt out
     python3 apfs-name-rule-probe.py
 
@@ -64,7 +64,7 @@ def clean() -> None:
 def main() -> int:
     for guarded in (".git", ".ko-agent-sandbox"):
         if os.path.lexists(guarded):
-            print(f"abort: this directory already has {guarded} — use a scratch project's root")
+            print(f"abort: this directory already has {guarded} — use a scratch workspace's root")
             return 2
 
     # The canary doubles as the base case: behind the filter this is EPERM; anywhere else it
@@ -73,7 +73,7 @@ def main() -> int:
         os.mkdir(".git")
         os.rmdir(".git")
         print("abort: created .git — this is NOT a filtered session;")
-        print("       run it through the launcher, under --write=live")
+        print("       run it through the launcher, under --workspace=live")
         return 2
     except PermissionError:
         print("ok denied  '.git' (the canary: this session is filtered)")

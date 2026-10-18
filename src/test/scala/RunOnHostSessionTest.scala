@@ -94,12 +94,12 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val root = Files.createTempDirectory("command-session").toRealPath().resolve("root")
     ensureRoot(root, uid).toOption.get
 
-  test("publish yields a locked session with tmp, records and the project on file"):
+  test("publish yields a locked session with tmp, records and the workspace root on file"):
     val root = freshRoot()
     val session = publish(root, Path.of("/Users/u/proj")).toOption.get
     assert(Files.isDirectory(session.tmp))
     assert(Files.isDirectory(session.records))
-    assertEquals(Files.readString(session.directory.resolve(ProjectFile), UTF_8).trim, "/Users/u/proj")
+    assertEquals(Files.readString(session.directory.resolve(WorkspaceFile), UTF_8).trim, "/Users/u/proj")
     assertEquals(session.directory.getParent, root)
     assertEquals(listNames(root.resolve(StagingDir)), Vector.empty, "staging holds nothing published")
     remove(session)
@@ -507,13 +507,13 @@ class RunOnHostSessionTest extends munit.FunSuite:
 
   test("a session being ended by its supervisor is left alone by a concurrent scavenger"):
     val root = freshRoot()
-    val project = Files.createTempDirectory("proj")
-    val session = publish(root, project).toOption.get
+    val workspace = Files.createTempDirectory("proj")
+    val session = publish(root, workspace).toOption.get
     val socket = session.tmp.resolve("sock")
     Files.createFile(socket)
-    Files.createDirectories(project.resolve("project/target"))
+    Files.createDirectories(workspace.resolve("project/target"))
     Files.writeString(
-      project.resolve("project/target/active.json"),
+      workspace.resolve("project/target/active.json"),
       s"""{"uri":"local://$socket"}""",
       UTF_8,
     )
@@ -550,8 +550,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(portfileSocket("""not a portfile"""), None)
 
   def deadSessionWithServer(root: Path, socketUnder: Path => Path): (Path, Path) =
-    val project = Files.createTempDirectory("proj")
-    val session = publish(root, project).toOption.get
+    val workspace = Files.createTempDirectory("proj")
+    val session = publish(root, workspace).toOption.get
     val dead = die(session)
     val socket = socketUnder(dead)
     // The socket exists on disk like a real server's; containment canonicalizes it. Only inside
@@ -559,9 +559,9 @@ class RunOnHostSessionTest extends munit.FunSuite:
     if socket.normalize.startsWith(dead) then
       Files.createDirectories(socket.getParent)
       Files.createFile(socket)
-    Files.createDirectories(project.resolve("project/target"))
+    Files.createDirectories(workspace.resolve("project/target"))
     Files.writeString(
-      project.resolve("project/target/active.json"),
+      workspace.resolve("project/target/active.json"),
       s"""{"uri":"local://$socket"}""",
       UTF_8,
     )
@@ -637,14 +637,14 @@ class RunOnHostSessionTest extends munit.FunSuite:
 
   test("endSession condemns before it collects, so the shutdown is sent to the condemned pathname"):
     val root = freshRoot()
-    val project = Files.createTempDirectory("proj")
-    val session = publish(root, project).toOption.get
+    val workspace = Files.createTempDirectory("proj")
+    val session = publish(root, workspace).toOption.get
     Files.writeString(session.records.resolve("client"), renderRecord(Record(4, "START-D")), UTF_8)
     val socket = session.tmp.resolve("sock")
     Files.createFile(socket)
-    Files.createDirectories(project.resolve("project/target"))
+    Files.createDirectories(workspace.resolve("project/target"))
     Files.writeString(
-      project.resolve("project/target/active.json"),
+      workspace.resolve("project/target/active.json"),
       s"""{"uri":"local://$socket"}""",
       UTF_8,
     )

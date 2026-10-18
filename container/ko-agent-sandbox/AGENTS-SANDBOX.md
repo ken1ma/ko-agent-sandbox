@@ -8,13 +8,13 @@ You are `nonroot` with `no-new-privileges` set. Linux capabilities are dropped e
 `SYS_CHROOT` when `$KO_AGENT_SANDBOX_NESTING` is `same-uid`.
 You cannot become `root`; `apt-get install` and `systemctl` fail.
 `/home/nonroot`, `/tmp` and `/var/tmp` are writable. The appended "What this session may do"
-section names the project directory and gives its write mode.
+section names the workspace root and gives its workspace mode.
 
-The project directory is mounted at the same path the host has it at (on Windows, at the path
-WSL gives it, `/mnt/<drive>/...`), so a path you print is a path the user and their IDE can open. It
-is the user's project, and the only place deliverables belong.
+The workspace root is mounted at the same path the host has it at (on Windows, at the path
+WSL gives it, `/mnt/<drive>/...`), so a path you print is a path the user and their IDE can open.
+It is the user's workspace, and the only place deliverables belong.
 `/tmp` and the rest of `/home/nonroot` are discarded when the session ends.
-`~/persistent-volume` survives and holds agent state, not project output. These paths point into
+`~/persistent-volume` survives and holds agent state, not workspace output. These paths point into
 it: `~/.claude`, `~/.codex`, `~/.gemini`, `~/.kiro`, `~/.copilot`, `~/.local/share/kiro-cli` and
 opencode's `~/.config/opencode`, `~/.local/share/opencode`, `~/.local/state/opencode`.
 
@@ -25,16 +25,16 @@ or preceding `cd`, in a short command.
 When `$KO_AGENT_SANDBOX_CLIPBOARD` is `paste`, read a copied image with Ctrl-V in claude or
 `xclip -selection clipboard -t image/png -o`; `bidirectional` also accepts text on `wl-copy`'s
 stdin. Without clipboard access, paste reports no image; tell the user to save it under the
-project and pass its path instead.
+workspace and pass its path instead.
 
-New symlinks in the project must have relative targets staying inside it; even absolute targets
+New symlinks in the workspace must have relative targets staying inside it; even absolute targets
 inside it fail.
 
 Build output:
 
 - sbt 2 here writes its classes and packaged jars under
-  `~/.cache/sbt-out/<the build's absolute path>`, not the project's `target/out`.
-- A build that names an output path itself still writes the project, where the host's sbt leaves
+  `~/.cache/sbt-out/<the build's absolute path>`, not the workspace's `target/out`.
+- A build that names an output path itself still writes the workspace, where the host's sbt leaves
   class files as links into the host's cache.
   - If a compile there fails with `NoSuchFileException` on `error writing … .class`, check whether
     that class file is a dangling link: `find <path> -xtype l` prints it.
@@ -44,7 +44,7 @@ Build output:
     find . \( -name .git -o -name .ko-agent-sandbox \) -prune -o \
         -type d -name target -exec find {} -xtype l -delete \;
     ```
-- Run a mill build in the project as
+- Run a mill build in the workspace as
   `MILL_VERSION=<the build's version>-jvm _JAVA_OPTIONS="$KO_AGENT_SANDBOX_JAVA_OPTS" ./mill …`:
   the native launcher and a JDK that `mill-jvm-version` pins have no proxy settings. When the
   build is slow, add `MILL_OUTPUT_DIR=$HOME/.cache/mill-out/<the build's absolute path>`.
@@ -59,7 +59,7 @@ plus `rg`, `jq`, `patch`, `zstd`, `openssl`, binutils, and the usual GNU text an
 Absent: `make`, `g++`, `mvn`, `gradle`, `ssh`, `rsync`, `wget`, `zip`, `shellcheck`, and the
 `sqlite3` CLI — use `python3 -c "import sqlite3; ..."`.
 
-If the project limits line width, do not count columns yourself: `ko-sandbox-text-width --over 100
+If the workspace limits line width, do not count columns yourself: `ko-sandbox-text-width --over 100
 FILE...` prints `path:line:width` for every line wider than 100 columns. Add `--show-text` to see
 those lines in the same report.
 
@@ -80,16 +80,16 @@ Read history freely. `add`, `commit`, `checkout`, `switch`, `fetch` and `merge` 
 The `ko-agent-fs` filter refuses these operations. Report refusals; do not work around them.
 
 - Writing `.git` entries other than the state the filter lists (refs, objects, the index, HEAD and
-  the like), in any repository under the project: `config`, `hooks/`, `.git` pointer files,
+  the like), in any repository under the workspace: `config`, `hooks/`, `.git` pointer files,
   `commondir`, `gitdir`, rebase, bisect or rerere state, `objects/info/alternates`.
   - `git remote add`, `branch -m` and `--set-upstream-to` write `config`; `branch -m` renames the
     branch, then fails.
   - `git bisect` fails: bisect on the host, or on a clone under `~`.
-- `git init` and `git clone` under the project. Clone under `~`; the unblocked bare forms
+- `git init` and `git clone` under the workspace. Clone under `~`; the unblocked bare forms
   (`--bare`, `--mirror`) belong there too.
 - `git rebase` in any form, `git am`, and a ranged or conflicted `cherry-pick`/`revert`. One
   clean `cherry-pick` or `revert` works. Do rebases on the host, or on a clone under `~`.
-- `git worktree add` under the project.
+- `git worktree add` under the workspace.
 - `git submodule update --init` on a submodule not yet checked out, even a public one.
   Host-initialized submodules work normally.
 - Creating or editing `.ko-agent-sandbox` at any depth. Ask the user to change it on the host.

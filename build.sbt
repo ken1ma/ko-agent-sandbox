@@ -17,7 +17,7 @@ scalacOptions ++= Seq(
 )
 
 // The container-launching suites share one podman, and each asserts on resources scoped to a
-// project it created. Run in parallel they interleave — one suite's launch observing another's
+// workspace it created. Run in parallel they interleave — one suite's launch observing another's
 // container, one suite's teardown racing another's `--reset`. The ordinary suites take seconds, so
 // serial costs almost nothing and removes the whole class of interference.
 Test / parallelExecution := false

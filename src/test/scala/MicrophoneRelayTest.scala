@@ -163,7 +163,7 @@ class MicrophoneRelayTest extends munit.FunSuite:
   private def run(relay: Relay, labels: Seq[String], jobWritable: Boolean = true)(check: Harness => Unit): Unit =
     assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
     val ps = HostPs.answering()
-    // Never under the project: on a podman machine served by libkrun, a FIFO there whose times
+    // Never under the workspace: on a podman machine served by libkrun, a FIFO there whose times
     // change hangs the machine's whole /Users share (doc/upstream-issues.md).
     val root = Files.createTempDirectory("microphone-relay").toRealPath()
     val host = Files.createDirectory(root.resolve("host"))

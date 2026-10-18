@@ -4,8 +4,8 @@ A mod with one hook, which draws the band `managed-probe draws this band: its ho
 Claude Code's prompt. Under the sandbox image's `allowManagedHooksOnly` the hook runs only when
 the plugin is managed, so a launch with `--claude-plugin-dir` draws the band or nothing.
 
-The launcher refuses a plugin directory inside the project, so copy this directory outside the
-project before naming it:
+The launcher refuses a plugin directory inside the workspace, so copy this directory outside the
+workspace before naming it:
 
 ```sh
 mkdir -p /tmp/ko-agent-sandbox && cp -r src/test/claude-plugins/managed-probe /tmp/ko-agent-sandbox/

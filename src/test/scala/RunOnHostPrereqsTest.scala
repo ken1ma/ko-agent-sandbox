@@ -2,7 +2,7 @@
 // correctly. The fixtures are a real macOS host's, not invented ones — the Coursier JDK home
 // contains a percent-encoded '+', a literal '+' and a directory named like an archive, and the
 // install directory contains a space, which is exactly the input a quoting or regex bug mishandles.
-// The run-on-host rule files are read from temporary projects.
+// The run-on-host rule files are read from temporary workspaces.
 
 package agentsandbox.launcher
 
@@ -15,7 +15,7 @@ import HostCommands.Os
 class RunOnHostPrereqsTest extends munit.FunSuite:
 
   private val home = "/Users/kenichi"
-  private val project = Paths.get(s"$home/ko-agent-sandbox")
+  private val workspace = Paths.get(s"$home/ko-agent-sandbox")
 
   private val jdkHome = Paths.get(
     s"$home/Library/Caches/Coursier/arc/https/github.com/adoptium/temurin25-binaries/releases/" +
@@ -65,18 +65,18 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   test("no HOME and no XDG_CACHE_HOME is a refusal, not a path relative to nowhere"):
     assert(cacheRootOf(Os.Mac, env()).isLeft)
 
-  test("a cache root inside the project is refused"):
-    val inside = project.resolve(".cache/ko-agent-sandbox")
-    assert(cacheRootOutsideProject(inside, project, Os.Mac, Right(_)).isLeft)
+  test("a cache root inside the workspace is refused"):
+    val inside = workspace.resolve(".cache/ko-agent-sandbox")
+    assert(cacheRootOutsideWorkspace(inside, workspace, Os.Mac, Right(_)).isLeft)
 
-  test("a cache root containing the project is refused"):
-    assert(cacheRootOutsideProject(Paths.get(home), project, Os.Mac, Right(_)).isLeft)
+  test("a cache root containing the workspace is refused"):
+    assert(cacheRootOutsideWorkspace(Paths.get(home), workspace, Os.Mac, Right(_)).isLeft)
 
-  test("the ordinary cache root is accepted beside the project"):
+  test("the ordinary cache root is accepted beside the workspace"):
     val root = Paths.get(s"$home/.cache/ko-agent-sandbox")
-    assertEquals(cacheRootOutsideProject(root, project, Os.Mac, Right(_)), Right(root))
+    assertEquals(cacheRootOutsideWorkspace(root, workspace, Os.Mac, Right(_)), Right(root))
 
-  test("the project's caches are stored under one removable directory"):
+  test("the workspace's caches are stored under one removable directory"):
     val root = Paths.get(s"$home/.cache/ko-agent-sandbox")
     assertEquals(coursierV1Of(root, "abc123"), Paths.get(s"$root/run-on-host/abc123/coursier/v1"))
     // One removal reaches all of them: what --reset-run-on-host relies on.
@@ -109,16 +109,16 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       Some(Paths.get("/opt/cs/bin")),
     )
 
-  test("a cache root whose symlink resolves inside the project is refused on its canonical path"):
+  test("a cache root whose symlink resolves inside the workspace is refused on its canonical path"):
     val alias = Paths.get("/opt/cache/ko-agent-sandbox")
     val canonical: Path => Either[String, Path] =
-      path => Right(if path == alias then project.resolve(".cache") else path)
-    assert(cacheRootOutsideProject(alias, project, Os.Mac, canonical).isLeft)
-    assert(cacheRootOutsideProject(alias, project, Os.Mac, _ => Left("cannot inspect")).isLeft)
+      path => Right(if path == alias then workspace.resolve(".cache") else path)
+    assert(cacheRootOutsideWorkspace(alias, workspace, Os.Mac, canonical).isLeft)
+    assert(cacheRootOutsideWorkspace(alias, workspace, Os.Mac, _ => Left("cannot inspect")).isLeft)
 
-  test("the data-volume spelling of the project is the project"):
-    val inside = Paths.get("/System/Volumes/Data" + project.toString + "/.cache/ko-agent-sandbox")
-    assert(cacheRootOutsideProject(inside, project, Os.Mac, Right(_)).isLeft)
+  test("the data-volume spelling of the workspace is the workspace"):
+    val inside = Paths.get("/System/Volumes/Data" + workspace.toString + "/.cache/ko-agent-sandbox")
+    assert(cacheRootOutsideWorkspace(inside, workspace, Os.Mac, Right(_)).isLeft)
 
   test("a cache path overlapping the state root is refused, unless under the state root's own tree"):
     val state = Paths.get(s"$home/.local/state/ko-agent-sandbox")
@@ -131,13 +131,13 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       cachePathClearOfStateRoot(holding, state, Os.Mac), Left(Refusal.CachePathOverlapsStateRoot(holding, state)),
     )
     assert(cachePathClearOfStateRoot(Paths.get("/System/Volumes/Data" + holding.toString), state, Os.Mac).isLeft)
-    // Under a state subtree: every project's caches would go with that project's --reset.
+    // Under a state subtree: every workspace's caches would go with that workspace's --reset.
     assert(cachePathClearOfStateRoot(runOnHostCachesOf(state.resolve("tls/a-0123456789ab")), state, Os.Mac).isLeft)
     assert(cachePathClearOfStateRoot(state.resolve("image-build/x"), state, Os.Mac).isLeft)
     // The shared-root layout, %LOCALAPPDATA%\ko-agent-sandbox for both: the tree beside the subtrees.
     assertEquals(cachePathClearOfStateRoot(runOnHostCachesOf(state), state, Os.Windows).isRight, true)
-    val sharedProject = runOnHostCachesOf(state).resolve("b-0123456789ab")
-    assertEquals(cachePathClearOfStateRoot(sharedProject, state, Os.Mac), Right(sharedProject))
+    val sharedWorkspace = runOnHostCachesOf(state).resolve("b-0123456789ab")
+    assertEquals(cachePathClearOfStateRoot(sharedWorkspace, state, Os.Mac), Right(sharedWorkspace))
 
   // --------------------------------------------------------------------------
   // JDK
@@ -268,16 +268,16 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       val inner = coursierCache.resolve(bad)
       assert(validateSbtDistribution(inner, coursierCache, exists(inner, coursierCache), _ => true).isLeft, clue(bad))
 
-  test("mill needs the project's own bootstrap; a global mill is not a fallback"):
-    val bootstrap = project.resolve("mill")
-    assertEquals(validateMillBootstrap(project, _ == bootstrap), Right(bootstrap))
-    assertEquals(validateMillBootstrap(project, _ => false), Left(Refusal.PrereqMillBootstrapMissing))
+  test("mill needs the workspace's own bootstrap; a global mill is not a fallback"):
+    val bootstrap = workspace.resolve("mill")
+    assertEquals(validateMillBootstrap(workspace, _ == bootstrap), Right(bootstrap))
+    assertEquals(validateMillBootstrap(workspace, _ => false), Left(Refusal.PrereqMillBootstrapMissing))
 
   private val millDownload = Paths.get(s"$home/.cache/mill/download")
 
   private def files(pairs: (String, Seq[String])*): Path => Option[Seq[String]] =
     val map = pairs.toMap
-    path => map.get(project.relativize(path).toString)
+    path => map.get(workspace.relativize(path).toString)
 
   test("the mill download folder follows the bootstrap's own fallback"):
     assertEquals(millDownloadDir(env("HOME" -> home)), Some(millDownload))
@@ -294,42 +294,42 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     )
 
   test("the pinned version is read from each place the bootstrap reads, in its order"):
-    assertEquals(millVersion(project, files(".mill-version" -> Seq("1.1.8"))), Right("1.1.8"))
+    assertEquals(millVersion(workspace, files(".mill-version" -> Seq("1.1.8"))), Right("1.1.8"))
     assertEquals(
-      millVersion(project, files(".config/mill-version" -> Seq("1.1.8"))),
+      millVersion(workspace, files(".config/mill-version" -> Seq("1.1.8"))),
       Right("1.1.8"),
     )
     assertEquals(
-      millVersion(project, files("build.mill.yaml" -> Seq("mill-version: 1.1.8"))),
+      millVersion(workspace, files("build.mill.yaml" -> Seq("mill-version: 1.1.8"))),
       Right("1.1.8"),
     )
     assertEquals(
-      millVersion(project, files("build.mill" -> Seq("//| mill-version: 1.1.8", "package build"))),
+      millVersion(workspace, files("build.mill" -> Seq("//| mill-version: 1.1.8", "package build"))),
       Right("1.1.8"),
     )
 
   test("the bootstrap's own trimming is reproduced: quotes and trailing comments"):
     assertEquals(
-      millVersion(project, files("build.mill.yaml" -> Seq("  mill-version: \"1.1.8\"  # pinned"))),
+      millVersion(workspace, files("build.mill.yaml" -> Seq("  mill-version: \"1.1.8\"  # pinned"))),
       Right("1.1.8"),
     )
 
   test("mill-jvm-version is system, one JVM id or unset, wherever mill would read it"):
-    assertEquals(millJvm(project, files("build.mill.yaml" -> Seq("mill-jvm-version: system"))), Right(MillJvm.System))
-    assertEquals(millJvm(project, files("build.mill" -> Seq("//| mill-jvm-version: system"))), Right(MillJvm.System))
-    assertEquals(millJvm(project, files(".mill-jvm-version" -> Seq("system"))), Right(MillJvm.System))
+    assertEquals(millJvm(workspace, files("build.mill.yaml" -> Seq("mill-jvm-version: system"))), Right(MillJvm.System))
+    assertEquals(millJvm(workspace, files("build.mill" -> Seq("//| mill-jvm-version: system"))), Right(MillJvm.System))
+    assertEquals(millJvm(workspace, files(".mill-jvm-version" -> Seq("system"))), Right(MillJvm.System))
     val pinned = Right(MillJvm.Pinned("temurin:25"))
-    assertEquals(millJvm(project, files("build.mill.yaml" -> Seq("mill-jvm-version: temurin:25"))), pinned)
-    assertEquals(millJvm(project, files("build.mill" -> Seq("//| mill-jvm-version: 'temurin:25' # LTS"))), pinned)
-    assertEquals(millJvm(project, files(".mill-jvm-version" -> Seq("temurin:25"))), pinned)
+    assertEquals(millJvm(workspace, files("build.mill.yaml" -> Seq("mill-jvm-version: temurin:25"))), pinned)
+    assertEquals(millJvm(workspace, files("build.mill" -> Seq("//| mill-jvm-version: 'temurin:25' # LTS"))), pinned)
+    assertEquals(millJvm(workspace, files(".mill-jvm-version" -> Seq("temurin:25"))), pinned)
     assertEquals(
-      millJvm(project, files(".mill-jvm-version" -> Seq("graalvm-community:25.0.1"))),
+      millJvm(workspace, files(".mill-jvm-version" -> Seq("graalvm-community:25.0.1"))),
       Right(MillJvm.Pinned("graalvm-community:25.0.1")),
     )
-    assertEquals(millJvm(project, files("build.mill.yaml" -> Seq("extends: ScalaModule"))), Right(MillJvm.Unset))
-    assertEquals(millJvm(project, files("build.mill" -> Seq("//| mill-version: 1.1.10", "package build"))),
+    assertEquals(millJvm(workspace, files("build.mill.yaml" -> Seq("extends: ScalaModule"))), Right(MillJvm.Unset))
+    assertEquals(millJvm(workspace, files("build.mill" -> Seq("//| mill-version: 1.1.10", "package build"))),
       Right(MillJvm.Unset))
-    assertEquals(millJvm(project, files()), Right(MillJvm.Unset))
+    assertEquals(millJvm(workspace, files()), Right(MillJvm.Unset))
 
   test("an unset mill-jvm-version is accepted under the launchers that resolve it to an id"):
     for accepted <- Seq("1.1.0-jvm", "1.1.10-jvm", "1.1.10", "1.2.0-RC1-jvm", "1.10.0-jvm", "2.0.0-jvm") do
@@ -350,70 +350,73 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     // Digits alone are a number to YAML; a `|` chain, a list and an interpolation are not one id.
     for value <- Seq("25", "17.0.6", "system|temurin:25", "temurin:25:1", "[temurin:25]", "${JVM}", "temurin 25") do
       assertEquals(
-        millJvm(project, files("build.mill.yaml" -> Seq(s"mill-jvm-version: $value"))),
+        millJvm(workspace, files("build.mill.yaml" -> Seq(s"mill-jvm-version: $value"))),
         Left(Refusal.PrereqMillJvmUnreadable(value)),
       )
-      assertEquals(millJvm(project, files(".mill-jvm-version" -> Seq(value))),
+      assertEquals(millJvm(workspace, files(".mill-jvm-version" -> Seq(value))),
         Left(Refusal.PrereqMillJvmUnreadable(value)))
 
   test("the JVM source is mill's loadMillConfig order, the first existing file authoritative"):
-    assertEquals(millJvm(project, files(".config/mill-jvm-version" -> Seq("system"))), Right(MillJvm.System))
+    assertEquals(millJvm(workspace, files(".config/mill-jvm-version" -> Seq("system"))), Right(MillJvm.System))
     // .mill-jvm-version beats .config, which beats the header; an empty first file is the answer,
     // and mill reads no line of it as unset.
     val dotBeatsConfig = files(".mill-jvm-version" -> Seq("temurin:25"), ".config/mill-jvm-version" -> Seq("system"))
-    assertEquals(millJvm(project, dotBeatsConfig), Right(MillJvm.Pinned("temurin:25")))
+    assertEquals(millJvm(workspace, dotBeatsConfig), Right(MillJvm.Pinned("temurin:25")))
     val emptyFirst = files(".mill-jvm-version" -> Seq(""), "build.mill.yaml" -> Seq("mill-jvm-version: system"))
-    assertEquals(millJvm(project, emptyFirst), Right(MillJvm.Unset))
+    assertEquals(millJvm(workspace, emptyFirst), Right(MillJvm.Unset))
     // Compared as written: mill keeps the opts-file line untrimmed and tests equality.
-    assertEquals(millJvm(project, files(".mill-jvm-version" -> Seq(" system "))),
+    assertEquals(millJvm(workspace, files(".mill-jvm-version" -> Seq(" system "))),
       Left(Refusal.PrereqMillJvmUnreadable(" system ")))
     // A key with no value is not unset; what mill makes of it is its parser's business.
-    val noValue = millJvm(project, files("build.mill.yaml" -> Seq("mill-jvm-version:")))
+    val noValue = millJvm(workspace, files("build.mill.yaml" -> Seq("mill-jvm-version:")))
     assertEquals(noValue, Left(Refusal.PrereqMillJvmUnreadable("")))
     assert(clue(wording(Refusal.PrereqMillJvmUnreadable(""))).endsWith("found an empty value"))
-    assertEquals(millJvm(project, files(".mill-jvm-version" -> Seq("# comment", "", "system"))), Right(MillJvm.System))
+    assertEquals(
+      millJvm(workspace, files(".mill-jvm-version" -> Seq("# comment", "", "system"))),
+      Right(MillJvm.System),
+    )
     // A nested YAML key is not the key; a //| line after the header is not the header.
     assertEquals(
-      millJvm(project, files("build.mill.yaml" -> Seq("mill-build:", "  mill-jvm-version: system"))),
+      millJvm(workspace, files("build.mill.yaml" -> Seq("mill-build:", "  mill-jvm-version: system"))),
       Right(MillJvm.Unset),
     )
     // Refused as a stray //| line: readBuildHeader scans the whole file and errors on it.
-    assert(millJvm(project, files("build.mill" -> Seq("package build", "//| mill-jvm-version: system"))).isLeft)
+    assert(millJvm(workspace, files("build.mill" -> Seq("package build", "//| mill-jvm-version: system"))).isLeft)
     val quoted = files("build.mill.yaml" -> Seq("mill-jvm-version: \"system\" # x"))
-    assertEquals(millJvm(project, quoted), Right(MillJvm.System))
+    assertEquals(millJvm(workspace, quoted), Right(MillJvm.System))
     // Not system, whatever a lax reader would strip: a YAML comment needs whitespace before its
     // #, and an unmatched quote is not the plain scalar.
     for bad <- Seq("mill-jvm-version: system#other", "mill-jvm-version: \"system", "mill-jvm-version: system'") do
-      assert(millJvm(project, files("build.mill.yaml" -> Seq(bad))).isLeft, clue(bad))
+      assert(millJvm(workspace, files("build.mill.yaml" -> Seq(bad))).isLeft, clue(bad))
     // YAML's `key:value` is one scalar, not a mapping: mill never sees the key.
-    assertEquals(millJvm(project, files("build.mill.yaml" -> Seq("mill-jvm-version:system"))), Right(MillJvm.Unset))
+    assertEquals(millJvm(workspace, files("build.mill.yaml" -> Seq("mill-jvm-version:system"))), Right(MillJvm.Unset))
     // A malformed //| line is an error in mill's readBuildHeader, and a refusal here; so is a
     // stray //| after the header, and so are two keys, whichever mill's map would keep.
-    assert(millJvm(project, files("build.mill" -> Seq("//|mill-jvm-version: system"))).isLeft)
+    assert(millJvm(workspace, files("build.mill" -> Seq("//|mill-jvm-version: system"))).isLeft)
     val stray = files("build.mill" -> Seq("//| mill-jvm-version: system", "package build", "//| x"))
-    assert(millJvm(project, stray).isLeft)
+    assert(millJvm(workspace, stray).isLeft)
     // A second YAML document is one mill never reads; a marker anywhere is a refusal.
     val secondDoc = files("build.mill.yaml" -> Seq("extends: ScalaModule", "---", "mill-jvm-version: system"))
-    assertEquals(millJvm(project, secondDoc), Left(Refusal.PrereqMillJvmUnreadable("multi-document YAML")))
+    assertEquals(millJvm(workspace, secondDoc), Left(Refusal.PrereqMillJvmUnreadable("multi-document YAML")))
     val headerDoc = files("build.mill" -> Seq("//| mill-jvm-version: system", "//| ..."))
-    assert(millJvm(project, headerDoc).isLeft)
+    assert(millJvm(workspace, headerDoc).isLeft)
     // A commented marker is still a marker; an indented or embedded one is not.
     val commented = files("build.mill.yaml" -> Seq("--- # next", "mill-jvm-version: system"))
-    assertEquals(millJvm(project, commented), Left(Refusal.PrereqMillJvmUnreadable("multi-document YAML")))
+    assertEquals(millJvm(workspace, commented), Left(Refusal.PrereqMillJvmUnreadable("multi-document YAML")))
     val dashesInValue = files("build.mill.yaml" -> Seq("mill-jvm-version: system", "x: --- y"))
-    assertEquals(millJvm(project, dashesInValue), Right(MillJvm.System))
+    assertEquals(millJvm(workspace, dashesInValue), Right(MillJvm.System))
     val doubled = files("build.mill.yaml" -> Seq("mill-jvm-version: system", "mill-jvm-version: temurin:25"))
-    assertEquals(millJvm(project, doubled),
+    assertEquals(millJvm(workspace, doubled),
       Left(Refusal.PrereqMillJvmUnreadable("duplicate mill-jvm-version keys")))
     // build.mill.yaml is consulted before build.mill, and one existing root file ends the search.
     val yamlFirst =
       files("build.mill.yaml" -> Seq("extends: ScalaModule"), "build.mill" -> Seq("//| mill-jvm-version: system"))
-    assertEquals(millJvm(project, yamlFirst), Right(MillJvm.Unset))
+    assertEquals(millJvm(workspace, yamlFirst), Right(MillJvm.Unset))
 
   test("no version anywhere is a refusal"):
-    assertEquals(millVersion(project, files()), Left(Refusal.PrereqMillVersionUnpinned))
+    assertEquals(millVersion(workspace, files()), Left(Refusal.PrereqMillVersionUnpinned))
     assertEquals(
-      millVersion(project, files(".mill-version" -> Seq(""))),
+      millVersion(workspace, files(".mill-version" -> Seq(""))),
       Left(Refusal.PrereqMillVersionUnpinned),
     )
 
@@ -423,35 +426,35 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   )
 
   test("with nothing else pinned, the version is the bootstrap's own DEFAULT_MILL_VERSION"):
-    assertEquals(millVersion(project, files("mill" -> bootstrap)), Right("1.1.8"))
+    assertEquals(millVersion(workspace, files("mill" -> bootstrap)), Right("1.1.8"))
     // A pin anywhere in the chain wins over the default, as in the script.
     val pinned = files("mill" -> bootstrap, ".mill-version" -> Seq("1.1.7"))
-    assertEquals(millVersion(project, pinned), Right("1.1.7"))
+    assertEquals(millVersion(workspace, pinned), Right("1.1.7"))
     val noDefault = files("mill" -> Seq("#!/bin/sh"))
-    assertEquals(millVersion(project, noDefault), Left(Refusal.PrereqMillVersionUnpinned))
+    assertEquals(millVersion(workspace, noDefault), Left(Refusal.PrereqMillVersionUnpinned))
 
   test("the first existing file decides, empty or not: the bootstrap's elif chain has no fall-through"):
     assertEquals(
-      millVersion(project, files(".mill-version" -> Seq(""), "build.mill.yaml" -> Seq("mill-version: 1.1.8"))),
+      millVersion(workspace, files(".mill-version" -> Seq(""), "build.mill.yaml" -> Seq("mill-version: 1.1.8"))),
       Left(Refusal.PrereqMillVersionUnpinned),
     )
     // An empty chain result falls to the default, as the script's `if [ -z "$MILL_VERSION" ]` does.
     assertEquals(
-      millVersion(project, files(".mill-version" -> Seq(""), "mill" -> bootstrap)),
+      millVersion(workspace, files(".mill-version" -> Seq(""), "mill" -> bootstrap)),
       Right("1.1.8"),
     )
     // build.mill exists and has no marker: build.mill.scala is never consulted.
     assertEquals(
       millVersion(
-        project,
+        workspace,
         files("build.mill" -> Seq("package build"), "build.mill.scala" -> Seq("//| mill-version: 1.1.8")),
       ),
       Left(Refusal.PrereqMillVersionUnpinned),
     )
-    assertEquals(millVersion(project, files("build.sc" -> Seq("//| mill-version: 0.11.5"))), Right("0.11.5"))
+    assertEquals(millVersion(workspace, files("build.sc" -> Seq("//| mill-version: 0.11.5"))), Right("0.11.5"))
     // grep's `//\|.*mill-version`: the marker before the key, never after it.
     assertEquals(
-      millVersion(project, files("build.mill" -> Seq("mill-version//|: 1.1.8"))),
+      millVersion(workspace, files("build.mill" -> Seq("mill-version//|: 1.1.8"))),
       Left(Refusal.PrereqMillVersionUnpinned),
     )
 
@@ -463,18 +466,18 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
 
   test("two markers are no version, and a version file's whitespace is kept as the script keeps it"):
     assertEquals(
-      millVersion(project, files("build.mill.yaml" -> Seq("mill-version: 1.1.8", "mill-version: 1.1.9"))),
+      millVersion(workspace, files("build.mill.yaml" -> Seq("mill-version: 1.1.8", "mill-version: 1.1.9"))),
       Left(Refusal.PrereqMillVersionUnpinned),
     )
     assertEquals(
-      millVersion(project, files(".mill-version" -> Seq("1.1.8 "))),
+      millVersion(workspace, files(".mill-version" -> Seq("1.1.8 "))),
       Left(Refusal.PrereqMillVersionUnpinned),
     )
 
   test("a version that could name a path other than a directory entry is refused"):
     for bad <- Seq("../../etc", "a/b", "1.1.8 --flag") do
       assertEquals(
-        millVersion(project, files(".mill-version" -> Seq(bad))),
+        millVersion(workspace, files(".mill-version" -> Seq(bad))),
         Left(Refusal.PrereqMillVersionUnpinned),
         clue(bad),
       )
@@ -531,7 +534,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     // own directories and a home whose bin/java leads out of it are not granted.
     val notCoursier = Left(Refusal.PrereqMillJdkNotCoursier(Some("temurin:25"), "1.1.10-jvm", coursierCache))
     val unsetNotCoursier = Left(Refusal.PrereqMillJdkNotCoursier(None, "1.1.10-jvm", coursierCache))
-    val planted = project.resolve("jdk")
+    val planted = workspace.resolve("jdk")
     val everything: Path => Option[Path] = path => Some(path.normalize())
     assertEquals(pinnedJdk(recorded(key, planted), everything), notCoursier)
     assertEquals(unsetJdk(recorded(key, planted), everything), unsetNotCoursier)
@@ -547,14 +550,14 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val pinned = Seq("mill-version: 1.1.9", "mill-jvm-version: system")
     def yaml(extra: String*) = files("build.mill.yaml" -> (pinned ++ extra))
     def yamlAnd(extra: (String, Seq[String])*) = files(("build.mill.yaml" -> pinned) +: extra*)
-    val baseConfig = millDaemonConfig(project, yaml("extends: ScalaModule"))
-    assertEquals(baseConfig, millDaemonConfig(project, yaml("extends: ScalaModule")), "deterministic")
+    val baseConfig = millDaemonConfig(workspace, yaml("extends: ScalaModule"))
+    assertEquals(baseConfig, millDaemonConfig(workspace, yaml("extends: ScalaModule")), "deterministic")
     // The header is taken whole: an edit outside the keys restarts too, the cheaper error.
-    assertNotEquals(millDaemonConfig(project, yaml("extends: JavaModule")), baseConfig)
+    assertNotEquals(millDaemonConfig(workspace, yaml("extends: JavaModule")), baseConfig)
     // Each key, from each of its sources.
-    assertNotEquals(millDaemonConfig(project, yaml("mill-jvm-opts:", "  - -Xmx1g")), baseConfig)
-    val dotOpts = millDaemonConfig(project, yamlAnd(".mill-jvm-opts" -> Seq("-Xmx1g")))
-    val configOpts = millDaemonConfig(project, yamlAnd(".config/mill-jvm-opts" -> Seq("-Xmx1g")))
+    assertNotEquals(millDaemonConfig(workspace, yaml("mill-jvm-opts:", "  - -Xmx1g")), baseConfig)
+    val dotOpts = millDaemonConfig(workspace, yamlAnd(".mill-jvm-opts" -> Seq("-Xmx1g")))
+    val configOpts = millDaemonConfig(workspace, yamlAnd(".config/mill-jvm-opts" -> Seq("-Xmx1g")))
     assertNotEquals(dotOpts, baseConfig)
     assertNotEquals(configOpts, baseConfig)
     // An empty file is a source Mill selects, over the header: creating one, in either place,
@@ -562,93 +565,96 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val headerOpts = yaml("mill-jvm-opts: [-Xmx1g]")
     for empty <- Seq(".mill-jvm-opts", ".config/mill-jvm-opts", ".mill-repositories", ".config/mill-repositories") do
       val withEmpty = files(("build.mill.yaml" -> (pinned :+ "mill-jvm-opts: [-Xmx1g]")) , empty -> Seq.empty)
-      assertNotEquals(millDaemonConfig(project, withEmpty), millDaemonConfig(project, headerOpts), empty)
+      assertNotEquals(millDaemonConfig(workspace, withEmpty), millDaemonConfig(workspace, headerOpts), empty)
     // One file's lines never read as another's.
     assertNotEquals(
-      millDaemonConfig(project, yamlAnd(".mill-jvm-opts" -> Seq("-Xmx1g", "-Xss1m"))),
-      millDaemonConfig(project, yamlAnd(".mill-jvm-opts" -> Seq("-Xmx1g"), ".mill-repositories" -> Seq("-Xss1m"))),
+      millDaemonConfig(workspace, yamlAnd(".mill-jvm-opts" -> Seq("-Xmx1g", "-Xss1m"))),
+      millDaemonConfig(workspace, yamlAnd(".mill-jvm-opts" -> Seq("-Xmx1g"), ".mill-repositories" -> Seq("-Xss1m"))),
     )
-    assertNotEquals(millDaemonConfig(project, yaml("mill-repositories: [https://r.example]")), baseConfig)
+    assertNotEquals(millDaemonConfig(workspace, yaml("mill-repositories: [https://r.example]")), baseConfig)
     val version = files("build.mill.yaml" -> Seq("mill-version: 1.1.8", "mill-jvm-version: system"))
-    assertNotEquals(millDaemonConfig(project, version), baseConfig)
+    assertNotEquals(millDaemonConfig(workspace, version), baseConfig)
     val jvm = files("build.mill.yaml" -> Seq("mill-version: 1.1.9", "mill-jvm-version: temurin:25"))
-    assertNotEquals(millDaemonConfig(project, jvm), baseConfig)
+    assertNotEquals(millDaemonConfig(workspace, jvm), baseConfig)
     // Under a pinned or unset mill-jvm-version the java-home file's text is the JDK the daemon runs
     // on; under system mill does not read the file.
     val recordedHome = Some("""["temurin:25:0.0.4:","/jdk-25"]""")
-    assertNotEquals(millDaemonConfig(project, jvm, recordedHome), millDaemonConfig(project, jvm))
+    assertNotEquals(millDaemonConfig(workspace, jvm, recordedHome), millDaemonConfig(workspace, jvm))
     assertNotEquals(
-      millDaemonConfig(project, jvm, recordedHome),
-      millDaemonConfig(project, jvm, Some("""["temurin:25:0.0.4:","/jdk-21"]""")),
+      millDaemonConfig(workspace, jvm, recordedHome),
+      millDaemonConfig(workspace, jvm, Some("""["temurin:25:0.0.4:","/jdk-21"]""")),
     )
-    assertEquals(millDaemonConfig(project, yaml("extends: ScalaModule"), recordedHome), baseConfig)
+    assertEquals(millDaemonConfig(workspace, yaml("extends: ScalaModule"), recordedHome), baseConfig)
     val unset = files("build.mill.yaml" -> Seq("mill-version: 1.1.9"))
-    assertNotEquals(millDaemonConfig(project, unset, recordedHome), millDaemonConfig(project, unset))
+    assertNotEquals(millDaemonConfig(workspace, unset, recordedHome), millDaemonConfig(workspace, unset))
     assertNotEquals(
-      millDaemonConfig(project, unset, recordedHome),
-      millDaemonConfig(project, unset, Some("""["zulu:21:0.0.4:","/jdk-21"]""")),
+      millDaemonConfig(workspace, unset, recordedHome),
+      millDaemonConfig(workspace, unset, Some("""["zulu:21:0.0.4:","/jdk-21"]""")),
     )
     // A key in a spelling only a YAML parser recognizes changes it all the same.
     assertNotEquals(
-      millDaemonConfig(project, yaml("\"mill-jvm-\\u006fpts\": [-Xmx1g]")),
-      millDaemonConfig(project, yaml("\"mill-jvm-\\u006fpts\": [-Xmx2g]")),
+      millDaemonConfig(workspace, yaml("\"mill-jvm-\\u006fpts\": [-Xmx1g]")),
+      millDaemonConfig(workspace, yaml("\"mill-jvm-\\u006fpts\": [-Xmx2g]")),
     )
     // The header of build.mill is its //| lines, and the body is not the header.
     def header(opt: String, body: String*) =
       val lines = Seq("//| mill-version: 1.1.9", "//| mill-jvm-opts:", s"//| - $opt", "package build")
       files("build.mill" -> (lines ++ body))
-    assertNotEquals(millDaemonConfig(project, header("-Xmx1g")), millDaemonConfig(project, header("-Xmx2g")))
-    assertEquals(millDaemonConfig(project, header("-Xmx1g")), millDaemonConfig(project, header("-Xmx1g", "object x")))
+    assertNotEquals(millDaemonConfig(workspace, header("-Xmx1g")), millDaemonConfig(workspace, header("-Xmx2g")))
+    assertEquals(
+      millDaemonConfig(workspace, header("-Xmx1g")),
+      millDaemonConfig(workspace, header("-Xmx1g", "object x")),
+    )
 
   // --------------------------------------------------------------------------
   // The channel's working directory
   // --------------------------------------------------------------------------
 
-  // The project is mounted at its own path, so the mount is the project's spelling; the value
+  // The workspace root is mounted at its own path, so the mount is the root's spelling; the value
   // still arrives from inside the container and is validated as such.
   private def cwd(requested: String, canonical: Path => Option[Path] = path => Some(path.normalize())) =
-    workingDirectory(requested, project.toString, project, canonical, Os.Mac)
+    workingDirectory(requested, workspace.toString, workspace, canonical, Os.Mac)
 
-  test("the mount root translates to the project root"):
-    assertEquals(cwd(project.toString), Right(project))
+  test("the mount root translates to the workspace root"):
+    assertEquals(cwd(workspace.toString), Right(workspace))
 
-  test("a subdirectory translates beneath the project"):
-    assertEquals(cwd(s"$project/modules/a"), Right(project.resolve("modules/a")))
+  test("a subdirectory translates beneath the workspace"):
+    assertEquals(cwd(s"$workspace/modules/a"), Right(workspace.resolve("modules/a")))
 
   test("climbing out of the mount is refused, not clamped"):
-    for requested <- Seq(s"$project/../..", s"$project/../../etc", s"$project/a/../../..") do
+    for requested <- Seq(s"$workspace/../..", s"$workspace/../../etc", s"$workspace/a/../../..") do
       assert(cwd(requested).isLeft, clue(requested))
 
   test("a path outside the mount is refused"):
-    for requested <- Seq("/etc", "/Users/kenichi", s"${project}x", project.getFileName.toString + "/a", "") do
+    for requested <- Seq("/etc", "/Users/kenichi", s"${workspace}x", workspace.getFileName.toString + "/a", "") do
       assert(cwd(requested).isLeft, clue(requested))
 
-  test("a symlink inside the project that leaves it is refused"):
+  test("a symlink inside the workspace that leaves it is refused"):
     // The textual check passes and the canonical one does not: why both run.
-    val escaping = project.resolve("link")
+    val escaping = workspace.resolve("link")
     val canonical: Path => Option[Path] =
       path => if path == escaping then Some(Paths.get("/etc")) else Some(path.normalize())
-    assert(cwd(s"$project/link", canonical).isLeft)
+    assert(cwd(s"$workspace/link", canonical).isLeft)
 
-  test("a canonical case-different sibling is outside the project; a lexical one still folds"):
+  test("a canonical case-different sibling is outside the workspace; a lexical one still folds"):
     // Canonical spellings are the volume's own: on a case-sensitive volume `Ko-Agent-Sandbox` is
     // another directory. The lexical check before canonicalization keeps folding, since a request
     // on a folding volume may arrive in either case.
     val sibling = Paths.get(s"$home/Ko-Agent-Sandbox/sub")
-    assert(cwd(s"$project/sub", _ => Some(sibling)).isLeft)
-    // Lexically a case-different spelling of the project itself, which the real filesystem folds.
-    val folded = cwd(s"$project/../KO-AGENT-SANDBOX/sub", _ => Some(project.resolve("sub")))
-    assertEquals(folded, Right(project.resolve("sub")))
+    assert(cwd(s"$workspace/sub", _ => Some(sibling)).isLeft)
+    // Lexically a case-different spelling of the workspace root itself, which the real filesystem folds.
+    val folded = cwd(s"$workspace/../KO-AGENT-SANDBOX/sub", _ => Some(workspace.resolve("sub")))
+    assertEquals(folded, Right(workspace.resolve("sub")))
 
-  test("a canonical case-different sibling of the project is a safe cache root"):
+  test("a canonical case-different sibling of the workspace is a safe cache root"):
     val sibling = Paths.get(s"$home/Ko-Agent-Sandbox/.cache")
-    assertEquals(cacheRootOutsideProject(sibling, project, Os.Mac, Right(_)), Right(sibling))
+    assertEquals(cacheRootOutsideWorkspace(sibling, workspace, Os.Mac, Right(_)), Right(sibling))
 
   test("a working directory that does not exist is refused"):
-    assert(cwd(s"$project/gone", _ => None).isLeft)
+    assert(cwd(s"$workspace/gone", _ => None).isLeft)
 
   test("a refusal names what was requested, so the diagnostic can quote it"):
-    assertEquals(cwd("/etc/passwd"), Left(Refusal.WorkingDirectoryOutsideProject("/etc/passwd")))
+    assertEquals(cwd("/etc/passwd"), Left(Refusal.WorkingDirectoryOutsideWorkspace("/etc/passwd")))
 
   // --------------------------------------------------------------------------
   // The command's temporary directory
@@ -669,7 +675,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   // --------------------------------------------------------------------------
 
   test("containment folds case where the filesystem does"):
-    // The probe reports this host's project volume as case-insensitive, so a guard that compares
+    // The probe reports this host's workspace volume as case-insensitive, so a guard that compares
     // exactly would accept a path the filesystem treats as the same one.
     assert(startsWith(Paths.get("/Users/K/P/.GIT/config"), Paths.get("/Users/k/p/.git"), Os.Mac))
     assert(!startsWith(Paths.get("/Users/K/P/.GIT/config"), Paths.get("/Users/k/p/.git"), Os.Linux))
@@ -683,7 +689,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
 
   test("the program's rule file accepts read lines, comments and blank lines, in file order, once each"):
     val text =
-      """# artifact repositories this project resolves from
+      """# artifact repositories this workspace resolves from
         |allow https://repo.example.org/ read
         |
         |allow https://mirror.example.org/ read  # inline comment
@@ -750,7 +756,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       "deny defaults\nallow https://repo1.maven.org/ read",
     )
 
-  test("the sbt global base and Ivy home sit beside the project's Coursier cache, one --reset-run-on-host removal"):
+  test("the sbt global base and Ivy home sit beside the workspace's Coursier cache, one --reset-run-on-host removal"):
     val cacheRoot = Paths.get("/Users/u/.cache/ko-agent-sandbox")
     assertEquals(
       sbtGlobalOf(cacheRoot, "proj-abc123"),
@@ -780,7 +786,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   // --------------------------------------------------------------------------
 
   private val gradleUrl = "https://services.gradle.org/distributions/gradle-9.7.1-bin.zip"
-  private val wrapperDir = project.resolve("gradle/wrapper")
+  private val wrapperDir = workspace.resolve("gradle/wrapper")
 
   test("the distribution URL is read as the wrapper reads it: Properties escapes, defaults, relative files"):
     def read(text: String, projectProperties: Option[String] = None) =
@@ -859,10 +865,10 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   private val mvnUrl =
     "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.16/apache-maven-3.9.16-bin.zip"
 
-  test("mvn needs the project's own wrapper; a global mvn is not a fallback"):
-    val wrapper = project.resolve("mvnw")
-    assertEquals(validateMvnWrapper(project, _ == wrapper), Right(wrapper))
-    assertEquals(validateMvnWrapper(project, _ => false), Left(Refusal.PrereqMvnWrapperMissing))
+  test("mvn needs the workspace's own wrapper; a global mvn is not a fallback"):
+    val wrapper = workspace.resolve("mvnw")
+    assertEquals(validateMvnWrapper(workspace, _ == wrapper), Right(wrapper))
+    assertEquals(validateMvnWrapper(workspace, _ => false), Left(Refusal.PrereqMvnWrapperMissing))
 
   test("only the only-script wrapper, recognized by the script that runs; any other type is refused"):
     assertEquals(validateMvnWrapperScript(Seq("#!/bin/sh", "hash_string() {", "}")), Right(()))
@@ -944,14 +950,14 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       Refusal.PrereqMillJdkNotCoursier(None, "1.1.8-jvm", coursierCache),
       Refusal.PrereqMillNativeLauncher("1.1.8-native"),
       Refusal.PrereqGradleWrapperMissing, Refusal.PrereqGradleWrapperUnreadable("no distributionUrl"),
-      Refusal.PrereqGradleDistributionMissing(gradleUrl, project),
+      Refusal.PrereqGradleDistributionMissing(gradleUrl, workspace),
       Refusal.PrereqMvnWrapperMissing, Refusal.PrereqMvnWrapperNotOnlyScript,
       Refusal.PrereqMvnDistributionIsMvnd(mvnUrl),
-      Refusal.PrereqMvnWrapperUnreadable("no distributionUrl"), Refusal.PrereqMvnDistributionMissing(mvnUrl, project),
-      Refusal.PrerequisiteFileUnreadable(project.resolve("mvnw"), "not valid UTF-8"),
-      Refusal.CacheRootUnusable("HOME is not set"), Refusal.CacheRootInsideProject(project, project),
-      Refusal.CachePathOverlapsStateRoot(project, project),
-      Refusal.WorkingDirectoryOutsideProject("/elsewhere"), Refusal.SessionTmpTooLong(project, 60),
+      Refusal.PrereqMvnWrapperUnreadable("no distributionUrl"), Refusal.PrereqMvnDistributionMissing(mvnUrl, workspace),
+      Refusal.PrerequisiteFileUnreadable(workspace.resolve("mvnw"), "not valid UTF-8"),
+      Refusal.CacheRootUnusable("HOME is not set"), Refusal.CacheRootInsideWorkspace(workspace, workspace),
+      Refusal.CachePathOverlapsStateRoot(workspace, workspace),
+      Refusal.WorkingDirectoryOutsideWorkspace("/elsewhere"), Refusal.SessionTmpTooLong(workspace, 60),
       Refusal.RuleOutsideProgramGrammar("allow x tunnel"),
     )
     for refusal <- cases do
@@ -976,13 +982,13 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assertEquals(mvnUserHome(env("HOME" -> home, "MAVEN_USER_HOME" -> "/opt/m2")), Some(Paths.get("/opt/m2")))
 
   test("the rule file path is per program under the frozen boundary directory"):
-    val project = Paths.get("/Users/u/proj")
+    val workspace = Paths.get("/Users/u/proj")
     assertEquals(
-      programRulePath(project, Program.Sbt),
+      programRulePath(workspace, Program.Sbt),
       Paths.get("/Users/u/proj/.ko-agent-sandbox/run-on-host/sbt/egress/rule"),
     )
     assertEquals(
-      programRulePath(project, Program.Mill),
+      programRulePath(workspace, Program.Mill),
       Paths.get("/Users/u/proj/.ko-agent-sandbox/run-on-host/mill/egress/rule"),
     )
 
@@ -990,41 +996,41 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   // run-on-host/ refuses unrecognized configuration entries
   // --------------------------------------------------------------------------
 
-  private def projectWith(paths: String*): Path =
-    val project = Files.createTempDirectory("run-on-host")
+  private def workspaceWith(paths: String*): Path =
+    val workspace = Files.createTempDirectory("run-on-host")
     paths.foreach: path =>
-      val full = project.resolve(path)
+      val full = workspace.resolve(path)
       Files.createDirectories(full.getParent)
       Files.writeString(full, "allow https://repo.example.org/ read\n")
-    project
+    workspace
 
   test("readProgramRules reads the program's file and defaults to nothing"):
     assertEquals(readProgramRules(Files.createTempDirectory("empty"), Program.Sbt), Right(Vector.empty))
-    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
-    assertEquals(readProgramRules(project, Program.Sbt), Right(Vector("repo.example.org")))
-    assertEquals(readProgramRules(project, Program.Mill), Right(Vector.empty), "mill has no file here")
+    val workspace = workspaceWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    assertEquals(readProgramRules(workspace, Program.Sbt), Right(Vector("repo.example.org")))
+    assertEquals(readProgramRules(workspace, Program.Mill), Right(Vector.empty), "mill has no file here")
 
   test("a program rule file with no rule line reads as absent"):
-    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
-    val rule = project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val workspace = workspaceWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val rule = workspace.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
     for text <- Seq("", "# allow https://repo.example.org/ read\n", "\n  \n") do
       Files.writeString(rule, text)
-      assertEquals(readProgramRules(project, Program.Sbt), Right(Vector.empty), clue(text))
+      assertEquals(readProgramRules(workspace, Program.Sbt), Right(Vector.empty), clue(text))
 
   test("a line outside the program's grammar is refused, quoted with what a terminal acts on spelled out"):
-    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
-    val rule = project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val workspace = workspaceWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val rule = workspace.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
     Files.writeString(rule, "allow model-provider openai\n")
-    val refused = readProgramRules(project, Program.Sbt)
+    val refused = readProgramRules(workspace, Program.Sbt)
     assert(refused.swap.exists(_.contains("allow model-provider openai")), refused.toString)
     assert(refused.swap.exists(_.contains(ProgramRuleForm)), refused.toString)
     Files.writeString(rule, "allow https://a.example/ read now‮\n")
-    val escaped = readProgramRules(project, Program.Sbt)
+    val escaped = readProgramRules(workspace, Program.Sbt)
     assert(escaped.swap.exists(reason => reason.contains("now\\u202e") && !reason.contains("‮")), escaped.toString)
 
   test("a host the proxy refuses is refused when the file is read, naming the file and the proxy's reason"):
-    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
-    val rule = project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val workspace = workspaceWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val rule = workspace.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
     val refusals = Seq(
       "192.0.2.1" -> "contains an IP literal '192.0.2.1'",
       "repo_a.example" -> "contains an invalid hostname 'repo_a.example'",
@@ -1032,12 +1038,14 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     )
     for (host, said) <- refusals do
       Files.writeString(rule, s"allow https://repo.example.org/ read\nallow https://$host/ read\n")
-      val refused = readProgramRules(project, Program.Sbt)
+      val refused = readProgramRules(workspace, Program.Sbt)
       assert(refused.swap.exists(reason => reason.contains(rule.toString) && reason.contains(said)), refused.toString)
-      assertEquals(readProgramRules(project, Program.Mill), Right(Vector.empty), "mill's proxy does not read this file")
+      assertEquals(
+        readProgramRules(workspace, Program.Mill), Right(Vector.empty), "mill's proxy does not read this file",
+      )
     // A spelling the proxy resolves is read as the file spells it.
     Files.writeString(rule, "allow https://Repo.Example.ORG./ read\n")
-    assertEquals(readProgramRules(project, Program.Sbt), Right(Vector("Repo.Example.ORG.")))
+    assertEquals(readProgramRules(workspace, Program.Sbt), Right(Vector("Repo.Example.ORG.")))
 
   test("a stray name at any level refuses another program's command too, naming itself; metadata does not"):
     for
@@ -1047,12 +1055,12 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
         ".ko-agent-sandbox/run-on-host/sbt/egress/rules",
       )
     do
-      val refused = readProgramRules(projectWith(stray), Program.Mill)
+      val refused = readProgramRules(workspaceWith(stray), Program.Mill)
       assert(
         refused.swap.exists(reason => reason.contains("update the launcher") || reason.contains("not a rule file")),
         s"$stray: $refused",
       )
-    val metadata = projectWith(
+    val metadata = workspaceWith(
       ".ko-agent-sandbox/run-on-host/.DS_Store",
       ".ko-agent-sandbox/run-on-host/sbt/egress/.DS_Store",
       ".ko-agent-sandbox/run-on-host/sbt/egress/rule",
@@ -1060,14 +1068,14 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assertEquals(readProgramRules(metadata, Program.Sbt), Right(Vector("repo.example.org")))
 
   test("a symlinked component refuses"):
-    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val workspace = workspaceWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
     Files.createSymbolicLink(
-      project.resolve(".ko-agent-sandbox/run-on-host/mill"),
-      project.resolve(".ko-agent-sandbox/run-on-host/sbt"),
+      workspace.resolve(".ko-agent-sandbox/run-on-host/mill"),
+      workspace.resolve(".ko-agent-sandbox/run-on-host/sbt"),
     )
-    val refused = readProgramRules(project, Program.Sbt)
+    val refused = readProgramRules(workspace, Program.Sbt)
     assert(refused.swap.exists(_.contains("symlink")), refused.toString)
-    val linkedRule = projectWith("elsewhere")
+    val linkedRule = workspaceWith("elsewhere")
     val elsewhere = linkedRule.resolve("elsewhere")
     val egress = Files.createDirectories(linkedRule.resolve(".ko-agent-sandbox/run-on-host/sbt/egress"))
     Files.createSymbolicLink(egress.resolve("rule"), elsewhere)
@@ -1076,49 +1084,49 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
 
   test("a file where a directory belongs refuses instead of reading as absent config"):
     for directory <- Seq("sbt", "sbt/egress") do
-      val project = Files.createTempDirectory("run-on-host")
-      val path = project.resolve(s".ko-agent-sandbox/run-on-host/$directory")
+      val workspace = Files.createTempDirectory("run-on-host")
+      val path = workspace.resolve(s".ko-agent-sandbox/run-on-host/$directory")
       Files.createDirectories(path.getParent)
       Files.writeString(path, "")
-      val refused = readProgramRules(project, Program.Mill)
+      val refused = readProgramRules(workspace, Program.Mill)
       assert(refused.isLeft, s"$directory: $refused")
 
   test("a non-regular file where rule belongs refuses instead of being read"):
-    val project = Files.createTempDirectory("run-on-host")
-    val egress = project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress")
+    val workspace = Files.createTempDirectory("run-on-host")
+    val egress = workspace.resolve(".ko-agent-sandbox/run-on-host/sbt/egress")
     Files.createDirectories(egress.resolve("rule")) // a directory; a FIFO would block a read
-    val refused = readProgramRules(project, Program.Sbt)
+    val refused = readProgramRules(workspace, Program.Sbt)
     assert(refused.swap.exists(r => r.contains("rule") && r.contains("not a regular file")), refused.toString)
 
   test("only the selected program's rule file is read; another's is checked for its form alone"):
-    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
-    val millRule = project.resolve(".ko-agent-sandbox/run-on-host/mill/egress/rule")
+    val workspace = workspaceWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val millRule = workspace.resolve(".ko-agent-sandbox/run-on-host/mill/egress/rule")
     Files.createDirectories(millRule.getParent)
     Files.write(millRule, Array[Byte](0xff.toByte, 0xfe.toByte))
-    assertEquals(readProgramRules(project, Program.Sbt), Right(Vector("repo.example.org")))
-    val malformed = readProgramRules(project, Program.Mill)
+    assertEquals(readProgramRules(workspace, Program.Sbt), Right(Vector("repo.example.org")))
+    val malformed = readProgramRules(workspace, Program.Mill)
     assert(malformed.swap.exists(reason => reason.contains("not UTF-8") && reason.contains("mill")), malformed.toString)
 
   test("an unreadable rule file is refused by name, not thrown"):
-    val project = projectWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
-    val rule = project.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val workspace = workspaceWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
+    val rule = workspace.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
     Files.setPosixFilePermissions(rule, java.nio.file.attribute.PosixFilePermissions.fromString("---------"))
     assume(!Files.isReadable(rule), "a user who reads any file (root) cannot test an unreadable one")
-    val refused = readProgramRules(project, Program.Sbt)
+    val refused = readProgramRules(workspace, Program.Sbt)
     assert(refused.swap.exists(reason => reason.contains("cannot read") && reason.contains("sbt")), refused.toString)
 
   test("every path a refusal names is spelled out where a terminal would act on it"):
     val parent = Files.createTempDirectory("run-on-host")
-    def projectNamed(paths: String*): Path =
-      val project = Files.createDirectory(parent.resolve(s"proj\u001b[2K\r${paths.size}"))
+    def workspaceNamed(paths: String*): Path =
+      val workspace = Files.createDirectory(parent.resolve(s"proj\u001b[2K\r${paths.size}"))
       paths.foreach: path =>
-        val full = project.resolve(path)
+        val full = workspace.resolve(path)
         Files.createDirectories(full.getParent)
         Files.writeString(full, "allow model-provider openai\n")
-      project
-    val grammar = readProgramRules(projectNamed(".ko-agent-sandbox/run-on-host/sbt/egress/rule"), Program.Sbt)
-    val stray = readProgramRules(projectNamed(".ko-agent-sandbox/run-on-host/sbt/egress/rules", "x"), Program.Sbt)
-    val wrongType = readProgramRules(projectNamed(".ko-agent-sandbox/run-on-host/sbt", "x", "y"), Program.Sbt)
+      workspace
+    val grammar = readProgramRules(workspaceNamed(".ko-agent-sandbox/run-on-host/sbt/egress/rule"), Program.Sbt)
+    val stray = readProgramRules(workspaceNamed(".ko-agent-sandbox/run-on-host/sbt/egress/rules", "x"), Program.Sbt)
+    val wrongType = readProgramRules(workspaceNamed(".ko-agent-sandbox/run-on-host/sbt", "x", "y"), Program.Sbt)
     for refused <- Seq(grammar, stray, wrongType) do
       assert(
         refused.swap.exists: reason =>

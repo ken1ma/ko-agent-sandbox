@@ -52,7 +52,7 @@ again.
     one header, so it cannot refuse the placeholder beside a foreign key in another declared
     form.
   - It protects an API-key session only. A subscription login stays a tunnel until step 6.
-  - A project that tests against the provider with its own key selects no credential for that
+  - A workspace that tests against the provider with its own key selects no credential for that
     host, or accepts the refusal; forwarding a token that is not a placeholder stays the rule at
     every other host (`egress-proxy.md`, "Where the value goes").
   - Measure first, with the model host inspected at the root: the hosts and paths the installed
@@ -149,18 +149,18 @@ measurement.
     alsa-plugins' pulse PCM fails (`microphone.md`, "Decisions"); whether the reply appears as
     transcript; and whether its feature gate opens for the sign-in.
 
-## A FIFO in the project hangs the podman machine
+## A FIFO in the workspace hangs the podman machine
 
 - [ ] Decide what keeps a session's FIFO from hanging a libkrun podman machine
-  (`upstream-issues.md`, containers/libkrun): `mkfifo` in a `--write=live` project, then a change
-  of its times, would block the machine's `/Users` share and every session on it (read from
-  libkrun's source; the reproducer was not run). Candidates: ko-agent-fs refuses `mknod` of FIFOs,
-  or refuses time changes on them, until libkrun fixes it.
+  (`upstream-issues.md`, containers/libkrun): `mkfifo` in the workspace under `--workspace=live`,
+  then a change of its times, would block the machine's `/Users` share and every session on it
+  (read from libkrun's source; the reproducer was not run). Candidates: ko-agent-fs refuses `mknod`
+  of FIFOs, or refuses time changes on them, until libkrun fixes it.
 
 ## One list of launch refusals
 
 - [ ] Inventory every condition that stops a launch, in the launcher (`AgentSandboxLauncher.scala`,
-  `SandboxProject.scala`, `RunOnHostPrereqs.scala`, …) and in the filter's mount-time guard
+  `SandboxWorkspace.scala`, `RunOnHostPrereqs.scala`, …) and in the filter's mount-time guard
   (`fuse/ko-agent-fs/src/guard.rs`). No document lists them all: `SECURITY.md` has the guard's,
   `fuse/ko-agent-fs/doc/troubleshooting.md` some filter messages, `run-on-host.md` its
   prerequisites.
@@ -240,7 +240,7 @@ measurement.
   - Claude Code's Bash-command sandbox is off in the managed settings and Codex runs
     `danger-full-access` (`container/ko-agent-sandbox/Containerfile` has the reasons), so neither
     calls `bwrap` as configured.
-  - A project's own bubblewrap or `unshare -Ur` step fails with `Operation not permitted`, so the
+  - A workspace's own bubblewrap or `unshare -Ur` step fails with `Operation not permitted`, so the
     container instructions name the refusal.
 
 ## Capabilities a `NESTING=none` session could keep
@@ -306,8 +306,8 @@ SECURITY.md, "The supply chain", has npm's seven-day window and why uv gets none
 
 - [ ] Cargo's window: `registry.global-min-publish-age` in `/.cargo/config.toml`, once `--build`
   installs Rust 1.100 (2026-11-12), which stabilizes it; 1.98.1 ignores it with a warning.
-  - That file lets a project's `.cargo/config.toml` shorten the window, as `.npmrc` does npm's;
-    `CARGO_REGISTRY_GLOBAL_MIN_PUBLISH_AGE` would override the project's file.
+  - That file lets a `.cargo/config.toml` in the workspace shorten the window, as `.npmrc` does
+    npm's; `CARGO_REGISTRY_GLOBAL_MIN_PUBLISH_AGE` would override the workspace's file.
   - A version already in `Cargo.lock` installs even when younger than the window. Measure first
     that `Cargo.lock` does not record the window, for uv's reason.
 - [ ] A window for `cs`, Maven and Gradle, only once one offers a resolution-time setting that its
@@ -354,14 +354,14 @@ Do not blindly allow the batch `POST` endpoint merely because downloads use it.
 
 A launch from a linked worktree binds the main worktree's Git directory read-only
 (`SECURITY.md`, "The host's git executing what the sandbox wrote"). The writable form binds the
-`.git` of the main project's filter mount at the same target, so the filter's policy governs it:
+`.git` of the main worktree's filter mount at the same target, so the filter's policy governs it:
 `worktrees/<name>` is a nested gitdir there, whose `config`, `hooks/`, `commondir` and `gitdir`
 stay frozen while its index and refs are written (`../fuse/ko-agent-fs/doc/git-metadata.md`, "The
 immutable set"). Only `.git` crosses; the main worktree's working files stay out of the session.
 
-- The linked session joins the main project's daemon as one of its sessions: its marker under the
-  main project's mount directory, so that the reap counts it, and the mount-time guard run on the
-  main root (`KoAgentFs`).
+- The linked session joins the daemon of the main worktree's mount as one of its sessions: its
+  marker under that mount's directory, so that the reap counts it, and the mount-time guard run on
+  the main root (`KoAgentFs`).
 - `--reset` in the main worktree unmounts that filter, and every linked session's git then fails
   with `ENOTCONN`. Either record it beside the volume's behaviour (`SECURITY.md`, "What the
   persistent volume holds") or refuse the reset while a linked session mounts it, as podman
@@ -376,17 +376,18 @@ immutable set"). Only `.git` crosses; the main worktree's working files stay out
 
 `git worktree add` writes the pointer as `C:/Users/<me>/repo/.git/worktrees/<name>`, which the
 container's git cannot follow at `/mnt/c/...`, so the read-only bind is skipped there
-(`SandboxProject.linkedGitdirBind`). Two routes:
+(`SandboxWorkspace.linkedGitdirBind`). Two routes:
 
 - A relative pointer resolves under `/mnt/c` as it does under `C:`, and the bind serves one. But
   `git worktree add --relative-paths`, or `git worktree repair --relative-paths` for an existing
   worktree (git 2.48 or later), also sets `extensions.relativeWorktrees`, and the image's git,
   Debian trixie's 2.47.3, refuses a repository with an extension it does not know — in the main
   worktree as in the linked one. The launch reads the extension from the common config and keeps
-  the no-git warning, with a note, rather than promise git (`SandboxProject.setsRelativeWorktrees`).
-  The route opens when the image's git is 2.48 or later, and that check goes with the upgrade;
-  until then only a hand-written relative pointer works, which `git worktree repair` rewrites
-  absolute. "The project mounted at its own path" has the row that measures it.
+  the no-git warning, with a note, rather than promise git
+  (`SandboxWorkspace.setsRelativeWorktrees`). The route opens when the image's git is 2.48 or
+  later, and that check goes with the upgrade; until then only a hand-written relative pointer
+  works, which `git worktree repair` rewrites absolute. "The workspace root mounted at its own
+  path" has the row that measures it.
 - For an absolute pointer, bind a launcher-written pointer file naming the `/mnt/<drive>` spelling
   over `<mountPath>/.git`, hiding the filter's protected pointer from the container alone. Setting
   `GIT_DIR` and `GIT_WORK_TREE` instead would redirect git in every other repository the agent
@@ -467,10 +468,10 @@ against the file through the same code that would run it; the equivalent here is
 ## Deferred — staged-workspace extensions and hardening
 
 These are separate increments after the staged workspace in `plan-staged.md`, not reasons to put all
-of its lifecycle into one change. The initial one-stage-per-project sharing unit and what happens
+of its lifecycle into one change. The initial one-stage-per-workspace sharing unit and what happens
 when it fails are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may reach the mount").
 
-- [ ] Detect project-directory replacement before attaching a persistent stage.
+- [ ] Detect workspace-root replacement before attaching a persistent stage.
   - Record a host-only root identity, an optional resolved-gitdir identity and a small secondary
     fingerprint; ordinary branch switches and host edits must remain live.
   - An uncertain or different origin preserves the stage and requires explicit reattachment.
@@ -482,7 +483,7 @@ when it fails are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may
 - [ ] Treat stage and apply disk exhaustion as a boundary condition.
   - Preflight upper-layer, temporary-replacement, rollback and staged-control-journal space.
   - Fail writes or apply closed; retain a precise partial result.
-  - Never spill into the host project directory, discard pending state, or fall back to live
+  - Never spill into the host workspace, discard pending state, or fall back to live
     write.
   - The live mutation journal's bounded, fail-closed storage behavior is defined in the initial
     increment and is not deferred here.
@@ -499,16 +500,16 @@ when it fails are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may
 - [ ] Add non-interactive plan/apply only with a concrete automation use case.
   - `--stage plan` seals the current generation and returns a digest;
     `--stage apply --plan=<digest> --yes` applies the whole conflict-free plan.
-  - The digest binds the project identity, representation version, generation, complete
+  - The digest binds the workspace identity, representation version, generation, complete
     operation groups, content and metadata hashes, lower baselines, and rename and hardlink
     relationships.
   - A mismatch changes nothing; path selection remains interactive and rewrites the remaining
     plan under a new digest.
-- [ ] Add `--stage-name=<name>` only when one project needs concurrent independent staged change
+- [ ] Add `--stage-name=<name>` only when one workspace needs concurrent independent staged change
   sets.
   - Each name selects a separate upper layer, merged mount, cache and failure domain over the
-    same project directory; sessions sharing a name still share those resources.
-  - Define safe name encoding, resource limits, management-command selection, project-wide apply
+    same workspace; sessions sharing a name still share those resources.
+  - Define safe name encoding, resource limits, management-command selection, workspace-wide apply
     serialization and migration from the sole unnamed stage before exposing it.
 
 ## Deferred — `--self-test`'s remaining share rows
@@ -616,7 +617,7 @@ code, not measured):
   mill launcher's grant:
   - a Node distribution the user provisions, read-only and executable, on the command's `PATH`,
     never the host's `PATH`;
-  - npm's cache in the project's run-on-host cache (`npm_config_cache`), not `~/.npm`;
+  - npm's cache in the workspace's run-on-host cache (`npm_config_cache`), not `~/.npm`;
   - the registry allowed in the sbt program's egress rule; `HTTPS_PROXY` and
     `NODE_EXTRA_CA_CERTS` already reach Node (`run-on-host.md`, the CA variables' table), and
     npm's proxy and HTTP/1.1 use through the inspecting proxy is to be measured;
@@ -640,14 +641,14 @@ One form would, and it waits on a measurement:
     slow requester does not count.
   - N must exceed a healthy silence — a module compiling, a large download, which the proxy logs
     once at its start, a slow test — because a value below one is not a one-off failure: the rerun
-    hits the same silence, and the project cannot build on the host until the constant changes.
+    hits the same silence, and the workspace cannot build on the host until the constant changes.
   - Five minutes is the smallest value defensible without measurement.
 
 A time-to-first-output limit would miss stalls after the JVM prints its `_JAVA_OPTIONS` banner.
 
 ## Deferred — a container mill or gradle beside the host's daemon
 
-Under `--run-on-host` the host's mill daemon keeps its lock and `socketPort` in the project's
+Under `--run-on-host` the host's mill daemon keeps its lock and `socketPort` in the workspace's
 `out/mill-daemon`, and a `./mill` run in the container without `MILL_OUTPUT_DIR` uses the same
 `out/`. The rules allow the bootstrap's downloads by default, so an agent can run it.
 
@@ -660,7 +661,7 @@ Under `--run-on-host` the host's mill daemon keeps its lock and `socketPort` in 
     to set the variable.
 - [ ] The same conflict for gradle. The two sides' daemon registries are separate — the host's
   is under the runner's temporary directory (`RunOnHostSandbox.gradleCommand`), the container's
-  in its gradle user home — but both builds use the project's `build/` and the locks under its
+  in its gradle user home — but both builds use the workspace's `build/` and the locks under its
   `.gradle/`, and the rules allow `./gradlew`'s download by default.
 
 ## Deferred — an idle bound for the sbt server
@@ -689,7 +690,7 @@ dispatch, fenced thus:
 Its tests: a request arriving as the timer fires, that late callback, and a stale timer after
 replacement, each leaving one consistent runtime.
 
-## The project mounted at its own path
+## The workspace root mounted at its own path
 
 - [ ] Run `sbt "testWithPodman *MountPathTest"` on Linux; all Linux cases must pass.
 - [ ] On Windows, run the launcher inside a WSL distribution — as a Linux program, with Java and
@@ -713,7 +714,7 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
   `/mnt/c/Users/<me>/src/app`, and `bash -c pwd` prints that path.
 - A launch from PowerShell in `\\wsl.localhost\podman-machine-default\home\user\<dir>` is
   refused with `error: cannot map ... into the podman machine`, before any `workspace:` line.
-- A first launch of a new project prepares the image's JDK (`JdkTrust.prepareScript` through
+- A first launch of a new workspace prepares the image's JDK (`JdkTrust.prepareScript` through
   `HostCommands.quoteFreeSh`) and reaches a shell.
 - Under `KO_AGENT_SANDBOX_CLIPBOARD=paste`, `xclip -selection clipboard -t image/png -o` in the
   session reads a copied image, 15498 bytes, through both wrapped clipboard execs.
@@ -823,18 +824,12 @@ are the image's Mach services, which the same mode measures once it starts.
   by the test suite (`ko-review.md`, "Tests") and the session's git reads by `SECURITY.md`; one
   session launched from such a worktree and driven to approval closes this.
 
-## Before the first release — the workspace vocabulary (`plan-workspace-rename.md`)
-
-- [ ] Call the mounted directory the workspace and select its mode with
-  `--workspace=read-only|live|staged`, in the four commits the plan lists.
-
 ## Deferred — `--add-dir`, a further host directory in the workspace
 
 - [ ] `--add-dir=<path>` exposes another host directory to the sandbox beside the workspace root,
   as the `--add-dir` of Claude Code, Codex, Antigravity and Copilot widens their own file access.
-  It follows `plan-workspace-rename.md`, which keeps `--workspace` for the mode and names the
-  single directory the workspace root, so added directories need no rename. To settle before
-  building:
+  `design.md` "Terminology" keeps `--workspace` for the mode and names the single directory the
+  workspace root, so added directories need no rename. To settle before building:
   - whether an added directory follows the workspace mode or carries its own;
   - where its file rules and egress rules come from, since `.ko-agent-sandbox` is read at the
     workspace root;
@@ -844,6 +839,13 @@ are the image's Mach services, which the same mode measures once it starts.
   - whether exposing a directory also records it as trusted for each agent and loads its
     instructions and skills, as Copilot's `--add-dir` loads the directory's `.github/skills`;
     `ko-sandbox-entrypoint` records trust for the workspace root only.
+
+## Before the first release — the former records directory
+
+- [ ] Delete `LauncherState.formerWorkspacesStateRoot`, its `--reset-all` step and its
+  `ResetRecordTest` case once the machines that launched before the workspace rename have run
+  `--reset-all` or removed `<state root>/projects/` by hand. Nothing writes or reads that
+  directory; a machine that never removes it keeps a few path strings, no resource.
 
 ## Before the first release — continuous integration
 

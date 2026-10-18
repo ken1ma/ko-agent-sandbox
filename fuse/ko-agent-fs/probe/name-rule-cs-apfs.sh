@@ -23,7 +23,7 @@ mountpoint="$HOME/ko-agent-fs-cs-probe"
 
 cleanup() {
     cd "$HOME"
-    # The session's own state first, while the project still exists; then the volume.
+    # The session's own state first, while the workspace still exists; then the volume.
     { [ -d "$mountpoint/scratch" ] &&
         (cd "$mountpoint/scratch" && java -jar "$jar" --reset >/dev/null 2>&1); } || true
     hdiutil detach "$mountpoint" -quiet 2>/dev/null || true
@@ -44,31 +44,31 @@ case "$personality" in
     *) echo "the volume mounted as '$personality', not case-sensitive; aborting" >&2; exit 1 ;;
 esac
 
-project="$mountpoint/scratch"
-mkdir "$project"
-cp "$here/apfs-name-rule-probe.py" "$project/"
+workspace="$mountpoint/scratch"
+mkdir "$workspace"
+cp "$here/apfs-name-rule-probe.py" "$workspace/"
 
 # The probe runs inside the filtered session; its own canary aborts if the filter is off. A
 # launch that cannot serve the scratch tree usually means the machine's share did not cross into
-# the mounted volume — `podman machine ssh ls "$project"` shows what the VM sees.
+# the mounted volume — `podman machine ssh ls "$workspace"` shows what the VM sees.
 (
-    cd "$project"
+    cd "$workspace"
     KO_AGENT_SANDBOX_SESSION_START=immediate \
         java -jar "$jar" python3 apfs-name-rule-probe.py
 )
 
 # The property itself, on the host against the real fold table.
-cd "$project"
+cd "$workspace"
 if ls .git >/dev/null 2>&1; then
-    echo "FAIL: host-side ls resolves a .git in $project" >&2
+    echo "FAIL: host-side ls resolves a .git in $workspace" >&2
     exit 1
 fi
 if git rev-parse --git-dir >/dev/null 2>&1; then
-    echo "FAIL: host-side git discovered a repository at $project" >&2
+    echo "FAIL: host-side git discovered a repository at $workspace" >&2
     exit 1
 fi
 if ls .ko-agent-sandbox >/dev/null 2>&1; then
-    echo "FAIL: host-side ls resolves a .ko-agent-sandbox in $project" >&2
+    echo "FAIL: host-side ls resolves a .ko-agent-sandbox in $workspace" >&2
     exit 1
 fi
 

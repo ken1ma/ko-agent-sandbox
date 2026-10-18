@@ -5,12 +5,12 @@
 - The ruleset specifies the reachable hosts, permitted operations and whether requests are
   inspected.
 - The proxy resolves it from its built-in defaults, the profile selected at launch, and the
-  project's rule file, and prints it at every start.
+  workspace's rule file, and prints it at every start.
 
 This document explains how to write the rule file and read the printout. SECURITY.md, "Egress
 proxy", explains the protections and their limits.
 
-A *rule* is a line of the project's file, what is written and reviewed; the *ruleset* is what a
+A *rule* is a line of the workspace's file, what is written and reviewed; the *ruleset* is what a
 launch enforces: the defaults, the profile and the file resolved together, printed as the ruleset
 lines and named by a digest. Two files of different rules may resolve to one ruleset.
 
@@ -49,7 +49,7 @@ A launch selects the model providers whose default rules it admits:
 The profiles:
 
 1. `deny-unless-allowed` (the default) — the inspected catalog and the selected providers' rules,
-   then every line of the project's file.
+   then every line of the workspace's file.
 1. `deny-unless-model` — the selected providers' rules, then the file's URL and model-provider
    denials. It ignores `allow` and `deny defaults` lines. With no provider selected it allows no
    host.
@@ -57,7 +57,7 @@ The profiles:
 
 ## The rule file
 
-One file, `.ko-agent-sandbox/egress/rule` in the project directory. One line per rule, in the
+One file, `.ko-agent-sandbox/egress/rule` in the workspace root. One line per rule, in the
 order they apply; `#` starts a comment at the start of a line or after whitespace, and blank
 lines are ignored.
 
@@ -107,7 +107,7 @@ What a line grants is its words, and nothing is implied:
 - `tunnel` — permits traffic without request inspection. It stands alone on its line, and its
   URL ends at `/`.
 
-The selected profile determines the starting rules and which project lines apply. Those lines
+The selected profile determines the starting rules and which of the file's lines apply. Those lines
 apply in file order:
 
 - an `allow` adds its grants under its path;
@@ -156,7 +156,7 @@ The `defaults` and `model-provider` lines:
 - `allow model-provider NAME` expands to the provider's default rules at that position.
 - `deny model-provider NAME` expands to a whole-host denial for every host listed in those rules,
   regardless of their paths or grants. It removes all earlier grants on those hosts, including
-  grants from the catalog or project rules. A later allow grants only what it names.
+  grants from the catalog or the workspace's rules. A later allow grants only what it names.
 
 For example, `deny model-provider github` also denies repository access on `github.com` and API
 access on `api.github.com`; hosts absent from GitHub's model-provider rules, such as
@@ -218,14 +218,14 @@ A line restating a defaults line at its path is silent: that is how a file stays
 image adopts its hosts.
 
 1. Without a rule file, or with one holding only comments and blank lines, the selected profile
-   applies without project overrides.
+   applies without workspace overrides.
    - An empty ruleset is valid and reported as such — `deny-all` resolves empty by design, as
      does `deny-unless-model` under `bash`.
 1. Editing the file takes effect on the next launch; a running session keeps its original ruleset.
-1. The sandbox cannot edit it, under either write mode (SECURITY.md, "Why the rules are per
-   project, in the project, and read-only").
-1. Commit the directory with the project. Review its rules before launching an unfamiliar
-   project (SECURITY.md, "A repository that ships wide egress rules").
+1. The sandbox cannot edit it, under either workspace mode (SECURITY.md, "Why the rules are per
+   workspace, in the workspace, and read-only").
+1. Commit the directory to the repository. Review its rules before launching in an unfamiliar
+   repository (SECURITY.md, "A repository that ships wide egress rules").
 
 ## The printed ruleset
 
@@ -272,12 +272,12 @@ the full ruleset there avoids including the host list in every prompt.
 
 ## Audit what has been allowed or denied
 
-Run with `--egress-log` from the project directory. Every proxy connection is logged,
+Run with `--egress-log` from the workspace root. Every proxy connection is logged,
 and the proxy appends the log to a file in the run's directory on the host, which the launch's
 `log dir` line names:
 
-    ~/.local/state/ko-agent-sandbox/log/<project>/     # Linux / macOS / WSL
-    %LOCALAPPDATA%\ko-agent-sandbox\log\<project>\     # native Windows
+    ~/.local/state/ko-agent-sandbox/log/<workspace>/     # Linux / macOS / WSL
+    %LOCALAPPDATA%\ko-agent-sandbox\log\<workspace>\     # native Windows
       run-<start>-<run>/           <start> in UTC, as 20261017T022446Z; <run> its containers' suffix
         proxy.log                  the container proxy's audit log
         run-on-host.log            the host command runner's log; only with --run-on-host
@@ -315,17 +315,17 @@ proxy").
 The proxy terminates TLS for every inspected host and checks each request against its grants.
 Only hosts with the `tunnel` treatment stay opaque:
 
-- under `deny-unless-allowed`, the selected providers' tunnel hosts, unless a project removes
-  them or adds more;
+- under `deny-unless-allowed`, the selected providers' tunnel hosts, unless the workspace's file
+  removes them or adds more;
 - under `deny-unless-model`, the selected providers' remaining tunnel hosts;
 - under `deny-all`, none.
 
-The per-project CA is stored on the host, under
+The per-workspace CA is stored on the host, under
 
-    ~/.local/state/ko-agent-sandbox/tls/<project>/     # Linux / macOS / WSL
-    %LOCALAPPDATA%\ko-agent-sandbox\tls\<project>\     # native Windows
+    ~/.local/state/ko-agent-sandbox/tls/<workspace>/     # Linux / macOS / WSL
+    %LOCALAPPDATA%\ko-agent-sandbox\tls\<workspace>\     # native Windows
 
-1. The certificates are created and refreshed automatically for each project (SECURITY.md,
+1. The certificates are created and refreshed automatically for each workspace (SECURITY.md,
    "Who holds the CA key").
 1. Deleting that directory is how you rotate the CA. The next launch recreates it, and every
    launch's proxy starts with the certificates the launch found or issued.
@@ -423,8 +423,8 @@ binding that applies to it:
   - https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-limits.html
   - https://nodejs.org/docs/latest-v24.x/api/cli.html#--max-http-header-sizesize
 
-The placeholder is fresh each launch and random. The project sees the placeholder once the
-session runs; the randomness keeps a string written before it, such as an application's own
+The placeholder is fresh each launch and random. Workspace files can hold the placeholder once
+the session runs; the randomness keeps a string written before it, such as an application's own
 token, from equaling it and being replaced.
 
 A value starting with a prefix programs recognize — `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`,

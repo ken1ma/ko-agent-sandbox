@@ -8,7 +8,7 @@ Answer it by measurement, not by reasoning: run this in a filtered session and a
 unfiltered one, and compare. The unfiltered run is the control, exactly as the perf table's unfiltered bind mount
 column is:
 
-    cp .../xattr-probe.py <scratch-project>/
+    cp .../xattr-probe.py <scratch-workspace>/
     java -jar ko-agent-sandbox.jar python3 xattr-probe.py
     .../probe/unfiltered.sh python3 xattr-probe.py      # the control
 
@@ -16,7 +16,7 @@ Rows that differ between the two runs are what implementing xattrs would enable.
 are the environment's, not the filter's. Record the result in doc/verification-log.md with the OS
 and podman versions, the way the name-rule probe does.
 
-Writes only under a temporary directory it removes; leaves nothing in the project.
+Writes only under a temporary directory it removes; leaves nothing in the workspace.
 """
 
 import errno
@@ -32,7 +32,7 @@ MARKER = "user.ko-agent-fs-probe"
 def stack() -> str:
     """Filtered or not, decided by a property a bind mount does not have: `.git` is refused at
     *any* depth. Probing inside a fresh subdirectory rather than at the root is what makes that
-    work in a project that already has a `.git`."""
+    work in a workspace that already has a `.git`."""
     probe = tempfile.mkdtemp(prefix=".ko-agent-fs-stack-", dir=".")
     try:
         os.mkdir(os.path.join(probe, ".git"))
@@ -88,7 +88,7 @@ def carrying_programs(work: str) -> None:
     """What a program that *preserves* xattrs does when the destination refuses them. The source is
     outside the mount, because inside it there may be no way to attach an xattr in the first
     place — which is exactly what extracting an archive or copying a tree into
-    the project does."""
+    the workspace does."""
     source = tempfile.mkdtemp(prefix="ko-agent-fs-xattr-src-")
     try:
         origin = os.path.join(source, "file")

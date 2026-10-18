@@ -138,7 +138,7 @@ bounded() { # seconds record dir command...
     [ "$status" -eq 0 ]
 }
 
-# The run's logs, tables and records under the project, where the sandbox can read them; the
+# The run's logs, tables and records under the workspace, where the sandbox can read them; the
 # scratch tree itself stays short for sbt's socket paths, and its build trees are not copied.
 logs=$PWD/log/run-on-host-runner-session
 save_logs() {

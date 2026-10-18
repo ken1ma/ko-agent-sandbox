@@ -9,7 +9,7 @@ import WithPodman.{Scratch, orphanScratch}
 
 class WithPodmanTest extends munit.FunSuite:
 
-  test("a sweep deletes scratch projects owned here or by exited JVMs, never by another running JVM"):
+  test("a sweep deletes scratch workspaces owned here or by exited JVMs, never by another running JVM"):
     val mine = Scratch("mine-0123456789ab", 100L, 1L, Paths.get("/tmp/mine"))
     val dead = Scratch("dead-0123456789ab", 200L, 2L, Paths.get("/tmp/dead"))
     val other = Scratch("other-0123456789ab", 300L, 3L, Paths.get("/tmp/other"))

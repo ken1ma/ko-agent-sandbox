@@ -4,11 +4,11 @@
 # what each grant opens and what the inspection costs and buys.
 #
 # Before adding a host, answer all five:
-# - why does an arbitrary project need it by default;
+# - why does an arbitrary workspace need it by default;
 # - what sandbox data could be sent to it;
 # - does it expose an unauthenticated write endpoint;
 # - which grants do its operations call for;
-# - could it be project-specific (.ko-agent-sandbox/egress/rule) instead?
+# - could it be workspace-specific (.ko-agent-sandbox/egress/rule) instead?
 # This list stays a small set of intentional data recipients; entries are added only for them.
 
 # git repositories: clone and pull are fetch, a POST to .../git-upload-pack, hence git-fetch

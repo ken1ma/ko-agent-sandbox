@@ -49,7 +49,7 @@ import RunOnHostSession.{daemonRecordName, proxyRecordName, serverRecordName, Se
  */
 final class RunnerRuntimes(
   session: Session,
-  project: Path,
+  workspaceRoot: Path,
   log: String => Unit,
   systemPaths: SeatbeltProfile.SystemPaths,
   forwards: Vector[(String, String)],
@@ -60,8 +60,8 @@ final class RunnerRuntimes(
 )(
   processes: RunOnHostSession.Processes = RunOnHostSession.HostProcesses,
   assemble: (Path, Program, Path) => Either[String, Assembled] =
-    (project, program, buildDirectory) =>
-      RunOnHostSandbox.assemble(project, program, name => Option(System.getenv(name)), buildDirectory),
+    (workspaceRoot, program, buildDirectory) =>
+      RunOnHostSandbox.assemble(workspaceRoot, program, name => Option(System.getenv(name)), buildDirectory),
   proxy: (Program, Vector[String], Path, Path) => Either[String, Int] =
     createProxy(systemPaths, credentials, channelLog),
   server: RuntimeStart => Either[String, Unit] = start => startSbtServer(session, start),
@@ -168,7 +168,7 @@ final class RunnerRuntimes(
                 case Some(shared) => Right(Some(shared))
                 case None =>
                   for
-                    fresh <- assemble(project, program, buildDirectory)
+                    fresh <- assemble(workspaceRoot, program, buildDirectory)
                     started <- startDaemon(current.copy(assembled = fresh), config)
                   yield
                     live += key -> started
@@ -203,8 +203,8 @@ final class RunnerRuntimes(
       try
         for
           _ <- RunOnHostSession.publishBuildFile(session.directory, hash, buildDirectory)
-          assembled <- assemble(project, program, buildDirectory)
-          hosts <- readProgramRules(project, program)
+          assembled <- assemble(workspaceRoot, program, buildDirectory)
+          hosts <- readProgramRules(workspaceRoot, program)
           // A record a failed creation kept: discarded, or the leader that would rename over it refused.
           _ <- discard(program, hash, proxyRecord(program, hash))
           port <- proxy(program, hosts, proxyRecord(program, hash), proxyLog)
@@ -320,8 +320,8 @@ final class RunnerRuntimes(
     * which our server would fail loading on. Run only when a server starts, after any foreign
     * server for the directory is shut down. */
   private def sweepTargetLinks(assembled: Assembled): Unit =
-    val project = assembled.prereqs.project
-    val swept = cleanForeignTargetLinks(project, project +: assembled.sbtCachesGranted)
+    val workspaceRoot = assembled.prereqs.workspaceRoot
+    val swept = cleanForeignTargetLinks(workspaceRoot, workspaceRoot +: assembled.sbtCachesGranted)
     if swept.nonEmpty then
       log(s"removed ${swept.size} target/ links resolving outside the command's roots (first: ${swept.head})")
 
@@ -353,9 +353,9 @@ final class RunnerRuntimes(
         Right(()) // a stale or planted/redirected portfile under this launch; our start overwrites it
       case Some(socket) =>
         // The profile's own persistent writable set, so a socket an earlier command planted
-        // in a cache is no more a shutdown target than one planted in the project.
+        // in a cache is no more a shutdown target than one planted in the workspace.
         shutdownForeignServer(
-          project, current.buildDirectory, socket, env, log,
+          workspaceRoot, current.buildDirectory, socket, env, log,
           runOnHostCaches = Seq(current.assembled.prereqs.coursierV1) ++ current.assembled.sbtCachesGranted,
         )
       case None => Right(())
@@ -437,8 +437,8 @@ final class RunnerRuntimes(
         case None => Right(Attachment.Unattachable("no runtime descriptor this launcher reads is published for it"))
         case Some(descriptor) =>
           for
-            assembled <- assemble(project, program, buildDirectory)
-            hosts <- readProgramRules(project, program)
+            assembled <- assemble(workspaceRoot, program, buildDirectory)
+            hosts <- readProgramRules(workspaceRoot, program)
             config <- if program == Program.Mill then daemonConfig(buildDirectory).map(Some(_)) else Right(None)
           yield
             val ownerProxyLog = owner.resolve(s"$proxyName.log")

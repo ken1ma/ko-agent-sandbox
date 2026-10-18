@@ -1,4 +1,4 @@
-// The supervisor: from a project and a program to a confined command's exit code, through its
+// The supervisor: from a workspace and a program to a confined command's exit code, through its
 // steps — validate, scavenge, publish, runtime, profile, run, end what was started, remove — and how
 // the launcher's own executable is re-invoked as the runner, the supervisor and the proxy
 // (selfInvocation). The runtimes the commands of one build directory share are RunnerRuntimes.scala,
@@ -23,7 +23,7 @@ import RunOnHostProxy.*
 import RunOnHostSession.Session
 import HostCommands.Os
 import FileHelper.{directoryEntries, directoryEntriesIfAny, isExecutableFile, realPath}
-import SandboxProject.projectIdOf
+import SandboxWorkspace.workspaceIdOf
 
 object RunOnHostSandbox:
 
@@ -34,7 +34,7 @@ object RunOnHostSandbox:
       * the JDK a pinned or unset `mill-jvm-version` runs the daemon on
       * (RunOnHostPrereqs.millRecordedJdk), none under `system`. */
     distribution: Option[Path],
-    /** The per-project sbt global base and Ivy home, Gradle's user home and Maven's local
+    /** The per-workspace sbt global base and Ivy home, Gradle's user home and Maven's local
       * repository: created and granted for the program that reads each (`sbtCachesGranted`,
       * `gradleUserHomeGranted`, `m2RepositoryGranted`), and for the other programs paths nothing
       * reads, named all the same so the environment has the same variable names for every program
@@ -123,8 +123,8 @@ object RunOnHostSandbox:
    * The text of mill's `java-home` file in `buildDirectory` (RunOnHostPrereqs.MillJavaHomeFile),
    * None when it is absent or cannot be read as the build's own file.
    *
-   * The launcher reads it outside any profile, under the runner's monitor, while a command of the
-   * project may be writing under `out/`. So each directory is opened relative to the one before
+   * The launcher reads it outside any profile, under the runner's monitor, while a command in the
+   * workspace may be writing under `out/`. So each directory is opened relative to the one before
    * it and the file relative to the last, none through a symlink, whatever a command renames
    * meanwhile; the read stops at `MillJavaHomeMaxBytes`, whatever size the file reports; and the
    * whole is abandoned after `MillJavaHomeReadMillis`, since the open of a FIFO moved into the
@@ -196,14 +196,14 @@ object RunOnHostSandbox:
       else directoryEntries(path).filter(Files.isDirectory(_))
 
   /** The assembly: everything the profile derives authority from, decided before anything runs.
-    * `buildDirectory` is where the command runs, the project or a directory beneath it: mill's
+    * `buildDirectory` is where the command runs, the workspace root or a directory beneath it: mill's
     * bootstrap, version pin and `mill-jvm-version` are that directory's, as the bootstrap reads
     * them from its working directory, so a nested build is another build; the grants stay the
-    * project's. */
+    * workspace's. */
   def assemble(
-    project: Path, program: Program, env: String => Option[String], buildDirectory: Path,
+    workspaceRoot: Path, program: Program, env: String => Option[String], buildDirectory: Path,
   ): Either[String, Assembled] =
-    try assembled(project, program, env, buildDirectory).left.map(_.worded)
+    try assembled(workspaceRoot, program, env, buildDirectory).left.map(_.worded)
     catch case ex: Unreadable => Left(wording(ex.refusal))
 
   /** Why one step of the assembly refuses, kept typed to the assembly's boundary: the launch's
@@ -216,7 +216,7 @@ object RunOnHostSandbox:
   private def context[A](step: String)(value: Either[Refusal | String, A]): Either[StepRefusal, A] =
     value.left.map(StepRefusal(step, _))
 
-  /** The executable a `mill`, `gradle` or `mvn` command from `buildDirectory` — the project, for
+  /** The executable a `mill`, `gradle` or `mvn` command from `buildDirectory` — the workspace root, for
     * Maven — would be granted, the one the user provisions (run-on-host.md "Program
     * prerequisites"), or the step refusing it. */
   def provisionedExecutable(
@@ -227,7 +227,8 @@ object RunOnHostSandbox:
         case Program.Mill   => millLauncher(env, buildDirectory).map(_.executable)
         case Program.Gradle => gradleDistribution(env, buildDirectory).map(_.resolve("bin").resolve("gradle"))
         case Program.Mvn    => mvnDistribution(env, buildDirectory).map(_.resolve("bin").resolve("mvn"))
-        case Program.Sbt    => Left(StepRefusal("sbt executable", "sbt's executable is the user's, not the project's"))
+        case Program.Sbt    =>
+          Left(StepRefusal("sbt executable", "sbt's executable is the user's, not the workspace's"))
     catch case ex: Unreadable => Left(StepRefusal(program.name, ex.refusal))
 
   /** Mill's provisioned JVM launcher, its version, `<v>-jvm`, and the JDK a pinned or unset
@@ -275,12 +276,12 @@ object RunOnHostSandbox:
       real <- context("gradle distribution")(realPath(home).toRight(s"$home vanished"))
     yield real
 
-  /** Maven's home as the project's wrapper would run it. */
-  private def mvnDistribution(env: String => Option[String], project: Path): Either[StepRefusal, Path] =
+  /** Maven's home as the workspace's wrapper would run it. */
+  private def mvnDistribution(env: String => Option[String], workspaceRoot: Path): Either[StepRefusal, Path] =
     for
-      wrapper <- context("mvn wrapper")(validateMvnWrapper(project, isExecutableFile))
+      wrapper <- context("mvn wrapper")(validateMvnWrapper(workspaceRoot, isExecutableFile))
       _ <- context("mvn wrapper")(validateMvnWrapperScript(readLines(wrapper).getOrElse(Seq.empty)))
-      properties = project.resolve(".mvn").resolve("wrapper").resolve("maven-wrapper.properties")
+      properties = workspaceRoot.resolve(".mvn").resolve("wrapper").resolve("maven-wrapper.properties")
       url <- context("mvn wrapper")(
         readText(properties).toRight(Refusal.PrereqMvnWrapperUnreadable(s"$properties is absent"))
           .flatMap(mvnDistributionUrl(_, env("MVNW_REPOURL"))),
@@ -291,7 +292,7 @@ object RunOnHostSandbox:
     yield real
 
   private def assembled(
-    project: Path, program: Program, env: String => Option[String], buildDirectory: Path,
+    workspaceRoot: Path, program: Program, env: String => Option[String], buildDirectory: Path,
   ): Either[StepRefusal, Assembled] =
     val os = Os.Mac
     for
@@ -321,30 +322,30 @@ object RunOnHostSandbox:
         case Program.Gradle =>
           gradleDistribution(env, buildDirectory).map(real => (real.resolve("bin").resolve("gradle"), Some(real), None))
         case Program.Mvn =>
-          mvnDistribution(env, project).map(real => (real.resolve("bin").resolve("mvn"), Some(real), None))
+          mvnDistribution(env, workspaceRoot).map(real => (real.resolve("bin").resolve("mvn"), Some(real), None))
       (executable, distribution, millLauncher) = executableAndDistribution
       configuredRoot <- context("cache root")(cacheRootOf(os, env))
       cacheRoot <- context("cache root")(
-        cacheRootOutsideProject(configuredRoot, project, os, FileHelper.canonicalizedFuturePath),
+        cacheRootOutsideWorkspace(configuredRoot, workspaceRoot, os, FileHelper.canonicalizedFuturePath),
       )
       // stateRootOf words its refusals for `fail`, which prints them whole.
       stateRoot <- context("state root")(
         LauncherState.stateRootOf(os, env).left.map(_.stripPrefix("error: ")),
       )
-      projectId = projectIdOf(project, os)
-      v1Dir = coursierV1Of(cacheRoot, projectId)
-      sbtGlobalDir = sbtGlobalOf(cacheRoot, projectId)
-      ivyHomeDir = ivyHomeOf(cacheRoot, projectId)
-      gradleUserHomeDir = gradleUserHomeOf(cacheRoot, projectId)
-      m2RepositoryDir = m2RepositoryOf(cacheRoot, projectId)
+      workspaceId = workspaceIdOf(workspaceRoot, os)
+      v1Dir = coursierV1Of(cacheRoot, workspaceId)
+      sbtGlobalDir = sbtGlobalOf(cacheRoot, workspaceId)
+      ivyHomeDir = ivyHomeOf(cacheRoot, workspaceId)
+      gradleUserHomeDir = gradleUserHomeOf(cacheRoot, workspaceId)
+      m2RepositoryDir = m2RepositoryOf(cacheRoot, workspaceId)
       // Each directory as it will be granted, before it is created: an existing symlink among its
-      // ancestors — `run-on-host`, the project's directory — places it wherever the link points.
+      // ancestors — `run-on-host`, the workspace's directory — places it wherever the link points.
       _ <- Vector(v1Dir, sbtGlobalDir, ivyHomeDir, gradleUserHomeDir, m2RepositoryDir)
         .foldLeft(Right(()): Either[StepRefusal, Unit]): (checked, dir) =>
           checked.flatMap: _ =>
             context("cache directory"):
               FileHelper.canonicalizedFuturePath(dir).left.map(Refusal.CacheRootUnusable(_))
-                .flatMap(cacheRootOutsideProject(_, project, os, Right(_)))
+                .flatMap(cacheRootOutsideWorkspace(_, workspaceRoot, os, Right(_)))
                 .flatMap(cachePathClearOfStateRoot(_, stateRoot, os))
                 .map(_ => ())
       v1 = Files.createDirectories(v1Dir)
@@ -356,7 +357,7 @@ object RunOnHostSandbox:
       m2Repository = programCache(Program.Mvn, m2RepositoryDir)
     yield Assembled(
       CommandPrereqs(
-        project = project,
+        workspaceRoot = workspaceRoot,
         jdkHome = jdk,
         coursierV1 = v1.toRealPath(),
         program = program,
@@ -445,8 +446,8 @@ object RunOnHostSandbox:
     * image binary, which is self-contained and reads no jar, or the jar form's launch entry
     * (launchEntry). Read once, when this object initializes — at each launcher process's start,
     * since every one calls in here before it serves or spawns — so it is the file the process was
-    * loaded from. The JDK is left out: coursier's under the cache root, which no project clean
-    * removes. */
+    * loaded from. The JDK is left out: coursier's under the cache root, which no clean in the
+    * workspace removes. */
   private[launcher] val launchFile: Option[Path] =
     if isNativeImage then
       val command = ProcessHandle.current().info().command()
@@ -475,10 +476,10 @@ object RunOnHostSandbox:
       case Some(path) =>
         realPath(path).map(Some(_)).toRight(
           s"the launcher's executable $path no longer exists; rebuild it at that path, " +
-            "or relaunch the session from an executable outside the project",
+            "or relaunch the session from an executable outside the workspace",
         )
 
-  /** `--run-command-on-host <program> <project> <cwd> [--env=<name>...] [--channel-log=<file>]
+  /** `--run-command-on-host <program> <workspace-root> <cwd> [--env=<name>...] [--channel-log=<file>]
     * [--runtime-session=<dir> --proxy-port=<port> --proxy-log=<file> [--daemon-port=<port> --daemon-pid=<pid>]]
     * [--credentials-on-stdin] --
     * <args...>`: one channel request as a process of its own, so the runner's cancel is a SIGTERM
@@ -487,7 +488,7 @@ object RunOnHostSandbox:
   def runCommandMain(args: Seq[String]): Unit =
     def start(
       programName: String,
-      project: String,
+      workspaceArg: String,
       workingDirectory: String,
       options: List[String],
       commandArgs: List[String],
@@ -510,7 +511,7 @@ object RunOnHostSandbox:
         reason => { Console.err.println(s"--run-command-on-host: $reason"); sys.exit(2) },
         identity,
       )
-      val fileRules = fileRulesOf(options, Path.of(project)).fold(
+      val fileRules = fileRulesOf(options, Path.of(workspaceArg)).fold(
         reason => { Console.err.println(s"--run-command-on-host: $reason"); sys.exit(2) },
         identity,
       )
@@ -535,7 +536,7 @@ object RunOnHostSandbox:
       runnerGone.start()
       sys.exit(
         run(
-          Path.of(project), program, commandArgs, bundledSystemPaths(), uid,
+          Path.of(workspaceArg), program, commandArgs, bundledSystemPaths(), uid,
           Console.err.println, workingDirectory = Some(Path.of(workingDirectory)),
           forwarded = forwardedNames(options),
           channelLog = options.find(_.startsWith(ChannelLogOption))
@@ -546,9 +547,9 @@ object RunOnHostSandbox:
         ),
       )
     args.toList match
-      case programName :: project :: workingDirectory :: rest if rest.contains("--") =>
+      case programName :: workspaceArg :: workingDirectory :: rest if rest.contains("--") =>
         val (options, commandArgs) = rest.span(_ != "--")
-        start(programName, project, workingDirectory, options, commandArgs.drop(1))
+        start(programName, workspaceArg, workingDirectory, options, commandArgs.drop(1))
       case other =>
         Console.err.println(s"--run-command-on-host: unexpected arguments: ${other.mkString(" ")}")
         sys.exit(2)
@@ -597,11 +598,11 @@ object RunOnHostSandbox:
   val FileRulesOption = "--file-rules="
 
   /** The file rules a command's or runtime's profile denies writes to: the launch's resolved set
-    * when the runner handed one on, else the project's lines alone (FileRules.ofProject). */
-  def fileRulesOf(options: Seq[String], project: Path): Either[String, FileRules.Resolved] =
+    * when the runner handed one on, else the workspace's lines alone (FileRules.ofWorkspace). */
+  def fileRulesOf(options: Seq[String], workspaceRoot: Path): Either[String, FileRules.Resolved] =
     options.find(_.startsWith(FileRulesOption)) match
       case Some(option) => FileRules.readResolved(Path.of(option.stripPrefix(FileRulesOption)))
-      case None         => FileRules.ofProject(project)
+      case None         => FileRules.ofWorkspace(workspaceRoot)
 
   /** The runner's runtime as the supervisor's options: the first three together or none, the
     * daemon's port and pid with them for a mill runtime. */
@@ -707,7 +708,7 @@ object RunOnHostSandbox:
   // ---------------------------------------------------------------------------
 
   def run(
-    projectArg: Path,
+    workspaceArg: Path,
     program: Program,
     commandArgs: Seq[String],
     systemPaths: SeatbeltProfile.SystemPaths,
@@ -732,10 +733,10 @@ object RunOnHostSandbox:
 
     val prepared: Either[String, Assembled] =
       for
-        project <-
-          try Right(projectArg.toAbsolutePath.toRealPath())
-          catch case ex: IOException => Left(s"$projectArg: ${ex.getMessage}")
-        assembled <- assemble(project, program, env, workingDirectory.getOrElse(project))
+        workspaceRoot <-
+          try Right(workspaceArg.toAbsolutePath.toRealPath())
+          catch case ex: IOException => Left(s"$workspaceArg: ${ex.getMessage}")
+        assembled <- assemble(workspaceRoot, program, env, workingDirectory.getOrElse(workspaceRoot))
         _ <- RunOnHostSession.ensureRoot(root, uid)
         // Scavenge before anything runs — an orphan a kill left is ours to end here — but only
         // when not dispatched by a runner: the runner owns scavenging (at its startup and before
@@ -757,7 +758,7 @@ object RunOnHostSandbox:
     prepared match
       case Left(reason) => refused(reason)
       case Right(assembled) =>
-        RunOnHostSession.publish(root, assembled.prereqs.project) match
+        RunOnHostSession.publish(root, assembled.prereqs.workspaceRoot) match
           case Left(reason) => refused(reason)
           case Right(session) =>
             // Also on a shutdown hook (RunOnHostSession.Teardown): the registered groups are
@@ -921,7 +922,7 @@ object RunOnHostSandbox:
     channelLog: Option[Path],
   ): Either[String, Int] =
     val program = assembled.prereqs.program
-    val buildDirectory = workingDirectory.getOrElse(assembled.prereqs.project)
+    val buildDirectory = workingDirectory.getOrElse(assembled.prereqs.workspaceRoot)
     for
       runtime <- runnerRuntime.map(Right(_)).getOrElse(
         ownRuntime(
@@ -970,7 +971,9 @@ object RunOnHostSandbox:
     log: String => Unit,
   ): Either[String, Runtime] =
     val program = assembled.prereqs.program
-    RunnerRuntimes(session, assembled.prereqs.project, log, systemPaths, forwards, fileRules, credentials, channelLog)(
+    RunnerRuntimes(
+      session, assembled.prereqs.workspaceRoot, log, systemPaths, forwards, fileRules, credentials, channelLog,
+    )(
       assemble = (_, _, _) => Right(assembled),
     )
       .prepare(program, buildDirectory, commandArgs)
@@ -978,7 +981,7 @@ object RunOnHostSandbox:
         case Some(runtime) => Right(runtime)
         case None =>
           val proxyLog = session.directory.resolve("proxy.log")
-          readProgramRules(assembled.prereqs.project, program)
+          readProgramRules(assembled.prereqs.workspaceRoot, program)
             .flatMap(
               createProxy(systemPaths, credentials, channelLog)(program, _, session.records.resolve("proxy"), proxyLog),
             )
@@ -1024,7 +1027,7 @@ object RunOnHostSandbox:
     val profileFile = session.directory.resolve("profile.sb")
     Files.writeString(profileFile, profile, UTF_8)
 
-    val buildDirectory = workingDirectory.getOrElse(prereqs.project)
+    val buildDirectory = workingDirectory.getOrElse(prereqs.workspaceRoot)
     val programCommand = prereqs.program match
       // With the portfile live the client connects and forks nothing
       // (NetworkClient.connectOrStartServerAndConnect, v1.13.0 and v2.0.9).
@@ -1036,7 +1039,7 @@ object RunOnHostSandbox:
       case Program.Mill =>
         buildDirectory.resolve("mill").toString +: commandArgs
       case Program.Gradle => gradleCommand(prereqs, tmp) ++ commandArgs
-      // The distribution's own `mvn`, not the project's `mvnw` (run-on-host.md "Maven");
+      // The distribution's own `mvn`, not the workspace's `mvnw` (run-on-host.md "Maven");
       // --batch-mode as sbt's -batch.
       case Program.Mvn =>
         Seq(prereqs.executable.toString, "--batch-mode") ++ commandArgs
@@ -1066,12 +1069,12 @@ object RunOnHostSandbox:
     catch case ex: IOException => Left(s"starting the command: ${ex.getMessage}")
 
   /**
-   * The distribution's own `gradle`, not the project's `gradlew` (run-on-host.md "Gradle"), with
+   * The distribution's own `gradle`, not the workspace's `gradlew` (run-on-host.md "Gradle"), with
    * its settings on the command line, where a `-D` overrides every gradle.properties. The daemon
    * registry is the launch's own, under the runner's `tmp/`, which every Gradle process of the
    * launch is granted and which ends with the launch: `gradle --stop` stops every daemon in the
-   * registry, whatever its JVM (`DaemonStopClient`), so a registry under the per-project user
-   * home would let one launch's `--stop` end another launch's builds on the project. Attaching
+   * registry, whatever its JVM (`DaemonStopClient`), so a registry under the per-workspace user
+   * home would let one launch's `--stop` end another launch's builds in the same workspace. Attaching
    * is already the launch's own: the client's `java.io.tmpdir`, the runner's `tmp/`, is among the
    * immutable properties Gradle's daemon compatibility compares (`InitialPropertiesConverter`,
    * `DaemonCompatibilitySpec`). The daemons the registry holds are recorded after each command
@@ -1216,7 +1219,7 @@ object RunOnHostSandbox:
    * resolved, as the links are: a root reached through a symlink, macOS's `/var`, would
    * otherwise match nothing and the sweep would take every link.
    */
-  def cleanForeignTargetLinks(project: Path, granted: Seq[Path]): Vector[Path] =
+  def cleanForeignTargetLinks(workspaceRoot: Path, granted: Seq[Path]): Vector[Path] =
     val roots = granted.flatMap(realPath)
     val removed = Vector.newBuilder[Path]
     def walk(dir: Path, inTarget: Boolean): Unit =
@@ -1237,5 +1240,5 @@ object RunOnHostSandbox:
               catch case _: IOException => ()
         else if Files.isDirectory(entry) && !FileRules.GuardedComponents.contains(name) then
           walk(entry, inTarget || name == "target")
-    walk(project, inTarget = false)
+    walk(workspaceRoot, inTarget = false)
     removed.result()

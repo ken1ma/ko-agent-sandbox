@@ -5,7 +5,7 @@
 # case the prerequisite classifier has to name, not a gap to fill in silently; a line that
 # disagrees with RunOnHostPrereqsTest's fixtures is a finding, not a test to relax.
 #
-# Run from the project directory. Read-only but for one temporary directory it removes.
+# Run from the workspace root. Read-only but for one temporary directory it removes.
 
 set -u
 
@@ -37,10 +37,10 @@ for v in XDG_CACHE_HOME XDG_STATE_HOME COURSIER_CACHE COURSIER_JVM_CACHE COURSIE
 done
 
 echo
-echo "=== project ==="
-project=$(pwd -P)
-say "canonical project root" "$project"
-probe_dir=$(mktemp -d "$project/.layout-probe.XXXXXX") || exit 1
+echo "=== workspace ==="
+workspace=$(pwd -P)
+say "canonical workspace root" "$workspace"
+probe_dir=$(mktemp -d "$workspace/.layout-probe.XXXXXX") || exit 1
 : > "$probe_dir/casetest"
 if [ -e "$probe_dir/CASETEST" ]; then say "filesystem case" "insensitive"
 else say "filesystem case" "sensitive"; fi
@@ -96,15 +96,15 @@ say "download folder" "$([ -d "$mill_cache/download" ] && ls -1 "$mill_cache/dow
 echo
 echo "=== maven ==="
 mvn_dists="${MAVEN_USER_HOME:-$HOME/.m2}/wrapper/dists"
-say "project wrapper" "$([ -x mvnw ] && echo mvnw || echo MISSING)"
+say "workspace wrapper" "$([ -x mvnw ] && echo mvnw || echo MISSING)"
 say "distributionUrl" \
     "$(sed -n 's/^distributionUrl=//p' .mvn/wrapper/maven-wrapper.properties 2>/dev/null || echo MISSING)"
 say "wrapper dists" "$([ -d "$mvn_dists" ] && ls -1 "$mvn_dists" | tr '\n' ' ' || echo "MISSING $mvn_dists")"
 
 echo
 echo "=== what a Seatbelt profile would name ==="
-say "PROJECT" "$project"
+say "WORKSPACE" "$workspace"
 say "COURSIER_JDK_HOME" "${JAVA_HOME:-UNSET — a prerequisite failure}"
 say "MILL_DOWNLOAD" "${XDG_CACHE_HOME:-$HOME/.cache}/mill/download"
-say "RUN_ON_HOST_COURSIER_V1" "${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/run-on-host/<projectId>/coursier/v1"
+say "RUN_ON_HOST_COURSIER_V1" "${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/run-on-host/<workspaceId>/coursier/v1"
 printf '\nThe sbt distribution is the other half of PROGRAM; src/probe/sbt-exec-chain.sh finds it.\n'

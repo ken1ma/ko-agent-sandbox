@@ -84,7 +84,7 @@ object RunOnHostProxy:
 
   /**
    * The name of a host proxy's audit log in the run's log directory, as the two parts a later start's
-   * number goes between (projectAuditLog): a session `r123`'s `proxy-sbt-<hash>.log` gives
+   * number goes between (workspaceAuditLog): a session `r123`'s `proxy-sbt-<hash>.log` gives
    * `proxy-sbt-<hash>-r123` and `.log`. The session's name tells apart the runner's and a command's
    * proxy logs of the same name, and `--egress-log` lists a name beginning `proxy` as a proxy's log
    * (EgressRules.proxyLogsOf).
@@ -100,13 +100,13 @@ object RunOnHostProxy:
    * failed (RunnerRuntimes.prepared, created) — has a session file of the same name, and the earlier
    * proxy's log keeps its own here: the `start`-th has `-<start>` before `.log`, from the second on.
    */
-  def projectAuditLog(channelLog: Path, proxyLog: Path, start: Int = 1): Option[Path] =
+  def workspaceAuditLog(channelLog: Path, proxyLog: Path, start: Int = 1): Option[Path] =
     auditLogName(proxyLog).map: (prefix, suffix) =>
       channelLog.resolveSibling(prefix + (if start == 1 then "" else s"-$start") + suffix)
 
   /**
    * Before the proxy starts, makes its log a file in the run's log directory, under the first name of
-   * projectAuditLog no earlier proxy's log has, and the session's `proxyLog` a symbolic link to it. The
+   * workspaceAuditLog no earlier proxy's log has, and the session's `proxyLog` a symbolic link to it. The
    * lines are there while the proxy writes them and stay however the session's directory is removed.
    * A symbolic link, not a hard link: XDG_STATE_HOME can place the log directory on another filesystem
    * than the session's.
@@ -119,7 +119,7 @@ object RunOnHostProxy:
     // Owner-only, as the container proxy's log is: the targets it records are what a GET carries out.
     val ownerOnly = PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------"))
     def created(start: Int): Option[Path] =
-      projectAuditLog(channelLog, proxyLog, start).flatMap: kept =>
+      workspaceAuditLog(channelLog, proxyLog, start).flatMap: kept =>
         try Some(Files.createFile(kept, ownerOnly))
         catch case _: FileAlreadyExistsException => created(start + 1)
     try

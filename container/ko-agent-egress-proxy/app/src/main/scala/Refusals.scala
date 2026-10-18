@@ -33,14 +33,14 @@ case class Refusal(message: String, advice: String, proxyError: String = "http_r
  * host this session's ruleset does not allow — forRefusedPost checks before naming one. A host command's
  * proxy sends these bodies too (run-on-host.md, "The command's egress proxy"), so a step that is the
  * user's says "outside the sandbox": a refused host command already runs on the host. Fixed text
- * plus what the request itself named, so a body never carries project data or a credential. This
+ * plus what the request itself named, so a body never carries workspace data or a credential. This
  * object is the whole table, one member per refusal; the audit line keeps the short reason alone.
  */
 object RefusalAdvice:
   /** The step depends on why the host is refused. The rule file's allow lines count under
     * deny-unless-allowed alone (resolveRuleset), so under deny-all or deny-unless-model the step is
     * a relaunch — named as necessary, never as sufficient: this session's resolution says nothing
-    * about what that profile would apply from the project's file, a denial of this very host
+    * about what that profile would apply from the workspace's file, a denial of this very host
     * included. A defaults host reaches this refusal under the default profile only through `deny
     * defaults` — a host a deny line emptied is refused as denied, naming the line — so the step
     * names that. */
@@ -50,16 +50,16 @@ object RefusalAdvice:
     val addition = s"'allow https://$host/ read' in .ko-agent-sandbox/egress/rule"
     if profile == default then
       if defaults then
-        "This project's rule file starts from deny defaults and does not allow it. Ask the user; do not look " +
+        "This workspace's rule file starts from deny defaults and does not allow it. Ask the user; do not look " +
           "for another route."
       else s"Not in this session's egress rules. Ask the user to add $addition on the host."
     else
-      s"This session's egress profile, $profile, allows no project hosts. Ask the user; a relaunch under " +
+      s"This session's egress profile, $profile, allows no workspace hosts. Ask the user; a relaunch under " +
         (if defaults then s"$default can allow it." else s"$default with $addition can allow it.")
 
   // The line is on the body's first line already (`host denied (<line>)`); a `**.domain` pattern
   // repeated here would name a host the ruleset does not allow.
-  val hostDenied = "Denied by this project's rules. Ask the user; do not look for another route."
+  val hostDenied = "Denied by this workspace's rules. Ask the user; do not look for another route."
 
   val port = "Only port 443 is reachable."
 

@@ -4,7 +4,7 @@
 
 The default rules inspect an agent's model hosts instead of tunnelling them, one agent at a time,
 each after a measurement shows its client works over an inspected connection. The `tunnel` grant
-stays for the hosts no measurement has cleared and for a project's own rules (`design.md`, "No
+stays for the hosts no measurement has cleared and for a workspace's own rules (`design.md`, "No
 inspecting every allowed host").
 
 Every model request is then logged with its method, path and size, so the log shows a call to an
@@ -18,7 +18,7 @@ adds the log fields; the overlay's own steps are unchanged.
 ## Evidence and target
 
 - The exfiltration SECURITY.md concedes at a model host: an injected instruction supplies the
-  attacker's key, and any process in the session uploads project files under it ("Exfiltration
+  attacker's key, and any process in the session uploads workspace files under it ("Exfiltration
   through allowed network traffic", with two reported demonstrations). Under a tunnel the log
   holds one `CONNECT` line per connection and nothing distinguishes that upload from a turn.
 - What the proxy sees for the more valuable credential today: forge tokens pass through the
@@ -43,7 +43,7 @@ adds the log fields; the overlay's own steps are unchanged.
    allowlist in "Audit line additions". A value outside the allowed character set is spelled `?`.
 4. The proxy keeps no credential value for the credential index: it keeps a digest, in memory,
    for the proxy's lifetime.
-5. A project keeps the opaque treatment through the existing rule: `deny defaults` and its own
+5. A workspace keeps the opaque treatment through the existing rule: `deny defaults` and its own
    `tunnel` line, the whole-ruleset decision `egress-proxy.md`, "The rule file", requires for a
    host the defaults inspect.
 6. The leaf certificate names the newly inspected hosts through the launcher's existing reading
@@ -154,7 +154,7 @@ OAuth step.
 
 ## Measurement
 
-One launch per agent with the agent's model hosts inspected through a project rule file
+One launch per agent with the agent's model hosts inspected through a workspace rule file
 (`deny defaults`, the defaults' other lines, the model hosts with
 `read method=POST,PUT,PATCH,DELETE`), `--egress-log` on, and a session that exercises tool calls,
 a subagent where the agent has one, and a compaction or long turn. Read from the log:
@@ -244,7 +244,7 @@ did not bother; they prove nothing.
 - `HostileInputTest`: a hint header value with a control character, U+202E, `=`, a space and
   4 KB of data reads back as `?` and never splits or reorders a line.
 - `EgressSessionTest`: the changed defaults resolve with the model host inspected and the leaf
-  naming it; the project override with `deny defaults` and a `tunnel` line restores the tunnel.
+  naming it; the workspace override with `deny defaults` and a `tunnel` line restores the tunnel.
 - The per-agent measurement is a recorded session, not a test: its log excerpt goes beside the
   defaults line as the evidence.
 
@@ -274,7 +274,7 @@ did not bother; they prove nothing.
   `allow` line per model request with `request=`, `client=`, `credential=` and the hint fields.
 - [ ] A `curl` upload to the model host from inside the session shows as a line with
   `client=curl`, its size and a second credential index.
-- [ ] The project override restores the tunnel and the banner says so.
+- [ ] The workspace override restores the tunnel and the banner says so.
 - [ ] Each other agent's model hosts inspected, or left tunnels with the failing rule recorded,
   one commit per agent.
 - [ ] The documents above changed in the same commit as Claude Code's.

@@ -153,7 +153,7 @@ object ClipboardRelay:
 
   /**
    * What the host runs for the mode: PowerShell for the Windows relay, or the programs the POSIX relay
-   * calls, each as [[findOnPath]] resolved it (a bare name would be searched for in the project directory,
+   * calls, each as [[findOnPath]] resolved it (a bare name would be searched for in the workspace root,
    * design.md "No repository-controlled host executable resolution"). Each program is its own field rather than a name
    * the shell would classify: findOnPath canonicalizes, so the file need not be called `xclip`.
    * Empty where absent, and everywhere on macOS.

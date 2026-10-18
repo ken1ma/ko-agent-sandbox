@@ -49,7 +49,7 @@ object RunOnHostSbtServer:
       "run `sbt shutdown` there and retry"
 
   /**
-   * Where the user's own sbt 2 keeps this project's server socket:
+   * Where the user's own sbt 2 keeps this build's server socket:
    * `<serverDir>/<half SHA-1 hex of the portfile path's Path.toUri spelling>/sock`, with
    * serverDir `$SBT_GLOBAL_SERVER_DIR`, else the global base versioned `/2`, then `/server`.
    * Each input is taken as sbt takes it, because a divergence here is a divergence in what gets
@@ -94,21 +94,21 @@ object RunOnHostSbtServer:
    * creating it would need a write to the last resolved prefix, outside every writable root by
    * then.
    *
-   * The roots are the profile's writable set (`SeatbeltProfile.render`): the project, and the
-   * per-project caches that persist across sessions, so a socket an *earlier* agent's command
+   * The roots are the profile's writable set (`SeatbeltProfile.render`): the workspace, and the
+   * per-workspace caches that persist across sessions, so a socket an *earlier* agent's command
    * planted in a cache is caught as well. Each is compared in both of its macOS spellings, the
    * firmlink aliasing every containment check here shares
-   * (`SandboxProject.withMacDataVolumeAliases`). A cache that does not resolve holds nothing and
-   * is skipped; the project is mandatory, so its silence, a relative target, and any unanswerable
+   * (`SandboxWorkspace.withMacDataVolumeAliases`). A cache that does not resolve holds nothing and
+   * is skipped; the workspace is mandatory, so its silence, a relative target, and any unanswerable
    * walk all count as reachable. A target already lexically inside a root is reachable whatever
    * the filesystem currently shows, so that is answered before the walk begins.
    */
-  def reachableThroughCommandWritable(target: Path, project: Path, caches: Seq[Path]): Boolean =
-    realPath(project) match
+  def reachableThroughCommandWritable(target: Path, workspaceRoot: Path, caches: Seq[Path]): Boolean =
+    realPath(workspaceRoot) match
       case None => true
-      case Some(projectRoot) =>
+      case Some(realWorkspaceRoot) =>
         val roots =
-          SandboxProject.withMacDataVolumeAliases(projectRoot +: caches.flatMap(realPath))
+          SandboxWorkspace.withMacDataVolumeAliases(realWorkspaceRoot +: caches.flatMap(realPath))
         def inside(path: Path) = roots.exists(path.normalize.startsWith)
         if target.getRoot == null || inside(target) then true
         else
@@ -146,12 +146,12 @@ object RunOnHostSbtServer:
    * socket the shutdown is sent to is derived from the build directory the way sbt derives it,
    * never read from the portfile, and the portfile's word is only compared against it: workspace
    * content must not choose where an unconfined write-and-parse goes. The derivation is
-   * authorization, so it is checked as well as computed — a derived socket the project could
-   * have planted is refused, since the project chooses its own content and would then be
+   * authorization, so it is checked as well as computed — a derived socket the workspace could
+   * have planted is refused, since the workspace chooses its own content and would then be
    * choosing the target. Every doubt falls back to the refusal, naming what stopped the shutdown.
    */
   def shutdownForeignServer(
-    project: Path,
+    workspaceRoot: Path,
     buildDirectory: Path,
     portfileSocket: Path,
     env: String => Option[String],
@@ -163,7 +163,7 @@ object RunOnHostSbtServer:
   ): Either[String, Unit] =
     def refused(cause: String) = Left(s"${foreignServerRefusal(portfileSocket)} — $cause")
     val derived = sbtServerSocket(buildDirectory, env, userHome)
-    if reachableThroughCommandWritable(derived, project, runOnHostCaches) then
+    if reachableThroughCommandWritable(derived, workspaceRoot, runOnHostCaches) then
       refused(
         s"the socket sbt derives for this build directory ($derived) is reachable through what a " +
           "command writes, so no shutdown is sent to it",

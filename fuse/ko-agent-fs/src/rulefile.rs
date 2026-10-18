@@ -1,5 +1,5 @@
 //! The file rules as they cross between the launcher and the filter: the lines the launcher
-//! resolved from its defaults and the project's `.ko-agent-sandbox/file/rule`, and the lines the
+//! resolved from its defaults and the workspace's `.ko-agent-sandbox/file/rule`, and the lines the
 //! guard adds. The launcher owns the grammar and has already refused every ambiguity; this reads
 //! the resolved form and refuses anything else, so a launcher and a filter of different versions
 //! fail rather than disagree.

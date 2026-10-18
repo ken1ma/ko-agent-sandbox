@@ -32,68 +32,71 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
   private val MvnDistributionUrl =
     "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.16/apache-maven-3.9.16-bin.zip"
 
-  /** A project whose only-script wrapper names Maven 3.9.16. */
+  /** A workspace whose only-script wrapper names Maven 3.9.16. */
   private def mvnProject(dir: Path): Path =
     Files.writeString(executable(dir.resolve("mvnw")), "#!/bin/sh\nhash_string() {\n}\n")
     val properties = Files.createDirectories(dir.resolve(".mvn/wrapper")).resolve("maven-wrapper.properties")
     Files.writeString(properties, s"distributionUrl=$MvnDistributionUrl\n")
     dir
 
-  test("the scan finds every build directory of the programs, the project first, entering no link, .git or boundary"):
+  test("the scan finds every build directory of the programs, the workspace first, entering no link, .git or boundary"):
     val root = Files.createTempDirectory("provisioning").toRealPath()
-    val project = millBuild(Files.createDirectories(root.resolve("project")))
-    gradleBuild(project)
-    mvnProject(project)
-    gradleBuild(project.resolve("services/api"))
-    mvnProject(Files.createDirectories(project.resolve("services/legacy")))
-    millBuild(project.resolve("lib/b"))
-    millBuild(project.resolve("lib/a"))
-    millBuild(project.resolve(".git/hooks"))
-    gradleBuild(project.resolve(".ko-agent-sandbox/run-on-host"))
-    millBuild(project.resolve("out/nested/.git/tricky"))
+    val workspace = millBuild(Files.createDirectories(root.resolve("project")))
+    gradleBuild(workspace)
+    mvnProject(workspace)
+    gradleBuild(workspace.resolve("services/api"))
+    mvnProject(Files.createDirectories(workspace.resolve("services/legacy")))
+    millBuild(workspace.resolve("lib/b"))
+    millBuild(workspace.resolve("lib/a"))
+    millBuild(workspace.resolve(".git/hooks"))
+    gradleBuild(workspace.resolve(".ko-agent-sandbox/run-on-host"))
+    millBuild(workspace.resolve("out/nested/.git/tricky"))
     val elsewhere = millBuild(Files.createDirectories(root.resolve("elsewhere")))
-    Files.createSymbolicLink(project.resolve("linked"), elsewhere)
-    Files.createSymbolicLink(project.resolve("mill-link"), elsewhere.resolve("mill"))
-    Files.createFile(Files.createDirectories(project.resolve("plain")).resolve("mill"))
+    Files.createSymbolicLink(workspace.resolve("linked"), elsewhere)
+    Files.createSymbolicLink(workspace.resolve("mill-link"), elsewhere.resolve("mill"))
+    Files.createFile(Files.createDirectories(workspace.resolve("plain")).resolve("mill"))
 
     assertEquals(
-      buildDirectories(project, Set(Program.Mill, Program.Gradle, Program.Mvn)),
+      buildDirectories(workspace, Set(Program.Mill, Program.Gradle, Program.Mvn)),
       Vector(
-        BuildDirectory(Program.Mvn, project),
-        BuildDirectory(Program.Mill, project),
-        BuildDirectory(Program.Gradle, project),
-        BuildDirectory(Program.Mill, project.resolve("lib/a")),
-        BuildDirectory(Program.Mill, project.resolve("lib/b")),
-        BuildDirectory(Program.Gradle, project.resolve("services/api")),
+        BuildDirectory(Program.Mvn, workspace),
+        BuildDirectory(Program.Mill, workspace),
+        BuildDirectory(Program.Gradle, workspace),
+        BuildDirectory(Program.Mill, workspace.resolve("lib/a")),
+        BuildDirectory(Program.Mill, workspace.resolve("lib/b")),
+        BuildDirectory(Program.Gradle, workspace.resolve("services/api")),
       ),
     )
     assertEquals(
-      buildDirectories(project, Set(Program.Gradle)),
-      Vector(BuildDirectory(Program.Gradle, project), BuildDirectory(Program.Gradle, project.resolve("services/api"))),
+      buildDirectories(workspace, Set(Program.Gradle)),
+      Vector(
+        BuildDirectory(Program.Gradle, workspace),
+        BuildDirectory(Program.Gradle, workspace.resolve("services/api")),
+      ),
     )
-    assertEquals(buildDirectories(project, Set(Program.Sbt)), Vector.empty)
+    assertEquals(buildDirectories(workspace, Set(Program.Sbt)), Vector.empty)
 
     assume(System.getProperty("user.name") != "root", "root lists everything")
-    val unlistable = millBuild(Files.createDirectories(project.resolve("closed/inner"))).getParent
+    val unlistable = millBuild(Files.createDirectories(workspace.resolve("closed/inner"))).getParent
     Files.setPosixFilePermissions(unlistable, permissions("---------"))
     try
-      val names = buildDirectories(project, Set(Program.Mill)).map(_.path.getFileName.toString)
+      val names = buildDirectories(workspace, Set(Program.Mill)).map(_.path.getFileName.toString)
       assertEquals(names, Vector("project", "a", "b"))
     finally Files.setPosixFilePermissions(unlistable, permissions("rwxr-xr-x"))
-    assertEquals(buildDirectories(project.resolve("lib"), Set(Program.Mvn)), Vector.empty)
+    assertEquals(buildDirectories(workspace.resolve("lib"), Set(Program.Mvn)), Vector.empty)
 
   test("a missing mill launcher is provisionable by the bootstrap under MILL_VERSION; other refusals are notices"):
     val root = Files.createTempDirectory("provisioning").toRealPath()
-    val project = millBuild(Files.createDirectories(root.resolve("project")))
+    val workspace = millBuild(Files.createDirectories(root.resolve("project")))
     val env = Map("HOME" -> root.toString)
-    val build = BuildDirectory(Program.Mill, project)
+    val build = BuildDirectory(Program.Mill, workspace)
     val downloads = root.resolve(".cache/mill/download")
 
     val missing = finding(build, env.get)
     assertEquals(
       missing,
       Some(Finding.Provisionable(
-        Program.Mill, project,
+        Program.Mill, workspace,
         s"mill executable: mill's JVM launcher 1.1.9-jvm is not provisioned under $downloads; run " +
           "`MILL_VERSION=1.1.9-jvm ./mill version` once on the host",
         Vector("./mill", "version"), Map("MILL_VERSION" -> "1.1.9-jvm"),
@@ -118,14 +121,14 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
 
   test("a pinned JDK mill's java-home file does not record is provisionable by the same run"):
     val root = Files.createTempDirectory("provisioning").toRealPath()
-    val project = millBuild(Files.createDirectories(root.resolve("project")), jvm = "temurin:25")
+    val workspace = millBuild(Files.createDirectories(root.resolve("project")), jvm = "temurin:25")
     val env = Map("HOME" -> root.toString)
-    val build = BuildDirectory(Program.Mill, project)
+    val build = BuildDirectory(Program.Mill, workspace)
     val downloads = root.resolve(".cache/mill/download")
     val coursier = root.resolve("Library/Caches/Coursier")
     val jdk = coursier.resolve("arc/https/github.com/adoptium/jdk-25/Contents/Home")
     executable(jdk.resolve("bin/java"))
-    val javaHome = project.resolve("out/mill-daemon/cache/java-home")
+    val javaHome = workspace.resolve("out/mill-daemon/cache/java-home")
     def record(home: Path): Unit =
       Files.createDirectories(javaHome.getParent)
       Files.writeString(javaHome, s"""["temurin:25:0.0.4-162-4be9be:","$home"]""")
@@ -134,7 +137,7 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     assert(clue(finding(build, env.get)).exists(_.wording.startsWith("mill executable: ")))
     executable(downloads.resolve("1.1.9"))
     val unprovisioned = Some(Finding.Provisionable(
-      Program.Mill, project,
+      Program.Mill, workspace,
       "mill jvm: the JDK that mill-jvm-version pins, temurin:25, is not provisioned: " +
         "out/mill-daemon/cache/java-home does not record it; run `MILL_VERSION=1.1.9-jvm ./mill version` once " +
         "on the host",
@@ -146,7 +149,7 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     assertEquals(finding(build, env.get), None)
 
     // A home a command planted is no run's to fix: the file is the user's to delete.
-    val planted = project.resolve("jdk")
+    val planted = workspace.resolve("jdk")
     executable(planted.resolve("bin/java"))
     record(planted)
     val notCoursier = finding(build, env.get)
@@ -155,22 +158,23 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
 
     // Read only as the build's own file: through a link it is absent.
     record(jdk)
-    val elsewhere = Files.move(project.resolve("out/mill-daemon/cache"), root.resolve("cache-elsewhere"))
-    Files.createSymbolicLink(project.resolve("out/mill-daemon/cache"), elsewhere)
+    val elsewhere = Files.move(workspace.resolve("out/mill-daemon/cache"), root.resolve("cache-elsewhere"))
+    Files.createSymbolicLink(workspace.resolve("out/mill-daemon/cache"), elsewhere)
     assertEquals(finding(build, env.get), unprovisioned)
-    Files.delete(project.resolve("out/mill-daemon/cache"))
-    Files.move(elsewhere, project.resolve("out/mill-daemon/cache"))
+    Files.delete(workspace.resolve("out/mill-daemon/cache"))
+    Files.move(elsewhere, workspace.resolve("out/mill-daemon/cache"))
     Files.move(javaHome, root.resolve("java-home-elsewhere"))
     Files.createSymbolicLink(javaHome, root.resolve("java-home-elsewhere"))
     assertEquals(finding(build, env.get), unprovisioned)
 
   test("an unset mill-jvm-version is provisionable by the same run from mill 1.1.0 on, and a notice before"):
     val root = Files.createTempDirectory("provisioning").toRealPath()
-    val project = millBuild(Files.createDirectories(root.resolve("project")))
-    def pin(version: String): Unit = Files.writeString(project.resolve("build.mill.yaml"), s"mill-version: $version\n")
+    val workspace = millBuild(Files.createDirectories(root.resolve("project")))
+    def pin(version: String): Unit =
+      Files.writeString(workspace.resolve("build.mill.yaml"), s"mill-version: $version\n")
     pin("1.1.9")
     val env = Map("HOME" -> root.toString)
-    val build = BuildDirectory(Program.Mill, project)
+    val build = BuildDirectory(Program.Mill, workspace)
     val downloads = root.resolve(".cache/mill/download")
     val jdk = root.resolve("Library/Caches/Coursier/arc/https/cdn.azul.com/zulu21/zulu-21.jdk/Contents/Home")
     executable(jdk.resolve("bin/java"))
@@ -180,14 +184,14 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     assertEquals(
       finding(build, env.get),
       Some(Finding.Provisionable(
-        Program.Mill, project,
+        Program.Mill, workspace,
         "mill jvm: the JDK that mill runs on while mill-jvm-version is unset is not provisioned: " +
           "out/mill-daemon/cache/java-home does not record it; run `MILL_VERSION=1.1.9-jvm ./mill version` once " +
           "on the host",
         Vector("./mill", "version"), Map("MILL_VERSION" -> "1.1.9-jvm"),
       )),
     )
-    val javaHome = Files.createDirectories(project.resolve("out/mill-daemon/cache")).resolve("java-home")
+    val javaHome = Files.createDirectories(workspace.resolve("out/mill-daemon/cache")).resolve("java-home")
     Files.writeString(javaHome, s"""["zulu:21:0.0.4-162-4be9be:","$jdk"]""")
     assertEquals(finding(build, env.get), None)
 
@@ -199,15 +203,15 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
 
   test("a missing Gradle distribution is provisionable by gradlew, and a notice without one"):
     val root = Files.createTempDirectory("provisioning").toRealPath()
-    val project = gradleBuild(Files.createDirectories(root.resolve("project")))
+    val workspace = gradleBuild(Files.createDirectories(root.resolve("project")))
     val env = Map("HOME" -> root.toString)
-    val build = BuildDirectory(Program.Gradle, project)
+    val build = BuildDirectory(Program.Gradle, workspace)
 
     val missing = finding(build, env.get)
     assertEquals(
       missing,
       Some(Finding.Provisionable(
-        Program.Gradle, project,
+        Program.Gradle, workspace,
         "gradle distribution: Gradle from https://services.gradle.org/distributions/gradle-9.7.1-bin.zip is not " +
           s"unpacked at ${root.resolve(GradleDistributionDir)}; run `./gradlew --version` once on the host",
         Vector("./gradlew", "--version"), Map.empty,
@@ -222,17 +226,17 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     executable(root.resolve(GradleDistributionDir).resolve("gradle-9.7.1/bin/gradle"))
     assertEquals(finding(build, env.get), None)
 
-  test("a missing Maven distribution is provisionable by the project's mvnw"):
+  test("a missing Maven distribution is provisionable by the workspace's mvnw"):
     val root = Files.createTempDirectory("provisioning").toRealPath()
-    val project = mvnProject(Files.createDirectories(root.resolve("project")))
+    val workspace = mvnProject(Files.createDirectories(root.resolve("project")))
     val env = Map("HOME" -> root.toString)
-    val build = BuildDirectory(Program.Mvn, project)
+    val build = BuildDirectory(Program.Mvn, workspace)
     val distribution = RunOnHostPrereqs.mvnDistributionDir(root.resolve(".m2"), MvnDistributionUrl)
 
     assertEquals(
       finding(build, env.get),
       Some(Finding.Provisionable(
-        Program.Mvn, project,
+        Program.Mvn, workspace,
         s"mvn distribution: Maven from $MvnDistributionUrl is not unpacked at $distribution; run " +
           "`./mvnw --version` once on the host",
         Vector("./mvnw", "--version"), Map.empty,
@@ -241,19 +245,20 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     executable(distribution.resolve("bin/mvn"))
     assertEquals(finding(build, env.get), None)
 
-    Files.writeString(project.resolve("mvnw"), "#!/bin/sh\nexec java -jar .mvn/wrapper/maven-wrapper.jar\n")
+    Files.writeString(workspace.resolve("mvnw"), "#!/bin/sh\nexec java -jar .mvn/wrapper/maven-wrapper.jar\n")
     val notice = finding(build, env.get)
     assert(clue(notice).exists(_.isInstanceOf[Finding.Notice]))
     assert(notice.exists(_.wording.contains("only-script")))
 
   test("provisioning reports every finding, runs only on an explicit yes, and rechecks after the run"):
-    val project = Path.of("/Users/u/project")
+    val workspace = Path.of("/Users/u/project")
     val provisionable: Finding.Provisionable = Finding.Provisionable(
-      Program.Mill, project, "mill executable: not provisioned", Vector("./mill", "version"),
+      Program.Mill, workspace, "mill executable: not provisioned", Vector("./mill", "version"),
       Map("MILL_VERSION" -> "1.1.9-jvm"),
     )
-    val notice = Finding.Notice(Program.Gradle, project.resolve("api"), "gradle wrapper: unreadable")
-    val builds = Vector(BuildDirectory(Program.Gradle, project.resolve("api")), BuildDirectory(Program.Mill, project))
+    val notice = Finding.Notice(Program.Gradle, workspace.resolve("api"), "gradle wrapper: unreadable")
+    val builds =
+      Vector(BuildDirectory(Program.Gradle, workspace.resolve("api")), BuildDirectory(Program.Mill, workspace))
     def provisioned(
       reader: Option[Reader], exit: Either[String, Int], after: Option[Finding],
     ): (Vector[String], Vector[Finding.Provisionable]) =
@@ -323,14 +328,14 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
 
   test("a build directory is judged when its turn comes, so one run that provisions two is asked once"):
     val root = Files.createTempDirectory("provisioning").toRealPath()
-    val project = millBuild(Files.createDirectories(root.resolve("project")))
-    millBuild(project.resolve("lib"))
+    val workspace = millBuild(Files.createDirectories(root.resolve("project")))
+    millBuild(workspace.resolve("lib"))
     val env = Map("HOME" -> root.toString)
     val prompts = Vector.newBuilder[String]
     val reports = Vector.newBuilder[String]
     val reader = Reader(prompts += _, () => Some("y"))
     provision(
-      buildDirectories(project, Set(Program.Mill)), finding(_, env.get), Some(reader),
+      buildDirectories(workspace, Set(Program.Mill)), finding(_, env.get), Some(reader),
       run = _ =>
         executable(root.resolve(".cache/mill/download/1.1.9"))
         Right(0),
@@ -339,16 +344,16 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     assertEquals(prompts.result().size, 1)
     assertEquals(reports.result().size, 1)
 
-  test("what the project wrote is shown spelled out, never acted on by the terminal"):
-    val project = Path.of("/Users/u/project/a\u001b[2Kb\rc")
+  test("what the workspace supplies is shown spelled out, never acted on by the terminal"):
+    val workspace = Path.of("/Users/u/project/a\u001b[2Kb\rc")
     val provisionable: Finding.Provisionable = Finding.Provisionable(
-      Program.Mill, project, "mill executable: 1.1.9\u001b[2K-jvm is not provisioned", Vector("./mill", "version"),
+      Program.Mill, workspace, "mill executable: 1.1.9\u001b[2K-jvm is not provisioned", Vector("./mill", "version"),
       Map("MILL_VERSION" -> "1.1.9\u001b[2K-jvm"),
     )
     val prompts = Vector.newBuilder[String]
     val reports = Vector.newBuilder[String]
     provision(
-      Vector(BuildDirectory(Program.Mill, project)), _ => Some(provisionable),
+      Vector(BuildDirectory(Program.Mill, workspace)), _ => Some(provisionable),
       Some(Reader(prompts += _, () => Some("n"))), run = _ => Right(0), report = reports += _,
     )
     assertEquals(

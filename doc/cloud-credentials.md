@@ -53,7 +53,7 @@ a Google Cloud access token and an Azure service principal travel in.
 
 A Bedrock API key is not one of these values: it is a bearer token, forwarded as
 `--env=AWS_BEARER_TOKEN_BEDROCK`, the variable the Bedrock SDKs read. No default names a Bedrock
-host; the region's `bedrock-runtime` host is the project's own `tunnel` line in
+host; the region's `bedrock-runtime` host is the workspace's own `tunnel` line in
 `.ko-agent-sandbox/egress/rule`:
 
     allow https://bedrock-runtime.us-east-1.amazonaws.com/      tunnel   # N. Virginia

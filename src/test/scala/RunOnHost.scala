@@ -3,14 +3,14 @@
 // the channel — reads the bundled copy. src/probe/run-on-host-acceptance-test.sh is its caller.
 //
 //   java -cp <the classpath EmitRunOnHostProfile prints> \
-//     agentsandbox.launcher.RunOnHost <program> <project> [system-paths-file] -- <args...>
+//     agentsandbox.launcher.RunOnHost <program> <workspace> [system-paths-file] -- <args...>
 //
 // The acceptance test runs that under the build lock the runner's lock holder takes (RunOnHostSession.lockedSpawn),
 // through perl's exec, so the pid its kill rows signal is the supervisor's: `--lock-script` prints
-// the perl script and `--build-lock <program> <project>` the lock file, for the acceptance test to compose.
+// the perl script and `--build-lock <program> <workspace>` the lock file, for the acceptance test to compose.
 //
 // Plain java, never `sbt Test/runMain`: runMain would host this in the build's own JVM, whose
-// server holds the target project's portfile — the supervisor would end it (one server per build
+// server holds the target workspace's portfile — the supervisor would end it (one server per build
 // directory) — and whose exit is sys.exit's.
 // Exits with the command's code; a refusal is 2, on stderr.
 
@@ -28,23 +28,23 @@ object RunOnHost:
       case (before, _)            => (before, Nil)
 
     val usage =
-      s"usage: RunOnHost <${Program.values.map(_.name).mkString("|")}> <project> [system-paths-file] -- <args...>"
+      s"usage: RunOnHost <${Program.values.map(_.name).mkString("|")}> <workspace> [system-paths-file] -- <args...>"
     front match
       case "--lock-script" :: Nil => print(RunOnHostSession.LockScript)
-      case "--build-lock" :: programName :: projectName :: Nil =>
+      case "--build-lock" :: programName :: workspacePath :: Nil =>
         val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
         val root = RunOnHostSession.root(uid)
         RunOnHostSession.ensureRoot(root, uid)
-          .flatMap(_ => RunOnHostSession.buildLockFile(root, programName.toLowerCase, Paths.get(projectName)))
+          .flatMap(_ => RunOnHostSession.buildLockFile(root, programName.toLowerCase, Paths.get(workspacePath)))
           .fold(reason => { Console.err.println(s"refused: $reason"); sys.exit(2) }, println)
-      case programName :: projectName :: rest if rest.sizeIs <= 1 =>
+      case programName :: workspacePath :: rest if rest.sizeIs <= 1 =>
         val program = Program.named(programName.toLowerCase).getOrElse:
           Console.err.println(s"unknown program $programName\n$usage")
           sys.exit(2)
         val systemPaths = RunOnHostSandbox.readSystemPaths(rest.headOption.map(Paths.get(_)))
         val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
         sys.exit(
-          RunOnHostSandbox.run(Paths.get(projectName), program, commandArgs, systemPaths, uid, Console.err.println),
+          RunOnHostSandbox.run(Paths.get(workspacePath), program, commandArgs, systemPaths, uid, Console.err.println),
         )
       case _ =>
         Console.err.println(usage)

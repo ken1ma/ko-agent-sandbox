@@ -9,20 +9,20 @@ open a path the sandbox chose?*
   or the agent from itself. It defends exactly the property below.
 - One rule in `policy.rs` derives from elsewhere: `.ko-agent-sandbox` cannot be created or written
   either — the launcher's own boundary configuration, protected for the reason `SECURITY.md` ("A
-  project loosening its own confinement") gives rather than for anything about git. It shares
+  workspace loosening its own confinement") gives rather than for anything about git. It shares
   this document's name rule, because the launcher resolves that name on the same case-folding
   backing.
 
 
 ## The property
 
-> Through the host-shared project mount, the sandbox can never create or alter repository
+> Through the host-shared workspace mount, the sandbox can never create or alter repository
 > state that causes a subsequent host-side `git` command to run a program the sandbox chose, or
 > to open an object directory at a path the sandbox chose.
 
 "Host-side" matters: the danger is not code running in the sandbox (the container is the boundary
 for that) but code the *host user's* `git` runs later, outside the sandbox, against the shared
-project directory — a `git status`, `git commit`, or `git checkout` in their editor or terminal.
+workspace — a `git status`, `git commit`, or `git checkout` in their editor or terminal.
 
 
 ## How a repository makes `git` run a program or open a path
@@ -333,7 +333,7 @@ into the **worktree**, two ways:
   sets `.husky/_` in every repository it installs into.
 
 In both cases the files host `git` executes are stored at an ordinary worktree path, which the
-`.git` name rule classifies as ordinary project data.
+`.git` name rule classifies as ordinary workspace data.
 
 - **The guard therefore resolves each such directory before the mount** (`guard::resolve`) and the
   filter serves it as a read-only root, with every ordinary component its chain traverses pinned
@@ -467,7 +467,7 @@ The check is also a snapshot, taken before the mount and not repeated.
   and an `lstat` on the hot path, so the answer is to record the window rather than chase it.
 - The window is the host's own to open: the binding rule allows only chains the sandbox cannot
   mutate.
-- What it costs is that Git configuration or hooks the host relocates into writable project paths
+- What it costs is that Git configuration or hooks the host relocates into writable workspace paths
   remain writable for the rest of that session, just as they would without the mount-time guard.
 
 
@@ -475,30 +475,29 @@ The check is also a snapshot, taken before the mount and not repeated.
 
 - `.gitattributes`, `.gitmodules` — writable worktree data; can only activate host-defined drivers,
   cannot define commands (and cannot smuggle `!cmd` submodule updates). A host's git-lfs filter
-  still connects where `.lfsconfig` says (`SECURITY.md`, "The project directory").
+  still connects where `.lfsconfig` says (`SECURITY.md`, "The workspace").
 - Operational gitdir state (`objects`, `refs`, `logs`, `index`, …) — writable, or `git` cannot
   function; none of it is executed, and `alternates` is the one path in it git opens (group 4).
 - Host-side changes — the host writes the backing store directly, bypassing the filter by design.
   Legitimate host `git` metadata is created outside the sandbox and is not the threat.
 
 
-## Consequences: git operations blocked inside the project
+## Consequences: git operations blocked inside the workspace
 
 These follow from the name rule and the classifier and must be documented, not silently broken
-(SECURITY.md, "The host's git executing what the sandbox wrote" and "The project directory", has
+(SECURITY.md, "The host's git executing what the sandbox wrote" and "The workspace", has
 the security reason for each):
 
-- `git init` / `git clone` into the project — creates a new `.git`. Blocked. Clone under `~`.
+- `git init` / `git clone` into the workspace — creates a new `.git`. Blocked. Clone under `~`.
   - The **bare-layout forms are not blocked**: `git init --bare` and `git clone --bare|--mirror`
     write only ordinary names (`HEAD`, `objects/`, `refs/`, `config`, `hooks/`), which no per-name
     rule can refuse without refusing legitimate projects that have them.
   - The guard refuses a bare layout at the workspace root at mount; one the sandbox creates —
     below the root, or at the root after that check — is the gap SECURITY.md records ("The
-    project directory"): running host git inside an agent-created directory is running the
-    agent's output.
-- `git worktree add <path>` with `<path>` in the project — writes a `.git` **file** at the new
+    workspace"): running host git inside an agent-created directory is running the agent's output.
+- `git worktree add <path>` with `<path>` in the workspace — writes a `.git` **file** at the new
   worktree. Blocked.
-- Submodule checkout that would create a submodule's worktree `.git` file in the project —
+- Submodule checkout that would create a submodule's worktree `.git` file in the workspace —
   operational state in `.git/modules/<n>/` stays writable, while its protected entries stay frozen
   by the recursion in "The immutable set". The new `.git` pointer in the worktree is refused.
 - Editing `.git/config` (e.g. `git config --local core.hooksPath …`) — blocked; the whole point.
@@ -678,7 +677,7 @@ command leaves.
     are written by init, `submodule add` and `worktree add`, never during ordinary
     commit/checkout/merge/fetch.
   - That is why freezing them costs an existing repository nothing, and why creating a submodule
-    or linked worktree inside the project is blocked ("Consequences", above).
+    or linked worktree inside the workspace is blocked ("Consequences", above).
   - Guarded by `tests/git_corpus.rs`.
 - **P4 — `.gitmodules` cannot define a command**, which is what lets it stay writable worktree
   data (group 2). Re-check on upgrade that git still refuses a `submodule.<name>.update = !command`

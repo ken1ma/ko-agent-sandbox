@@ -66,16 +66,16 @@ The keys per agent:
 
 Limits:
 
-- It covers the volume, not the project's `.mcp.json` or `.opencode/plugins/`.
+- It covers the volume, not the workspace's `.mcp.json` or `.opencode/plugins/`.
 - An in-session `claude mcp add` works until the next launch.
-- A concurrent session of the same project can re-add, which the next launch replaces and reports
+- A concurrent session of the same workspace can re-add, which the next launch replaces and reports
   again.
 - Claude's file layout is measured, not documented, and has no safe self-check.
 
 ## Phase 1 confirmation: the agents' managed files
 
-The managed files are documented, reach the project's files too, and refuse an in-session add
-with a clear message; reconciliation stays as the check behind them. A project that needs a
+The managed files are documented, reach the workspace's files too, and refuse an in-session add
+with a clear message; reconciliation stays as the check behind them. A workspace that needs a
 server names it in the reviewed file above, which the launcher also mounts as the managed file.
 
 - Claude: `managed-mcp.json` in `/etc/claude-code/` loads only the servers it names, an empty map

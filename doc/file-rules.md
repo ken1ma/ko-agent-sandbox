@@ -1,15 +1,15 @@
-# Project files a host program executes
+# Workspace files a host program executes
 
-Some project files name a command a program on your host runs without you running the project: an
-agent's hooks when you start it, a hook manager's configuration when you commit, an editor's tasks
-when you open the folder, mise's hooks when you enter the directory, a Dev Container's
-`initializeCommand` when you reopen it. One names a server instead: `.lfsconfig`, which git-lfs
-on your host downloads from when you check out and uploads to when you push.
+Some workspace files name a command a program on your host runs without you running the
+workspace's code: an agent's hooks when you start it, a hook manager's configuration when you
+commit, an editor's tasks when you open the folder, mise's hooks when you enter the directory, a Dev
+Container's `initializeCommand` when you reopen it. One names a server instead: `.lfsconfig`, which
+git-lfs on your host downloads from when you check out and uploads to when you push.
 
 - In a writable session the workspace filter keeps these files read-only, and under
   `--run-on-host` so does the host command's profile.
 - Build files, scripts and `package.json` stay writable: you run those yourself, and review their
-  diff as any other (SECURITY.md, "The project directory").
+  diff as any other (SECURITY.md, "The workspace").
 
 ## What is read-only
 
@@ -21,10 +21,10 @@ on your host downloads from when you check out and uploads to when you push.
 - Inside `node_modules`, nothing: npm installs packages that carry these names.
 - A Git hook directory the repository keeps in the worktree — husky's `.husky/_`, a
   `core.hooksPath` of `githooks` — found when the filter mounts.
-- The target of a symlink inside a listed entry at the project root: with
+- The target of a symlink inside a listed entry at the workspace root: with
   `.vscode/tasks.json -> ../tasks-data.json`, `tasks-data.json` is read-only too, also when
-  `.vscode` itself links to a directory outside the project.
-- The directory a symlink at the project root leads to, when it makes that directory part of a
+  `.vscode` itself links to a directory outside the workspace.
+- The directory a symlink at the workspace root leads to, when it makes that directory part of a
   listed name: with `.claude -> shared/claude`, the session cannot create
   `shared/claude/settings.json`.
 - A directory a listed name passes through, `.claude` for `.claude/settings.json`, can be created
@@ -47,12 +47,12 @@ The session's own writes fail with `Operation not permitted`. Its agent sees the
 - An installer writing a listed name outside `node_modules`, a scaffolder's `.vscode/` among them,
   is refused that entry.
 - A sandboxed agent's own write to a listed file fails: Claude Code's "Yes, and don't ask again",
-  OpenCode's install into an existing `.opencode/`. A project whose agent or editor maintains a
+  OpenCode's install into an existing `.opencode/`. A workspace whose agent or editor maintains a
   listed file in the sandbox makes it writable in its rule file, below.
 
 ## The rule file
 
-`.ko-agent-sandbox/file/rule` in the project directory, read at every launch after the defaults.
+`.ko-agent-sandbox/file/rule` in the workspace root, read at every launch after the defaults.
 One line per rule; `#` starts a comment at the start of a line or after whitespace, and blank
 lines are ignored, as in `egress/rule`.
 
@@ -65,7 +65,7 @@ writable NAME      the entry and everything below it are writable
   directory (`.claude/settings.json`). It matches at any depth.
 - `*` matches any run of characters within one component; nothing else is a wildcard. In a
   directory component it pins every entry it matches: `*/hooks.json` leaves no file in the
-  project creatable, renamable or removable.
+  workspace creatable, renamable or removable.
 - The characters are `a`–`z`, `0`–`9`, `.`, `_`, `-` and `*`. The filter folds case as the host's
   filesystem may, so `readonly .vscode` covers `.VSCode`.
 - The last line naming the entry or one of its ancestors decides:
@@ -87,9 +87,9 @@ the filter refuses:
 A Git directory's operational state, `.git/objects` among it, is where no line applies, so the
 filter refuses:
 
-- moving a directory or symlink out of it into the project, and a hard link of a symlink out of
+- moving a directory or symlink out of it into the workspace, and a hard link of a symlink out of
   it;
-- a symlink in the project whose target names any `.git` entry, `.git/config` included, since
+- a symlink in the workspace whose target names any `.git` entry, `.git/config` included, since
   another link's `..` after it reaches that state;
 - a symlink whose target spells an NTFS 8.3 short name such as `GIT~1`, whatever that name holds
   when the link is made: a Windows host resolves the name when it reads the link, and the
@@ -107,7 +107,7 @@ others.
 
 `doc/file-rule-example/*/rule` holds complete files for common needs, to copy and trim:
 
-- `direnv/rule`, for a project whose users approve a changed `.envrc` by reflex, lists `.envrc`;
+- `direnv/rule`, for a workspace whose users approve a changed `.envrc` by reflex, lists `.envrc`;
   the defaults leave it writable because direnv asks again when it changes.
 
 ## Under `--run-on-host`
@@ -115,15 +115,15 @@ others.
 The host command's profile denies writing the same names, in the same order, with one limit and
 two stricter spots:
 
-- A host command can move a directory out of `node_modules` over a directory of the project, with
+- A host command can move a directory out of `node_modules` over a directory of the workspace, with
   a listed file the session or the command wrote in it: `node_modules/x`, holding
   `.vscode/tasks.json`, over `apps/web`.
-- So under `--run-on-host` a listed name still cannot be written at the project root or inside a
+- So under `--run-on-host` a listed name still cannot be written at the workspace root or inside a
   directory a line names, such as `.vscode/`. A listed file moved in the other way takes effect
   when a host program starts in its new directory: an editor opening `apps/web`, a Dev Container,
   mise, an agent.
 - A session without `--run-on-host` has no such limit: the filter refuses the move.
-- A project that wants a listed name read-only inside `node_modules` too repeats its line in its
+- A workspace that wants a listed name read-only inside `node_modules` too repeats its line in its
   rule file, whose lines follow the defaults' `writable node_modules`. npm then installs a package
   without that entry, prints `npm warn tar TAR_ENTRY_ERROR` for it, and exits 0.
 - The profile is stricter than the filter in two respects (`run-on-host.md`, "The host command's
@@ -141,12 +141,12 @@ two stricter spots:
 - Keeping every listed name read-only inside `node_modules` under `--run-on-host` alone would close
   it, at the costs `design.md`, "A `--run-on-host` limit, not a stricter form", weighs.
 
-## One mount per project
+## One mount per workspace
 
-Concurrent sessions of a project share one filter mount, which serves the rules its first session
+Concurrent sessions of a workspace share one filter mount, which serves the rules its first session
 resolved.
 
-- A launch after an edit of the rule file, while other sessions of the project run, joins their
+- A launch after an edit of the rule file, while other sessions of the workspace run, joins their
   mount under their rules. It prints a warning naming them, and its start prompt is the consent;
   the edit takes effect at a launch after they end.
 - Without the start prompt, `KO_AGENT_SANDBOX_SESSION_START=immediate` or no terminal, that launch
@@ -155,19 +155,19 @@ resolved.
 ## Why these files
 
 The list protects which command a host program runs on an event other than you running the
-project, where a file you do not run selects that command; SECURITY.md, "A host program executing
-a project file on an event", states the boundary and what stays open.
+workspace's code, where a file you do not run selects that command; SECURITY.md, "A host program
+executing a workspace file on an event", states the boundary and what stays open.
 
-- It keeps a session from adding a command to an event or changing one a non-project file names:
-  no `runOn: folderOpen` task added to `.vscode/tasks.json`, no `repo: local` entry of
+- It keeps a session from adding a command to an event or changing one a file you do not run
+  names: no `runOn: folderOpen` task added to `.vscode/tasks.json`, no `repo: local` entry of
   `.pre-commit-config.yaml` pointed at a script of its own.
-- A project whose event configuration already runs project code gains nothing for that event:
-  when a folder-open task runs `npm run build`, the session edits the `build` script in
+- A workspace whose event configuration already runs one of its scripts gains nothing for that
+  event: when a folder-open task runs `npm run build`, the session edits the `build` script in
   `package.json`, and the task runs the edit on the next open.
 - The host's Claude Code asks before starting a project MCP server, once per project, so the
   `.mcp.json` line defends a changed server after that answer.
 - The `.lfsconfig` line keeps a session from choosing the server a host checkout contacts, a
-  connection the egress proxy never sees; SECURITY.md, "The project directory", has what it leaves
+  connection the egress proxy never sees; SECURITY.md, "The workspace", has what it leaves
   open.
 
 Which files a default line names:
@@ -187,10 +187,10 @@ Not listed:
   them, or install from them.
 - CI definitions (`.github/workflows`): the forge executes them, not the host.
 - The commands `devcontainer.json` runs inside the container, `onCreateCommand` through
-  `postAttachCommand`: what they reach is the dev container's, which you build from the project's
+  `postAttachCommand`: what they reach is the dev container's, which you build from the workspace's
   own configuration, as the sandbox's container is. `.devcontainer` is listed for
   `initializeCommand` alone, and whole because one file holds both.
-- Editor extensions that evaluate project files on open or save: no list of names closes them.
+- Editor extensions that evaluate workspace files on open or save: no list of names closes them.
 - Instruction files a model reads (`CLAUDE.md`, `.cursor/rules`, `.windsurf/rules`,
   `.devin/rules`, `.kiro/steering`, `.agents/skills`): no host program runs them.
 - `.codex/hooks.json` and `.gemini/commands`: their programs approve a changed hook, or each run.
@@ -269,7 +269,7 @@ Git hook managers:
   `internal/templates/hook.tmpl`):
   - `lefthook`, `.lefthook` and `.config/lefthook`, each with a `-local` variant, with `.yml`,
     `.yaml`, `.json`, `.jsonc` or `.toml`; the installed stub reads them at each commit.
-  - The stub runs lefthook from the project, `node_modules/lefthook/bin/index.js` among others.
+  - The stub runs lefthook from the workspace, `node_modules/lefthook/bin/index.js` among others.
 
 Editors:
 
@@ -336,5 +336,5 @@ In the image on 2026-09-26:
   and `sequelize` printed `npm warn tar TAR_ENTRY_ERROR` for each refused entry, exited 0, and left
   `pino-abstract-transport` without `.husky/pre-commit`, `inflection` without
   `.vscode/settings.json`, and `thread-stream/.claude` empty.
-- In a `--write=live` session through the filter, writing a listed file, creating a listed name
+- In a `--workspace=live` session through the filter, writing a listed file, creating a listed name
   and renaming a directory a listed name passes through failed with `Operation not permitted`.

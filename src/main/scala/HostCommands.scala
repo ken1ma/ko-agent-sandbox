@@ -118,10 +118,10 @@ object HostCommands:
    *   - red: the launch stopped. On the `error:` label only (stopped).
    *   - orange: the launch goes on, and there is something to know. On the `warning:` label
    *     (caution); on a whole line, a boundary is weaker than the default (weakened), by an option
-   *     or environment variable of this launch, by a rule file of the project directory, or by
+   *     or environment variable of this launch, by a rule file of the workspace, or by
    *     the unconfined host run a prompt offers (RunOnHostProvisioning) — a reminder and not an
    *     alarm, and the line or the one before it says what weakened it.
-   *   - purple: what the user chose where it weakens nothing — the project directory, the
+   *   - purple: what the user chose where it weakens nothing — the workspace root, the
    *     workspace mode, the egress profile, an upstream proxy (chosen) — a hue of its own so it
    *     is never read as a severity.
    *   - gray: what is there to look up, not to read — the long path of the run's log directory (lookedUp).
@@ -410,8 +410,8 @@ object HostCommands:
    * the file the one container's private MCS categories, which keep a key from every other
    * container that runs under SELinux separation — not from one with `label=disable`. No file is
    * mounted into two containers — the proxy and the sandbox mount this run's copies (the launch's
-   * `carried`), the throwaway JDK container the project's CA certificate — so `Z` never takes a
-   * file from another container. Never for the project tree: SECURITY.md ("the project tree's
+   * `carried`), the throwaway JDK container the workspace's CA certificate — so `Z` never takes a
+   * file from another container. Never for the workspace: SECURITY.md ("the workspace's
    * SELinux labels").
    */
   def fileBind(source: Path, containerPath: String, access: String, selinuxEnforcing: Boolean): String =
@@ -491,7 +491,7 @@ object HostCommands:
 
   /**
    * The launcher's working directory, canonical where it can be. It is the
-   * project directory being sandboxed — untrusted by definition — and so the one
+   * workspace root being sandboxed — untrusted by definition — and so the one
    * directory a host executable must never be resolved out of.
    */
   def workingDirectory(): Path =
@@ -501,26 +501,26 @@ object HostCommands:
 
   /**
    * Host executables resolve through PATH entries that are absolute *and*
-   * outside the project directory. Two different path classes are being
+   * outside the workspace. Two different path classes are being
    * kept out, and neither subsumes the other:
    *
    *   - a relative entry (`.`, `bin`, `../programs`) resolves against the working
-   *     directory, so the project supplies the host's podman with nobody having
+   *     directory, so the workspace supplies the host's podman with nobody having
    *     chosen it — and invoking the returned absolute path forecloses
    *     CreateProcess's implicit current-directory search on Windows for the
    *     same reason (prior art: Docker Sandboxes #392);
-   *   - an *absolute* entry that names a directory inside the project also lets the project select
+   *   - an *absolute* entry that names a directory inside the workspace also lets the workspace select
    *     the host executable while looking deliberate. `npm run` puts an absolute
    *     `$PWD/node_modules/.bin` on PATH, and a transitive dependency can ship
    *     a `bin` entry named `podman` without running a line of its own code.
-   *     Nothing about absoluteness makes the project's copy the user's
+   *     Nothing about absoluteness makes the workspace's copy the user's
    *     choice, so both are skipped.
    *
    * The *candidate* is what gets canonicalized, not the directory holding it,
    * and that distinction is the rule rather than a detail: `isRegularFile` and
    * `isExecutable` follow a symlink, so an innocent directory holding
-   * `podman -> <project>/bin/podman` would pass a check made on the directory
-   * alone and run the project's binary anyway. Resolving here also fixes
+   * `podman -> <workspace>/bin/podman` would pass a check made on the directory
+   * alone and run the workspace's binary anyway. Resolving here also fixes
    * *what* runs — the absolute path handed to podman and to the reaper is the
    * real file, so a link swapped afterwards cannot redirect it.
    */
@@ -554,15 +554,15 @@ object HostCommands:
    * The PATH every script this launcher writes runs with, named rather than
    * inherited. Those scripts are `sh -c` text, and on native Linux they
    * inherit the launcher's environment and its working directory — the
-   * project directory — so a relative entry in the inherited PATH (`.`,
-   * `bin`, `../programs`) would let the project supply what they run. findOnPath
+   * workspace root — so a relative entry in the inherited PATH (`.`,
+   * `bin`, `../programs`) would let the workspace supply what they run. findOnPath
    * covers the executables the launcher itself invokes; this covers the ones
    * its scripts do.
    *
    * The system directories are the whole list, and what that costs is reported
    * rather than silent: a host keeping fusermount3 somewhere unusual — a Nix
    * profile, say — gets a "not found" it can read, never a binary out of the
-   * project. Inside a podman machine the value is what the VM already had.
+   * workspace. Inside a podman machine the value is what the VM already had.
    *
    * podman never leans on this (koAgentFsReapPodman has the argument).
    *
@@ -602,7 +602,7 @@ object HostCommands:
           """error: podman is not installed or not on PATH
             |
             |PATH entries inside the current directory are not searched: it is the
-            |project directory being sandboxed (design.md, "No repository-controlled host executable resolution").
+            |workspace root being sandboxed (design.md, "No repository-controlled host executable resolution").
             |
             |Install it first: https://podman.io/docs/installation""".stripMargin,
           127,

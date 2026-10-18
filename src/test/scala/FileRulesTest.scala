@@ -1,4 +1,4 @@
-// The launcher's side of the file rules: the grammar and its refusals, the defaults, the project's
+// The launcher's side of the file rules: the grammar and its refusals, the defaults, the workspace's
 // file as read, and the text the filter exchanges.
 
 package agentsandbox.launcher
@@ -56,12 +56,12 @@ class FileRulesTest extends munit.FunSuite:
     Vector("CLAUDE.md", "AGENTS.md", ".cursor/rules", ".agents/skills", ".envrc")
       .foreach(name => assert(!names.contains(name), name))
 
-  test("a session gets the defaults, then the project's lines, and the launch names every line once"):
+  test("a session gets the defaults, then the workspace's lines, and the launch names every line once"):
     val written = lines("writable .claude/skills\nwritable .vscode/settings.json\n")
     assertEquals(resolve(written), Defaults ++ written)
-    val project = Some(("writable .claude/skills\nwritable .vscode/settings.json", written))
+    val workspaceFile = Some(("writable .claude/skills\nwritable .vscode/settings.json", written))
     assertEquals(
-      launchLines(project, color = false),
+      launchLines(workspaceFile, color = false),
       Vector(
         "file rules (.ko-agent-sandbox/file/rule) widen (2):",
         "  writable .claude/skills",
@@ -75,7 +75,7 @@ class FileRulesTest extends munit.FunSuite:
     )
     assertEquals(
       launchLines(None, color = false),
-      Vector("file rules: no project rule file; the launcher-owned defaults"),
+      Vector("file rules: no workspace rule file; the launcher-owned defaults"),
     )
 
   test("a joined mount's rules are described beyond the defaults, and read back from the daemon's text"):
@@ -102,13 +102,13 @@ class FileRulesTest extends munit.FunSuite:
     )
     assert(parseDaemonText("host-view /\nallow .vscode\n").swap.exists(_.contains("allow .vscode")))
 
-  test("a command without a launch's set reads the project's lines, and a launch's set reads back from its file"):
-    val dir = Files.createTempDirectory("file-rules-project")
+  test("a command without a launch's set reads the workspace's lines, and a launch's set reads back from its file"):
+    val dir = Files.createTempDirectory("file-rules-workspace")
     try
-      assertEquals(ofProject(dir), Right(Resolved(Defaults, Vector.empty, Vector.empty)))
+      assertEquals(ofWorkspace(dir), Right(Resolved(Defaults, Vector.empty, Vector.empty)))
       Files.createDirectories(dir.resolve(".ko-agent-sandbox/file"))
       Files.writeString(dir.resolve(".ko-agent-sandbox/file/rule"), "readonly .envrc\n")
-      assertEquals(ofProject(dir).map(_.lines.last), Right(Line(Word.ReadOnly, ".envrc")))
+      assertEquals(ofWorkspace(dir).map(_.lines.last), Right(Line(Word.ReadOnly, ".envrc")))
       val resolved = Resolved(Vector(Line(Word.ReadOnly, ".vscode")), Vector(".husky/_"), Vector("tools"))
       val file = dir.resolve("file-rules.resolved")
       Files.writeString(file, resolved.text)
@@ -116,7 +116,7 @@ class FileRulesTest extends munit.FunSuite:
       assert(readResolved(dir.resolve("absent")).swap.exists(_.contains("cannot read the file rules")))
     finally FileHelper.deleteRecursively(dir)
 
-  test("the project's file is read under the boundary directory's refusals"):
+  test("the workspace's file is read under the boundary directory's refusals"):
     val dir = Files.createTempDirectory("file-rules-test")
     try
       val fileDir = dir.resolve("file")

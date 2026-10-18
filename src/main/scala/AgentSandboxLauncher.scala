@@ -10,7 +10,7 @@
 //   ImageBuilds.scala           --build, --update and --self-test: build commands, context, lock
 //   ContainerfileSources.scala  the remote images the bundled Containerfiles name, for the refresh
 //   SandboxLifecycle.scala      the handover to podman, and both paths that remove a run's proxy
-//   EgressRules.scala           this project's egress rules, their resolution, the audit log, and the
+//   EgressRules.scala           the workspace's egress rules, their resolution, the audit log, and the
 //                               --egress-* actions
 //   LauncherState.scala         the state root, and the resets with the name patterns they sweep
 //   CommandLine.scala           the session options, the management actions and the --env forwards
@@ -18,11 +18,11 @@
 //   ClaudePlugins.scala         --claude-plugin-dir: host plugin directories run as Claude Code's managed plugins
 //   LaunchMessages.scala        the weakened-boundary lines and the agent instructions' appended section
 //   KoAgentFs.scala             the workspace FUSE filter: build, install, identity, mount lifecycle
-//   SandboxProject.scala        the project directory: real path, refusals, identity, mount guards
+//   SandboxWorkspace.scala      the workspace root: real path, refusals, identity, mount guards
 //   CertificateHelper.scala     certificates as PEM: creating, parsing, checking
 //   JdkTrust.scala              making the image's JVM reach the proxy — locate, prepare, mount
 //   FFMHelper.scala             the downcalls into libc and kernel32
-//   FileRules.scala             the file rules: defaults, the project's rule file, grammar, resolution
+//   FileRules.scala             the file rules: defaults, the workspace's rule file, grammar, resolution
 //   EgressCredentials.scala     --egress-cred: the bindings, their values, placeholders and proxies
 //   ClipboardRelay.scala        the host clipboard offered to the sandbox: the protocol and both relays
 //   MicrophoneRelay.scala       the host microphone under --mic: the recorders, the probe and both relays
@@ -40,15 +40,15 @@
 //
 //   Host
 //    |
-//    +-- current project -------------------> the same path (Windows: /mnt/<drive>/...)
-//    |     (SandboxProject.mountPathOf; --write selects the mount: live — the default — is the
+//    +-- workspace root (the current directory) --> the same path (Windows: /mnt/<drive>/...)
+//    |     (SandboxWorkspace.mountPathOf; --workspace selects the mount: live — the default — is the
 //    |      ko-agent-fs mountpoint, RW with Git entries and launcher
-//    |      configuration protected (mountKoAgentFs); reject is a
-//    |      read-only bind of the raw tree)
+//    |      configuration protected (mountKoAgentFs); read-only binds
+//    |      the raw tree with podman's `ro` option)
 //    |
 //    +-- .ko-agent-sandbox: the egress rules, the file rules and each
 //    |      run-on-host program's egress rules, read on the host; the
-//    |      write mode is what keeps a session from writing the next one's
+//    |      workspace mode is what keeps a session from writing the next one's
 //    |
 //    +-- podman named volume -----------> ~/persistent-volume RW/persistent
 //    |                                       (~/.claude, ~/.codex, ~/.gemini, ~/.kiro,
@@ -58,8 +58,8 @@
 //    |
 //    +-- --run-on-host (macOS only): ko-sandbox-run-on-host relays a command
 //    |      request to a host-side supervisor that runs a build tool under a
-//    |      Seatbelt profile — the project (`.git` and
-//    |      .ko-agent-sandbox denied), per-project build caches, one
+//    |      Seatbelt profile — the workspace (`.git` and
+//    |      .ko-agent-sandbox denied), per-workspace build caches, one
 //    |      Coursier JDK, a session directory, and the build's own
 //    |      loopback egress proxy; nothing else (RunOnHostSandbox.scala,
 //    |      RunOnHostChannel.scala; SECURITY.md "Run on host")
@@ -80,8 +80,8 @@
 //
 // The rest of /home/nonroot is an anonymous podman volume: build caches work, and disappear with the container.
 //
-// The entrypoint records the project's mount path as trusted for Claude Code, Codex, Antigravity and Copilot at
-// every launch (ko-sandbox-entrypoint), so a mounted project's own agent configuration — MCP servers included —
+// The entrypoint records the workspace's mount path as trusted for Claude Code, Codex, Antigravity and Copilot at
+// every launch (ko-sandbox-entrypoint), so a mounted workspace's own agent configuration — MCP servers included —
 // takes effect without a trust dialog. The container, not that dialog, is the boundary; whatever the configuration
 // names runs inside it, never in a host-side helper.
 //
@@ -113,7 +113,7 @@ import KoAgentFs.*
 import LauncherImages.*
 import LauncherState.*
 import LaunchMessages.*
-import SandboxProject.*
+import SandboxWorkspace.*
 import SandboxLifecycle.*
 
 object AgentSandboxLauncher:
@@ -130,7 +130,7 @@ object AgentSandboxLauncher:
   //
   // Pure, and unit-tested: what this run's containers and networks are
   // called. Which podman objects the resets may touch is LauncherState.scala,
-  // the project's own identity and guards SandboxProject.scala.
+  // the workspace's own identity and guards SandboxWorkspace.scala.
   // -------------------------------------------------------------------------
 
   /**
@@ -647,30 +647,30 @@ object AgentSandboxLauncher:
 
   /**
    * The sandbox container's name: what the reaper waits on. The suffix
-   * keeps concurrent sandboxes in one project distinct.
+   * keeps concurrent sandboxes in one workspace distinct.
    */
-  def sandboxRunContainer(projectId: String, suffix: String): String =
-    s"ko-agent-sandbox-run-$projectId-$suffix"
+  def sandboxRunContainer(workspaceId: String, suffix: String): String =
+    s"ko-agent-sandbox-run-$workspaceId-$suffix"
 
   /**
    * The proxy container's name, sharing the sandbox's run suffix: each run
    * gets its own proxy, removed with its sandbox — SandboxLifecycle.scala has the
    * why.
    */
-  def proxyRunContainer(projectId: String, suffix: String): String =
-    s"ko-agent-egress-proxy-$projectId-$suffix"
+  def proxyRunContainer(workspaceId: String, suffix: String): String =
+    s"ko-agent-egress-proxy-$workspaceId-$suffix"
 
   /**
    * This run's internal network — the one the sandbox joins, with no
    * gateway. Per run like the proxy; createNetwork has why nothing is
    * reused.
    */
-  def sandboxRunNetwork(projectId: String, suffix: String): String =
-    s"ko-agent-sandbox-$projectId-$suffix"
+  def sandboxRunNetwork(workspaceId: String, suffix: String): String =
+    s"ko-agent-sandbox-$workspaceId-$suffix"
 
   /** This run's outbound network — the proxy's route out. Per run, as above. */
-  def egressRunNetwork(projectId: String, suffix: String): String =
-    s"ko-agent-egress-$projectId-$suffix"
+  def egressRunNetwork(workspaceId: String, suffix: String): String =
+    s"ko-agent-egress-$workspaceId-$suffix"
 
   /** This run's disambiguator: always exactly eight hex characters (RunSuffixPattern), which
     * is what lets isRunNamed anchor on it. */
@@ -679,11 +679,11 @@ object AgentSandboxLauncher:
 
   val RunSuffixPattern = "[0-9a-f]{8}"
 
-  /** The run's directory of mount sources under the project's TLS state. */
+  /** The run's directory of mount sources under the workspace's TLS state. */
   def tlsRunDir(suffix: String): String = s"run-$suffix"
 
   /**
-   * The run's directory of logs under the project's log directory. The launch's start (logStamp)
+   * The run's directory of logs under the workspace's log directory. The launch's start (logStamp)
    * comes first, so a sorted listing is chronological (runLogDirsToPrune), and the run suffix last,
    * so pruning matches a live run by the name's end, as tlsRunDirsToPrune does.
    */
@@ -700,16 +700,16 @@ object AgentSandboxLauncher:
     DateTimeFormatter.ofPattern("uuuuMMdd'T'HHmmss'Z'").withZone(ZoneOffset.UTC).format(now)
 
   /**
-   * Whether `name` is `builder(projectId, <run suffix>)` — the anchored
+   * Whether `name` is `builder(workspaceId, <run suffix>)` — the anchored
    * form of a bare prefix check. The anchor matters because hex is
    * slug-legal and a slug may be 32 characters: a directory literally named
-   * after another project's id yields resources that extend this project's
-   * prefix, and a --reset here would end that project's live sessions.
-   * With the suffix anchored, a name matches exactly one project. Taking
+   * after another workspace's id yields resources that extend this workspace's
+   * prefix, and a --reset here would end that workspace's live sessions.
+   * With the suffix anchored, a name matches exactly one workspace. Taking
    * the builder keeps the name pattern stated once, in the builders above.
    */
-  def isRunNamed(builder: (String, String) => String, projectId: String)(name: String): Boolean =
-    val prefix = builder(projectId, "")
+  def isRunNamed(builder: (String, String) => String, workspaceId: String)(name: String): Boolean =
+    val prefix = builder(workspaceId, "")
     name.startsWith(prefix) && name.drop(prefix.length).matches(RunSuffixPattern)
 
   /**
@@ -843,7 +843,7 @@ object AgentSandboxLauncher:
 
   /**
    * The per-run TLS mount-source directories a launch may sweep: named for a run (`run-<8 hex>`)
-   * that no container names. `liveRuns` is a listing taken under the project lock, and a launch
+   * that no container names. `liveRuns` is a listing taken under the workspace lock, and a launch
    * creates its proxy under that lock before releasing it, so a directory another launch can see
    * belongs to a run with a container or to a launch that died — never to one in flight. The
    * reaper deliberately does not remove these (its argument list stays fixed); the next
@@ -854,12 +854,12 @@ object AgentSandboxLauncher:
       .filter(_.matches(tlsRunDir(RunSuffixPattern)))
       .filterNot(name => liveRuns.contains(name.stripPrefix(tlsRunDir(""))))
 
-  /** The run suffixes of `projectId` that a container in `containerNames` names, its proxy or its sandbox; None
+  /** The run suffixes of `workspaceId` that a container in `containerNames` names, its proxy or its sandbox; None
     * when the listing failed, so that nothing is pruned (prepareRunFiles has why either container counts). */
-  def liveRunsOf(projectId: String, containerNames: Option[Vector[String]]): Option[Set[String]] =
+  def liveRunsOf(workspaceId: String, containerNames: Option[Vector[String]]): Option[Set[String]] =
     containerNames.map: names =>
       Vector(proxyRunContainer, sandboxRunContainer)
-        .flatMap(builder => names.filter(isRunNamed(builder, projectId)).map(_.stripPrefix(builder(projectId, ""))))
+        .flatMap(builder => names.filter(isRunNamed(builder, workspaceId)).map(_.stripPrefix(builder(workspaceId, ""))))
         .toSet
 
   /**
@@ -877,7 +877,7 @@ object AgentSandboxLauncher:
       fail(s"error: could not create the network $network\n${created.err}")
 
   /**
-   * The question a run of the image answers about the project's mount path (mountPathRefusal):
+   * The question a run of the image answers about the workspace's mount path (mountPathRefusal):
    * `entry` when the image has something at it, which the bind would cover — `/tmp`,
    * `/usr/local/bin`, a directory the image gains later — `file <path>` when the nearest
    * ancestor the image has is not a directory, `/opt/node/bin/node`, so nothing can be mounted
@@ -984,29 +984,29 @@ object AgentSandboxLauncher:
     if answer.ok && answer.text.trim == "absent" then
       writeStamped(file, mountPathProbeStamp(imageId, mountPath), "absent")
 
-  /** Why the image cannot take the project at `mountPath`, read from the probe's answer, or None. */
-  def mountPathRefusal(answer: String, projectDir: Path, mountPath: String): Option[String] =
-    val refusing = s"error: refusing to mount $projectDir at $mountPath\n\n"
+  /** Why the image cannot take the workspace root at `mountPath`, read from the probe's answer, or None. */
+  def mountPathRefusal(answer: String, workspaceRoot: Path, mountPath: String): Option[String] =
+    val refusing = s"error: refusing to mount $workspaceRoot at $mountPath\n\n"
     answer.trim match
       case "absent" => None
       case "entry" =>
         Some(
           refusing +
-            s"The sandbox image has an entry at $mountPath, which the project's mount would cover, and the\n" +
-            "container relies on what the image has there. Move the project to a path the image has nothing\n" +
-            "at (/tmp/app binds into /tmp; /tmp itself does not) and run this again.",
+            s"The sandbox image has an entry at $mountPath, which the workspace's mount would cover, and the\n" +
+            "container relies on what the image has there. Move the workspace root to a path the image has\n" +
+            "nothing at (/tmp/app binds into /tmp; /tmp itself does not) and run this again.",
         )
       case s"file $path" =>
         Some(
           refusing +
-            s"In the sandbox image, $path is a file, so nothing can be mounted beneath it. Move the project\n" +
-            "elsewhere and run this again.",
+            s"In the sandbox image, $path is a file, so nothing can be mounted beneath it. Move the workspace\n" +
+            "root elsewhere and run this again.",
         )
       case s"unreachable $dir" =>
         Some(
           refusing +
             s"In the sandbox image, $dir cannot be entered by the sandbox user, so nothing mounted beneath\n" +
-            "it is reachable. Move the project elsewhere and run this again.",
+            "it is reachable. Move the workspace root elsewhere and run this again.",
         )
       case other => Some(s"error: the sandbox image gave no answer about $mountPath\n$other")
 
@@ -1048,7 +1048,7 @@ object AgentSandboxLauncher:
     // The actions that read no session option refuse one rather than ignoring it: a selection
     // that configures nothing is the silent failure mode the options must not have.
     val launchOptions = Vector(
-      "--write" -> parsed.write.isDefined, "--egress" -> parsed.egress.isDefined,
+      "--workspace" -> parsed.workspace.isDefined, "--egress" -> parsed.egress.isDefined,
       CommandLine.ModelProviderOption -> parsed.modelProvider.isDefined,
       "--egress-cred" -> parsed.credentialBindings.nonEmpty, "--clipboard" -> parsed.clipboard.isDefined,
       "--mic" -> parsed.mic, "--env" -> parsed.env.nonEmpty, "--env-aws-cred" -> parsed.awsCredential.isDefined,
@@ -1085,13 +1085,13 @@ object AgentSandboxLauncher:
 
       case Some(("--reset", rest)) =>
         noSessionOptions("--reset")
-        val givenIds = projectIdOperands("--reset", rest).fold(fail(_), identity)
+        val givenIds = workspaceIdOperands("--reset", rest).fold(fail(_), identity)
         // The resets only remove what carries this launcher's names, so they run against a
         // rootful service too.
         requirePodman(currentOs, refuseRootful = false)
-        resetProject(currentOs, givenIds)
+        resetWorkspace(currentOs, givenIds)
 
-      // No id form: a gone project's cache goes with `--reset <id>`, and this action exists for the
+      // No id form: a gone workspace's cache goes with `--reset <id>`, and this action exists for the
       // live one, whose directory is there to run from.
       case Some(("--reset-run-on-host", rest)) =>
         noSessionOptions("--reset-run-on-host")
@@ -1202,14 +1202,14 @@ object AgentSandboxLauncher:
       :+ fileBind(agentDoc, AgentDocPath, "ro", selinuxEnforcing)
 
   /**
-   * The project's `--volume` value. Never relabeled: a FUSE mountpoint must not be, the reject check
-   * established the tree is already container-readable, and relabeling is the host write that mode
-   * withholds.
+   * The workspace's `--volume` value. Never relabeled: a FUSE mountpoint must not be; under
+   * `--workspace=read-only`, launchWorkspace's SELinux check established that the tree is already
+   * container-readable, and relabeling is the host write that mode withholds.
    */
-  def projectBind(filteredMountpoint: Option[String], projectDir: Path, mountPath: String): String =
+  def workspaceBind(filteredMountpoint: Option[String], workspaceRoot: Path, mountPath: String): String =
     filteredMountpoint match
       case Some(mountpoint) => s"$mountpoint:$mountPath:rw"
-      case None             => s"$projectDir:$mountPath:ro"
+      case None             => s"$workspaceRoot:$mountPath:ro"
 
   /**
    * Whether the directory's own SELinux context already allows container reads, so an unfiltered
@@ -1220,7 +1220,7 @@ object AgentSandboxLauncher:
    * — a missing stat, an unreadable or unexpected context all answer false.
    *
    * stat resolves through findOnPath like every host executable: this runs before the sandbox
-   * exists, and the working directory is the project directory.
+   * exists, and the working directory is the workspace root.
    */
   def selinuxContainerReadable(dir: Path): Boolean =
     findOnPath("stat", Os.Linux).exists: stat =>
@@ -1250,7 +1250,7 @@ object AgentSandboxLauncher:
         if magnitude == 0 then "UTC"
         else s"UTC$sign${magnitude / 60}" + (if magnitude % 60 == 0 then "" else f":${magnitude % 60}%02d")
 
-  /** What a launch reads and refuses before it checks the project directory: the options, the
+  /** What a launch reads and refuses before it checks the workspace root: the options, the
     * variables that decide the boundary, and the run-on-host rule files. */
   private case class LaunchSettings(
     credentials: Vector[BrokeredCredential],
@@ -1265,18 +1265,18 @@ object AgentSandboxLauncher:
     forwardedEnv: Vector[String],
     awsCredential: Option[AwsCredential.Resolved],
     runOnHost: Vector[String],
-    projectDir: Path,
+    workspaceRoot: Path,
     boundaryDir: Path,
     programRules: Vector[(RunOnHostPrereqs.Program, Vector[String])],
   )
 
-  private case class LaunchProject(
+  private case class LaunchWorkspace(
     homeProtection: HomeProtection,
     mainWorktree: Option[Path],
     mountPath: String,
     selinuxEnforcing: Boolean,
-    projectSlug: String,
-    projectId: String,
+    workspaceSlug: String,
+    workspaceId: String,
     persistentVolume: String,
     claudePlugins: Vector[ClaudePlugins.Plugin],
   )
@@ -1292,11 +1292,11 @@ object AgentSandboxLauncher:
 
   private case class LaunchRules(
     ruleFiles: Vector[(String, String)],
-    projectFileRules: Option[(String, Vector[FileRules.Line])],
+    workspaceFileRules: Option[(String, Vector[FileRules.Line])],
     fileRuleLines: Vector[FileRules.Line],
     fileRulesInForce: Boolean,
     fileRulesText: String,
-    rejectFileRules: Option[FileRules.Resolved],
+    readOnlyFileRules: Option[FileRules.Resolved],
     provider: Option[String],
     rulesetCacheDir: Path,
     rulesetText: String,
@@ -1313,7 +1313,7 @@ object AgentSandboxLauncher:
   )
 
   /** The filter's mountpoint for a live session, and the file rules the session runs under. */
-  private case class LaunchWorkspace(
+  private case class LaunchMount(
     filteredWorkspace: Option[KoAgentFsPrepared],
     joinedRules: Option[RunningMount],
     sessionRuleLines: Vector[FileRules.Line],
@@ -1333,16 +1333,16 @@ object AgentSandboxLauncher:
   def launch(parsed: ParsedCommandLine): Unit =
     val os = currentOs
     val settings = launchSettings(parsed, os)
-    val project = launchProject(parsed, settings, os)
-    import parsed.{command, writeMode}
-    import settings.{projectDir, runOnHost, sessionStartMode}
-    import project.projectId
+    val workspace = launchWorkspace(parsed, settings, os)
+    import parsed.{command, workspaceMode}
+    import settings.{workspaceRoot, runOnHost, sessionStartMode}
+    import workspace.workspaceId
     val machineMemory = requirePodman(os)
 
     // One suffix ties this run's containers, networks and log directory together in podman output and the retained
     // logs.
     val runSuffix = newRunSuffix()
-    val logDir = logStateRoot(os).resolve(projectId)
+    val logDir = logStateRoot(os).resolve(workspaceId)
     val runLogs = logDir.resolve(runLogDir(logStamp(Instant.now()), runSuffix))
     // Named before it exists: prepareRunFiles creates it after pruning, and a launch refused earlier has written
     // nothing there. Creating it here would let each refused launch's empty directory count toward the RetainedRuns
@@ -1351,12 +1351,12 @@ object AgentSandboxLauncher:
 
     // The filter's read-only checks run beside the image and rule checks below; prepareKoAgentFs
     // reads their answer once this run's cleanup is armed.
-    val startedKoAgentFsChecks = Option.when(writeMode == "live"):
+    val startedKoAgentFsChecks = Option.when(workspaceMode == "live"):
       val sourceId = bundledKoAgentFsSourceId()
       (sourceId, inBackground("ko-agent-fs checks")(koAgentFsChecks(podman, os, sourceId)))
 
-    val images = launchImages(settings, project, os)
-    val rules = launchRules(parsed, settings, project, images, os)
+    val images = launchImages(settings, workspace, os)
+    val rules = launchRules(parsed, settings, workspace, images, os)
     import rules.{fileRuleLines, fileRulesText, sessionCredentials}
 
     // -----------------------------------------------------------------------
@@ -1370,12 +1370,12 @@ object AgentSandboxLauncher:
     // created").
 
     val names = RunNames(
-      proxyRunContainer(projectId, runSuffix),
-      sandboxRunContainer(projectId, runSuffix),
-      // Per run, not per project, so concurrent sessions cannot reach each other — a compromised proxy reaches the
+      proxyRunContainer(workspaceId, runSuffix),
+      sandboxRunContainer(workspaceId, runSuffix),
+      // Per run, not per workspace, so concurrent sessions cannot reach each other — a compromised proxy reaches the
       // Internet and its own sandbox, never a neighbour with a wider ruleset.
-      sandboxRunNetwork(projectId, runSuffix),
-      egressRunNetwork(projectId, runSuffix),
+      sandboxRunNetwork(workspaceId, runSuffix),
+      egressRunNetwork(workspaceId, runSuffix),
     )
     import names.{egressNetwork, proxyContainer, sandboxContainer, sandboxNetwork}
 
@@ -1387,17 +1387,17 @@ object AgentSandboxLauncher:
     // mount script writes this session's marker as its first act (KoAgentFs, koAgentFsMountScript),
     // and a failure after that would otherwise leave the marker to a later reap. Only live
     // sessions have a mount to reap.
-    val filterReap = Option.when(writeMode == "live")(
-      koAgentFsReapScript(koAgentFsReapPodman(podman, os), projectId, sandboxContainer),
+    val filterReap = Option.when(workspaceMode == "live")(
+      koAgentFsReapScript(koAgentFsReapPodman(podman, os), workspaceId, sandboxContainer),
     )
 
-    // This project's TLS/trust state, and this run's own copies of the files podman will mount —
-    // shared state is derived under the project lock further down, and what a container mounts is
+    // This workspace's TLS/trust state, and this run's own copies of the files podman will mount —
+    // shared state is derived under the workspace lock further down, and what a container mounts is
     // the per-run copy, so a later launch's legitimate rewrite (a rebuilt image, an edited
     // rule file) cannot take a mounted file from a session already running: a bind mount does not
     // survive its source's inode being replaced, and these files have nothing behind them to fall
     // through to.
-    val tlsDir = tlsStateRoot(os).resolve(projectId)
+    val tlsDir = tlsStateRoot(os).resolve(workspaceId)
     createPrivateDirectories(tlsDir)
     val runFiles = tlsDir.resolve(tlsRunDir(runSuffix))
 
@@ -1425,7 +1425,7 @@ object AgentSandboxLauncher:
       filterReap.foreach(script => runOk(koAgentFsScriptCommand(podman, os, script)*))
 
     // Armed before the first resource this run owns — its networks, then its files under the
-    // project lock below. What precedes it is this project's ruleset cache, which outlives every
+    // workspace lock below. What precedes it is this workspace's ruleset cache, which outlives every
     // run by design. From here on this process is the only one that knows what to remove, and
     // every refusal below ends the JVM rather than raising (SandboxLifecycle, armRunCleanup).
     val cleanup = armRunCleanup(removeWhatThisRunCreated)
@@ -1433,9 +1433,9 @@ object AgentSandboxLauncher:
     // The filter's checks, started above, and its mountpoint now; the mount itself once the sandbox
     // container exists (mountKoAgentFs has why), which is after the proxy and the hold.
     val filteredWorkspace = startedKoAgentFsChecks.map: (sourceId, awaitChecks) =>
-      prepareKoAgentFs(podman, os, projectId, sourceId, awaitChecks())
+      prepareKoAgentFs(podman, os, workspaceId, sourceId, awaitChecks())
     // A live mount under other file rules, after an edit of file/rule, is joined under its rules,
-    // which an earlier session of the project accepted; the start prompt below is the consent.
+    // which an earlier session of the workspace accepted; the start prompt below is the consent.
     val joinedRules = joinUnderOtherRules(
       filteredWorkspace.flatMap(_.running),
       fileRulesText,
@@ -1460,7 +1460,7 @@ object AgentSandboxLauncher:
     // file, so the record outlives the per-run container. Not --log-opt
     // path=: conmon interprets that inside the podman-machine VM. A
     // single-file mount — the run's directory would hand the proxy this run's
-    // other logs, and the project's directory every previous session's
+    // other logs, and the workspace's log directory every previous session's
     // record — and owner-only: refusal lines carry full URLs, and a URL can
     // carry a secret.
     createPrivateDirectories(logDir)
@@ -1469,10 +1469,10 @@ object AgentSandboxLauncher:
     val channelLogFile = runLogs.resolve("run-on-host.log")
     val microphoneLogFile = runLogs.resolve("microphone.log")
 
-    val git = gitAccess(settings, project, images, rules, os)
+    val git = gitAccess(settings, workspace, images, rules, os)
     val sandboxFiles =
       prepareRunFiles(
-        parsed, settings, project, images, rules, names, git, tlsDir, runFiles, logDir, runLogs, hostLogFile, os,
+        parsed, settings, workspace, images, rules, names, git, tlsDir, runFiles, logDir, runLogs, hostLogFile, os,
       )
 
     val proxyNetworks =
@@ -1482,10 +1482,10 @@ object AgentSandboxLauncher:
     val proxyIp = addressOn(proxyNetworks, sandboxNetwork)
       .getOrElse(fail(s"error: could not determine the egress proxy's address on $sandboxNetwork"))
 
-    val workspace = LaunchWorkspace(filteredWorkspace, joinedRules, sessionRuleLines, sessionRulesText)
-    printLaunchLines(parsed, settings, project, rules, workspace, git, hostLogFile, os)
+    val mount = LaunchMount(filteredWorkspace, joinedRules, sessionRuleLines, sessionRulesText)
+    printLaunchLines(parsed, settings, workspace, rules, mount, git, hostLogFile, os)
     val createCommand = sandboxCreateCommand(
-      parsed, settings, project, images, rules, names, workspace, git, proxyIp, sandboxFiles, machineMemory, os,
+      parsed, settings, workspace, images, rules, names, mount, git, proxyIp, sandboxFiles, machineMemory, os,
     )
 
     // Before the hold, what the first mill, gradle or mvn command would refuse for want of an
@@ -1493,7 +1493,7 @@ object AgentSandboxLauncher:
     // is the hold's, so a launch that holds nothing is told and asked nothing.
     if runOnHost.nonEmpty then
       RunOnHostProvisioning.run(
-        projectDir,
+        workspaceRoot,
         RunOnHostPrereqs.Program.values.filter(program => runOnHost.contains(program.name)).toSet,
         name => Option(System.getenv(name)),
         terminalReader.filter(_ => sessionStartMode == "pause"),
@@ -1518,7 +1518,7 @@ object AgentSandboxLauncher:
       sys.exit(0)
 
     startSandbox(
-      parsed, settings, project, rules, names, workspace, createCommand, filterReap, runFiles, channelLogFile,
+      parsed, settings, workspace, rules, names, mount, createCommand, filterReap, runFiles, channelLogFile,
       microphoneLogFile, cleanup, os,
     )
 
@@ -1563,9 +1563,9 @@ object AgentSandboxLauncher:
     if runOnHost.nonEmpty && os != Os.Mac then
       fail("error: --run-on-host is available on macOS only; on this host, run those programs in the container")
 
-    val projectDir = resolveProjectDir(os)
+    val workspaceRoot = resolveWorkspaceRoot(os)
     // Before any read of the boundary configuration: boundaryDirRefusal has the forms, SECURITY.md the why.
-    val boundaryDir = boundaryDirOf(projectDir)
+    val boundaryDir = boundaryDirOf(workspaceRoot)
     boundaryDirRefusal(boundaryDir).foreach(fail(_))
 
     // The selected programs' rule files, read before anything is created: a binding is checked against
@@ -1573,31 +1573,31 @@ object AgentSandboxLauncher:
     // The runner reads them again at a program's first command.
     val programRules = RunOnHostPrereqs.Program.values.toVector.filter(program => runOnHost.contains(program.name))
       .map: program =>
-        RunOnHostPrereqs.readProgramRules(projectDir, program).fold(fail(_), program -> _)
+        RunOnHostPrereqs.readProgramRules(workspaceRoot, program).fold(fail(_), program -> _)
     LaunchSettings(
       credentials, image, imageOverridden, nesting, sessionStartMode, clipboard, clipboardHost, microphone,
-      forwardedEnv, awsCredential, runOnHost, projectDir, boundaryDir, programRules,
+      forwardedEnv, awsCredential, runOnHost, workspaceRoot, boundaryDir, programRules,
     )
 
-  private def launchProject(parsed: ParsedCommandLine, settings: LaunchSettings, os: Os): LaunchProject =
-    import parsed.writeMode
-    import settings.{projectDir, sessionStartMode}
+  private def launchWorkspace(parsed: ParsedCommandLine, settings: LaunchSettings, os: Os): LaunchWorkspace =
+    import parsed.workspaceMode
+    import settings.{workspaceRoot, sessionStartMode}
     // -----------------------------------------------------------------------
-    // Refuse obviously wrong project directories
+    // Refuse obviously wrong workspace roots
     // -----------------------------------------------------------------------
     val homeProtection = protectedHomeDirectories(os, env).fold(fail(_), identity)
     homeProtection.warnings.foreach(warn)
-    forbiddenProjectDirReason(projectDir, homeProtection).foreach: reason =>
-      fail(s"error: refusing to mount ${pathInline(projectDir, os)}\n\n$reason")
-    forbiddenStateRootReason(os, stateRoot(os), projectDir).foreach(fail(_))
+    forbiddenWorkspaceRootReason(workspaceRoot, homeProtection).foreach: reason =>
+      fail(s"error: refusing to mount ${pathInline(workspaceRoot, os)}\n\n$reason")
+    forbiddenStateRootReason(os, stateRoot(os), workspaceRoot).foreach(fail(_))
 
     // -----------------------------------------------------------------------
     // Shared agent state
     // -----------------------------------------------------------------------
     //
-    // Separate volumes keep settings and MCP commands written by one project out of another project's sessions
-    // (SECURITY.md, "What the persistent volume holds"). This requires signing in separately for each project.
-    // KO_AGENT_SANDBOX_PERSISTENT_VOLUME opts into sharing that state across projects using the named volume.
+    // Separate volumes keep settings and MCP commands written by one workspace out of another workspace's sessions
+    // (SECURITY.md, "What the persistent volume holds"). This requires signing in separately for each workspace.
+    // KO_AGENT_SANDBOX_PERSISTENT_VOLUME opts into sharing that state across workspaces using the named volume.
     // A linked worktree may instead share its main worktree's volume, which the reader agrees to
     // right here, under the two lines naming both directories and before podman announces
     // itself: the question is about those two lines and nothing that follows. A launch that
@@ -1608,8 +1608,8 @@ object AgentSandboxLauncher:
       sharedVolumeNameRefusal(shared).foreach(reason => fail(s"error: $reason"))
       shared
     // Named under the variable too, where nothing is asked: the read-only git mount reads it.
-    val mainWorktree = SandboxProject.mainWorktreeOf(projectDir, homeProtection, os)
-    System.err.println(pathLine("project directory", projectDir, os, tint = chosen(_)))
+    val mainWorktree = SandboxWorkspace.mainWorktreeOf(workspaceRoot, homeProtection, os)
+    System.err.println(pathLine("workspace root", workspaceRoot, os, tint = chosen(_)))
     mainWorktree.foreach(main => System.err.println(pathLine("main git worktree", main, os)))
     // The answer said back as the workspace and egress lines say their modes: an answer is a
     // choice, and either continues the launch.
@@ -1628,13 +1628,13 @@ object AgentSandboxLauncher:
           )
           false
 
-    // Where the container has the project: the same path, so nothing on either side translates
-    // (SandboxProject.mountPathOf). What the image has there is asked, or read from the cache of
-    // an earlier answer, once the image is known, below, still before any per-project resource
+    // Where the container has the workspace: the same path, so nothing on either side translates
+    // (SandboxWorkspace.mountPathOf). What the image has there is asked, or read from the cache of
+    // an earlier answer, once the image is known, below, still before any per-workspace resource
     // exists.
-    val mountPath = mountPathOf(os, projectDir).fold(fail(_), identity)
+    val mountPath = mountPathOf(os, workspaceRoot).fold(fail(_), identity)
 
-    // Detected this early because reject's refusal below must come before any resource exists;
+    // Detected this early because the read-only mode's refusal below must come before any resource exists;
     // every fileBind reads it again further down. Enforcing specifically:
     // permissive and disabled hosts read every mount unrelabeled, so relabeling there would be
     // a host-metadata write with no benefit.
@@ -1643,28 +1643,28 @@ object AgentSandboxLauncher:
         .exists(path => run(path.toString).text.trim == "Enforcing")
 
     // An unfiltered bind mount on an SELinux-enforcing host is readable to the container only after
-    // :Z relabels the project directory — a recursive host-metadata write, which is exactly the
-    // authority reject withholds. Refused rather than relabeled, unless the tree already has a
-    // shared container-accessible context, where a plain read-only bind needs no host write.
-    if writeMode == "reject" && selinuxEnforcing && !selinuxContainerReadable(projectDir) then
+    // :Z relabels the workspace — a recursive host-metadata write, which is exactly the authority the
+    // read-only mode withholds. Refused rather than relabeled, unless the tree already has a shared
+    // container-accessible context, where a plain read-only bind needs no host write.
+    if workspaceMode == "read-only" && selinuxEnforcing && !selinuxContainerReadable(workspaceRoot) then
       fail(
-        s"""error: --write=reject cannot mount $projectDir on this SELinux-enforcing host
-           |Reading an unfiltered bind mount here requires relabeling the project directory (:Z), a recursive
-           |host-metadata write that reject must not perform. Use --write=live — the filter's
-           |mountpoint needs no relabel — or relabel the project yourself
+        s"""error: --workspace=read-only cannot mount $workspaceRoot on this SELinux-enforcing host
+           |Reading an unfiltered bind mount here requires relabeling the workspace (:Z), a recursive
+           |host-metadata write that --workspace=read-only never makes. Use --workspace=live — the filter's
+           |mountpoint needs no relabel — or relabel the workspace yourself
            |(chcon -R -t container_file_t -l s0 <dir>; the level clears any categories a
            |previous :Z assigned to one container) and relaunch.""".stripMargin,
       )
 
     // -----------------------------------------------------------------------
-    // Per-project identity
+    // Per-workspace identity
     // -----------------------------------------------------------------------
     //
-    // Names this project directory and suffixes everything podman holds for it. The directory name alone would
-    // collide — two project directories called `app` must not share credentials or a ruleset — so the hash covers
-    // the whole path; moving a project yields new resources and new sign-ins.
-    val projectSlug = slugOf(projectDir.getFileName.toString)
-    val projectId = projectIdOf(projectDir, os)
+    // Names this workspace root and suffixes everything podman holds for it. The directory name alone would
+    // collide — two workspace roots called `app` must not share credentials or a ruleset — so the hash covers
+    // the whole path; moving a workspace yields new resources and new sign-ins.
+    val workspaceSlug = slugOf(workspaceRoot.getFileName.toString)
+    val workspaceId = workspaceIdOf(workspaceRoot, os)
     // -----------------------------------------------------------------------
     // Persistent volume
     // -----------------------------------------------------------------------
@@ -1672,27 +1672,27 @@ object AgentSandboxLauncher:
     // The volume this session mounts ("Shared agent state", above).
     val persistentVolume = sharedVolume
       .orElse(sharedWithMain.map(mainWorktreeVolume(_, os)))
-      .getOrElse(persistentVolumeName(projectId))
+      .getOrElse(persistentVolumeName(workspaceId))
     // Read against the host here, before anything is created, like the rule files: the directories
     // are bound into the sandbox unrelabeled, so an enforcing host is asked whether the container
-    // can read them, as it is about the project.
+    // can read them, as it is about the workspace.
     val claudePlugins =
       if parsed.claudePlugins.isEmpty then Vector.empty
       else
         ClaudePlugins.resolve(
           parsed.claudePlugins,
-          ClaudePlugins.SessionWritten(projectDir, "the project directory, which the session writes")
+          ClaudePlugins.SessionWritten(workspaceRoot, "the workspace, which the session writes")
             +: hostCommandWrites(os).fold(fail(_), identity),
           os,
           directory => !selinuxEnforcing || selinuxContainerReadable(directory),
         ).fold(fail(_), identity)
-    LaunchProject(
-      homeProtection, mainWorktree, mountPath, selinuxEnforcing, projectSlug, projectId, persistentVolume,
+    LaunchWorkspace(
+      homeProtection, mainWorktree, mountPath, selinuxEnforcing, workspaceSlug, workspaceId, persistentVolume,
       claudePlugins,
     )
 
   /**
-   * The directories outside the project that `--run-on-host` commands write (SeatbeltProfile.render's
+   * The directories outside the workspace that `--run-on-host` commands write (SeatbeltProfile.render's
    * grants): the caches under the launcher's cache root, where each lies once a symlink is
    * followed (RunOnHostPrereqs.writtenCacheDirectories), and every session's `tmp/` under the host
    * commands' root. The cache root and the host commands' root are named whole, as a reset removes
@@ -1717,9 +1717,9 @@ object AgentSandboxLauncher:
       ClaudePlugins.SessionWritten(root, s"the host commands' directory $root, which --run-on-host commands write")
     caches.map(_ ++ sessions)
 
-  private def launchImages(settings: LaunchSettings, project: LaunchProject, os: Os): LaunchImages =
-    import settings.{image, imageOverridden, projectDir}
-    import project.{mountPath, projectId}
+  private def launchImages(settings: LaunchSettings, workspace: LaunchWorkspace, os: Os): LaunchImages =
+    import settings.{image, imageOverridden, workspaceRoot}
+    import workspace.{mountPath, workspaceId}
     // -----------------------------------------------------------------------
     // Sandbox image
     // -----------------------------------------------------------------------
@@ -1751,10 +1751,10 @@ object AgentSandboxLauncher:
     // before the filter's preparation, the networks and the TLS state, so a refusal writes
     // nothing (mountPathRefusal has the cases).
     //   - The probe is a run of the image, 0.2 s on a macOS podman machine (2026-09-18), so its
-    //     `absent` is cached per image Id, written once the project's cache directory exists below.
+    //     `absent` is cached per image Id, written once the workspace's cache directory exists below.
     //   - A miss runs beside the sandbox image's version lock and the proxy image's inspect; its
     //     refusals come between theirs.
-    val mountPathAnswerFile = rulesetStateRoot(os).resolve(projectId).resolve("mount-path.answer")
+    val mountPathAnswerFile = rulesetStateRoot(os).resolve(workspaceId).resolve("mount-path.answer")
     val cachedMountPath = cachedMountPathAnswer(mountPathAnswerFile, imageId, mountPath)
     val awaitMountPathProbe = cachedMountPath.fold(
       inBackground("mount path probe")(probeMountPath(podman, imageId, mountPath)),
@@ -1774,7 +1774,7 @@ object AgentSandboxLauncher:
     val mountPathProbe = awaitMountPathProbe()
     if !mountPathProbe.ok then
       fail(s"error: could not ask $image about $mountPath\n${mountPathProbe.err}")
-    mountPathRefusal(mountPathProbe.text, projectDir, mountPath).foreach(fail(_))
+    mountPathRefusal(mountPathProbe.text, workspaceRoot, mountPath).foreach(fail(_))
 
     if !proxyInspected.ok then
       fail(
@@ -1790,34 +1790,34 @@ object AgentSandboxLauncher:
   private def launchRules(
     parsed: ParsedCommandLine,
     settings: LaunchSettings,
-    project: LaunchProject,
+    workspace: LaunchWorkspace,
     images: LaunchImages,
     os: Os,
   ): LaunchRules =
-    import parsed.{command, egressProfile, writeMode}
-    import settings.{boundaryDir, credentials, programRules, projectDir, runOnHost}
-    import project.{mountPath, projectId}
+    import parsed.{command, egressProfile, workspaceMode}
+    import settings.{boundaryDir, credentials, programRules, workspaceRoot, runOnHost}
+    import workspace.{mountPath, workspaceId}
     import images.{cachedMountPath, imageId, mountPathAnswerFile, mountPathProbe, proxyImageId}
     // -----------------------------------------------------------------------
-    // This project's boundary configuration
+    // This workspace's boundary configuration
     // -----------------------------------------------------------------------
     //
-    // The project's egress/ is read here on the host and handed to the proxy at startup.
+    // The workspace's egress/ is read here on the host and handed to the proxy at startup.
     // readRuleFiles has the forms, SECURITY.md the why. What keeps a session from writing the
-    // next one's rules is the write mode itself: reject's read-only tree, or live's FUSE
-    // reserved-name rule.
+    // next one's rules is the workspace mode itself: the read-only mode's `ro` bind of the raw tree, or
+    // the live mode's FUSE reserved-name rule.
     val ruleFiles = readRuleFiles(boundaryDir.resolve("egress")).fold(fail(_), identity)
 
-    // The project files a host program executes on an event (FileRules), read as the egress rules
+    // The workspace files a host program executes on an event (FileRules), read as the egress rules
     // are and resolved to what the filter and the Seatbelt profile enforce. The filter's guard adds
-    // to them at the mount; under --write=reject with --run-on-host, where no daemon runs,
+    // to them at the mount; under --workspace=read-only with --run-on-host, where no daemon runs,
     // `ko-agent-fs --resolve` does.
-    val projectFileRules = FileRules.readRuleFile(boundaryDir.resolve("file")).fold(fail(_), identity)
-    val fileRuleLines = FileRules.resolve(projectFileRules.fold(Vector.empty[FileRules.Line])(_(1)))
-    val fileRulesInForce = writeMode == "live" || runOnHost.nonEmpty
+    val workspaceFileRules = FileRules.readRuleFile(boundaryDir.resolve("file")).fold(fail(_), identity)
+    val fileRuleLines = FileRules.resolve(workspaceFileRules.fold(Vector.empty[FileRules.Line])(_(1)))
+    val fileRulesInForce = workspaceMode == "live" || runOnHost.nonEmpty
     val fileRulesText = FileRules.daemonText(fileRuleLines, FileRules.hostView(os, mountPath))
-    val rejectFileRules = Option.when(writeMode == "reject" && runOnHost.nonEmpty)(
-      resolveFileRules(podman, os, projectId, mountPath, fileRulesText),
+    val readOnlyFileRules = Option.when(workspaceMode == "read-only" && runOnHost.nonEmpty)(
+      resolveFileRules(podman, os, workspaceId, mountPath, fileRulesText),
     )
 
     // The providers the launch selects (EgressRules.selectedProvider), and the one warning that is
@@ -1830,9 +1830,9 @@ object AgentSandboxLauncher:
     // under the stamp below, and only success is written.
     // Enforcement never reads this cache: the proxy re-resolves the same variables at startup, so corruption can at
     // worst misprint the banner, never widen what is enforced.
-    val rulesetCacheDir = rulesetStateRoot(os).resolve(projectId)
+    val rulesetCacheDir = rulesetStateRoot(os).resolve(workspaceId)
     createPrivateDirectories(rulesetCacheDir)
-    recordProjectDirectory(projectsStateRoot(os), projectId, projectDir)
+    recordWorkspaceRoot(workspacesStateRoot(os), workspaceId, workspaceRoot)
     if cachedMountPath.isEmpty then cacheMountPathAnswer(mountPathAnswerFile, imageId, mountPath, mountPathProbe)
 
     val resolvedHostsFile = rulesetCacheDir.resolve("resolved.hosts")
@@ -1842,7 +1842,7 @@ object AgentSandboxLauncher:
     // value the proxy would refuse never share a stamp — and the files,
     // hashed into its one line because they are multi-part. It is the first line of each cached
     // file rather than a file of its own, and a hit needs both to hold it: concurrent launches of
-    // one project under different session options write here without a lock, and a stamp
+    // one workspace under different session options write here without a lock, and a stamp
     // beside the content can end up describing the other launch's (FileHelper.stampedEntry).
     val rulesetStamp =
       s"$proxyImageId $egressProfile ${provider.getOrElse("")} " +
@@ -1881,34 +1881,34 @@ object AgentSandboxLauncher:
     ).fold(fail(_), identity)
     val sessionCredentials = EgressCredentials.bindingsFor(credentials, inspectedHosts.toSet)
     LaunchRules(
-      ruleFiles, projectFileRules, fileRuleLines, fileRulesInForce, fileRulesText, rejectFileRules, provider,
+      ruleFiles, workspaceFileRules, fileRuleLines, fileRulesInForce, fileRulesText, readOnlyFileRules, provider,
       rulesetCacheDir, rulesetText, rulesetWarnings, inspectedHosts, sessionCredentials,
     )
 
   private def gitAccess(
     settings: LaunchSettings,
-    project: LaunchProject,
+    workspace: LaunchWorkspace,
     images: LaunchImages,
     rules: LaunchRules,
     os: Os,
   ): GitAccess =
-    import settings.projectDir
-    import project.{homeProtection, mainWorktree, mountPath, selinuxEnforcing}
+    import settings.workspaceRoot
+    import workspace.{homeProtection, mainWorktree, mountPath, selinuxEnforcing}
     import images.imageId
     import rules.rulesetCacheDir
-    val noGit = SandboxProject.noGit(projectDir, homeProtection, os)
+    val noGit = SandboxWorkspace.noGit(workspaceRoot, homeProtection, os)
     // A linked worktree's main Git directory, bound read-only where the container can follow the
-    // pointer there (SandboxProject.linkedGitdirBind) and can read it once bound: the image must
-    // have nothing at the target (the project's probe, asked again of this path); on an
+    // pointer there (SandboxWorkspace.linkedGitdirBind) and can read it once bound: the image must
+    // have nothing at the target (the workspace root's probe, asked again of this path); on an
     // SELinux-enforcing host, the directory must carry a container-readable label, which the
-    // launcher never gives a project tree (SECURITY.md, "the project tree's SELinux labels"); and
+    // launcher never gives a workspace (SECURITY.md, "the workspace's SELinux labels"); and
     // the repository must not set the extension the image's git refuses
-    // (SandboxProject.setsRelativeWorktrees). Each refusal is said with the git warning, since
+    // (SandboxWorkspace.setsRelativeWorktrees). Each refusal is said with the git warning, since
     // the warning alone would read as a linked worktree this launcher does not recognize.
     val gitdirBind = noGit.collect { case NoGit.Gitdir(_, _, _) => () }
-      .flatMap(_ => mainWorktree.flatMap(main => SandboxProject.linkedGitdirBind(projectDir, main, os)))
+      .flatMap(_ => mainWorktree.flatMap(main => SandboxWorkspace.linkedGitdirBind(workspaceRoot, main, os)))
     val gitdirBindRefusal: Option[String] = gitdirBind.flatMap: bind =>
-      if SandboxProject.setsRelativeWorktrees(bind.source) then
+      if SandboxWorkspace.setsRelativeWorktrees(bind.source) then
         Some(
           "the repository sets extensions.relativeWorktrees, which the sandbox image's git does not know; " +
             "git there would refuse the repository",
@@ -1924,16 +1924,16 @@ object AgentSandboxLauncher:
           s"the sandbox image cannot take a mount at ${bind.target}"
     val mountedGitdir = gitdirBind.filter(_ => gitdirBindRefusal.isEmpty)
     val gitInstruction = mountedGitdir
-      .map(SandboxProject.readOnlyGitInstruction(_, mountPath))
-      .orElse(noGit.map(SandboxProject.noGitInstruction(_, mountPath)))
+      .map(SandboxWorkspace.readOnlyGitInstruction(_, mountPath))
+      .orElse(noGit.map(SandboxWorkspace.noGitInstruction(_, mountPath)))
     GitAccess(noGit, mountedGitdir, gitdirBindRefusal, gitInstruction)
 
-  /** This project's TLS state and agent instructions, this run's copies of what the containers mount,
-    * and the proxy container, all under the project lock: the sandbox container's file arguments. */
+  /** This workspace's TLS state and agent instructions, this run's copies of what the containers mount,
+    * and the proxy container, all under the workspace lock: the sandbox container's file arguments. */
   private def prepareRunFiles(
     parsed: ParsedCommandLine,
     settings: LaunchSettings,
-    project: LaunchProject,
+    workspace: LaunchWorkspace,
     images: LaunchImages,
     rules: LaunchRules,
     names: RunNames,
@@ -1945,21 +1945,21 @@ object AgentSandboxLauncher:
     hostLogFile: Path,
     os: Os,
   ): Vector[String] =
-    import parsed.{egressProfile, writeMode}
+    import parsed.{egressProfile, workspaceMode}
     import settings.{image, runOnHost}
-    import project.{claudePlugins, mountPath, projectId, projectSlug, selinuxEnforcing}
+    import workspace.{claudePlugins, mountPath, workspaceId, workspaceSlug, selinuxEnforcing}
     import images.{imageEnv, imageId, proxyImageId}
     import rules.{inspectedHosts, provider, ruleFiles, rulesetCacheDir, rulesetText, sessionCredentials}
     import names.{egressNetwork, proxyContainer, sandboxNetwork}
     import git.gitInstruction
     // -----------------------------------------------------------------------
-    // This project's TLS inspection CA, and this run's mount sources
+    // This workspace's TLS inspection CA, and this run's mount sources
     // -----------------------------------------------------------------------
     //
     // The CA the sandbox trusts for TLS inspection. Created here; the key stays on the host, only the leaf and its own
     // key reach the proxy. SECURITY.md ("Who holds the CA key") has the reasoning.
     //
-    // Under the project lock, because every step is check-then-act over shared files: two first
+    // Under the workspace lock, because every step is check-then-act over shared files: two first
     // launches that both find no usable CA would otherwise interleave their writes and leave one
     // launch's ca.key beside the other's ca.crt. The lock spans the checks through the per-run
     // copies and the proxy's create, so what this run mounts is one launch's consistent set; it
@@ -1988,11 +1988,11 @@ object AgentSandboxLauncher:
     // The profile and provider need no stamp input of their own — the resolved text's first line
     // names both.
     val agentDocStamp = agentDocumentStamp(
-      imageId, writeMode, rulesetText, runOnHost, gitInstruction, parsed.credentialBindings,
+      imageId, workspaceMode, rulesetText, runOnHost, gitInstruction, parsed.credentialBindings,
     )
 
     withFileLock(tlsDir.resolve(".lock")):
-      // Which of this project's runs a container still names, for every pruning decision this
+      // Which of this workspace's runs a container still names, for every pruning decision this
       // launch makes. Listed under the lock and in every state, because a run's directories — of
       // logs, of mount copies — are created under this lock and its proxy created before the
       // lock is released: a run whose files another launch can see has a container in that
@@ -2006,10 +2006,10 @@ object AgentSandboxLauncher:
       val containers = run(podman, "ps", "--all", "--format", "{{.Names}}")
       val containerNames: Option[Vector[String]] =
         Option.when(containers.ok)(containers.text.linesIterator.map(_.trim).toVector)
-      val liveRuns = liveRunsOf(projectId, containerNames)
+      val liveRuns = liveRunsOf(workspaceId, containerNames)
       if containerNames.isEmpty then
         System.err.println(
-          "note: could not list this project's containers; keeping every retained log and run file\n"
+          "note: could not list this workspace's containers; keeping every retained log and run file\n"
             + containers.err,
         )
 
@@ -2044,7 +2044,7 @@ object AgentSandboxLauncher:
         || !coherentPair(caCertFile, caKeyFile)
       then
         try
-          val ca = createCa(projectSlug)
+          val ca = createCa(workspaceSlug)
           // The leaf this CA no longer signs is retired by emptying it, not by deleting it: the
           // names stay stable for the copies below and for anything still reading them
           // (FileHelper.writeWithMode). Empty fails every expiry test below, so the leaf is
@@ -2057,7 +2057,7 @@ object AgentSandboxLauncher:
           writePrivate(caCertFile, ca.certificatePem)
         catch
           case ex: Exception =>
-            fail(s"error: could not create this project's inspection CA in $tlsDir\n$ex")
+            fail(s"error: could not create this workspace's inspection CA in $tlsDir\n$ex")
 
       // The leaf is reissued when the CA is (emptied just above), when the list of inspected names changes, and before
       // it expires — and not issued at all for a ruleset that inspects nothing. Its own coherence
@@ -2080,7 +2080,7 @@ object AgentSandboxLauncher:
           writeReadable(leafSansFile, sanList + "\n")
         catch
           case ex: Exception =>
-            fail(s"error: could not issue this project's inspection certificate\n$ex")
+            fail(s"error: could not issue this workspace's inspection certificate\n$ex")
 
       // The sandbox's trust: the image's own CA bundle — not the workstation's, a different set
       // entirely — plus the CA this run trusts. Re-read when image or CA changes; the stamp records
@@ -2123,7 +2123,7 @@ object AgentSandboxLauncher:
           agentDocFile,
           String(imageDoc, StandardCharsets.UTF_8).stripLineEnd
             + appendedSection(
-              mountPath, writeMode, rulesetText, runOnHost, os == Os.Mac, gitInstruction, parsed.credentialBindings,
+              mountPath, workspaceMode, rulesetText, runOnHost, os == Os.Mac, gitInstruction, parsed.credentialBindings,
             ),
         )
         writeReadable(agentDocStampFile, agentDocStamp + "\n")
@@ -2216,29 +2216,29 @@ object AgentSandboxLauncher:
   private def printLaunchLines(
     parsed: ParsedCommandLine,
     settings: LaunchSettings,
-    project: LaunchProject,
-    rules: LaunchRules,
     workspace: LaunchWorkspace,
+    rules: LaunchRules,
+    mount: LaunchMount,
     git: GitAccess,
     hostLogFile: Path,
     os: Os,
   ): Unit =
     import settings.{awsCredential, credentials}
-    import project.mountPath
-    import rules.{fileRulesInForce, inspectedHosts, projectFileRules, ruleFiles, rulesetText, rulesetWarnings}
-    import workspace.{filteredWorkspace, joinedRules, sessionRuleLines}
+    import workspace.mountPath
+    import rules.{fileRulesInForce, inspectedHosts, workspaceFileRules, ruleFiles, rulesetText, rulesetWarnings}
+    import mount.{filteredWorkspace, joinedRules, sessionRuleLines}
     import git.{gitdirBindRefusal, mountedGitdir, noGit}
     // The workspace mode and the egress profile with their relevant state, said every launch — and
     // rules that arrived with the repository never take effect unseen: each line of the files once
     // (HostCommands.ruleFileReport), then the dry run's counts, the proxy's own answers to exactly
     // what is enforced. Each line tints the mode it states; a line stating a boundary weaker than
     // the default is tinted whole instead (HostCommands.weakened).
-    // The mount path is said on Windows only, where it is not the project directory line's
+    // The mount path is said on Windows only, where it is not the workspace root line's
     // spelling but the /mnt/<drive> one the agent will print.
     val mountedAt = if os == Os.Windows then s" at $mountPath" else ""
     System.err.println(filteredWorkspace match
       case Some(_) => s"workspace: ${chosen("live")}; ${koAgentFsLabel(os)}$mountedAt"
-      case None    => s"workspace: ${chosen("reject")}; read-only this session$mountedAt")
+      case None    => s"workspace: ${chosen("read-only")} this session$mountedAt")
     // Qualifies the line above: the mount is sound, and git is not there, or reads the main
     // worktree's Git directory and writes nothing. Every mode, since what git needs is absent from
     // the container under each.
@@ -2251,7 +2251,7 @@ object AgentSandboxLauncher:
       case Some(running) =>
         warn(joinWarning(running))
         FileRules.runningLaunchLines(sessionRuleLines).foreach(System.err.println)
-      case None => if fileRulesInForce then FileRules.launchLines(projectFileRules).foreach(System.err.println)
+      case None => if fileRulesInForce then FileRules.launchLines(workspaceFileRules).foreach(System.err.println)
     EgressRules.launchLines(ruleFiles, rulesetText).foreach(System.err.println)
     System.err.println(egressBanner(rulesetText))
     // The transport, when this launch passed HTTPS_PROXY: the proxy's own line, from its own
@@ -2275,7 +2275,8 @@ object AgentSandboxLauncher:
     awsCredential.foreach(resolved => System.err.println(AwsCredential.bannerLine(resolved, Instant.now())))
     // Loud as a loosening: code that runs in the session without a tool call, which the image's
     // allowManagedHooksOnly otherwise keeps out, chosen on the host (SECURITY.md).
-    if project.claudePlugins.nonEmpty then System.err.println(weakened(ClaudePlugins.bannerLine(project.claudePlugins)))
+    if workspace.claudePlugins.nonEmpty then
+      System.err.println(weakened(ClaudePlugins.bannerLine(workspace.claudePlugins)))
     if credentials.nonEmpty then
       EgressCredentials.bannerLines(credentials).foreach(System.err.println)
       System.err.println(s"note: ${EgressCredentials.SubstitutionNote}")
@@ -2284,27 +2285,27 @@ object AgentSandboxLauncher:
   private def sandboxCreateCommand(
     parsed: ParsedCommandLine,
     settings: LaunchSettings,
-    project: LaunchProject,
+    workspace: LaunchWorkspace,
     images: LaunchImages,
     rules: LaunchRules,
     names: RunNames,
-    workspace: LaunchWorkspace,
+    mount: LaunchMount,
     git: GitAccess,
     proxyIp: String,
     sandboxFiles: Vector[String],
     machineMemory: Option[Long],
     os: Os,
   ): Vector[String] =
-    import parsed.{command, writeMode}
+    import parsed.{command, workspaceMode}
     import settings.{
-      awsCredential, clipboard, credentials, forwardedEnv, microphone, nesting, programRules, projectDir, runOnHost,
+      awsCredential, clipboard, credentials, forwardedEnv, microphone, nesting, programRules, workspaceRoot, runOnHost,
       sessionStartMode,
     }
-    import project.{mountPath, persistentVolume}
+    import workspace.{mountPath, persistentVolume}
     import images.imageId
     import rules.{fileRulesInForce, rulesetText}
     import names.{sandboxContainer, sandboxNetwork}
-    import workspace.{filteredWorkspace, sessionRuleLines}
+    import mount.{filteredWorkspace, sessionRuleLines}
     import git.mountedGitdir
     // -----------------------------------------------------------------------
     // How the sandbox reaches it
@@ -2324,8 +2325,8 @@ object AgentSandboxLauncher:
       s"--add-host=$EgressProxyHost:$proxyIp",
     ) ++ proxyVariables(egressProxyUrl).map((name, value) => s"--env=$name=$value") ++ Vector(
 
-      // Keep the proxy's resolved rules available on demand. Metadata about the project file
-      // stays with the terminal; the agent needs the grants actually in force (rulesetLinesOf).
+      // Keep the proxy's resolved rules available on demand. Metadata about the workspace's rule
+      // file stays with the terminal; the agent needs the grants actually in force (rulesetLinesOf).
       // Revealing the rules grants no access: an agent could discover them by probing, slowly
       // and noisily, and mistake refusals for a broken environment in the meantime.
       s"--env=KO_AGENT_SANDBOX_EGRESS_RULESET=${rulesetLinesOf(rulesetText)}",
@@ -2372,14 +2373,14 @@ object AgentSandboxLauncher:
     val runOnHostArgs =
       if runOnHost.isEmpty then Vector.empty
       else
-        runOnHostLines(runOnHost, writeMode).foreach(System.err.println)
+        runOnHostLines(runOnHost, workspaceMode).foreach(System.err.println)
         runOnHostWideningLines(programRules.map((program, hosts) => program.name -> hosts)).foreach(System.err.println)
         Vector(s"--env=${RunOnHostChannel.RunOnHostVariable}=${runOnHost.mkString(",")}")
 
     // -----------------------------------------------------------------------
-    // Project bind mount
+    // Workspace bind mount
     // -----------------------------------------------------------------------
-    val projectVolume = projectBind(filteredWorkspace.map(_.mountpoint), projectDir, mountPath)
+    val workspaceVolume = workspaceBind(filteredWorkspace.map(_.mountpoint), workspaceRoot, mountPath)
 
     // -----------------------------------------------------------------------
     // Memory limit
@@ -2412,7 +2413,7 @@ object AgentSandboxLauncher:
       "--pull=never",
       "--init",
 
-      // Map the invoking rootless podman user to our fixed non-root user. Files created in the project consequently
+      // Map the invoking rootless podman user to our fixed non-root user. Files created in the workspace consequently
       // remain host-user-owned.
       s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid",
       s"--user=$ContainerUid:$ContainerGid",
@@ -2440,8 +2441,8 @@ object AgentSandboxLauncher:
       ++ placeholderArgs(credentials) ++ Vector(
 
       // The deliberate host exposure; what the agent writes here is untrusted input to host programs (SECURITY.md, "The
-      // project directory").
-      "--volume", projectVolume,
+      // workspace").
+      "--volume", workspaceVolume,
     ) ++ mountedGitdir.toVector.flatMap(bind => Vector("--volume", s"${bind.source}:${bind.target}:ro")) ++ Vector(
 
       // Anonymous, removed on exit: caches work without becoming cross-session attack state.
@@ -2465,10 +2466,10 @@ object AgentSandboxLauncher:
   private def startSandbox(
     parsed: ParsedCommandLine,
     settings: LaunchSettings,
-    project: LaunchProject,
+    workspace: LaunchWorkspace,
     rules: LaunchRules,
     names: RunNames,
-    workspace: LaunchWorkspace,
+    mount: LaunchMount,
     createCommand: Vector[String],
     filterReap: Option[String],
     runFiles: Path,
@@ -2477,11 +2478,11 @@ object AgentSandboxLauncher:
     cleanup: RunCleanup,
     os: Os,
   ): Nothing =
-    import settings.{awsCredential, clipboard, clipboardHost, credentials, microphone, projectDir, runOnHost}
-    import project.{mountPath, projectId}
-    import rules.rejectFileRules
+    import settings.{awsCredential, clipboard, clipboardHost, credentials, microphone, workspaceRoot, runOnHost}
+    import workspace.{mountPath, workspaceId}
+    import rules.readOnlyFileRules
     import names.{egressNetwork, proxyContainer, sandboxContainer, sandboxNetwork}
-    import workspace.{filteredWorkspace, sessionRulesText}
+    import mount.{filteredWorkspace, sessionRulesText}
     // The AWS values in the create's own environment, where its value-less `--env=NAME` reads them;
     // checked again here, since the hold above may have outlasted them.
     awsCredential.flatMap(AwsCredential.expiredSince(_, Instant.now())).foreach(message => fail(message))
@@ -2545,13 +2546,13 @@ object AgentSandboxLauncher:
     // silence, and which branch the mount took is known only now.
     val mountedFileRules = filteredWorkspace.map: prepared =>
       val (joined, resolved) =
-        mountKoAgentFs(podman, os, prepared, projectId, mountPath, sandboxContainer, sessionRulesText)
+        mountKoAgentFs(podman, os, prepared, workspaceId, mountPath, sandboxContainer, sessionRulesText)
       System.err.println(
-        if joined then "ko-agent-fs filter: joined the existing mount for this project directory"
+        if joined then "ko-agent-fs filter: joined the existing mount for this workspace"
         else "ko-agent-fs filter: mounted",
       )
       resolved
-    val resolvedFileRules = mountedFileRules.orElse(rejectFileRules)
+    val resolvedFileRules = mountedFileRules.orElse(readOnlyFileRules)
     resolvedFileRules.map(FileRules.guardLines).getOrElse(Vector.empty).foreach(System.err.println)
 
     // The command runner, detached like the reaper: it must outlive the exec below, and it ends
@@ -2562,7 +2563,7 @@ object AgentSandboxLauncher:
       val runnerFileRules = runFiles.resolve("file-rules.resolved")
       resolvedFileRules.foreach(resolved => writePrivate(runnerFileRules, resolved.text))
       if !RunOnHostChannel.spawnRunner(
-          podman, sandboxContainer, projectDir, runOnHost, channelLogFile, mountPath,
+          podman, sandboxContainer, workspaceRoot, runOnHost, channelLogFile, mountPath,
           // A brokered name reaches a host command as the sandbox has it: its placeholder.
           forwards = parsed.env ++ awsCredential.toVector.flatMap(_.forwards) ++ credentials.map(credential =>
             EnvForward(credential.binding.name, Some(credential.placeholder)),

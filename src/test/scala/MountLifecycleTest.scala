@@ -6,7 +6,7 @@
 //
 // Sessions are driven with `sleep` rather than an agent — a session runs whatever command it is
 // given, which is what makes the sequence scriptable with no terminal — and the marker set is
-// asserted at every step. Asserting the markers rather than just that the project still reads is the
+// asserted at every step. Asserting the markers rather than just that the workspace still reads is the
 // point: the two ways the count can be wrong are opposite, and a leaked marker (a mount nobody
 // uses) is invisible to the user who would notice the other one.
 //
@@ -14,7 +14,7 @@
 // (`KoAgentFs`, "The workspace FUSE filter's mount lifecycle"). Neither needs a launch that can be
 // paused: the state a launch-in-flight presents to a reap is a marker whose container exists and
 // is not running, which can be created directly; that a real launch passes through that state and
-// no other is the marker's mtime against its container's creation; and that the project lock
+// no other is the marker's mtime against its container's creation; and that the workspace lock
 // serializes a reap against a launch is a blocked FLOCK request in /proc/locks, not a stopwatch.
 
 package agentsandbox.launcher
@@ -35,17 +35,17 @@ class MountLifecycleTest extends munit.FunSuite:
   private def vm(script: String): String =
     run(koAgentFsScriptCommand(podman, currentOs, script)*).text
 
-  test("a project's mount is created, reused, held through a launch in flight, and released"):
+  test("a workspace's mount is created, reused, held through a launch in flight, and released"):
     requireTestWithPodman()
 
-    val project = scratchProject()
+    val workspace = scratchWorkspace()
     var started = Vector.empty[Session]
     var lockHolder = ""
     var id = ""
     var planted = ""
 
     def launch(log: Path): String =
-      val appeared = WithPodman.launch(project, log)
+      val appeared = WithPodman.launch(workspace, log)
       started = started :+ appeared
       id = appeared.id
       appeared.container
@@ -65,15 +65,15 @@ class MountLifecycleTest extends munit.FunSuite:
         .getOrElse(0)
 
     /** Blocked flock requests appear in /proc/locks with a `->` marker, so a reap waiting on the
-      * project lock is observed rather than inferred from how long a teardown took. */
+      * workspace lock is observed rather than inferred from how long a teardown took. */
     def lockWaiters(): Int =
       vm(s"""ino=$$(stat -c %i "$$HOME/$Mounts/$id/lock" 2>/dev/null || echo 0)
             |grep -E '^[0-9]+: -> FLOCK' /proc/locks 2>/dev/null | grep -c ":$$ino " || true
             |""".stripMargin).trim.toIntOption.getOrElse(0)
 
     try
-      val a = launch(project.resolve("a.log"))
-      val aLog = Files.readString(project.resolve("a.log"))
+      val a = launch(workspace.resolve("a.log"))
+      val aLog = Files.readString(workspace.resolve("a.log"))
       assert(
         aLog.contains("ko-agent-fs filter: mounted") && !aLog.contains("joined the existing mount"),
         s"session A did not create the mount — another session of $id already holds one; its output:\n$aLog",
@@ -82,17 +82,17 @@ class MountLifecycleTest extends munit.FunSuite:
       assertEquals(mounted(), 1, "A is running but its mountpoint is not mounted")
       assertEquals(daemonPids().size, 1, s"expected one daemon for $id")
 
-      val b = launch(project.resolve("b.log"))
+      val b = launch(workspace.resolve("b.log"))
       assert(
         Files
-          .readString(project.resolve("b.log"))
-          .contains("ko-agent-fs filter: joined the existing mount for this project directory"),
-        s"session B did not reuse the mount; its output:\n${Files.readString(project.resolve("b.log"))}",
+          .readString(workspace.resolve("b.log"))
+          .contains("ko-agent-fs filter: joined the existing mount for this workspace"),
+        s"session B did not reuse the mount; its output:\n${Files.readString(workspace.resolve("b.log"))}",
       )
       val both = Vector(a, b).sorted.mkString(" ")
       polling.withMaxRetries(30).eventually(assertEquals(markers(), both, "markers with both up"))
       assertEquals(daemonPids().size, 1, "B started a second daemon")
-      // A daemon holding the project lock would block every later reap for the session's whole
+      // A daemon holding the workspace lock would block every later reap for the session's whole
       // life; the mount script closes fd 9 across the fork to prevent exactly that.
       daemonPids().foreach: pid =>
         assertEquals(vm(s"[ -e /proc/$pid/fd/9 ] && echo held || echo free").trim, "free")
@@ -114,9 +114,9 @@ class MountLifecycleTest extends munit.FunSuite:
       started = started.filterNot(_.container == a)
       eventually(assertEquals(markers(), b, "markers after A exits"))
       assertEquals(mounted(), 1, "the mount went away while B was still using it")
-      val mount = SandboxProject.mountPathOf(currentOs, project).fold(fail(_), identity)
+      val mount = SandboxWorkspace.mountPathOf(currentOs, workspace).fold(fail(_), identity)
       assert(run(podman, "exec", b, "sh", "-c", s"ls '$mount' > /dev/null").ok,
-             "B's project mount stopped serving when A exited")
+             "B's workspace mount stopped serving when A exited")
 
       // Exactly the state a launch in flight presents to a reap, planted rather than raced for: a
       // marker whose container exists and is not running. Pruning on anything short of the
@@ -138,11 +138,11 @@ class MountLifecycleTest extends munit.FunSuite:
       // Its container gone — as the reaper's bounded wait or a reset leaves it — the marker is the
       // next reap's to collect.
       assert(run(podman, "rm", planted).ok, "could not remove the planted container")
-      val c = launch(project.resolve("c.log"))
+      val c = launch(workspace.resolve("c.log"))
       assert(
         Files
-          .readString(project.resolve("c.log"))
-          .contains("ko-agent-fs filter: joined the existing mount for this project directory"),
+          .readString(workspace.resolve("c.log"))
+          .contains("ko-agent-fs filter: joined the existing mount for this workspace"),
         "the surviving mount was not reusable",
       )
 
@@ -160,7 +160,7 @@ class MountLifecycleTest extends munit.FunSuite:
 
       run(podman, "stop", "--time", "2", c)
       started = started.filterNot(_.container == c)
-      eventually(assert(lockWaiters() >= 1, "no reap ever blocked on the project lock; it is not serializing"))
+      eventually(assert(lockWaiters() >= 1, "no reap ever blocked on the workspace lock; it is not serializing"))
       assertEquals(mounted(), 1, "the mount went down while the lock was held")
       assertEquals(markers(), planted, "expected only the planted marker while the reap is blocked")
 
@@ -174,4 +174,4 @@ class MountLifecycleTest extends munit.FunSuite:
       if lockHolder.nonEmpty then vm(s"kill $lockHolder 2>/dev/null || true")
       if planted.nonEmpty then run(podman, "rm", "--force", planted)
       started.foreach(stop)
-      discard(project)
+      discard(workspace)

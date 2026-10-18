@@ -3,7 +3,7 @@
 a path walk"): `lstat` by depth, one deep file three ways, every tracked file by path and through
 directory fds, and `find` and `git status` over the tree.
 
-Run it INSIDE a filtered session, at the root of a project that is a git repository; it reads and
+Run it INSIDE a filtered session, at the root of a workspace that is a git repository; it reads and
 writes nothing but stat calls:
 
     java -jar ko-agent-sandbox.jar python3 fuse/ko-agent-fs/probe/walk-probe.py
@@ -26,7 +26,7 @@ listing = subprocess.run(["git", "ls-files", "-z"], capture_output=True)
 tracked = [p for p in listing.stdout.decode().split("\0")[:-1] if os.path.lexists(p)]
 if listing.returncode != 0 or not tracked:
     sys.exit(
-        "abort: git lists no tracked files in %s — run this at the root of a project that is a git "
+        "abort: git lists no tracked files in %s — run this at the root of a workspace that is a git "
         "repository%s" % (root, (": " + listing.stderr.decode().strip()) if listing.stderr else "")
     )
 depths = [p.count("/")+1 for p in tracked]

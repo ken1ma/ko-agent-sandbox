@@ -1,9 +1,9 @@
-# Plan: a BPF cgroup-LSM backend for `--write=live`
+# Plan: a BPF cgroup-LSM backend for `--workspace=live`
 
 The workspace filter costs 6–18× on metadata operations over an unfiltered bind mount on macOS and
 5–30× on Windows (`../fuse/ko-agent-fs/doc/verification-log.md`, "The cost of a path walk"), and
 sessions through it have frozen the podman machine. This plan replaces the filter on every platform
-with a direct bind of the project and a policy the kernel running the containers enforces: BPF
+with a direct bind of the workspace and a policy the kernel running the containers enforces: BPF
 programs of type `BPF_LSM_CGROUP`, attached to the sandbox's own cgroup, so the host and every
 other container keep unfiltered access to the same files.
 
@@ -13,7 +13,7 @@ the supported set "Native Linux" states.
 Status: the environment prerequisites and the cgroup placement are measured on both machines
 ("Environment evidence"), and Phase 0 is done ("Inventory"); no BPF program has been loaded,
 attached or shown to deny anything. The filter stays the default until "Acceptance" passes, and
-no launch ever binds the project writable without the policy attached and verified.
+no launch ever binds the workspace writable without the policy attached and verified.
 
 The reader acting on this plan starts at "Phases" and "What is gained and what is lost". The
 sections before them are what the phases rest on.
@@ -26,7 +26,7 @@ sections before them are what the phases rest on.
   set, the name rule and the double-sided rename and link rules are that document's, except that
   a directory may be created and removed at any name, under the rules "Directories" adds.
 - No non-directory entry is created inside a `.ko-agent-sandbox` at any depth, and nothing under
-  one is written (`../SECURITY.md`, "A project loosening its own confinement"; "Directories" has
+  one is written (`../SECURITY.md`, "A workspace loosening its own confinement"; "Directories" has
   why directories there may be created).
 - The file rules keep the host-executed files read-only, with the launcher-resolved
   `readonly-path` lines for relocated hooks and symlink aliases (`file-rules.md`).
@@ -62,9 +62,9 @@ reason, and its answer here:
   run on the host; the inode table, resolver and FUSE layer do not exist.
 - Read-only mounts protect a path, not a name: a host rename over the file takes the protection
   away, a nested repository has none, an NTFS short name passes beside the mount, and an absent
-  `.git` needs a mount target created in the project. The hooks here judge the name and the
+  `.git` needs a mount target created in the workspace. The hooks here judge the name and the
   object at every mutation but a directory's creation and removal, at any depth, and create
-  nothing in the project; the proof's fixture lives under the launcher's state directory
+  nothing in the workspace; the proof's fixture lives under the launcher's state directory
   ("Lifecycle").
 
 `design.md`'s principle "Do not trade security for performance" stands: the backend is built to hold
@@ -74,7 +74,7 @@ is shown covered by the hooks, the launcher's seccomp rules ("Attributes, flags 
 protection is dropped for speed: a route neither a hook nor the rules hold is the user's decision,
 taken in "Directories" or pending in "Decisions still open", never a recorded loss that a gate
 passes. The change that adds the backend updates the two documents above, and the statements that
-refuse a directory at a guarded name: `../SECURITY.md`, "A project loosening its own confinement"
+refuse a directory at a guarded name: `../SECURITY.md`, "A workspace loosening its own confinement"
 and "The host's git executing what the sandbox wrote", `git-metadata.md`, "The immutable set" and
 "The name rule", and `file-rules.md`, where no line applies in a Git directory's operational state.
 It also names what the seccomp rules refuse in `../container/ko-agent-sandbox/AGENTS-SANDBOX.md`.
@@ -190,7 +190,7 @@ What else a session can do with directories, and why each is safe:
     hook's command stops, and a `post-*` hook's failure is reported;
   - in `.ko-agent-sandbox`, a directory at a rule file's name or at a name the launcher does not
     read refuses the next launch, and a directory holding no rule reads as absent
-    (`SandboxProject.readBoundaryRuleFiles`).
+    (`SandboxWorkspace.readBoundaryRuleFiles`).
   - The last two fail closed and cost availability, which `../SECURITY.md` ("Resource
     exhaustion") does not bound.
 - The removal of a protected directory the session can empty, leaves first, read in `policy.rs`
@@ -319,7 +319,7 @@ The program classifies by object and position, never by a path string:
   root ("Lifecycle"), judged by the same rules.
   - The line set is the launcher's resolved rules, the same text the filter receives, which the
     unprivileged guard (`ko-agent-fs --resolve`) folds and compiles into fixed-size map records
-    before attach. The controller loads those records and parses no project text.
+    before attach. The controller loads those records and parses no text from the workspace.
 - The gitdir allowlist (`git-metadata.md`, "The classifier") is the policy here too. The filter
   finds a nested gitdir's root by the `HEAD` it holds, a lookup a program cannot make, so the
   controller records the roots under `modules/` at launch; a namespace without a recorded root
@@ -344,7 +344,7 @@ The program classifies by object and position, never by a path string:
     guarded source. Covering the launch-time half needs a scan of the whole tree at launch; the
     mid-session half has no cover a program can give. It is a pending user decision ("Decisions
     still open"), and Phase 3's row for it cannot pass without that decision.
-- A mount inside the workspace, a filesystem the host mounted at `project/vendor`, has dentries
+- A mount inside the workspace, a filesystem the host mounted at `<workspace>/vendor`, has dentries
   whose `d_parent` chain ends at that filesystem's root, never at the workspace root, so a walk
   by dentry alone would allow everything in it. The filter crosses such mounts and classifies
   their contents (`fs.rs`, `open_ino`, no `RESOLVE_NO_XDEV`). Here:
@@ -377,7 +377,7 @@ The programs enforce; the controller only loads them. It is an ordinary process 
 that enforces: in a podman machine the launcher runs it for the launch through
 `podman machine ssh` under the machine's `sudo`, and it exits once the links are pinned; on
 native Linux it is the root-installed unit "Native Linux" describes. The session never has
-those privileges, and the controller never reads the project: its input is the launcher's
+those privileges, and the controller never reads the workspace: its input is the launcher's
 fixed-size records, made by the unprivileged guard ("The policy"), and its output is links and
 maps.
 
@@ -414,7 +414,7 @@ For each session:
      - The tag alone proves nothing about the maps: the kernel zeroes map references before
        computing it (`kernel/bpf/core.c`, `bpf_prog_calc_tag`).
    - A fixture the kernel judges, under the launcher's state directory in the VM, so a missing
-     hook costs nothing in the project.
+     hook costs nothing in the workspace.
      - The guard writes a tree laid out as a workspace, with a `.git` holding `config` and a
        hook, a `.ko-agent-sandbox`, and one entry per resolved rule line, and the sandbox's
        policy records that tree's root as a second root.
@@ -440,7 +440,7 @@ For each session:
 6. On teardown, end every task under the cgroup, then detach and remove the cgroup.
 
 A failure at any step before 4 ends the launch; the launcher prints which step and never binds
-the project writable. During a session the policy cannot lapse without a trusted hand: a link
+the workspace writable. During a session the policy cannot lapse without a trusted hand: a link
 is detached only when its cgroup is removed, and a cgroup with the container's scope or
 tasks in it cannot be removed, so only root detaching the link ends the enforcement, and root
 is trusted ("What the backend must hold"). Phase 4 proves both.
@@ -667,10 +667,10 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    bind with the policy, beside the filter and the unfiltered bind; the machine's CPU and memory
    during the stat storm under each.
    Gate: the numbers are recorded; the default changes only by a release decision.
-6. **Integration.** A backend selector with a capability probe, `--write=reject` and the printed
-   host requirements where the probe fails, the launch line naming the backend and the accepted
-   differences, the removal of the filter, and the documentation changes "The recorded decisions
-   this answers" names. It needs the profile "Mounts" relies on to have shipped.
+6. **Integration.** A backend selector with a capability probe, `--workspace=read-only` and the
+   printed host requirements where the probe fails, the launch line naming the backend and the
+   accepted differences, the removal of the filter, and the documentation changes "The recorded
+   decisions this answers" names. It needs the profile "Mounts" relies on to have shipped.
 
 
 ## What is gained and what is lost
@@ -698,7 +698,7 @@ Gained:
   - What the bind keeps is the share server's one worker thread per share, which one blocked
     request stalls for every later one (`upstream-issues.md`, "Setting a FIFO's times blocks
     the macOS virtio-fs server").
-  - The refusal of `mknod` of a FIFO that `TODO.md` ("A FIFO in the project hangs the podman
+  - The refusal of `mknod` of a FIFO that `TODO.md` ("A FIFO in the workspace hangs the podman
     machine") considers for the filter is an `inode_mknod` rule here.
 - **No window between resolving and acting.** The decision is taken inside the syscall, on the
   dentry the kernel acts on, which the filter's resolver and its `ESTALE` rules exist to
@@ -707,7 +707,7 @@ Gained:
   can be seen mid-move; Phase 3's rename races measure what that passes.
 - **Data coherency is the share's own.** The filter's two residual cache cases
   (`../fuse/ko-agent-fs/doc/architecture.md`, "Coherency") have no layer to occur in.
-- **No daemon.** No `ENOTCONN` failure domain shared by a project's sessions, no serialized
+- **No daemon.** No `ENOTCONN` failure domain shared by a workspace's sessions, no serialized
   round trips, no inode table.
 
 Lost, stated as what becomes possible that the filter does not allow:
@@ -716,7 +716,7 @@ Lost, stated as what becomes possible that the filter does not allow:
   kernel; the controller that installs it runs with the `bpf` syscall's privileges, as root in
   the machine for the launch, or as the host's root unit ("Native Linux"), where the filter
   daemon runs as an ordinary user throughout.
-  - It parses no project text: the unprivileged guard folds and compiles the rules into
+  - It parses no text from the workspace: the unprivileged guard folds and compiles the rules into
     fixed-size records ("The policy"), and the controller installs them and attaches links.
   - What becomes possible is a defect in that installing, reached only through the launcher,
     since the sandbox has no path to the controller and the host unit's socket is not bound
@@ -800,9 +800,9 @@ Decisions still open, each the user's, taken after Phase 2's table:
 ## Native Linux
 
 A native Linux host runs the backend on its own kernel, without a podman machine, within a
-supported set the launcher states rather than discovers. A host outside it gets `--write=reject`
-and a message naming the missing requirement; a podman machine is never created for it. The
-requirements, each checked at launch:
+supported set the launcher states rather than discovers. A host outside it gets
+`--workspace=read-only` and a message naming the missing requirement; a podman machine is never
+created for it. The requirements, each checked at launch:
 
 - **`bpf` in the active LSM list**, read from `/sys/kernel/security/lsm`. Fedora CoreOS's
   kernel activates it (the machine's list above). Where a kernel does not, the message names the
@@ -819,7 +819,7 @@ requirements, each checked at launch:
     `bpf_token_capable`); whether the attach also works unprivileged is unverified, so the unit is
     what the plan builds and the token a later reduction.
 - **Under SELinux enforcing, a label the container may use.** The launcher's default is a
-  persistent file-context rule and a relabel of the project directory to a shared container type
+  persistent file-context rule and a relabel of the workspace to a shared container type
   at level `s0`.
   - The commands are `semanage fcontext`, then `restorecon`, both printed for the user; the first
     is what keeps a later `restorecon` from undoing the second.

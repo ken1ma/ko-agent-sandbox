@@ -4,10 +4,10 @@
 and reports microseconds per entry for the workloads the tables in doc/verification-log.md, "The
 cost of a path walk", are built from.
 
-Run it in a scratch project, twice, and compare the columns — the second run is the control
+Run it in a scratch workspace, twice, and compare the columns — the second run is the control
 (unfiltered.sh has what it is):
 
-    cp .../perf-probe.py <scratch-project>/ && cd <scratch-project>
+    cp .../perf-probe.py <scratch-workspace>/ && cd <scratch-workspace>
     java -jar ko-agent-sandbox.jar python3 perf-probe.py         # filtered
     .../probe/unfiltered.sh python3 perf-probe.py
 
@@ -15,7 +15,7 @@ The control matters more than the absolute numbers: on the measured macOS stack 
 answers an uncached guest lookup quickly, while the filter adds a FUSE round trip and full-path
 resolution. What the ratio measures is the filter's cost, not the backing share's (doc/architecture.md).
 
-Everything is written under a temporary directory in the project, the working directory — which
+Everything is written under a temporary directory in the workspace, the working directory — which
 is the point, /tmp is not the filesystem under test — and removed afterwards. FILES=n varies the
 corpus size.
 """

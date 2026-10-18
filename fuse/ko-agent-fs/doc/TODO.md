@@ -23,7 +23,7 @@ short names"; `SECURITY.md` states the exception to its claims).
 - [ ] A design in which the decision holds through the mutation. Candidates, none examined: a
   backing-name resolution that cannot select a second name of a guarded entry; enforcement inside
   the backing filesystem; coordination that covers every writer of the backing tree, which a lock
-  in the daemon does not; refusing `--write=live` where second names can arise. A scan at launch
+  in the daemon does not; refusing `--workspace=live` where second names can arise. A scan at launch
   does not qualify, since the host can create a second name mid-session, and turning 8.3 name
   generation off leaves the existing short names (`fsutil 8dot3name strip` removes those).
   Staged mode keeps session mutations off the host tree, and its apply step needs the same
@@ -96,7 +96,7 @@ The `.git` rows the recorded runs hold pass on APFS (both variants, macOS 26.4.1
   and `link` (`fs.rs`, `open_ino`, `apply_setattr`, `link`): the run `verification-log.md` records
   ("Verified: NTFS 8.3 short names") has the check in `lookup` and the `O_EXCL` in `create`, and
   none of those.
-  - `sbt dist`, `--build`, then the entry's commands over a host-created project.
+  - `sbt dist`, `--build`, then the entry's commands over a host-created workspace.
   - Add `chmod`, `touch` and `ln` on an ordinary file: every file's metadata change and hard link
     go through an `O_PATH` descriptor and its `/proc` path, which the rig shows on its own backing
     and not on the WSL drive mount.
@@ -144,7 +144,7 @@ case rather than an occasional one.
 
 ### What the staged lower can do, per share
 
-A stage's lower is the host project directory as it arrives inside the machine, and it is where the
+A stage's lower is the workspace root as it arrives inside the machine, and it is where the
 stage reads its baseline, revalidates it and applies back onto it. Each row below decides a
 representation choice, so they run before the stage format is fixed rather than after — the root
 `doc/plan-staged.md` has which machine settles which part of the contract. Every row is two-party:
@@ -216,7 +216,7 @@ What the suites cover and how to run them, the self-test image and the privilege
 
 ## P1 — Performance (the measurements say the target workload would hurt)
 
-The filter enforces the default mode, `--write=live`, so its cost is the sandbox's own.
+The filter enforces the default mode, `--workspace=live`, so its cost is the sandbox's own.
 `probe/perf-probe.py` builds its own corpus, so two runs are comparable across machines, and
 reports per-entry times per workload. Run it once in a filtered session and once under
 `probe/unfiltered.sh` (`probe\unfiltered.ps1` on Windows) — the ratio between the columns is the
@@ -291,12 +291,12 @@ where a user meets it.
           directory (measured on xfs). The difference keeps a directory the host moved into a
           gitdir from being written under its old classification.
     - Accepted (2026-09-20), provided it is documented: when the host moves a held directory
-      *out of* the project, the sandbox can still read that subtree through it, where
+      *out of* the workspace, the sandbox can still read that subtree through it, where
       `RESOLVE_IN_ROOT` refuses today. An unfiltered bind mount behaves the same; `..` does not
       climb from there, since the kernel resolves it.
     - [ ] Docs, in the change that adds the cache — the second acceptance is conditional on them:
         - `SECURITY.md`, "Not defended": a directory the session holds stays readable after the
-          host moves it out of the project, and what that lets a session read;
+          host moves it out of the workspace, and what that lets a session read;
         - `architecture.md`, "Inode model": a held directory follows the object the host moved,
           reads through the descriptor and mutations through the walk, and why the split keeps
           the policy's decisions as they are;
@@ -350,9 +350,9 @@ opt-in and off by default:
 
 ### The cache-TTL option (decided 2026-08-25, not started)
 
-A per-project TTL for the kernel's cache of *directory names and attributes*, default 0. Chosen over
-an always-on value because the break-even point moves with the host: a component costs ~0.9 ms over
-virtiofs and far less on native Linux, so the right T is measured per machine, not designed.
+A per-workspace TTL for the kernel's cache of *directory names and attributes*, default 0. Chosen
+over an always-on value because the break-even point moves with the host: a component costs ~0.9 ms
+over virtiofs and far less on native Linux, so the right T is measured per machine, not designed.
 
 What it caches, and why exactly that. The path-walk term is the kernel re-asking per component,
 and an entry-only TTL does not remove it: under `DefaultPermissions` the kernel's `fuse_permission`
@@ -382,14 +382,14 @@ unmeasured; the sweep below decides.
       once under both. `--self-test` stays at 0, which is what "every mount is the same mount"
       (`fs.rs`, `mount_config`) is there to prove.
 - [ ] Launcher: `--fuse-ttl=<ms>`, printed at every start beside the workspace line. The mount is
-      per project and shared by its live sessions, reused on matching source-id; T joins that key,
+      per workspace and shared by its live sessions, reused on matching source-id; T joins that key,
       recorded beside `source-id`, and a launch asking a different value while sessions are live
       *refuses*, naming the live value and the sessions — never a looser or stricter mount than
       asked, silently.
 - [ ] The sweep: 0 / 10 / 100 / 1000 ms against `git status` on the real tree, recorded in
       `verification-log.md`. Only then a persisted value.
 - [ ] `.ko-agent-sandbox/fuse.conf` (`ttl-ms = N`, `#` comments), overridden by the flag, allowed
-      by the unknown-filename rule (doc/egress-proxy.md, "The rule file"). A project sets its own
+      by the unknown-filename rule (doc/egress-proxy.md, "The rule file"). A workspace sets its own
       coherency window, and a session cannot edit the file. Deferred until the sweep has a value
       worth persisting.
 - [ ] Docs: `architecture.md` "Coherency" states the guarantee with the option in it — file
@@ -410,16 +410,16 @@ defended"), which leaves:
   hooks or redirected gitdir stay writable; husky's `.husky/` is covered by the default
   `readonly .husky`. Decide whether to close it or keep recording it:
   - a walk of the whole tree at every mount, `node_modules` and `target/` included, checking each
-    repository and bare layout it finds: mount time on large projects, and a repository the host
+    repository and bare layout it finds: mount time on large workspaces, and a repository the host
     creates mid-session is still missed;
   - a check when a lookup first meets a `.git`: no walk, but a hook directory can be looked up and
     written before its repository's `.git` is, so every directory lookup needs a `stat` for
     `.git`, and read-only roots added mid-session invalidate cached contexts.
 - [ ] A symlink the session makes that later resolves outside the workspace on the host
-  (`SECURITY.md`, "The project directory"; `fs.rs`, `target_has_portable_syntax`). Three routes:
+  (`SECURITY.md`, "The workspace"; `fs.rs`, `target_has_portable_syntax`). Three routes:
   moving the link or a directory above it to a shallower depth, a hard link of it in a shallower
   directory, and a target through another symlink followed by `..` (`x -> d1/d2/a/..` with
-  `a -> ../..`). A host program that follows it reads or writes outside the project; a
+  `a -> ../..`). A host program that follows it reads or writes outside the workspace; a
   `--run-on-host` command does not, since Seatbelt matches the resolved path. Closing it for the
   session's own links:
   - refuse `..` after a named component in a target: npm's and pnpm's links climb only first, but
@@ -471,7 +471,7 @@ Timed to the work that needs it, so the findings are fresh when they are used.
   ("Test infrastructure").
 - **A supervisor watching the daemon.** A daemon that dies mid-session makes every access
   fail `ENOTCONN` at `stat` — no partial listing, no cached tree, no fallback to an empty
-  directory or the raw one — scoped to the project mount alone, and even shells die at spawn
+  directory or the raw one — scoped to the workspace mount alone, and even shells die at spawn
   because their cwd is inside the dead mount. The failure is already total, loud and
   fail-closed, so an outside program would only convert one obvious dead session into
   another; the user exits and the reaper cleans up.
@@ -497,7 +497,7 @@ Timed to the work that needs it, so the findings are fresh when they are used.
   for `.git/index` and packfiles. `AUTO_INVAL_DATA` gets coherency without that cost.
 - **An always-on nonzero cache TTL.** Real-time bidirectional visibility is the defining
   requirement, so the default is 0 and no built-in value exists; "The cache-TTL option" above is
-  the one exception, per project and opt-in, and its exposure is stated there.
+  the one exception, per workspace and opt-in, and its exposure is stated there.
 - **Blocking executable-bit changes.** This prevents only accidental direct POSIX execution;
   explicit interpreters and Windows bypass the bit, so it adds little beside read-only-by-default
   and staged review. The mutation journal and apply plan report new executable bits and other mode

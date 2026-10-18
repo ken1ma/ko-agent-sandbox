@@ -61,7 +61,7 @@ class DirectoryStreamsTest extends munit.FunSuite:
 
         val scans: Vector[(String, () => Unit)] = Vector(
           "egress rules" -> (() => { EgressRules.readRuleFiles(rules); () }),
-          "boundary entries" -> (() => { SandboxProject.boundaryDirRefusal(boundary); () }),
+          "boundary entries" -> (() => { SandboxWorkspace.boundaryDirRefusal(boundary); () }),
           "run log directories" -> (() => { EgressRules.runLogDirs(logs); () }),
           "proxy logs" -> (() => { EgressRules.retainedProxyLogs(logs); () }),
           "TLS entries" -> (() => { directoryEntries(tls).map(_.getFileName.toString); () }),

@@ -33,7 +33,7 @@ argument asks for instructions, or a reviewer, model or effort, that a continuat
   reviews the last commit and whatever is uncommitted, `/ko-review main` whatever differs from
   `main`.
 - A reviewer of the author's product uses the sign-in the author's session has; the other
-  product's needs its own in this project's sandbox (`REVIEWER_AUTH_FAILED`, below).
+  product's needs its own in this workspace's sandbox (`REVIEWER_AUTH_FAILED`, below).
 - The skill asks three questions before a new review, each skipped when the argument answers it:
   the reviewer, then, from `ko-review defaults REVIEWER`, the model and the effort. Codex has no
   question tool outside Plan mode (its `default_mode_request_user_input` feature is under
@@ -48,9 +48,9 @@ argument asks for instructions, or a reviewer, model or effort, that a continuat
 - Codex reads a copy of the skill from `/etc/codex/skills`, its admin scope, and runs the helper
   through its link in `/usr/local/bin`; the Containerfile has why. On a host, a copy of the skill
   directory in `~/.agents/skills` and the plugin's `bin/` on PATH do the same.
-- The project must be a Git working tree. A `start` elsewhere fails with `NOT_A_GIT_REPOSITORY`
-  before the reviewer runs; its message gives the `git init` and empty `git commit` that make one
-  while leaving every file uncommitted, and so in the review's scope.
+- The working directory must be inside a Git working tree. A `start` elsewhere fails with
+  `NOT_A_GIT_REPOSITORY` before the reviewer runs; its message gives the `git init` and empty
+  `git commit` that make one while leaving every file uncommitted, and so in the review's scope.
 
 
 ## The cycle
@@ -243,7 +243,7 @@ edits like any other, and the user commits them when and as they choose.
       such a holder holds the turn until it exits.
   - Every reviewer error's `error` carries `reviewer`, the name the message uses:
     - `REVIEWER_AUTH_FAILED`: `codex login status` or `claude auth status` reports no sign-in,
-      whichever credential store the CLI uses; sign in to that CLI in this project's sandbox.
+      whichever credential store the CLI uses; sign in to that CLI in this workspace's sandbox.
     - `REVIEWER_EGRESS_DENIED`: the ruleset in `KO_AGENT_SANDBOX_EGRESS_RULESET` allows none of
       the reviewer's hosts, `api.openai.com` and `chatgpt.com` for Codex, `api.anthropic.com` and
       `platform.claude.com` for Claude, as when the launch admitted the author's provider alone;
@@ -288,10 +288,10 @@ transcript and tree, which `delete` removes with the directory above.
   directory and the refs group by start minute, in an arbitrary order within one, and the id can
   be typed.
 - State is namespaced by checkout path because a persistent volume can be shared by several
-  projects (`KO_AGENT_SANDBOX_PERSISTENT_VOLUME`) or by a main worktree and its linked worktrees,
+  workspaces (`KO_AGENT_SANDBOX_PERSISTENT_VOLUME`) or by a main worktree and its linked worktrees,
   and a review is about one checkout. The reviewers' own session files stay in `~/.codex` and
   `~/.claude`; sharing them is safe because every continuation names its thread id.
-- `--reset` removes the project's own volume, and the review state and those session files with
+- `--reset` removes the workspace's own volume, and the review state and those session files with
   it. It keeps a volume named through `KO_AGENT_SANDBOX_PERSISTENT_VOLUME` and, from a linked
   worktree, the main worktree's volume, each with what it holds (`SECURITY.md`, "What the
   persistent volume holds").
@@ -466,9 +466,9 @@ is kept.
   helper sets the variable to the chosen effort in the reviewer's environment, on `start` and on
   every resumed round. A managed `env` block would replace it, so `start` refuses, with
   `REVIEWER_CHOICE_REFUSED`, an effort other than the one such a block sets.
-- The reviewer session spends this project's Claude Code usage, as a Claude author does, and its
-  transcript lands in `~/.claude/projects/` like any session's, where `claude --resume` can open
-  it.
+- The reviewer session counts against the usage of this workspace's Claude Code sign-in, as a
+  Claude author does, and its transcript lands in `~/.claude/projects/` like any session's, where
+  `claude --resume` can open it.
 - Measured with Claude Code 2.1.283 in a session of the image, with a claude.ai sign-in:
   - a nested `claude -p` runs from Claude Code's Bash tool;
   - `--resume` of the print-mode session answers from the earlier turn's context and returns the

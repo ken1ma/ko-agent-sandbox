@@ -14,13 +14,18 @@ class KoReviewTest extends munit.FunSuite:
   private def run(timeoutSeconds: Long, command: String*): (Int, String) = runIn(timeoutSeconds, Map.empty, command*)
 
   private def runIn(timeoutSeconds: Long, environment: Map[String, String], command: String*): (Int, String) =
-    val builder = ProcessBuilder(command*).redirectErrorStream(true)
+    // Into a file, which nothing has to read while the process runs: a pipe read only after the wait
+    // stalls a process that writes more than the pipe holds (doc/limitations.md, "Pipes as small as 8 KiB").
+    val output = Files.createTempFile("ko-review-test", ".log")
+    val builder = ProcessBuilder(command*).redirectErrorStream(true).redirectOutput(output.toFile)
     environment.foreach((name, value) => builder.environment().put(name, value))
     val process = builder.start()
     try
       assert(process.waitFor(timeoutSeconds, TimeUnit.SECONDS), s"${command.head} exceeded $timeoutSeconds seconds")
-      (process.exitValue(), String(process.getInputStream.readAllBytes()))
-    finally process.destroyForcibly()
+      (process.exitValue(), Files.readString(output))
+    finally
+      process.destroyForcibly()
+      Files.deleteIfExists(output)
 
   test("ko-review runs a review cycle against a fake codex and a fake claude"):
     assume(System.getProperty("os.name") == "Linux", "runs the plugin's helper with Python 3")

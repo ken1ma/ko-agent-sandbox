@@ -25,10 +25,10 @@ class ProxyContainerTest extends munit.FunSuite:
   test("this run's proxy is hardened, on its own networks, holding only this run's material"):
     requireTestWithPodman()
 
-    val project = scratchProject()
+    val workspace = scratchWorkspace()
     var session: Option[Session] = None
     try
-      val live = launch(project, project.resolve("session.log"))
+      val live = launch(workspace, workspace.resolve("session.log"))
       session = Some(live)
       val proxy = live.proxy
 
@@ -76,7 +76,7 @@ class ProxyContainerTest extends munit.FunSuite:
       assertEquals(attached, Vector(live.egressNetwork, live.sandboxNetwork).sorted)
 
       // What is mounted in: the leaf certificate and its own key, and this run's audit log. The
-      // project CA's key stays on the host — "Who holds the CA key" is the whole of SECURITY.md's
+      // workspace CA's key stays on the host — "Who holds the CA key" is the whole of SECURITY.md's
       // argument — and an earlier run's log would hand this proxy a record it never wrote.
       val binds = inspect(proxy, "{{range .HostConfig.Binds}}{{println .}}{{end}}")
         .linesIterator.map(_.trim).filter(_.nonEmpty).toVector
@@ -86,7 +86,7 @@ class ProxyContainerTest extends munit.FunSuite:
 
       assert(sources.exists(_.endsWith("leaf.crt")), s"no leaf certificate is mounted: $binds")
       assert(sources.exists(_.endsWith("leaf.key")), s"no leaf key is mounted: $binds")
-      assert(!sources.contains(projectCaKey(live).toString), s"SECURITY: the CA private key is mounted: $binds")
+      assert(!sources.contains(workspaceCaKey(live).toString), s"SECURITY: the CA private key is mounted: $binds")
       assert(!sources.exists(_.endsWith("ca.key")), s"a CA key is mounted under the default profile: $binds")
       assertEquals(writableMounts, Vector("/var/log/ko-agent-egress-proxy/proxy.log"))
 
@@ -99,10 +99,10 @@ class ProxyContainerTest extends munit.FunSuite:
 
     finally
       session.foreach(stop)
-      discard(project)
+      discard(workspace)
 
-  /** The project CA's key, by its path: what no proxy of any profile may mount. */
-  private def projectCaKey(live: Session): java.nio.file.Path =
+  /** The workspace CA's key, by its path: what no proxy of any profile may mount. */
+  private def workspaceCaKey(live: Session): java.nio.file.Path =
     LauncherState.tlsStateRoot(currentOs).resolve(live.id).resolve("ca.key")
 
   /**
@@ -146,14 +146,14 @@ class ProxyContainerTest extends munit.FunSuite:
     requireTestWithPodman()
 
     val upstream = HostProxy()
-    val project = scratchProject()
+    val workspace = scratchWorkspace()
     var session: Option[Session] = None
     try
       val endpoint = s"http://host.containers.internal:${upstream.port}"
       val value = s"http://alice:s3cret@host.containers.internal:${upstream.port}"
       val basic = "Basic " + Base64.getEncoder.encodeToString("alice:s3cret".getBytes(StandardCharsets.UTF_8))
       val live = launchWith(
-        project, project.resolve("session.log"),
+        workspace, workspace.resolve("session.log"),
         Vector("--egress=deny-unless-allowed", "--env=FORWARDED_TOKEN"),
         "HTTPS_PROXY" -> value, "FORWARDED_TOKEN" -> "f0rwarded-s3cret",
       )
@@ -203,17 +203,17 @@ class ProxyContainerTest extends munit.FunSuite:
     finally
       session.foreach(stop)
       upstream.close()
-      discard(project)
+      discard(workspace)
 
   test("a brokered value reaches the proxy by its attached start alone, and the proxy runs on without that client"):
     requireTestWithPodman()
 
-    val project = scratchProject()
+    val workspace = scratchWorkspace()
     var session: Option[Session] = None
     val value = "br0kered-s3cret-value"
     try
       val live = launchWith(
-        project, project.resolve("session.log"),
+        workspace, workspace.resolve("session.log"),
         Vector("--egress=deny-unless-allowed", "--egress-cred=BROKERED_TOKEN@docs.python.org"),
         "BROKERED_TOKEN" -> value,
       )
@@ -253,7 +253,7 @@ class ProxyContainerTest extends munit.FunSuite:
       assert(audit.linesIterator.exists(_.matches(substituted)), audit)
       assert(!audit.contains(value) && !audit.contains(placeholder), audit)
 
-      // After the session: no file under the state root or in the project holds the value, nor does the
+      // After the session: no file under the state root or in the workspace holds the value, nor does the
       // persistent volume — the openai/codex #30971 check, over every agent's state directory.
       stop(live)
       session = None
@@ -267,13 +267,13 @@ class ProxyContainerTest extends munit.FunSuite:
               .filter(file => contains(java.nio.file.Files.readAllBytes(file), bytes)).toVector
           finally walked.close()
       assertEquals(holding(LauncherState.stateRoot(currentOs)), Vector.empty)
-      assertEquals(holding(project), Vector.empty)
+      assertEquals(holding(workspace), Vector.empty)
       val volume = run(podman, "volume", "export", s"ko-agent-sandbox-persistent-${live.id}")
       assert(volume.ok, volume.err)
       assert(!contains(volume.out, bytes), "the persistent volume holds the value")
     finally
       session.foreach(stop)
-      discard(project)
+      discard(workspace)
 
   private def contains(haystack: Array[Byte], needle: Array[Byte]): Boolean =
     haystack.indices.exists(start => haystack.startsWith(needle, start))

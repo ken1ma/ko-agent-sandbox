@@ -14,6 +14,26 @@ What remains to do is TODO.md; the security model is SECURITY.md.
 
 The words the documents share, each defined in the document its entry names and listed here once:
 
+- **workspace** — the host directory tree the launcher exposes to the sandbox: one directory, and
+  later the ones `--add-dir` adds (`TODO.md`). The tools around the launcher use the word for the
+  directory a tool opens and acts in: Codex's `--sandbox read-only|workspace-write` and "the primary
+  workspace", Antigravity's `--add-dir` ("a directory to the workspace"), VS Code's workspace and
+  Workspace Trust.
+  - **workspace root** — the directory the launcher starts in: it is mounted at its own path, holds
+    `.ko-agent-sandbox`, and its path identifies the workspace — id, hash, state directory, trust
+    entries.
+  - **workspace mode** — how the sandbox's writes reach the workspace, selected by
+    `--workspace=read-only|live` (`staged` in `plan-staged.md`); each value names where writes
+    land, or that they land nowhere.
+    - Like `--egress=` and `--clipboard=`, the option names the thing and takes its mode. It never
+      takes a path: the workspace root is the current directory, and `--add-dir`, the spelling of
+      Claude Code, Codex, Antigravity and Copilot, adds directories.
+    - Not `--project=`: Antigravity's `--project` takes the ID or name of a project of its own.
+- **project** — always another system's concept, never the launcher's directory: sbt's
+  `project/`, a Gradle multi-project build, a JetBrains project, Claude Code's project settings,
+  the agents' `projects` keys and trust lists.
+  - A workspace holds one or more projects or repositories, or none: the launcher selects its
+    boundary rather than inferring it from a build or a repository.
 - **sandbox** — the container the agent runs in, rootless, as `nonroot`; its boundary is the
   subject of SECURITY.md.
 - **proxy** — the egress proxy, one per session in its own container, which every request of the
@@ -22,11 +42,12 @@ The words the documents share, each defined in the document its entry names and 
     launch's commands, or per command under Maven, with rules of its own: `deny defaults`, the
     program's Maven Central host, and the file `.ko-agent-sandbox/run-on-host/<program>/egress/rule`
     (`run-on-host.md`, "The command's egress proxy").
-  - **rule, ruleset, profile** — a rule is a line of the project's `.ko-agent-sandbox/egress/rule`;
-    the ruleset is what a launch enforces, the defaults, the profile and the file resolved together
-    and printed at every start; a profile is one of the three `--egress=` treatments
-    (`egress-proxy.md`). Under `--run-on-host` a profile is also a Seatbelt profile, the generated
-    sandbox a host command runs under; each document names which it means.
+  - **rule, ruleset, profile** — a rule is a line of the workspace's
+    `.ko-agent-sandbox/egress/rule`; the ruleset is what a launch enforces, the defaults, the
+    profile and the file resolved together and printed at every start; a profile is one of the
+    three `--egress=` treatments (`egress-proxy.md`). Under `--run-on-host` a profile is also a
+    Seatbelt profile, the generated sandbox a host command runs under; each document names which
+    it means.
   - **grant word** — what a rule permits at its URL: `tunnel`, `read`, `git-fetch`, `method=`
     (`egress-proxy.md`, "The rule file").
   - **tunnel, inspected** — an allowed host's two treatments: application traffic left opaque after
@@ -37,10 +58,12 @@ The words the documents share, each defined in the document its entry names and 
       CONNECT tunnel can also carry inspected traffic, so the transport description needs that
       distinction.
 - **boundary directory** — `.ko-agent-sandbox`, read on the host before launch and unwritable in
-  every write mode (SECURITY.md, "Why the rules are per project, in the project, and read-only").
-- **workspace filter** — `ko-agent-fs`, the FUSE mount the project is shared through, which refuses
-  the Git entries and links a session must not write (`../fuse/ko-agent-fs/doc/architecture.md`).
-- **launch** — one invocation of the launcher for one project, from its command line to the
+  every workspace mode (SECURITY.md, "Why the rules are per workspace, in the workspace, and
+  read-only").
+- **workspace filter** — `ko-agent-fs`, the FUSE mount the workspace is shared through, which
+  refuses the Git entries and links a session must not write
+  (`../fuse/ko-agent-fs/doc/architecture.md`).
+- **launch** — one invocation of the launcher for one workspace, from its command line to the
   sandbox's end; the run and the session are its two views.
 - **run** — the launch as the host sees it, the objects created for it:
   - the two networks and the proxy and sandbox containers, removed when it ends;
@@ -51,7 +74,7 @@ The words the documents share, each defined in the document its entry names and 
     been allowed or denied").
 - **session** — the same interval from inside: the agent's time in the sandbox container, what it
   can reach, and what outlives it — agent state kept across sessions, concurrent sessions of one
-  project, what this session may do.
+  workspace, what this session may do.
 - **launcher** — the program run on the host, the jar or the native image built from it, which
   builds the images, creates a run's objects and keeps its state under the host's state directory
   ([README.md](../README.md#reference)).
@@ -135,16 +158,16 @@ What is deliberately not borrowed:
 - First-match evaluation, Squid's and nginx's, which reads the exception before the rule.
 - A wildcard on the granting side.
 
-The decision behind the grammar: the syntax alone decides the file's meaning, and not the project's
-choices, which `tunnel` is right there to make; restricting the grammar further would add no
-security about what a reviewed project may open. Syntax alone means:
+The decision behind the grammar: the syntax alone decides the file's meaning, and not the
+workspace's choices, which `tunnel` is right there to make; restricting the grammar further would
+add no security about what a reviewed workspace may open. Syntax alone means:
 
 - one parser, one resolver the launcher's dry run executes;
 - exact hosts, so a grant is enumerable and the leaf certificate can name it;
 - every ambiguity a refused launch.
 
 A URL is the form every comparable project's operator already writes, and a path on the granting
-side is what every one of them has been asked for — the multi-tenant host a project adds for one
+side is what every one of them has been asked for — the multi-tenant host a workspace adds for one
 tenant's content, its own bucket, one owner on a forge:
 
 - sandbox-runtime's open request names `storage.googleapis.com` and `raw.githubusercontent.com`:
@@ -213,31 +236,31 @@ host. [README.md](../README.md#running-command) gives each agent’s sign-in ste
 ### The image carries no working conventions
 
 The agent instructions a session receives are the image's `AGENTS-SANDBOX.md`, which says what a
-project cannot know about itself, and the launcher's "What this session may do", which a project
-must not be trusted to declare. How an agent writes, codes and uses git is each project's choice
-and goes in the project's own instruction files, which each installed agent reads with no launcher
+workspace cannot know about itself, and the launcher's "What this session may do", which a workspace
+must not be trusted to declare. How an agent writes, codes and uses git is each workspace's choice
+and goes in the workspace's own instruction files, which each installed agent reads with no launcher
 help ([agent-settings.md](agent-settings.md#adding-project-instructions)). The image's file loads
-unconditionally, for `claude` from the managed-policy location: a project could add to
+unconditionally, for `claude` from the managed-policy location: a workspace could add to
 conventions placed there but never drop them.
 
-A session can edit the project's instruction files, and a later session reads the edit. The
+A session can edit the workspace's instruction files, and a later session reads the edit. The
 launcher does not prevent that: instruction files change no enforcement.
 
 ### No following symlinks at sandbox setup
 
 A symlinked `.ko-agent-sandbox`, a symlinked entry of it (`egress`, `file` or `run-on-host`) or a
 symlinked file inside an entry refuses the launch (`boundaryDirRefusal`, `ruleDirectoryRefusal`,
-`RunOnHostPrereqs.readProgramRules`, tested). The workspace filter refuses to mount a project
-whose `.git` is a symlink; a `.git/hooks` symlinked to a directory inside the project is served
+`RunOnHostPrereqs.readProgramRules`, tested). The workspace filter refuses to mount a workspace
+whose `.git` is a symlink; a `.git/hooks` symlinked to a directory inside the workspace is served
 read-only instead (`../fuse/ko-agent-fs/doc/git-metadata.md`, "Relocated hook directories").
 
 - The launcher reads the rules on the host, so a repository-controlled link would choose which
-  host file it reads as this project's rules.
+  host file it reads as this workspace's rules.
 - Following the link would make the protected paths depend on where the link points at launch
   time.
 - The launcher's refusal is loud, names the path, and comes before the launcher creates anything,
   so setup writes nothing through a pre-seeded link (tested: "a refused symlink form leaves no
-  artifact through the link"); the project directory itself is `toRealPath()`-canonical before
+  artifact through the link"); the workspace root itself is `toRealPath()`-canonical before
   any of this.
 
 Prior art for both failure cases — a sandbox that crashed mid-setup on a symlink, and setup code
@@ -246,14 +269,14 @@ whose mount-target creation wrote through one to paths outside its root:
 - https://github.com/anthropic-experimental/sandbox-runtime/issues/221
 - https://github.com/bazelbuild/bazel/issues/28515
 
-The cost is that a project whose `.git` is a symlink cannot be sandboxed writable as-is, and one
+The cost is that a workspace whose `.git` is a symlink cannot be sandboxed writable as-is, and one
 with a symlink at or inside `.ko-agent-sandbox` cannot be launched; its user replaces the link
 with a real directory or file first. Accept that cost rather than following links.
 
 ### No repository-controlled host executable resolution
 
 The launcher resolves `podman` (and `getenforce`, `stat` and the clipboard programs) through
-`PATH` entries that are absolute **and** outside the project directory —
+`PATH` entries that are absolute **and** outside the workspace —
 `HostCommands.findOnPath` — and the reaper receives the resolved path as an argument, so those
 invocations consult neither `PATH` nor, on Windows, CreateProcess's implicit current-directory
 search.
@@ -291,20 +314,20 @@ the one condition that would reopen it.
 ### No masking of secret-named files in the workspace
 
 Gemini CLI, Codex CLI, clampdown and sandbox-runtime hide or empty `.env`, `.env.*`, `*.pem` and the
-like inside the sandbox. Here the boundary is that the project directory is hostile data and nothing
+like inside the sandbox. Here the boundary is that the workspace is hostile data and nothing
 credentialed goes in (SECURITY.md, "Credential theft"), and a name mask leaves that boundary where
 it is:
 
 - It hides one class of files by name: a secret under any other name, in `config.yaml`, or in git
   history stays visible.
-- It applies to every project to protect the few that store a credential under such a name: a
+- It applies to every workspace to protect the few that store a credential under such a name: a
   default `.env` mask breaks tests that read `.env`, the first `-name .env` removes the
   protection, and the user who commits a credential is the one least likely to review a third
   boundary file in `.ko-agent-sandbox`.
 - Password-protected containers (`*.p12`, `*.pfx`) are inert without the password, and these
   formats have no standard password file or environment-variable name.
 
-Keep the rule procedural: a credential in the project directory violates the operating model, and
+Keep the rule procedural: a credential in the workspace violates the operating model, and
 it is the user's to keep out. A `deny` of the forge in `egress/rule` removes one way to use a
 forge token left there, not the risk — every allowed host is a possible recipient of what the
 sandbox holds.
@@ -313,8 +336,8 @@ sandbox holds.
 
 Every session gets the same file rules, `writable node_modules` among the defaults, and under
 `--run-on-host` a host command can carry a listed file out of `node_modules`: `file-rules.md`,
-"Under `--run-on-host`", states the limit. It is a cost of `--run-on-host`, like the project a host
-command writes under `--write=reject` (SECURITY.md, "Run on host").
+"Under `--run-on-host`", states the limit. It is a cost of `--run-on-host`, like the workspace a
+host command writes under `--workspace=read-only` (SECURITY.md, "Run on host").
 
 The alternative weighed, a strict form under `--run-on-host` in which a `writable` line only
 cancels an earlier `readonly` line of the same name, closes the limit and costs:
@@ -331,7 +354,7 @@ Revisit when `../src/probe/seatbelt-semantics.sh` E13-E16 find a rule refusing a
 
 ### Read-only mounts over the protected entries are not a backend
 
-The cheapest writable session would bind the project directly and mount `.git/config`,
+The cheapest writable session would bind the workspace directly and mount `.git/config`,
 `.git/hooks` and `.ko-agent-sandbox` back over themselves read-only. A read-only bind mount
 protects the path it is mounted at, from the moment of the launch, which leaves:
 
@@ -350,15 +373,16 @@ protects the path it is mounted at, from the moment of the launch, which leaves:
   `KO-AGE~1` succeed and reach the host's files. Closing it takes a second mount per guarded
   entry at a name the volume generated, read from the host at launch, and the first two items
   apply to that mount too.
-- A project with no repository needs an empty directory mounted at `.git`, and an absent
+- A workspace with no repository needs an empty directory mounted at `.git`, and an absent
   `.ko-agent-sandbox` one as well, so that the session cannot create either. The container runtime
-  creates those mount targets in the project, a change to the user's tree no launch otherwise makes
-  (SECURITY.md, "Silent changes to what you own"), and on Windows the created `.git` has a short
-  name of its own, through which the session lays out the repository the mount was there to prevent.
+  creates those mount targets in the workspace, a change to the user's tree no launch otherwise
+  makes (SECURITY.md, "Silent changes to what you own"), and on Windows the created `.git` has a
+  short name of its own, through which the session lays out the repository the mount was there to
+  prevent.
 - On an SELinux-enforcing host the container reads a bind mount only under `:Z`, which relabels
-  the project tree recursively.
+  the workspace tree recursively.
 
-`--write=reject` is the read-only session, with no policy to enforce. The probes that need an
+`--workspace=read-only` is the read-only session, with no policy to enforce. The probes that need an
 unfiltered writable control run one outside the launcher
 (`../fuse/ko-agent-fs/probe/unfiltered.sh`). The filter's cost is measured in
 `../fuse/ko-agent-fs/doc/verification-log.md` ("The cost of a path walk"), and
@@ -618,7 +642,7 @@ Left out:
     lifecycle per release. A stolen model token is a nuisance to the account holder, a stolen forge
     token every private repository: hiding the first does not pay for a per-release contract.
   - `ANTHROPIC_API_KEY@api.anthropic.com` would fit — a fixed header, no lifecycle — and is
-    refused because the host is a tunnel; so is `AWS_BEARER_TOKEN_BEDROCK` at a project's
+    refused because the host is a tunnel; so is `AWS_BEARER_TOKEN_BEDROCK` at a workspace's
     `bedrock-runtime.<region>.amazonaws.com`. If model endpoints are ever inspected for another
     reason, the binding works unchanged.
   - The Codex CLI trusts the CA in `SSL_CERT_FILE`, and its built-in provider opens a websocket
@@ -727,19 +751,19 @@ Rejected:
 - Under an egress profile that refuses the reviewer's provider, or before the reviewer is signed in,
   the block can be passed only by recording an escalation, which makes the gate a formality;
   letting the hook pass when the reviewer is unreachable reopens the loophole it exists to close.
-- A managed hook applies to every project on the image; a per-project opt-in marker would add a
+- A managed hook applies to every workspace on the image; a per-workspace opt-in marker would add a
   second mechanism for a workflow that starts only at the user's request.
 - Claude skipping a requested review is an instruction failure, fixed in the skill text or
   `AGENTS.md`, not by a hook that runs on every stop.
 
 Revisit if, in use, Claude regularly ends a turn with unreviewed changes after being told to review
-and the instruction fix does not hold; then the shape is a managed hook with a per-project opt-in
+and the instruction fix does not hold; then the shape is a managed hook with a per-workspace opt-in
 marker, still a local check that never runs Codex.
 
 ### Host resources are granted by launch options, not variables
 
-`--clipboard=<mode>` and `--mic` grant a host resource for one launch, spelled in the launch
-command like `--write` and `--egress`. A variable in a shell profile would hand every session the
+`--clipboard=<mode>` and `--mic` grant a host resource for one launch, spelled in the launch command
+like `--workspace` and `--egress`. A variable in a shell profile would hand every session the
 resource unnoticed, so the launcher reads none. It refuses `KO_AGENT_SANDBOX_CLIPBOARD` in its own
 environment, naming the option, rather than ignoring a profile that exports it; a launcher run in a
 session with the clipboard on refuses it too, until it is unset there.
@@ -754,7 +778,7 @@ Conflating them is what makes verification look larger than it is.
   Microsoft build on Windows, the user's own on native Linux — and this mount already hinges on
   what a kernel offers, refusing to mount at all when `init` cannot negotiate `AUTO_INVAL_DATA`
   (`../fuse/ko-agent-fs/doc/architecture.md`).
-- **The share**, and the backing under it: the host project directory as it arrives inside the
+- **The share**, and the backing under it: the host's workspace as it arrives inside the
   machine, over virtiofs on macOS and the WSL share on Windows. On native Linux the upper varies
   instead, a named volume stored in the host's container storage — btrfs, ZFS, XFS or overlay —
   against the machine's own ext4 everywhere else.
@@ -772,17 +796,17 @@ are linked inline where that decision is recorded; these are the broader sources
 
 - Docker AI sandboxes — microVM isolation, direct-vs-clone workspace models:
   https://docs.docker.com/ai/sandboxes/ https://docs.docker.com/ai/sandboxes/security/isolation/
-- The project mounted at its own path (`SandboxProject.mountPathOf`) — what the two container
-  sandboxes doing the same ran into, read in September 2026. Gemini CLI mounts the unresolved
-  path while its tools resolve real paths, so a symlinked project (macOS's `/tmp`) fails its own
-  lookups and splits its sessions; this launcher mounts the real path only. Docker Sandboxes
-  spells a Windows drive `/c/…` and serves `\\wsl.localhost` workspaces, where `chmod` and
-  `symlink` fail; its users asked for a remapped path over the disclosure of the username and
-  layout, and a maintainer answered in May 2026 that the host path serves scripts expecting it
-  and the default may change. Antigravity confines commands on the host instead, paths the
-  host's by construction; hosted agents and VS Code dev containers use a fixed path. Open: a
-  second bind at the launch spelling for an IDE that opened a symbolic path, and `/mnt/<drive>`
-  against those tools' `/c/`.
+- The workspace root mounted at its own path (`SandboxWorkspace.mountPathOf`) — what the two
+  container sandboxes doing the same ran into, read in September 2026. Gemini CLI mounts the
+  unresolved path while its tools resolve real paths, so a symlinked workspace root (macOS's `/tmp`)
+  fails its own lookups and splits its sessions; this launcher mounts the real path only. Docker
+  Sandboxes spells a Windows drive `/c/…` and serves `\\wsl.localhost` workspaces, where `chmod`
+  and `symlink` fail; its users asked for a remapped path over the disclosure of the username and
+  layout, and a maintainer answered in May 2026 that the host path serves scripts expecting it and
+  the default may change. Antigravity confines commands on the host instead, paths the host's by
+  construction; hosted agents and VS Code dev containers use a fixed path. Open: a second bind at
+  the launch spelling for an IDE that opened a symbolic path, and `/mnt/<drive>` against those
+  tools' `/c/`.
   https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md
   https://github.com/google-gemini/gemini-cli/issues/28416
   https://github.com/google-gemini/gemini-cli/issues/27278
@@ -875,9 +899,9 @@ a changed file applies at the next launch.
 ```
 
 ```text
-The workspace's writability is the user's per-launch choice (`--write`).
+The workspace's writability is the user's per-launch choice (`--workspace`).
 In a writable mode, the workspace is untrusted output: protect implicit host execution
-paths, but keep other project files writable, because editing them is the purpose
+paths, but keep other workspace files writable, because editing them is the purpose
 of such a session; a read-only session's purpose is reading, and its results leave
 through the conversation.
 ```

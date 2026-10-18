@@ -1,4 +1,4 @@
-// The file rules as the launcher deals with them: the defaults, the project's
+// The file rules as the launcher deals with them: the defaults, the workspace's
 // .ko-agent-sandbox/file/rule, their grammar and resolution, and the text the filter daemon and
 // the run-on-host profile receive (doc/file-rules.md). The launcher owns the
 // grammar; the filter reads only the resolved form (fuse/ko-agent-fs/src/rulefile.rs), and the
@@ -23,7 +23,7 @@ object FileRules:
 
   /**
    * What the resolved set holds beyond the rule lines: the paths the filter's guard found, relative
-   * to the project and spelled as the host spells them — directories and files served read-only
+   * to the workspace root and spelled as the host spells them — directories and files served read-only
    * whole, components pinned against rename, replacement and removal, and `(directory, rest)`
    * pairs: a directory a symlink makes an interior component of a `readonly` line, with the
    * line's rest below it as a pattern.
@@ -49,16 +49,16 @@ object FileRules:
     catch case ex: java.io.IOException => Left(s"error: cannot read the file rules $file: ${ex.getMessage}")
 
   /**
-   * The lines for `project` without the filter's guard: what a host command gets when no launch
+   * The lines for `workspaceRoot` without the filter's guard: what a host command gets when no launch
    * handed it a resolved set, the acceptance test's own entry. The guard's paths, a relocated
    * hook directory among them, come only from a launch's mount or `--resolve`.
    */
-  def ofProject(project: Path): Either[String, Resolved] =
-    readRuleFile(SandboxProject.boundaryDirOf(project).resolve("file")).map: file =>
+  def ofWorkspace(workspaceRoot: Path): Either[String, Resolved] =
+    readRuleFile(SandboxWorkspace.boundaryDirOf(workspaceRoot).resolve("file")).map: file =>
       Resolved(resolve(file.fold(Vector.empty[Line])(_(1))), Vector.empty, Vector.empty)
 
   /** The names the filter's own rules govern, which a rule line cannot reach. The host command's
-    * profile guards the same names (SeatbeltProfile), and the launcher's walks of the project
+    * profile guards the same names (SeatbeltProfile), and the launcher's walks of the workspace
     * enter neither. */
   val GuardedComponents: Seq[String] = Seq(".git", ".ko-agent-sandbox")
 
@@ -95,7 +95,7 @@ object FileRules:
       components.find(GuardedComponents.contains).map: guarded =>
         s"`$guarded` is the filter's own to protect, and no file rule reaches it"
 
-  /** The launcher's defaults (`agentsandbox/file-rule-defaults`), before the project's lines. */
+  /** The launcher's defaults (`agentsandbox/file-rule-defaults`), before the workspace's lines. */
   lazy val Defaults: Vector[Line] =
     val stream = getClass.getResourceAsStream("/agentsandbox/file-rule-defaults")
     if stream == null then throw IllegalStateException("the launcher has no file-rule-defaults resource")
@@ -105,25 +105,25 @@ object FileRules:
     parse(text, "the launcher's file-rule-defaults").fold(why => throw IllegalStateException(why), identity)
 
   /**
-   * The project's `.ko-agent-sandbox/file/rule`, as (normalized text, lines), or None when absent;
-   * `fileDir` is its `file/` directory (SandboxProject.readBoundaryRuleFiles has the refusals).
+   * The workspace's `.ko-agent-sandbox/file/rule`, as (normalized text, lines), or None when absent;
+   * `fileDir` is its `file/` directory (SandboxWorkspace.readBoundaryRuleFiles has the refusals).
    */
   def readRuleFile(fileDir: Path): Either[String, Option[(String, Vector[Line])]] =
-    SandboxProject.readBoundaryRuleFiles(fileDir, Vector("rule"), "doc/file-rules.md", EgressRules.normalizeRuleText)
+    SandboxWorkspace.readBoundaryRuleFiles(fileDir, Vector("rule"), "doc/file-rules.md", EgressRules.normalizeRuleText)
       .flatMap: files =>
         files.headOption match
           case None => Right(None)
           case Some((name, text)) =>
             parse(text, s".ko-agent-sandbox/file/$name").map(lines => Some((text, lines)))
 
-  /** The lines a session gets: the defaults, then the project's. */
-  def resolve(project: Vector[Line]): Vector[Line] = Defaults ++ project
+  /** The lines a session gets: the defaults, then the workspace's. */
+  def resolve(workspaceLines: Vector[Line]): Vector[Line] = Defaults ++ workspaceLines
 
   /**
    * The directories whose objects the filter's daemon sees as the host does, for its guard
    * (`guard.rs`, `resolve`): all of it on native Linux, the podman machine's shares elsewhere
    * (SECURITY.md, "Container, runtime and kernel escape", has the observed mounts). On Windows the
-   * project's own drive, which WSL mounts where the project's mount path says.
+   * workspace's own drive, which WSL mounts where the workspace's mount path says.
    */
   def hostView(os: Os, mountPath: String): Vector[String] =
     os match
@@ -178,15 +178,15 @@ object FileRules:
   /** The line the mount script prints before the resolved set. */
   val ResolvedMarker = "file rules resolved:"
 
-  /** The launch lines about the project's file (HostCommands.ruleFileReport); its `writable`
+  /** The launch lines about the workspace's file (HostCommands.ruleFileReport); its `writable`
     * lines, the only kind that can widen, are the widening. What the guard added is printed once
     * the filter has answered (guardLines). */
   def launchLines(
-    project: Option[(String, Vector[Line])],
+    workspaceFile: Option[(String, Vector[Line])],
     color: Boolean = HostCommands.colorStderr,
   ): Vector[String] =
-    project match
-      case None             => Vector("file rules: no project rule file; the launcher-owned defaults")
+    workspaceFile match
+      case None             => Vector("file rules: no workspace rule file; the launcher-owned defaults")
       case Some((_, lines)) => report("file rules (.ko-agent-sandbox/file/rule)", lines, color)
 
   /** The launch lines about a running mount's rules a launch joins: its lines beyond the defaults,

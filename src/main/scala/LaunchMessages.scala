@@ -13,10 +13,10 @@ object LaunchMessages:
 
   /** The launch's host-command lines: the programs chosen — authority a container session alone
     * does not have, so tinted as a weakened boundary (HostCommands.weakened) — and what
-    * running them on the host costs the user; under `--write=reject` an extra line, tinted alike
-    * as a boundary weaker than the option says, since a host command writes the project as its
-    * program does while the session's own writes are refused (SECURITY.md "Run on host"). */
-  def runOnHostLines(runOnHost: Seq[String], writeMode: String, color: Boolean = colorStderr): Vector[String] =
+    * running them on the host costs the user; under `--workspace=read-only` an extra line, tinted
+    * alike as a boundary weaker than the option says, since a host command writes the workspace as
+    * its program does while the session's own writes are refused (SECURITY.md "Run on host"). */
+  def runOnHostLines(runOnHost: Seq[String], workspaceMode: String, color: Boolean = colorStderr): Vector[String] =
     val programs = weakened(s"ko-sandbox-run-on-host: ${runOnHost.mkString(", ")} on host", color)
     val displaced = runOnHost.collect:
       case "sbt" => "sbt server"
@@ -24,14 +24,14 @@ object LaunchMessages:
     val shutdown = Option.when(displaced.nonEmpty)(
       s"  your own ${displaced.mkString(" or ")} in the build directory is stopped when the agent runs that program",
     )
-    val reject = Option.when(writeMode == "reject")(
+    val readOnly = Option.when(workspaceMode == "read-only")(
       weakened(
-        "run on host: --write=reject refuses the session's own writes, not a host command's: a build writes the" +
-          " project as its program does",
+        "run on host: --workspace=read-only refuses the session's own writes, not a host command's: " +
+          "a build writes the workspace as its program does",
         color,
       ),
     )
-    Vector(programs) ++ shutdown ++ reject
+    Vector(programs) ++ shutdown ++ readOnly
 
   def nestingLine(mode: String, color: Boolean = colorStderr): String =
     weakened(
@@ -81,37 +81,37 @@ object LaunchMessages:
    * instruction vocabulary to the proxy source.
    */
   def appendedSection(
-    /** Where the container has the project (SandboxProject.mountPathOf): the one place the
-      * instructions name it, since the image's own text says "the project directory". */
+    /** Where the container has the workspace root (SandboxWorkspace.mountPathOf): the one place
+      * the instructions name it, since the image's own text says "the workspace root". */
     mountPath: String,
-    writeMode: String,
+    workspaceMode: String,
     resolved: String,
     runOnHost: Vector[String] = Vector.empty,
     // Whether this host could serve --run-on-host at all (macOS): decides the discovery line
     // (doc/run-on-host.md, "The channel and the command"). Constant per machine, so the agents.md
     // stamp needs no part of it.
     hostCommandsAvailable: Boolean = false,
-    // What git cannot do in this session, in the container's words (SandboxProject.noGitInstruction
+    // What git cannot do in this session, in the container's words (SandboxWorkspace.noGitInstruction
     // and readOnlyGitInstruction): the agent hears it before its first command.
     git: Option[String] = None,
     // The --egress-cred bindings: the variables holding a placeholder, and where the proxy substitutes it.
     brokered: Vector[CredentialBinding] = Vector.empty,
   ): String =
     val profileLine = resolved.linesIterator.next()
-    val workspace = writeMode match
-      // The plain reject instruction would be false under --run-on-host: a host command writes the
-      // project (SECURITY.md "Run on host", the --write=reject composition).
-      case "reject" if runOnHost.nonEmpty =>
+    val workspace = workspaceMode match
+      // The plain read-only instruction would be false under --run-on-host: a host command writes the
+      // workspace (SECURITY.md "Run on host", the --workspace=read-only composition).
+      case "read-only" if runOnHost.nonEmpty =>
         s"""`$mountPath` is read-only to this session's own writes; only commands through
-          |`ko-sandbox-run-on-host` write the project, on the host. For anything a command does not
+          |`ko-sandbox-run-on-host` write there, on the host. For anything a command does not
           |write, use `~` or `/tmp` for temporary work and return results in the conversation.
-          |Tell the user to relaunch with `--write=live` when project files must be written.""".stripMargin
-      case "reject" =>
+          |Tell the user to relaunch with `--workspace=live` when the session itself must write there.""".stripMargin
+      case "read-only" =>
         s"""`$mountPath` is read-only this session. Do not attempt writes there; use `~` or `/tmp`
           |for temporary work and return results in the conversation. Tell the user to relaunch
-          |with `--write=live` when project files must be written.""".stripMargin
+          |with `--workspace=live` when files there must be written.""".stripMargin
       case "live" =>
-        s"""`$mountPath` is writable and shared live with the host project directory through the
+        s"""`$mountPath` is writable and shared live with the same directory on the host through the
           |`ko-agent-fs` filter. The Git state the filter lists (refs, objects, the index, HEAD and the
           |like) is writable; every other `.git` entry is frozen at any depth, among them config, hooks, `.git`
           |pointer files, `commondir`, `gitdir`, rebase, bisect and rerere state and alternates, as are
@@ -119,7 +119,7 @@ object LaunchMessages:
           |the last line naming an entry or an ancestor decides. Symlink targets must be relative and
           |remain inside the workspace.""".stripMargin
       case _ =>
-        throw IllegalArgumentException(s"unknown write mode: $writeMode")
+        throw IllegalArgumentException(s"unknown workspace mode: $workspaceMode")
     val gitParagraph = git.fold("")(paragraph => s"\n\n$paragraph")
     val runOnHostSection =
       if runOnHost.nonEmpty then
@@ -141,7 +141,7 @@ object LaunchMessages:
             """ To run several
               |commands in one, quote them: `ko-sandbox-run-on-host sbt 'compile; test'`; sbt reads separate
               |arguments as one command, and `compile test` fails to parse. The container's own `sbt` is the last
-              |resort, not an alternative: by default its output is outside the project and discarded
+              |resort, not an alternative: by default its output is outside the workspace and discarded
               |with the session, so it compiles everything once per session, while the host keeps its
               |build between sessions.""".stripMargin
           else ""
@@ -159,9 +159,9 @@ object LaunchMessages:
         s"""
            |## Run on host
            |
-           |Run $names for this project as $commands: they run on the
-           |host, sandboxed to the project, per-project run-on-host caches and configured artifact repositories,
-           |and they may write the project except `.git`, `.ko-agent-sandbox` and what
+           |Run $names for this workspace as $commands: they run on the
+           |host, sandboxed to the workspace, per-workspace run-on-host caches and configured artifact repositories,
+           |and they may write the workspace except `.git`, `.ko-agent-sandbox` and what
            |`$$KO_AGENT_SANDBOX_FILE_RULES` makes read-only.$daemons$sbtUsage$listenerDenied$listenerGranted
            |Any other host command that fails or is refused is reported to the user,
            |never re-run in the container.
@@ -223,13 +223,13 @@ object LaunchMessages:
 
   def agentDocumentStamp(
     imageId: String,
-    writeMode: String,
+    workspaceMode: String,
     rulesetText: String,
     runOnHost: Vector[String] = Vector.empty,
     git: Option[String] = None,
     brokered: Vector[CredentialBinding] = Vector.empty,
   ): String =
-    s"$imageId $writeMode ${sha256Hex(rulesetText)}"
+    s"$imageId $workspaceMode ${sha256Hex(rulesetText)}"
       + (if runOnHost.isEmpty then "" else s" ${runOnHost.mkString(",")}")
       + git.fold("")(paragraph => s" git:${sha256Hex(paragraph)}")
       + (if brokered.isEmpty then "" else s" brokered:${brokered.map(_.spelled).mkString(",")}")

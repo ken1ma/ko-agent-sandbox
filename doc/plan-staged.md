@@ -1,32 +1,32 @@
 # Plan: staged workspace, live-mode closure, and the default flip
 
 The remaining increments of the workspace-mode work. No distributable build may make launches
-with no `--write` option read-only before the staged workflow is usable.
+with no `--workspace` option read-only before the staged workflow is usable.
 
 ## Staged mode
 
-`--write=staged` creates or resumes the project's persistent stage. A stage is a persistent
+`--workspace=staged` creates or resumes the workspace's persistent stage. A stage is a persistent
 copy-on-write view:
 
 ```text
-live host project directory, read-only ---+
-                                  +--- staged project mount
-persistent writable upper layers-+
+live host workspace, read-only ---+
+                                  +--- staged workspace mount
+persistent writable upper layers--+
 ```
 
-Untouched paths read the current host project directory, so host changes appear during the session.
+Untouched paths read the current host workspace, so host changes appear during the session.
 The first staged mutation records the lower state; the upper entry then shadows that path, and a
 later host change becomes an apply conflict. Deletions use whiteouts. Nothing is copied back
 automatically.
 
-The sharing unit is the project. Sessions attached to its stage share the merged view, locks, cache,
-upper layers and failure domain. `.ko-agent-sandbox` remains unmodifiable. Git metadata may exist
-privately in a stage but is never applied to the host.
+The sharing unit is the workspace. Sessions attached to its stage share the merged view, locks,
+cache, upper layers and failure domain. `.ko-agent-sandbox` remains unmodifiable. Git metadata may
+exist privately in a stage but is never applied to the host.
 
 One workload can add latency for every attached session, and a `ko-agent-fs` failure makes the
 merged view fail closed for all of them until they restart. This shared cost is accepted to keep
 locks and caches coherent across 20–30 collaborating sessions. One process and mount serve the
-project's attached staged sessions, rather than one per session.
+workspace's attached staged sessions, rather than one per session.
 
 Implement the merged view in `ko-agent-fs`. Kernel OverlayFS is not a candidate: changing a mounted
 lower tree is outside its defined contract, while live host changes are a requirement. A podman
@@ -71,7 +71,7 @@ session.
 
 Windows has one measured hazard to settle before the apply state machine is built rather than
 during it: a file a live session holds open refuses some host writers with a sharing violation,
-PowerShell's `Set-Content` among them (SECURITY.md, "The project directory";
+PowerShell's `Set-Content` among them (SECURITY.md, "The workspace";
 `../fuse/ko-agent-fs/doc/verification-log.md` has the measurement). Apply writes to the host while
 sessions are attached, and sealing rebinds write authority without necessarily closing the lower
 descriptor, so apply's atomic replacement can be refused on exactly the paths it is applying.
@@ -85,20 +85,20 @@ descriptor, so apply's atomic replacement can be refused on exactly the paths it
 --stage discard
 ```
 
-The current project identifies the stage for every action except `list`. There is no bulk discard
+The current workspace identifies the stage for every action except `list`. There is no bulk discard
 action in this increment. `--reset` and `--reset-all` remove runtime resources but preserve every
-stage. Discard refuses an attached stage and confirms the project directory, pending path count and
+stage. Discard refuses an attached stage and confirms the workspace root, pending path count and
 size plus any sealed, partially applied or recovery-needed state; non-interactive use additionally
 requires `--yes`.
 
-`--stage list` lists every stored stage by project; the other actions address the current project.
-Attachment and list output show the representation version, pending path count and logical size,
-physical stored size, backing volume, attached-session count, lower path and last-use time. No
-pending stage is pruned automatically. Status also exposes `quiescing`, `sealed`, `applying` and
-`recovery-needed` states, with the controlling host process and start time. Stage storage has a
-distinct reserved resource-name pattern that neither reset action matches; tests verify the
-preservation rule. Reset takes the same project lifecycle lock and refuses while an apply or
-recovery transition is active; it never tears down a stage underneath its control process.
+`--stage list` lists every stored stage by workspace; the other actions address the current
+workspace. Attachment and list output show the representation version, pending path count and
+logical size, physical stored size, backing volume, attached-session count, lower path and last-use
+time. No pending stage is pruned automatically. Status also exposes `quiescing`, `sealed`,
+`applying` and `recovery-needed` states, with the controlling host process and start time. Stage
+storage has a distinct reserved resource-name pattern that neither reset action matches; tests
+verify the preservation rule. Reset takes the same workspace lifecycle lock and refuses while an
+apply or recovery transition is active; it never tears down a stage underneath its control process.
 
 The startup banner gains the stage's state, in the format the workspace mode and the egress profile
 already use:
@@ -125,7 +125,7 @@ Sealing is one per-stage serialized operation:
 
 Failure to flush, drain or rebind any writable handle, mapping or open directory aborts before the
 barrier advances. New agent changes during review stay in the new generation. Before pausing, the
-command reports the project directory and number of attached sessions it will quiesce.
+command reports the workspace root and number of attached sessions it will quiesce.
 
 Apply holds the stage's control lock for its whole state transition. The sealed plan is a durable
 ordered set of operation groups: a rename, hardlink relationship or other indivisible change is
@@ -168,16 +168,16 @@ prompt can expand one group or all groups, page or search the expansion, show di
 version, cancel, or explicitly apply a low-risk collapsed group. Plain `y` is available only when
 every selected path is displayed.
 
-Trusted fixed code performs apply without project Git, hooks, filters, pagers or executables. It
-recursively resolves current host gitdirs, commondirs, configuration includes and hook locations,
-then refuses every protected Git path. It applies the existing conservative raw-byte name rules to
-`.git` and `.ko-agent-sandbox` at every depth and also refuses a resulting bare Git layout,
-host-incompatible paths, symlink escapes and path-replacement races. The same classification is
-rerun immediately before each affected mutation because host Git state can change during review.
+Trusted fixed code performs apply without the workspace's Git, hooks, filters, pagers or
+executables. It recursively resolves current host gitdirs, commondirs, configuration includes and
+hook locations, then refuses every protected Git path. It applies the existing conservative raw-byte
+name rules to `.git` and `.ko-agent-sandbox` at every depth and also refuses a resulting bare Git
+layout, host-incompatible paths, symlink escapes and path-replacement races. The same classification
+is rerun immediately before each affected mutation because host Git state can change during review.
 
 Only regular files, directories, safe symlinks and hardlinks are eligible for apply. Planning
-refuses FIFOs, sockets and device nodes rather than reproducing special files in the project
-directory.
+refuses FIFOs, sockets and device nodes rather than reproducing special files in the
+workspace.
 
 ## Live mutation journal
 
@@ -199,12 +199,12 @@ rollback bundles and staged control journals (`TODO.md`).
 
 ## Closing the git gaps
 
-Live mode recursively validates nested repositories before mounting without following symlinks.
-It validates `.git` directories and pointer files, detects bare layouts outside recognized gitdirs,
-and checks create, write, rename, exchange, hardlink and symlink operations that could complete one.
-Complete full-tree validation is a launch-time cost; benchmark it on build-output-heavy projects on
-every platform. An acceleration must still validate the current complete tree; a skipped directory
-or stale result would reopen the gap.
+Live mode recursively validates nested repositories before mounting without following symlinks. It
+validates `.git` directories and pointer files, detects bare layouts outside recognized gitdirs, and
+checks create, write, rename, exchange, hardlink and symlink operations that could complete one.
+Complete full-tree validation is a launch-time cost; benchmark it on build-output-heavy workspaces
+on every platform. An acceleration must still validate the current complete tree; a skipped
+directory or stale result would reopen the gap.
 
 The bare-layout rule uses Git's valid-`HEAD` plus `objects/` plus `refs/` discovery layout. Gitdirs
 reached from an existing worktree's `.git` metadata are classified separately. Elsewhere, only a
@@ -212,10 +212,10 @@ mutation affecting an entry whose basename is one of those three candidates perf
 lookups and, when necessary, validates `HEAD`; operations on other names and tree walks pay no extra
 checks. Benchmark the candidate path against the existing FUSE performance measurements.
 
-This rule cannot distinguish a bare repository from a project fixture containing the same valid
-triple. Live mode deliberately refuses completing either one, and recursive preflight refuses an
-existing one; staged mode may hold the fixture privately, but apply refuses to reproduce it on the
-host. This narrower completion rule supersedes the current per-name infeasibility conclusion in
+This rule cannot distinguish a bare repository from a fixture in the workspace containing the same
+valid triple. Live mode deliberately refuses completing either one, and recursive preflight refuses
+an existing one; staged mode may hold the fixture privately, but apply refuses to reproduce it on
+the host. This narrower completion rule supersedes the current per-name infeasibility conclusion in
 `../fuse/ko-agent-fs/doc/git-metadata.md` ("Consequences"), whose text — with `guard.rs` and its
 tests — changes in the same increment.
 
@@ -231,15 +231,15 @@ its private Git metadata cannot be applied.
    to a conclusion (`../fuse/ko-agent-fs/doc/TODO.md`, "P1"). Settling them first avoids revising
    an implemented representation.
 2. Close the nested-git and bare-layout gaps and add the live mutation journal.
-3. Implement and prove the staged `ko-agent-fs` engine, versioned storage, and shared per-project
+3. Implement and prove the staged `ko-agent-fs` engine, versioned storage, and shared per-workspace
    lifecycle and visibility, with the in-situ suite, the launcher action and the stamp a staged
    launch requires.
 4. Implement handle-safe generation sealing, deterministic review, recursive Git classification,
    the durable apply state machine and conflict detection. Do not expose staged mode as complete
    until status, apply, recovery and discard are available.
-5. Make `reject` the default only after step 4, and update the documents that describe the
+5. Make `read-only` the default only after step 4, and update the documents that describe the
    writable default — README, SECURITY.md, `doc/design.md` — in the same change. Persistent stages
-   narrow the meaning of reset: `--reset` and `--reset-all` no longer mean the project was never
+   narrow the meaning of reset: `--reset` and `--reset-all` no longer mean the workspace was never
    opened; launcher comments, help, README and SECURITY must point to explicit stage discard.
    Remove completed TODO rows rather than retaining a change history.
 
@@ -253,7 +253,7 @@ its private Git metadata cannot be applied.
 - Test nested repositories, initialized and absent submodules, split Git directories, relocated
   hooks and includes, folded reserved names, every mutation route to a bare layout, the accepted
   fixture false positive, absence of sibling checks on unrelated operations, and launch-time walk
-  cost on a build-output-heavy project.
+  cost on a build-output-heavy workspace.
 - Test malicious filenames, indivisible operation selection, collapsed large build trees and the
   expansion requirement for security-significant entries.
 - Test refusal of FIFOs, sockets and device nodes during apply planning.
@@ -270,18 +270,17 @@ its private Git metadata cannot be applied.
 
 There is no detached full-copy stage, named parallel stage, automatic apply, per-session live mount,
 bulk stage discard, host-wide command runner, executable-bit enforcement, or implicit fallback
-between write modes. Project-controlled commands remain the user's workflow to manage rather than a
-claimed host-wide boundary.
+between workspace modes. Workspace-controlled commands remain the user's workflow to manage rather
+than a claimed host-wide boundary.
 
 Deferred staged work is `TODO.md` ("staged-workspace extensions and hardening"); the optional
 no-symlink profile and the executable-bit decision are `../fuse/ko-agent-fs/doc/TODO.md`.
 
 ## Unresolved: a staged workspace under `--run-on-host`
 
-`--run-on-host` (`run-on-host.md`) runs an agent's build natively against the host project
-directory. A staged
-session's agent sees the merged mount, so the two disagree about what the project contains: the
-build compiles the host tree, not what the session staged, and writes its output where no stage
-records it. Which of the three answers holds — refuse the combination, stage the build's writes
-too, or define the host tree as the build's view and say so — is undecided, and belongs with
-whichever of the two features is implemented second.
+`--run-on-host` (`run-on-host.md`) runs an agent's build natively against the host workspace. A
+staged session's agent sees the merged mount, so the two disagree about what the workspace
+contains: the build compiles the host tree, not what the session staged, and writes its output
+where no stage records it. Which of the three answers holds — refuse the combination, stage the
+build's writes too, or define the host tree as the build's view and say so — is undecided, and
+belongs with whichever of the two features is implemented second.
