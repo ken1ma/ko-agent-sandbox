@@ -27,7 +27,7 @@ The containers run rootless, and the programs run as the `nonroot` user.
     │  │                               │     │  ... point into it            │  │
     │  └────┬──────────────────────────┘     └───────┬───────────────────────┘  │
     │       │ mounted at the same path               │ at ~/persistent-volume   │
-    │       │ (at WSL's path on Windows)             │ writable                 │
+    │       │ (WSL's path on Windows)                │ writable                 │
     │       │ writable by default                    │                          │
     │       │                      ┌─────────────────┘                          │
     │       │                      │                                            │
@@ -35,7 +35,7 @@ The containers run rootless, and the programs run as the `nonroot` user.
     │  ┃  runs claude/codex/agy/...    ┃     │  https only, stateless,       │  │
     │  ┃  capabilities dropped,        ┃     │  TLS-inspects except model    │  │
     │  ┃  read-only rootfs,            ┠────>│  providers                    ├──┼─> Internet
-    │  ┃  ephemeral /tmp and $HOME     ┃     │                               │  │
+    │  ┃  ephemeral $HOME and /tmp     ┃     │                               │  │
     │  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛     └─────┬─────────────────────────┘  │
     │              only internal network,          │                            │
     │              no gateway, no outbound DNS     │                            │
@@ -53,7 +53,7 @@ The containers run rootless, and the programs run as the `nonroot` user.
 
 A typical workflow:
 
-1. `git clone`/`pull` on the host first — host Git credentials are not automatically forwarded.
+1. `git clone`/`pull` on the host first — no host credentials are automatically forwarded.
 2. Run a program in the sandbox: it should feel mostly like running it on the host.
     1. The program can `git clone` public GitHub repositories into the sandbox's `$HOME`.
 3. Review the changes, then `git commit`/`push` on the host.
@@ -66,7 +66,7 @@ The sandbox image preinstalls:
 1. [Kiro CLI](https://kiro.dev/cli/)                                    (AWS)
 1. [Copilot CLI](https://github.com/github/copilot-cli)                 (GitHub)
 1. [OpenCode](https://github.com/anomalyco/opencode)                    (multiple providers)
-1. plus the toolchains: Python + uv / Node.js / Rust / Java / Scala, and the VS Code CLI.
+1. plus the toolchains: Node.js / Python + uv / Rust / Java / Scala, and the VS Code CLI.
 
 The agents are configured to run without permission prompts, to avoid training users to approve
 without reading. The sandbox enforces the boundary; inside it, the agents can call each other.
@@ -109,15 +109,14 @@ Start an agent in a trusted project directory, such as `~/my-project`:
 
     java -jar "<path-to-jar>/ko-agent-sandbox.jar" claude
 
-Insert these options before the agent command (`claude` above):
+Insert these launcher options before the agent command (`claude` above):
 
 1. Use `--model-provider=<names>` to reach other model providers than the agent's own:
    `anthropic`, `openai`, `google`, `aws` or `github`, separated by commas. `opencode` has no
    fixed provider and is refused without the option.
+   For example, to run `claude` and review with `codex` through `/ko-review`:
 
-    1. For example, to run `claude` and review with `codex` through `/ko-review`:
-
-           java -jar "<path-to-jar>/ko-agent-sandbox.jar" --model-provider=anthropic,openai claude
+       java -jar "<path-to-jar>/ko-agent-sandbox.jar" --model-provider=anthropic,openai claude
 
 1. Use `--egress=deny-unless-model` to limit network access to the selected model providers,
    dropping the read-only sites.
@@ -131,8 +130,7 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 ### Running `<command>`
 
-1. The current directory is the project directory; the sandbox mounts it at the same path (on
-   Windows, at the path WSL gives it).
+1. The current directory is the project directory; the sandbox mounts it at the same path.
 1. To change a session option such as `--egress=`, quit, then relaunch with the new options and
    the agent's resume arguments:
 
@@ -148,11 +146,11 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 1. Sign-in prints an authorization URL; open it in an external browser and paste the resulting
    code back.
 1. Ctrl-V pastes a copied image only under `--clipboard=paste` or `--clipboard=bidirectional`.
-1. `/voice` needs `--mic`.
+1. `/voice` needs the `--mic` launcher option.
 1. The image keeps Claude Code's conversation in the terminal's scrollback, where you can select
    and copy it. For the fullscreen renderer, launch with `--env=CLAUDE_CODE_NO_FLICKER=1`: the
    image's managed setting overrides `/tui fullscreen`.
-1. Run `/ko-review`, the skill of the image's `ko-review` plugin, to review the working tree.
+1. `/ko-review`, the skill of the image's `ko-review` plugin, reviews the working tree.
    Choose Codex or a separate Claude Code session as the reviewer. Claude fixes or disputes each
    finding on the same reviewer thread until the reviewer approves the exact tree or asks for a
    decision only you can make.
@@ -162,16 +160,15 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
      changed the design.
    - The review covers the uncommitted changes by default.
    - Codex reviews under this project's Codex sign-in.
-   - Each round's tree and transcript are on a ref under `refs/ko-review/` in the repository, for
-     `git diff` between rounds; the raw record is under `persistent-volume/ko-review`
-     ([doc/ko-review.md](doc/ko-review.md)).
+   - Each round's tree and transcript are on a Git ref under `refs/ko-review/` in the repository,
+     for `git diff` between rounds ([doc/ko-review.md](doc/ko-review.md)).
 1. A prompt remains for some `rm` commands
    ([doc/limitations.md](doc/limitations.md#permission-prompts-that-remain)).
 
 #### `codex`
 
-1. Sign-in: "ChatGPT Settings" → "Security and login" → "Enable device code authorization for
-   Codex", then choose "Sign in with Device Code" in the login UI.
+1. Sign-in: on the ChatGPT website, "Settings" → "Security and login" → "Enable device code
+   authorization for Codex", then choose "Sign in with Device Code" in the login UI.
 1. The image keeps Codex's conversation in the terminal's scrollback, where you can select and copy
    it. To restore Codex's default, pass `-c tui.fullscreen_transcript=true` for one launch, or set
    `tui.fullscreen_transcript = true` in `~/.codex/config.toml`.
@@ -522,7 +519,7 @@ Run the commands below from the repository root.
     sbt dist && java -jar target/dist/ko-agent-sandbox.jar --build
 
 1. This assembles one self-contained jar — a single file is the whole install.
-1. On Windows PowerShell below version 7, run the commands separated by `&&` individually.
+1. On Windows, PowerShell 7 or later is recommended. Windows PowerShell 5.1 does not support `&&`.
 
 ### Tests
 

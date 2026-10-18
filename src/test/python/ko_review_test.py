@@ -1,6 +1,8 @@
 """Tests of the ko-review plugin's helper against a fake `codex` and a fake `claude` on PATH, and of its
 `stream_events` and `children_of` loaded into this process; no model is used."""
 
+import datetime
+import fcntl
 import importlib.machinery
 import importlib.util
 import json
@@ -1272,6 +1274,77 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(self.git_out("for-each-ref", f"refs/ko-review/{review_id}/"), "")
         self.assertEqual(self.helper("list")["reviews"], [])
         self.assertEqual(self.helper("show", review_id, expect=1)["error"]["code"], "UNKNOWN_REVIEW")
+
+    def test_start_deletes_reviews_not_updated_for_eight_weeks(self):
+        def set_updated(review_id, days_ago):
+            state_path = Path(self.helper("show", review_id)["statePath"])
+            state = json.loads(state_path.read_text())
+            moment = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_ago, minutes=1)
+            state["updatedAt"] = moment.isoformat(timespec="milliseconds")
+            state_path.write_text(json.dumps(state))
+
+        kept, expired, busy = (self.start()["reviewId"] for _ in range(3))
+        set_updated(kept, 55)
+        set_updated(expired, 56)
+        set_updated(busy, 400)
+        lock = open(Path(self.helper("show", busy)["statePath"]).parent / "review.lock", "a")
+        self.addCleanup(lock.close)
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # as a command running in another session would
+        unreadable = "2020-01-01-0000-deadbeef"  # its state says nothing, so its id's start minute dates it
+        unreadable_dir = self.state / "repositories"
+        unreadable_dir = next(path for path in unreadable_dir.iterdir() if (path / "reviews").is_dir()) / "reviews"
+        (unreadable_dir / unreadable).mkdir()
+        (unreadable_dir / unreadable / "state.json").write_text("not JSON")
+        self.git("update-ref", f"refs/ko-review/{unreadable}/round-001", "HEAD")
+        current = self.start()
+        self.assertEqual((current["expiredReviews"], current["expiryFailures"]), ([unreadable, expired], []))
+        self.assertEqual(
+            sorted(row["reviewId"] for row in self.helper("list")["reviews"]),
+            sorted([kept, busy, current["reviewId"]]),
+        )
+        self.assertEqual(self.git_out("for-each-ref", f"refs/ko-review/{expired}/"), "")
+        self.assertEqual(self.git_out("for-each-ref", f"refs/ko-review/{unreadable}/"), "")
+        self.assertIn(f"refs/ko-review/{kept}/round-001", self.git_out("for-each-ref", f"refs/ko-review/{kept}/"))
+        self.assertFalse((unreadable_dir / expired).exists())
+        self.assertTrue((unreadable_dir / busy).exists())
+        self.assertNotIn("expiredReviews", self.helper("show", current["reviewId"]))  # `start` alone names them
+
+    def test_start_proceeds_when_an_expired_review_cannot_be_deleted(self):
+        def age(review_id):
+            state_path = Path(self.helper("show", review_id)["statePath"])
+            state = json.loads(state_path.read_text())
+            state["updatedAt"] = "2020-01-01T00:00:00.000+00:00"
+            state_path.write_text(json.dumps(state))
+            return state_path.parent
+
+        first, second = self.start()["reviewId"], self.start()["reviewId"]  # aged only once both exist
+        with_ref, unlockable = age(first), age(second)
+        (unlockable / "review.lock").unlink()
+        (unlockable / "review.lock").mkdir()  # the lock cannot be opened: an OSError, not a ReviewError
+        git_dir = self.repo / ".git"
+        directories = lambda: [path for path in [git_dir, *git_dir.rglob("*")] if path.is_dir()]
+        for path in directories():
+            path.chmod(0o555)
+        self.addCleanup(lambda: [path.chmod(0o755) for path in directories()])
+        started = self.start(APPROVED)  # the ref of the first expired review cannot be deleted
+        self.assertEqual(started["status"], "APPROVED")
+        self.assertEqual(started["expiredReviews"], [])
+        self.assertEqual(
+            sorted((failure["reviewId"], failure["error"]["code"]) for failure in started["expiryFailures"]),
+            sorted([(with_ref.name, "GIT_FAILED"), (unlockable.name, "STATE_IO_FAILED")]),
+        )
+        self.assertTrue(with_ref.exists() and unlockable.exists())
+        for path in directories():
+            path.chmod(0o755)
+        (unlockable / "review.lock").rmdir()
+        again = self.start(APPROVED)
+        self.assertEqual(sorted(again["expiredReviews"]), sorted([with_ref.name, unlockable.name]))
+        self.assertEqual(again["expiryFailures"], [])
+        self.assertEqual(self.git_out("for-each-ref", f"refs/ko-review/{with_ref.name}/"), "")
+        self.assertEqual(
+            sorted(row["reviewId"] for row in self.helper("list")["reviews"]),
+            sorted([started["reviewId"], again["reviewId"]]),
+        )
 
     def test_a_read_only_git_directory_leaves_the_round_without_a_snapshot(self):
         git_dir = self.repo / ".git"

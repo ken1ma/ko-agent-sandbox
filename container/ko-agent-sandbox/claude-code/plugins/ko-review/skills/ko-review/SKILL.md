@@ -161,17 +161,10 @@ However it ends, report:
 - every suggestion you put to the user, with the reviewer's reason, your view and why the user
   decides it; and every adopted suggestion that changed an interface or the split into
   components;
-- the review id, and the `inspect` lines of the last output as a code block: the commands with
-  which the user sees how the review went, lists the checkout's reviews and deletes this one. A
-  failure's JSON carries them too once a review exists.
+- the review id, in this command as a code block, the only `inspect` line of the output the reply
+  carries; `export`'s footer lists the rest:
 
-What the `inspect` lines use:
-
-- Each round's transcript and tree are on `refs/ko-review/REVIEW_ID/round-NNN`, for `git diff`
-  between rounds.
-- `ko-review export REVIEW_ID` prints the transcript; `diff REVIEW_ID` compares the working tree
-  with the approved round; `delete REVIEW_ID` deletes the refs and the state, on the user's
-  request only.
+      ko-review export REVIEW_ID    # the transcript; its footer lists the other commands
 
 ## Errors
 

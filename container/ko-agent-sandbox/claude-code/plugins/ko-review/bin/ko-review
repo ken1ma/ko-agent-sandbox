@@ -38,6 +38,7 @@ SUGGESTION_KINDS = {"design", "simplification", "alternative", "question"}
 TERMINAL = {"USER_DECISION_REQUIRED", "LOOP_LIMIT_REACHED"}
 DEFAULT_MAX_ROUNDS = 12
 DEFAULT_TIMEOUT_SECONDS = 3600
+RETENTION_DAYS = 56  # four times the two weeks Git keeps dangling commits by default (gc.pruneExpire)
 # Python turns only SIGINT into an exception; these are raised as one below so that a terminated
 # helper still kills the reviewer and reverts the review's state.
 TERMINATING_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
@@ -1412,6 +1413,7 @@ def command_start(args):
     base = resolve_base(root, args.base) if args.base else None
     check_scope(root, base)
     REVIEWERS[args.reviewer].check_choice({"model": args.model, "effort": args.effort})
+    expired, expiry_failures = expire_reviews(root)
     review = Review.create(root, args.max_rounds, REVIEWERS[args.reviewer])
     review.state["timeoutSeconds"] = args.timeout
     review.state["instructions"] = instructions
@@ -1422,7 +1424,7 @@ def command_start(args):
     review.lock()
     if instructions is not None:
         review.journal({"round": 1, "actor": "user", "kind": "instructions", "text": instructions})
-    return review_turn(review, message)
+    return {**review_turn(review, message), "expiredReviews": expired, "expiryFailures": expiry_failures}
 
 
 def command_continue(args):
@@ -1644,12 +1646,59 @@ def command_diff(args):
 
 def command_delete(args):
     root = repository_root(args.repository)
-    review = Review.open(root, args.review_id, check_readable=False)
+    return delete_review(Review.open(root, args.review_id, check_readable=False))
+
+
+def delete_review(review):
     refs = snapshot_refs(review)
     for ref in refs:
-        git(root, "update-ref", "-d", ref)
+        git(review.root, "update-ref", "-d", ref)
     shutil.rmtree(review.dir)
     return {"reviewId": review.id, "removedRefs": refs, "removedDirectory": str(review.dir)}
+
+
+def last_activity(review):
+    """When the review last changed: `updatedAt`, else `createdAt`, else the start minute its id
+    carries, for a state this helper cannot read."""
+    for key in ("updatedAt", "createdAt"):
+        try:
+            moment = datetime.datetime.fromisoformat(review.state[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+        return moment if moment.tzinfo else moment.replace(tzinfo=datetime.timezone.utc)
+    try:
+        return datetime.datetime.strptime(review.id[:15], "%Y-%m-%d-%H%M").astimezone()
+    except ValueError:
+        return None
+
+
+def expire_reviews(root):
+    """Deletes the checkout's reviews whose last activity is RETENTION_DAYS or more ago, as `delete`
+    would: the deleted ids, and for each review it could not delete, its id and the error, so that
+    the new review starts whatever the old ones' state. A review another command holds, one gone
+    meanwhile, or one whose age cannot be told, stays silently."""
+    reviews_dir = repository_dir(root) / "reviews"
+    if not reviews_dir.exists():
+        return [], []
+    limit = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=RETENTION_DAYS)
+    expired, failures = [], []
+    for entry in sorted(reviews_dir.iterdir()):
+        if not (entry / "state.json").exists():
+            continue
+        try:
+            review = Review.open(root, entry.name, check_readable=False)
+            activity = last_activity(review)
+            if activity is not None and activity <= limit:
+                delete_review(review)
+                expired.append(review.id)
+        except ReviewError as ex:
+            if ex.code not in ("REVIEW_BUSY", "UNKNOWN_REVIEW"):
+                failures.append({"reviewId": entry.name, "error": ex.to_json()})
+        except FileNotFoundError:
+            pass
+        except OSError as ex:
+            failures.append({"reviewId": entry.name, "error": {"code": "STATE_IO_FAILED", "message": str(ex)}})
+    return expired, failures
 
 
 GIT_METADATA_LIMIT = 64 * 1024  # Codex's MAX_GIT_METADATA_FILE_BYTES
@@ -1924,7 +1973,12 @@ def build_parser():
         sub.set_defaults(handler=handler)
         return sub
 
-    start = add("start", command_start, "review the working tree on a new reviewer thread", message=True, reviewer=True)
+    start = add(
+        "start", command_start,
+        f"review the working tree on a new reviewer thread, after deleting this checkout's reviews not updated for"
+        f" {RETENTION_DAYS} days",
+        message=True, reviewer=True,
+    )
     start.add_argument(
         "--max-rounds", type=int, default=DEFAULT_MAX_ROUNDS, help="rounds the reviewer answers before the review ends",
     )
