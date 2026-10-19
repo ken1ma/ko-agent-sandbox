@@ -414,17 +414,19 @@ object LauncherImages:
       protectedImageNames(imageNames, staleTags),
     )
     val currentIds = current.toSet
-    staleTags.filterNot(image => currentIds.contains(image.id)).foreach: image =>
+    val tagsToRemove = staleTags.filterNot(image => currentIds.contains(image.id))
+    // The echoed commands under each heading name the tags or images, so the heading does not.
+    if tagsToRemove.nonEmpty then System.err.println("removing launcher tags from older builds")
+    tagsToRemove.foreach: image =>
       val command = Vector(podman, "image", "untag", image.id, image.tag)
-      // The echoed command after each heading names the tag or image, so the heading does not.
-      System.err.println("removing launcher tag from an older build")
       echoCommand(command)
-      val untagged = run(command*)
-      if !untagged.ok then
-        System.err.println(s"note: keeping stale launcher tag ${image.tag}\n${untagged.err}")
+      val result = run(command*)
+      if !result.ok then
+        System.err.println(s"note: keeping stale launcher tag ${image.tag}\n${result.err}")
     val remaining = Vector.newBuilder[String]
-    supersededImageRemoveCommands(podman, candidates, current).foreach: command =>
-      System.err.println("removing launcher image from an older build")
+    val removals = supersededImageRemoveCommands(podman, candidates, current)
+    if removals.nonEmpty then System.err.println("removing launcher images from older builds")
+    removals.foreach: command =>
       echoCommand(command)
       val removed = run(command*)
       if !removed.ok then

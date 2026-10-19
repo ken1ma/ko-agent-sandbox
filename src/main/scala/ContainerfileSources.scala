@@ -8,7 +8,7 @@ package agentsandbox.launcher
 
 import scala.util.matching.Regex
 
-import HostCommands.fail
+import HostCommands.{fail, shownCommand}
 
 object ContainerfileSources:
 
@@ -215,7 +215,7 @@ object ContainerfileSources:
   )
 
   private def imageBuildSpecification(command: Vector[String]): BuildSpecification =
-    def refuse(reason: String): Nothing = fail(s"error: $reason: ${command.mkString(" ")}")
+    def refuse(reason: String): Nothing = fail(s"error: $reason: ${shownCommand(command)}")
     if command.lift(1) != Some("build") then refuse("expected an image build command")
     val buildArgs = Map.newBuilder[String, String]
     var containerfile: Option[String] = None

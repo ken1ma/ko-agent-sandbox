@@ -328,10 +328,16 @@ object HostCommands:
 
   /** The echoed line; `announcedPodman` is the path the `using:` line said, or None before it has. */
   def renderCommand(command: Seq[String], announcedPodman: Option[String]): String =
+    "+ " + commandWords(command, announcedPodman)
+
+  /** The command as its echo shows it, for an error whose command was echoed far above, or not at all. */
+  def shownCommand(command: Seq[String]): String = commandWords(command, announcedPodman)
+
+  def commandWords(command: Seq[String], announcedPodman: Option[String]): String =
     val words = command.toVector
     val named =
       if words.headOption.exists(announcedPodman.contains) then "podman" +: words.tail else words
-    "+ " + named.map(shellWord).mkString(" ")
+    named.map(shellWord).mkString(" ")
 
   private val BareWord = "[A-Za-z0-9_@%+=:,./-]+".r
 

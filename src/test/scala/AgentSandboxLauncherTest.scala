@@ -769,6 +769,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val rendered = renderCommand(Vector("podman", "machine", "ssh", script), None)
     assert(!rendered.contains('\n'), rendered)
     assert(rendered.startsWith("+ podman machine ssh 'set -eu\\nsudo"), rendered)
+    val inError = HostCommands.commandWords(Vector("podman", "machine", "ssh", script), None)
+    assert(!inError.contains('\n'), inError)
+    assert(inError.startsWith("podman machine ssh 'set -eu\\nsudo"), inError)
+    assertEquals(
+      HostCommands.commandWords(pull, Some("/opt/podman/bin/podman")),
+      "podman pull docker.io/library/debian:13.6-slim --quiet",
+    )
 
   test("a --quiet pull's verdict comes from the image id before and after"):
     val old = "sha256:7e3898f7b011a107d0ef7393d5f604a6e0c0ff05ac4f2476630a8af21059ec9b"
@@ -1183,6 +1190,54 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         Vector(TaggedImage("localhost/ko-agent-self-test:latest", "self-test-old")),
       ),
       managedImageTags("1.2-3").filterNot(_ == "ko-agent-self-test:latest"),
+    )
+
+  test("an image cleanup names each kind of removal once, above all of its commands"):
+    assume(!System.getProperty("os.name").toLowerCase.contains("win"), "the stub podman is a /bin/sh script")
+    val dir = Files.createTempDirectory("superseded-cleanup").toRealPath()
+    val podman = dir.resolve("podman")
+    Files.writeString(
+      podman,
+      """#!/bin/sh
+        |case "$*" in
+        |  "image ls"*) printf 'localhost/ko-agent-sandbox:latest\tsandbox-current\n' ;;
+        |  *proxy-old) echo 'image is busy' >&2; exit 1 ;;
+        |esac
+        |""".stripMargin,
+    )
+    podman.toFile.setExecutable(true)
+    val stub = podman.toString
+    val captured = java.io.ByteArrayOutputStream()
+    val saved = System.err
+    val remaining =
+      try
+        System.setErr(java.io.PrintStream(captured, true))
+        removeSupersededImages(
+          stub,
+          Vector("fs-old", "proxy-old", "sandbox-current"),
+          Vector("ko-agent-sandbox:latest"),
+          Vector(
+            TaggedImage("debian-coursier:1.1-2", "coursier-old"),
+            TaggedImage("localhost/debian-temurin:1.1-2", "temurin-old"),
+          ),
+        )
+      finally
+        System.setErr(saved)
+        FileHelper.deleteRecursively(dir)
+    assertEquals(remaining, Vector("proxy-old"))
+    def echoed(words: String*) = HostCommands.renderCommand(stub +: words, None)
+    assertEquals(
+      captured.toString.linesIterator.toVector,
+      Vector(
+        "removing launcher tags from older builds",
+        echoed("image", "untag", "coursier-old", "debian-coursier:1.1-2"),
+        echoed("image", "untag", "temurin-old", "localhost/debian-temurin:1.1-2"),
+        "removing launcher images from older builds",
+        echoed("image", "rm", "--ignore", "fs-old"),
+        echoed("image", "rm", "--ignore", "proxy-old"),
+        "note: keeping superseded image proxy-old; podman did not remove it",
+        "image is busy",
+      ),
     )
 
   test("an interrupted image cleanup is journalled in removal order"):
