@@ -155,6 +155,10 @@ object KoAgentFs:
   def koAgentFsSelfTestCommand(podman: String, os: Os, home: String): Vector[String] =
     koAgentFsInvocation(podman, os, home, "--self-test")
 
+  /** The --version line without its leading program name, which the label already says. */
+  def koAgentFsInstalledLine(versionLine: String): String =
+    s"ko-agent-fs installed: ${versionLine.trim.stripPrefix("ko-agent-fs ")}"
+
   /** "ko-agent-fs <version> source <id>" → the id; None for anything else. */
   def koAgentFsReportedSourceId(versionLine: String): Option[String] =
     versionLine.trim.split("\\s+") match
@@ -176,13 +180,13 @@ object KoAgentFs:
       echoCommand(command)
       val result = run(command*)
       if !result.ok then
-        fail(s"error: ko-agent-fs install failed: ${command.mkString(" ")}\n${result.err}", result.exit)
+        fail(s"error: ko-agent-fs install failed: ${shownCommand(command)}\n${result.err}", result.exit)
     val version = run(koAgentFsVersionCommand(podman, os, home)*)
     if !version.ok then
       fail(s"error: the installed ko-agent-fs does not run: ${version.err}", version.exit)
     koAgentFsReportedSourceId(version.text) match
       case Some(id) if id == expectedId =>
-        System.err.println(s"ko-agent-fs installed: ${version.text}")
+        System.err.println(koAgentFsInstalledLine(version.text))
       case Some(id) =>
         fail(
           s"""error: the installed ko-agent-fs reports source $id, expected $expectedId

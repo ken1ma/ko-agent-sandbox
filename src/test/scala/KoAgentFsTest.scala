@@ -476,6 +476,12 @@ class KoAgentFsTest extends munit.FunSuite:
     assertEquals(koAgentFsReportedSourceId("bash: ./ko-agent-fs: No such file or directory"), None)
     assertEquals(koAgentFsReportedSourceId("ko-agent-fs 0.1.0"), None)
 
+  test("the install line names ko-agent-fs once, then its version and source"):
+    assertEquals(
+      koAgentFsInstalledLine("ko-agent-fs 0.1.0 source " + "a" * 64 + "\n"),
+      "ko-agent-fs installed: 0.1.0 source " + "a" * 64,
+    )
+
   test("the ko-agent-fs source id keys on content, name and file set — nothing else"):
     def bytes(text: String) = text.getBytes("UTF-8")
     val base = Seq("src/lib.rs" -> bytes("pub mod policy;"), "Cargo.toml" -> bytes("[package]"))

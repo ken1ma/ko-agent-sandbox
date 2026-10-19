@@ -329,10 +329,10 @@ object ImageBuilds:
       if exit != 0 then
         if pulled.isDefined then
           deleteRecursively(context)
-          fail(s"error: image refresh failed: ${command.mkString(" ")}", exit)
+          fail(s"error: image refresh failed: ${shownCommand(command)}", exit)
         else
           fail(
-            s"error: build failed: ${command.mkString(" ")}\n" +
+            s"error: build failed: ${shownCommand(command)}\n" +
               s"build context retained at $context",
             exit,
           )
