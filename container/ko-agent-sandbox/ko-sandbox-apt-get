@@ -120,7 +120,7 @@ sed -n 's/^Inst \([^ ]*\) \(\[[^]]*\] \)\{0,1\}(\([^ ]*\) .*/\1 \3/p' "$apt/simu
 # package into a re-download. A manifest per package, filed under the name the simulation gives it,
 # stands in for the ownership database dpkg would have kept: it names the extracted archive, its
 # version, and every path that archive holds.
-# A re-run of the same archive is skipped. Any other version the install resolved to extracts over
+# A rerun of the same archive is skipped. Any other version the install resolved to extracts over
 # $root and then deletes the paths its predecessor owned that no manifest lists any more, so no
 # command the replaced version alone shipped stays behind, while a path that moved to another
 # package — a Debian transition, and the other package may well have been extracted first — stays.
@@ -173,7 +173,7 @@ wrapper_target() {
 # - a command already on PATH, for the same reason: a dependency chain that happens to include
 #   python3 must not change which python3 the session runs;
 # - any other file of its name in ~/.local/bin, such as a `uv tool` or `cs install` command.
-# Our own earlier wrappers do get rewritten, so re-running stays idempotent.
+# Our own earlier wrappers do get rewritten, so rerunning stays idempotent.
 libs="$root/usr/lib/$(uname -m)-linux-gnu:$root/usr/lib:$root/lib"
 wrapped=""
 skipped=""

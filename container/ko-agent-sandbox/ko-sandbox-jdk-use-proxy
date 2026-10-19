@@ -105,7 +105,7 @@ EOF
         return
     fi
     # The original beside it before the first append, and only if no copy is there yet, so a
-    # re-run cannot overwrite the true original with an already-appended one. Named for this
+    # rerun cannot overwrite the true original with an already-appended one. Named for this
     # program rather than `.dist`, which would claim the file is as distributed, which nobody
     # verified — the same convention /etc/fuse.conf gets (KoAgentFs.KoAgentFsFuseConfBackup).
     [ -e "$net.ko-agent-sandbox.orig" ] || cp "$net" "$net.ko-agent-sandbox.orig"

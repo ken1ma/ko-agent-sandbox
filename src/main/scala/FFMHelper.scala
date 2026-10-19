@@ -144,7 +144,7 @@ object FFMHelper:
       * execvp below.
       *
       * Every failure answers "not a terminal": the first caller is `fail`, and a platform without
-      * the symbol, or one that denies the call, must lose the colour rather than the refusal text.
+      * the symbol, or one that denies the call, must lose the color rather than the refusal text.
       */
     def isatty(fd: Int): Boolean =
       try

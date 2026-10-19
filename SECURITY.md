@@ -192,7 +192,7 @@ A workspace file that a command in `.git/config` names or runs stays writable:
   `node scripts/driver.js`: the session cannot change the value, and can rewrite the file it names.
 - Git passes each of these values to a shell when it holds a space or another shell character
   (git 2.51.0), so the guard cannot tell which word names a file, as it can for `core.hooksPath`.
-- A `readonly tools/clean.sh` line in `.ko-agent-sandbox/file/rule` protects such a file outside
+- A `read-only tools/clean.sh` line in `.ko-agent-sandbox/file/rule` protects such a file outside
   `node_modules` (`doc/file-rules.md`, "The rule file").
 
 A directory laid out as a gitdir *without* a `.git` name elsewhere in the tree is the gap "The
@@ -506,7 +506,7 @@ above the workspace root, including common links into external caches. Two gaps 
 - a later `rename` or `link` can move a relative symlink so that its target escapes the workspace.
 
 The creation-time syntax check does not prevent deliberate construction of such links; they still
-require review. Direct hardlinks across the workspace mount boundary fail with `EXDEV`, because the
+require review. Direct hard links across the workspace mount boundary fail with `EXDEV`, because the
 workspace mount and the container root are different filesystems. Hardlinking a symlink within the
 workspace can still change where its relative target resolves.
 
@@ -556,7 +556,7 @@ What an auditor trusts, and how each link is checked:
   in this repository, and `--build` compiles it in a pinned `rust:slim` container on the user's
   own machine.
 - **The dependency tree**, pinned by `Cargo.lock` (`--locked` at every cargo step) and checked by a
-  pinned `cargo-deny` — permissive licences only — before any binary exists.
+  pinned `cargo-deny` — permissive licenses only — before any binary exists.
 - **The installed binary's source version.** The launcher digests the bundled source, passes the
   digest into the image build, and checks the installed binary's `--version` against it. A mismatch
   fails `--build`. This detects a mismatched installation; the binary reports the value, so the

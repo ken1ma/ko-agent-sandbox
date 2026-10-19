@@ -164,11 +164,11 @@ class KoAgentFsTest extends munit.FunSuite:
     assertEquals(script.linesIterator.drop(1).next(), "set -eu")
 
   test("the mount script joins a live mount only under the same file rules, and prints the resolved set"):
-    val rules = "host-view /Users /private /var/folders\nreadonly .vscode\n"
+    val rules = "host-view /Users /private /var/folders\nread-only .vscode\n"
     val script = koAgentFsMountScript("/Users/u/proj", "app-abc123def456", "d" * 64, "run-container-1", rules)
     val encoded = java.util.Base64.getEncoder.encodeToString(rules.getBytes("UTF-8"))
     // User-controlled, like the backing path: base64 only.
-    assert(!script.contains("readonly .vscode"), script)
+    assert(!script.contains("read-only .vscode"), script)
     assert(script.contains(s"printf %s $encoded | base64 -d > \"$$dir/file-rules.new\""), script)
     // Compared under the workspace lock, inside the reuse branch, before the launch joins.
     val compare = script.indexOf("\"$(cat \"$dir/file-rules.new\")\" != \"$(cat \"$dir/file-rules\"")
@@ -189,7 +189,7 @@ class KoAgentFsTest extends munit.FunSuite:
     assert(script.indexOf("flock 9") < running, script)
     assert(script.contains("[ \"$(cat \"$dir/source-id\" 2>/dev/null || true)\" = \"" + "d" * 64 + "\" ]"), script)
     assert(script.indexOf(s"echo \"$RunningRulesMarker\"") < script.indexOf("cat \"$dir/file-rules\""), script)
-    val rules = "host-view /\nreadonly .vscode\n"
+    val rules = "host-view /\nread-only .vscode\n"
     assertEquals(
       runningMountOf(s"$RunningMountMarker\nsession run-a\nsession run-b\n$RunningRulesMarker\n$rules"),
       Some(RunningMount(Vector("run-a", "run-b"), rules)),
@@ -197,7 +197,7 @@ class KoAgentFsTest extends munit.FunSuite:
     assertEquals(runningMountOf(""), None)
 
   test("a launch under other rules joins a running mount only when the start prompt asks, and says so on one line"):
-    val running = RunningMount(Vector("run-a", "run-b"), "host-view /\nreadonly .vscode\n")
+    val running = RunningMount(Vector("run-a", "run-b"), "host-view /\nread-only .vscode\n")
     assertEquals(joinUnderOtherRules(None, "host-view /\n", prompted = false), Right(None))
     assertEquals(joinUnderOtherRules(Some(running), running.rules, prompted = false), Right(None))
     assertEquals(joinUnderOtherRules(Some(running), "host-view /\n", prompted = true), Right(Some(running)))
@@ -208,20 +208,21 @@ class KoAgentFsTest extends munit.FunSuite:
     assert(warning.indexOf("do not take effect") < warning.indexOf("until"), warning)
 
   test("the resolved set is read after the marker, and a filter of another format is refused"):
-    val output = s"reusing the existing mount\n${FileRules.ResolvedMarker}\nreadonly .vscode\nreadonly-path .husky/_\n"
+    val output =
+      s"reusing the existing mount\n${FileRules.ResolvedMarker}\nread-only .vscode\nread-only-path .husky/_\n"
     assertEquals(
       resolvedAfterMarker(output),
       FileRules.Resolved(Vector(FileRules.Line(FileRules.Word.ReadOnly, ".vscode")), Vector(".husky/_"), Vector.empty),
     )
-    assert(FileRules.parseResolved("readonly .vscode\nignore x\n").isLeft)
+    assert(FileRules.parseResolved("read-only .vscode\nignore x\n").isLeft)
     // What the profile writes into its regexes stays in the grammar, whatever the filter answers.
     for line <- Vector(
-        "readonly ../x",
+        "read-only ../x",
         "writable a//b",
-        "readonly-under shared/claude",
-        "readonly-under shared/claude a b",
-        "readonly-under shared/claude ../x",
-        "readonly-under shared/claude a\"b",
+        "read-only-under shared/claude",
+        "read-only-under shared/claude a b",
+        "read-only-under shared/claude ../x",
+        "read-only-under shared/claude a\"b",
       )
     do assert(FileRules.parseResolved(s"$line\n").isLeft, line)
 

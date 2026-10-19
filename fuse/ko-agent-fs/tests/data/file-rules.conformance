@@ -2,7 +2,7 @@
 # Seatbelt profile's rendered rules (the launcher's `SeatbeltProfileTest`).
 #
 # A case lists resolved lines, as the launcher and the guard write them, then paths with their
-# answer: `readonly`, `pinned` (not read-only, but not to be renamed or unlinked) or `free`.
+# answer: `read-only`, `pinned` (not read-only, but not to be renamed or unlinked) or `free`.
 #
 # `path` rows hold for both enforcement points. `folded` rows spell a name as a filesystem may
 # fold it; the filter folds, and the profile relies on the volume resolving the spelling to the
@@ -10,76 +10,76 @@
 # only the filter checks them. The third `folded` row holds an invisible U+200B ZERO WIDTH SPACE.
 
 case one directory at any depth
-line readonly .vscode
-path .vscode readonly
-path .vscode/tasks.json readonly
-path apps/web/.vscode/tasks.json readonly
+line read-only .vscode
+path .vscode read-only
+path .vscode/tasks.json read-only
+path apps/web/.vscode/tasks.json read-only
 path .vscodex free
 path vscode free
 path x.vscode/tasks.json free
-folded .VSCODE/tasks.json readonly
-folded .vscode./tasks.json readonly
-folded .vs​code/tasks.json readonly
+folded .VSCODE/tasks.json read-only
+folded .vscode./tasks.json read-only
+folded .vs​code/tasks.json read-only
 
 case a later writable line lifts a file below a read-only directory
-line readonly .vscode
+line read-only .vscode
 line writable .vscode/settings.json
-path .vscode/tasks.json readonly
+path .vscode/tasks.json read-only
 path .vscode/settings.json free
 path .vscode/settings.json/tasks.json free
 
 case the reverse order keeps it read-only
 line writable .vscode/settings.json
-line readonly .vscode
-path .vscode/settings.json readonly
+line read-only .vscode
+path .vscode/settings.json read-only
 
 case a star within one component
-line readonly *.code-workspace
+line read-only *.code-workspace
 line writable demo.code-workspace
-line readonly lefthook.*
-path x.code-workspace readonly
-path .code-workspace readonly
+line read-only lefthook.*
+path x.code-workspace read-only
+path .code-workspace read-only
 path demo.code-workspace free
-path lefthook.yml readonly
-path .config/lefthook.yml readonly
+path lefthook.yml read-only
+path .config/lefthook.yml read-only
 path lefthook free
 path lefthook-local.yml free
-path lefthook.d/x readonly
+path lefthook.d/x read-only
 
 case a directory a line names through is pinned
-line readonly .claude/settings.json
+line read-only .claude/settings.json
 path .claude pinned
-path .claude/settings.json readonly
+path .claude/settings.json read-only
 path .claude/notes.md free
 path x/.claude pinned
-path x/.claude/settings.json readonly
+path x/.claude/settings.json read-only
 path settings.json free
 path .claude/x/settings.json free
 
 case three components pin two
-line readonly .kiro/settings/mcp.json
+line read-only .kiro/settings/mcp.json
 path .kiro pinned
 path .kiro/settings pinned
-path .kiro/settings/mcp.json readonly
+path .kiro/settings/mcp.json read-only
 path .kiro/steering/x.md free
 
 case the same name cancelled
-line readonly .claude/skills
+line read-only .claude/skills
 line writable .claude/skills
 path .claude/skills free
 path .claude/skills/x/SKILL.md free
 path .claude pinned
 
 case a writable ancestor lifts what is below it
-line readonly .claude/settings.json
+line read-only .claude/settings.json
 line writable .claude
 path .claude free
 path .claude/settings.json free
 
 case a dependency directory
-line readonly .vscode
-line readonly .claude/settings.json
-line readonly .opencode
+line read-only .vscode
+line read-only .claude/settings.json
+line read-only .opencode
 line writable node_modules
 path node_modules free
 path node_modules/inflection/.vscode/settings.json free
@@ -87,28 +87,28 @@ path node_modules/thread-stream/.claude free
 path node_modules/thread-stream/.claude/settings.local.json free
 path node_modules/p/.claude/settings.json free
 path .opencode/node_modules/x/index.js free
-path apps/.vscode/tasks.json readonly
+path apps/.vscode/tasks.json read-only
 
 case a later line pins inside a writable region
 line writable node_modules
-line readonly node_modules/foo/bar
+line read-only node_modules/foo/bar
 path node_modules pinned
 path node_modules/foo pinned
-path node_modules/foo/bar readonly
+path node_modules/foo/bar read-only
 path node_modules/other free
 
 case the guard's paths decide over every rule line
-line readonly .vscode
+line read-only .vscode
 line writable node_modules
-line readonly-path tools/githooks
-line readonly-path node_modules/.hooks
+line read-only-path tools/githooks
+line read-only-path node_modules/.hooks
 line pinned-path alias
 line pinned-path deep/link
 path tools pinned
-path tools/githooks readonly
-path tools/githooks/pre-commit readonly
+path tools/githooks read-only
+path tools/githooks/pre-commit read-only
 path apps/tools/githooks free
-path node_modules/.hooks/pre-commit readonly
+path node_modules/.hooks/pre-commit read-only
 path alias pinned
 path x/alias free
 path tools/other free

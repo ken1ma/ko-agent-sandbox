@@ -1,9 +1,9 @@
-# The licence check, run in the build container before the binary is produced (`Containerfile`), so a
-# dependency arriving under an unexpected licence fails the build rather than shipping unnoticed.
+# The license check, run in the build container before the binary is produced (`Containerfile`), so a
+# dependency arriving under an unexpected license fails the build rather than shipping unnoticed.
 #
-# Only permissive licences, and only the ones the tree actually carries — cargo-deny warns on an
+# Only permissive licenses, and only the ones the tree actually carries — cargo-deny warns on an
 # allowance nothing uses, so a speculative entry is noise on every build; extend the list when a
-# dependency actually arrives under a new (still permissive) licence. Copyleft is deliberately
+# dependency actually arrives under a new (still permissive) license. Copyleft is deliberately
 # absent, including weak copyleft such as MPL-2.0: this binary ships inside a user's environment,
 # and `SECURITY.md` ("The workspace filter") names this check as permissive-only.
 

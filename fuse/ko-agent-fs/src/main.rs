@@ -137,7 +137,7 @@ const SELF_TEST_SETUP_EXIT: u8 = 3;
 /// `--self-test`: prove, against a scratch tree that is never the user's workspace, that this
 /// binary can mount in *this* environment, that the policy actually refuses, and that a host write
 /// reaches both a cached read and an established mapping (`coherency_check`). It runs where the
-/// daemon will serve — inside the Podman machine, or on a native Linux host — at install time and
+/// daemon will serve — inside the podman machine, or on a native Linux host — at install time and
 /// again before every session that mounts it (`KoAgentFs.installKoAgentFs`,
 /// `koAgentFsChecks`), aborting either on failure, so the exit code is the contract and the
 /// text is for the human reading the log. Beyond the policy, this is the probe for the two

@@ -217,7 +217,7 @@ fn creating_a_dotgit_entry_is_refused_for_every_entry_type() {
         symlink("/etc/passwd", mount.at("src/.git")),
     );
     denied(
-        "hardlink named .git",
+        "hard link named .git",
         fs::hard_link(mount.at("src/main.rs"), mount.at("src/.git")),
     );
 
@@ -637,16 +637,16 @@ fn alternates_cannot_be_written_or_moved_into_place() {
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn hardlink_aliasing_cannot_smuggle_protected_entries_out() {
-    // A hardlink shares the inode, so aliasing a hook to a writable name would let a write through
+    // A hard link shares the inode, so aliasing a hook to a writable name would let a write through
     // the alias mutate the frozen inode. Refused on the source side as well as the destination.
     let mount = TestMount::new(repository);
 
     denied(
-        "hardlink a hook out to a writable name",
+        "hard-link a hook out to a writable name",
         fs::hard_link(mount.at(HOOK), mount.at("src/hooklink")),
     );
     denied(
-        "hardlink config out to a writable name",
+        "hard-link config out to a writable name",
         fs::hard_link(mount.at(".git/config"), mount.at("src/cfglink")),
     );
     assert!(!mount.at("src/hooklink").exists());
@@ -687,7 +687,7 @@ fn a_second_name_of_a_guarded_entry_is_guarded_like_it() {
             fs::rename(mount.at("ordinary"), mount.at(alias)),
         );
         denied(
-            "hardlink an alias out",
+            "hard-link an alias out",
             fs::hard_link(mount.at(alias), mount.at("linked")),
         );
     }
@@ -1099,7 +1099,7 @@ fn mount_with_rules(rule_lines: &str, setup: impl FnOnce(&Path)) -> TestMount {
     })
 }
 
-const DEFAULTS_LIKE: &str = "readonly .vscode\nreadonly .claude/settings.json\n\
+const DEFAULTS_LIKE: &str = "read-only .vscode\nread-only .claude/settings.json\n\
                              writable node_modules\n";
 
 fn listed_files(backing: &Path) {
@@ -1364,7 +1364,7 @@ fn a_gitdir_keeps_the_listed_names_it_holds() {
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn a_writable_line_frees_one_file_below_a_read_only_directory() {
     let mount = mount_with_rules(
-        "readonly .vscode\nwritable .vscode/settings.json\n",
+        "read-only .vscode\nwritable .vscode/settings.json\n",
         |backing| {
             listed_files(backing);
             fs::write(backing.join(".vscode/settings.json"), b"{}\n").unwrap();
@@ -1411,7 +1411,7 @@ fn ordinary_workspace_work_is_unaffected() {
         fs::rename(mount.at("src/new.rs"), mount.at("src/moved.rs")),
     );
     allowed(
-        "hardlink an ordinary file",
+        "hard-link an ordinary file",
         fs::hard_link(mount.at("src/main.rs"), mount.at("src/alias.rs")),
     );
     allowed(

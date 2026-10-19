@@ -235,8 +235,9 @@ Every start prints, in order:
 
 1. when the file grants beyond the launch's defaults — a host they lack, a grant they lack at the
    line's path, a provider the launch did not select, `deny defaults` — the line
-   `egress rules (.ko-agent-sandbox/egress/rule) widen (<count>):`, then those rule lines, each
-   on its own indented line. A file that only removes grants or narrows them prints neither;
+   `.ko-agent-sandbox/egress/rule: <count> widening lines`, then those rule lines indented, one
+   per line except that `allow https://<host>/ <words>` lines sharing their words join into
+   `allow <words>: <host>, <host>`. A file that only removes grants or narrows them prints neither;
 1. the file's other lines, on one line, so each line of the file prints once;
 1. the launch banner — the profile and the counts, never a host name.
 

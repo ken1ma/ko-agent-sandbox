@@ -75,7 +75,7 @@ RUN set -euxo pipefail; \
         -jar target/dist/ko-agent-egress-proxy.jar
 
 # The mount point for the leaf cert/key, created here because distroless has no shell to mkdir
-# with; in the image the contract is visible and independent of podman's --read-only behaviour.
+# with; in the image the contract is visible and independent of podman's --read-only behavior.
 RUN set -euxo pipefail; \
     install -d -o nonroot -g nonroot -m 0755 /build/tls
 

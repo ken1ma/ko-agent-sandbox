@@ -197,7 +197,7 @@ Attested in:
 Do not add a wildcard on the granting side, a second precedence, a richer pattern language, or
 a grant word outside the closed set without a concrete need that outweighs the added attack surface.
 
-The file rules (`file-rules.md`) apply the same model to names: `readonly` and `writable` lines
+The file rules (`file-rules.md`) apply the same model to names: `read-only` and `writable` lines
 in order over the launcher's defaults, the last line naming an entry or an ancestor deciding.
 They carry no path pattern beyond `*` within a component:
 
@@ -208,7 +208,7 @@ They carry no path pattern beyond `*` within a component:
 - An outermost-wins or most-specific-wins order would be a second precedence; the ordered form
   already makes `node_modules` the exception with its last line.
 - They differ from `egress/rule` in carrying one bit instead of grant words, and in letting
-  `readonly` name a path, since the filter, not an origin, decides how a name reads (SECURITY.md,
+  `read-only` name a path, since the filter, not an origin, decides how a name reads (SECURITY.md,
   "Adding hosts, not patterns").
 
 ### No approve-on-miss prompt for a refused host
@@ -340,7 +340,7 @@ Every session gets the same file rules, `writable node_modules` among the defaul
 host command writes under `--workspace=read-only` (SECURITY.md, "Run on host").
 
 The alternative weighed, a strict form under `--run-on-host` in which a `writable` line only
-cancels an earlier `readonly` line of the same name, closes the limit and costs:
+cancels an earlier `read-only` line of the same name, closes the limit and costs:
 
 - npm installing a package without a listed name it carries, with a warning: the measured ones
   carry development leftovers (`file-rules.md`, "Measurements");

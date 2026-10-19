@@ -144,7 +144,7 @@ Compile / resourceGenerators += Def.task {
   // (context root, the directories under it to bundle). Entries are stored relative to their context
   // root, so a jar entry — and the podman build path --build uses — stays a bare <image>/... whichever
   // tree the source is in. ko-agent-fs is under fuse/ rather than container/ because it runs in the
-  // Podman machine, not in a container.
+  // podman machine, not in a container.
   val contexts = Seq(
     baseDirectory.value / "container" ->
       Seq(

@@ -24,7 +24,7 @@ sandbox session → FUSE filter → virtiofs → APFS — using `probe/apfs-name
   really does treat the forms as one name, and neither resolves anywhere near `.git`.
 
 Fold tables are OS-version-specific, so this verifies **this** release against macOS 26.4.1;
-re-run the probe when either side moves.
+rerun the probe when either side moves.
 
 ### Verified: APFS case-sensitive (macOS 26.4.1, build 25E253; 2026-08-18)
 
@@ -148,7 +148,7 @@ The virtiofs premise, as observed on the same machine: the host shares (`/Users`
 `virtiofs (rw,relatime,context=system_u:object_r:nfs_t:s0)` — **no `cache=` option appears**, so
 the caching mode is decided host-side by the hypervisor (vfkit/applehv) and is not introspectable
 from the guest. The premise is therefore behavioral, not declarative: the coherency result above,
-and the guest-layer measurement below. Re-run the measurement — the launcher's `--self-test` share
+and the guest-layer measurement below. Rerun the measurement — the launcher's `--self-test` share
 rows — after a podman or macOS upgrade: it, not the mount table, is what notices a changed
 default. (The `nfs_t` SELinux context is also why the launcher never applies `:Z` relabeling to
 machine-shared sources.)
@@ -158,7 +158,7 @@ machine-shared sources.)
 The run above repeated by `--self-test`'s own share rows (the launcher's `SelfTestShare.scala`),
 with the launcher playing the host writer over a scratch lower in the workspace: the
 guard's refusal held through the whole stack, the host write was visible to `read()` 1 ms after
-it was written, and the established mmap showed it 0 ms behind `read()`. Every later re-run
+it was written, and the established mmap showed it 0 ms behind `read()`. Every later rerun
 follows this procedure.
 
 ### Measured: the virtiofs layer itself (same machine; 2026-08-25)
@@ -403,7 +403,7 @@ build succeeds.
 `probe/lower-probe.py` and its host half, in a filtered session over a workspace on case-insensitive
 APFS (host Darwin 25.4.0 arm64, machine kernel 7.1.3-200.fc44.aarch64):
 
-- **Hardlink identity does not survive the filter, and the filter is the whole of why.** A
+- **Hard-link identity does not survive the filter, and the filter is the whole of why.** A
   host-made pair reads back through the mount as two inode numbers with `st_nlink` 2, while a
   session-made pair reads on the host as one inode with `st_nlink` 2. `to_file_attr` replies with
   the number `InodeTable` allocated per `(parent, name)` (`src/fs.rs`, `src/inode.rs`), so two names

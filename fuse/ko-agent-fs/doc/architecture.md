@@ -19,7 +19,7 @@ operations the kernel forwards. Three other mechanisms were considered and rejec
 - **AppArmor on the container** — its path-based rules express the policy naturally: allow normal
   read/write on the bind-mounted workspace while denying creation of `.git` entries and writes to
   Git hook and configuration paths. Rejected for environment, not expressiveness: on macOS and
-  Windows the containers run inside the default Podman machine, whose Fedora-based images do not
+  Windows the containers run inside the default podman machine, whose Fedora-based images do not
   provide AppArmor, so using it would require a dedicated machine with an AppArmor-capable kernel
   and the policy loaded — not the user's normal default machine.
 - **fanotify pre-content permission events** (Linux 6.14) — allow or deny access on the real mount,
@@ -182,7 +182,7 @@ measurements and `TODO.md`, "Performance", the open rows. In place:
   on the live backing, that of the identity comparison (`fs.rs`, `open_ino`), and the cached
   Git and rule contexts keep a mutation's policy check free of a path scan.
 
-The layer beneath matters: the backing tree is itself the host share (virtiofs on a Podman machine).
+The layer beneath matters: the backing tree is itself the host share (virtiofs on a podman machine).
 TTL 0 makes *our* view re-read the backing on every access, but end-to-end coherency also needs that
 backing to reflect host writes promptly — the virtiofs mount's own cache mode. TTL 0 is necessary,
 and on macOS it is the only cache policy in the path: the guest kernel caches nothing over virtiofs
@@ -252,7 +252,7 @@ how to undo it, is its `README.md` ("`--build`"). This section is the build and 
        podman build --build-arg KO_AGENT_FS_SOURCE_ID=<digest> \
            -t ko-agent-fs:latest ko-agent-fs
 
-   The build checks licences (`deny.toml`) before it produces a binary. The test suite runs in
+   The build checks licenses (`deny.toml`) before it produces a binary. The test suite runs in
    the separately built `ko-agent-self-test` image (`testing.md`).
 3. **Extract the binary.** The image's final stage is `scratch` holding only `/ko-agent-fs`, so
    the binary is the only file to take:
@@ -267,7 +267,7 @@ how to undo it, is its `README.md` ("`--build`"). This section is the build and 
    differs by platform, and is the step worth understanding:
    - *native Linux* — there is no VM; the filter runs on the host, so the extraction above writes
      straight into the host user's home.
-   - *macOS / Windows* — the filter runs **inside the Podman machine**, because that is where the
+   - *macOS / Windows* — the filter runs **inside the podman machine**, because that is where the
      workspace's backing filesystem is. The image is already in the VM's image storage, so the
      extraction is run *there*, through `podman machine ssh` (which writes to the VM user's home,
      whoever that is), rather than on the host where a plain `podman cp` would put it.

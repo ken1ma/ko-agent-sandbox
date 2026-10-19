@@ -95,7 +95,7 @@ object EmitRunOnHostProfile:
     Console.err.println(s"ivy home: ${assembled.ivyHome}")
     Console.err.println(s"gradle user home: ${assembled.gradleUserHome}")
     Console.err.println(s"m2 repository: ${assembled.m2Repository}")
-    // The acceptance test re-runs this classpath as RunOnHost, plain java with no sbt in front, because a
+    // The acceptance test reruns this classpath as RunOnHost, plain java with no sbt in front, because a
     // supervisor driven through `sbt Test/runMain` would find its own server holding the workspace's
     // portfile and end it (one server per build directory). Walked from the class loaders, not
     // java.class.path — runMain ran this inside the build JVM, whose own classpath is sbt's — and

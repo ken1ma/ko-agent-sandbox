@@ -15,70 +15,70 @@
 # The reasons, source by source: doc/file-rules.md, "Why these files".
 
 # Agents on the host: hooks, helper commands and the MCP servers their files in the workspace name.
-readonly .claude/settings.json          # Claude Code, Copilot CLI
-readonly .claude/settings.local.json
-readonly .claude/skills                 # Claude Code: hooks and !`command` lines
-readonly .claude/agents                 # Claude Code, Copilot CLI
-readonly .claude/commands
-readonly .mcp.json                      # Claude Code, Copilot CLI
-readonly .codex/config.toml             # Codex
-readonly .gemini/settings.json          # Gemini CLI
-readonly .github/hooks                  # Copilot CLI
-readonly .github/copilot/settings.json
-readonly .github/copilot/settings.local.json
-readonly .github/mcp.json
-readonly .github/lsp.json
-readonly .github/extensions
-readonly .github/agents
-readonly .agents/hooks.json             # Antigravity
-readonly .agents/mcp_config.json
-readonly .agents/plugins
-readonly .kiro/hooks                    # Kiro
-readonly .kiro/agents
-readonly .kiro/settings/mcp.json
-readonly .opencode                      # OpenCode: plugins, tools and commands it loads
-readonly opencode.json
-readonly opencode.jsonc
+read-only .claude/settings.json         # Claude Code, Copilot CLI
+read-only .claude/settings.local.json
+read-only .claude/skills                # Claude Code: hooks and !`command` lines
+read-only .claude/agents                # Claude Code, Copilot CLI
+read-only .claude/commands
+read-only .mcp.json                     # Claude Code, Copilot CLI
+read-only .codex/config.toml            # Codex
+read-only .gemini/settings.json         # Gemini CLI
+read-only .github/hooks                 # Copilot CLI
+read-only .github/copilot/settings.json
+read-only .github/copilot/settings.local.json
+read-only .github/mcp.json
+read-only .github/lsp.json
+read-only .github/extensions
+read-only .github/agents
+read-only .agents/hooks.json            # Antigravity
+read-only .agents/mcp_config.json
+read-only .agents/plugins
+read-only .kiro/hooks                   # Kiro
+read-only .kiro/agents
+read-only .kiro/settings/mcp.json
+read-only .opencode                     # OpenCode: plugins, tools and commands it loads
+read-only opencode.json
+read-only opencode.jsonc
 
 # Git hook managers: the hook installed in .git runs what these name at each commit.
-readonly .husky
-readonly .pre-commit-config.yaml
-readonly lefthook.*                     # .config/lefthook.* too: a name matches at any depth
-readonly .lefthook.*
-readonly lefthook-local.*
-readonly .lefthook-local.*
+read-only .husky
+read-only .pre-commit-config.yaml
+read-only lefthook.*                    # .config/lefthook.* too: a name matches at any depth
+read-only .lefthook.*
+read-only lefthook-local.*
+read-only .lefthook-local.*
 
 # Editors: configuration a trusted folder runs.
-readonly .vscode                        # VS Code, and Zed for its tasks and launch files
-readonly *.code-workspace
-readonly .vs                            # Visual Studio
-readonly tasks.vs.json
-readonly launch.vs.json
-readonly .idea                          # IntelliJ IDEA
-readonly .cursor/hooks.json             # Cursor
-readonly .cursor/mcp.json
-readonly .windsurf/hooks.json           # Windsurf
-readonly .devin/hooks.json
-readonly .zed                           # Zed
+read-only .vscode                       # VS Code, and Zed for its tasks and launch files
+read-only *.code-workspace
+read-only .vs                           # Visual Studio
+read-only tasks.vs.json
+read-only launch.vs.json
+read-only .idea                         # IntelliJ IDEA
+read-only .cursor/hooks.json            # Cursor
+read-only .cursor/mcp.json
+read-only .windsurf/hooks.json          # Windsurf
+read-only .devin/hooks.json
+read-only .zed                          # Zed
 
 # Dev Containers: initializeCommand runs on the host.
-readonly .devcontainer
-readonly .devcontainer.json
+read-only .devcontainer
+read-only .devcontainer.json
 
 # mise: [hooks] enter runs when you enter the directory, and a file stays trusted by path.
-readonly mise.toml                      # .config/mise.toml too: a name matches at any depth
-readonly .mise.toml
-readonly mise.*.toml
-readonly .mise.*.toml
-readonly mise
-readonly .mise
-readonly .tool-versions                 # its templates can run commands
-readonly .miserc.toml                   # which configuration files load
-readonly .miserc.*.toml
-readonly miserc.toml                    # .config/miserc.toml, without pinning every .config
+read-only mise.toml                     # .config/mise.toml too: a name matches at any depth
+read-only .mise.toml
+read-only mise.*.toml
+read-only .mise.*.toml
+read-only mise
+read-only .mise
+read-only .tool-versions                # its templates can run commands
+read-only .miserc.toml                  # which configuration files load
+read-only .miserc.*.toml
+read-only miserc.toml                   # .config/miserc.toml, without pinning every .config
 
 # Git LFS: the server a checkout downloads from and a push uploads to.
-readonly .lfsconfig
+read-only .lfsconfig
 
 # Last, so it decides inside node_modules: npm installs packages that carry listed names.
 writable node_modules

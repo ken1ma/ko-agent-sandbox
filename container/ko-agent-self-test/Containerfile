@@ -66,7 +66,7 @@ RUN --mount=type=cache,target=/build/target \
 
 # The base is the sandbox image for two reasons beyond convenience: it is already on the user's
 # machine, so verifying pulls nothing, and it carries `git`, which tests/mounted_git.rs needs and a
-# Podman machine has not got. Its `nonroot` user is the third — see the fuse3 step below.
+# podman machine has not got. Its `nonroot` user is the third — see the fuse3 step below.
 FROM ko-agent-sandbox:latest
 
 USER root
@@ -82,7 +82,7 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     # The suites mount with the product's options, allow_other among them, which fusermount3
     # refuses without this line. Written into the image rather than at runtime, so that verifying
-    # never touches the Podman machine's own /etc/fuse.conf.
+    # never touches the podman machine's own /etc/fuse.conf.
     echo user_allow_other >> /etc/fuse.conf
 
 COPY --from=build /suite /opt/ko-agent-fs-suite

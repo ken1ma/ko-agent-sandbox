@@ -323,6 +323,32 @@ class EgressRulesTest extends munit.FunSuite:
     assertEquals(rulesetLinesOf(ruleset), ruleset)
     MetadataPrefixes.foreach(prefix => assertEquals(rulesetLinesOf(ruleset + "\n" + prefix + "x"), ruleset))
 
+  test("whole-host rules sharing their grant words join into one line at the first one's place"):
+    assertEquals(
+      groupedByHost(Vector(
+        "allow https://a.example/ read",
+        "deny defaults",
+        "allow https://b.example/ tunnel",
+        "allow https://c.example/ read",
+        "allow https://d.example/x/ read",
+        "allow https://e.example/ tunnel",
+        "allow https://a.example/ read",
+        "allow https://f.example/ read method=POST",
+      )),
+      Vector(
+        "allow read: a.example, c.example",
+        "deny defaults",
+        "allow tunnel: b.example, e.example",
+        "allow https://d.example/x/ read",
+        "allow https://f.example/ read method=POST",
+      ),
+    )
+    // A host alone with its words, even when its line repeats, stays a rule line.
+    assertEquals(
+      groupedByHost(Vector("allow https://a.example/ read", "allow https://a.example/ read")),
+      Vector("allow https://a.example/ read"),
+    )
+
   test("a launch prints each line of the rule file once, those that widen under a counted heading"):
     def launched(file: String, widening: String*): Vector[String] =
       val line = if widening.isEmpty then "" else s"\nwidening lines (${widening.size}): ${widening.mkString("; ")}"
@@ -331,19 +357,19 @@ class EgressRulesTest extends munit.FunSuite:
         "egress profile: deny-unless-allowed\n" + summary(1, 0, widening.size) + line,
         color = false,
       )
-    val source = "egress rules (.ko-agent-sandbox/egress/rule)"
+    val source = ".ko-agent-sandbox/egress/rule"
     assertEquals(
       launched(
         "allow https://a.example/ read\nallow https://b.example/ read",
         "allow https://a.example/ read",
         "allow https://b.example/ read",
       ),
-      Vector(s"$source widen (2):", "  allow https://a.example/ read", "  allow https://b.example/ read"),
+      Vector(s"$source: 2 widening lines", "  allow read: a.example, b.example"),
     )
     assertEquals(
       launched("deny https://gitlab.com/\nallow https://a.example/ read", "allow https://a.example/ read"),
       Vector(
-        s"$source widen (1):",
+        s"$source: 1 widening line",
         "  allow https://a.example/ read",
         s"$source, other lines: deny https://gitlab.com/",
       ),

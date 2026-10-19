@@ -86,7 +86,7 @@ object KoAgentFs:
    * is the program's name, not `.dist`: `.dist` would claim
    * as-distributed pristineness nobody verified, while this says who saved
    * it and when it is safe to delete. Saved only if no backup exists yet,
-   * so a re-run cannot overwrite the true original with a modified copy.
+   * so a rerun cannot overwrite the true original with a modified copy.
    */
   val KoAgentFsFuseConfBackup = "/etc/fuse.conf.ko-agent-sandbox.orig"
 
@@ -133,12 +133,12 @@ object KoAgentFs:
     val reader = AgentSandboxLauncher.terminalReader.getOrElse(
       fail(
         s"error: no terminal to ask on; run the script above via `podman machine ssh` yourself, " +
-          "then re-run --build",
+          "then rerun --build",
       ),
     )
     reader.prompt("Apply it now? [y/N] ")
     if !consented(reader.readLine()) then
-      fail("error: not applied; run the script above via `podman machine ssh` yourself, then re-run --build")
+      fail("error: not applied; run the script above via `podman machine ssh` yourself, then rerun --build")
     val enable = run(koAgentFsFuseConfEnableCommand(podman)*)
     if !enable.ok then fail(s"error: enabling user_allow_other failed: ${enable.err}", enable.exit)
     if !run(koAgentFsFuseConfCheckCommand(podman)*).ok then

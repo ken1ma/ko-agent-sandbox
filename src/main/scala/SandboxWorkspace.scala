@@ -363,7 +363,7 @@ object SandboxWorkspace:
    * whether the container can follow `.git` to that Git directory from a given base. A
    * `launchFrom` is the nearest directory holding the workspace from which the repository git uses
    * there is reachable, so `that whole tree is then the workspace` is true of it: the superproject
-   * over a submodule, the repository root over a subdirectory. A separate git dir has none — nor
+   * over a submodule, the repository root over a subdirectory. A separate gitdir has none — nor
    * has any parent of one, under which the pointer stays as absolute — and neither has a linked
    * worktree, whose main worktree is a different checkout, not this one's tree.
    *

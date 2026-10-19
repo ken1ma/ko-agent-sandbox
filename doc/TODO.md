@@ -307,6 +307,14 @@ are workspaces only the test uses.
     that remain.
   - Check whether Codex, `agy` and the other agents have a counterpart worth the same option.
 
+## Japanese names in file rules
+
+- [ ] Let `read-only` and `writable` lines name Japanese directories and files; `file-rules.md`
+  limits names to `a`–`z`, `0`–`9`, `.`, `_`, `-` and `*`.
+  - The filter's name matching rests on names being ASCII
+    (`fuse/ko-agent-fs/doc/security-research.md`, "Real-filesystem case-folding: APFS and NTFS"),
+    and the run-on-host profile spells each name as a regex (`SeatbeltProfile.fileRuleFilters`).
+
 ## Deferred — executable agent configuration in the persistent volume
 
 - [ ] `plan-executable-agent-configuration.md`, in its two phases: reconciliation of the keys
@@ -377,7 +385,7 @@ immutable set"). Only `.git` crosses; the main worktree's working files stay out
   marker under that mount's directory, so that the reap counts it, and the mount-time guard run on
   the main root (`KoAgentFs`).
 - `--reset` in the main worktree unmounts that filter, and every linked session's git then fails
-  with `ENOTCONN`. Either record it beside the volume's behaviour (`SECURITY.md`, "What the
+  with `ENOTCONN`. Either record it beside the volume's behavior (`SECURITY.md`, "What the
   persistent volume holds") or refuse the reset while a linked session mounts it, as podman
   refuses the volume.
 - Unverified: a bind of a subpath of the FUSE mount keeps the filter's positional classification.
@@ -515,7 +523,7 @@ when it fails are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may
   - `--stage plan` seals the current generation and returns a digest;
     `--stage apply --plan=<digest> --yes` applies the whole conflict-free plan.
   - The digest binds the workspace identity, representation version, generation, complete
-    operation groups, content and metadata hashes, lower baselines, and rename and hardlink
+    operation groups, content and metadata hashes, lower baselines, and rename and hard link
     relationships.
   - A mismatch changes nothing; path selection remains interactive and rewrites the remaining
     plan under a new digest.
@@ -540,7 +548,7 @@ when it fails are defined in `../fuse/ko-agent-fs/doc/architecture.md` ("Who may
 
 Still to fold, to that same standard:
 
-- [ ] The `probe/lower-probe.py` rows — hardlink identity, rename flags, symlink creation, case
+- [ ] The `probe/lower-probe.py` rows — hard-link identity, rename flags, symlink creation, case
   folding, open-file holds — with the launcher in place of `lower-probe-host.py`; both probe
   halves are deleted when their rows are added. Their machine record adds the upper volume's
   filesystem, which is what the staged design needs the answers for (`plan-staged.md`).

@@ -42,7 +42,7 @@ object EgressRules:
   /**
    * The rule lines the ruleset reports as granting beyond the defaults, read from its
    * `widening lines (N): ...` line, `; ` between rule lines. The launch prints them under an
-   * `egress rules (<file>) widen (N):` heading, so that a file which only removes or narrows grants
+   * `<file>: N widening lines` heading, so that a file which only removes or narrows grants
    * prints no such report and the report is a signal rather than a habit. The proxy classifies
    * against the defaults it ships (resolveRuleset has the classes), so a custom image reports
    * against its own; an image printing no such line reports nothing, never a classification
@@ -51,6 +51,24 @@ object EgressRules:
   def wideningLines(resolved: String): Vector[String] =
     resolved.linesIterator.find(_.startsWith(RulesetHelper.WideningLineHead)).toVector.flatMap: line =>
       line.drop(line.indexOf("):") + 2).trim.split("; ").toVector.filter(_.nonEmpty)
+
+  private val WholeHostRule = """allow https://([^/ ]+)/ (.+)""".r
+
+  /** Whole-host rules sharing their grant words, `allow https://<host>/ <words>`, joined into one
+    * line `allow <words>: <host>, <host>` at the first one's place, so that a report listing many
+    * hosts stays short. A rule with no such partner, and any other line, stays as written. */
+  def groupedByHost(rules: Seq[String]): Vector[String] =
+    val hostsOf = rules
+      .collect { case WholeHostRule(host, words) => words -> host }
+      .groupMap((words, _) => words)((_, host) => host)
+      .map((words, hosts) => words -> hosts.distinct)
+      .filter((_, hosts) => hosts.size > 1)
+    // Every rule of a group maps to the same line; distinct keeps it at the first one's place.
+    rules.toVector
+      .map:
+        case WholeHostRule(_, words) if hostsOf.contains(words) => s"allow $words: ${hostsOf(words).mkString(", ")}"
+        case rule => rule
+      .distinct
 
   /** The lines the proxy prints after the ruleset lines, describing the ruleset's size and the
     * workspace's file rather than the ruleset: the summary line, then the widening line. Everything
@@ -394,7 +412,7 @@ object EgressRules:
 
     (workspaceId, proxyImageId, ruleFiles, provider)
 
-  private def ruleFileSource(name: String): String = s"egress rules (.ko-agent-sandbox/egress/$name)"
+  private def ruleFileSource(name: String): String = s".ko-agent-sandbox/egress/$name"
 
   /** The workspace's rule file as written, one line. Printed by the egress actions, which report no
     * widening on stderr; a launch prints launchLines. */
@@ -403,9 +421,9 @@ object EgressRules:
       System.err.println(s"${ruleFileSource(name)}: ${lineSummary(text)}")
 
   /** A launch's lines about the workspace's rule file, once the dry run has answered: the lines it
-    * reports as granting beyond the defaults (wideningLines) tinted as a weakened boundary, the
-    * file's other lines after them (HostCommands.ruleFileReport). The proxy reads one rule file
-    * (RuleFiles), so every widening line is that file's. */
+    * reports as granting beyond the defaults (wideningLines) tinted as a weakened boundary and
+    * grouped by host (groupedByHost), the file's other lines after them (HostCommands.ruleFileReport).
+    * The proxy reads one rule file (RuleFiles), so every widening line is that file's. */
   def launchLines(
     ruleFiles: Vector[(String, String)],
     rulesetText: String,
@@ -413,7 +431,7 @@ object EgressRules:
   ): Vector[String] =
     val widens = wideningLines(rulesetText)
     ruleFiles.flatMap: (name, text) =>
-      ruleFileReport(ruleFileSource(name), text.linesIterator.toVector, widens, color)
+      ruleFileReport(ruleFileSource(name), text.linesIterator.toVector, widens, color, groupedByHost)
 
   /**
    * The ruleset this workspace would apply, without a session: the same readRuleFiles +

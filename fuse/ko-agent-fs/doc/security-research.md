@@ -22,7 +22,7 @@ A new git CVE is relevant to `ko-agent-fs` if it touches one of these:
 - **"Trick git into writing into `.git`"** (symlink + case-insensitivity + submodules). We deny the
   final write on the sandbox side because we classify the *resolved* destination; still worth
   tracking.
-- **Hardlink handling.** Inode aliasing is the class the `link` source-side rule closes.
+- **Hard-link handling.** Inode aliasing is the class the `link` source-side rule closes.
 - **`.gitmodules` / submodule name or path parsing.** `.gitmodules` is writable worktree data, so a
   git bug here is the accepted "hostile data + git bug" residual — but track it.
 - **Config parsing bugs** (CR, quoting, encoding). Same residual class as `.gitmodules`.
@@ -44,7 +44,7 @@ host git; *test-vector* = a name spelling for the per-backing name-rule corpus.
   the resolved-destination check.
 - **CVE-2024-32002** — recursive clone: symlink + case-insensitivity + submodule writes a hook into
   `.git`. *Write denied* on the sandbox side; *residual* for a host-side clone.
-- **CVE-2024-32021** — git creates hardlinks during a local clone. *Validated* (the `link`
+- **CVE-2024-32021** — git creates hard links during a local clone. *Validated* (the `link`
   source-side / inode-aliasing rule).
 - **CVE-2018-11235** — crafted `.gitmodules` name → traversal into `$GIT_DIR/modules`, hook runs.
   *Residual* (hostile `.gitmodules` + git bug).

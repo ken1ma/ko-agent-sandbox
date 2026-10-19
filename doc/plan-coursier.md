@@ -410,7 +410,7 @@ can prevent the download. It does not need to teach how podman implements overla
 ## References
 
 - [podman volume semantics](https://docs.podman.io/en/latest/markdown/podman-create.1.html)
-- [podman Machine](https://docs.podman.io/en/latest/markdown/podman-machine-init.1.html)
+- [podman machine](https://docs.podman.io/en/latest/markdown/podman-machine-init.1.html)
 - [Coursier cache locations and overrides](https://get-coursier.io/docs/cache)
 - [Coursier setup options](https://get-coursier.io/docs/cli-setup)
 - [Coursier install-directory behavior](https://get-coursier.io/docs/cli-install)

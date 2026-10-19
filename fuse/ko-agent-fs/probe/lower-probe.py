@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The platform-verification probe for what a stage's lower can represent (doc/TODO.md, "What the
-staged lower can do, per share"): hardlink identity, atomic rename flags, symlink creation, case
+staged lower can do, per share"): hard-link identity, atomic rename flags, symlink creation, case
 folding between two names, and how far an open-file hold reaches. Each decides a stage
 representation choice, and only the backing filesystem and the share answer any of them.
 
@@ -124,7 +124,7 @@ def hardlink_identity() -> None:
     invented inode per path shows up as two different st_ino for one file."""
     host = ask("hardlink-create")
     if host["created"] != "ok":
-        record("hardlink identity", f"host could not create the pair: {host['created']}")
+        record("hard-link identity", f"host could not create the pair: {host['created']}")
         return
     here = [os.stat(os.path.join(WORK, name)) for name in ("hl-host-a", "hl-host-b")]
     host_to_session = (
@@ -137,7 +137,7 @@ def hardlink_identity() -> None:
         os.link(os.path.join(WORK, "hl-guest-a"), os.path.join(WORK, "hl-guest-b"))
     except OSError as ex:
         record(
-            "hardlink identity",
+            "hard-link identity",
             f"host -> session: {host_to_session}",
             f"session -> host: cannot link at all: {ex}",
         )
@@ -148,7 +148,7 @@ def hardlink_identity() -> None:
         else f"st_ino {there['ino_a']} vs {there['ino_b']}, nlink {there['nlink']}"
     )
     record(
-        "hardlink identity",
+        "hard-link identity",
         f"host -> session: {host_to_session}",
         f"session -> host: {session_to_host}",
     )

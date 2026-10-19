@@ -19,7 +19,7 @@ class FileRulesTest extends munit.FunSuite:
 
   test("a line is a word and a name, comments and blank lines as in egress/rule"):
     assertEquals(
-      lines("# editor\nreadonly .vscode   # tasks\n\nwritable .vscode/settings.json\nreadonly *.code-workspace\n"),
+      lines("# editor\nread-only .vscode   # tasks\n\nwritable .vscode/settings.json\nread-only *.code-workspace\n"),
       Vector(
         Line(Word.ReadOnly, ".vscode"),
         Line(Word.Writable, ".vscode/settings.json"),
@@ -29,19 +29,19 @@ class FileRulesTest extends munit.FunSuite:
 
   test("every ambiguity refuses, saying what a line may hold"):
     refused("allow .vscode\n", "not a word")
-    refused("readonly\n", "one word and one name")
-    refused("readonly .vscode .idea\n", "one word and one name")
-    refused("readonly /.vscode\n", "leading, trailing or doubled")
-    refused("readonly .vscode/\n", "leading, trailing or doubled")
-    refused("readonly a//b\n", "leading, trailing or doubled")
-    refused("readonly ../x\n", "`.` or `..`")
-    refused("readonly ./x\n", "`.` or `..`")
-    refused("readonly .VSCode\n", "lowercase")
-    refused("readonly .vs#code\n", "only a-z")
-    refused("readonly naïve\n", "only a-z")
-    refused("readonly [ab]\n", "only a-z")
+    refused("read-only\n", "one word and one name")
+    refused("read-only .vscode .idea\n", "one word and one name")
+    refused("read-only /.vscode\n", "leading, trailing or doubled")
+    refused("read-only .vscode/\n", "leading, trailing or doubled")
+    refused("read-only a//b\n", "leading, trailing or doubled")
+    refused("read-only ../x\n", "`.` or `..`")
+    refused("read-only ./x\n", "`.` or `..`")
+    refused("read-only .VSCode\n", "lowercase")
+    refused("read-only .vs#code\n", "only a-z")
+    refused("read-only naïve\n", "only a-z")
+    refused("read-only [ab]\n", "only a-z")
     refused("writable .git/hooks\n", "`.git` is the filter's own")
-    refused("readonly apps/.ko-agent-sandbox\n", "`.ko-agent-sandbox` is the filter's own")
+    refused("read-only apps/.ko-agent-sandbox\n", "`.ko-agent-sandbox` is the filter's own")
 
   test("the defaults parse, protect the agents' and editors' files, and end with the dependency directory"):
     val names = Defaults.map(_.name)
@@ -63,39 +63,38 @@ class FileRulesTest extends munit.FunSuite:
     assertEquals(
       launchLines(workspaceFile, color = false),
       Vector(
-        "file rules (.ko-agent-sandbox/file/rule) widen (2):",
-        "  writable .claude/skills",
-        "  writable .vscode/settings.json",
+        ".ko-agent-sandbox/file/rule: 2 widening lines",
+        "  writable: .claude/skills, .vscode/settings.json",
       ),
     )
-    val narrowing = lines("readonly .envrc\n")
+    val narrowing = lines("read-only .envrc\n")
     assertEquals(
-      launchLines(Some(("readonly .envrc", narrowing)), color = false),
-      Vector("file rules (.ko-agent-sandbox/file/rule): readonly .envrc"),
+      launchLines(Some(("read-only .envrc", narrowing)), color = false),
+      Vector(".ko-agent-sandbox/file/rule: read-only .envrc"),
     )
     assertEquals(launchLines(None, color = false), Vector.empty)
 
   test("a joined mount's rules are described beyond the defaults, and read back from the daemon's text"):
-    val extra = lines("writable .claude/skills\nreadonly .envrc\n")
+    val extra = lines("writable .claude/skills\nread-only .envrc\n")
     val text = daemonText(Defaults ++ extra, Vector("/"))
     assertEquals(parseDaemonText(text), Right(Defaults ++ extra))
     assertEquals(
       runningLaunchLines(Defaults ++ extra, color = false),
       Vector(
-        "file rules (the running mount's) widen (1):",
+        "the running mount's file rules: 1 widening line",
         "  writable .claude/skills",
-        "file rules (the running mount's), other lines: readonly .envrc",
+        "the running mount's file rules, other lines: read-only .envrc",
       ),
     )
     assertEquals(
       runningLaunchLines(Defaults, color = false),
-      Vector("file rules (the running mount's): the launcher-owned defaults"),
+      Vector("the running mount's file rules: the launcher-owned defaults"),
     )
     // A mount a launcher of other defaults started is described whole.
-    val otherDefaults = lines("readonly .vscode\n")
+    val otherDefaults = lines("read-only .vscode\n")
     assertEquals(
       runningLaunchLines(otherDefaults, color = false),
-      Vector("file rules (the running mount's): readonly .vscode"),
+      Vector("the running mount's file rules: read-only .vscode"),
     )
     assert(parseDaemonText("host-view /\nallow .vscode\n").swap.exists(_.contains("allow .vscode")))
 
@@ -104,7 +103,7 @@ class FileRulesTest extends munit.FunSuite:
     try
       assertEquals(ofWorkspace(dir), Right(Resolved(Defaults, Vector.empty, Vector.empty)))
       Files.createDirectories(dir.resolve(".ko-agent-sandbox/file"))
-      Files.writeString(dir.resolve(".ko-agent-sandbox/file/rule"), "readonly .envrc\n")
+      Files.writeString(dir.resolve(".ko-agent-sandbox/file/rule"), "read-only .envrc\n")
       assertEquals(ofWorkspace(dir).map(_.lines.last), Right(Line(Word.ReadOnly, ".envrc")))
       val resolved = Resolved(Vector(Line(Word.ReadOnly, ".vscode")), Vector(".husky/_"), Vector("tools"))
       val file = dir.resolve("file-rules.resolved")
@@ -119,21 +118,21 @@ class FileRulesTest extends munit.FunSuite:
       val fileDir = dir.resolve("file")
       assertEquals(readRuleFile(fileDir), Right(None))
       Files.createDirectories(fileDir)
-      Files.writeString(fileDir.resolve("rule"), "readonly .envrc\n")
-      assertEquals(readRuleFile(fileDir), Right(Some(("readonly .envrc", Vector(Line(Word.ReadOnly, ".envrc"))))))
+      Files.writeString(fileDir.resolve("rule"), "read-only .envrc\n")
+      assertEquals(readRuleFile(fileDir), Right(Some(("read-only .envrc", Vector(Line(Word.ReadOnly, ".envrc"))))))
       Files.writeString(fileDir.resolve("rule"), "# nothing yet\n")
       assertEquals(readRuleFile(fileDir), Right(None))
-      Files.writeString(fileDir.resolve("rule"), "readonly .Envrc\n")
+      Files.writeString(fileDir.resolve("rule"), "read-only .Envrc\n")
       assert(readRuleFile(fileDir).swap.exists(_.contains(".ko-agent-sandbox/file/rule")))
-      Files.writeString(fileDir.resolve("rule"), "readonly .envrc\n")
-      Files.writeString(fileDir.resolve("rules"), "readonly .envrc\n")
+      Files.writeString(fileDir.resolve("rule"), "read-only .envrc\n")
+      Files.writeString(fileDir.resolve("rules"), "read-only .envrc\n")
       assert(readRuleFile(fileDir).swap.exists(_.contains("not a rule file")))
     finally FileHelper.deleteRecursively(dir)
 
   test("the daemon's text leads with the host view, and the resolved set reads back"):
     assertEquals(
       daemonText(Vector(Line(Word.ReadOnly, ".vscode")), hostView(HostCommands.Os.Mac, "/Users/u/p")),
-      "host-view /Users /private /var/folders\nreadonly .vscode\n",
+      "host-view /Users /private /var/folders\nread-only .vscode\n",
     )
     assertEquals(hostView(HostCommands.Os.Linux, "/home/u/p"), Vector("/"))
     assertEquals(hostView(HostCommands.Os.Windows, "/mnt/d/src/p"), Vector("/mnt/d"))

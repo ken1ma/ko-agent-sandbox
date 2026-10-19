@@ -29,7 +29,7 @@ sections before them are what the phases rest on.
   one is written (`../SECURITY.md`, "A workspace loosening its own confinement"; "Directories" has
   why directories there may be created).
 - The file rules keep the host-executed files read-only, with the launcher-resolved
-  `readonly-path` lines for relocated hooks and symlink aliases (`file-rules.md`).
+  `read-only-path` lines for relocated hooks and symlink aliases (`file-rules.md`).
 - The policy is effective for the sandbox's cgroup before any program of the image runs in the
   container: entrypoint, `podman exec` processes and OCI hooks that run in the container's
   namespaces. The container runtime's own processes are trusted, as the filter daemon is.
@@ -169,9 +169,9 @@ it, so three rules depart from `policy.rs`:
     `.git/objects/x/.git`, where `classify_within_gitdir` admits every name, `config` included.
   - Cost: a session that removes a `HEAD` cannot restore it. The commands that create one,
     `git init`, `git clone` and `git worktree add`, are already blocked.
-- **A `readonly` line keeps applying below a `.git` entry.** `policy.rs` lets no line apply in git
-  state (`file-rules.md`), so without the rule a `.git` made under `readonly locked` would make
-  `locked/.git/objects/payload` writable. Cost: a host repository below a `readonly` line is
+- **A `read-only` line keeps applying below a `.git` entry.** `policy.rs` lets no line apply in git
+  state (`file-rules.md`), so without the rule a `.git` made under `read-only locked` would make
+  `locked/.git/objects/payload` writable. Cost: a host repository below a `read-only` line is
   read-only to the session's `git`.
 - **A `.ko-agent-sandbox` component protects everything below it in git state too.**
   `child_context` recognizes the name only outside git state, so `.git/objects/x/.ko-agent-sandbox`
@@ -199,7 +199,7 @@ What else a session can do with directories, and why each is safe:
   - Such a directory is `.git/hooks` holding no hook, empty directories at most; a gitdir whose
     protected entries are such directories, which the session empties first, since in the git
     rules a gitdir's root is the one protected directory whose entries can be operational
-    (`classify_within_gitdir`); or a `readonly` directory whose non-directories later `writable`
+    (`classify_within_gitdir`); or a `read-only` directory whose non-directories later `writable`
     lines all lift (`child_rule_context`).
   - Only `mkdir` refills the name, and it starts the directory empty, which returns it to the
     cases above; a removed gitdir's `HEAD` stays refused.
@@ -325,7 +325,7 @@ The program classifies by object and position, never by a path string:
   controller records the roots under `modules/` at launch; a namespace without a recorded root
   stays wholly protected, the filter's own strict default, and the sandbox cannot add a root
   since the `.git` pointer its worktree needs is refused.
-- "Directories" adds three rules to the classifier: no new `HEAD` in a `.git`, a `readonly` line
+- "Directories" adds three rules to the classifier: no new `HEAD` in a `.git`, a `read-only` line
   applying below a `.git`, and a `.ko-agent-sandbox` protected in git state too.
 - A second name of a guarded entry, a hard link to a `.git` pointer file or an NTFS short name,
   is the same object, which the filter recognizes by comparing every ordinary entry with its
@@ -424,7 +424,7 @@ For each session:
        `chmod` of a guarded file, and one operation per hook a decision adds; then one write per
        rule-line entry and one write to an ordinary entry.
      - Each write's expected answer is derived from the whole ordered rule set, as the filter
-       decides it (`file-rules.md`, "The rule file"): refused under a `readonly` line, allowed
+       decides it (`file-rules.md`, "The rule file"): refused under a `read-only` line, allowed
        under a `writable` line such as the defaults' `writable node_modules`, and the later
        line's answer where lines overlap; the fixture holds an overlapping pair on purpose.
        Every answer must be the expected one.
@@ -652,10 +652,10 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    pointer file, made before and after launch; a `HEAD` by each creating syscall in a `.git` the
    session makes in `sub/` and in `.git/objects/x/`, and by a rename or `RENAME_EXCHANGE` over a
    directory placeholder; an exchange of a filled directory with a session-made `.git`; host `git`
-   in `sub/` under a global relative `core.hooksPath`; writes below a `.git` made under a `readonly`
-   line; a file in `.git/objects/x/.ko-agent-sandbox`. Gate: each row ENFORCED, or an existing
-   filter residual, or covered by a decision the user has taken, "Directories" or one in "Decisions
-   still open". A listed loss passes nothing.
+   in `sub/` under a global relative `core.hooksPath`; writes below a `.git` made under a
+   `read-only` line; a file in `.git/objects/x/.ko-agent-sandbox`. Gate: each row ENFORCED, or an
+   existing filter residual, or covered by a decision the user has taken, "Directories" or one in
+   "Decisions still open". A listed loss passes nothing.
 4. **Lifecycle.** The ordering of "Lifecycle" on rootless podman: first-process denial, restart,
    recreate, `podman exec`, stop and kill, controller exit, machine restart, link loss; and the
    proof's catches, a controller that attaches a subset of the hooks, one that attaches another
@@ -846,7 +846,7 @@ It is not a backend for this policy.
   and the machine's own processes are never judged.
 - A `.git` or `.ko-agent-sandbox` by any folded spelling cannot appear by `creat`, `mknod`,
   `symlink`, `link`, `rename` or exchange, at any depth, directly or through an overlay mount the
-  session makes; one that `mkdir` makes never gains a `HEAD`, a `readonly` line still covers what
+  session makes; one that `mkdir` makes never gains a `HEAD`, a `read-only` line still covers what
   lies below it, and nothing but directories enters a `.ko-agent-sandbox` at any position.
 - A protected entry cannot be opened for writing, truncated, re-attributed by `chmod`, `chown`,
   times, an xattr, an ACL or a `chattr` flag, changed by a filesystem ioctl, unlinked, removed
@@ -856,7 +856,7 @@ It is not a backend for this policy.
 - Under `NESTING=none`, unless the session loosens the profile, it creates no user namespace and
   no mount syscall succeeds.
 - Git's everyday commands work; the commands the filter blocks stay blocked and listed.
-- The file rules hold at any depth, with the resolved `readonly-path` lines.
+- The file rules hold at any depth, with the resolved `read-only-path` lines.
 - No container process runs before the policy, proven by the read-back of every attachment,
   program tag, program map id and map record and by the fixture suite in the attach cgroup,
   which a controller that attached nothing, a subset, another build, wrong records or another

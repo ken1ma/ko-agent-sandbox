@@ -7,7 +7,7 @@
 # its own jar and builds it, passing the digest of that bundled source as
 # KO_AGENT_FS_SOURCE_ID; it then extracts the binary from the image and
 # installs it where the filter must run — on macOS and Windows that is inside
-# the Podman machine, not the host.
+# the podman machine, not the host.
 #
 #     podman build --target build --build-arg KO_AGENT_FS_SOURCE_ID=<digest> \
 #         -t ko-agent-fs-build:cache ko-agent-fs
@@ -35,7 +35,7 @@ RUN set -eux; \
 RUN set -eux; \
     rustup target add "$(uname -m)-unknown-linux-musl"
 
-# The licence check (`deny.toml`).
+# The license check (`deny.toml`).
 ARG CARGO_DENY_VERSION=0.20.2
 RUN set -eux; \
     cargo install cargo-deny --version "${CARGO_DENY_VERSION}" --locked
@@ -47,7 +47,7 @@ COPY . .
 ARG KO_AGENT_FS_SOURCE_ID=unstamped
 ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 
-# `cargo deny` runs here because its licence and source checks apply to the
+# `cargo deny` runs here because its license and source checks apply to the
 # artifact this step produces, and it costs seconds.
 #
 # `cargo test` deliberately does not. This step runs on every user's --build,
@@ -62,7 +62,7 @@ ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 # `--self-test`, at install and before every session that mounts it.
 #
 # The source id is compiled in (`option_env!`), so every change to it busts the
-# ENV layer and re-runs this step; without the mounts that means recompiling the
+# ENV layer and reruns this step; without the mounts that means recompiling the
 # whole dependency tree rather than the one crate that changed. A mount is not a
 # layer, hence the `install` below lifting the binary out of it while still
 # inside this RUN.

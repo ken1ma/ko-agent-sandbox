@@ -529,7 +529,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     val guard = textLines.indexWhere(_.contains("\\.git(/|$)"))
     assert(lastOtherAllow < positions.head && positions.last < guard, text)
 
-  test("a writable line after a readonly one lifts its deny, and an equal filter keeps its last position"):
+  test("a writable line after a read-only one lifts its deny, and an equal filter keeps its last position"):
     val lifted = FileRules.Resolved(
       Vector(
         FileRules.Line(FileRules.Word.ReadOnly, ".claude/settings.json"),
@@ -542,10 +542,10 @@ class SeatbeltProfileTest extends munit.FunSuite:
     val filters = fileRuleFilters(workspace, lifted).fold(reason => fail(reason), identity)
     assertEquals(filters.map(_(0)), Vector(Protection.Writable, Protection.Pinned, Protection.ReadOnly))
     assertEquals(conformanceAnswer(filters, s"$workspace/.claude"), "pinned")
-    assertEquals(conformanceAnswer(filters, s"$workspace/.claude/settings.json"), "readonly")
+    assertEquals(conformanceAnswer(filters, s"$workspace/.claude/settings.json"), "read-only")
     assertEquals(conformanceAnswer(filters, s"$workspace/.claude/notes.md"), "free")
 
-  test("a readonly-under rest renders last, anchored at its directory, its interiors pinned"):
+  test("a read-only-under rest renders last, anchored at its directory, its interiors pinned"):
     val under = FileRules.Resolved(
       Vector(
         FileRules.Line(FileRules.Word.ReadOnly, ".claude/skills/*.md"),
@@ -556,7 +556,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
       Vector("shared/claude" -> "skills/*.md"),
     )
     val filters = fileRuleFilters(workspace, under).fold(reason => fail(reason), identity)
-    assertEquals(conformanceAnswer(filters, s"$workspace/shared/claude/skills/new.md"), "readonly")
+    assertEquals(conformanceAnswer(filters, s"$workspace/shared/claude/skills/new.md"), "read-only")
     assertEquals(conformanceAnswer(filters, s"$workspace/shared/claude/skills"), "pinned")
     assertEquals(conformanceAnswer(filters, s"$workspace/shared/claude"), "pinned")
     assertEquals(conformanceAnswer(filters, s"$workspace/shared"), "pinned")
@@ -566,17 +566,17 @@ class SeatbeltProfileTest extends munit.FunSuite:
       assert(fileRuleFilters(workspace, under.copy(readOnlyUnder = Vector(directory -> "a"))).isLeft, directory)
     val odd = under.copy(pinnedPaths = Vector.empty, readOnlyUnder = Vector("c++ (x)/claude" -> "skills/*.md"))
     val oddFilters = fileRuleFilters(workspace, odd).fold(reason => fail(reason), identity)
-    assertEquals(conformanceAnswer(oddFilters, s"$workspace/c++ (x)/claude/skills/new.md"), "readonly")
+    assertEquals(conformanceAnswer(oddFilters, s"$workspace/c++ (x)/claude/skills/new.md"), "read-only")
     assertEquals(conformanceAnswer(oddFilters, s"$workspace/cxx (x)/claude/skills/new.md"), "free")
 
   test("what the filter prints for a symlinked directory renders as the filter decides it"):
     // rulefile.rs, an_alias_prints_the_read_only_rests_it_carries_and_decides_below_its_path.
-    val printed = "readonly .claude/settings.json\nreadonly .claude/skills\npinned-path Shared/claude\n" +
-      "readonly-under Shared/claude settings.json\nreadonly-under Shared/claude skills\n"
+    val printed = "read-only .claude/settings.json\nread-only .claude/skills\npinned-path Shared/claude\n" +
+      "read-only-under Shared/claude settings.json\nread-only-under Shared/claude skills\n"
     val resolved = FileRules.parseResolved(printed).fold(reason => fail(reason), identity)
     val filters = fileRuleFilters(workspace, resolved).fold(reason => fail(reason), identity)
-    assertEquals(conformanceAnswer(filters, s"$workspace/Shared/claude/skills/new.md"), "readonly")
-    assertEquals(conformanceAnswer(filters, s"$workspace/Shared/claude/settings.json"), "readonly")
+    assertEquals(conformanceAnswer(filters, s"$workspace/Shared/claude/skills/new.md"), "read-only")
+    assertEquals(conformanceAnswer(filters, s"$workspace/Shared/claude/settings.json"), "read-only")
     assertEquals(conformanceAnswer(filters, s"$workspace/Shared/claude/notes.md"), "free")
 
   test("a workspace root SBPL cannot spell, and a guard path leaving the workspace, are refused"):
@@ -590,7 +590,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     val filters = fileRuleFilters(odd, fileRules).fold(reason => fail(reason), identity)
     val vscode = filters.collectFirst { case (Protection.ReadOnly, filter) if filter.contains("vscode") => filter }.get
     assert(clue(vscode).startsWith("""(regex #"^/Users/u/c\+\+ \(work\)/p\.1/(.*/)?"""))
-    assert(conformanceAnswer(filters, "/Users/u/c++ (work)/p.1/src/.vscode/tasks.json") == "readonly")
+    assert(conformanceAnswer(filters, "/Users/u/c++ (work)/p.1/src/.vscode/tasks.json") == "read-only")
     assert(conformanceAnswer(filters, "/Users/u/cxx (work)/p.1/src/.vscode/tasks.json") == "free")
 
   /** How SBPL decides a path against the file-rule filters alone: the last filter matching it.
@@ -610,7 +610,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     val matching = filters.filter((_, filter) => matches(filter)).map(_(0))
     matching.lastOption match
       case None | Some(Protection.Writable) => "free"
-      case _ if matching.filterNot(_ == Protection.Pinned).lastOption.contains(Protection.ReadOnly) => "readonly"
+      case _ if matching.filterNot(_ == Protection.Pinned).lastOption.contains(Protection.ReadOnly) => "read-only"
       case _ => "pinned"
 
   test("the profile answers the file rules' conformance table as the filter does"):
@@ -631,11 +631,11 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(cases.size >= 10, "the table did not parse into its cases")
     val failures = cases.flatMap: testCase =>
       val ruleLines = testCase.lines.collect:
-        case ("readonly", name) => FileRules.Line(FileRules.Word.ReadOnly, name)
+        case ("read-only", name) => FileRules.Line(FileRules.Word.ReadOnly, name)
         case ("writable", name) => FileRules.Line(FileRules.Word.Writable, name)
       val resolved = FileRules.Resolved(
         ruleLines,
-        testCase.lines.collect { case ("readonly-path", path) => path },
+        testCase.lines.collect { case ("read-only-path", path) => path },
         testCase.lines.collect { case ("pinned-path", path) => path },
       )
       val filters = fileRuleFilters(workspace, resolved).fold(reason => fail(reason), identity)

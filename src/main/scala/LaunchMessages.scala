@@ -23,7 +23,7 @@ object LaunchMessages:
     source: String = "",
     color: Boolean = colorStderr,
   ): Vector[String] =
-    val programs = weakened(s"run-on-host: ${runOnHost.mkString(", ")}", color) + s" on host$source"
+    val programs = weakened(s"run-on-host: ${runOnHost.mkString(", ")}", color) + source
     val displaced = runOnHost.collect:
       case "sbt" => "sbt server"
       case "mill" => "mill daemon"
@@ -84,7 +84,7 @@ object LaunchMessages:
       case (program, hosts) if hosts.nonEmpty =>
         val grants = hosts.map(host => shown(RunOnHostPrereqs.programRuleLine(host)))
         val file = s".ko-agent-sandbox/run-on-host/$program/egress/rule"
-        wideningReport(s"run-on-host egress rules ($file)", grants, color)
+        wideningReport(file, grants, color, EgressRules.groupedByHost)
       case _ => Vector.empty
 
   /**
@@ -180,7 +180,7 @@ object LaunchMessages:
            |and they may write the workspace except `.git`, `.ko-agent-sandbox` and what
            |`$$KO_AGENT_SANDBOX_FILE_RULES` makes read-only.$daemons$sbtUsage$listenerDenied$listenerGranted
            |Any other host command that fails or is refused is reported to the user,
-           |never re-run in the container.
+           |never rerun in the container.
            |The environment variable `${RunOnHostChannel.RunOnHostVariable}` holds this program list.
            |""".stripMargin
       else if hostCommandsAvailable then
