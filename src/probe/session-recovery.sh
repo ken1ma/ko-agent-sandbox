@@ -63,7 +63,7 @@ if [ ! -f "$dist" ] || [ "$proxy_src" -nt "$dist" ]; then
 fi
 
 if lsof -nP -iTCP:3128 -sTCP:LISTEN >/dev/null 2>&1; then
-    report FAIL "M1 port 3128 free before start" "another process already listens; stop it and re-run"
+    report FAIL "M1 port 3128 free before start" "another process already listens; stop it and rerun"
 else
     EGRESS_PROFILE=deny-unless-allowed EGRESS_RULE='deny defaults
 allow https://repo1.maven.org/ read' "$JAVA" -jar "$dist" 2>"$work/proxy.log" &

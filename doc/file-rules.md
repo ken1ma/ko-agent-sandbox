@@ -57,7 +57,7 @@ One line per rule; `#` starts a comment at the start of a line or after whitespa
 lines are ignored, as in `egress/rule`.
 
 ```text
-readonly NAME      the entry and everything below it are read-only
+read-only NAME     the entry and everything below it are read-only
 writable NAME      the entry and everything below it are writable
 ```
 
@@ -67,11 +67,11 @@ writable NAME      the entry and everything below it are writable
   directory component it pins every entry it matches: `*/hooks.json` leaves no file in the
   workspace creatable, renamable or removable.
 - The characters are `a`–`z`, `0`–`9`, `.`, `_`, `-` and `*`. The filter folds case as the host's
-  filesystem may, so `readonly .vscode` covers `.VSCode`.
+  filesystem may, so `read-only .vscode` covers `.VSCode`.
 - The last line naming the entry or one of its ancestors decides:
 
 ```text
-readonly .vscode
+read-only .vscode
 writable .vscode/settings.json      settings.json writable, the rest of .vscode read-only
 ```
 
@@ -102,8 +102,8 @@ filter's own rules protect.
 
 A file holding only comments and blank lines is read as no file.
 
-The launch prints each of the file's lines once: every `writable` line as a widening, then the
-others.
+The launch prints each of the file's lines once: the `writable` lines as a widening, two or more
+joined into `writable: <name>, <name>`, then the others.
 
 `doc/file-rule-example/*/rule` holds complete files for common needs, to copy and trim:
 

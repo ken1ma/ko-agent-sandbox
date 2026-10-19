@@ -68,7 +68,7 @@ The rig's flags and toolchain selection are documented beside their implementati
 `tests/common/mod.rs` is their harness: a filter over a temporary backing tree, mounted with
 `fs::mount_config` — the product's options, not a convenient subset — and every refusal asserted
 as `EPERM` specifically rather than merely as an error. Over it run the read path; the adversarial
-set (`RENAME_EXCHANGE` on protected operands, `O_TRUNC` on a hook, `mknod` in `hooks/`, hardlink
+set (`RENAME_EXCHANGE` on protected operands, `O_TRUNC` on a hook, `mknod` in `hooks/`, hard link
 aliasing in both directions, the full name-rule corpus, an existing `.git` pointer file, a symlinked
 `hooks/`, nested `modules/` and `worktrees/` protected entries, a second name of a guarded entry, a
 directory handle held across the rename that vacates its name, to a symlink or to a second name, a

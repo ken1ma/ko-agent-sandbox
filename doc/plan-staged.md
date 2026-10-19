@@ -55,7 +55,7 @@ one settles which part of the staged contract.
 | open-unlinked files and writable handles           | in situ, in each machine    |
 | live lower changes, and copy-up from the share     | in situ, on each share      |
 | baseline revalidation and apply write-back         | in situ, on each share      |
-| hardlink identity                                  | the filter's inode model    |
+| hard-link identity                                 | the filter's inode model    |
 | rename and exchange on the lower                   | in situ, on each share      |
 | symlinks: creation, and refusal of an escape       | in situ, on each share      |
 | upper and lower names differing only by case       | in situ, APFS and NTFS      |
@@ -64,7 +64,7 @@ one settles which part of the staged contract.
 A successful `--self-test` stamps the filter's source id and the machine it proved — podman
 version, machine identity, kernel and the lower's filesystem. Staged launch refuses on an absent or
 non-matching stamp, which is what makes "failure aborts staged launch" above a mechanism rather than
-an intention, and what turns "re-run after a podman or macOS upgrade" from a row someone remembers
+an intention, and what turns "rerun after a podman or macOS upgrade" from a row someone remembers
 into a refused launch until `--self-test` runs again. The stamp records that a machine was proved
 once; that the filter can still mount here now is the filter's own `--self-test`'s job, before every
 session.
@@ -128,7 +128,7 @@ barrier advances. New agent changes during review stay in the new generation. Be
 command reports the workspace root and number of attached sessions it will quiesce.
 
 Apply holds the stage's control lock for its whole state transition. The sealed plan is a durable
-ordered set of operation groups: a rename, hardlink relationship or other indivisible change is
+ordered set of operation groups: a rename, hard-link relationship or other indivisible change is
 selected and applied as one group. A link relationship cannot be recovered from what a session
 observed — the filter assigns an inode per `(parent, name)`, so two names for one object are two
 inodes there (`../fuse/ko-agent-fs/doc/verification-log.md`) — so the stage records it at copy-up,
@@ -162,7 +162,7 @@ M  scripts/run.sh  [mode 0644 -> 0755]
 ```
 
 A directory with more than 100 changed descendants collapses into an indexed summary. The summary
-shows exact counts by operation class. A collapsed group containing a rename, hardlink, symlink,
+shows exact counts by operation class. A collapsed group containing a rename, hard link, symlink,
 type change, executable-bit addition or deletion must be expanded before it can be approved. The
 prompt can expand one group or all groups, page or search the expansion, show diffs, keep the host
 version, cancel, or explicitly apply a low-risk collapsed group. Plain `y` is available only when
@@ -175,7 +175,7 @@ name rules to `.git` and `.ko-agent-sandbox` at every depth and also refuses a r
 layout, host-incompatible paths, symlink escapes and path-replacement races. The same classification
 is rerun immediately before each affected mutation because host Git state can change during review.
 
-Only regular files, directories, safe symlinks and hardlinks are eligible for apply. Planning
+Only regular files, directories, safe symlinks and hard links are eligible for apply. Planning
 refuses FIFOs, sockets and device nodes rather than reproducing special files in the
 workspace.
 
@@ -201,7 +201,7 @@ rollback bundles and staged control journals (`TODO.md`).
 
 Live mode recursively validates nested repositories before mounting without following symlinks. It
 validates `.git` directories and pointer files, detects bare layouts outside recognized gitdirs, and
-checks create, write, rename, exchange, hardlink and symlink operations that could complete one.
+checks create, write, rename, exchange, hard link and symlink operations that could complete one.
 Complete full-tree validation is a launch-time cost; benchmark it on build-output-heavy workspaces
 on every platform. An acceleration must still validate the current complete tree; a skipped
 directory or stale result would reopen the gap.
@@ -226,7 +226,7 @@ its private Git metadata cannot be applied.
 ## Delivery order
 
 1. Characterize the supported lower filesystems before the stage representation is fixed.
-   Hardlink identity, rename and exchange, symlink creation, case folding between upper and lower
+   Hard-link identity, rename and exchange, symlink creation, case folding between upper and lower
    and the reach of an open-file hold each decide a representation choice, and none can be reasoned
    to a conclusion (`../fuse/ko-agent-fs/doc/TODO.md`, "P1"). Settling them first avoids revising
    an implemented representation.
@@ -245,8 +245,8 @@ its private Git metadata cannot be applied.
 
 ## Verification
 
-- Test stage resume, representation refusal, shared locks, live lower changes, whiteouts, hardlinks,
-  open-unlinked objects, shadow conflicts and applied-layer retirement.
+- Test stage resume, representation refusal, shared locks, live lower changes, whiteouts, hard
+  links, open-unlinked objects, shadow conflicts and applied-layer retirement.
 - Test writable handles, open directories and shared mmap across sealing; inject interruption after
   every durable apply boundary; test partial apply, retry, operation dropping, third-state conflicts
   and concurrent seal/apply/discard.

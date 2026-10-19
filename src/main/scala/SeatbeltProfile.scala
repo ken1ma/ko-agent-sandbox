@@ -423,16 +423,16 @@ object SeatbeltProfile:
    *
    *   - each line as a regex anchored after the workspace root's own path, so a directory above
    *     the workspace root bearing a listed name — a checkout named `mise` — cannot match, with
-   *     `*` as any run within one component: a `readonly` line a deny, a `writable` line an allow;
+   *     `*` as any run within one component: a `read-only` line a deny, a `writable` line an allow;
    *   - before it, each interior component of the line as a deny on the entry alone, which a later
    *     line matching the entry or an ancestor overrides as the filter's pruning does. It denies
    *     `file-write-create` and `file-write-unlink`, which a rename's two sides and both sides of a
    *     `RENAME_SWAP` exchange are checked as (`src/probe/seatbelt-semantics.sh` E13, E14, E17),
    *     and `file-link`; so it also denies the component's `mkdir` and `rmdir`, which the filter
    *     allows, and leaves the entry's contents, mode and attributes to the other rules;
-   *   - after every line, the guard's `readonly-path` entries by `subpath`, and its `pinned-path`
+   *   - after every line, the guard's `read-only-path` entries by `subpath`, and its `pinned-path`
    *     entries and the interior components of both by `literal`;
-   *   - last, each `readonly-under` rest as a regex anchored at its directory, its interior
+   *   - last, each `read-only-under` rest as a regex anchored at its directory, its interior
    *     components pinned. A `writable` line lifting part of a rest under the symlink's name
    *     stays unlifted here, although the filter lifts it (doc/run-on-host.md).
    *

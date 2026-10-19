@@ -172,7 +172,7 @@ emit() { # program
 # SBT_GLOBAL_SERVER_DIR keep sbt's sockets inside the command's temporary directory (RunOnHostPrereqs.
 # SessionTmpMaxLength says why its length matters).
 #
-# PATH, because -java-home reaches sbt's client alone: the client starts the server by re-running
+# PATH, because -java-home reaches sbt's client alone: the client starts the server by rerunning
 # the sbt script, which takes `java` from PATH — /usr/bin/java, the stub the JVM rule rejects and the
 # profile denies. mill's `mill-jvm-version: system` takes `java` from PATH the same way.
 # `env -i`, because the supervisor's environment is a closed set (RunOnHostSandbox.commandEnvironment;

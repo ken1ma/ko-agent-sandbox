@@ -112,7 +112,7 @@ object HostCommands:
   /**
    * Case is not emphasis: a value is printed as it is configured — `live`, `deny-unless-allowed` —
    * so the banner, `--egress-effective` and the rule file read and grep
-   * alike, and the reader is not shouted at for the mode they selected. Colour is the emphasis, and
+   * alike, and the reader is not shouted at for the mode they selected. Color is the emphasis, and
    * each hue has one meaning:
    *
    *   - red: the launch stopped. On the `error:` label only (stopped).
@@ -135,9 +135,9 @@ object HostCommands:
    *
    * A label is tinted alone, as sbt and mill tint `[warn]` and `[error]` and leave the message, and
    * a grant alike. A span inside a tinted one, as a gray source among a grant's plugins, reopens
-   * the outer colour after it (tinted).
+   * the outer color after it (tinted).
    *
-   * Colour adds nothing the words do not say. These lines are read back from a redirected stream, from a
+   * Color adds nothing the words do not say. These lines are read back from a redirected stream, from a
    * pasted transcript, and — for the workspace and egress lines — from the instructions the agent is
    * handed, where an escape would be noise: the words have to hold in all three.
    */
@@ -147,24 +147,32 @@ object HostCommands:
 
   def weakened(text: String, color: Boolean = colorStderr): String = tinted(Orange, text, color)
 
-  /** A heading ending in `widen (<count of rules>):`, then one indented line per rule, each tinted
-    * on its own so a line filtered out of a saved log still opens and closes its colour. */
-  def wideningReport(heading: String, rules: Seq[String], color: Boolean = colorStderr): Vector[String] =
-    (s"$heading widen (${rules.size}):" +: rules.map(rule => s"  $rule")).toVector.map(weakened(_, color))
+  /** A heading `<source>: <count> widening lines`, then one indented line per rule, or per group of
+    * rules `grouped` joins, each tinted on its own so a line filtered out of a saved log still opens
+    * and closes its color. */
+  def wideningReport(
+    source: String,
+    rules: Seq[String],
+    color: Boolean = colorStderr,
+    grouped: Seq[String] => Seq[String] = identity,
+  ): Vector[String] =
+    val count = if rules.size == 1 then "1 widening line" else s"${rules.size} widening lines"
+    (s"$source: $count" +: grouped(rules).map(rule => s"  $rule")).toVector.map(weakened(_, color))
 
   /** A launch's lines about one rule file, each of the file's lines once: a line printed twice
     * lengthens what is read at every launch, and a longer text is skipped. The `widening` lines
-    * are a wideningReport; the file's other lines follow on one line, untinted.
+    * are a wideningReport joined by `grouped`; the file's other lines follow on one line, untinted.
     *
-    * @param source names the rules and their file, such as `egress rules (.ko-agent-sandbox/egress/rule)`. */
+    * @param source names the rule file, such as `.ko-agent-sandbox/egress/rule`. */
   def ruleFileReport(
     source: String,
     lines: Seq[String],
     widening: Seq[String],
     color: Boolean = colorStderr,
+    grouped: Seq[String] => Seq[String] = identity,
   ): Vector[String] =
     val others = lines.filterNot(widening.contains)
-    val report = if widening.isEmpty then Vector.empty else wideningReport(source, widening, color)
+    val report = if widening.isEmpty then Vector.empty else wideningReport(source, widening, color, grouped)
     val rest =
       if others.isEmpty then Vector.empty
       else if widening.isEmpty then Vector(s"$source: ${others.mkString("; ")}")
@@ -173,7 +181,7 @@ object HostCommands:
 
   /** What the user chose, as the line stating it says it — `live`, `deny-unless-allowed`.
     * Purple and orange are not among the theme's sixteen — its magenta is as often pink, its
-    * yellow as often olive — so both are the 256-colour cube's. */
+    * yellow as often olive — so both are the 256-color cube's. */
   def chosen(text: String, color: Boolean = colorStderr): String = tinted("38;5;207", text, color)
 
   /** What is there to look up, not to read. Mid-gray from the cube, legible on a light and a dark
@@ -217,7 +225,7 @@ object HostCommands:
   private final val Orange = "38;5;208"
 
   /** A span tinted inside `text`, such as a gray source among a grant's plugins, ends with a reset;
-    * the colour is reopened after it, so the rest of `text` keeps its tint. */
+    * the color is reopened after it, so the rest of `text` keeps its tint. */
   private def tinted(code: String, text: String, color: Boolean): String =
     val reset = s"$Esc[0m"
     if color then s"$Esc[${code}m${text.replace(reset, s"$reset$Esc[${code}m")}$reset" else text

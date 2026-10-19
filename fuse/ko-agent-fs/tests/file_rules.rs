@@ -52,9 +52,9 @@ fn cases() -> Vec<Case> {
 
 fn rule_line(word: &str, name: &str) -> RuleLine {
     let (word, anchored) = match word {
-        "readonly" => (RuleWord::ReadOnly, false),
+        "read-only" => (RuleWord::ReadOnly, false),
         "writable" => (RuleWord::Writable, false),
-        "readonly-path" => (RuleWord::ReadOnly, true),
+        "read-only-path" => (RuleWord::ReadOnly, true),
         "pinned-path" => (RuleWord::Pinned, true),
         other => panic!("not a resolved word: {other}"),
     };
@@ -84,7 +84,7 @@ fn answer(lines: &[(String, String)], path: &str) -> String {
     let components: Vec<&[u8]> = path.split('/').map(str::as_bytes).collect();
     let context = rule_context_of_path(&rules, &components).expect("an ordinary path");
     if context.read_only(&rules) {
-        "readonly"
+        "read-only"
     } else if context.pinned() {
         "pinned"
     } else {

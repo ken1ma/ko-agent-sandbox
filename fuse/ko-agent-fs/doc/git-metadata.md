@@ -202,7 +202,7 @@ entries. There are two ways to draw that line, and they fail in opposite directi
 `.git` is matched as a **conservative superset**, on every platform:
 
 - The backing store may be a case-insensitive host filesystem (macOS APFS, Windows NTFS) reached
-  through the Podman Machine.
+  through the podman machine.
 - Host `git` there resolves `lstat(".git")` to an entry the sandbox created as `.GIT`, so
   exact-byte matching is a real bypass on the platforms this project actually targets.
 
@@ -299,7 +299,7 @@ Rename and exchange are the double-sided cases:
 
 `link` is the subtle one, and doubly-checked.
 
-- A hardlink shares an **inode**, so it bypasses path-based classification:
+- A hard link shares an **inode**, so it bypasses path-based classification:
   `link <gitdir>/hooks/pre-commit → src/alias` gives the frozen inode a second, *writable* name,
   and a write through `src/alias` then mutates the hook.
 - So `link` is refused both destination-side (a link named into a protected tree) **and
@@ -312,13 +312,13 @@ Rename and exchange are the double-sided cases:
   is opened for write. The file rules refuse a symlink whose target names a `.git` entry for
   their own reason (`../../../doc/file-rules.md`).
 
-Residual: a hardlink the *host* already created between a protected inode and a worktree path lets
+Residual: a hard link the *host* already created between a protected inode and a worktree path lets
 a write to the worktree path reach the frozen inode.
 
 - Detecting that needs every write to prove its inode is not also reachable under a gitdir — not
   feasible per write.
 - It is out of scope as host-created setup (the host is trusted; Git's default layout creates no
-  hardlink between a hook and a worktree path). The filter closes only *sandbox*-created
+  hard link between a hook and a worktree path). The filter closes only *sandbox*-created
   aliasing.
 
 
@@ -337,7 +337,7 @@ In both cases the files host `git` executes are stored at an ordinary worktree p
 
 - **The guard therefore resolves each such directory before the mount** (`guard::resolve`) and the
   filter serves it as a read-only root, with every ordinary component its chain traverses pinned
-  against rename and replacement — a `readonly-path` line of the resolved file rules
+  against rename and replacement — a `read-only-path` line of the resolved file rules
   (`../../../doc/file-rules.md`).
 - The mounted suite's `relocated_hooks_are_served_read_only` checks that the served directory
   refuses writes at its own name.
@@ -451,7 +451,7 @@ root is unchecked, recorded in `TODO.md` and named in `SECURITY.md`:
 
 - A repository the **host** nested deeper — its protected entries under `.git` names are frozen
   like any other's, but Git metadata the host routed into the worktree (relocated hooks, a
-  redirected gitdir) are served writable unless a file rule lists them, as `readonly .husky`
+  redirected gitdir) are served writable unless a file rule lists them, as `read-only .husky`
   does husky's; the sandbox cannot create this layout.
 - A **bare layout**, which the sandbox *can* create — `git init --bare` and
   `git clone --bare|--mirror` write only ordinary names, and no per-name rule can refuse `HEAD`,

@@ -92,7 +92,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
         authorize(literal, 443)
 
   test("Smokescreen-class canonicalization tricks reach no non-allowed host"):
-    // Permanent regression inputs from Smokescreen's deny-list bypasses: bracketed hostname (GHSA-qwrf-gfpj-qvj6),
+    // Permanent regression inputs from Smokescreen's denylist bypasses: bracketed hostname (GHSA-qwrf-gfpj-qvj6),
     // trailing dot / letter case (GHSA-gcj7-j438-hjj2). A ruleset passing every host through normalizeHost once
     // keeps every spelling of a non-listed host refused.
     Vector(
@@ -789,7 +789,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     same("deny-unless-allowed", "deny https://docs.python.org/ read", "deny https://docs.python.org/")
     // A deny of hosts the map lacks takes nothing, so it is the empty file.
     same("deny-unless-allowed", "deny https://**.example.com/", "")
-    // A deny list against its reordering where no grant depends on the order.
+    // A denylist against its reordering where no grant depends on the order.
     same(
       "deny-unless-allowed",
       "deny https://api.anthropic.com/\ndeny https://**.github.com/\ndeny https://docs.python.org/ read",

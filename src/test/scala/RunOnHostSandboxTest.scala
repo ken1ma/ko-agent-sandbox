@@ -698,7 +698,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       else false
     assert(classpath.exists(includes), classpath.take(8).toString)
 
-  test("selfInvocation on a JVM re-runs this classpath under the private action"):
+  test("selfInvocation on a JVM reruns this classpath under the private action"):
     val command = selfInvocation("--serve-proxy-on-host")
     assert(command.head.endsWith("/bin/java"), command.toString)
     assertEquals(command.last, "--serve-proxy-on-host")

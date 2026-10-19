@@ -717,7 +717,7 @@ object AgentSandboxLauncher:
             val started = run(podman, "machine", "start")
             if !started.ok then
               fail(
-                s"""error: podman Machine could not be started.
+                s"""error: podman machine could not be started.
                    |${started.err}
                    |
                    |Initialize it once, for example:
@@ -1444,7 +1444,7 @@ object AgentSandboxLauncher:
     //
     // The audit log is appended by the proxy through a bind-mounted host
     // file, so the record outlives the per-run container. Not --log-opt
-    // path=: conmon interprets that inside the podman-machine VM. A
+    // path=: conmon interprets that inside the podman machine VM. A
     // single-file mount — the run's directory would hand the proxy this run's
     // other logs, and the workspace's log directory every previous session's
     // record — and owner-only: refusal lines carry full URLs, and a URL can

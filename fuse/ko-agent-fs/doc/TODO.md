@@ -45,7 +45,7 @@ short names"; `SECURITY.md` states the exception to its claims).
 
 Every run belongs in `verification-log.md` with the machine that produced it: OS, podman, kernel and
 filesystem versions. A pass with no machine recorded is not evidence for the next release, and
-only re-running notices a platform default changing underneath a row.
+only rerunning notices a platform default changing underneath a row.
 
 ### The `.git` name rule per backing filesystem
 
@@ -153,8 +153,8 @@ the pair reports all five in one run.
 
 The rows:
 
-- Hardlink identity: two names for one file, created host-side and through the mount. Does the lower
-  keep the relationship, and can a session see it?
+- Hard-link identity: two names for one file, created host-side and through the mount. Does the
+  lower keep the relationship, and can a session see it?
 - `RENAME_EXCHANGE` and `RENAME_NOREPLACE` on the lower, and on the host path apply replaces. An
   absent exchange is an apply that cannot be atomic by that route.
 - Symlinks: can the daemon create one on the lower, and does the host then resolve it as a symlink?
@@ -166,11 +166,11 @@ The rows:
   read-held and write-held, and whether releasing restores what was refused. Apply write-back
   depends or falls on this.
 
-APFS answers all five (`verification-log.md` has the run): the lower keeps hardlink relationships,
+APFS answers all five (`verification-log.md` has the run): the lower keeps hard-link relationships,
 exchange is available on both sides, symlinks round-trip, two names differing only by case are one
 name, and a session-held descriptor blocks no host mutation. One answer was never the share's to
-give — a session cannot see a hardlink relationship at all, because the filter assigns an inode per
-`(parent, name)` — and what that costs a stage is the root `doc/plan-staged.md`'s to settle.
+give — a session cannot see a hard-link relationship at all, because the filter assigns an inode
+per `(parent, name)` — and what that costs a stage is the root `doc/plan-staged.md`'s to settle.
 
 What is left:
 
@@ -198,7 +198,7 @@ so the filter judges each as a name in the link's directory, not as a path:
 ### The platform matrix itself
 
 - [ ] linux-x86_64 and linux-aarch64 (the two architectures every image here builds for).
-- [ ] macOS Podman machine on x86_64, if it still matters — aarch64 is where the rows above ran.
+- [ ] macOS podman machine on x86_64, if it still matters — aarch64 is where the rows above ran.
 
 On Windows the name rule, coherency and performance rows are measured (`verification-log.md`):
 fold tables are per-volume, so the name-rule run verifies the volume it ran on; coherency's `mmap`
@@ -408,7 +408,7 @@ defended"), which leaves:
   beside the verified guarantee. Platform evidence does not resolve those separate limits.
 - [ ] The guard's scope gap (`SECURITY.md`, "Not defended"): a nested repository's relocated
   hooks or redirected gitdir stay writable; husky's `.husky/` is covered by the default
-  `readonly .husky`. Decide whether to close it or keep recording it:
+  `read-only .husky`. Decide whether to close it or keep recording it:
   - a walk of the whole tree at every mount, `node_modules` and `target/` included, checking each
     repository and bare layout it finds: mount time on large workspaces, and a repository the host
     creates mid-session is still missed;
@@ -437,7 +437,7 @@ Timed to the work that needs it, so the findings are fresh when they are used.
 - [ ] `fuse-backend-rs` (virtiofsd, Cloud Hypervisor) versus `fuser` — before investing in
   passthrough, since it is the more battle-tested passthrough implementation.
 - [ ] gVisor's gofer and virtiofsd as prior art for fd-relative, TOCTOU-safe passthrough at scale.
-- [ ] Podman-machine virtiofs cache modes, alongside the coherency premise above.
+- [ ] The podman machine's virtiofs cache modes, alongside the coherency premise above.
 - [ ] Landlock to confine the daemon itself, so a bug in `ko-agent-fs` can reach only the backing
   directory. Defense in depth, not a boundary — the boundary is the policy.
 - [ ] An optional no-symlink profile, only if staged review proves insufficient or users need a

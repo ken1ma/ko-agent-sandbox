@@ -292,7 +292,7 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
       declinedPrompts(),
       Vector("run `MILL_VERSION=1.1.9-jvm ./mill version` in /Users/u/project now, unconfined on the host? [y/N] "),
     )
-    // The question in the colour of a weakened boundary, the answer after it in the terminal's own.
+    // The question in the color of a weakened boundary, the answer after it in the terminal's own.
     val (tinted, tintedPrompts) = answering("n")
     provision(
       builds.drop(1), _ => Some(provisionable), Some(tinted), run = _ => Right(0), report = _ => (), color = true,

@@ -65,7 +65,7 @@ INNER
 # `SYS_ADMIN` is not redundant with the setuid fusermount3, which is the reasonable expectation and
 # is measured wrong: dropped, the probe fails with `fusermount3: mount failed: Operation not
 # permitted` (`doc/verification-log.md`). A setuid binary does not escape the container's
-# capability bounding set. A Podman machine grants what a container does not, which is why the
+# capability bounding set. A podman machine grants what a container does not, which is why the
 # daemon mounts there unprivileged.
 exec podman run --rm -it \
     --device /dev/fuse \

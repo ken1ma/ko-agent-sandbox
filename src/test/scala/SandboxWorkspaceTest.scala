@@ -522,7 +522,7 @@ class SandboxWorkspaceTest extends munit.FunSuite:
       mainWorktreeOf(linkedAt("module", mainGitdir.resolve("modules/x"), Some("..\n")), homes, Os.Linux),
       None,
     )
-    // A bare repository's worktrees, and those of a main worktree with a separate git dir: the
+    // A bare repository's worktrees, and those of a main worktree with a separate gitdir: the
     // common gitdir is not a `.git` directory, so the main checkout is not named by it.
     val bare = gitdirAt(root.resolve("bare.git"))
     assertEquals(

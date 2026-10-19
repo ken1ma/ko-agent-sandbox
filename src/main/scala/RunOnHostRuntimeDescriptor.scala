@@ -107,7 +107,7 @@ object RunOnHostRuntimeDescriptor:
     * nowhere; a cache flag naming a path outside the grants fails the server at its first write;
     * and the flags naming a program are dropped before the start. What remains of them for the
     * attaching launch's build — the properties it sees, the memory it gets — is what the owner's
-    * own later commands see, the behaviour SECURITY.md "Run on host" accepts for every request.
+    * own later commands see, the behavior SECURITY.md "Run on host" accepts for every request.
     *
     * Each field is length-framed, so no two inputs render alike. Every profile input is named, so
     * a field added to `ProfileInputs` or `CommandPrereqs` fails to compile here until it is

@@ -271,7 +271,7 @@ class Connection:
             await ok({})
         elif method in ("resourceList", "resourceResolve", "resourceRead"):
             # The client browsing the host's own files, as the Remote tab's folder picker does. The
-            # real host serves the sandbox's file system; so does this one, read-only.
+            # real host serves the sandbox's filesystem; so does this one, read-only.
             await self._serve_own_file(method, params, ok, err)
         else:
             await err(-32601, f"method not handled by hostile host: {method}")

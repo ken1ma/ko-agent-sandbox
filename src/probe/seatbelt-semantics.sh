@@ -102,8 +102,8 @@ profile <<'SB'
 SB
 rm -f "$workspace/plain/hard"
 r=$(attempt "" "ln '$workspace/.git/config' '$workspace/plain/hard'")
-report "E6 hardlink under a write deny" \
-    "can a hardlink to a denied file be created when only writes are denied?" "$r" \
+report "E6 hard link under a write deny" \
+    "can a hard link to a denied file be created when only writes are denied?" "$r" \
     "ALLOWED: a write deny alone is not enough; E7 is the fix. DENIED: it already covers linking."
 
 # ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ SB
 rm -f "$workspace/plain/hard2"
 r=$(attempt "" "ln '$workspace/.git/config' '$workspace/plain/hard2'")
 report "E7 explicit file-link deny" \
-    "does (deny file-link) refuse a hardlink whose *target* is denied?" "$r" \
+    "does (deny file-link) refuse a hard link whose *target* is denied?" "$r" \
     "DENIED: the link clause is enforceable as written. ALLOWED: it needs a different mechanism."
 
 # ---------------------------------------------------------------------------

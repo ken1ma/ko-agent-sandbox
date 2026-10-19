@@ -14,7 +14,7 @@ import HostCommands.Os
 object FileRules:
 
   enum Word(val keyword: String):
-    case ReadOnly extends Word("readonly")
+    case ReadOnly extends Word("read-only")
     case Writable extends Word("writable")
 
   /** One rule line: a word and a name matching at any depth, `*` within one component. */
@@ -25,7 +25,7 @@ object FileRules:
    * What the resolved set holds beyond the rule lines: the paths the filter's guard found, relative
    * to the workspace root and spelled as the host spells them — directories and files served read-only
    * whole, components pinned against rename, replacement and removal, and `(directory, rest)`
-   * pairs: a directory a symlink makes an interior component of a `readonly` line, with the
+   * pairs: a directory a symlink makes an interior component of a `read-only` line, with the
    * line's rest below it as a pattern.
    */
   case class Resolved(
@@ -36,9 +36,9 @@ object FileRules:
   ):
     /** The resolved text: the form the filter writes back and `--resolve` prints. */
     def text: String =
-      (lines.map(_.text) ++ readOnlyPaths.map(path => s"readonly-path $path") ++
+      (lines.map(_.text) ++ readOnlyPaths.map(path => s"read-only-path $path") ++
         pinnedPaths.map(path => s"pinned-path $path") ++
-        readOnlyUnder.map((path, rest) => s"readonly-under $path $rest")).map(_ + "\n").mkString
+        readOnlyUnder.map((path, rest) => s"read-only-under $path $rest")).map(_ + "\n").mkString
 
   object Resolved:
     val Empty: Resolved = Resolved(Vector.empty, Vector.empty, Vector.empty)
@@ -74,9 +74,9 @@ object FileRules:
       line.split(" ").toVector match
         case Vector(word, name) =>
           Word.values.find(_.keyword == word) match
-            case None => Left(s"'$word' is not a word; a line is `readonly NAME` or `writable NAME`")
+            case None => Left(s"'$word' is not a word; a line is `read-only NAME` or `writable NAME`")
             case Some(known) => nameRefusal(name).toLeft(Line(known, name))
-        case _ => Left("a line is one word and one name: `readonly NAME` or `writable NAME`")
+        case _ => Left("a line is one word and one name: `read-only NAME` or `writable NAME`")
     parsed.zip(lines).collectFirst { case (Left(why), line) => s"error: $origin: $line: $why" }
       .toLeft(parsed.collect { case Right(line) => line })
 
@@ -146,12 +146,12 @@ object FileRules:
       if nameRefusal(name).isEmpty then Right(entry) else Left(line)
     val parsed = lines.map: line =>
       line.split(" ").toVector match
-        case Vector("readonly", name)             => named(name, ResolvedEntry.Rule(Line(Word.ReadOnly, name)), line)
-        case Vector("writable", name)             => named(name, ResolvedEntry.Rule(Line(Word.Writable, name)), line)
-        case Vector("readonly-path", path)        => Right(ResolvedEntry.ReadOnlyPath(path))
-        case Vector("pinned-path", path)          => Right(ResolvedEntry.PinnedPath(path))
-        case Vector("readonly-under", path, rest) => named(rest, ResolvedEntry.ReadOnlyUnder(path, rest), line)
-        case _                                    => Left(line)
+        case Vector("read-only", name)             => named(name, ResolvedEntry.Rule(Line(Word.ReadOnly, name)), line)
+        case Vector("writable", name)              => named(name, ResolvedEntry.Rule(Line(Word.Writable, name)), line)
+        case Vector("read-only-path", path)        => Right(ResolvedEntry.ReadOnlyPath(path))
+        case Vector("pinned-path", path)           => Right(ResolvedEntry.PinnedPath(path))
+        case Vector("read-only-under", path, rest) => named(rest, ResolvedEntry.ReadOnlyUnder(path, rest), line)
+        case _                                     => Left(line)
     parsed.collectFirst { case Left(line) => line } match
       case Some(line) =>
         Left(
@@ -185,18 +185,24 @@ object FileRules:
     workspaceFile: Option[(String, Vector[Line])],
     color: Boolean = HostCommands.colorStderr,
   ): Vector[String] =
-    workspaceFile.toVector.flatMap((_, lines) => report("file rules (.ko-agent-sandbox/file/rule)", lines, color))
+    workspaceFile.toVector.flatMap((_, lines) => report(".ko-agent-sandbox/file/rule", lines, color))
 
   /** The launch lines about a running mount's rules a launch joins: its lines beyond the defaults,
     * all of them when it runs under other defaults, the `writable` ones as their widening. */
   def runningLaunchLines(running: Vector[Line], color: Boolean = HostCommands.colorStderr): Vector[String] =
     val beyond = if running.startsWith(Defaults) then running.drop(Defaults.size) else running
-    if beyond.isEmpty then Vector("file rules (the running mount's): the launcher-owned defaults")
-    else report("file rules (the running mount's)", beyond, color)
+    if beyond.isEmpty then Vector("the running mount's file rules: the launcher-owned defaults")
+    else report("the running mount's file rules", beyond, color)
 
   private def report(source: String, lines: Vector[Line], color: Boolean): Vector[String] =
     val writable = lines.filter(_.word == Word.Writable)
-    HostCommands.ruleFileReport(source, lines.map(_.text), writable.map(_.text), color)
+    HostCommands.ruleFileReport(source, lines.map(_.text), writable.map(_.text), color, joinedWritable)
+
+  /** Two or more `writable` lines as one, `writable: <name>, <name>`, as egress joins its hosts
+    * (EgressRules.groupedByHost); one stays as written. A name holds no `,` (parse). */
+  private def joinedWritable(rules: Seq[String]): Seq[String] =
+    val names = rules.map(_.stripPrefix(s"${Word.Writable.keyword} ")).distinct
+    if names.size < 2 then rules.distinct else Vector(s"${Word.Writable.keyword}: ${names.mkString(", ")}")
 
   /** The rule lines of a text daemonText wrote, as a running mount serves them. */
   def parseDaemonText(text: String): Either[String, Vector[Line]] =

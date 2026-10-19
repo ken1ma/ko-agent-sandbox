@@ -39,7 +39,7 @@ VS Code and AHP:
 - What the host can ask of VS Code, the client surface found so far:
   - tools a connected client contributes, VS Code's own and its extensions', which the host
     routes back to that client;
-  - the read-only `vscode-agent-client://` file system, whose `browseDirectory` and
+  - the read-only `vscode-agent-client://` filesystem, whose `browseDirectory` and
     `fetchContent` the connection proxies back to the client
     (`agentHostClientFileSystemProvider.ts`);
   - the MCP servers configured in the editor, which VS Code forwards to the host;
@@ -68,7 +68,7 @@ ACP, for the deferred track:
 - Over the stdio transport the agent reads JSON-RPC from stdin and writes it to stdout, writes
   logs to stderr, and must write nothing else to stdout.
 - What the agent may ask of the client, the v1 client surface: `session/request_permission`
-  always; `fs/read_text_file` and `fs/write_text_file` on the client's file system, including
+  always; `fs/read_text_file` and `fs/write_text_file` on the client's filesystem, including
   unsaved editor buffers; `terminal/create`, `output`, `wait_for_exit`, `kill` and `release`,
   which run a command in the client's environment; `elicitation/create` in form mode, a schema
   the user fills in, or URL mode, where the client shows the full URL, obtains consent and opens
@@ -389,7 +389,7 @@ documentation.
 
 ## Non-goals
 
-- The IDE's file system, terminals, browser or MCP servers reachable from the sandbox.
+- The IDE's filesystem, terminals, browser or MCP servers reachable from the sandbox.
 - The IDE's credentials forwarded into the sandbox, on any route, without a credential-selection
   decision of its own.
 - More than one workspace root, or a workspace root other than the launch directory.
@@ -468,7 +468,7 @@ From the agent to the client:
 
 Why each refusal:
 
-- The client's file system and terminals are the host's. A `terminal/create` from the sandbox is
+- The client's filesystem and terminals are the host's. A `terminal/create` from the sandbox is
   the shortcut `--run-on-host` exists to prevent (SECURITY.md, "Run on host"): a host command with
   the IDE's authority, not a confined one.
 - `additionalDirectories` widens the root set past the workspace, which only the mount decides.

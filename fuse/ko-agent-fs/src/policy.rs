@@ -527,8 +527,8 @@ pub enum RuleWord {
     Pinned,
 }
 
-/// One resolved line. The launcher writes the rule lines, `readonly` and `writable`; the guard adds
-/// the anchored ones, `readonly-path` and `pinned-path`.
+/// One resolved line. The launcher writes the rule lines, `read-only` and `writable`; the guard adds
+/// the anchored ones, `read-only-path` and `pinned-path`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleLine {
     pub word: RuleWord,
@@ -614,7 +614,7 @@ impl RuleContext {
         RuleContext::default()
     }
 
-    /// Whether the deciding line is `readonly` or a guard's `readonly-path`, under any of the
+    /// Whether the deciding line is `read-only` or a guard's `read-only-path`, under any of the
     /// entry's names (`also`).
     pub fn read_only(&self, rules: &FileRules) -> bool {
         self.deciding
@@ -632,7 +632,7 @@ impl RuleContext {
     /// it: the entry is an interior component of a line later than its own deciding line, a
     /// guard's traversed component, or either under another of its names (`also`). Renaming
     /// `.claude` to `saved`, writing `saved/settings.json` and renaming it back would otherwise
-    /// defeat `readonly .claude/settings.json`.
+    /// defeat `read-only .claude/settings.json`.
     pub fn pinned(&self) -> bool {
         self.pinned_path || !self.partial.is_empty() || self.also.iter().any(RuleContext::pinned)
     }
@@ -642,7 +642,7 @@ impl RuleContext {
         self.read_only(rules) || self.pinned()
     }
 
-    /// The rests of the `readonly` lines the entry is an interior component of, under any of its
+    /// The rests of the `read-only` lines the entry is an interior component of, under any of its
     /// names, as `/`-joined folded patterns: what a directory a symlink reaches under this name
     /// protects below it. A `writable` line lifting part of a rest is ignored, which is stricter.
     pub fn read_only_rests(&self, rules: &FileRules) -> Vec<String> {

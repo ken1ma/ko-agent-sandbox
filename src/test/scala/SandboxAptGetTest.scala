@@ -180,9 +180,9 @@ class SandboxAptGetTest extends munit.FunSuite:
       assert(Files.exists(f.localBin.resolve("common")), "common stays wrapped")
       assertEquals(run(f.usrBin.resolve("common")), "demo common 1.10\n", "common is the newer version")
 
-      // A re-run with the same cache extracts nothing new and fails nothing.
+      // A rerun with the same cache extracts nothing new and fails nothing.
       assertEquals(f.sandboxAptGet("install", "demo"), 0)
-      assert(!Files.exists(f.usrBin.resolve("old-only")), "the re-run kept old-only gone")
+      assert(!Files.exists(f.usrBin.resolve("old-only")), "the rerun kept old-only gone")
 
   test("an install resolving to an older version than the one extracted replaces it"):
     fixture: f =>
@@ -218,7 +218,7 @@ class SandboxAptGetTest extends munit.FunSuite:
       assertEquals(run(f.usrBin.resolve("moved")), "demo-data moved 1.0\n", "demo-data's copy stays")
       assert(Files.exists(f.localBin.resolve("moved")), "and so does its wrapper")
       assertEquals(f.sandboxAptGet("install", "demo"), 0)
-      assert(Files.exists(f.usrBin.resolve("moved")), "the re-run leaves the file alone")
+      assert(Files.exists(f.usrBin.resolve("moved")), "the rerun leaves the file alone")
 
   test("a deletion the upgrade could not make is retried, not recorded as done"):
     fixture: f =>

@@ -175,10 +175,10 @@ The filesystem rules define what a host command can access:
     denied.
   - A spelling the volume resolves to the name and no row creates is unmeasured.
 - **Writes to what the file rules protect are denied the same way, in the rules' order**
-  (`doc/file-rules.md`): each `readonly` line a deny and each `writable` line an allow, as a regex
+  (`doc/file-rules.md`): each `read-only` line a deny and each `writable` line an allow, as a regex
   anchored after the workspace root's path; each directory a line passes through a deny on the entry
   itself, at the line's position; what the filter's guard added by path, after the lines; and
-  below a directory a symlink makes part of a listed name, the rest of each `readonly` line.
+  below a directory a symlink makes part of a listed name, the rest of each `read-only` line.
   - SBPL checks a rename's source as `file-write-unlink`, as it checks `rmdir` and `unlink`, and
     its destination as `file-write-create`, as it checks `mkdir`; it has no operation of a
     rename's own, and checks a `RENAME_SWAP` exchange as both, on either operand
@@ -197,7 +197,7 @@ The filesystem rules define what a host command can access:
     `.claude -> shared/claude`, the profile keeps denying what a `writable` line lifts under the
     symlink's name, where the filter allows it. Rendered as a later allow, the lift would also
     apply under the target's own name: with `.claude -> .vscode/claude`, it would lift part of
-    `readonly .vscode`.
+    `read-only .vscode`.
 - **The `.git` and `.ko-agent-sandbox` denials cover link creation, not only writes.** Without them,
   a command could create `link(WORKSPACE/.git/config, WORKSPACE/x)` and write through `x` to modify
   `.git/config`.
@@ -294,7 +294,7 @@ silently permitted.
 ## Refusals
 
 Missing prerequisites and denied accesses fail clearly, nothing expands authority, and nothing
-falls back: a host command that cannot run is reported to the user, never re-run in the
+falls back: a host command that cannot run is reported to the user, never rerun in the
 container — the same rule the egress refusal follows. The one exception is a test suite that
 binds a listener under sbt or Maven, which runs in the container ("Network", above).
 
@@ -1362,7 +1362,7 @@ rest, measured:
 - What the guard depends on (`src/probe/seatbelt-semantics.sh`): the accessed path is resolved —
   a write through `link -> .git` is denied, as are the folded spellings described in the filesystem
   rules; rules are evaluated at access time, so a `.git` created *during* the command is covered;
-  one regex spans every depth; and `file-write*` already refuses a hardlink to a denied target, so
+  one regex spans every depth; and `file-write*` already refuses a hard link to a denied target, so
   the explicit link clause is redundancy — kept, because the membership of a wildcard operation
   family is Apple's to change.
 - `/dev/tty` is the terminal, whatever stdin is: closing the child's stdin does not detach its
@@ -1617,11 +1617,10 @@ To allow artifact downloads beyond Maven Central, add repository hosts to this w
   rather than passed through. The full grammar would let one `allow model-provider` line expand
   into endpoints that are no artifact repository, and a `tunnel` or `method=` word would let a
   host command write to a host, which no host command may.
-- A launch selecting the program prints, per file,
-  `run-on-host egress rules (<file>) widen (<count>):` then each of the file's hosts as an
-  indented rule line, and refuses a file outside the grammar or naming a host the proxy refuses,
-  such as an IP literal, so you see a host that arrived with the repository before the agent's
-  first command.
+- A launch selecting the program prints, per file, `<file>: <count> widening lines` then the
+  file's hosts indented, two or more joined into `allow read: <host>, <host>`, and refuses a file
+  outside the grammar or naming a host the proxy refuses, such as an IP literal, so you see a host
+  that arrived with the repository before the agent's first command.
 - The supervisor hands the proxy `deny defaults`, Maven Central, then the file's lines
   (`RunOnHostPrereqs.egressRuleText`), so the container's catalog contributes nothing.
 

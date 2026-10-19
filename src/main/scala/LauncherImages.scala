@@ -163,20 +163,17 @@ object LauncherImages:
    * side is stale — an old image, or a launch through a different jar than
    * the one that ran --build.
    */
-  def bundleMismatch(
-    image: String,
-    expected: String,
-    label: String,
-    labelName: String = BundleLabel,
-  ): Option[String] =
+  def bundleMismatch(image: String, expected: String, label: String): Option[String] =
     Option.when(label.trim != expected)(
       s"container image $image was not built from the sources this launcher bundles" +
         (if label.trim.isEmpty then " (it has no bundle label)" else "") +
-        "; rebuild with --build" +
-        s"\n  launcher bundle digest: $expected" +
-        s"\n  image label $labelName: " +
-        (if label.trim.isEmpty then "(none)" else label.trim),
+        "; rebuild with --build\n" + digestLines(expected, label),
     )
+
+  /** The launcher's digest over the image's, aligned so that the two compare column by column. */
+  private def digestLines(expected: String, label: String): String =
+    val found = if label.trim.isEmpty then "(none)" else label.trim
+    s"  launcher bundle digest: $expected\n  image bundle digest:    $found"
 
   /**
    * --update uses a base built from this jar's bundled base sources, or does not start. The
@@ -188,7 +185,7 @@ object LauncherImages:
       fail(s"error: base container image not found: $baseImage\n\nBuild it first: run this launcher with --build.")
     val inspected = imageLabel(podman, baseImage, BaseBundleLabel)
     if !inspected.ok then fail(s"error: could not inspect $baseImage\n${inspected.err}")
-    bundleMismatch(baseImage, expected, inspected.text, BaseBundleLabel).foreach: mismatch =>
+    bundleMismatch(baseImage, expected, inspected.text).foreach: mismatch =>
       fail(s"error: $mismatch")
 
   /**
@@ -206,9 +203,7 @@ object LauncherImages:
       if inspected.text.trim != id then
         fail(
           s"""error: the image build committed $image with a stale bundle label
-             |  launcher bundle digest: $id
-             |  image label $labelName: ${
-                if inspected.text.trim.isEmpty then "(none)" else inspected.text.trim}
+             |${digestLines(id, inspected.text)}
              |
              |podman's layer cache can serve a LABEL derived from a changed
              |build arg stale (buildah #5501); this launcher passes --label to
@@ -421,14 +416,15 @@ object LauncherImages:
     val currentIds = current.toSet
     staleTags.filterNot(image => currentIds.contains(image.id)).foreach: image =>
       val command = Vector(podman, "image", "untag", image.id, image.tag)
-      System.err.println(s"removing launcher tag from an older build: ${image.tag}")
+      // The echoed command after each heading names the tag or image, so the heading does not.
+      System.err.println("removing launcher tag from an older build")
       echoCommand(command)
       val untagged = run(command*)
       if !untagged.ok then
         System.err.println(s"note: keeping stale launcher tag ${image.tag}\n${untagged.err}")
     val remaining = Vector.newBuilder[String]
     supersededImageRemoveCommands(podman, candidates, current).foreach: command =>
-      System.err.println(s"removing launcher image from an older build: ${command.last}")
+      System.err.println("removing launcher image from an older build")
       echoCommand(command)
       val removed = run(command*)
       if !removed.ok then

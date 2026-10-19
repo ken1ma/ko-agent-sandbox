@@ -197,7 +197,7 @@ class HostCommandsTest extends munit.FunSuite:
     assert(!consented(Some("yeah")))
     assert(!consented(None))
 
-  test("colour is for a terminal that will render it, and for no one else"):
+  test("color is for a terminal that will render it, and for no one else"):
     assertEquals(colorAllowed(None, Some("xterm-256color")), true)
     assertEquals(colorAllowed(None, None), true)
     assertEquals(colorAllowed(Some("1"), Some("xterm-256color")), false)

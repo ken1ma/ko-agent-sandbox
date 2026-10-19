@@ -213,7 +213,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
   test("the run-on-host lines name the programs in orange, and under --workspace=read-only say a host command writes"):
     val live = runOnHostLines(Seq("sbt", "mill"), "live", color = false)
     assertEquals(live, Vector(
-      "run-on-host: sbt, mill on host",
+      "run-on-host: sbt, mill",
       "  stops your own sbt server or mill daemon in the build directory when used",
     ))
     for
@@ -221,14 +221,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       workspaceMode <- Seq("live", "read-only")
     do
       val lines = runOnHostLines(selected, workspaceMode, color = false)
-      assertEquals(lines.head, s"run-on-host: ${selected.mkString(", ")} on host")
+      assertEquals(lines.head, s"run-on-host: ${selected.mkString(", ")}")
       val shutdown = lines.find(_.startsWith("  stops your own"))
       assertEquals(shutdown.exists(_.contains("sbt server")), selected.contains("sbt"))
       assertEquals(shutdown.exists(_.contains("mill daemon")), selected.contains("mill"))
       assertEquals(lines.exists(_.contains("--workspace=read-only")), workspaceMode == "read-only")
     assertEquals(
       runOnHostLines(Seq("sbt"), "live", color = true).head,
-      "\u001b[38;5;208mrun-on-host: sbt\u001b[0m on host",
+      "\u001b[38;5;208mrun-on-host: sbt\u001b[0m",
     )
     val readOnly = runOnHostLines(Seq("gradle"), "read-only", color = false)
     assertEquals(readOnly.size, 2)
@@ -258,7 +258,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(micLine(source, color = false).startsWith(s"audio: mic$source; "))
     assertEquals(
       runOnHostLines(Seq("mvn"), "live", source, color = false),
-      Vector(s"run-on-host: mvn on host$source"),
+      Vector(s"run-on-host: mvn$source"),
     )
     assertEquals(
       clipboardLine("paste", color = false),
@@ -303,7 +303,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       s"forwarded environment: ${on}GH_TOKEN$off, ${on}TERM$off$source",
     )
 
-  test("a program's hosts are an orange report, one rule per line, what a terminal acts on spelled out"):
+  test("a program's hosts are an orange report, joined on one line, what a terminal acts on spelled out"):
     val silent = Seq("sbt" -> Vector.empty, "mill" -> Vector.empty)
     assertEquals(runOnHostWideningLines(silent, color = false), Vector.empty)
     assertEquals(
@@ -312,24 +312,22 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         color = false,
       ),
       Vector(
-        "run-on-host egress rules (.ko-agent-sandbox/run-on-host/sbt/egress/rule) widen (2):",
-        "  allow https://repo.example/ read",
-        "  allow https://plugins.example/ read",
+        ".ko-agent-sandbox/run-on-host/sbt/egress/rule: 2 widening lines",
+        "  allow read: repo.example, plugins.example",
       ),
     )
     val hostile = runOnHostWideningLines(Seq("gradle" -> Vector("x.example\u001b[2K")), color = true)
     assertEquals(
       hostile,
       Vector(
-        "\u001b[38;5;208mrun-on-host egress rules (.ko-agent-sandbox/run-on-host/gradle/egress/rule) widen (1):" +
-          "\u001b[0m",
+        "\u001b[38;5;208m.ko-agent-sandbox/run-on-host/gradle/egress/rule: 1 widening line\u001b[0m",
         "\u001b[38;5;208m  allow https://x.example\\x1b[2K/ read\u001b[0m",
       ),
     )
     // A bidi override would show the line reordered, a line separator as two lines.
     assertEquals(
       runOnHostWideningLines(Seq("sbt" -> Vector("moc.live\u202e", "a\u2028b")), color = false).tail,
-      Vector("  allow https://moc.live\\u202e/ read", "  allow https://a\\u2028b/ read"),
+      Vector("  allow read: moc.live\\u202e, a\\u2028b"),
     )
 
   test("the memory figure's scale is the action's: the session floor at a launch, the build check before a build"):
@@ -1360,6 +1358,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(stale.exists(_.startsWith("container image ko-agent-sandbox:latest")), stale.toString)
     assert(stale.exists(_.contains(sandboxId)), stale.toString)
     assert(stale.exists(_.contains(proxyId)), stale.toString)
+    // The two digests start in the same column.
+    val digests = stale.toVector.flatMap(_.linesIterator.drop(1))
+    assertEquals(digests.map(_.trim.takeWhile(_ != ':')), Vector("launcher bundle digest", "image bundle digest"))
+    assertEquals(digests(0).indexOf(sandboxId), digests(1).indexOf(proxyId))
     val unlabeled = bundleMismatch("ko-agent-sandbox:latest", sandboxId, "")
     assert(unlabeled.exists(_.contains("no bundle label")), unlabeled.toString)
     assert(unlabeled.exists(_.contains(s"$sandboxId")), unlabeled.toString)
@@ -1450,7 +1452,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val (olderExit, olderError, olderCalls) = update(Some(older))
     assertEquals(olderExit, 1, olderError)
     assert(olderError.contains("rebuild with --build"), olderError)
-    assert(olderError.contains(s"image label $BaseBundleLabel: $older"), olderError)
+    assert(olderError.contains(s"\n  image bundle digest:    $older"), olderError)
     assert(!startsImageWork(olderCalls), olderCalls.toString)
 
     val (unlabeledExit, unlabeledError, unlabeledCalls) = update(Some(""))
@@ -1686,7 +1688,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       runOnHostSection.replace('\n', ' ').contains("Under mill and gradle a build's processes can bind"),
       runOnHostSection,
     )
-    assert(runOnHostSection.contains("never re-run in the container"), runOnHostSection)
+    assert(runOnHostSection.contains("never rerun in the container"), runOnHostSection)
     assert(runOnHostSection.contains(RunOnHostChannel.RunOnHostVariable), runOnHostSection)
     assert(!filtered.contains("ko-sandbox-run-on-host"), filtered)
     val discoverable =

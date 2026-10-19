@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! host-view /Users /private /var/folders   directories whose objects the daemon sees as the host does
-//! readonly .vscode                          a rule line: a name at any depth, `*` within a component
+//! read-only .vscode                         a rule line: a name at any depth, `*` within a component
 //! writable node_modules
 //! ```
 //!
@@ -16,16 +16,16 @@
 //! guard's, each naming a workspace-relative path from the root:
 //!
 //! ```text
-//! readonly .vscode
+//! read-only .vscode
 //! writable node_modules
-//! readonly-path .husky/_
+//! read-only-path .husky/_
 //! pinned-path tools
-//! readonly-under shared/claude settings.json
+//! read-only-under shared/claude settings.json
 //! ```
 //!
-//! `readonly-under <dir> <rest>` makes `<rest>` below `<dir>` read-only, where a symlink makes
+//! `read-only-under <dir> <rest>` makes `<rest>` below `<dir>` read-only, where a symlink makes
 //! `<dir>` an interior component of a line: `.claude -> shared/claude` under
-//! `readonly .claude/settings.json`.
+//! `read-only .claude/settings.json`.
 
 use std::path::PathBuf;
 
@@ -57,8 +57,8 @@ impl RuleFile {
     /// every rule line, and the guard's `aliases`; and their text, which a mount with
     /// `--file-rules` writes beside its input and `--resolve` prints. The text is stricter than
     /// the returned rules where a `writable` line lifts under an alias's name, since the Seatbelt
-    /// profile built from it has no contexts: a read-only alias prints as `readonly-path`, another
-    /// as one `readonly-under` per `readonly` rest ([`RuleContext::read_only_rests`]).
+    /// profile built from it has no contexts: a read-only alias prints as `read-only-path`, another
+    /// as one `read-only-under` per `read-only` rest ([`RuleContext::read_only_rests`]).
     pub fn with_additions(
         &self,
         additions: &[(RuleWord, String)],
@@ -70,17 +70,17 @@ impl RuleFile {
             lines.push(anchored_line(*word, path));
             match word {
                 RuleWord::Pinned => pinned.push(format!("pinned-path {path}")),
-                RuleWord::ReadOnly => read_only.push(format!("readonly-path {path}")),
+                RuleWord::ReadOnly => read_only.push(format!("read-only-path {path}")),
                 RuleWord::Writable => unreachable!("the guard adds no writable path"),
             }
         }
         let mut rules = FileRules::new(lines);
         for (path, context) in aliases {
             if context.read_only(&self.rules) {
-                read_only.push(format!("readonly-path {path}"));
+                read_only.push(format!("read-only-path {path}"));
             } else {
                 for rest in context.read_only_rests(&self.rules) {
-                    under.push(format!("readonly-under {path} {rest}"));
+                    under.push(format!("read-only-under {path} {rest}"));
                 }
             }
             rules.push_alias(path, context.clone());
@@ -126,12 +126,12 @@ pub fn parse(text: &str) -> Result<RuleFile, String> {
                 }
                 host_view = Some(roots.iter().map(PathBuf::from).collect());
             }
-            [word @ ("readonly" | "writable"), name] => {
+            [word @ ("read-only" | "writable"), name] => {
                 if !valid_name(name) {
                     return Err(format!("{}: not a resolved rule name", at()));
                 }
                 lines.push(RuleLine {
-                    word: if *word == "readonly" {
+                    word: if *word == "read-only" {
                         RuleWord::ReadOnly
                     } else {
                         RuleWord::Writable
@@ -174,8 +174,8 @@ mod tests {
     #[test]
     fn the_resolved_form_parses_and_echoes_with_the_guard_additions_last() {
         let file = parse(
-            "host-view /Users /private /var/folders\nreadonly .vscode\nwritable node_modules\n\
-             readonly *.code-workspace\n",
+            "host-view /Users /private /var/folders\nread-only .vscode\nwritable node_modules\n\
+             read-only *.code-workspace\n",
         )
         .unwrap();
         assert_eq!(
@@ -195,8 +195,8 @@ mod tests {
         );
         assert_eq!(
             text,
-            "readonly .vscode\nwritable node_modules\nreadonly *.code-workspace\n\
-             readonly-path .husky/_\npinned-path Tools\n",
+            "read-only .vscode\nwritable node_modules\nread-only *.code-workspace\n\
+             read-only-path .husky/_\npinned-path Tools\n",
         );
         let last = &rules.lines()[4];
         assert!(last.anchored);
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn an_alias_prints_the_read_only_rests_it_carries_and_decides_below_its_path() {
-        let file = parse("readonly .claude/settings.json\nreadonly .claude/skills\n").unwrap();
+        let file = parse("read-only .claude/settings.json\nread-only .claude/skills\n").unwrap();
         let components: [&[u8]; 1] = [b".claude"];
         let claude = crate::policy::rule_context_of_path(&file.rules, &components).unwrap();
         let (rules, text) = file.with_additions(
@@ -216,8 +216,8 @@ mod tests {
         );
         assert_eq!(
             text,
-            "readonly .claude/settings.json\nreadonly .claude/skills\npinned-path Shared/claude\n\
-             readonly-under Shared/claude settings.json\nreadonly-under Shared/claude skills\n",
+            "read-only .claude/settings.json\nread-only .claude/skills\npinned-path Shared/claude\n\
+             read-only-under Shared/claude settings.json\nread-only-under Shared/claude skills\n",
         );
         let components: [&[u8]; 4] = [b"shared", b"claude", b"skills", b"new.md"];
         let below = crate::policy::rule_context_of_path(&rules, &components).unwrap();
@@ -227,19 +227,19 @@ mod tests {
     #[test]
     fn anything_but_the_resolved_form_is_refused() {
         for text in [
-            "readonly\n",
-            "readonly .vscode extra\n",
-            "readonly  .vscode\n",
-            "readonly .VSCODE\n",
-            "readonly /.vscode\n",
-            "readonly .vscode/\n",
-            "readonly a//b\n",
-            "readonly ../x\n",
-            "readonly-path .husky/_\n",
+            "read-only\n",
+            "read-only .vscode extra\n",
+            "read-only  .vscode\n",
+            "read-only .VSCODE\n",
+            "read-only /.vscode\n",
+            "read-only .vscode/\n",
+            "read-only a//b\n",
+            "read-only ../x\n",
+            "read-only-path .husky/_\n",
             "allow .vscode\n",
             "host-view relative\n",
             "host-view /\nhost-view /\n",
-            "readonly .vs code\n",
+            "read-only .vs code\n",
         ] {
             assert!(parse(text).is_err(), "{text:?} was accepted");
         }
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn without_a_host_view_line_the_daemon_sees_the_host_namespace() {
         assert_eq!(
-            parse("readonly .idea\n").unwrap().host_view,
+            parse("read-only .idea\n").unwrap().host_view,
             vec![PathBuf::from("/")],
         );
     }

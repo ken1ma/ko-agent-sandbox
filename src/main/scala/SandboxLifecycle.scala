@@ -85,7 +85,7 @@ object SandboxLifecycle:
    * launches make every later launch fail for want of one, until a reset.
    *
    * A single hook avoids a window where swapping hooks could let a JVM shutdown remove a sandbox
-   * whose podman had already started. Behaviour follows the run's own state instead; these answers
+   * whose podman had already started. Behavior follows the run's own state instead; these answers
    * are the whole design:
    *
    *   - before the handover, nothing outside this process knows what was made — remove it;

@@ -2147,7 +2147,7 @@ mod tests {
         fs::create_dir_all(root.join("shared/claude/skills/cache")).unwrap();
         std::os::unix::fs::symlink("shared/claude", root.join(".claude")).unwrap();
         let file =
-            crate::rulefile::parse("readonly .claude/skills\nwritable .claude/skills/cache\n")
+            crate::rulefile::parse("read-only .claude/skills\nwritable .claude/skills/cache\n")
                 .unwrap();
         let additions = protected(&root, &file.rules);
         let (rules, text) = file.with_additions(&additions.lines(), &additions.aliases);
@@ -2158,7 +2158,7 @@ mod tests {
         assert!(at("shared/claude/skills/new.md").read_only(&rules));
         assert!(!at("shared/claude/skills/cache/entry").read_only(&rules));
         assert!(
-            text.contains("readonly-under shared/claude skills\n"),
+            text.contains("read-only-under shared/claude skills\n"),
             "{text}",
         );
         let _ = fs::remove_dir_all(&root);

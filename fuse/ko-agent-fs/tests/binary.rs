@@ -128,7 +128,7 @@ fn a_workspace_whose_hooks_live_inside_it_is_resolved_with_them_read_only() {
     )
     .unwrap();
     let rules = scratch("relocated-rules").join("file-rules");
-    fs::write(&rules, b"host-view /\nreadonly .vscode\n").unwrap();
+    fs::write(&rules, b"host-view /\nread-only .vscode\n").unwrap();
 
     let output = resolve(&source, Some(&rules));
 
@@ -139,7 +139,7 @@ fn a_workspace_whose_hooks_live_inside_it_is_resolved_with_them_read_only() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "readonly .vscode\nreadonly-path shared-hooks\nreadonly-path tools/githooks\n\
+        "read-only .vscode\nread-only-path shared-hooks\nread-only-path tools/githooks\n\
          pinned-path tools\n",
     );
 
@@ -160,7 +160,7 @@ fn the_ends_of_symlinks_the_rules_reach_are_printed_as_the_profile_reads_them() 
     let rules = scratch("alias-rules").join("file-rules");
     fs::write(
         &rules,
-        b"host-view /\nreadonly .vscode\nreadonly .claude/settings.json\n",
+        b"host-view /\nread-only .vscode\nread-only .claude/settings.json\n",
     )
     .unwrap();
 
@@ -173,8 +173,8 @@ fn the_ends_of_symlinks_the_rules_reach_are_printed_as_the_profile_reads_them() 
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "readonly .vscode\nreadonly .claude/settings.json\nreadonly-path tasks-data.json\n\
-         pinned-path shared\npinned-path shared/claude\nreadonly-under shared/claude settings.json\n",
+        "read-only .vscode\nread-only .claude/settings.json\nread-only-path tasks-data.json\n\
+         pinned-path shared\npinned-path shared/claude\nread-only-under shared/claude settings.json\n",
     );
 
     let _ = fs::remove_dir_all(&source);
@@ -186,7 +186,7 @@ fn file_rules_the_launcher_did_not_resolve_are_refused_before_mounting() {
     // The launcher owns the grammar; a line it would never write means another version wrote it.
     let source = scratch("bad-rules-source");
     let rules = scratch("bad-rules").join("file-rules");
-    fs::write(&rules, b"readonly .VSCODE\n").unwrap();
+    fs::write(&rules, b"read-only .VSCODE\n").unwrap();
 
     let output = resolve(&source, Some(&rules));
 

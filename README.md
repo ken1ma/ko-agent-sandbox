@@ -476,7 +476,7 @@ restore permission prompts and set the Claude Code status line.
     (doc/egress-proxy.md).
 
     .ko-agent-sandbox/file/rule modifies which workspace files a session cannot change because a
-    host program takes a command or a server from them: readonly and writable lines naming files or
+    host program takes a command or a server from them: read-only and writable lines naming files or
     directories at any depth, applied in order over the launcher-owned defaults (doc/file-rules.md).
 
 
