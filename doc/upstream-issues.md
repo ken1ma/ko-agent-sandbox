@@ -257,3 +257,113 @@ read here while a JDK runs, lists processes and still reads a child it started:
 **Not verified:** the reproducer ran under `sandbox-exec` with the profile above, not under any
 of the three projects' own sandboxes. Run its last command under each before submitting. No
 public report of it for these projects was found by a web search without GitHub code search.
+
+## openjdk/jdk
+
+Found when the `--run-on-host` acceptance test ran its mill rows on Mill 1.3.0, whose daemon reads
+each launcher's start time (the com-lihaoyi/mill entry below). This project runs Mill 1.2 and later
+without a daemon (`run-on-host.md`, "Mill 1.2 and later: no daemon").
+
+### `ProcessHandle.info()` throws on macOS when `KERN_PROCARGS2` returns `EPERM`
+
+**Title:** On macOS, `ProcessHandle.info()` throws `RuntimeException: Operation not permitted` for
+a process whose arguments the caller may not read, and drops the start time it already read
+
+**Versions:** Temurin 25.0.4, macOS 26.6.2 on Apple silicon. Source read on 2026-10-19:
+`src/java.base/macosx/native/libjava/ProcessHandleImpl_macosx.c` at jdk-25+36 and `master`.
+
+**Reproducer:** `Info.java`:
+
+```java
+public class Info {
+    public static void main(String[] args) {
+        var process = ProcessHandle.of(Long.parseLong(args[0])).orElseThrow();
+        System.out.println(process.info().startInstant());
+    }
+}
+```
+
+```sh
+sleep 600 & outside=$!
+printf '%s\n' '(version 1)' '(allow default)' \
+    '(deny sysctl-read (sysctl-name-regex #"procargs"))' \
+    '(deny process-info-pidinfo)' '(allow process-info-pidinfo (target same-sandbox))' > info.sb
+sandbox-exec -f info.sb "$JAVA_HOME/bin/java" Info.java "$outside"
+```
+
+**What happens:**
+
+```text
+java.lang.RuntimeException: Operation not permitted
+    at java.base/java.lang.ProcessHandleImpl$Info.info0(Native Method)
+    at java.base/java.lang.ProcessHandleImpl$Info.info(ProcessHandleImpl.java:562)
+    at java.base/java.lang.ProcessHandleImpl.info(ProcessHandleImpl.java:479)
+```
+
+**Why:** `info0` (`ProcessHandleImpl_unix.c`) stores the start time from `kern.proc`, then calls
+`os_getCmdlineAndUserInfo`. When its `sysctl` of `{CTL_KERN, KERN_PROCARGS2, pid}` fails with an
+errno other than `EINVAL` or `EIO`, it throws, and the caller loses the start time with the
+arguments. Linux's `os_getCmdlineAndUserInfo` returns quietly when it cannot open
+`/proc/<pid>/cmdline`. A sandbox refuses the read with `EPERM`; the profile above has the rule of
+agent-safehouse's `profiles/10-system-runtime.sb`.
+
+**Expected:** treat `EPERM` as `EINVAL` and `EIO` are treated, leaving the arguments empty. The
+`ProcessHandle.Info` Javadoc says the information "is limited by the operating system privileges
+of the process making the request", and `info()` declares no exception. JDK-8276651 (fixed in 20,
+backported to 17u and 11u) added `EIO` for the same reason; its review (openjdk/jdk#9946) reads:
+"The spec for `ProcessHandle.info()` does not declare any exceptions so there is little risk
+changing the behavior by quietly returning in the case of EINVAL or EIO".
+
+**Not verified:** the reproducer was not run. The stack trace is Mill 1.3.0's daemon under this
+project's command profile, which has the same three rules; `run-on-host.md`, "The Seatbelt
+profile", has the measurement that allowing `kern.procargs2.<pid>` after them makes `info()` of
+that process succeed. That the start time survives the fix is read from the source. No report of
+`EPERM` was found on bugs.openjdk.org (searched for `ProcessHandle` with `EPERM`, "Operation not
+permitted" and `KERN_PROCARGS2`, 2026-10-19).
+
+## com-lihaoyi/mill
+
+Found with the openjdk/jdk entry above, which is the cause; this report asks Mill to tolerate the
+JDK releases that throw. This project's handling is the openjdk/jdk entry's.
+
+### The daemon fails every command when it cannot read the launcher's start time
+
+**Title:** `LauncherOutFilesRecordStore` lets `ProcessHandle.info()`'s exception fail the command
+when the daemon may not read the launcher's process information
+
+**Versions:** Mill 1.3.0, Temurin 25.0.4, macOS 26.6.2 on Apple silicon. The code is the same in
+2.0.0-M2 and `main` (read on 2026-10-19); it came with #6955 and is absent from 1.1.10.
+
+**Reproducer:** start the daemon inside a Seatbelt sandbox that refuses reading other processes'
+arguments, then run a launcher outside it. `info.sb` is the openjdk/jdk entry's profile.
+
+```sh
+sandbox-exec -f info.sb ./mill version     # the daemon inherits the sandbox and stays
+./mill __.compile                          # the launcher is outside it
+```
+
+**What happens:** every command fails with `Mill launcher failed. See out/mill-launcher/log for
+details.`, and the daemon reports:
+
+```text
+java.lang.RuntimeException: Operation not permitted
+    at java.base/java.lang.ProcessHandleImpl$Info.info0(Native Method)
+    …
+    at mill.internal.LauncherOutFilesRecordStore$.write(LauncherOutFilesRecordStore.scala:25)
+    at mill.internal.LauncherOutFilesImpl.writeLauncherRunFile(LauncherOutFilesImpl.scala:55)
+    at mill.daemon.MillMain0$.createLauncherResources$1(MillMain0.scala:323)
+```
+
+**Why:** `processStartMillis` calls `info()` outside any `try`, and the JDK on macOS throws there
+(the openjdk/jdk entry). `liveProcess` in `readActiveRecord` calls `info()` the same way for a
+record with a start time, which a launcher waiting for `out/mill-out-lock` reaches while wording
+its wait (`SharedOutLockManager.activeOtherProcessPrefix`). The record format already allows no
+start time: `write` stores `null`, and `liveProcess` checks such a record by pid alone.
+
+**Expected:** treat an exception from `info()` as an unknown start time in both places, as a
+record without one already is.
+
+**Not verified:** the reproducer was not run; the failure is the `--run-on-host` acceptance test's,
+where the daemon and each launcher run under separate `sandbox-exec` profiles with the rule
+(2026-10-19). No report was found in Mill's issues (searched for `LauncherOutFilesRecordStore`,
+`info0` and "Operation not permitted", 2026-10-19).

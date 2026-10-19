@@ -168,6 +168,20 @@ measurement.
   each refusal's message, what the user does, and the document that records its reason, which
   stays where it was decided.
 
+## The run-on-host acceptance test's host prerequisites
+
+The test names one fixture's missing host run at a time, after `emit` fails on it. A launch on
+this repository offers the runs of the nested mill and Gradle fixtures alone: Maven runs from the
+workspace root's `mvnw` (`run-on-host.md`, "Maven"), and the mvn fixture and the Mill 1.1.10 copy
+are workspaces only the test uses.
+
+- [ ] Check every selected fixture before the first `emit`, print every missing host run at once,
+  and exit: the launch's own findings (`RunOnHostProvisioning.finding`) through the test classpath,
+  so the wording is the refusals'.
+- [ ] If that check is not built: list each fixture's host run in the script's header —
+  `./mvnw --version` in `mvn-fixture`, `./gradlew --version` in `gradle-fixture`, and
+  `MILL_VERSION=1.1.10-jvm ./mill --no-daemon version` in `mill-fixture`, which the header has.
+
 ## Refuse user namespaces and mounts under `NESTING=none`
 
 - [ ] A launcher-owned seccomp profile for `NESTING=none` that refuses creating a user namespace,

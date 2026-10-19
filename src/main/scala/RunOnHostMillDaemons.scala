@@ -281,7 +281,7 @@ object RunOnHostMillDaemons:
     * writable roots. The read is the file's text when the file is one, else None. */
   case class Confined(read: Path => Option[String], delete: Path => Boolean)
 
-  private def confined(profileFile: Path): Confined =
+  def confined(profileFile: Path): Confined =
     def run(command: String*): Option[String] =
       try
         val process = ProcessBuilder(RunOnHostSandbox.sandboxExec(profileFile, command)*)

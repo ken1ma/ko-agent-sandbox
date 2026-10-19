@@ -1386,7 +1386,7 @@ provides the confinement for these commands; they execute outside the container.
   - a temporary directory for that command — under `mill` and `gradle`, the runner's own, where the
     daemons' forked JVMs write;
   - under sbt, the sockets of the launch's sbt server under the runner's own directory; under
-    `mill`, the one port of the launch's mill daemon;
+    `mill` before 1.2, the one port of the launch's mill daemon;
   - the port of one egress proxy: the runner's for that program under sbt, `mill` and `gradle`,
     kept across the launch's commands of one build directory, or the command's own under Maven;
   - that proxy's CA certificate, read-only.
@@ -1395,7 +1395,8 @@ provides the confinement for these commands; they execute outside the container.
   caches included.
 
   The mill daemon and every Gradle process, alone among the host processes, may bind listeners on
-  any port: Mill and Gradle bind port 0, and no rule confines a bind to one port.
+  any port: Mill and Gradle bind port 0, and no rule confines a bind to one port. From Mill 1.2 on,
+  the mill command has that grant in the daemon's place.
   - Every process they fork inherits that grant, so a test under `mill` or `gradle` can bind a TCP
     or UDP listener where one under sbt or Maven gets `EPERM`.
   - The bind is at any address of this host, not loopback alone: SBPL's `localhost` class admits a
@@ -1487,6 +1488,9 @@ provides the confinement for these commands; they execute outside the container.
       whose directory lies under the command's writable roots on a fingerprint mismatch — the reach
       the profile's write grant sets — while the one-port rule keeps the client from attaching to
       it.
+  - From Mill 1.2 on, the runner starts no daemon, and each command runs the build in its own
+    profile: Mill's daemon reads each launcher's process information, which `ProcessReadRule`
+    refuses across sandboxes (`doc/run-on-host.md`, "Mill 1.2 and later: no daemon").
 
   The runner keeps one per build directory it visits, all warm at once, and ends them with the
   launch or when their proxy is gone. A cancel follows the stock program (`doc/run-on-host.md`,
