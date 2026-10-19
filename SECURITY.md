@@ -62,7 +62,7 @@ costs are described below.
 - Outbound HTTPS traffic passes through the proxy, which enforces the resolved egress rules and
   records protocol and policy decisions ("Egress proxy", below).
 - The default profile starts from the inspected catalog and the default rules of the model
-  providers the launch selects: the agent's own, or those `--model-provider` names. The
+  providers the launch selects: the agent's own and those `--model-provider` names. The
   workspace's rule file can remove or extend those grants.
 
 **Writing to remote hosts**, subject to the resolved egress rules.
@@ -365,7 +365,8 @@ root the user selects.
 ## Not defended
 
 **Prompt injection.** The sandbox does not detect or prevent an agent from following malicious
-instructions. It limits the actions available to the compromised agent.
+instructions. It limits the actions available to the compromised agent. Claude Code's auto mode
+(README, "`claude`") screens actions with a classifier; this document counts it as no defense.
 
 **Exfiltration through allowed network traffic.**
 

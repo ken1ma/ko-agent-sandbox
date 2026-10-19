@@ -287,26 +287,6 @@ are workspaces only the test uses.
   `same-uid` launch line (`LaunchMessages.scala`, `nestingLine`) and `README.md`'s
   `--nesting` entry, which name it as what `same-uid` adds.
 
-## Claude Code's auto mode, as a launcher option
-
-- [ ] A launcher option that starts `claude` in auto mode instead of the image's managed
-  `"defaultMode": "bypassPermissions"` (`container/ko-agent-sandbox/Containerfile`), so a
-  classifier blocks actions that appear driven by hostile content Claude read
-  (https://code.claude.com/docs/en/permission-modes.md). Name it like the README's other options.
-  - The option must reach every `claude` the session starts, a `claude` typed in the session's
-    shell included, so it sets the session's managed settings, not a command-line flag. `/etc` is
-    read-only in a session and `CLAUDE_CODE_MANAGED_SETTINGS_PATH` is a stub in 2.1.274
-    (`Containerfile`); a read-only bind of a second settings file over
-    `/etc/claude-code/managed-settings.json` is the candidate. Read whether managed settings can
-    also keep the session from switching back to `bypassPermissions`.
-  - Measure, under each egress profile, that the classifier works through the proxy: its review
-    rides on the model requests, or Claude Code sends its own classifier requests when a proxy
-    drops them; and what a session shows when the server rejects auto mode for the account.
-  - Decide whether the option covers `ko-review`'s `claude` reviewer, which `doc/ko-review.md`
-    describes under the managed `bypassPermissions`, and update `doc/limitations.md`'s prompts
-    that remain.
-  - Check whether Codex, `agy` and the other agents have a counterpart worth the same option.
-
 ## Japanese names in file rules
 
 - [ ] Let `read-only` and `writable` lines name Japanese directories and files; `file-rules.md`

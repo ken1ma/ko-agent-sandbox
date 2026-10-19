@@ -101,8 +101,8 @@ The launcher:
   (`SandboxLifecycle.handOver`).
 - Every launch line is written to stderr, as are the entrypoint's warnings; the entrypoint's start
   pause needs a terminal on stdin.
-- The model providers a launch admits under egress are selected by `--model-provider`, else by
-  the command's first word (`EgressRules.selectedProvider`); `copilot` is recognized, and
+- The model providers a launch admits under egress are selected by the command's first word
+  and `--model-provider` (`EgressRules.selectedProvider`); `copilot` is recognized, and
   `opencode` is refused without the option.
 - No host process accepts a connection from the sandbox: the clipboard relay and the runner read
   FIFOs through `podman exec` (SECURITY.md, "Clipboard" and "Run on host"). The listeners
@@ -409,7 +409,7 @@ The design as reviewed, for when the track is reopened.
 The IDE's custom-agent entry runs one of these lines, with the workspace root as the working
 directory: the launcher takes the workspace from it, as for a terminal launch. `--protocol` selects
 the transport and the relay's policy; the command after `--` selects the agent and, as for a
-terminal launch, the providers its egress admits, unless `--model-provider` names them. The
+terminal launch, the providers its egress admits, beside those `--model-provider` names. The
 other session options keep their meaning.
 
 There is no launcher-owned alias from an agent name to its ACP command line. The agent's own

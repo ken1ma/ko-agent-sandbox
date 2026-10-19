@@ -61,9 +61,9 @@ object CommandLine:
   val DefaultSessionStartMode = "pause"
 
   /**
-   * `--model-provider=<names>` selects the model providers the session's egress admits, in place of
-   * the one the command's name selects (EgressRules.selectedProvider). The value goes to the proxy
-   * as written: the proxy image defines the provider names, and its refusal of a value it does not
+   * `--model-provider=<names>` adds model providers to the one the command's name selects for the
+   * session's egress (EgressRules.selectedProvider). The names go to the proxy as written: the
+   * proxy image defines the provider names, and its refusal of a value it does not
    * define fails the launch (EgressRules.rulesetRefusal). The launcher keeps no list of providers.
    */
   final val ModelProviderOption = "--model-provider"
