@@ -182,11 +182,21 @@ class EgressRulesTest extends munit.FunSuite:
     assertEquals(commandProvider(Some("./run-claude.sh")), None)
     assertEquals(commandProvider(None), None)
 
-  test("the launch's selection is the option, else the command's provider; opencode needs the option"):
+  test("the launch's selection is the command's provider and the option's; opencode needs the option"):
     val profiles = Vector("deny-unless-allowed", "deny-unless-model")
     profiles.foreach: profile =>
       assertEquals(selectedProvider(None, Some("claude"), profile), Right(Some("anthropic")))
-      assertEquals(selectedProvider(Some("aws"), Some("claude"), profile), Right(Some("aws")))
+      assertEquals(selectedProvider(Some("aws"), Some("claude"), profile), Right(Some("anthropic,aws")))
+      // An options file's selection for another agent keeps agy's own provider, named once.
+      assertEquals(
+        selectedProvider(Some("anthropic,openai"), Some("agy"), profile),
+        Right(Some("google,anthropic,openai")),
+      )
+      assertEquals(selectedProvider(Some("anthropic,openai"), Some("claude"), profile), Right(Some("anthropic,openai")))
+      assertEquals(selectedProvider(Some("openai,anthropic"), Some("claude"), profile), Right(Some("anthropic,openai")))
+      assertEquals(selectedProvider(Some("anthropic"), Some("claude"), profile), Right(Some("anthropic")))
+      // A name the option spells twice still reaches the proxy, which refuses it.
+      assertEquals(selectedProvider(Some("aws,aws"), Some("claude"), profile), Right(Some("anthropic,aws,aws")))
       assertEquals(selectedProvider(Some("anthropic,aws"), Some("bash"), profile), Right(Some("anthropic,aws")))
       assertEquals(selectedProvider(Some("aws,github"), Some("/opt/bin/opencode"), profile), Right(Some("aws,github")))
       assertEquals(selectedProvider(None, Some("bash"), profile), Right(None))

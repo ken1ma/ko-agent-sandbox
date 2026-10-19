@@ -183,10 +183,12 @@ object EgressRules:
 
   /**
    * The provider selection a launch hands the proxy (RulesetHelper.selectedProviders): the
-   * `--model-provider` value when given, else the command's classification, else none. The option
-   * is refused under deny-all, where it would select nothing; a providerless agent without it is
-   * refused under the other profiles, where every other agent's launch selects a provider and
-   * that one's would silently select none.
+   * command's classification, followed by the `--model-provider` names it does not repeat, which
+   * the proxy would refuse as named twice. An options file's `--model-provider` applies to every
+   * agent, so a selection that replaced the classification would cut each other agent off from its
+   * own provider. The option is refused under deny-all, where it would select nothing; a
+   * providerless agent without it is refused under the other profiles, where every other agent's
+   * launch selects a provider and that one's would silently select none.
    */
   def selectedProvider(
     option: Option[String],
@@ -197,7 +199,9 @@ object EgressRules:
     if profile == "deny-all" && option.isDefined then
       Left(s"error: ${CommandLine.ModelProviderOption} selects no host under --egress=deny-all; drop it")
     else
-      option.orElse(commandProvider(command)) match
+      val own = commandProvider(command)
+      val named = option.toVector.flatMap(_.split(",", -1)).filterNot(own.contains)
+      Option.when(own.nonEmpty || named.nonEmpty)((own.toVector ++ named).mkString(",")) match
         case None if profile != "deny-all" && name.exists(ProviderlessAgents) =>
           Left(
             s"error: ${name.get} has no fixed model provider; name the session's providers with " +

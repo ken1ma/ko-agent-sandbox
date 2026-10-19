@@ -116,7 +116,7 @@ Insert these launcher options before the agent command (`claude` above):
    fixed provider and is refused without the option.
    For example, to run `claude` and review with `codex` through `/ko-review`:
 
-       java -jar "<path-to-jar>/ko-agent-sandbox.jar" --model-provider=anthropic,openai claude
+       java -jar "<path-to-jar>/ko-agent-sandbox.jar" --model-provider=openai claude
 
 1. Use `--egress=deny-unless-model` to limit network access to the selected model providers,
    dropping the read-only sites.
@@ -155,7 +155,7 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
    Choose Codex or a separate Claude Code session as the reviewer. Claude fixes or disputes each
    finding on the same reviewer thread until the reviewer approves the exact tree or asks for a
    decision only you can make.
-   - A Codex reviewer needs `--model-provider` to name `openai` as well (the launch example above).
+   - A Codex reviewer needs `--model-provider` to name `openai` (the launch example above).
    - The reviewer's suggestions, opinions on the design that do not block approval, Claude adopts
      or disputes; it brings to you those that are yours to decide and names the adopted ones that
      changed the design.
@@ -163,6 +163,11 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
    - Codex reviews under this workspace's Codex sign-in.
    - Each round's tree and transcript are on a Git ref under `refs/ko-review/` in the repository,
      for `git diff` between rounds ([doc/ko-review.md](doc/ko-review.md)).
+1. To have a classifier screen Claude's actions, such as sending workspace data out on an injected
+   instruction, launch `claude --permission-mode auto`. It adds a check, not a boundary
+   ([SECURITY.md](SECURITY.md#not-defended), "Prompt injection").
+   - A `claude` started without the flag, such as one in the session's shell or the `/ko-review`
+     reviewer, runs under the image's managed `bypassPermissions`.
 1. A prompt remains for some `rm` commands
    ([doc/limitations.md](doc/limitations.md#permission-prompts-that-remain)).
 
@@ -179,7 +184,7 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
    ([doc/microphone.md](doc/microphone.md#codex)).
 1. `$ko-review` runs the same review as [`/ko-review`](#claude), with Codex fixing or disputing
    the findings. Codex asks its questions in replies, since it has no question tool outside Plan
-   mode. For a Claude reviewer, launch with `--model-provider=openai,anthropic`.
+   mode. For a Claude reviewer, launch with `--model-provider=anthropic`.
 
 #### `agy`
 
@@ -309,7 +314,7 @@ restore permission prompts and set the Claude Code status line.
                          defaults modified by .ko-agent-sandbox/egress/rule.
                          Each profile: doc/egress-proxy.md
       --model-provider=<names>
-                         the model providers the session reaches instead of the
+                         the model providers the session reaches beside the
                          agent's own: anthropic, openai, google, aws or github,
                          separated by commas. Required for opencode, which has no
                          fixed provider; refused under --egress=deny-all

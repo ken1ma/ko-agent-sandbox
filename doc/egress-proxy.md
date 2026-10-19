@@ -38,13 +38,13 @@ The proxy's default rules, listed in the proxy image's `defaults/host` and
 
 A launch selects the model providers whose default rules it admits:
 
-- `--model-provider=<names>` names them: the providers under `defaults/model-provider/`,
-  separated by commas. It is refused under `deny-all`, where nothing is admitted.
-- Without the option, the command's first word selects one: `claude` selects `anthropic`,
-  `codex` selects `openai`, `agy` selects `google`, `kiro-cli` selects `aws`, `copilot` selects
-  `github`. `opencode` has no fixed provider, and a launch of it without the option is refused.
+- The command's first word selects one: `claude` selects `anthropic`, `codex` selects `openai`,
+  `agy` selects `google`, `kiro-cli` selects `aws`, `copilot` selects `github`.
+- `--model-provider=<names>` adds the providers it names: those under `defaults/model-provider/`,
+  separated by commas. It is refused under `deny-all`, where nothing is admitted. `opencode` has
+  no fixed provider, and a launch of it without the option is refused.
 - Only the basename of the directly launched command is classified; anything else selects no
-  provider and says so at startup.
+  provider of its own, and a launch that selects none says so at startup.
 
 The profiles:
 
