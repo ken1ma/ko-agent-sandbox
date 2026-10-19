@@ -34,11 +34,14 @@ allow https://antigravity.google/     read  # agy
 allow https://www.antigravity.google/ read  # agy: 2026-08: agy docs alias
 allow https://kiro.dev/               read  # kiro-cli
 allow https://docs.github.com/        read  # copilot
+
 # opencode: the docs, and the model catalog it refreshes hourly, from a copy built into the binary.
 # opencode.ai also serves the Zen model API and the console sign-in, both writes, which `read`
 # refuses; default rules tunneling Zen's host would require removing this inspected grant.
 allow https://opencode.ai/            read
 allow https://models.opencode.ai/     read
+
+allow https://pi.dev/                 read  # pi
 
 # VS Code: the image's `code` CLI fetches the server release for `code agent host`, at first start
 # and on updates: a GET of the update service's /commit:<commit>/server-linux-<arch>/stable,
