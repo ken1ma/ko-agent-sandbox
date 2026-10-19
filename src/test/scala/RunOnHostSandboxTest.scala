@@ -307,6 +307,18 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assert(runtimeOf(runtimeOptions(runtime) :+ "--daemon-port=x").isLeft)
     assert(runtimeOf(Seq("--daemon-port=51000")).isLeft)
 
+  test("a mill command passes --no-daemon first under a launcher that runs without a daemon, nothing more otherwise"):
+    def assembledFor(launcher: String) = Assembled(
+      RunOnHostPrereqs.CommandPrereqs(Path.of("/w"), Path.of("/jdk"), Path.of("/v1"), Program.Mill, Path.of("/mill")),
+      None, Path.of("/g"), Path.of("/i"), Path.of("/gradle"), Path.of("/m"), Some(Path.of("/d")), Some(launcher),
+    )
+    val build = Path.of("/w/app")
+    assertEquals(
+      millCommand(build, assembledFor("1.3.0-jvm"), Seq("-k", "__.compile")),
+      Seq("/w/app/mill", "--no-daemon", "-k", "__.compile"),
+    )
+    assertEquals(millCommand(build, assembledFor("1.1.10-jvm"), Seq("__.compile")), Seq("/w/app/mill", "__.compile"))
+
   test("a mill command's temporary directory is the runner's; sbt keeps its own with the runner's sockets"):
     val own = Path.of("/r/s1/tmp")
     val runners = Path.of("/r/b1/tmp")
@@ -531,6 +543,90 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assert(Files.isSymbolicLink(classpathFile))
     Files.delete(classpathFile)
     assertEquals(RunOnHostMillDaemons.discardForeignClasspath(build, cache, direct), None)
+
+  test("before each mill command without a daemon a foreign classpath file is discarded; with one, the start's"):
+    val build = Files.createTempDirectory("build")
+    val cache = Files.createTempDirectory("cache").toRealPath()
+    val classpathFile = build.resolve("out/mill-daemon/cache/mill-daemon-classpath")
+    Files.createDirectories(classpathFile.getParent)
+    def foreign(): Unit =
+      Files.writeString(classpathFile, "[\"1.3.0 |\",[\"/Users/me/Library/Caches/Coursier/v1/a.jar\"]]")
+    val direct = RunOnHostMillDaemons.Confined(
+      read = file => Option.when(Files.isRegularFile(file))(Files.readString(file, UTF_8)),
+      delete = file => Files.deleteIfExists(file),
+    )
+    def assembledFor(launcher: String) = Assembled(
+      RunOnHostPrereqs.CommandPrereqs(build, Path.of("/jdk"), cache, Program.Mill, Path.of("/mill")),
+      None, Path.of("/g"), Path.of("/i"), Path.of("/gradle"), Path.of("/m"), Some(Path.of("/d")), Some(launcher),
+    )
+    // A daemon's start discards the file (RunOnHostMillDaemons.start); the command leaves it.
+    foreign()
+    assertEquals(discardForeignClasspathWithoutDaemon(assembledFor("1.1.10-jvm"), build, direct), None)
+    assert(Files.exists(classpathFile))
+    // Each command without a daemon checks it again: a host run may have rewritten it since the last.
+    for _ <- 1 to 2 do
+      foreign()
+      val said = discardForeignClasspathWithoutDaemon(assembledFor("1.3.0-jvm"), build, direct)
+      assert(said.exists(_.contains("outside")), said)
+      assert(!Files.exists(classpathFile))
+
+  test("out/'s lock is held only while another process locks it; absent, a link or no lock reads as not held"):
+    val root = Files.createTempDirectory("out-lock").toRealPath()
+    val build = Files.createDirectories(root.resolve("build"))
+    val lock = Files.createDirectories(build.resolve("out")).resolve("mill-out-lock")
+    assertEquals(millOutLockHeld(build), None)
+    Files.createFile(lock)
+    assertEquals(millOutLockHeld(build), Some(false))
+    // Mill's own lock: an exclusive file lock another process takes on the file.
+    val holder = Files.writeString(root.resolve("HoldLock.java"),
+      """import java.nio.channels.FileChannel;
+        |import java.nio.file.*;
+        |public class HoldLock {
+        |  public static void main(String[] args) throws Exception {
+        |    try (var channel = FileChannel.open(Path.of(args[0]), StandardOpenOption.WRITE);
+        |         var held = channel.lock()) {
+        |      System.out.println("locked");
+        |      System.out.flush();
+        |      System.in.read();
+        |    }
+        |  }
+        |}
+        |""".stripMargin)
+    val javaExecutable = Path.of(System.getProperty("java.home"), "bin", "java").toString
+    val process = ProcessBuilder(javaExecutable, holder.toString, lock.toString)
+      .redirectError(ProcessBuilder.Redirect.DISCARD).start()
+    try
+      val said = java.io.BufferedReader(java.io.InputStreamReader(process.getInputStream, UTF_8)).readLine()
+      assertEquals(said, "locked")
+      assertEquals(millOutLockHeld(build), Some(true))
+    finally
+      process.getOutputStream.close()
+      process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)
+      process.destroyForcibly()
+    assertEquals(millOutLockHeld(build), Some(false))
+    Files.delete(lock)
+    Files.createSymbolicLink(lock, Files.createFile(root.resolve("elsewhere")))
+    assertEquals(millOutLockHeld(build), None)
+
+  test("a command without a daemon waits while out/'s lock is held, then runs; past the bound it is refused"):
+    val build = Path.of("/w/app")
+    val logged = scala.collection.mutable.ListBuffer[String]()
+    val answers = scala.collection.mutable.Queue(Some(true), Some(true), Some(false))
+    assertEquals(awaitMillOutLock(build, logged.append(_), _ => answers.dequeue(), pollMillis = 1), Right(()))
+    assert(answers.isEmpty)
+    assertEquals(logged.size, 1, logged)
+    assert(logged.head.contains("/w/app/out/mill-out-lock"), logged)
+    // A lock that cannot be probed does not hold the command up: Mill meets it as it is.
+    assertEquals(awaitMillOutLock(build, _ => fail("no wait"), _ => None), Right(()))
+    val refused = awaitMillOutLock(build, _ => (), _ => Some(true), deadlineMillis = 20, pollMillis = 1)
+    assert(refused.swap.exists(_.contains("retry when its build is done")), refused)
+    // A build that took the lock as the command started is named after the command failed.
+    val after = scala.collection.mutable.ListBuffer[String]()
+    reportMillOutLockTaken(build, after.append(_), _ => Some(false))
+    reportMillOutLockTaken(build, after.append(_), _ => None)
+    assertEquals(after.toList, Nil)
+    reportMillOutLockTaken(build, after.append(_), _ => Some(true))
+    assert(after.exists(line => line.contains("/w/app/out/mill-out-lock") && line.contains("retry")), after)
 
   test("the server's command line is the thin client's: the request's launcher flags as the client forwards them"):
     val sbt = Path.of("/Users/u/Library/Application Support/Coursier/bin/sbt")
@@ -1627,6 +1723,78 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assert(listening(owner, other))
       Files.delete(socketDir)
     finally close()
+
+  test("a mill launcher that runs without a daemon gets its proxy alone; a version change starts or ends the daemon"):
+    @volatile var alive = Map.empty[Long, String]
+    val ended = scala.collection.mutable.ListBuffer[Long]()
+    val processes = new RunOnHostSession.Processes:
+      def startOf(pid: Long): Option[String] = alive.get(pid)
+      def endGroup(pgid: Long): Boolean =
+        ended += pgid
+        alive -= pgid
+        true
+      def groupEmpty(pgid: Long): Boolean = !alive.contains(pgid)
+      def signal(pid: Long, name: String): Unit = fail(s"signalled $pid with $name")
+    var nextPid = 500L
+    def register(record: Path): Long =
+      nextPid += 1
+      alive += nextPid -> s"START-$nextPid"
+      val leader = RunOnHostSession.Record(nextPid, s"START-$nextPid")
+      Files.writeString(record, RunOnHostSession.renderRecord(leader), UTF_8)
+      nextPid
+    val root = Files.createTempDirectory("nodaemon")
+    val workspace = Files.createDirectory(root.resolve("workspace"))
+    val dir = Files.createDirectory(workspace.resolve("app"))
+    val session = RunOnHostSession.publish(root, workspace, RunOnHostSession.Kind.Runner).toOption.get
+    try
+      // The assembly follows the build directory's pin, as the real one does.
+      def pinned = Files.readString(dir.resolve(".mill-version"), UTF_8).trim
+      val assemble = (_: Path, _: Program, _: Path) =>
+        Right(Assembled(
+          RunOnHostPrereqs.CommandPrereqs(workspace, Path.of("/jdk"), Path.of("/v1"), Program.Mill, Path.of("/mill")),
+          None, Path.of("/g"), Path.of("/i"), Path.of("/gradle"), Path.of("/m"), Some(Path.of("/d")),
+          Some(s"$pinned-jvm"),
+        ))
+      val proxy = (_: Program, _: Vector[String], record: Path, proxyLog: Path) =>
+        register(record)
+        Files.writeString(proxyLog, "listening\n", UTF_8)
+        Right(7000)
+      val daemonStarts = scala.collection.mutable.ListBuffer[Path]()
+      val daemon = (start: RuntimeStart) =>
+        daemonStarts += start.record
+        val leader = register(start.record)
+        val pid = register(Files.createTempFile(root, "daemon", ".record"))
+        Right(RunOnHostMillDaemons.Daemon(pid, s"START-$pid", 40_000 + leader.toInt))
+      val runtimes =
+        RunnerRuntimes(session, workspace, _ => (), SeatbeltProfile.SystemPaths(Seq.empty, Seq.empty), Vector.empty,
+          FileRules.Resolved.Empty)(processes, assemble, proxy, _ => fail("no sbt server here"), daemon)
+      val hash = RunOnHostSession.buildHash(dir)
+      val proxyLog = session.directory.resolve(s"proxy-mill-$hash.log")
+      val daemonRecord = session.records.resolve(s"daemon-mill-$hash")
+      val proxyAlone = Right(Some(Runtime(session.directory, 7000, proxyLog)))
+
+      Files.writeString(dir.resolve(".mill-version"), "1.3.0\n", UTF_8)
+      assertEquals(runtimes.prepare(Program.Mill, dir, Seq("compile")), proxyAlone)
+      assertEquals(runtimes.prepare(Program.Mill, dir, Seq("test")), proxyAlone, "reused")
+      assertEquals(daemonStarts.toList, Nil)
+      assert(!Files.exists(daemonRecord))
+
+      // A pin of a launcher that keeps the daemon starts one under the same proxy.
+      Files.writeString(dir.resolve(".mill-version"), "1.1.10\n", UTF_8)
+      val withDaemon = runtimes.prepare(Program.Mill, dir, Seq("compile"))
+      assertEquals(daemonStarts.toList, List(daemonRecord))
+      assert(withDaemon.exists(_.exists(_.daemonPort.isDefined)), withDaemon.toString)
+      assertEquals(withDaemon.map(_.map(_.proxyPort)), Right(Some(7000)), "the same proxy")
+      val daemonLeader = RunOnHostSession.parseRecord(Files.readString(daemonRecord, UTF_8)).get.pgid
+
+      // Back to a launcher without one: the daemon's group is ended and its record gone, and no
+      // daemon starts.
+      Files.writeString(dir.resolve(".mill-version"), "1.3.0\n", UTF_8)
+      assertEquals(runtimes.prepare(Program.Mill, dir, Seq("compile")), proxyAlone)
+      assertEquals(ended.toList, List(daemonLeader))
+      assert(!Files.exists(daemonRecord))
+      assertEquals(daemonStarts.size, 1)
+    finally session.close()
 
   test("a second launch attaches to another launch's mill daemon under the directory's configuration, else takes over"):
     val two = Runners(Program.Mill)

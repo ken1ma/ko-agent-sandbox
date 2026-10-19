@@ -346,6 +346,13 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val worded = wording(Refusal.PrereqMillJvmUnset("1.0.6-jvm"))
     assert(clue(worded).contains("1.0.6-jvm") && worded.contains("before mill 1.1.0") && worded.contains("`system`"))
 
+  test("a mill launcher whose daemon reads each launcher's start time runs without a daemon; an earlier one with"):
+    for without <- Seq("1.2.0-RC1-jvm", "1.3.0-jvm", "1.3.0-M0-jvm", "1.10.0-jvm", "2.0.0-M2-jvm", "1.3.0") do
+      assert(millRunsWithoutDaemon(without), without)
+    // A version that is not two leading numbers is not known to be 1.2 or later.
+    for daemon <- Seq("1.1.10-jvm", "1.1.0-jvm", "1.0.6-jvm", "0.12.14-jvm", "main-jvm", "1-jvm", "1.x-jvm", "") do
+      assert(!millRunsWithoutDaemon(daemon), daemon)
+
   test("a mill-jvm-version that is neither system nor one id is refused as found"):
     // Digits alone are a number to YAML; a `|` chain, a list and an interpolation are not one id.
     for value <- Seq("25", "17.0.6", "system|temurin:25", "temurin:25:1", "[temurin:25]", "${JVM}", "temurin 25") do

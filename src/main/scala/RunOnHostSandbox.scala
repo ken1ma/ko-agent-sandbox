@@ -56,6 +56,8 @@ object RunOnHostSandbox:
     def m2RepositoryGranted: Option[Path] = Option.when(prereqs.program == Program.Mvn)(m2Repository)
     /** The persistent caches an sbt command writes besides Coursier's. */
     def sbtCachesGranted: Seq[Path] = sbtGlobalGranted.toSeq ++ ivyHomeGranted
+    /** A mill command whose build runs without the runner's daemon (RunOnHostPrereqs.millRunsWithoutDaemon). */
+    def millWithoutDaemon: Boolean = millLauncherVersion.exists(millRunsWithoutDaemon)
 
     /** The profile's inputs for a process of this command: what the assembly grants, and the rest
       * as the caller has it. */
@@ -142,12 +144,50 @@ object RunOnHostSandbox:
     raced: () => Unit = () => (),
     readers: java.util.concurrent.Semaphore = MillJavaHomeReaders,
   ): Option[String] =
+    buildFileOpened(buildDirectory, MillJavaHomeFile, "mill-java-home-read", millis, raced, readers): channel =>
+      val buffer = ByteBuffer.allocate(MillJavaHomeMaxBytes + 1)
+      var open = true
+      while open && buffer.hasRemaining do
+        if channel.read(buffer) < 0 then open = false
+      Option.when(buffer.position() <= MillJavaHomeMaxBytes):
+        UTF_8.newDecoder().decode(buffer.flip()).toString
+
+  /** The probes of `out/mill-out-lock` running or abandoned at once (millOutLockHeld). */
+  private val MillOutLockProbes = java.util.concurrent.Semaphore(4)
+
+  /**
+   * Whether a process holds Mill's lock on the build directory's `out/` (`MillOutLockFile`), opened
+   * as millJavaHomeText opens the `java-home` file and abandoned after as long; None when the file is
+   * absent or cannot be opened as the build's own. A shared lock, taken and released at once,
+   * conflicts with the exclusive one Mill takes; this JVM holds no lock on the file.
+   */
+  private[launcher] def millOutLockHeld(
+    buildDirectory: Path,
+    raced: () => Unit = () => (),
+    readers: java.util.concurrent.Semaphore = MillOutLockProbes,
+  ): Option[Boolean] =
+    buildFileOpened(buildDirectory, MillOutLockFile, "mill-out-lock-probe", MillJavaHomeReadMillis, raced, readers):
+      case file: java.nio.channels.FileChannel =>
+        Option(file.tryLock(0, Long.MaxValue, true)) match
+          case None => Some(true)
+          case Some(lock) =>
+            lock.release()
+            Some(false)
+      case _ => None
+
+  /** `use` of the file at `relative` under `buildDirectory`, opened for reading as millJavaHomeText
+    * describes, on a thread of its own abandoned after `millis`; None when the file is absent, is
+    * not the build's own regular file, or `use` gave none in time. */
+  private def buildFileOpened[A](
+    buildDirectory: Path, relative: String, threadName: String, millis: Long, raced: () => Unit,
+    readers: java.util.concurrent.Semaphore,
+  )(use: java.nio.channels.SeekableByteChannel => Option[A]): Option[A] =
     if !readers.tryAcquire() then None
     else
-      val read = java.util.concurrent.FutureTask[Option[String]]: () =>
-        try millJavaHomeRead(buildDirectory, raced)
+      val read = java.util.concurrent.FutureTask[Option[A]]: () =>
+        try buildFileRead(buildDirectory, relative, raced)(use)
         finally readers.release()
-      try Thread.ofPlatform().daemon().name("mill-java-home-read").start(read)
+      try Thread.ofPlatform().daemon().name(threadName).start(read)
       catch
         case ex: Throwable =>
           readers.release()
@@ -155,8 +195,10 @@ object RunOnHostSandbox:
       try read.get(millis, java.util.concurrent.TimeUnit.MILLISECONDS)
       catch case _: (java.util.concurrent.TimeoutException | java.util.concurrent.ExecutionException) => None
 
-  private def millJavaHomeRead(buildDirectory: Path, raced: () => Unit): Option[String] =
-    def opened(directory: SecureDirectoryStream[Path], names: List[Path]): Option[String] =
+  private def buildFileRead[A](buildDirectory: Path, relative: String, raced: () => Unit)(
+    use: java.nio.channels.SeekableByteChannel => Option[A],
+  ): Option[A] =
+    def opened(directory: SecureDirectoryStream[Path], names: List[Path]): Option[A] =
       try
         names match
           case file :: Nil =>
@@ -168,13 +210,7 @@ object RunOnHostSandbox:
             else
               val channel =
                 directory.newByteChannel(file, java.util.Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))
-              try
-                val buffer = ByteBuffer.allocate(MillJavaHomeMaxBytes + 1)
-                var open = true
-                while open && buffer.hasRemaining do
-                  if channel.read(buffer) < 0 then open = false
-                Option.when(buffer.position() <= MillJavaHomeMaxBytes):
-                  UTF_8.newDecoder().decode(buffer.flip()).toString
+              try use(channel)
               finally channel.close()
           case next :: deeper => opened(directory.newDirectoryStream(next, LinkOption.NOFOLLOW_LINKS), deeper)
           case Nil            => None
@@ -182,7 +218,7 @@ object RunOnHostSandbox:
     try
       Files.newDirectoryStream(buildDirectory) match
         case secure: SecureDirectoryStream[Path] =>
-          opened(secure, Path.of(MillJavaHomeFile).iterator().asScala.toList)
+          opened(secure, Path.of(relative).iterator().asScala.toList)
         // A JVM without openat has no way to hold a directory while a command renames it.
         case plain =>
           plain.close()
@@ -937,6 +973,8 @@ object RunOnHostSandbox:
       (tmp, socketDir) = temporaryDirectories(program, session.tmp, runtime.tmp)
       network <- program match
         case Program.Sbt => Right(SeatbeltProfile.Network.SbtClient(runtime.tmp))
+        // The build runs in the command's own profile, so it gets the grant it would get in the daemon's.
+        case Program.Mill if assembled.millWithoutDaemon => Right(SeatbeltProfile.Network.MillDaemon)
         case Program.Mill =>
           runtime.daemonPort.zip(runtime.daemonPid).map(SeatbeltProfile.Network.MillClient(_, _))
             .toRight("the mill runtime names no daemon port and pid")
@@ -945,7 +983,15 @@ object RunOnHostSandbox:
       profile <- SeatbeltProfile.render(
         assembled.profileInputs(tmp, runtime.proxyPort, runtime.trust, systemPaths, network, fileRules),
       )
-      exit <- runCommand(session, assembled, profile, runtime, commandArgs, workingDirectory, forwards, tmp, socketDir)
+      _ = assembled.millLauncherVersion.filter(_ => assembled.millWithoutDaemon).foreach: version =>
+        log(
+          s"mill $version runs the build without a daemon (--no-daemon): the JDK on macOS fails its daemon's " +
+            "read of each launcher under the sandbox, so each command starts its own JVM",
+        )
+      _ <- if assembled.millWithoutDaemon then awaitMillOutLock(buildDirectory, log) else Right(())
+      exit <- runCommand(
+        session, assembled, profile, runtime, commandArgs, workingDirectory, forwards, tmp, socketDir, log,
+      )
     yield
       // Under the runner the daemons are the runner's to record (RunnerRuntimes.commandEnded).
       if program == Program.Gradle && runnerRuntime.isEmpty then
@@ -954,6 +1000,7 @@ object RunOnHostSandbox:
         RunOnHostGradleDaemons.record(session.records, found, processes).foreach(log)
       reportDenied(runtime.proxyLog, reportFrom, program, log)
       if exit != 0 then reportUnwritableProxyLog(runtime, channelLog, log)
+      if exit != 0 && assembled.millWithoutDaemon then reportMillOutLockTaken(buildDirectory, log)
       exit
 
   /** The runtime a command without the runner's runs against: the acceptance test's entry, and Maven under
@@ -1014,6 +1061,70 @@ object RunOnHostSandbox:
       case Program.Mill | Program.Gradle => (runtimeTmp, runtimeTmp)
       case Program.Mvn                   => (sessionTmp, sessionTmp)
 
+  /** The build directory's own bootstrap, which runs the JVM launcher the environment's
+    * MILL_VERSION names: the launcher attaches to the daemon on the one port the profile admits, or
+    * runs the build itself, `--no-daemon` first among Mill's options (millWithoutDaemon). */
+  def millCommand(buildDirectory: Path, assembled: Assembled, commandArgs: Seq[String]): Seq[String] =
+    buildDirectory.resolve("mill").toString +: (Option.when(assembled.millWithoutDaemon)("--no-daemon").toSeq ++
+      commandArgs)
+
+  /**
+   * Before a mill command running its build without a daemon: while a process holds `out/`'s lock
+   * (millOutLockHeld) — a Mill build of yours, outside any profile — wait for it, up to the bound a
+   * busy daemon of yours gets (RunOnHostMillDaemons.ForeignIdleDeadlineMillis), then refuse. Mill
+   * words its own wait from the start time of the launcher the newest record names
+   * (`SharedOutLockManager.activeOtherProcessPrefix`, `LauncherOutFilesRecordStore.mostRecentActive`,
+   * 1.3.0), and that read throws under the profile (upstream-issues.md, openjdk/jdk); a daemon's
+   * build writes such a record, one without a daemon none (`MillMain0.createLauncherResources`). A
+   * build taking the lock after the last probe fails the command that way, which no probe before the
+   * command closes; reportMillOutLockTaken names it after.
+   */
+  def awaitMillOutLock(
+    buildDirectory: Path,
+    log: String => Unit,
+    held: Path => Option[Boolean] = millOutLockHeld(_),
+    deadlineMillis: Long = RunOnHostMillDaemons.ForeignIdleDeadlineMillis,
+    pollMillis: Long = 500,
+  ): Either[String, Unit] =
+    val lock = buildDirectory.resolve(MillOutLockFile)
+    val deadline = System.nanoTime + deadlineMillis * 1_000_000
+    var waiting = false
+    var result: Option[Either[String, Unit]] = None
+    while result.isEmpty do
+      if !held(buildDirectory).contains(true) then result = Some(Right(()))
+      else if System.nanoTime > deadline then
+        result = Some(Left(
+          s"a Mill process not this launch's holds $lock and held it for the ${deadlineMillis / 1000}s this " +
+            "command waited; retry when its build is done",
+        ))
+      else
+        if !waiting then log(s"waiting up to ${deadlineMillis / 1000}s for the Mill process that holds $lock")
+        waiting = true
+        Thread.sleep(pollMillis)
+    result.get
+
+  /** After a mill command without a daemon failed: a process holding `out/`'s lock now may have
+    * taken it after awaitMillOutLock's last probe, which fails the command as that wait describes. */
+  def reportMillOutLockTaken(
+    buildDirectory: Path, log: String => Unit, held: Path => Option[Boolean] = millOutLockHeld(_),
+  ): Unit =
+    if held(buildDirectory).contains(true) then
+      log(
+        s"a Mill process not this launch's holds ${buildDirectory.resolve(MillOutLockFile)}; if the command " +
+          "failed with \"Operation not permitted\" in ProcessHandle, it met that build as it started: retry when " +
+          "that build is done",
+      )
+
+  /** A mill command running its build without a daemon reads the daemon's classpath file too
+    * (`CoursierClient.resolveMillDaemon`, 1.3.0), and a host run can rewrite the file between
+    * commands, so it is checked before each such command, under the command's profile, as a daemon
+    * start checks it (RunOnHostMillDaemons.discardForeignClasspath). None for any other command. */
+  def discardForeignClasspathWithoutDaemon(
+    assembled: Assembled, buildDirectory: Path, confined: RunOnHostMillDaemons.Confined,
+  ): Option[String] =
+    if !assembled.millWithoutDaemon then None
+    else RunOnHostMillDaemons.discardForeignClasspath(buildDirectory, assembled.prereqs.coursierV1, confined)
+
   private def runCommand(
     session: Session,
     assembled: Assembled,
@@ -1024,22 +1135,22 @@ object RunOnHostSandbox:
     forwards: Vector[(String, String)],
     tmp: Path,
     socketDir: Path,
+    log: String => Unit,
   ): Either[String, Int] =
     val prereqs = assembled.prereqs
     val profileFile = session.directory.resolve("profile.sb")
     Files.writeString(profileFile, profile, UTF_8)
 
     val buildDirectory = workingDirectory.getOrElse(prereqs.workspaceRoot)
+    discardForeignClasspathWithoutDaemon(assembled, buildDirectory, RunOnHostMillDaemons.confined(profileFile))
+      .foreach(log)
     val programCommand = prereqs.program match
       // With the portfile live the client connects and forks nothing
       // (NetworkClient.connectOrStartServerAndConnect, v1.13.0 and v2.0.9).
       case Program.Sbt =>
         sbtCommand(prereqs.executable, assembled.sbtGlobal) ++
           Seq("--jvm-client", "-batch", "-java-home", prereqs.jdkHome.toString) ++ commandArgs
-      // The build directory's own bootstrap, which runs the JVM launcher the environment's
-      // MILL_VERSION names; the launcher attaches to the daemon on the one port the profile admits.
-      case Program.Mill =>
-        buildDirectory.resolve("mill").toString +: commandArgs
+      case Program.Mill => millCommand(buildDirectory, assembled, commandArgs)
       case Program.Gradle => gradleCommand(prereqs, tmp) ++ commandArgs
       // The distribution's own `mvn`, not the workspace's `mvnw` (run-on-host.md "Maven");
       // --batch-mode as sbt's -batch.

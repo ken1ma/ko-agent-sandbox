@@ -621,6 +621,24 @@ object RunOnHostPrereqs:
     if jvm == MillJvm.Unset && !resolvesUnsetAsAPin then Left(Refusal.PrereqMillJvmUnset(launcherVersion))
     else Right(())
 
+  /** The major and minor version of the first mill whose daemon reads each launcher's start time
+    * (millRunsWithoutDaemon): `LauncherOutFilesRecordStore`, from 1.2.0-RC1, absent from 1.1.10. */
+  val MillDaemonReadsLauncherSince = (1, 2)
+
+  /**
+   * Whether a mill command runs its build without the runner's daemon, `--no-daemon`: under a
+   * launcher whose daemon reads each launcher's start time with `ProcessHandle.info()`, which
+   * throws on macOS when the profile refuses `kern.procargs2.<pid>` (doc/upstream-issues.md,
+   * openjdk/jdk), and the daemon's profile cannot name a launcher's pid, unknown when the daemon
+   * starts. Without a daemon, the build runs as the launcher's child, inside the launcher's own
+   * sandbox, where the read is allowed. A version that does not start with two numbers keeps the
+   * daemon.
+   */
+  def millRunsWithoutDaemon(launcherVersion: String): Boolean = launcherVersion match
+    case MajorMinor(major, minor) =>
+      major.toIntOption.zip(minor.toIntOption).exists(Ordering[(Int, Int)].gteq(_, MillDaemonReadsLauncherSince))
+    case _ => false
+
   /** `---` or `...` at line start, bare or followed by whitespace and anything: both start
     * territory mill's single-document parse never reads. */
   private val DocumentMarker = raw"""(?:---|\.\.\.)(?:\s.*)?""".r
@@ -640,6 +658,10 @@ object RunOnHostPrereqs:
   /** Where mill's launcher writes the JDK home it resolved for a `mill-jvm-version` other than
     * `system`, under the build directory (`CoursierClient.resolveJavaHome`, 1.1.10). */
   val MillJavaHomeFile = "out/mill-daemon/cache/java-home"
+
+  /** The lock each Mill command takes on the build directory's `out/` for its build, a file lock
+    * whoever runs it, daemon or not (`SharedOutLockManager`, `MillNoDaemonMain`, 1.3.0). */
+  val MillOutLockFile = "out/mill-out-lock"
 
   /** The file's whole text: a JSON pair of strings, the key then the home, neither holding an
     * escape — mill writes none for the paths this accepts, and one refused fails closed. */

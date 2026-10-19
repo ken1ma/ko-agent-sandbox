@@ -33,7 +33,9 @@ import RunOnHostSession.{daemonRecordName, proxyRecordName, serverRecordName, Se
  * mid-command, so the next mill command starts one. Gradle's runtime is its proxy: the client
  * starts and matches the daemon in the launch's own registry, inside the profile, and the
  * runner records the registry's daemons after each command and ends them with its session
- * (RunOnHostGradleDaemons). Maven is never here: it runs once and exits, its proxy with the command.
+ * (RunOnHostGradleDaemons). A mill launcher that runs its build without a daemon
+ * (Assembled.millWithoutDaemon) has a runtime that is its proxy, as Gradle's is.
+ * Maven is never here: it runs once and exits, its proxy with the command.
  * The acceptance test's entry holds one of these over the command's own session for its one command, so
  * the one lifecycle has two callers and no second owner.
  *
@@ -156,10 +158,12 @@ final class RunnerRuntimes(
         // or under a changed configuration, a fresh one starts under the same proxy, from a
         // fresh assembly: a changed version pin grants another launcher, and the assembly
         // is what grants it. The exit file of its starter is no liveness, since the starter
-        // is ended, or exits, by design once the daemon is up.
+        // is ended, or exits, by design once the daemon is up. A runtime for a launcher that
+        // runs without a daemon is its proxy, reused until the configuration changes.
         daemonConfig(buildDirectory).flatMap: config =>
           val same = config == current.daemonConfig
-          if same && current.daemon.exists(daemonLives) then Right(Some(current.runtime))
+          if same && (current.assembled.millWithoutDaemon || current.daemon.exists(daemonLives)) then
+            Right(Some(current.runtime))
           else
             val why = if same then "its daemon is gone" else "its configuration changed"
             discard(program, hash, daemonRecord(hash)).flatMap: what =>
@@ -169,7 +173,7 @@ final class RunnerRuntimes(
                 case None =>
                   for
                     fresh <- assemble(workspaceRoot, program, buildDirectory)
-                    started <- startDaemon(current.copy(assembled = fresh), config)
+                    started <- daemonFor(current.copy(assembled = fresh), config)
                   yield
                     live += key -> started
                     Some(started.runtime)
@@ -211,7 +215,7 @@ final class RunnerRuntimes(
           made = Live(buildDirectory, hash, assembled, Runtime(session.directory, port, proxyLog), hosts)
           current <- program match
             case Program.Sbt                  => startServer(made, arguments).map(_ => made)
-            case Program.Mill                 => daemonConfig(buildDirectory).flatMap(startDaemon(made, _))
+            case Program.Mill                 => daemonConfig(buildDirectory).flatMap(daemonFor(made, _))
             case Program.Gradle | Program.Mvn => Right(made)
         yield current
       catch case NonFatal(ex) => Left(s"creating the runtime: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
@@ -261,6 +265,17 @@ final class RunnerRuntimes(
       catch case NonFatal(ex) => Left(s"starting the sbt server: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
     started.left.map: reason =>
       discard(Program.Sbt, current.hash, record).fold(kept => s"$reason; $kept", _ => reason)
+
+  /** The runtime under `config` once its proxy is up: with the daemon startDaemon starts, or with
+    * none for a launcher that runs without one (Assembled.millWithoutDaemon). */
+  private def daemonFor(current: Live, config: String): Either[String, Live] =
+    if current.assembled.millWithoutDaemon then
+      Right(current.copy(
+        runtime = current.runtime.copy(daemonPort = None, daemonPid = None),
+        daemon = None,
+        daemonConfig = config,
+      ))
+    else startDaemon(current, config)
 
   /** The daemon of a runtime whose proxy is up, no other launch owning the build directory's
     * daemon (foreignRuntime, decided by every caller first): the start itself ends a daemon of

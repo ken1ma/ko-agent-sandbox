@@ -23,7 +23,10 @@
 # The sbt rows build this repository. The mill rows build src/probe/mill-fixture, the gradle rows
 # src/probe/gradle-fixture and the mvn rows src/probe/mvn-fixture, one-module projects that exist
 # for them: this repository is sbt-built, and a mill, Gradle or Maven build of it would be a second
-# build definition rather than a measurement.
+# build definition rather than a measurement. The mill rows run on the Mill the fixture's bootstrap
+# names, which runs without a daemon, then in a second run of this script on a copy of the fixture
+# pinned to the last Mill with one. Provision that launcher on the host first, with
+# `MILL_VERSION=1.1.10-jvm ./mill --no-daemon version` in the fixture, which leaves no daemon behind.
 # src/probe/deny-fixture exists for the unlisted-host row: its resolution must reach a host the
 # proxy refuses. src/probe/ivy-fixture exists for the inter-project row: resolving a dependsOn
 # edge enters Ivy, whose lock file lives in the Ivy home, and this repository has no such edge.
@@ -58,6 +61,29 @@ safe_path "the checkout path" "$workspace"
 safe_path "HOME" "$HOME"
 safe_path "JAVA_HOME" "${JAVA_HOME:-}"
 safe_path "TMPDIR" "${TMPDIR:-}"
+# The mill rows once per Mill: the fixture's own, then the last with a daemon
+# (RunOnHostPrereqs.MillDaemonReadsLauncherSince), on a copy at a fixed path — the run-on-host cache
+# is per workspace path. Each in a run of its own, with its own work directory, traps and totals.
+daemon_mill=1.1.10
+daemon_mill_workspace=$workspace/target/acceptance-mill-$daemon_mill
+if want mill && [ -z "${ACCEPTANCE_MILL_WORKSPACE:-}" ]; then
+    # A build directory left under the workspace would be met by the next launch's provisioning.
+    trap 'rm -rf "$daemon_mill_workspace"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    ACCEPTANCE_MILL_WORKSPACE=$workspace/src/probe/mill-fixture sh "$0" "$@"; fixture_status=$?
+    rm -rf "$daemon_mill_workspace"; mkdir -p "$daemon_mill_workspace"
+    fixture=$workspace/src/probe/mill-fixture
+    cp "$fixture/mill" "$fixture/build.mill.yaml" "$daemon_mill_workspace/"
+    cp -R "$fixture/src" "$fixture/test" "$daemon_mill_workspace/"
+    printf '%s\n' "$daemon_mill" > "$daemon_mill_workspace/.mill-version"
+    echo
+    echo "the mill rows on Mill $daemon_mill, in $daemon_mill_workspace"
+    ACCEPTANCE_MILL_WORKSPACE=$daemon_mill_workspace sh "$0" mill "${2:-full}"; daemon_status=$?
+    [ "$fixture_status" -eq 0 ] && [ "$daemon_status" -eq 0 ]
+    exit
+fi
+safe_path "ACCEPTANCE_MILL_WORKSPACE" "${ACCEPTANCE_MILL_WORKSPACE:-}"
 # Every path this run creates is unique to it — mktemp, not a pid, which is reused — so two acceptance runs
 # do not share logs, and the cleanup removes only what this run made and never a workspace file.
 # The logs are under the workspace's target/acceptance/, git-ignored and, unlike $TMPDIR, shared with a
@@ -76,7 +102,7 @@ report() { # status label detail
 }
 
 # The workspace each profile is for.
-mill_workspace=$workspace/src/probe/mill-fixture
+mill_workspace=${ACCEPTANCE_MILL_WORKSPACE:-$workspace/src/probe/mill-fixture}
 # The pinned-JVM rows' build, a workspace of its own at a fixed path: the run-on-host cache is per
 # workspace path, so a path new to each run would leave a cache behind each time.
 pinned_workspace=$workspace/target/acceptance-pinned-mill
@@ -99,8 +125,19 @@ if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]
 then machine "$("$JAVA_HOME/bin/java" -version 2>&1 | head -1) ($JAVA_HOME)"
 else machine "JAVA_HOME does not name a JDK"; fi
 machine "sbt $(sed -n 's/^sbt.version=//p' "$workspace/project/build.properties")"
-mill_version=$(grep -m1 -o '"[0-9][^"]*"' "$mill_workspace/mill" | tr -d '"')
-machine "mill $mill_version"
+# As the supervisor reads it (RunOnHostPrereqs.millVersion): the .mill-version of the copy pinned to
+# the daemon's Mill, else the bootstrap's default.
+if [ -f "$mill_workspace/.mill-version" ]; then mill_version=$(head -1 "$mill_workspace/.mill-version")
+else mill_version=$(grep -m1 -o '"[0-9][^"]*"' "$mill_workspace/mill" | tr -d '"'); fi
+mill_version=${mill_version%-jvm}
+# Mill 1.2 or later runs its build without a daemon (RunOnHostPrereqs.millRunsWithoutDaemon).
+mill_major=${mill_version%%.*}; mill_minor=${mill_version#*.}; mill_minor=${mill_minor%%[!0-9]*}
+mill_daemonless=0
+case "$mill_major" in ''|*[!0-9]*) ;; *) case "$mill_minor" in ''|*[!0-9]*) ;; *)
+    if [ "$mill_major" -gt 1 ] || { [ "$mill_major" -eq 1 ] && [ "$mill_minor" -ge 2 ]; }; then mill_daemonless=1; fi ;;
+esac ;; esac
+if [ "$mill_daemonless" -eq 1 ]; then mill_runner=build; machine "mill $mill_version, without a daemon"
+else mill_runner=daemon; machine "mill $mill_version"; fi
 machine "gradle $(sed -n 's|^distributionUrl=.*/gradle-\(.*\)-bin.zip$|\1|p' \
     "$gradle_workspace/gradle/wrapper/gradle-wrapper.properties")"
 mvn_version=$(sed -n 's|^distributionUrl=.*/apache-maven-\(.*\)-bin.zip$|\1|p' \
@@ -449,6 +486,11 @@ mvn_home=$(sed -n 's|^executable: \(.*\)/bin/mvn$|\1|p' "$work/emit-mvn.log" 2>/
 # nothing.
 scratch_sbt=""; scratch_mill=""; scratch_gradle=""; scratch_mvn=""; sibling_repo=""; pin_saved=""; pinned_made=""
 acceptance_opts_file=""; port_saved=""; redirect_saved=""; unrelated_listener=""; held_jdk=""
+foreign_client=""; foreign_client_start=""
+# The build of yours a mill row starts unconfined: its pid and start time, for the cleanup to signal
+# only while the pid is still that process, as kill_channel_execs checks its execs.
+foreign_started() { foreign_client=$1; foreign_client_start=$(ps -o lstart= -p "$1" 2>/dev/null); }
+foreign_reaped() { wait "$foreign_client" 2>/dev/null; foreign_client=""; }
 marker=acceptance-marker.${work##*.}
 cleanup() {
     # The ivy fixture's pin, edited under the sbt.version row: restored on any exit.
@@ -476,6 +518,12 @@ cleanup() {
     [ -n "$unrelated_listener" ] && kill "$unrelated_listener" 2>/dev/null
     # So is the process-read rows' target.
     [ -n "$held_jdk" ] && kill "$held_jdk" 2>/dev/null
+    # And the build of yours the mill rows start unconfined, with the run JVM it forks; its daemon is
+    # end_workspace_servers'.
+    if [ -n "$foreign_client" ] \
+        && [ "$(ps -o lstart= -p "$foreign_client" 2>/dev/null)" = "$foreign_client_start" ]
+    then kill "$foreign_client" 2>/dev/null; fi
+    pkill -f "$fixture_sleep" 2>/dev/null
     # The channel rows' runner and stubbed execs; their FIFOs are this acceptance run's alone — a real
     # session's live inside its container.
     if [ -n "${channel_runner:-}" ]; then
@@ -610,6 +658,7 @@ if want mill; then
     # ends it with the session; out/mill-daemon is Mill's, neither cleared nor read for authority
     # (RunnerRuntimes, RunOnHostMillDaemons), beyond the `mill-daemon-classpath` file a
     # start deletes when it names paths the profile denies (RunOnHostMillDaemons.discardForeignClasspath).
+    # A Mill without a daemon runs the build in the command itself, and no daemon starts.
     for command in __.compile __.test; do
         [ "$command" = __.test ] && [ "$quick" = 1 ] && { report SKIP "./mill $command" "quick mode"; continue; }
         if supervisor mill "$mill_workspace" "$command" >"$work/mill.log" 2>&1
@@ -631,6 +680,7 @@ if want mill; then
     pinned_made=1
     rm -rf "$pinned_workspace"; mkdir -p "$pinned_workspace"
     cp "$mill_workspace/mill" "$pinned_workspace/"
+    [ -f "$mill_workspace/.mill-version" ] && cp "$mill_workspace/.mill-version" "$pinned_workspace/"
     cp -R "$mill_workspace/src" "$mill_workspace/test" "$pinned_workspace/"
     sed 's/^mill-jvm-version: system$/mill-jvm-version: temurin:99\
 mill-jvm-index-version: acceptance/' "$mill_workspace/build.mill.yaml" > "$pinned_workspace/build.mill.yaml"
@@ -654,19 +704,22 @@ mill-jvm-index-version: acceptance/' "$mill_workspace/build.mill.yaml" > "$pinne
     pinned_refused "a java-home file naming a directory outside the Coursier cache is refused" \
         "$work/mill-pinned-planted.log" "no JDK inside the Coursier cache"
 
+    # Java 23 or later: for an id naming such a version, as `temurin:99` and `zulu:25` do, Mill
+    # passes the daemon `--sun-misc-unsafe-memory-access=allow`, which an older JDK rejects
+    # (`MillProcessLauncher.millLaunchJvmCommand`, 1.3.0).
     java_home_real=$(cd "$JAVA_HOME" && pwd -P)
-    pinned_home=$java_home_real; pinned_which="JAVA_HOME's, the only JDK 17 or later in the Coursier cache"
+    pinned_home=$java_home_real; pinned_which="JAVA_HOME's, the only JDK 23 or later in the Coursier cache"
     find "$user_arc" -maxdepth 13 -type f -path '*/Contents/Home/bin/java' 2>/dev/null |
         sed 's|/bin/java$||' > "$work/cached-jdks"
     while IFS= read -r candidate; do
         candidate=$(cd "$candidate" && pwd -P) || continue
         [ "$candidate" != "$java_home_real" ] || continue
         major=$("$candidate/bin/java" -version 2>&1 | sed -n '1s/.*version "\([0-9]*\).*/\1/p')
-        if [ "${major:-0}" -ge 17 ]; then pinned_home=$candidate; pinned_which="a second JDK, Java $major"; break; fi
+        if [ "${major:-0}" -ge 23 ]; then pinned_home=$candidate; pinned_which="a second JDK, Java $major"; break; fi
     done < "$work/cached-jdks"
     safe_path "the pinned JDK home" "$pinned_home"
     record_pinned_home "$pinned_home"
-    pinned_row="a pinned JVM's daemon runs on the JDK the java-home file records"
+    pinned_row="a pinned JVM's $mill_runner runs on the JDK the java-home file records"
     if supervisor mill "$pinned_workspace" --version >"$work/mill-pinned.log" 2>&1 \
         && grep -qxF "java.home: $pinned_home" "$work/mill-pinned.log"
     then report PASS "$pinned_row" "$pinned_which"
@@ -675,17 +728,22 @@ mill-jvm-index-version: acceptance/' "$mill_workspace/build.mill.yaml" > "$pinne
     fi
 
     # An unset mill-jvm-version (doc/run-on-host.md, "An unset `mill-jvm-version`"), in the same
-    # build directory. The key these rows write names the id built into the fixture's Mill,
-    # `zulu:21` (its `default-mill-jvm-version`, 1.1.10): under another id Mill fetches, and the
-    # second row fails.
+    # build directory. The key these rows write names the id built into the fixture's Mill, its
+    # `default-mill-jvm-version`: under another id Mill fetches, and the second row fails.
+    case "$mill_version" in
+        1.1.[0-9]*) mill_default_jvm=zulu:21 ;;
+        1.3.0) mill_default_jvm=zulu:25 ;;
+        *) mill_default_jvm="" ;;
+    esac
     grep -v '^mill-jvm-version: ' "$pinned_workspace/build.mill.yaml" > "$work/unset-build.mill.yaml"
     cp "$work/unset-build.mill.yaml" "$pinned_workspace/build.mill.yaml"
     rm -f "$pinned_workspace/out/mill-daemon/cache/java-home"
     pinned_refused "an unset JVM with no java-home file is refused, naming the host run" \
         "$work/mill-unset-absent.log" "MILL_VERSION=$mill_version-jvm ./mill version"
-    record_pinned_home "$pinned_home" zulu:21
-    pinned_row="an unset JVM's daemon runs on the JDK the java-home file records"
-    if supervisor mill "$pinned_workspace" --version >"$work/mill-unset.log" 2>&1 \
+    pinned_row="an unset JVM's $mill_runner runs on the JDK the java-home file records"
+    if [ -z "$mill_default_jvm" ]; then report SKIP "$pinned_row" "the id built into mill $mill_version is unread"
+    elif record_pinned_home "$pinned_home" "$mill_default_jvm" \
+        && supervisor mill "$pinned_workspace" --version >"$work/mill-unset.log" 2>&1 \
         && grep -qxF "java.home: $pinned_home" "$work/mill-unset.log"
     then report PASS "$pinned_row" "$pinned_which"
     else report FAIL "$pinned_row" \
@@ -743,7 +801,7 @@ while True:
 PY
 python3 "$work/unrelated.py" >"$work/unrelated.log" 2>&1 & unrelated_listener=$!
 tries=0
-while ! grep -q port "$work/unrelated.log" && [ "$tries" -lt 50 ]; do tries=$((tries + 1)); sleep 0.1; done
+while ! grep -q port "$work/unrelated.log" 2>/dev/null && [ "$tries" -lt 50 ]; do tries=$((tries + 1)); sleep 0.1; done
 unrelated_port=$(sed -n 's/^port //p' "$work/unrelated.log")
 
 # The process-read rows' target: a JDK outside every profile holding a variable, as the launcher,
@@ -1246,7 +1304,13 @@ channel: TERM to the runner ends its command before the runner exits
 channel: a killed runner's command ends with it, and its server with the next start
 channel: a planted portfile nominates nothing: refused, no shutdown spoken
 channel: the runner's end takes the gradle daemon, and the JVM its build forked"
-mill_channel_rows="channel: a second launch attaches to the first's mill daemon
+mill_share_row="channel: a second launch attaches to the first's mill daemon"
+mill_daemonless_row="channel: mill without a daemon builds in each command, and the runner starts no daemon"
+mill_lock_row="channel: without a daemon, a build through a mill daemon of yours is waited for, then the command runs"
+mill_daemonless_reason="mill $mill_version runs without a daemon"
+mill_channel_rows="$mill_share_row
+$mill_daemonless_row
+$mill_lock_row
 channel: mill compile starts the runner's daemon, and the next command reuses it
 channel: a mill build's forked JVM writes temporary files where the daemon's profile allows
 channel: a redirected out/mill-daemon is refused before Mill's launcher acts on it
@@ -1272,6 +1336,17 @@ EOF
 }
 skip_mill_channel() {
     while IFS= read -r row; do report SKIP "$row" "$1"; done <<EOF
+$mill_channel_rows
+EOF
+}
+# Under a mill without a daemon: the rows that need one, but the share row, which its block reports.
+skip_mill_daemon_rows() {
+    while IFS= read -r row; do
+        case "$row" in
+            "$mill_share_row"|"$mill_daemonless_row"|"$mill_lock_row") ;;
+            *) report SKIP "$row" "$mill_daemonless_reason" ;;
+        esac
+    done <<EOF
 $mill_channel_rows
 EOF
 }
@@ -1338,7 +1413,19 @@ else
     mkdir -p "$work/bin"
     printf '#!/bin/sh\nexit 0\n' > "$work/bin/flock"; chmod +x "$work/bin/flock"
     printf '#!/bin/sh\nshift\nexec "$@"\n' > "$work/bin/timeout"; chmod +x "$work/bin/timeout"
-    # `podman exec -i C sh -c S` runs S here, and container liveness is a file this script flips.
+    # What the stubbed execs run, first on their PATH. The runner's writers open each FIFO with
+    # `dd conv=nocreat` (RunOnHostChannel.writer), a GNU conversion the container's dd has and
+    # macOS's lacks (file_cmds, dd/args.c); the stand-in opens the existing FIFO without creating it.
+    mkdir -p "$work/sandbox-bin"
+    cat > "$work/sandbox-bin/dd" <<'DD'
+#!/bin/sh
+for arg; do case "$arg" in of=*) of=${arg#of=} ;; esac; done
+[ -p "${of:-}" ] || { echo "dd: ${of:-no of=}: no such FIFO" >&2; exit 1; }
+exec cat > "$of"
+DD
+    chmod +x "$work/sandbox-bin/dd"
+    # `podman exec -i --detach-keys= C sh -c S` (HostCommands.ExecWithInput) runs S here, and
+    # container liveness is a file this script flips.
     # Each exec records its pid — which survives the exec — so "the container died, taking every
     # exec with it" can be staged, and cleaned up, against exactly this acceptance run's processes: a
     # pattern kill would match every live session's own `podman exec` command lines too.
@@ -1347,7 +1434,8 @@ else
 case "\$1 \$2" in
     "exec -i")
         echo "\$\$|\$(ps -o lstart= -p \$\$)" >> "$work/exec.pids"
-        shift 3; exec "\$@" ;;
+        [ "\$3" = --detach-keys= ] || { echo "podman stub: exec -i without --detach-keys=" >&2; exit 125; }
+        shift 4; PATH="$work/sandbox-bin:\$PATH" exec "\$@" ;;
     "container inspect") cat "$work/running" ;;
 esac
 EOF
@@ -1542,8 +1630,9 @@ deny alive after root: $deny_after_root, deny reused: $deny_reused"; fi
 case "\$1 \$2" in
     "exec -i")
         echo "\$\$|\$(ps -o lstart= -p \$\$)" >> "$work/exec.pids"
-        script=\$(printf '%s' "\$6" | sed 's|/tmp/ko-agent-sandbox/run-on-host|$channel_dir2|g')
-        exec sh -c "\$script" ;;
+        [ "\$3" = --detach-keys= ] || { echo "podman stub: exec -i without --detach-keys=" >&2; exit 125; }
+        script=\$(printf '%s' "\$7" | sed 's|/tmp/ko-agent-sandbox/run-on-host|$channel_dir2|g')
+        PATH="$work/sandbox-bin:\$PATH" exec sh -c "\$script" ;;
     "container inspect") cat "$work/running2" ;;
 esac
 EOF
@@ -1601,7 +1690,6 @@ EOF
         takeover_row="channel: a second launch forwarding a variable the first did not takes the sbt server over"
         takeback_row="channel: the first launch's next command takes the sbt server back"
         teardown_row="channel: the first launch's command during the second's teardown starts its own server"
-        mill_share_row="channel: a second launch attaches to the first's mill daemon"
         mill_takeover_row="channel: a second launch forwarding a variable the first did not takes the mill daemon over"
         # The mill rows are reported once: here, or with the mill rows' own skip.
         if ! start_second_runner; then
@@ -1635,7 +1723,8 @@ ${share_session:-none} records: ${share_records:-none}; $(tail -1 "$work/chan-sh
             # own `version` — the start meets the `mill-daemon-classpath` file the supervisor rows left
             # before the mill rows below do — and shut down after, so the mill rows still measure a
             # start of their own.
-            if want mill; then
+            if want mill && [ "$mill_daemonless" -eq 1 ]; then report SKIP "$mill_share_row" "$mill_daemonless_reason"
+            elif want mill; then
                 with_timeout 900 channel_shim chan-share-mill1.log "$mill_workspace" mill version
                 channel_settled
                 mill_share_record=$(runner_daemon_record "$mill_workspace")
@@ -1706,7 +1795,9 @@ $(command_servers | tr '\n' ' '), root: $(root_now); $(tail -1 "$work/chan-share
                 # The daemon likewise: the first runner's, started by its own `version`, is ended
                 # by the second's and replaced; the first's `shutdown` then ends the second's the
                 # same way and stops its own, so the mill rows still measure a start of their own.
-                if want mill; then
+                if want mill && [ "$mill_daemonless" -eq 1 ]; then
+                    report SKIP "$mill_takeover_row" "$mill_daemonless_reason"
+                elif want mill; then
                     with_timeout 900 channel_shim chan-share-mill-takeover0.log "$mill_workspace" mill version
                     channel_settled
                     mill_before=$(session_record "$first_session" "$mill_record")
@@ -1773,7 +1864,61 @@ $(tail -1 "$work/chan-share-teardown.log.err" | cut -c1-60)"; fi
         # (RunOnHostMillDaemons.discardForeignClasspath), or the daemon dies unable to open its jars. The
         # fixture's `run` prints the TMPDIR the build sees and, with `sleep`, stays up for the
         # cancel and busy-daemon rows.
-        if ! want mill; then skip_mill_channel "needs mill"; else
+        if ! want mill; then skip_mill_channel "needs mill"
+        elif [ "$mill_daemonless" -eq 1 ]; then
+            skip_mill_daemon_rows
+            # Each command runs the build in its own profile (RunOnHostPrereqs.millRunsWithoutDaemon):
+            # the runner keeps the proxy alone, and the supervisor says why on the command's stderr.
+            with_timeout 900 channel_shim chan-mill-nodaemon1.log "$mill_workspace" mill __.compile
+            nodaemon_status=$?
+            channel_settled
+            with_timeout 600 channel_shim chan-mill-nodaemon2.log "$mill_workspace" mill __.test
+            nodaemon_test_status=$?
+            channel_settled
+            if [ "$nodaemon_status" -eq 0 ] && [ "$nodaemon_test_status" -eq 0 ] \
+                && [ -z "$(runner_daemon_record "$mill_workspace")" ] && [ -z "$(mill_daemons)" ] \
+                && grep -q 'runs the build without a daemon' "$work/chan-mill-nodaemon1.log.err"
+            then report PASS "$mill_daemonless_row" "compile and test; no daemon record, no daemon"
+            else report FAIL "$mill_daemonless_row" "exits $nodaemon_status/$nodaemon_test_status, record \
+$(runner_daemon_record "$mill_workspace" | tr '\n' ' '), daemons: $(mill_daemons | tr '\n' ' '); \
+$(grep -v 'Picked up' "$work/chan-mill-nodaemon1.log.err" | tail -1 | cut -c1-50)"; fi
+
+            # A build through a daemon of yours, outside any profile, holds out/mill-out-lock and
+            # records its launcher: Mill's own wait would read that launcher's start time and throw
+            # under the profile, so the supervisor waits instead (RunOnHostSandbox.awaitMillOutLock),
+            # and the command runs once the build ends. The daemon, idle then, is left alone; the row
+            # ends it, and the cleanup ends it and the build on any exit.
+            ( cd "$mill_workspace" && env -u JAVA_OPTS -u JDK_JAVA_OPTIONS PATH="$JAVA_HOME/bin:$PATH" \
+                ./mill run sleep "$fixture_tag" ) >"$work/foreign-lock.log" 2>&1 & foreign_started $!
+            tries=0
+            while ! grep -q 'fixture-main' "$work/foreign-lock.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
+                tries=$((tries + 1)); sleep 0.5
+            done
+            foreign=$(mill_daemons | head -1)
+            channel_shim chan-mill-lock.log "$mill_workspace" mill __.compile & shim=$!
+            sleep 20
+            waiting=$(kill -0 "$shim" 2>/dev/null && echo yes || echo no)
+            # The run JVM ends, not the launcher: a launcher's disconnect mid-command shuts its
+            # daemon down, as the busy-daemon rows below measure.
+            pkill -f "$fixture_sleep" 2>/dev/null
+            foreign_reaped
+            wait "$shim"; lock_status=$?
+            channel_settled
+            foreign_alive=$(kill -0 "${foreign:-0}" 2>/dev/null && echo yes || echo no)
+            [ -n "$foreign" ] && kill "$foreign" 2>/dev/null
+            tries=0
+            while [ -n "$foreign" ] && kill -0 "$foreign" 2>/dev/null && [ "$tries" -lt 120 ]; do
+                tries=$((tries + 1)); sleep 0.5
+            done
+            if [ -n "$foreign" ] && [ "$waiting" = yes ] && [ "$lock_status" -eq 0 ] && [ "$foreign_alive" = yes ] \
+                && grep -q 'waiting up to .* for the Mill process that holds' "$work/chan-mill-lock.log.err"
+            then report PASS "$mill_lock_row" "waited 20s on foreign daemon $foreign's build, then built"
+            else report FAIL "$mill_lock_row" "foreign daemon ${foreign:-none} alive after: $foreign_alive, \
+waiting after 20s: $waiting, exit $lock_status; \
+$(grep -v 'Picked up' "$work/chan-mill-lock.log.err" | tail -1 | cut -c1-50)"; fi
+        else
+        report SKIP "$mill_daemonless_row" "mill $mill_version keeps its daemon"
+        report SKIP "$mill_lock_row" "mill $mill_version keeps its daemon"
         mill_row="channel: mill compile starts the runner's daemon, and the next command reuses it"
         # The start TERMs its starter once the daemon listens (RunOnHostMillDaemons.endStarter): the channel
         # log says the TERM was sent — counted before and after, since the log accumulates — and
@@ -1939,7 +2084,7 @@ log lines: $(grep -c 'ended the mill daemon' "$work/channel.log") (before $ended
         busy_row="channel: a mill daemon of yours mid-command is left until its client disconnects"
         with_timeout 300 channel_shim chan-mill-shutdown2.log "$mill_workspace" mill shutdown
         channel_settled
-        foreign_mill ./mill run sleep "$fixture_tag" >"$work/foreign-run.log" 2>&1 & foreign_client=$!
+        foreign_mill ./mill run sleep "$fixture_tag" >"$work/foreign-run.log" 2>&1 & foreign_started $!
         tries=0
         while ! grep -q 'fixture-main' "$work/foreign-run.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
             tries=$((tries + 1)); sleep 0.5
@@ -1949,7 +2094,7 @@ log lines: $(grep -c 'ended the mill daemon' "$work/channel.log") (before $ended
         sleep 20
         waiting=$(kill -0 "$shim" 2>/dev/null && echo yes || echo no)
         foreign_alive=$(kill -0 "${foreign:-0}" 2>/dev/null && echo yes || echo no)
-        kill "$foreign_client" 2>/dev/null; wait "$foreign_client" 2>/dev/null
+        kill "$foreign_client" 2>/dev/null; foreign_reaped
         pkill -f "$fixture_sleep" 2>/dev/null
         wait "$shim"; busy_status=$?
         channel_settled
@@ -1967,7 +2112,7 @@ waiting: $waiting, exit $busy_status, ours ${ours:-none}"; fi
         bound_row="channel: a mill daemon of yours busy past the bound is refused, and left alive"
         with_timeout 300 channel_shim chan-mill-shutdown3.log "$mill_workspace" mill shutdown
         channel_settled
-        foreign_mill ./mill run sleep "$fixture_tag" >"$work/foreign-run2.log" 2>&1 & foreign_client=$!
+        foreign_mill ./mill run sleep "$fixture_tag" >"$work/foreign-run2.log" 2>&1 & foreign_started $!
         tries=0
         while ! grep -q 'fixture-main' "$work/foreign-run2.log" 2>/dev/null && [ "$tries" -lt 600 ]; do
             tries=$((tries + 1)); sleep 0.5
@@ -1976,7 +2121,7 @@ waiting: $waiting, exit $busy_status, ours ${ours:-none}"; fi
         with_timeout 300 channel_shim chan-mill-bound.log "$mill_workspace" mill version; bound_status=$?
         channel_settled
         foreign_alive=$(kill -0 "${foreign:-0}" 2>/dev/null && echo yes || echo no)
-        kill "$foreign_client" 2>/dev/null; wait "$foreign_client" 2>/dev/null
+        kill "$foreign_client" 2>/dev/null; foreign_reaped
         pkill -f "$fixture_sleep" 2>/dev/null
         tries=0
         while [ -n "$foreign" ] && kill -0 "$foreign" 2>/dev/null && [ "$tries" -lt 120 ]; do
@@ -2260,7 +2405,9 @@ PY
         planted_sock=$work/planted.sock
         python3 "$work/planted.py" "$planted_sock" >"$work/planted.log" 2>&1 & planted_listener=$!
         tries=0
-        while ! grep -q bound "$work/planted.log" && [ "$tries" -lt 50 ]; do tries=$((tries + 1)); sleep 0.1; done
+        while ! grep -q bound "$work/planted.log" 2>/dev/null && [ "$tries" -lt 50 ]; do
+            tries=$((tries + 1)); sleep 0.1
+        done
         mkdir -p "$deny_workspace/project/target"
         printf '{"uri":"local://%s"}' "$planted_sock" > "$deny_workspace/project/target/active.json"
         # The mill rendezvous files name this script's listener's TCP port and its sleep's pid: the
@@ -2279,8 +2426,10 @@ PY
         python3 "$work/planted-tcp.py" >"$work/planted-tcp.log" 2>&1 & planted_tcp=$!
         sleep 3600 & planted_sleep=$!
         tries=0
-        while ! grep -q port "$work/planted-tcp.log" && [ "$tries" -lt 50 ]; do tries=$((tries + 1)); sleep 0.1; done
-        if want mill; then
+        while ! grep -q port "$work/planted-tcp.log" 2>/dev/null && [ "$tries" -lt 50 ]; do
+            tries=$((tries + 1)); sleep 0.1
+        done
+        if want mill && [ "$mill_daemonless" -eq 0 ]; then
             mkdir -p "$mill_workspace/out/mill-daemon"
             port_saved=$(cat "$mill_workspace/out/mill-daemon/socketPort" 2>/dev/null)
             sed -n 's/^port //p' "$work/planted-tcp.log" | tr -d '\n' > "$mill_workspace/out/mill-daemon/socketPort"
@@ -2295,8 +2444,9 @@ PY
             then report PASS "$planted_row" "$(grep -c bytes "$work/planted.log") connects, no bytes"
             else report FAIL "$planted_row" "exit $status: $(tail -1 "$work/chan-planted.log.err" | cut -c1-60); \
 listener: $(grep bytes "$work/planted.log" | tr '\n' ' ')"; fi
+            # Under a mill without a daemon the mill rows' own skip reports the row.
             if ! want mill; then report SKIP "$planted_mill_row" "needs mill"
-            else
+            elif [ "$mill_daemonless" -eq 0 ]; then
                 with_timeout 600 channel_shim chan-planted-mill.log "$mill_workspace" mill version; status=$?
                 channel_settled
                 port_saved=""

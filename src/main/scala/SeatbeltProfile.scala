@@ -107,7 +107,9 @@ object SeatbeltProfile:
     * mill daemon, listeners on any port, since it binds port 0 and no rule confines a bind to
     * one, and at any address of this host, since the "localhost" class admits a wildcard bind —
     * a grant everything the daemon forks inherits, so a build under mill can bind a listener a
-    * LAN peer reaches, where one under sbt or Maven gets EPERM (SECURITY.md "Run on host");
+    * LAN peer reaches, where one under sbt or Maven gets EPERM (SECURITY.md "Run on host"); the
+    * same for a mill command running its build without a daemon (RunOnHostPrereqs.millRunsWithoutDaemon),
+    * so that build binds what it would under one;
     * for a mill client, outbound to the daemon's one port (RunnerRuntimes,
     * RunOnHostMillDaemons), and the daemon's arguments, which Mill's client reads to check the
     * daemon is the one that took its lock; for Gradle, the mill daemon's grant plus outbound to any port of this host:

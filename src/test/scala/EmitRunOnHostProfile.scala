@@ -71,9 +71,11 @@ object EmitRunOnHostProfile:
       // No proxy runs under the emitted profile, so nothing is here: the supervisor rows have the real one.
       trust = RunOnHostInspection.trustDirectory(sessionTmp.resolveSibling("proxy.log")),
       systemPaths = systemPaths,
+      // A mill command without a daemon gets the grant RunOnHostSandbox gives it; a client's port is the runner's.
       network = program match
-        case Program.Gradle => SeatbeltProfile.Network.Gradle
-        case _              => SeatbeltProfile.Network.ProxyOnly,
+        case Program.Gradle                              => SeatbeltProfile.Network.Gradle
+        case Program.Mill if assembled.millWithoutDaemon => SeatbeltProfile.Network.MillDaemon
+        case _                                           => SeatbeltProfile.Network.ProxyOnly,
       // The workspace's lines, as a command the acceptance test starts without a launch gets.
       fileRules = FileRules.ofWorkspace(workspace).fold(fail, identity),
     )

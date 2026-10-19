@@ -58,10 +58,13 @@ the code that enforces each part:
 | the generated profile | `SeatbeltProfile.scala` |
 | the exit criteria, measured | `src/probe/run-on-host-acceptance-test.sh` |
 
-The full acceptance test (`all`) reports **295 PASS, 0 FAIL, 0 SKIP** on macOS 26.4.1 arm64 with
-Temurin 25.0.4, sbt 2.0.9, Mill 1.1.10, Gradle 9.8.0 and Maven 3.9.16 (2026-10-04). The two rows on
-an unset `mill-jvm-version` (`src/probe/run-on-host-acceptance-test.sh`) postdate that run and are
-unmeasured.
+The full acceptance test (`all`) reports **285 PASS, 0 FAIL, 13 SKIP** on macOS 26.6.2 arm64 with
+Temurin 25.0.4, sbt 2.0.9, Mill 1.3.0, Gradle 9.8.0 and Maven 3.9.16 (2026-10-19); the skips are
+the rows of Mill's daemon, which 1.3.0 runs without. Its second run, the mill rows on the copy
+pinned to Mill 1.1.10, reports **101 PASS, 0 FAIL, 16 SKIP**, each skip a row of a program that run
+does not select or of Mill without a daemon. The row on a build through a mill daemon of yours
+postdates both; with it, the `mill` selection reports **90 PASS, 0 FAIL, 28 SKIP** on Mill 1.3.0
+and **101 PASS, 0 FAIL, 17 SKIP** on 1.1.10 (2026-10-19).
 
 The measurement behind the feature: an `sbt test` of this project takes about 2 GB inside the podman
 machine, whose total is fixed when the machine is created and shared with every other session on it.
@@ -524,7 +527,8 @@ bootstrap of its own is another build.
 
 Mill is client/daemon by construction: the launcher starts a daemon that binds a port of the
 kernel's choosing on the loopback address, writes it to `out/mill-daemon/socketPort`, and connects
-(`Server.scala`, `ServerLauncher.scala`, Mill 1.1.10). The runner starts the daemon itself, before
+(`Server.scala`, `ServerLauncher.scala`, Mill 1.1.10). From Mill 1.2 on, a command runs without
+one ("Mill 1.2 and later: no daemon"). The runner starts the daemon itself, before
 the first `mill` command of a build directory, and every command from that directory attaches to
 it (`RunOnHostMillDaemons.scala`, `RunnerRuntimes`):
 
@@ -645,6 +649,45 @@ or ended by that record and replaced, as its sbt server is ("The channel and the
   remains in a group whose leader the scavenger cannot check, and is nothing a portfile
   attributes; it exits on Mill's idle timeout.
 
+#### Mill 1.2 and later: no daemon
+
+From Mill 1.2.0-RC1 on, the supervisor runs `./mill --no-daemon <args>`, and the runner starts no
+daemon: the build directory's runtime is its proxy (`RunOnHostPrereqs.millRunsWithoutDaemon`).
+
+- Mill's daemon reads each launcher's start time with `ProcessHandle.info()`
+  (`LauncherOutFilesRecordStore.write`, com-lihaoyi/mill#6955). On macOS the JDK throws when the
+  profile refuses `kern.procargs2.<pid>`, and every command fails with "Mill launcher failed"
+  (`upstream-issues.md`, openjdk/jdk and com-lihaoyi/mill).
+- The daemon's profile cannot allow that read: it is fixed when the daemon starts, before any
+  launcher's pid exists, and allowing every pid would let the build read the arguments and
+  environment of every process of the user ("The Seatbelt profile").
+- Without a daemon the build runs as the launcher's child, inside the launcher's sandbox, where
+  the rule allows the read.
+- The command gets the daemon's network grant, listeners and no outbound but the proxy
+  (`SeatbeltProfile.Network.MillDaemon`), so the build binds what it would under a daemon. It
+  gets no daemon port and no `kern.procargs2` exception.
+- Mill reads `out/mill-daemon/cache/java-home` in this mode too (`CoursierClient.cacheDir`, 1.3.0),
+  so "A pinned JVM" and "An unset `mill-jvm-version`" apply unchanged.
+- Mill reads `out/mill-daemon/cache/mill-daemon-classpath` in this mode too, and a host run can
+  rewrite it between commands, so the supervisor deletes a file naming paths outside the granted
+  cache before each command, as a daemon's start does
+  (`RunOnHostSandbox.discardForeignClasspathWithoutDaemon`).
+- Mill takes `out/mill-out-lock` for each command's build (`SharedOutLockManager`, 1.3.0), so a
+  daemon of yours that is idle does not block the command, and the runner leaves it alone.
+- While a process holds that lock — a build of yours — the supervisor waits, up to the two minutes
+  a busy daemon of yours gets, then refuses naming the lock (`RunOnHostSandbox.awaitMillOutLock`).
+  Mill's own wait would read the start time of the launcher a build through your daemon records,
+  and that read throws here; a build of yours without a daemon records none.
+  - The probe takes a shared lock and releases it at once, after the no-follow, time-bounded open
+    the `java-home` file gets (`RunOnHostSandbox.millOutLockHeld`).
+  - A build through your daemon that takes the lock after the probe, while the command starts,
+    fails the command with "Operation not permitted"; no probe before the command closes that. The
+    supervisor then names the lock's holder and says to retry (`reportMillOutLockTaken`).
+- Each command starts its own JVM, and the supervisor says so on the command's stderr. Measured
+  on Mill 1.3.0 with the fixture through a launch's runner, under the client profile with the
+  runner's daemon unused (2026-10-19): the first `__.compile` 71 s, then `__.test` 4.0 s, and a
+  `__.compile` with nothing to compile 5.8 s. A warm daemon's times are unmeasured.
+
 #### A pinned JVM
 
 Run `MILL_VERSION=<v>-jvm ./mill version` once on the host in the build directory, the run that
@@ -704,8 +747,8 @@ records under the same checks.
     took.
 - Mill's launcher resolves an unset version to the id built into it, through the call that
   resolves a pin (`MillProcessLauncher.javaHome`, `BuildInfo.defaultJvmVersion`).
-  - The id is `zulu:21` in Mill 1.1.0, 1.1.5 and 1.1.10, read in their source and the 1.1.0
-    changelog; an unset version is not measured under the profile.
+  - The id is `zulu:21` in Mill 1.1.0, 1.1.5 and 1.1.10, and `zulu:25` in 1.3.0, read in their
+    source and the 1.1.0 changelog; an unset version is not measured under the profile.
 - The supervisor does not read that id, so it accepts the `java-home` file under any key.
   - A file that an earlier pin or another Mill version wrote passes the check; Mill resolves its
     built-in id again, and the command fails at Mill's fetch. The host run rewrites the file.
@@ -1649,6 +1692,7 @@ How each program reaches its cache:
   from `PATH`:
   - https://github.com/com-lihaoyi/mill/blob/1.1.0/runner/launcher/src/mill/launcher/MillProcessLauncher.scala
   - https://github.com/com-lihaoyi/mill/blob/1.1.10/default-mill-jvm-version
+  - https://github.com/com-lihaoyi/mill/blob/1.3.0/default-mill-jvm-version
   - https://github.com/com-lihaoyi/mill/blob/1.1.10/changelog.adoc
   - https://github.com/com-lihaoyi/mill/blob/1.0.6/runner/launcher/src/mill/launcher/MillProcessLauncher.java
 - sbt server — domain-socket and TCP modes, the port file, discovery and the token:
