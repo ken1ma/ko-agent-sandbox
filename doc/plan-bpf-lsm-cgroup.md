@@ -7,8 +7,12 @@ with a direct bind of the workspace and a policy the kernel running the containe
 programs of type `BPF_LSM_CGROUP`, attached to the sandbox's own cgroup, so the host and every
 other container keep unfiltered access to the same files.
 
-On macOS and Windows that kernel is the podman machine's; on native Linux it is the host's, within
-the supported set "Native Linux" states.
+The first version serves `NESTING=none` sessions launched with the launcher's own seccomp profile
+on the podman machines, where that kernel is the machine's, and gives a `--workspace=read-only`
+session there a policy recording no root ("The hooks", `file_receive`, has why).
+`NESTING=same-uid` sessions, sessions launched with the profile's loosening option (`TODO.md`,
+"Refuse user namespaces and mounts under `NESTING=none`", which ships both) and native Linux
+hosts keep the filter until "Later versions" admits them.
 
 Status: the environment prerequisites and the cgroup placement are measured on both machines
 ("Environment evidence"), and Phase 0 is done ("Inventory"); no BPF program has been loaded,
@@ -40,6 +44,22 @@ sections before them are what the phases rest on.
   (https://wsl.dev/technical-documentation/security/).
 
 What else the backend changes, each way, is "What is gained and what is lost".
+
+
+## Later versions
+
+What the first version leaves to the versions after it, each behind the gates the phases name
+for it; until then Phase 6's backend selector launches those sessions with the filter, and on
+the podman machines their `--workspace=read-only` sessions under the no-root policy, which
+denies the share wholly and needs none of the routes the first item names:
+
+- `NESTING=same-uid` sessions and `NESTING=none` sessions with the profile loosened, where the
+  session mounts and creates user namespaces: the routes a nested podman needs and the free slots,
+  overlayfs's `user.overlay.*` names ("Decisions still open"), Phase 2's nested-podman measurement,
+  Phase 3's alias and overlay rows, and a key for `file_receive` other than the mount namespace,
+  which a nested container of such a session would fail ("The hooks").
+- Native Linux hosts: "Native Linux", Phase 4's two refusals there, and the host's own mount
+  topology under the workspace ("Mounts").
 
 
 ## The recorded decisions this answers
@@ -82,18 +102,21 @@ It also names what the seccomp rules refuse in `../container/ko-agent-sandbox/AG
 
 ## The mechanism
 
-Read in Linux v7.1 (https://github.com/torvalds/linux/tree/v7.1). The podman machine on macOS
-runs Fedora's `7.1.8-200.fc44.aarch64`; the WSL kernel is Microsoft's `6.18.54.1`, where each
-fact below is to be re-read before Phase 2 relies on it.
+Read in Linux 7.2.5 (`linux-7.2.tar.xz` with `patch-7.2.5.xz` from
+https://cdn.kernel.org/pub/linux/kernel/v7.x/), which the podman machine on macOS runs as
+Fedora's `7.2.5-200.fc44.aarch64`. The WSL kernel is Microsoft's `6.18.54.1`, where each fact
+below is to be re-read before Phase 2 relies on it; the sleepable bullet names the one difference
+read so far.
 
 - `include/linux/bpf-cgroup-defs.h`: `CGROUP_LSM_NUM` is 10. `kernel/bpf/cgroup.c`,
   `bpf_cgroup_atype_find`, gives one slot per distinct hook, refcounted across every cgroup that
   attaches it, and `-E2BIG` for an eleventh hook. Ten hooks serve any number of sandboxes. The
   pool is shared by everything in the VM, so the controller reads it before attaching rather
   than assuming it free.
-- `cgroup.c`, `bpf_prog_run_array_cg`: a program's nonzero return grants, zero becomes `-EPERM`.
-  A program on a void hook must return 1 (`kernel/bpf/verifier.c`, `return_retval_range`). The
-  `lsm/` convention of returning a negative errno does not apply.
+- `cgroup.c`, `bpf_prog_run_array_cg`: a program's nonzero return grants, and zero becomes
+  `-EPERM` on a hook that returns an errno alone (`cgroup_bpf_hook_returns_errno`), which the
+  eight hooks all do. A program on a void hook must return 1 (`kernel/bpf/verifier.c`,
+  `return_retval_range`). The `lsm/` convention of returning a negative errno does not apply.
 - `cgroup.c`, `cgroup_bpf_link_attach`, adds `BPF_F_ALLOW_MULTI` to every link attach, so every
   descendant cgroup runs the program (`compute_effective_progs`). A descendant may attach programs
   of its own, which needs the `bpf` syscall privileges the sandbox lacks: inside a session
@@ -110,17 +133,20 @@ fact below is to be re-read before Phase 2 relies on it.
   its hook is in `bpf_lsm.c`'s `untrusted_lsm_hooks`, which holds none of the hooks below. A
   `struct dentry` or `struct file` argument is usable as such, and `dentry->d_parent` walks are
   CO-RE reads.
-- Sleepable programs: `verifier.c`, `bpf_check_attach_target`, admits a sleepable LSM program by
-  its hook alone; no check against `BPF_LSM_CGROUP` was found, and `trampoline.c` enters such a
-  program under `rcu_read_lock`. The design needs no sleepable program: `fs/bpf_fs_kfuncs.c`
-  tags `bpf_path_d_path` without `KF_SLEEPABLE`, and the policy below does not call it.
+- Sleepable programs: the two kernels differ. `verifier.c`, `can_be_sleepable`, refuses a
+  sleepable `BPF_LSM_CGROUP` program at load; Microsoft's 6.18.54.1 lacks the check, admits
+  every sleepable LSM program by its hook alone and runs it under the shim's `rcu_read_lock`
+  (`trampoline.c`). The design needs no sleepable program, and the controller never sets
+  `BPF_F_SLEEPABLE`: `fs/bpf_fs_kfuncs.c` tags `bpf_path_d_path` without `KF_SLEEPABLE`, and the
+  policy below does not call it.
 - The hooks below are outside every `#ifdef` of `include/linux/lsm_hook_defs.h`, so they need no
   `CONFIG_SECURITY_PATH`; both kernels' BTF lists them ("Inventory").
 
 ### The hooks
 
-Eight hooks take eight of the ten slots `CGROUP_LSM_NUM` gives, and hold the writes and the names of
-everything but directories at the VFS, whatever the backing. The name hooks are the `inode_*` hooks,
+Eight hooks take eight of the ten slots `CGROUP_LSM_NUM` gives, a ninth under `--unix-sockets`
+(`file_receive` below), and hold the writes and the names of everything but directories at the
+VFS, whatever the backing. The name hooks are the `inode_*` hooks,
 not the `path_*` hooks the syscalls call first, because overlayfs, which a session can mount where
 "Mounts" allows it, changes its upper layer through the `inode_*` hooks alone ("Inventory", row 20);
 each hook judges row 20's changes of its kind as well. Slots 9 and 10 stay free for what "Decisions
@@ -136,6 +162,7 @@ still open" may give them.
 | 6    | `inode_unlink`  | removal of a protected entry                              | 8         |
 | 7    | `file_open`     | an open for writing of a protected object                 | 10–13, 19 |
 | 8    | `inode_setattr` | `chmod`, `chown`, times, `truncate`, `O_TRUNC`            | 11, 14    |
+| 9    | `file_receive`  | a writable share file arriving by IPC, `--unix-sockets`   | —         |
 
 `inode_create` judges a `mknod` of a regular file; the other types reach `inode_mknod`
 (`fs/namei.c`, `filename_mknodat`).
@@ -146,7 +173,9 @@ The plan judges neither `mkdir` nor `rmdir` (rows 3 and 9): a session creates an
 directories at any name, `.git` and `.ko-agent-sandbox` included. Every non-directory put into a
 new directory is still judged at the position it lands at, by `inode_create`, `inode_mknod`,
 `inode_symlink`, `inode_link` or `inode_rename`. A directory filled elsewhere cannot take a guarded
-name, since `inode_rename` refuses a rename onto one (`authorize_create`).
+name, since `inode_rename` refuses a rename onto one (`authorize_create`), and one at a guarded
+name cannot leave it, since the rename rules refuse the guarded source (`authorize`,
+`Mutation::RenameFrom`): a session-made `.git` is created and removed in place, never moved.
 
 A new `.git` or `.ko-agent-sandbox` would still change how the classifier judges what lands below
 it, so three rules depart from `policy.rs`:
@@ -227,8 +256,8 @@ not implement the operation ("Inventory", filter column `none`; for xattrs,
 - File flags, the inode flags `chattr` sets, row 17: `inode_file_setattr`. `file_setattr`,
   `FS_IOC_SETFLAGS` and `FS_IOC_FSSETXATTR` change the flags and `fsxattr` fields of a file the
   caller owns through a read-only descriptor, which `file_open` admits.
-- Filesystem ioctls, row 18: `file_ioctl` and `file_ioctl_compat`. The commands read in v7.1 take
-  a read-only descriptor and set a file's generation, set an empty directory's encryption policy,
+- Filesystem ioctls, row 18: `file_ioctl` and `file_ioctl_compat`. The commands read take a
+  read-only descriptor and set a file's generation, set an empty directory's encryption policy,
   or make a file permanently read-only.
 
 `inode_permission` would not hold them in one slot: it sees neither an ACL change, whose
@@ -244,12 +273,15 @@ check, nor a flag change, which `vfs_fileattr_set` admits by ownership (`fs/file
   - `file_setattr`;
   - `ioctl` by its command argument: `FS_IOC_SETFLAGS`, its 32-bit `FS_IOC32_SETFLAGS`
     (`fs/ioctl.c`, `compat_sys_ioctl`), `FS_IOC_FSSETXATTR`, and the commands row 18 lists,
-    32-bit forms included.
-- Under `NESTING=same-uid`, whether a nested podman's storage needs the xattr syscalls,
-  `file_setattr` or the refused ioctl commands is a Phase 2 measurement. The rule cannot refuse a
-  family the nested podman needs; the two free slots can hold two of its hooks, and which routes
-  stay open on such sessions is a user decision in "Decisions still open", with each route's
-  consequence stated there. Phase 2's gate stays unmet for that mode until it is taken.
+    32-bit forms included. The rule compares the argument's low 32 bits (`SCMP_CMP_MASKED_EQ`
+    in the OCI profile): seccomp sees the whole 64-bit register while the kernel reads `cmd` as
+    `unsigned int`, so an equality over 64 bits is passed by a command with a high bit set
+    (seccomp(2)). Phase 2 runs each refused command with high bits set, on both architectures.
+- Under `NESTING=same-uid` ("Later versions"), whether a nested podman's storage needs the xattr
+  syscalls, `file_setattr` or the refused ioctl commands is a Phase 2 measurement. The rule
+  cannot refuse a family the nested podman needs; the free slots can hold two of its hooks,
+  and which routes stay open on such sessions is a user decision in "Decisions still open", with
+  each route's consequence stated there. That version's gate stays unmet until it is taken.
 
 What the seccomp rule reaches and what it misses:
 
@@ -285,7 +317,121 @@ Hooks the plan does not need, and the fact that excuses each:
 - `file_permission`: judges descriptors that predate the policy or were passed in. The policy is
   attached before the container's first process ("What the backend must hold"), so none
   predates it, and the launcher passes no host descriptor into the container: it never uses
-  `--preserve-fds`.
+  `--preserve-fds`. A descriptor another container passes is `file_receive`'s case.
+- `file_receive`: judges a descriptor arriving by `SCM_RIGHTS` or `pidfd_getfd`, both through
+  `receive_fd` (`fs/file.c`), which the seccomp notifier's add-descriptor ioctl and io_uring's
+  fixed-file install also call. `pidfd_getfd` needs a pid visible in the session's pid
+  namespace, which holds the container's processes alone. A descriptor is judged where it is
+  used: an `openat` through a received directory descriptor runs the receiver's hooks, and the
+  sender's see nothing, since an `O_PATH` open returns before `security_file_open` (`fs/open.c`,
+  `do_dentry_open`) and no hook is on the send; a descriptor already open for writing takes the
+  receiver's `write` with `file_permission` alone, which is not attached. So the receiver's
+  policy over the share is what counts, and the sandboxes that can exchange descriptors are
+  those reaching one socket's inode: each launch has its own podman network and pid namespace,
+  and a pathname socket is found by its inode (`net/unix/af_unix.c`, `unix_find_bsd`,
+  `unix_find_socket_byinode`) through any mount of its superblock, a read-only mount included,
+  since the permission check there (`include/linux/fs.h`, `path_permission`; `fs/namei.c`,
+  `sb_permission`) refuses a regular file, a directory or a symlink on a read-only superblock
+  and reads no mount flag. A socket bound in the workspace is thus reached through a direct
+  bind of the tree and not through a FUSE mount of it; the launcher binds no socket into the
+  container (`AgentSandboxLauncher`, the `podman create` arguments); and the clipboard and
+  run-on-host relays speak through FIFOs that `podman exec` processes, which are in the cgroup,
+  create. What two containers have in common is a volume, the raw tree where a
+  `--workspace=read-only` session binds it (`AgentSandboxLauncher`, `workspaceBind`), and a
+  linked worktree's main gitdir, bound read-only into its container.
+  - By default the session opens no channel to another container: the policy refuses a socket
+    inode on a superblock of the root's type, beneath a recorded root and beneath the
+    persistent volume's root, by `inode_mknod`, `inode_rename` and `inode_link` ("The policy").
+    The hook is then not attached. What else could carry a descriptor does not reach another
+    container: an abstract socket stays in the launch's own network namespace, a socket pair in
+    the processes holding it, and no socket is bound before the policy, which precedes the
+    container's first process. A socket the host binds under the workspace is a listener in the
+    host's kernel, which the VM's lookup does not find; on a native Linux host it would be, a
+    question for that version ("Later versions"). Sockets under `/tmp` and the rest of `~`,
+    each container's own, stay allowed. What binds where is measured in "Environment
+    evidence": the one program with a socket on shared storage is Codex's app-server daemon,
+    under `~/.codex`, and whether `codex exec` works without it is a Phase 3 row.
+  - `--unix-sockets` (a provisional name, "Decisions still open") lifts the refusal and attaches
+    `file_receive` as a ninth hook, run on the receiver's cgroup since the hook's argument is a file
+    (`kernel/bpf/bpf_lsm.c`, `bpf_lsm_find_cgroup_shim`). It refuses every file whose mount belongs
+    to another mount namespace (`fs/mount.h`, `real_mount`, `mnt_ns`; the task's in `nsproxy`),
+    unless the file is a non-directory on a superblock of the root's type beneath a recorded root
+    and, when it has `FMODE_WRITE`, the receiver's `file_open` would admit opening it for writing,
+    which the sender's may have, since two sessions of one workspace run under the rule files of
+    their own launches ("The policy", the maps). Under `NESTING=none` another mount namespace is
+    another container: the profile refuses a user namespace, `CLONE_NEWNS` needs `CAP_SYS_ADMIN`,
+    which `CapEff` zero lacks ("Environment evidence"), and `podman exec` joins the container's
+    namespaces; the mounts inside the container, `/tmp`, the volumes and the bind, are its
+    namespace's own, and a pipe, a socket or an anonymous inode sits on a kernel-internal mount of
+    no namespace (`fs/namespace.c`, `kern_mount`, `MNT_NS_INTERNAL`) and passes, reaching no
+    filesystem; so what processes of one container pass each other passes as today. A directory
+    descriptor from another namespace is refused whatever it names: a lookup through it starts at
+    its own path and mount (`fs/namei.c`, `path_init`), descends the mounts beneath, found by parent
+    mount and dentry whatever the caller's namespace (`fs/namespace.c`, `__lookup_mnt`), and ascends
+    by `..` past the receiver's root and the sender's bind (`follow_dotdot`, `choose_mountpoint`),
+    so a descriptor of the sender's container root reaches its writable workspace bind, and one of
+    `/repo/sub` passed to a sandbox of `/repo/sub` by a sandbox of `/repo` reaches `/repo`, where
+    `mkdirat` and `unlinkat` with `AT_REMOVEDIR` are judged by no hook ("Directories") and, under a
+    profile without the seccomp rules, a read-only open takes `fsetxattr` and `ioctl` ("Attributes,
+    flags and ioctls"). A non-directory descriptor starts no lookup (`path_init` answers `ENOTDIR`
+    to a name through one), and a reopen of it by an empty name is a `file_open`. `scm_detach_fds`
+    (`net/core/scm.c`) installs a message's descriptors in order and stops at the refusal: the
+    earlier ones arrive, the later ones are dropped, and the message carries `MSG_CTRUNC` with no
+    error from `recvmsg`.
+    - Under the option a socket inode does not enter a gitdir directly, by `inode_mknod`, by
+      `inode_rename` of one bound elsewhere, each way for an exchange, or by `inode_link`, each
+      judged on the inode the hook holds (`S_ISSOCK` of `old_dentry` for the last two): a
+      filter-backed worktree session reaches the main checkout's gitdir bind with no policy,
+      and the filter admits a socket under `objects`, judging only the name and the destination
+      (`fs.rs`, `allow_create`). A symlink adds no reach: `connect` follows it
+      (`unix_find_bsd`, `LOOKUP_FOLLOW`) in the connecting container's own mount namespace,
+      where a filter-backed session has no raw host inode but the gitdir bind's and the
+      volumes'. Git binds one socket in a gitdir, `fsmonitor--daemon.ipc` at its root
+      (`compat/fsmonitor/fsm-ipc-unix.c`, `fsmonitor_ipc__get_path`), a name outside the root's
+      allowlist (`policy.rs`, `OPERATIONAL_FILES`) that the filter refuses today, so the rule
+      costs nothing. It sees the moved inode alone: a directory holding a bound socket, renamed
+      into `objects`, carries it in, and the launch refusal below is what the pair of a main
+      checkout and a filter-backed worktree rests on, this rule narrowing the direct routes.
+    - A second sandbox of the workspace under this backend judges its use of the descriptor by
+      the same policy, and a sandbox of another workspace allows nothing on the share outside
+      its own roots ("The policy") and receives no writable file of it, so a descriptor into
+      this workspace gives it nothing. Both are Phase 3 rows.
+  - A `--workspace=read-only` session shares the raw tree and the volume with a live one, and
+    its `ro` mount judges only what it opens by path: an `openat` through a received directory
+    descriptor resolves on the sender's writable mount, so without a policy of its own the
+    session could open the live session's `.git/config` for writing, judged by nothing. So it
+    runs under a policy recording no root ("The policy"), and that is why its launch runs the
+    controller as a live launch does. The filter admits what a passed descriptor widens, since
+    the live session's mount judged the open; here nothing arrives by default, and under the
+    option `file_receive` refuses the writable file. Where the probe fails, no session of the
+    host has a policy, and the mode keeps the raw `ro` bind alone ("Native Linux"). A Phase 3
+    row.
+  - A filter-backed session has no policy over the share, and a session without the option has no
+    `file_receive`, so the launcher refuses a launch whose backend or option differs from that of a
+    live session it shares a raw mount with, naming that session. The raw mounts are the volume, the
+    workspace tree and a linked worktree's main gitdir (`SandboxWorkspace.linkedGitdirBind`): a
+    linked worktree may mount its main checkout's own volume (`LauncherState.mainWorktreeVolume`),
+    `--persistent-volume` names one for any workspace, two sessions of one workspace may name two, a
+    workspace root above or below another's binds the same directories, and the gitdir bind lies
+    under the main checkout's root, so a worktree session under the other backend or setting is
+    refused beside the main checkout's whatever its volume. Each sandbox container carries labels
+    naming its backend, its option, its volume and, for each raw mount, the host path and the
+    `(superblock, inode)` identity the controller's `stat` in the VM gave before the container was
+    created ("The policy"); a path alone goes stale, since a host rename leaves a live session's
+    mount on the renamed directory (the Phase 1 identity test) while a new launch spells the new
+    name. The launcher lists every sandbox container by the name pattern each of its versions has
+    used (`sandboxRunContainer`; `podman ps --all --filter name=`,
+    https://docs.podman.io/en/latest/markdown/podman-ps.1.html), reads the labels, and compares the
+    volumes for equality and the raw mounts by identity for equality; for ancestry it first re-reads
+    each live session's recorded paths in the VM and refuses beside one whose path no longer names
+    its recorded identity, then compares the paths. A listing or a `stat` that fails refuses the
+    launch, as does a live container without the labels, from a launcher that predates them, each
+    named. The launcher holds one launch lock per machine (`FileHelper.withFileLock`, as the
+    per-workspace `.lock` under the TLS state directory) from the listing until its container
+    exists, so of two launches racing, one sees the other's container; a host rename inside that
+    window is the one case the comparison does not see, the host's own act, which the trust model
+    leaves to the host ("What the backend must hold") as the filter leaves it the renames and
+    coherency races it admits ("What is gained and what is lost").
 
 ### Mounts
 
@@ -298,8 +444,9 @@ ships before this backend, and the backend does not ship without it.
   capability to mount with.
 - The profile has neither rule under `NESTING=same-uid`, where a nested podman creates user
   namespaces and mounts, nor on a `NESTING=none` session launched with the profile's loosening
-  option. On both, the hooks judge rows 20 and 21 ("The policy"), and overlayfs's
-  `user.overlay.*` names are the decision "Decisions still open" holds for them.
+  option. On both, a later version's sessions ("Later versions"), the hooks judge rows 20 and 21
+  ("The policy"), and overlayfs's `user.overlay.*` names are the decision "Decisions still open"
+  holds for them.
 
 
 ## The policy
@@ -307,9 +454,42 @@ ships before this backend, and the backend does not ship without it.
 The program classifies by object and position, never by a path string:
 
 - The sandbox's policy names its workspace root as `(superblock, inode)`, recorded by the
-  controller from the VM's own `stat` of the bind source. The program walks `d_parent` from the
-  target dentry, bounded, folding each name as `policy.rs` folds (`git-metadata.md`, "The name
-  rule"), until it meets the root or the filesystem root. Outside the root, everything is allowed.
+  controller from the VM's own `statx` of the bind source, with the root's filesystem type name;
+  a `--workspace=read-only` session's policy records the type and no root. The program walks
+  `d_parent` from the target dentry, bounded, folding each name as `policy.rs` folds
+  (`git-metadata.md`, "The name rule"), until it meets a recorded root or the filesystem root.
+  An object on a superblock of another type, `~`, the volumes and the container's own
+  filesystems, is outside before any walk and allowed. On a superblock of the root's type, a
+  mutation is allowed only beneath a recorded root: a walk that meets none, or reaches the
+  bound, which stays above the deepest path Phase 2 measures, denies. Every workspace a machine
+  serves is on its one share type, which Phase 1's `findmnt` row records (on Windows the
+  launcher takes `/mnt/<drive>` paths alone, `SandboxWorkspace`), so another workspace's object
+  is of the root's type.
+  - Nothing the session may write lies there: the container's one other host bind, a linked
+    worktree's main gitdir (`SandboxWorkspace.linkedGitdirBind`), is read-only, and the rest is
+    volumes and its own filesystems. What the rule denies is another workspace's directory
+    reached through a descriptor a sandbox passed ("The hooks", `file_receive`), the whole
+    share for a read-only session, and the same type's unrecorded superblocks: a submount the
+    guest mounts mid-session ("Mounts" below) is one and in no table, while a FUSE mount the
+    session makes is of type `fuse`, not `virtiofs`.
+  - The identity's encoding, one on both sides: the program reads the inode's `i_ino` and its
+    superblock's `s_dev`, a `dev_t` the kernel lays out as `MKDEV` does (`include/linux/kdev_t.h`,
+    `MINORBITS` 20); the controller records `statx`'s `stx_ino` and `MKDEV` of its
+    `stx_dev_major` and `stx_dev_minor`, which `fs/stat.c` (`cp_statx`, `generic_fillattr`)
+    fills from the same two fields, while a plain `stat`'s `st_dev` is `new_encode_dev`'s other
+    layout. FUSE fills the inode's number and the attribute from the server's one number
+    (`fs/fuse/inode.c`, `fuse_squash_ino`, the identity on a 64-bit kernel; `fs/fuse/dir.c`,
+    `fuse_fillattr`). Phase 1 compares the two readings of one object on both kernels.
+- No socket inode comes to be on a superblock of the root's type, beneath a recorded root, or
+  beneath the persistent volume's root, recorded as `(superblock, inode)` like a workspace root
+  since the volume shares its superblock with `~` ("Environment evidence"): `inode_mknod`
+  refuses the creation, and `inode_rename`, each way for an exchange, and `inode_link` refuse a
+  source whose inode is a socket. The walk from the new name's parent that meets the volume's
+  root, or the bound, denies. `--unix-sockets` lifts the rule and keeps a socket out of a
+  gitdir by the same three hooks ("The hooks", `file_receive`, has the channel each closes).
+    Each share is one superblock (`fs/fuse/virtio_fs.c`, `virtio_fs_test_super`), so a second
+    share bound into a disposable container is Phase 3's stand-in for a submount made after
+    attach.
 - A string from `bpf_path_d_path` is not an identity: where "Mounts" allows them, unprivileged user
   namespaces work inside a session, so a task can bind the workspace at a second path
   in a mount namespace of its own.
@@ -326,7 +506,8 @@ The program classifies by object and position, never by a path string:
   stays wholly protected, the filter's own strict default, and the sandbox cannot add a root
   since the `.git` pointer its worktree needs is refused.
 - "Directories" adds three rules to the classifier: no new `HEAD` in a `.git`, a `read-only` line
-  applying below a `.git`, and a `.ko-agent-sandbox` protected in git state too.
+  applying below a `.git`, and a `.ko-agent-sandbox` protected in git state too; "The policy"
+  and "The hooks", `file_receive`, the socket rules.
 - A second name of a guarded entry, a hard link to a `.git` pointer file or an NTFS short name,
   is the same object, which the filter recognizes by comparing every ordinary entry with its
   guarded siblings on each lookup (`fs.rs`, `policy_name`), a lookup a program cannot make.
@@ -346,27 +527,46 @@ The program classifies by object and position, never by a path string:
     still open"), and Phase 3's row for it cannot pass without that decision.
 - A mount inside the workspace, a filesystem the host mounted at `<workspace>/vendor`, has dentries
   whose `d_parent` chain ends at that filesystem's root, never at the workspace root, so a walk
-  by dentry alone would allow everything in it. The filter crosses such mounts and classifies
-  their contents (`fs.rs`, `open_ino`, no `RESOLVE_NO_XDEV`). Here:
-  - the bind is recursive, so the sandbox sees them: `--mount type=bind` binds recursively by
-    default, while `--volume` does not and needs `rbind`
-    (https://docs.podman.io/en/latest/markdown/podman-run.1.html);
-  - the controller lists the mounts under the bind source at launch and records, per nested
-    superblock, the classification context of its mountpoint; every hook identifies a nested
-    subtree by the superblock of the object it judges and resumes the walk from that context.
-    No hook follows a mount: a superblock and its dentries are the same objects through every
-    mount of them, so a bind the session makes in a mount namespace of its own, of the
-    workspace or of a nested filesystem, at any other path, gets the same answer, and a mount
-    the host adds mid-session does not propagate into the container under podman's default
-    `rprivate`;
-  - a nested superblock also mounted elsewhere in the container at launch refuses the launch,
-    since its dentries would have two positions;
-  - whether the macOS and Windows shares present a host-side mount as one tree or as a nested
-    superblock is a Phase 2 row.
-- Per-sandbox state is a map keyed by the cgroup id of the attach target, which the program reads
-  with `bpf_get_current_ancestor_cgroup_id` at the slice's fixed depth, or cgroup-local storage;
-  `kernel/bpf/helpers.c` defines both, and whether an `lsm_cgroup` program may call them is a
-  Phase 1 check. The programs are loaded once and the links are per sandbox.
+  by dentry alone would allow everything in it; a bind mount of a directory of the workspace's
+  own filesystem has dentries whose chain passes the bind's source, not its mountpoint. The
+  filter crosses such mounts and classifies their contents (`fs.rs`, `open_ino`, no
+  `RESOLVE_NO_XDEV`). Here:
+  - the first version refuses the launch when the VM shows a mount under the bind source, and
+    names it. The session makes none ("Mounts"), the launcher binds nothing under the workspace
+    (`SandboxWorkspace.linkedGitdirBind` refuses a target inside the workspace mount or holding
+    it), and a mount the host adds mid-session does not propagate into the container under
+    podman's default `rprivate`; what remains is the share. Whether the macOS and Windows virtiofs
+    servers present a host-side mount as one tree or as a nested superblock, one present at
+    launch and one the host makes after attach, is a Phase 2 row, with the launch refused for the
+    former and the mutations beneath the latter denied: only virtiofs auto-mounts a directory
+    its server flags with `FUSE_ATTR_SUBMOUNT` (`fs/fuse/virtio_fs.c`, `auto_submounts`), as a
+    new superblock of the parent's type at the guest's next lookup (`fs/fuse/dir.c`,
+    `fuse_dentry_automount`, `fs_context_for_submount`), and a 9p share never does. Apple does
+    not document whether its server flags one; neither rule depends on the answer;
+  - native Linux's version ("Later versions"), where the host's own `git` reads a tree with the
+    user's binds and tmpfs mounts under it, records them instead. The bind is recursive, so the
+    sandbox sees them: `--mount type=bind` binds recursively by default, while `--volume` does
+    not and needs `rbind` (https://docs.podman.io/en/latest/markdown/podman-run.1.html). The
+    controller lists the mounts under the bind source at launch and records each mount's root as
+    `(superblock, inode)`, as it records the workspace root, with the classification context of
+    its mountpoint; the walk stops at the first recorded root it meets and resumes from that
+    context. A superblock alone would not do: it does not tell a bind of a subdirectory from the
+    filesystem's root, and it does not see a bind from the workspace's own filesystem at all. No
+    hook follows a mount: a superblock and its dentries are the same objects through every mount
+    of them, so a bind the session makes in a mount namespace of its own, of the workspace or of
+    a nested filesystem, at any other path, gets the same answer, and the host's `git` never
+    sees that namespace. A mount root that is the same as, an ancestor of or a descendant of
+    another recorded root, or of the workspace root, refuses the launch, since its dentries
+    would have two positions: two binds of one source directory, and a bind of a workspace
+    directory at a second workspace position, are that case; a bind from outside the workspace
+    at one position is recorded like a nested filesystem.
+- Each sandbox has its own programs and maps: the controller loads the eight programs per launch
+  with that sandbox's maps, so a program references its own sandbox's records and no other's,
+  which is what the read-back in "Lifecycle" compares. The maps are written before attach and
+  never after: a rule change is a relaunch, as with the filter, so no record changes under a
+  running program. The slots are per hook, not per program
+  (`bpf_cgroup_atype_find` keys them by `attach_btf_id`), so this takes no slot; its cost is the
+  verifier's time per launch, a Phase 1 number.
 - An error in the walk, a name too long for the bound, or a missing map entry denies.
 
 
@@ -375,18 +575,17 @@ The program classifies by object and position, never by a path string:
 The programs enforce; the controller only loads them. It is an ordinary process making the
 `bpf` syscalls that need `CAP_BPF` with `CAP_PERFMON`, or `CAP_SYS_ADMIN`, beside the kernel
 that enforces: in a podman machine the launcher runs it for the launch through
-`podman machine ssh` under the machine's `sudo`, and it exits once the links are pinned; on
-native Linux it is the root-installed unit "Native Linux" describes. The session never has
-those privileges, and the controller never reads the workspace: its input is the launcher's
+`podman machine ssh` under the machine's `sudo`, and on native Linux directly under the host's
+(the sudoers drop-in "Native Linux" names); it exits once the links are pinned. The session never
+has those privileges, and the controller never reads the workspace: its input is the launcher's
 fixed-size records, made by the unprivileged guard ("The policy"), and its output is links and
 maps.
 
 `--build` installs the BPF object and the controller into the machine, as it installs the
 filter. The controller then runs at every launch, restart and recreate, since each attaches to a
-new cgroup and only a privileged caller can: one `sudo -n` per launch in the machine, the unit's
-work on native Linux. The programs themselves load once per machine boot: pinned programs
-outlive the controller and later launches reuse them, and a pin in `bpffs` does not survive a
-machine restart.
+new cgroup and only a privileged caller can: one `sudo -n` per launch, in the machine or on the
+host. It loads the sandbox's own programs and maps each time ("The policy"); the pins outlive the
+controller, and a pin in `bpffs` does not survive a machine restart.
 For each session:
 
 1. Create the attach cgroup before any container process exists, and keep it alive. Two shapes,
@@ -398,19 +597,25 @@ For each session:
      cgroup"), so the hold unit is not optional;
    - the container's own scope: `podman create`, attach to the scope, then `podman start`. Simpler
      if, between create and start, the scope exists and runs no image code. Unverified.
-2. Load the programs if not loaded, fill the sandbox's map entries, attach every program by link,
-   pin the links where the session cannot reach, and read them back.
+2. Load the sandbox's programs and maps, fill the records, attach every program by link, pin
+   the links where the session cannot reach, and read them back. A pinned link holds its program
+   and the program its maps (`kernel/bpf/syscall.c`, `bpf_link_free`), so nothing else is pinned.
 3. Prove the enforcement without trusting step 2's report, in two parts, both before any
-   container exists.
+   container process runs.
    - A read-back by a separate program, with the controller's privileges and none of its code:
-     for each hook of the session's set, the eight of "The hooks" and those a decision in
-     "Decisions still open" adds, `BPF_PROG_QUERY` on the attach cgroup with `BPF_LSM_CGROUP`
+     for each hook of the session's set, the eight of "The hooks", the ninth under
+     `--unix-sockets` and those a decision in "Decisions still open" adds, `BPF_PROG_QUERY` on
+     the attach cgroup with `BPF_LSM_CGROUP`
      lists the attached programs by id, as the kernel's own test does
      (`prog_tests/lsm_cgroup.c`, `query_prog_cnt`).
-     - For each program, `BPF_OBJ_GET_INFO_BY_FD` gives its tag and its `map_ids`
-       (`kernel/bpf/syscall.c`, `bpf_prog_get_info_by_fd`): the tag must equal the installed
-       object's, the map ids must be exactly the ids of the sandbox's pinned maps, and those
-       maps' contents, read by id, must equal the records the guard produced.
+     - One query lists the programs of every hook together (`kernel/bpf/cgroup.c`,
+       `__cgroup_bpf_query`, `CGROUP_LSM_START` to `CGROUP_LSM_END`). For each program,
+       `BPF_OBJ_GET_INFO_BY_FD` gives its `attach_btf_id`, tag and `map_ids`
+       (`kernel/bpf/syscall.c`, `bpf_prog_get_info_by_fd`): the ids must name each hook of the
+       set once and nothing else, the tag must equal the installed object's, and every map,
+       opened by id (`BPF_MAP_GET_FD_BY_ID`, which needs `CAP_SYS_ADMIN`), must have the record
+       format's type, key and value sizes and entry count, and the records the guard produced
+       as its contents.
      - The tag alone proves nothing about the maps: the kernel zeroes map references before
        computing it (`kernel/bpf/core.c`, `bpf_prog_calc_tag`).
    - A fixture the kernel judges, under the launcher's state directory in the VM, so a missing
@@ -421,8 +626,9 @@ For each session:
      - The launcher places a process of its own in the attach cgroup and runs one refused
        operation per hook of that set against the fixture: `creat`, `mkfifo`, `symlink`, `link`
        and `rename` to a guarded name, an `unlink` of a guarded entry, an open for writing and a
-       `chmod` of a guarded file, and one operation per hook a decision adds; then one write per
-       rule-line entry and one write to an ordinary entry.
+       `chmod` of a guarded file, a `bind` of a socket in the fixture or, with `--unix-sockets`,
+       in its `.git`, and one operation per hook a decision adds; then one write per rule-line
+       entry and one write to an ordinary entry.
      - Each write's expected answer is derived from the whole ordered rule set, as the filter
        decides it (`file-rules.md`, "The rule file"): refused under a `read-only` line, allowed
        under a `writable` line such as the defaults' `writable node_modules`, and the later
@@ -437,7 +643,8 @@ For each session:
    `podman start`.
 5. A restart or recreate repeats 1–4; a stop of the container does not detach. `podman exec`
    joins the container's cgroup and needs nothing.
-6. On teardown, end every task under the cgroup, then detach and remove the cgroup.
+6. On teardown, end every task under the cgroup, then detach and unpin the sandbox's links,
+   whose release frees their programs and maps, and remove the cgroup.
 
 A failure at any step before 4 ends the launch; the launcher prints which step and never binds
 the workspace writable. During a session the policy cannot lapse without a trusted hand: a link
@@ -453,14 +660,15 @@ program: the placement below is settled, the enforcement is not. Repeat a row on
 change in the component it names: a kernel, WSL, podman, crun or cgroup-manager change reopens
 the placement and hook rows of that platform; nothing else does.
 
-macOS, the default podman machine:
+macOS, the default podman machine, measured on 2026-10-19 and 2026-10-20:
 
 | item          | observed                                                                       |
 | ------------- | ------------------------------------------------------------------------------ |
-| machine       | Fedora CoreOS 44.20260817.3.1, aarch64, kernel 7.1.8-200.fc44                  |
+| machine       | Fedora CoreOS 44.20260913.3.2, aarch64, kernel 7.2.5-200.fc44                  |
 | LSMs          | `lockdown,capability,yama,selinux,bpf,landlock,ipe,ima,evm`                    |
-| BPF           | BTF readable; bpffs at `/sys/fs/bpf`, mode 700; `libbpf` 1.6.3; no compiler   |
-| podman        | rootless, `cgroupManager=systemd`, cgroup v2, crun 1.29.1; `sudo -n` works     |
+| BPF           | BTF readable with every hook of "Inventory", `kptr_restrict` 0 (from a         |
+|               | session); bpffs `/sys/fs/bpf` mode 700, `libbpf` 1.6.3, no compiler            |
+| podman        | rootless, `cgroupManager=systemd`, cgroup v2, crun 1.30; `sudo -n`             |
 
 Windows, an EC2 Server instance, build 10.0.26100.32522:
 
@@ -474,9 +682,10 @@ Windows, an EC2 Server instance, build 10.0.26100.32522:
 WSL 3.0.1.0 ran kernel 6.18.40.1, whose published `CONFIG_LSM` lacks `bpf`; the pre-release was
 installed for its kernel.
 
-The placement, the same on both machines: after `systemd-run --user --unit=ko-agent-probe-hold
---slice=ko-agent-probe.slice /usr/bin/sleep 180`, the cgroup of a container run with
-`--cgroup-parent=ko-agent-probe.slice` was, with uid 501 on macOS and 1000 on Windows,
+The placement, the same on both machines, macOS measured on its earlier kernel 7.1.8: after
+`systemd-run --user --unit=ko-agent-probe-hold --slice=ko-agent-probe.slice /usr/bin/sleep 180`,
+the cgroup of a container run with `--cgroup-parent=ko-agent-probe.slice` was, with uid 501 on
+macOS and 1000 on Windows,
 
 ```text
 /user.slice/user-<uid>.slice/user@<uid>.service/ko.slice/ko-agent.slice/
@@ -494,7 +703,9 @@ https://github.com/microsoft/WSL/issues/41492,
 https://github.com/podman-container-tools/podman/issues/29749.
 
 Build the BPF objects and the controller in a builder container with clang and libbpf, outside
-the machine; the machine keeps its images and installs no toolchain.
+the machine; the machine keeps its images and installs no toolchain. The builder pins clang's
+version: the stack depth and instruction count the verifier admits ("Phases", 2) are the
+compiler's output, so a compiler change reopens that gate with the kernel unchanged.
 
 
 ## Inventory
@@ -504,7 +715,7 @@ the last to change `src/{policy,fs,guard,rulefile}.rs`. A later change to those 
 rows it touches. Phase 2 fills the macOS and WSL columns with the answer under the attached
 programs.
 
-| #  | syscalls                  | filter            | hooks v7.1 calls             | macOS | WSL |
+| #  | syscalls                  | filter            | hooks 7.2.5 calls            | macOS | WSL |
 | -- | ------------------------- | ----------------- | ---------------------------- | ----- | --- |
 | 1  | open* O_CREAT, creat      | name              | path_mknod, inode_create     |       |     |
 | 2  | mknod*, Unix socket bind  | name              | path_mknod, inode_mknod      |       |     |
@@ -565,8 +776,8 @@ The rows, where the table does not say it all:
     namespace, and a project id is refused outside it.
   - Seccomp can refuse `file_setattr`, and the two ioctl commands by their command argument.
 - Row 18: commands a filesystem implements itself, outside `vfs_fileattr_set`; the seccomp rule
-  "Attributes, flags and ioctls" names refuses those listed here. The ones read in v7.1 take a
-  read-only descriptor:
+  "Attributes, flags and ioctls" names refuses those listed here. The ones read take a read-only
+  descriptor:
   - ext4's `EXT4_IOC_SETVERSION` and `EXT4_IOC_SETVERSION_OLD`, refused under `metadata_csum`,
     set the generation and ctime directly; `ext4_compat_ioctl` maps `EXT4_IOC32_SETVERSION` and
     `EXT4_IOC32_SETVERSION_OLD` to them. They, `EXT4_IOC_MIGRATE` and `EXT4_IOC_ALLOC_DA_BLKS`
@@ -597,13 +808,24 @@ The rows, where the table does not say it all:
   (`fs/fhandle.c`, `may_decode_fh`).
 - Row 22: `io_uring_setup` answers `ENOSYS` in a session.
 
-The source read is Linux v7.1. Upstream v6.18 makes the same calls for rows 1, 11 and 17, has
+The source read is Linux 7.2.5. Upstream v6.18 makes the same calls for rows 1, 11 and 17, has
 row 20's check of an upper layer, and its `bpf_lsm_disabled_hooks` lacks only
-`file_alloc_security`; Microsoft's `6.18.54.1` is not read.
+`file_alloc_security`; of Microsoft's `6.18.54.1`, `verifier.c` is read for the sleepable check
+("The mechanism") and nothing else.
 
 Both kernels' BTF lists every hook named in the table. The macOS kernel's is read from a session
-on 2026-10-15 with `grep -aoE 'bpf_lsm_[a-z0-9_]+' /sys/kernel/btf/vmlinux`; the WSL kernel's
-through `podman machine ssh` on 2026-10-16, with a `grep -aoE` for the table's 24 names.
+on 2026-10-19 with `grep -aoE 'bpf_lsm_[a-z0-9_]+' /sys/kernel/btf/vmlinux` for the table's names
+with `file_receive` and `file_permission`; the WSL kernel's through `podman machine ssh` on
+2026-10-16, with a `grep -aoE` for the table's 24 names.
+
+Sockets, measured in a sandbox session on 2026-10-21 with Codex 0.163.0, from `/proc/net/unix`
+and a `find -type s` over the container: the one pathname socket bound was Claude Code's under
+`/tmp`; the one socket file on shared storage was Codex's app-server daemon's,
+`~/.codex/app-server-daemon/daemon-updater.sock` on the persistent volume, its daemon not
+running; none in the workspace. sbt 2's server socket is under `~/.config/sbt/2/server`
+(`project/target/active.json`); Mill's daemon listens on the TCP port it writes to
+`out/mill-daemon/socketPort`, and Gradle's daemon and workers on TCP ports (`../SECURITY.md`).
+`~` and the persistent volume are two mounts of one xfs superblock, `/dev/vda4`.
 
 
 ## Phases
@@ -618,37 +840,85 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    one marker name, the controller attaching it to a disposable cgroup of each shape in
    "Lifecycle", then a disposable container under it: the marker is refused, other files are
    not, a sibling container outside the cgroup opens the marker, a second attached cgroup shares
-   the slot, and a deliberately failed attach starts no container. On macOS first, then WSL.
-   Gate: inheritance, denial, isolation and fail-closed start, both kernels.
+   the slot, and a deliberately failed attach starts no container. Also, on each share, the
+   identity test: a directory's and a file's `(superblock, i_ino)` in the guest stay the same
+   after a host rename of it and of an ancestor, after the guest drops its caches, and for the
+   two names of a host-made hard link, and differ from a host-made replacement at the same name,
+   and the identity the controller's `statx` records equals the one an attached program reads
+   from the object's inode ("The policy"), on both kernels;
+   `findmnt` records the share's backend and options first, since 9p without metadata caching
+   makes a new inode per lookup and keeps `i_ino` from the QID alone (`fs/9p/vfs_inode.c`,
+   `v9fs_get_new_inode_from_fid`). And the verifier's time to load the eight programs, nine with
+   `--unix-sockets`, with the `rename_lock` read and its fetch-add barrier ("What is gained and what
+   is lost") in the walk, and `bpftool prog dump jited` showing the barrier instruction on each
+   architecture.
+   On macOS first, then WSL.
+   Gate: inheritance, denial, isolation, fail-closed start and stable identities, both kernels.
 2. **Every hook.** The candidate programs on a disposable tree of the real share, exercising
    each syscall of the inventory, `openat2`, descriptor-relative calls, `RENAME_EXCHANGE`,
    `setfacl`, `setxattr`, `chattr` and row 18's commands, an overlay mount whose upper layer is
    in the tree, a host-side mount inside the tree, and ordinary git. Record the verifier's
    answer per hook per kernel, which attribute routes and ioctl commands each share accepts, and
    the cost of the bounded ancestry walk at the real tree's depths on both kernels, so the
-   policy's price is known before the classifier and the lifecycle are built.
-   Also read xfs's and btrfs's ioctl commands into row 18; measure whether a nested podman under
-   `NESTING=same-uid` needs the xattr syscalls, `file_setattr` or the refused ioctl commands
-   while it pulls and extracts an image, creates, runs and execs into a container, and removes
-   both, and whether each share stores a `security.capability` set and removed from a user
-   namespace the session creates, before the decisions on open routes are put.
-   Gate: the inventory's macOS and WSL columns are complete; every route, row 20's `user.overlay.*`
-   names included, is held by its slot or by the seccomp rules "Attributes, flags and ioctls" and
-   "Mounts" name, or covered by a decision taken for it, such as "Directories"; and the walk's cost
-   is recorded beside the unfiltered bind's.
+   policy's price is known before the classifier and the lifecycle are built. Also a
+   representative program holding the bounded walk, the folding, the ordered rule match, the
+   git-context transitions and the `rename_lock` read together, loaded on both kernels and run
+   at the real tree's depth and at the walk's bound, with the verifier's log, its instruction
+   count and stack depth, clang's version and the object's hash recorded: the verifier's
+   instruction budget and 512-byte stack (`include/linux/bpf.h`, `BPF_COMPLEXITY_LIMIT_INSNS`;
+   `include/linux/filter.h`, `MAX_BPF_STACK`) are met by loading, not by reading, and
+   `policy.rs`'s `fold` and `child_context` allocate, so the port is written allocation-free
+   with bounded loops before Phase 3 ports the rest.
+   Also read xfs's and btrfs's ioctl commands into row 18. For the later version, measure whether
+   a nested podman under `NESTING=same-uid` needs the xattr syscalls, `file_setattr` or the
+   refused ioctl commands while it pulls and extracts an image, creates, runs and execs into a
+   container, and removes both, and whether each share stores a `security.capability` set and
+   removed from a user namespace the session creates, before the decisions on open routes are
+   put.
+   Gate: the inventory's macOS and WSL columns are complete; every route of the first version's
+   sessions, row 20's `user.overlay.*` names included, is held by its slot or by the seccomp rules
+   "Attributes, flags and ioctls" and "Mounts" name, or covered by a decision taken for it, such
+   as "Directories"; and the walk's cost is recorded beside the unfiltered bind's, and the
+   representative program loads on both kernels.
 3. **The policy.** The classifier in the programs, the map compiler in the guard, and the
    filter's test corpus run against the bind: the name-rule corpus, the pointer rewrite, the
    second-name cases, hooks, config, alternates, operational writability, the blocked git
-   commands, symlink escape and the rename races (`git-metadata.md`, "Test list"); a host hard
-   link to the root's `.git` pointer file and to `.ko-agent-sandbox`
+   commands, symlink escape and the rename races (`git-metadata.md`, "Test list"); the torn-name
+   race of "What is gained and what is lost": a session renames `node_modAAAA`, holding
+   `.vscode/tasks.json`, to `BBBBBBBBules` and back in a loop, by `rename` and by
+   `RENAME_EXCHANGE` with a directory of the other name, while another process writes that file
+   through both names, on both machines, and no write succeeds; a socket `bind` in the
+   workspace and beneath the persistent volume's root, and a `rename` and a `link` of a socket
+   bound under `~` into either, refused by default, and `codex exec` run with the daemon
+   directory unwritable; under `--unix-sockets`, a directory descriptor passed over a socket in the
+   volume from a second sandbox of the workspace, judged by the receiver's policy, and from a
+   sandbox of another workspace and into a `--workspace=read-only` session, which do not receive it,
+   nor a read-only descriptor, a directory descriptor, of the sender's container root, of its `~`
+   and of the receiver's own root passed between sandboxes of `/repo` and `/repo/sub`, which no
+   receiver gets, and a pipe, a socket pair's end and a workspace file passed between two processes
+   of one container, which arrive, to a live session of the same workspace launched under a later
+   rule file, one message of three descriptors, a read-only one of an ordinary file, a writable one
+   of a file that rule file refuses and the sender's allows, and a read-only one again, of which the
+   receiver gets the first alone and `MSG_CTRUNC`, and a socket under `.git/objects` by `bind`, by
+   `rename` and `RENAME_EXCHANGE` of one bound elsewhere and by `link`, each refused, and a symlink
+   there to a socket outside, through which a worktree's container cannot connect; a launch under
+   the other backend or the other setting of `--unix-sockets` while a session sharing its volume or
+   a raw mount is live, refused in either order, for a main checkout and a linked worktree sharing
+   its volume, for two sessions of one workspace naming two volumes, for a workspace below another's
+   root, for a linked worktree with its own volume beside its main checkout, after a host rename of
+   the workspace between the two launches, which name two volumes, and beside a live container of an
+   earlier launcher without the labels too, and of two such launches racing, one refused; a host
+   hard link to the root's `.git` pointer file and to `.ko-agent-sandbox`
    (`tests/mounted_mutate.rs`, `a_second_name_of_a_guarded_entry_is_guarded_like_it`); the NTFS
-   short-name form on a real NTFS volume; a nested mount holding a `.git`; a linked git worktree,
+   short-name form on a real NTFS volume; a mount under the bind source refusing the launch, and
+   for native Linux's version a nested mount holding a `.git`; a second host share bound into a
+   disposable container, on which every mutation is denied; a linked git worktree,
    whose main gitdir the launcher binds read-only (`TODO.md`, "Deferred — writable git from a
    linked worktree").
-   Also: under `NESTING=same-uid` and on a `NESTING=none` session with the profile loosened, the
-   session binds the workspace and a nested filesystem at other paths in a mount namespace of its
-   own and mutates through the aliases, and through an overlay mount; under `NESTING=none`
-   otherwise, `unshare -Ur` and each mount syscall are refused; a host hard link to a nested `.git`
+   Also: under `NESTING=none`, `unshare -Ur` and each mount syscall are refused, and for the later
+   version, under `NESTING=same-uid` and with the profile loosened, the session binds the
+   workspace and a nested filesystem at other paths in a mount namespace of its own and mutates
+   through the aliases, and through an overlay mount; a host hard link to a nested `.git`
    pointer file, made before and after launch; a `HEAD` by each creating syscall in a `.git` the
    session makes in `sub/` and in `.git/objects/x/`, and by a rename or `RENAME_EXCHANGE` over a
    directory placeholder; an exchange of a filled directory with a session-made `.git`; host `git`
@@ -659,18 +929,23 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
 4. **Lifecycle.** The ordering of "Lifecycle" on rootless podman: first-process denial, restart,
    recreate, `podman exec`, stop and kill, controller exit, machine restart, link loss; and the
    proof's catches, a controller that attaches a subset of the hooks, one that attaches another
-   build's program, one that loads wrong records, and one whose program uses a map other than
-   the pinned one, each of which must end the launch.
-   Gate: no container process runs before the policy, on either machine, and each of the four
+   build's program, and one that loads wrong records, each of which must end the launch. For
+   native Linux's version, the two refusals of "Native Linux": a controller given an object path,
+   and one asked for a cgroup outside the invoking user's slice.
+   Gate: no container process runs before the policy, on either machine, and each of the three
    defective controllers is caught.
 5. **Measurement.** `probe/perf-probe.py` and the real-tree rows of `verification-log.md` on the
    bind with the policy, beside the filter and the unfiltered bind; the machine's CPU and memory
    during the stat storm under each.
    Gate: the numbers are recorded; the default changes only by a release decision.
-6. **Integration.** A backend selector with a capability probe, `--workspace=read-only` and the
-   printed host requirements where the probe fails, the launch line naming the backend and the
-   accepted differences, the removal of the filter, and the documentation changes "The recorded
-   decisions this answers" names. It needs the profile "Mounts" relies on to have shipped.
+6. **Integration.** A backend selector with a capability probe, the no-root policy for
+   `--workspace=read-only` where the probe passes and the raw `ro` bind with the printed host
+   requirements where it fails, the launch line naming the backend and the accepted differences, the
+   removal of the filter from the first version's sessions, with the selector keeping it for the
+   rest ("Later versions") and refusing a launch whose backend or `--unix-sockets` setting differs
+   from a live session's sharing its volume or a raw mount, or that of an unlabelled or renamed one
+   ("The hooks", `file_receive`), and the documentation changes "The recorded decisions this
+   answers" names. It needs the profile "Mounts" relies on to have shipped.
 
 
 ## What is gained and what is lost
@@ -703,8 +978,39 @@ Gained:
 - **No window between resolving and acting.** The decision is taken inside the syscall, on the
   dentry the kernel acts on, which the filter's resolver and its `ESTALE` rules exist to
   approximate. A held directory handle follows a directory the host moved and is judged by its
-  current position. The walk reads `d_parent` without the rename lock, so a concurrent rename
-  can be seen mid-move; Phase 3's rename races measure what that passes.
+  current position. The walk reads `d_parent` and `d_name` without `rename_lock`, so a concurrent
+  `d_move` of an ancestor can be seen mid-move, half old and half new (`fs/dcache.c`, `__d_move`).
+  What keeps that harmless:
+  - a walk that overlaps a rename is discarded, and no property of the classifier stands in for
+    that: `d_move`, `d_exchange` and `__d_unalias` hold `rename_lock` across the parent change
+    and the name change, which for inline names copies the new name over the old on a rename
+    (`fs/dcache.c`, `__d_move`, `copy_name`, a struct assignment) and swaps the two a word at a
+    time on an exchange (`swap_names`), so an unvalidated walk can read a name that is neither,
+    `node_modules` out of `node_modAAAA` and `BBBBBBBBules`, and the defaults' `writable` line
+    would lift a `.vscode` below it that both real names protect. `policy.rs` allows that rename,
+    since a directory is pinned only as an interior component of a line (`RuleContext::pinned`) and
+    the move leaves no region (`authorize_region_move`). Phase 3 runs it as a race;
+  - the program reads `rename_lock`'s sequence before and after the walk, as `d_path` does. A
+    walk counts only when both reads succeeded, the first value is even, the second equals it,
+    and a barrier separates each counter read from the dentry reads, as `read_seqbegin` and
+    `read_seqretry` have (`include/linux/seqlock.h`, `smp_rmb`) and two plain reads do not;
+    otherwise it walks again, and denies after a bound. The controller passes the address, read
+    from `/proc/kallsyms` as root, in the program's data: the machine's BTF holds per-CPU
+    variables only, and `bpf_probe_read_kernel` takes any scalar as its source
+    (`kernel/trace/bpf_trace.c`, `ARG_ANYTHING`). Clang emits no barrier instruction for BPF: a
+    fence outside the single-thread scope is a fatal error in LLVM's BPF backend
+    (`BPFISelLowering.cpp`, `LowerATOMIC_FENCE`). The candidate is an atomic fetch-add on a stack
+    word between the reads: the arm64 JIT emits `ldaddal`, or `ldxr`/`stlxr` with `dmb ish`
+    without LSE (`arch/arm64/net/bpf_jit_comp.c`, `emit_lse_atomic`, `emit_ll_sc_atomic`), and
+    the x86 JIT a `lock`-prefixed `xadd` (`arch/x86/net/bpf_jit_comp.c`, `emit_atomic_rmw`).
+    Whether both verifiers accept it, and the jited dump shows those instructions, is a Phase 1
+    row;
+  - a host rename moves a guest dentry too, when the session's next lookup of the new name
+    returns the inode the old dentry holds (`fs/dcache.c`, `d_splice_alias` to `__d_unalias`,
+    which FUSE, virtiofs, overlayfs, ext4, xfs and 9p reach; 9p without metadata caching makes a
+    new inode instead), and on native Linux by `rename(2)` itself. A write the walk judges at the
+    old position is one the session could make until the guest noticed the host's rename, the
+    race `git-metadata.md`, "Races", lists for the filter; the host is trusted.
 - **Data coherency is the share's own.** The filter's two residual cache cases
   (`../fuse/ko-agent-fs/doc/architecture.md`, "Coherency") have no layer to occur in.
 - **No daemon.** No `ENOTCONN` failure domain shared by a workspace's sessions, no serialized
@@ -713,14 +1019,14 @@ Gained:
 Lost, stated as what becomes possible that the filter does not allow:
 
 - **A privileged controller in the path.** The enforcement is the verified program in the
-  kernel; the controller that installs it runs with the `bpf` syscall's privileges, as root in
-  the machine for the launch, or as the host's root unit ("Native Linux"), where the filter
-  daemon runs as an ordinary user throughout.
+  kernel; the controller that installs it runs with the `bpf` syscall's privileges, as root for
+  the launch, in the machine or on a native Linux host ("Native Linux"), where the filter daemon
+  runs as an ordinary user throughout.
   - It parses no text from the workspace: the unprivileged guard folds and compiles the rules into
     fixed-size records ("The policy"), and the controller installs them and attaches links.
   - What becomes possible is a defect in that installing, reached only through the launcher,
-    since the sandbox has no path to the controller and the host unit's socket is not bound
-    into the container.
+    since the sandbox has no path to the controller: it exits before the container starts and
+    listens on nothing.
 - **A mistake in the kernel-facing glue, which no host test reaches.** The classifier itself is
   unit-tested on the host, a `no_std` crate compiled into the program and into a test binary,
   as `policy.rs` is tested, and the folding, parsing and map compilation stay in the guard's
@@ -734,6 +1040,18 @@ Lost, stated as what becomes possible that the filter does not allow:
   writable and says what the host lacks. A lost session, never a weaker one.
 - **No session write through an NTFS short name on Windows.** Refused by form ("The policy"), a
   form no project is known to use. No protection is weakened.
+- **No Unix socket in the workspace or beneath the persistent volume, by default.** Of the
+  installed software, Codex's app-server daemon alone binds one there ("Environment evidence");
+  `--unix-sockets` allows them at the cost of a ninth hook ("The hooks", `file_receive`).
+- **No write by a `--workspace=read-only` session through a descriptor a live session passes, and
+  the controller's run for a read-only launch.** The filter admits the write, since the live
+  session's mount judged the open; here nothing arrives by default, `file_receive` refuses under the
+  option what another container passes but a share file it could open itself, and the session's
+  policy recording no root lets nothing on the share be opened for writing ("The hooks",
+  `file_receive`). No protection is weakened.
+- **No socket inode inside a gitdir under `--unix-sockets`, by creation, rename or link.** Git
+  binds its one there at the root, a name the filter refuses already. No protection is
+  weakened.
 - **A directory at any name, `.git` and `.ko-agent-sandbox` included.** The session can create
   and remove empty directories at a guarded name or position, which the filter refuses.
   "Directories" has the rules that keep this from weakening any protection.
@@ -744,16 +1062,18 @@ Lost, stated as what becomes possible that the filter does not allow:
 
 Decisions still open, each the user's, taken after Phase 2's table:
 
+- **The option's name.** `--unix-sockets` stands in for the option that allows Unix sockets in
+  the workspace and beneath the persistent volume at the cost of the ninth hook ("The hooks",
+  `file_receive`).
 - **Cgroup shape.** Slice with a hold unit, or the container's scope between create and start;
   Phase 1 measures both.
-- **Native Linux, SELinux enforcing: relabel or `label=disable`.** "Native Linux" states both;
-  the relabel is the plan's default, and `label=disable` a per-host choice.
-- **The routes under `NESTING=same-uid` whose syscalls a nested podman needs.** The seccomp
-  rule cannot refuse those syscalls, and the two free slots ("The hooks") can hold two of their
-  hooks. Which two, and so which routes stay open on such sessions, is this decision.
+- **The routes under `NESTING=same-uid` whose syscalls a nested podman needs, a later version.**
+  The seccomp rule cannot refuse those syscalls, and the two free slots ("The hooks") can hold
+  two of their hooks. Which two, and so which routes stay open on such sessions, is this decision.
   - A `NESTING=none` session attaches eight hooks and such a session ten, so both fit the
-    machine's ten slots at once, unless something else in the VM holds one ("The mechanism").
-  Each route's consequence, read in v7.1:
+    machine's ten slots at once, unless something else in the VM holds one ("The mechanism") or
+    a `--unix-sockets` session holds the ninth, when one route's hook has no slot.
+  Each route's consequence:
   - `inode_set_acl` open: an ACL set on a protected file rewrites its mode bits
     (`posix_acl_update_mode`), a `chmod` the hooks never see;
   - `inode_remove_acl` open: an ACL the host set on a protected file can be removed; the mode
@@ -779,8 +1099,8 @@ Decisions still open, each the user's, taken after Phase 2's table:
   Nothing is pre-accepted.
 - **overlayfs's `user.overlay.*` names on protected directories, where the session can mount:
   under `NESTING=same-uid`, and on a `NESTING=none` session with the profile loosened
-  ("Mounts").** No taken slot holds `inode_setxattr`, and the seccomp rule does not see
-  overlayfs's own writes ("Attributes, flags and ioctls"). Pending, between:
+  ("Mounts"), a later version.** No taken slot holds `inode_setxattr`, and the seccomp rule does
+  not see overlayfs's own writes ("Attributes, flags and ioctls"). Pending, between:
   - accepting them: a `user.` xattr on a protected directory, which no host program here reads;
   - `inode_setxattr` in a free slot on such sessions, which holds row 15 there too and leaves one
     free slot to the decision above.
@@ -791,6 +1111,10 @@ Decisions still open, each the user's, taken after Phase 2's table:
     inodes to these entries;
   - a scan of the whole tree at launch, which covers the launch-time half at the cost of a walk
     of the tree per launch, accepting the mid-session half.
+  Refusing every write through a file with `i_nlink > 1` is not among them: pnpm installs by
+  hard-linking from a store on the installation's filesystem, which in a session is the
+  workspace's (https://pnpm.io/faq, "Does pnpm work across multiple drives or filesystems?"), so
+  hard-linked files in a workspace are ordinary.
 - **Denylist inside a gitdir.** Only if Phase 3 finds the allowlist too large for the program:
   a denylist of the executable state (`config*`, `hooks`, `commondir`, `gitdir`,
   `objects/info`, the rebase, sequencer, bisect and `rr-cache` state) is smaller and fails open
@@ -799,39 +1123,45 @@ Decisions still open, each the user's, taken after Phase 2's table:
 
 ## Native Linux
 
-A native Linux host runs the backend on its own kernel, without a podman machine, within a
-supported set the launcher states rather than discovers. A host outside it gets
-`--workspace=read-only` and a message naming the missing requirement; a podman machine is never
-created for it. The requirements, each checked at launch:
+A later version ("Later versions") runs the backend on a native Linux host's own kernel, without
+a podman machine, within a supported set the launcher states rather than discovers. A host
+outside it gets `--workspace=read-only` and a message naming the missing requirement; a podman
+machine is never created for it. The set is chosen so that the host's launch is the machine's
+launch, one `sudo -n` of the controller under the same cgroup manager, with no mechanism of its
+own. The requirements, each checked at launch:
 
-- **`bpf` in the active LSM list**, read from `/sys/kernel/security/lsm`. Fedora CoreOS's
-  kernel activates it (the machine's list above). Where a kernel does not, the message names the
-  boot parameter, `lsm=` with `bpf` appended, and the reboot; which distributions ship it
-  inactive is not something this plan records, since the probe answers per host.
-- **The root-installed controller**, a systemd system unit running the controller as root and
-  reached over a socket the launcher's user may write.
+- **`bpf` in the active LSM list**, read from `/sys/kernel/security/lsm`. Every default list in
+  `security/Kconfig` ends in `bpf`, and the machine's Fedora kernel lists it ("Environment
+  evidence"); which distributions drop it is not something this plan records, since the probe
+  answers per host. Where a kernel lacks it, the message names the boot parameter, `lsm=` with
+  `bpf` appended, and the reboot.
+- **A sudoers drop-in for the controller**, granting the launcher's user `sudo -n` of the
+  root-owned controller binary and nothing else.
   - The host is never prompted for sudo (`../SECURITY.md`, "Silent changes to what you own"), so
-    the launcher prints the unit and its install command, as `--build` prints the `fuse.conf`
-    change for a machine.
+    `--build` prints the drop-in and its install command, as it prints the `fuse.conf` change
+    for a machine, and the user runs them once.
+  - What any sudo-granted binary needs, and Phase 4 runs: the controller loads the object
+    installed beside it and takes no object path, and it attaches only under the invoking user's
+    slice, `/user.slice/user-<uid>.slice/`, with the uid from `SUDO_UID`; either refusal fails
+    the launch.
   - Loading an LSM program needs `CAP_BPF` with `CAP_PERFMON`, or `CAP_SYS_ADMIN`
     (`kernel/bpf/syscall.c`, `is_perfmon_prog_type`). A BPF token on a delegated `bpffs`
     satisfies those two checks for an unprivileged process (`bpf_prog_load`,
-    `bpf_token_capable`); whether the attach also works unprivileged is unverified, so the unit is
-    what the plan builds and the token a later reduction.
-- **Under SELinux enforcing, a label the container may use.** The launcher's default is a
-  persistent file-context rule and a relabel of the workspace to a shared container type
-  at level `s0`.
-  - The commands are `semanage fcontext`, then `restorecon`, both printed for the user; the first
-    is what keeps a later `restorecon` from undoing the second.
-  - Confined host services then lose access to that tree, and `../SECURITY.md`'s "labels never
-    changed" gains this consented exception.
-  - The alternative, `label=disable` for the sandbox container, runs it outside SELinux
-    confinement, which the launcher already does for nested containers (`../SECURITY.md`, "No
-    containers inside the sandbox by default"); it costs no relabel and removes a layer around
-    the container.
+    `bpf_token_capable`); whether the attach also works unprivileged is unverified, so the
+    drop-in is what the plan builds and the token a later reduction.
+- **Under SELinux enforcing, `label=disable` for the sandbox container.** Podman's default,
+  `label=true` in `containers.conf`, labels the container `container_t`, which cannot read a
+  plain bind of the workspace; the option is ignored where SELinux is disabled, so a host under
+  AppArmor needs nothing here and keeps podman's `container-default` profile on the container.
+  - The sandbox container then runs outside SELinux confinement, as nested containers already do
+    (`../SECURITY.md`, "No containers inside the sandbox by default"); what confines it is the
+    cgroup-LSM policy, its namespaces, seccomp and capabilities.
+  - The alternatives, each rejected: relabeling the workspace to a shared container type
+    (`semanage fcontext`, then `restorecon`) keeps the container confined, but writes every
+    file's metadata, takes confined host services' access to the tree away, and `../SECURITY.md`
+    records that the workspace's labels are never changed; leaving enforcing hosts out of the set
+    excludes the host family both podman machines are built from.
 - **Rootless podman with the systemd cgroup manager**, as on the machines.
-
-Hosts without SELinux need the first two and the last.
 
 Landlock would need no privilege and no kernel option, and is active on both machines' kernels,
 but a Landlock rule's object is a file hierarchy named by an open descriptor
@@ -845,40 +1175,65 @@ It is not a backend for this policy.
 - Two sandboxes share the hook slots and differ in policy; a third container, the egress proxy
   and the machine's own processes are never judged.
 - A `.git` or `.ko-agent-sandbox` by any folded spelling cannot appear by `creat`, `mknod`,
-  `symlink`, `link`, `rename` or exchange, at any depth, directly or through an overlay mount the
-  session makes; one that `mkdir` makes never gains a `HEAD`, a `read-only` line still covers what
-  lies below it, and nothing but directories enters a `.ko-agent-sandbox` at any position.
+  `symlink`, `link`, `rename` or exchange, at any depth; one that `mkdir` makes never gains a
+  `HEAD`, a `read-only` line still covers what lies below it, and nothing but directories enters
+  a `.ko-agent-sandbox` at any position.
 - A protected entry cannot be opened for writing, truncated, re-attributed by `chmod`, `chown`,
   times, an xattr, an ACL or a `chattr` flag, changed by a filesystem ioctl, unlinked, removed
   unless it is an empty directory, renamed, exchanged, hard-linked out, or replaced, through any
-  name, descriptor, mapping, nested mount or overlay mount, beyond what a decision taken in
-  "Decisions still open" accepts.
-- Under `NESTING=none`, unless the session loosens the profile, it creates no user namespace and
-  no mount syscall succeeds.
+  name, descriptor or mapping, beyond what a decision taken in "Decisions still open" accepts.
+- Under `NESTING=none` with the launcher's profile, the session creates no user namespace and no
+  mount syscall succeeds, and a mount under the bind source refuses the launch.
+- By default no socket inode comes to be in the workspace or beneath the persistent volume, by
+  creation, rename or link, so the session opens no channel to another container. Under
+  `--unix-sockets`, a descriptor one sandbox passes another is judged by the receiver's policy, a
+  descriptor from another container is refused on arrival unless it is a non-directory of the share
+  beneath a recorded root that the receiver could open so by path, every directory among the refused
+  and passing within one container unchanged, so a sandbox of another workspace and a
+  `--workspace=read-only` session get nothing on the share, and no socket inode enters a gitdir
+  directly. A launch whose backend or option differs from that of a live session sharing its volume
+  or a raw mount, a linked worktree's main gitdir included, beside a live container of an earlier
+  launcher without the labels, or beside one whose recorded root path no longer names its recorded
+  identity, is refused, whichever launched first and when both launch at once.
 - Git's everyday commands work; the commands the filter blocks stay blocked and listed.
 - The file rules hold at any depth, with the resolved `read-only-path` lines.
 - No container process runs before the policy, proven by the read-back of every attachment,
-  program tag, program map id and map record and by the fixture suite in the attach cgroup,
-  which a controller that attached nothing, a subset, another build, wrong records or another
-  map cannot pass; the policy outlives the controller; the attach cgroup cannot be removed
-  while the container's scope or any task is in it.
+  program tag and map record and by the fixture suite in the attach cgroup, which a controller
+  that attached nothing, a subset, another build or wrong records cannot pass; the policy
+  outlives the controller; the attach cgroup cannot be removed while the container's scope or any
+  task is in it.
+- A later version ("Later versions") holds the `.git` and protected-entry rows through an alias
+  the session binds, an overlay mount it makes and a nested mount the host made, for the sessions
+  it admits, and on native Linux the two refusals of "Native Linux".
 
 
 ## Sources
 
-- Linux v7.1: `include/linux/bpf-cgroup-defs.h`, `include/linux/lsm_hook_defs.h`,
+- Linux 7.2.5: `include/linux/{bpf-cgroup-defs,lsm_hook_defs,seqlock,filter,bpf,fs}.h`,
+  `include/linux/{kdev_t,nsproxy}.h`,
   `kernel/bpf/{cgroup,bpf_lsm,trampoline,btf,verifier,helpers,core,syscall}.c`,
-  `security/{security,commoncap}.c`,
+  `kernel/trace/bpf_trace.c`, `security/{security,commoncap}.c`, `net/unix/af_unix.c`,
   `fs/{namei,attr,open,xattr,posix_acl,file_attr,ioctl,read_write,splice,remap_range}.c`,
-  `fs/{fhandle,bpf_fs_kfuncs}.c`, `fs/fuse/{inode,acl,file,dir,ioctl}.c`,
+  `fs/{fhandle,bpf_fs_kfuncs,dcache,file,fs_context,stat,namespace}.c`, `fs/mount.h`,
+  `fs/fuse/{inode,acl,file,dir,ioctl,virtio_fs}.c`, `arch/{arm64,x86}/net/bpf_jit_comp.c`,
   `fs/overlayfs/{overlayfs.h,super.c,util.c}`, `fs/{ext4,btrfs}/acl.c`, `fs/xfs/xfs_acl.c`,
-  `fs/ext4/ioctl.c`, `fs/crypto/policy.c`, `fs/verity/enable.c`, `mm/mmap.c`, and
-  `tools/testing/selftests/bpf/{progs,prog_tests}/lsm_cgroup.c` for a working attach.
-- Loaders: libbpf (https://github.com/libbpf/libbpf) or Aya's `lsm_cgroup` support
-  (https://github.com/aya-rs/aya/pull/1135). Decide after Phase 1.
+  `fs/ext4/ioctl.c`, `fs/crypto/policy.c`, `fs/verity/enable.c`, `fs/9p/vfs_inode.c`,
+  `mm/mmap.c`, and `tools/testing/selftests/bpf/{progs,prog_tests}/lsm_cgroup.c` for a working
+  attach.
+- Microsoft's 6.18.54.1 (https://github.com/microsoft/WSL2-Linux-Kernel): `kernel/bpf/verifier.c`
+  for the sleepable check.
+- LLVM's BPF backend at `main` on 2026-10-20 (https://github.com/llvm/llvm-project),
+  `llvm/lib/Target/BPF/BPFISelLowering.cpp`, for `LowerATOMIC_FENCE`.
+- Loaders: libbpf 1.6.3, the machine's (https://github.com/libbpf/libbpf), or Aya 0.14.0, whose
+  `LsmCgroup` is https://github.com/aya-rs/aya/pull/1135. Aya's resolution of a typeless ksym
+  through `/proc/kallsyms` (https://github.com/aya-rs/aya/pull/1372) is in no release as of
+  2026-10-19; the `rename_lock` address arrives in program data and needs no ksym resolution.
+  Decide after Phase 1.
 - Prior art for container-scoped BPF policy, none of which carries this policy: KubeArmor
   (https://github.com/kubearmor/KubeArmor), BPFContain
   (https://github.com/willfindlay/bpfcontain-rs), Aegis-BPF (https://github.com/ErenAri/Aegis-BPF).
+- Git at `master` on 2026-10-20 (https://github.com/git/git), `compat/fsmonitor/fsm-ipc-unix.c`,
+  for where `fsmonitor--daemon` binds its socket.
 - OCI runtime lifecycle and hook ordering:
   https://github.com/opencontainers/runtime-spec/blob/main/runtime.md,
   https://github.com/opencontainers/runtime-spec/blob/main/config.md.
