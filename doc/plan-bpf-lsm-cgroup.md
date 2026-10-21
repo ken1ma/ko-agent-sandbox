@@ -15,9 +15,11 @@ session there a policy recording no root ("The hooks", `file_receive`, has why).
 hosts keep the filter until "Later versions" admits them.
 
 Status: the environment prerequisites and the cgroup placement are measured on both machines
-("Environment evidence"), and Phase 0 is done ("Inventory"); no BPF program has been loaded,
-attached or shown to deny anything. The filter stays the default until "Acceptance" passes, and
-no launch ever binds the workspace writable without the policy attached and verified.
+("Environment evidence"), Phase 0 is done ("Inventory"), and Phase 1's probe
+(`../bpf/probe/phase1/`) passes every row measured on both machines ("Phase 1 on macOS", "Phase
+1 on WSL"), where one hook denies; Phase 2 is next. The filter stays the default until
+"Acceptance" passes, and no launch ever binds the workspace writable without the policy attached
+and verified.
 
 The reader acting on this plan starts at "Phases" and "What is gained and what is lost". The
 sections before them are what the phases rest on.
@@ -110,9 +112,10 @@ read so far.
 
 - `include/linux/bpf-cgroup-defs.h`: `CGROUP_LSM_NUM` is 10. `kernel/bpf/cgroup.c`,
   `bpf_cgroup_atype_find`, gives one slot per distinct hook, refcounted across every cgroup that
-  attaches it, and `-E2BIG` for an eleventh hook. Ten hooks serve any number of sandboxes. The
-  pool is shared by everything in the VM, so the controller reads it before attaching rather
-  than assuming it free.
+  attaches it, and `-E2BIG` for an eleventh hook, which `__cgroup_bpf_attach` folds into the
+  `EINVAL` the attach answers (measured, "Phase 1 on macOS"). Ten hooks serve any number of
+  sandboxes. The pool is shared by everything in the VM, so the controller reads it before
+  attaching rather than assuming it free.
 - `cgroup.c`, `bpf_prog_run_array_cg`: a program's nonzero return grants, and zero becomes
   `-EPERM` on a hook that returns an errno alone (`cgroup_bpf_hook_returns_errno`), which the
   eight hooks all do. A program on a void hook must return 1 (`kernel/bpf/verifier.c`,
@@ -588,18 +591,38 @@ host. It loads the sandbox's own programs and maps each time ("The policy"); the
 controller, and a pin in `bpffs` does not survive a machine restart.
 For each session:
 
-1. Create the attach cgroup before any container process exists, and keep it alive. Two shapes,
-   one to be proven in Phase 1:
-   - a transient systemd slice held by a VM-side unit, under which `podman create
-     --cgroup-parent=<slice>` places the container. systemd removes a transient slice once
-     nothing is in it, at a moment Phase 1 measures, and a link whose cgroup is removed is
-     detached without an error (`cgroup.c`, `bpf_cgroup_link_release`, "auto-detached by dying
-     cgroup"), so the hold unit is not optional;
-   - the container's own scope: `podman create`, attach to the scope, then `podman start`. Simpler
-     if, between create and start, the scope exists and runs no image code. Unverified.
+1. Create the attach cgroup before any container process exists, and keep it alive: under the
+   systemd manager, a transient slice held by a VM-side unit, under which `podman create
+   --cgroup-parent=<slice>` places the container; under the cgroupfs manager, the WSL machine's
+   ("Environment evidence"), a directory the launcher makes under the user's delegated subtree,
+   which podman takes as an absolute `--cgroup-parent` and which stays until removed ("Phase 1
+   on WSL").
+   - A link whose cgroup is removed is detached without an error (`cgroup.c`,
+     `bpf_cgroup_link_release`, "auto-detached by dying cgroup"), so what removes the slice
+     decides whether the hold unit is needed: systemd left the empty slice and the link in place
+     for the 60 s Phase 1 watched after the hold unit and a container below had stopped, and a
+     stop of the slice unit removed it within 1 ms and detached the link ("Phase 1 on macOS").
+     Whether systemd ever removes the empty slice by itself is unmeasured beyond those 60 s, so
+     the hold unit stays until a longer watch says otherwise, and teardown stops the slice unit.
+   - Rejected: the container's own cgroup, a scope under systemd and a directory under cgroupfs,
+     attached between `podman init`, which performs every step short of starting the container
+     (https://docs.podman.io/en/latest/markdown/podman-init.1.html), and `podman start`. It
+     works: on both machines the cgroup exists after `podman init`, holds the runtime's process
+     alone, and a policy attached there refuses the started command ("Phase 1 on macOS",
+     "Phase 1 on WSL"). It fails "What the backend must hold": the `createContainer` hooks run
+     in the container's namespaces during create, before any attach there is possible (OCI
+     runtime spec, `config.md`, "CreateContainer Hooks").
+   - In which cgroup a `createContainer` hook runs is what the spec leaves open: a hook may
+     expect the mounts and nothing about cgroups (the same section, and
+     https://github.com/opencontainers/runtime-spec/issues/1039). crun, 1.30 on macOS and 1.28
+     on WSL, runs it inside the container's own cgroup below the attach cgroup, where the policy
+     refused its write ("Phase 1 on macOS", "Phase 1 on WSL"); a crun that ran a hook outside
+     would reopen this step.
 2. Load the sandbox's programs and maps, fill the records, attach every program by link, pin
    the links where the session cannot reach, and read them back. A pinned link holds its program
    and the program its maps (`kernel/bpf/syscall.c`, `bpf_link_free`), so nothing else is pinned.
+   The controller attaches only below the invoking user's slice, in the machine as on native
+   Linux ("Native Linux"); any other cgroup is refused before the attach.
 3. Prove the enforcement without trusting step 2's report, in two parts, both before any
    container process runs.
    - A read-back by a separate program, with the controller's privileges and none of its code:
@@ -607,7 +630,8 @@ For each session:
      `--unix-sockets` and those a decision in "Decisions still open" adds, `BPF_PROG_QUERY` on
      the attach cgroup with `BPF_LSM_CGROUP`
      lists the attached programs by id, as the kernel's own test does
-     (`prog_tests/lsm_cgroup.c`, `query_prog_cnt`).
+     (`prog_tests/lsm_cgroup.c`, `query_prog_cnt`), with the attach-flags buffer the query of
+     this type requires beside the id buffer (`__cgroup_bpf_query`, `EINVAL` without it).
      - One query lists the programs of every hook together (`kernel/bpf/cgroup.c`,
        `__cgroup_bpf_query`, `CGROUP_LSM_START` to `CGROUP_LSM_END`). For each program,
        `BPF_OBJ_GET_INFO_BY_FD` gives its `attach_btf_id`, tag and `map_ids`
@@ -618,8 +642,11 @@ For each session:
        as its contents.
      - The tag alone proves nothing about the maps: the kernel zeroes map references before
        computing it (`kernel/bpf/core.c`, `bpf_prog_calc_tag`).
-   - A fixture the kernel judges, under the launcher's state directory in the VM, so a missing
-     hook costs nothing in the workspace.
+   - A fixture the kernel judges, under the launcher's state root on the machine's share, so a
+     missing hook costs nothing in the workspace. It must be on the share: an object on a
+     superblock of another type is allowed before any walk ("The policy"), and a fixture there
+     would fail every expected refusal. The controller records the fixture root's filesystem
+     type as it records the workspace root's and refuses the launch when the two differ.
      - The guard writes a tree laid out as a workspace, with a `.git` holding `config` and a
        hook, a `.ko-agent-sandbox`, and one entry per resolved rule line, and the sandbox's
        policy records that tree's root as a second root.
@@ -638,13 +665,21 @@ For each session:
    nothing, attached a subset, attached another build, loaded the wrong records, or whose
    program uses another map; what they do not catch is a defect the program shares with the
    fixture's expectations, which Phase 3's corpus is for.
-4. Create and start the container. With the slice shape the container's scope lands below the
-   proven cgroup; with the scope shape, steps 2 and 3 run between `podman create` and
-   `podman start`.
+4. Create and start the container; its scope, or its directory under cgroupfs, lands below the
+   proven cgroup.
 5. A restart or recreate repeats 1–4; a stop of the container does not detach. `podman exec`
    joins the container's cgroup and needs nothing.
 6. On teardown, end every task under the cgroup, then detach and unpin the sandbox's links,
    whose release frees their programs and maps, and remove the cgroup.
+7. Reconcile at every launcher start, under the per-machine launch lock ("The hooks",
+   `file_receive`): list the pinned links and attach cgroups beside podman's containers. A pin
+   and its cgroup are removed only when no container, a stopped or initialized one included,
+   names the cgroup, no launch or restart holds the lock, and the cgroup's `cgroup.events` reads
+   `populated 0`, which counts the descendants' tasks as `cgroup.procs` does not
+   (`Documentation/admin-guide/cgroup-v2.rst`, "Core Interface Files"); under systemd the hold
+   unit is stopped first, once the cgroup has no container, so that it does not count. A stopped
+   container keeps its pins (step 5), so an empty cgroup alone is no orphan. A listing or a
+   label that cannot be read leaves every pin in place and is reported, each named.
 
 A failure at any step before 4 ends the launch; the launcher prints which step and never binds
 the workspace writable. During a session the policy cannot lapse without a trusted hand: a link
@@ -676,13 +711,17 @@ Windows, an EC2 Server instance, build 10.0.26100.32522:
 | ------------- | ------------------------------------------------------------------------------ |
 | WSL           | 3.0.3.0 pre-release (`wsl --update --pre-release`), kernel 6.18.54.1           |
 | LSMs          | `capability,landlock,yama,safesetid,selinux,bpf,ima`, `securityfs` mounted first |
-| BPF           | BTF readable; `sudo -n` works; loading and pinning untested                    |
-| podman        | 6.1.0, rootless, systemd, cgroup v2, provider `wsl`                            |
+| BPF           | BTF readable; `sudo -n` works; the machine mounts no bpffs and no securityfs   |
+|               | (measured 2026-10-21: a pin under `/sys/fs/bpf` fails until one is mounted)    |
+| podman        | 6.1.4, rootless, cgroup v2, provider `wsl`; its manager is cgroupfs (measured  |
+|               | 2026-10-21), which refuses a slice as `--cgroup-parent` and places a container |
+|               | at `user@1000.service/app.slice/<id>`; 6.1.0 reported systemd on 2026-10-11    |
 
 WSL 3.0.1.0 ran kernel 6.18.40.1, whose published `CONFIG_LSM` lacks `bpf`; the pre-release was
 installed for its kernel.
 
-The placement, the same on both machines, macOS measured on its earlier kernel 7.1.8: after
+The placement under the systemd manager, measured on both machines on 2026-10-10 and 2026-10-11,
+macOS on its earlier kernel 7.1.8: after
 `systemd-run --user --unit=ko-agent-probe-hold --slice=ko-agent-probe.slice /usr/bin/sleep 180`,
 the cgroup of a container run with `--cgroup-parent=ko-agent-probe.slice` was, with uid 501 on
 macOS and 1000 on Windows,
@@ -701,6 +740,78 @@ setup note for Windows names it. References:
 https://learn.microsoft.com/windows/wsl/wsl-config,
 https://github.com/microsoft/WSL/issues/41492,
 https://github.com/podman-container-tools/podman/issues/29749.
+
+### Phase 1 on macOS
+
+Measured on 2026-10-21 with `../bpf/probe/phase1/phase1.sh` on the machine above, podman 6.1.2,
+clang 19.1.7, no other `lsm_cgroup` link in the VM. The probe's transcript holds the raw lines.
+
+| row                      | measured                                                              |
+| ------------------------ | --------------------------------------------------------------------- |
+| share                    | `/Users` virtiofs, `rw,relatime,context=system_u:object_r:nfs_t:s0`   |
+| verifier, per program    | 10,880 to 11,382 insns, at most 4 states per insn, 118 to 131 ms      |
+| verifier, all eleven     | 159 ms in one load: the time is the load's, not the programs'         |
+| jited `file_open`, arm64 | 1,808 bytes holding two `ldaddal`, one per fetch-add                  |
+| walk, under the slice    | 1,379 calls, 1,379 settled, 0 retries, depth 19 at most               |
+| slice shape              | the marker refused for writing with `EPERM`, readable, its sibling   |
+|                          | written; a container outside the slice writes the marker             |
+| identity                 | the program's `(s_dev, i_ino)` equals statx's `(mkdev, ino)`,         |
+|                          | `(41, 242960587)`, type `virtiofs`; unchanged after a host rename of  |
+|                          | the file and of an ancestor, after `drop_caches`, and for both names |
+|                          | of a host-made hard link; a directory's likewise, after its own      |
+|                          | rename too, and read by the program on `opendir` as statx reads it   |
+| replacement              | after the host's `rm` and create at the same name, the guest answered |
+|                          | `ENOENT` to statx for about 3 s, for the file and for the directory, |
+|                          | then gave the new inode; a container's open of the file failed the   |
+|                          | same way, and the program then read the file's new inode as statx did |
+| slots                    | `file_open` on two slices takes one hook; ten distinct hooks attach,  |
+|                          | the eleventh answers `EINVAL`                                         |
+| populated                | with a container below it the slice holds no task of its own and     |
+|                          | `cgroup.events` reads `populated 1`, still 1 after the hold unit     |
+|                          | stopped, 0 after the container stopped                               |
+| empty slice              | present with its link 60 s after the hold unit and the container     |
+|                          | stopped; a stop of the slice unit removed it within 1 ms, and the    |
+|                          | link's cgroup id read 0                                              |
+| scope shape              | after `podman init`, `libpod-<id>.scope/container` exists under the  |
+|                          | user manager's `user.slice` holding one process, `crun`; attached    |
+|                          | there, `podman start` runs the command under the policy, and after   |
+|                          | `podman rm` the link's cgroup id reads 0                              |
+| fail-closed              | a launch whose controller attaches and then exits 1 starts no        |
+|                          | container: it stays `initialized` and prints nothing                 |
+| create hook              | crun 1.30 ran the `createContainer` hook in                          |
+|                          | `<slice>/libpod-<id>.scope/container`, the container's own cgroup    |
+|                          | below the attach slice, and its write of the marker got `EPERM`      |
+
+### Phase 1 on WSL
+
+Measured on 2026-10-21 with `../bpf/probe/phase1/phase1.ps1` on the Windows machine above, podman
+6.1.4 under the cgroupfs manager, clang 19.1.7, no other `lsm_cgroup` link in the VM. The rows
+below name what differs from macOS; every other row passed as there.
+
+| row                      | measured                                                              |
+| ------------------------ | --------------------------------------------------------------------- |
+| mounts                   | no securityfs and no bpffs until the probe mounted them               |
+| share                    | `/mnt/c` 9p, `aname=drvfs`, `cache=0x5`, `access=client`              |
+| verifier, per program    | 16,168 to 16,670 insns, at most 4 states per insn, 95 to 112 ms       |
+| verifier, all eleven     | 165 ms in one load                                                    |
+| jited `file_open`, x86   | 1,362 bytes holding two `lock xadd`, one per fetch-add                |
+| walk                     | 245 calls, 245 settled, 0 retries, depth 14 at most                   |
+| identity                 | the program's `(s_dev, i_ino)` equals statx's, type `9p`, with NTFS's |
+|                          | 64-bit file ids, for the file and for a directory; unchanged after    |
+|                          | the host renames, the cache drop and for the hard link's two names   |
+| replacement              | the file's and the directory's replacement differ from the first     |
+|                          | inode, and the guest saw each at once                                 |
+| attach cgroup            | a directory under `user@1000.service/app.slice`, made by the user,    |
+|                          | taken by podman as an absolute `--cgroup-parent`; `populated 1` with  |
+|                          | a container below and no task of its own, 0 after its stop; present  |
+|                          | 60 s after the container stopped; `rmdir` removed it and the link    |
+|                          | read cgroup id 0                                                      |
+| container's own cgroup   | after `podman init`, `app.slice/<id>` holding `crun`; attached        |
+|                          | there, the started command is refused                                 |
+| create hook              | crun 1.28 ran the `createContainer` hook in `<attach>/libpod-<id>`,  |
+|                          | the container's own directory below the attach cgroup, and its write |
+|                          | of the marker got `EPERM`                                             |
+| `rename_lock`            | in kallsyms as a `T` symbol; libbpf resolved it                       |
 
 Build the BPF objects and the controller in a builder container with clang and libbpf, outside
 the machine; the machine keeps its images and installs no toolchain. The builder pins clang's
@@ -837,36 +948,46 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    both kernels' BTF. Confirm the rmdir reading against `policy.rs`. Done in "Inventory",
    whose measured results Phase 2 fills.
 1. **One hook, one denial.** A `lsm_cgroup/file_open` program denying the open for writing of
-   one marker name, the controller attaching it to a disposable cgroup of each shape in
-   "Lifecycle", then a disposable container under it: the marker is refused, other files are
-   not, a sibling container outside the cgroup opens the marker, a second attached cgroup shares
-   the slot, and a deliberately failed attach starts no container. Also, on each share, the
-   identity test: a directory's and a file's `(superblock, i_ino)` in the guest stay the same
-   after a host rename of it and of an ancestor, after the guest drops its caches, and for the
-   two names of a host-made hard link, and differ from a host-made replacement at the same name,
-   and the identity the controller's `statx` records equals the one an attached program reads
-   from the object's inode ("The policy"), on both kernels;
+   one marker name, the controller attaching it to a disposable cgroup of the shape in
+   "Lifecycle" and of the rejected one, then a disposable container under it: the marker is
+   refused, other files are not, a sibling container outside the cgroup opens the marker, a
+   second attached cgroup shares the slot, and a deliberately failed attach starts no container.
+   Also, on each share, the identity test: a directory's and a file's `(superblock, i_ino)` in
+   the guest stay the same after a host rename of it and of an ancestor, after the guest drops
+   its caches, and for the two names of a host-made hard link, and differ from a host-made
+   replacement at the same name, and the identity the controller's `statx` records equals the
+   one an attached program reads from the object's inode ("The policy"), on both kernels;
    `findmnt` records the share's backend and options first, since 9p without metadata caching
    makes a new inode per lookup and keeps `i_ino` from the QID alone (`fs/9p/vfs_inode.c`,
    `v9fs_get_new_inode_from_fid`). And the verifier's time to load the eight programs, nine with
    `--unix-sockets`, with the `rename_lock` read and its fetch-add barrier ("What is gained and what
    is lost") in the walk, and `bpftool prog dump jited` showing the barrier instruction on each
-   architecture.
-   On macOS first, then WSL.
-   Gate: inheritance, denial, isolation, fail-closed start and stable identities, both kernels.
+   architecture. And, under the attach cgroup, a `createContainer` hook (`podman --hooks-dir`)
+   that records its `/proc/self/cgroup` and opens the marker for writing: the open must fail
+   with `EPERM` and the recorded cgroup must lie below the attach cgroup, with the installed
+   crun ("Lifecycle", 1); the attach cgroup's `cgroup.events` reading `populated 1` with a
+   container below it and no task of its own, and `populated 0` after the container's stop
+   ("Lifecycle", 7); and whether the manager removes the empty slice within 60 s.
+   On macOS first, then WSL. The probe is `../bpf/probe/phase1/phase1.sh`, `phase1.ps1` on
+   Windows, run on the host; its transcript is this phase's record, and its programs are C with
+   libbpf, not the classifier's Rust, since the phase measures the kernel and not the port.
+   Gate: inheritance, denial, isolation, fail-closed start, stable identities and the hook's
+   refused open below the attach cgroup, both kernels.
 2. **Every hook.** The candidate programs on a disposable tree of the real share, exercising
    each syscall of the inventory, `openat2`, descriptor-relative calls, `RENAME_EXCHANGE`,
    `setfacl`, `setxattr`, `chattr` and row 18's commands, an overlay mount whose upper layer is
-   in the tree, a host-side mount inside the tree, and ordinary git. Record the verifier's
-   answer per hook per kernel, which attribute routes and ioctl commands each share accepts, and
-   the cost of the bounded ancestry walk at the real tree's depths on both kernels, so the
-   policy's price is known before the classifier and the lifecycle are built. Also a
-   representative program holding the bounded walk, the folding, the ordered rule match, the
-   git-context transitions and the `rename_lock` read together, loaded on both kernels and run
-   at the real tree's depth and at the walk's bound, with the verifier's log, its instruction
-   count and stack depth, clang's version and the object's hash recorded: the verifier's
-   instruction budget and 512-byte stack (`include/linux/bpf.h`, `BPF_COMPLEXITY_LIMIT_INSNS`;
-   `include/linux/filter.h`, `MAX_BPF_STACK`) are met by loading, not by reading, and
+   in the tree, a host-side mount inside the tree, and ordinary git. Record
+   the verifier's answer per hook per kernel, which attribute routes and ioctl commands each
+   share accepts, and the cost of the bounded ancestry walk at the real tree's depths on both
+   kernels, so the policy's price is known before the classifier and the lifecycle are built.
+   Also a representative program holding the bounded walk, twice as `inode_rename` walks its
+   source and its destination, the folding, the ordered rule match over a rule map filled to
+   its `max_entries`, the git-context transitions and the `rename_lock` read together, loaded
+   on both kernels and run at the real tree's depth and at the walk's bound, with the verifier's
+   log, its instruction count and stack depth, clang's version and the object's hash recorded:
+   the verifier's instruction budget and 512-byte stack (`include/linux/bpf.h`,
+   `BPF_COMPLEXITY_LIMIT_INSNS`; `include/linux/filter.h`, `MAX_BPF_STACK`) are met by
+   loading, not by reading, and
    `policy.rs`'s `fold` and `child_context` allocate, so the port is written allocation-free
    with bounded loops before Phase 3 ports the rest.
    Also read xfs's and btrfs's ioctl commands into row 18. For the later version, measure whether
@@ -887,7 +1008,8 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    race of "What is gained and what is lost": a session renames `node_modAAAA`, holding
    `.vscode/tasks.json`, to `BBBBBBBBules` and back in a loop, by `rename` and by
    `RENAME_EXCHANGE` with a directory of the other name, while another process writes that file
-   through both names, on both machines, and no write succeeds; a socket `bind` in the
+   through both names, on both machines, with the writes, refusals, walks and retries counted
+   as the Phase 1 probe's stats row counts them, and no write succeeds; a socket `bind` in the
    workspace and beneath the persistent volume's root, and a `rename` and a `link` of a socket
    bound under `~` into either, refused by default, and `codex exec` run with the daemon
    directory unwritable; under `--unix-sockets`, a directory descriptor passed over a socket in the
@@ -929,16 +1051,26 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
 4. **Lifecycle.** The ordering of "Lifecycle" on rootless podman: first-process denial, restart,
    recreate, `podman exec`, stop and kill, controller exit, machine restart, link loss; and the
    proof's catches, a controller that attaches a subset of the hooks, one that attaches another
-   build's program, and one that loads wrong records, each of which must end the launch. For
-   native Linux's version, the two refusals of "Native Linux": a controller given an object path,
-   and one asked for a cgroup outside the invoking user's slice.
-   Gate: no container process runs before the policy, on either machine, and each of the three
-   defective controllers is caught.
+   build's program, and one that loads wrong records, each of which must end the launch. The
+   reconcile of "Lifecycle", 7: a launcher killed between the pins and `podman create`, and a
+   `podman create` that fails after the pins, each leave a cgroup and pins the next start
+   removes; a launcher killed between `podman create` and `podman start` leaves a container
+   that names the cgroup, whose pins stay until the container is removed; a stopped session's
+   and a live session's stay, and a listing that fails removes nothing. The controller's two
+   refusals: one given an object path, and one asked for a cgroup outside the invoking user's
+   slice, in the machine and on native Linux ("Native Linux").
+   Gate: no container process runs before the policy, on either machine, each of the three
+   defective controllers is caught, and the reconcile removes the two orphans and nothing else.
 5. **Measurement.** `probe/perf-probe.py` and the real-tree rows of `verification-log.md` on the
    bind with the policy, beside the filter and the unfiltered bind; the machine's CPU and memory
    during the stat storm under each.
    Gate: the numbers are recorded; the default changes only by a release decision.
-6. **Integration.** A backend selector with a capability probe, the no-root policy for
+6. **Integration.** A backend selector with a capability probe, run at every launch: `bpf` in
+   the active LSM list, cgroup v2 with the user's delegated subtree under the manager podman
+   reports, `bpffs` and `securityfs` mounted, which the launcher mounts where the machine does
+   not ("Environment evidence", Windows), the share's type among the measured ones, and a
+   container placed below the attach cgroup, with the WSL setting named where that fails; the
+   reconcile of "Lifecycle", 7, at the launcher's start; the no-root policy for
    `--workspace=read-only` where the probe passes and the raw `ro` bind with the printed host
    requirements where it fails, the launch line naming the backend and the accepted differences, the
    removal of the filter from the first version's sessions, with the selector keeping it for the
@@ -1065,8 +1197,6 @@ Decisions still open, each the user's, taken after Phase 2's table:
 - **The option's name.** `--unix-sockets` stands in for the option that allows Unix sockets in
   the workspace and beneath the persistent volume at the cost of the ninth hook ("The hooks",
   `file_receive`).
-- **Cgroup shape.** Slice with a hold unit, or the container's scope between create and start;
-  Phase 1 measures both.
 - **The routes under `NESTING=same-uid` whose syscalls a nested podman needs, a later version.**
   The seccomp rule cannot refuse those syscalls, and the two free slots ("The hooks") can hold
   two of their hooks. Which two, and so which routes stay open on such sessions, is this decision.
@@ -1228,7 +1358,8 @@ It is not a backend for this policy.
   `LsmCgroup` is https://github.com/aya-rs/aya/pull/1135. Aya's resolution of a typeless ksym
   through `/proc/kallsyms` (https://github.com/aya-rs/aya/pull/1372) is in no release as of
   2026-10-19; the `rename_lock` address arrives in program data and needs no ksym resolution.
-  Decide after Phase 1.
+  libbpf resolves a typeless `__ksym` extern through `/proc/kallsyms` at load, which the Phase 1
+  probe uses. Decide after Phase 1.
 - Prior art for container-scoped BPF policy, none of which carries this policy: KubeArmor
   (https://github.com/kubearmor/KubeArmor), BPFContain
   (https://github.com/willfindlay/bpfcontain-rs), Aegis-BPF (https://github.com/ErenAri/Aegis-BPF).
