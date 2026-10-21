@@ -219,10 +219,19 @@ allow https://cdn06.quay.io/                    read
 # ghcr.io is under "GitHub" above
 
 # Unix / Debian
+allow https://cdn.kernel.org/      read  # Linux source
 allow https://man7.org/            read  # Linux man pages
 allow https://manpages.debian.org/ read
 allow https://deb.debian.org/      read  # packages
 allow https://www.gnu.org/         read  # the GNU manuals: bash, coreutils, sed, awk, make, grep
 allow https://pubs.opengroup.org/  read  # POSIX
+
+allow https://www.openbsd.org/     read
+allow https://man.openbsd.org/     read
+allow https://www.freebsd.org/     read
+allow https://docs.freebsd.org/    read
+allow https://man.freebsd.org/     read
+allow https://www.netbsd.org/      read
+allow https://man.netbsd.org/      read
 
 allow https://git-scm.com/         read  # the manual and the book

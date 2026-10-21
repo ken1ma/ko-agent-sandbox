@@ -168,6 +168,26 @@ measurement.
   each refusal's message, what the user does, and the document that records its reason, which
   stays where it was decided.
 
+## A stale podman machine OS
+
+A podman machine keeps the OS image `podman machine init` gave it until the user runs
+`podman machine os upgrade --restart`, which the launcher prints and never runs (`SECURITY.md`,
+"Silent changes to what you own"). Measured 2026-10-19: the machine of `plan-bpf-lsm-cgroup.md`'s
+evidence ran an August image with kernel 7.1.8 while September's carried 7.2.5.
+
+- [ ] At `--build`, a notice when the machine's OS has an update, from the dry run
+  `podman machine os upgrade -n -f json`, whose output holds a boolean for it
+  (https://docs.podman.io/en/latest/markdown/podman-machine-os-upgrade.1.html). It queries the
+  registry, so it runs at `--build`, not at every launch. The command is unsupported for the
+  WSL provider, whose kernel `wsl --update` brings (`README.md`); the notice there is the WSL
+  kernel version beside the one the plan's evidence names.
+- [ ] The upgrade command as the remedy, per provider, in the message the BPF backend's
+  capability probe prints when a requirement fails on a podman machine
+  (`plan-bpf-lsm-cgroup.md`, "Phases", 6). A kernel version floor is not the test: the probe
+  tests the features themselves, and a floor would age.
+- [ ] The machine's kernel version in the launch line, so a report says which kernel a session
+  ran on; `podman info` has it as `host.kernel`.
+
 ## The run-on-host acceptance test's host prerequisites
 
 The test names one fixture's missing host run at a time, after `emit` fails on it. A launch on
