@@ -1,0 +1,59 @@
+# ---------------------------------------------------------------------------
+# Build the Phase 2 probe of doc/plan-bpf-lsm-cgroup.md, and the container its rows run in
+# ---------------------------------------------------------------------------
+#
+# phase2.sh builds this on the host and extracts /out from the image inside the podman machine, as
+# Phase 1's driver does; the same image is the container the rows run in, since the rows need git,
+# the xattr, ACL and chattr tools, unshare, setcap and a nested podman.
+#
+# vmlinux.h is generated from the kernel this build runs on, the machine's, the one the programs
+# attach to; the CO-RE relocations in the objects would also carry them to the other machine's
+# kernel. The controller and the exerciser are static: they run in the machine and in the
+# container.
+
+# Debian 13 (trixie), matching the rest of this project's images.
+FROM docker.io/library/debian:trixie-slim AS build
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        clang-19 llvm-19 bpftool libbpf-dev libelf-dev zlib1g-dev libzstd-dev linux-libc-dev libc6-dev; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY inventory.bpf.c classify.bpf.c controller.c mutate.c ./
+
+# The kernel whose BTF the step below reads is not a build input podman sees, so a cached layer
+# would outlive a kernel upgrade; the driver passes the machine's `uname -r` here to key the cache.
+ARG BUILD_KERNEL=unknown
+
+RUN set -eux; \
+    mkdir -p /out; \
+    test "$(uname -r)" = "$BUILD_KERNEL"; \
+    test -r /sys/kernel/btf/vmlinux; \
+    bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h; \
+    clang-19 --version | head -1 > /out/clang-version.txt; \
+    for obj in inventory classify; do \
+        clang-19 -O2 -g -target bpf -mcpu=v3 -Wall -Wno-missing-declarations -Werror \
+            -c $obj.bpf.c -o /out/$obj.bpf.o; \
+        llvm-objdump-19 -d --no-show-raw-insn /out/$obj.bpf.o > /out/$obj.bpf.asm; \
+        sha256sum /out/$obj.bpf.o >> /out/objects.sha256; \
+    done; \
+    clang-19 -O2 -Wall -Werror -static -o /out/controller controller.c -lbpf -lelf -lz -lzstd; \
+    clang-19 -O2 -Wall -Werror -static -o /out/mutate mutate.c; \
+    for bin in controller mutate; do \
+        ldd /out/$bin 2>&1 | grep -q "statically linked\|not a dynamic executable"; \
+    done; \
+    uname -r > /out/build-kernel.txt
+
+# The rows' container: git for the git row, attr and acl for rows 15 and 16, e2fsprogs for chattr,
+# util-linux for unshare and mount, libcap2-bin for setcap, podman for the nested-podman row.
+FROM docker.io/library/debian:trixie-slim
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        git attr acl e2fsprogs util-linux libcap2-bin podman ca-certificates; \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /out /out
