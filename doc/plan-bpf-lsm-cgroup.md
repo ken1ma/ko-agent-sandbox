@@ -17,9 +17,9 @@ hosts keep the filter until "Later versions" admits them.
 Status: the environment prerequisites and the cgroup placement are measured on both machines
 ("Environment evidence"), Phase 0 is done ("Inventory"), and Phase 1's probe
 (`../bpf/probe/phase1/`) passes every row measured on both machines ("Phase 1 on macOS", "Phase
-1 on WSL"), where one hook denies; Phase 2 is next. The filter stays the default until
-"Acceptance" passes, and no launch ever binds the workspace writable without the policy attached
-and verified.
+1 on WSL"), where one hook denies; Phase 2's probe (`../bpf/probe/phase2/`) passes on both
+("Phase 2 on macOS", "Phase 2 on WSL"). The filter stays the default until "Acceptance" passes,
+and no launch ever binds the workspace writable without the policy attached and verified.
 
 The reader acting on this plan starts at "Phases" and "What is gained and what is lost". The
 sections before them are what the phases rest on.
@@ -291,8 +291,8 @@ What the seccomp rule reaches and what it misses:
 - Every xattr, ACL and flag change a process requests enters through those syscalls;
   `io_uring_setup` already answers `ENOSYS` in a session ("Inventory", row 22).
 - Row 18 is a list of commands, not a syscall family: the rule refuses the commands the row lists.
-  xfs's and btrfs's are listed before Phase 2's gate, and a kernel change reopens the row
-  ("Environment evidence").
+  xfs's and btrfs's are listed there, and a kernel change reopens the row ("Environment
+  evidence").
 - The rule refuses those calls everywhere in the container, under `~` as well. It answers
   `ENOTSUP` to the xattr syscalls, so that `cp -a` drops attributes silently as through the
   filter, and `ENOTTY` to the ioctl commands, as FUSE answers for the filter (`fs/fuse/ioctl.c`).
@@ -679,7 +679,11 @@ For each session:
    (`Documentation/admin-guide/cgroup-v2.rst`, "Core Interface Files"); under systemd the hold
    unit is stopped first, once the cgroup has no container, so that it does not count. A stopped
    container keeps its pins (step 5), so an empty cgroup alone is no orphan. A listing or a
-   label that cannot be read leaves every pin in place and is reported, each named.
+   label that cannot be read leaves every pin in place and is reported, each named. The reconcile
+   removes only cgroups below the user's slice and pins below the controller's own directory,
+   each by the identity the launcher recorded, and refuses a symlink, another filesystem or a
+   path outside those roots, as a cleanup guard elsewhere has admitted `.` and volume roots as
+   safe to remove (https://github.com/kubearmor/KubeArmor/issues/2822).
 
 A failure at any step before 4 ends the launch; the launcher prints which step and never binds
 the workspace writable. During a session the policy cannot lapse without a trusted hand: a link
@@ -709,7 +713,7 @@ Windows, an EC2 Server instance, build 10.0.26100.32522:
 
 | item          | observed                                                                       |
 | ------------- | ------------------------------------------------------------------------------ |
-| WSL           | 3.0.3.0 pre-release (`wsl --update --pre-release`), kernel 6.18.54.1           |
+| WSL           | 3.0.3.0 (`wsl --update --pre-release`), kernel 6.18.54.1                       |
 | LSMs          | `capability,landlock,yama,safesetid,selinux,bpf,ima`, `securityfs` mounted first |
 | BPF           | BTF readable; `sudo -n` works; the machine mounts no bpffs and no securityfs   |
 |               | (measured 2026-10-21: a pin under `/sys/fs/bpf` fails until one is mounted)    |
@@ -717,8 +721,9 @@ Windows, an EC2 Server instance, build 10.0.26100.32522:
 |               | 2026-10-21), which refuses a slice as `--cgroup-parent` and places a container |
 |               | at `user@1000.service/app.slice/<id>`; 6.1.0 reported systemd on 2026-10-11    |
 
-WSL 3.0.1.0 ran kernel 6.18.40.1, whose published `CONFIG_LSM` lacks `bpf`; the pre-release was
-installed for its kernel.
+WSL 3.0.1.0 ran kernel 6.18.40.1, whose published `CONFIG_LSM` lacks `bpf`; 3.0.3 was installed
+for its kernel, a release since 2026-10-09, with 3.0.4 of 2026-10-20 the pre-release
+(https://github.com/microsoft/WSL/releases).
 
 The placement under the systemd manager, measured on both machines on 2026-10-10 and 2026-10-11,
 macOS on its earlier kernel 7.1.8: after
@@ -818,38 +823,192 @@ the machine; the machine keeps its images and installs no toolchain. The builder
 version: the stack depth and instruction count the verifier admits ("Phases", 2) are the
 compiler's output, so a compiler change reopens that gate with the kernel unchanged.
 
+### Phase 2 on macOS
+
+Measured on 2026-10-21 with `../bpf/probe/phase2/phase2.sh` on the machine of "Phase 1 on macOS",
+podman 6.1.2, clang 19.1.7, `classify.bpf.o` of SHA-256
+`3fd866407d2d007c5f6ab550d5e3af9eddc146356b8bd4a7147940ae99746e70`. The exerciser's containers
+run without podman's seccomp profile,
+which answers `file_setattr` and `io_uring_setup` with `ENOSYS` and refuses a mount in a user
+namespace before the kernel does; rows 20 and 21 run with `label=disable` besides, as the
+sandbox's nesting mode does. The transcript holds the raw lines.
+
+| row                      | measured                                                              |
+| ------------------------ | --------------------------------------------------------------------- |
+| verifier, inventory      | 33 programs, 16 to 596 insns each, at most 4 states per insn, 9 to    |
+|                          | 16 ms each, 35 ms for all 33 in one load                              |
+| verifier, representative | the walk, the fold and the rule match are one global function         |
+|                          | (`judge_position`, `__noinline`, scalar arguments) that each          |
+|                          | program's load verifies once, 19,213 insns and 192 bytes of stack,    |
+|                          | the second walk of `inode_link` and `inode_rename` included; the      |
+|                          | hooks' own bodies are 477 to 913 insns and 56 to 88 bytes of stack;   |
+|                          | 19,690 to 20,126 insns per program, at most 12 states per insn, 147   |
+|                          | to 154 ms each, 316 ms for all eight; jited 19,952 to 22,896 bytes    |
+| convergence              | a loop converges only when every value it carries between iterations  |
+|                          | is read back from the map at each iteration: a counter kept in a      |
+|                          | register and used as an index unrolled the fold's loop 204 iterations |
+|                          | deep and the program was "too large" at one million insns; with the   |
+|                          | loop state in the per-CPU map, the function verifies as above         |
+| masks                    | a mask the compiler proves redundant is dropped, and the verifier,    |
+|                          | which does not follow the range check that proved it, reports an      |
+|                          | "unbounded memory access": such an offset passes a `barrier_var`      |
+|                          | before its mask                                                       |
+| barrier                  | the jited `file_open`, 20,120 bytes, holds two `ldaddal`, one per     |
+|                          | fetch-add, with the fetched value kept live; with that value unused,  |
+|                          | `__sync_fetch_and_add` compiles to the plain atomic add, without      |
+|                          | `BPF_FETCH`, and the jited program held no `ldaddal`                  |
+| inventory                | every row's hooks called and each refusing on its own, where the      |
+|                          | row's macOS column says `yes`: a hook is attached apart from the      |
+|                          | hooks the operation reaches before it, and its refusal is its         |
+|                          | program's denied count with the operation's `EPERM` in its batch      |
+| share                    | `mknod` of a regular file: `EPERM` after `inode_create`; `O_TMPFILE`  |
+|                          | and `FICLONE`: `EOPNOTSUPP`, the latter after `file_ioctl`; the four  |
+|                          | row 18 commands and the two of row 17: `ENOTTY` after `file_ioctl`,   |
+|                          | a command with a high bit set arriving as its 32-bit value            |
+|                          | (`0x40086602`); `file_setattr`: `EOPNOTSUPP` before                   |
+|                          | `inode_file_setattr`, since `vfs_fileattr_set` reads the attributes   |
+|                          | first (`fs/file_attr.c`) and virtiofs fails that read; `user.`        |
+|                          | xattrs, ACLs and a `security.capability` set from a user namespace    |
+|                          | stored, the last read back outside and removed; a socket bound        |
+| FIFO                     | `mkfifo` gets `EACCES` after `path_mknod` and before `inode_mknod`,   |
+|                          | and the kernel log holds no `fifo_file` AVC: between the two hooks    |
+|                          | lie the parent's permission check, which the socket bind passed on    |
+|                          | the same directory, and the earlier LSMs' `inode_mknod` handlers      |
+| overlay, row 20          | with `userxattr` and the three layers on the share, overlayfs fails   |
+|                          | to create its work directory there (errno 13, kernel log) and mounts  |
+|                          | read-only, `inode_setxattr` seeing two `user.overlay.` names on the   |
+|                          | way; a create in the merged tree then gets `EROFS` before any hook    |
+| bind alias, row 21       | a create through a bind mount of the tree in a user namespace reaches |
+|                          | `path_mknod`, `inode_create` and `file_open`, refused by the deny     |
+|                          | name; `name_to_handle_at` works and `open_by_handle_at` gets `EPERM`  |
+|                          | without `CAP_DAC_READ_SEARCH`                                         |
+| io_uring, row 22         | `io_uring_setup` gets `EACCES` under `container_t` with               |
+|                          | `io_uring_disabled` 0 and no AVC logged, and succeeds with            |
+|                          | `label=disable`: SELinux refuses it                                   |
+| corpus                   | 51 cases under 128 rule lines and three roots: 0 mismatches; the two  |
+|                          | FIFO cases are the share's `EACCES`; a folded `.GiT` beside an        |
+|                          | existing `.git` would be the case-insensitive host's `EEXIST` before  |
+|                          | any hook, so the case stands where no `.git` is                      |
+| git                      | status, add, commit, a branch, log and gc in a clone of this          |
+|                          | repository under the policy; `git config` and `git init` refused      |
+| walk cost, syscall       | 2,000 opens for writing: depth 11, 0.81 ms under the policy against   |
+|                          | 0.78 ms bare; depth 32, 1.97 against 1.91; depth 63, 3.82 against     |
+|                          | 3.53 (virtiofs's own cost is the rest)                                |
+| walk cost, in program    | means over the calls that walked: `file_open` over 6,059 walks at     |
+|                          | depths 11, 32 and 63, 174 µs mean, 2.0 ms at most; `inode_unlink` at  |
+|                          | depth 5 or less, 24 µs; `inode_setattr` at depth 4 or less, 23 µs;    |
+|                          | `inode_link`, two walks, 41 µs; `inode_rename`, two walks, 39 µs      |
+| walks                    | 7,374 walks settled, 0 retries, 0 gave up, depth 64 at most           |
+| host-side mount          | an APFS image `hdiutil` attached at a directory inside the tree, the  |
+|                          | recorded root, before the attach and after it: a superblock of its    |
+|                          | own, `mkdev` 78 and 89 against the tree's 41, type `virtiofs`; a      |
+|                          | write inside it under the policy gets `EPERM` while a write in an     |
+|                          | ordinary directory beside it is allowed: the walk meets the image's   |
+|                          | root before the recorded root, as "Mounts" designs                    |
+| nested podman            | a pull, run, exec and removal of `alpine:3.22` under the loosenings   |
+|                          | with storage on a tmpfs: `inode_setattr` 1,066 calls,                 |
+|                          | `inode_setxattr` 31 (`user.overlay.origin`), `inode_removexattr` 6    |
+|                          | (`user.overlay.opaque`), `inode_remove_acl` 12                        |
+|                          | (`system.posix_acl_access`), `file_ioctl` 34 (`FIONBIO`, `TCGETS`),   |
+|                          | no `inode_set_acl`, `inode_file_setattr` or `file_ioctl_compat`; with |
+|                          | those hooks refusing everything in the cgroup, podman fails at its    |
+|                          | first step, the `O_TRUNC` open of `/proc/<pid>/setgroups`, which      |
+|                          | `inode_setattr` refuses                                               |
+
+### Phase 2 on WSL
+
+Measured on 2026-10-21 with `../bpf/probe/phase2/phase2.ps1` on the Windows machine of "Phase 1
+on WSL", podman 6.1.4, clang 19.1.7, `classify.bpf.o` of SHA-256
+`aba2e8b1be6ad42e3540474b221370238e281c7c363e6cc06c56478fd0d9c256`, built against that kernel's
+BTF. The containers run as on macOS. The rows below name what differs from macOS; every other row
+passed as there.
+
+| row                      | measured                                                              |
+| ------------------------ | --------------------------------------------------------------------- |
+| verifier, inventory      | 33 programs, 16 to 596 insns each, at most 4 states per insn, 12 to   |
+|                          | 29 ms each, 29 ms for all 33 in one load                              |
+| verifier, representative | 6.18 verifies the global function in 228,755 insns, twelve times      |
+|                          | 7.2's count, at most 44 states per insn; 229,232 to 229,689 insns per |
+|                          | program, the stack as on macOS, 500 to 1,141 ms each, 3,421 ms for    |
+|                          | all eight; jited x86 15,451 to 17,739 bytes, `file_open` holding two  |
+|                          | `lock xadd`                                                           |
+| global function          | with the walk inlined into each hook, 6.18 needed 638,813 to 793,033  |
+|                          | insns for each of the six single-walk hooks and refused `inode_link`  |
+|                          | and `inode_rename` at the million; 7.2 verified the same programs in  |
+|                          | 14,458 to 43,504. The global function, verified once per program,     |
+|                          | is what keeps 6.18 under the limit                                    |
+| share                    | FIFO and socket bind: `EOPNOTSUPP` after `inode_mknod`;               |
+|                          | `RENAME_WHITEOUT` and `RENAME_EXCHANGE`: `EINVAL` after               |
+|                          | `inode_rename`, called twice for the exchange; `fallocate`:           |
+|                          | `EOPNOTSUPP` after `file_permission`; `FICLONE`: `EOPNOTSUPP` after   |
+|                          | `file_ioctl`; an ACL set and removal: `EOPNOTSUPP` after              |
+|                          | `inode_set_acl` and `inode_remove_acl`; `name_to_handle_at`:          |
+|                          | `EOPNOTSUPP`; `mknod` of a regular file stored, as a `user.` xattr    |
+|                          | and a `security.capability` set from a user namespace are; the ioctl, |
+|                          | `O_TMPFILE` and `file_setattr` answers are macOS's                    |
+| overlay, row 20          | with `userxattr` and the three layers on the share, the mount is      |
+|                          | writable, the kernel log warning that the upper supports neither      |
+|                          | `RENAME_WHITEOUT` nor `tmpfile`; a create in the merged tree reaches  |
+|                          | `path_mknod`, `inode_create`, `file_open`, `inode_setxattr` and       |
+|                          | `file_permission`, refused by the deny name at `path_mknod`,          |
+|                          | `inode_create` and `file_open`                                        |
+| io_uring, row 22         | `io_uring_setup` succeeds in a plain container, `io_uring_disabled`   |
+|                          | 0, no AVC logged                                                      |
+| corpus                   | 51 cases: 0 mismatches; the two FIFO cases are the share's            |
+|                          | `EOPNOTSUPP`                                                          |
+| walk cost, syscall       | 2,000 opens for writing: depth 11, 9.5 ms under the policy against    |
+|                          | 10.8 ms bare; depth 32, 25.5 against 27.5; depth 63, 56.2 against     |
+|                          | 55.1: the policy's share lies within the run's spread, and 9p's own   |
+|                          | cost is about fourteen times virtiofs's                               |
+| walk cost, in program    | means over the calls that walked: `file_open` over 6,059 walks at     |
+|                          | depths 11, 32 and 63, 89 µs mean, 0.92 ms at most; `inode_unlink` and |
+|                          | `inode_setattr` 15 µs; `inode_create` 16 µs; `inode_link` 23 µs and   |
+|                          | `inode_rename` 24 µs, two walks each                                  |
+| walks                    | 6,272 walks settled, 0 retries, 0 gave up, depth 64 at most           |
+| host-side mount          | a second mount point of the `C:` volume (`mountvol`) at a directory   |
+|                          | inside the tree, the recorded root, before the attach and after it:   |
+|                          | 9p presents it as a symlink (`statx` mode `0120000`) on the tree's    |
+|                          | device 69, not as a superblock of its own, and a write through it     |
+|                          | under the policy gets `EACCES` while a write in an ordinary directory |
+|                          | beside it is allowed                                                  |
+| nested podman            | `inode_setattr` 1,002 calls, `inode_setxattr` 31, `inode_removexattr` |
+|                          | 6, `inode_remove_acl` 12, `file_ioctl` 25 (`TCGETS`), the same names  |
+|                          | as on macOS, and the same first failure with the hooks refusing       |
+
 
 ## Inventory
 
 The policy transcribes `fuse/ko-agent-fs` at commit `0fe166a159c1f3cc75dd966a8b0e2d4faae5aa31`,
 the last to change `src/{policy,fs,guard,rulefile}.rs`. A later change to those files reopens the
-rows it touches. Phase 2 fills the macOS and WSL columns with the answer under the attached
-programs.
+rows it touches. The macOS and WSL columns hold the answer under the attached programs: `yes`,
+the hooks listed are called and a program there refuses the operation; `none`, the share
+answers before any hook; `note`, the row of "Phase 2 on macOS" or "Phase 2 on WSL" named by the
+row's number.
 
-| #  | syscalls                  | filter            | hooks 7.2.5 calls            | macOS | WSL |
-| -- | ------------------------- | ----------------- | ---------------------------- | ----- | --- |
-| 1  | open* O_CREAT, creat      | name              | path_mknod, inode_create     |       |     |
-| 2  | mknod*, Unix socket bind  | name              | path_mknod, inode_mknod      |       |     |
-| 3  | mkdir*                    | name              | path_mkdir, inode_mkdir      |       |     |
-| 4  | symlink*                  | name, syntax      | path_symlink, inode_symlink  |       |     |
-| 5  | link*                     | entry, name, move | path_link, inode_link        |       |     |
-| 6  | rename*, RENAME_WHITEOUT  | entry, name, move | path_rename, inode_rename    |       |     |
-| 7  | renameat2 RENAME_EXCHANGE | row 6 both ways   | path_rename, inode_rename ×2 |       |     |
-| 8  | unlink*                   | entry             | path_unlink, inode_unlink    |       |     |
-| 9  | rmdir, AT_REMOVEDIR       | entry             | path_rmdir, inode_rmdir      |       |     |
-| 10 | open* O_WRONLY, O_RDWR    | entry             | file_open                    |       |     |
-| 11 | open* O_TRUNC, any mode   | entry             | file_open, inode_setattr     |       |     |
-| 12 | write*, splice, mmap, …   | row 10's open     | row 10's open                |       |     |
-| 13 | fallocate, FICLONE*       | none              | row 10's open                |       |     |
-| 14 | chmod*, chown*, truncate  | entry             | inode_setattr                |       |     |
-| 15 | setxattr*, removexattr*   | none              | inode_setxattr, …removexattr |       |     |
-| 16 | row 15 on ACL names       | none              | inode_set_acl, …remove_acl   |       |     |
-| 17 | file_setattr, 2 ioctls    | none              | inode_file_setattr           |       |     |
-| 18 | other ioctl commands      | none              | file_ioctl, …_compat         |       |     |
-| 19 | open* O_TMPFILE           | none              | file_open                    |       |     |
-| 20 | overlayfs upper layer     | not measured      | inode_*, file_open           |       |     |
-| 21 | a second path             | as by the first   | as by the first              |       |     |
-| 22 | io_uring_*                | not reached       | not reached                  |       |     |
+| #  | syscalls                  | filter            | hooks 7.2.5 calls            | macOS | WSL  |
+| -- | ------------------------- | ----------------- | ---------------------------- | ----- | ---- |
+| 1  | open* O_CREAT, creat      | name              | path_mknod, inode_create     | yes   | yes  |
+| 2  | mknod*, Unix socket bind  | name              | path_mknod, inode_mknod      | yes   | yes  |
+| 3  | mkdir*                    | name              | path_mkdir, inode_mkdir      | yes   | yes  |
+| 4  | symlink*                  | name, syntax      | path_symlink, inode_symlink  | yes   | yes  |
+| 5  | link*                     | entry, name, move | path_link, inode_link        | yes   | yes  |
+| 6  | rename*, RENAME_WHITEOUT  | entry, name, move | path_rename, inode_rename    | yes   | yes  |
+| 7  | renameat2 RENAME_EXCHANGE | row 6 both ways   | row 6, inode_rename twice    | yes   | yes  |
+| 8  | unlink*                   | entry             | path_unlink, inode_unlink    | yes   | yes  |
+| 9  | rmdir, AT_REMOVEDIR       | entry             | path_rmdir, inode_rmdir      | yes   | yes  |
+| 10 | open* O_WRONLY, O_RDWR    | entry             | file_open                    | yes   | yes  |
+| 11 | open* O_TRUNC, any mode   | entry             | file_open, inode_setattr     | yes   | yes  |
+| 12 | write*, splice, mmap, ... | row 10's open     | row 10's open                | yes   | yes  |
+| 13 | fallocate, FICLONE*       | none              | row 10's open                | yes   | yes  |
+| 14 | chmod*, chown*, truncate  | entry             | inode_setattr                | yes   | yes  |
+| 15 | setxattr*, removexattr*   | none              | inode_{set,remove}xattr      | yes   | yes  |
+| 16 | row 15 on ACL names       | none              | inode_{set,remove}_acl       | yes   | yes  |
+| 17 | file_setattr, 2 ioctls    | none              | inode_file_setattr           | note  | note |
+| 18 | other ioctl commands      | none              | file_ioctl{,_compat}         | yes   | yes  |
+| 19 | open* O_TMPFILE           | none              | file_open                    | none  | none |
+| 20 | overlayfs upper layer     | not measured      | inode_*, file_open           | note  | yes  |
+| 21 | a second path             | as by the first   | as by the first              | yes   | yes  |
+| 22 | io_uring_*                | not reached       | not reached                  | none  | none |
 
 The filter column names `fs.rs`'s checks:
 
@@ -897,8 +1056,23 @@ The rows, where the table does not say it all:
     (`fscrypt_ioctl_set_policy`).
   - `FS_IOC_ENABLE_VERITY` makes a file permanently read-only, checking write permission through
     `inode_permission` (`fsverity_ioctl_enable`).
-  - xfs's and btrfs's commands are not read. FUSE answers a server's `ENOSYS` with `ENOTTY`
-    (`fs/fuse/ioctl.c`).
+  - xfs: none changes a file through a read-only descriptor. `XFS_IOC_ALLOCSP` and
+    `XFS_IOC_FREESP` answer `ENOTTY`; `XFS_IOC_EXCHANGE_RANGE`, `XFS_IOC_START_COMMIT`,
+    `XFS_IOC_COMMIT_RANGE` and `XFS_IOC_SWAPEXT` need the files open for reading and writing
+    (`fs/xfs/xfs_exchrange.c`, `fs/xfs/xfs_ioctl.c`); `XFS_IOC_FREE_EOFBLOCKS`,
+    `XFS_IOC_GETPARENTS` and the scrub, growfs, label and reserved-blocks commands need
+    `CAP_SYS_ADMIN`.
+  - btrfs (`fs/btrfs/ioctl.c`): `BTRFS_IOC_SUBVOL_SETFLAGS` makes a subvolume read-only and
+    `BTRFS_IOC_SET_RECEIVED_SUBVOL` sets its received fields, each for the owner;
+    `BTRFS_IOC_SNAP_CREATE`, `BTRFS_IOC_SNAP_CREATE_V2`, `BTRFS_IOC_SUBVOL_CREATE` and
+    `BTRFS_IOC_SUBVOL_CREATE_V2` create a subvolume, a snapshot's whole tree among them, at a
+    new name under the descriptor's directory through `btrfs_mksubvol` and `may_create_dentry`
+    (`fs/namei.c`, `inode_permission` alone), calling no `inode_*` hook; `BTRFS_IOC_SNAP_DESTROY`
+    and `BTRFS_IOC_SNAP_DESTROY_V2` remove one through `may_delete_dentry`, under
+    `CAP_SYS_ADMIN` or the `user_subvol_rm_allowed` mount option. The rule lists these eight.
+    `BTRFS_IOC_DEFRAG` changes the layout alone, and `BTRFS_IOC_ENCODED_WRITE` needs
+    `CAP_SYS_ADMIN` and a writable descriptor.
+  - FUSE answers a server's `ENOSYS` with `ENOTTY` (`fs/fuse/ioctl.c`).
 - Row 19: `vfs_tmpfile` calls no hook before the inode exists, and the file has no name until
   row 5 links it. The filter implements no `tmpfile`, and FUSE answers a server's `ENOSYS` there
   with `EOPNOTSUPP` (`fs/fuse/dir.c`).
@@ -911,13 +1085,19 @@ The rows, where the table does not say it all:
     the `inode_*` hooks only; `fs/namei.c` calls the `path_*` hooks from the syscalls' paths.
   - It opens an upper file through `backing_file_open`, which reaches `file_open`.
   - It accepts an upper layer whose dentries revalidate, FUSE's and virtiofs's among them, only
-    with `d_type`, `RENAME_WHITEOUT` and xattrs (`fs/overlayfs/super.c`). By that reading the
-    filter, which implements no xattrs, cannot be one; whether each share can, Phase 2 measures.
+    with `d_type`, `RENAME_WHITEOUT` and xattrs, and one whose dentries do not with a warning
+    for each it lacks (`fs/overlayfs/super.c`, `ovl_make_workdir`). By that reading the filter,
+    which implements no xattrs, cannot be one. Measured in Phase 2: on virtiofs the mount is
+    read-only, since the work directory cannot be created there; on drvfs, whose `cache=0x5`
+    selects 9p's dentry operations without `d_revalidate` (`fs/9p/vfs_super.c`), it is
+    writable with the warning for `RENAME_WHITEOUT` ("Phase 2 on macOS", "Phase 2 on WSL").
 - Row 21: a bind mount in a mount namespace of the session's own, which "Mounts" refuses where it
   refuses row 20's, or `open_by_handle_at`. The hooks judge dentries ("The policy"). Without
   `CAP_DAC_READ_SEARCH` in the initial user namespace, `open_by_handle_at` decodes directories only
-  (`fs/fhandle.c`, `may_decode_fh`).
-- Row 22: `io_uring_setup` answers `ENOSYS` in a session.
+  (`fs/fhandle.c`, `may_decode_fh`); 9p answers `name_to_handle_at` with `EOPNOTSUPP`.
+- Row 22: `io_uring_setup` answers `ENOSYS` in a session, from the seccomp profile, and `EACCES`
+  from SELinux to a plain container on the macOS machine ("Phase 2 on macOS"); on the WSL machine
+  it succeeds in a plain container.
 
 The source read is Linux 7.2.5. Upstream v6.18 makes the same calls for rows 1, 11 and 17, has
 row 20's check of an upper layer, and its `bpf_lsm_disabled_hooks` lacks only
@@ -990,7 +1170,19 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    loading, not by reading, and
    `policy.rs`'s `fold` and `child_context` allocate, so the port is written allocation-free
    with bounded loops before Phase 3 ports the rest.
-   Also read xfs's and btrfs's ioctl commands into row 18. For the later version, measure whether
+   The probe is `../bpf/probe/phase2/phase2.sh`, `phase2.ps1` on Windows, run on the host, and its
+   transcript is this phase's record: `inventory.bpf.c` records which of 33 hooks each operation
+   of the exerciser (`mutate.c`) reaches and refuses the operation on a deny name, attached in
+   batches of eight that keep a hook whose refusal a row claims apart from the hooks the same
+   operation reaches first; `classify.bpf.c` is the representative program, its loops the kernel's
+   numeric-iterator loops (`bpf_iter_num_*`, Linux 6.4), which the verifier checks by the
+   convergence of the loop's state rather than by simulating each iteration
+   (`kernel/bpf/verifier.c`, `process_iter_next_call`), deciding a corpus of 51 cases on a
+   fixture laid out as a workspace, under the defaults' rules and filler lines filling the
+   128-line rule map, and ordinary git in a clone of this repository; the exerciser's open loops
+   give the walk's cost at the clone's deepest file, at depth 32 and at depth 63, under the
+   policy and on the bare bind. What the program leaves to Phase 3 is listed at its end.
+   xfs's and btrfs's ioctl commands are read into row 18. For the later version, measure whether
    a nested podman under `NESTING=same-uid` needs the xattr syscalls, `file_setattr` or the
    refused ioctl commands while it pulls and extracts an image, creates, runs and execs into a
    container, and removes both, and whether each share stores a `security.capability` set and
@@ -1009,7 +1201,19 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    `.vscode/tasks.json`, to `BBBBBBBBules` and back in a loop, by `rename` and by
    `RENAME_EXCHANGE` with a directory of the other name, while another process writes that file
    through both names, on both machines, with the writes, refusals, walks and retries counted
-   as the Phase 1 probe's stats row counts them, and no write succeeds; a socket `bind` in the
+   as the Phase 1 probe's stats row counts them, no write succeeds, and the retries counted are
+   above zero, without which no walk overlapped a rename and the race did not run; the walk's
+   state across its loops, per CPU in the Phase 2 program, is per task in the port, in task-local
+   storage (`bpf_task_storage_get`), or guarded by a per-CPU in-use count that denies on
+   reentry: the kernel runs a cgroup's programs under `rcu_read_lock` and `migrate_disable`
+   with no recursion count (`kernel/bpf/cgroup.c`, `bpf_prog_run_array_cg`), so under full
+   preemption a second task on the CPU enters the program over the first's per-CPU state; each
+   kernel's preemption mode is read from `/sys/kernel/debug/sched/preempt` (the macOS kernel is
+   `PREEMPT_DYNAMIC`, `dynamic_preempt_schedule` in its kallsyms, so a boot parameter sets the
+   mode), and a row
+   runs many processes creating, writing, renaming, linking and symlinking at once, permitted
+   and refused names mixed, on both machines, with every decision counted and none wrong; a
+   socket `bind` in the
    workspace and beneath the persistent volume's root, and a `rename` and a `link` of a socket
    bound under `~` into either, refused by default, and `codex exec` run with the daemon
    directory unwritable; under `--unix-sockets`, a directory descriptor passed over a socket in the
@@ -1047,7 +1251,9 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    in `sub/` under a global relative `core.hooksPath`; writes below a `.git` made under a
    `read-only` line; a file in `.git/objects/x/.ko-agent-sandbox`. Gate: each row ENFORCED, or an
    existing filter residual, or covered by a decision the user has taken, "Directories" or one in
-   "Decisions still open". A listed loss passes nothing.
+   "Decisions still open"; and the production object loads on both kernels, its verifier figures
+   recorded as Phase 2's are, within a budget per kernel, since 6.18 processes twelve times 7.2's
+   instructions for one program ("Phase 2 on WSL"). A listed loss passes nothing.
 4. **Lifecycle.** The ordering of "Lifecycle" on rootless podman: first-process denial, restart,
    recreate, `podman exec`, stop and kill, controller exit, machine restart, link loss; and the
    proof's catches, a controller that attaches a subset of the hooks, one that attaches another
@@ -1058,7 +1264,10 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    that names the cgroup, whose pins stay until the container is removed; a stopped session's
    and a live session's stay, and a listing that fails removes nothing. The controller's two
    refusals: one given an object path, and one asked for a cgroup outside the invoking user's
-   slice, in the machine and on native Linux ("Native Linux").
+   slice, in the machine and on native Linux ("Native Linux"). The launch cost of steps 2 and 3
+   on both machines, since the WSL verifier takes 3.4 s for the probe's eight programs ("Phase 2
+   on WSL"): whether the fixture runs at every launch or after installation and changes alone is
+   decided on that figure, and the controller keeps the two parts of step 3 separable.
    Gate: no container process runs before the policy, on either machine, each of the three
    defective controllers is caught, and the reconcile removes the two orphans and nothing else.
 5. **Measurement.** `probe/perf-probe.py` and the real-tree rows of `verification-log.md` on the
