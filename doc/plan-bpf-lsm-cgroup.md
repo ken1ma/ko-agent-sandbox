@@ -18,8 +18,10 @@ Status: the environment prerequisites and the cgroup placement are measured on b
 ("Environment evidence"), Phase 0 is done ("Inventory"), and Phase 1's probe
 (`../bpf/probe/phase1/`) passes every row measured on both machines ("Phase 1 on macOS", "Phase
 1 on WSL"), where one hook denies; Phase 2's probe (`../bpf/probe/phase2/`) passes on both
-("Phase 2 on macOS", "Phase 2 on WSL"). The filter stays the default until "Acceptance" passes,
-and no launch ever binds the workspace writable without the policy attached and verified.
+("Phase 2 on macOS", "Phase 2 on WSL"); Phase 3's probe (`../bpf/probe/phase3/`) passes every
+row on both ("Phase 3 on macOS", "Phase 3 on WSL"). The filter stays the default until
+"Acceptance" passes, and no launch ever binds the workspace writable without the policy attached
+and verified.
 
 The reader acting on this plan starts at "Phases" and "What is gained and what is lost". The
 sections before them are what the phases rest on.
@@ -60,8 +62,20 @@ denies the share wholly and needs none of the routes the first item names:
   overlayfs's `user.overlay.*` names ("Decisions still open"), Phase 2's nested-podman measurement,
   Phase 3's alias and overlay rows, and a key for `file_receive` other than the mount namespace,
   which a nested container of such a session would fail ("The hooks").
-- Native Linux hosts: "Native Linux", Phase 4's two refusals there, and the host's own mount
-  topology under the workspace ("Mounts").
+- Native Linux hosts: "Native Linux", the controller's two refusals and the mount under the
+  bind source there, with a nested mount holding a `.git` (Phase 4 measures them in the
+  machines), and the host's own mount topology under the workspace ("Mounts").
+- The classifier in Rust, once `rustc` emits the CO-RE field relocations the walk's reads need
+  (https://github.com/aya-rs/aya/issues/349): the port keeps the shape the verifier accepted in
+  C, the numeric-iterator loops with their state in map memory, the masks `barrier_var` keeps
+  and the global functions verified once per program, each to be found under Rust's BPF target
+  and measured on both kernels as Phases 2 and 3 measured the C program. The user: "Rust should
+  give us fewer vulnerabilities and fewer things to harden with great efforts." What the
+  language can and cannot cost in the program is under "The recorded decisions this answers".
+  A loader other than libbpf, for the controller or the port, is shown first to resolve the
+  object's CO-RE relocations as libbpf does on both kernels, with a fixture whose BTF holds two
+  types of one name, since a loader that picks the wrong one reads the wrong field without
+  an error (reported against Aya as its issue 1727, not verified here).
 
 
 ## The recorded decisions this answers
@@ -79,9 +93,36 @@ reason, and its answer here:
   machines show the LSM active and the BTF readable as shipped ("Environment evidence"); a
   native Linux host passes the probe within a stated supported set, after host changes the user
   consents to ("Native Linux").
-- A BPF policy program is less auditable than Rust. The classifier is a `no_std` Rust port of
-  `policy.rs` compiled twice, into the program and into a host test binary, so its unit tests
-  run on the host; the inode table, resolver and FUSE layer do not exist.
+- A BPF policy program is less auditable than Rust. The classifier is the C program the phases
+  measured, compiled a second time into a host test binary against a header standing in for the
+  helpers, with `policy.rs`'s corpus run through both, so the two classifiers are shown to agree
+  and the C one is unit-tested on the host; the inode table, resolver and FUSE layer do not
+  exist. The user, 2026-10-22: "Let's proceed with C, but I will definitely want to migrate to
+  Rust when CO-RE becomes stable in Rust." The migration is a later version ("Later versions").
+  What the language costs in the program, and where it costs instead:
+  - A memory-safety bug of the C kind cannot ship in the program. The verifier refuses the
+    object at load when any instruction reads or writes outside the bounds it has proven for the
+    register, a map value, the stack or a helper's argument, uses a scalar as a pointer, reads a
+    stack slot before it is written, or loops without a proven bound (`kernel/bpf/verifier.c`,
+    `check_mem_access`, `check_stack_read`, `check_helper_call`); the CO-RE reads of kernel
+    structures go through `bpf_probe_read_kernel`, which answers an unmapped address with
+    `-EFAULT` and a zeroed destination, and a field the running kernel lacks fails the
+    relocation at load. So an overflow, a use after free or a null dereference in the program's
+    own memory is a load failure, never a running program, and the launch then binds nothing
+    writable ("Lifecycle"). What the verifier does not prove is that a kernel address the
+    program hands the probe helper denotes the object or field meant: a wrong relocation or a
+    wrong offset reads unrelated mapped kernel memory and returns success (a loader was
+    reported to resolve a relocation against the wrong one of two same-named types, Aya issue
+    1727, "Later versions"). The loader's correctness and the classifier's are validated
+    apart, the one by the relocation suite "Later versions" names, the other by the corpus.
+  - What the verifier does not catch is a wrong decision: an allow where the filter denies, or a
+    name folded differently. That is the corpus's job through both classifiers, in either
+    language.
+  - Where C does cost is the controller: an ordinary process running as root, parsing the
+    guard's records and calling libbpf. A memory bug there is a privileged one, reached through
+    the launcher alone ("What is gained and what is lost", the privileged controller). A
+    memory-safe language hardens that piece, and its language is the loader choice "Sources"
+    leaves open.
 - Read-only mounts protect a path, not a name: a host rename over the file takes the protection
   away, a nested repository has none, an NTFS short name passes beside the mount, and an absent
   `.git` needs a mount target created in the workspace. The hooks here judge the name and the
@@ -169,6 +210,14 @@ still open" may give them.
 
 `inode_create` judges a `mknod` of a regular file; the other types reach `inode_mknod`
 (`fs/namei.c`, `filename_mknodat`).
+
+`inode_symlink` judges the target as the filter does (`fs.rs`, `target_has_portable_syntax`,
+`allow_symlink_target`): an absolute target or one climbing above the workspace root is refused on
+its syntax; with rules, each path the target passes, resolved lexically from the link's directory,
+is refused when its last component has the NTFS short-name form, when it enters a gitdir from the
+workspace, or when it is in a writable region the link is not in. The program reads the target
+from the hook's kernel copy, bounded: a target of 1024 bytes or more, or of more than 64
+components, is denied.
 
 ### Directories
 
@@ -323,8 +372,13 @@ Hooks the plan does not need, and the fact that excuses each:
   `--preserve-fds`. A descriptor another container passes is `file_receive`'s case.
 - `file_receive`: judges a descriptor arriving by `SCM_RIGHTS` or `pidfd_getfd`, both through
   `receive_fd` (`fs/file.c`), which the seccomp notifier's add-descriptor ioctl and io_uring's
-  fixed-file install also call. `pidfd_getfd` needs a pid visible in the session's pid
-  namespace, which holds the container's processes alone. A descriptor is judged where it is
+  fixed-file install also call. The hook's isolation rests on io_uring staying refused: a
+  transfer into another ring's fixed-file table by `IORING_OP_MSG_RING` was reported to skip
+  the hook (a report to the io_uring list of 2026-05-21, not verified here on either kernel),
+  and `io_uring_setup` answers `ENOSYS` under the launcher's profile ("Inventory", row 22),
+  which Phase 6 tests under the profile it installs; a configuration that admits io_uring
+  reopens this hook. `pidfd_getfd` needs a pid visible in the session's pid namespace, which
+  holds the container's processes alone. A descriptor is judged where it is
   used: an `openat` through a received directory descriptor runs the receiver's hooks, and the
   sender's see nothing, since an `O_PATH` open returns before `security_file_open` (`fs/open.c`,
   `do_dentry_open`) and no hook is on the send; a descriptor already open for writing takes the
@@ -356,18 +410,42 @@ Hooks the plan does not need, and the fact that excuses each:
     under `~/.codex`, and whether `codex exec` works without it is a Phase 3 row.
   - `--unix-sockets` (a provisional name, "Decisions still open") lifts the refusal and attaches
     `file_receive` as a ninth hook, run on the receiver's cgroup since the hook's argument is a file
-    (`kernel/bpf/bpf_lsm.c`, `bpf_lsm_find_cgroup_shim`). It refuses every file whose mount belongs
-    to another mount namespace (`fs/mount.h`, `real_mount`, `mnt_ns`; the task's in `nsproxy`),
-    unless the file is a non-directory on a superblock of the root's type beneath a recorded root
-    and, when it has `FMODE_WRITE`, the receiver's `file_open` would admit opening it for writing,
-    which the sender's may have, since two sessions of one workspace run under the rule files of
-    their own launches ("The policy", the maps). Under `NESTING=none` another mount namespace is
+    (`kernel/bpf/bpf_lsm.c`, `bpf_lsm_find_cgroup_shim`). Of a file whose mount belongs to
+    another mount namespace (`fs/mount.h`, `real_mount`, `mnt_ns`; the task's in `nsproxy`), or
+    to none, because the sender's container ended before the receiver read the message and its
+    namespace was torn down with it (`fs/namespace.c`, `umount_tree` clears `mnt_ns`), it
+    refuses a directory, whatever it names; it passes a non-directory on a superblock of the
+    root's type only beneath a recorded root and, when it has `FMODE_WRITE`, only where the
+    receiver's `file_open` would admit opening it for writing, which the sender's may have, since
+    two sessions of one workspace run under the rule files of their own launches ("The policy",
+    the maps); one on a superblock of the volume's type only beneath the recorded volume root, so
+    another workspace's volume file does not arrive; and one of any other type, which reaches no
+    share and starts no lookup. Under `NESTING=none` another mount namespace is
     another container: the profile refuses a user namespace, `CLONE_NEWNS` needs `CAP_SYS_ADMIN`,
     which `CapEff` zero lacks ("Environment evidence"), and `podman exec` joins the container's
     namespaces; the mounts inside the container, `/tmp`, the volumes and the bind, are its
     namespace's own, and a pipe, a socket or an anonymous inode sits on a kernel-internal mount of
     no namespace (`fs/namespace.c`, `kern_mount`, `MNT_NS_INTERNAL`) and passes, reaching no
-    filesystem; so what processes of one container pass each other passes as today. A directory
+    filesystem, as does a file of the runtime's own namespaces: one whose root is the receiver's
+    own root directory, which is the host's root for the runtime's processes, the container's
+    init before it pivots into the container's root among them, and a container's root for every
+    session process, whose own namespace alone has it (`fs/namespace.c`, `pivot_root`); the one
+    the controller runs in, by the inode number of its own `/proc/self/ns/mnt`; and an anonymous
+    one, told by its flag on 7.2 and by the one inode number, 0xEFFFFFF7, that every anonymous
+    namespace carries on 6.18 (measured: `crun` 1.28 passes the volume as such a clone whose root
+    is the volume directory, "Phase 3 on WSL"), which `open_tree`
+    with `OPEN_TREE_CLONE` makes (`fs/namespace.c`, `is_anon_ns`): the session has neither under
+    the profile, and the runtime passes the container's mount sources into it as it starts
+    (measured: a directory descriptor of the volume's mountpoint, refused as a directory, ended
+    `crun`'s start, "Phase 3 on macOS"; on WSL the same descriptor came from a namespace that was
+    neither the controller's nor pid 1's, which are one there, so the runtime's namespaces are
+    not knowable by number, "Phase 3 on WSL"). What keeps that exception the runtime's: a descriptor
+    of those namespaces can be sent only by a process holding one, the runtime's own processes,
+    which pass them to the container's init before it execs the first process and leave none
+    open across that exec (Phase 3's row on the first process's descriptors), and to which the
+    session has no socket, since the sockets a session can reach are its own and, under the
+    option, those of other sessions in the volume; so what processes of one container pass each
+    other passes as today. A directory
     descriptor from another namespace is refused whatever it names: a lookup through it starts at
     its own path and mount (`fs/namei.c`, `path_init`), descends the mounts beneath, found by parent
     mount and dentry whatever the caller's namespace (`fs/namespace.c`, `__lookup_mnt`), and ascends
@@ -460,7 +538,11 @@ The program classifies by object and position, never by a path string:
   controller from the VM's own `statx` of the bind source, with the root's filesystem type name;
   a `--workspace=read-only` session's policy records the type and no root. The program walks
   `d_parent` from the target dentry, bounded, folding each name as `policy.rs` folds
-  (`git-metadata.md`, "The name rule"), until it meets a recorded root or the filesystem root.
+  (`git-metadata.md`, "The name rule"), until it meets a recorded workspace or volume root or
+  the filesystem root. A recorded gitdir root or guarded object met on the way is marked and
+  the walk goes on, so that the file rules and a symlink target's depth keep the workspace's
+  ancestry above it; it is the walk's root only when the walk reached the filesystem root with
+  no workspace root above it, while a walk that reaches the bound denies whatever it marked.
   An object on a superblock of another type, `~`, the volumes and the container's own
   filesystems, is outside before any walk and allowed. On a superblock of the root's type, a
   mutation is allowed only beneath a recorded root: a walk that meets none, or reaches the
@@ -488,7 +570,12 @@ The program classifies by object and position, never by a path string:
   since the volume shares its superblock with `~` ("Environment evidence"): `inode_mknod`
   refuses the creation, and `inode_rename`, each way for an exchange, and `inode_link` refuse a
   source whose inode is a socket. The walk from the new name's parent that meets the volume's
-  root, or the bound, denies. `--unix-sockets` lifts the rule and keeps a socket out of a
+  root, or the bound, denies. The three hooks see the moved inode alone, so a directory holding
+  a bound socket, moved whole, would carry it; what stops that is the mount layout, which Phase
+  4 tests: a socket is bound under `~`, the volume and the share are other mounts, and `rename`
+  across mounts answers `EXDEV` before any hook (`fs/namei.c`, `do_renameat2`), while beneath
+  the volume no socket comes to be in the first place. A version that binds another mount into
+  the container reopens this. `--unix-sockets` lifts the rule and keeps a socket out of a
   gitdir by the same three hooks ("The hooks", `file_receive`, has the channel each closes).
     Each share is one superblock (`fs/fuse/virtio_fs.c`, `virtio_fs_test_super`), so a second
     share bound into a disposable container is Phase 3's stand-in for a submount made after
@@ -503,6 +590,12 @@ The program classifies by object and position, never by a path string:
   - The line set is the launcher's resolved rules, the same text the filter receives, which the
     unprivileged guard (`ko-agent-fs --resolve`) folds and compiles into fixed-size map records
     before attach. The controller loads those records and parses no text from the workspace.
+    The records are bounded, and the guard refuses a launch whose rules exceed a bound: 128
+    lines of at most 7 components of 63 bytes, 16 alias contexts (the context of a symlink whose
+    end an anchored `pinned-path` line names, which every entry below the end also stands as,
+    `RuleContext::also`), and at most 2 alias contexts live at one position, a third denying
+    the mutation. The program keeps the alias contexts as the filter does: activated at the
+    line's end, advanced with each name below it, dropped once they can decide nothing.
 - The gitdir allowlist (`git-metadata.md`, "The classifier") is the policy here too. The filter
   finds a nested gitdir's root by the `HEAD` it holds, a lookup a program cannot make, so the
   controller records the roots under `modules/` at launch; a namespace without a recorded root
@@ -515,19 +608,29 @@ The program classifies by object and position, never by a path string:
   is the same object, which the filter recognizes by comparing every ordinary entry with its
   guarded siblings on each lookup (`fs.rs`, `policy_name`), a lookup a program cannot make.
   Here two rules replace it:
-  - the controller records the identity of the workspace root's `.git` and `.ko-agent-sandbox`
-    and of every gitdir the guard resolves, so any name of those objects is judged as the
-    object;
+  - the controller records the identity of the workspace root's `.git` and `.ko-agent-sandbox`,
+    of every gitdir the guard resolves, and of each submodule worktree's `.git` pointer file the
+    guard reads to resolve its gitdir, so any name of those objects is judged as the object: a
+    walk meeting a `.git` object's identity is at the gitdir entry, one meeting the
+    `.ko-agent-sandbox` object's is in the launcher's directory, at whatever depth and name;
   - on Windows, a mutation whose ancestry holds a component of NTFS's generated short-name form,
     uppercase, a tilde and a digit within the 8.3 lengths, is denied whatever the component is,
     which covers a `.git` the host creates mid-session. Cost: no session write through a name of
     that form on Windows, a form no project is known to use. The exact form is a Phase 3 row.
-  - What neither covers: a hard link the host makes to a guarded file below the root, or after
-    launch, is ordinary data to the walk, and a rewrite of a nested `.git` pointer file through
-    it is within the property. The session cannot make such a link, since `inode_link` refuses a
-    guarded source. Covering the launch-time half needs a scan of the whole tree at launch; the
-    mid-session half has no cover a program can give. It is a pending user decision ("Decisions
-    still open"), and Phase 3's row for it cannot pass without that decision.
+  - What neither covers, a residual the change adding the backend records beside
+    `git-metadata.md`'s for host-made hard links to protected inodes: a hard link the host makes
+    to the `.git` pointer file of a nested repository that is not a submodule, or to any guarded
+    file after launch, is ordinary data to the walk, and a rewrite of the pointer through it is
+    within the property. The session cannot make such a link, since `inode_link` refuses a
+    guarded source; the filter catches only a link beside its target, by comparing siblings; a
+    scan of the whole tree at launch would cover the launch-time half at the cost of a walk of
+    the tree per launch, the cost the backend removes, and nothing a program can do covers the
+    mid-session half. The residual narrows the property, and the host's trust does not restore
+    it: a host program that hard-links such a file for its own reasons, a backup or `cp -al`,
+    gives the session a write path to the pointer that the host did not intend, so the
+    statement of the property excludes a host-made second name the policy cannot recognize.
+    The user, 2026-10-22, on recording the submodule pointer files and accepting the rest: "Add
+    the third option as recommended one, as you recommend."
 - A mount inside the workspace, a filesystem the host mounted at `<workspace>/vendor`, has dentries
   whose `d_parent` chain ends at that filesystem's root, never at the workspace root, so a walk
   by dentry alone would allow everything in it; a bind mount of a directory of the workspace's
@@ -668,7 +771,11 @@ For each session:
 4. Create and start the container; its scope, or its directory under cgroupfs, lands below the
    proven cgroup.
 5. A restart or recreate repeats 1–4; a stop of the container does not detach. `podman exec`
-   joins the container's cgroup and needs nothing.
+   joins the container's cgroup and needs nothing. No container with a writable workspace is
+   started by anything but the launcher's steps 1–4: the launcher creates it with `--restart=no`,
+   so that `podman-restart.service`, which starts containers under `always` or `unless-stopped`
+   when the machine boots, never starts one whose pins the restart lost, and a start by a unit
+   or by hand outside the launcher is outside the supported lifecycle.
 6. On teardown, end every task under the cgroup, then detach and unpin the sandbox's links,
    whose release frees their programs and maps, and remove the cgroup.
 7. Reconcile at every launcher start, under the per-machine launch lock ("The hooks",
@@ -976,6 +1083,116 @@ passed as there.
 |                          | as on macOS, and the same first failure with the hooks refusing       |
 
 
+### Phase 3 on macOS
+
+Measured on 2026-10-23 with `../bpf/probe/phase3/phase3.sh` on the machine of "Phase 1 on macOS",
+podman 6.1.2, clang 19.1.7, `policy.bpf.o` of SHA-256
+`33ba77076c8e94d9759d259821964dc131f6b0c945a7db9d217649df22626ff9`, the revision "Phase 3 on
+WSL" measures. The containers run as in Phase 2. Every one of the 44 rows passes; the transcript
+holds the raw lines. The review of the change then altered the program in three places, the
+walk going on past a gitdir root, a bound hit denying under a mark, and a mount in no namespace
+judged as another namespace's, and added four rows; the run of that revision is pending. Rows
+of the first runs of 2026-10-22, under the program as first written, are kept as the reason for
+two rules.
+
+| row                      | measured                                                              |
+| ------------------------ | --------------------------------------------------------------------- |
+| preemption               | `full (lazy)`, 10 CPUs                                                |
+| verifier, per program    | 21,104 to 23,760 insns, stack 384 to 416 of 512 bytes, at most 11     |
+|                          | states per insn, 255 ms for all nine; the walk and position 16,758    |
+|                          | insns, the rule match 2,524, the alias activation 634 and the symlink |
+|                          | judgment 2,797, each a global function verified once                  |
+| barrier                  | the jited `file_open`, 26,832 bytes, holds three `ldaddal`, one per   |
+|                          | fetch-add: before and after a level's reads, and before the snapshot  |
+| records                  | 128 rule lines, nine roots, the alias context of `.claude` holding    |
+|                          | the five `.claude` lines as partial matches                           |
+| corpus                   | 244 cases: 230 under the default flags, 6 under the short-name flag   |
+|                          | and 8 under `--unix-sockets`, 0 mismatches each; 5 FIFO cases of the  |
+|                          | 230 answered by the share's `EACCES` before any hook, counted apart   |
+| git                      | status, add, commit, a branch, log and gc in the clone; `git config`  |
+|                          | and `git init` refused; git outside the policy in `sub/`, whose       |
+|                          | session-made `.git` has no `HEAD`, finds the workspace's gitdir       |
+| race                     | 3,670 moves of the outer directory, 1,492 moves and 659 exchanges of  |
+|                          | the inner, against 12,444 writes by path and through held             |
+|                          | descriptors: 7,474 refused, 4,970 absent, 0 succeeded; 12 walks       |
+|                          | overlapped a move, none gave up                                       |
+| race, global sequence    | the first run, validating the walk by `rename_lock`: 167 walks        |
+|                          | overlapped a rename and 35 of 11,891 gave up after four retries       |
+| storm                    | 16 processes, 30,000 decisions, 0 wrong, 0 denied for want of a slot, |
+|                          | no nesting on any CPU; walk means 19 to 33 µs, 335 µs at most         |
+| slots exhausted          | with four marked taken a write on the share is refused and counted    |
+|                          | once as reentry; with three it runs in the fourth; freed, in the      |
+|                          | first                                                                 |
+| storm, global sequence   | the first run: 16 walks gave up and 17 permitted operations in four   |
+|                          | processes were denied                                                 |
+| sockets by default       | `bind` beneath the volume `EPERM` and under its superblock's `~`      |
+|                          | stand-in allowed, from where `mv` and `ln` beneath the volume and     |
+|                          | `mv` into the workspace are refused                                   |
+| second share             | a directory under `/private/tmp`, virtiofs, bound into the container: |
+|                          | a write inside gets `EPERM`                                           |
+| walk cost, syscall       | the mean of 2,000 opens for writing at depth 11: 791 µs per open      |
+|                          | under the policy against 748 µs bare; an earlier run on a busier      |
+|                          | machine read 1,110 against 905                                        |
+| container start          | with `file_receive` attached, the runtime passes 15 descriptors of    |
+|                          | its own namespaces into the starting container, all passed, and the  |
+|                          | first process holds no descriptor beyond the standard three; the     |
+|                          | controller's namespace is pid 1's, 0xEFFFFFF8, the initial one       |
+| container start, refused | the first run, with every other namespace's descriptor judged: a      |
+|                          | directory descriptor of the volume's mountpoint, `_data`, refused,    |
+|                          | and `crun` failed with `write to sync socket: Connection reset`       |
+| slots                    | four sandboxes with nine hooks each hold nine of the ten              |
+| descriptors              | every row of "Phases", 3 as listed; B's `file_receive` over the rows: |
+|                          | 94 calls, 90 of the runtime's namespaces, 3 allowed, 1 denied         |
+| seccomp                  | under the generated profile `unshare` with `CLONE_NEWUSER` and the    |
+|                          | twelve mount syscalls answer `EPERM`, and a child process runs        |
+
+
+### Phase 3 on WSL
+
+Measured on 2026-10-23 with `../bpf/probe/phase3/phase3.ps1` on the Windows machine of "Phase 1
+on WSL", podman 6.1.4 under the cgroupfs manager, crun 1.28, clang 19.1.7, `policy.bpf.o` of
+SHA-256 `31c0803211ce0b7542269f33c9cdf3f2f3df5811f49e5ed4e826bcc0015f3fd5`, built against that
+kernel's BTF. Every one of the 45 rows passes; the run of the revision the review altered
+("Phase 3 on macOS") is pending here too. The rows below name what differs from macOS; every
+other row passed as there.
+
+| row                      | measured                                                              |
+| ------------------------ | --------------------------------------------------------------------- |
+| preemption               | `none`, 4 CPUs                                                        |
+| verifier, per program    | 125,185 to 130,642 insns, the walk and position 121,408 of them,      |
+|                          | seven times the count on 7.2.5; the rule match 1,955, the alias       |
+|                          | activation 634 and the symlink judgment 4,665; stack 384 to 416       |
+|                          | bytes; at most 36 states per insn; 205 to 459 ms each, 2,045 ms for   |
+|                          | all nine                                                              |
+| barrier                  | the jited `file_open`, 20,612 bytes, holds `lock xadd`: the scan      |
+|                          | counted one, matching the prefix-less form and the `REX.W` form of    |
+|                          | the instruction alone, so the count of the three is a lower bound     |
+| corpus                   | 228 of the 230 default cases run, 0 mismatches: two names NTFS cannot |
+|                          | hold, a newline and non-UTF-8 bytes, skipped; a FIFO's and an         |
+|                          | exchange's refusal the share's; of the socket group 4 of 8 run, the   |
+|                          | rest needing a bound socket, which 9p refuses after the hook          |
+| race                     | no descriptor held, since 9p refuses to move a directory with an open |
+|                          | handle below it; 916 moves of the outer directory and 126 of the      |
+|                          | inner against 3,024 writes: 213 refused, 2,811 absent, 0 succeeded; 4 |
+|                          | walks overlapped a move, none gave up                                 |
+| storm                    | 16 processes, 6,800 decisions in the 5 s a 9p operation's 10 ms       |
+|                          | allows, 0 wrong, 0 reentry; walk means 35 to 49 µs, 2.8 ms at most    |
+| short name, real volume  | NTFS serves `.vscode` as `VSCODE~1`; under the flag a write through   |
+|                          | it is refused and the host sees no file in `.vscode`                  |
+| walk cost, syscall       | the mean of 2,000 opens for writing at depth 11: 11.07 ms per open    |
+|                          | under the policy against 11.10 ms bare, 9p's own cost                 |
+| container start          | with `file_receive` attached, the runtime passes 10 descriptors;      |
+|                          | the volume mountpoint arrives as an `open_tree` clone, an anonymous   |
+|                          | namespace whose root is the volume directory and whose inode number   |
+|                          | is 0xEFFFFFF7, the receiver `crun` still at the host's root          |
+| container start, refused | the runs before that number was known: the clone's namespace was      |
+|                          | neither the controller's nor pid 1's, which are one on this machine,  |
+|                          | and carried neither anonymity field the program looked for            |
+| second share             | no `D:` drive on the machine; not measured                            |
+| descriptors              | every row as on macOS; B's `file_receive` over the rows: 65 calls, 60 |
+|                          | of the runtime's, 3 allowed, 2 denied                                 |
+
+
 ## Inventory
 
 The policy transcribes `fuse/ko-agent-fs` at commit `0fe166a159c1f3cc75dd966a8b0e2d4faae5aa31`,
@@ -1193,67 +1410,117 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    "Attributes, flags and ioctls" and "Mounts" name, or covered by a decision taken for it, such
    as "Directories"; and the walk's cost is recorded beside the unfiltered bind's, and the
    representative program loads on both kernels.
-3. **The policy.** The classifier in the programs, the map compiler in the guard, and the
-   filter's test corpus run against the bind: the name-rule corpus, the pointer rewrite, the
-   second-name cases, hooks, config, alternates, operational writability, the blocked git
-   commands, symlink escape and the rename races (`git-metadata.md`, "Test list"); the torn-name
-   race of "What is gained and what is lost": a session renames `node_modAAAA`, holding
-   `.vscode/tasks.json`, to `BBBBBBBBules` and back in a loop, by `rename` and by
-   `RENAME_EXCHANGE` with a directory of the other name, while another process writes that file
-   through both names, on both machines, with the writes, refusals, walks and retries counted
-   as the Phase 1 probe's stats row counts them, no write succeeds, and the retries counted are
-   above zero, without which no walk overlapped a rename and the race did not run; the walk's
-   state across its loops, per CPU in the Phase 2 program, is per task in the port, in task-local
-   storage (`bpf_task_storage_get`), or guarded by a per-CPU in-use count that denies on
-   reentry: the kernel runs a cgroup's programs under `rcu_read_lock` and `migrate_disable`
-   with no recursion count (`kernel/bpf/cgroup.c`, `bpf_prog_run_array_cg`), so under full
-   preemption a second task on the CPU enters the program over the first's per-CPU state; each
-   kernel's preemption mode is read from `/sys/kernel/debug/sched/preempt` (the macOS kernel is
+3. **The policy.** The classifier in the programs, with what Phase 2 left to it ("The policy"):
+   the guarded objects' identities, the alias contexts, the short-name form, the symlink target
+   rules, `file_receive` and the walk's state against reentry; its host build and the corpus run
+   through both classifiers ("The recorded decisions this answers"); the map compiler in the
+   guard, producing the records "The policy" describes, with the record layouts written once,
+   the guard emitting the C header or a layout test over both; and the filter's test corpus
+   transcribed into the probe's corpus, each case naming the test it transcribes
+   (`git-metadata.md`, "Test list"; `tests/mounted_*.rs`), since those tests mount a FUSE filter
+   over a backing tree they write directly, which under the policy is a process outside the
+   cgroup, and read `mkdir` as judged, which "Directories" does not.
+   The walk's state across its loops, per CPU in the Phase 2 program, is per CPU and per slot
+   here: the kernel runs a cgroup's programs under `rcu_read_lock` and `migrate_disable` with no
+   recursion count (`kernel/bpf/cgroup.c`, `bpf_prog_run_array_cg`), so under full preemption a
+   second task on the CPU enters the program over the first's state. Each call on an object of
+   the share's type takes the lowest free of four slots by an atomic or on a per-CPU word and
+   releases it at its decision; a fifth such task at once is denied and counted (`reentry`),
+   while a call on another type, the runtime's and the container's own files, takes no slot and
+   passes. Task-local storage would allocate the 28 KB of state inside the hook. Each kernel's
+   preemption mode is read from `/sys/kernel/debug/sched/preempt` (the macOS kernel is
    `PREEMPT_DYNAMIC`, `dynamic_preempt_schedule` in its kallsyms, so a boot parameter sets the
-   mode), and a row
-   runs many processes creating, writing, renaming, linking and symlinking at once, permitted
-   and refused names mixed, on both machines, with every decision counted and none wrong; a
-   socket `bind` in the
-   workspace and beneath the persistent volume's root, and a `rename` and a `link` of a socket
-   bound under `~` into either, refused by default, and `codex exec` run with the daemon
-   directory unwritable; under `--unix-sockets`, a directory descriptor passed over a socket in the
-   volume from a second sandbox of the workspace, judged by the receiver's policy, and from a
-   sandbox of another workspace and into a `--workspace=read-only` session, which do not receive it,
-   nor a read-only descriptor, a directory descriptor, of the sender's container root, of its `~`
-   and of the receiver's own root passed between sandboxes of `/repo` and `/repo/sub`, which no
-   receiver gets, and a pipe, a socket pair's end and a workspace file passed between two processes
-   of one container, which arrive, to a live session of the same workspace launched under a later
-   rule file, one message of three descriptors, a read-only one of an ordinary file, a writable one
-   of a file that rule file refuses and the sender's allows, and a read-only one again, of which the
-   receiver gets the first alone and `MSG_CTRUNC`, and a socket under `.git/objects` by `bind`, by
-   `rename` and `RENAME_EXCHANGE` of one bound elsewhere and by `link`, each refused, and a symlink
-   there to a socket outside, through which a worktree's container cannot connect; a launch under
-   the other backend or the other setting of `--unix-sockets` while a session sharing its volume or
-   a raw mount is live, refused in either order, for a main checkout and a linked worktree sharing
-   its volume, for two sessions of one workspace naming two volumes, for a workspace below another's
-   root, for a linked worktree with its own volume beside its main checkout, after a host rename of
-   the workspace between the two launches, which name two volumes, and beside a live container of an
-   earlier launcher without the labels too, and of two such launches racing, one refused; a host
-   hard link to the root's `.git` pointer file and to `.ko-agent-sandbox`
-   (`tests/mounted_mutate.rs`, `a_second_name_of_a_guarded_entry_is_guarded_like_it`); the NTFS
-   short-name form on a real NTFS volume; a mount under the bind source refusing the launch, and
-   for native Linux's version a nested mount holding a `.git`; a second host share bound into a
-   disposable container, on which every mutation is denied; a linked git worktree,
-   whose main gitdir the launcher binds read-only (`TODO.md`, "Deferred — writable git from a
-   linked worktree").
-   Also: under `NESTING=none`, `unshare -Ur` and each mount syscall are refused, and for the later
-   version, under `NESTING=same-uid` and with the profile loosened, the session binds the
-   workspace and a nested filesystem at other paths in a mount namespace of its own and mutates
-   through the aliases, and through an overlay mount; a host hard link to a nested `.git`
-   pointer file, made before and after launch; a `HEAD` by each creating syscall in a `.git` the
-   session makes in `sub/` and in `.git/objects/x/`, and by a rename or `RENAME_EXCHANGE` over a
-   directory placeholder; an exchange of a filled directory with a session-made `.git`; host `git`
-   in `sub/` under a global relative `core.hooksPath`; writes below a `.git` made under a
-   `read-only` line; a file in `.git/objects/x/.ko-agent-sandbox`. Gate: each row ENFORCED, or an
-   existing filter residual, or covered by a decision the user has taken, "Directories" or one in
-   "Decisions still open"; and the production object loads on both kernels, its verifier figures
-   recorded as Phase 2's are, within a budget per kernel, since 6.18 processes twelve times 7.2's
-   instructions for one program ("Phase 2 on WSL"). A listed loss passes nothing.
+   mode).
+   The rows, each run with the policy attached, on both machines:
+   - the corpus, in groups:
+     - the name rule, the launcher's directory, hooks in the gitdir, a submodule's and a
+       worktree's, a `hooks` that is itself a symlink, config, the redirections, alternates and
+       operational state, with the region rules of a gitdir;
+     - the file rules: a freed file, a pinned component, the writable region, a relocated hook
+       directory and the symlinked `.claude`;
+     - the "Directories" rules: a `HEAD` by each creating syscall in a `.git` the session makes
+       in `sub/` and in `.git/objects/x/`, and by an exchange over a directory placeholder (a
+       rename over one answers `EISDIR` before any hook); an exchange of a filled directory with
+       a session-made `.git`; writes below a `.git` made under a `read-only` line; a file in
+       `.git/objects/x/.ko-agent-sandbox`;
+     - the symlink target rules, the walk's bound, in the workspace and below the recorded
+       `.git`, and sockets;
+     - a workspace whose `.git` is a pointer file with a host hard link to it and to
+       `.ko-agent-sandbox` (`tests/mounted_mutate.rs`,
+       `a_second_name_of_a_guarded_entry_is_guarded_like_it`), and a submodule worktree's
+       pointer file with a host hard link to it in another directory, each judged by its name
+       and by its second name;
+   - ordinary git in a clone, and host git in `sub/`, whose session-made `.git` has no `HEAD`,
+     finding the workspace's gitdir;
+   - the torn-name race of "What is gained and what is lost", at two levels: one process renames
+     `node_modAAAA`, holding `.vscode/tasks.json`, to `BBBBBBBBules` and back in a loop, by
+     `rename` and by `RENAME_EXCHANGE` with a directory of the other name, another moves their
+     parent `outerAAAA` to `BBBBouter` and back, and a third writes that file and creates beside
+     it by path under every combination of the names and through directory descriptors of both
+     `.vscode` directories held from the start, with the writes, refusals, walks and retries
+     counted as the Phase 1 probe's stats row counts them, no write succeeds, and the retries
+     counted are above zero, without which no walk overlapped a move and the race did not run;
+   - the storm: sixteen processes creating, writing, renaming, linking and symlinking at once,
+     permitted and refused names mixed, every decision counted and none wrong, with the reentry
+     count and the deepest slot taken recorded; then the slots exhausted by hand through the
+     per-CPU guard word: with four taken a write is refused and counted, with three it runs in
+     the fourth, and freed it runs in the first, the word set while a container already up
+     sleeps, so that no call of the runtime's is in flight;
+   - sockets by default: a `bind` beneath the persistent volume's root refused and one under
+     a directory on the volume's superblock standing for `~` allowed, from where the socket can
+     be neither renamed nor linked beneath the volume, nor moved into the workspace, which
+     recreates it by `mknod`;
+   - a second host share bound into a disposable container, on which a write is denied;
+   - the walk's cost at the clone's deepest file beside the bare bind, and the jited barrier;
+   - the NTFS short-name form under its flag: a mutation whose ancestry or own name has the form
+     denied, a name with a `~` outside the form allowed; the form on a real NTFS volume is the
+     Windows driver's row;
+   - under `--unix-sockets`, four sandboxes with their own policies, a live session, a second
+     session of the workspace launched under a later rule file, a session of another workspace
+     and a `--workspace=read-only` session, holding nine hooks of the ten slots and differing in
+     policy:
+     - a socket in the workspace allowed, and one under `.git/objects`, at the gitdir's root
+       (`fsmonitor--daemon.ipc`) and under a `read-only` line refused, by `bind`, by `rename`
+       and `RENAME_EXCHANGE` of one bound elsewhere and by `link`; a symlink there to a socket
+       outside allowed;
+     - a container starting with `file_receive` attached, the runtime's descriptors passing,
+       and its first process holding no descriptor beyond the standard three;
+     - a pipe, a socket pair's end and a workspace file passed between two processes of one
+       container, which arrive;
+     - to the later session one message of three descriptors, a read-only one of an ordinary
+       file, a writable one of a file its rule file refuses and the sender's allows, and a
+       read-only one again, of which it gets the first alone and `MSG_CTRUNC`; a writable
+       descriptor of a file both allow, which it writes, beside a read-only one of the refused
+       file, which it cannot reopen for writing;
+     - directory descriptors of the sender's container root, of its `/tmp` and of the
+       receiver's own root, which no receiver gets; a pipe after a refused directory dropped
+       with it, and one before it arriving; a sender whose container ends and is removed
+       before the receiver reads, the receiver waiting for the driver's marker of that, whose
+       writable file and directory do not arrive, the hook's record showing the file's mount in
+       no namespace, and whose read-only share file does arrive;
+     - a file descriptor into the other workspace's session and into the read-only session,
+       which get nothing; the read-only session itself writing nothing on the share, writing
+       `/tmp` and reading the workspace;
+   - the seccomp profile "Mounts" relies on, derived from the machine's default as `TODO.md`
+     plans it: `unshare` and each mount syscall answer `EPERM` and a child process still starts.
+   For the later version, under `NESTING=same-uid` and with the profile loosened, the session
+   binds the workspace and a nested filesystem at other paths in a mount namespace of its own and
+   mutates through the aliases, and through an overlay mount; and a host hard link to a nested
+   `.git` pointer file, made before and after launch, the residual "The policy" records under
+   the second-name rule.
+   The probe is `../bpf/probe/phase3/phase3.sh`, `phase3.ps1` on Windows, run on the host, and
+   its transcript is this phase's record: `policy.bpf.c` is Phase 2's program with the additions
+   above, the walk, the rule match, the alias activation and the symlink judgment each a global
+   function verified once per program; `exercise.c` lays out the fixtures, decides the corpus of
+   246 cases in seventeen groups, runs the race and the storm, and binds, serves and receives
+   sockets and descriptors; `controller.c` is Phase 2's with the records, computing an alias
+   context in user space as the guard will. The map compiler in the guard and the host build
+   follow the runs, which settled the record layout.
+   Gate: each row ENFORCED, or an existing filter residual, or covered by a decision the user has
+   taken, "Directories" or one in "Decisions still open"; and the policy program loads on both
+   kernels, its verifier figures recorded as Phase 2's are, within a budget per kernel, since
+   6.18 processes twelve times 7.2's instructions for one program ("Phase 2 on WSL"). A listed
+   loss passes nothing.
 4. **Lifecycle.** The ordering of "Lifecycle" on rootless podman: first-process denial, restart,
    recreate, `podman exec`, stop and kill, controller exit, machine restart, link loss; and the
    proof's catches, a controller that attaches a subset of the hooks, one that attaches another
@@ -1262,9 +1529,14 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    `podman create` that fails after the pins, each leave a cgroup and pins the next start
    removes; a launcher killed between `podman create` and `podman start` leaves a container
    that names the cgroup, whose pins stay until the container is removed; a stopped session's
-   and a live session's stay, and a listing that fails removes nothing. The controller's two
-   refusals: one given an object path, and one asked for a cgroup outside the invoking user's
-   slice, in the machine and on native Linux ("Native Linux"). The launch cost of steps 2 and 3
+   and a live session's stay, and a listing that fails removes nothing. The restart invariant
+   of "Lifecycle", 5: the created container's restart policy reads `no`, and after a machine
+   restart with a stopped container present, nothing starts it. The socket rule's dependence on
+   the mounts ("The policy"): a directory under `~` holding a bound socket, moved into the
+   volume or the workspace, fails with `EXDEV`. The controller's two refusals: one given an
+   object path, and one asked for a cgroup outside the invoking user's slice, in the machine;
+   and its third, a mount under the bind source, which it lists in the VM before the attach
+   ("The policy"). The launch cost of steps 2 and 3
    on both machines, since the WSL verifier takes 3.4 s for the probe's eight programs ("Phase 2
    on WSL"): whether the fixture runs at every launch or after installation and changes alone is
    decided on that figure, and the controller keeps the two parts of step 3 separable.
@@ -1286,7 +1558,21 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    rest ("Later versions") and refusing a launch whose backend or `--unix-sockets` setting differs
    from a live session's sharing its volume or a raw mount, or that of an unlabelled or renamed one
    ("The hooks", `file_receive`), and the documentation changes "The recorded decisions this
-   answers" names. It needs the profile "Mounts" relies on to have shipped.
+   answers" names. It needs the profile "Mounts" relies on to have shipped. Its rows, which
+   need the launcher:
+   - under the profile the launcher installs, `io_uring_setup` answers `ENOSYS` from the
+     container's first process and from a `podman exec` process ("The hooks", `file_receive`);
+   - a launch under the other backend or the other setting of `--unix-sockets` while a session
+     sharing its volume or a raw mount is live, refused in either order: for a main checkout and
+     a linked worktree sharing its volume, for two sessions of one workspace naming two volumes,
+     for a workspace below another's root, for a linked worktree with its own volume beside its
+     main checkout, after a host rename of the workspace between the two launches, which name
+     two volumes, beside a live container of an earlier launcher without the labels too, and of
+     two such launches racing, one refused;
+   - a linked git worktree, whose main gitdir the launcher binds read-only (`TODO.md`,
+     "Deferred — writable git from a linked worktree"), and a symlink under its main checkout's
+     `.git/objects` to a socket outside, through which the worktree's container cannot connect;
+   - `codex exec` run with the daemon directory unwritable ("The hooks", `file_receive`).
 
 
 ## What is gained and what is lost
@@ -1331,21 +1617,30 @@ Gained:
     would lift a `.vscode` below it that both real names protect. `policy.rs` allows that rename,
     since a directory is pinned only as an interior component of a line (`RuleContext::pinned`) and
     the move leaves no region (`authorize_region_move`). Phase 3 runs it as a race;
-  - the program reads `rename_lock`'s sequence before and after the walk, as `d_path` does. A
-    walk counts only when both reads succeeded, the first value is even, the second equals it,
-    and a barrier separates each counter read from the dentry reads, as `read_seqbegin` and
-    `read_seqretry` have (`include/linux/seqlock.h`, `smp_rmb`) and two plain reads do not;
-    otherwise it walks again, and denies after a bound. The controller passes the address, read
-    from `/proc/kallsyms` as root, in the program's data: the machine's BTF holds per-CPU
-    variables only, and `bpf_probe_read_kernel` takes any scalar as its source
-    (`kernel/trace/bpf_trace.c`, `ARG_ANYTHING`). Clang emits no barrier instruction for BPF: a
-    fence outside the single-thread scope is a fatal error in LLVM's BPF backend
-    (`BPFISelLowering.cpp`, `LowerATOMIC_FENCE`). The candidate is an atomic fetch-add on a stack
+  - the program reads each dentry's own sequence count, `d_seq`, before and after reading its
+    parent, name and inode (`fs/dcache.c`, `__d_move` and `d_exchange` hold it odd across the
+    parent and name change), and reads every level's count again after the last level, as the
+    RCU path walk revalidates the dentry it came from after reading the next (`fs/namei.c`,
+    `lookup_fast`), through the address each level was read at, a scalar the probe helper
+    returned, under the caller's RCU read lock, which keeps a dentry's memory a dentry
+    (`fs/dcache.c`, `__d_free`): the chain counts only when each first value is even and every
+    later read equals it, so it is the object's position over one interval of the walk and not
+    a composition of two moments, and a barrier separates each count read from the field reads,
+    as `read_seqbegin`
+    and `read_seqretry` have (`include/linux/seqlock.h`, `smp_rmb`) and two plain reads do not;
+    otherwise the walk is discarded and made again, and denied after a bound. Phases 1 and 2
+    read the global `rename_lock` sequence around the whole walk instead, as `d_path` does,
+    which discards a walk at any rename in the VM: sixteen renaming processes made 35 of 11,891
+    walks give up after four retries and denied permitted operations ("Phase 3 on macOS"),
+    where `d_path` takes the write lock on its second try and a program cannot. Clang emits no
+    barrier instruction for
+    BPF: a fence outside the single-thread scope is a fatal error in LLVM's BPF backend
+    (`BPFISelLowering.cpp`, `LowerATOMIC_FENCE`). The barrier is an atomic fetch-add on a map
     word between the reads: the arm64 JIT emits `ldaddal`, or `ldxr`/`stlxr` with `dmb ish`
     without LSE (`arch/arm64/net/bpf_jit_comp.c`, `emit_lse_atomic`, `emit_ll_sc_atomic`), and
-    the x86 JIT a `lock`-prefixed `xadd` (`arch/x86/net/bpf_jit_comp.c`, `emit_atomic_rmw`).
-    Whether both verifiers accept it, and the jited dump shows those instructions, is a Phase 1
-    row;
+    the x86 JIT a `lock`-prefixed `xadd` (`arch/x86/net/bpf_jit_comp.c`, `emit_atomic_rmw`);
+    both verifiers accept it and the jited dumps show those instructions ("Phase 1 on macOS",
+    "Phase 1 on WSL");
   - a host rename moves a guest dentry too, when the session's next lookup of the new name
     returns the inode the old dentry holds (`fs/dcache.c`, `d_splice_alias` to `__d_unalias`,
     which FUSE, virtiofs, overlayfs, ext4, xfs and 9p reach; 9p without metadata caching makes a
@@ -1369,9 +1664,9 @@ Lost, stated as what becomes possible that the filter does not allow:
     since the sandbox has no path to the controller: it exits before the container starts and
     listens on nothing.
 - **A mistake in the kernel-facing glue, which no host test reaches.** The classifier itself is
-  unit-tested on the host, a `no_std` crate compiled into the program and into a test binary,
-  as `policy.rs` is tested, and the folding, parsing and map compilation stay in the guard's
-  Rust and reuse `policy.rs`.
+  unit-tested on the host, the C program compiled a second time into a test binary and run
+  through `policy.rs`'s corpus ("The recorded decisions this answers"), and the folding,
+  parsing and map compilation stay in the guard's Rust and reuse `policy.rs`.
   - What the host cannot run is the glue around it, the `d_parent` walk, its CO-RE reads and
     its bounds: an LSM program has no `BPF_PROG_TEST_RUN` (`kernel/bpf/bpf_lsm.c`,
     `lsm_prog_ops` is empty).
@@ -1384,10 +1679,21 @@ Lost, stated as what becomes possible that the filter does not allow:
 - **No Unix socket in the workspace or beneath the persistent volume, by default.** Of the
   installed software, Codex's app-server daemon alone binds one there ("Environment evidence");
   `--unix-sockets` allows them at the cost of a ninth hook ("The hooks", `file_receive`).
+  - Under the option a `--workspace=read-only` session can connect to a socket a live session
+    binds on the share or the volume and send it data: no hook judges `connect` or a socket's
+    `sendmsg`, and the bytes do not touch the socket's inode. It cannot bind one, mutate the
+    socket's file or receive a share file, so what it writes is what the live session's
+    process then writes under its own policy.
+  - Refusing the data would take `socket_sendmsg` as a tenth hook, the last slot, walking from
+    the peer's bound dentry (`net/unix/af_unix.c`, `unix_sk(peer)->path`), and would close
+    nothing while the two sessions share the persistent volume, which a read-only session
+    writes: the live session's configuration under `~` is reachable there directly. Not built;
+    the case to revisit is two sessions launched with different volumes.
 - **No write by a `--workspace=read-only` session through a descriptor a live session passes, and
   the controller's run for a read-only launch.** The filter admits the write, since the live
   session's mount judged the open; here nothing arrives by default, `file_receive` refuses under the
-  option what another container passes but a share file it could open itself, and the session's
+  option what another container passes but a share file it could open itself, a file of its own
+  volume or a file of another type, which reaches no share ("The hooks"), and the session's
   policy recording no root lets nothing on the share be opened for writing ("The hooks",
   `file_receive`). No protection is weakened.
 - **No socket inode inside a gitdir under `--unix-sockets`, by creation, rename or link.** Git
@@ -1443,16 +1749,11 @@ Decisions still open, each the user's, taken after Phase 2's table:
   - accepting them: a `user.` xattr on a protected directory, which no host program here reads;
   - `inode_setxattr` in a free slot on such sessions, which holds row 15 there too and leaves one
     free slot to the decision above.
-- **A hard link the host makes to a nested `.git` pointer file or `.ko-agent-sandbox` entry,
-  below the root or after launch.** The filter catches it by comparing siblings on every lookup;
-  the program catches only objects recorded at launch ("The policy"). Pending, between:
-  - extending the residual `git-metadata.md` records for host-made hard links to protected
-    inodes to these entries;
-  - a scan of the whole tree at launch, which covers the launch-time half at the cost of a walk
-    of the tree per launch, accepting the mid-session half.
-  Refusing every write through a file with `i_nlink > 1` is not among them: pnpm installs by
-  hard-linking from a store on the installation's filesystem, which in a session is the
-  workspace's (https://pnpm.io/faq, "Does pnpm work across multiple drives or filesystems?"), so
+- **A hard link the host makes to a guarded file** is taken ("The policy", the second-name
+  rule): the submodule pointer files are recorded, the rest is a residual. Refusing every write
+  through a file with `i_nlink > 1` was not among the options: pnpm installs by hard-linking
+  from a store on the installation's filesystem, which in a session is the workspace's
+  (https://pnpm.io/faq, "Does pnpm work across multiple drives or filesystems?"), so
   hard-linked files in a workspace are ordinary.
 - **Denylist inside a gitdir.** Only if Phase 3 finds the allowlist too large for the program:
   a denylist of the executable state (`config*`, `hooks`, `commondir`, `gitdir`,
@@ -1527,8 +1828,9 @@ It is not a backend for this policy.
   creation, rename or link, so the session opens no channel to another container. Under
   `--unix-sockets`, a descriptor one sandbox passes another is judged by the receiver's policy, a
   descriptor from another container is refused on arrival unless it is a non-directory of the share
-  beneath a recorded root that the receiver could open so by path, every directory among the refused
-  and passing within one container unchanged, so a sandbox of another workspace and a
+  beneath a recorded root that the receiver could open so by path, of its own volume, or of a type
+  that reaches no share, every directory among the refused and passing within one container
+  unchanged, so a sandbox of another workspace and a
   `--workspace=read-only` session get nothing on the share, and no socket inode enters a gitdir
   directly. A launch whose backend or option differs from that of a live session sharing its volume
   or a raw mount, a linked worktree's main gitdir included, beside a live container of an earlier
@@ -1566,9 +1868,10 @@ It is not a backend for this policy.
 - Loaders: libbpf 1.6.3, the machine's (https://github.com/libbpf/libbpf), or Aya 0.14.0, whose
   `LsmCgroup` is https://github.com/aya-rs/aya/pull/1135. Aya's resolution of a typeless ksym
   through `/proc/kallsyms` (https://github.com/aya-rs/aya/pull/1372) is in no release as of
-  2026-10-19; the `rename_lock` address arrives in program data and needs no ksym resolution.
-  libbpf resolves a typeless `__ksym` extern through `/proc/kallsyms` at load, which the Phase 1
-  probe uses. Decide after Phase 1.
+  2026-10-19; the policy program reads no kernel symbol since the per-dentry `d_seq` replaced
+  `rename_lock` ("What is gained and what is lost"), which the Phase 1 and 2 probes resolved as
+  a typeless `__ksym` extern through `/proc/kallsyms`, as libbpf does at load. Decide after
+  Phase 1.
 - Prior art for container-scoped BPF policy, none of which carries this policy: KubeArmor
   (https://github.com/kubearmor/KubeArmor), BPFContain
   (https://github.com/willfindlay/bpfcontain-rs), Aegis-BPF (https://github.com/ErenAri/Aegis-BPF).
