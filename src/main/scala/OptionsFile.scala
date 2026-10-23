@@ -78,6 +78,10 @@ object OptionsFile:
   def fromFile(path: Path, os: Os, color: Boolean = colorStderr): String =
     s" ${lookedUp(s"(from ${shown(path, os)})", color)}"
 
+  /** fromFile naming the values the file supplied, for a line that also states values from elsewhere. */
+  def valuesFromFile(values: Vector[String], path: Path, os: Os, color: Boolean = colorStderr): String =
+    s" ${lookedUp(s"(${values.mkString(", ")} from ${shown(path, os)})", color)}"
+
   /**
    * The file's options as one source of arguments, or why the file fails the launch, naming it as
    * `shown` and the line. Each line holds one launcher option and nothing else, so a line the parser
@@ -231,6 +235,17 @@ case class OptionsInForce(
   /** The values the file supplied for `option`, a repeatable option's each. */
   def fileValues(option: String): Vector[String] =
     supplied.filter(_.option == option).map(_.spelled.stripPrefix(option + "="))
+
+  /** What the egress line adds after the providers `selected`: `from` when the file supplied each of
+    * them, else the file's names, so a provider the command or the command line added is not
+    * credited to the file. */
+  def providersFrom(
+    selected: Vector[String], os: HostCommands.Os = HostCommands.currentOs, color: Boolean = HostCommands.colorStderr,
+  ): String =
+    val fromFile = fileValues(CommandLine.ModelProviderOption)
+    file.filter(_ => fromFile.nonEmpty).fold(""): path =>
+      if selected.forall(fromFile.contains) then OptionsFile.fromFile(path, os, color)
+      else OptionsFile.valuesFromFile(fromFile, path, os, color)
 
   /** The startup line of each option the file supplied, but those in `covered`, whose own lines
     * name the file (from), with its value tinted as what the user chose (HostCommands.chosen). */

@@ -229,11 +229,14 @@ class OptionsFileTest extends munit.FunSuite:
     )
     assertEquals(reset.sessionStartMode, "pause")
     assertEquals(
-      (reset.awsCredential, reset.runOnHost, reset.modelProvider, reset.persistentVolume, reset.memory),
-      (None, None, None, None, None),
+      (reset.awsCredential, reset.runOnHost, reset.persistentVolume, reset.memory),
+      (None, None, None, None),
     )
     assertEquals((reset.image, reset.proxyImage), (None, None))
-    assertEquals((reset.env, reset.credentialBindings, reset.claudePlugins), (Vector.empty, Vector.empty, Vector.empty))
+    assertEquals(
+      (reset.env, reset.credentialBindings, reset.claudePlugins, reset.modelProviders),
+      (Vector.empty, Vector.empty, Vector.empty, Vector.empty),
+    )
     // --env-aws-cred alone keeps reading AWS_PROFILE.
     assertEquals(inForce("--env-aws-cred=team", "--env-aws-cred").awsCredential, Some(AwsCredential.Request(None)))
     // A repeatable option's empty value drops the file's entries; the entries after it still add.
@@ -260,6 +263,17 @@ class OptionsFileTest extends munit.FunSuite:
       inForce("--claude-plugin-dir=/a\n--claude-plugin-dir=/b", "--claude-plugin-dir=/b", "--claude-plugin-dir=/c")
         .claudePlugins,
       Vector("/a", "/b", "/c"),
+    )
+    // The command line's --model-provider adds to the file's names; its empty value drops them.
+    val fileProviders = "--model-provider=anthropic,openai"
+    assertEquals(
+      inForce(fileProviders, "--model-provider=google").modelProviders,
+      Vector("anthropic", "openai", "google"),
+    )
+    assertEquals(inForce(fileProviders, "--model-provider=openai").modelProviders, Vector("anthropic", "openai"))
+    assertEquals(
+      inForce(fileProviders, "--model-provider=", "--model-provider=google").modelProviders,
+      Vector("google"),
     )
     // The checks across options run on the merged set, whichever source each option comes from.
     assertEquals(
@@ -288,6 +302,14 @@ class OptionsFileTest extends munit.FunSuite:
     assert(!options.fileLines(os = Os.Linux, color = false).exists(_.contains("hunter2")))
     assertEquals(options.from("--nesting", Os.Linux, color = false).replace("/home/me/.config", "~/.config"), FromFile)
     assertEquals(options.from("--image", Os.Linux, color = false), "")
+    // The egress line credits the file with its own provider names alone.
+    val (withProviders, providersSupplied) =
+      merged("--model-provider=anthropic,openai", "--model-provider=google").fold(fail(_), identity)
+    def providersFrom(selected: String*): String =
+      OptionsInForce(withProviders, providersSupplied, Some(Path.of("/home/me/.config/ko-agent-sandbox/options")))
+        .providersFrom(selected.toVector, Os.Linux, color = false).replace("/home/me/.config", "~/.config")
+    assertEquals(providersFrom("anthropic", "openai"), FromFile)
+    assertEquals(providersFrom("anthropic", "openai", "google"), s" (anthropic, openai from $Shown)")
     assertEquals(OptionsInForce(parsed, Vector.empty, None).fileLines(color = false), Vector.empty)
     assertEquals(
       LaunchMessages.sharedVolumeLine("team", FromFile, color = false),
@@ -316,8 +338,8 @@ class OptionsFileTest extends munit.FunSuite:
     // The file's --env and --egress-cred of one name meet only where both are read.
     val effective = read(EgressEffectiveReads, "--egress-effective")
     assertEquals(
-      (effective.parsed.egress, effective.parsed.modelProvider, effective.parsed.proxyImage),
-      (Some("deny-all"), Some("openai"), Some("proxy:mine")),
+      (effective.parsed.egress, effective.parsed.modelProviders, effective.parsed.proxyImage),
+      (Some("deny-all"), Vector("openai"), Some("proxy:mine")),
     )
     assertEquals(effective.parsed.credentialBindings.map(_.name), Vector("X"))
     assertEquals(

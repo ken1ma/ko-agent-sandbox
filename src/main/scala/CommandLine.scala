@@ -62,9 +62,10 @@ object CommandLine:
 
   /**
    * `--model-provider=<names>` adds model providers to the one the command's name selects for the
-   * session's egress (EgressRules.selectedProvider). The names go to the proxy as written: the
-   * proxy image defines the provider names, and its refusal of a value it does not
-   * define fails the launch (EgressRules.rulesetRefusal). The launcher keeps no list of providers.
+   * session's egress (EgressRules.selectedProvider). It is repeatable, so the command line adds to
+   * the options file's names rather than replacing them. The names go to the proxy as written: the
+   * proxy image defines the provider names, and its refusal of a name it does not define fails the
+   * launch (EgressRules.rulesetRefusal). The launcher keeps no list of providers.
    */
   final val ModelProviderOption = "--model-provider"
 
@@ -155,7 +156,7 @@ object CommandLine:
     /** `--audio=off` is `Some(Vector.empty)`. */
     audio: Option[Vector[String]] = None,
     claudePlugins: Vector[String] = Vector.empty,
-    modelProvider: Option[String] = None,
+    modelProviders: Vector[String] = Vector.empty,
     nesting: Option[String] = None,
     sessionStart: Option[String] = None,
     memory: Option[String] = None,
@@ -215,10 +216,6 @@ object CommandLine:
   private val Singles: Vector[Single[?]] = Vector(
     Single[String]("--workspace", _.workspace, (p, v) => p.copy(workspace = v), v => s"--workspace=$v"),
     Single[String]("--egress", _.egress, (p, v) => p.copy(egress = v), v => s"--egress=$v"),
-    Single[String](
-      ModelProviderOption, _.modelProvider, (p, v) => p.copy(modelProvider = v), v => s"$ModelProviderOption=$v",
-      Some(""),
-    ),
     Single[String]("--clipboard", _.clipboard, (p, v) => p.copy(clipboard = v), v => s"--clipboard=$v"),
     Single[Vector[String]](
       AudioOption, _.audio, (p, v) => p.copy(audio = v),
@@ -255,6 +252,10 @@ object CommandLine:
     Repeated[String](
       ClaudePlugins.OptionName, _.claudePlugins, (p, v) => p.copy(claudePlugins = v), identity,
       directory => s"${ClaudePlugins.OptionName}=$directory",
+    ),
+    Repeated[String](
+      ModelProviderOption, _.modelProviders, (p, v) => p.copy(modelProviders = v), identity,
+      name => s"$ModelProviderOption=$name",
     ),
   )
 
@@ -389,7 +390,6 @@ object CommandLine:
           single("--session-start", parsed.sessionStart, (p, v) => p.copy(sessionStart = v))(
             choose("--session-start", _, SessionStartModes),
           ),
-        () => single(ModelProviderOption, parsed.modelProvider, (p, v) => p.copy(modelProvider = v))(Right(_)),
         () => single("--memory", parsed.memory, (p, v) => p.copy(memory = v))(Right(_)),
         () => single(PersistentVolumeOption, parsed.persistentVolume, (p, v) => p.copy(persistentVolume = v))(Right(_)),
         () => single("--image", parsed.image, (p, v) => p.copy(image = v))(Right(_)),
@@ -423,6 +423,19 @@ object CommandLine:
             case directory if parsed.claudePlugins.contains(directory) =>
               Left(s"error: ${ClaudePlugins.OptionName}=$directory is given twice")
             case directory => update(parsed.copy(claudePlugins = parsed.claudePlugins :+ directory))
+          },
+        () =>
+          valueOf(ModelProviderOption).map {
+            case "" => drop(ModelProviderOption)(_.copy(modelProviders = Vector.empty))
+            case spelled =>
+              val names = spelled.split(",", -1).toVector
+              val selected = parsed.modelProviders ++ names
+              if names.contains("") then
+                Left(s"error: $ModelProviderOption=$spelled; the value is provider names separated by commas")
+              else
+                selected.diff(selected.distinct).headOption match
+                  case Some(name) => Left(s"error: $ModelProviderOption=$name is given twice")
+                  case None       => update(parsed.copy(modelProviders = selected))
           },
         () =>
           valueOf("--env").map {

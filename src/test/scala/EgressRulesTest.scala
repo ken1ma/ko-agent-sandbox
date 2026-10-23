@@ -185,29 +185,30 @@ class EgressRulesTest extends munit.FunSuite:
   test("the launch's selection is the command's provider and the option's; opencode needs the option"):
     val profiles = Vector("deny-unless-allowed", "deny-unless-model")
     profiles.foreach: profile =>
-      assertEquals(selectedProvider(None, Some("claude"), profile), Right(Some("anthropic")))
-      assertEquals(selectedProvider(Some("aws"), Some("claude"), profile), Right(Some("anthropic,aws")))
+      assertEquals(selectedProvider(Vector.empty, Some("claude"), profile), Right(Some("anthropic")))
+      assertEquals(selectedProvider(Vector("aws"), Some("claude"), profile), Right(Some("anthropic,aws")))
       // An options file's selection for another agent keeps agy's own provider, named once.
       assertEquals(
-        selectedProvider(Some("anthropic,openai"), Some("agy"), profile),
+        selectedProvider(Vector("anthropic", "openai"), Some("agy"), profile),
         Right(Some("google,anthropic,openai")),
       )
-      assertEquals(selectedProvider(Some("anthropic,openai"), Some("claude"), profile), Right(Some("anthropic,openai")))
-      assertEquals(selectedProvider(Some("openai,anthropic"), Some("claude"), profile), Right(Some("anthropic,openai")))
-      assertEquals(selectedProvider(Some("anthropic"), Some("claude"), profile), Right(Some("anthropic")))
-      // A name the option spells twice still reaches the proxy, which refuses it.
-      assertEquals(selectedProvider(Some("aws,aws"), Some("claude"), profile), Right(Some("anthropic,aws,aws")))
-      assertEquals(selectedProvider(Some("anthropic,aws"), Some("bash"), profile), Right(Some("anthropic,aws")))
-      assertEquals(selectedProvider(Some("aws,github"), Some("/opt/bin/opencode"), profile), Right(Some("aws,github")))
-      assertEquals(selectedProvider(None, Some("bash"), profile), Right(None))
-      assertEquals(selectedProvider(None, None, profile), Right(None))
-      val refused = selectedProvider(None, Some("/opt/bin/opencode"), profile)
+      for named <- Vector(Vector("anthropic", "openai"), Vector("openai", "anthropic")) do
+        assertEquals(selectedProvider(named, Some("claude"), profile), Right(Some("anthropic,openai")))
+      assertEquals(selectedProvider(Vector("anthropic"), Some("claude"), profile), Right(Some("anthropic")))
+      assertEquals(selectedProvider(Vector("anthropic", "aws"), Some("bash"), profile), Right(Some("anthropic,aws")))
+      assertEquals(
+        selectedProvider(Vector("aws", "github"), Some("/opt/bin/opencode"), profile),
+        Right(Some("aws,github")),
+      )
+      assertEquals(selectedProvider(Vector.empty, Some("bash"), profile), Right(None))
+      assertEquals(selectedProvider(Vector.empty, None, profile), Right(None))
+      val refused = selectedProvider(Vector.empty, Some("/opt/bin/opencode"), profile)
       assert(refused.swap.exists(_.startsWith("error: opencode has no fixed model provider")), refused.toString)
       assert(refused.swap.exists(_.contains("--model-provider=<names>")), refused.toString)
     // deny-all admits nothing, so the option is refused there and opencode needs none.
-    assertEquals(selectedProvider(None, Some("opencode"), "deny-all"), Right(None))
-    assertEquals(selectedProvider(None, Some("claude"), "deny-all"), Right(Some("anthropic")))
-    assert(selectedProvider(Some("aws"), Some("claude"), "deny-all").swap.exists(_.contains("deny-all")))
+    assertEquals(selectedProvider(Vector.empty, Some("opencode"), "deny-all"), Right(None))
+    assertEquals(selectedProvider(Vector.empty, Some("claude"), "deny-all"), Right(Some("anthropic")))
+    assert(selectedProvider(Vector("aws"), Some("claude"), "deny-all").swap.exists(_.contains("deny-all")))
     // The warning names the command and the profile's effect, under the two profiles that admit providers.
     assertEquals(noProviderLine(Some("bash"), "deny-all"), None)
     assert(
