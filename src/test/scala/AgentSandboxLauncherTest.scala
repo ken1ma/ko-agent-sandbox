@@ -1963,18 +1963,25 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(parseCommandLine(List("--workspace", "live")).swap.exists(_.contains("--workspace=<mode>")))
     assert(parseCommandLine(List("--frobnicate")).swap.exists(_.contains("unknown option")))
 
-  test("option parsing: --model-provider passes its value to the proxy as written, selected once"):
-    assertEquals(parseCommandLine(List("--model-provider=aws", "claude")).map(_.modelProvider), Right(Some("aws")))
+  test("option parsing: --model-provider names providers for the proxy as written, repeatable, each once"):
+    def providers(args: String*): Either[String, Vector[String]] = parseCommandLine(args.toList).map(_.modelProviders)
+    assertEquals(providers("--model-provider=aws", "claude"), Right(Vector("aws")))
+    assertEquals(providers("--model-provider=anthropic,github", "opencode"), Right(Vector("anthropic", "github")))
     assertEquals(
-      parseCommandLine(List("--model-provider=anthropic,github", "opencode")).map(_.modelProvider),
-      Right(Some("anthropic,github")),
+      providers("--model-provider=anthropic", "--model-provider=openai,google", "claude"),
+      Right(Vector("anthropic", "openai", "google")),
     )
-    assertEquals(parseCommandLine(List("claude")).map(_.modelProvider), Right(None))
-    // The proxy image defines the names; the empty value is the command's own provider.
-    assertEquals(parseCommandLine(List("--model-provider=meta")).map(_.modelProvider), Right(Some("meta")))
-    assertEquals(parseCommandLine(List("--model-provider=")).map(_.modelProvider), Right(None))
-    assert(parseCommandLine(List("--model-provider=aws", "--model-provider=aws")).swap.exists(_.contains("twice")))
-    assert(parseCommandLine(List("--model-provider", "aws")).swap.exists(_.contains("--model-provider=<names>")))
+    assertEquals(providers("claude"), Right(Vector.empty))
+    // The proxy image defines the names; the empty value drops the names before it.
+    assertEquals(providers("--model-provider=meta"), Right(Vector("meta")))
+    assertEquals(
+      providers("--model-provider=aws", "--model-provider=", "--model-provider=github"),
+      Right(Vector("github")),
+    )
+    for twice <- Vector(Vector("--model-provider=aws", "--model-provider=aws"), Vector("--model-provider=aws,aws")) do
+      assert(providers(twice*).swap.exists(_.contains("--model-provider=aws is given twice")), twice)
+    assert(providers("--model-provider=aws,,github").swap.exists(_.contains("separated by commas")))
+    assert(providers("--model-provider", "aws").swap.exists(_.contains("--model-provider=<names>")))
 
   test("option parsing: --run-on-host names programs from a closed set, each once, selected once"):
     assertEquals(

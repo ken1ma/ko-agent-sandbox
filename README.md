@@ -190,6 +190,8 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 1. Sign in with the URL and pasted code, as for [`claude`](#claude).
 1. `/voice` needs `--audio=mic`.
+1. Its terminal sandbox fails to start in a session, so in Auto mode commands run without it
+   ([doc/limitations.md](doc/limitations.md#agys-terminal-sandbox-and-auto-mode)).
 
 #### `kiro-cli`
 
@@ -316,8 +318,9 @@ restore permission prompts and set the Claude Code status line.
       --model-provider=<names>
                          the model providers the session reaches beside the
                          agent's own: anthropic, openai, google, aws or github,
-                         separated by commas. Required for opencode, which has no
-                         fixed provider; refused under --egress=deny-all
+                         separated by commas. Repeatable, each name once. Required
+                         for opencode, which has no fixed provider; refused under
+                         --egress=deny-all
       --clipboard=off|paste|bidirectional
                          off (default) keeps the host clipboard out; paste lets
                          the agent read a copied image; bidirectional also lets
@@ -416,9 +419,9 @@ restore permission prompts and set the Claude Code status line.
     session or Claude Code option per line, spelled as above; # starts a comment, "..." quotes a
     value, ${NAME} expands a variable of the launcher's environment. Every launch prints each
     option it supplies. A command-line option replaces the file's; --env and --egress-cred replace
-    the file's entry of the same name. --reset reads its --persistent-volume, --egress-effective
-    and --egress-check its egress options and --proxy-image; the other actions read none. See
-    README.md "Options file"
+    the file's entry of the same name, and --model-provider adds its names to the file's.
+    --reset reads its --persistent-volume, --egress-effective and --egress-check its egress
+    options and --proxy-image; the other actions read none. See README.md "Options file"
       --no-options-file  before the command: skip the options file for this launch or action
 
     Management actions, each recognized before the command; whatever follows
@@ -449,7 +452,7 @@ restore permission prompts and set the Claude Code status line.
       --egress-effective [--] [<command> [args...]]
                          print the ruleset the accompanying --egress=<profile>
                          resolves to for this workspace, with per-line
-                         provenance; the command, or --model-provider, selects
+                         provenance; the command and --model-provider select
                          the model providers without launching anything
       --egress-check=<host> [--] [<command> [args...]]
                          print the host's rule decision and DNS result using the proxy's
@@ -527,11 +530,12 @@ command line:
 1. An option on the command line replaces the file's for that launch.
 
     1. `--env` and `--egress-cred` replace the file's entry of the same name;
-       `--claude-plugin-dir` loads a directory both spell alike once.
+       `--claude-plugin-dir` loads a directory both spell alike once, and `--model-provider` adds
+       its names to the file's.
     1. An empty value returns an option to its default: `--memory=`, `--run-on-host=`. A closed
        choice names its default instead: `--clipboard=off`, `--nesting=none`.
-    1. The empty value of `--env`, `--egress-cred` or `--claude-plugin-dir` drops the file's entries
-       of that option; those after it on the command line still add.
+    1. The empty value of `--env`, `--egress-cred`, `--claude-plugin-dir` or `--model-provider`
+       drops the file's entries of that option; those after it on the command line still add.
 
 1. `--no-options-file`, before the command, skips the file for one launch or action.
 1. `--reset` reads the file's `--persistent-volume`. `--egress-effective` reads its `--egress`,

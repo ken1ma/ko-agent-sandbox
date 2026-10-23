@@ -91,7 +91,8 @@ object EgressRules:
    * this line stating its egress.
    *
    * @param profileSource follows the profile, and `providerSource` the provider selection: what the
-   *   line adds when the options file supplied `--egress` or `--model-provider` (OptionsInForce.from).
+   *   line adds when the options file supplied `--egress` (OptionsInForce.from) or provider names
+   *   (OptionsInForce.providersFrom).
    * @param color tints the profile and the provider selection (HostCommands.chosen).
    */
   def egressBanner(
@@ -191,17 +192,17 @@ object EgressRules:
    * launch selects a provider and that one's would silently select none.
    */
   def selectedProvider(
-    option: Option[String],
+    named: Vector[String],
     command: Option[String],
     profile: String,
   ): Either[String, Option[String]] =
     val name = commandName(command)
-    if profile == "deny-all" && option.isDefined then
+    if profile == "deny-all" && named.nonEmpty then
       Left(s"error: ${CommandLine.ModelProviderOption} selects no host under --egress=deny-all; drop it")
     else
       val own = commandProvider(command)
-      val named = option.toVector.flatMap(_.split(",", -1)).filterNot(own.contains)
-      Option.when(own.nonEmpty || named.nonEmpty)((own.toVector ++ named).mkString(",")) match
+      val selected = own.toVector ++ named.filterNot(own.contains)
+      Option.when(selected.nonEmpty)(selected.mkString(",")) match
         case None if profile != "deny-all" && name.exists(ProviderlessAgents) =>
           Left(
             s"error: ${name.get} has no fixed model provider; name the session's providers with " +
@@ -382,7 +383,7 @@ object EgressRules:
   private def egressPreflight(
     os: Os,
     profile: String,
-    modelProvider: Option[String],
+    modelProviders: Vector[String],
     proxyImageOption: Option[String],
     operands: List[String],
   ): (String, String, Vector[(String, String)], Option[String]) =
@@ -407,7 +408,7 @@ object EgressRules:
     boundaryDirRefusal(boundaryDir).foreach(fail(_))
     val ruleFiles = readRuleFiles(boundaryDir.resolve("egress")).fold(fail(_), identity)
 
-    val provider = selectedProvider(modelProvider, command.headOption, profile).fold(fail(_), identity)
+    val provider = selectedProvider(modelProviders, command.headOption, profile).fold(fail(_), identity)
     if provider.isEmpty then
       noProviderLine(command.headOption, profile).foreach(line => System.err.println(s"egress: $line"))
 
@@ -445,13 +446,13 @@ object EgressRules:
   def egressEffective(
     os: Os,
     profile: String,
-    modelProvider: Option[String],
+    modelProviders: Vector[String],
     proxyImage: Option[String],
     operands: List[String],
     bindings: Vector[CredentialBinding] = Vector.empty,
   ): Nothing =
     val (workspaceId, proxyImageId, ruleFiles, provider) =
-      egressPreflight(os, profile, modelProvider, proxyImage, operands)
+      egressPreflight(os, profile, modelProviders, proxyImage, operands)
 
     val resolved = resolvedRuleset(podman, proxyImageId, profile, provider, ruleFiles, provenance = true)
     System.out.write(resolved.out)
@@ -475,13 +476,13 @@ object EgressRules:
   def egressCheck(
     os: Os,
     profile: String,
-    modelProvider: Option[String],
+    modelProviders: Vector[String],
     proxyImage: Option[String],
     host: String,
     operands: List[String],
   ): Nothing =
     val (workspaceId, proxyImageId, ruleFiles, provider) =
-      egressPreflight(os, profile, modelProvider, proxyImage, operands)
+      egressPreflight(os, profile, modelProviders, proxyImage, operands)
 
     val network = egressRunNetwork(workspaceId, newRunSuffix())
     createNetwork(network, internal = false)

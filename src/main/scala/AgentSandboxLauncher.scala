@@ -1101,7 +1101,7 @@ object AgentSandboxLauncher:
         import options.parsed
         requirePodman(currentOs)
         egressEffective(
-          currentOs, parsed.egressProfile, parsed.modelProvider, parsed.proxyImage, rest, parsed.credentialBindings,
+          currentOs, parsed.egressProfile, parsed.modelProviders, parsed.proxyImage, rest, parsed.credentialBindings,
         )
 
       case Some(("--egress-check", operands)) =>
@@ -1113,7 +1113,7 @@ object AgentSandboxLauncher:
         options.fileLines().foreach(System.err.println)
         import options.parsed
         requirePodman(currentOs)
-        egressCheck(currentOs, parsed.egressProfile, parsed.modelProvider, parsed.proxyImage, host, operands.tail)
+        egressCheck(currentOs, parsed.egressProfile, parsed.modelProviders, parsed.proxyImage, host, operands.tail)
 
       // CommandLine.ManagementActions and this match drifted.
       case Some((action, _)) => fail(s"error: unhandled action $action")
@@ -1832,7 +1832,7 @@ object AgentSandboxLauncher:
 
     // The providers the launch selects (EgressRules.selectedProvider), and the one warning that is
     // the launcher's to print.
-    val provider = selectedProvider(parsed.modelProvider, command.headOption, egressProfile).fold(fail(_), identity)
+    val provider = selectedProvider(parsed.modelProviders, command.headOption, egressProfile).fold(fail(_), identity)
     if provider.isEmpty then noProviderLine(command.headOption.orElse(Some("bash")), egressProfile).foreach(warn)
 
     // Validated before anything is created: invalid rules would otherwise appear as "could not determine the
@@ -1884,7 +1884,8 @@ object AgentSandboxLauncher:
     val inspectedHosts = inspectedHostsOf(rulesetText).fold(fail(_), identity)
     // Read now, so a dry run the banner cannot state fails the launch before its proxy starts.
     val egressLine = egressBanner(
-      rulesetText, settings.options.from("--egress", os), settings.options.from(ModelProviderOption, os),
+      rulesetText, settings.options.from("--egress", os),
+      settings.options.providersFrom(provider.toVector.flatMap(_.split(",")), os),
     ).fold(fail(_), identity)
 
     // Each binding must reach a proxy that inspects its host: the session's, or a selected

