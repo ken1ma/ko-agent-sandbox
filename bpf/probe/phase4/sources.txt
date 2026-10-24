@@ -1,0 +1,7 @@
+../phase3/policy.bpf.c
+../../../fuse/ko-agent-fs/include/records.h
+probe.h
+controller.c
+readback.c
+fixture.c
+Containerfile
