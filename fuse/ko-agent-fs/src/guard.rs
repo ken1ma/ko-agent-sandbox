@@ -7,7 +7,7 @@
 //! read-only", and `SECURITY.md`, "A host program executing a workspace file on an event".
 
 use std::collections::{BTreeSet, HashSet, VecDeque};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::ErrorKind;
 use std::os::unix::ffi::OsStrExt;
@@ -43,6 +43,10 @@ pub struct Additions {
     pub read_only: BTreeSet<String>,
     pub pinned: BTreeSet<String>,
     pub aliases: Vec<(String, RuleContext)>,
+    /// No rule lines: the guarded objects the BPF backend records by identity (`bpf_records.rs`),
+    /// the workspace root first, then its `.git` and `.ko-agent-sandbox` entries, each gitdir
+    /// under `.git/modules` with its submodule worktree's `.git` pointer file after it.
+    pub guarded: Vec<GuardedPath>,
 }
 
 impl Additions {
@@ -58,6 +62,28 @@ impl Additions {
             )
             .collect()
     }
+}
+
+/// A guarded object by workspace-relative path, empty for the root itself. The BPF backend's
+/// controller records its identity, so that any name of the object is judged as the object
+/// (`doc/plan-bpf-lsm-cgroup.md` at the repository root, "The policy", the second-name rule).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuardedPath {
+    pub kind: GuardedKind,
+    pub path: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GuardedKind {
+    /// The workspace root.
+    Workspace,
+    /// A gitdir under `.git/modules`, found by its `HEAD` as the runtime finds it.
+    Gitdir,
+    /// A `.git` entry: the root's, a directory or a pointer file, or a submodule worktree's
+    /// pointer file.
+    GitEntry,
+    /// The root's `.ko-agent-sandbox` entry.
+    SandboxEntry,
 }
 
 /// Refuse the tree, or say what the mount protects beyond names: the relocated hook directories
@@ -80,6 +106,7 @@ pub fn resolve(
         None => workspace.check_bare_root()?,
     }
     workspace.walk_listed()?;
+    workspace.collect_guarded()?;
     Ok(workspace.additions)
 }
 
@@ -214,6 +241,79 @@ impl Workspace {
             }
         }
         Ok(())
+    }
+
+    /// The guarded objects ([`Additions::guarded`]). A submodule worktree's `.git` pointer file is
+    /// found through its gitdir's `core.worktree`, which `git submodule` writes when it connects
+    /// the two; a gitdir whose config names no regular `.git` inside the workspace records none,
+    /// and that pointer file is then guarded by its name alone, a host-made second name of it
+    /// being the residual the plan records.
+    fn collect_guarded(&mut self) -> Result<(), Refusal> {
+        self.additions.guarded.push(GuardedPath {
+            kind: GuardedKind::Workspace,
+            path: Vec::new(),
+        });
+        for (name, kind) in [
+            (".git", GuardedKind::GitEntry),
+            (".ko-agent-sandbox", GuardedKind::SandboxEntry),
+        ] {
+            let entry = self.root.join(name);
+            match fs::symlink_metadata(&entry) {
+                // A symlink is not the object: `locate_gitdir` refused a symlinked `.git`, and
+                // the launcher refuses a symlinked `.ko-agent-sandbox` before the guard runs.
+                Ok(metadata) if !metadata.file_type().is_symlink() => {
+                    self.additions.guarded.push(GuardedPath {
+                        kind,
+                        path: name.as_bytes().to_vec(),
+                    });
+                }
+                Ok(_) => {}
+                Err(err) if err.kind() == ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(Refusal {
+                        reason: format!("cannot read {entry:?}: {err}"),
+                        remedy: "The guard records the guarded entries by identity and will not \
+                                 guess at them."
+                            .to_string(),
+                    });
+                }
+            }
+        }
+        for gitdir in self.gitdir_roots.clone() {
+            let pointer = self.submodule_pointer_file(&gitdir);
+            self.additions.guarded.push(GuardedPath {
+                kind: GuardedKind::Gitdir,
+                path: gitdir,
+            });
+            if let Some(path) = pointer {
+                self.additions.guarded.push(GuardedPath {
+                    kind: GuardedKind::GitEntry,
+                    path,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// The workspace-relative path of the `.git` pointer file in the worktree that the config of
+    /// the gitdir `gitdir_rel` names, when that is a regular file inside the workspace. The
+    /// worktree is resolved as git resolves `core.worktree` (`setup.c`, `set_git_work_tree`,
+    /// `real_pathdup`), every symlink and `..` followed, and compared with the canonical root, so
+    /// a worktree spelled through a symlink or a `..` leading outside records nothing.
+    fn submodule_pointer_file(&self, gitdir_rel: &[u8]) -> Option<Vec<u8>> {
+        let gitdir = self.root.join(OsStr::from_bytes(gitdir_rel));
+        let text = fs::read_to_string(gitdir.join("config")).ok()?;
+        let worktree = resolve_against(&gitdir, &core_worktree(&text)?)
+            .canonicalize()
+            .ok()?;
+        let rel = worktree.strip_prefix(&self.root).ok()?;
+        if rel.as_os_str().is_empty() {
+            return None;
+        }
+        fs::symlink_metadata(worktree.join(".git"))
+            .ok()
+            .filter(fs::Metadata::is_file)?;
+        Some([rel.as_os_str().as_bytes(), b"/.git"].concat())
     }
 
     /// The path's workspace-relative bytes when it lies strictly inside the root; `None` for the
@@ -1110,25 +1210,54 @@ fn strip_comment(line: &str) -> Option<&str> {
 fn after_section_headers(line: &str) -> Option<&str> {
     let mut rest = line.trim_start();
     while rest.starts_with('[') {
-        let mut quoted = false;
-        let mut header_end = None;
-        let mut characters = rest.char_indices();
-        while let Some((at, ch)) = characters.next() {
-            match ch {
-                '\\' => {
-                    characters.next();
-                }
-                '"' => quoted = !quoted,
-                ']' if !quoted => {
-                    header_end = Some(at);
-                    break;
-                }
-                _ => {}
-            }
-        }
-        rest = rest[header_end? + 1..].trim_start();
+        rest = rest[header_end(rest)? + 1..].trim_start();
     }
     Some(rest)
+}
+
+/// The index of the `]` closing the header `rest` begins with, or `None` when it is left open. A
+/// `]` inside the quoted subsection does not end the header.
+fn header_end(rest: &str) -> Option<usize> {
+    let mut quoted = false;
+    let mut characters = rest.char_indices();
+    while let Some((at, ch)) = characters.next() {
+        match ch {
+            '\\' => {
+                characters.next();
+            }
+            '"' => quoted = !quoted,
+            ']' if !quoted => return Some(at),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The last `core.worktree` a gitdir's config states, as git reads it, or `None` where the file
+/// states none or a line cannot be read. A doubt here records nothing and refuses nothing, where
+/// [`scan_hooks_path`]'s refuses: the pointer file stays guarded by its name. The key is
+/// `core.worktree` alone: a header with a subsection, `[core "x"]` or `[core.x]`, opens another
+/// section (`config.c`, `get_extended_base_var`), and a value with a backslash, which git
+/// unescapes (`parse_value`) and [`value_readings`] does not, reads as none.
+fn core_worktree(text: &str) -> Option<String> {
+    let mut in_core = false;
+    let mut worktree = None;
+    for raw in text.strip_prefix('\u{feff}').unwrap_or(text).lines() {
+        let mut rest = strip_comment(raw)?.trim_start();
+        while let Some(header) = rest.strip_prefix('[') {
+            let end = header_end(header)?;
+            in_core = header[..end].trim().eq_ignore_ascii_case("core");
+            rest = header[end + 1..].trim_start();
+        }
+        let Some((key, value)) = rest.split_once('=') else {
+            continue;
+        };
+        if in_core && key.trim().eq_ignore_ascii_case("worktree") {
+            let readings = value_readings(value);
+            worktree = (readings.len() == 1 && !value.contains('\\')).then(|| readings[0].clone());
+        }
+    }
+    worktree
 }
 
 /// The whitespace git's config parser skips: `isspace` of git's own `ctype.c`, without the
@@ -1390,6 +1519,17 @@ mod tests {
     /// The guard with no file rules, in the host's own namespace: the repository checks alone.
     fn check_hook_location(root: &Path) -> Result<Additions, Refusal> {
         resolve(root, &FileRules::default(), &[PathBuf::from("/")])
+    }
+
+    /// No rule line added; the guarded objects are every tree's.
+    #[track_caller]
+    fn assert_no_additions(additions: &Additions) {
+        assert!(
+            additions.read_only.is_empty()
+                && additions.pinned.is_empty()
+                && additions.aliases.is_empty(),
+            "{additions:?}"
+        );
     }
 
     #[track_caller]
@@ -1967,7 +2107,7 @@ mod tests {
             anchored: false,
         });
         let additions = protected(&root, &FileRules::new(lines));
-        assert_eq!(additions, Additions::default());
+        assert_no_additions(&additions);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -2171,7 +2311,7 @@ mod tests {
         fs::write(root.join("x.json"), b"{}").unwrap();
         std::os::unix::fs::symlink("../x.json", root.join("src/link.json")).unwrap();
         let additions = protected(&root, &listed(&[".vscode"]));
-        assert_eq!(additions, Additions::default());
+        assert_no_additions(&additions);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -2198,5 +2338,127 @@ mod tests {
         assert!(resolve(&root, &FileRules::default(), &shared).is_ok());
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn the_guarded_objects_are_the_root_its_entries_the_module_gitdirs_and_their_pointer_files() {
+        let root = scratch("guarded");
+        let outside = scratch("guarded-outside");
+        fs::write(outside.join(".git"), b"gitdir: nowhere\n").unwrap();
+        let outside_name = outside.file_name().unwrap().to_str().unwrap().to_string();
+        for (module, worktree) in [
+            ("sub", "../../../sub".to_string()),
+            ("gone", "../../../gone".to_string()),
+            ("out", "../../../../elsewhere".to_string()),
+            // A `..` after a real component, and a symlink, each leading to the outside tree.
+            ("interior", format!("../../../sub/../../{outside_name}")),
+            ("linked", "../../../link".to_string()),
+            // A symlink within the workspace: recorded under the real name.
+            ("aliased", "../../../alias".to_string()),
+        ] {
+            let gitdir = root.join(".git/modules").join(module);
+            fs::create_dir_all(&gitdir).unwrap();
+            fs::write(gitdir.join("HEAD"), b"ref: refs/heads/main\n").unwrap();
+            fs::write(
+                gitdir.join("config"),
+                format!("[core]\n\trepositoryformatversion = 0\n\tworktree = {worktree}\n"),
+            )
+            .unwrap();
+        }
+        // `sub` is connected; `gone`'s worktree was removed; `out`'s lies outside the workspace.
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("sub/.git"), b"gitdir: ../.git/modules/sub\n").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        fs::create_dir_all(root.join("real")).unwrap();
+        fs::write(root.join("real/.git"), b"gitdir: ../.git/modules/aliased\n").unwrap();
+        std::os::unix::fs::symlink("real", root.join("alias")).unwrap();
+        fs::create_dir_all(root.join(".ko-agent-sandbox")).unwrap();
+        let mut guarded: Vec<(GuardedKind, String)> = served_read_only(&root)
+            .guarded
+            .iter()
+            .map(|object| (object.kind, String::from_utf8(object.path.clone()).unwrap()))
+            .collect();
+        assert_eq!(guarded[0], (GuardedKind::Workspace, String::new()));
+        guarded.sort();
+        assert_eq!(
+            guarded,
+            vec![
+                (GuardedKind::Workspace, String::new()),
+                (GuardedKind::Gitdir, ".git/modules/aliased".to_string()),
+                (GuardedKind::Gitdir, ".git/modules/gone".to_string()),
+                (GuardedKind::Gitdir, ".git/modules/interior".to_string()),
+                (GuardedKind::Gitdir, ".git/modules/linked".to_string()),
+                (GuardedKind::Gitdir, ".git/modules/out".to_string()),
+                (GuardedKind::Gitdir, ".git/modules/sub".to_string()),
+                (GuardedKind::GitEntry, ".git".to_string()),
+                (GuardedKind::GitEntry, "real/.git".to_string()),
+                (GuardedKind::GitEntry, "sub/.git".to_string()),
+                (GuardedKind::SandboxEntry, ".ko-agent-sandbox".to_string()),
+            ],
+        );
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn a_pointer_file_root_is_a_guarded_git_entry_and_a_symlinked_sandbox_directory_is_none() {
+        let root = scratch("guarded-pointer");
+        let gitdir = scratch("guarded-pointer-gitdir");
+        fs::create_dir_all(gitdir.join("hooks")).unwrap();
+        fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", gitdir.display()).as_bytes(),
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("elsewhere")).unwrap();
+        std::os::unix::fs::symlink("elsewhere", root.join(".ko-agent-sandbox")).unwrap();
+        let guarded = served_read_only(&root).guarded;
+        assert_eq!(
+            guarded,
+            vec![
+                GuardedPath {
+                    kind: GuardedKind::Workspace,
+                    path: Vec::new(),
+                },
+                GuardedPath {
+                    kind: GuardedKind::GitEntry,
+                    path: b".git".to_vec(),
+                },
+            ],
+        );
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&gitdir);
+    }
+
+    #[test]
+    fn core_worktree_is_read_from_the_core_section_alone_and_a_doubt_reads_as_none() {
+        let some = |value: &str| Some(value.to_string());
+        assert_eq!(
+            core_worktree("[core]\n\tworktree = ../../../sub\n"),
+            some("../../../sub")
+        );
+        assert_eq!(core_worktree("[Core]\nWorkTree=../y ; c\n"), some("../y"));
+        assert_eq!(
+            core_worktree("[core]\n\tworktree = \"../a b\"\n"),
+            some("../a b")
+        );
+        // A subsection opens another section, and a later one does not close `[core]`'s value.
+        assert_eq!(core_worktree("[core \"x\"]\n\tworktree = ../z\n"), None);
+        assert_eq!(core_worktree("[core.x]\n\tworktree = ../z\n"), None);
+        assert_eq!(
+            core_worktree("[core]\n\tworktree = ../w\n[core \"x\"]\n\tworktree = ../z\n"),
+            some("../w")
+        );
+        assert_eq!(core_worktree("[core]\n\tworktree = ..\\\\x\n"), None);
+        assert_eq!(
+            core_worktree("[core]\n\tworktree = ../1\n\tworktree = ../2\n"),
+            some("../2")
+        );
+        assert_eq!(
+            core_worktree("[submodule \"x\"]\n\tworktree = ../x\n[core]\n\tbare = false\n"),
+            None
+        );
+        assert_eq!(core_worktree("[core]\n\tworktree = \"open\n"), None);
+        assert_eq!(core_worktree("[core]\n\tworktree = a\tb\n"), None);
     }
 }

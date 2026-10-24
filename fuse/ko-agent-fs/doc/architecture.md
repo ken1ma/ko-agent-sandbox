@@ -299,6 +299,8 @@ untrusted FUSE layer around it. The FUSE layer decides *where* an op is; `policy
 *whether* it is allowed, save the symlink-target refusals `fs.rs` makes itself
 (`allow_symlink_target`, `symlink`). Keeping that separation strict is what keeps the
 authorization rules auditable at 100k-file scale, where the FUSE layer is necessarily busy.
+`src/bpf_records.rs` decides nothing either: it renders the resolved rules and the guard's findings
+as the map records of the BPF backend (`../../../doc/plan-bpf-lsm-cgroup.md`, "The policy").
 
 The line is worth reading precisely, because *where* is not always a function of the names. Under
 `<gitdir>/modules` it is not: a submodule's name defaults to its path, so the same path can be a

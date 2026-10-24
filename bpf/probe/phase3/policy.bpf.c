@@ -251,6 +251,9 @@ struct loop_state {
 	__u32 tgt_first;      // the first special component of the resolved prefix, plus one
 	__u32 same;           // alias_activate: a live slot equals the candidate
 	__u64 barrier;        // walk_once: the word the barrier's fetch-add counts on
+	__u64 cur;            // walk_level: the dentry the level reads, then its parent
+	__u32 status;         // walk_level: the walk's end, a walk_status, and the root's kind there
+	__u32 root_kind;
 };
 
 // Where an entry stands under the rules, for the main context and each live alias context
@@ -431,6 +434,95 @@ static __always_inline void barrier_fetch_add(struct scratch *sc)
 	barrier_var(old);
 }
 
+// One level of the walk, from the dentry `ls->cur`: its name into `sc->raw[level]`, its inode
+// looked up among the roots, its parent into `ls->cur`. Returns 1 to go on to the parent, 0 at the
+// walk's end with `ls->status` and `ls->root_kind` set, or -1 for a dentry seen mid-move, which
+// discards the walk. A global function, as the walk's two loops' bodies are: the verifier checks a
+// global function once for any arguments, where it checks a loop's inlined body at every iteration
+// until the states converge, which for this body took 919,220 instructions of the 1,000,000 limit
+// on 6.18 ("Phase 3 on WSL") and 33,135 on 7.2.5.
+__noinline int walk_level(__u64 slot, __u64 level)
+{
+	struct scratch *sc = get_scratch(slot);
+	volatile struct loop_state *ls;
+	struct dentry *cur, *parent;
+	struct inode *inode;
+	const unsigned char *name;
+	__u32 i, seq0, seq1, len;
+	long copied;
+
+	if (!sc || level >= WALK_BOUND)
+		return -1;
+	ls = &sc->loop;
+	i = level;
+	cur = (struct dentry *)ls->cur;
+	seq0 = BPF_CORE_READ(cur, d_seq.seqcount.sequence);
+	ls->depth = i;
+	if (seq0 & 1)
+		return -1;
+	sc->dentries[BOUNDED(i, WALK_BOUND)] = (__u64)cur;
+	sc->seqs[BOUNDED(i, WALK_BOUND)] = seq0;
+	ls->levels = i + 1;
+	barrier_fetch_add(sc);
+	inode = BPF_CORE_READ(cur, d_inode);
+	len = BPF_CORE_READ(cur, d_name.len);
+	name = BPF_CORE_READ(cur, d_name.name);
+	parent = BPF_CORE_READ(cur, d_parent);
+	copied = len < NAME_BYTES ? bpf_probe_read_kernel_str(sc->raw[BOUNDED(i, WALK_BOUND)], NAME_BYTES, name) : -1;
+	barrier_fetch_add(sc);
+	seq1 = BPF_CORE_READ(cur, d_seq.seqcount.sequence);
+	if (seq1 != seq0)
+		return -1;
+	if (inode) {
+		struct ident id;
+		struct root *root;
+
+		id.s_dev = BPF_CORE_READ(inode, i_sb, s_dev);
+		id.i_ino = BPF_CORE_READ(inode, i_ino);
+		root = bpf_map_lookup_elem(&roots, &id);
+		if (root) {
+			__u32 kind = root->kind;
+
+			if (kind == ROOT_WORKSPACE || kind == ROOT_VOLUME) {
+				ls->root_kind = kind;
+				ls->status = WALK_OK;
+				return 0;
+			}
+			if (ls->mark_level < 0) {
+				ls->mark_level = i;
+				ls->mark_kind = kind;
+			}
+		}
+	}
+	if (copied < 0) {
+		ls->status = WALK_TOO_LONG;
+		return 0;
+	}
+	sc->raw_len[BOUNDED(i, WALK_BOUND)] = len;
+	ls->depth = i + 1;
+	if (!parent || parent == cur) {
+		ls->status = WALK_NOROOT;
+		return 0;
+	}
+	ls->cur = (__u64)parent;
+	return 1;
+}
+
+// One level of the snapshot: whether the dentry read at `level`, through the address it was read
+// at, is still at the sequence it was read under. Returns 1 so, 0 moved, -1 for a bad slot.
+__noinline int walk_recheck(__u64 slot, __u64 level)
+{
+	struct scratch *sc = get_scratch(slot);
+	struct dentry *seen;
+	__u32 i;
+
+	if (!sc || level >= WALK_BOUND)
+		return -1;
+	i = level;
+	seen = (struct dentry *)sc->dentries[BOUNDED(i, WALK_BOUND)];
+	return BPF_CORE_READ(seen, d_seq.seqcount.sequence) == sc->seqs[BOUNDED(i, WALK_BOUND)];
+}
+
 // One pass from `start` toward the root: each component's name into `sc->raw`, until a dentry
 // whose inode is a workspace or volume root, the filesystem root, or the bound. A gitdir root or
 // a guarded object met on the way is marked and the walk goes on, so that the rules and the
@@ -446,92 +538,40 @@ static __always_inline void barrier_fetch_add(struct scratch *sc)
 // memory a dentry (fs/dcache.c, `__d_free`). A rename elsewhere in the VM discards nothing
 // (measured: a global `rename_lock` check retried at every rename of sixteen processes and gave
 // up, "Phase 3 on macOS").
-static __always_inline int walk_once(struct dentry *start, struct scratch *sc, struct walk *out)
+static __always_inline int walk_once(__u64 slot, struct dentry *start, struct scratch *sc, struct walk *out)
 {
 	volatile struct loop_state *ls = &sc->loop;
-	struct dentry *cur = start;
-	__u32 status = WALK_BOUND_HIT, root_kind = 0, levels;
 	int i, k;
 
 	ls->depth = 0;
 	ls->levels = 0;
 	ls->mark_level = -1;
 	ls->mark_kind = 0;
+	ls->cur = (__u64)start;
+	ls->status = WALK_BOUND_HIT;
+	ls->root_kind = 0;
 	bpf_for(i, 0, WALK_BOUND) {
-		__u32 seq0 = BPF_CORE_READ(cur, d_seq.seqcount.sequence), seq1, len;
-		struct inode *inode;
-		struct dentry *parent;
-		const unsigned char *name;
-		long copied;
+		int next = walk_level(slot, i);
 
-		ls->depth = i;
-		if (seq0 & 1)
+		if (next < 0)
 			return 0;
-		sc->dentries[BOUNDED(i, WALK_BOUND)] = (__u64)cur;
-		sc->seqs[BOUNDED(i, WALK_BOUND)] = seq0;
-		ls->levels = i + 1;
-		barrier_fetch_add(sc);
-		inode = BPF_CORE_READ(cur, d_inode);
-		len = BPF_CORE_READ(cur, d_name.len);
-		name = BPF_CORE_READ(cur, d_name.name);
-		parent = BPF_CORE_READ(cur, d_parent);
-		copied = len < NAME_BYTES ? bpf_probe_read_kernel_str(sc->raw[BOUNDED(i, WALK_BOUND)], NAME_BYTES, name)
-					  : -1;
-		barrier_fetch_add(sc);
-		seq1 = BPF_CORE_READ(cur, d_seq.seqcount.sequence);
-		if (seq1 != seq0)
-			return 0;
-		if (inode) {
-			struct ident id;
-			struct root *root;
-
-			id.s_dev = BPF_CORE_READ(inode, i_sb, s_dev);
-			id.i_ino = BPF_CORE_READ(inode, i_ino);
-			root = bpf_map_lookup_elem(&roots, &id);
-			if (root) {
-				__u32 kind = root->kind;
-
-				if (kind == ROOT_WORKSPACE || kind == ROOT_VOLUME) {
-					root_kind = kind;
-					status = WALK_OK;
-					break;
-				}
-				if (ls->mark_level < 0) {
-					ls->mark_level = i;
-					ls->mark_kind = kind;
-				}
-			}
-		}
-		if (copied < 0) {
-			status = WALK_TOO_LONG;
+		if (next == 0)
 			break;
-		}
-		sc->raw_len[BOUNDED(i, WALK_BOUND)] = len;
-		ls->depth = i + 1;
-		if (!parent || parent == cur) {
-			status = WALK_NOROOT;
-			break;
-		}
-		cur = parent;
 	}
 	// The snapshot: no level moved while the levels above it were read.
 	barrier_fetch_add(sc);
-	levels = ls->levels;
 	bpf_for(k, 0, WALK_BOUND) {
-		struct dentry *seen;
-
-		if (k >= levels)
+		if (k >= ls->levels)
 			break;
-		seen = (struct dentry *)sc->dentries[BOUNDED(k, WALK_BOUND)];
-		if (BPF_CORE_READ(seen, d_seq.seqcount.sequence) != sc->seqs[BOUNDED(k, WALK_BOUND)])
+		if (walk_recheck(slot, k) != 1)
 			return 0;
 	}
 	out->depth = ls->depth;
-	out->root_kind = root_kind;
-	out->status = status;
+	out->root_kind = ls->root_kind;
+	out->status = ls->status;
 	out->mark_level = ls->mark_level;
 	out->mark_kind = ls->mark_kind;
-	if (status == WALK_NOROOT && ls->mark_level >= 0) {
+	if (ls->status == WALK_NOROOT && ls->mark_level >= 0) {
 		// The filesystem root reached with no workspace root above the marked root: it is the
 		// walk's root, and the names below it are the position. A walk that reached the bound
 		// or a name too long keeps its status and denies, whatever it marked.
@@ -543,7 +583,8 @@ static __always_inline int walk_once(struct dentry *start, struct scratch *sc, s
 	return 1;
 }
 
-static __always_inline void walk(enum hook hook, struct dentry *start, struct scratch *sc, struct walk *out)
+static __always_inline void walk(enum hook hook, __u64 slot, struct dentry *start, struct scratch *sc,
+				 struct walk *out)
 {
 	__u32 key = hook;
 	struct hook_stats *st = bpf_map_lookup_elem(&stats, &key);
@@ -556,7 +597,7 @@ static __always_inline void walk(enum hook hook, struct dentry *start, struct sc
 	out->mark_level = -1;
 	out->mark_kind = 0;
 	bpf_for(i, 0, RETRY_BOUND) {
-		if (walk_once(start, sc, out)) {
+		if (walk_once(slot, start, sc, out)) {
 			ok = 1;
 			out->retries = i;
 			break;
@@ -1546,7 +1587,7 @@ __noinline int judge_position(__u64 hook, __u64 dentry, __u64 slot, __u64 pos_in
 	if (!cfg || !sc || pos_index > 1)
 		return R_INTERNAL;
 	pos = &sc->pos[pos_index & 1];
-	walk(hook, (struct dentry *)dentry, sc, &w);
+	walk(hook, slot, (struct dentry *)dentry, sc, &w);
 	if (!locate(sc, slot, cfg, &w, pos))
 		return walk_reason(pos);
 	return R_ALLOW;

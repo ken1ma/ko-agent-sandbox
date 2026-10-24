@@ -70,6 +70,7 @@ check() { # check DESCRIPTION COMMAND...: PASS when COMMAND succeeds
 }
 has() { printf '%s\n' "$2" | grep -q -- "$1"; }
 eq2() { [ "$1" = "$2" ] && [ "$3" = "$4" ]; }
+positive() { for n in "$@"; do [ "$n" -gt 0 ] 2>/dev/null || return 1; done; }
 # A command in the machine, as the machine's user; its output is logged and returned.
 vm() {
     out=$(podman machine ssh "$1" 2>&1)
@@ -80,8 +81,11 @@ vm() {
 }
 # The value of KEY in the first line of INPUT holding it, as the controller prints `key=value`.
 field() { printf '%s\n' "$2" | sed -n "s/.* $1=\([^ ]*\).*/\1/p" | head -1; }
-# The sum of KEY over every line of INPUT holding it.
+# The sum of KEY over every line of INPUT holding it, and the least value.
 sum_field() { printf '%s\n' "$2" | sed -n "s/.* $1=\([0-9]*\).*/\1/p" | awk '{ s += $1 } END { print s + 0 }'; }
+min_field() {
+    printf '%s\n' "$2" | sed -n "s/.* $1=\([0-9]*\).*/\1/p" | awk 'NR == 1 || $1 < m { m = $1 } END { print m + 0 }'
+}
 step() { log ""; log "== $*"; }
 
 cleanup() {
@@ -155,6 +159,8 @@ check "the policy program's nine hooks load, alone and together" \
     eq2 "$(printf '%s\n' "$load" | grep -c ' ok=1')" 10 "$load_status" 0
 max_insns=$(printf '%s\n' "$load" | sed -n 's/^prog .*verified_insns=\([0-9]*\).*/\1/p' | sort -n | tail -1)
 info "the most instructions the verifier processed for one program: ${max_insns:-none}, of the limit 1,000,000"
+# The gate's budget ("Phases", 3): a program near the limit fails to load at the next change of the walk.
+check "every program verifies within 500,000 instructions, half the limit" [ "${max_insns:-1000000}" -le 500000 ]
 for prog in inode_rename inode_symlink; do
     vm "sudo -n $CTL verifier-log policy.bpf.o $prog /tmp/$prog.log" | grep '^verifier ' | tee -a "$TRANSCRIPT"
     vm "gzip -c /tmp/$prog.log | base64" | base64 --decode > "$OUT/policy-$prog.log.gz" 2>/dev/null
@@ -305,8 +311,12 @@ stats=$(vm "sudo -n $CTL stats $PIN")
 printf '%s\n' "$stats" | sed 's/^/  /' | tee -a "$TRANSCRIPT"
 check "the race: $(printf '%s\n' "$race" | grep '^race ' | tr '\n' ' ')" \
     eq2 "$(field succeeded "$race")" 0 "$(sum_field gave_up "$stats")" 0
-check "the race ran: retries above zero, $(sum_field retries "$stats") walks overlapped a rename" \
-    [ "$(sum_field retries "$stats")" -gt 0 ]
+# The race ran when both renamers moved and the writer met both names, refused under one and absent
+# under the other. The torn reads the walk caught, its retries, are information: each dentry is
+# validated over the read of its own name, a window a run hits 0 to 12 times ("Phase 3 on macOS").
+check "the race ran: both renamers moved, and the writer saw refusals and absences" \
+    positive "$(min_field renames "$race")" "$(field refused "$race")" "$(field absent "$race")"
+info "walks that read a torn name and were made again: $(sum_field retries "$stats")"
 # The storm: every decision counted, none wrong, and no call denied for want of a slot.
 vm "sudo -n $CTL reset-stats $PIN" > /dev/null
 storm=$(in_cg 1 "$EXERCISE storm $TREE $STORM_PROCS $STORM_SECONDS")

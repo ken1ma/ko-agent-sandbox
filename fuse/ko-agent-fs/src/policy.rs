@@ -577,6 +577,12 @@ impl FileRules {
         &self.lines
     }
 
+    /// The alias contexts, each with the anchored `pinned-path` line whose end carries it
+    /// ([`Self::push_alias`]), for the BPF backend's records (`bpf_records.rs`).
+    pub fn aliases(&self) -> &[(u32, RuleContext)] {
+        &self.aliases
+    }
+
     fn alias(&self, line: u32) -> Option<&RuleContext> {
         self.aliases
             .iter()
@@ -612,6 +618,23 @@ impl RuleContext {
     /// The workspace root's: no line names the root.
     pub fn root() -> RuleContext {
         RuleContext::default()
+    }
+
+    /// The partial matches, `(line, matched)`, for the BPF backend's records (`bpf_records.rs`).
+    pub fn partial(&self) -> &[(u32, u32)] {
+        &self.partial
+    }
+
+    pub fn deciding(&self) -> Option<u32> {
+        self.deciding
+    }
+
+    pub fn pinned_path(&self) -> bool {
+        self.pinned_path
+    }
+
+    pub fn also(&self) -> &[RuleContext] {
+        &self.also
     }
 
     /// Whether the deciding line is `read-only` or a guard's `read-only-path`, under any of the

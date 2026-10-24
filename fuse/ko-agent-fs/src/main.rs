@@ -10,7 +10,9 @@ use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use ko_agent_fs::bpf_records;
 use ko_agent_fs::fs::{KoAgentFs, mount_config};
+use ko_agent_fs::guard::GuardedPath;
 use ko_agent_fs::policy::FileRules;
 use ko_agent_fs::rulefile::{self, RuleFile};
 use nix::fcntl::{OFlag, open};
@@ -28,6 +30,8 @@ struct Args {
     mount: Option<PathBuf>,
     /// The launcher's resolved rule lines; a mount writes the full set beside them.
     file_rules: Option<PathBuf>,
+    /// `--resolve --bpf-records`: where the BPF backend's records go (`bpf_records.rs`).
+    bpf_records: Option<PathBuf>,
     /// `--trace`: [`KoAgentFs::traced`].
     trace: bool,
 }
@@ -36,7 +40,8 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage: ko-agent-fs --source <backing-dir> --mount <mountpoint> [--file-rules <file>] [--foreground]\n\
                                                                        [--trace]\n\
-                ko-agent-fs --source <backing-dir> --resolve [--file-rules <file>]\n\
+                ko-agent-fs --source <backing-dir> --resolve [--file-rules <file>] [--bpf-records <file>]\n\
+                ko-agent-fs --bpf-records-header\n\
                 ko-agent-fs --self-test\n\
                 ko-agent-fs --version"
     );
@@ -47,6 +52,7 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, ExitCode> {
     let mut source = None;
     let mut mount = None;
     let mut file_rules = None;
+    let mut bpf_records = None;
     let mut resolve = false;
     let mut trace = false;
     while let Some(arg) = args.next() {
@@ -55,6 +61,11 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, ExitCode> {
             Some("--mount") => mount = args.next().map(PathBuf::from),
             Some("--file-rules") => file_rules = args.next().map(PathBuf::from),
             Some("--resolve") => resolve = true,
+            Some("--bpf-records") => bpf_records = args.next().map(PathBuf::from),
+            Some("--bpf-records-header") => {
+                print!("{}", bpf_records::c_header());
+                return Err(ExitCode::SUCCESS);
+            }
             Some("--trace") => trace = true,
             Some("--foreground") => {} // the only mode; accepted for the launcher's explicitness
             Some("--self-test") => return Err(self_test()),
@@ -69,26 +80,28 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, ExitCode> {
         }
     }
     match (source, mount, resolve) {
-        (Some(source), Some(mount), false) => Ok(Args {
+        (Some(source), Some(mount), false) if bpf_records.is_none() => Ok(Args {
             source,
             mount: Some(mount),
             file_rules,
+            bpf_records,
             trace,
         }),
         (Some(source), None, true) if !trace => Ok(Args {
             source,
             mount: None,
             file_rules,
+            bpf_records,
             trace,
         }),
         _ => Err(usage()),
     }
 }
 
-/// The file rules and the guard's additions to them, or why the tree is not served. When mounting
-/// with `--file-rules`, the full set is also written beside the input, `<file>.resolved`, where
-/// the launcher's mount script reads it.
-fn resolve_rules(args: &Args) -> Result<(FileRules, String), String> {
+/// The file rules and the guard's additions to them, with the guarded objects, or why the tree is
+/// not served. When mounting with `--file-rules`, the full set is also written beside the input,
+/// `<file>.resolved`, where the launcher's mount script reads it.
+fn resolve_rules(args: &Args) -> Result<(FileRules, String, Vec<GuardedPath>), String> {
     let rule_file = match &args.file_rules {
         None => RuleFile::none(),
         Some(path) => {
@@ -114,7 +127,19 @@ fn resolve_rules(args: &Args) -> Result<(FileRules, String), String> {
         std::fs::write(&resolved, &text)
             .map_err(|err| format!("ko-agent-fs: cannot write {resolved:?}: {err}"))?;
     }
-    Ok((rules, text))
+    Ok((rules, text, additions.guarded))
+}
+
+/// `--bpf-records`: the records of the resolved rules and the guarded objects, written whole.
+fn write_bpf_records(
+    path: &Path,
+    rules: &FileRules,
+    guarded: &[GuardedPath],
+) -> Result<(), String> {
+    let records =
+        bpf_records::compile(rules, guarded).map_err(|why| format!("ko-agent-fs: {why}"))?;
+    std::fs::write(path, records.to_bytes())
+        .map_err(|err| format!("ko-agent-fs: cannot write the BPF records {path:?}: {err}"))
 }
 
 /// Which stage a self-test failure came from, because only this code knows. Everything up to and
@@ -408,14 +433,20 @@ fn main() -> ExitCode {
         Err(code) => return code,
     };
 
-    let (rules, resolved) = match resolve_rules(&args) {
-        Ok(pair) => pair,
+    let (rules, resolved, guarded) = match resolve_rules(&args) {
+        Ok(resolved) => resolved,
         Err(message) => {
             eprintln!("{message}");
             return ExitCode::FAILURE;
         }
     };
     let Some(mount) = args.mount else {
+        if let Some(path) = &args.bpf_records
+            && let Err(message) = write_bpf_records(path, &rules, &guarded)
+        {
+            eprintln!("{message}");
+            return ExitCode::FAILURE;
+        }
         print!("{resolved}");
         return ExitCode::SUCCESS;
     };

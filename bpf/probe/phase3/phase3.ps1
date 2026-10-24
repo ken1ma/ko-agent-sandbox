@@ -167,6 +167,8 @@ try {
     $maxInsns = ($load -split "`n" | ForEach-Object { if ($_ -match 'verified_insns=(\d+)') { [int]$Matches[1] } } |
         Measure-Object -Maximum).Maximum
     Info "the most instructions the verifier processed for one program: $maxInsns, of the limit 1,000,000"
+    # The gate's budget ("Phases", 3): a program near the limit fails to load at the next change of the walk.
+    Check "every program verifies within 500,000 instructions, half the limit" ([int]$maxInsns -le 500000)
     foreach ($prog in @("inode_rename", "inode_symlink")) {
         $logLine = Vm "sudo -n $Ctl verifier-log policy.bpf.o $prog /tmp/$prog.log"
         Log (Lines $logLine '^verifier ')
@@ -316,8 +318,14 @@ try {
     foreach ($line in ($stats -split "`n")) { Log "  $line" }
     Check "the race: $((Lines $race '^race ') -replace "`n", ' ')" `
         (((Field "succeeded" $race) -eq "0") -and ((SumField "gave_up" $stats) -eq 0))
-    Check "the race ran: retries above zero, $(SumField 'retries' $stats) walks overlapped a rename" `
-        ((SumField "retries" $stats) -gt 0)
+    # The race ran when both renamers moved and the writer met both names, refused under one and
+    # absent under the other; the torn reads the walk caught, its retries, are information (phase3.sh).
+    $renames = $race -split "`n" | Where-Object { $_ -match '^race renamer=' } |
+        ForEach-Object { [int](Field "renames" $_) }
+    Check "the race ran: both renamers moved, and the writer saw refusals and absences" `
+        ((($renames | Measure-Object -Minimum).Minimum -gt 0) -and ([int](Field "refused" $race) -gt 0) -and
+            ([int](Field "absent" $race) -gt 0))
+    Info "walks that read a torn name and were made again: $(SumField 'retries' $stats)"
     Vm "sudo -n $Ctl reset-stats $Pin" | Out-Null
     $storm = InCg 1 "$Exercise storm $Tree $StormProcs $StormSeconds"
     $stats = Vm "sudo -n $Ctl stats $Pin"
