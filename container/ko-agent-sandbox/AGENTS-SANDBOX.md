@@ -54,7 +54,8 @@ Build output:
 
 VS Code CLI (`code`), Java 25, Scala (`sbt`, `cs`, `scalafmt`, and `scala`, which is Scala CLI),
 Python 3.14 (`uv`, `uvx`), Node 24, Rust stable (`clippy`, `rustfmt`, and the static musl target),
-plus `rg`, `jq`, `patch`, `zstd`, `openssl`, binutils, and the usual GNU text and process commands.
+plus `rg`, `jq`, `patch`, `zstd`, `openssl`, `git filter-repo`, `git lfs`, binutils, and the usual
+GNU text and process commands.
 
 Absent: `make`, `g++`, `mvn`, `gradle`, `ssh`, `rsync`, `wget`, `zip`, `shellcheck`, and the
 `sqlite3` CLI — use `python3 -c "import sqlite3; ..."`.
@@ -81,10 +82,9 @@ The `ko-agent-fs` filter refuses these operations. Report refusals; do not work 
 
 - Writing `.git` entries other than the state the filter lists (refs, objects, the index, HEAD and
   the like), in any repository under the workspace: `config`, `hooks/`, `.git` pointer files,
-  `commondir`, `gitdir`, rebase, bisect or rerere state, `objects/info/alternates`.
+  `commondir`, `gitdir`, rebase or rerere state, `objects/info/alternates`.
   - `git remote add`, `branch -m` and `--set-upstream-to` write `config`; `branch -m` renames the
     branch, then fails.
-  - `git bisect` fails: bisect on the host, or on a clone under `~`.
 - `git init` and `git clone` under the workspace. Clone under `~`; the unblocked bare forms
   (`--bare`, `--mirror`) belong there too.
 - `git rebase` in any form, `git am`, and a ranged or conflicted `cherry-pick`/`revert`. One
@@ -114,8 +114,17 @@ machine, not this container, is short on memory. In `/sys/fs/cgroup/memory.event
 `oom_kill` means this container reached its memory limit. For either condition, run fewer things
 in parallel and report which occurred.
 
-LFS files check out as pointer stubs; installing `git-lfs` does not help. Read content one file at
-a time from
+LFS files check out as pointer stubs: the image's git-lfs skips the smudge, so a clone or checkout
+needs no egress. `git lfs pull` fetches them once the egress rules allow its two requests, the
+batch `POST` on the forge and the `GET`s on the host its answer names, which the failed pull
+prints. For GitHub, on the host, in `.ko-agent-sandbox/egress/rule`:
+
+```text
+allow https://github.com/<owner>/<repo>.git/info/lfs/ method=POST
+allow https://github-cloud.githubusercontent.com/ read
+```
+
+Without those lines, read one file at a time from
 `https://media.githubusercontent.com/media/<owner>/<repo>/<ref>/<path>`.
 
 

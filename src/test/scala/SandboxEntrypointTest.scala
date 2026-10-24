@@ -222,7 +222,8 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val quoted = "\"" + Workspace.toString.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
     assertEquals(
       parsed(claude),
-      s"""{"projects":{"$other":{"hasCompletedProjectOnboarding":true,"hasTrustDialogAccepted":true},""" +
+      s"""{"lspRecommendationDisabled":true,""" +
+        s""""projects":{"$other":{"hasCompletedProjectOnboarding":true,"hasTrustDialogAccepted":true},""" +
         s"""$quoted:{"hasCompletedProjectOnboarding":true,"hasTrustDialogAccepted":true}}}""",
     )
     // The lists' order is the launches' order under the lock, so each is compared sorted.
@@ -325,7 +326,8 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val quoted = "\"" + Workspace.toString.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
     assertEquals(
       parsed(claude),
-      s"""{"projects":{$quoted:{"hasCompletedProjectOnboarding":true,"hasTrustDialogAccepted":true}}}""",
+      s"""{"lspRecommendationDisabled":true,""" +
+        s""""projects":{$quoted:{"hasCompletedProjectOnboarding":true,"hasTrustDialogAccepted":true}}}""",
     )
     assertEquals(parsed(antigravity), s"""{"trustedWorkspaces":[$quoted]}""")
     assertEquals(parsed(copilot), s"""{"trustedFolders":[$quoted]}""")
@@ -356,7 +358,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val first = Vector(claude, antigravity, copilot).map(parsed(_)) :+ Files.readString(codex)
     assertEquals(
       first(0),
-      """{"oauthAccount":{"emailAddress":"me@example.com"},""" +
+      """{"lspRecommendationDisabled":true,"oauthAccount":{"emailAddress":"me@example.com"},""" +
         """"projects":{"/Users/me/other":{"hasTrustDialogAccepted":true},""" +
         s""""$simple":{"hasCompletedProjectOnboarding":true,"hasTrustDialogAccepted":true}}}""",
     )
@@ -373,6 +375,15 @@ class SandboxEntrypointTest extends munit.FunSuite:
     assertEquals(again, 0, output2)
     assertEquals(Vector(claude, antigravity, copilot).map(parsed(_)) :+ Files.readString(codex), first)
     assertEquals(entries(volume.resolve("claude")), Set(".claude.json"))
+
+  test("Claude's LSP recommendations are switched off only where the user has not decided"):
+    val (seed, home) = fixture()
+    val (claude, _, _, _) = trustFiles(home)
+    Files.createDirectories(claude.getParent)
+    Files.writeString(claude, """{"lspRecommendationDisabled":false}""")
+    val (status, output) = run(seed, home)
+    assertEquals(status, 0, output)
+    assertEquals(parsed(claude, ".lspRecommendationDisabled"), "false")
 
   test("Codex's table is found in every spelling, and another trust level is left as written"):
     val (seed, home) = fixture()

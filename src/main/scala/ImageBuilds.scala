@@ -54,6 +54,7 @@ object ImageBuilds:
       val context = unpackBuildContext()
       val fsSourceId = koAgentFsSourceId(context)
       val selfTestSourceId = contextSourceId(context, "ko-agent-self-test")
+      val bpfSourceId = contextSourceId(context, "bpf/probe/phase3")
       val sandboxBundleId = contextSourceId(context, "ko-agent-sandbox")
       val proxyBundleId = contextSourceId(context, "ko-agent-egress-proxy")
       val readContainerfile = buildContextReader(context)
@@ -87,6 +88,7 @@ object ImageBuilds:
         staleBaseTags,
         fsSourceId,
         selfTestSourceId,
+        bpfSourceId,
       )
       val remaining = removeSupersededImages(
         podman,
@@ -110,6 +112,7 @@ object ImageBuilds:
       val context = unpackBuildContext()
       val fsSourceId = koAgentFsSourceId(context)
       val selfTestSourceId = contextSourceId(context, "ko-agent-self-test")
+      val bpfSourceId = contextSourceId(context, "bpf/probe/phase3")
       val sandboxBundleId = contextSourceId(context, "ko-agent-sandbox")
       val readContainerfile = buildContextReader(context)
       val commands = updateCommands(podman, ImgTagVersion, sandboxBundleId)
@@ -132,6 +135,7 @@ object ImageBuilds:
         staleBaseTags,
         fsSourceId,
         selfTestSourceId,
+        bpfSourceId,
       )
       val remaining = removeSupersededImages(
         podman,
@@ -414,6 +418,7 @@ object ImageBuilds:
       val bundleId = selfTestBundleId(
         fsSourceId,
         contextSourceId(context, "ko-agent-self-test"),
+        contextSourceId(context, "bpf/probe/phase3"),
         sandboxImageId,
       )
       val commands = selfTestBuildCommands(

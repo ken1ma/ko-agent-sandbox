@@ -256,6 +256,8 @@ static int cmd_make_tree(void)
 	tree_dirs(".git/rebase-merge");
 	tree_dirs(".git/sequencer");
 	tree_dirs(".git/rr-cache");
+	tree_dirs(".git/filter-repo");
+	tree_dirs(".git/lfs/objects/ab/cd");
 	tree_dirs(".git/modules/sub/refs/heads");
 	tree_dirs(".git/modules/sub/objects/info");
 	tree_dirs(".git/modules/sub/hooks");
@@ -508,6 +510,12 @@ static const struct corpus_case corpus[] = {
 	{"operational", "mkfifo-in-objects", A_MKFIFO, ".git/objects/pack/fifo", NULL, E_ALLOW},
 	{"operational", "creat-commit-editmsg", A_CREAT, ".git/COMMIT_EDITMSG", NULL, E_ALLOW},
 	{"operational", "creat-index-stash", A_CREAT, ".git/index.stash.1234", NULL, E_ALLOW},
+	{"operational", "creat-index-stash-lock", A_CREAT, ".git/index.stash.1234.lock", NULL, E_ALLOW},
+	{"operational", "creat-next-index-lock", A_CREAT, ".git/next-index-1234.lock", NULL, E_ALLOW},
+	{"operational", "creat-bisect-log", A_CREAT, ".git/BISECT_LOG", NULL, E_ALLOW},
+	{"operational", "creat-bisect-names", A_CREAT, ".git/BISECT_NAMES", NULL, E_ALLOW},
+	{"operational", "creat-filter-repo-map", A_CREAT, ".git/filter-repo/commit-map", NULL, E_ALLOW},
+	{"operational", "creat-lfs-object", A_CREAT, ".git/lfs/objects/ab/cd/abcdef", NULL, E_ALLOW},
 	{"operational", "creat-sharedindex", A_CREAT, ".git/sharedindex.0123abcd", NULL, E_ALLOW},
 	{"operational", "creat-rr-cache-entry", A_CREAT, ".git/rr-cache/x", NULL, E_DENY},
 	{"operational", "creat-rebase-todo", A_CREAT, ".git/rebase-merge/done", NULL, E_DENY},

@@ -312,6 +312,13 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
         b"reftable", // the refs of a `--ref-format=reftable` repository
         b"NOTES_MERGE_WORKTREE",
         b"lost-found", // `git fsck --lost-found`
+        // `git filter-repo`'s commit and ref maps, marks and reports: data it reads on a later
+        // run, which no git command reads.
+        b"filter-repo",
+        // git-lfs's object store, temporaries, lock cache and logs: content named by the
+        // pointer's hash (SECURITY.md, "The workspace"); the commands it runs come from config,
+        // hooks and `.lfsconfig`'s safe keys, none of them here.
+        b"lfs",
     ];
     if OPERATIONAL_TREES.contains(&first) {
         return GitPathClass::Operational;
@@ -323,15 +330,9 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
     // fall through to Protected below, so a rebase/am/sequenced cherry-pick cannot be left in
     // the workspace for the host to resume. This note marks the spot where they must not be added.
     //
-    // Nor the bisect state (`BISECT_START`, `BISECT_LOG`, `BISECT_NAMES`, …): the host's git may be
-    // older than the image's, and through git 2.33 `git bisect visualize` runs `eval` over
-    // BISECT_NAMES (`git-bisect.sh`), so writing it plants shell code. `git bisect start` writes it
-    // and BISECT_LOG every time, so bisecting does not work in the workspace.
-    //
     // Nor `rr-cache` and `MERGE_RR`: with `rerere.enabled` unset, host git enables rerere when
     // `rr-cache` exists, so creating it switches on replaying recorded resolutions in host merges,
-    // a switch that belongs to the protected config. Nor `lfs`: the image has no git-lfs, and its
-    // downloads are refused.
+    // a switch that belongs to the protected config.
 
     if components.len() == 1 {
         const OPERATIONAL_FILES: &[&[u8]] = &[
@@ -360,6 +361,20 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
             b"REPLACE_EDITOBJ",
             b"shallow",
             b"BISECT_HEAD",
+            // The bisect state is data to git 2.34 and later: BISECT_NAMES goes to `git log`
+            // after `--`, as pathspecs; BISECT_START is one argument of `git checkout` before
+            // `--`; `git bisect run` takes its command from the command line alone
+            // (builtin/bisect.c, v2.51). Through 2.33 `git bisect` is a shell script that runs
+            // `eval` over BISECT_NAMES, so the launcher warns on a host git that old
+            // (`AgentSandboxLauncher`, `oldGitBisectWarning`).
+            b"BISECT_START",
+            b"BISECT_LOG",
+            b"BISECT_NAMES",
+            b"BISECT_TERMS",
+            b"BISECT_EXPECTED_REV",
+            b"BISECT_ANCESTORS_OK",
+            b"BISECT_FIRST_PARENT",
+            b"BISECT_RUN",
             b"gc.pid",
             // Host `git gc --auto` prints this through `warning()`, which replaces control
             // characters with `?` (git 2.20 and later).

@@ -21,8 +21,10 @@ Status: the environment prerequisites and the cgroup placement are measured on b
 ("Phase 2 on macOS", "Phase 2 on WSL"); Phase 3's probe (`../bpf/probe/phase3/`) passes every
 row on both ("Phase 3 on macOS", "Phase 3 on WSL"), the nine programs loading within the gate's
 budget in 0.5 s on macOS and 1.7 s on WSL; the guard compiles the policy's records
-(`../fuse/ko-agent-fs/src/bpf_records.rs`); the host build of the classifier with the corpus
-through both classifiers is what Phase 3 still owes. The filter stays
+(`../fuse/ko-agent-fs/src/bpf_records.rs`); the classifier's host build runs the corpus through
+both classifiers (`../fuse/ko-agent-fs/tests/bpf_equivalence.rs`). The Phase 3 sections measure
+the objects they name, not the current `policy.bpf.c`: Phase 3 still owes one run of the probe on
+each machine. The filter stays
 the default until "Acceptance" passes, and no launch ever binds the workspace writable without
 the policy attached and verified.
 
@@ -63,8 +65,11 @@ denies the share wholly and needs none of the routes the first item names:
 - `NESTING=same-uid` sessions and `NESTING=none` sessions with the profile loosened, where the
   session mounts and creates user namespaces: the routes a nested podman needs and the free slots,
   overlayfs's `user.overlay.*` names ("Decisions still open"), Phase 2's nested-podman measurement,
-  Phase 3's alias and overlay rows, and a key for `file_receive` other than the mount namespace,
-  which a nested container of such a session would fail ("The hooks").
+  Phase 3's alias and overlay rows, among them a copy-up that moves a protected object to a new
+  inode in the overlay's upper layer, written during the copy and right after it, which must stay
+  protected by its position alone and by nothing that waits on a notification from user space,
+  and a key for `file_receive` other than the mount namespace, which a nested container of such a
+  session would fail ("The hooks").
 - Native Linux hosts: "Native Linux", the controller's two refusals and the mount under the
   bind source there, with a nested mount holding a `.git` (Phase 4 measures them in the
   machines), and the host's own mount topology under the workspace ("Mounts").
@@ -97,11 +102,15 @@ reason, and its answer here:
   native Linux host passes the probe within a stated supported set, after host changes the user
   consents to ("Native Linux").
 - A BPF policy program is less auditable than Rust. The classifier is the C program the phases
-  measured, compiled a second time into a host test binary against a header standing in for the
-  helpers, with `policy.rs`'s corpus run through both, so the two classifiers are shown to agree
-  and the C one is unit-tested on the host; the inode table, resolver and FUSE layer do not
-  exist. The user, 2026-10-22: "Let's proceed with C, but I will definitely want to migrate to
-  Rust when CO-RE becomes stable in Rust." The migration is a later version ("Later versions").
+  measured, compiled a second time into a host test binary against headers standing in for the
+  kernel's types and the helpers (`../bpf/probe/phase3/host/`), with `policy.rs`'s corpus run
+  through both (`../fuse/ko-agent-fs/tests/bpf_equivalence.rs`: every path of the conformance
+  table and of the git corpus, written, unlinked, created and moved, under the rules as the
+  guard's compiler writes them), so the two classifiers are shown to agree, the three rules
+  "Directories" adds apart, and the C one is unit-tested on the host; the inode table, resolver
+  and FUSE layer do not exist. The user, 2026-10-22: "Let's proceed with C, but I will
+  definitely want to migrate to Rust when CO-RE becomes stable in Rust." The migration is a
+  later version ("Later versions").
   What the language costs in the program, and where it costs instead:
   - A memory-safety bug of the C kind cannot ship in the program. The verifier refuses the
     object at load when any instruction reads or writes outside the bounds it has proven for the
@@ -1442,7 +1451,7 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
 3. **The policy.** The classifier in the programs, with what Phase 2 left to it ("The policy"):
    the guarded objects' identities, the alias contexts, the short-name form, the symlink target
    rules, `file_receive` and the walk's state against reentry; its host build and the corpus run
-   through both classifiers ("The recorded decisions this answers"); the map compiler in the
+   through both classifiers ("What is gained and what is lost"); the map compiler in the
    guard (`../fuse/ko-agent-fs/src/bpf_records.rs`), producing the records "The policy" describes
    in one layout, from which it generates the C header `../fuse/ko-agent-fs/include/records.h`
    that a test compares with the committed file; and the filter's test corpus
@@ -1546,10 +1555,12 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    the symlink judgment each a global function verified once per program, since the verifier
    checks a loop's inlined body at every iteration until its states converge and 6.18 converges
    slowly ("Phase 3 on WSL"); `exercise.c` lays out the fixtures, decides the corpus of
-   246 cases in seventeen groups, runs the race and the storm, and binds, serves and receives
+   252 cases in seventeen groups, runs the race and the storm, and binds, serves and receives
    sockets and descriptors; `controller.c` is Phase 2's with the records, computing an alias
    context in user space as the guard does. The runs settled the record layout, which the
-   guard's compiler writes; the host build follows them.
+   guard's compiler writes. The host build (`../bpf/probe/phase3/host/`) runs the filter's own
+   corpus through the program before any host run, and a program it has not passed is not run
+   on the machines.
    Gate: each row ENFORCED, or an existing filter residual, or covered by a decision the user has
    taken, "Directories" or one in "Decisions still open"; and the policy program loads on both
    kernels, its verifier figures recorded as Phase 2's are, each program within 500,000
@@ -1580,8 +1591,26 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    session's records in inner maps of a map-of-maps keyed by the attach cgroup, found through
    the task's cgroup ancestry, at the cost of the per-sandbox programs "The policy" relies on and
    of the read-back's comparison in step 3. Neither is taken before the figures.
+   The rows the reuse of pins, the reconcile's identities and the cleanup add, on both machines:
+   - a restart after `--build` installed another object, and one after a rule change, each
+     loading and verifying fresh programs and attaching none of the old pins, which are
+     unpinned; the launch's own pins attached only when the read-back finds the installed tag
+     and this launch's records ("Lifecycle", 5);
+   - the reconcile under identities that contradict: a container whose labels name another
+     session's cgroup, a cgroup directory whose recorded identity no longer matches its path,
+     and a pin under another session's name; it associates no pin or cgroup with a session it
+     cannot establish, removes nothing for them, and reports each;
+   - the cleanup's refusals, one each: a pin path with a relative component, a symlink in place
+     of a pin directory or of a cgroup directory, a mount on the pin directory, and a cgroup
+     directory whose identity changed since the launcher recorded it; each refused, nothing
+     removed.
+   Phase 4 also binds the evidence to the program it measured: the drivers of Phases 3 and 4
+   record the SHA-256 of the probe's sources beside the object's, the measurement sections name
+   it, and `bpf/probe/check-evidence.sh` fails when a source differs from the hash its section
+   names, so that a section cannot stand as evidence for a program it did not measure.
    Gate: no container process runs before the policy, on either machine, each of the three
-   defective controllers is caught, and the reconcile removes the two orphans and nothing else.
+   defective controllers is caught, the stale pins and the contradicting identities are refused,
+   the reconcile removes the two orphans and nothing else, and the evidence check passes.
 5. **Measurement.** `probe/perf-probe.py` and the real-tree rows of `verification-log.md` on the
    bind with the policy, beside the filter and the unfiltered bind; the machine's CPU and memory
    during the stat storm under each.
@@ -1705,7 +1734,7 @@ Lost, stated as what becomes possible that the filter does not allow:
     listens on nothing.
 - **A mistake in the kernel-facing glue, which no host test reaches.** The classifier itself is
   unit-tested on the host, the C program compiled a second time into a test binary and run
-  through `policy.rs`'s corpus ("The recorded decisions this answers"), and the folding,
+  through `policy.rs`'s corpus ("What is gained and what is lost"), and the folding,
   parsing and map compilation stay in the guard's Rust and reuse `policy.rs`.
   - What the host cannot run is the glue around it, the `d_parent` walk, its CO-RE reads and
     its bounds: an LSM program has no `BPF_PROG_TEST_RUN` (`kernel/bpf/bpf_lsm.c`,
@@ -1797,7 +1826,7 @@ Decisions still open, each the user's, taken after Phase 2's table:
   hard-linked files in a workspace are ordinary.
 - **Denylist inside a gitdir.** Only if Phase 3 finds the allowlist too large for the program:
   a denylist of the executable state (`config*`, `hooks`, `commondir`, `gitdir`,
-  `objects/info`, the rebase, sequencer, bisect and `rr-cache` state) is smaller and fails open
+  `objects/info`, the rebase, sequencer and `rr-cache` state) is smaller and fails open
   on a future git file that executes. Not recommended before that finding.
 
 

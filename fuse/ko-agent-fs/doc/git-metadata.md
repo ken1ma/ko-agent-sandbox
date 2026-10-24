@@ -151,7 +151,7 @@ From the four groups, the state that must be immutable to the sandbox:
      `commit-graphs/**`, `packs` — so `alternates` and `http-alternates` (group 4); `objects` and
      `objects/info` themselves are created only by `mkdir` and never renamed or unlinked
    - every other entry the classifier's allowlist does not name, among them the rebase and
-     sequencer state (group 1), the bisect state and `rr-cache`
+     sequencer state (group 1) and `rr-cache`
    - and, by recursion, the same classes inside every nested gitdir: `worktrees/<name>/**`
      and `modules/<name>/**` are themselves gitdirs, so their `config`, `hooks/**`, `commondir` and
      `gitdir` are immutable while their operational state is not.
@@ -167,8 +167,8 @@ Everything else stays writable — see the classifier — except what the file r
 The whole of `.git` cannot be read-only: `git` must write its operational state for `status`,
 `commit`, `checkout`, `fetch`, `merge` to work at all — `index`, `HEAD` and the other `*_HEAD`
 refs, `refs/**`, `logs/**`, `objects/**`, `packed-refs`, `COMMIT_EDITMSG`, `MERGE_MSG`, and so
-on. (`rebase` and `bisect` are the deliberate exceptions — their state is protected; see group 1
-and blocked operations.)
+on. (`rebase` is the deliberate exception — its state is protected; see group 1 and blocked
+operations.)
 
 So inside a gitdir the filter must keep operational state writable while protecting the other
 entries. There are two ways to draw that line, and they fail in opposite directions:
@@ -190,9 +190,10 @@ entries. There are two ways to draw that line, and they fail in opposite directi
   git to execute, or to open a path the sandbox chose?"), *not* "does git write here": watching
   real git ("Premises", below) checks only that legitimate git is not *over*-frozen, never what is
   safe to allow.
-  - The question is asked of every host git a user may run, not of the image's version alone:
-    through 2.33, `git bisect` is a shell script that `eval`s `BISECT_NAMES`, which is why the
-    bisect state stays protected.
+  - The question is asked of every host git a user may run, not of the image's version alone.
+    The bisect state is the one answer that depends on that version: from 2.34 it is data
+    (`classify_within_gitdir`), while through 2.33 `git bisect` is a shell script that `eval`s
+    `BISECT_NAMES`. The state is writable, and the launcher warns on a host git older than 2.34.
 - Where the two diverge — `rebase-merge`, `rebase-apply`, `sequencer` — security wins, and the
   affected commands are listed under blocked operations below.
 
@@ -475,7 +476,8 @@ The check is also a snapshot, taken before the mount and not repeated.
 
 - `.gitattributes`, `.gitmodules` — writable worktree data; can only activate host-defined drivers,
   cannot define commands (and cannot smuggle `!cmd` submodule updates). A host's git-lfs filter
-  still connects where `.lfsconfig` says (`SECURITY.md`, "The workspace").
+  still connects where `.lfsconfig` says, and reads the objects a session may have placed in
+  `.git/lfs/` (`SECURITY.md`, "The workspace").
 - Operational gitdir state (`objects`, `refs`, `logs`, `index`, …) — writable, or `git` cannot
   function; none of it is executed, and `alternates` is the one path in it git opens (group 4).
 - Host-side changes — the host writes the backing store directly, bypassing the filter by design.
@@ -504,8 +506,6 @@ the security reason for each):
   - So is every command that records something there: `git remote add`, `git push -u`,
     `git branch --set-upstream-to`, `git switch --track`, `git sparse-checkout`. `git branch -m`
     renames the branch and then fails; `git branch -d` deletes it and warns.
-- `git bisect` — its state stays protected, because a host git through 2.33 evaluates
-  `BISECT_NAMES` as shell code (`classify_within_gitdir` in `src/policy.rs` has the details).
 - `git rerere` — its `rr-cache/` stays protected, since creating it enables rerere for host merges
   (`classify_within_gitdir` has why).
 - Removing `objects/info/alternates` to detach a repository from the object directories it
@@ -519,8 +519,14 @@ the security reason for each):
   - Do rebases on the host, or on a clone under `~`.
 
 Existing host repositories keep working for the everyday commands: `status`, `add`, `commit`,
-`checkout`, `switch`, `fetch`, `merge`, `stash`, `gc` touch only operational state. The rebase
-family, bisect and the commands writing config are the deliberate exceptions above.
+`checkout`, `switch`, `fetch`, `merge`, `stash`, `gc`, `bisect` touch only operational state. The
+rebase family and the commands writing config are the deliberate exceptions above. `bisect` is
+safe for a host git of 2.34 or later; the launcher warns on an older one ("The classifier").
+
+`git filter-repo`, which the image has, runs: its `filter-repo/` metadata is operational, and
+`git remote rm origin`, which it runs at the end and whose config write is refused, is a step it
+does not check (`git_filter_repo.py`, the `subproc.call` after "Removing 'origin' remote"), so
+`origin` stays. Unverified under the filter.
 
 
 ## Prior art: git's own CVE history

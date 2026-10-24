@@ -1034,7 +1034,24 @@ __noinline int alias_activate(__u64 slot, __u64 mask)
 
 // policy.rs, `classify_within_gitdir` and `classify_within_object_info`, over the gitdir-relative
 // components, rel[k] being sc->raw[pos->rel_start - k].
-static __always_inline __u8 is_scratch_name(struct scratch *sc, __u32 index);
+static __always_inline __u8 scratch_name_shape(const char *raw, __u32 len);
+
+// policy.rs's OPERATIONAL_TREES and OPERATIONAL_FILES, each once: the classification and the lock
+// rule, which admits `<name>.lock` for the same names, apply them through IS, a macro of one
+// string literal.
+#define OPERATIONAL_TREES(IS)                                                                      \
+	(IS("objects") || IS("refs") || IS("logs") || IS("info") || IS("reftable") ||                  \
+	 IS("NOTES_MERGE_WORKTREE") || IS("lost-found") || IS("filter-repo") || IS("lfs"))
+#define OPERATIONAL_FILES(IS)                                                                      \
+	(IS("HEAD") || IS("ORIG_HEAD") || IS("FETCH_HEAD") || IS("MERGE_HEAD") || IS("CHERRY_PICK_HEAD") || \
+	 IS("REVERT_HEAD") || IS("REBASE_HEAD") || IS("AUTO_MERGE") || IS("MERGE_AUTOSTASH") ||           \
+	 IS("NOTES_MERGE_PARTIAL") || IS("NOTES_MERGE_REF") || IS("index") || IS("packed-refs") ||       \
+	 IS("packed-refs.new") || IS("COMMIT_EDITMSG") || IS("MERGE_MSG") || IS("MERGE_MODE") ||           \
+	 IS("SQUASH_MSG") || IS("TAG_EDITMSG") || IS("NOTES_EDITMSG") || IS("EDIT_DESCRIPTION") ||        \
+	 IS("ADD_EDIT.patch") || IS("REPLACE_EDITOBJ") || IS("shallow") || IS("BISECT_HEAD") ||           \
+	 IS("gc.pid") || IS("gc.log") || IS("BISECT_START") || IS("BISECT_LOG") || IS("BISECT_NAMES") ||   \
+	 IS("BISECT_TERMS") || IS("BISECT_EXPECTED_REV") || IS("BISECT_ANCESTORS_OK") ||                   \
+	 IS("BISECT_FIRST_PARENT") || IS("BISECT_RUN"))
 
 static __always_inline int lock_base_is_operational(struct scratch *sc, __u32 index)
 {
@@ -1045,7 +1062,7 @@ static __always_inline int lock_base_is_operational(struct scratch *sc, __u32 in
 	__u32 lock_at = len - 5;
 	int k;
 
-	if (len < 6 || len > sizeof(sc->base) + 4)
+	if (len < 6)
 		return 0;
 	// The compiler drops a mask the range check above makes redundant, and the verifier, which
 	// does not follow that check's arithmetic, then sees an unbounded offset: the barrier hides
@@ -1054,6 +1071,12 @@ static __always_inline int lock_base_is_operational(struct scratch *sc, __u32 in
 	lock_at &= NAME_BYTES - 1;
 	if (bpf_strncmp(raw + lock_at, 6, ".lock") != 0)
 		return 0;
+	// The lock of a scratch name: `index.stash.<pid>.lock` (git stash), `next-index-<pid>.lock`
+	// (git commit <pathspec>).
+	if (scratch_name_shape(raw, len - 5))
+		return 1;
+	if (len > sizeof(sc->base) + 4)
+		return 0;
 	__builtin_memset(sc->base, 0, sizeof(sc->base));
 	bpf_for(k, 0, sizeof(sc->base) - 1) {
 		if (k >= len - 5)
@@ -1061,16 +1084,7 @@ static __always_inline int lock_base_is_operational(struct scratch *sc, __u32 in
 		base[BOUNDED(k, sizeof(sc->base))] = raw[BOUNDED(k, NAME_BYTES)];
 	}
 #define BASE_IS(lit) (bpf_strncmp(base, sizeof(sc->base), lit) == 0)
-	return BASE_IS("objects") || BASE_IS("refs") || BASE_IS("logs") || BASE_IS("info") || BASE_IS("reftable") ||
-	       BASE_IS("NOTES_MERGE_WORKTREE") || BASE_IS("lost-found") || BASE_IS("HEAD") || BASE_IS("ORIG_HEAD") ||
-	       BASE_IS("FETCH_HEAD") || BASE_IS("MERGE_HEAD") || BASE_IS("CHERRY_PICK_HEAD") ||
-	       BASE_IS("REVERT_HEAD") || BASE_IS("REBASE_HEAD") || BASE_IS("AUTO_MERGE") ||
-	       BASE_IS("MERGE_AUTOSTASH") || BASE_IS("NOTES_MERGE_PARTIAL") || BASE_IS("NOTES_MERGE_REF") ||
-	       BASE_IS("index") || BASE_IS("packed-refs") || BASE_IS("packed-refs.new") || BASE_IS("COMMIT_EDITMSG") ||
-	       BASE_IS("MERGE_MSG") || BASE_IS("MERGE_MODE") || BASE_IS("SQUASH_MSG") || BASE_IS("TAG_EDITMSG") ||
-	       BASE_IS("NOTES_EDITMSG") || BASE_IS("EDIT_DESCRIPTION") || BASE_IS("ADD_EDIT.patch") ||
-	       BASE_IS("REPLACE_EDITOBJ") || BASE_IS("shallow") || BASE_IS("BISECT_HEAD") || BASE_IS("gc.pid") ||
-	       BASE_IS("gc.log");
+	return OPERATIONAL_TREES(BASE_IS) || OPERATIONAL_FILES(BASE_IS);
 #undef BASE_IS
 }
 
@@ -1130,12 +1144,10 @@ static __always_inline int six_alnum(const char *raw, __u32 from, __u32 len)
 }
 
 // policy.rs, `is_operational_scratch_name`: `index.stash.<pid>`, `next-index-<pid>`,
-// `sharedindex.<hash>`, `sharedindex_XXXXXX`, `shallow_XXXXXX`.
-static __always_inline __u8 is_scratch_name(struct scratch *sc, __u32 index)
+// `sharedindex.<hash>`, `sharedindex_XXXXXX`, `shallow_XXXXXX`, over the first `len` bytes of a
+// name in `sc->raw`.
+static __always_inline __u8 scratch_name_shape(const char *raw, __u32 len)
 {
-	const char *raw = sc->raw[BOUNDED(index, WALK_BOUND)];
-	__u32 len = sc->raw_len[BOUNDED(index, WALK_BOUND)];
-
 	if (len > 12 && bpf_strncmp(raw, 12, "index.stash.") == 0)
 		return all_digits(raw, 12, len);
 	if (len > 11 && bpf_strncmp(raw, 11, "next-index-") == 0)
@@ -1147,6 +1159,11 @@ static __always_inline __u8 is_scratch_name(struct scratch *sc, __u32 index)
 	if (len > 8 && bpf_strncmp(raw, 8, "shallow_") == 0)
 		return six_alnum(raw, 8, len);
 	return 0;
+}
+
+static __always_inline __u8 is_scratch_name(struct scratch *sc, __u32 index)
+{
+	return scratch_name_shape(sc->raw[BOUNDED(index, WALK_BOUND)], sc->raw_len[BOUNDED(index, WALK_BOUND)]);
 }
 
 static __always_inline int classify_object_info(struct scratch *sc, __u32 index, __u32 remaining)
@@ -1188,24 +1205,11 @@ static __always_inline int classify_in_gitdir(struct scratch *sc, struct positio
 		if (fold_component(sc, second) && FOLD_IS(sc, "info"))
 			return classify_object_info(sc, second - 1, pos->rel_len - 2);
 	}
-	if (RAW_IS(sc, first, "objects") || RAW_IS(sc, first, "refs") || RAW_IS(sc, first, "logs") ||
-	    RAW_IS(sc, first, "info") || RAW_IS(sc, first, "reftable") || RAW_IS(sc, first, "NOTES_MERGE_WORKTREE") ||
-	    RAW_IS(sc, first, "lost-found"))
+#define FIRST_IS(lit) RAW_IS(sc, first, lit)
+	if (OPERATIONAL_TREES(FIRST_IS))
 		return 0;
 	if (pos->rel_len == 1) {
-		if (RAW_IS(sc, first, "HEAD") || RAW_IS(sc, first, "ORIG_HEAD") ||
-		    RAW_IS(sc, first, "FETCH_HEAD") || RAW_IS(sc, first, "MERGE_HEAD") ||
-		    RAW_IS(sc, first, "CHERRY_PICK_HEAD") || RAW_IS(sc, first, "REVERT_HEAD") ||
-		    RAW_IS(sc, first, "REBASE_HEAD") || RAW_IS(sc, first, "AUTO_MERGE") ||
-		    RAW_IS(sc, first, "MERGE_AUTOSTASH") || RAW_IS(sc, first, "NOTES_MERGE_PARTIAL") ||
-		    RAW_IS(sc, first, "NOTES_MERGE_REF") || RAW_IS(sc, first, "index") ||
-		    RAW_IS(sc, first, "packed-refs") || RAW_IS(sc, first, "packed-refs.new") ||
-		    RAW_IS(sc, first, "COMMIT_EDITMSG") || RAW_IS(sc, first, "MERGE_MSG") ||
-		    RAW_IS(sc, first, "MERGE_MODE") || RAW_IS(sc, first, "SQUASH_MSG") ||
-		    RAW_IS(sc, first, "TAG_EDITMSG") || RAW_IS(sc, first, "NOTES_EDITMSG") ||
-		    RAW_IS(sc, first, "EDIT_DESCRIPTION") || RAW_IS(sc, first, "ADD_EDIT.patch") ||
-		    RAW_IS(sc, first, "REPLACE_EDITOBJ") || RAW_IS(sc, first, "shallow") ||
-		    RAW_IS(sc, first, "BISECT_HEAD") || RAW_IS(sc, first, "gc.pid") || RAW_IS(sc, first, "gc.log"))
+		if (OPERATIONAL_FILES(FIRST_IS))
 			return 0;
 		if (is_scratch_name(sc, first))
 			return 0;
@@ -1213,6 +1217,7 @@ static __always_inline int classify_in_gitdir(struct scratch *sc, struct positio
 			return 0;
 	}
 	return 1;
+#undef FIRST_IS
 }
 
 // The rules at one level of the walk: the main context's child state, recorded per level for the

@@ -130,7 +130,7 @@ object LaunchMessages:
         s"""`$mountPath` is writable and shared live with the same directory on the host through the
           |`ko-agent-fs` filter. The Git state the filter lists (refs, objects, the index, HEAD and the
           |like) is writable; every other `.git` entry is frozen at any depth, among them config, hooks, `.git`
-          |pointer files, `commondir`, `gitdir`, rebase, bisect and rerere state and alternates, as are
+          |pointer files, `commondir`, `gitdir`, rebase and rerere state and alternates, as are
           |`.ko-agent-sandbox` and what `$$KO_AGENT_SANDBOX_FILE_RULES` makes read-only; in those rules
           |the last line naming an entry or an ancestor decides. Symlink targets must be relative and
           |remain inside the workspace.""".stripMargin

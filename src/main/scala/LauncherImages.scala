@@ -51,10 +51,17 @@ object LauncherImages:
 
   def managedImageTags(version: String): Vector[String] = buildImageTags(version) ++ SelfTestImageTags
 
-  def selfTestBundleId(fsSourceId: String, selfTestSourceId: String, sandboxImageId: String): String =
+  /** `bpfSourceId` is the bundled `bpf/probe/phase3`, whose classifier the image compiles for the suite. */
+  def selfTestBundleId(
+    fsSourceId: String,
+    selfTestSourceId: String,
+    bpfSourceId: String,
+    sandboxImageId: String,
+  ): String =
     bundleSourceId(Vector(
       "ko-agent-fs" -> fsSourceId.getBytes(StandardCharsets.UTF_8),
       "ko-agent-self-test" -> selfTestSourceId.getBytes(StandardCharsets.UTF_8),
+      "bpf-probe-phase3" -> bpfSourceId.getBytes(StandardCharsets.UTF_8),
       "ko-agent-sandbox-image" -> sandboxImageId.getBytes(StandardCharsets.UTF_8),
     ))
 
@@ -358,6 +365,7 @@ object LauncherImages:
     staleBaseTags: Vector[TaggedImage],
     fsSourceId: String,
     selfTestSourceId: String,
+    bpfSourceId: String,
   ): (Vector[String], Vector[TaggedImage]) =
     val currentTags = existingImageTags(podman, "cleanup did not start")
     val sandboxImageId = requiredImageId(
@@ -365,7 +373,7 @@ object LauncherImages:
       SandboxImage,
       "cleanup did not start",
     )
-    val selfTestId = selfTestBundleId(fsSourceId, selfTestSourceId, sandboxImageId)
+    val selfTestId = selfTestBundleId(fsSourceId, selfTestSourceId, bpfSourceId, sandboxImageId)
     val staleSelfTestTags = staleSelfTestImages(podman, currentTags, selfTestId)
     val candidates = prependImageCleanupDependents(initialCandidates, staleSelfTestTags)
     writeImageCleanupJournal(journal, candidates)

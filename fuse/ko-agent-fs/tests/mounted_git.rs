@@ -241,16 +241,6 @@ fn the_deliberately_blocked_commands_fail() {
         ),
     );
 
-    // Writes BISECT_NAMES, which `git bisect visualize` in a host git through 2.33 evaluates.
-    fails(
-        "git bisect start",
-        git_in(&workspace, &["bisect", "start", "HEAD", "HEAD~1"]),
-    );
-    assert!(
-        !mount.backing_at(".git/BISECT_NAMES").exists(),
-        "bisect state was created despite the block"
-    );
-
     // Would plant a new repository for the host to discover.
     fs::create_dir_all(mount.at("newproject")).unwrap();
     fails(
@@ -262,6 +252,28 @@ fn the_deliberately_blocked_commands_fail() {
     assert!(
         !config.contains("hooksPath"),
         "the config was modified despite the block:\n{config}"
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn git_bisect_works() {
+    // BISECT_START, BISECT_LOG and BISECT_NAMES are data to git 2.34 and later (`policy.rs`,
+    // `classify_within_gitdir`).
+    let mount = TestMount::new(host_repository);
+    let workspace = mount.at("");
+    succeeds(
+        "git bisect start",
+        git_in(&workspace, &["bisect", "start", "HEAD", "HEAD~1"]),
+    );
+    assert!(
+        mount.backing_at(".git/BISECT_LOG").exists(),
+        "bisect start wrote no state"
+    );
+    succeeds("git bisect reset", git_in(&workspace, &["bisect", "reset"]));
+    assert!(
+        !mount.backing_at(".git/BISECT_LOG").exists(),
+        "bisect reset left its state"
     );
 }
 

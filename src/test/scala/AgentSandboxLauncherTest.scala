@@ -210,6 +210,23 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(machineMemoryLine(Os.Windows, None, Some(1L << 30), color = false), None)
     assertEquals(machineMemoryLine(Os.Mac, Some(8L << 30), None, color = false), None)
 
+  test("a host git older than 2.34 gets the bisect warning in every live workspace, a later one none"):
+    assertEquals(
+      oldGitBisectWarning("live", Some("git version 2.33.1")),
+      Some(
+        "host git 2.33 is older than 2.34: its `git bisect` evaluates .git/BISECT_NAMES as shell code, a file a " +
+          "session may write. Do not run git bisect on the host in this workspace, or upgrade git.",
+      ),
+    )
+    assertEquals(oldGitBisectWarning("live", Some("git version 2.34.0")), None)
+    assertEquals(oldGitBisectWarning("live", Some("git version 2.51.0.windows.1")), None)
+    assert(oldGitBisectWarning("live", Some("git version 1.9.5")).isDefined)
+    assertEquals(oldGitBisectWarning("live", Some("xcrun: error: invalid active developer path")), None)
+    // No git on the host: nothing evaluates the state there.
+    assertEquals(oldGitBisectWarning("live", None), None)
+    // A read-only workspace writes no gitdir, and the version is not even read.
+    assertEquals(oldGitBisectWarning("read-only", fail("git --version ran for a read-only workspace")), None)
+
   test("the run-on-host lines name the programs in orange, and under --workspace=read-only say a host command writes"):
     val live = runOnHostLines(Seq("sbt", "mill"), "live", color = false)
     assertEquals(live, Vector(
@@ -1390,11 +1407,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         s"$path: $step",
       )
 
-  test("the self-test identity covers its source, filter, and actual inherited sandbox image"):
-    val original = selfTestBundleId("fs-source-1", "self-test-source-1", "sandbox-image-1")
-    assert(selfTestBundleId("fs-source-2", "self-test-source-1", "sandbox-image-1") != original)
-    assert(selfTestBundleId("fs-source-1", "self-test-source-2", "sandbox-image-1") != original)
-    assert(selfTestBundleId("fs-source-1", "self-test-source-1", "sandbox-image-2") != original)
+  test("the self-test identity covers its source, filter, BPF probe, and actual inherited sandbox image"):
+    val original = selfTestBundleId("fs-source-1", "self-test-source-1", "bpf-source-1", "sandbox-image-1")
+    assert(selfTestBundleId("fs-source-2", "self-test-source-1", "bpf-source-1", "sandbox-image-1") != original)
+    assert(selfTestBundleId("fs-source-1", "self-test-source-2", "bpf-source-1", "sandbox-image-1") != original)
+    assert(selfTestBundleId("fs-source-1", "self-test-source-1", "bpf-source-2", "sandbox-image-1") != original)
+    assert(selfTestBundleId("fs-source-1", "self-test-source-1", "bpf-source-1", "sandbox-image-2") != original)
 
   test("the bundle version lock refuses a mismatch and knows an unlabeled image"):
     // The digests compared come from the jar's own bundle, one per image directory — real,
