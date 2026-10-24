@@ -20,13 +20,11 @@ Status: the environment prerequisites and the cgroup placement are measured on b
 1 on WSL"), where one hook denies; Phase 2's probe (`../bpf/probe/phase2/`) passes on both
 ("Phase 2 on macOS", "Phase 2 on WSL"); Phase 3's probe (`../bpf/probe/phase3/`) passes every
 row on both ("Phase 3 on macOS", "Phase 3 on WSL"), the nine programs loading within the gate's
-budget in 0.5 s on macOS and 1.7 s on WSL; the guard compiles the policy's records
+budget within 0.6 s on macOS and 1.7 s on WSL; the guard compiles the policy's records
 (`../fuse/ko-agent-fs/src/bpf_records.rs`); the classifier's host build runs the corpus through
-both classifiers (`../fuse/ko-agent-fs/tests/bpf_equivalence.rs`). The Phase 3 sections measure
-the objects they name, not the current `policy.bpf.c`: Phase 3 still owes one run of the probe on
-each machine. The filter stays
-the default until "Acceptance" passes, and no launch ever binds the workspace writable without
-the policy attached and verified.
+both classifiers (`../fuse/ko-agent-fs/tests/bpf_equivalence.rs`). The filter stays the default
+until "Acceptance" passes, and no launch ever binds the workspace writable without the policy
+attached and verified.
 
 The reader acting on this plan starts at "Phases" and "What is gained and what is lost". The
 sections before them are what the phases rest on.
@@ -707,7 +705,7 @@ maps.
 filter. The controller then runs at every launch, restart and recreate, since each attaches to a
 new cgroup and only a privileged caller can: one `sudo -n` per launch, in the machine or on the
 host. A launch loads the sandbox's own programs and maps ("The policy"), which the verifier
-checks in 0.5 s on the macOS machine and 1.7 s on the WSL one ("Phase 3 on macOS", "Phase 3 on
+checks within 0.6 s on the macOS machine and 1.7 s on the WSL one ("Phase 3 on macOS", "Phase 3 on
 WSL"); a restart or recreate attaches the programs the launch pinned, verified once (step 5). The
 pins outlive the controller, and a pin in `bpffs` does not survive a machine restart.
 For each session:
@@ -1112,44 +1110,54 @@ passed as there.
 ### Phase 3 on macOS
 
 Measured on 2026-10-24 with `../bpf/probe/phase3/phase3.sh` on the machine of "Phase 1 on macOS",
-podman 6.1.2, clang 19.1.7, `policy.bpf.o` of SHA-256
-`d4c960c52dca27576e81b5caee0ca8129f31508ac3540ee66ce943b8707c9a8d`: the program as the review of
-the first runs altered it in three places, the walk going on past a gitdir root, a bound hit
-denying under a mark, and a mount in no namespace judged as another namespace's, with each walk
-loop's body a global function. The containers run as in Phase 2. Every one of the 48 rows passes;
-the transcript holds the raw lines. Rows of the first runs of 2026-10-22, under the program as
-first written, are kept as the reason for two rules, and the verifier row keeps the walk's counts
-of the two revisions before beside this one's.
+podman 6.1.2, crun 1.30, clang 19.1.7, `policy.bpf.o` of SHA-256
+`7a23c6fc79cd63e3993c7750bb981a2dcea2beb7f6e56a3f0c4b0d742baa71f0`: the program after the host
+corpus run (`../fuse/ko-agent-fs/tests/bpf_equivalence.rs`) admitted the scratch names' locks,
+the bisect state, `filter-repo/` and `lfs/`, and after the review of the first runs altered it in
+three places, the walk going on past a gitdir root, a bound hit denying under a mark, and a mount
+in no namespace judged as another namespace's, with each walk loop's body a global function. The
+containers run as in Phase 2. Every one of the 48 rows passes, in three runs of this object, the
+later two with the walk cost in pairs and the last with the program's own timer over them; the rows
+give the last run's figures and the transcript holds its raw lines. Rows of the first runs of
+2026-10-22, under the program as first written, are kept as the reason for two rules, and the
+verifier row keeps the walk's counts of the three revisions before beside this one's.
 
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
 | preemption               | `full (lazy)`, 10 CPUs                                                |
-| verifier, per program    | 44,109 to 46,765 insns, stack 352 to 384 of 512 bytes, at most 25     |
-|                          | states per insn, 70 to 83 ms each, 521 ms for all nine; the walk and  |
-|                          | position 39,476 insns (33,135 with the loop bodies inlined, 16,758    |
-|                          | before the review's three changes), each level of the walk 248 and of |
-|                          | its snapshot 39, the rule match 2,524, the alias activation 634 and   |
-|                          | the symlink judgment 2,797, each a global function verified once      |
-| barrier                  | the jited `file_open`, 27,472 bytes, holds three `ldaddal`, one per   |
+| verifier, per program    | 45,217 to 47,873 insns, stack 352 to 384 of 512 bytes, at most 25     |
+|                          | states per insn, 69 to 168 ms each, 533 ms for all nine (73 to 86 and |
+|                          | 581 in the first run); the walk and position 40,584 insns (39,476     |
+|                          | before the scratch locks' admission, 33,135 with the loop bodies      |
+|                          | inlined, 16,758 before the review's three changes), each level of the |
+|                          | walk 248 and of its snapshot 39, the rule match 2,524, the alias      |
+|                          | activation 634 and the symlink judgment 2,797, each a global function |
+|                          | verified once                                                         |
+| barrier                  | the jited `file_open`, 30,184 bytes, holds three `ldaddal`, one per   |
 |                          | fetch-add: before and after a level's reads, and before the snapshot  |
-| records                  | 128 rule lines, nine roots, the alias context of `.claude` holding    |
-|                          | the five `.claude` lines as partial matches, which the guard's        |
-|                          | compiler reproduces (`bpf_records.rs`, its first test)                |
-| corpus                   | 246 cases: 232 under the default flags, 6 under the short-name flag   |
-|                          | and 8 under `--unix-sockets`, 0 mismatches each; 5 of the 232         |
-|                          | answered by the share's `EACCES` before any hook, counted apart       |
+| records                  | 128 rule lines, eleven roots (three workspaces, a submodule's gitdir, |
+|                          | four guarded `.git`, two guarded `.ko-agent-sandbox` and the volume), |
+|                          | the alias context of `.claude` holding the five `.claude` lines as    |
+|                          | partial matches, which the guard's compiler reproduces                |
+|                          | (`bpf_records.rs`, its first test)                                    |
+| corpus                   | 252 cases: 238 under the default flags, 6 under the short-name flag   |
+|                          | and 8 under `--unix-sockets`, 0 mismatches each; 5 of the 238, the    |
+|                          | `mkfifo` cases, answered by the share's `EACCES` before any hook,     |
+|                          | counted apart                                                         |
 | git                      | status, add, commit, a branch, log and gc in the clone; `git config`  |
 |                          | and `git init` refused; git outside the policy in `sub/`, whose       |
 |                          | session-made `.git` has no `HEAD`, finds the workspace's gitdir       |
-| race                     | 3,458 moves of the outer directory, 1,398 moves and 564 exchanges of  |
-|                          | the inner, against 11,760 writes by path and through held             |
-|                          | descriptors: 7,033 refused, 4,727 absent, 0 succeeded; 6 walks read a |
-|                          | torn name and were made again (2, 11 and 12 in the runs before), none |
-|                          | gave up                                                               |
+| race                     | 3,618 moves of the outer directory, 1,487 moves and 635 exchanges of  |
+|                          | the inner, against 12,192 writes by path and through held             |
+|                          | descriptors: 7,382 refused, 4,810 absent, 0 succeeded; 9 walks read a |
+|                          | torn name and were made again (15, 8, 6, 2, 11 and 12 in the runs     |
+|                          | before), none gave up                                                 |
 | race, global sequence    | the first run, validating the walk by `rename_lock`: 167 walks        |
 |                          | overlapped a rename and 35 of 11,891 gave up after four retries       |
-| storm                    | 16 processes, 31,948 decisions, 0 wrong, 0 denied for want of a slot, |
-|                          | no nesting on any CPU; walk means 18 to 31 µs, 269 µs at most         |
+| storm                    | 16 processes, 29,498 decisions, 0 wrong, 0 denied for want of a slot, |
+|                          | no nesting on any CPU; walk means 19 to 31 µs, 204 µs at most (the    |
+|                          | runs before: 25,312 and 30,394 decisions, means 19 to 35 µs, 478 µs   |
+|                          | at most but for one `inode_unlink` walk of 1.22 ms)                   |
 | slots exhausted          | with four marked taken a write on the share is refused and counted    |
 |                          | once as reentry; with three it runs in the fourth; freed, in the      |
 |                          | first                                                                 |
@@ -1160,14 +1168,25 @@ of the two revisions before beside this one's.
 |                          | `mv` into the workspace are refused                                   |
 | second share             | a directory under `/private/tmp`, virtiofs, bound into the container: |
 |                          | a write inside gets `EPERM`                                           |
-| walk cost, syscall       | the mean of 2,000 opens for writing at depth 11: 784 µs per open      |
-|                          | under the policy against 920 µs bare; the runs before read 868        |
-|                          | against 698 and 831 against 778, so the share's own spread exceeds    |
-|                          | the policy's cost                                                     |
+| walk cost, in program    | `file_open` over the 10,000 opens for writing of the pairs below, all |
+|                          | walked to depth 11: 61.6 µs mean, 163 µs at most; the storm's walks   |
+|                          | at depth 3 average 19 µs and the race's at depth 5, 33 µs             |
+| walk cost, syscall       | five pairs of 2,000 opens at depth 11, a container under the policy   |
+|                          | then one bare, in that order in every pair of these runs, policy      |
+|                          | minus bare: the open for writing +100, +60, +64, +11 and +56 µs,      |
+|                          | median +60, the program's own figure; the open for reading, which the |
+|                          | hook leaves before any walk, −22 to +140, median +22; `lstat`, which  |
+|                          | no hook sees, −61 to +62, median +3; the bare write open at 712 to    |
+|                          | 796 µs. The run before, with the bare open at 949 to 1,791 µs, spread |
+|                          | the write open's difference from −640 to +443 and `lstat`'s to        |
+|                          | +1,224, so the syscall figure holds on a quiet share only, and the    |
+|                          | program's timer is the one to read. The single-shot runs before read  |
+|                          | policy 784, 868, 831 and 1,282 µs against bare 920, 698, 778 and      |
+|                          | 1,125                                                                 |
 | container start          | with `file_receive` attached, the runtime passes 15 descriptors of    |
-|                          | its own namespaces into the starting container, all passed, and the  |
-|                          | first process holds no descriptor beyond the standard three; the     |
-|                          | controller's namespace is pid 1's, 0xEFFFFFF8, the initial one       |
+|                          | its own namespaces into the starting container, all passed, and the   |
+|                          | first process holds no descriptor beyond the standard three; the      |
+|                          | controller's namespace is pid 1's, 0xEFFFFFF8, the initial one        |
 | container start, refused | the first run, with every other namespace's descriptor judged: a      |
 |                          | directory descriptor of the volume's mountpoint, `_data`, refused,    |
 |                          | and `crun` failed with `write to sync socket: Connection reset`       |
@@ -1182,50 +1201,60 @@ of the two revisions before beside this one's.
 
 Measured on 2026-10-24 with `../bpf/probe/phase3/phase3.ps1` on the Windows machine of "Phase 1
 on WSL", podman 6.1.4 under the cgroupfs manager, crun 1.28, clang 19.1.7, `policy.bpf.o` of
-SHA-256 `db93bbc4f173c9fd78fc387fcf6c21de02eb1e3e72497ec54dd7e0c22e169edf`, the revision "Phase 3
-on macOS" measures, built against that kernel's BTF. Every one of the 49 rows passes. A run of the
-revision before, with the loop bodies inlined, failed the race's sanity row under the row's first
-criterion, a walk that read a torn name and was made again, of which that run had none and the
-macOS run of the day two; the row asks since for what the race shows, both renamers moving while
-the writer is refused under one name and finds none under the other. The rows below name what
-differs from macOS; every other row passed as there.
+SHA-256 `6e2e7dc5112c8498b03c8ce7933e4f0e2ba2fcb559ed8b810f5bd80a5ac0abd1`, the revision "Phase 3
+on macOS" measures, built against that kernel's BTF. Every one of the 49 rows passes, in three runs
+of this object as on macOS, the rows giving the last run's figures. A run of the revision with the
+loop bodies inlined failed the race's sanity row under the row's first criterion, a walk that read
+a torn name and was made again, of which that run had none and the macOS run of the day two; the
+row asks since for what the race shows, both renamers moving while the writer is refused under one
+name and finds none under the other. The rows below name what differs from macOS; every other row
+passed as there.
 
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
 | preemption               | `none`, 4 CPUs                                                        |
-| verifier, per program    | 111,993 to 117,450 insns of the 1,000,000 limit, the walk and         |
-|                          | position 107,929 of them, 2.7 times the count on 7.2.5 (919,220 with  |
-|                          | the loop bodies inlined, 24.7 s for all nine; 121,408 before the      |
-|                          | review's three changes); each level of the walk 248 and of its        |
-|                          | snapshot 39, the rule match 1,955, the alias activation 634 and the   |
-|                          | symlink judgment 4,665; stack 352 to 384 bytes; at most 46 states per |
-|                          | insn; 189 to 330 ms each, 1.7 s for all nine                          |
-| barrier                  | the jited `file_open`, 21,039 bytes, holds three `lock xadd`, the     |
+| verifier, per program    | 113,101 to 118,558 insns of the 1,000,000 limit, the walk and         |
+|                          | position 109,037 of them, 2.7 times the count on 7.2.5 (107,929       |
+|                          | before the scratch locks' admission; 919,220 with the loop bodies     |
+|                          | inlined, 24.7 s for all nine; 121,408 before the review's three       |
+|                          | changes); each level of the walk 248 and of its snapshot 39, the rule |
+|                          | match 1,955, the alias activation 634 and the symlink judgment 4,665; |
+|                          | stack 352 to 384 bytes; at most 46 states per insn; 195 to 647 ms     |
+|                          | each, 1.67 s for all nine (192 to 325 and 1.73 s in the first run)    |
+| barrier                  | the jited `file_open`, 22,977 bytes, holds three `lock xadd`, the     |
 |                          | scan matching the instruction under any `REX` prefix                  |
-| corpus                   | 230 of the 232 default cases run, 0 mismatches: two names NTFS cannot |
+| corpus                   | 236 of the 238 default cases run, 0 mismatches: two names NTFS cannot |
 |                          | hold, a newline and non-UTF-8 bytes, skipped; 3 answered by the share |
-|                          | before any hook; of the socket group 4 of 8 run, the rest needing a   |
-|                          | bound socket, which 9p refuses after the hook                         |
+|                          | before any hook, two `mkfifo` with `EOPNOTSUPP` and the exchange with |
+|                          | `EINVAL`; of the socket group 4 of 8 run, the rest needing a bound    |
+|                          | socket, which 9p refuses after the hook                               |
 | race                     | no descriptor held, since 9p refuses to move a directory with an open |
-|                          | handle below it, and no exchange; 1,000 moves of the outer directory  |
-|                          | and 113 of the inner against 3,192 writes: 243 refused, 2,949 absent, |
-|                          | 0 succeeded; 1 walk read a torn name and was made again (0, 2 and 4   |
-|                          | in the runs before)                                                   |
-| storm                    | 16 processes, 6,566 decisions in the 5 s a 9p operation's 10 ms       |
-|                          | allows, 0 wrong, 0 reentry; walk means 25 to 63 µs, 5.1 ms at most    |
+|                          | handle below it, and no exchange; 1,026 moves of the outer directory  |
+|                          | and 120 of the inner against 3,296 writes: 271 refused, 3,025 absent, |
+|                          | 0 succeeded; 2 walks read a torn name and were made again (1, 4, 1,   |
+|                          | 0, 2 and 4 in the runs before); in one run the outer renamer's first  |
+|                          | failed move answered `EACCES`                                         |
+| storm                    | 16 processes, 6,678 decisions in the 5 s a 9p operation's 10 ms       |
+|                          | allows, 0 wrong, 0 reentry; walk means 29 to 49 µs, 4.1 ms at most    |
 | short name, real volume  | NTFS serves `.vscode` as `VSCODE~1`; under the flag a write through   |
 |                          | it is refused and the host sees no file in `.vscode`                  |
-| walk cost, syscall       | the mean of 2,000 opens for writing at depth 11: 11.13 ms per open    |
-|                          | under the policy against 8.88 ms bare; the runs before read 11.51     |
-|                          | against 9.58 and 10.48 against 10.76, so 9p's own spread hides the    |
-|                          | policy's cost                                                         |
+| walk cost, in program    | `file_open` over the pairs' 10,000 opens for writing at depth 11:     |
+|                          | 37.3 µs mean, 1.21 ms at most                                         |
+| walk cost, syscall       | five pairs as on macOS, policy minus bare: the open for writing −721, |
+|                          | +86, −202, +807 and −849 µs, median −202; the open for reading −173   |
+|                          | to +951, median +58; `lstat` −140 to +978, median +307; the bare      |
+|                          | write open 10.05 to 10.82 ms (the run before: −704 to +334 µs, median |
+|                          | −564, bare 9.52 to 10.01 ms), so 9p's jitter within a pair exceeds    |
+|                          | the walk's cost in every run and the program's timer alone gives it.  |
+|                          | The single-shot runs before read policy 11.13, 11.51, 10.48 and 11.06 |
+|                          | ms against bare 8.88, 9.58, 10.76 and 10.59                           |
 | container start          | with `file_receive` attached, the runtime passes 10 descriptors;      |
 |                          | the volume mountpoint arrives as an `open_tree` clone, an anonymous   |
 |                          | namespace whose root is the volume directory and whose inode number   |
-|                          | is 0xEFFFFFF7, the receiver `crun` still at the host's root          |
+|                          | is 0xEFFFFFF7, the receiver `crun` still at the host's root           |
 | container start, refused | the runs before that number was known: the clone's namespace was      |
 |                          | neither the controller's nor pid 1's, which are one on this machine,  |
-|                          | and carried neither anonymity field the program looked for           |
+|                          | and carried neither anonymity field the program looked for            |
 | second share             | no `D:` drive on the machine; not measured                            |
 | descriptors              | every row as on macOS; B's `file_receive` over the rows: 87 calls, 80 |
 |                          | of the runtime's, 4 allowed, 3 denied                                 |
@@ -1512,7 +1541,10 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
      be neither renamed nor linked beneath the volume, nor moved into the workspace, which
      recreates it by `mknod`;
    - a second host share bound into a disposable container, on which a write is denied;
-   - the walk's cost at the clone's deepest file beside the bare bind, and the jited barrier;
+   - the walk's cost at the clone's deepest file: `file_open`'s own timer over five interleaved
+     pairs of a container under the policy and one beside it, in alternating order, and each
+     pair's difference for the open for writing beside two the policy does not walk, the open for
+     reading, which the hook leaves first, and `lstat`, which no hook sees; and the jited barrier;
    - the NTFS short-name form under its flag: a mutation whose ancestry or own name has the form
      denied, a name with a `~` outside the form allowed; the form on a real NTFS volume is the
      Windows driver's row;
@@ -1582,7 +1614,7 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    volume or the workspace, fails with `EXDEV`. The controller's two refusals: one given an
    object path, and one asked for a cgroup outside the invoking user's slice, in the machine;
    and its third, a mount under the bind source, which it lists in the VM before the attach
-   ("The policy"). The launch cost of steps 2 and 3 on both machines, the verifier's 0.5 s and
+   ("The policy"). The launch cost of steps 2 and 3 on both machines, the verifier's 0.6 s and
    1.7 s for the nine programs among it ("Phase 3 on macOS", "Phase 3 on WSL"), and a restart's
    with the pinned programs ("Lifecycle", 5). Two decisions rest on those figures: whether the
    fixture runs at every launch or after installation and changes alone, for which the

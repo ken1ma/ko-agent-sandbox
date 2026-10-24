@@ -18,11 +18,11 @@
 # directory and a symlinked `.claude` (the alias), and on a workspace whose `.git` is a pointer
 # file with host-made hard links; ordinary git in a clone of this repository; the torn-name race;
 # the concurrency storm; the socket rules by default; a second host share; host git in a
-# session-made `.git` without HEAD; the walk's cost and the jited barrier; the NTFS short-name form
-# under its flag; under `--unix-sockets`, the socket corpus and descriptors passed between four
-# sandboxes, a live session, a second session of the workspace under a later rule file, a session
-# of another workspace and a read-only session; and the namespaces and mounts a generated seccomp
-# profile refuses.
+# session-made `.git` without HEAD; the walk's cost in pairs beside a bare container, and the jited
+# barrier; the NTFS short-name form under its flag; under `--unix-sockets`, the socket corpus and
+# descriptors passed between four sandboxes, a live session, a second session of the workspace under
+# a later rule file, a session of another workspace and a read-only session; and the namespaces and
+# mounts a generated seccomp profile refuses.
 #
 # It writes a fixture under $HOME/.cache (the share the machine mounts), a directory under
 # /private/tmp for the second share, four attach cgroups with their transient units, a podman
@@ -40,6 +40,7 @@ SHARE2=/private/tmp/ko-agent-bpf-phase3.$$
 VOL=ko-agent-bpf3-vol
 VOL2=ko-agent-bpf3-home
 WALK_COUNT=2000
+WALK_PAIRS=5
 RACE_SECONDS=5
 STORM_PROCS=16
 STORM_SECONDS=5
@@ -81,10 +82,18 @@ vm() {
 }
 # The value of KEY in the first line of INPUT holding it, as the controller prints `key=value`.
 field() { printf '%s\n' "$2" | sed -n "s/.* $1=\([^ ]*\).*/\1/p" | head -1; }
-# The sum of KEY over every line of INPUT holding it, and the least value.
+# The sum of KEY over every line of INPUT holding it, the least value, the greatest, and the median, the lower
+# middle value of an even count; the median alone admits a negative value.
 sum_field() { printf '%s\n' "$2" | sed -n "s/.* $1=\([0-9]*\).*/\1/p" | awk '{ s += $1 } END { print s + 0 }'; }
 min_field() {
     printf '%s\n' "$2" | sed -n "s/.* $1=\([0-9]*\).*/\1/p" | awk 'NR == 1 || $1 < m { m = $1 } END { print m + 0 }'
+}
+max_field() {
+    printf '%s\n' "$2" | sed -n "s/.* $1=\([0-9]*\).*/\1/p" | awk 'NR == 1 || $1 > m { m = $1 } END { print m + 0 }'
+}
+median_field() {
+    printf '%s\n' "$2" | sed -n "s/.* $1=\(-\{0,1\}[0-9]*\).*/\1/p" | sort -n |
+        awk '{ v[NR] = $1 } END { print v[int((NR + 1) / 2)] + 0 }'
 }
 step() { log ""; log "== $*"; }
 
@@ -313,7 +322,7 @@ check "the race: $(printf '%s\n' "$race" | grep '^race ' | tr '\n' ' ')" \
     eq2 "$(field succeeded "$race")" 0 "$(sum_field gave_up "$stats")" 0
 # The race ran when both renamers moved and the writer met both names, refused under one and absent
 # under the other. The torn reads the walk caught, its retries, are information: each dentry is
-# validated over the read of its own name, a window a run hits 0 to 12 times ("Phase 3 on macOS").
+# validated over the read of its own name, a window a run hits 0 to 15 times ("Phase 3 on macOS").
 check "the race ran: both renamers moved, and the writer saw refusals and absences" \
     positive "$(min_field renames "$race")" "$(field refused "$race")" "$(field absent "$race")"
 info "walks that read a torn name and were made again: $(sum_field retries "$stats")"
@@ -383,10 +392,42 @@ if [ "$share2_type" = "$FS_TYPE" ] && [ "$share2_target" != "$(vm "findmnt -T $H
 else
     info "second share: $SHARE2 is on $share2_type, the same mount as the fixture or another type; not measured"
 fi
-walk=$(in_cg 1 "$EXERCISE walk-cost $REPO/$DEEPEST $WALK_COUNT")
-bare=$(outside "$EXERCISE walk-cost $REPO/$DEEPEST $WALK_COUNT")
-info "walk cost at the clone's deepest file, depth $DEEPEST_DEPTH: policy open_rdwr=$(field open_rdwr_ns "$walk")" \
-    "bare open_rdwr=$(field open_rdwr_ns "$bare") ns; failed=$(field failed "$walk")"
+# The walk's cost: WALK_PAIRS pairs of a container under the policy and one outside it, the policy's first in the
+# odd pairs so that the order is not confounded with the policy, each timing WALK_COUNT opens for writing, opens
+# for reading, which the hook leaves before any walk, and lstats, which no hook sees.
+# The share's speed can drift within a pair by more than the walk costs ("Phase 3 on macOS"), so the figure that
+# resolves the walk is the program's own timer: file_open's mean over the pairs' write opens, read after them.
+walk_pair() { # walk_pair N FIRST POLICY-LINE BARE-LINE: the pair's differences, policy minus bare, in ns
+    printf 'walk-pair n=%s first=%s rdwr=%s rdonly=%s lstat=%s policy_rdwr=%s bare_rdwr=%s failed=%s\n' "$1" "$2" \
+        "$(( $(field open_rdwr_ns "$3") - $(field open_rdwr_ns "$4") ))" \
+        "$(( $(field open_rdonly_ns "$3") - $(field open_rdonly_ns "$4") ))" \
+        "$(( $(field lstat_ns "$3") - $(field lstat_ns "$4") ))" \
+        "$(field open_rdwr_ns "$3")" "$(field open_rdwr_ns "$4")" "$(( $(field failed "$3") + $(field failed "$4") ))"
+}
+vm "sudo -n $CTL reset-stats $PIN" > /dev/null
+pairs=
+n=1
+while [ "$n" -le "$WALK_PAIRS" ]; do
+    if [ $((n % 2)) = 1 ]; then
+        first=policy
+        walk=$(in_cg 1 "$EXERCISE walk-cost $REPO/$DEEPEST $WALK_COUNT")
+        bare=$(outside "$EXERCISE walk-cost $REPO/$DEEPEST $WALK_COUNT")
+    else
+        first=bare
+        bare=$(outside "$EXERCISE walk-cost $REPO/$DEEPEST $WALK_COUNT")
+        walk=$(in_cg 1 "$EXERCISE walk-cost $REPO/$DEEPEST $WALK_COUNT")
+    fi
+    pair=$(walk_pair "$n" "$first" "$walk" "$bare")
+    log "$pair"
+    pairs="$pairs$pair
+"
+    n=$((n + 1))
+done
+info "walk cost at the clone's deepest file, depth $DEEPEST_DEPTH, policy minus bare over $WALK_PAIRS pairs," \
+    "the medians: open_rdwr=$(median_field rdwr "$pairs") open_rdonly=$(median_field rdonly "$pairs")" \
+    "lstat=$(median_field lstat "$pairs") ns; bare open_rdwr $(min_field bare_rdwr "$pairs") to" \
+    "$(max_field bare_rdwr "$pairs") ns; failed=$(sum_field failed "$pairs")"
+info "in program over the pairs: $(vm "sudo -n $CTL stats $PIN" | grep '^stats hook=file_open ')"
 jited=$(vm "sudo -n $CTL jited $PIN /tmp/file_open.jited")
 info "$jited"
 barrier_seen() {
