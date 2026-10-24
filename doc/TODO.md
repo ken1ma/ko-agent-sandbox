@@ -155,7 +155,10 @@ measurement.
   (`upstream-issues.md`, containers/libkrun): `mkfifo` in the workspace under `--workspace=live`,
   then a change of its times, would block the machine's `/Users` share and every session on it
   (read from libkrun's source; the reproducer was not run). Candidates: ko-agent-fs refuses `mknod`
-  of FIFOs, or refuses time changes on them, until libkrun fixes it.
+  of FIFOs, or refuses time changes on them, until libkrun fixes it. Observed 2026-10-24, not as a
+  controlled reproduction: a probe left a FIFO on the share and the next `podman machine stop` did
+  not return (`doc/plan-bpf-lsm-cgroup.md`, "Phase 4 on macOS", the FIFO row). The BPF backend
+  would refuse the `mknod` with one type check in `inode_mknod`, where it refuses sockets.
 
 ## One list of launch refusals
 

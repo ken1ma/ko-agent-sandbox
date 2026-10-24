@@ -153,7 +153,16 @@ vm "set -eu; mkdir -p $MACHINE_DIR
     podman rm ko-agent-bpf3-extract >/dev/null
     test -x $MACHINE_DIR/controller" > /dev/null
 check "probe installed in the machine" [ $? -eq 0 ]
-vm "cat $MACHINE_DIR/clang-version.txt $MACHINE_DIR/build-kernel.txt $MACHINE_DIR/objects.sha256" > "$OUT/build.txt"
+# The sources the object and the binaries were built from, hashed in sources.txt's order: what the
+# plan's section names and bpf/probe/check-evidence.sh recomputes.
+sha256_stdin() {
+    if command -v sha256sum > /dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi
+}
+# shellcheck disable=SC2046
+SOURCES_SHA=$(cd "$PROBE_DIR" && cat $(cat sources.txt) | sha256_stdin)
+{ echo "sources sha256=$SOURCES_SHA"
+  vm "cat $MACHINE_DIR/clang-version.txt $MACHINE_DIR/build-kernel.txt $MACHINE_DIR/objects.sha256"
+} > "$OUT/build.txt"
 vm "cat $MACHINE_DIR/policy.bpf.asm" > "$OUT/policy.bpf.asm"
 info "$(tr '\n' ' ' < "$OUT/build.txt")"
 

@@ -22,9 +22,11 @@ Status: the environment prerequisites and the cgroup placement are measured on b
 row on both ("Phase 3 on macOS", "Phase 3 on WSL"), the nine programs loading within the gate's
 budget within 0.6 s on macOS and 1.7 s on WSL; the guard compiles the policy's records
 (`../fuse/ko-agent-fs/src/bpf_records.rs`); the classifier's host build runs the corpus through
-both classifiers (`../fuse/ko-agent-fs/tests/bpf_equivalence.rs`). The filter stays the default
-until "Acceptance" passes, and no launch ever binds the workspace writable without the policy
-attached and verified.
+both classifiers (`../fuse/ko-agent-fs/tests/bpf_equivalence.rs`); Phase 4's probe
+(`../bpf/probe/phase4/`) passes every row on both machines ("Phase 4 on macOS", "Phase 4 on
+WSL"), its gate met, and `../bpf/probe/check-evidence.sh` passes for every measured section. The
+filter stays the default until "Acceptance" passes, and no launch ever binds the workspace
+writable without the policy attached and verified.
 
 The reader acting on this plan starts at "Phases" and "What is gained and what is lost". The
 sections before them are what the phases rest on.
@@ -686,7 +688,7 @@ The program classifies by object and position, never by a path string:
   never after: a rule change is a relaunch, as with the filter, so no record changes under a
   running program. The slots are per hook, not per program
   (`bpf_cgroup_atype_find` keys them by `attach_btf_id`), so this takes no slot; its cost is the
-  verifier's time per launch, a Phase 1 number.
+  verifier's time per program set, paid ahead of the launch ("Lifecycle", the spare set).
 - An error in the walk, a name too long for the bound, or a missing map entry denies.
 
 
@@ -704,10 +706,17 @@ maps.
 `--build` installs the BPF object and the controller into the machine, as it installs the
 filter. The controller then runs at every launch, restart and recreate, since each attaches to a
 new cgroup and only a privileged caller can: one `sudo -n` per launch, in the machine or on the
-host. A launch loads the sandbox's own programs and maps ("The policy"), which the verifier
-checks within 0.6 s on the macOS machine and 1.7 s on the WSL one ("Phase 3 on macOS", "Phase 3 on
-WSL"); a restart or recreate attaches the programs the launch pinned, verified once (step 5). The
-pins outlive the controller, and a pin in `bpffs` does not survive a machine restart.
+host. The verifier checks a sandbox's nine programs within 0.6 s on the macOS machine and 1.85 s
+on the WSL one ("Phase 4 on macOS", "Phase 4 on WSL"), time no launch waits for: the controller
+keeps one spare set per machine, loaded and pinned with empty maps and attached to nothing, which
+a launch takes by renaming its pin directory to the session's name, fills and attaches (step 2),
+and the controller prepares the next spare afterwards, in the background, as a boot-time unit
+prepares the first. Without a spare, a launch loads as the spare would and is slow once. A restart
+or recreate attaches the programs the launch pinned (step 5). A spare is used once, dies with the
+boot as every pin does, and fails the read-back's tag check when `--build` installed another
+object since, as a stale pin does; the fill through the pinned programs' map ids is the one step
+Phase 4 did not run, which Phase 6 measures. The pins outlive the controller, and a pin in `bpffs`
+does not survive a machine restart.
 For each session:
 
 1. Create the attach cgroup before any container process exists, and keep it alive: under the
@@ -737,11 +746,12 @@ For each session:
      on WSL, runs it inside the container's own cgroup below the attach cgroup, where the policy
      refused its write ("Phase 1 on macOS", "Phase 1 on WSL"); a crun that ran a hook outside
      would reopen this step.
-2. Load the sandbox's programs and maps, fill the records, attach every program by link, pin
-   the links and the programs where the session cannot reach, and read them back. A pinned link
-   holds its program and the program its maps (`kernel/bpf/syscall.c`, `bpf_link_free`), so the
-   maps need no pin; the programs are pinned for step 5 alone, so that a restart or recreate
-   attaches them without the verifier's time again.
+2. Take the spare set, or load the sandbox's programs and maps where none is ready; fill the
+   records, attach every program by link, pin the links and the programs where the session cannot
+   reach, and read them back. A pinned link holds its program and the program its maps
+   (`kernel/bpf/syscall.c`, `bpf_link_free`), so the maps need no pin; the programs are pinned for
+   step 5 and for the spare, so that a restart, a recreate or a launch attaches them without the
+   verifier's time again.
    The controller attaches only below the invoking user's slice, in the machine as on native
    Linux ("Native Linux"); any other cgroup is refused before the attach.
 3. Prove the enforcement without trusting step 2's report, in two parts, both before any
@@ -760,7 +770,9 @@ For each session:
        set once and nothing else, the tag must equal the installed object's, and every map,
        opened by id (`BPF_MAP_GET_FD_BY_ID`, which needs `CAP_SYS_ADMIN`), must have the record
        format's type, key and value sizes and entry count, and the records the guard produced
-       as its contents.
+       as its contents; the string literals' read-only map must hold the installed object's
+       bytes, since the tag covers instructions alone and a build differing in data alone keeps
+       every tag.
      - The tag alone proves nothing about the maps: the kernel zeroes map references before
        computing it (`kernel/bpf/core.c`, `bpf_prog_calc_tag`).
    - A fixture the kernel judges, under the launcher's state root on the machine's share, so a
@@ -770,7 +782,10 @@ For each session:
      type as it records the workspace root's and refuses the launch when the two differ.
      - The guard writes a tree laid out as a workspace, with a `.git` holding `config` and a
        hook, a `.ko-agent-sandbox`, and one entry per resolved rule line, and the sandbox's
-       policy records that tree's root as a second root.
+       policy records that tree's root as a second root. It writes the tree once and lays its
+       entries out again, the root keeping its identity, only after a failed proof or when the
+       resolved rules changed: a passed proof changes nothing in it but the writable entries'
+       content, and each entry costs a round trip of the share.
      - The launcher places a process of its own in the attach cgroup and runs one refused
        operation per hook of that set against the fixture: `creat`, `mkfifo`, `symlink`, `link`
        and `rename` to a guarded name, an `unlink` of a guarded entry, an open for writing and a
@@ -803,8 +818,11 @@ For each session:
    programs, whose release frees the programs and maps, and remove the cgroup.
 7. Reconcile at every launcher start, under the per-machine launch lock ("The hooks",
    `file_receive`): list the pinned links, programs and attach cgroups beside podman's
-   containers. A pin and its cgroup are removed only when no container, a stopped or initialized
-   one included, names the cgroup, no launch or restart holds the lock, and the cgroup's
+   containers. The spare's pin directory is kept while its tags are the installed object's and
+   unpinned otherwise; a directory named for a session the lock holder is not launching and no
+   container names is a launch that died after taking the spare, and goes as an orphan. A pin
+   and its cgroup are removed only when no container, a stopped or initialized one included,
+   names the cgroup, no launch or restart holds the lock, and the cgroup's
    `cgroup.events` reads `populated 0`, which counts the descendants' tasks as `cgroup.procs`
    does not
    (`Documentation/admin-guide/cgroup-v2.rst`, "Core Interface Files"); under systemd the hold
@@ -1111,7 +1129,9 @@ passed as there.
 
 Measured on 2026-10-24 with `../bpf/probe/phase3/phase3.sh` on the machine of "Phase 1 on macOS",
 podman 6.1.2, crun 1.30, clang 19.1.7, `policy.bpf.o` of SHA-256
-`7a23c6fc79cd63e3993c7750bb981a2dcea2beb7f6e56a3f0c4b0d742baa71f0`: the program after the host
+`7a23c6fc79cd63e3993c7750bb981a2dcea2beb7f6e56a3f0c4b0d742baa71f0`, built from sources of SHA-256
+`d22bb1e73c457fa48f57ec2e539142218cfcdfe0c7fa90308eddfebc371265fa` (`sources.txt` lists them in
+hashing order; `../bpf/probe/check-evidence.sh` recomputes it): the program after the host
 corpus run (`../fuse/ko-agent-fs/tests/bpf_equivalence.rs`) admitted the scratch names' locks,
 the bisect state, `filter-repo/` and `lfs/`, and after the review of the first runs altered it in
 three places, the walk going on past a gitdir root, a bound hit denying under a mark, and a mount
@@ -1202,7 +1222,9 @@ verifier row keeps the walk's counts of the three revisions before beside this o
 Measured on 2026-10-24 with `../bpf/probe/phase3/phase3.ps1` on the Windows machine of "Phase 1
 on WSL", podman 6.1.4 under the cgroupfs manager, crun 1.28, clang 19.1.7, `policy.bpf.o` of
 SHA-256 `6e2e7dc5112c8498b03c8ce7933e4f0e2ba2fcb559ed8b810f5bd80a5ac0abd1`, the revision "Phase 3
-on macOS" measures, built against that kernel's BTF. Every one of the 49 rows passes, in three runs
+on macOS" measures, from the same sources of SHA-256
+`d22bb1e73c457fa48f57ec2e539142218cfcdfe0c7fa90308eddfebc371265fa`, built against that kernel's
+BTF. Every one of the 49 rows passes, in three runs
 of this object as on macOS, the rows giving the last run's figures. A run of the revision with the
 loop bodies inlined failed the race's sanity row under the row's first criterion, a walk that read
 a torn name and was made again, of which that run had none and the macOS run of the day two; the
@@ -1258,6 +1280,132 @@ passed as there.
 | second share             | no `D:` drive on the machine; not measured                            |
 | descriptors              | every row as on macOS; B's `file_receive` over the rows: 87 calls, 80 |
 |                          | of the runtime's, 4 allowed, 3 denied                                 |
+
+
+### Phase 4 on macOS
+
+Measured on 2026-10-25 with `../bpf/probe/phase4/phase4.sh` on the machine of "Phase 1 on macOS",
+podman 6.1.2, crun 1.30, clang 19.1.7, `policy.bpf.o` of SHA-256
+`7a23c6fc79cd63e3993c7750bb981a2dcea2beb7f6e56a3f0c4b0d742baa71f0`, the object "Phase 3 on macOS"
+measures, built again byte for byte, beside `other.bpf.o` of SHA-256
+`5777797e27ae80ded9625d30fa72ebd06632cce659f9caab2b1698adbf9a0275`, the same source counting each
+call twice in its statistics, which stands for another build, and `other-data.bpf.o` of SHA-256
+`8a47bc034f432a97f753585af6eedb2176e432b1a1e3f49d8705b04a2090f26b`, the source with one string
+literal of the same length changed, whose instructions and tags equal the installed object's; all
+from sources of SHA-256 `58d057f9e769f634be9768bb4599f746894aca931cadfb2cff79bd5117b00d55`. Every
+one of the 63 rows passes in one run of these sources, the four machine-restart rows declined in
+it and measured in the run before, under the sources the independent review then changed (the
+read-back's read-only data comparison, the reconcile's check of every pin before removal); the
+runs before found defects of the driver and of the proof fixture alone, and one fact kept below
+(the FIFO row). The containers run as in Phase 2; twenty-two launches ran, each through the
+launcher's steps 1 to 4.
+
+| row                      | measured                                                              |
+| ------------------------ | --------------------------------------------------------------------- |
+| install                  | the read-back loads the nine programs once and records their tags    |
+|                          | and the read-only data's 758 bytes: 535 ms                            |
+| step 2 at launch         | over the twenty-two launches the controller's load took 421 to 671    |
+|                          | ms, once 937, filling the maps 0.1 ms, the eight or nine attaches     |
+|                          | 8.5 to 18 ms in ten launches and 0.3 to 0.6 ms in the rest            |
+| step 2 at a recreate     | the pinned programs checked in 16 ms and attached to the new cgroup   |
+|                          | in 9 ms, nothing loaded; the old links read cgroup_id 0 after their   |
+|                          | cgroup went, the programs stayed pinned                               |
+| step 3                   | the read-back 13 to 17 ms: eight programs, nine maps (the eight of    |
+|                          | the policy and the string literals' read-only map, its bytes the      |
+|                          | installed object's), five roots, 56 rules; the proof's 68 operations  |
+|                          | (69 under `--unix-sockets`) 33 to 44 ms, 0 mismatches, in a scope     |
+|                          | under the slice                                                       |
+| the session              | the first process is refused `.git/config` and writes an ordinary     |
+|                          | file; `podman exec` is refused; after `podman restart` the first      |
+|                          | process is refused again; after `podman kill` the container is exited |
+|                          | and the eight programs stay attached, the link naming the cgroup;     |
+|                          | the restart policy reads `no`                                         |
+| identity                 | each link's cgroup_id is the attach cgroup's inode number             |
+| the controller           | exited before the container started; no process of it remains        |
+| sockets and mounts       | a socket bound under the container's `/tmp`; `rename` of that        |
+|                          | directory into the volume and into the workspace answers `EXDEV`      |
+| the policy cannot lapse  | `rmdir` of the attach cgroup with the container in it: `EBUSY`;       |
+|                          | root's unpin of the links: 0 programs attached and the protected      |
+|                          | write succeeds                                                        |
+| defective controllers    | seven hooks: `hook-set attached=7 expected=8`; the other build:       |
+|                          | `tag` on `file_open`; the build differing in data alone: `rodata`,    |
+|                          | its 758 bytes differing from the installed object's under equal tags; |
+|                          | another rule file's records: `map-contents rules index=55`; no        |
+|                          | container exists after any; the proof alone catches the records too,  |
+|                          | one mismatch (`.vscode/settings.json`)                                |
+| `--unix-sockets`         | nine hooks attached and verified; the proof's `bind` in `.git`        |
+|                          | refused, and a directory descriptor sent from a mount namespace of    |
+|                          | the sender's own refused on arrival                                   |
+| pins across a rule       | the check finds `map-contents rules index=55`, the pins go and fresh  |
+| change                   | programs load with new ids                                            |
+| pins across a new build  | with the other object installed and its tags recorded, the check      |
+|                          | finds `tag`; fresh programs of the new build load and verify; the pin |
+|                          | directory holds this launch's eight links and eight programs alone    |
+| the controller's         | an object given as a path, a cgroup outside the user's slice, a       |
+| refusals                 | tmpfs mounted at `tree/vendor` under the bind source, a proof fixture |
+|                          | on tmpfs: each `refused reason=...`, status 3, nothing pinned         |
+| the reconcile            | a listing that fails (`podman ps` made to fail) is reported and keeps |
+|                          | all five sessions; the launcher killed before `podman create` and a   |
+|                          | `podman create` that failed: pins and slices removed; a created, a    |
+|                          | stopped and a live container keep theirs; the created one's go once   |
+|                          | it is removed                                                         |
+| contradicting identities | a container whose label names another cgroup: kept, unassociated; a   |
+|                          | cgroup recreated at its path (inode 48288, then 49203): refused; a    |
+|                          | pin directory renamed to another session's name: refused by its       |
+|                          | links' cgroup id; nothing removed                                     |
+| cleanup refusals         | a session name and a cgroup path with `..`; a symlink in place of     |
+|                          | the pin directory (`ELOOP`); a tmpfs mounted on it (`EXDEV`); a       |
+|                          | recorded identity off by one; each refused, nothing removed. cgroup2  |
+|                          | refuses a symlink in place of a cgroup directory with `EPERM`         |
+| refusals found late      | one foreign link among a session's eight: refused, its 9 links and 8  |
+|                          | programs all surviving; a programs directory that is a symlink:       |
+|                          | refused after the links were checked, all 8 links surviving           |
+| machine restart          | the run before: `podman machine stop` 61 s, `start` 11 s; the pin     |
+|                          | root is gone with bpffs, the attach cgroups are gone, the two         |
+|                          | containers stay exited and the reconcile keeps both, since their      |
+|                          | containers name them                                                  |
+| bpffs                    | holds symlinks and renames of pin directories                         |
+| FIFO                     | the first run: a `mkfifo` at an ordinary name of the fixture passed   |
+|                          | `inode_mknod`, which judges a socket by type and any node by name;    |
+|                          | the proof's `mkfifo` targets `.git/ko-fifo` since, and the FIFO left  |
+|                          | on the share preceded a `podman machine stop` that did not return     |
+
+
+### Phase 4 on WSL
+
+Measured on 2026-10-25 with `../bpf/probe/phase4/phase4.ps1` on the Windows machine of "Phase 1 on
+WSL", podman 6.1.4 under the cgroupfs manager, crun 1.28, clang 19.1.7, `policy.bpf.o` of SHA-256
+`6e2e7dc5112c8498b03c8ce7933e4f0e2ba2fcb559ed8b810f5bd80a5ac0abd1`, the object "Phase 3 on WSL"
+measures, built again byte for byte, beside `other.bpf.o` of SHA-256
+`fac0fb9b520c760629957bd0a3d82b0ad76d927ad9a6013dc82ceee5d3cb9404` and `other-data.bpf.o` of
+SHA-256 `1adad44441f677cca904f0b9705166112b72712956d8fc6930479fe5389c4079`; all built from the
+sources of SHA-256 `58d057f9e769f634be9768bb4599f746894aca931cadfb2cff79bd5117b00d55` that "Phase
+4 on macOS" measures. Every one of the 63 rows passes, in one run of these sources, the four
+machine-restart rows declined in it and measured in the run before as on macOS; the runs before
+found defects of the driver alone. The rows below name what differs from macOS; every other row
+passed as there, the reconcile removing the cgroup directories itself under cgroupfs.
+
+| row                      | measured                                                              |
+| ------------------------ | --------------------------------------------------------------------- |
+| install                  | the tags and the read-only data recorded in 1.82 s                    |
+| step 2 at launch         | the load 1.47 to 1.84 s over the twenty-two launches, filling 0.1 ms, |
+|                          | the attaches 13 to 23 ms in ten launches and 0.2 to 0.4 ms in the     |
+|                          | rest                                                                  |
+| step 2 at a recreate     | the pins checked in 43 ms and attached in 17 ms                       |
+| step 3                   | the read-back 35 to 50 ms; the proof's 68 operations 327 to 373 ms    |
+|                          | on 9p, 0 mismatches                                                   |
+| the proof's cgroup       | a process of the ssh session could not join the leaf below the attach |
+|                          | cgroup: writing its `cgroup.procs` answered `EACCES` (the run         |
+|                          | before), since the move needs write access to the common ancestor's   |
+|                          | `cgroup.procs` and the session's cgroup shares no ancestor the user   |
+|                          | owns with the delegated subtree; from a transient scope of the user   |
+|                          | manager, `app.slice/run-*.scope`, the join into `app.slice/<attach>/  |
+|                          | proof` works, on every launch. A launcher reaching the machine over   |
+|                          | ssh takes that step                                                   |
+| sockets and mounts       | `rename` of the socket's directory into the volume (ext4) and into    |
+|                          | the workspace (9p) answers `EXDEV`                                    |
+| machine restart          | the run before: `podman machine stop` 2 s, `start` 9 s; the rows as   |
+|                          | on macOS                                                              |
 
 
 ## Inventory
@@ -1602,7 +1750,8 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
 4. **Lifecycle.** The ordering of "Lifecycle" on rootless podman: first-process denial, restart,
    recreate, `podman exec`, stop and kill, controller exit, machine restart, link loss; and the
    proof's catches, a controller that attaches a subset of the hooks, one that attaches another
-   build's program, and one that loads wrong records, each of which must end the launch. The
+   build's program, one whose build differs in data alone, and one that loads wrong records, each
+   of which must end the launch. The
    reconcile of "Lifecycle", 7: a launcher killed between the pins and `podman create`, and a
    `podman create` that fails after the pins, each leave a cgroup and pins the next start
    removes; a launcher killed between `podman create` and `podman start` leaves a container
@@ -1616,13 +1765,16 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    and its third, a mount under the bind source, which it lists in the VM before the attach
    ("The policy"). The launch cost of steps 2 and 3 on both machines, the verifier's 0.6 s and
    1.7 s for the nine programs among it ("Phase 3 on macOS", "Phase 3 on WSL"), and a restart's
-   with the pinned programs ("Lifecycle", 5). Two decisions rest on those figures: whether the
-   fixture runs at every launch or after installation and changes alone, for which the
-   controller keeps the two parts of step 3 separable; and whether the launch's verification is
-   worth removing with one program set per machine, verified once per boot, whose hooks find the
-   session's records in inner maps of a map-of-maps keyed by the attach cgroup, found through
-   the task's cgroup ancestry, at the cost of the per-sandbox programs "The policy" relies on and
-   of the read-back's comparison in step 3. Neither is taken before the figures.
+   with the pinned programs ("Lifecycle", 5). Two decisions rested on those figures. Whether
+   the fixture runs at every launch or after installation and changes alone, for which the
+   controller keeps the two parts of step 3 separable, is open; it runs at every launch until
+   decided. The verifier's time leaves the launch through the spare set ("Lifecycle"), the user's
+   decision of 2026-10-25 over the alternative of one program set per machine, verified once per
+   boot, whose hooks would find the session's records in inner maps of a map-of-maps keyed by
+   the attach cgroup, found through the task's cgroup ancestry: that would cost the per-sandbox
+   programs "The policy" relies on, the invariant that no record changes under a running program,
+   and the read-back's showing that a cgroup's programs read that cgroup's records, where the
+   spare costs an idle set per machine and a background preparation.
    The rows the reuse of pins, the reconcile's identities and the cleanup add, on both machines:
    - a restart after `--build` installed another object, and one after a rule change, each
      loading and verifying fresh programs and attaching none of the old pins, which are
@@ -1635,7 +1787,9 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    - the cleanup's refusals, one each: a pin path with a relative component, a symlink in place
      of a pin directory or of a cgroup directory, a mount on the pin directory, and a cgroup
      directory whose identity changed since the launcher recorded it; each refused, nothing
-     removed.
+     removed; and a refusal found late, one foreign link among a session's pins and a programs
+     directory that cannot be opened once the links were checked, each leaving every pin in
+     place, since the reconcile checks all of a session's pins before it removes any.
    Phase 4 also binds the evidence to the program it measured: the drivers of Phases 3 and 4
    record the SHA-256 of the probe's sources beside the object's, the measurement sections name
    it, and `bpf/probe/check-evidence.sh` fails when a source differs from the hash its section
@@ -1673,7 +1827,15 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    - a linked git worktree, whose main gitdir the launcher binds read-only (`TODO.md`,
      "Deferred — writable git from a linked worktree"), and a symlink under its main checkout's
      `.git/objects` to a socket outside, through which the worktree's container cannot connect;
-   - `codex exec` run with the daemon directory unwritable ("The hooks", `file_receive`).
+   - `codex exec` run with the daemon directory unwritable ("The hooks", `file_receive`);
+   - the spare set ("Lifecycle"): a launch taking it by rename and filling its maps through the
+     pinned programs' ids, passing the read-back and the proof, its step 2 at a recreate's cost;
+     two launches racing for one spare, one loading; a spare of a build `--build` replaced,
+     unpinned by its tags; a launch that died after taking the spare, removed by the reconcile;
+     and the first spare prepared at boot;
+   - on WSL, the proof run by the launcher itself: its process enters the leaf below the attach
+     cgroup through a transient scope of the user manager ("Phase 4 on WSL"), and a scope that
+     cannot be created or a migration that fails ends the launch before any container.
 
 
 ## What is gained and what is lost
@@ -1702,7 +1864,9 @@ Gained:
     request stalls for every later one (`upstream-issues.md`, "Setting a FIFO's times blocks
     the macOS virtio-fs server").
   - The refusal of `mknod` of a FIFO that `TODO.md` ("A FIFO in the workspace hangs the podman
-    machine") considers for the filter is an `inode_mknod` rule here.
+    machine") considers for the filter would be one more type check in `inode_mknod`, where the
+    socket refusal is; the program has none until that decision is taken, and a FIFO at an
+    ordinary name passes it ("Phase 4 on macOS").
 - **No window between resolving and acting.** The decision is taken inside the syscall, on the
   dentry the kernel acts on, which the filter's resolver and its `ESTALE` rules exist to
   approximate. A held directory handle follows a directory the host moved and is judged by its

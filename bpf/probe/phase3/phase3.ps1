@@ -151,7 +151,18 @@ try {
         ">/dev/null; podman cp ko-agent-bpf3-extract:/out/. $MachineDir/; podman rm ko-agent-bpf3-extract " +
         ">/dev/null; test -x $MachineDir/controller") | Out-Null
     Check "probe installed in the machine" ($script:vmStatus -eq 0)
-    $build = Vm "cat $MachineDir/clang-version.txt $MachineDir/build-kernel.txt $MachineDir/objects.sha256"
+    # The sources the object and the binaries were built from, hashed in sources.txt's order: what the
+    # plan's section names and bpf/probe/check-evidence.sh recomputes.
+    $sources = New-Object IO.MemoryStream
+    foreach ($name in Get-Content (Join-Path $ProbeDir "sources.txt")) {
+        if ($name.Trim() -eq "") { continue }
+        $bytes = [IO.File]::ReadAllBytes((Join-Path $ProbeDir $name))
+        $sources.Write($bytes, 0, $bytes.Length)
+    }
+    $digest = [Security.Cryptography.SHA256]::Create().ComputeHash($sources.ToArray())
+    $SourcesSha = ([BitConverter]::ToString($digest) -replace "-", "").ToLower()
+    $build = "sources sha256=$SourcesSha`n" +
+        (Vm "cat $MachineDir/clang-version.txt $MachineDir/build-kernel.txt $MachineDir/objects.sha256")
     Set-Content -Path (Join-Path $OutDir "build.txt") -Value $build -Encoding UTF8
     Set-Content -Path (Join-Path $OutDir "policy.bpf.asm") -Value (Vm "cat $MachineDir/policy.bpf.asm") -Encoding UTF8
     Info ($build -replace "`n", " ")
