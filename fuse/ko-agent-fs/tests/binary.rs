@@ -395,3 +395,66 @@ fn a_missing_backing_directory_is_refused() {
     );
     let _ = fs::remove_dir_all(&mount);
 }
+
+#[test]
+fn the_records_header_prints_and_resolve_writes_the_records() {
+    use ko_agent_fs::bpf_records::{ROOT_GUARDED_GIT, ROOT_WORKSPACE, Records, c_header};
+    let output = Command::new(binary())
+        .arg("--bpf-records-header")
+        .output()
+        .expect("run ko-agent-fs");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), c_header());
+
+    let source = scratch("records-source");
+    fs::create_dir_all(source.join(".git")).unwrap();
+    let scratch_dir = scratch("records-files");
+    let rules = scratch_dir.join("rules");
+    fs::write(&rules, "read-only .vscode\nwritable node_modules\n").unwrap();
+    let records_file = scratch_dir.join("records");
+    let output = Command::new(binary())
+        .arg("--source")
+        .arg(&source)
+        .arg("--resolve")
+        .arg("--file-rules")
+        .arg(&rules)
+        .arg("--bpf-records")
+        .arg(&records_file)
+        .output()
+        .expect("run ko-agent-fs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "read-only .vscode\nwritable node_modules\n"
+    );
+    let records = Records::parse(&fs::read(&records_file).unwrap()).unwrap();
+    assert_eq!(records.rules.len(), 2);
+    assert_eq!(records.aliases.len(), 0);
+    let guarded: Vec<(u32, &[u8])> = records
+        .guarded
+        .iter()
+        .map(|object| (object.kind, object.path.as_slice()))
+        .collect();
+    assert_eq!(
+        guarded,
+        vec![(ROOT_WORKSPACE, &b""[..]), (ROOT_GUARDED_GIT, &b".git"[..])]
+    );
+
+    // The records belong to `--resolve`; a mount with them is a usage error.
+    let output = Command::new(binary())
+        .arg("--source")
+        .arg(&source)
+        .arg("--mount")
+        .arg(&scratch_dir)
+        .arg("--bpf-records")
+        .arg(&records_file)
+        .output()
+        .expect("run ko-agent-fs");
+    assert_eq!(output.status.code(), Some(2));
+    let _ = fs::remove_dir_all(&source);
+    let _ = fs::remove_dir_all(&scratch_dir);
+}

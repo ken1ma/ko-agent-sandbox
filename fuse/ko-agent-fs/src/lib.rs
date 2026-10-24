@@ -6,6 +6,7 @@
 //! code that decides *where* it is (`doc/architecture.md`, "What stays out of the audited
 //! core").
 
+pub mod bpf_records;
 pub mod fs;
 pub mod guard;
 pub mod inode;
