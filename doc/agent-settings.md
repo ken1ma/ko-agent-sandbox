@@ -32,16 +32,27 @@ work ([design.md](design.md#the-image-carries-no-working-conventions)).
 
 ## Claude Code status line
 
-Show the model and effort level, like Codex, by adding this to `.claude/settings.json`
-in the project:
+Show the model and effort level, like Codex, by handing the launcher the format as an environment
+variable, on the launch or in the [options file](../README.md#options-file):
 
-```json
-{
-  "env": {
-    "KO_CLAUDE_STATUSLINE_FORMAT": "${model.display_name} ${effort.level}"
-  }
-}
+```sh
+java -jar ko-agent-sandbox.jar \
+    --env='KO_CLAUDE_STATUSLINE_FORMAT=${model.display_name} ${effort.level} · context '\
+'${context_window.used_percentage.getOrElse(0)}%' \
+    claude
 ```
+
+```text
+# ~/.config/ko-agent-sandbox/options: the quotes enclose the whole value after --env=, and the
+# placeholders are spelled \${...}, since the file expands ${NAME} from the launcher's environment
+# and refuses an unset name. The line runs past this document's width: an option takes one line.
+--env="KO_CLAUDE_STATUSLINE_FORMAT=\${model.display_name} \${effort.level} · context \${context_window.used_percentage.getOrElse(0)}%"
+```
+
+A repository's `.claude/settings.json` cannot set it: Claude Code starts a managed hook, which the
+status line is, without the `env` of the repository's settings (its debug log under 2.1.310:
+`statusLine is the organization's and starts without the repository settings' env of
+KO_CLAUDE_STATUSLINE_FORMAT`). A launch's variable is the process's own and reaches the command.
 
 Use `${jsonField}` to insert a value from
 [Available data](https://code.claude.com/docs/en/statusline#available-data),
@@ -54,7 +65,7 @@ using syntax like Scala’s:
 | `cost=$$${cost.total_cost_usd}` | Estimated session cost | `cost=$1.25` |
 
 1. Missing or null fields appear as empty text unless a fallback is supplied.
-2. Set `KO_CLAUDE_STATUSLINE_FORMAT` to `""` to hide the status line.
+2. Without the variable, or with it set to `""`, the status line stays hidden.
 
 Use `${context_window.used_percentage.getOrElse(0)}%` to show `0%` before usage is available.
 `.getOrElse(literal)` supplies a fallback for missing or null fields. The literal can be a number,

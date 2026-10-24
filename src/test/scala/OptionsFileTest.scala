@@ -57,6 +57,18 @@ class OptionsFileTest extends munit.FunSuite:
     // Outside quotes every backslash is literal, so a Windows path needs none.
     assertEquals(argument("--claude-plugin-dir=C:\\mods\\band"), Right(Some("--claude-plugin-dir=C:\\mods\\band")))
     assert(argument("--env=NAME=\"a b\"").swap.exists(_.contains("unquoted value")))
+    // The status line's line as doc/agent-settings.md spells it: a status-line placeholder is a
+    // literal `${...}` to the file, not a variable of the launcher's.
+    assertEquals(
+      argument(
+        "--env=\"KO_CLAUDE_STATUSLINE_FORMAT=\\${model.display_name} \\${effort.level} · context " +
+          "\\${context_window.used_percentage.getOrElse(0)}%\"",
+      ),
+      Right(Some(
+        "--env=KO_CLAUDE_STATUSLINE_FORMAT=${model.display_name} ${effort.level} · context " +
+          "${context_window.used_percentage.getOrElse(0)}%",
+      )),
+    )
     assert(argument("--env=\"A=a\" b").swap.exists(_.contains("after the closing")))
     assert(argument("--env=\"A=a").swap.exists(_.contains("without its closing")))
 
