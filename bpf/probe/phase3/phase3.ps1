@@ -25,6 +25,7 @@ $PinRoot = "/sys/fs/bpf/ko-agent-bpf-phase3"
 $Vol = "ko-agent-bpf3-vol"
 $Vol2 = "ko-agent-bpf3-home"
 $WalkCount = 2000
+$WalkPairs = 5
 $RaceSeconds = 5
 $StormProcs = 16
 $StormSeconds = 5
@@ -396,11 +397,44 @@ try {
     } else {
         Info "second share: no D: drive; not measured"
     }
-    $walk = InCg 1 "$Exercise walk-cost $Repo/$deepest $WalkCount"
-    $bare = Outside "$Exercise walk-cost $Repo/$deepest $WalkCount"
-    Info ("walk cost at the clone's deepest file, depth ${deepestDepth}: " +
-        "policy open_rdwr=$(Field 'open_rdwr_ns' $walk) bare open_rdwr=$(Field 'open_rdwr_ns' $bare) ns; " +
-        "failed=$(Field 'failed' $walk)")
+    # The walk's cost: WalkPairs pairs of a container under the policy and one outside it, the policy's first in
+    # the odd pairs so that the order is not confounded with the policy, each timing WalkCount opens for writing,
+    # opens for reading, which the hook leaves before any walk, and lstats, which no hook sees.
+    # The share's speed can drift within a pair by more than the walk costs ("Phase 3 on macOS"), so the figure that
+    # resolves the walk is the program's own timer: file_open's mean over the pairs' write opens, read after them.
+    Vm "sudo -n $Ctl reset-stats $Pin" | Out-Null
+    $pairs = @()
+    for ($n = 1; $n -le $WalkPairs; $n++) {
+        if ($n % 2 -eq 1) {
+            $first = "policy"
+            $walk = InCg 1 "$Exercise walk-cost $Repo/$deepest $WalkCount"
+            $bare = Outside "$Exercise walk-cost $Repo/$deepest $WalkCount"
+        } else {
+            $first = "bare"
+            $bare = Outside "$Exercise walk-cost $Repo/$deepest $WalkCount"
+            $walk = InCg 1 "$Exercise walk-cost $Repo/$deepest $WalkCount"
+        }
+        $pair = @{ n = $n; first = $first; failed = [int](Field "failed" $walk) + [int](Field "failed" $bare)
+            policy_rdwr = [long](Field "open_rdwr_ns" $walk); bare_rdwr = [long](Field "open_rdwr_ns" $bare) }
+        foreach ($key in "open_rdwr_ns", "open_rdonly_ns", "lstat_ns") {
+            $pair[$key] = [long](Field $key $walk) - [long](Field $key $bare)
+        }
+        Log ("walk-pair n=$n first=$first rdwr=$($pair.open_rdwr_ns) rdonly=$($pair.open_rdonly_ns) " +
+            "lstat=$($pair.lstat_ns) " +
+            "policy_rdwr=$($pair.policy_rdwr) bare_rdwr=$($pair.bare_rdwr) failed=$($pair.failed)")
+        $pairs += $pair
+    }
+    function Median([string]$key) {
+        @($pairs | ForEach-Object { $_[$key] } | Sort-Object)[[math]::Floor(($pairs.Count - 1) / 2)]
+    }
+    $bareRdwr = $pairs | ForEach-Object { $_.bare_rdwr } | Measure-Object -Minimum -Maximum
+    $failedOpens = ($pairs | ForEach-Object { $_.failed } | Measure-Object -Sum).Sum
+    Info ("walk cost at the clone's deepest file, depth ${deepestDepth}, policy minus bare over $WalkPairs pairs, " +
+        "the medians: open_rdwr=$(Median 'open_rdwr_ns') open_rdonly=$(Median 'open_rdonly_ns') " +
+        "lstat=$(Median 'lstat_ns') ns; bare open_rdwr $($bareRdwr.Minimum) to $($bareRdwr.Maximum) ns; " +
+        "failed=$failedOpens")
+    Info ("in program over the pairs: " + ((Vm "sudo -n $Ctl stats $Pin") -split "`n" |
+        Where-Object { $_ -match "^stats hook=file_open " } | Select-Object -First 1))
     $jited = Vm "sudo -n $Ctl jited $Pin /tmp/file_open.jited"
     Info $jited
     $fetchAdd = Field "fetch_add_insns" $jited
