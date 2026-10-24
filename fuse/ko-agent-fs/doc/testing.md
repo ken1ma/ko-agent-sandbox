@@ -14,7 +14,9 @@ profile.
     cargo test --locked --target "$(uname -m)-unknown-linux-musl"
 
 This runs the unit tests beside the sources, the static Git-corpus and file-rule conformance
-suites, and the binary tests for argument handling and startup refusal. It needs no mount
+suites, the same corpus through the BPF backend's classifier built for the host
+(`tests/bpf_equivalence.rs`, which compiles `bpf/probe/phase3/policy.bpf.c` with `$CC` or `cc`),
+and the binary tests for argument handling and startup refusal. It needs no mount
 privileges and runs in CI or inside a `ko-agent-sandbox` session, where the musl target is
 preinstalled; the read-only rustup home prevents adding targets during a session.
 
@@ -29,7 +31,9 @@ Run `--build` first to provide the sandbox image and pull the Rust image, then:
 The launcher builds `ko-agent-self-test` from the bundled source and pinned toolchain on top of the
 sandbox image. It runs both suites, including ignored tests, with `/dev/fuse` and `CAP_SYS_ADMIN`
 in a container with no host bind mounts, removed on exit. It retains the current self-test and
-compile-cache images and removes those they replace.
+compile-cache images and removes those they replace. The image carries the BPF classifier's host
+build, compiled in its builder stage and named to `tests/bpf_equivalence.rs` by
+`KO_AGENT_FS_POLICY_HOST`, so the relocated suite needs neither a C compiler nor the sources.
 
 Without a case filter, it also checks whether host writes reach the session through the real
 share. This check creates a scratch directory in the workspace, removes it on success, and reports

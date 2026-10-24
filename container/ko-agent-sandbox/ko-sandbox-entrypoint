@@ -18,6 +18,10 @@
 # the volume may be shared (the launcher's --persistent-volume). Merged into the agent's own file,
 # which the agent rewrites: user state, in the volume. The keys are the agents' internals and may
 # change between releases; an entry that cannot be written is said, and the agent then asks.
+# Claude's file also gets its LSP plugin recommendations switched off where the key is absent:
+# the dialog otherwise returns once per session, on the first file edited in a language it has a
+# plugin for, since Claude Code records "No, not now" nowhere; a user who set the key false keeps
+# the dialog.
 #
 # Then the machine's health, read from here rather than by the launcher: /proc/meminfo and
 # /proc/pressure are the VM's own, not the container's, and the same read serves a podman machine
@@ -151,8 +155,9 @@ if [ -d "$volume" ] && [ "$workspace" != / ]; then
     # `command`: a failed redirection on the special builtin would exit the shell, not take the else.
     if command exec 9<"$volume" && flock 9; then
         merge_json "$volume/claude/.claude.json" \
-            '.projects[$workspace] |=
-                ((. // {}) + {hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true})' \
+            '(.projects[$workspace] |=
+                ((. // {}) + {hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true}))
+             | (if has("lspRecommendationDisabled") then . else . + {lspRecommendationDisabled: true} end)' \
             claude
         merge_json "$volume/antigravity/antigravity-cli/settings.json" \
             '.trustedWorkspaces |= ((. // []) | if index($workspace) then . else . + [$workspace] end)' \

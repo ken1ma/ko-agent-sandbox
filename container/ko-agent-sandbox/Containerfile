@@ -9,6 +9,7 @@ LABEL org.opencontainers.image.base.name="debian-coursier:${IMG_TAG_VER}"
 ARG UV_VERSION=0.12.21
 ARG PYTHON_VERSION=3.14
 ARG WCWIDTH_VERSION=0.8.4
+ARG GIT_FILTER_REPO_VERSION=2.47.0
 ARG LYCHEE_VERSION=0.24.2
 ARG NODE_VERSION=24.21.0
 
@@ -18,13 +19,15 @@ ARG NODE_VERSION=24.21.0
 #
 # ripgrep: Claude Code bundles `rg`, but generated scripts use it.
 # openssl: present anyway — ca-certificates depends on it.
-# Excluded: git-lfs; sqlite3 (python3 covers it); shellcheck (40 MB).
+# git-lfs: `git lfs pull` fetches once the egress rules allow it (AGENTS-SANDBOX.md, "git").
+# Excluded: sqlite3 (python3 covers it); shellcheck (40 MB).
 
 RUN set -euxo pipefail; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         # curl and ca-certificates are installed in the parent image
         git \
+        git-lfs \
         ripgrep \
         patch \
         unzip \
@@ -36,7 +39,11 @@ RUN set -euxo pipefail; \
         psmisc \
         file \
         jq; \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/*; \
+    # The filter driver in the system config, without a repository's hooks, which the workspace
+    # filter refuses anyway, and without fetching at checkout: a clone or checkout writes pointers
+    # and needs no egress, and `git lfs pull` is the fetch.
+    git lfs install --system --skip-repo --skip-smudge
 
 # Avoid interactive pagers when Claude executes commands and needs their complete output.
 ENV GIT_PAGER=cat
@@ -61,6 +68,14 @@ RUN set -euxo pipefail; \
 # ko-sandbox-text-width's import comment explains why this is outside site-packages.
 RUN set -euxo pipefail; \
     uv pip install --no-cache --target /opt/ko-sandbox/python "wcwidth==${WCWIDTH_VERSION}"
+
+# git filter-repo, which the filter lets a session run (fuse/ko-agent-fs/doc/git-metadata.md, "Blocked
+# operations"): a Python script, installed with the image's Python; Debian's package would pull
+# Debian's python3 beside it.
+RUN set -euxo pipefail; \
+    UV_TOOL_DIR=/opt/uv/tools UV_TOOL_BIN_DIR=/usr/local/bin \
+    uv tool install --no-cache "git-filter-repo==${GIT_FILTER_REPO_VERSION}"; \
+    git filter-repo --version
 
 # ko-sandbox-markdown-link-check runs lychee. The musl asset is static, so it needs nothing from the base image.
 RUN set -euxo pipefail; \

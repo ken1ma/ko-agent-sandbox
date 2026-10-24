@@ -2228,6 +2228,33 @@ object AgentSandboxLauncher:
 
       preparedSandboxFiles
 
+  /** `git --version` on the host, or None where no git answers on PATH. */
+  private def hostGitVersionLine(): Option[String] =
+    try
+      val run = HostCommands.run("git", "--version")
+      Option.when(run.exit == 0)(String(run.out, StandardCharsets.UTF_8).trim)
+    catch case _: IOException => None
+
+  /**
+   * The warning for a host git older than 2.34, whose `git bisect` is a shell script that runs `eval`
+   * over `.git/BISECT_NAMES`, a file the filter lets a session write since 2.34 reads it as data
+   * (`fuse/ko-agent-fs/src/policy.rs`, `classify_within_gitdir`). For every live workspace: a session
+   * writes the gitdir of any repository below the root, whether or not the root's own git works or its
+   * main gitdir is mounted read-only. `versionLine` is read only then.
+   */
+  def oldGitBisectWarning(workspaceMode: String, versionLine: => Option[String]): Option[String] =
+    if workspaceMode != "live" then None
+    else
+      versionLine.flatMap: line =>
+        raw"git version (\d+)\.(\d+)".r
+          .findFirstMatchIn(line)
+          .map(found => (found.group(1).toInt, found.group(2).toInt))
+          .collect:
+            case (major, minor) if major < 2 || (major == 2 && minor < 34) =>
+              s"host git $major.$minor is older than 2.34: its `git bisect` evaluates .git/BISECT_NAMES as " +
+                "shell code, a file a session may write. Do not run git bisect on the host in this workspace, " +
+                "or upgrade git."
+
   private def printLaunchLines(
     parsed: ParsedCommandLine,
     settings: LaunchSettings,
@@ -2259,6 +2286,7 @@ object AgentSandboxLauncher:
       case None       => noGit.foreach(cause => warn(noGitWarning(cause, os)))
     gitdirBindRefusal.foreach: reason =>
       System.err.println(s"note: the main worktree's Git directory is not mounted; $reason")
+    oldGitBisectWarning(parsed.workspaceMode, hostGitVersionLine()).foreach(warn)
     joinedRules match
       case Some(running) =>
         warn(joinWarning(running))

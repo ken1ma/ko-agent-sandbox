@@ -131,6 +131,15 @@ Reversing these lines also denies Git fetches under `my-org`, because the denial
 Ordinary reads remain allowed. To restrict reads too, use `deny https://codeberg.org/` followed
 by `allow https://codeberg.org/my-org/ read git-fetch`.
 
+A `git lfs pull` is two requests no grant names: the batch `POST` at the repository's `info/lfs/`
+and the `GET`s of the objects on the host the batch answer names, which a failed pull prints. For
+GitHub, whose objects come from `github-cloud.githubusercontent.com` (measured 2026-10-24):
+
+```text
+allow https://github.com/<owner>/<repo>.git/info/lfs/ method=POST
+allow https://github-cloud.githubusercontent.com/ read
+```
+
 A request is decided against the resolved scope of its longest literal match: the scope at a path
 holds the union of the contributions still in force there once the lines have applied in order,
 so a root `git-fetch` line and a narrower `method=POST` line make the narrower scope hold both.

@@ -25,6 +25,7 @@ RUN set -eux; rustup target add "$(uname -m)-unknown-linux-musl"
 
 WORKDIR /build
 COPY ko-agent-fs .
+COPY bpf/probe/phase3 /bpf/probe/phase3
 
 # The identity the installed filter reports. The suites run against the same source the launcher
 # bundles, so the digest travels here too rather than being left unstamped.
@@ -63,6 +64,14 @@ RUN --mount=type=cache,target=/build/target \
     test -x /suite/ko-agent-fs; \
     test -n "$(ls /suite/deps)"
 
+# The BPF classifier's host build, which tests/bpf_equivalence.rs runs: compiled here, where a C
+# compiler and the sources are, and named to the test by KO_AGENT_FS_POLICY_HOST below, since the
+# test's own build looks for the sources beside the crate, which the runtime image has not got.
+RUN set -eux; \
+    cc -std=gnu17 -O1 -Wall -I /bpf/probe/phase3/host -I /build/include -o /suite/policy-host \
+        /bpf/probe/phase3/host/policy_host.c /bpf/probe/phase3/host/records_file.c; \
+    test -x /suite/policy-host
+
 
 # The base is the sandbox image for two reasons beyond convenience: it is already on the user's
 # machine, so verifying pulls nothing, and it carries `git`, which tests/mounted_git.rs needs and a
@@ -88,6 +97,7 @@ RUN set -eux; \
 COPY --from=build /suite /opt/ko-agent-fs-suite
 COPY ko-agent-self-test/ko-agent-fs-suite /usr/local/bin/ko-agent-fs-suite
 RUN chmod 0755 /usr/local/bin/ko-agent-fs-suite
+ENV KO_AGENT_FS_POLICY_HOST=/opt/ko-agent-fs-suite/policy-host
 
 USER nonroot
 ENTRYPOINT ["/usr/local/bin/ko-agent-fs-suite"]

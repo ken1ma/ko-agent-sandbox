@@ -1075,11 +1075,27 @@ fn relocated_hooks_are_served_read_only() {
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn an_ordinary_repository_passes_the_startup_guard() {
     // The refusal must stay narrow: a repository with hooks in the default place is served, and
-    // needs nothing beyond the names.
+    // needs nothing beyond the names. The guarded objects are the record of what the names
+    // protect, for the BPF backend, not an addition to the rules.
     let mount = TestMount::new(repository);
+    let additions =
+        ko_agent_fs::guard::resolve(&mount.backing, &FileRules::default(), &[PathBuf::from("/")])
+            .expect("an ordinary repository is served");
+    assert!(
+        additions.read_only.is_empty()
+            && additions.pinned.is_empty()
+            && additions.aliases.is_empty(),
+        "the guard added rules: {additions:?}"
+    );
+    let kinds: Vec<_> = additions.guarded.iter().map(|object| object.kind).collect();
     assert_eq!(
-        ko_agent_fs::guard::resolve(&mount.backing, &FileRules::default(), &[PathBuf::from("/")]),
-        Ok(ko_agent_fs::guard::Additions::default()),
+        kinds,
+        vec![
+            ko_agent_fs::guard::GuardedKind::Workspace,
+            ko_agent_fs::guard::GuardedKind::GitEntry,
+            ko_agent_fs::guard::GuardedKind::Gitdir,
+        ],
+        "{additions:?}"
     );
 }
 

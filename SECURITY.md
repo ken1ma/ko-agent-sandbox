@@ -133,10 +133,11 @@ user's next host `git` invocation:
 - It refuses a new entry named `.git` at any depth, under any spelling a case-insensitive host
   filesystem treats as that name.
 - It prevents changes to the protected Git entries of every repository rooted at a `.git` entry —
-  `config`, `hooks/`, files that redirect Git to another directory, rebase instructions, the
-  bisect state a host git through 2.33 evaluates as shell code, `rr-cache`, whose existence
-  enables rerere in host merges, and `objects/info/alternates`, whose paths host git opens —
-  while operational state stays writable, so the agent's own git keeps working.
+  `config`, `hooks/`, files that redirect Git to another directory, rebase instructions,
+  `rr-cache`, whose existence enables rerere in host merges, and `objects/info/alternates`, whose
+  paths host git opens — while operational state stays writable, so the agent's own git keeps
+  working. The bisect state is operational: a host git older than 2.34 evaluates `BISECT_NAMES`
+  as shell code, and the launcher warns when the host's git is that old.
 - It serves the tree live: a repository created on the host mid-session appears at once, with the
   same Git entries protected against modification.
 - It treats a second name of a host-created `.git` or `.ko-agent-sandbox` as that entry: an NTFS
@@ -476,6 +477,16 @@ encode information. The proxy does not detect or bound these covert channels.
     first: the session can mark the entry skip-worktree.
   - A `.lfsconfig` that includes another workspace file protects nothing unless
     `.ko-agent-sandbox/file/rule` lists that file too: git-lfs reads the file with its includes.
+  - git-lfs reads eight keys from `.lfsconfig`, `lfs.url`, `lfs.pushurl` and the fetch filters
+    among them, and ignores every key naming a command (git-lfs 3.7.0, `config/git_fetcher.go`,
+    `safeKeys`); the commands it runs come from your Git configuration and the hooks, which the
+    filter protects.
+  - The object store, `.git/lfs/`, is writable: a session can place bytes under an object's
+    hash that do not have that hash, and a host checkout or `git lfs checkout` writes them to the
+    worktree without a download. That is content a session could write to the worktree anyway,
+    not a command, and the pointer names the true hash: `git lfs fsck` reports the object, git
+    sees the file as modified once it reads it, and a server verifying uploads refuses it at
+    push. A rerere resolution has no such reference, which is why `rr-cache` stays protected.
 
 Everything else writable — build scripts, CI definitions, IDE configuration the file rules do not
 list, generators, binaries — is output from an untrusted execution environment: editing them is

@@ -136,6 +136,14 @@ marketplace under `extraKnownMarketplaces`, each plugin under `enabledPlugins` a
 counts a mod as the organization's
 (https://code.claude.com/docs/en/plugins/mods/admin#install-your-organizations-mods).
 
+### LSP plugin recommendations
+
+The recommendation dialog is off in a session: the entrypoint sets `lspRecommendationDisabled`
+in `~/.claude/.claude.json` at launch, where the key is absent. Left on, the dialog returns in
+every session, not once per project: Claude Code shows the dialog on the first file edited in a
+language it has a plugin for, until "Never for this plugin" or "Disable all LSP recommendations".
+To get the dialog, set the key to `false` there; a launch leaves a key that exists as it is.
+
 ## Holding agents to a line width
 
 Without a program that measures, an agent checking a width limit spends tokens three ways:
