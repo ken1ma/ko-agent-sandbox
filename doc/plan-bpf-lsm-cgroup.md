@@ -24,9 +24,14 @@ budget within 0.6 s on macOS and 1.7 s on WSL; the guard compiles the policy's r
 (`../fuse/ko-agent-fs/src/bpf_records.rs`); the classifier's host build runs the corpus through
 both classifiers (`../fuse/ko-agent-fs/tests/bpf_equivalence.rs`); Phase 4's probe
 (`../bpf/probe/phase4/`) passes every row on both machines ("Phase 4 on macOS", "Phase 4 on
-WSL"), its gate met, and `../bpf/probe/check-evidence.sh` passes for every measured section. The
-filter stays the default until "Acceptance" passes, and no launch ever binds the workspace
-writable without the policy attached and verified.
+WSL"), its gate met, and `../bpf/probe/check-evidence.sh` passes for every measured section;
+Phase 5's probe (`../bpf/probe/phase5/Phase5.scala`) passes every row on both machines ("Phase 5
+on macOS", "Phase 5 on WSL"), its gate met: on `perf-probe.py`'s repeated rows the policy's rounds
+overlap the unfiltered bind's on both machines, its single runs of the walk and the build lie
+within a tenth of the bind's on the per-file rows, `git status` and the build and scatter either
+way on the walk's depth rows, and the filter costs the bind 5 to 31 times. The filter stays the
+default until "Acceptance" passes, and no launch ever binds the workspace writable without the
+policy attached and verified.
 
 The reader acting on this plan starts at "Phases" and "What is gained and what is lost". The
 sections before them are what the phases rest on.
@@ -211,14 +216,18 @@ still open" may give them.
 | slot | hook            | decides                                                   | rows      |
 | ---- | --------------- | --------------------------------------------------------- | --------- |
 | 1    | `inode_create`  | a new file's name and parent: `creat`, `O_CREAT`, `mknod` | 1         |
-| 2    | `inode_mknod`   | a new FIFO's, socket's or device's name and parent        | 2         |
+| 2    | `inode_mknod`   | a new FIFO's, socket's or device's name and parent; a     | 2         |
+|      |                 | FIFO or a socket by type                                  |           |
 | 3    | `inode_symlink` | a new symlink's name, parent and target syntax            | 4         |
 | 4    | `inode_link`    | the source object and the new name                        | 5         |
 | 5    | `inode_rename`  | both names and parents, each way for `RENAME_EXCHANGE`    | 6, 7      |
 | 6    | `inode_unlink`  | removal of a protected entry                              | 8         |
-| 7    | `file_open`     | an open for writing of a protected object                 | 10–13, 19 |
-| 8    | `inode_setattr` | `chmod`, `chown`, times, `truncate`, `O_TRUNC`            | 11, 14    |
-| 9    | `file_receive`  | a writable share file arriving by IPC, `--unix-sockets`   | —         |
+| 7    | `file_open`     | an open for writing of a protected object; any open of a  | 10–13, 19 |
+|      |                 | FIFO by type                                              |           |
+| 8    | `inode_setattr` | `chmod`, `chown`, times, `truncate`, `O_TRUNC`; a FIFO's  | 11, 14    |
+|      |                 | times by type                                             |           |
+| 9    | `file_receive`  | a writable share file, or a FIFO of the share in any mode, | —         |
+|      |                 | arriving by IPC, `--unix-sockets`                         |           |
 
 `inode_create` judges a `mknod` of a regular file; the other types reach `inode_mknod`
 (`fs/namei.c`, `filename_mknodat`).
@@ -589,6 +598,37 @@ The program classifies by object and position, never by a path string:
   the volume no socket comes to be in the first place. A version that binds another mount into
   the container reopens this. `--unix-sockets` lifts the rule and keeps a socket out of a
   gitdir by the same three hooks ("The hooks", `file_receive`, has the channel each closes).
+- No FIFO comes to be on a superblock of the root's type beneath a recorded root, none there is
+  opened, and none has its times changed: `inode_mknod` refuses the creation by type,
+  `file_open` any open of one by the inode's type, for reading as for writing, before the hook's
+  early exit for reads, and `inode_setattr` a time change on one, by type and `ATTR_ATIME` or
+  `ATTR_MTIME` in the attribute's `ia_valid` (`include/linux/fs.h`), so that `chmod` and `chown`
+  of one stay as they are, as in the filter; on every platform. The user's decision of
+  2026-10-25, taken against documenting the hazard and waiting for libkrun: on the macOS machine
+  a FIFO's times reaching libkrun's passthrough `setattr` block the share's one worker thread,
+  and with it every session on the machine (`../doc/upstream-issues.md`, "Setting a FIFO's times
+  blocks the macOS virtio-fs server"; `../doc/TODO.md`, "A FIFO in the workspace hangs the podman
+  machine"). Why three hooks: a write through a FIFO makes the guest kernel flush its times to
+  the share itself (`fs/pipe.c`, `pipe_write`, `file_update_time`; `fs/fuse/file.c`,
+  `fuse_write_inode`, `fuse_flush_times`), past `security_inode_setattr`, which `fs/attr.c`
+  calls from `notify_change` alone, so the time rule holds `touch` and not use; the open rule
+  holds use, of a FIFO the host made included, since every open but `O_PATH` passes
+  `security_file_open` before the file's own open (`fs/open.c`, `do_dentry_open`) and an
+  `O_PATH` open opens no pipe. Under `--unix-sockets`, `file_receive` refuses a FIFO of the
+  share's type by inode type too, whatever its mode: a container on the machine outside any
+  policy can open one and pass the descriptor, and a write through it would flush the times as
+  the session's own open would. A `--workspace=read-only` session needs none of these: its bind
+  is read-only, which still lets a FIFO be opened for writing, since `do_dentry_open` takes the
+  mount's write access for no special file (`fs/open.c`), but a write or a read through it
+  changes no time on the share, since `file_update_time` and `touch_atime` take that write
+  access first and skip the update where the mount refuses it (`fs/inode.c`,
+  `mnt_get_write_access_file`), and FUSE flushes `mtime` and `ctime` alone (`fs/fuse/dir.c`,
+  `fuse_flush_times`). What stays is the host's own use of a FIFO it made, and a container
+  outside any policy using one, neither of which a session's hook sees. The filter, whose
+  daemon receives the flush as a `SETATTR` request, refuses it instead (`fs.rs`, `setattr`),
+  since the kernel opens a FIFO on a FUSE mount without asking the daemon. The rules wait for
+  the program's next build (Phase 6): the measured sections of Phases 3 to 5 name the present
+  sources' hash, which they change.
     Each share is one superblock (`fs/fuse/virtio_fs.c`, `virtio_fs_test_super`), so a second
     share bound into a disposable container is Phase 3's stand-in for a submount made after
     attach.
@@ -1408,6 +1448,133 @@ passed as there, the reconcile removing the cgroup directories itself under cgro
 |                          | on macOS                                                              |
 
 
+### Phase 5 on macOS
+
+Measured on 2026-10-25 with `../bpf/probe/phase5/Phase5.scala` on the machine of "Phase 1 on macOS",
+podman 6.1.2, crun 1.30, clang 19.1.7, `policy.bpf.o` of SHA-256
+`7a23c6fc79cd63e3993c7750bb981a2dcea2beb7f6e56a3f0c4b0d742baa71f0`, the object "Phase 3 on macOS"
+and "Phase 4 on macOS" measure, built again byte for byte, from sources of SHA-256
+`bc6b5a5bfb82b2bc3e48228afa16c2c29acc641ac37ab0a7ad03c7097c02f2f1`. The tree is sbt/sbt at
+`8a8a17c4`, 4,475 tracked files at mean depth 7.0 among 7,946 entries, the corpus `perf-probe.py`'s
+2,101 entries, and the build a clone of this repository at the tree's root, under the launcher's
+default rules, 55 lines. Every one of the 26 rows passes in one run, the fourth: the first failed
+its filter rows on the launcher's refusal of a workspace below `~/.cache`, the second passed its 23
+rows before the bare round and the build were added, and the third's build under the policy read as
+absent the clone the driver had removed and made again at one name within a second, the dentry the
+machine keeps ("Phase 1 on macOS", the replacement row). The three stacks run the sandbox image
+with the session's user mapping, the policy's containers below the attach cgroup, the filter's
+through the launcher; `perf-probe.py` ran three rounds a stack, interleaved, after one round on the
+bare bind before the launch; the figures are the mean, with the range, over the rounds.
+
+| row                      | measured                                                              |
+| ------------------------ | --------------------------------------------------------------------- |
+| the launch               | load 438 ms, attach 8.7 ms, read-back 15.9 ms, the proof's 67         |
+|                          | operations 38.4 ms, 0 mismatches; a hook file in `.git/hooks` made on |
+|                          | the bare bind, refused under the policy and through the filter        |
+| the bare bind, µs an     | before the launch, with nothing under the probe's pin root (whether   |
+| entry                    | another process held an attachment was not checked in this run; the   |
+|                          | driver now lists all of `bpffs` and counts `bpftool`'s programs of    |
+|                          | type `lsm` where it has one): `find` 76, `find -printf` 167, `ls -lR` |
+|                          | 719, `cp -r` 1,258, `rm -rf` 342, each inside the range of the bind's |
+|                          | rounds beside the policy: the shim the first attach installs costs    |
+|                          | tasks outside the cgroup nothing the rounds' spread shows             |
+| `perf-probe.py`, µs an   | `find`: bind 82 (63 to 107), policy 73 (71 to 78), filter 402;        |
+| entry, bind / policy /   | `find -printf`: 165 (134 to 204), 179 (160 to 190), 1,291;            |
+| filter                   | `ls -lR`: 724 (640 to 870), 765 (697 to 894), 12,289;                 |
+|                          | `cp -r`: 1,421 (1,194 to 1,636), 1,401 (1,244 to 1,674), 9,128;       |
+|                          | `rm -rf`: 419 (334 to 547), 358 (355 to 362), 2,602. Policy over bind |
+|                          | 0.86 to 1.09 times over overlapping ranges in every row; filter over  |
+|                          | bind 4.9 to 17.0 times, as "The cost of a path walk" measured in      |
+|                          | 2026-09                                                               |
+| the program's share of a | 3,600 judged calls each of `file_open`, `inode_create` and            |
+| `perf-probe.py` round    | `inode_unlink` (the corpus's 1,800 files made, copied and removed     |
+|                          | twice over), 123, 32 and 36 more answered at the superblock check,    |
+|                          | every walk 4 deep and none retried, denied or without a slot; 15.4 to |
+|                          | 17.8 µs mean from entry to decision, 0.17 ms at most: the three       |
+|                          | hooks' 10,800 judged calls take 167 to 182 ms of a round's 9 to 12 s  |
+| the build                | `sbt 'testOnly *SandboxTextWidthTest'`, output in the workspace:      |
+|                          | bind 102 s wall, sbt's own 72 s; policy 104 s, 67 s; 10 of 10 tests   |
+|                          | under both. The policy judged 1,691 opens, 1,349 creates, 214 renames |
+|                          | (428 walks, source and destination), 108 unlinks and 514 attribute    |
+|                          | changes, walks up to 20 deep, 40 to 47 µs mean a call and 93 for a    |
+|                          | rename, 0.21 ms at most; it refused 4 symlinks at depth 7, the        |
+|                          | absolute targets "The policy" refuses as the filter refuses sbt's     |
+|                          | links into its cache, under which sbt writes copies ("sbt over        |
+|                          | dangling cache links"); the machine 18 to 21 % busy mean, 47 to 49 %  |
+|                          | max, memory used rising from 2.8 to 4.8 GB under both                 |
+| `walk-probe.py`, bind /  | `lstat` by path: depth 1 0.08 / 0.17 / 0.76 ms, depth 7 0.48 / 0.48 / |
+| policy / filter          | 6.52 ms, depth 15 0.76 / 1.02 / 20.5 ms; every tracked file by path   |
+|                          | 0.42 / 0.42 / 7.31 ms a file, through a directory fd 0.11 / 0.11 /    |
+|                          | 1.76 ms; `find . -type f` 1.8 / 2.2 / 16.9 s; `git status` 4.7 / 4.3  |
+|                          | / 71.2 s, `--untracked-files=no` 1.2 / 1.1 / 40.5 s. The depth rows,  |
+|                          | 200 `lstat` each of 0.1 to 1 ms, scatter 1.0 to 2.1 times policy over |
+|                          | bind in this run and 0.7 to 1.4 in the run before, the per-file rows  |
+|                          | 1.00 in both; the policy judged 4 opens, 4 creates and 4 unlinks in   |
+|                          | the whole run, git's lock at depth 2, 15 to 22 µs each; the filter's  |
+|                          | figures match "a real tree" of 2026-09-19 (5.97 ms a file, 71.5 s)    |
+| the machine during the   | `/proc/stat` over the run, ten CPUs: bind 13 % busy mean, 27 % max    |
+| stat storm               | over 34 s; policy 12 %, 26 % over 29 s; filter 8 %, 32 % over 541 s;  |
+|                          | iowait at most 2 %; memory used 3.0 to 3.3 GB of 11.9 GB under each,  |
+|                          | memory pressure `some avg10` 0.00 throughout, io at most 0.32         |
+| the machine during       | bare, bind and policy 6 to 7 % busy mean, 6 to 10 % max over 8 to 12  |
+| `perf-probe.py`          | s a round; filter 7 % mean, 23 to 24 % max over 78 to 80 s a round    |
+| the probe's own label    | `perf-probe.py` reported `unfiltered bind mount` under the policy     |
+|                          | too, telling the stacks apart by a `.git` directory, which the policy |
+|                          | allows ("Directories"); it now also tries a hook file inside that     |
+|                          | directory, which the policy refuses by name, and reports `BPF policy` |
+| the attach cgroup        | under the systemd manager the slice `ko-agent-bpf5-policy.slice` lies |
+|                          | below `ko.slice/ko-agent.slice/ko-agent-bpf5.slice`, the hierarchy    |
+|                          | systemd reads from a slice name's dashes                              |
+
+### Phase 5 on WSL
+
+Measured on 2026-10-25 with `../bpf/probe/phase5/Phase5.scala` (`scala shebang`) on the Windows
+machine of "Phase 1 on WSL", podman 6.1.4 under the cgroupfs manager, crun 1.28, clang 19.1.7,
+`policy.bpf.o` of SHA-256 `6e2e7dc5112c8498b03c8ce7933e4f0e2ba2fcb559ed8b810f5bd80a5ac0abd1`, the
+object "Phase 3 on WSL" and "Phase 4 on WSL" measure, built again byte for byte, from the
+sources of SHA-256 `bc6b5a5bfb82b2bc3e48228afa16c2c29acc641ac37ab0a7ad03c7097c02f2f1` that "Phase 5
+on macOS" measures, over the same tree and corpus, the machine of four CPUs and 7.8 GB on the 9p
+share. Every one of the 23 rows passes in one run of 2 h 10 min, of which the filter's
+`walk-probe.py` took 82 min. The rows below name what differs from macOS; the stacks and the
+`perf-probe.py` and `walk-probe.py` rounds are the same, and the bare round and the build, added
+to the driver after this run, are not measured there.
+
+| row                      | measured                                                              |
+| ------------------------ | --------------------------------------------------------------------- |
+| the launch               | load 1,667 ms, attach 15.9 ms, read-back 49.3 ms, the proof's 67      |
+|                          | operations 323 ms on 9p, 0 mismatches; the attach cgroup a directory  |
+|                          | under `app.slice`, the proof joined from a transient scope            |
+| `perf-probe.py`, µs an   | `find`: bind 584 (559 to 598), policy 623 (560 to 659), filter 3,486; |
+| entry, bind / policy /   | `find -printf`: 1,493 (1,440 to 1,576), 1,606 (1,478 to 1,749),       |
+| filter                   | 11,710; `ls -lR`: 3,064 (2,759 to 3,220), 3,019 (2,690 to 3,198),     |
+|                          | 95,301; `cp -r`: 13,671 (12,980 to 14,551), 13,662 (12,981 to         |
+|                          | 14,039), 71,470; `rm -rf`: 1,988 (1,918 to 2,079), 2,007 (1,877 to    |
+|                          | 2,132), 19,717. Policy over bind 0.99 to 1.08 times over overlapping  |
+|                          | ranges in every row; filter over bind 5.2 to 31.1 times, each column  |
+|                          | within 20 % of "the filter's ratio on Windows" of 2026-09-19          |
+| the program's share of a | the same 3,600 judged calls a hook, 6, 10 and 0 answered at the       |
+| `perf-probe.py` round    | superblock check, every walk 4 deep; 12.6 to 15.0 µs mean from entry  |
+|                          | to decision, 3.6 ms at most once, no retry, denial or missing slot    |
+| `walk-probe.py`, bind /  | `lstat` by path: depth 1 0.96 / 0.91 / 4.19 ms, depth 7 5.10 / 4.97 / |
+| policy / filter          | 55.5 ms, depth 15 11.0 / 10.4 / 184.7 ms; every tracked file by path  |
+|                          | 5.17 / 5.01 / 53.0 ms a file, through a directory fd 1.00 / 0.93 /    |
+|                          | 16.9 ms; `find . -type f` 14.6 / 14.1 / 169.5 s; `git status` 23.0 /  |
+|                          | 20.7 / 738.2 s, `--untracked-files=no` 11.0 / 11.0 / 423.4 s. The     |
+|                          | policy judged 4 opens, 4 creates and 4 unlinks, 16 to 21 µs each; the |
+|                          | bare 9p bind costs 10 times the macOS virtiofs bind on every row, and |
+|                          | the filter 4.4 to 38 times the bind on top                            |
+| the machine during the   | four CPUs: bind 14 % busy mean, 35 % max over 359 s; policy 17 %,     |
+| stat storm               | 35 % over 230 s; filter 14 %, 55 % over 4,928 s; iowait at most 5, 4  |
+|                          | and 12 %; memory used 0.57 to 0.79 GB of 7.8 GB under each, memory    |
+|                          | pressure `some avg10` 0.00 under the bind and the policy, 0.36 under  |
+|                          | the filter; io pressure at most 1.7, 1.1 and 4.6                      |
+| the machine during       | bind and policy 13 to 14 % busy mean, 16 to 18 % max, over 70 to 78 s |
+| `perf-probe.py`          | a round; filter 14 to 15 % mean, 55 to 59 % max over 603 to 620 s a   |
+|                          | round, with iowait peaks of 36 and 58 % and memory pressure up to 2.7 |
+|                          | in two of its rounds, where the other stacks' rounds stay at 0.00 but |
+|                          | for the first round after the clone (io pressure 13.0, iowait 5 %)    |
+
+
 ## Inventory
 
 The policy transcribes `fuse/ko-agent-fs` at commit `0fe166a159c1f3cc75dd966a8b0e2d4faae5aa31`,
@@ -1799,7 +1966,26 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    the reconcile removes the two orphans and nothing else, and the evidence check passes.
 5. **Measurement.** `probe/perf-probe.py` and the real-tree rows of `verification-log.md` on the
    bind with the policy, beside the filter and the unfiltered bind; the machine's CPU and memory
-   during the stat storm under each.
+   during the stat storm under each, the stat storm being `walk-probe.py`'s rows over the real
+   tree, `lstat` of every tracked file by path and `git status`.
+   The probe is `../bpf/probe/phase5/Phase5.scala`, one Scala CLI script for both hosts, run on
+   the host, and its transcript and tables are this phase's record: it builds Phase 4's controller,
+   read-back and fixture over Phase 3's program, with `stats.c` reading the program's counters
+   beside them, clones the real-tree rows' tree (sbt/sbt, shallow) into a scratch workspace on the
+   share, launches the policy over it through steps 1 to 3 of "Lifecycle" under the launcher's
+   default rules, and runs the two probes over that one tree in three containers: the sandbox
+   image over a writable bind of the workspace (`probe/unfiltered.sh`'s command), the same
+   command below the attach cgroup, and the launcher's session through the filter, and before the
+   launch one `perf-probe.py` round on the bind with no program attached, the control for the shim
+   the first attach installs for every task in the VM ("The mechanism"). `perf-probe.py` runs in
+   interleaved rounds, three by default; the `sbt` build of "an sbt build, by where its output goes"
+   runs once on the bind and once under the policy, on a clone of this repository made inside the
+   tree with its output there, the filter's 604 s standing from that log; `walk-probe.py` runs once
+   per stack. A sampler in the machine reads `/proc/stat`, `/proc/meminfo` and the pressure files
+   each second during each run, and the program's counters are read after each run under the
+   policy, so that each figure comes with the calls each hook judged. A hook file's creation in
+   `.git/hooks`, refused under the policy and through the filter and made over the bare bind, shows
+   each stack is what it claims before the figures are taken.
    Gate: the numbers are recorded; the default changes only by a release decision.
 6. **Integration.** A backend selector with a capability probe, run at every launch: `bpf` in
    the active LSM list, cgroup v2 with the user's delegated subtree under the manager podman
@@ -1832,10 +2018,34 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
      pinned programs' ids, passing the read-back and the proof, its step 2 at a recreate's cost;
      two launches racing for one spare, one loading; a spare of a build `--build` replaced,
      unpinned by its tags; a launch that died after taking the spare, removed by the reconcile;
-     and the first spare prepared at boot;
+     and the first spare prepared at boot; a live session's records, read back before and after
+     another launch takes the spare and the next spare is prepared, unchanged, and the two
+     sessions' program and map ids disjoint;
+   - the sessions' cost in the kernel: the programs, links and maps and their memory at one,
+     four and eight live sessions, and the same after their teardown, so that the per-sandbox
+     sets "The policy" relies on have a measured price. The kernel charges a map's and a
+     program's memory to the memory cgroup of the process that made them, and the charge
+     outlives the process (`kernel/bpf/syscall.c`, `bpf_map_save_memcg`, the map's `objcg`), so
+     every load, the launch's, the boot-time spare's and each replenishment's, runs in a cgroup
+     kept for the measurement and summed by it, whose `memory.current` is read after the loader
+     exits: under systemd a scope holding a sleeping process beside it, since a scope ends with
+     its last process (`systemd.scope(5)`), under cgroupfs a directory of the delegated subtree,
+     which stays until removed; a set loaded elsewhere, the spare's preparer's cgroup for one, is
+     charged there and missing from the sum. The machine's root offers no reading, `memory.current`
+     being a file of non-root cgroups alone (`Documentation/admin-guide/cgroup-v2.rst`), and
+     `bpftool`'s `memlock` is each map's own estimate (`kernel/bpf/syscall.c`,
+     `bpf_map_memory_usage`), not the charge;
    - on WSL, the proof run by the launcher itself: its process enters the leaf below the attach
      cgroup through a transient scope of the user manager ("Phase 4 on WSL"), and a scope that
-     cannot be created or a migration that fails ends the launch before any container.
+     cannot be created or a migration that fails ends the launch before any container;
+   - the FIFO rules ("The policy"): `mknod` of a FIFO refused by type in `inode_mknod`, its
+     open in `file_open`, a time change on one in `inode_setattr` and, under `--unix-sockets`,
+     its descriptor in `file_receive`, each a corpus case over a FIFO the host made, opened with
+     `O_NONBLOCK` so that the test itself never waits, and the proof's `mkfifo` at an ordinary
+     name, under which the measured sections of Phases 3 to 5
+     name a sources hash the tree no longer has; `check-evidence.sh` then needs a way to mark a
+     section as the evidence of the program before this change, or the three phases rerun on the
+     changed program.
 
 
 ## What is gained and what is lost
@@ -1849,24 +2059,31 @@ Gained:
 - **The filter's whole cost.** The ceiling is measured
   (`../fuse/ko-agent-fs/doc/verification-log.md`, "The cost of a path walk"):
 
-  | workload                              | through the filter | unfiltered bind |
-  | ------------------------------------- | ------------------ | --------------- |
-  | `ls -lR`, per entry                   | 12.7 ms            | 0.7 ms          |
-  | `git status`, 4,200 files at depth 7  | 72 s               | not measured    |
-  | `sbt` build of this repository        | 604 s              | 43 s            |
+  | workload                             | through the filter | unfiltered bind | under the policy |
+  | ------------------------------------ | ------------------ | --------------- | ---------------- |
+  | `ls -lR`, per entry                  | 12.7 ms            | 0.72 ms         | 0.77 ms          |
+  | `git status`, 4,475 files at depth 7 | 72 s               | 4.7 s           | 4.3 s            |
+  | `sbt` build of this repository       | 604 s              | 102 s           | 104 s            |
 
-  The policy's own cost over the unfiltered bind is Phase 5's number. It runs on mutations and
-  opens, never on `lookup` or `getattr`, the operations that dominate those columns.
+  The `sbt` row's bind and policy figures keep the output in the workspace as the filter's does; the
+  43 s of "an sbt build, by where its output goes" had it outside. The policy's own cost over the
+  unfiltered bind is measured in "Phase 5 on macOS" and "Phase 5 on WSL": `perf-probe.py`'s
+  rounds overlap the bind's in every row on both machines; the single runs of the walk and the
+  build lie within a tenth of the bind's on the per-file rows, `git status` and the build, and
+  scatter up to 1.2 times on `find` and 2.1 times on the depth rows, 200 `lstat` of 0.1 to 1 ms
+  each, either way across runs; the program itself takes 13 to 18 µs a judged call on either
+  kernel, 40 to 47 µs at the build's depth of 20. It runs on mutations and opens, never on
+  `lookup` or `getattr`, the operations that dominate those columns.
 - **The daemon's share of the machine's hangs.** `git status` in a worktree of hundreds of
   files has frozen the podman machine for over an hour, with memory not short and
   `podman machine ssh` failing throughout. The daemon and its requests go with the filter.
   - What the bind keeps is the share server's one worker thread per share, which one blocked
     request stalls for every later one (`upstream-issues.md`, "Setting a FIFO's times blocks
     the macOS virtio-fs server").
-  - The refusal of `mknod` of a FIFO that `TODO.md` ("A FIFO in the workspace hangs the podman
-    machine") considers for the filter would be one more type check in `inode_mknod`, where the
-    socket refusal is; the program has none until that decision is taken, and a FIFO at an
-    ordinary name passes it ("Phase 4 on macOS").
+  - A FIFO on the share is refused by type, its creation in `inode_mknod`, its open in
+    `file_open`, its time change in `inode_setattr` and, under `--unix-sockets`, its descriptor
+    in `file_receive` ("The policy"), the decision of 2026-10-25; the measured program has none
+    of these yet, and a FIFO at an ordinary name passes it ("Phase 4 on macOS").
 - **No window between resolving and acting.** The decision is taken inside the syscall, on the
   dentry the kernel acts on, which the filter's resolver and its `ESTALE` rules exist to
   approximate. A held directory handle follows a directory the host moved and is judged by its

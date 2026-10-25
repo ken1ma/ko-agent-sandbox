@@ -1485,6 +1485,14 @@ impl Filesystem for KoAgentFs {
             Err(err) => return reply.error(err),
         };
         let kind = SFlag::from_bits_truncate(mode & libc::S_IFMT);
+        // A FIFO on the macOS machine's share hangs the machine once its times reach libkrun, whose
+        // passthrough `setattr` opens the FIFO and waits for a writer that never comes, with the
+        // share's one worker thread (`doc/upstream-issues.md`, "Setting a FIFO's times blocks the
+        // macOS virtio-fs server"). None comes to be through this mount, on every platform, and
+        // `setattr` refuses the times of one the host made.
+        if kind == SFlag::S_IFIFO {
+            return reply.error(deny("mknod", &format!("{name:?}"), "fifo"));
+        }
         let perm = Mode::from_bits_truncate(mode & !umask & 0o7777);
         if let Err(err) = mknodat(&parentfd, cname.as_c_str(), kind, perm, rdev as libc::dev_t) {
             return reply.error(to_errno(err));
@@ -1747,6 +1755,26 @@ impl Filesystem for KoAgentFs {
         // path-based change.
         if let Err(err) = self.allow_ino(ino.0, Mutation::SetAttr, "setattr") {
             return reply.error(err);
+        }
+        // A FIFO's times never reach the backing share (`mknod` above has why): `touch` sends them
+        // by `utimensat`, and the kernel sends them itself after a write through the FIFO, when it
+        // flushes the inode's changed times to this daemon (`fs/fuse/file.c`, `fuse_write_inode`),
+        // the one path by which a host-made FIFO's use would reach libkrun. Refused, nothing reaches
+        // the backing tree and the kernel keeps its own times for the FIFO.
+        if atime.is_some() || mtime.is_some() {
+            let mode = match self.handle_fd(fh) {
+                Some(fd) => fstat(fd.as_ref()).map(|st| st.st_mode),
+                None => self
+                    .open_ino_with_stat(ino.0, OFlag::O_PATH | OFlag::O_NOFOLLOW)
+                    .map(|(_, st)| st.st_mode),
+            };
+            match mode {
+                Ok(mode) if mode & libc::S_IFMT == libc::S_IFIFO => {
+                    return reply.error(deny("setattr", &format!("ino={}", ino.0), "fifo-times"));
+                }
+                Ok(_) => {}
+                Err(err) => return reply.error(to_errno(err)),
+            }
         }
         // A handle-carrying `setattr` — an `ftruncate` through a descriptor, the one that reaches
         // the daemon with `FATTR_FH` — acts on the object that descriptor opened, then reports its

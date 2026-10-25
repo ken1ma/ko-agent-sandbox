@@ -66,3 +66,21 @@ The cause is outside the launcher:
 - Rootless podman's networking held the 64 MiB on one machine (2026-10-18): 32 pipes of 1 MiB in
   `pasta` and 30 in `rootlessport`, which runs for containers that publish ports. The launcher
   publishes none.
+
+## No FIFO in the workspace
+
+A session cannot make a FIFO (a named pipe, `mkfifo`) in the workspace, nor set the times of one
+the host put there: both answer `EPERM`, on every platform.
+
+1. Make the FIFO under `/tmp` or another directory of the container's own filesystem, where
+   nothing refuses it; a session leaves `TMPDIR` unset, so a tool's temporary files go there
+   without a setting.
+1. A tool that insists on a FIFO beside its inputs fails at `mkfifo` with `EPERM`, visibly, rather
+   than hanging the machine.
+
+The reason is a libkrun defect on the macOS podman machine: a FIFO on the share whose times reach
+the host's virtio-fs server blocks the share for every session on the machine, and a mere write
+through the FIFO is enough, since the guest kernel flushes the FIFO's times itself
+(`upstream-issues.md`, "Setting a FIFO's times blocks the macOS virtio-fs server"; `TODO.md`,
+"A FIFO in the workspace hangs the podman machine", has the decision and what lifts it).
+
