@@ -201,6 +201,17 @@ so every later request on the share waits behind it.
 **Expected:** open with `O_NONBLOCK` there, as `grab_unlinked_fd` and the truncate path already
 do, or change the times by path (`utimensat` with `AT_SYMLINK_NOFOLLOW`) without opening.
 
+**Why mere use triggers it** (Linux 7.2 source, read 2026-10-25): a write through a FIFO updates
+its times (`fs/pipe.c`, `pipe_write`, `file_update_time`), which marks the inode dirty, and the
+guest's FUSE client flushes the changed times at writeback as a `SETATTR` with `FATTR_MTIME`
+(`fs/fuse/file.c`, `fuse_write_inode`; `fs/fuse/dir.c`, `fuse_flush_times`). No process calls
+`utimensat`, so a FIFO merely written through reaches the passthrough's `setattr` seconds later.
+
+**This project's guard until the fix:** the filter refuses `mknod` of a FIFO and a time change on
+one (`fuse/ko-agent-fs/src/fs.rs`), the BPF backend will by type in its hooks
+(`plan-bpf-lsm-cgroup.md`, "The policy"); `TODO.md`, "A FIFO in the workspace hangs the podman
+machine", has the decision.
+
 ## openai/codex, anthropic-experimental/sandbox-runtime, google-gemini/gemini-cli
 
 One report for each project's macOS Seatbelt profile. This project's own profile closes the gap

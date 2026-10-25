@@ -151,14 +151,20 @@ measurement.
 
 ## A FIFO in the workspace hangs the podman machine
 
-- [ ] Decide what keeps a session's FIFO from hanging a libkrun podman machine
-  (`upstream-issues.md`, containers/libkrun): `mkfifo` in the workspace under `--workspace=live`,
-  then a change of its times, would block the machine's `/Users` share and every session on it
-  (read from libkrun's source; the reproducer was not run). Candidates: ko-agent-fs refuses `mknod`
-  of FIFOs, or refuses time changes on them, until libkrun fixes it. Observed 2026-10-24, not as a
-  controlled reproduction: a probe left a FIFO on the share and the next `podman machine stop` did
-  not return (`doc/plan-bpf-lsm-cgroup.md`, "Phase 4 on macOS", the FIFO row). The BPF backend
-  would refuse the `mknod` with one type check in `inode_mknod`, where it refuses sockets.
+Decided 2026-10-25: a FIFO's creation in the workspace and a time change on one are refused, by the
+filter now (`fuse/ko-agent-fs/src/fs.rs`, `mknod` and `setattr`; `tests/mounted_mutate.rs`,
+`a_fifo_is_neither_made_nor_retimed_through_the_mount`) and, with any open of one and its
+descriptor under `--unix-sockets`, by the BPF backend's hooks when its program is next built
+(`doc/plan-bpf-lsm-cgroup.md`, "The policy"), on every platform, until libkrun opens the FIFO
+without blocking (`upstream-issues.md`, containers/libkrun). Why more than the creation: a
+session's write through a FIFO makes the guest kernel flush the FIFO's changed times to the share
+itself, with no `utimensat` from any process, so refusing creation alone leaves a host-made FIFO
+as a hang a session can trigger by writing to it; the filter's daemon receives that flush as a
+`SETATTR` request and refuses it, where the BPF hooks never see it, so the backend refuses the
+open instead.
+
+- [ ] File the libkrun report (`upstream-issues.md`, "Setting a FIFO's times blocks the macOS
+  virtio-fs server"), with the kernel's flush path as the reason mere use of a FIFO triggers it.
 
 ## One list of launch refusals
 

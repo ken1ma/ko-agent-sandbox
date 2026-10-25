@@ -46,6 +46,27 @@ fn rename_exchange(dirfd: &OwnedFd, old: &str, new: &str) -> nix::Result<()> {
     }
 }
 
+/// `utimensat(2)` by path, the call `touch` makes, through libc as the other raw calls here are.
+fn set_times(path: &Path) -> nix::Result<()> {
+    let path = CString::new(path.as_os_str().as_encoded_bytes()).expect("a path without a NUL");
+    let times = [
+        libc::timespec {
+            tv_sec: 1,
+            tv_nsec: 0,
+        },
+        libc::timespec {
+            tv_sec: 1,
+            tv_nsec: 0,
+        },
+    ];
+    let result = unsafe { libc::utimensat(libc::AT_FDCWD, path.as_ptr(), times.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(nix::errno::Errno::last())
+    }
+}
+
 /// `openat(2)` on a directory handle the caller still holds — the operation the stale-handle tests
 /// below are about, and one no path-based call can express: the kernel addresses the directory by
 /// the handle, so the daemon is asked about an inode rather than about a path the kernel has just
@@ -242,6 +263,44 @@ fn creating_a_dotgit_entry_is_refused_for_every_entry_type() {
             0,
         ),
     );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_fifo_is_neither_made_nor_retimed_through_the_mount() {
+    // The one refusal here that is not about git: a FIFO on the macOS machine's share hangs the
+    // machine once its times reach libkrun (`doc/upstream-issues.md`, "Setting a FIFO's times
+    // blocks the macOS virtio-fs server"), so the filter makes none and retimes none, on every
+    // platform (`fs.rs`, `mknod` and `setattr`). Other attribute changes stay allowed: the hang is
+    // the time change's open.
+    let mount = TestMount::new(|backing| {
+        fs::write(backing.join("plain"), b"x").unwrap();
+        nix::unistd::mkfifo(&backing.join("host-fifo"), Mode::from_bits_truncate(0o644)).unwrap();
+    });
+    let dirfd = mount.mount_dirfd();
+    denied_nix(
+        "mknod of a FIFO at an ordinary name",
+        mknodat(
+            &dirfd,
+            "fifo",
+            SFlag::S_IFIFO,
+            Mode::from_bits_truncate(0o644),
+            0,
+        ),
+    );
+    assert!(
+        !mount.backing_at("fifo").exists(),
+        "the refused FIFO must not exist on the backing tree"
+    );
+    denied_nix(
+        "setting a host-made FIFO's times",
+        set_times(&mount.at("host-fifo")),
+    );
+    allowed(
+        "chmod of the host-made FIFO",
+        fs::set_permissions(mount.at("host-fifo"), Permissions::from_mode(0o600)),
+    );
+    set_times(&mount.at("plain")).expect("a regular file's times are set as before");
 }
 
 #[test]

@@ -4,8 +4,9 @@
 and reports microseconds per entry for the workloads the tables in doc/verification-log.md, "The
 cost of a path walk", are built from.
 
-Run it in a scratch workspace, twice, and compare the columns — the second run is the control
-(unfiltered.sh has what it is):
+Run it in a scratch workspace, once per stack, and compare the columns — the unfiltered run is
+the control (unfiltered.sh has what it is), and the BPF policy's run is the same command below the
+attach cgroup, which bpf/probe/phase5/Phase5.scala drives:
 
     cp .../perf-probe.py <scratch-workspace>/ && cd <scratch-workspace>
     java -jar ko-agent-sandbox.jar python3 perf-probe.py         # filtered
@@ -31,13 +32,21 @@ FILES = int(os.environ.get("FILES", "1800"))
 
 
 def stack() -> str:
-    """Filtered or not, decided by a property a bind mount does not have: `.git` is refused at
-    any depth."""
+    """Which stack, decided by two properties a bind mount does not have: the filter refuses a
+    `.git` directory at any depth, and the BPF policy, which allows the directory
+    (doc/plan-bpf-lsm-cgroup.md, "Directories"), refuses a hook file inside it by the name alone."""
     probe = tempfile.mkdtemp(prefix=".perf-probe-stack-", dir=".")
     try:
-        os.mkdir(os.path.join(probe, ".git"))
-    except PermissionError:
-        return "filtered"
+        try:
+            os.mkdir(os.path.join(probe, ".git"))
+        except PermissionError:
+            return "filtered"
+        try:
+            os.mkdir(os.path.join(probe, ".git", "hooks"))
+            with open(os.path.join(probe, ".git", "hooks", "pre-commit"), "wb"):
+                pass
+        except PermissionError:
+            return "BPF policy"
     finally:
         shutil.rmtree(probe, ignore_errors=True)
     return "unfiltered bind mount"
