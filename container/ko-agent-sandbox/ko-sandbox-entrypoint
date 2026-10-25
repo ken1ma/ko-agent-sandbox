@@ -10,7 +10,7 @@
 # the outcome wanted, and its staging directory is removed.
 #
 # Before seeding, it refuses a session whose container lacks its seccomp filter, no-new-privileges
-# or exact capabilities.
+# or exact capabilities, and a --nesting=none session that can create a user namespace.
 #
 # Then each agent's trust entry for the workspace, keyed by the path it is mounted at: the working
 # directory, which the launcher sets to the workspace root's own path. Per launch rather than
@@ -41,7 +41,7 @@ proc=${KO_SANDBOX_PROC:-/proc}
 status_field() { awk -v key="$1:" '$1 == key { print $2 }' "$proc/self/status" 2>/dev/null; }
 case "${KO_AGENT_SANDBOX_NESTING-}" in
     '') capabilities= ;;
-    none) capabilities=0000000000000000 ;;
+    none|user-namespace) capabilities=0000000000000000 ;;
     same-uid) capabilities=0000000000040000 ;; # cap_sys_chroot, and only that
     *) capabilities="(none for nesting mode $KO_AGENT_SANDBOX_NESTING)" ;;
 esac
@@ -57,6 +57,15 @@ if [ -n "$capabilities" ]; then
         } >&2
         exit 1
     fi
+fi
+# Seccomp 2 shows a filter, not which: under none the launcher's own profile must be the one, and
+# it answers this unshare with EPERM (SeccompProfile.scala).
+if [ "${KO_AGENT_SANDBOX_NESTING-}" = none ] && unshare -U true 2>/dev/null; then
+    {
+        echo "error: this session's container can create a user namespace, which --nesting=none refuses (SECURITY.md);"
+        echo "  the launcher's seccomp profile is not in force. Report a bug with podman --version."
+    } >&2
+    exit 1
 fi
 
 # No $volume, no seeding: a session always has the directory — the image ships nonroot's, and the

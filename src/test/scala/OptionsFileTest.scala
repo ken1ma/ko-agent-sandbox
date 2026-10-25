@@ -131,7 +131,7 @@ class OptionsFileTest extends munit.FunSuite:
     assertEquals(fileOptions("--memory=1g\n# again\n--memory=2g"), Left(s"error: $Shown:3: --memory is given twice"))
     assertEquals(
       fileOptions("--nesting=on"),
-      Left(s"error: $Shown:1: --nesting=on; the values are none, same-uid, exactly"),
+      Left(s"error: $Shown:1: --nesting=on; the values are none, user-namespace, same-uid, exactly"),
     )
     assertEquals(
       fileOptions("--env=X\n--egress-cred=X@a.example").flatMap(merge(_, NoOptions)),

@@ -91,8 +91,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       Some(
         "error: the launcher does not read KO_AGENT_SANDBOX_MEMORY; --memory=<size> replaces it. Unset it, and " +
           "pass --memory=8g to keep that value\n" +
-          "error: the launcher does not read KO_AGENT_SANDBOX_NESTING; --nesting=none|same-uid replaces it. Unset " +
-          "it, and pass --nesting=same-uid to keep that value",
+          "error: the launcher does not read KO_AGENT_SANDBOX_NESTING; --nesting=none|user-namespace|same-uid " +
+          "replaces it. Unset it, and pass --nesting=same-uid to keep that value",
       ),
     )
     // A session sets these for the agent, and a launcher run in it inherits them.
@@ -116,7 +116,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       replacedVariablesRefusal(Map("KO_AGENT_SANDBOX_NESTING" -> "", "KO_AGENT_SANDBOX_MEMORY" -> "").get, false),
       Some(
         "error: the launcher does not read KO_AGENT_SANDBOX_MEMORY; --memory=<size> replaces it. Unset it\n" +
-          "error: the launcher does not read KO_AGENT_SANDBOX_NESTING; --nesting=none|same-uid replaces it. Unset it",
+          "error: the launcher does not read KO_AGENT_SANDBOX_NESTING; --nesting=none|user-namespace|same-uid " +
+          "replaces it. Unset it",
       ),
     )
     Vector("KO_AGENT_SANDBOX_PERSISTENT_VOLUME", "KO_AGENT_SANDBOX_IMAGE", "KO_AGENT_SANDBOX_PROXY_IMAGE").foreach:
@@ -263,8 +264,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
   test("a boundary an option weakens is an orange grant, its explanation plain, and the options file named after it"):
     assertEquals(
       nestingLine("same-uid", color = false),
-      "nesting: same-uid; /proc unmasked, SELinux label disabled and " +
+      "nesting: same-uid; user namespaces and mounts allowed, /proc unmasked, SELinux label disabled and " +
         "CAP_SYS_CHROOT added, for the whole session",
+    )
+    assertEquals(
+      nestingLine("user-namespace", color = false),
+      "nesting: user-namespace; user namespaces and mounts allowed, for the whole session",
     )
     val source = " (from ~/.config/ko-agent-sandbox/options)"
     assert(
@@ -375,12 +380,24 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(parseCommandLine(Nil).map(_.nestingMode), Right("none"))
     assertEquals(parseCommandLine(List("--nesting=none")).map(_.nestingMode), Right("none"))
     assertEquals(parseCommandLine(List("--nesting=same-uid")).map(_.nestingMode), Right("same-uid"))
-    Vector("", "on", "off", "ON", "1", "true", "single-uid", "SAME-UID", " same-uid ").foreach: value =>
-      assert(parseCommandLine(List(s"--nesting=$value")).isLeft, s"'$value' was not refused")
+    assertEquals(parseCommandLine(List("--nesting=user-namespace")).map(_.nestingMode), Right("user-namespace"))
+    Vector("", "on", "off", "ON", "1", "true", "single-uid", "SAME-UID", " same-uid ", "user-namespaces", "userns")
+      .foreach: value =>
+        assert(parseCommandLine(List(s"--nesting=$value")).isLeft, s"'$value' was not refused")
     assertEquals(
       parseCommandLine(List("--nesting=on")),
-      Left("error: --nesting=on; the values are none, same-uid, exactly"),
+      Left("error: --nesting=on; the values are none, user-namespace, same-uid, exactly"),
     )
+    // The profile is the default's boundary, and only `same-uid` gets the loosenings; every mode
+    // sets the variable (NestingVariable has why `none` does too).
+    val variable = "--env=KO_AGENT_SANDBOX_NESTING="
+    val state = Paths.get("/state")
+    assertEquals(
+      nestingArguments("none", state),
+      Vector("--security-opt=seccomp=/state/seccomp/nesting-none.json", variable + "none"),
+    )
+    assertEquals(nestingArguments("user-namespace", state), Vector(variable + "user-namespace"))
+    assertEquals(nestingArguments("same-uid", state), NestingLoosenings :+ (variable + "same-uid"))
     assert(parseCommandLine(List("--nesting=none", "--nesting=none")).swap.exists(_.contains("twice")))
     // What a nesting-enabled session loosens is these three flags and nothing else; SECURITY.md
     // describes the cost of exactly this set, so a fourth entry here is a doc change too.

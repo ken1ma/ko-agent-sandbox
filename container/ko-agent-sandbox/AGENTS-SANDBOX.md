@@ -7,6 +7,9 @@ This container is the security boundary.
 You are `nonroot` with `no-new-privileges` set. Linux capabilities are dropped except for
 `SYS_CHROOT` when `$KO_AGENT_SANDBOX_NESTING` is `same-uid`.
 You cannot become `root`; `apt-get install` and `systemctl` fail.
+Creating a user namespace (`unshare -Ur`, `bwrap`, a browser's or a tool's own sandbox) and
+mounting fail with `Operation not permitted` unless `$KO_AGENT_SANDBOX_NESTING` is
+`user-namespace` or `same-uid`; tell the user, who chooses at launch.
 `/home/nonroot`, `/tmp` and `/var/tmp` are writable. The appended "What this session may do"
 section names the workspace root and gives its workspace mode.
 
@@ -181,10 +184,10 @@ their command lines: `scala $KO_AGENT_SANDBOX_JAVA_OPTS run ...` or
 
 ## Containers in here: only if this session opted in
 
-At `KO_AGENT_SANDBOX_NESTING=none` (default), no container runtime is available or installable.
-Do not fight it. Run services directly: PostgreSQL rootless via `initdb`/`pg_ctl`, a JVM S3 mock
-such as Adobe S3Mock via `java -jar`. Bind to 127.0.0.1 and point the tests there. If a task needs
-a real runtime, tell the user and stop.
+At `KO_AGENT_SANDBOX_NESTING=none` (default) and `user-namespace`, no container runtime is
+available or installable. Do not fight it. Run services directly: PostgreSQL rootless via
+`initdb`/`pg_ctl`, a JVM S3 mock such as Adobe S3Mock via `java -jar`. Bind to 127.0.0.1 and
+point the tests there. If a task needs a real runtime, tell the user and stop.
 
 At `same-uid` a runtime runs, within four limits:
 

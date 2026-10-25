@@ -289,8 +289,10 @@ RUN set -euxo pipefail; \
         # Carried because an organization's server-managed settings, which override that
         # file, can enforce sandbox.failIfUnavailable: without these the session exits,
         # with the reason on stderr, which the TUI discards. Enabled in here it would
-        # also need enableWeakerNestedSandbox: bwrap cannot mount a fresh /proc under
-        # podman's masked /proc entries (measured, as for Codex below).
+        # also need a --nesting=user-namespace launch, since the default's seccomp
+        # profile refuses the user namespace bwrap creates, and enableWeakerNestedSandbox:
+        # bwrap cannot mount a fresh /proc under podman's masked /proc entries (measured,
+        # as for Codex below).
         bubblewrap \
         socat \
         # `/voice`'s recorder under --audio=mic, through its PulseAudio backend below
@@ -436,10 +438,11 @@ ENV KO_SANDBOX_TOOLCHAIN_PATH="$PATH"
 # managed_config.toml).
 #
 # danger-full-access: the container is the boundary, and Codex's own Linux
-# sandbox cannot finish setting up here. Measured, not assumed: unshare -Ur
-# works under --cap-drop=ALL, but mounting a fresh /proc fails while
-# podman's masked /proc entries are in place, and the bubblewrap-style
-# sandbox needs one for its pid namespace.
+# sandbox cannot finish setting up here. Measured, not assumed: under podman's
+# default seccomp profile unshare -Ur works under --cap-drop=ALL, but mounting
+# a fresh /proc fails while podman's masked /proc entries are in place, and the
+# bubblewrap-style sandbox needs one for its pid namespace; the launcher's
+# --nesting=none profile refuses the unshare itself.
 #
 # The project's trust_level is ko-sandbox-entrypoint's, in the user layer
 # ~/.codex/config.toml: it is per project, and this layer is the image's.

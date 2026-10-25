@@ -249,6 +249,10 @@ credentials another cloud's login produced, and what forwarding costs.
    absolute one on macOS and Linux) the session also mounts the main worktree's Git directory,
    read-only, so `git` works there ([SECURITY.md](SECURITY.md#defended), "The host's git executing
    what the sandbox wrote").
+1. A session creates no user namespace and mounts nothing: `unshare -Ur`, bubblewrap and an
+   agent's or a browser's own sandbox fail with `Operation not permitted`.
+   `--nesting=user-namespace` allows both for the whole session
+   ([SECURITY.md](SECURITY.md#no-containers-inside-the-sandbox-by-default)).
 1. `--nesting=same-uid` lets the session run containers of its own.
 
     1. Follow [AGENTS-SANDBOX.md](container/ko-agent-sandbox/AGENTS-SANDBOX.md) for the container
@@ -336,11 +340,14 @@ restore permission prompts and set the Claude Code status line.
                          sox_ng.exe on PATH on Windows. On macOS the terminal needs the
                          microphone permission (System Settings > Privacy & Security >
                          Microphone)
-      --nesting=none|same-uid
-                         none (default) allows no container runtime; same-uid allows rootless
-                         containers with one uid, host networking and session-only storage,
-                         but unmasks /proc, disables SELinux labeling and adds SYS_CHROOT for
-                         the whole session (SECURITY.md)
+      --nesting=none|user-namespace|same-uid
+                         none (default) runs the session under the launcher's seccomp
+                         profile, which refuses creating a user namespace and mounting;
+                         user-namespace allows both, under podman's default profile;
+                         same-uid also allows rootless containers with one uid, host
+                         networking and session-only storage, but unmasks /proc, disables
+                         SELinux labeling and adds SYS_CHROOT for the whole session
+                         (SECURITY.md)
       --session-start=pause|immediate
                          pause (default) holds a launch's startup lines on screen, because the
                          agent TUIs clear it: Enter or y starts, n or EOF at the prompt exits
@@ -427,10 +434,12 @@ restore permission prompts and set the Claude Code status line.
     Management actions, each recognized before the command; whatever follows
     belongs to the action:
 
-      --build            build the container images and install the workspace filter,
+      --build            build the container images, install the workspace filter and
+                         derive the --nesting=none seccomp profile from podman's default,
                          always pulling remote base images
       --update           update the agents: rebuild only the sandbox container
-                         image, without cache, on the base images --build built
+                         image, without cache, on the base images --build built, and
+                         derive the seccomp profile again
 
       --stats            show the resource use of the machine, the live sessions and each workspace.
                          Flags caches worth clearing with --reset-run-on-host

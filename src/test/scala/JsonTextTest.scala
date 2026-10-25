@@ -20,6 +20,30 @@ class JsonTextTest extends munit.FunSuite:
     assertEquals(JsonText.parse("[]"), Right(Arr(Vector.empty)))
     assertEquals(JsonText.parse("\"\""), Right(Str("")))
 
+  test("a rendered value reads back as itself, one field or item a line, empty containers on one"):
+    val value = Obj(Vector(
+      "name" -> Str("a\"b\\c\n\u0001"),
+      "n" -> Arr(Vector(Num("1"), Num("-2.5e3"), Bool(true), Null)),
+      "o" -> Obj(Vector.empty),
+      "a" -> Arr(Vector.empty),
+    ))
+    val text = JsonText.render(value)
+    assertEquals(JsonText.parse(text), Right(value))
+    assertEquals(
+      text,
+      """{
+        |  "name": "a\"b\\c\n\u0001",
+        |  "n": [
+        |    1,
+        |    -2.5e3,
+        |    true,
+        |    null
+        |  ],
+        |  "o": {},
+        |  "a": []
+        |}""".stripMargin,
+    )
+
   test("a field is found at the top level only, and a nested same-named field does not stand in"):
     val manifest = JsonText.parse("""{ "author": { "name": "me" }, "name": "band" }""").toOption.get
     assertEquals(manifest.field("name"), Some(Str("band")))

@@ -135,9 +135,12 @@ object AgentSandboxLauncher:
   // -------------------------------------------------------------------------
 
   /**
-   * Whether a container runtime may run inside the sandbox, as `--nesting` selects it: `none` — the
-   * default — or `same-uid`, which grants the listed loosenings for the whole session,
-   * at the cost SECURITY.md's "No containers inside the sandbox by default" section describes. `unmask=ALL`
+   * What a session may nest inside itself, as `--nesting` selects it: `none` — the default — runs
+   * under the launcher's seccomp profile (SeccompProfile), which refuses creating a user namespace
+   * and every mount syscall; `user-namespace` runs under podman's default profile, which allows
+   * both; `same-uid` also grants the listed loosenings for the whole session, so a rootless
+   * container runtime runs, at the cost SECURITY.md's "No containers inside the sandbox by
+   * default" section describes. `unmask=ALL`
    * because a nested pid namespace must mount a fresh /proc, and the kernel refuses that while
    * the masked entries remain mounted on it (measured: EPERM from a bare unshare with the masks in
    * place, SELinux permitting the mount and SYS_CHROOT granted);
@@ -1527,6 +1530,15 @@ object AgentSandboxLauncher:
       Option.when(parsed.claudePlugins.nonEmpty)(ClaudePlugins.OptionName),
     ).flatten
 
+  /** The `podman create` arguments of a nesting mode (NestingVariable has what each allows and why
+    * the variable is set for `none` too): the profile for `none`, the loosenings for `same-uid`. */
+  def nestingArguments(nesting: String, stateRoot: Path): Vector[String] =
+    val variable = s"--env=$NestingVariable=$nesting"
+    nesting match
+      case "none"     => Vector(SeccompProfile.createArgument(stateRoot), variable)
+      case "same-uid" => NestingLoosenings :+ variable
+      case _          => Vector(variable)
+
   private def launchSettings(options: OptionsInForce, os: Os): LaunchSettings =
     val parsed = options.parsed
     // First, before any check that starts a process (the clipboard's `ps` below): from here the values
@@ -1539,6 +1551,8 @@ object AgentSandboxLauncher:
     val (proxyImage, proxyImageOverridden) = proxyImageChoice(parsed.proxyImage)
 
     val nesting = parsed.nestingMode
+    // Before anything is created: a launch under podman's default profile is the weaker boundary.
+    if nesting == "none" then SeccompProfile.missingReason(stateRoot(os)).foreach(fail(_))
     val sessionStartMode = parsed.sessionStartMode
     val clipboard = parsed.clipboardMode
     val pathValue = env("PATH").getOrElse("")
@@ -2395,14 +2409,9 @@ object AgentSandboxLauncher:
       s"--env=KO_AGENT_SANDBOX_FILE_RULES=${sessionRuleLines.map(_.text).mkString("\n")}",
     ).toVector
 
-    // The nested-container loosenings (NestingLoosenings has the what and why). Loud every session
-    // they apply: the weaker boundary must never be the silent one.
-    val nestingEnv = s"--env=$NestingVariable=$nesting"
-    val nestedArgs = nesting match
-      case "none" => Vector(nestingEnv)
-      case mode =>
-        System.err.println(nestingLine(mode, settings.options.from("--nesting", os)))
-        NestingLoosenings :+ nestingEnv
+    // Loud every session a nesting loosening applies: the weaker boundary must never be the silent one.
+    if nesting != "none" then System.err.println(nestingLine(nesting, settings.options.from("--nesting", os)))
+    val nestedArgs = nestingArguments(nesting, stateRoot(os))
 
     // Loud for the same reason. WAYLAND_DISPLAY, because Claude Code and Copilot copy through
     // wl-copy only when they see a display, and otherwise through OSC 52, which Terminal.app

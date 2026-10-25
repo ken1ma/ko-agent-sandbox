@@ -57,6 +57,9 @@ class SandboxEntrypointTest extends munit.FunSuite:
     workspace: Path = Workspace,
     // KO_AGENT_SANDBOX_NESTING as the launcher sets it; None for a container run by hand.
     nesting: Option[String] = Some("none"),
+    // What the entrypoint's `unshare -U` probe finds: refused, as the launcher's profile answers
+    // it, unless a test says the container creates user namespaces.
+    userNamespaces: Boolean = false,
     environment: Map[String, String] = Map.empty,
   ): Process =
     val builder =
@@ -68,7 +71,8 @@ class SandboxEntrypointTest extends munit.FunSuite:
     nesting.fold(builder.environment.remove("KO_AGENT_SANDBOX_NESTING"))(
       builder.environment.put("KO_AGENT_SANDBOX_NESTING", _),
     )
-    path.foreach(dir => builder.environment.put("PATH", dir.toString + ":" + System.getenv("PATH")))
+    val entries = path.toVector :+ fakeUnshare(refused = !userNamespaces)
+    builder.environment.put("PATH", entries.map(_.toString).mkString("", ":", ":" + System.getenv("PATH")))
     // A suite run inside a --audio=mic session inherits its microphone variables; a test gives its own.
     MicrophoneRelay.sandboxEnvironment().foreach((name, _) => builder.environment.remove(name))
     environment.foreach(builder.environment.put(_, _))
@@ -125,6 +129,20 @@ class SandboxEntrypointTest extends munit.FunSuite:
         s"echo 'vda 100 1 $availableKb 1% /'\n",
     )
     df.toFile.setExecutable(true)
+    dir
+
+  /** An `unshare` answering as the kernel does under the launcher's profile (refused) or under
+    * podman's default (a user namespace created), on a PATH entry before the real one: the real one
+    * answers for the machine this suite runs on, not for the fixture's session. */
+  private def fakeUnshare(refused: Boolean): Path =
+    val dir = Files.createTempDirectory("ko-sandbox-entrypoint-unshare")
+    val unshare = dir.resolve("unshare")
+    Files.writeString(
+      unshare,
+      if refused then "#!/bin/sh\necho 'unshare: unshare failed: Operation not permitted' >&2\nexit 1\n"
+      else "#!/bin/sh\nexit 0\n",
+    )
+    unshare.toFile.setExecutable(true)
     dir
 
   private def finish(process: Process): (Int, String) =
@@ -245,6 +263,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val sameUid = ConfinedStatus.updated("CapEff", "0000000000040000")
     val started = Vector(
       (ConfinedStatus, Some("none")),
+      (ConfinedStatus, Some("user-namespace")),
       (sameUid, Some("same-uid")),
       // A container run by hand is not a session, whatever it runs with.
       (Map("Seccomp" -> "0", "NoNewPrivs" -> "0", "CapEff" -> "00000000a80425fb"), None),
@@ -257,6 +276,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
       (ConfinedStatus - "Seccomp", Some("none")), // a kernel without seccomp
       (ConfinedStatus.updated("NoNewPrivs", "0"), Some("none")),
       (sameUid, Some("none")),
+      (sameUid, Some("user-namespace")),
       (ConfinedStatus, Some("same-uid")),
       (ConfinedStatus, Some("other")),
     )
@@ -267,6 +287,20 @@ class SandboxEntrypointTest extends munit.FunSuite:
       assert(output.startsWith("error: this session's container runs with Seccomp "), output)
       assert(!output.contains("a b c"), output)
       assert(!Files.exists(home.resolve("persistent-volume").resolve("claude")), "seeded before refusing")
+
+  test("a --nesting=none session whose container creates a user namespace does not start; the other modes do"):
+    val (seed, home) = fixture()
+    val (code, output) = finish(start(seed, home, userNamespaces = true))
+    assertEquals(code, 1, output)
+    assert(output.startsWith("error: this session's container can create a user namespace"), output)
+    assert(!output.contains("a b c"), output)
+    assert(!Files.exists(home.resolve("persistent-volume").resolve("claude")), "seeded before refusing")
+    Vector("user-namespace" -> ConfinedStatus, "same-uid" -> ConfinedStatus.updated("CapEff", "0000000000040000"))
+      .foreach: (nesting, status) =>
+        val (seed, home) = fixture()
+        val (code, output) =
+          finish(start(seed, home, proc(8L << 20, status = status), nesting = Some(nesting), userNamespaces = true))
+        assertEquals((code, output), (0, "a b c "), nesting)
 
   test("a healthy machine prints nothing before the command"):
     val (seed, home) = fixture()

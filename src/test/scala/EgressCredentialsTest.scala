@@ -49,7 +49,8 @@ class EgressCredentialsTest extends munit.FunSuite:
         "error: 257 --egress-cred options; a launch takes at most 256",
       List("--egress-cred", "X@a.example") ->
         ("error: the launch options are spelled --workspace=<mode>, --egress=<profile>, --model-provider=<names>, " +
-          "--clipboard=<mode>, --audio=off|<devices>, --nesting=none|same-uid, --session-start=pause|immediate, " +
+          "--clipboard=<mode>, --audio=off|<devices>, --nesting=none|user-namespace|same-uid, " +
+          "--session-start=pause|immediate, " +
           "--memory=<size>, --persistent-volume=<name>, --image=<reference>, --proxy-image=<reference>, " +
           "--env=<name>[=<value>], --env-aws-cred[=<profile>], --egress-cred=<name>@<host>, " +
           "--run-on-host=<programs> and --claude-plugin-dir=<dir>"),

@@ -105,9 +105,9 @@ class SessionBoundaryTest extends munit.FunSuite:
     // that matters — a capability arriving without the variable that grants it.
     val nesting = env(AgentSandboxLauncher.NestingVariable).getOrElse("none")
     val expectedCapabilities = nesting match
-      case "none"     => "0000000000000000"
-      case "same-uid" => "0000000000040000" // cap_sys_chroot, and only that
-      case other      => fail(s"unknown nesting mode $other")
+      case "none" | "user-namespace" => "0000000000000000"
+      case "same-uid"                => "0000000000040000" // cap_sys_chroot, and only that
+      case other                     => fail(s"unknown nesting mode $other")
     assertEquals(field("/proc/self/status", "CapEff"), expectedCapabilities, s"nesting=$nesting")
 
     assert(mountOptions("/").exists(_.startsWith("ro")), "the root filesystem is writable")
@@ -118,6 +118,79 @@ class SessionBoundaryTest extends munit.FunSuite:
     val memoryLimit = Files.readString(Paths.get("/sys/fs/cgroup/memory.max")).trim
     assertNotEquals(memoryLimit, "max")
     assertEquals(Files.readString(Paths.get("/sys/fs/cgroup/memory.swap.max")).trim, "0")
+
+  /** Each syscall SeccompProfile decides, called with arguments the kernel answers before its
+    * capability check where it has such a check: `ENOENT`, `EINVAL` or `EBADF` from the kernel,
+    * `EPERM` or `ENOSYS` from the filter (measured on the machine's kernel 7.2.5 under podman's
+    * default profile, 2026-10-26). `fsopen`, `fspick` and `move_mount` check the capability first
+    * and answer `EPERM` either way. The `clone` with `CLONE_NEWUSER` is a fork when allowed, and
+    * the child exits at once. Then a thread and a child process, which the profile must leave
+    * working. */
+  private val SyscallProbe: String =
+    """import ctypes, errno, os, subprocess, threading
+      |libc = ctypes.CDLL(None, use_errno=True)
+      |libc.syscall.restype = ctypes.c_long
+      |nr = {'x86_64': dict(clone=56, unshare=272, setns=308, mount=165, umount2=166, pivot_root=155),
+      |      'aarch64': dict(clone=220, unshare=97, setns=268, mount=40, umount2=39, pivot_root=41)}[os.uname().machine]
+      |nr.update(clone3=435, open_tree=428, move_mount=429, fsopen=430, fsconfig=431, fsmount=432, fspick=433,
+      |          mount_setattr=442, open_tree_attr=467)
+      |def answer(name, *args):
+      |    ctypes.set_errno(0)
+      |    r = libc.syscall(ctypes.c_long(nr[name]), *[ctypes.c_long(a) if isinstance(a, int) else a for a in args])
+      |    print(name, 'ok' if r >= 0 else errno.errorcode.get(ctypes.get_errno(), str(ctypes.get_errno())))
+      |    return r
+      |CLONE_NEWUSER, SIGCHLD = 0x10000000, 17
+      |pid = answer('clone', CLONE_NEWUSER | SIGCHLD, 0, 0, 0, 0)
+      |if pid == 0: os._exit(0)
+      |if pid > 0: os.waitpid(pid, 0)
+      |answer('unshare', CLONE_NEWUSER)
+      |answer('clone3', None, 0)
+      |answer('setns', -1, 0)
+      |answer('mount', b'none', b'/nonexistent-ko-agent-sandbox', b'tmpfs', 0, None)
+      |answer('umount2', b'/tmp', 0xffff)
+      |answer('pivot_root', b'/nonexistent-ko-agent-sandbox', b'/nonexistent-ko-agent-sandbox')
+      |answer('open_tree', -1, b'', 0xffff)
+      |answer('move_mount', -1, b'', -1, b'', 0xffff)
+      |answer('fsopen', b'tmpfs', 0xffff)
+      |answer('fsconfig', -1, 0, None, None, 0)
+      |answer('fsmount', -1, 0xffff, 0)
+      |answer('fspick', -1, b'', 0xffff)
+      |answer('mount_setattr', -1, b'', 0xffff, None, 0)
+      |answer('open_tree_attr', -1, b'', 0xffff, None, 0)
+      |threading.Thread(target=lambda: None).start()
+      |print('child', subprocess.run(['true']).returncode)
+      |""".stripMargin
+
+  test("under --nesting=none no user namespace is created and nothing is mounted; processes still start"):
+    inSession()
+    val nesting = env(AgentSandboxLauncher.NestingVariable).getOrElse("none")
+    val unshared = run("unshare", "-Ur", "true")
+    if nesting != "none" then assertEquals(unshared.exit, 0, s"unshare -Ur under $nesting: ${unshared.err}")
+    else
+      assert(unshared.err.contains("Operation not permitted"), s"unshare -Ur: exit ${unshared.exit}, '${unshared.err}'")
+      val probe = run("python3", "-I", "-c", SyscallProbe)
+      assertEquals(probe.exit, 0, probe.err)
+      val answers = probe.text.linesIterator.map(_.split(" ", 2)).map(parts => parts(0) -> parts(1)).toMap
+      // The kernel's own answer to each probe's arguments is another errno (SyscallProbe), so these
+      // `EPERM`s are the filter's. `umount` has no syscall on these architectures.
+      val filtered = Vector(
+        "clone", "unshare", "setns", "mount", "umount2", "pivot_root", "open_tree", "fsconfig", "fsmount",
+        "mount_setattr",
+      )
+      filtered.foreach(name => assertEquals(answers.get(name), Some("EPERM"), name))
+      assertEquals(answers.get("clone3"), Some("ENOSYS"))
+      // Capability-first: the kernel answers `EPERM` to any arguments without CAP_SYS_ADMIN, so a
+      // session cannot tell the filter's refusal from the kernel's. They sit in the one rule whose
+      // other names the assertions above prove installed (SeccompProfile.AddedRules), and the
+      // derivation test proves the rule names them.
+      Vector("fsopen", "fspick", "move_mount").foreach(name => assertEquals(answers.get(name), Some("EPERM"), name))
+      // `open_tree_attr` (Linux 6.15): `ENOSYS` where libseccomp does not know the name and the
+      // default action refuses it, `EPERM` where it does.
+      assert(Set("EPERM", "ENOSYS").exists(answers.get("open_tree_attr").contains), answers.get("open_tree_attr"))
+      assertEquals(answers.get("child"), Some("0"))
+      val thread = Thread(() => ())
+      thread.start()
+      thread.join()
 
   test("the network has one interface and no route off it"):
     inSession()
