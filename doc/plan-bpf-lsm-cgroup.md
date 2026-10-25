@@ -138,8 +138,8 @@ reason, and its answer here:
   - Where C does cost is the controller: an ordinary process running as root, parsing the
     guard's records and calling libbpf. A memory bug there is a privileged one, reached through
     the launcher alone ("What is gained and what is lost", the privileged controller). A
-    memory-safe language hardens that piece, and its language is the loader choice "Sources"
-    leaves open.
+    memory-safe language hardens that piece; the controller stays C over libbpf until the
+    classifier's port ("Sources", loaders).
 - Read-only mounts protect a path, not a name: a host rename over the file takes the protection
   away, a nested repository has none, an NTFS short name passes beside the mount, and an absent
   `.git` needs a mount target created in the workspace. The hooks here judge the name and the
@@ -205,9 +205,9 @@ read so far.
 
 ### The hooks
 
-Eight hooks take eight of the ten slots `CGROUP_LSM_NUM` gives, a ninth under `--unix-sockets`
-(`file_receive` below), and hold the writes and the names of everything but directories at the
-VFS, whatever the backing. The name hooks are the `inode_*` hooks,
+Eight hooks take eight of the ten slots `CGROUP_LSM_NUM` gives, a ninth under `unix-socket`, a
+value of `--workspace` ("Phases", 6; `file_receive` below), and hold the writes and the names of
+everything but directories at the VFS, whatever the backing. The name hooks are the `inode_*` hooks,
 not the `path_*` hooks the syscalls call first, because overlayfs, which a session can mount where
 "Mounts" allows it, changes its upper layer through the `inode_*` hooks alone ("Inventory", row 20);
 each hook judges row 20's changes of its kind as well. Slots 9 and 10 stay free for what "Decisions
@@ -227,7 +227,7 @@ still open" may give them.
 | 8    | `inode_setattr` | `chmod`, `chown`, times, `truncate`, `O_TRUNC`; a FIFO's  | 11, 14    |
 |      |                 | times by type                                             |           |
 | 9    | `file_receive`  | a writable share file, or a FIFO of the share in any mode, | —         |
-|      |                 | arriving by IPC, `--unix-sockets`                         |           |
+|      |                 | arriving by IPC, `unix-socket`                           |           |
 
 `inode_create` judges a `mknod` of a regular file; the other types reach `inode_mknod`
 (`fs/namei.c`, `filename_mknodat`).
@@ -429,7 +429,7 @@ Hooks the plan does not need, and the fact that excuses each:
     each container's own, stay allowed. What binds where is measured in "Environment
     evidence": the one program with a socket on shared storage is Codex's app-server daemon,
     under `~/.codex`, and whether `codex exec` works without it is a Phase 3 row.
-  - `--unix-sockets` (a provisional name, "Decisions still open") lifts the refusal and attaches
+  - `unix-socket` lifts the refusal and attaches
     `file_receive` as a ninth hook, run on the receiver's cgroup since the hook's argument is a file
     (`kernel/bpf/bpf_lsm.c`, `bpf_lsm_find_cgroup_shim`). Of a file whose mount belongs to
     another mount namespace (`fs/mount.h`, `real_mount`, `mnt_ns`; the task's in `nsproxy`), or
@@ -596,7 +596,7 @@ The program classifies by object and position, never by a path string:
   4 tests: a socket is bound under `~`, the volume and the share are other mounts, and `rename`
   across mounts answers `EXDEV` before any hook (`fs/namei.c`, `do_renameat2`), while beneath
   the volume no socket comes to be in the first place. A version that binds another mount into
-  the container reopens this. `--unix-sockets` lifts the rule and keeps a socket out of a
+  the container reopens this. `unix-socket` lifts the rule and keeps a socket out of a
   gitdir by the same three hooks ("The hooks", `file_receive`, has the channel each closes).
 - No FIFO comes to be on a superblock of the root's type beneath a recorded root, none there is
   opened, and none has its times changed: `inode_mknod` refuses the creation by type,
@@ -614,7 +614,7 @@ The program classifies by object and position, never by a path string:
   calls from `notify_change` alone, so the time rule holds `touch` and not use; the open rule
   holds use, of a FIFO the host made included, since every open but `O_PATH` passes
   `security_file_open` before the file's own open (`fs/open.c`, `do_dentry_open`) and an
-  `O_PATH` open opens no pipe. Under `--unix-sockets`, `file_receive` refuses a FIFO of the
+  `O_PATH` open opens no pipe. Under `unix-socket`, `file_receive` refuses a FIFO of the
   share's type by inode type too, whatever its mode: a container on the machine outside any
   policy can open one and pass the descriptor, and a write through it would flush the times as
   the session's own open would. A `--workspace=read-only` session needs none of these: its bind
@@ -798,7 +798,7 @@ For each session:
    container process runs.
    - A read-back by a separate program, with the controller's privileges and none of its code:
      for each hook of the session's set, the eight of "The hooks", the ninth under
-     `--unix-sockets` and those a decision in "Decisions still open" adds, `BPF_PROG_QUERY` on
+     `unix-socket` and those a decision in "Decisions still open" adds, `BPF_PROG_QUERY` on
      the attach cgroup with `BPF_LSM_CGROUP`
      lists the attached programs by id, as the kernel's own test does
      (`prog_tests/lsm_cgroup.c`, `query_prog_cnt`), with the attach-flags buffer the query of
@@ -829,7 +829,7 @@ For each session:
      - The launcher places a process of its own in the attach cgroup and runs one refused
        operation per hook of that set against the fixture: `creat`, `mkfifo`, `symlink`, `link`
        and `rename` to a guarded name, an `unlink` of a guarded entry, an open for writing and a
-       `chmod` of a guarded file, a `bind` of a socket in the fixture or, with `--unix-sockets`,
+       `chmod` of a guarded file, a `bind` of a socket in the fixture or, with `unix-socket`,
        in its `.git`, and one operation per hook a decision adds; then one write per rule-line
        entry and one write to an ordinary entry.
      - Each write's expected answer is derived from the whole ordered rule set, as the filter
@@ -1201,7 +1201,7 @@ verifier row keeps the walk's counts of the three revisions before beside this o
 |                          | partial matches, which the guard's compiler reproduces                |
 |                          | (`bpf_records.rs`, its first test)                                    |
 | corpus                   | 252 cases: 238 under the default flags, 6 under the short-name flag   |
-|                          | and 8 under `--unix-sockets`, 0 mismatches each; 5 of the 238, the    |
+|                          | and 8 under `unix-socket`, 0 mismatches each; 5 of the 238, the      |
 |                          | `mkfifo` cases, answered by the share's `EACCES` before any hook,     |
 |                          | counted apart                                                         |
 | git                      | status, add, commit, a branch, log and gc in the clone; `git config`  |
@@ -1353,7 +1353,7 @@ launcher's steps 1 to 4.
 | step 3                   | the read-back 13 to 17 ms: eight programs, nine maps (the eight of    |
 |                          | the policy and the string literals' read-only map, its bytes the      |
 |                          | installed object's), five roots, 56 rules; the proof's 68 operations  |
-|                          | (69 under `--unix-sockets`) 33 to 44 ms, 0 mismatches, in a scope     |
+|                          | (69 under `unix-socket`) 33 to 44 ms, 0 mismatches, in a scope       |
 |                          | under the slice                                                       |
 | the session              | the first process is refused `.git/config` and writes an ordinary     |
 |                          | file; `podman exec` is refused; after `podman restart` the first      |
@@ -1373,7 +1373,7 @@ launcher's steps 1 to 4.
 |                          | another rule file's records: `map-contents rules index=55`; no        |
 |                          | container exists after any; the proof alone catches the records too,  |
 |                          | one mismatch (`.vscode/settings.json`)                                |
-| `--unix-sockets`         | nine hooks attached and verified; the proof's `bind` in `.git`        |
+| `unix-socket`           | nine hooks attached and verified; the proof's `bind` in `.git`        |
 |                          | refused, and a directory descriptor sent from a mount namespace of    |
 |                          | the sender's own refused on arrival                                   |
 | pins across a rule       | the check finds `map-contents rules index=55`, the pins go and fresh  |
@@ -1739,7 +1739,7 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    `findmnt` records the share's backend and options first, since 9p without metadata caching
    makes a new inode per lookup and keeps `i_ino` from the QID alone (`fs/9p/vfs_inode.c`,
    `v9fs_get_new_inode_from_fid`). And the verifier's time to load the eight programs, nine with
-   `--unix-sockets`, with the `rename_lock` read and its fetch-add barrier ("What is gained and what
+   `unix-socket`, with the `rename_lock` read and its fetch-add barrier ("What is gained and what
    is lost") in the walk, and `bpftool prog dump jited` showing the barrier instruction on each
    architecture. And, under the attach cgroup, a `createContainer` hook (`podman --hooks-dir`)
    that records its `/proc/self/cgroup` and opens the marker for writing: the open must fail
@@ -1863,7 +1863,7 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    - the NTFS short-name form under its flag: a mutation whose ancestry or own name has the form
      denied, a name with a `~` outside the form allowed; the form on a real NTFS volume is the
      Windows driver's row;
-   - under `--unix-sockets`, four sandboxes with their own policies, a live session, a second
+   - under `unix-socket`, four sandboxes with their own policies, a live session, a second
      session of the workspace launched under a later rule file, a session of another workspace
      and a `--workspace=read-only` session, holding nine hooks of the ten slots and differing in
      policy:
@@ -1987,7 +1987,14 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    `.git/hooks`, refused under the policy and through the filter and made over the bare bind, shows
    each stack is what it claims before the figures are taken.
    Gate: the numbers are recorded; the default changes only by a release decision.
-6. **Integration.** A backend selector with a capability probe, run at every launch: `bpf` in
+6. **Integration.** Beside the mode, `--workspace` takes comma-separated values for the backend
+   and for sockets, the user's decisions of 2026-10-26. The backend is `bpf` or `fuse`, the
+   filter; `fuse` stays the default of both modes until the release decision. `unix-socket`
+   allows Unix sockets in the workspace and beneath the persistent volume at the cost of the
+   ninth hook ("The hooks", `file_receive`), and is a fatal error with `fuse`, since the filter
+   cannot honor it. The parser accepts the values in any order, and the container label holds
+   one canonical spelling, so that the refusal below compares settings, not spellings.
+   The backend selector with a capability probe, run at every launch: `bpf` in
    the active LSM list, cgroup v2 with the user's delegated subtree under the manager podman
    reports, `bpffs` and `securityfs` mounted, which the launcher mounts where the machine does
    not ("Environment evidence", Windows), the share's type among the measured ones, and a
@@ -1996,14 +2003,14 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    `--workspace=read-only` where the probe passes and the raw `ro` bind with the printed host
    requirements where it fails, the launch line naming the backend and the accepted differences, the
    removal of the filter from the first version's sessions, with the selector keeping it for the
-   rest ("Later versions") and refusing a launch whose backend or `--unix-sockets` setting differs
+   rest ("Later versions") and refusing a launch whose backend or `unix-socket` setting differs
    from a live session's sharing its volume or a raw mount, or that of an unlabelled or renamed one
    ("The hooks", `file_receive`), and the documentation changes "The recorded decisions this
    answers" names. It needs the profile "Mounts" relies on to have shipped. Its rows, which
    need the launcher:
    - under the profile the launcher installs, `io_uring_setup` answers `ENOSYS` from the
      container's first process and from a `podman exec` process ("The hooks", `file_receive`);
-   - a launch under the other backend or the other setting of `--unix-sockets` while a session
+   - a launch under the other backend or the other setting of `unix-socket` while a session
      sharing its volume or a raw mount is live, refused in either order: for a main checkout and
      a linked worktree sharing its volume, for two sessions of one workspace naming two volumes,
      for a workspace below another's root, for a linked worktree with its own volume beside its
@@ -2039,13 +2046,16 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
      cgroup through a transient scope of the user manager ("Phase 4 on WSL"), and a scope that
      cannot be created or a migration that fails ends the launch before any container;
    - the FIFO rules ("The policy"): `mknod` of a FIFO refused by type in `inode_mknod`, its
-     open in `file_open`, a time change on one in `inode_setattr` and, under `--unix-sockets`,
+     open in `file_open`, a time change on one in `inode_setattr` and, under `unix-socket`,
      its descriptor in `file_receive`, each a corpus case over a FIFO the host made, opened with
      `O_NONBLOCK` so that the test itself never waits, and the proof's `mkfifo` at an ordinary
-     name, under which the measured sections of Phases 3 to 5
-     name a sources hash the tree no longer has; `check-evidence.sh` then needs a way to mark a
-     section as the evidence of the program before this change, or the three phases rerun on the
-     changed program.
+     name, under which the measured sections of Phases 3 to 5 name a sources hash the tree no
+     longer has: the three probes rerun on the changed program on both machines, the FIFO cases
+     in Phase 3's corpus and the `mkfifo` in Phase 4's fixture, and their sections are rewritten
+     from the reruns. `check-evidence.sh` gets no marker for a superseded section, the user's
+     decision of 2026-10-26: a section stands for the program in the tree alone, so that no later
+     change of the program, the Rust port among them, leaves the plan's evidence describing
+     another program.
 
 
 ## What is gained and what is lost
@@ -2081,7 +2091,7 @@ Gained:
     request stalls for every later one (`upstream-issues.md`, "Setting a FIFO's times blocks
     the macOS virtio-fs server").
   - A FIFO on the share is refused by type, its creation in `inode_mknod`, its open in
-    `file_open`, its time change in `inode_setattr` and, under `--unix-sockets`, its descriptor
+    `file_open`, its time change in `inode_setattr` and, under `unix-socket`, its descriptor
     in `file_receive` ("The policy"), the decision of 2026-10-25; the measured program has none
     of these yet, and a FIFO at an ordinary name passes it ("Phase 4 on macOS").
 - **No window between resolving and acting.** The decision is taken inside the syscall, on the
@@ -2160,7 +2170,7 @@ Lost, stated as what becomes possible that the filter does not allow:
   form no project is known to use. No protection is weakened.
 - **No Unix socket in the workspace or beneath the persistent volume, by default.** Of the
   installed software, Codex's app-server daemon alone binds one there ("Environment evidence");
-  `--unix-sockets` allows them at the cost of a ninth hook ("The hooks", `file_receive`).
+  `unix-socket` allows them at the cost of a ninth hook ("The hooks", `file_receive`).
   - Under the option a `--workspace=read-only` session can connect to a socket a live session
     binds on the share or the volume and send it data: no hook judges `connect` or a socket's
     `sendmsg`, and the bytes do not touch the socket's inode. It cannot bind one, mutate the
@@ -2178,7 +2188,7 @@ Lost, stated as what becomes possible that the filter does not allow:
   volume or a file of another type, which reaches no share ("The hooks"), and the session's
   policy recording no root lets nothing on the share be opened for writing ("The hooks",
   `file_receive`). No protection is weakened.
-- **No socket inode inside a gitdir under `--unix-sockets`, by creation, rename or link.** Git
+- **No socket inode inside a gitdir under `unix-socket`, by creation, rename or link.** Git
   binds its one there at the root, a name the filter refuses already. No protection is
   weakened.
 - **A directory at any name, `.git` and `.ko-agent-sandbox` included.** The session can create
@@ -2191,15 +2201,12 @@ Lost, stated as what becomes possible that the filter does not allow:
 
 Decisions still open, each the user's, taken after Phase 2's table:
 
-- **The option's name.** `--unix-sockets` stands in for the option that allows Unix sockets in
-  the workspace and beneath the persistent volume at the cost of the ninth hook ("The hooks",
-  `file_receive`).
 - **The routes under `NESTING=same-uid` whose syscalls a nested podman needs, a later version.**
   The seccomp rule cannot refuse those syscalls, and the two free slots ("The hooks") can hold
   two of their hooks. Which two, and so which routes stay open on such sessions, is this decision.
   - A `NESTING=none` session attaches eight hooks and such a session ten, so both fit the
     machine's ten slots at once, unless something else in the VM holds one ("The mechanism") or
-    a `--unix-sockets` session holds the ninth, when one route's hook has no slot.
+    a `unix-socket` session holds the ninth, when one route's hook has no slot.
   Each route's consequence:
   - `inode_set_acl` open: an ACL set on a protected file rewrites its mode bits
     (`posix_acl_update_mode`), a `chmod` the hooks never see;
@@ -2308,7 +2315,7 @@ It is not a backend for this policy.
   mount syscall succeeds, and a mount under the bind source refuses the launch.
 - By default no socket inode comes to be in the workspace or beneath the persistent volume, by
   creation, rename or link, so the session opens no channel to another container. Under
-  `--unix-sockets`, a descriptor one sandbox passes another is judged by the receiver's policy, a
+  `unix-socket`, a descriptor one sandbox passes another is judged by the receiver's policy, a
   descriptor from another container is refused on arrival unless it is a non-directory of the share
   beneath a recorded root that the receiver could open so by path, of its own volume, or of a type
   that reaches no share, every directory among the refused and passing within one container
@@ -2352,8 +2359,11 @@ It is not a backend for this policy.
   through `/proc/kallsyms` (https://github.com/aya-rs/aya/pull/1372) is in no release as of
   2026-10-19; the policy program reads no kernel symbol since the per-dentry `d_seq` replaced
   `rename_lock` ("What is gained and what is lost"), which the Phase 1 and 2 probes resolved as
-  a typeless `__ksym` extern through `/proc/kallsyms`, as libbpf does at load. Decide after
-  Phase 1.
+  a typeless `__ksym` extern through `/proc/kallsyms`, as libbpf does at load. By the user's
+  decision of 2026-10-26 the controller stays C over libbpf until the classifier is ported to
+  Rust ("Later versions"), a scheduling choice: a Rust controller needs no CO-RE from `rustc`,
+  which only the program needs. Aya is the port's candidate, under the relocation suite that
+  section names.
 - Prior art for container-scoped BPF policy, none of which carries this policy: KubeArmor
   (https://github.com/kubearmor/KubeArmor), BPFContain
   (https://github.com/willfindlay/bpfcontain-rs), Aegis-BPF (https://github.com/ErenAri/Aegis-BPF).

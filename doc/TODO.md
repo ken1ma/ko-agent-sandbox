@@ -154,8 +154,9 @@ measurement.
 Decided 2026-10-25: a FIFO's creation in the workspace and a time change on one are refused, by the
 filter now (`fuse/ko-agent-fs/src/fs.rs`, `mknod` and `setattr`; `tests/mounted_mutate.rs`,
 `a_fifo_is_neither_made_nor_retimed_through_the_mount`) and, with any open of one and its
-descriptor under `--unix-sockets`, by the BPF backend's hooks when its program is next built
-(`doc/plan-bpf-lsm-cgroup.md`, "The policy"), on every platform, until libkrun opens the FIFO
+descriptor under the `unix-socket` value of `--workspace`, by the BPF backend's hooks when its
+program is next built (`doc/plan-bpf-lsm-cgroup.md`, "The policy"), on every platform, until
+libkrun opens the FIFO
 without blocking (`upstream-issues.md`, containers/libkrun). Why more than the creation: a
 session's write through a FIFO makes the guest kernel flush the FIFO's changed times to the share
 itself, with no `utimensat` from any process, so refusing creation alone leaves a host-made FIFO
