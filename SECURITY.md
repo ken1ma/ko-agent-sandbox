@@ -22,8 +22,9 @@ costs are described below.
   - The session's entrypoint refuses to start unless `/proc/self/status` shows a seccomp filter,
     `no-new-privileges` and exactly the capabilities `--nesting` grants: the host's
     `containers.conf` can turn the filter off, and `podman info` reports only kernel support.
-  - The check shows that a filter is loaded, not what it allows: a permissive `seccomp_profile`
-    in `containers.conf` passes.
+  - The status check shows that a filter is loaded, not which. Under `--nesting=none` the
+    entrypoint also runs `unshare -U`, which the launcher's profile refuses and podman's default
+    allows ("No containers inside the sandbox by default").
 - Writable `$HOME` and `/tmp` contents outside the persistent volume are discarded with the session.
 - No host container-runtime socket is mounted: access to one would let a session control containers
   outside its confinement. `SessionBoundaryTest` checks both Docker and Podman socket paths.
@@ -677,6 +678,9 @@ launching in an unfamiliar workspace, as you would its build scripts.
 podman, the OCI runtime, namespaces, seccomp and the host kernel. This design is not built to
 contain a working kernel or container-runtime exploit; if that enters the threat model, the answer
 is a stronger isolation layer (gVisor, a microVM), at its compatibility cost, not more flags here.
+The `--nesting=none` seccomp profile ("No containers inside the sandbox by default") is not such
+containment: it removes kernel interfaces from a session's reach, those a user namespace unlocks
+and the mount syscalls, and claims nothing about an exploit already running.
 The podman machine on macOS and Windows is not that layer: a process that escapes the container
 into the podman machine reaches every host directory it shares, `/Users`, `/private` and
 `/var/folders` on macOS and the `C:` drive at `/mnt/c` on Windows
@@ -1668,10 +1672,47 @@ Test services can instead run as ordinary processes inside the sandbox, with the
 capabilities and egress confinement: PostgreSQL through `initdb`/`pg_ctl`, for example, or an S3
 endpoint through a JVM mock such as Adobe S3Mock.
 
-**The opt-in, and the controls it relaxes.** `--nesting` accepts `none` or `same-uid`; without the
-option it is `none`, and any other value fails the launch. Selecting
-`same-uid` relaxes these controls for every process in the session, including untrusted repository
-code. `NestingLoosenings` records why each change is required:
+**The default's seccomp profile.** Under `--nesting=none` the session runs under the launcher's
+own seccomp profile (`SeccompProfile.scala`), not podman's default, which lets an unprivileged
+process create a user namespace: measured in a default session 2026-10-17, after `unshare -Urm`
+the process holds every capability (`CapEff` `000001ffffffffff`) and mounts `tmpfs`, a bind and
+overlayfs; `io_uring_setup` answers `ENOSYS` already, so that interface needs no rule. The
+profile:
+
+- answers a `clone` or `unshare` that sets `CLONE_NEWUSER` with `EPERM`, the "Operation not
+  permitted" `unshare -Ur` and bubblewrap print, and allows one that does not;
+- answers `clone3` with `ENOSYS`, since its flags sit in memory a filter cannot read. glibc 2.41,
+  the image's, retries with `clone`, `posix_spawn` included except with `POSIX_SPAWN_SETCGROUP`;
+  Go has no fallback for a launch that sets `UseCgroupFD` or `CLONE_NEWTIME` and calls `clone`
+  for any other (`SeccompProfile.NamespaceSyscalls` has the sources);
+- answers `setns` and every mount syscall, `mount` to `pivot_root`, with `EPERM`. Without a user
+  namespace each already fails for want of a capability; the rules keep a mistake in the namespace
+  rules from reopening a mount or a join, which `doc/plan-bpf-lsm-cgroup.md` ("Mounts") relies
+  on. The whole mount family, because a mount `fsmount` or `open_tree` returns is writable through
+  its descriptor before `move_mount` attaches it (measured 2026-10-17).
+
+`--build` and `--update` derive it from the default profile the podman host has installed, so a
+podman upgrade's changes reach it at the next build, and name it to `podman create` by path; the
+server reads it, which is why it sits under the launcher's state root, a directory the podman
+machine shares. The refused names are taken out of the default's rules rather than overruled by
+later ones: libseccomp keeps a syscall's first unconditional rule and drops every later rule for
+it, measured on the default's own later `setns` refusal, which `setns(-1, 0)` shows is not in
+force (`EBADF` from the kernel).
+
+Its cost: every program that sandboxes itself with a user namespace fails at that step —
+bubblewrap, Chromium's namespace sandbox, the agents' own command sandboxes — and a workspace's
+own `unshare -Ur` step fails with `Operation not permitted`. Claude Code's Bash-command sandbox is
+off in the managed settings and Codex runs `danger-full-access`
+(`container/ko-agent-sandbox/Containerfile` has the reasons), so neither calls bubblewrap as
+configured.
+
+**The opt-ins, and the controls they relax.** `--nesting` accepts `none`, `user-namespace` or
+`same-uid`; without the option it is `none`, and any other value fails the launch.
+`user-namespace` runs the session under podman's default profile: every process in it, untrusted
+repository code included, can create user namespaces and mount within them, which
+`doc/plan-bpf-lsm-cgroup.md` ("Mounts") judges as it judges `same-uid`'s mounts. `same-uid` runs
+under the default profile too and relaxes these controls for every process in the session.
+`NestingLoosenings` records why each change is required:
 
 - `--security-opt=unmask=ALL` re-exposes the informational files — `/proc/keys`,
   `/proc/timer_list`, `/proc/sched_debug` — while `/proc/kcore` stays unreadable, owned by a real

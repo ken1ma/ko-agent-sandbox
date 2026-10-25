@@ -10,9 +10,9 @@ other container keep unfiltered access to the same files.
 The first version serves `NESTING=none` sessions launched with the launcher's own seccomp profile
 on the podman machines, where that kernel is the machine's, and gives a `--workspace=read-only`
 session there a policy recording no root ("The hooks", `file_receive`, has why).
-`NESTING=same-uid` sessions, sessions launched with the profile's loosening option (`TODO.md`,
-"Refuse user namespaces and mounts under `NESTING=none`", which ships both) and native Linux
-hosts keep the filter until "Later versions" admits them.
+`NESTING=same-uid` and `NESTING=user-namespace` sessions (`../SECURITY.md`, "No containers inside
+the sandbox by default") and native Linux hosts keep the filter until "Later versions" admits
+them.
 
 Status: the environment prerequisites and the cgroup placement are measured on both machines
 ("Environment evidence"), Phase 0 is done ("Inventory"), and Phase 1's probe
@@ -67,7 +67,7 @@ for it; until then Phase 6's backend selector launches those sessions with the f
 the podman machines their `--workspace=read-only` sessions under the no-root policy, which
 denies the share wholly and needs none of the routes the first item names:
 
-- `NESTING=same-uid` sessions and `NESTING=none` sessions with the profile loosened, where the
+- `NESTING=same-uid` and `NESTING=user-namespace` sessions, where the
   session mounts and creates user namespaces: the routes a nested podman needs and the free slots,
   overlayfs's `user.overlay.*` names ("Decisions still open"), Phase 2's nested-podman measurement,
   Phase 3's alias and overlay rows, among them a copy-up that moves a protected object to a new
@@ -538,15 +538,15 @@ Hooks the plan does not need, and the fact that excuses each:
 ### Mounts
 
 Under `NESTING=none`, the launcher's seccomp profile refuses creating a user namespace and every
-mount syscall (`TODO.md`, "Refuse user namespaces and mounts under `NESTING=none`"). That item
-ships before this backend, and the backend does not ship without it.
+mount syscall (`../SECURITY.md`, "No containers inside the sandbox by default";
+`SeccompProfile.scala`).
 
 - It removes row 20's overlay mount, whose `user.overlay.*` writes no taken slot holds, and row
   21's bind of the workspace at a second path: without a user namespace the session holds no
   capability to mount with.
-- The profile has neither rule under `NESTING=same-uid`, where a nested podman creates user
-  namespaces and mounts, nor on a `NESTING=none` session launched with the profile's loosening
-  option. On both, a later version's sessions ("Later versions"), the hooks judge rows 20 and 21
+- Neither `NESTING=same-uid`, where a nested podman creates user namespaces and mounts, nor
+  `NESTING=user-namespace` runs under the profile: both keep podman's default. On both, a later
+  version's sessions ("Later versions"), the hooks judge rows 20 and 21
   ("The policy"), and overlayfs's `user.overlay.*` names are the decision "Decisions still open"
   holds for them.
 
@@ -1677,8 +1677,8 @@ The rows, where the table does not say it all:
   with `EOPNOTSUPP` (`fs/fuse/dir.c`).
 - Row 20: no `path_*` hook runs. Measured in a session on 2026-10-15: after `unshare -Urm`,
   `mount -t overlay` with `userxattr` and layers on `tmpfs` succeeds, and `mkdir merged/.git`
-  lands in the upper layer. "Mounts" refuses the mount under `NESTING=none` unless the session
-  loosens the profile.
+  lands in the upper layer. "Mounts" refuses the mount under `NESTING=none`;
+  `NESTING=user-namespace` keeps podman's default profile.
   - overlayfs changes the upper layer through `vfs_create`, `vfs_mkdir`, `vfs_rename` and
     their siblings, `notify_change` and `vfs_setxattr` (`fs/overlayfs/overlayfs.h`), which call
     the `inode_*` hooks only; `fs/namei.c` calls the `path_*` hooks from the syscalls' paths.
@@ -1889,9 +1889,10 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
      - a file descriptor into the other workspace's session and into the read-only session,
        which get nothing; the read-only session itself writing nothing on the share, writing
        `/tmp` and reading the workspace;
-   - the seccomp profile "Mounts" relies on, derived from the machine's default as `TODO.md`
-     plans it: `unshare` and each mount syscall answer `EPERM` and a child process still starts.
-   For the later version, under `NESTING=same-uid` and with the profile loosened, the session
+   - the seccomp profile "Mounts" relies on, derived from the machine's default
+     (`SeccompProfile.scala`): `unshare` and each mount syscall answer `EPERM` and a child
+     process still starts.
+   For the later version, under `NESTING=same-uid` and `NESTING=user-namespace`, the session
    binds the workspace and a nested filesystem at other paths in a mount namespace of its own and
    mutates through the aliases, and through an overlay mount; and a host hard link to a nested
    `.git` pointer file, made before and after launch, the residual "The policy" records under
@@ -2232,9 +2233,9 @@ Decisions still open, each the user's, taken after Phase 2's table:
     directory, or be made permanently read-only.
   Nothing is pre-accepted.
 - **overlayfs's `user.overlay.*` names on protected directories, where the session can mount:
-  under `NESTING=same-uid`, and on a `NESTING=none` session with the profile loosened
-  ("Mounts"), a later version.** No taken slot holds `inode_setxattr`, and the seccomp rule does
-  not see overlayfs's own writes ("Attributes, flags and ioctls"). Pending, between:
+  under `NESTING=same-uid` and `NESTING=user-namespace` ("Mounts"), a later version.** No taken
+  slot holds `inode_setxattr`, and the seccomp rule does not see overlayfs's own writes
+  ("Attributes, flags and ioctls"). Pending, between:
   - accepting them: a `user.` xattr on a protected directory, which no host program here reads;
   - `inode_setxattr` in a free slot on such sessions, which holds row 15 there too and leaves one
     free slot to the decision above.

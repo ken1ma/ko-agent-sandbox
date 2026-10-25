@@ -1,5 +1,6 @@
-// A JSON reader for the files the launcher only reads, such as a plugin manifest: the launcher has
-// no JSON library, and what it writes is literal text.
+// A JSON reader for the files the launcher reads, such as a plugin manifest, and a writer for the
+// one it derives from a read file, the seccomp profile (SeccompProfile): the launcher has no JSON
+// library, and its other output is literal text.
 
 package agentsandbox.launcher
 
@@ -28,6 +29,51 @@ object JsonText:
       parser.skipSpace()
       if parser.at < text.length then Left(parser.error("text after the value")) else Right(value)
     catch case ex: Malformed => Left(ex.getMessage)
+
+  /** The value as JSON text: each object field and array item on a line of its own, nested ones
+    * indented two spaces further, an empty object or array on one line. Numbers as they were read. */
+  def render(json: Json): String =
+    val out = StringBuilder()
+    def quoted(value: String): Unit =
+      out += '"'
+      value.foreach:
+        case '"'                => out ++= "\\\""
+        case '\\'               => out ++= "\\\\"
+        case '\n'               => out ++= "\\n"
+        case '\r'               => out ++= "\\r"
+        case '\t'               => out ++= "\\t"
+        case char if char < ' ' => out ++= f"\\u${char.toInt}%04x"
+        case char               => out += char
+      out += '"'
+    def write(value: Json, depth: Int): Unit =
+      val inner = "  " * (depth + 1)
+      val outer = "  " * depth
+      value match
+        case Json.Obj(Vector())  => out ++= "{}"
+        case Json.Arr(Vector())  => out ++= "[]"
+        case Json.Str(text)      => quoted(text)
+        case Json.Num(text)      => out ++= text
+        case Json.Bool(boolean)  => out ++= boolean.toString
+        case Json.Null           => out ++= "null"
+        case Json.Obj(fields) =>
+          out ++= "{\n"
+          fields.zipWithIndex.foreach:
+            case ((name, field), index) =>
+              out ++= inner
+              quoted(name)
+              out ++= ": "
+              write(field, depth + 1)
+              out ++= (if index < fields.length - 1 then ",\n" else "\n")
+          out ++= outer + "}"
+        case Json.Arr(items) =>
+          out ++= "[\n"
+          items.zipWithIndex.foreach: (item, index) =>
+            out ++= inner
+            write(item, depth + 1)
+            out ++= (if index < items.length - 1 then ",\n" else "\n")
+          out ++= outer + "]"
+    write(json, 0)
+    out.result()
 
   private class Malformed(message: String) extends Exception(message)
 

@@ -53,9 +53,14 @@ object LaunchMessages:
     val said = names.map(name => chosen(name, color) + (if fromFile(name) then source else ""))
     s"forwarded environment: ${said.mkString(", ")}"
 
+  /** The two `--nesting` values that weaken the default's seccomp profile, which refuses creating a
+    * user namespace and mounting (SeccompProfile). */
   def nestingLine(mode: String, source: String = "", color: Boolean = colorStderr): String =
-    weakened(s"nesting: $mode", color) +
-      s"$source; /proc unmasked, SELinux label disabled and CAP_SYS_CHROOT added, for the whole session"
+    val loosened = mode match
+      case "same-uid" =>
+        "user namespaces and mounts allowed, /proc unmasked, SELinux label disabled and CAP_SYS_CHROOT added"
+      case _ => "user namespaces and mounts allowed"
+    weakened(s"nesting: $mode", color) + s"$source; $loosened, for the whole session"
 
   /** The shared agent-state volume, said whichever source named it. */
   def sharedVolumeLine(volume: String, source: String = "", color: Boolean = colorStderr): String =

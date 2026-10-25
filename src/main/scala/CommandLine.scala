@@ -53,9 +53,9 @@ object CommandLine:
         case None if devices.distinct != devices => Left(s"error: $AudioOption=$value names a device twice")
         case None                                => Right(devices)
 
-  /** `--nesting` (NestingLoosenings has what `same-uid` loosens) and `--session-start`
-    * (SessionStartVariable has why the launch pauses). */
-  val NestingModes = Vector("none", "same-uid")
+  /** `--nesting` (AgentSandboxLauncher.NestingVariable has what each value allows) and
+    * `--session-start` (SessionStartVariable has why the launch pauses). */
+  val NestingModes = Vector("none", "user-namespace", "same-uid")
   val DefaultNestingMode = "none"
   val SessionStartModes = Vector("pause", "immediate")
   val DefaultSessionStartMode = "pause"
@@ -321,7 +321,7 @@ object CommandLine:
   /** The options that take a value, with what the value is; each is refused spelled without its `=`. */
   val ValuedOptions: Map[String, String] = Map(
     "--workspace" -> "<mode>", "--egress" -> "<profile>", ModelProviderOption -> "<names>",
-    "--clipboard" -> "<mode>", AudioOption -> "off|<devices>", "--nesting" -> "none|same-uid",
+    "--clipboard" -> "<mode>", AudioOption -> "off|<devices>", "--nesting" -> "none|user-namespace|same-uid",
     "--session-start" -> "pause|immediate", "--memory" -> "<size>", PersistentVolumeOption -> "<name>",
     "--image" -> "<reference>", ProxyImageOption -> "<reference>", "--env" -> "<name>[=<value>]",
     "--egress-cred" -> "<name>@<host>", "--run-on-host" -> "<programs>", ClaudePlugins.OptionName -> "<dir>",

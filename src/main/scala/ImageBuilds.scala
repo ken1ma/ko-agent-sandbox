@@ -81,6 +81,7 @@ object ImageBuilds:
       ))
       verifyBuiltBundleLabels(Seq(coursierImage(ImgTagVersion) -> baseId), BaseBundleLabel)
       installKoAgentFs(podman, os, fsSourceId)
+      SeccompProfile.install(podman, os, SandboxImage)
       val (candidates, staleTags) = includeStaleSelfTestCleanup(
         podman,
         journal,
@@ -128,6 +129,8 @@ object ImageBuilds:
       )
       runBuilds(context, remoteImagePullCommands(podman, remoteImages) ++ commands)
       verifyBuiltBundleLabels(Seq(SandboxImage -> sandboxBundleId))
+      // Again here, so a podman upgrade between two --build runs reaches the sessions' profile.
+      SeccompProfile.install(podman, os, SandboxImage)
       val (candidates, staleTags) = includeStaleSelfTestCleanup(
         podman,
         journal,

@@ -212,80 +212,30 @@ are workspaces only the test uses.
   `./mvnw --version` in `mvn-fixture`, `./gradlew --version` in `gradle-fixture`, and
   `MILL_VERSION=1.1.10-jvm ./mill --no-daemon version` in `mill-fixture`, which the header has.
 
-## Refuse user namespaces and mounts under `NESTING=none`
+## Measure the agents under the `--nesting=none` seccomp profile
 
-- [ ] A launcher-owned seccomp profile for `NESTING=none` that refuses creating a user namespace,
-  so a session holds no capability in any namespace and reaches no kernel interface one unlocks.
-  `same-uid` keeps the default profile: rootless podman inside the session creates user
-  namespaces and mounts.
-  - Measured in a default session: `unshare -Ur true` returns 0, so the containers-common
-    default profile allows it, and `io_uring_setup` returns `ENOSYS`, so that interface needs no
-    rule (2026-09-22); after `unshare -Urm`, `CapEff` is `000001ffffffffff` and mounting `tmpfs`,
-    a bind and overlayfs succeeds (2026-10-17).
-  - `clone` and `unshare` carry their flags in a register, so the filter refuses `CLONE_NEWUSER`
-    and passes the rest.
-  - `clone3` carries them in a `struct clone_args` the filter cannot read (a seccomp filter sees
-    register values only, https://www.kernel.org/doc/html/latest/userspace-api/seccomp_filter.html),
-    and it reaches the kernel here (`EINVAL` on a zero-size argument), so the profile answers
-    every `clone3` with `ENOSYS`. A caller with no fallback to `clone` then fails:
-    - glibc 2.41, the image's, retries with `clone` on `ENOSYS`
-      (`sysdeps/unix/sysv/linux/clone-internal.c`, `__clone_internal`), and so does
-      `posix_spawn`, except with `POSIX_SPAWN_SETCGROUP`, which then fails with `ENOTSUP`
-      (`spawni.c`, `__spawnix`).
-    - Go calls `clone3` with no fallback for a launch that sets `SysProcAttr.UseCgroupFD` or
-      `CLONE_NEWTIME` in `Cloneflags`, and `clone` for any other (`src/syscall/exec_linux.go`,
-      `forkAndExecInChild1`, read on `master`).
-  - Measured 2026-10-17 with these rules installed by hand on one shell: `unshare -Ur` and
-    `bwrap --unshare-user` are refused; a thread and a child process in Python 3.14, Node 24 and
-    Java 25, `git status`, `rg` and `uv run` work; `claude`, `codex`, `kiro-cli`, `copilot`,
-    `opencode` and `agy` start (`--version`).
-  - Joining an existing namespace needs no rule: the containers-common profile allows `setns`
-    only with `CAP_SYS_ADMIN` (`includes.caps`), which the session lacks.
-- [ ] Before shipping, measure each installed agent, as the image configures it, running a
-  command under the profile, and report one that fails to the user.
+The profile (`SECURITY.md`, "No containers inside the sandbox by default") is measured with its
+rules installed by hand on one shell (2026-10-17): `unshare -Ur` and `bwrap --unshare-user` are
+refused; a thread and a child process in Python 3.14, Node 24 and Java 25, `git status`, `rg` and
+`uv run` work; `claude`, `codex`, `kiro-cli`, `copilot`, `opencode` and `agy` start (`--version`).
+
+- [ ] In a session launched with the profile, run `sbt testFull` on the podman machine on Windows
+  (x86_64); `SessionBoundaryTest` checks each refused syscall and that processes start. On macOS
+  (aarch64, podman 6.1.2) it passes (2026-10-26).
+- [ ] Measure each installed agent, as the image configures it, running a command in such a
+  session, and report one that fails to the user.
   - `agy` 1.2.7 in print mode runs a shell command in the session's own user, pid and mount
     namespaces (the command's `/proc/self/ns/*` inodes equal the session shell's; measured
     2026-09-22). Measure `kiro-cli`, `copilot` and `opencode` the same way.
   - Measure whether Playwright's Chromium starts.
-- [ ] The same profile refuses the mount syscalls by number: `mount`, `fsopen`, `fsconfig`,
-  `fsmount`, `fspick`, `move_mount`, `open_tree`, `open_tree_attr`, `mount_setattr`, `umount2` and
-  `pivot_root` (Linux v7.1, `scripts/syscall.tbl`). Without a user namespace each fails already
-  for want of a capability; the rules keep a mistake in the namespace rules from reopening a
-  mount, which `plan-bpf-lsm-cgroup.md` ("Mounts") relies on.
-  - The whole family, not `mount` and `fsopen` alone: a mount that `fsmount` or `open_tree` with
-    `OPEN_TREE_CLONE` returns is usable through its descriptor before `move_mount` attaches it.
-    Measured 2026-10-17: a file created through such a detached clone lands in the cloned
-    directory.
-- [ ] In the same change, `SECURITY.md`'s "Container, runtime and kernel escape", which answers a
-  kernel exploit with a stronger isolation layer, "not more flags here", records the distinction:
-  this profile removes kernel interfaces and claims no containment of a running exploit.
-- [ ] Build the profile:
-  - Derive it from the installed containers-common default at `--build`, and test that it differs
-    only in the added rules; a copied profile drifts on a podman upgrade.
-  - The podman server, not the launcher, reads the profile file, so on macOS and Windows it must
-    sit under a host share the machine mounts; the launcher's state root is under one today,
-    since the server resolves the audit log's bind at a path there.
-  - It joins the session's `createCommand` beside `--cap-drop=ALL` on the branch that skips it
-    for `same-uid` (`nestedArgs`), not the proxy container's.
-  - Ship the loosening in the same change: an option in the `--nesting` style, its mode set in
-    the session's environment and printed every session as the nesting loosening is, so the
-    first `Operation not permitted` has its switch.
-    - It lifts the mount rules with the user-namespace rules, since a tool that creates a user
-      namespace to sandbox, such as `bwrap`, mounts too. `plan-bpf-lsm-cgroup.md` ("Mounts")
-      judges such a session's mounts as it judges `same-uid`'s.
-  - Test the generated profile in a session (`SessionBoundaryTest.scala`), not a hand-installed
-    filter: `clone` and `unshare` with `CLONE_NEWUSER` fail with `EPERM`, `clone3` with
-    `ENOSYS`, each mount syscall is refused, and a thread and a child process still start; with
-    the loosening set, `unshare -Ur` succeeds. Run it on each architecture the launcher supports.
-- Cost:
-  - Every unprivileged `bwrap` call fails at its first step. In this image `bwrap` (bubblewrap
-    0.12.0) with `--unshare-user`, bind mounts and a tmpfs works today; `--proc` and `--dev` fail
-    with `Permission denied` (a fresh `/proc` under podman's masked entries, and devpts).
-  - Claude Code's Bash-command sandbox is off in the managed settings and Codex runs
-    `danger-full-access` (`container/ko-agent-sandbox/Containerfile` has the reasons), so neither
-    calls `bwrap` as configured.
-  - A workspace's own bubblewrap or `unshare -Ur` step fails with `Operation not permitted`, so the
-    container instructions name the refusal.
+  - `agy`'s Auto mode: `limitations.md` measures it under podman's default profile only.
+
+## The status-line test reads a settings key the launch now supplies
+
+- [ ] `ClaudeManagedHelpersTest` fails on `main`: its Python case
+  `test_project_format_handles_initial_and_reported_context_usage` reads `env` from
+  `.claude/settings.json`, which 4822487 moved to the launch's `--env` (`agent-settings.md`). Give
+  the case the format the document's launch line passes, as the neighbouring cases pass theirs.
 
 ## Capabilities a `NESTING=none` session could keep
 
@@ -294,8 +244,8 @@ are workspaces only the test uses.
   `chroot` with `EPERM`, in a user namespace the session creates too (measured 2026-10-17:
   `unshare -Ur chroot / true` fails with `Operation not permitted`).
   - Grant it only for a tool the sessions run that needs it. Chromium's namespace sandbox is not
-    one: it also needs a user namespace, which "Refuse user namespaces and mounts under
-    `NESTING=none`" refuses.
+    one: it also needs a user namespace, which the `--nesting=none` seccomp profile refuses
+    (`SECURITY.md`, "No containers inside the sandbox by default").
   - Record each risk of `chroot` with what removes it, starting from `SECURITY.md` ("No
     containers inside the sandbox by default"), which judges it for `same-uid`: nothing in the
     sandbox is chroot-confined, and `no-new-privileges` leaves no setuid program for a crafted

@@ -20,14 +20,16 @@ allow rule in the managed settings removes it.
 ## `agy`'s terminal sandbox and Auto mode
 
 `agy`'s terminal sandbox fails to start in a session, so in Auto mode commands run without it:
-rely on the egress rules to limit where `agy` sends data. Measured with `agy` 1.4.5 on 2026-10-23:
+rely on the egress rules to limit where `agy` sends data. Measured with `agy` 1.4.5 on 2026-10-23
+under podman's default seccomp profile, which `--nesting=user-namespace` keeps; the default
+`--nesting=none` refuses the user namespace the sandbox creates first:
 
 1. Each command `agy` runs in its sandbox fails with `connecting to sandbox server: ... connection
    reset by peer`. Its log names the step: `sbox: mount proc: permission denied`, and under
    `--nesting=same-uid`, which unmasks `/proc`, `sbox: sethostname: operation not permitted`.
 1. `agy` offers Auto mode anyway. Google documents that `agy` withholds Auto where the sandbox is
-   unavailable, naming hosts and containers that block unprivileged user namespaces; a session
-   allows them (https://antigravity.google/docs/cli/modes).
+   unavailable, naming hosts and containers that block unprivileged user namespaces; the measured
+   session allowed them (https://antigravity.google/docs/cli/modes).
 1. With Tool Permission `request-review`, the model reissues each failed command with
    `"BypassSandbox": true`, and `agy`'s safety check decides whether it runs without a prompt.
    - It ran a `readlink` without a prompt.
