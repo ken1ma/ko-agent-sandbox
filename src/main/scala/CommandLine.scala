@@ -20,6 +20,65 @@ object CommandLine:
    */
   val WorkspaceModes = Vector("read-only", "live")
   val DefaultWorkspaceMode = "live"
+
+  /**
+   * `--workspace`'s other values, beside the mode, in any order, each at most once: the backend that
+   * holds the workspace's protections, `fuse`, the ko-agent-fs filter, the default of both modes
+   * until the release decision, or `bpf`, the cgroup-LSM policy of doc/plan-bpf-lsm-cgroup.md
+   * ("Phases", 6); and `unix-socket`, which allows Unix sockets in the workspace and beneath the
+   * persistent volume at the cost of the policy's ninth hook, and so needs `bpf`: the filter cannot
+   * honor it. On Windows the share refuses every socket bind itself (`ENOTSUP`), so there the value
+   * reaches the volume alone (doc/plan-bpf-lsm-cgroup.md, "What is gained and what is lost").
+   */
+  val WorkspaceBackends = Vector("fuse", "bpf")
+  val DefaultWorkspaceBackend = "fuse"
+  val UnixSocketValue = "unix-socket"
+
+  /** The settings `--workspace` selects, as parseWorkspace reads them. */
+  final case class WorkspaceSettings(mode: String, backend: String, unixSocket: Boolean):
+    def bpf: Boolean = backend == "bpf"
+    def live: Boolean = mode == "live"
+    def readOnly: Boolean = mode == "read-only"
+    /** The filter mounts the workspace: a live session under the `fuse` backend. */
+    def filtered: Boolean = live && !bpf
+
+    /** The launch line uses commas without spaces to match the `--workspace` command-line value
+      * and the container label (KoAgentBpf.SettingsLabel): the mode, the backend, then `unix-socket`
+      * when set. The backend is always spelled, so a launch line reads the same once another backend
+      * is the default. */
+    def spelled: String = s"$mode,$backend" + (if unixSocket then s",$UnixSocketValue" else "")
+
+  object WorkspaceSettings:
+    val Default: WorkspaceSettings =
+      WorkspaceSettings(DefaultWorkspaceMode, DefaultWorkspaceBackend, unixSocket = false)
+
+  /**
+   * `--workspace=<mode>[,<backend>][,unix-socket]`, the values in any order and each once; an
+   * unclear value refuses the launch rather than being read as either side of a choice (design.md,
+   * "Security configuration must fail closed").
+   */
+  def parseWorkspace(value: String): Either[String, WorkspaceSettings] =
+    val values = value.split(",", -1).toVector
+    val grammar =
+      s"the values are a mode, ${WorkspaceModes.mkString(" or ")}, a backend, " +
+        s"${WorkspaceBackends.mkString(" or ")}, and $UnixSocketValue, separated by commas, each at most once"
+    val modes = values.filter(WorkspaceModes.contains)
+    val backends = values.filter(WorkspaceBackends.contains)
+    val sockets = values.filter(_ == UnixSocketValue)
+    val unknown = values.filterNot(value =>
+      WorkspaceModes.contains(value) || WorkspaceBackends.contains(value) || value == UnixSocketValue,
+    )
+    if unknown.nonEmpty || modes.size != 1 || backends.size > 1 || sockets.size > 1 then
+      Left(s"error: --workspace=$value; $grammar")
+    else
+      val settings =
+        WorkspaceSettings(modes.head, backends.headOption.getOrElse(DefaultWorkspaceBackend), sockets.nonEmpty)
+      if settings.unixSocket && !settings.bpf then
+        Left(
+          s"error: --workspace=$value; $UnixSocketValue needs the bpf backend: the fuse filter cannot allow Unix " +
+            s"sockets in the workspace (--workspace=${settings.mode},bpf,$UnixSocketValue)",
+        )
+      else Right(settings)
   val EgressProfiles = Vector("deny-all", "deny-unless-model", "deny-unless-allowed")
   val DefaultEgressProfile = "deny-unless-allowed"
 
@@ -166,7 +225,12 @@ object CommandLine:
     noOptionsFile: Boolean = false,
     dropped: Set[String] = Set.empty,
   ):
-    def workspaceMode: String = workspace.getOrElse(DefaultWorkspaceMode)
+    /** The settings of `workspace`, which parseArguments stored in its one spelling (parseWorkspace). */
+    def workspaceSettings: WorkspaceSettings =
+      workspace.fold(WorkspaceSettings.Default)(spelled =>
+        parseWorkspace(spelled).fold(reason => throw IllegalStateException(reason), identity),
+      )
+    def workspaceMode: String = workspaceSettings.mode
     def egressProfile: String = egress.getOrElse(DefaultEgressProfile)
     def clipboardMode: String = clipboard.getOrElse(DefaultClipboardMode)
     def nestingMode: String = nesting.getOrElse(DefaultNestingMode)
@@ -320,7 +384,7 @@ object CommandLine:
 
   /** The options that take a value, with what the value is; each is refused spelled without its `=`. */
   val ValuedOptions: Map[String, String] = Map(
-    "--workspace" -> "<mode>", "--egress" -> "<profile>", ModelProviderOption -> "<names>",
+    "--workspace" -> "<mode>[,<backend>][,unix-socket]", "--egress" -> "<profile>", ModelProviderOption -> "<names>",
     "--clipboard" -> "<mode>", AudioOption -> "off|<devices>", "--nesting" -> "none|user-namespace|same-uid",
     "--session-start" -> "pause|immediate", "--memory" -> "<size>", PersistentVolumeOption -> "<name>",
     "--image" -> "<reference>", ProxyImageOption -> "<reference>", "--env" -> "<name>[=<value>]",
@@ -378,7 +442,7 @@ object CommandLine:
       Vector(
         () =>
           single("--workspace", parsed.workspace, (p, v) => p.copy(workspace = v))(
-            choose("--workspace", _, WorkspaceModes),
+            parseWorkspace(_).map(_.spelled),
           ),
         () => single("--egress", parsed.egress, (p, v) => p.copy(egress = v))(choose("--egress", _, EgressProfiles)),
         () =>

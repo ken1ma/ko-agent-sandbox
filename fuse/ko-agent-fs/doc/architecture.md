@@ -26,8 +26,13 @@ operations the kernel forwards. Three other mechanisms were considered and rejec
   no FUSE. Its permission model decides *access to existing content*; it does not cleanly express
   the rule we most need, *refusing creation of an entry named `.git`*. Partial fit.
 - **BPF-LSM** — hook `security_inode_create`/`rename`/`link`/`setattr` and deny by name in-kernel.
-  Elegant and native-speed, and the alternative to revisit if constraints change. Rejected for the
-  three reasons below.
+  Elegant and native-speed. Rejected for the filter's design for the three reasons below, each
+  answered since by `../../../doc/plan-bpf-lsm-cgroup.md` ("The recorded decisions this answers"):
+  `BPF_LSM_CGROUP` programs attached to the session's own cgroup give the asymmetry in the kernel,
+  a probe at every launch answers the configuration risk, and the C classifier is compiled for the
+  host and run through this crate's corpus (`tests/bpf_equivalence.rs`). That backend is
+  `--workspace=live,bpf` on the podman machines, with the filter the default of both modes until
+  the plan's "Acceptance" passes.
 
 The deciding requirement is the **host/container asymmetry**: the container's view is filtered, the
 host's direct writes to the same files are not (`git-metadata.md`, "What this intentionally does

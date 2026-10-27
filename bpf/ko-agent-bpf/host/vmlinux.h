@@ -102,7 +102,7 @@ struct mnt_idmap {
 };
 
 struct iattr {
-	int unused;
+	unsigned int ia_valid;
 };
 
 #endif

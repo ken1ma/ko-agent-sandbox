@@ -2,7 +2,7 @@
 # Build the Phase 3 probe of doc/plan-bpf-lsm-cgroup.md, and the container its rows run in
 # ---------------------------------------------------------------------------
 #
-# phase3.sh builds this on the host and extracts /out from the image inside the podman machine, as
+# Phase3.scala builds this on the host and extracts /out from the image inside the podman machine, as
 # the earlier phases' drivers do; the same image is the container the rows run in, since the rows
 # need git.
 #

@@ -124,15 +124,22 @@ costs are described below.
   - under the filter `.ko-agent-sandbox` is protected: the name cannot be created at any depth,
     under the same name-matching rules as `.git`, and nothing under an existing one can be
     written, with the exception "The host's git executing what the sandbox wrote" states for a
-    concurrent host change.
+    concurrent host change;
+  - under `--workspace=live,bpf` the BPF policy holds the same, with one difference: an empty
+    directory of the name can be made and removed, and no file enters it at any depth
+    (`doc/plan-bpf-lsm-cgroup.md`, "Directories").
 
 **The host's git executing what the sandbox wrote.** Host `git` runs what `.git` configures:
 hooks, and commands named in `.git/config` — `core.hooksPath`, `core.fsmonitor`, filters, the
 pager. By default the workspace FUSE filter prevents a session from injecting commands into the
-user's next host `git` invocation:
+user's next host `git` invocation; under `--workspace=live,bpf` the BPF policy of
+`doc/plan-bpf-lsm-cgroup.md` holds the same rules on the workspace directory itself, except that
+an empty directory may be made at a `.git` name and gains no `HEAD` ("Directories" there), and
+"The BPF backend" below has what an auditor trusts for it:
 
-- It refuses a new entry named `.git` at any depth, under any spelling a case-insensitive host
-  filesystem treats as that name.
+- The filter refuses a new entry named `.git` at any depth, under any spelling a case-insensitive
+  host filesystem treats as that name; the policy refuses one that is not a directory, and a
+  directory it allows there gains no `HEAD`.
 - It prevents changes to the protected Git entries of every repository rooted at a `.git` entry —
   `config`, `hooks/`, files that redirect Git to another directory, rebase instructions,
   `rr-cache`, whose existence enables rerere in host merges, and `objects/info/alternates`, whose
@@ -294,8 +301,14 @@ are:
 - a native Linux **host** is never even prompted for sudo — only handed the command;
 - the **machine** is started when stopped, but never created or resized: sizing is yours;
 - during **session setup**, the workspace tree is unchanged: the filter denies creation of `.git`
-  and `.ko-agent-sandbox` by name and needs no mount target in the workspace, and
-  `--workspace=read-only` makes the entire tree read-only;
+  and `.ko-agent-sandbox` by name and the BPF policy judges what enters them, so neither needs a
+  mount target in the workspace,
+  the policy's proof fixture lies under the launcher's state root, and `--workspace=read-only`
+  makes the entire tree read-only;
+- the podman **machine's** `/etc/systemd/system/ko-agent-bpf-spare.service`, which loads and
+  verifies the BPF policy's programs at boot ahead of the first launch, is written only after
+  `--build` shows the unit and you consent; declining costs the first launch after each boot that
+  load;
 - **`--self-test` without a case filter** writes to its own scratch directory in the workspace
   ([testing.md](fuse/ko-agent-fs/doc/testing.md));
 - the **workspace's SELinux labels** are never changed. On an enforcing host a container reads
@@ -597,6 +610,62 @@ A version mismatch, a failed self-test or a failed mount aborts the launch; none
 unfiltered bind.
 
 Implementation, policy derivation and test evidence: `fuse/ko-agent-fs/doc/`.
+
+**The BPF backend.** `--workspace=live,bpf` mounts the workspace directory itself, writable, and
+holds the filter's rules with BPF programs of type `BPF_LSM_CGROUP`, attached to a cgroup of the
+session's own in the podman machine, so the host and every other container keep unfiltered access
+to the same files; `doc/plan-bpf-lsm-cgroup.md` is the design, its evidence and what the backend
+changes ("What is gained and what is lost"). On the podman machines of macOS and Windows alone:
+native Linux keeps the filter ("Later versions" there). What an auditor trusts, and how each link
+is checked:
+
+- **The program.** C, `bpf/ko-agent-bpf/policy.bpf.c`, compiled in the machine against its own
+  kernel by `--build`; the kernel's verifier refuses at load any read or write outside the bounds
+  it proves, so a memory fault of the C kind is a failed launch, never a running program. The
+  classifier is compiled a second time for the host and run through the filter's own corpus
+  (`fuse/ko-agent-fs/tests/bpf_equivalence.rs`), so the two decide alike.
+- **The controller is privileged and parses nothing of the workspace.** It runs once per launch
+  under the machine's `sudo -n`, loads the object from beside itself, fills the maps from records
+  the unprivileged guard compiled (`ko-agent-fs --resolve --bpf-records`) and the identities it
+  reads for itself, attaches below the invoking user's slice alone, pins, and exits before the
+  container exists; the session has no path to it.
+- **No container process runs before the policy is proven.** A read-back with the controller's
+  privileges and none of its code lists what the kernel attached and compares the hook set, each
+  program's tag and read-only data with the installed object's, and each map's shape and contents
+  with the launch's records; then the launcher's own process below the attach cgroup runs one
+  refused operation per hook and one write per rule line against a fixture under the state root.
+  A difference ends the launch with nothing bound writable. The container then starts only once
+  the machine has read its initialized process's cgroup below the attach cgroup.
+- **The policy outlives the controller and cannot lapse without root.** A pinned link detaches
+  only when its cgroup is removed, and a cgroup holding the container cannot be. A read-only
+  session (`--workspace=read-only,bpf`) gets a policy recording no root, so a descriptor a live
+  session passes it opens nothing on the share for writing.
+- **Two backends never share a tree.** Every sandbox container carries labels naming its
+  settings, its volume and the identity of each directory it mounts from the host; a launch is
+  refused beside a live session of the other backend or socket setting sharing the volume or a
+  mount, and beside one whose recorded path no longer names its directory, under one launch lock
+  per machine. A container of an earlier launcher carries no labels: it ran the filter with no
+  socket setting, so a `bpf` or `unix-socket` launch is refused beside it and a filter launch is
+  not. A read-only launch the probe leaves without a policy counts as a filter session too. The
+  refusal is the later launch's: an earlier launcher started beside a `bpf` or `unix-socket`
+  session refuses nothing.
+- **The installation and the program set verified ahead.** `--build` installs the binaries at
+  `~/.local/share/ko-agent-sandbox/bpf/` in the machine (remove with
+  `podman machine ssh rm -r .local/share/ko-agent-sandbox/bpf`, and the unit as its comment says),
+  records the installed object's tags under the running kernel and keeps one program set loaded
+  and verified ahead of the next launch, which that launch takes by renaming its pin directory
+  after the read-back checked it; a launch finds its binaries by a source id of the bundled
+  sources, as the filter's `--version` is checked.
+- **Refused routes the hooks do not hold.** The seccomp profile refuses xattrs, ACLs and file
+  flags ("The default's seccomp profile", below); the filesystem ioctls that change a file through
+  a read-only descriptor are answered `ENOTTY` by the machines' shares, measured in the plan's
+  Phase 2 on both, and a seccomp refusal of them stays unbuilt in the first version (the plan,
+  "Decisions still open", has what reopens it); a FIFO on the share is refused by type: made,
+  opened, retimed or received (`doc/limitations.md`, "No FIFO in the workspace").
+
+What is measured: the plan's "Phase 1 on macOS" to "Phase 5 on WSL" sections, each binding its
+figures to the sources' hash; the launcher's own rows of Phase 6 are owed on both machines, and
+`fuse` stays the default of both modes until the plan's "Acceptance" passes.
 
 **What is inside TLS, for the hosts that stay opaque.**
 
@@ -1689,22 +1758,35 @@ profile:
   namespace each already fails for want of a capability; the rules keep a mistake in the namespace
   rules from reopening a mount or a join, which `doc/plan-bpf-lsm-cgroup.md` ("Mounts") relies
   on. The whole mount family, because a mount `fsmount` or `open_tree` returns is writable through
-  its descriptor before `move_mount` attaches it (measured 2026-10-17).
+  its descriptor before `move_mount` attaches it (measured 2026-10-17);
+- answers the `setxattr` and `removexattr` families, ACLs among them, and `file_setattr` with
+  `ENOTSUP` (`SeccompProfile.AttributeSyscalls`). The filter refuses these routes by not
+  implementing them, and the BPF policy holds no hook for them (`doc/plan-bpf-lsm-cgroup.md`,
+  "Attributes, flags and ioctls"); the rule holds them in every `--nesting=none` session, under
+  `~` too. No `ioctl` command is refused: libseccomp clears a syscall's argument rules when an
+  unconditional rule for it arrives (`src/db.c`, `_db_rule_add`), so refusing the commands that
+  set a file's flags means spelling every allowed command as a masked prefix, some 255 rules,
+  which the first version does without (`doc/plan-bpf-lsm-cgroup.md`, "Decisions still open");
+  on the podman machines the shares answer them `ENOTTY` themselves.
 
 `--build` and `--update` derive it from the default profile the podman host has installed, so a
 podman upgrade's changes reach it at the next build, and name it to `podman create` by path; the
 server reads it, which is why it sits under the launcher's state root, a directory the podman
-machine shares. The refused names are taken out of the default's rules rather than overruled by
-later ones: libseccomp keeps a syscall's first unconditional rule and drops every later rule for
-it, measured on the default's own later `setns` refusal, which `setns(-1, 0)` shows is not in
-force (`EBADF` from the kernel).
+machine shares. A launch refuses a profile an earlier build derived without the rules this build
+adds, as it refuses a missing one, since the BPF backend's protections rest on them; the build
+derives the profile before it installs the backend. The refused names are taken out of the
+default's rules rather than overruled by later ones: libseccomp keeps a syscall's first
+unconditional rule and drops every later rule for it, measured on the default's own later `setns`
+refusal, which `setns(-1, 0)` shows is not in force (`EBADF` from the kernel).
 
 Its cost: every program that sandboxes itself with a user namespace fails at that step —
 bubblewrap, Chromium's namespace sandbox, the agents' own command sandboxes — and a workspace's
 own `unshare -Ur` step fails with `Operation not permitted`. Claude Code's Bash-command sandbox is
 off in the managed settings and Codex runs `danger-full-access`
 (`container/ko-agent-sandbox/Containerfile` has the reasons), so neither calls bubblewrap as
-configured.
+configured. `setfattr`, `setfacl` and `chattr` fail everywhere in the session, `~` included, and
+`cp -a` and `tar` drop extended attributes and ACLs silently, as they do on a filesystem without
+them.
 
 **The opt-ins, and the controls they relax.** `--nesting` accepts `none`, `user-namespace` or
 `same-uid`; without the option it is `none`, and any other value fails the launch.

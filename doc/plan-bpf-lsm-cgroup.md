@@ -16,22 +16,25 @@ them.
 
 Status: the environment prerequisites and the cgroup placement are measured on both machines
 ("Environment evidence"), Phase 0 is done ("Inventory"), and Phase 1's probe
-(`../bpf/probe/phase1/`) passes every row measured on both machines ("Phase 1 on macOS", "Phase
-1 on WSL"), where one hook denies; Phase 2's probe (`../bpf/probe/phase2/`) passes on both
-("Phase 2 on macOS", "Phase 2 on WSL"); Phase 3's probe (`../bpf/probe/phase3/`) passes every
-row on both ("Phase 3 on macOS", "Phase 3 on WSL"), the nine programs loading within the gate's
-budget within 0.6 s on macOS and 1.7 s on WSL; the guard compiles the policy's records
-(`../fuse/ko-agent-fs/src/bpf_records.rs`); the classifier's host build runs the corpus through
-both classifiers (`../fuse/ko-agent-fs/tests/bpf_equivalence.rs`); Phase 4's probe
-(`../bpf/probe/phase4/`) passes every row on both machines ("Phase 4 on macOS", "Phase 4 on
-WSL"), its gate met, and `../bpf/probe/check-evidence.sh` passes for every measured section;
-Phase 5's probe (`../bpf/probe/phase5/Phase5.scala`) passes every row on both machines ("Phase 5
-on macOS", "Phase 5 on WSL"), its gate met: on `perf-probe.py`'s repeated rows the policy's rounds
-overlap the unfiltered bind's on both machines, its single runs of the walk and the build lie
-within a tenth of the bind's on the per-file rows, `git status` and the build and scatter either
-way on the walk's depth rows, and the filter costs the bind 5 to 31 times. The filter stays the
-default until "Acceptance" passes, and no launch ever binds the workspace writable without the
-policy attached and verified.
+(`../bpf/probe/phase1/`) passes every row measured on both machines ("Phase 1 on macOS", "Phase 1 on
+WSL"), where one hook denies; Phase 2's probe (`../bpf/probe/phase2/`) passes on both ("Phase 2 on
+macOS", "Phase 2 on WSL"); Phase 3's probe (`../bpf/probe/phase3/Phase3.scala`) passes every row on
+both ("Phase 3 on macOS", "Phase 3 on WSL"), the nine programs loading within the gate's budget
+within 0.6 s on macOS and 2.1 s on WSL; the guard compiles the policy's records
+(`../fuse/ko-agent-fs/src/bpf_records.rs`); the classifier's host build runs the corpus through both
+classifiers (`../fuse/ko-agent-fs/tests/bpf_equivalence.rs`); Phase 4's probe
+(`../bpf/probe/phase4/`) passes every row on both machines ("Phase 4 on macOS", "Phase 4 on WSL"),
+its gate met, and `../bpf/probe/CheckEvidence.scala` passes for every measured section; Phase 5's
+probe (`../bpf/probe/phase5/Phase5.scala`) passes every row on both machines ("Phase 5 on macOS",
+"Phase 5 on WSL"), its gate met: on `perf-probe.py`'s repeated rows the policy's rounds overlap the
+unfiltered bind's on both machines, its single runs of the walk and the build lie within 11 % of the
+bind's on the per-file rows, `git status` and the build and scatter either way on the walk's depth
+rows, and the filter costs the bind 5 to 32 times on `perf-probe.py`'s rows. Phase 6's integration
+is built ("Phases", 6: `../src/main/scala/KoAgentBpf.scala`, the launcher's `--workspace` values,
+the binaries of `../bpf/ko-agent-bpf/`, the FIFO rules in the program and the attribute rules in the
+seccomp profile) and owes its rows on both machines, and the program's change reran Phases 3 to 5
+there, their sections rewritten from the reruns. The filter stays the default until "Acceptance"
+passes, and no launch ever binds the workspace writable without the policy attached and verified.
 
 The reader acting on this plan starts at "Phases" and "What is gained and what is lost". The
 sections before them are what the phases rest on.
@@ -108,7 +111,7 @@ reason, and its answer here:
   consents to ("Native Linux").
 - A BPF policy program is less auditable than Rust. The classifier is the C program the phases
   measured, compiled a second time into a host test binary against headers standing in for the
-  kernel's types and the helpers (`../bpf/probe/phase3/host/`), with `policy.rs`'s corpus run
+  kernel's types and the helpers (`../bpf/ko-agent-bpf/host/`), with `policy.rs`'s corpus run
   through both (`../fuse/ko-agent-fs/tests/bpf_equivalence.rs`: every path of the conformance
   table and of the git corpus, written, unlinked, created and moved, under the rules as the
   guard's compiler writes them), so the two classifiers are shown to agree, the three rules
@@ -343,13 +346,23 @@ check, nor a flag change, which `vfs_fileattr_set` admits by ownership (`fs/file
   slot and refuses:
   - the `setxattr` and `removexattr` syscall families, `setxattrat` and `removexattrat`
     included;
-  - `file_setattr`;
-  - `ioctl` by its command argument: `FS_IOC_SETFLAGS`, its 32-bit `FS_IOC32_SETFLAGS`
-    (`fs/ioctl.c`, `compat_sys_ioctl`), `FS_IOC_FSSETXATTR`, and the commands row 18 lists,
-    32-bit forms included. The rule compares the argument's low 32 bits (`SCMP_CMP_MASKED_EQ`
-    in the OCI profile): seccomp sees the whole 64-bit register while the kernel reads `cmd` as
-    `unsigned int`, so an equality over 64 bits is passed by a command with a high bit set
-    (seccomp(2)). Phase 2 runs each refused command with high bits set, on both architectures.
+  - `file_setattr`.
+  - Not `ioctl` by its command argument, in the first version. libseccomp refuses some commands of
+    a syscall and allows the rest only with the allowed commands spelled out: an unconditional
+    rule for a syscall clears the argument rules before it (`src/db.c`, `_db_rule_add`, v2.6.0:
+    "the new filter has no chains so we need to clear the existing chains"), and the podman
+    default's `ioctl` allow is such a rule; a rule holds one comparison per argument
+    (`db_col_rule_add`, `-EINVAL` for a second), so the allowed commands are the binary prefixes
+    of the low 32 bits holding no refused command, one `SCMP_CMP_MASKED_EQ` rule each, 255 for the
+    19 commands of rows 17 and 18 beside 19 refusals, in a filter the kernel bounds at 4,096
+    instructions (`BPF_MAXINSNS`). The user's decision of 2026-10-26: not in the first version
+    ("Decisions still open" has what reopens it).
+    On the machines rows 17 and 18 are closed by the shares: virtiofs and 9p answer
+    `FS_IOC_SETFLAGS`, `FS_IOC_FSSETXATTR` and the row 18 commands `ENOTTY` before any hook
+    ("Phase 2 on macOS", "Phase 2 on WSL", `share`), with the 64-bit register's high bits ignored
+    as the kernel reads `cmd` as `unsigned int`. Native Linux ("Later versions"), whose
+    filesystems implement them, needs `file_ioctl` and `file_ioctl_compat` as hooks, or the
+    `--workspace` value `../doc/TODO.md` plans for them.
 - Under `NESTING=same-uid` ("Later versions"), whether a nested podman's storage needs the xattr
   syscalls, `file_setattr` or the refused ioctl commands is a Phase 2 measurement. The rule
   cannot refuse a family the nested podman needs; the free slots can hold two of its hooks,
@@ -360,9 +373,9 @@ What the seccomp rule reaches and what it misses:
 
 - Every xattr, ACL and flag change a process requests enters through those syscalls;
   `io_uring_setup` already answers `ENOSYS` in a session ("Inventory", row 22).
-- Row 18 is a list of commands, not a syscall family: the rule refuses the commands the row lists.
-  xfs's and btrfs's are listed there, and a kernel change reopens the row ("Environment
-  evidence").
+- Row 18 is a list of commands, not a syscall family, and the rule refuses none of them (above):
+  the shares' answers close the row on the machines, and a kernel or share change reopens it
+  ("Environment evidence").
 - The rule refuses those calls everywhere in the container, under `~` as well. It answers
   `ENOTSUP` to the xattr syscalls, so that `cp -a` drops attributes silently as through the
   filter, and `ENOTTY` to the ioctl commands, as FUSE answers for the filter (`fs/fuse/ioctl.c`).
@@ -626,9 +639,10 @@ The program classifies by object and position, never by a path string:
   `fuse_flush_times`). What stays is the host's own use of a FIFO it made, and a container
   outside any policy using one, neither of which a session's hook sees. The filter, whose
   daemon receives the flush as a `SETATTR` request, refuses it instead (`fs.rs`, `setattr`),
-  since the kernel opens a FIFO on a FUSE mount without asking the daemon. The rules wait for
-  the program's next build (Phase 6): the measured sections of Phases 3 to 5 name the present
-  sources' hash, which they change.
+  since the kernel opens a FIFO on a FUSE mount without asking the daemon. The program holds the
+  four rules (`policy.bpf.c`, `R_FIFO`), each a corpus case of `exercise.c`'s `fifo` group over a
+  FIFO the host made, skipped where the share refuses to make one, as both machines' shares do;
+  the measured sections of Phases 3 to 5 measure the program holding them.
     Each share is one superblock (`fs/fuse/virtio_fs.c`, `virtio_fs_test_super`), so a second
     share bound into a disposable container is Phase 3's stand-in for a submount made after
     attach.
@@ -746,7 +760,7 @@ maps.
 `--build` installs the BPF object and the controller into the machine, as it installs the
 filter. The controller then runs at every launch, restart and recreate, since each attaches to a
 new cgroup and only a privileged caller can: one `sudo -n` per launch, in the machine or on the
-host. The verifier checks a sandbox's nine programs within 0.6 s on the macOS machine and 1.85 s
+host. The verifier checks a sandbox's nine programs within 0.6 s on the macOS machine and 2.0 s
 on the WSL one ("Phase 4 on macOS", "Phase 4 on WSL"), time no launch waits for: the controller
 keeps one spare set per machine, loaded and pinned with empty maps and attached to nothing, which
 a launch takes by renaming its pin directory to the session's name, fills and attaches (step 2),
@@ -842,7 +856,38 @@ For each session:
    program uses another map; what they do not catch is a defect the program shares with the
    fixture's expectations, which Phase 3's corpus is for.
 4. Create and start the container; its scope, or its directory under cgroupfs, lands below the
-   proven cgroup.
+   proven cgroup. `podman init` makes the container first, and the start waits for the machine to
+   confirm the placement: a watcher the script of steps 1 to 3 leaves behind reads the cgroup of
+   the process `State.Pid` names and reports it on the share (`KoAgentBpf.PlacementWatcher`), and
+   the launch ends unstarted unless that cgroup lies below the attach cgroup, or when it cannot be
+   read (`KoAgentBpf.placementVerdict`).
+   - Why: the proof runs the launcher's own fixture in the attach cgroup, not the container, so the
+     placement would rest on the runtime honouring `--cgroup-parent` as "Environment evidence"
+     measured; a runtime that placed the container elsewhere would leave it without a policy,
+     unreported.
+   - Not from `podman inspect`: `State.CgroupPath` is empty until the container runs (podman
+     6.1.4, `libpod/container.go`, `cGroupPath`), and `HostConfig.CgroupParent` is the request,
+     not the placement. Podman itself reads `/proc/<State.Pid>/cgroup`, and sets `State.Pid` at
+     create (`libpod/oci_conmon_common.go`, `createOCIContainer`), as the OCI runtime spec requires
+     a pid in the `created` state (`runtime.md`, "State").
+   - Measured on 2026-10-27: after `init` the status reads `initialized` and `State.Pid` names
+     `crun`, whose `/proc/<pid>/cgroup` names `<parent>/libpod-<id>.scope/container` on macOS and
+     `<parent>/libpod-<id>` on WSL. Read over `podman machine ssh` it took 0.25 s and 1.0 s, and a
+     launch makes no other machine round trip between create and start; through the watcher, with
+     `init` run right after the create, the start waited 57 ms on macOS and 55 ms on WSL.
+   - A pid reused after the container's process ended reads another process's cgroup, below the
+     attach cgroup only if that process were there, where nothing but the container runs: reuse can
+     only refuse the launch, so the pid needs no start-time check.
+   - The start runs only after the launcher's own `init` succeeded (`KoAgentBpf.confirmPlacement`).
+     The check covers the instance that `init` made: `podman start` makes another when that one
+     ended before it (podman 6.1.4, `prepareToStart`, `init` from `Exited`, `reinit` from
+     `Stopped`), which only an act in the machine in that window causes, no session process
+     existing yet; that the same runtime then places it as it placed the first is the measured
+     behaviour, not a guarantee, and the window is left open, since a check before `start` would
+     leave one of its own.
+   - The check does not cover the `createContainer` hooks, which run during `init`, before it;
+     their placement stays with the hook rows of "Phase 1 on macOS" and "Phase 1 on WSL" and the
+     rerun rule of "Environment evidence".
 5. A restart or recreate repeats 1–4 with step 2 attaching the pinned programs to the new cgroup
    by link, loading nothing, when step 3's read-back of the pinned programs finds the installed
    object's tag and the records the guard produces for this launch; a pinned program of another
@@ -930,10 +975,14 @@ The Windows placement needs `%UserProfile%\.wslconfig` holding `[wsl2]` and
 `crun: controller pids is not available`; `--cgroups=disabled` makes it run but places the
 container in no cgroup of its own, which this backend cannot use. The setting applies to every
 WSL2 distribution of that Windows user, and the launcher neither writes nor removes it: the
-setup note for Windows names it. References:
+setup note for Windows names it. Under it the session's limits apply, below the attach cgroup as
+well: `memory.max` 7,105,761,280 and `pids.max` 2048 in a `live,fuse` and a `live,bpf` session on
+2026-10-27, where podman issue 29966 reports no controller for rootless podman on WSL 3.0.3 by
+default. References:
 https://learn.microsoft.com/windows/wsl/wsl-config,
 https://github.com/microsoft/WSL/issues/41492,
-https://github.com/podman-container-tools/podman/issues/29749.
+https://github.com/podman-container-tools/podman/issues/29749,
+https://github.com/podman-container-tools/podman/issues/29966.
 
 ### Phase 1 on macOS
 
@@ -1167,57 +1216,55 @@ passed as there.
 
 ### Phase 3 on macOS
 
-Measured on 2026-10-24 with `../bpf/probe/phase3/phase3.sh` on the machine of "Phase 1 on macOS",
-podman 6.1.2, crun 1.30, clang 19.1.7, `policy.bpf.o` of SHA-256
-`7a23c6fc79cd63e3993c7750bb981a2dcea2beb7f6e56a3f0c4b0d742baa71f0`, built from sources of SHA-256
-`d22bb1e73c457fa48f57ec2e539142218cfcdfe0c7fa90308eddfebc371265fa` (`sources.txt` lists them in
-hashing order; `../bpf/probe/check-evidence.sh` recomputes it): the program after the host
-corpus run (`../fuse/ko-agent-fs/tests/bpf_equivalence.rs`) admitted the scratch names' locks,
-the bisect state, `filter-repo/` and `lfs/`, and after the review of the first runs altered it in
-three places, the walk going on past a gitdir root, a bound hit denying under a mark, and a mount
-in no namespace judged as another namespace's, with each walk loop's body a global function. The
-containers run as in Phase 2. Every one of the 48 rows passes, in three runs of this object, the
-later two with the walk cost in pairs and the last with the program's own timer over them; the rows
-give the last run's figures and the transcript holds its raw lines. Rows of the first runs of
-2026-10-22, under the program as first written, are kept as the reason for two rules, and the
-verifier row keeps the walk's counts of the three revisions before beside this one's.
+Measured on 2026-10-27 with `../bpf/probe/phase3/Phase3.scala` on the machine of "Phase 1 on
+macOS", podman 6.1.2, crun 1.30, clang 19.1.7, `policy.bpf.o` of SHA-256
+`81b80f90f32c1c751b4a8904c498e57c592a297317377b121367c8eac00b14f0`, built from sources of SHA-256
+`e3395db92fc444779d91b7a402d1acf50b2973cb2ff7617f1e395fc81592e2a5` (`sources.txt` lists them in
+hashing order; `../bpf/probe/CheckEvidence.scala` recomputes it): the program with the FIFO rules
+("The policy"), from `../bpf/ko-agent-bpf/policy.bpf.c`. The containers run as in Phase 2. Every
+one of the 48 rows passes; the rows give this run's figures and the transcript holds its raw
+lines. Figures of the runs before, of 2026-10-22 under the program as first written and of
+2026-10-24 under the revision before the FIFO rules, are kept where they are the reason for a rule
+or the only measurement of their kind, and named as such.
 
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
 | preemption               | `full (lazy)`, 10 CPUs                                                |
-| verifier, per program    | 45,217 to 47,873 insns, stack 352 to 384 of 512 bytes, at most 25     |
-|                          | states per insn, 69 to 168 ms each, 533 ms for all nine (73 to 86 and |
-|                          | 581 in the first run); the walk and position 40,584 insns (39,476     |
-|                          | before the scratch locks' admission, 33,135 with the loop bodies      |
-|                          | inlined, 16,758 before the review's three changes), each level of the |
-|                          | walk 248 and of its snapshot 39, the rule match 2,524, the alias      |
-|                          | activation 634 and the symlink judgment 2,797, each a global function |
-|                          | verified once                                                         |
-| barrier                  | the jited `file_open`, 30,184 bytes, holds three `ldaddal`, one per   |
+| verifier, per program    | 45,398 to 47,873 insns (45,217 to 47,873 before the FIFO rules), at   |
+|                          | most 25 states per insn, 67 to 85 ms each, 541 ms for all nine; the   |
+|                          | run of 2026-10-24, whose log holds the per-function counts: the walk  |
+|                          | and position 40,584 insns (39,476 before the scratch locks'           |
+|                          | admission, 33,135 with the loop bodies inlined, 16,758 before the     |
+|                          | review's three changes), each level of the walk 248 and of its        |
+|                          | snapshot 39, the rule match 2,524, the alias activation 634 and the   |
+|                          | symlink judgment 2,797, each a global function verified once, stack   |
+|                          | 352 to 384 of 512 bytes                                               |
+| barrier                  | the jited `file_open`, 32,336 bytes, holds three `ldaddal`, one per   |
 |                          | fetch-add: before and after a level's reads, and before the snapshot  |
 | records                  | 128 rule lines, eleven roots (three workspaces, a submodule's gitdir, |
 |                          | four guarded `.git`, two guarded `.ko-agent-sandbox` and the volume), |
 |                          | the alias context of `.claude` holding the five `.claude` lines as    |
 |                          | partial matches, which the guard's compiler reproduces                |
 |                          | (`bpf_records.rs`, its first test)                                    |
-| corpus                   | 252 cases: 238 under the default flags, 6 under the short-name flag   |
-|                          | and 8 under `unix-socket`, 0 mismatches each; 5 of the 238, the      |
-|                          | `mkfifo` cases, answered by the share's `EACCES` before any hook,     |
-|                          | counted apart                                                         |
+| corpus                   | 256 cases: 242 under the default flags, 6 under the short-name flag   |
+|                          | and 8 under `unix-socket`, 0 mismatches each; of the 242, 5 answered  |
+|                          | by the share before any hook, the `mkfifo` cases with `EACCES`,       |
+|                          | counted apart, and 4 skipped, the `fifo` group's cases on the host    |
+|                          | FIFO the share refused to make (`result=EACCES`)                      |
 | git                      | status, add, commit, a branch, log and gc in the clone; `git config`  |
 |                          | and `git init` refused; git outside the policy in `sub/`, whose       |
 |                          | session-made `.git` has no `HEAD`, finds the workspace's gitdir       |
-| race                     | 3,618 moves of the outer directory, 1,487 moves and 635 exchanges of  |
-|                          | the inner, against 12,192 writes by path and through held             |
-|                          | descriptors: 7,382 refused, 4,810 absent, 0 succeeded; 9 walks read a |
-|                          | torn name and were made again (15, 8, 6, 2, 11 and 12 in the runs     |
+| race                     | 2,580 moves of the outer directory, 1,012 moves and 414 exchanges of  |
+|                          | the inner, against 10,464 writes by path and through held             |
+|                          | descriptors: 6,061 refused, 4,403 absent, 0 succeeded; 5 walks read a |
+|                          | torn name and were made again (9, 15, 8, 6, 2, 11 and 12 in the runs  |
 |                          | before), none gave up                                                 |
 | race, global sequence    | the first run, validating the walk by `rename_lock`: 167 walks        |
 |                          | overlapped a rename and 35 of 11,891 gave up after four retries       |
-| storm                    | 16 processes, 29,498 decisions, 0 wrong, 0 denied for want of a slot, |
-|                          | no nesting on any CPU; walk means 19 to 31 µs, 204 µs at most (the    |
-|                          | runs before: 25,312 and 30,394 decisions, means 19 to 35 µs, 478 µs   |
-|                          | at most but for one `inode_unlink` walk of 1.22 ms)                   |
+| storm                    | 16 processes, 24,850 decisions, 0 wrong, 0 denied for want of a slot, |
+|                          | no nesting on any CPU; walk means 20 to 32 µs, 236 µs at most (the    |
+|                          | runs before: 29,498, 25,312 and 30,394 decisions, means 19 to 35 µs,  |
+|                          | 478 µs at most but for one `inode_unlink` walk of 1.22 ms)            |
 | slots exhausted          | with four marked taken a write on the share is refused and counted    |
 |                          | once as reentry; with three it runs in the fourth; freed, in the      |
 |                          | first                                                                 |
@@ -1227,23 +1274,21 @@ verifier row keeps the walk's counts of the three revisions before beside this o
 |                          | stand-in allowed, from where `mv` and `ln` beneath the volume and     |
 |                          | `mv` into the workspace are refused                                   |
 | second share             | a directory under `/private/tmp`, virtiofs, bound into the container: |
-|                          | a write inside gets `EPERM`                                           |
+|                          | a write inside gets `EPERM`, a directory is made ("Directories")      |
 | walk cost, in program    | `file_open` over the 10,000 opens for writing of the pairs below, all |
-|                          | walked to depth 11: 61.6 µs mean, 163 µs at most; the storm's walks   |
-|                          | at depth 3 average 19 µs and the race's at depth 5, 33 µs             |
+|                          | walked to depth 11: 61.3 µs mean, 161 µs at most; the storm's walks   |
+|                          | at depth 3 average 20 to 32 µs and the race's at depth 5, 33 µs       |
 | walk cost, syscall       | five pairs of 2,000 opens at depth 11, a container under the policy   |
-|                          | then one bare, in that order in every pair of these runs, policy      |
-|                          | minus bare: the open for writing +100, +60, +64, +11 and +56 µs,      |
-|                          | median +60, the program's own figure; the open for reading, which the |
-|                          | hook leaves before any walk, −22 to +140, median +22; `lstat`, which  |
-|                          | no hook sees, −61 to +62, median +3; the bare write open at 712 to    |
-|                          | 796 µs. The run before, with the bare open at 949 to 1,791 µs, spread |
-|                          | the write open's difference from −640 to +443 and `lstat`'s to        |
-|                          | +1,224, so the syscall figure holds on a quiet share only, and the    |
-|                          | program's timer is the one to read. The single-shot runs before read  |
-|                          | policy 784, 868, 831 and 1,282 µs against bare 920, 698, 778 and      |
-|                          | 1,125                                                                 |
-| container start          | with `file_receive` attached, the runtime passes 15 descriptors of    |
+|                          | and one bare, the policy's first in the odd pairs, policy minus bare: |
+|                          | the open for writing +38, +131, +73, +68 and +68 µs, median +68, the  |
+|                          | program's own figure; the open for reading, which the hook leaves     |
+|                          | before any walk, −34 to +18, median +6; `lstat`, which no hook sees,  |
+|                          | −19 to +56, median +11; the bare write open at 775 to 809 µs. A run   |
+|                          | of 2026-10-24 with the bare open at 949 to 1,791 µs spread the write  |
+|                          | open's difference from −640 to +443 and `lstat`'s to +1,224, so the   |
+|                          | syscall figure holds on a quiet share only, and the program's timer   |
+|                          | is the one to read                                                    |
+| container start          | with `file_receive` attached, the runtime passes 16 descriptors of    |
 |                          | its own namespaces into the starting container, all passed, and the   |
 |                          | first process holds no descriptor beyond the standard three; the      |
 |                          | controller's namespace is pid 1's, 0xEFFFFFF8, the initial one        |
@@ -1251,129 +1296,136 @@ verifier row keeps the walk's counts of the three revisions before beside this o
 |                          | directory descriptor of the volume's mountpoint, `_data`, refused,    |
 |                          | and `crun` failed with `write to sync socket: Connection reset`       |
 | slots                    | four sandboxes with nine hooks each hold nine of the ten              |
-| descriptors              | every row of "Phases", 3 as listed; B's `file_receive` over the rows: |
-|                          | 126 calls, 120 of the runtime's namespaces, 4 allowed, 2 denied       |
+| descriptors              | every row of "Phases", 3 as listed but the host FIFO's, skipped as    |
+|                          | the share made no FIFO; B's `file_receive` over the rows: 134 calls,  |
+|                          | 128 of the runtime's namespaces, 4 allowed, 2 denied                  |
 | seccomp                  | under the generated profile `unshare` with `CLONE_NEWUSER` and the    |
 |                          | twelve mount syscalls answer `EPERM`, and a child process runs        |
 
 
 ### Phase 3 on WSL
 
-Measured on 2026-10-24 with `../bpf/probe/phase3/phase3.ps1` on the Windows machine of "Phase 1
-on WSL", podman 6.1.4 under the cgroupfs manager, crun 1.28, clang 19.1.7, `policy.bpf.o` of
-SHA-256 `6e2e7dc5112c8498b03c8ce7933e4f0e2ba2fcb559ed8b810f5bd80a5ac0abd1`, the revision "Phase 3
-on macOS" measures, from the same sources of SHA-256
-`d22bb1e73c457fa48f57ec2e539142218cfcdfe0c7fa90308eddfebc371265fa`, built against that kernel's
-BTF. Every one of the 49 rows passes, in three runs
-of this object as on macOS, the rows giving the last run's figures. A run of the revision with the
-loop bodies inlined failed the race's sanity row under the row's first criterion, a walk that read
-a torn name and was made again, of which that run had none and the macOS run of the day two; the
-row asks since for what the race shows, both renamers moving while the writer is refused under one
-name and finds none under the other. The rows below name what differs from macOS; every other row
-passed as there.
+Measured on 2026-10-27 with `../bpf/probe/phase3/Phase3.scala` on the Windows machine of "Phase 1 on
+WSL", podman 6.1.4 under the cgroupfs manager, crun 1.28, clang 19.1.7, `policy.bpf.o` of SHA-256
+`463cfe8660a9f165cdff072bcf99efd47edbb9d82596030ecd337841ee2bd0a5`, built against that kernel's BTF
+from sources of SHA-256 `e3395db92fc444779d91b7a402d1acf50b2973cb2ff7617f1e395fc81592e2a5`, those
+"Phase 3 on macOS" measures: the program with the FIFO rules. Every one of the 49 rows passes. The
+rows below name what differs from macOS and give this run's figures; every other row passed as
+there. Figures of the runs of 2026-10-24, under the revision before the FIFO rules, are kept where
+they are the reason for a rule or the only measurement of their kind, and named as such.
 
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
 | preemption               | `none`, 4 CPUs                                                        |
-| verifier, per program    | 113,101 to 118,558 insns of the 1,000,000 limit, the walk and         |
-|                          | position 109,037 of them, 2.7 times the count on 7.2.5 (107,929       |
-|                          | before the scratch locks' admission; 919,220 with the loop bodies     |
-|                          | inlined, 24.7 s for all nine; 121,408 before the review's three       |
-|                          | changes); each level of the walk 248 and of its snapshot 39, the rule |
-|                          | match 1,955, the alias activation 634 and the symlink judgment 4,665; |
-|                          | stack 352 to 384 bytes; at most 46 states per insn; 195 to 647 ms     |
-|                          | each, 1.67 s for all nine (192 to 325 and 1.73 s in the first run)    |
-| barrier                  | the jited `file_open`, 22,977 bytes, holds three `lock xadd`, the     |
+| verifier, per program    | 113,296 to 118,558 insns of the 1,000,000 limit (113,101 to 118,558   |
+|                          | before the FIFO rules), the walk and position 109,037 of them, 2.7    |
+|                          | times the count on 7.2.5 (107,929 before the scratch locks'           |
+|                          | admission; 919,220 with the loop bodies inlined, 24.7 s for all nine; |
+|                          | 121,408 before the review's three changes); each level of the walk    |
+|                          | 248 and of its snapshot 39, the rule match 1,955, the alias           |
+|                          | activation 634 and the symlink judgment 4,665; stack 352 to 384       |
+|                          | bytes; at most 46 states per insn; 207 to 491 ms each, 2.07 s for all |
+|                          | nine (1.67 s and 1.73 s in the runs of 2026-10-24)                    |
+| barrier                  | the jited `file_open`, 24,769 bytes, holds three `lock xadd`, the     |
 |                          | scan matching the instruction under any `REX` prefix                  |
-| corpus                   | 236 of the 238 default cases run, 0 mismatches: two names NTFS cannot |
-|                          | hold, a newline and non-UTF-8 bytes, skipped; 3 answered by the share |
-|                          | before any hook, two `mkfifo` with `EOPNOTSUPP` and the exchange with |
-|                          | `EINVAL`; of the socket group 4 of 8 run, the rest needing a bound    |
-|                          | socket, which 9p refuses after the hook                               |
+| corpus                   | 242 default cases, 0 mismatches: 236 run, the exchange among them     |
+|                          | answered `EINVAL` by 9p before any hook; 6 skipped, the two names     |
+|                          | NTFS cannot hold (a newline, non-UTF-8 bytes) and the `fifo` group's  |
+|                          | four on the host FIFO 9p refused to make (`EOPNOTSUPP`). The five     |
+|                          | `mkfifo` cases are refused `EPERM` by the policy, whose FIFO rule in  |
+|                          | `inode_mknod` runs before 9p answers; the macOS share answers         |
+|                          | `EACCES` before any hook. Of the socket group 4 of 8 run, the rest    |
+|                          | needing a bound socket, which 9p refuses after the hook               |
 | race                     | no descriptor held, since 9p refuses to move a directory with an open |
-|                          | handle below it, and no exchange; 1,026 moves of the outer directory  |
-|                          | and 120 of the inner against 3,296 writes: 271 refused, 3,025 absent, |
-|                          | 0 succeeded; 2 walks read a torn name and were made again (1, 4, 1,   |
-|                          | 0, 2 and 4 in the runs before); in one run the outer renamer's first  |
-|                          | failed move answered `EACCES`                                         |
-| storm                    | 16 processes, 6,678 decisions in the 5 s a 9p operation's 10 ms       |
-|                          | allows, 0 wrong, 0 reentry; walk means 29 to 49 µs, 4.1 ms at most    |
+|                          | handle below it, and no exchange; 1,204 moves of the outer directory  |
+|                          | and 119 of the inner against 3,728 writes: 290 refused, 3,438 absent, |
+|                          | 0 succeeded; 1 walk read a torn name and was made again (2, 1, 4, 1,  |
+|                          | 0, 2 and 4 in the runs of 2026-10-24, in one of which the outer       |
+|                          | renamer's first failed move answered `EACCES`)                        |
+| storm                    | 16 processes, 8,246 decisions in the 5 s a 9p operation's 10 ms       |
+|                          | allows, 0 wrong, 0 reentry; walk means 34 to 55 µs, 2.7 ms at most    |
+|                          | (6,678 decisions, 29 to 49 µs and 4.1 ms in the last run of           |
+|                          | 2026-10-24)                                                           |
 | short name, real volume  | NTFS serves `.vscode` as `VSCODE~1`; under the flag a write through   |
 |                          | it is refused and the host sees no file in `.vscode`                  |
 | walk cost, in program    | `file_open` over the pairs' 10,000 opens for writing at depth 11:     |
-|                          | 37.3 µs mean, 1.21 ms at most                                         |
-| walk cost, syscall       | five pairs as on macOS, policy minus bare: the open for writing −721, |
-|                          | +86, −202, +807 and −849 µs, median −202; the open for reading −173   |
-|                          | to +951, median +58; `lstat` −140 to +978, median +307; the bare      |
-|                          | write open 10.05 to 10.82 ms (the run before: −704 to +334 µs, median |
-|                          | −564, bare 9.52 to 10.01 ms), so 9p's jitter within a pair exceeds    |
-|                          | the walk's cost in every run and the program's timer alone gives it.  |
-|                          | The single-shot runs before read policy 11.13, 11.51, 10.48 and 11.06 |
-|                          | ms against bare 8.88, 9.58, 10.76 and 10.59                           |
-| container start          | with `file_receive` attached, the runtime passes 10 descriptors;      |
-|                          | the volume mountpoint arrives as an `open_tree` clone, an anonymous   |
-|                          | namespace whose root is the volume directory and whose inode number   |
-|                          | is 0xEFFFFFF7, the receiver `crun` still at the host's root           |
-| container start, refused | the runs before that number was known: the clone's namespace was      |
-|                          | neither the controller's nor pid 1's, which are one on this machine,  |
-|                          | and carried neither anonymity field the program looked for            |
+|                          | 40.5 µs mean, 2.10 ms at most (37.3 µs and 1.21 ms in the last run of |
+|                          | 2026-10-24)                                                           |
+| walk cost, syscall       | five pairs as on macOS, policy minus bare: the open for writing +139, |
+|                          | −66, +6, −186 and −87 µs, median −66; the open for reading −284 to    |
+|                          | +24, median −29; `lstat` −659 to +120, median −178; the bare write    |
+|                          | open 10.64 to 10.97 ms (the runs of 2026-10-24: medians −202 and −564 |
+|                          | µs for the write open), so 9p's jitter within a pair exceeds the      |
+|                          | walk's cost in every run and the program's timer alone gives it       |
+| container start          | with `file_receive` attached, the runtime passes 10 descriptors, all  |
+|                          | passed, and the first process holds no descriptor beyond the standard |
+|                          | three. In the runs of 2026-10-24 the volume mountpoint arrived as an  |
+|                          | `open_tree` clone, an anonymous namespace whose root is the volume    |
+|                          | directory and whose inode number is 0xEFFFFFF7, the receiver `crun`   |
+|                          | still at the host's root                                              |
+| container start, refused | the runs of 2026-10-24 before that number was known: the clone's      |
+|                          | namespace was neither the controller's nor pid 1's, which are one on  |
+|                          | this machine, and carried neither anonymity field the program looked  |
+|                          | for                                                                   |
 | second share             | no `D:` drive on the machine; not measured                            |
-| descriptors              | every row as on macOS; B's `file_receive` over the rows: 87 calls, 80 |
-|                          | of the runtime's, 4 allowed, 3 denied                                 |
+| descriptors              | every row as on macOS but the host FIFO's, skipped as 9p made no      |
+|                          | FIFO; B's `file_receive` over the rows: 87 calls, 80 of the           |
+|                          | runtime's, 4 allowed, 3 denied                                        |
 
 
 ### Phase 4 on macOS
 
-Measured on 2026-10-25 with `../bpf/probe/phase4/phase4.sh` on the machine of "Phase 1 on macOS",
-podman 6.1.2, crun 1.30, clang 19.1.7, `policy.bpf.o` of SHA-256
-`7a23c6fc79cd63e3993c7750bb981a2dcea2beb7f6e56a3f0c4b0d742baa71f0`, the object "Phase 3 on macOS"
+Measured on 2026-10-27 with `../bpf/probe/phase4/Phase4.scala` on the machine of "Phase 1 on
+macOS", podman 6.1.2, crun 1.30, clang 19.1.7, `policy.bpf.o` of SHA-256
+`81b80f90f32c1c751b4a8904c498e57c592a297317377b121367c8eac00b14f0`, the object "Phase 3 on macOS"
 measures, built again byte for byte, beside `other.bpf.o` of SHA-256
-`5777797e27ae80ded9625d30fa72ebd06632cce659f9caab2b1698adbf9a0275`, the same source counting each
+`40e11723b1709a982062f31d438ec09f28de09a041cb32e7a1a7490b66bfa62b`, the same source counting each
 call twice in its statistics, which stands for another build, and `other-data.bpf.o` of SHA-256
-`8a47bc034f432a97f753585af6eedb2176e432b1a1e3f49d8705b04a2090f26b`, the source with one string
+`4901d9e57541470a03087e9fc039b55b89068896fdeac7805b4a135b86dac341`, the source with one string
 literal of the same length changed, whose instructions and tags equal the installed object's; all
-from sources of SHA-256 `58d057f9e769f634be9768bb4599f746894aca931cadfb2cff79bd5117b00d55`. Every
-one of the 63 rows passes in one run of these sources, the four machine-restart rows declined in
-it and measured in the run before, under the sources the independent review then changed (the
-read-back's read-only data comparison, the reconcile's check of every pin before removal); the
-runs before found defects of the driver and of the proof fixture alone, and one fact kept below
-(the FIFO row). The containers run as in Phase 2; twenty-two launches ran, each through the
-launcher's steps 1 to 4.
+built from sources of SHA-256 `76bbe1e5c74a646962ce0821170a67aa6fcf5b35cbec748ceea6bb083fc4b55e`
+(`sources.txt` lists them in hashing order; `../bpf/probe/CheckEvidence.scala` recomputes it):
+the program with the FIFO rules and the launcher's controller, read-back and fixture, from
+`../bpf/ko-agent-bpf/`. Every one of the 67 rows passes in one run, the four machine-restart rows
+among them. The containers run as in Phase 2; thirteen launches ran through the launcher's steps
+1 to 4, and the reconcile's rows ran the controller's attach alone nine times. A fact of the runs
+of 2026-10-25, under the program before the FIFO rules, is kept as a reason for them and named as
+such.
 
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
-| install                  | the read-back loads the nine programs once and records their tags    |
-|                          | and the read-only data's 758 bytes: 535 ms                            |
-| step 2 at launch         | over the twenty-two launches the controller's load took 421 to 671    |
-|                          | ms, once 937, filling the maps 0.1 ms, the eight or nine attaches     |
-|                          | 8.5 to 18 ms in ten launches and 0.3 to 0.6 ms in the rest            |
-| step 2 at a recreate     | the pinned programs checked in 16 ms and attached to the new cgroup   |
-|                          | in 9 ms, nothing loaded; the old links read cgroup_id 0 after their   |
+| install                  | the read-back loads the nine programs once and records their tags and |
+|                          | the read-only data's 758 bytes: 532 ms                                |
+| step 2 at launch         | over the twenty-one attaches that loaded, the controller's load took  |
+|                          | 406 to 553 ms, filling the maps 0.1 to 0.2 ms, the eight or nine      |
+|                          | attaches 0.4 to 0.7 ms                                                |
+| step 2 at a recreate     | the pinned programs checked in 17 ms and attached to the new cgroup   |
+|                          | in 0.4 ms, nothing loaded; the old links read cgroup_id 0 after their |
 |                          | cgroup went, the programs stayed pinned                               |
-| step 3                   | the read-back 13 to 17 ms: eight programs, nine maps (the eight of    |
+| step 3                   | the read-back 15 to 18 ms: eight programs, nine maps (the eight of    |
 |                          | the policy and the string literals' read-only map, its bytes the      |
 |                          | installed object's), five roots, 56 rules; the proof's 68 operations  |
-|                          | (69 under `unix-socket`) 33 to 44 ms, 0 mismatches, in a scope       |
-|                          | under the slice                                                       |
+|                          | (69 under `unix-socket`, 67 under the launcher's defaults alone) 38   |
+|                          | to 47 ms, 0 mismatches, in a scope under the slice                    |
 | the session              | the first process is refused `.git/config` and writes an ordinary     |
 |                          | file; `podman exec` is refused; after `podman restart` the first      |
 |                          | process is refused again; after `podman kill` the container is exited |
-|                          | and the eight programs stay attached, the link naming the cgroup;     |
-|                          | the restart policy reads `no`                                         |
+|                          | and the eight programs stay attached, the link naming the cgroup; the |
+|                          | restart policy reads `no`                                             |
 | identity                 | each link's cgroup_id is the attach cgroup's inode number             |
-| the controller           | exited before the container started; no process of it remains        |
-| sockets and mounts       | a socket bound under the container's `/tmp`; `rename` of that        |
+| the controller           | exited before the container started; no process of it remains         |
+| sockets and mounts       | a socket bound under the container's `/tmp`; `rename` of that         |
 |                          | directory into the volume and into the workspace answers `EXDEV`      |
 | the policy cannot lapse  | `rmdir` of the attach cgroup with the container in it: `EBUSY`;       |
 |                          | root's unpin of the links: 0 programs attached and the protected      |
 |                          | write succeeds                                                        |
-| defective controllers    | seven hooks: `hook-set attached=7 expected=8`; the other build:       |
-|                          | `tag` on `file_open`; the build differing in data alone: `rodata`,    |
-|                          | its 758 bytes differing from the installed object's under equal tags; |
-|                          | another rule file's records: `map-contents rules index=55`; no        |
-|                          | container exists after any; the proof alone catches the records too,  |
-|                          | one mismatch (`.vscode/settings.json`)                                |
-| `unix-socket`           | nine hooks attached and verified; the proof's `bind` in `.git`        |
+| defective controllers    | seven hooks: `hook-set attached=7 expected=8`; the other build: `tag` |
+|                          | on `file_open`; the build differing in data alone: `rodata`, its 758  |
+|                          | bytes differing from the installed object's under equal tags; another |
+|                          | rule file's records: `map-contents rules index=55`; no container      |
+|                          | exists after any; the proof alone catches the records too, one        |
+|                          | mismatch (`.vscode/settings.json`)                                    |
+| `unix-socket`            | nine hooks attached and verified; the proof's `bind` in `.git`        |
 |                          | refused, and a directory descriptor sent from a mount namespace of    |
 |                          | the sender's own refused on arrival                                   |
 | pins across a rule       | the check finds `map-contents rules index=55`, the pins go and fresh  |
@@ -1381,198 +1433,213 @@ launcher's steps 1 to 4.
 | pins across a new build  | with the other object installed and its tags recorded, the check      |
 |                          | finds `tag`; fresh programs of the new build load and verify; the pin |
 |                          | directory holds this launch's eight links and eight programs alone    |
-| the controller's         | an object given as a path, a cgroup outside the user's slice, a       |
-| refusals                 | tmpfs mounted at `tree/vendor` under the bind source, a proof fixture |
-|                          | on tmpfs: each `refused reason=...`, status 3, nothing pinned         |
+| the controller's         | an object given as a path, a cgroup outside the user's slice, a tmpfs |
+| refusals                 | mounted at `tree/vendor` under the bind source, a proof fixture on    |
+|                          | tmpfs: each `refused reason=...`, status 3, nothing pinned            |
 | the reconcile            | a listing that fails (`podman ps` made to fail) is reported and keeps |
 |                          | all five sessions; the launcher killed before `podman create` and a   |
 |                          | `podman create` that failed: pins and slices removed; a created, a    |
 |                          | stopped and a live container keep theirs; the created one's go once   |
 |                          | it is removed                                                         |
 | contradicting identities | a container whose label names another cgroup: kept, unassociated; a   |
-|                          | cgroup recreated at its path (inode 48288, then 49203): refused; a    |
+|                          | cgroup recreated at its path (inode 352098, then 353013): refused; a  |
 |                          | pin directory renamed to another session's name: refused by its       |
 |                          | links' cgroup id; nothing removed                                     |
-| cleanup refusals         | a session name and a cgroup path with `..`; a symlink in place of     |
-|                          | the pin directory (`ELOOP`); a tmpfs mounted on it (`EXDEV`); a       |
-|                          | recorded identity off by one; each refused, nothing removed. cgroup2  |
-|                          | refuses a symlink in place of a cgroup directory with `EPERM`         |
-| refusals found late      | one foreign link among a session's eight: refused, its 9 links and 8  |
-|                          | programs all surviving; a programs directory that is a symlink:       |
-|                          | refused after the links were checked, all 8 links surviving           |
-| machine restart          | the run before: `podman machine stop` 61 s, `start` 11 s; the pin     |
-|                          | root is gone with bpffs, the attach cgroups are gone, the two         |
-|                          | containers stay exited and the reconcile keeps both, since their      |
-|                          | containers name them                                                  |
+| cleanup refusals         | a session name and a cgroup path with `..`; a symlink in place of the |
+|                          | pin directory (`ELOOP`); a tmpfs mounted on it (`EXDEV`); a recorded  |
+|                          | identity off by one; each refused, nothing removed. cgroup2 refuses a |
+|                          | symlink in place of a cgroup directory with `EPERM`                   |
+| a refusal removes        | one foreign link among a session's eight: refused, its 9 links and 8  |
+| nothing                  | programs all surviving; a programs directory that is a symlink        |
+|                          | (`ELOOP`): refused, all 8 links surviving                             |
+| machine restart          | `podman machine stop` 3 s, `start` 12 s; the pin root is gone with    |
+|                          | bpffs, the attach cgroups are gone, the two containers stay exited    |
+|                          | and the reconcile keeps both, since their containers name them        |
 | bpffs                    | holds symlinks and renames of pin directories                         |
-| FIFO                     | the first run: a `mkfifo` at an ordinary name of the fixture passed   |
-|                          | `inode_mknod`, which judges a socket by type and any node by name;    |
-|                          | the proof's `mkfifo` targets `.git/ko-fifo` since, and the FIFO left  |
-|                          | on the share preceded a `podman machine stop` that did not return     |
+| FIFO                     | the proof's `mkfifo` at an ordinary name answers `EPERM` under the    |
+|                          | FIFO rules. On 2026-10-25, before them, the same `mkfifo` passed      |
+|                          | `inode_mknod`, which judged a socket by type and any other node by    |
+|                          | name, and the FIFO left on the share preceded a `podman machine stop` |
+|                          | that did not return                                                   |
 
 
 ### Phase 4 on WSL
 
-Measured on 2026-10-25 with `../bpf/probe/phase4/phase4.ps1` on the Windows machine of "Phase 1 on
-WSL", podman 6.1.4 under the cgroupfs manager, crun 1.28, clang 19.1.7, `policy.bpf.o` of SHA-256
-`6e2e7dc5112c8498b03c8ce7933e4f0e2ba2fcb559ed8b810f5bd80a5ac0abd1`, the object "Phase 3 on WSL"
+Measured on 2026-10-27 with `../bpf/probe/phase4/Phase4.scala` on the Windows machine of "Phase 1
+on WSL", podman 6.1.4 under the cgroupfs manager, crun 1.28, clang 19.1.7, `policy.bpf.o` of SHA-256
+`463cfe8660a9f165cdff072bcf99efd47edbb9d82596030ecd337841ee2bd0a5`, the object "Phase 3 on WSL"
 measures, built again byte for byte, beside `other.bpf.o` of SHA-256
-`fac0fb9b520c760629957bd0a3d82b0ad76d927ad9a6013dc82ceee5d3cb9404` and `other-data.bpf.o` of
-SHA-256 `1adad44441f677cca904f0b9705166112b72712956d8fc6930479fe5389c4079`; all built from the
-sources of SHA-256 `58d057f9e769f634be9768bb4599f746894aca931cadfb2cff79bd5117b00d55` that "Phase
-4 on macOS" measures. Every one of the 63 rows passes, in one run of these sources, the four
-machine-restart rows declined in it and measured in the run before as on macOS; the runs before
-found defects of the driver alone. The rows below name what differs from macOS; every other row
-passed as there, the reconcile removing the cgroup directories itself under cgroupfs.
+`43af7b4d6bb547246b8cc6728d956059c699111f9d2112aa0eaf214802ae7ab4` and `other-data.bpf.o` of
+SHA-256 `7099595b9d5d308eadb99538a915ecdd2fce7980e2a60ed140485fff4f7eb78f`; all built from sources
+of SHA-256 `76bbe1e5c74a646962ce0821170a67aa6fcf5b35cbec748ceea6bb083fc4b55e`, those "Phase 4 on
+macOS" measures. Every one of the 67 rows passes in one run, the four machine-restart rows among
+them. The rows below name what differs from macOS; every other row passed as there, the reconcile
+removing the cgroup directories itself under cgroupfs.
 
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
-| install                  | the tags and the read-only data recorded in 1.82 s                    |
-| step 2 at launch         | the load 1.47 to 1.84 s over the twenty-two launches, filling 0.1 ms, |
-|                          | the attaches 13 to 23 ms in ten launches and 0.2 to 0.4 ms in the     |
-|                          | rest                                                                  |
-| step 2 at a recreate     | the pins checked in 43 ms and attached in 17 ms                       |
-| step 3                   | the read-back 35 to 50 ms; the proof's 68 operations 327 to 373 ms    |
-|                          | on 9p, 0 mismatches                                                   |
-| the proof's cgroup       | a process of the ssh session could not join the leaf below the attach |
-|                          | cgroup: writing its `cgroup.procs` answered `EACCES` (the run         |
-|                          | before), since the move needs write access to the common ancestor's   |
+| install                  | the tags and the read-only data recorded in 1.98 s                    |
+| step 2 at launch         | over the twenty-one attaches that loaded, the load 1.63 to 2.23 s,    |
+|                          | filling 0.1 to 0.2 ms, the attaches 13 to 53 ms in ten, once 161 ms,  |
+|                          | and 0.2 to 0.4 ms in the other ten                                    |
+| step 2 at a recreate     | the pins checked in 45 ms and attached in 24 ms                       |
+| step 3                   | the read-back 40 to 47 ms; the proof's 68 operations (69 under        |
+|                          | `unix-socket`, 67 under the launcher's defaults alone) 306 to 386 ms  |
+|                          | on 9p, 0 mismatches; its `mkfifo` and `bind` answer `EPERM`, the      |
+|                          | policy's, since 9p answers both after the hooks                       |
+| the proof's cgroup       | a process of the ssh session cannot join the leaf below the attach    |
+|                          | cgroup: on 2026-10-25 writing its `cgroup.procs` answered `EACCES`,   |
+|                          | since the move needs write access to the common ancestor's            |
 |                          | `cgroup.procs` and the session's cgroup shares no ancestor the user   |
-|                          | owns with the delegated subtree; from a transient scope of the user   |
-|                          | manager, `app.slice/run-*.scope`, the join into `app.slice/<attach>/  |
-|                          | proof` works, on every launch. A launcher reaching the machine over   |
-|                          | ssh takes that step                                                   |
+|                          | owns with the delegated subtree. From a transient scope of the user   |
+|                          | manager, `app.slice/run-*.scope`, the join into                       |
+|                          | `app.slice/<attach>/proof` works on every launch, the ten of this run |
+|                          | among them. A launcher reaching the machine over ssh takes that step  |
 | sockets and mounts       | `rename` of the socket's directory into the volume (ext4) and into    |
 |                          | the workspace (9p) answers `EXDEV`                                    |
-| machine restart          | the run before: `podman machine stop` 2 s, `start` 9 s; the rows as   |
-|                          | on macOS                                                              |
+| machine restart          | `podman machine stop` 2 s, `start` 10 s; the rows as on macOS         |
 
 
 ### Phase 5 on macOS
 
-Measured on 2026-10-25 with `../bpf/probe/phase5/Phase5.scala` on the machine of "Phase 1 on macOS",
-podman 6.1.2, crun 1.30, clang 19.1.7, `policy.bpf.o` of SHA-256
-`7a23c6fc79cd63e3993c7750bb981a2dcea2beb7f6e56a3f0c4b0d742baa71f0`, the object "Phase 3 on macOS"
+Measured on 2026-10-27 with `../bpf/probe/phase5/Phase5.scala` on the machine of "Phase 1 on
+macOS", podman 6.1.2, crun 1.30, clang 19.1.7, `policy.bpf.o` of SHA-256
+`81b80f90f32c1c751b4a8904c498e57c592a297317377b121367c8eac00b14f0`, the object "Phase 3 on macOS"
 and "Phase 4 on macOS" measure, built again byte for byte, from sources of SHA-256
-`bc6b5a5bfb82b2bc3e48228afa16c2c29acc641ac37ab0a7ad03c7097c02f2f1`. The tree is sbt/sbt at
-`8a8a17c4`, 4,475 tracked files at mean depth 7.0 among 7,946 entries, the corpus `perf-probe.py`'s
+`caabf361ee5b1cf67e76004bf7e88abd496fa2da3fc166b7b62680575e3ed390`. The tree is sbt/sbt at
+`8b211995`, 4,498 tracked files at mean depth 7.0 among 7,987 entries, the corpus `perf-probe.py`'s
 2,101 entries, and the build a clone of this repository at the tree's root, under the launcher's
-default rules, 55 lines. Every one of the 26 rows passes in one run, the fourth: the first failed
-its filter rows on the launcher's refusal of a workspace below `~/.cache`, the second passed its 23
-rows before the bare round and the build were added, and the third's build under the policy read as
-absent the clone the driver had removed and made again at one name within a second, the dentry the
-machine keeps ("Phase 1 on macOS", the replacement row). The three stacks run the sandbox image
-with the session's user mapping, the policy's containers below the attach cgroup, the filter's
-through the launcher; `perf-probe.py` ran three rounds a stack, interleaved, after one round on the
-bare bind before the launch; the figures are the mean, with the range, over the rounds.
+default rules, 55 lines. Every one of the 26 rows passes in one run. The three stacks run the
+sandbox image with the session's user mapping, the policy's containers below the attach cgroup,
+the filter's through the launcher under `--workspace=live,fuse`; `perf-probe.py` ran three rounds
+a stack, interleaved, after one round on the bare bind before the launch; the figures are the
+mean, with the range, over the rounds. A live session of the backend held its nine links
+throughout, so the shim was installed in every round; the bare bind's control is the run of
+2026-10-25, under the program before the FIFO rules, named as such.
 
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
-| the launch               | load 438 ms, attach 8.7 ms, read-back 15.9 ms, the proof's 67         |
-|                          | operations 38.4 ms, 0 mismatches; a hook file in `.git/hooks` made on |
+| the launch               | load 460 ms, attach 0.4 ms, read-back 14.3 ms, the proof's 67         |
+|                          | operations 38.2 ms, 0 mismatches; a hook file in `.git/hooks` made on |
 |                          | the bare bind, refused under the policy and through the filter        |
-| the bare bind, µs an     | before the launch, with nothing under the probe's pin root (whether   |
-| entry                    | another process held an attachment was not checked in this run; the   |
-|                          | driver now lists all of `bpffs` and counts `bpftool`'s programs of    |
-|                          | type `lsm` where it has one): `find` 76, `find -printf` 167, `ls -lR` |
-|                          | 719, `cp -r` 1,258, `rm -rf` 342, each inside the range of the bind's |
-|                          | rounds beside the policy: the shim the first attach installs costs    |
-|                          | tasks outside the cgroup nothing the rounds' spread shows             |
-| `perf-probe.py`, µs an   | `find`: bind 82 (63 to 107), policy 73 (71 to 78), filter 402;        |
-| entry, bind / policy /   | `find -printf`: 165 (134 to 204), 179 (160 to 190), 1,291;            |
-| filter                   | `ls -lR`: 724 (640 to 870), 765 (697 to 894), 12,289;                 |
-|                          | `cp -r`: 1,421 (1,194 to 1,636), 1,401 (1,244 to 1,674), 9,128;       |
-|                          | `rm -rf`: 419 (334 to 547), 358 (355 to 362), 2,602. Policy over bind |
-|                          | 0.86 to 1.09 times over overlapping ranges in every row; filter over  |
-|                          | bind 4.9 to 17.0 times, as "The cost of a path walk" measured in      |
-|                          | 2026-09                                                               |
+| the bare bind, µs an     | this run, with a live session's nine links attached and so the shim   |
+| entry                    | installed: `find` 68, `find -printf` 150, `ls -lR` 677, `cp -r`       |
+|                          | 1,234, `rm -rf` 310, each inside the range of the bind's rounds. On   |
+|                          | 2026-10-25, before the launcher could start a session of the backend, |
+|                          | with nothing under the probe's pin root (other attachments not        |
+|                          | checked): 76, 167, 719, 1,258, 342, each inside the range of that     |
+|                          | run's bind rounds: the shim the first attach installs costs tasks     |
+|                          | outside the cgroup nothing the rounds' spread shows                   |
+| `perf-probe.py`, µs an   | `find`: bind 72 (68 to 77), policy 67 (66 to 68), filter 372; `find   |
+| entry, bind / policy /   | -printf`: 150 (148 to 154), 156 (143 to 172), 1,218; `ls -lR`: 676    |
+| filter                   | (661 to 690), 680 (672 to 685), 11,825; `cp -r`: 1,186 (1,127 to      |
+|                          | 1,284), 1,222 (1,195 to 1,270), 8,343; `rm -rf`: 296 (283 to 314),    |
+|                          | 311 (300 to 317), 2,186. Policy over bind 0.93 to 1.05 times over     |
+|                          | overlapping ranges in every row; filter over bind 5.1 to 17.5 times,  |
+|                          | as "The cost of a path walk" measured in 2026-09                      |
 | the program's share of a | 3,600 judged calls each of `file_open`, `inode_create` and            |
 | `perf-probe.py` round    | `inode_unlink` (the corpus's 1,800 files made, copied and removed     |
-|                          | twice over), 123, 32 and 36 more answered at the superblock check,    |
-|                          | every walk 4 deep and none retried, denied or without a slot; 15.4 to |
-|                          | 17.8 µs mean from entry to decision, 0.17 ms at most: the three       |
-|                          | hooks' 10,800 judged calls take 167 to 182 ms of a round's 9 to 12 s  |
-| the build                | `sbt 'testOnly *SandboxTextWidthTest'`, output in the workspace:      |
-|                          | bind 102 s wall, sbt's own 72 s; policy 104 s, 67 s; 10 of 10 tests   |
-|                          | under both. The policy judged 1,691 opens, 1,349 creates, 214 renames |
-|                          | (428 walks, source and destination), 108 unlinks and 514 attribute    |
-|                          | changes, walks up to 20 deep, 40 to 47 µs mean a call and 93 for a    |
-|                          | rename, 0.21 ms at most; it refused 4 symlinks at depth 7, the        |
+|                          | twice over), 126, 32 and 36 more answered at the superblock check,    |
+|                          | every walk 4 deep and none retried or without a slot; one create      |
+|                          | refused a round, the probe's own hook file in `.git/hooks`; 15.0 to   |
+|                          | 15.5 µs mean from entry to decision, 0.07 ms at most: the three       |
+|                          | hooks' 10,800 judged calls take 164 to 165 ms of a round's 8 to 9 s   |
+| the build                | `sbt 'testOnly *SandboxTextWidthTest'`, output in the workspace: bind |
+|                          | 86 s wall, sbt's own 56 s; policy 84 s, 54 s; 10 of 10 tests under    |
+|                          | both. The policy judged 1,700 opens, 1,358 creates, 214 renames (428  |
+|                          | walks, source and destination), 108 unlinks and 514 attribute         |
+|                          | changes, walks up to 20 deep, 39 to 46 µs mean a call and 90 for a    |
+|                          | rename, 0.18 ms at most; it refused 5 symlinks at depth 7, the        |
 |                          | absolute targets "The policy" refuses as the filter refuses sbt's     |
 |                          | links into its cache, under which sbt writes copies ("sbt over        |
-|                          | dangling cache links"); the machine 18 to 21 % busy mean, 47 to 49 %  |
-|                          | max, memory used rising from 2.8 to 4.8 GB under both                 |
-| `walk-probe.py`, bind /  | `lstat` by path: depth 1 0.08 / 0.17 / 0.76 ms, depth 7 0.48 / 0.48 / |
-| policy / filter          | 6.52 ms, depth 15 0.76 / 1.02 / 20.5 ms; every tracked file by path   |
-|                          | 0.42 / 0.42 / 7.31 ms a file, through a directory fd 0.11 / 0.11 /    |
-|                          | 1.76 ms; `find . -type f` 1.8 / 2.2 / 16.9 s; `git status` 4.7 / 4.3  |
-|                          | / 71.2 s, `--untracked-files=no` 1.2 / 1.1 / 40.5 s. The depth rows,  |
-|                          | 200 `lstat` each of 0.1 to 1 ms, scatter 1.0 to 2.1 times policy over |
-|                          | bind in this run and 0.7 to 1.4 in the run before, the per-file rows  |
-|                          | 1.00 in both; the policy judged 4 opens, 4 creates and 4 unlinks in   |
-|                          | the whole run, git's lock at depth 2, 15 to 22 µs each; the filter's  |
-|                          | figures match "a real tree" of 2026-09-19 (5.97 ms a file, 71.5 s)    |
-| the machine during the   | `/proc/stat` over the run, ten CPUs: bind 13 % busy mean, 27 % max    |
-| stat storm               | over 34 s; policy 12 %, 26 % over 29 s; filter 8 %, 32 % over 541 s;  |
-|                          | iowait at most 2 %; memory used 3.0 to 3.3 GB of 11.9 GB under each,  |
+|                          | dangling cache links"); the machine 21 % busy mean, 45 to 51 % max,   |
+|                          | memory used rising from 1.5 to 3.5 GB under both                      |
+| `walk-probe.py`, bind /  | `lstat` by path: depth 1 0.11 / 0.09 / 0.58 ms, depth 7 0.34 / 0.34 / |
+| policy / filter          | 5.34 ms, depth 15 0.67 / 0.81 / 16.1 ms; every tracked file by path   |
+|                          | 0.34 / 0.37 / 5.41 ms a file, through a directory fd 0.09 / 0.10 /    |
+|                          | 1.37 ms; `find . -type f` 1.8 / 1.8 / 13.9 s; `git status` 3.7 / 3.7  |
+|                          | / 67.6 s, `--untracked-files=no` 0.9 / 0.9 / 38.0 s. The depth rows,  |
+|                          | 200 `lstat` each of 0.1 to 1 ms, scatter 0.80 to 1.36 times policy    |
+|                          | over bind, the per-file rows 1.09 and 1.11; the policy judged 4       |
+|                          | opens, 4 creates and 4 unlinks in the whole run, git's lock at depth  |
+|                          | 2, 15 to 20 µs each; the filter's figures lie near "a real tree" of   |
+|                          | 2026-09-19 (5.97 ms a file, 71.5 s)                                   |
+| the machine during the   | `/proc/stat` over the run, ten CPUs: bind 8 % busy mean, 20 % max     |
+| stat storm               | over 31 s; policy 8 %, 20 % over 25 s; filter 6 %, 18 % over 479 s;   |
+|                          | iowait at most 1 %; memory used 1.4 to 1.8 GB of 11.9 GB under each,  |
 |                          | memory pressure `some avg10` 0.00 throughout, io at most 0.32         |
-| the machine during       | bare, bind and policy 6 to 7 % busy mean, 6 to 10 % max over 8 to 12  |
-| `perf-probe.py`          | s a round; filter 7 % mean, 23 to 24 % max over 78 to 80 s a round    |
-| the probe's own label    | `perf-probe.py` reported `unfiltered bind mount` under the policy     |
-|                          | too, telling the stacks apart by a `.git` directory, which the policy |
-|                          | allows ("Directories"); it now also tries a hook file inside that     |
-|                          | directory, which the policy refuses by name, and reports `BPF policy` |
+| the machine during       | bare, bind and policy 5 to 7 % busy mean, 6 to 10 % max over 8 to 9 s |
+| `perf-probe.py`          | a round; filter 7 % mean, 18 to 23 % max over 74 s a round            |
+| the probe's own label    | `perf-probe.py` reports `unfiltered bind mount`, `BPF policy` and     |
+|                          | `filtered`: it tells the policy from the bind by a hook file in       |
+|                          | `.git/hooks`, which the policy refuses by name and allows the         |
+|                          | directory ("Directories")                                             |
 | the attach cgroup        | under the systemd manager the slice `ko-agent-bpf5-policy.slice` lies |
 |                          | below `ko.slice/ko-agent.slice/ko-agent-bpf5.slice`, the hierarchy    |
 |                          | systemd reads from a slice name's dashes                              |
 
 ### Phase 5 on WSL
 
-Measured on 2026-10-25 with `../bpf/probe/phase5/Phase5.scala` (`scala shebang`) on the Windows
+Measured on 2026-10-27 with `../bpf/probe/phase5/Phase5.scala` (`scala shebang`) on the Windows
 machine of "Phase 1 on WSL", podman 6.1.4 under the cgroupfs manager, crun 1.28, clang 19.1.7,
-`policy.bpf.o` of SHA-256 `6e2e7dc5112c8498b03c8ce7933e4f0e2ba2fcb559ed8b810f5bd80a5ac0abd1`, the
-object "Phase 3 on WSL" and "Phase 4 on WSL" measure, built again byte for byte, from the
-sources of SHA-256 `bc6b5a5bfb82b2bc3e48228afa16c2c29acc641ac37ab0a7ad03c7097c02f2f1` that "Phase 5
-on macOS" measures, over the same tree and corpus, the machine of four CPUs and 7.8 GB on the 9p
-share. Every one of the 23 rows passes in one run of 2 h 10 min, of which the filter's
-`walk-probe.py` took 82 min. The rows below name what differs from macOS; the stacks and the
-`perf-probe.py` and `walk-probe.py` rounds are the same, and the bare round and the build, added
-to the driver after this run, are not measured there.
+`policy.bpf.o` of SHA-256 `463cfe8660a9f165cdff072bcf99efd47edbb9d82596030ecd337841ee2bd0a5`, the
+object "Phase 3 on WSL" and "Phase 4 on WSL" measure, built again byte for byte, from sources of
+SHA-256 `caabf361ee5b1cf67e76004bf7e88abd496fa2da3fc166b7b62680575e3ed390`, those "Phase 5 on
+macOS" measures. The tree is sbt/sbt at `00b58625`, 4,498 tracked files, the corpus and the build as
+on macOS, the machine of four CPUs and 7.8 GB on the 9p share. Every one of the 26 rows passes in
+one run of 2 h 32 min, of which the filter's `walk-probe.py` took 88 min. No session of the backend
+was live, so the bare round is the shim's control. The rows below name what differs from macOS; the
+stacks and the rounds are the same.
 
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
-| the launch               | load 1,667 ms, attach 15.9 ms, read-back 49.3 ms, the proof's 67      |
-|                          | operations 323 ms on 9p, 0 mismatches; the attach cgroup a directory  |
+| the launch               | load 1,914 ms, attach 18.2 ms, read-back 32.2 ms, the proof's 67      |
+|                          | operations 309 ms on 9p, 0 mismatches; the attach cgroup a directory  |
 |                          | under `app.slice`, the proof joined from a transient scope            |
-| `perf-probe.py`, µs an   | `find`: bind 584 (559 to 598), policy 623 (560 to 659), filter 3,486; |
-| entry, bind / policy /   | `find -printf`: 1,493 (1,440 to 1,576), 1,606 (1,478 to 1,749),       |
-| filter                   | 11,710; `ls -lR`: 3,064 (2,759 to 3,220), 3,019 (2,690 to 3,198),     |
-|                          | 95,301; `cp -r`: 13,671 (12,980 to 14,551), 13,662 (12,981 to         |
-|                          | 14,039), 71,470; `rm -rf`: 1,988 (1,918 to 2,079), 2,007 (1,877 to    |
-|                          | 2,132), 19,717. Policy over bind 0.99 to 1.08 times over overlapping  |
-|                          | ranges in every row; filter over bind 5.2 to 31.1 times, each column  |
-|                          | within 20 % of "the filter's ratio on Windows" of 2026-09-19          |
+| the bare bind, µs an     | before the launch, no link of any session attached, the launcher's    |
+| entry                    | spare set pinned and attached to nothing: `find` 596, `find -printf`  |
+|                          | 1,446, `ls -lR` 3,047, `cp -r` 15,303, `rm -rf` 2,015; each inside    |
+|                          | the range of the bind's rounds but `cp -r`, above it in this first    |
+|                          | round after the clone (iowait 17 %, io pressure 4.0): the shim the    |
+|                          | first attach installs costs tasks outside the cgroup nothing the      |
+|                          | rounds' spread shows                                                  |
+| `perf-probe.py`, µs an   | `find`: bind 619 (542 to 660), policy 605 (567 to 635), filter 3,729; |
+| entry, bind / policy /   | `find -printf`: 1,475 (1,368 to 1,536), 1,556 (1,419 to 1,658),       |
+| filter                   | 12,287; `ls -lR`: 3,082 (2,917 to 3,196), 3,191 (2,798 to 3,460),     |
+|                          | 97,605; `cp -r`: 14,203 (13,476 to 14,676), 14,478 (13,040 to         |
+|                          | 15,875), 73,722; `rm -rf`: 1,958 (1,897 to 2,041), 1,931 (1,797 to    |
+|                          | 2,030), 20,370. Policy over bind 0.98 to 1.06 times over overlapping  |
+|                          | ranges in every row; filter over bind 5.2 to 31.7 times               |
 | the program's share of a | the same 3,600 judged calls a hook, 6, 10 and 0 answered at the       |
-| `perf-probe.py` round    | superblock check, every walk 4 deep; 12.6 to 15.0 µs mean from entry  |
-|                          | to decision, 3.6 ms at most once, no retry, denial or missing slot    |
-| `walk-probe.py`, bind /  | `lstat` by path: depth 1 0.96 / 0.91 / 4.19 ms, depth 7 5.10 / 4.97 / |
-| policy / filter          | 55.5 ms, depth 15 11.0 / 10.4 / 184.7 ms; every tracked file by path  |
-|                          | 5.17 / 5.01 / 53.0 ms a file, through a directory fd 1.00 / 0.93 /    |
-|                          | 16.9 ms; `find . -type f` 14.6 / 14.1 / 169.5 s; `git status` 23.0 /  |
-|                          | 20.7 / 738.2 s, `--untracked-files=no` 11.0 / 11.0 / 423.4 s. The     |
-|                          | policy judged 4 opens, 4 creates and 4 unlinks, 16 to 21 µs each; the |
-|                          | bare 9p bind costs 10 times the macOS virtiofs bind on every row, and |
-|                          | the filter 4.4 to 38 times the bind on top                            |
-| the machine during the   | four CPUs: bind 14 % busy mean, 35 % max over 359 s; policy 17 %,     |
-| stat storm               | 35 % over 230 s; filter 14 %, 55 % over 4,928 s; iowait at most 5, 4  |
-|                          | and 12 %; memory used 0.57 to 0.79 GB of 7.8 GB under each, memory    |
-|                          | pressure `some avg10` 0.00 under the bind and the policy, 0.36 under  |
-|                          | the filter; io pressure at most 1.7, 1.1 and 4.6                      |
-| the machine during       | bind and policy 13 to 14 % busy mean, 16 to 18 % max, over 70 to 78 s |
-| `perf-probe.py`          | a round; filter 14 to 15 % mean, 55 to 59 % max over 603 to 620 s a   |
-|                          | round, with iowait peaks of 36 and 58 % and memory pressure up to 2.7 |
-|                          | in two of its rounds, where the other stacks' rounds stay at 0.00 but |
-|                          | for the first round after the clone (io pressure 13.0, iowait 5 %)    |
+| `perf-probe.py` round    | superblock check, every walk 4 deep, the probe's own hook file        |
+|                          | refused once a round; 13.0 to 18.1 µs mean from entry to decision,    |
+|                          | 2.5 ms at most once: 155 to 176 ms of a round's 71 to 82 s            |
+| the build                | bind 320 s wall, sbt's own 246 s; policy 305 s, 239 s; 10 of 10 tests |
+|                          | under both. The policy judged 1,740 opens, 1,770 creates, 210 renames |
+|                          | (420 walks), 106 unlinks and 752 attribute changes, walks up to 20    |
+|                          | deep, 39 to 62 µs mean a call and 82 for a rename, 3.6 ms at most; it |
+|                          | refused 4 symlinks at depth 7, as on macOS; the machine 38 % busy     |
+|                          | mean, 93 to 96 % max, memory used rising from 0.6 to 2.6 GB under     |
+|                          | both                                                                  |
+| `walk-probe.py`, bind /  | `lstat` by path: depth 1 0.91 / 1.00 / 4.52 ms, depth 7 5.18 / 5.72 / |
+| policy / filter          | 58.5 ms, depth 15 10.6 / 11.9 / 216.5 ms; every tracked file by path  |
+|                          | 5.03 / 5.57 / 58.8 ms a file, through a directory fd 0.94 / 1.03 /    |
+|                          | 18.6 ms; `find . -type f` 14.1 / 15.1 / 186.8 s; `git status` 22.2 /  |
+|                          | 23.2 / 779.9 s, `--untracked-files=no` 11.0 / 11.1 / 448.9 s. Policy  |
+|                          | over bind 1.04 to 1.25 times on the depth rows, 1.10 and 1.11 per     |
+|                          | file, 1.01 to 1.07 on the commands; the policy judged 4 opens, 4      |
+|                          | creates and 4 unlinks, 18 to 46 µs each; the bare 9p bind costs 10    |
+|                          | times the macOS virtiofs bind on every row, and the filter 5 to 41    |
+|                          | times the bind on top                                                 |
+| the machine during the   | four CPUs: bind 15 % busy mean, 36 % max over 339 s; policy 17 %, 35  |
+| stat storm               | % over 250 s; filter 14 %, 55 % over 5,283 s; iowait at most 5, 4 and |
+|                          | 14 %; memory used 0.53 to 0.70 GB of 7.8 GB under each, memory        |
+|                          | pressure `some avg10` 0.00 throughout; io pressure at most 1.8, 0.8   |
+|                          | and 5.4                                                               |
+| the machine during       | bare, bind and policy 14 % busy mean, 16 to 18 % max (41 % once under |
+| `perf-probe.py`          | the policy) over 71 to 82 s a round; filter 14 to 15 % mean, 57 to 59 |
+|                          | % max over 617 to 662 s a round, with iowait peaks of 8 to 22 %;      |
+|                          | memory pressure 0.00 under every stack                                |
 
 
 ## Inventory
@@ -1897,7 +1964,7 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    mutates through the aliases, and through an overlay mount; and a host hard link to a nested
    `.git` pointer file, made before and after launch, the residual "The policy" records under
    the second-name rule.
-   The probe is `../bpf/probe/phase3/phase3.sh`, `phase3.ps1` on Windows, run on the host, and
+   The probe is `../bpf/probe/phase3/Phase3.scala`, one driver for both hosts, run on the host, and
    its transcript is this phase's record: `policy.bpf.c` is Phase 2's program with the additions
    above, the walk, each level of it and of its snapshot, the rule match, the alias activation and
    the symlink judgment each a global function verified once per program, since the verifier
@@ -1906,7 +1973,7 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    252 cases in seventeen groups, runs the race and the storm, and binds, serves and receives
    sockets and descriptors; `controller.c` is Phase 2's with the records, computing an alias
    context in user space as the guard does. The runs settled the record layout, which the
-   guard's compiler writes. The host build (`../bpf/probe/phase3/host/`) runs the filter's own
+   guard's compiler writes. The host build (`../bpf/ko-agent-bpf/host/`) runs the filter's own
    corpus through the program before any host run, and a program it has not passed is not run
    on the machines.
    Gate: each row ENFORCED, or an existing filter residual, or covered by a decision the user has
@@ -1933,12 +2000,14 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    and its third, a mount under the bind source, which it lists in the VM before the attach
    ("The policy"). The launch cost of steps 2 and 3 on both machines, the verifier's 0.6 s and
    1.7 s for the nine programs among it ("Phase 3 on macOS", "Phase 3 on WSL"), and a restart's
-   with the pinned programs ("Lifecycle", 5). Two decisions rested on those figures. Whether
-   the fixture runs at every launch or after installation and changes alone, for which the
-   controller keeps the two parts of step 3 separable, is open; it runs at every launch until
-   decided. The verifier's time leaves the launch through the spare set ("Lifecycle"), the user's
-   decision of 2026-10-25 over the alternative of one program set per machine, verified once per
-   boot, whose hooks would find the session's records in inner maps of a map-of-maps keyed by
+   with the pinned programs ("Lifecycle", 5). Two decisions rested on those figures. The
+   fixture's proof runs at every launch, the user's decision of 2026-10-26, with the controller
+   keeping the two parts of step 3 separable for the skip rule `../doc/TODO.md` records ("The
+   proof fixture skipped on an unchanged launch"), since its 306 to 386 ms on WSL ("Phase 4 on
+   WSL") is a cost that launch pays. The verifier's time leaves the launch through the spare set
+   ("Lifecycle"), the user's decision of 2026-10-25 over the alternative of one program set per
+   machine, verified once per boot, whose hooks would find the session's records in inner maps of
+   a map-of-maps keyed by
    the attach cgroup, found through the task's cgroup ancestry: that would cost the per-sandbox
    programs "The policy" relies on, the invariant that no record changes under a running program,
    and the read-back's showing that a cgroup's programs read that cgroup's records, where the
@@ -1960,7 +2029,7 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
      place, since the reconcile checks all of a session's pins before it removes any.
    Phase 4 also binds the evidence to the program it measured: the drivers of Phases 3 and 4
    record the SHA-256 of the probe's sources beside the object's, the measurement sections name
-   it, and `bpf/probe/check-evidence.sh` fails when a source differs from the hash its section
+   it, and `bpf/probe/CheckEvidence.scala` fails when a source differs from the hash its section
    names, so that a section cannot stand as evidence for a program it did not measure.
    Gate: no container process runs before the policy, on either machine, each of the three
    defective controllers is caught, the stale pins and the contradicting identities are refused,
@@ -2053,10 +2122,31 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
      name, under which the measured sections of Phases 3 to 5 name a sources hash the tree no
      longer has: the three probes rerun on the changed program on both machines, the FIFO cases
      in Phase 3's corpus and the `mkfifo` in Phase 4's fixture, and their sections are rewritten
-     from the reruns. `check-evidence.sh` gets no marker for a superseded section, the user's
+     from the reruns. `CheckEvidence.scala` gets no marker for a superseded section, the user's
      decision of 2026-10-26: a section stands for the program in the tree alone, so that no later
      change of the program, the Rust port among them, leaves the plan's evidence describing
      another program.
+   The integration, as built: `../src/main/scala/KoAgentBpf.scala` holds the backend's side of the
+   launcher, `CommandLine.parseWorkspace` the option. `--build` builds `../bpf/ko-agent-bpf/` (the
+   Phase 4 controller, read-back and fixture moved there, over `policy.bpf.c` and the guard's
+   `records.h`) in the machine against its kernel, where the probe's kernel checks and the kernel's
+   BTF pass, and otherwise names what is missing and builds the rest (`KoAgentBpf.buildFailures`);
+   the backend's build and install run after the rest and, failing on a kernel those checks cannot
+   tell apart, warn and leave the rest built; it installs the binaries beside the filter under
+   `~/.local/share/ko-agent-sandbox/bpf/`, records the tags, prepares the spare set and offers the
+   boot-time unit `ko-agent-bpf-spare.service` with the user's consent. A launch runs the probe
+   (`checksScript`), reconciles under the launch lock (`reconcileScript`, the controller's
+   `reconcile`), and in `startSandbox` holds the launch lock from the backend's steps 1 to 3
+   (`launchScript`: the guard's records, the fixture, the attach cgroup, the controller's `attach`
+   taking the spare `readback check-spare` passed or loading, `readback verify`, the proof) through
+   the listing of the live sessions, the comparison (`refusalBeside`) and `podman create`, whose
+   `--cgroup-parent`, `--restart=no` and labels (`labelArguments`) come from those steps; the
+   session's teardown (`teardownScript`) takes the filter reap's place in the reaper. A read-only
+   launch runs the same steps with `--no-root` and no records, and keeps the raw `ro` bind alone,
+   printing what the machine lacks, where the probe fails; a live launch is refused with the same
+   lines, each with the remedy per provider (`upgradeRemedy`). The fill through the pinned programs'
+   map ids is the controller's `--spare` path, which no machine has run yet, as none has run the
+   rows above.
 
 
 ## What is gained and what is lost
@@ -2072,18 +2162,18 @@ Gained:
 
   | workload                             | through the filter | unfiltered bind | under the policy |
   | ------------------------------------ | ------------------ | --------------- | ---------------- |
-  | `ls -lR`, per entry                  | 12.7 ms            | 0.72 ms         | 0.77 ms          |
-  | `git status`, 4,475 files at depth 7 | 72 s               | 4.7 s           | 4.3 s            |
-  | `sbt` build of this repository       | 604 s              | 102 s           | 104 s            |
+  | `ls -lR`, per entry                  | 12.7 ms            | 0.68 ms         | 0.68 ms          |
+  | `git status`, 4,475 files at depth 7 | 72 s               | 3.7 s           | 3.7 s            |
+  | `sbt` build of this repository       | 604 s              | 86 s            | 84 s             |
 
   The `sbt` row's bind and policy figures keep the output in the workspace as the filter's does; the
   43 s of "an sbt build, by where its output goes" had it outside. The policy's own cost over the
   unfiltered bind is measured in "Phase 5 on macOS" and "Phase 5 on WSL": `perf-probe.py`'s
   rounds overlap the bind's in every row on both machines; the single runs of the walk and the
-  build lie within a tenth of the bind's on the per-file rows, `git status` and the build, and
+  build lie within 11 % of the bind's on the per-file rows, `git status` and the build, and
   scatter up to 1.2 times on `find` and 2.1 times on the depth rows, 200 `lstat` of 0.1 to 1 ms
   each, either way across runs; the program itself takes 13 to 18 µs a judged call on either
-  kernel, 40 to 47 µs at the build's depth of 20. It runs on mutations and opens, never on
+  kernel, 39 to 62 µs at the build's depth of 20. It runs on mutations and opens, never on
   `lookup` or `getattr`, the operations that dominate those columns.
 - **The daemon's share of the machine's hangs.** `git status` in a worktree of hundreds of
   files has frozen the podman machine for over an hour, with memory not short and
@@ -2093,8 +2183,8 @@ Gained:
     the macOS virtio-fs server").
   - A FIFO on the share is refused by type, its creation in `inode_mknod`, its open in
     `file_open`, its time change in `inode_setattr` and, under `unix-socket`, its descriptor
-    in `file_receive` ("The policy"), the decision of 2026-10-25; the measured program has none
-    of these yet, and a FIFO at an ordinary name passes it ("Phase 4 on macOS").
+    in `file_receive` ("The policy"), the decision of 2026-10-25; the program holds the rules,
+    which the measured sections of Phases 3 to 5 measure.
 - **No window between resolving and acting.** The decision is taken inside the syscall, on the
   dentry the kernel acts on, which the filter's resolver and its `ESTALE` rules exist to
   approximate. A held directory handle follows a directory the host moved and is judged by its
@@ -2172,6 +2262,11 @@ Lost, stated as what becomes possible that the filter does not allow:
 - **No Unix socket in the workspace or beneath the persistent volume, by default.** Of the
   installed software, Codex's app-server daemon alone binds one there ("Environment evidence");
   `unix-socket` allows them at the cost of a ninth hook ("The hooks", `file_receive`).
+  - On the Windows machine the option reaches the volume alone: the 9p share answers a socket
+    bind `ENOTSUP` after the hook admits it ("Phase 2 on WSL", share), measured again on
+    2026-10-27 in a `live,bpf,unix-socket` session, where a bind beneath the volume, the
+    refusals under `.git` and `.ko-agent-sandbox`, and a share descriptor passed inside the
+    session behaved as on macOS.
   - Under the option a `--workspace=read-only` session can connect to a socket a live session
     binds on the share or the volume and send it data: no hook judges `connect` or a socket's
     `sendmsg`, and the bytes do not touch the socket's inode. It cannot bind one, mutate the
@@ -2195,12 +2290,22 @@ Lost, stated as what becomes possible that the filter does not allow:
 - **A directory at any name, `.git` and `.ko-agent-sandbox` included.** The session can create
   and remove empty directories at a guarded name or position, which the filter refuses.
   "Directories" has the rules that keep this from weakening any protection.
-- **Under `NESTING=none`, nothing in the container sets xattrs (`setfattr`), ACLs (`setfacl`) or
-  `chattr` flags, or runs row 18's ioctl commands.** The seccomp rule ("Attributes, flags and
-  ioctls") refuses them under `~` too, where the filter refuses them in the workspace alone, and
-  `cp -a` drops xattrs and ACLs there. No protection is weakened.
+- **Under `NESTING=none`, nothing in the container sets xattrs (`setfattr`) or ACLs (`setfacl`),
+  or calls `file_setattr`.** The seccomp rule ("Attributes, flags and ioctls") refuses them under
+  `~` too, where the filter refuses them in the workspace alone, and `cp -a` drops xattrs and ACLs
+  there; `chattr` and row 18's ioctl commands are answered by the share on the machines. No
+  protection is weakened.
 
 Decisions still open, each the user's, taken after Phase 2's table:
+
+- **The seccomp refusal of rows 17 and 18 by masked prefixes.** Taken 2026-10-26 for the first
+  version: the shares' `ENOTTY` on both machines closes the rows ("Attributes, flags and ioctls"),
+  and the 255 prefix rules stay unbuilt. To reevaluate when any of these holds: a share, a kernel
+  or a virtiofs server starts implementing `FS_IOC_SETFLAGS` or a row 18 command, which "Environment
+  evidence" reopens the row for; native Linux is admitted ("Later versions"), whose filesystems
+  implement them; or the compiled prefix filter is measured on both machines and found small enough
+  beside podman's profile. The alternative is the `--workspace` value `../doc/TODO.md` plans for
+  file flags and the ioctls.
 
 - **The routes under `NESTING=same-uid` whose syscalls a nested podman needs, a later version.**
   The seccomp rule cannot refuse those syscalls, and the two free slots ("The hooks") can hold
@@ -2336,6 +2441,61 @@ It is not a backend for this policy.
 - A later version ("Later versions") holds the `.git` and protected-entry rows through an alias
   the session binds, an overlay mount it makes and a nested mount the host made, for the sessions
   it admits, and on native Linux the two refusals of "Native Linux".
+
+
+## Remaining work
+
+Phase 6 is built and its rows are owed on both machines ("Phases", 6, and the status paragraph),
+each a launch of the launcher itself under `--workspace=live,bpf` and its variants; the reruns of
+Phases 3 to 5 on the program that holds the FIFO rules are done. Once the rows are, the plan
+retires: it is the design record and the evidence of a backend that ships, and the production
+sources live outside the probe tree (`../bpf/ko-agent-bpf/policy.bpf.c` and its host build
+`../bpf/ko-agent-bpf/host/`). What stays is what a later program change needs, the three suites
+that rerun on every such change and the evidence they are checked against; each retired item
+names what covers it.
+
+- [ ] Phase 6's rows, in the order of "Phases", 6; a driver for them is not written:
+  - `io_uring_setup` under the installed profile;
+  - the refusals beside a live session of the other backend or setting, in each pairing;
+  - `podman exec` and `podman restart` of a `unix-socket` session: the runtime's work succeeding
+    under `file_receive` and a protected write refused, which Phase 4 measured without the option;
+  - the linked worktree's socket symlink, and `codex exec` with its daemon directory unwritable;
+  - the spare set's take, race, replacement and replenishment;
+  - the kernel's memory at one, four and eight sessions;
+  - the proof on WSL through the user manager's scope, and the FIFO rules' cases.
+  - Measured in-session on 2026-10-26 (macOS) and 2026-10-27 (WSL), each a `live,bpf,unix-socket`
+    launch: a bind on the share and beneath the volume, a bind, rename and link into `.git` and a
+    bind in `.ko-agent-sandbox` refused, a share descriptor passed over a socketpair inside the
+    session; on WSL the share's `ENOTSUP` answers every bind on it, so the share rows there measure
+    the share, not the policy.
+  - A `live,bpf` launch on WSL (2026-10-27) took the spare: attached in 0.1 ms, read back in 20.3
+    ms, proved in 269.2 ms, with the next spare's verification started behind it.
+- [ ] `sbt testWithPodman` on both machines, and `SessionBoundaryTest` inside a `live,bpf` session,
+  whose attribute rows are new:
+  - macOS, 2026-10-27, with the placement check: `sbt testWithPodman` passed (691 passed, 101
+    skipped), and `SessionBoundaryTest` inside a `live,bpf` session (18 passed, 1 skipped, no
+    `--claude-plugin-dir`).
+  - WSL: `SessionBoundaryTest` inside a `live,bpf` session passed on 2026-10-27 (18 passed, 1
+    skipped). Owed: the container-launching suites on the Windows host, whose ordinary suites assume
+    a Unix JVM (`TODO.md`, "The ordinary suites on a Windows host", has the command).
+- [ ] The design sections of this plan: `../SECURITY.md` ("The BPF backend"), `design.md`,
+  `../fuse/ko-agent-fs/doc/architecture.md` and `git-metadata.md` hold the shipped design; a
+  sentence only this plan holds moves to the document that owns its subject before the plan goes.
+  "Decisions still open" and "Later versions" become items of `TODO.md`.
+- [ ] The measured sections, "Phase 1 on macOS" to "Phase 5 on WSL": kept whole in an evidence
+  document beside the backend, `../bpf/ko-agent-bpf/doc/evidence.md`, which
+  `../bpf/probe/CheckEvidence.scala` then reads in place of this plan. Later documents cite their
+  rows: "Phase 2 on WSL" (the shares' answers) closes the ioctl rows, "Phase 4" the launch costs.
+- [ ] `../bpf/probe/phase1/` and `../bpf/probe/phase2/`, drivers, programs and transcripts:
+  Phase 1 asked whether a cgroup-attached LSM program loads and denies on each machine's kernel,
+  which the launcher's capability probe asks at every launch (`KoAgentBpf.checksScript`) and the
+  Phase 3 suite shows; Phase 2 inventoried what each hook sees and what each share answers, which
+  the Phase 3 corpus exercises and the kept "Phase 2" sections record. Neither is rerun.
+- [ ] `../bpf/probe/phase3/`, `phase4/` and `phase5/` stay, with `../bpf/probe/ProbeHelper.scala`,
+  what their drivers share: the program's suite, the launcher lifecycle's and the cost
+  measurement, rerun on every program change (the decision of 2026-10-26 against a
+  superseded-section marker). Their headers then cite the evidence document, not this plan, and
+  the probe tree's name says what it is.
 
 
 ## Sources

@@ -24,9 +24,9 @@ class SeccompProfileTest extends munit.FunSuite:
       |  "syscalls": [
       |    {"names": ["kexec_load", "vm86"], "action": "SCMP_ACT_ERRNO", "errnoRet": 1, "args": [], "comment": "",
       |     "includes": {}, "excludes": {}},
-      |    {"names": ["accept", "clone", "clone3", "fsconfig", "fsmount", "fsopen", "fspick", "mount",
-      |               "mount_setattr", "move_mount", "open_tree", "pivot_root", "read", "setns", "umount",
-      |               "umount2", "unshare", "write"],
+      |    {"names": ["accept", "clone", "clone3", "fsconfig", "fsmount", "fsopen", "fspick", "fsetxattr", "ioctl",
+      |               "lremovexattr", "lsetxattr", "mount", "mount_setattr", "move_mount", "open_tree", "pivot_root",
+      |               "read", "removexattr", "setns", "setxattr", "umount", "umount2", "unshare", "write"],
       |     "action": "SCMP_ACT_ALLOW", "args": [], "comment": "", "includes": {}, "excludes": {}},
       |    {"names": ["personality"], "action": "SCMP_ACT_ALLOW",
       |     "args": [{"index": 0, "value": 0, "valueTwo": 0, "op": "SCMP_CMP_EQ"}], "comment": "", "includes": {},
@@ -63,7 +63,7 @@ class SeccompProfileTest extends munit.FunSuite:
         |  "syscalls": [
         |    {"names": ["kexec_load", "vm86"], "action": "SCMP_ACT_ERRNO", "errnoRet": 1, "args": [], "comment": "",
         |     "includes": {}, "excludes": {}},
-        |    {"names": ["accept", "read", "write"],
+        |    {"names": ["accept", "ioctl", "read", "write"],
         |     "action": "SCMP_ACT_ALLOW", "args": [], "comment": "", "includes": {}, "excludes": {}},
         |    {"names": ["personality"], "action": "SCMP_ACT_ALLOW",
         |     "args": [{"index": 0, "value": 0, "valueTwo": 0, "op": "SCMP_CMP_EQ"}], "comment": "", "includes": {},
@@ -89,6 +89,19 @@ class SeccompProfileTest extends munit.FunSuite:
     assertEquals(AddedRules.flatMap(names).filterNot(RefusedNames.contains), Vector.empty)
     assertEquals(AddedRules.flatMap(names).toSet, RefusedNames.toSet)
 
+  test("the added rules refuse the attribute syscalls with ENOTSUP, and name no ioctl command"):
+    def rule(index: Int, field: String): Option[Json] = AddedRules(index).field(field)
+    assertEquals(AddedRules.size, 5)
+    assertEquals(names(AddedRules(4)), AttributeSyscalls)
+    assertEquals((rule(4, "action"), rule(4, "errnoRet")), (Some(Str("SCMP_ACT_ERRNO")), Some(Num("95"))))
+    assertEquals(rule(4, "args"), Some(Arr(Vector.empty)))
+    assert(AttributeSyscalls.contains("setxattrat") && AttributeSyscalls.contains("file_setattr"))
+    // libseccomp clears a syscall's argument rules when an unconditional rule for it arrives, so
+    // `ioctl` stays in the default's allow list untouched (SeccompProfile.AddedRules has the source).
+    assert(!RefusedNames.contains("ioctl"))
+    val derived = SeccompProfile.derived(Default).fold(reason => fail(reason), identity)
+    assert(rules(derived).exists(rule => names(rule).contains("ioctl")), "ioctl is kept as the default has it")
+
   test("the added rules refuse CLONE_NEWUSER with EPERM, clone3 with ENOSYS, and joining or mounting with EPERM"):
     def rule(index: Int, field: String): Option[Json] = AddedRules(index).field(field)
     val mask = Num(0x10000000L.toString)
@@ -107,6 +120,29 @@ class SeccompProfileTest extends munit.FunSuite:
     assertEquals(names(AddedRules(3)), "setns" +: MountSyscalls)
     assertEquals((rule(3, "action"), rule(3, "errnoRet")), (Some(Str("SCMP_ACT_ERRNO")), Some(Num("1"))))
     assertEquals(rule(3, "args"), Some(Arr(Vector.empty)))
+
+  test("a profile is stale without this build's rules: a launch refuses it, and the derived one passes"):
+    val derived = SeccompProfile.derived(Default).fold(reason => fail(reason), identity)
+    assertEquals(staleReason(Some(derived)), None)
+    assertEquals(staleReason(None), Some("is not a JSON profile"))
+    assert(staleReason(Some(Default)).exists(_.contains("lacks the rules")))
+    // An earlier build's profile: the namespace and mount rules without the attribute rule.
+    val earlier = Obj(derived.asInstanceOf[Obj].fields.map {
+      case ("syscalls", Arr(rules)) => "syscalls" -> Arr(rules.filterNot(_ == AddedRules(4)))
+      case other                    => other
+    })
+    assert(staleReason(Some(earlier)).exists(_.contains("lacks the rules")))
+    assert(staleReason(Some(parsed("{\"defaultAction\": \"SCMP_ACT_ERRNO\"}"))).exists(_.contains("syscalls")))
+    val dir = Files.createTempDirectory("ko-agent-seccomp-test")
+    try
+      assert(missingReason(dir).exists(_.contains("not built")))
+      val file = profileFile(dir)
+      Files.createDirectories(file.getParent)
+      Files.writeString(file, JsonText.render(earlier))
+      assert(missingReason(dir).exists(_.contains("lacks the rules")), missingReason(dir))
+      Files.writeString(file, JsonText.render(derived))
+      assertEquals(missingReason(dir), None)
+    finally FileHelper.deleteRecursively(dir)
 
   test("a default without a syscalls array, or not an object, is refused"):
     assertEquals(SeccompProfile.derived(parsed("""{"defaultAction": "SCMP_ACT_ERRNO"}""")).isLeft, true)
@@ -159,4 +195,6 @@ class SeccompProfileTest extends munit.FunSuite:
     assert(missingReason(root).exists(_.contains("Run --build, or --update")))
     Files.createDirectories(profileFile(root).getParent)
     Files.writeString(profileFile(root), "{}")
+    assert(missingReason(root).exists(_.contains("has no \"syscalls\" array")))
+    Files.writeString(profileFile(root), JsonText.render(derived(Default).fold(reason => fail(reason), identity)))
     assertEquals(missingReason(root), None)

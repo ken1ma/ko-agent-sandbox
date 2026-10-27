@@ -152,11 +152,10 @@ measurement.
 ## A FIFO in the workspace hangs the podman machine
 
 Decided 2026-10-25: a FIFO's creation in the workspace and a time change on one are refused, by the
-filter now (`fuse/ko-agent-fs/src/fs.rs`, `mknod` and `setattr`; `tests/mounted_mutate.rs`,
+filter (`fuse/ko-agent-fs/src/fs.rs`, `mknod` and `setattr`; `tests/mounted_mutate.rs`,
 `a_fifo_is_neither_made_nor_retimed_through_the_mount`) and, with any open of one and its
-descriptor under the `unix-socket` value of `--workspace`, by the BPF backend's hooks when its
-program is next built (`doc/plan-bpf-lsm-cgroup.md`, "The policy"), on every platform, until
-libkrun opens the FIFO
+descriptor under the `unix-socket` value of `--workspace`, by the BPF backend's hooks
+(`doc/plan-bpf-lsm-cgroup.md`, "The policy"), on every platform, until libkrun opens the FIFO
 without blocking (`upstream-issues.md`, containers/libkrun). Why more than the creation: a
 session's write through a FIFO makes the guest kernel flush the FIFO's changed times to the share
 itself, with no `utimensat` from any process, so refusing creation alone leaves a host-made FIFO
@@ -191,10 +190,6 @@ evidence ran an August image with kernel 7.1.8 while September's carried 7.2.5.
   registry, so it runs at `--build`, not at every launch. The command is unsupported for the
   WSL provider, whose kernel `wsl --update` brings (`README.md`); the notice there is the WSL
   kernel version beside the one the plan's evidence names.
-- [ ] The upgrade command as the remedy, per provider, in the message the BPF backend's
-  capability probe prints when a requirement fails on a podman machine
-  (`plan-bpf-lsm-cgroup.md`, "Phases", 6). A kernel version floor is not the test: the probe
-  tests the features themselves, and a floor would age.
 - [ ] The machine's kernel version in the launch line, so a report says which kernel a session
   ran on; `podman info` has it as `host.kernel`.
 
@@ -219,16 +214,94 @@ rules installed by hand on one shell (2026-10-17): `unshare -Ur` and `bwrap --un
 refused; a thread and a child process in Python 3.14, Node 24 and Java 25, `git status`, `rg` and
 `uv run` work; `claude`, `codex`, `kiro-cli`, `copilot`, `opencode` and `agy` start (`--version`).
 
-- [ ] In a session launched with the profile, run `sbt testFull` on the podman machine on Windows
-  (x86_64); `SessionBoundaryTest` checks each refused syscall and that processes start. On macOS
-  (aarch64, podman 6.1.2) it passes (2026-10-26).
-- [ ] Measure each installed agent, as the image configures it, running a command in such a
-  session, and report one that fails to the user.
-  - `agy` 1.2.7 in print mode runs a shell command in the session's own user, pid and mount
-    namespaces (the command's `/proc/self/ns/*` inodes equal the session shell's; measured
-    2026-09-22). Measure `kiro-cli`, `copilot` and `opencode` the same way.
-  - Measure whether Playwright's Chromium starts.
+- [x] In a session launched with the profile, run `sbt testFull` on the podman machine on Windows
+  (x86_64); `SessionBoundaryTest` checks each refused syscall and that processes start. It passes
+  on macOS (aarch64, podman 6.1.2) and on Windows (2026-10-26), where the run's two failures are
+  elsewhere: `ClaudeManagedHelpersTest` (its own section below) and `KoReviewTest`, whose review
+  cycle against the fake codex and claude exceeded its 300 s timeout on the `/mnt/c` workspace;
+  whether the profile or the share's speed caused that is unmeasured.
+- [x] Measure each installed agent, as the image configures it, running a command in such a
+  session, and report one that fails to the user. Each of the six runs a shell command without a
+  prompt, in the session's own user, pid, mount, net and cgroup namespaces (the command's
+  `/proc/self/ns/*` inodes equal the session shell's): `claude -p` 2.1.310, `codex exec` 0.164.0,
+  `agy -p` 1.4.7, `opencode run` 1.19.4, `kiro-cli chat --no-interactive` 2.34.0 and `copilot -p`
+  1.0.103, measured 2026-10-26 and 2026-10-27 in `--workspace=live,bpf,unix-socket` sessions on
+  macOS, each agent signed in interactively first and the launch's `--model-provider` naming
+  its provider (`google`, `openai`, `aws`, `github`), without which its first request is refused.
+  Kiro rejected the seeded agent file, which lacked `name` (the Containerfile seed has it; a
+  volume seeded earlier needs the field edited into `~/.kiro/agents/ko-agent-sandbox.json` or
+  `--reset`).
+  - [x] Playwright 1.64.1's Chromium 156 starts and renders a page under Playwright's default
+    launch, which passes `--no-sandbox` (measured 2026-10-26, `chromium.launch()` with the headless
+    shell and with the full browser); with `chromiumSandbox: true` it dies with `No usable
+    sandbox!`, the user namespace the profile refuses. Two needs beyond the image: the download,
+    `npx playwright install chromium`, reads `cdn.playwright.dev`, which redirects to
+    `storage.googleapis.com`, both `read` rule lines; and ten shared libraries the image lacks
+    (`libnspr4`, `libnss3`, `libatk1.0-0`, `libatk-bridge2.0-0`, `libxcomposite1`, `libxdamage1`,
+    `libxrandr2`, `libgbm1`, `libxkbcommon0`, `libatspi2.0-0`), unpacked by `ko-sandbox-apt-get`
+    and reached through `LD_LIBRARY_PATH`. Decide whether the image ships them.
   - `agy`'s Auto mode: `limitations.md` measures it under podman's default profile only.
+
+## Attribute routes as `--workspace` values, spending the free hook slots
+
+Under `--nesting=none` the seccomp profile refuses extended attributes, ACLs and `file_setattr`
+everywhere in the session, `/home` and `/tmp` included, since a filter sees no path and no
+descriptor's file (`SECURITY.md`, "The default's seccomp profile"; `plan-bpf-lsm-cgroup.md`,
+"Attributes, flags and ioctls"); the ioctl commands that set a file's flags it refuses only with
+every allowed command spelled as a masked prefix, some 255 rules, left unbuilt by the user's
+decision of 2026-10-26 (the plan's "Decisions still open" has what reopens it), and on the machines
+the shares answer them `ENOTTY`. The BPF hooks could judge them by
+position instead, as the rest of the policy is judged, but the seven hooks they need
+(`inode_{set,remove}xattr`, `inode_{set,remove}_acl`, `inode_file_setattr`,
+`file_ioctl{,_compat}`) exceed the two slots the policy leaves free of the kernel's ten, one under
+`unix-socket`. Decided 2026-10-26: the rule stays for every session, and the routes become
+values of `--workspace` a user selects, like `unix-socket`, each costing its slots.
+
+- [ ] Values `xattr` (two hooks) and `acl` (two hooks), each allowed with `bpf` alone: the
+  session's hooks judge that family by position, the seccomp profile of that launch omits the
+  family's rule, and the launch is refused when the selected values need more slots than the
+  machine has free, naming the count. The user cannot have every value at once. File flags and
+  the ioctls (three hooks) stay with the shares' own answers until a value for them fits; native
+  Linux ("Later versions") needs that value or the hooks, since its filesystems implement them.
+  - The per-launch profile: one derived file per combination of values under the state root,
+    beside `nesting-none.json`, named to `podman create` by path.
+  - The read-back and the proof take the added hooks as they take `file_receive`: one refused
+    operation per hook of the set ("Lifecycle", 3).
+  - The slots are shared by every sandbox on the machine, and the `same-uid` version's nested
+    podman needs some of these routes ("Decisions still open" in the plan): record there which
+    values that version admits.
+
+## The proof fixture skipped on an unchanged launch
+
+The BPF backend proves its attachment at every launch, restart and recreate in two parts
+(`plan-bpf-lsm-cgroup.md`, "Lifecycle", 3): the read-back, 40 to 47 ms on WSL, and the fixture's
+proof, 68 operations the kernel judges, 306 to 386 ms on WSL and 38 to 47 ms on macOS ("Phase 4
+on WSL", "Phase 4 on macOS"). The user, 2026-10-26: 0.4 s on Windows matters; every launch pays
+the proof until this is built.
+
+- [ ] Run the proof on the first launch after a boot, after `--build`, after a rule change and
+  after a failed proof; the read-back on every launch. The launcher keeps a marker beside the
+  fixture tree holding the installed object's tag, the resolved rule set's hash and the boot id,
+  and skips the proof while all three match the marker's and the marker names a passed proof.
+  - What a skipped proof does not catch: a defect none of the three signals, such as a controller
+    bug that depends on the session's own records; the read-back still proves the attached set,
+    the tags and the records. Record that residual beside the rule when it ships.
+  - The controller keeps the two parts of step 3 separable for this ("Phases", 4).
+
+## The policy's record maps frozen
+
+- [ ] With the next change to `bpf/ko-agent-bpf/`, have the controller freeze `roots`, `rules`,
+  `aliases` and `policy_config` (`BPF_MAP_FREEZE`) once `fill_policy` wrote them, before any
+  attach, so that no write from user space changes a session's records afterwards.
+  - It guards against a stray write by a tool of the machine's root, not against root, who can
+    detach the policy.
+  - `stats`, `last_decision`, `scratch` and `guard` stay unfrozen: the program writes them, and
+    `stats` is reset from user space.
+  - Deferred to a program change since `controller.c` is in the hashed sources of Phases 4 and 5,
+    whose evidence a change reopens (`plan-bpf-lsm-cgroup.md`, "Remaining work").
+  - Test by behaviour, since the read-back may not see the frozen state: an update of each frozen
+    map fails, the program's decisions are unchanged, and a fresh load, a spare's take and a
+    recreate on the pinned programs all work.
 
 ## The status-line test reads a settings key the launch now supplies
 
@@ -236,6 +309,41 @@ refused; a thread and a child process in Python 3.14, Node 24 and Java 25, `git 
   `test_project_format_handles_initial_and_reported_context_usage` reads `env` from
   `.claude/settings.json`, which 4822487 moved to the launch's `--env` (`agent-settings.md`). Give
   the case the format the document's launch line passes, as the neighbouring cases pass theirs.
+
+## The ordinary suites on a Windows host
+
+`sbt testWithPodman` typed in PowerShell runs `testFull` in the Windows JVM, and the ordinary
+suites assume a Unix one; until they are fixed, run only the container-launching suites there:
+`sbt "testWithPodman *RunTopologyTest *MountLifecycleTest *MountPathTest *EgressSessionTest
+*ProxyContainerTest *BundleLockTest *ResetRecordTest *WithPodmanTest
+*SandboxMarkdownLinkCheckTest"`. The failures below are from Codex's run of 2026-10-27 on the
+EC2 machine (`development.md`, "On Windows x64").
+
+- [ ] Skip, with a clue, the tests that need a Unix host:
+  - those running `sh`, `/bin/bash` or `/usr/bin/perl` (`RunOnHostAcceptanceSetupTest`,
+    `RunOnHostSandboxTest`, `RunOnHostSessionTest`);
+  - those setting POSIX permissions or reading the `unix` attribute view
+    (`RunOnHostProvisioningTest`, `MicrophoneRelayTest`, `RunOnHostSessionTest`);
+  - those calling `com.sun.security.auth.module.UnixSystem`, whose `UnsatisfiedLinkError` munit
+    treats as fatal, aborting the rest of `RunOnHostSandboxTest`;
+  - the Mill file and lock cases of `RunOnHostSandboxTest`, whose code answers `None` without a
+    `SecureDirectoryStream`, which Windows lacks.
+- [ ] Make the fixtures that spell Unix paths independent of the JVM's filesystem: an `Os.Mac` or
+  `Os.Linux` argument does not change how `Path` parses a string (`SeatbeltProfileTest`,
+  `SeccompProfileTest`, `RunOnHostPrereqsTest`, `RunOnHostSandboxTest`, and path cases of
+  `OptionsFileTest`, `AwsCredentialTest`, `AgentSandboxLauncherTest`, `EgressRulesTest`,
+  `SandboxStatsTest`, `SandboxWorkspaceTest`, `ClaudePluginsTest` and `SandboxLifecycleTest`).
+- [ ] `ClaudePluginsTest`'s directory-symlink fixture loses `elsewhere/sbt-global` on Windows. It
+  makes the link before its target; which link type Windows then makes is unchecked.
+
+## The launcher's output on a Windows code page other than UTF-8
+
+- [ ] Read the bytes of a launcher's redirected output on the EC2 machine. `ProxyContainerTest`'s
+  brokered-credential case failed reading `WithPodman.Session.output` as UTF-8
+  (`MalformedInputException`, 2026-10-27), and the run's log holds `窶・`, which is `—` in UTF-8
+  read as MS932. The launcher sets no output encoding, so redirected, Java writes the platform's
+  (unverified there). If the bytes confirm it, choose between the launcher writing UTF-8 and the
+  test reading the platform's encoding, and cover a line holding `—`.
 
 ## Capabilities a `NESTING=none` session could keep
 

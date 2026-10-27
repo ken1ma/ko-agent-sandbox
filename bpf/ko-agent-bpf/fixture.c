@@ -1,9 +1,8 @@
-// Phase 4 of doc/plan-bpf-lsm-cgroup.md: the unprivileged side of the probe, standing for the
-// launcher's guard and for the launcher's own process in the attach cgroup. It writes the guard's
-// records file from a rule file, lays out the proof fixture and runs the proof ("Lifecycle", 3),
-// deriving each expected answer from the whole ordered rule set as the filter decides it, and
-// makes the single syscalls the lifecycle rows need. Static, so it runs in the machine and in the
-// probe's container alike.
+// The BPF cgroup-LSM backend of doc/plan-bpf-lsm-cgroup.md: the unprivileged side, the launcher's
+// own process in the attach cgroup. It lays out the proof fixture and runs the proof ("Lifecycle",
+// 3), deriving each expected answer from the whole ordered rule set as the filter decides it, makes
+// the single syscalls the lifecycle rows need, and, for the probes, writes a records file from a
+// rule file in place of the guard. Static, so it runs in the machine and in a container alike.
 //
 //   fixture records RULES OUT [--guarded KIND=RELPATH]...
 //                                   the records file (records.h) of RULES, a rule file as the Phase 3
@@ -11,11 +10,13 @@
 //                                   path; KIND is workspace, gitdir, guarded-git or guarded-sandbox
 //   fixture make ROOT RULES         the proof fixture: a tree laid out as a workspace with a .git
 //                                   holding config and a hook, a .ko-agent-sandbox, ordinary files
-//                                   and one entry per line of RULES
-//   fixture run ROOT RULES [--unix-sockets]
+//                                   and one entry per line of RULES, a rule file or the guard's
+//                                   records file (the launcher passes the records)
+//   fixture run ROOT RULES [--unix-socket] [--no-root]
 //                                   the proof, from this process: one refused operation per hook,
 //                                   one write per rule-line entry and per ordinary entry, each
-//                                   printed with its expected and actual answer
+//                                   printed with its expected and actual answer; --no-root is a
+//                                   read-only session's policy, under which every write is refused
 //   fixture join CGROUP CMD...      move this process into CGROUP, then run CMD
 //   fixture write PATH              open PATH for writing, creating it, and write one byte
 //   fixture rename FROM TO          rename(2), printing the errno name
@@ -40,21 +41,10 @@
 
 #include <linux/types.h>
 
-#include "records.h"
+#define PROGRAM_NAME "fixture"
+#include "backend.h"
 
 #define MAX_COMPS 64
-
-static void die(const char *format, ...)
-{
-	va_list args;
-
-	va_start(args, format);
-	fprintf(stderr, "fixture: ");
-	vfprintf(stderr, format, args);
-	fprintf(stderr, "\n");
-	va_end(args);
-	exit(2);
-}
 
 static const char *errname(int err)
 {
@@ -91,14 +81,6 @@ static const char *result(int rc)
 		return errname(err);
 	snprintf(text, sizeof(text), "errno%d", err);
 	return text;
-}
-
-static double now_ms(void)
-{
-	struct timespec ts;
-
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
 }
 
 // --- The rule file ------------------------------------------------------------------------------------
@@ -190,13 +172,41 @@ static void child_rule_context(const struct rule_line *lines, __u32 count, struc
 	ctx->pinned_path = pinned;
 }
 
+// The lines of a records file the guard wrote (`ko-agent-fs --resolve --bpf-records`), told from a
+// rule file by its magic: the launcher's proof reads the records the controller loaded.
+static bool read_records_as_rules(const char *path, struct rules *rules)
+{
+	static struct records rec;
+	FILE *file = fopen(path, "rb");
+	char magic[8];
+	bool is_records;
+
+	if (!file)
+		die("open %s: %s", path, strerror(errno));
+	is_records = fread(magic, 1, sizeof(magic), file) == sizeof(magic) && !memcmp(magic, RECORDS_MAGIC, 8);
+	fclose(file);
+	if (!is_records)
+		return false;
+	read_records(path, &rec);
+	memset(rules, 0, sizeof(*rules));
+	memcpy(rules->lines, rec.rules, sizeof(rules->lines));
+	memcpy(rules->aliases, rec.aliases, sizeof(rules->aliases));
+	rules->count = rec.header.rule_count;
+	rules->alias_count = rec.header.alias_count;
+	return true;
+}
+
 // A rule file: `word comp/comp[/comp...] [anchored] [alias=PATH]` per line, `#` comments and blank
-// lines ignored, as the Phase 3 probe reads one (its controller.c, read_rules).
+// lines ignored, as the Phase 3 probe reads one (its controller.c, read_rules); or the guard's
+// records file.
 static void read_rules(const char *path, struct rules *rules)
 {
-	FILE *file = fopen(path, "r");
+	FILE *file;
 	char line[1024];
 
+	if (read_records_as_rules(path, rules))
+		return;
+	file = fopen(path, "r");
 	memset(rules, 0, sizeof(*rules));
 	if (!file)
 		die("open %s: %s", path, strerror(errno));
@@ -409,10 +419,93 @@ static void concrete_path(const struct rule_line *line, char *out, size_t size)
 	}
 }
 
-// Whether another line's entry lies below this one's, which makes it a directory.
-static bool has_entry_below(const struct rules *rules, __u32 index, const char *path)
+static bool is_below(const char *path, const char *other)
 {
 	size_t len = strlen(path);
+
+	return !strncmp(other, path, len) && other[len] == '/';
+}
+
+// The proof's own names: the fixed entries the per-hook operations and the two ordinary writes
+// need, and the names those operations create, which must not exist when the proof runs, or the
+// kernel answers `EEXIST` before any hook. Each is chosen against every record (pick_name): a
+// user's rule name cannot hold the `+` (FileRules.nameRefusal: a-z, 0-9, `.`, `_`, `-`, `*` and
+// `/`), but the guard's anchored lines name whatever a relocated hook directory or a symlink's
+// end is called, so a record equal to a base name or below it moves the name to `<base>.1`, `.2`
+// and so on; `make` and `run` read the same records and choose the same names. A record above a
+// name, such as `read-only sub`, keeps that directory a directory (has_entry_below).
+struct names {
+	char ordinary[REL_BYTES];
+	char ordinary2[REL_BYTES];
+	char sub[REL_BYTES];
+	char sub_ordinary[REL_BYTES];
+	char sub_git[REL_BYTES];
+	char fifo[REL_BYTES];
+	char sock[REL_BYTES];
+	char git_new[REL_BYTES];
+	char git_sock[REL_BYTES];
+};
+
+static bool record_at_or_below(const struct rules *rules, const char *path)
+{
+	for (__u32 i = 0; i < rules->count; i++) {
+		char other[REL_BYTES];
+
+		concrete_path(&rules->lines[i], other, sizeof(other));
+		if (!strcmp(other, path) || is_below(path, other))
+			return true;
+	}
+	return false;
+}
+
+// `base`, or `base.N` for the smallest N from 1 at which no record is the name or lies below it.
+static void pick_name(const struct rules *rules, const char *base, char *out, size_t size)
+{
+	for (int n = 0;; n++) {
+		if (n == 0)
+			snprintf(out, size, "%s", base);
+		else
+			snprintf(out, size, "%s.%d", base, n);
+		if (!record_at_or_below(rules, out))
+			return;
+		if (n == 999)
+			die("no free name for %s among the records", base);
+	}
+}
+
+static void pick_names(const struct rules *rules, struct names *names)
+{
+	pick_name(rules, "ko+ordinary", names->ordinary, sizeof(names->ordinary));
+	pick_name(rules, "ko+ordinary2", names->ordinary2, sizeof(names->ordinary2));
+	// The directory holding an ordinary file and the `.git` the per-hook operations try to make;
+	// no record lies below it, so its own entries are free.
+	pick_name(rules, "ko+sub", names->sub, sizeof(names->sub));
+	snprintf(names->sub_ordinary, sizeof(names->sub_ordinary), "%s/ko+ordinary", names->sub);
+	snprintf(names->sub_git, sizeof(names->sub_git), "%s/.git", names->sub);
+	pick_name(rules, "ko+fifo", names->fifo, sizeof(names->fifo));
+	pick_name(rules, "ko+sock", names->sock, sizeof(names->sock));
+	pick_name(rules, ".git/ko+new", names->git_new, sizeof(names->git_new));
+	pick_name(rules, ".git/ko+sock", names->git_sock, sizeof(names->git_sock));
+}
+
+// The fixed entries, laid out before the rule entries: a rule line naming a directory above one
+// keeps the directory (has_entry_below).
+#define FIXED_ENTRIES 7
+static void fixed_entries(const struct names *names, const char *out[FIXED_ENTRIES])
+{
+	out[0] = ".git/HEAD";
+	out[1] = ".git/config";
+	out[2] = ".git/hooks/pre-commit";
+	out[3] = ".ko-agent-sandbox/file/rule";
+	out[4] = names->ordinary;
+	out[5] = names->ordinary2;
+	out[6] = names->sub_ordinary;
+}
+
+// Whether another line's entry or a fixed entry lies below this one's, which makes it a directory.
+static bool has_entry_below(const struct rules *rules, const struct names *names, __u32 index, const char *path)
+{
+	const char *fixed[FIXED_ENTRIES];
 
 	for (__u32 i = 0; i < rules->count; i++) {
 		char other[REL_BYTES];
@@ -420,9 +513,13 @@ static bool has_entry_below(const struct rules *rules, __u32 index, const char *
 		if (i == index)
 			continue;
 		concrete_path(&rules->lines[i], other, sizeof(other));
-		if (!strncmp(other, path, len) && other[len] == '/')
+		if (is_below(path, other))
 			return true;
 	}
+	fixed_entries(names, fixed);
+	for (unsigned i = 0; i < FIXED_ENTRIES; i++)
+		if (is_below(path, fixed[i]))
+			return true;
 	return false;
 }
 
@@ -470,8 +567,10 @@ static __u8 decide(const struct rules *rules, const char *rel)
 static int cmd_make(const char *rules_path)
 {
 	struct rules rules;
+	struct names names;
 
 	read_rules(rules_path, &rules);
+	pick_names(&rules, &names);
 	if (mkdir(root, 0755) && errno != EEXIST)
 		die("mkdir %s: %s", root, strerror(errno));
 	make_dirs(".git/hooks");
@@ -480,19 +579,20 @@ static int cmd_make(const char *rules_path)
 	make_file(".git/config", "[core]\n");
 	make_file(".git/hooks/pre-commit", "#!/bin/sh\n");
 	make_file(".ko-agent-sandbox/file/rule", "");
-	make_file("ordinary", "x\n");
-	make_file("ordinary2", "x\n");
-	make_file("sub/ordinary", "x\n");
+	make_file(names.ordinary, "x\n");
+	make_file(names.ordinary2, "x\n");
+	make_file(names.sub_ordinary, "x\n");
 	for (__u32 i = 0; i < rules.count; i++) {
 		char path[REL_BYTES];
 
 		concrete_path(&rules.lines[i], path, sizeof(path));
-		if (has_entry_below(&rules, i, path))
+		if (has_entry_below(&rules, &names, i, path))
 			make_dirs(path);
 		else
 			make_file(path, "{}\n");
 	}
-	printf("make root=%s rule_entries=%u\n", root, rules.count);
+	printf("make root=%s rule_entries=%u ordinary=%s sub=%s fifo=%s sock=%s\n", root, rules.count, names.ordinary,
+	       names.sub, names.fifo, names.sock);
 	return 0;
 }
 
@@ -630,33 +730,56 @@ static const char *receive_dir(void)
 	return (msg.msg_flags & MSG_CTRUNC) ? "refused" : "nothing";
 }
 
-static int cmd_run(const char *rules_path, bool unix_sockets)
+static int cmd_run(const char *rules_path, bool unix_socket, bool no_root)
 {
 	struct rules rules;
+	struct names names;
 	double start = now_ms();
 	int rc, sock;
+	const char *absent[5];
+	// Under a read-only session's policy every write on the share is refused, the ordinary ones
+	// and the rule entries' alike ("The policy", a policy recording no root); under a live one the
+	// fixed entries follow the rules as the rule entries do, since a line may name a directory
+	// above them.
+	const char *allowed = no_root ? "EPERM" : "ok";
 
 	read_rules(rules_path, &rules);
+	pick_names(&rules, &names);
+	// A leftover at a name an operation creates, from a proof that ran without the policy, goes
+	// first; refused, it stays, and the operation then answers `EEXIST`.
+	absent[0] = names.fifo;
+	absent[1] = names.sock;
+	absent[2] = names.git_new;
+	absent[3] = names.git_sock;
+	absent[4] = names.sub_git;
+	for (unsigned i = 0; i < 5; i++) {
+		struct stat st;
+
+		if (lstat(at(absent[i]), &st))
+			continue;
+		if (S_ISDIR(st.st_mode) ? rmdir(at(absent[i])) : unlink(at(absent[i])))
+			printf("fixture op=remove path=%s got=%s verdict=leftover\n", absent[i], result(-1));
+	}
 	// One refused operation per hook, each a guarded name or object ("Lifecycle", 3).
-	rc = open(at(".git/ko-new"), O_WRONLY | O_CREAT | O_EXCL, 0644);
-	record("creat", ".git/ko-new", "EPERM", result(rc));
+	rc = open(at(names.git_new), O_WRONLY | O_CREAT | O_EXCL, 0644);
+	record("creat", names.git_new, "EPERM", result(rc));
 	if (rc >= 0)
 		close(rc);
-	// At a guarded name: a FIFO at an ordinary name passes the policy, and one on the share can
-	// block the macOS virtiofs server (upstream-issues.md, "Setting a FIFO's times blocks the
-	// macOS virtio-fs server").
-	rc = mkfifo(at(".git/ko-fifo"), 0644);
-	record("mkfifo", ".git/ko-fifo", "EPERM", result(rc));
-	sock = bind_at(at(unix_sockets ? ".git/ko-sock" : "ko-sock"));
-	record("bind", unix_sockets ? ".git/ko-sock" : "ko-sock", "EPERM", result(sock));
+	// At an ordinary name: the FIFO rule refuses one anywhere on the share by type ("The policy"),
+	// since one there can block the macOS virtiofs server (upstream-issues.md, "Setting a FIFO's
+	// times blocks the macOS virtio-fs server").
+	rc = mkfifo(at(names.fifo), 0644);
+	record("mkfifo", names.fifo, "EPERM", result(rc));
+	sock = bind_at(at(unix_socket ? names.git_sock : names.sock));
+	record("bind", unix_socket ? names.git_sock : names.sock, "EPERM", result(sock));
 	if (sock >= 0)
 		close(sock);
-	rc = symlink("ordinary", at("sub/.git"));
-	record("symlink", "sub/.git", "EPERM", result(rc));
-	rc = link(at("ordinary"), at("sub/.git"));
-	record("link", "sub/.git", "EPERM", result(rc));
-	rc = rename(at("ordinary2"), at("sub/.git"));
-	record("rename", "sub/.git", "EPERM", result(rc));
+	rc = symlink(names.ordinary, at(names.sub_git));
+	record("symlink", names.sub_git, "EPERM", result(rc));
+	rc = link(at(names.ordinary), at(names.sub_git));
+	record("link", names.sub_git, "EPERM", result(rc));
+	rc = rename(at(names.ordinary2), at(names.sub_git));
+	record("rename", names.sub_git, "EPERM", result(rc));
 	rc = unlink(at(".git/config"));
 	record("unlink", ".git/config", "EPERM", result(rc));
 	rc = open(at(".git/config"), O_WRONLY);
@@ -665,7 +788,7 @@ static int cmd_run(const char *rules_path, bool unix_sockets)
 		close(rc);
 	rc = chmod(at(".git/config"), 0600);
 	record("chmod", ".git/config", "EPERM", result(rc));
-	if (unix_sockets)
+	if (unix_socket)
 		record("receive-dir", ".", "refused", receive_dir());
 	// One write per rule-line entry, its answer from the whole ordered rule set, and the
 	// ordinary entries.
@@ -680,15 +803,23 @@ static int cmd_run(const char *rules_path, bool unix_sockets)
 			record("rename-pinned", path, "EPERM", result(rc));
 			continue;
 		}
-		if (has_entry_below(&rules, i, path))
-			snprintf(target, sizeof(target), "%s/ko-probe", path);
-		else
+		if (has_entry_below(&rules, &names, i, path)) {
+			char probe[REL_BYTES];
+
+			snprintf(probe, sizeof(probe), "%s/ko+probe", path);
+			pick_name(&rules, probe, target, sizeof(target));
+		} else {
 			snprintf(target, sizeof(target), "%s", path);
+		}
 		word = decide(&rules, target);
-		try_write(target, word == WORD_WRITABLE ? "ok" : "EPERM");
+		try_write(target, word == WORD_WRITABLE ? allowed : "EPERM");
 	}
-	try_write("ordinary", "ok");
-	try_write("sub/ordinary", "ok");
+	for (const char *const *fixed = (const char *const[]){names.ordinary, names.sub_ordinary, NULL}; *fixed;
+	     fixed++) {
+		__u8 word = decide(&rules, *fixed);
+
+		try_write(*fixed, word == 0 || word == WORD_WRITABLE ? allowed : "EPERM");
+	}
 	try_write(".ko-agent-sandbox/file/rule", "EPERM");
 	printf("fixture ops=%d mismatches=%d share_answered=%d ms=%.1f\n", ops, mismatches, share_answered,
 	       now_ms() - start);
@@ -753,11 +884,21 @@ int main(int argc, char **argv)
 	if (!strcmp(argv[1], "records") && argc >= 4)
 		return cmd_records(argc - 2, argv + 2);
 	if ((!strcmp(argv[1], "make") || !strcmp(argv[1], "run")) && argc >= 4) {
+		bool unix_socket = false, no_root = false, known = true;
+
 		snprintf(root, sizeof(root), "%s", argv[2]);
 		if (!strcmp(argv[1], "make") && argc == 4)
 			return cmd_make(argv[3]);
-		if (!strcmp(argv[1], "run") && (argc == 4 || (argc == 5 && !strcmp(argv[4], "--unix-sockets"))))
-			return cmd_run(argv[3], argc == 5);
+		for (int i = 4; i < argc; i++) {
+			if (!strcmp(argv[i], "--unix-socket"))
+				unix_socket = true;
+			else if (!strcmp(argv[i], "--no-root"))
+				no_root = true;
+			else
+				known = false;
+		}
+		if (!strcmp(argv[1], "run") && known)
+			return cmd_run(argv[3], unix_socket, no_root);
 	}
 	if (!strcmp(argv[1], "join") && argc >= 4)
 		return cmd_join(argc - 2, argv + 2);

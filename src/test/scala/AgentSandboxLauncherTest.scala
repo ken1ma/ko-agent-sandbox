@@ -14,7 +14,7 @@ import CommandLine.*
 import ImageBuilds.*
 import LauncherState.*
 import LaunchMessages.*
-import HostCommands.{InvisibleTypes, Os, renderArgument, shown}
+import HostCommands.{InvisibleTypes, Os, renderArgument, shown, shownCommand}
 import SandboxWorkspace.workspaceIdOf
 import ContainerfileSources.*
 import LauncherImages.*
@@ -668,7 +668,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       documentedActions,
       ManagementActions ++ Set("--egress-check", NoOptionsFileOption) ++ FileOptionNames,
     )
-    assert(UsageText.contains(s"--workspace=${WorkspaceModes.mkString("|")}"), UsageText)
+    val workspaceUsage =
+      s"--workspace=${WorkspaceModes.mkString("|")}[,${WorkspaceBackends.mkString("|")}][,$UnixSocketValue]"
+    assert(UsageText.contains(workspaceUsage), UsageText)
     assert(UsageText.contains(s"--clipboard=${ClipboardModes.mkString("|")}"), UsageText)
     assert(UsageText.contains(s"--nesting=${NestingModes.mkString("|")}"), UsageText)
     assert(UsageText.contains(s"--session-start=${SessionStartModes.mkString("|")}"), UsageText)
@@ -818,6 +820,27 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(pullVerdict(Some(old), Some(now)), "tag updated; was 7e3898f7b011")
     assertEquals(pullVerdict(None, Some(now)), "tag added")
     assertEquals(pullVerdict(Some(old), None), "no local image after the pull")
+
+  test("the optional builds run after the rest, the first failure ending them without ending the build"):
+    val context = Files.createTempDirectory("build-context")
+    var ran = Vector.empty[String]
+    def execute(dir: Path, command: Vector[String]): Int =
+      assertEquals(dir, context)
+      ran :+= command.last
+      if command.last.startsWith("fails") then 1 else 0
+    val failure = runBuilds(
+      context,
+      Vector(Vector("podman", "build", "sandbox")),
+      optional = Vector(Vector("podman", "build", "bpf-cache"), Vector("podman", "build", "fails-bpf"),
+        Vector("podman", "build", "after")),
+      execute = execute,
+    )
+    assertEquals(ran, Vector("sandbox", "bpf-cache", "fails-bpf"), "the optional ones stop at the first failure")
+    assertEquals(failure, Some(s"build failed: ${shownCommand(Vector("podman", "build", "fails-bpf"))}"))
+    assert(!Files.exists(context), "the context is removed either way")
+    val clean = Files.createTempDirectory("build-context")
+    assertEquals(runBuilds(clean, Vector.empty, optional = Vector(Vector("podman", "build", "ok")), (_, _) => 0), None)
+    assert(!Files.exists(clean))
 
   test("remote image parsing reads every pattern the bundled Containerfiles use"):
     assertEquals(
@@ -1803,6 +1826,22 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(noGit.contains(s"\n\n$paragraph\n"), noGit)
     assert(!filtered.contains("Git does not work"), filtered)
 
+  test("a bpf session is told where a Unix socket can be bound, per socket setting and share"):
+    val resolution = "egress profile: deny-all"
+    val bpf = appendedSection(Mount, "live", resolution, backend = "bpf")
+    assert(bpf.contains("no FIFO can be made, opened or retimed in the workspace.\nNo Unix socket can be bound"), bpf)
+    assert(bpf.contains("bind under `/tmp` or the rest of `~`."), bpf)
+    val sockets = appendedSection(Mount, "live", resolution, backend = "bpf", unixSocket = true)
+    assert(sockets.contains("Unix sockets can be bound wherever a file can be made in the workspace"), sockets)
+    assert(!sockets.contains("No Unix socket"), sockets)
+    // The Windows share answers every bind itself (plan-bpf-lsm-cgroup.md, "What is gained and what is lost").
+    val windows = appendedSection(Mount, "live", resolution, backend = "bpf", unixSocket = true, windowsShare = true)
+    assert(windows.contains("the share refuses a bind in the workspace with `ENOTSUP`"), windows)
+    assert(!windows.contains("wherever a file can be made"), windows)
+    // The filter has no socket setting, so its text says nothing of sockets.
+    val fuse = appendedSection(Mount, "live", resolution)
+    assert(!fuse.contains("Unix socket"), fuse)
+
   test("the mount-path probe tells an image entry, an unreachable ancestor and a free path apart"):
     assume(!System.getProperty("os.name").toLowerCase.contains("win"))
     // The image's tree stands in: /usr/local/bin exists, /tmp exists, /root exists and cannot be entered.
@@ -1977,7 +2016,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       parseCommandLine(List("--workspace=read-only", "--egress=deny-all", "claude", "--workspace=live")),
       Right(
         ParsedCommandLine(
-          Some("read-only"), Some("deny-all"), None, List("claude", "--workspace=live"),
+          Some("read-only,fuse"), Some("deny-all"), None, List("claude", "--workspace=live"),
         ),
       ),
     )
@@ -1992,11 +2031,43 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(parseCommandLine(Nil).map(_.egressProfile), Right("deny-unless-allowed"))
 
   test("option parsing: workspace modes and egress profiles are a closed set and are selected once"):
-    assert(parseCommandLine(List("--workspace=maybe")).swap.exists(_.contains("read-only, live")))
+    assert(parseCommandLine(List("--workspace=maybe")).swap.exists(_.contains("read-only or live")))
     assert(parseCommandLine(List("--egress=allow-all")).isLeft)
     assert(parseCommandLine(List("--workspace=live", "--workspace=read-only")).swap.exists(_.contains("twice")))
     assert(parseCommandLine(List("--workspace", "live")).swap.exists(_.contains("--workspace=<mode>")))
     assert(parseCommandLine(List("--frobnicate")).swap.exists(_.contains("unknown option")))
+
+  test("option parsing: --workspace takes the backend and unix-socket in any order, once each, and says one spelling"):
+    def settings(value: String) = parseWorkspace(value)
+    assertEquals(settings("live"), Right(WorkspaceSettings("live", "fuse", unixSocket = false)))
+    assertEquals(settings("bpf,live"), Right(WorkspaceSettings("live", "bpf", unixSocket = false)))
+    assertEquals(settings("unix-socket,read-only,bpf"), Right(WorkspaceSettings("read-only", "bpf", unixSocket = true)))
+    assertEquals(settings("live,fuse"), Right(WorkspaceSettings("live", "fuse", unixSocket = false)))
+    assertEquals(settings("live,bpf").map(_.spelled), Right("live,bpf"))
+    assertEquals(settings("bpf,unix-socket,live").map(_.spelled), Right("live,bpf,unix-socket"))
+    // The backend is always spelled, the default included.
+    assertEquals(settings("live,fuse").map(_.spelled), Right("live,fuse"))
+    assertEquals(settings("live").map(_.spelled), Right("live,fuse"))
+    // The filter cannot honor the socket setting: a fatal error, not a silent downgrade.
+    assert(settings("live,unix-socket").swap.exists(_.contains("needs the bpf backend")))
+    assert(settings("live,fuse,unix-socket").swap.exists(_.contains("needs the bpf backend")))
+    // Each value once, one mode, nothing unknown, nothing empty.
+    assert(settings("live,live").isLeft)
+    assert(settings("live,read-only").isLeft)
+    assert(settings("live,bpf,fuse").isLeft)
+    assert(settings("live,bpf,unix-socket,unix-socket").isLeft)
+    assert(settings("bpf").isLeft)
+    assert(settings("live,").isLeft)
+    assert(settings("live,sockets").isLeft)
+    // The command line stores the one spelling, and the settings read back from it.
+    assertEquals(parseCommandLine(List("--workspace=bpf,live", "claude")).map(_.workspace), Right(Some("live,bpf")))
+    assertEquals(
+      parseCommandLine(List("--workspace=unix-socket,live,bpf")).map(_.workspaceSettings),
+      Right(WorkspaceSettings("live", "bpf", unixSocket = true)),
+    )
+    assertEquals(parseCommandLine(Nil).map(_.workspaceSettings), Right(WorkspaceSettings.Default))
+    assertEquals(parseCommandLine(List("--workspace=live,bpf")).map(_.workspaceMode), Right("live"))
+    assertEquals(parseCommandLine(List("--workspace=live", "claude")).map(_.workspace), Right(Some("live,fuse")))
 
   test("option parsing: --model-provider names providers for the proxy as written, repeatable, each once"):
     def providers(args: String*): Either[String, Vector[String]] = parseCommandLine(args.toList).map(_.modelProviders)

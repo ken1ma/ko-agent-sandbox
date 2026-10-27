@@ -221,6 +221,9 @@ object LauncherState:
     // The audit trail goes with the rest of the workspace's state: "reset" means "as if this workspace had never
     // been opened". Copy the files out first if a session's refusals still matter.
     perWorkspaceStateRoots(os).foreach(root => deleteTree(root.resolve(id)))
+    // The BPF backend's proof fixture for the workspace; its pins and cgroups go with the reconcile at
+    // the next launch, once the containers above are gone (KoAgentBpf.reconcileScript).
+    deleteTree(KoAgentBpf.fixtureRoot(stateRoot(os), id))
     // The run-on-host cache too: it is the one store a command can poison (SECURITY.md, "Cache
     // poisoning stops at the workspace"), and a reset that kept it would not mean "never opened".
     // The root is checked against the directory the reset runs in, as every deletion under it is.

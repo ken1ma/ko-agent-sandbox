@@ -541,7 +541,9 @@ RUN set -euxo pipefail; \
 # seeded custom agent whose allowedTools names every built-in tool and
 # every tool of every MCP server (allowedTools takes no bare "*"). Like
 # agy's settings.json it is user state in the persistent volume: opting
-# back into prompts is an edit there. No resources entry: a custom agent
+# back into prompts is an edit there. kiro-cli 2.34 rejects an agent file
+# without `name` as invalid and falls back to kiro_default, which prompts.
+# No resources entry: a custom agent
 # inherits the global steering, where the instructions link below lands,
 # unless chat.disableInheritingDefaultResources is set.
 # app.disableAutoupdates: the startup update check would only be refused
@@ -559,6 +561,7 @@ RUN set -euxo pipefail; \
         > $KO_SANDBOX_VOLUME_SEED/kiro/config/settings/cli.json; \
     printf '%s\n' \
         '{' \
+        '  "name": "ko-agent-sandbox",' \
         '  "description": "Every tool trusted: the container is the boundary",' \
         '  "tools": [' \
         '    "*"' \

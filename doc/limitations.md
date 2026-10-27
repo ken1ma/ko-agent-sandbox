@@ -72,17 +72,31 @@ The cause is outside the launcher:
 ## No FIFO in the workspace
 
 A session cannot make a FIFO (a named pipe, `mkfifo`) in the workspace, nor set the times of one
-the host put there: both answer `EPERM`, on every platform.
+the host put there, on every platform; under `--workspace=live,bpf` a FIFO the host put there
+cannot be opened either, in any mode. The refusals answer `EPERM`, except the `mkfifo` under
+`live,bpf` on the macOS machine, which the share refuses ahead of the policy with `EACCES`.
 
 1. Make the FIFO under `/tmp` or another directory of the container's own filesystem, where
    nothing refuses it; a session leaves `TMPDIR` unset, so a tool's temporary files go there
    without a setting.
-1. A tool that insists on a FIFO beside its inputs fails at `mkfifo` with `EPERM`, visibly, rather
-   than hanging the machine.
+1. A tool that insists on a FIFO beside its inputs fails at `mkfifo`, visibly, rather than hanging
+   the machine.
 
 The reason is a libkrun defect on the macOS podman machine: a FIFO on the share whose times reach
 the host's virtio-fs server blocks the share for every session on the machine, and a mere write
 through the FIFO is enough, since the guest kernel flushes the FIFO's times itself
 (`upstream-issues.md`, "Setting a FIFO's times blocks the macOS virtio-fs server"; `TODO.md`,
 "A FIFO in the workspace hangs the podman machine", has the decision and what lifts it).
+
+## No extended attributes or ACLs
+
+`setfattr`, `setfacl` and the programs that call what they call fail everywhere in a session, `~`
+included: the xattr syscalls answer `Operation not supported`. `chattr` fails in the workspace,
+where the share answers `Inappropriate ioctl for device`.
+
+1. `cp -a`, `rsync -X` and `tar --xattrs` copy the files and drop the attributes, as on a
+   filesystem without them.
+1. A tool that needs an attribute set fails at that call; report it, since the rule is the
+   launcher's (`SECURITY.md`, "No containers inside the sandbox by default", the profile's
+   attribute rule, has why the workspace's protections need it).
 

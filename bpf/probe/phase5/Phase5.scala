@@ -1,5 +1,6 @@
 #!/usr/bin/env -S scala shebang
 //> using scala 3.10.0
+//> using file ../ProbeHelper.scala
 
 // Phase 5 of doc/plan-bpf-lsm-cgroup.md ("Phases", 5) on the podman machine of either host, in one
 // run. Run it on the HOST, from the repository root, with the default machine running and the
@@ -10,7 +11,8 @@
 //
 // The first line hands the file to the `scala` runner's `shebang` sub-command, which takes everything
 // after the file as the program's arguments; on Windows, where no shebang runs, the same is
-// `scala shebang bpf\probe\phase5\Phase5.scala [options]`.
+// `scala shebang bpf\probe\phase5\Phase5.scala [options]`. The `using file` line pulls in ../ProbeHelper.scala,
+// what every driver shares; this file holds the phase's own rows and readers.
 //
 // It builds the probe image (Containerfile) from a context assembled out of the files sources.txt
 // lists, extracts /out into the machine under ~/.local/share/ko-agent-sandbox/bpf-probe5, clones the
@@ -20,7 +22,7 @@
 //
 //   bind     the sandbox image over a writable bind of the workspace, unfiltered.sh's command
 //   policy   the same command below the attach cgroup, so the eight hooks judge it
-//   filter   the launcher's session, the workspace through the filter
+//   filter   the launcher's session under --workspace=live,fuse, the workspace through the filter
 //
 // and, before the launch, one round of perf-probe.py on the bind with no program attached to any hook,
 // the `bare` column, so that the shim the first attach installs on each hook for every task in the VM
@@ -49,62 +51,31 @@
 // systemd, a directory under the user's delegated subtree under cgroupfs), the path the machine serves
 // a host directory at (the same path on macOS, /mnt/<drive>/... on Windows) and the output
 // directory's name. On Windows, %UserProfile%\.wslconfig must hold `[wsl2]` and
-// `isolateDistroCgroup=false` ("VmFacts evidence"), or the containers land in no cgroup of their
+// `isolateDistroCgroup=false` ("Environment evidence"), or the containers land in no cgroup of their
 // own. Every command in the machine is one line without double quotes, the form Phase 4's Windows
 // driver settled on after double quotes inside an argument did not reach the machine.
 //
-// It writes the scratch workspace and the proof fixture under the repository's tmp/, which git ignores
-// and the machine mounts, one attach cgroup ko-agent-bpf5-policy with its transient unit, a podman volume, pins under
-// /sys/fs/bpf/ko-agent-bpf-phase5 in the machine, and containers labelled ko-agent-bpf5; all are
-// removed on exit.
+// It writes the scratch workspace and the proof fixture under ~/ko-agent-bpf-phase5.<pid> on the host,
+// which the machine mounts, one attach cgroup ko-agent-bpf5-policy with its transient unit, a podman
+// volume, pins under /sys/fs/bpf/ko-agent-bpf-phase5 in the machine, containers labelled ko-agent-bpf5
+// and, through the filter stack's launches, the launcher's own state for the scratch workspace; all are
+// removed on exit, that state by the launcher's --reset. A live sandbox session whose workspace holds
+// that directory, under another backend or socket setting, makes the launcher refuse the filter stack.
 
-import scala.util.Properties
 import scala.util.Using
 import scala.util.matching.Regex
 
 import java.lang.ProcessBuilder.Redirect
 import java.nio.charset.StandardCharsets.UTF_8
-import java.nio.file.{Files, Path, StandardCopyOption, StandardOpenOption}
-import java.security.MessageDigest
+import java.nio.file.{Files, Path, StandardCopyOption}
 import java.util.Base64
-import java.util.Comparator
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+
+import ProbeHelper.*
 
 @main def probe(args: String*): Unit = Phase5.run(args)
 
 object Phase5:
-
-  extension (path: Path)
-    def /(child: String): Path = path.resolve(child)
-    def /(child: Path): Path = path.resolve(child)
-
-  def workingDir: Path = Path.of("").toAbsolutePath
-
-  /** The hosts whose podman machine the phase measures, each with the name the output calls it by, which
-    * names its output directory too. A native Linux host has no machine and keeps the filter until a later
-    * version of the backend runs on its own kernel ("Later versions", "Native Linux"); it joins here when
-    * that version's phase measures it, with the controller run under the host's `sudo -n` in place of the
-    * machine's. */
-  enum Platform(val label: String):
-    case Mac     extends Platform("macOS")
-    case Windows extends Platform("WSL")
-    def outDir: String = s"out-${label.toLowerCase}"
-
-  object Platform:
-    def detect: Either[String, Platform] =
-      if Properties.isWin then Right(Windows)
-      else if Properties.isMac then Right(Mac)
-      else
-        Left(
-          s"this probe measures the podman machines of macOS and Windows; a ${Properties.osName} host keeps the " +
-            "filter until \"Later versions\" of doc/plan-bpf-lsm-cgroup.md admits it (\"Native Linux\")",
-        )
-
-  /** The path the machine serves a host path at (SandboxWorkspace.mountPathOf). */
-  def vmPath(platform: Platform, path: String): String = platform match
-    case Platform.Mac => path
-    case Platform.Windows => s"/mnt/${path.head.toLower}/${path.drop(3).replace('\\', '/')}"
 
   /** `Bare` is the bind before any program is attached, run once before the launch and not selectable. */
   enum Stack(val name: String):
@@ -159,24 +130,12 @@ object Phase5:
       case Seq("--workloads", value, tail*) =>
         names(value, Workload.values.toSeq, _.name)
           .flatMap(workloads => loop(tail, options.copy(workloads = workloads)))
-      case Seq("--platform", "mac", tail*) => loop(tail, options.copy(platform = Some(Platform.Mac)))
-      case Seq("--platform", "windows", tail*) => loop(tail, options.copy(platform = Some(Platform.Windows)))
+      case Seq("--platform", value, tail*) =>
+        Platform.named(value).flatMap(platform => loop(tail, options.copy(platform = Some(platform))))
       case Seq(other, _*) => Left(s"unknown option $other; see the header of Phase5.scala")
     loop(args, ProbeOptions())
 
   // --- The pure parts: what the transcript's figures are read with -----------------------------------------
-
-  /** The value of KEY in the first line holding `KEY=`, as the binaries print `key=value`. */
-  def field(key: String, text: String): String =
-    raw"(?m)(?:^|(?<=\s))${Regex.quote(key)}=(\S*)".r.findFirstMatchIn(text).map(_.group(1)).getOrElse("")
-
-  /** The rule file's lines without comments: `kind path`, as the Phase 3 probe reads them. */
-  def stripRules(text: String): Seq[String] =
-    text.linesIterator
-      .map(_.replaceAll("#.*", "").trim.split("\\s+").toSeq)
-      .collect:
-        case Seq(kind, path) => s"$kind $path"
-      .toSeq
 
   case class Figure(row: String, value: Double, unit: String)
 
@@ -266,11 +225,6 @@ object Phase5:
       cells.zip(widths).map((text, width) => text.padTo(width, ' ')).mkString("| ", " | ", " |")
     (line(header) +: widths.map("-" * _).mkString("| ", " | ", " |") +: rows.map(line)).mkString("\n")
 
-  def sha256(contents: Seq[Array[Byte]]): String =
-    val digest = MessageDigest.getInstance("SHA-256")
-    contents.foreach(digest.update)
-    digest.digest().map(byte => f"$byte%02x").mkString
-
   def mean(values: Seq[Double]): Double = values.sum / values.length
 
   /** One figure over the rounds of a stack: the mean, with the range when there are several. */
@@ -284,57 +238,6 @@ object Phase5:
 
   // --- The run ---------------------------------------------------------------------------------------------
 
-  class Transcript(val path: Path):
-    var passed = 0
-    var failed = 0
-    Files.writeString(path, "")
-    def record(text: String): Unit =
-      Files.writeString(path, text.stripLineEnd + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND)
-    def log(text: String): Unit =
-      println(text)
-      record(text)
-    def info(text: String): Unit = log("INFO " + text)
-    def pass(text: String): Unit =
-      passed += 1
-      log("PASS " + text)
-    def fail(text: String): Unit =
-      failed += 1
-      log("FAIL " + text)
-    def check(description: String, ok: Boolean): Boolean =
-      if ok then pass(description) else fail(description)
-      ok
-    def step(text: String): Unit =
-      log("")
-      log("== " + text)
-    def indent(text: String): Unit = text.linesIterator.filter(_.nonEmpty).foreach(line => log("  " + line))
-
-  /** What a command printed, both streams merged, and its exit status. */
-  case class Output(status: Int, text: String):
-    def ok: Boolean = status == 0
-
-  /** A command on the host, its output recorded; a merged stream, a closed stdin unless inherited. */
-  def host(transcript: Transcript, command: Seq[String], cwd: Path = workingDir, inheritStdin: Boolean = false)
-      : Output =
-    val builder = ProcessBuilder(command*).directory(cwd.toFile).redirectErrorStream(true)
-    if inheritStdin then builder.redirectInput(Redirect.INHERIT)
-    val process = builder.start()
-    if !inheritStdin then process.getOutputStream.close()
-    val text = String(process.getInputStream.readAllBytes(), UTF_8)
-    val status = process.waitFor()
-    transcript.record(text)
-    Output(status, text)
-
-  /** One shell command of several statements, for `Vm`. */
-  def sh(statements: String*): String = statements.mkString("; ")
-
-  /** A path as one word of a machine command, whatever it holds; the checkout's path is the user's. */
-  def quoted(path: String): String = "'" + path.replace("'", "'\\''") + "'"
-
-  /** A command in the podman machine, as the machine's user, over `podman machine ssh`. */
-  class Vm(transcript: Transcript):
-    def apply(command: String): Output = host(transcript, Seq("podman", "machine", "ssh", command))
-    def line(command: String): String = apply(command).text.trim
-
   val VmDir = ".local/share/ko-agent-sandbox/bpf-probe5"
   val Controller = s"./$VmDir/controller"
   val Readback = s"./$VmDir/readback"
@@ -342,15 +245,12 @@ object Phase5:
   val Stats = s"./$VmDir/stats"
   val Tags = s"./$VmDir/tags.txt"
   val PinRoot = "/sys/fs/bpf/ko-agent-bpf-phase5"
-  val AppSliceGlob = "/sys/fs/cgroup/user.slice/user-*.slice/user@*.service/app.slice"
   val Session = "policy"
   val Pins = s"$PinRoot/$Session"
   val ProbeImage = "ko-agent-bpf-probe:phase5"
   val SandboxImage = "ko-agent-sandbox:latest"
   val Volume = "ko-agent-bpf5-vol"
   val Label = "ko-agent-bpf5"
-  val Hooks8 = Seq("file_open", "inode_create", "inode_mknod", "inode_symlink", "inode_link", "inode_rename",
-    "inode_unlink", "inode_setattr")
   val PerfDefaultFiles = 1800
 
   /** One line a second while OUT.run exists; the driver makes that file before starting the sampler
@@ -387,40 +287,29 @@ object Phase5:
     /** The marker was made and the loop ended on its removal with status 0. */
     def ran: Boolean = marked && ended
 
-  /** What the run leaves on the host and in the machine, held in a `Using` block and by the shutdown hook:
-    * closed once, it removes the containers, the pins, the attach cgroup, the volume and the scratch
-    * directory, and prints the tally. */
-  class Cleanup(platform: Platform, scratchDir: Path, transcript: Transcript, vm: Vm) extends AutoCloseable:
-    private val closed = AtomicBoolean(false)
-    def close(): Unit = if closed.compareAndSet(false, true) then
-      transcript.step("cleanup")
-      val containers = host(transcript, Seq("podman", "ps", "-aq", "--filter", s"label=$Label")).text.trim
-      if containers.nonEmpty then host(transcript, Seq("podman", "rm", "-f") ++ containers.linesIterator.toSeq)
-      vm(sh(
-        s"[ -x $Controller ] && sudo -n $Controller unpin $Pins >/dev/null 2>&1",
-        s"sudo -n rmdir $PinRoot 2>/dev/null",
-        s"systemctl --user stop ko-agent-bpf5-hold-$Session ko-agent-bpf5-$Session.slice 2>/dev/null",
-        "systemctl --user reset-failed 2>/dev/null",
-        s"rmdir $AppSliceGlob/ko-agent-bpf5-$Session/proof $AppSliceGlob/ko-agent-bpf5-$Session 2>/dev/null",
-        s"rm -f $VmDir/sample.sh $VmDir/samples-* $VmDir/programs.txt",
-        "true",
-      ))
-      host(transcript, Seq("podman", "volume", "rm", "-f", Volume))
-      removeTree(platform, scratchDir)
-      transcript.log("")
-      transcript.log(s"passed=${transcript.passed} failed=${transcript.failed} transcript=${transcript.path}")
+  /** What the run leaves beside its containers: the pins, the attach cgroup, the sampler's files, the
+    * volume and the scratch directory. */
+  def removeLeftovers(platform: Platform, scratchDir: Path, filterLauncher: Option[Path], transcript: Transcript,
+      vm: Vm): Unit =
+    // What the filter stack's launches made for the scratch workspace, its volume, networks, inspection CA,
+    // ruleset cache and logs, is the launcher's to name: its --reset removes it, run from that directory.
+    val tree = scratchDir / "sbt"
+    filterLauncher.filter(_ => Files.isDirectory(tree)).foreach: launcher =>
+      host(transcript, Seq("java", "-jar", launcher.toString, "--reset"), cwd = tree)
+    vm(sh(
+      s"[ -x $Controller ] && sudo -n $Controller unpin $Pins >/dev/null 2>&1",
+      s"sudo -n rmdir $PinRoot 2>/dev/null",
+      s"systemctl --user stop ko-agent-bpf5-hold-$Session ko-agent-bpf5-$Session.slice 2>/dev/null",
+      "systemctl --user reset-failed 2>/dev/null",
+      s"rmdir $AppSliceGlob/ko-agent-bpf5-$Session/proof $AppSliceGlob/ko-agent-bpf5-$Session 2>/dev/null",
+      s"rm -f $VmDir/sample.sh $VmDir/samples-* $VmDir/programs.txt",
+      "true",
+    ))
+    host(transcript, Seq("podman", "volume", "rm", "-f", Volume))
+    removeTree(platform, scratchDir)
 
-  case class VmFacts(
-      uid: String,
-      kernel: String,
-      manager: String,
-      runtime: String,
-      podmanVersion: String,
-      fsType: String,
-      cpus: String,
-      memory: String,
-  ):
-    def appSlice: String = s"/user.slice/user-$uid.slice/user@$uid.service/app.slice"
+  def launcherOf(options: ProbeOptions, repoDir: Path): Path =
+    options.launcher.getOrElse(repoDir / "target" / "dist" / "ko-agent-sandbox.jar")
 
   /** The scratch workspace on the share: the host path and the machine path of the tree, what the tree
     * is, and the machine paths of the rule file, the records, the proof fixture and the volume. */
@@ -434,8 +323,6 @@ object Phase5:
       proofVm: String,
       volumeMountpoint: String,
   )
-
-  case class Cgroup(path: String, parent: String)
 
   /** What a container of a stack runs; `network` for the build's downloads, the rest run without one. */
   case class Command(argv: Seq[String], network: Boolean = false)
@@ -455,50 +342,25 @@ object Phase5:
     def name: String = s"${workload.name}-${stack.name}-$round"
 
   def run(args: Seq[String]): Unit =
-    val options = parseOptions(args) match
-      case Right(options) => options
-      case Left(message) =>
-        System.err.println(message)
-        sys.exit(2)
-    val platform = options.platform.toRight(()).left.flatMap(_ => Platform.detect) match
-      case Right(platform) => platform
-      case Left(message) =>
-        System.err.println(message)
-        sys.exit(2)
-    val repoDir = workingDir
+    val options = orExit(parseOptions(args))
+    val platform = orExit(Platform.resolve(options.platform))
+    val repoDir = orExit(repositoryRoot("bpf/probe/phase5/sources.txt", "fuse/ko-agent-fs/probe/perf-probe.py"))
     val probeDir = repoDir / "bpf" / "probe" / "phase5"
-    val probes = repoDir / "fuse" / "ko-agent-fs" / "probe"
-    if !Files.exists(probeDir / "sources.txt") || !Files.exists(probes / "perf-probe.py") then
-      System.err.println(s"$repoDir is not the repository root; run this from it")
-      sys.exit(2)
     val out = options.out.getOrElse(probeDir / platform.outDir)
     Files.createDirectories(out)
     val transcript = Transcript(out / "transcript.log")
     val vm = Vm(transcript)
-    // Under the repository's ignored tmp/, on the share the machine mounts; not under ~/.cache, where Phase 4
-    // kept its fixtures, since the launcher refuses a workspace below a dot-prefixed directory.
-    val scratchDir = repoDir / "tmp" / s"ko-agent-bpf-phase5.${ProcessHandle.current().pid()}"
-    val cleanup = Cleanup(platform, scratchDir, transcript, vm)
-    Runtime.getRuntime.addShutdownHook(Thread(() => cleanup.close()))
-    val status = Using.resource(cleanup): _ =>
-      try Measurement(options, platform, probeDir, repoDir, out, transcript, vm, scratchDir).measure()
-      catch
-        case ex: Exception =>
-          transcript.fail(s"the driver failed: ${ex.getMessage}")
-          2
-    sys.exit(status)
-
-  def removeTree(platform: Platform, path: Path): Unit =
-    if Files.exists(path) then
-      platform match
-        // Git's pack files are read-only, which Java's delete refuses on Windows and rmdir does not.
-        case Platform.Windows =>
-          val process = ProcessBuilder("cmd", "/c", "rmdir", "/s", "/q", path.toString)
-            .redirectOutput(Redirect.DISCARD).redirectErrorStream(true).start()
-          process.getOutputStream.close()
-          process.waitFor()
-        case Platform.Mac =>
-          Using.resource(Files.walk(path))(_.sorted(Comparator.reverseOrder()).forEach(Files.delete(_)))
+    // In the home directory, on the share the machine mounts: not under the repository, which a sandbox
+    // session over it holds, and beside which the launcher refuses the filter stack's session under another
+    // backend ("The mechanism"); not under ~/.cache, since the launcher refuses a workspace below a dot-prefixed
+    // directory.
+    val scratchDir =
+      Path.of(System.getProperty("user.home")) / s"ko-agent-bpf-phase5.${ProcessHandle.current().pid()}"
+    val filterLauncher = Option.when(options.stacks.contains(Stack.Filter))(launcherOf(options, repoDir))
+    val cleanup =
+      Cleanup(transcript, Label, () => removeLeftovers(platform, scratchDir, filterLauncher, transcript, vm))
+    runMeasured(transcript, cleanup):
+      Measurement(options, platform, probeDir, repoDir, out, transcript, vm, scratchDir).measure()
 
   /** The phase as steps, each `Right` with what the next needs or `Left` with the exit status after it
     * said why: 2 for a refusal before any figure is taken, 1 for a gate the transcript records as FAIL. */
@@ -512,9 +374,9 @@ object Phase5:
       vm: Vm,
       scratchDir: Path,
   ):
-    import transcript.{check, info, log, step}
+    import transcript.{check, gate, info, log, refuse, step}
     private val scratchDirVm = vmPath(platform, scratchDir.toString)
-    private val launcher = options.launcher.getOrElse(repoDir / "target" / "dist" / "ko-agent-sandbox.jar")
+    private val launcher = launcherOf(options, repoDir)
 
     def measure(): Int =
       val outcome =
@@ -534,102 +396,34 @@ object Phase5:
           if transcript.failed == 0 then 0 else 1
       outcome.merge
 
-    /** A refusal before any figure is taken: the message, then exit status 2. */
-    private def refuse(ok: Boolean, message: String): Either[Int, Unit] =
-      if ok then Right(())
-      else
-        log(message)
-        Left(2)
-
-    /** A gate the transcript records: FAIL ends the phase with exit status 1. */
-    private def gate(description: String, ok: Boolean): Either[Int, Unit] = Either.cond(check(description, ok), (), 1)
-
     def readVmFacts(): Either[Int, VmFacts] =
-      step("environment")
       for
-        _ <- refuse(host(transcript, Seq("podman", "machine", "inspect", "--format", "{{.State}}")).ok,
-          "no default podman machine")
-        _ <- refuse(vm("sudo -n true").ok, "sudo -n fails in the machine")
+        facts <- ProbeHelper.readVmFacts(transcript, vm, out, scratchDir, scratchDirVm, PinRoot)
         _ <- refuse(host(transcript, Seq("podman", "image", "exists", SandboxImage)).ok,
           s"no $SandboxImage image; run the launcher's --build first")
         _ <- refuse(!options.stacks.contains(Stack.Filter) || Files.exists(launcher),
           s"no launcher at $launcher; pass --launcher JAR or build it with sbt dist")
-      yield
-        val uid = vm.line("id -u")
-        val kernel = vm.line("uname -r")
-        val manager = vm.line("podman info --format '{{.Host.CgroupManager}}'")
-        val runtime = vm.line("podman info --format '{{.Host.OCIRuntime.Name}} {{.Host.OCIRuntime.Version}}'")
-          .linesIterator.next()
-        val podmanVersion = host(transcript, Seq("podman", "--version")).text.trim
-        info(s"machine user uid=$uid kernel=$kernel podman=$podmanVersion cgroup manager=$manager runtime=$runtime")
-        // The pseudo filesystems the controller and the read-back need, mounted where the machine does not.
-        vm(sh(
-          "sudo -n sh -c 'findmnt -n /sys/kernel/security >/dev/null || " +
-            "mount -t securityfs securityfs /sys/kernel/security'",
-          "sudo -n sh -c 'findmnt -n /sys/fs/bpf >/dev/null || mount -t bpf bpf /sys/fs/bpf'",
-        ))
-        info(s"lsm=${vm.line("sudo -n cat /sys/kernel/security/lsm")}")
-        Files.createDirectories(scratchDir)
-        val findmnt = vm(s"findmnt -T ${quoted(scratchDirVm)} -o TARGET,SOURCE,FSTYPE,OPTIONS").text
-        Files.writeString(out / "findmnt.txt", findmnt)
-        val fsType = vm.line(s"findmnt -T ${quoted(scratchDirVm)} -n -o FSTYPE")
-        info(s"share: ${findmnt.linesIterator.drop(1).nextOption().getOrElse("?")}, type $fsType")
-        vm(s"sudo -n mkdir -p $PinRoot")
-        val cpus = vm.line("nproc")
-        val memory = vm.line("awk '/^MemTotal:/ { print int($2 / 1024) }' /proc/meminfo")
-        info(s"machine cpus=$cpus memory=$memory MiB")
-        VmFacts(uid, kernel, manager, runtime, podmanVersion, fsType, cpus, memory)
+      yield facts
 
     def buildAndInstall(facts: VmFacts): Either[Int, Unit] =
       step("build, with the hash of its sources, and install")
-      // The context holds the files sources.txt lists, the policy program of Phase 3, the guard's records
-      // header and Phase 4's binaries among them; their hash in that order is what the plan's section
-      // names and check-evidence.sh recomputes.
-      val sources =
-        Files.readString(probeDir / "sources.txt").linesIterator.filter(_.nonEmpty).map(Path.of(_)).toSeq
-      val context = scratchDir / "build-context"
-      Files.createDirectories(context)
-      sources.foreach: source =>
-        Files.copy(probeDir / source, context / source.getFileName.toString, StandardCopyOption.REPLACE_EXISTING)
-      val sourcesSha = sha256(sources.map(source => Files.readAllBytes(probeDir / source)))
-      info(s"sources sha256=$sourcesSha over ${sources.mkString(" ")}")
-      // The procedure's digest, the driver, the rule defaults and the two probes, says which measurement
-      // ran; it binds nothing, since the plan's sections name the compiled sources' hash alone.
-      val procedureFiles = Seq(
+      // The procedure: the driver, the rule defaults and the two probes.
+      val procedure = procedureSha(transcript, Seq(
         probeDir / "Phase5.scala",
-        repoDir / "src" / "main" / "resources" / "agentsandbox" / "file-rule-defaults",
+        repoDir / "bpf" / "probe" / "ProbeHelper.scala",
+        repoDir / RuleDefaults,
         repoDir / "fuse" / "ko-agent-fs" / "probe" / "perf-probe.py",
         repoDir / "fuse" / "ko-agent-fs" / "probe" / "walk-probe.py",
-      )
-      val procedureSha = sha256(procedureFiles.map(Files.readAllBytes))
-      info(s"procedure sha256=$procedureSha over Phase5.scala file-rule-defaults perf-probe.py walk-probe.py")
-      val build = host(
-        transcript,
-        Seq("podman", "build", "--build-arg", s"BUILD_KERNEL=${facts.kernel}", "-t", ProbeImage, "-f",
-          (context / "Containerfile").toString, context.toString),
-      )
-      for _ <- refuse(build.ok, s"the probe image failed to build; the build log is in ${transcript.path}")
+      ))
+      for sourcesSha <- buildProbeImage(transcript, probeDir, scratchDir, ProbeImage, facts.kernel)
       yield
-        val installed = vm(sh(
-          "set -eu",
-          s"mkdir -p $VmDir",
-          s"podman create --replace --name ko-agent-bpf5-extract $ProbeImage >/dev/null",
-          s"podman cp ko-agent-bpf5-extract:/out/. $VmDir/",
-          "podman rm ko-agent-bpf5-extract >/dev/null",
-          s"test -x $Controller && test -x $Readback && test -x $Fixture && test -x $Stats",
-        ))
+        val installed = installProbe(vm, ProbeImage, VmDir, Label, Seq("controller", "readback", "fixture", "stats"))
         check("probe installed in the machine", installed.ok)
         vm(sh(s"sudo -n $Controller unpin $Pins >/dev/null 2>&1", "true"))
-        val buildText = s"sources sha256=$sourcesSha\nprocedure sha256=$procedureSha\n" +
-          vm(s"cat $VmDir/clang-version.txt $VmDir/build-kernel.txt $VmDir/objects.sha256").text
-        Files.writeString(out / "build.txt", buildText)
-        info(buildText.linesIterator.mkString(" "))
+        recordBuild(transcript, vm, out, VmDir, Seq(s"sources sha256=$sourcesSha", s"procedure sha256=$procedure"))
         val sampler = Base64.getEncoder.encodeToString(SamplerScript.getBytes(UTF_8))
         vm(s"echo $sampler | base64 -d > $VmDir/sample.sh")
-        // The installation records the object's tags once, under the running kernel ("Lifecycle", 3).
-        val tags = vm(s"sudo -n $Readback tags policy.bpf.o $Tags").text
-        tags.linesIterator.filter(_.startsWith("tags ")).foreach(info)
-        check("the installed object's nine tags are recorded", field("programs", tags) == "9")
+        recordTags(transcript, vm, Readback, Tags)
 
     def prepareWorkspace(): Either[Int, Workspace] =
       step("the workspace: the tree of the real-tree rows, the probes, the rules, the proof fixture")
@@ -651,15 +445,14 @@ object Phase5:
             StandardCopyOption.REPLACE_EXISTING),
         )
         // The rules: the launcher's defaults, exactly what a session's policy holds.
-        val defaults = repoDir / "src" / "main" / "resources" / "agentsandbox" / "file-rule-defaults"
-        Files.writeString(scratchDir / "rules.txt", stripRules(Files.readString(defaults)).mkString("", "\n", "\n"))
+        Files.writeString(scratchDir / "rules.txt",
+          stripRules(Files.readString(repoDir / RuleDefaults)).mkString("", "\n", "\n"))
         val rulesVm = s"$scratchDirVm/rules.txt"
         val recordsVm = s"$scratchDirVm/records.bin"
         val proofVm = s"$scratchDirVm/state/proof"
-        val guarded = "--guarded workspace= --guarded guarded-git=.git --guarded guarded-sandbox=.ko-agent-sandbox"
         val made = vm(
           s"mkdir -p ${quoted(s"$scratchDirVm/state")} && $Fixture make ${quoted(proofVm)} ${quoted(rulesVm)} && " +
-            s"$Fixture records ${quoted(rulesVm)} ${quoted(recordsVm)} $guarded",
+            s"$Fixture records ${quoted(rulesVm)} ${quoted(recordsVm)} $GuardedOptions",
         )
         transcript.indent(made.text)
         check(
@@ -672,41 +465,12 @@ object Phase5:
         info(s"the volume's mountpoint in the machine: $volumeMountpoint, on $volumeFsType")
         Workspace(tree, treeVm, head, tracked, rulesVm, recordsVm, proofVm, volumeMountpoint)
 
-    /** Step 1 of "Lifecycle": a transient slice held by a unit under systemd, a directory under the user's
-      * delegated subtree under cgroupfs. */
-    private def attachCgroup(facts: VmFacts): Cgroup =
-      if facts.manager == "systemd" then
-        vm(sh(
-          s"systemctl --user stop ko-agent-bpf5-hold-$Session 2>/dev/null",
-          "systemctl --user reset-failed 2>/dev/null",
-          s"systemd-run --user --unit=ko-agent-bpf5-hold-$Session --slice=ko-agent-bpf5-$Session.slice " +
-            "/usr/bin/sleep infinity",
-        ))
-        val path =
-          vm.line(s"find /sys/fs/cgroup/user.slice -type d -name ko-agent-bpf5-$Session.slice 2>/dev/null | head -1")
-        Cgroup(path, s"ko-agent-bpf5-$Session.slice")
-      else
-        val parent = s"${facts.appSlice}/ko-agent-bpf5-$Session"
-        vm(s"mkdir -p /sys/fs/cgroup$parent")
-        Cgroup(s"/sys/fs/cgroup$parent", parent)
-
-    /** Step 3's proof, by a process of the launcher's own below the attach cgroup: a scope under the slice,
-      * or a leaf directory joined from a transient scope of the user manager ("Phase 4 on WSL"). */
-    private def runProof(facts: VmFacts, cgroup: Cgroup, workspace: Workspace): Output =
-      val run = s"$Fixture run ${quoted(workspace.proofVm)} ${quoted(workspace.rulesVm)}"
-      if facts.manager == "systemd" then vm(s"systemd-run --user --scope --slice=${cgroup.parent} -q $run")
-      else
-        vm(sh(
-          s"mkdir -p ${cgroup.path}/proof && systemd-run --user --scope -q $Fixture join ${cgroup.path}/proof $run",
-          s"rmdir ${cgroup.path}/proof",
-        ))
-
     /** Steps 1 to 3 of "Lifecycle" over the scratch workspace; `None` when no stack needs the policy. */
     def launchPolicy(facts: VmFacts, workspace: Workspace): Either[Int, Option[Cgroup]] =
       step("the launch: the attach cgroup, the controller, the read-back, the proof")
       if !options.stacks.contains(Stack.Policy) then Right(None)
       else
-        val cgroup = attachCgroup(facts)
+        val cgroup = attachCgroup(vm, facts.manager, facts.uid, Label, Session)
         val roots = s"--records ${quoted(workspace.recordsVm)} --workspace ${quoted(workspace.treeVm)} " +
           s"--fixture ${quoted(workspace.proofVm)} --volume ${quoted(workspace.volumeMountpoint)}"
         for
@@ -729,7 +493,7 @@ object Phase5:
             "the read-back finds eight programs of the installed tags over one map set holding the records",
             field("ok", verify.text) == "1" && field("programs", verify.text) == Hooks8.length.toString,
           )
-          proof = runProof(facts, cgroup, workspace)
+          proof = runProof(vm, facts.manager, cgroup, Fixture, workspace.proofVm, workspace.rulesVm)
           _ = transcript.indent(
             proof.text.linesIterator.filter(line => line.contains("mismatch") || line.startsWith("fixture ops"))
               .mkString("\n"),
@@ -758,7 +522,7 @@ object Phase5:
           case Stack.Filter =>
             host(
               transcript,
-              Seq("java", "-jar", launcher.toString) ++ launcherFilesEnv ++ command.argv,
+              Seq("java", "-jar", launcher.toString, "--workspace=live,fuse") ++ launcherFilesEnv ++ command.argv,
               cwd = workspace.tree,
               inheritStdin = true,
             )
@@ -797,8 +561,15 @@ object Phase5:
         // What this establishes: no pin anywhere in bpffs, and no program of type `lsm`, the policy's type,
         // where bpftool can list programs (its listing names the program type, not the attach type); a link
         // held open by a live process elsewhere in the machine is not excluded.
-        val pins = vm.line("sudo -n find /sys/fs/bpf -mindepth 1 2>/dev/null").linesIterator.mkString(" ")
-        info(s"pins in bpffs before the launch: ${if pins.isEmpty then "none" else pins}")
+        val pins = vm.line("sudo -n find /sys/fs/bpf -mindepth 1 2>/dev/null").linesIterator.toSeq
+        info(s"pins in bpffs before the launch: ${if pins.isEmpty then "none" else pins.mkString(" ")}")
+        // A launcher session of the backend pins its links, and its attach installed the shim already.
+        val links = pins.count(pin => pin.contains("/links/") && !pin.startsWith(PinRoot))
+        if links > 0 then
+          info(
+            s"$links links of live sessions are attached, so the shim is installed and this round is no control " +
+              "for it; end every session of the bpf backend on this machine for one",
+          )
         // A failed listing reads `unknown`, a machine without bpftool `unavailable`; grep's own status on a
         // count of zero does not decide, since the count is printed either way.
         val programs = vm.line(sh(

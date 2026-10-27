@@ -4,7 +4,8 @@
 // so the probe image's libc is not needed.
 //
 //   exercise make-tree TREE         the corpus fixture, laid out as a workspace; TREE-ptr beside it,
-//                                   a workspace whose `.git` is a pointer file
+//                                   a workspace whose `.git` is a pointer file; `made fifo=...` says
+//                                   whether the share let it make the host FIFO the `fifo` group needs
 //   exercise corpus TREE [GROUP]    the decisions, each printed as `case=... expect=... got=...`;
 //                                   GROUP selects one group's cases (`exercise groups` lists them)
 //   exercise check TREE             without the policy: the allowed cases run, and each refused
@@ -15,7 +16,8 @@
 //                                   PROCS processes mixing permitted and refused operations, counted
 //   exercise bind PATH              bind a socket at PATH and leave it
 //   exercise serve SOCK SPEC...     bind SOCK, accept one peer, send one message holding one
-//                                   descriptor per SPEC: ro:PATH, rw:PATH, dir:PATH, pipe, pair;
+//                                   descriptor per SPEC: ro:PATH, rw:PATH, dir:PATH, fifo:PATH (a
+//                                   FIFO opened for reading without blocking), pipe, pair;
 //                                   with the spec `then-exit`, exit right after sending instead
 //                                   of waiting for the peer to finish
 //   exercise receive SOCK [ACTION...]
@@ -77,6 +79,10 @@
 
 static const char *tree;
 static int on_9p;             // the tree is on a 9p share, drvfs: what it refuses is counted apart
+
+// The FIFO the host makes in the fixture, for the `fifo` group: a share may refuse to make one
+// (virtiofs answered the Phase 2 and 3 fixtures' mknod with EACCES, Phase 4's with success).
+#define HOST_FIFO "apps/host-fifo"
 
 // Whether `path` is on a 9p share.
 static int is_9p(const char *path)
@@ -331,6 +337,13 @@ static int cmd_make_tree(void)
 	tree_file("README3.md", "readme\n");
 	tree_file("ordinary", "data\n");
 	tree_dirs("storm");
+	{
+		int rc = mknod(tree_path(HOST_FIFO), S_IFIFO | 0644, 0);
+
+		if (rc < 0 && errno == EEXIST)
+			rc = 0;
+		printf("made fifo=%s result=%s\n", HOST_FIFO, result(rc));
+	}
 	tree_dirs("race/outerAAAA/node_modAAAA/.vscode");
 	tree_file("race/outerAAAA/node_modAAAA/.vscode/tasks.json", "{}\n");
 	tree_dirs("race/outerAAAA/BBBBBBBBules/.vscode");
@@ -379,6 +392,8 @@ enum action {
 	A_EXCHANGE,           // renameat2 RENAME_EXCHANGE a with b
 	A_MKDIR,
 	A_MKFIFO,
+	A_OPEN_FIFO_RD,       // open O_RDONLY|O_NONBLOCK of a FIFO the host made
+	A_OPEN_FIFO_WR,       // open O_WRONLY|O_NONBLOCK of one: ENXIO without a reader where allowed
 	A_BIND,               // a socket bound at a
 	A_CHMOD,
 	A_CHOWN,              // to the caller's own ids
@@ -405,8 +420,8 @@ struct corpus_case {
 };
 
 // Each case names the filter test it transcribes where one exists (`fuse/ko-agent-fs/tests`,
-// `doc/git-metadata.md`, "Test list"). A FIFO case gets the share's own answer (virtiofs
-// EACCES, 9p EOPNOTSUPP) where it is allowed; the `-ptr` group runs on TREE-ptr.
+// `doc/git-metadata.md`, "Test list"). The `fifo` group runs on the FIFO the host made, HOST_FIFO,
+// and is skipped where the share refused to make it; the `-ptr` group runs on TREE-ptr.
 static const struct corpus_case corpus[] = {
 	// name rule (mounted_mutate.rs, creating_a_dotgit_entry_is_refused_for_every_entry_type,
 	// the_name_rule_covers_the_case_folded_and_collapsing_spellings, ordinary_dot_git_prefixed_names_are_allowed)
@@ -507,7 +522,7 @@ static const struct corpus_case corpus[] = {
 	{"operational", "creat-pack", A_CREAT, ".git/objects/pack/p.pack", NULL, E_ALLOW},
 	{"operational", "mkdir-object-dir", A_MKDIR, ".git/objects/ab", NULL, E_ALLOW},
 	{"operational", "creat-object", A_CREAT, ".git/objects/ab/cdef", NULL, E_ALLOW},
-	{"operational", "mkfifo-in-objects", A_MKFIFO, ".git/objects/pack/fifo", NULL, E_ALLOW},
+	{"operational", "mkfifo-in-objects", A_MKFIFO, ".git/objects/pack/fifo", NULL, E_DENY},
 	{"operational", "creat-commit-editmsg", A_CREAT, ".git/COMMIT_EDITMSG", NULL, E_ALLOW},
 	{"operational", "creat-index-stash", A_CREAT, ".git/index.stash.1234", NULL, E_ALLOW},
 	{"operational", "creat-index-stash-lock", A_CREAT, ".git/index.stash.1234.lock", NULL, E_ALLOW},
@@ -646,9 +661,16 @@ static const struct corpus_case corpus[] = {
 	{"ordinary", "unlink-source", A_UNLINK, "src/pkg/new.rs", NULL, E_ALLOW},
 	{"ordinary", "rmdir-source-dir", A_RMDIR, "src/pkg", NULL, E_ALLOW},
 	{"ordinary", "unlink-readme2", A_UNLINK, "README2.md", NULL, E_ALLOW},
-	{"ordinary", "mkfifo-ordinary", A_MKFIFO, "apps/fifo", NULL, E_ALLOW},
+	// the FIFO rules ("The policy"): none made on the share, by type alone (mounted_mutate.rs,
+	// a_fifo_is_neither_made_nor_retimed_through_the_mount)
+	{"ordinary", "mkfifo-ordinary", A_MKFIFO, "apps/fifo", NULL, E_DENY},
 	{"ordinary", "link-ordinary", A_LINK, "README.md", "apps/readme-link", E_ALLOW},
 	{"ordinary", "exchange-ordinary", A_EXCHANGE, "README.md", "ordinary", E_ALLOW},
+	// the FIFO the host made: no open in any mode and no time change, by type; `chmod` as of any object
+	{"fifo", "open-host-fifo-read", A_OPEN_FIFO_RD, HOST_FIFO, NULL, E_DENY},
+	{"fifo", "open-host-fifo-write", A_OPEN_FIFO_WR, HOST_FIFO, NULL, E_DENY},
+	{"fifo", "utimes-host-fifo", A_UTIMES, HOST_FIFO, NULL, E_DENY},
+	{"fifo", "chmod-host-fifo", A_CHMOD, HOST_FIFO, NULL, E_ALLOW},
 	// the NTFS short-name form, under the flag (the `short` group runs with it set)
 	{"short", "creat-under-short-name-dir", A_CREAT, "VSCODE~1/x", NULL, E_DENY},
 	{"short", "creat-under-short-name-with-ext", A_CREAT, "shortish/NODE_M~1.JSO/x", NULL, E_DENY},
@@ -802,6 +824,18 @@ static int run_action(enum action action, const char *a, const char *b)
 	case A_MKFIFO:
 		rc = mknod(tree_path(a), S_IFIFO | 0644, 0);
 		break;
+	case A_OPEN_FIFO_RD:
+		fd = open(tree_path(a), O_RDONLY | O_NONBLOCK);
+		rc = fd;
+		if (fd >= 0)
+			close(fd);
+		break;
+	case A_OPEN_FIFO_WR:
+		fd = open(tree_path(a), O_WRONLY | O_NONBLOCK);
+		rc = fd;
+		if (fd >= 0)
+			close(fd);
+		break;
 	case A_BIND:
 		rc = bind_at(tree_path(a));
 		if (rc >= 0)
@@ -832,6 +866,8 @@ static int run_action(enum action action, const char *a, const char *b)
 	return rc;
 }
 
+static int present(const char *path);
+
 // Each case's answer against its expectation: `allow` and `deny` (EPERM) must match; `fail` takes
 // any error. What the share answers instead of the hook is counted apart whatever the
 // expectation: a FIFO's EACCES on virtiofs or EOPNOTSUPP on 9p, before any hook ("Phase 2 on
@@ -858,6 +894,11 @@ static int cmd_corpus(const char *group)
 		if (on_9p && (item->expect == E_ALLOW_POSIX ||
 			      (!strcmp(item->group, "unix") && item->action != A_BIND && item->action != A_SYMLINK))) {
 			printf("case=%s/%s SKIPPED on 9p\n", item->group, item->label);
+			skipped++;
+			continue;
+		}
+		if (!strcmp(item->group, "fifo") && !present(tree_path(item->a))) {
+			printf("case=%s/%s SKIPPED without the host FIFO\n", item->group, item->label);
 			skipped++;
 			continue;
 		}
@@ -917,7 +958,7 @@ static int cmd_check(void)
 {
 	static char ptr[8192];
 	const char *main_tree = tree;
-	int gaps = 0;
+	int gaps = 0, no_fifo = 0;
 
 	snprintf(ptr, sizeof(ptr), "%s-ptr", main_tree);
 	on_9p = is_9p(main_tree);
@@ -929,6 +970,10 @@ static int cmd_check(void)
 		if (on_9p && (item->expect == E_ALLOW_POSIX ||
 			      (!strcmp(item->group, "unix") && item->action != A_BIND && item->action != A_SYMLINK)))
 			continue;
+		if (!strcmp(item->group, "fifo") && !present(tree_path(item->a))) {
+			no_fifo++;
+			continue;
+		}
 		if (item->expect == E_ALLOW || item->expect == E_ALLOW_POSIX) {
 			rc = run_action(item->action, item->a, item->b);
 			ok = rc >= 0 || (item->action == A_MKFIFO && (errno == EACCES || errno == EOPNOTSUPP)) ||
@@ -963,7 +1008,7 @@ static int cmd_check(void)
 			gaps++;
 	}
 	tree = main_tree;
-	printf("check cases=%zu gaps=%d\n", CORPUS, gaps);
+	printf("check cases=%zu gaps=%d without_host_fifo=%d\n", CORPUS, gaps, no_fifo);
 	return gaps ? 1 : 0;
 }
 
@@ -1337,6 +1382,8 @@ static int cmd_serve(const char *sock_path, int argc, char **argv)
 			fd = open(spec + 3, O_RDWR);
 		else if (!strncmp(spec, "dir:", 4))
 			fd = open(spec + 4, O_RDONLY | O_DIRECTORY);
+		else if (!strncmp(spec, "fifo:", 5))
+			fd = open(spec + 5, O_RDONLY | O_NONBLOCK);
 		else if (!strcmp(spec, "pipe"))
 			fd = pipe(pipe_fds) ? -1 : pipe_fds[1];
 		else if (!strcmp(spec, "pair"))

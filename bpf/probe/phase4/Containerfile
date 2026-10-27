@@ -2,10 +2,10 @@
 # Build the Phase 4 probe of doc/plan-bpf-lsm-cgroup.md, and the container its sessions run in
 # ---------------------------------------------------------------------------
 #
-# phase4.sh builds this on the host from a context it assembles out of the files sources.txt lists,
-# since the policy program is Phase 3's and the records header the guard's, outside this directory,
-# then extracts /out from the image inside the podman machine, as the earlier phases' drivers do;
-# the same image is the session container the rows run.
+# Phase4.scala builds this on the host from a context it assembles out of the files sources.txt lists,
+# since the policy program and the binaries are bpf/ko-agent-bpf/'s and the records header the
+# guard's, outside this directory, then extracts /out from the image inside the podman machine, as the
+# earlier phases' drivers do; the same image is the session container the rows run.
 #
 # vmlinux.h is generated from the kernel this build runs on, the machine's, the one the programs
 # attach to. The three binaries are static: the controller and the read-back run in the machine,
@@ -21,7 +21,7 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY policy.bpf.c records.h probe.h controller.c readback.c fixture.c ./
+COPY policy.bpf.c records.h backend.h controller.c readback.c fixture.c ./
 
 # The kernel whose BTF the step below reads is not a build input podman sees, so a cached layer
 # would outlive a kernel upgrade; the driver passes the machine's `uname -r` here to key the cache.

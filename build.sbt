@@ -154,8 +154,9 @@ Compile / resourceGenerators += Def.task {
       ),
     baseDirectory.value / "fuse" -> Seq("ko-agent-fs"),
     // The BPF classifier and its host build, which the self-test image compiles for
-    // tests/bpf_equivalence.rs (ko-agent-self-test/Containerfile).
-    baseDirectory.value -> Seq("bpf/probe/phase3"),
+    // tests/bpf_equivalence.rs (ko-agent-self-test/Containerfile), and the BPF backend's binaries,
+    // which --build compiles with that classifier (bpf/ko-agent-bpf/Containerfile).
+    baseDirectory.value -> Seq("bpf/ko-agent-bpf"),
   )
 
   // Build output and editor caches a worked-in checkout accumulates; keep in step with the .dockerignore files, which
@@ -185,8 +186,6 @@ Compile / resourceGenerators += Def.task {
     file.isFile &&
       !relative.startsWith("ko-agent-fs/doc/") &&
       !relative.startsWith("ko-agent-fs/probe/") &&
-      // the probe drivers' transcripts, git-ignored beside the sources
-      !relative.startsWith("bpf/probe/phase3/out-") &&
       !parts.contains("target") &&
       !parts.contains(".scala-build") &&
       !parts.contains(".bsp") &&

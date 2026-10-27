@@ -15,7 +15,7 @@ profile.
 
 This runs the unit tests beside the sources, the static Git-corpus and file-rule conformance
 suites, the same corpus through the BPF backend's classifier built for the host
-(`tests/bpf_equivalence.rs`, which compiles `bpf/probe/phase3/policy.bpf.c` with `$CC` or `cc`),
+(`tests/bpf_equivalence.rs`, which compiles `bpf/ko-agent-bpf/policy.bpf.c` with `$CC` or `cc`),
 and the binary tests for argument handling and startup refusal. It needs no mount
 privileges and runs in CI or inside a `ko-agent-sandbox` session, where the musl target is
 preinstalled; the read-only rustup home prevents adding targets during a session.

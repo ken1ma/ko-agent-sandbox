@@ -117,7 +117,27 @@ object LaunchMessages:
     git: Option[String] = None,
     // The --egress-cred bindings: the variables holding a placeholder, and where the proxy substitutes it.
     brokered: Vector[CredentialBinding] = Vector.empty,
+    // Which backend holds a live session's protections (CommandLine.WorkspaceBackends): the filter's
+    // name is in the text the agent reads, and the bpf backend changes two facts of it.
+    backend: String = CommandLine.DefaultWorkspaceBackend,
+    // The `unix-socket` value of --workspace (CommandLine.WorkspaceSettings): under bpf the agent is
+    // told where a Unix socket can be bound, since the policy answers a bind with a bare EPERM.
+    unixSocket: Boolean = false,
+    // Whether the host is Windows, whose 9p share refuses every socket bind itself with ENOTSUP
+    // (doc/plan-bpf-lsm-cgroup.md, "What is gained and what is lost"), so the value reaches the
+    // agent-state volume alone there.
+    windowsShare: Boolean = false,
   ): String =
+    val socketSentence =
+      if !unixSocket then
+        "No Unix socket can be bound in the workspace or beneath `~/persistent-volume`; bind under `/tmp` or " +
+          "the rest of `~`."
+      else if windowsShare then
+        "Unix sockets can be bound beneath `~/persistent-volume`; the share refuses a bind in the workspace " +
+          "with `ENOTSUP`."
+      else
+        "Unix sockets can be bound wherever a file can be made in the workspace, and beneath " +
+          "`~/persistent-volume`."
     val profileLine = resolved.linesIterator.next()
     val workspace = workspaceMode match
       // The plain read-only instruction would be false under --run-on-host: a host command writes the
@@ -126,11 +146,24 @@ object LaunchMessages:
         s"""`$mountPath` is read-only to this session's own writes; only commands through
           |`ko-sandbox-run-on-host` write there, on the host. For anything a command does not
           |write, use `~` or `/tmp` for temporary work and return results in the conversation.
-          |Tell the user to relaunch with `--workspace=live` when the session itself must write there.""".stripMargin
+          |Tell the user to relaunch with `--workspace=live,$backend` when the session itself must
+          |write there.""".stripMargin
       case "read-only" =>
         s"""`$mountPath` is read-only this session. Do not attempt writes there; use `~` or `/tmp`
           |for temporary work and return results in the conversation. Tell the user to relaunch
-          |with `--workspace=live` when files there must be written.""".stripMargin
+          |with `--workspace=live,$backend` when files there must be written.""".stripMargin
+      case "live" if backend == "bpf" =>
+        s"""`$mountPath` is writable and shared live with the same directory on the host, under a BPF
+          |policy the kernel enforces on this container (`ko-agent-bpf`), which refuses what the
+          |`ko-agent-fs` filter refuses elsewhere. The Git state the filter lists (refs, objects, the index,
+          |HEAD and the like) is writable; every other `.git` entry is frozen at any depth, among them
+          |config, hooks, `.git` pointer files, `commondir`, `gitdir`, rebase and rerere state and
+          |alternates, as are `.ko-agent-sandbox` and what `$$KO_AGENT_SANDBOX_FILE_RULES` makes read-only;
+          |in those rules the last line naming an entry or an ancestor decides. Symlink targets must be
+          |relative and remain inside the workspace. Two differences from the filter: an empty directory
+          |can be made and removed at any name, `.git` included, and gains no file where the name is
+          |guarded; and no FIFO can be made, opened or retimed in the workspace.
+          |$socketSentence""".stripMargin
       case "live" =>
         s"""`$mountPath` is writable and shared live with the same directory on the host through the
           |`ko-agent-fs` filter. The Git state the filter lists (refs, objects, the index, HEAD and the

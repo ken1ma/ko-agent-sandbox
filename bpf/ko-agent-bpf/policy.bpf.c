@@ -2,9 +2,10 @@
 // (../phase2/classify.bpf.c) with what that phase left to this one ("The policy"): the identities
 // of guarded objects as second names, the guard's alias contexts (policy.rs, `RuleContext::also`),
 // the NTFS short-name form, the symlink target rules (fs.rs, `target_has_portable_syntax` and
-// `allow_symlink_target`), `file_receive` under `--unix-sockets`, and the walk's state guarded
-// against reentry ("Phases", 3). The verifier's answer to it on both kernels and the corpus's
-// decisions are what the phase measures.
+// `allow_symlink_target`), `file_receive` under `unix-socket`, the walk's state guarded against
+// reentry ("Phases", 3), and the FIFO rules ("The policy": no FIFO made, opened, retimed or
+// received on the share). The verifier's answer to it on both kernels and the corpus's decisions
+// are what the phase measures; the launcher installs this object (bpf/ko-agent-bpf/).
 //
 // Every loop is a `bpf_for` over the kernel's numeric iterator (bpf_iter_num_*, Linux 6.4), which
 // the verifier checks by convergence rather than by simulating every iteration, and every value a
@@ -50,6 +51,9 @@ char LICENSE[] SEC("license") = "GPL";
 #define S_IFDIR 0040000
 #define S_IFLNK 0120000
 #define S_IFSOCK 0140000
+#define S_IFIFO 0010000
+#define ATTR_ATIME (1u << 4)  // include/linux/fs.h: what notify_change carries for a time change
+#define ATTR_MTIME (1u << 5)
 #define MAX_ERRNO 4095
 #define MNT_NS_ANON_INO 0xEFFFFFF7u  // every anonymous mount namespace's inode number on Linux 6.18 (measured)
 
@@ -94,6 +98,7 @@ enum reason {
 	R_SOCKET_GITDIR,      // under FLAG_UNIX_SOCKETS, a socket inode coming to be in a gitdir
 	R_RECEIVE_NS,         // a descriptor from another mount namespace, not a share file the receiver may open
 	R_RECEIVE_DIR,        // such a descriptor of a directory
+	R_FIFO,               // a FIFO on the share: made, opened, retimed or received ("The policy")
 	R_COUNT,
 };
 
@@ -1756,24 +1761,41 @@ static __always_inline struct super_block *sb_of_inode(struct inode *inode)
 				      start_, slot_);                                        \
 	} while (0)
 
+// The refused object's name into the decision record, for a refusal taken before any walk.
+static __always_inline struct position *note_dentry(struct scratch *sc, struct dentry *dentry)
+{
+	const unsigned char *name = BPF_CORE_READ(dentry, d_name.name);
+
+	bpf_probe_read_kernel_str(sc->raw[0], NAME_BYTES, name);
+	sc->pos[0].depth = 1;
+	sc->pos[0].root_kind = 0;
+	return &sc->pos[0];
+}
+
+// A FIFO of the share's type, whatever its mode: every open but `O_PATH` passes here before the
+// pipe's own open (fs/open.c, do_dentry_open), and a write through one would flush its times to
+// the share without any hook seeing the flush ("The policy", the FIFO rules).
 SEC("lsm_cgroup/file_open")
 int BPF_PROG(file_open, struct file *file)
 {
 	__u64 start = bpf_ktime_get_ns();
 	__u32 f_mode = BPF_CORE_READ(file, f_mode);
 	__u32 f_flags = BPF_CORE_READ(file, f_flags);
-	struct dentry *dentry;
-	struct inode *inode;
+	struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
+	struct inode *inode = BPF_CORE_READ(dentry, d_inode);
+	__u32 mode = BPF_CORE_READ(inode, i_mode);
 	struct policy_config *cfg;
 	struct scratch *sc;
 	__u32 reason;
 	int slot;
 
+	if ((mode & S_IFMT) == S_IFIFO) {
+		ENTER(HOOK_FILE_OPEN, cfg, sc, slot, start, sb_of_inode(inode));
+		return finish(HOOK_FILE_OPEN, R_FIFO, note_dentry(sc, dentry), sc, start, slot);
+	}
 	// A read-only open changes nothing; `O_TRUNC` without `FMODE_WRITE` is row 11's truncate.
 	if (!(f_mode & FMODE_WRITE) && !(f_flags & O_TRUNC_FLAG))
 		return 1;
-	dentry = BPF_CORE_READ(file, f_path.dentry);
-	inode = BPF_CORE_READ(dentry, d_inode);
 	ENTER(HOOK_FILE_OPEN, cfg, sc, slot, start, sb_of_inode(inode));
 	reason = prologue(HOOK_FILE_OPEN, dentry, sb_of_inode(inode), cfg, slot, 0, 0);
 	if (reason == R_ALLOW)
@@ -1781,17 +1803,23 @@ int BPF_PROG(file_open, struct file *file)
 	return finish(HOOK_FILE_OPEN, reason, &sc->pos[0], sc, start, slot);
 }
 
+// A time change on a FIFO of the share's type is refused by type, `chmod` and `chown` of one
+// judged as of any object: `touch` reaches here, a write through the FIFO does not ("The policy").
 SEC("lsm_cgroup/inode_setattr")
 int BPF_PROG(inode_setattr, struct mnt_idmap *idmap, struct dentry *dentry, struct iattr *attr)
 {
 	__u64 start = bpf_ktime_get_ns();
 	struct inode *inode = BPF_CORE_READ(dentry, d_inode);
+	__u32 mode = BPF_CORE_READ(inode, i_mode);
+	__u32 valid = BPF_CORE_READ(attr, ia_valid);
 	struct policy_config *cfg;
 	struct scratch *sc;
 	__u32 reason;
 	int slot;
 
 	ENTER(HOOK_INODE_SETATTR, cfg, sc, slot, start, sb_of_inode(inode));
+	if ((mode & S_IFMT) == S_IFIFO && (valid & (ATTR_ATIME | ATTR_MTIME)))
+		return finish(HOOK_INODE_SETATTR, R_FIFO, note_dentry(sc, dentry), sc, start, slot);
 	reason = prologue(HOOK_INODE_SETATTR, dentry, sb_of_inode(inode), cfg, slot, 0, 0);
 	if (reason == R_ALLOW)
 		reason = decide_modify(&sc->pos[0]);
@@ -1836,9 +1864,10 @@ static __always_inline __u32 decide_socket(const struct policy_config *cfg, stru
 }
 
 // A new non-directory name: create, mknod and symlink share it; `is_socket` adds the socket rule,
-// which holds beneath a recorded root of any superblock type; `target` is a symlink's.
+// which holds beneath a recorded root of any superblock type; `is_fifo` refuses the name on the
+// share's type before any walk; `target` is a symlink's.
 static __always_inline int new_name(enum hook hook, struct inode *dir, struct dentry *dentry, int is_socket,
-				    const char *target)
+				    int is_fifo, const char *target)
 {
 	__u64 start = bpf_ktime_get_ns();
 	struct policy_config *cfg;
@@ -1850,6 +1879,8 @@ static __always_inline int new_name(enum hook hook, struct inode *dir, struct de
 	// A socket is judged on any superblock type, so its slot is taken whatever the type.
 	ENTER(hook, cfg, sc, slot, start, is_socket ? NULL : sb_of_inode(dir));
 	pos = &sc->pos[0];
+	if (is_fifo)
+		return finish(hook, R_FIFO, note_dentry(sc, dentry), sc, start, slot);
 	reason = prologue(hook, dentry, sb_of_inode(dir), cfg, slot, 0, is_socket);
 	if (is_socket)
 		return finish(hook, decide_socket(cfg, sb_of_inode(dir), reason, pos), pos, sc, start, slot);
@@ -1866,19 +1897,19 @@ static __always_inline int new_name(enum hook hook, struct inode *dir, struct de
 SEC("lsm_cgroup/inode_create")
 int BPF_PROG(inode_create, struct inode *dir, struct dentry *dentry, umode_t mode)
 {
-	return new_name(HOOK_INODE_CREATE, dir, dentry, 0, NULL);
+	return new_name(HOOK_INODE_CREATE, dir, dentry, 0, 0, NULL);
 }
 
 SEC("lsm_cgroup/inode_mknod")
 int BPF_PROG(inode_mknod, struct inode *dir, struct dentry *dentry, umode_t mode, dev_t dev)
 {
-	return new_name(HOOK_INODE_MKNOD, dir, dentry, (mode & S_IFMT) == S_IFSOCK, NULL);
+	return new_name(HOOK_INODE_MKNOD, dir, dentry, (mode & S_IFMT) == S_IFSOCK, (mode & S_IFMT) == S_IFIFO, NULL);
 }
 
 SEC("lsm_cgroup/inode_symlink")
 int BPF_PROG(inode_symlink, struct inode *dir, struct dentry *dentry, const char *old_name)
 {
-	return new_name(HOOK_INODE_SYMLINK, dir, dentry, 0, old_name);
+	return new_name(HOOK_INODE_SYMLINK, dir, dentry, 0, 0, old_name);
 }
 
 // A source object getting a second name, or moving: `old` positive, `new` a name.
@@ -1988,17 +2019,6 @@ static __always_inline int ns_is_runtime(struct mnt_namespace *ns, struct task_s
 	return 0;
 }
 
-// The refused object's name into the decision record, for a refusal taken before any walk.
-static __always_inline struct position *note_dentry(struct scratch *sc, struct dentry *dentry)
-{
-	const unsigned char *name = BPF_CORE_READ(dentry, d_name.name);
-
-	bpf_probe_read_kernel_str(sc->raw[0], NAME_BYTES, name);
-	sc->pos[0].depth = 1;
-	sc->pos[0].root_kind = 0;
-	return &sc->pos[0];
-}
-
 // What file_receive saw of a file's namespace and its receiver, into the decision record.
 static __always_inline void note_receive(struct mnt_namespace *ns, struct task_struct *task)
 {
@@ -2064,6 +2084,10 @@ int BPF_PROG(file_receive, struct file *file)
 	note_receive(ns, task);
 	if ((mode & S_IFMT) == S_IFDIR)
 		return finish(HOOK_FILE_RECEIVE, R_RECEIVE_DIR, note_dentry(sc, dentry), sc, start, slot);
+	// A FIFO of the share, in any mode: a container outside any policy can open one and pass the
+	// descriptor, and a write through it would flush the FIFO's times ("The policy").
+	if ((mode & S_IFMT) == S_IFIFO && sb_type_is(sb, cfg->fs_type))
+		return finish(HOOK_FILE_RECEIVE, R_FIFO, note_dentry(sc, dentry), sc, start, slot);
 	if (sb_type_is(sb, cfg->fs_type)) {
 		reason = judge_position(HOOK_FILE_RECEIVE, as_scalar(dentry), slot, 0);
 		if (reason == R_WALK_NOROOT)

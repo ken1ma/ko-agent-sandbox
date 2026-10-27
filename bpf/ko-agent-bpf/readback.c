@@ -1,23 +1,29 @@
-// Phase 4 of doc/plan-bpf-lsm-cgroup.md: the read-back ("Lifecycle", 3), a program with the
-// controller's privileges and none of its code. It asks the kernel what is attached to the attach
-// cgroup and compares it with what the launch meant: the hook set, each program's tag against the
-// installed object's, and each map's shape and contents against the guard's records and the
-// identities it reads for itself. A difference ends the launch. It also records the installed
-// object's tags, once per installation and kernel, and checks pinned programs before a restart
-// reuses them ("Lifecycle", 5). Exit status 1 is a difference, 2 a failure.
+// The BPF cgroup-LSM backend of doc/plan-bpf-lsm-cgroup.md: the read-back ("Lifecycle", 3), a
+// program with the controller's privileges and none of its code. It asks the kernel what is
+// attached to the attach cgroup and compares it with what the launch meant: the hook set, each
+// program's tag against the installed object's, and each map's shape and contents against the
+// guard's records and the identities it reads for itself. A difference ends the launch. It also
+// records the installed object's tags, once per installation and kernel, checks pinned programs
+// before a restart reuses them ("Lifecycle", 5), and checks the spare set before a launch takes
+// it. Exit status 1 is a difference, 2 a failure.
 //
 //   readback tags OBJ OUT             load OBJ, beside this binary, and write each program's name,
 //                                     hook and tag, and the read-only data map's bytes, to OUT, under
 //                                     the running kernel's release
 //   readback verify CGROUP --tags FILE --records FILE --workspace PATH [--fixture PATH] [--volume PATH]
-//                  [--flags F,F] HOOK...
+//                  [--flags F,F] [--no-root] HOOK...
 //                                     the programs attached to CGROUP must be HOOK..., once each and
 //                                     nothing else, with FILE's tags, sharing one map set whose
 //                                     records are those the guard produced for this launch and whose
-//                                     read-only data is FILE's
+//                                     read-only data is FILE's; --no-root expects a read-only
+//                                     session's policy (backend.h), for which --records may be absent
 //   readback check-pins PINDIR --tags FILE --records FILE --workspace PATH [--fixture PATH]
-//                      [--volume PATH] [--flags F,F] HOOK...
+//                      [--volume PATH] [--flags F,F] [--no-root] HOOK...
 //                                     the same of the programs pinned under PINDIR/progs
+//   readback check-spare PINDIR --tags FILE HOOK...
+//                                     the programs pinned under PINDIR/progs are HOOK... with FILE's
+//                                     tags and read-only data, over one map set holding no record:
+//                                     the spare a launch may take
 #define _GNU_SOURCE
 #include <libgen.h>
 #include <sys/utsname.h>
@@ -27,7 +33,7 @@
 #include <bpf/libbpf.h>
 
 #define PROGRAM_NAME "readback"
-#include "probe.h"
+#include "backend.h"
 
 #define MAX_MAPS 32
 
@@ -221,53 +227,6 @@ static void read_tags(const char *path, struct tags *tags)
 }
 
 // --- verify -----------------------------------------------------------------------------------------
-
-struct expectation {
-	const char *tags_path;
-	const char *records;
-	const char *workspace;
-	const char *fixture;
-	const char *volume;
-	__u32 flags;
-	const char **hooks;
-	int hook_count;
-};
-
-static int parse_expectation(int argc, char **argv, struct expectation *exp)
-{
-	int first = 0;
-
-	memset(exp, 0, sizeof(*exp));
-	while (first < argc && argv[first][0] == '-') {
-		const char *option = argv[first++];
-
-		if (first >= argc)
-			die("%s takes a value", option);
-		if (!strcmp(option, "--tags"))
-			exp->tags_path = argv[first++];
-		else if (!strcmp(option, "--records"))
-			exp->records = argv[first++];
-		else if (!strcmp(option, "--workspace"))
-			exp->workspace = argv[first++];
-		else if (!strcmp(option, "--fixture"))
-			exp->fixture = argv[first++];
-		else if (!strcmp(option, "--volume"))
-			exp->volume = argv[first++];
-		else if (!strcmp(option, "--flags"))
-			exp->flags = parse_flags(argv[first++]);
-		else
-			die("unknown option %s", option);
-	}
-	if (!exp->tags_path || !exp->records || !exp->workspace)
-		die("--tags, --records and --workspace are required");
-	if (first >= argc)
-		die("no hook named");
-	exp->hooks = (const char **)argv + first;
-	exp->hook_count = argc - first;
-	for (int i = 0; i < exp->hook_count; i++)
-		hook_index(exp->hooks[i]);
-	return first;
-}
 
 // A difference: printed, and the verdict.
 static int differ(const char *what, const char *format, ...)
@@ -523,9 +482,11 @@ static int cmd_verify(int argc, char **argv)
 
 	if (argc < 2)
 		die("usage: verify CGROUP [options] HOOK...");
-	parse_expectation(argc - 1, argv + 1, &exp);
+	parse_expectation(argc - 1, argv + 1, &exp, "verify");
+	if (!exp.tags_path || !exp.workspace)
+		die("verify: --tags and --workspace are required");
 	read_tags(exp.tags_path, &tags);
-	expect_policy(&policy, exp.records, exp.workspace, exp.fixture, exp.volume, exp.flags);
+	expect_policy(&policy, exp.records, exp.workspace, exp.fixture, exp.volume, exp.flags, exp.no_root);
 	cgroup_fd = open_cgroup(argv[0]);
 	// BPF_PROG_QUERY on the attach cgroup with BPF_LSM_CGROUP lists the programs of every hook
 	// together; the ids need the attach-flags buffer beside them (kernel/bpf/cgroup.c,
@@ -557,11 +518,13 @@ static int cmd_check_pins(int argc, char **argv)
 
 	if (argc < 2)
 		die("usage: check-pins PINDIR [options] HOOK...");
-	parse_expectation(argc - 1, argv + 1, &exp);
+	parse_expectation(argc - 1, argv + 1, &exp, "check-pins");
+	if (!exp.tags_path || !exp.workspace)
+		die("check-pins: --tags and --workspace are required");
 	if (!relative_beneath(PIN_FS, argv[0]))
 		die("pindir %s is not under %s", argv[0], PIN_FS);
 	read_tags(exp.tags_path, &tags);
-	expect_policy(&policy, exp.records, exp.workspace, exp.fixture, exp.volume, exp.flags);
+	expect_policy(&policy, exp.records, exp.workspace, exp.fixture, exp.volume, exp.flags, exp.no_root);
 	for (int i = 0; i < exp.hook_count; i++) {
 		char pin[PATH_MAX];
 
@@ -573,6 +536,38 @@ static int cmd_check_pins(int argc, char **argv)
 		}
 	}
 	return verify_programs(prog_fds, exp.hook_count, &exp, &policy, &tags, "check-pins", start) ? 1 : 0;
+}
+
+// The spare ("Lifecycle"): the pinned programs of every hook, the installed object's, over maps
+// holding no record and a zero configuration, which is what a zeroed policy expects.
+static int cmd_check_spare(int argc, char **argv)
+{
+	int prog_fds[POLICY_HOOKS];
+	struct expectation exp;
+	struct policy policy;
+	struct tags tags;
+	double start = now_ms();
+
+	if (argc < 2)
+		die("usage: check-spare PINDIR --tags FILE HOOK...");
+	parse_expectation(argc - 1, argv + 1, &exp, "check-spare");
+	if (!exp.tags_path)
+		die("check-spare: --tags is required");
+	if (!relative_beneath(PIN_FS, argv[0]))
+		die("pindir %s is not under %s", argv[0], PIN_FS);
+	read_tags(exp.tags_path, &tags);
+	memset(&policy, 0, sizeof(policy));
+	for (int i = 0; i < exp.hook_count; i++) {
+		char pin[PATH_MAX];
+
+		snprintf(pin, sizeof(pin), "%s/progs/%s", argv[0], exp.hooks[i]);
+		prog_fds[i] = bpf_obj_get(pin);
+		if (prog_fds[i] < 0) {
+			printf("check-spare ok=0 reason=missing-pin pin=%s error=%s\n", pin, strerror(errno));
+			return 1;
+		}
+	}
+	return verify_programs(prog_fds, exp.hook_count, &exp, &policy, &tags, "check-spare", start) ? 1 : 0;
 }
 
 int main(int argc, char **argv)
@@ -587,5 +582,7 @@ int main(int argc, char **argv)
 		return cmd_verify(argc - 2, argv + 2);
 	if (!strcmp(argv[1], "check-pins"))
 		return cmd_check_pins(argc - 2, argv + 2);
+	if (!strcmp(argv[1], "check-spare"))
+		return cmd_check_spare(argc - 2, argv + 2);
 	die("unknown subcommand %s", argv[1]);
 }

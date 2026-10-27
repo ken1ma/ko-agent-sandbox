@@ -12,6 +12,11 @@ mounting fail with `Operation not permitted` unless `$KO_AGENT_SANDBOX_NESTING` 
 `user-namespace` or `same-uid`; tell the user, who chooses at launch.
 `/home/nonroot`, `/tmp` and `/var/tmp` are writable. The appended "What this session may do"
 section names the workspace root and gives its workspace mode.
+`setfattr` and `setfacl` fail everywhere, `~` included, with `Operation not supported`, and
+`chattr` in the workspace with `Inappropriate ioctl for device`; `cp -a` and `tar` drop extended
+attributes and ACLs silently.
+Make a FIFO under `/tmp`, never in the workspace, where `mkfifo` fails with `Operation not
+permitted`.
 
 The workspace root is mounted at the same path the host has it at (on Windows, at the path
 WSL gives it, `/mnt/<drive>/...`), so a path you print is a path the user and their IDE can open.
@@ -81,7 +86,8 @@ findings with you.
 
 Read history freely. `add`, `commit`, `checkout`, `switch`, `fetch` and `merge` work.
 
-The `ko-agent-fs` filter refuses these operations. Report refusals; do not work around them.
+The workspace's protections, the `ko-agent-fs` filter or the BPF policy the appended section
+names, refuse these operations. Report refusals; do not work around them.
 
 - Writing `.git` entries other than the state the filter lists (refs, objects, the index, HEAD and
   the like), in any repository under the workspace: `config`, `hooks/`, `.git` pointer files,

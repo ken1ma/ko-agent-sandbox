@@ -139,7 +139,9 @@ Windows UNC path, which the host opens outside the egress proxy.
 
 From the four groups, the state that must be immutable to the sandbox:
 
-1. **Any new entry named `.git`** — directory *or* file, at any depth. (Name rule below.)
+1. **Any new entry named `.git`** — directory *or* file, at any depth. (Name rule below.) The BPF
+   backend admits the directory alone and keeps it from gaining a `HEAD`
+   (`../../../doc/plan-bpf-lsm-cgroup.md`, "Directories").
 2. **Any existing `.git` pointer file** — the `gitdir:` indirection, immutable so it cannot be
    re-aimed.
 3. **Within any gitdir**, the protected entries:
@@ -237,7 +239,10 @@ How it is applied:
 
 A rule over spellings covers the names a filesystem folds to `.git`, not a second name it gives
 an existing `.git` — an NTFS 8.3 short name, a hard link to a pointer file. Those the filter
-recognizes by the backing object (`security-research.md`, "Windows 8.3 short names").
+recognizes by the backing object (`security-research.md`, "Windows 8.3 short names"); the BPF
+backend records the guarded objects' identities at launch and judges any name of them as the
+object, with the residual its plan states (`../../../doc/plan-bpf-lsm-cgroup.md`, "The policy",
+the second-name rule).
 
 **The empirical test.** Reasoning bounds the candidate list; only the real filesystem settles it.
 

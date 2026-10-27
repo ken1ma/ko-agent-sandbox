@@ -1,5 +1,5 @@
-//! The BPF cgroup-LSM backend's classifier (`bpf/probe/phase3/policy.bpf.c` at the repository
-//! root), built for the host against the stand-in headers in `bpf/probe/phase3/host/`, and the
+//! The BPF cgroup-LSM backend's classifier (`bpf/ko-agent-bpf/policy.bpf.c` at the repository
+//! root), built for the host against the stand-in headers in `bpf/ko-agent-bpf/host/`, and the
 //! policy's corpus (`corpus`) run through it and through `policy.rs`: the two classifiers give one
 //! answer to every query (`doc/plan-bpf-lsm-cgroup.md`, "What is gained and what is lost"). The
 //! rules reach the program as the guard writes them, through `bpf_records::compile`, so the
@@ -31,7 +31,7 @@ const FS_TYPE: &str = "virtiofs";
 const MOVED: &str = "moved";
 
 fn host_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bpf/probe/phase3/host")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bpf/ko-agent-bpf/host")
 }
 
 /// This run's files, under the system's temporary directory: the packaged suite has no Cargo

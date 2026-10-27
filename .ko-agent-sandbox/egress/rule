@@ -1,4 +1,10 @@
+# Playwright
+allow https://cdn.playwright.dev/       read
+allow https://playwright.azureedge.net/ read
+allow https://storage.googleapis.com/   read
+
+# IDEs
 allow https://www.jetbrains.com/ read
-allow https://cursor.com/ read
+allow https://cursor.com/        read
 allow https://docs.windsurf.com/ read
-allow https://docs.devin.ai/ read      # docs.windsurf.com redirects here
+allow https://docs.devin.ai/     read  # docs.windsurf.com redirects here

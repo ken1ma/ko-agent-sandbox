@@ -85,13 +85,25 @@ class SessionBoundaryTest extends munit.FunSuite:
       .map(_.split("\\s+").last)
       .getOrElse(s"($name absent from $status)")
 
+  /** The kernel writes a space, tab, newline or backslash in a mountinfo path as `\NNN` octal
+    * (`show_mountinfo`, `mangle_path`), so a workspace path holding one matches only decoded. */
+  private def unescapeMountinfo(field: String): String =
+    "\\\\([0-7]{3})".r.replaceAllIn(
+      field,
+      found => java.util.regex.Matcher.quoteReplacement(Integer.parseInt(found.group(1), 8).toChar.toString),
+    )
+
   private def mountPoints: Vector[String] =
-    procLines("/proc/self/mountinfo").map(_.split(" ")(4))
+    procLines("/proc/self/mountinfo").map(line => unescapeMountinfo(line.split(" ")(4)))
 
   private def mountOptions(at: String): Option[String] =
     procLines("/proc/self/mountinfo").collectFirst {
-      case line if line.split(" ")(4) == at => line.split(" ")(5)
+      case line if unescapeMountinfo(line.split(" ")(4)) == at => line.split(" ")(5)
     }
+
+  test("a mountinfo path is matched decoded: the kernel writes its spaces and backslashes as octal"):
+    assertEquals(unescapeMountinfo("/work/my\\040project\\134x"), "/work/my project\\x")
+    assertEquals(unescapeMountinfo("/plain/path"), "/plain/path")
 
   test("the container is the unprivileged one the image declares"):
     inSession()
@@ -133,7 +145,7 @@ class SessionBoundaryTest extends munit.FunSuite:
       |nr = {'x86_64': dict(clone=56, unshare=272, setns=308, mount=165, umount2=166, pivot_root=155),
       |      'aarch64': dict(clone=220, unshare=97, setns=268, mount=40, umount2=39, pivot_root=41)}[os.uname().machine]
       |nr.update(clone3=435, open_tree=428, move_mount=429, fsopen=430, fsconfig=431, fsmount=432, fspick=433,
-      |          mount_setattr=442, open_tree_attr=467)
+      |          mount_setattr=442, open_tree_attr=467, file_setattr=468)
       |def answer(name, *args):
       |    ctypes.set_errno(0)
       |    r = libc.syscall(ctypes.c_long(nr[name]), *[ctypes.c_long(a) if isinstance(a, int) else a for a in args])
@@ -157,6 +169,21 @@ class SessionBoundaryTest extends munit.FunSuite:
       |answer('fspick', -1, b'', 0xffff)
       |answer('mount_setattr', -1, b'', 0xffff, None, 0)
       |answer('open_tree_attr', -1, b'', 0xffff, None, 0)
+      |# The attribute syscalls (SeccompProfile.AttributeSyscalls), on a file of the container's own
+      |# filesystem, where the kernel itself would admit each; an ioctl stays with the kernel.
+      |import fcntl, tempfile
+      |with tempfile.NamedTemporaryFile(dir=os.path.expanduser('~')) as f:
+      |    def attr(name, call):
+      |        try:
+      |            call()
+      |            print(name, 'ok')
+      |        except OSError as ex:
+      |            print(name, errno.errorcode.get(ex.errno, str(ex.errno)))
+      |    attr('setxattr', lambda: os.setxattr(f.name, 'user.ko', b'v'))
+      |    attr('fsetxattr', lambda: os.setxattr(f.fileno(), 'user.ko', b'v'))
+      |    attr('removexattr', lambda: os.removexattr(f.name, 'user.ko'))
+      |    attr('ioctl_fionread', lambda: fcntl.ioctl(f.fileno(), 0x541b, b'\0' * 4))
+      |    answer('file_setattr', -1, b'', None, 0, 0)
       |threading.Thread(target=lambda: None).start()
       |print('child', subprocess.run(['true']).returncode)
       |""".stripMargin
@@ -187,6 +214,15 @@ class SessionBoundaryTest extends munit.FunSuite:
       // `open_tree_attr` (Linux 6.15): `ENOSYS` where libseccomp does not know the name and the
       // default action refuses it, `EPERM` where it does.
       assert(Set("EPERM", "ENOSYS").exists(answers.get("open_tree_attr").contains), answers.get("open_tree_attr"))
+      // The attribute syscalls: `ENOTSUP`, which the kernel never answers for a `user.` xattr on the
+      // container's own filesystem; an ioctl reaches the kernel (FIONREAD on a regular file: the
+      // filesystem's own answer, not the filter's). `file_setattr` (Linux 6.17): `ENOSYS` where
+      // libseccomp lacks the name.
+      Vector("setxattr", "fsetxattr", "removexattr").foreach: name =>
+        assert(Set("ENOTSUP", "EOPNOTSUPP").exists(answers.get(name).contains), s"$name: ${answers.get(name)}")
+      assert(answers.contains("ioctl_fionread"), "the ioctl probe ran")
+      val fileSetattr = answers.get("file_setattr")
+      assert(Set("ENOTSUP", "EOPNOTSUPP", "ENOSYS").exists(fileSetattr.contains), fileSetattr)
       assertEquals(answers.get("child"), Some("0"))
       val thread = Thread(() => ())
       thread.start()
@@ -431,27 +467,48 @@ class SessionBoundaryTest extends munit.FunSuite:
       assert(clone.ok, s"an anonymous clone failed: ${clone.err}")
     finally deleteRecursively(into)
 
-  test("the workspace is writable, and where it is filtered its Git entries are not"):
+  /** The workspace mount's filesystem type and source from mountinfo: the filter mounts as `fuse`
+    * from `ko-agent-fs` (fs.rs, `MountOption::FSName`); the podman machine's share, which the BPF
+    * backend mounts itself, is `virtiofs` or `9p`. The share's magic is FUSE's too on macOS, so
+    * `stat -f %T` cannot tell them apart. */
+  private def workspaceMount: Option[(String, String)] =
+    procLines("/proc/self/mountinfo").collectFirst {
+      case line if unescapeMountinfo(line.split(" ")(4)) == workspace.toString =>
+        val after = line.split(" - ")(1).split(" ")
+        (after(0), unescapeMountinfo(after(1)))
+    }
+
+  test("the workspace is writable, and its Git entries are not, under the filter or the policy"):
     inSession()
-    val filtered = run("stat", "-f", "-c", "%T", workspace.toString).text == "fuse"
+    val mount = workspaceMount.getOrElse(fail(s"$workspace is not a mount point in /proc/self/mountinfo"))
+    val filtered = mount == ("fuse", "ko-agent-fs")
 
     val work = Files.createTempDirectory(workspace, ".boundary-test-")
     try
       Files.writeString(work.resolve("ordinary"), "x")
       assert(Files.exists(work.resolve("ordinary")), s"$workspace is not writable")
 
-      if filtered then
-        val deep = Files.createDirectories(work.resolve("deep/nested"))
-        Vector(work, deep).foreach: at =>
+      // A writable workspace mounted from elsewhere is the BPF backend's share
+      // (--workspace=live,bpf, the other live mode). The policy lets an empty
+      // `.git` directory be made at any depth and refuses the first entry under it; the filter
+      // refuses the directory itself (SECURITY.md, "The BPF backend").
+      val deep = Files.createDirectories(work.resolve("deep/nested"))
+      Vector(work, deep).foreach: at =>
+        if filtered then
           deniedByFilter(s"creating .git under ${at.getFileName}"):
             Files.createDirectory(at.resolve(".git"))
+        else
+          val dotGit = Files.createDirectory(at.resolve(".git"))
+          deniedByFilter(s"creating .git/HEAD under ${at.getFileName}"):
+            Files.writeString(dotGit.resolve("HEAD"), "ref: refs/heads/main\n")
+          Files.delete(dotGit)
 
-        val config = workspace.resolve(".git/config")
-        if Files.exists(config) then
-          // Appending nothing rather than truncating: the question is whether a write is
-          // permitted, and asking it must not perform one on the user's own repository.
-          deniedByFilter("opening this repository's .git/config for writing"):
-            Files.newOutputStream(config, StandardOpenOption.APPEND).close()
+      val config = workspace.resolve(".git/config")
+      if Files.exists(config) then
+        // Appending nothing rather than truncating: the question is whether a write is
+        // permitted, and asking it must not perform one on the user's own repository.
+        deniedByFilter("opening this repository's .git/config for writing"):
+          Files.newOutputStream(config, StandardOpenOption.APPEND).close()
     finally deleteRecursively(work)
 
   test("the session cannot write the boundary directory governing the next launch"):

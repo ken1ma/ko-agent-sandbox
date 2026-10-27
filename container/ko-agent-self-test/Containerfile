@@ -25,7 +25,7 @@ RUN set -eux; rustup target add "$(uname -m)-unknown-linux-musl"
 
 WORKDIR /build
 COPY ko-agent-fs .
-COPY bpf/probe/phase3 /bpf/probe/phase3
+COPY bpf/ko-agent-bpf /bpf/ko-agent-bpf
 
 # The identity the installed filter reports. The suites run against the same source the launcher
 # bundles, so the digest travels here too rather than being left unstamped.
@@ -68,8 +68,8 @@ RUN --mount=type=cache,target=/build/target \
 # compiler and the sources are, and named to the test by KO_AGENT_FS_POLICY_HOST below, since the
 # test's own build looks for the sources beside the crate, which the runtime image has not got.
 RUN set -eux; \
-    cc -std=gnu17 -O1 -Wall -I /bpf/probe/phase3/host -I /build/include -o /suite/policy-host \
-        /bpf/probe/phase3/host/policy_host.c /bpf/probe/phase3/host/records_file.c; \
+    cc -std=gnu17 -O1 -Wall -I /bpf/ko-agent-bpf/host -I /build/include -o /suite/policy-host \
+        /bpf/ko-agent-bpf/host/policy_host.c /bpf/ko-agent-bpf/host/records_file.c; \
     test -x /suite/policy-host
 
 
