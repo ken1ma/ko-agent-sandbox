@@ -1,8 +1,11 @@
 // The seccomp profile a `--nesting=none` session runs under: podman's installed default profile
-// with creating a user namespace, joining a namespace and every mount syscall refused. Derived by
-// --build and --update from the default the podman server applies, kept under the launcher's
-// state root, and named to `podman create` by path, which the server reads (SECURITY.md, "No
-// containers inside the sandbox by default").
+// with creating a user namespace, joining a namespace and every mount syscall refused, and with the
+// syscalls that change a file's extended attributes, ACLs or flags refused too
+// (doc/plan-bpf-lsm-cgroup.md, "Attributes, flags and ioctls": the BPF policy holds no hook for
+// them, and the filter refuses them by not implementing them). Derived by --build and --update from
+// the default the podman server applies, kept under the launcher's state root, and named to
+// `podman create` by path, which the server reads (SECURITY.md, "No containers inside the sandbox
+// by default").
 
 package agentsandbox.launcher
 
@@ -23,6 +26,7 @@ object SeccompProfile:
 
   private val EPERM = 1
   private val ENOSYS = 38
+  private val EOPNOTSUPP = 95
 
   /** The syscalls that create, attach, alter or remove a mount (Linux v7.1, `scripts/syscall.tbl`;
     * `umount` exists on the 32-bit sub-architectures the default's archMap covers). The whole
@@ -42,9 +46,19 @@ object SeccompProfile:
     * `CLONE_NEWTIME` (`src/syscall/exec_linux.go`, `forkAndExecInChild1`). */
   val NamespaceSyscalls: Vector[String] = Vector("clone", "clone3", "unshare", "setns")
 
+  /** The syscalls that set or remove an extended attribute, POSIX ACLs among them (`fs/xattr.c`
+    * routes the `system.posix_acl_*` names), `setxattrat` and `removexattrat` (Linux 6.13) included,
+    * and `file_setattr` (Linux 6.17), which sets a file's flags and `fsxattr` fields. Answered
+    * `ENOTSUP`, the answer the filter's FUSE mount gives, so that `cp -a` drops the attributes
+    * silently as it does there (plan, "Attributes, flags and ioctls"). */
+  val AttributeSyscalls: Vector[String] = Vector(
+    "setxattr", "lsetxattr", "fsetxattr", "setxattrat", "removexattr", "lremovexattr", "fremovexattr", "removexattrat",
+    "file_setattr",
+  )
+
   /** Every name the derived profile decides itself: removed from the default's rules, then ruled
     * below. */
-  val RefusedNames: Vector[String] = NamespaceSyscalls ++ MountSyscalls
+  val RefusedNames: Vector[String] = NamespaceSyscalls ++ MountSyscalls ++ AttributeSyscalls
 
   private def rule(names: Vector[String], action: String, args: Vector[Json], comment: String, errno: Option[Int])
     : Json =
@@ -66,7 +80,15 @@ object SeccompProfile:
     * and with it refused with `EPERM`, the refusal `unshare -Ur` and bubblewrap print as "Operation
     * not permitted". `setns` joins a namespace only with `CAP_SYS_ADMIN` over its owner, which the
     * session holds in no namespace but one it created; refused so that a mistake in the two rules
-    * above reopens nothing. */
+    * above reopens nothing. The attribute syscalls are refused whole. The filesystem ioctls that
+    * change a file (`FS_IOC_SETFLAGS`, `FS_IOC_FSSETXATTR`, the ext4, fscrypt, verity and btrfs
+    * commands of the plan's row 18) have no rule: libseccomp refuses some commands of a syscall
+    * and allows the rest only with the allowed commands spelled as masked prefixes, since an
+    * unconditional rule for a syscall clears its argument rules (`src/db.c`, `_db_rule_add`) and
+    * a rule holds one comparison per argument (`db_col_rule_add`): 255 allow rules for today's 19
+    * commands. The podman machines' shares answer those commands `ENOTTY` themselves (the plan's
+    * "Phase 2 on macOS" and "Phase 2 on WSL", `share`), and the rules stay unbuilt for the first
+    * version by the user's decision (the plan, "Decisions still open", has what reopens it). */
   val AddedRules: Vector[Json] = Vector(
     rule(
       Vector("clone", "unshare"), "SCMP_ACT_ALLOW", Vector(userNamespaceFlag(0)),
@@ -83,6 +105,11 @@ object SeccompProfile:
     rule(
       "setns" +: MountSyscalls, "SCMP_ACT_ERRNO", Vector.empty,
       "ko-agent-sandbox: --nesting=none joins no namespace and mounts nothing", Some(EPERM),
+    ),
+    rule(
+      AttributeSyscalls, "SCMP_ACT_ERRNO", Vector.empty,
+      "ko-agent-sandbox: no xattr, ACL, flag or fsxattr change in a session (SECURITY.md, the seccomp profile)",
+      Some(EOPNOTSUPP),
     ),
   )
 
@@ -212,13 +239,35 @@ object SeccompProfile:
     System.err.println(s"seccomp profile for --nesting=none: $file, derived from $source")
 
   /** Why a `--nesting=none` launch cannot proceed, or None: the profile is derived by the build
-    * actions, and a launch without it would run under podman's default, the weaker boundary. */
+    * actions, and a launch without it would run under podman's default, the weaker boundary; one
+    * an earlier build derived lacks the rules this build adds (AddedRules), which the BPF backend's
+    * protections rest on, so it is refused too. */
   def missingReason(stateRoot: Path): Option[String] =
     val file = profileFile(stateRoot)
-    Option.when(!Files.isRegularFile(file))(
-      s"""error: the seccomp profile for --nesting=none is not built: $file
-         |Run --build, or --update, which derive it from podman's default profile.""".stripMargin,
-    )
+    if !Files.isRegularFile(file) then
+      Some(
+        s"""error: the seccomp profile for --nesting=none is not built: $file
+           |Run --build, or --update, which derive it from podman's default profile.""".stripMargin,
+      )
+    else
+      val content =
+        try Files.readString(file)
+        catch case ex: java.io.IOException => ex.getMessage
+      staleReason(JsonText.parse(content).toOption).map(reason =>
+        s"""error: the seccomp profile for --nesting=none, $file, $reason
+           |Run --build, or --update, which derive it again.""".stripMargin,
+      )
+
+  /** Why a profile is not this build's, or None: every rule of AddedRules must be among its rules,
+    * as `derived` appends them, in their order. */
+  def staleReason(profile: Option[Json]): Option[String] =
+    profile match
+      case None => Some("is not a JSON profile")
+      case Some(json) =>
+        json.field("syscalls") match
+          case Some(Arr(rules)) =>
+            Option.when(!rules.containsSlice(AddedRules))("lacks the rules this launcher's build adds")
+          case _ => Some("has no \"syscalls\" array")
 
   /** The `podman create` argument naming the profile. */
   def createArgument(stateRoot: Path): String = s"--security-opt=seccomp=${profileFile(stateRoot)}"

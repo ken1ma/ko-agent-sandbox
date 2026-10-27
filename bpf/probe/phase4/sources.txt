@@ -1,7 +1,7 @@
-../phase3/policy.bpf.c
+../../ko-agent-bpf/policy.bpf.c
 ../../../fuse/ko-agent-fs/include/records.h
-probe.h
-controller.c
-readback.c
-fixture.c
+../../ko-agent-bpf/backend.h
+../../ko-agent-bpf/controller.c
+../../ko-agent-bpf/readback.c
+../../ko-agent-bpf/fixture.c
 Containerfile

@@ -1,0 +1,57 @@
+# ---------------------------------------------------------------------------
+# Build the BPF cgroup-LSM backend of doc/plan-bpf-lsm-cgroup.md: the policy program, the
+# controller, the read-back and the fixture
+# ---------------------------------------------------------------------------
+#
+# The launcher unpacks its bundled build contexts and builds this from their root, since the policy
+# program is bpf/ko-agent-bpf/policy.bpf.c and the records header the guard's
+# (ko-agent-fs/include/records.h), then extracts /out from the image into the podman machine
+# (KoAgentBpf.scala, the install):
+#
+#     podman build --build-arg BUILD_KERNEL=<the machine's uname -r> \
+#         --build-arg KO_AGENT_BPF_SOURCE_ID=<digest> -f bpf/ko-agent-bpf/Containerfile \
+#         -t ko-agent-bpf:latest .
+#
+# The build runs in the podman machine, whose kernel the programs attach to: vmlinux.h is generated
+# from that kernel's BTF, and the machine's `uname -r` is passed as BUILD_KERNEL because the BTF is
+# not a build input podman sees, so a cached layer would otherwise outlive a kernel upgrade. The
+# binaries are static, so they run in the machine as they are; the fixture runs in a container too.
+
+# Debian 13 (trixie), matching the rest of this project's images.
+FROM docker.io/library/debian:trixie-slim AS build
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        clang-19 llvm-19 bpftool libbpf-dev libelf-dev zlib1g-dev libzstd-dev linux-libc-dev libc6-dev; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY bpf/ko-agent-bpf/policy.bpf.c ko-agent-fs/include/records.h ./
+COPY bpf/ko-agent-bpf/backend.h bpf/ko-agent-bpf/controller.c bpf/ko-agent-bpf/readback.c bpf/ko-agent-bpf/fixture.c ./
+
+ARG BUILD_KERNEL=unknown
+ARG KO_AGENT_BPF_SOURCE_ID=unstamped
+
+RUN set -eux; \
+    mkdir -p /out; \
+    test "$(uname -r)" = "$BUILD_KERNEL"; \
+    test -r /sys/kernel/btf/vmlinux; \
+    bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h; \
+    clang-19 --version | head -1 > /out/clang-version.txt; \
+    clang-19 -O2 -g -target bpf -mcpu=v3 -Wall -Wno-missing-declarations -Werror \
+        -c policy.bpf.c -o /out/policy.bpf.o; \
+    sha256sum /out/policy.bpf.o >> /out/objects.sha256; \
+    clang-19 -O2 -Wall -Werror -static -I. -o /out/controller controller.c -lbpf -lelf -lz -lzstd; \
+    clang-19 -O2 -Wall -Werror -static -I. -o /out/readback readback.c -lbpf -lelf -lz -lzstd; \
+    clang-19 -O2 -Wall -Werror -static -I. -o /out/fixture fixture.c; \
+    for bin in controller readback fixture; do \
+        ldd /out/$bin 2>&1 | grep -q "statically linked\|not a dynamic executable"; \
+    done; \
+    uname -r > /out/build-kernel.txt; \
+    printf '%s\n' "$KO_AGENT_BPF_SOURCE_ID" > /out/source-id
+
+# What the launcher extracts; nothing runs from this image.
+FROM scratch
+
+COPY --from=build /out /out

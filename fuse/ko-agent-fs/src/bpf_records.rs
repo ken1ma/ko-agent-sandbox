@@ -500,7 +500,7 @@ mod tests {
         }
     }
 
-    /// The rules of the Phase 3 probe (`bpf/probe/phase3/phase3.sh`): an anchored line first, the
+    /// The rules of the Phase 3 probe (`bpf/probe/phase3/Phase3.scala`): an anchored line first, the
     /// launcher's lines, the `.claude` lines among them at indices 1 to 5, and the guard's lines
     /// last, the end of `.claude -> shared/claude` with `.claude`'s context as its alias.
     fn probe_rules() -> FileRules {

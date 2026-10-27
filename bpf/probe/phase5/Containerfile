@@ -21,7 +21,7 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY policy.bpf.c records.h probe.h controller.c readback.c fixture.c stats.c ./
+COPY policy.bpf.c records.h backend.h controller.c readback.c fixture.c stats.c ./
 
 # The kernel whose BTF the step below reads is not a build input podman sees, so a cached layer
 # would outlive a kernel upgrade; the driver passes the machine's `uname -r` here to key the cache.

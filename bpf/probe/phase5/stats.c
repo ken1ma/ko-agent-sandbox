@@ -18,7 +18,7 @@
 #include <bpf/libbpf.h>
 
 #define PROGRAM_NAME "stats"
-#include "probe.h"
+#include "backend.h"
 
 // policy.bpf.c's layout; probe.h's map table leaves this map's value size unchecked, so it is checked here.
 struct hook_stats {

@@ -272,6 +272,7 @@ static const char *const reason_names[R_COUNT] = {
 	[R_SOCKET_GITDIR] = "socket-gitdir",
 	[R_RECEIVE_NS] = "receive-ns",
 	[R_RECEIVE_DIR] = "receive-dir",
+	[R_FIFO] = "fifo",
 };
 
 static struct chain chain_a, chain_b;

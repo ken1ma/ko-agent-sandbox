@@ -1,10 +1,13 @@
-// Phase 4 of doc/plan-bpf-lsm-cgroup.md: what the controller and the read-back share, the formats
-// and the readings both sides take for themselves. policy.bpf.c defines its map records for itself,
-// since a BPF program includes vmlinux.h and records.h follows it; the layouts here must equal the
-// program's, and the read-back compares the kernel's map info with this table. What is not here is
-// any action of the controller's: the read-back learns what is attached from the kernel alone.
-#ifndef PROBE_H
-#define PROBE_H
+// The BPF cgroup-LSM backend of doc/plan-bpf-lsm-cgroup.md: what the controller, the read-back and
+// the fixture share, the formats and the readings each side takes for itself. policy.bpf.c
+// (bpf/probe/phase3/) defines its map records for itself, since a BPF program includes vmlinux.h
+// and records.h follows it; the layouts here must equal the program's, and the read-back compares
+// the kernel's map info with this table. What is not here is any action of the controller's: the
+// read-back learns what is attached from the kernel alone. The launcher installs the three binaries
+// built from this directory (Containerfile) into the podman machine (KoAgentBpf.scala); the Phase 4
+// and 5 probes build the same sources (their sources.txt).
+#ifndef BACKEND_H
+#define BACKEND_H
 
 #include <errno.h>
 #include <fcntl.h>
@@ -410,7 +413,10 @@ static inline void read_records(const char *path, struct records *out)
 
 // The policy a launch loads: the records, the roots by identity and the configuration, each read by
 // the caller for itself. The fixture root is a second workspace root ("Lifecycle", 3) and must be
-// on the workspace's filesystem type, or every expected refusal there would fail.
+// on the workspace's filesystem type, or every expected refusal there would fail. `no_root` is a
+// `--workspace=read-only` session's policy ("The policy"): the share's type and the volume's root
+// are recorded and no workspace, gitdir or fixture root, so every mutation on the share's type is
+// refused; `records` may then be NULL.
 struct policy {
 	struct records rec;
 	struct ident idents[ROOTS];
@@ -436,11 +442,14 @@ static inline void add_root(struct policy *policy, __u32 kind, const char *path)
 }
 
 static inline void expect_policy(struct policy *policy, const char *records, const char *workspace, const char *fixture,
-			  const char *volume, __u32 flags)
+			  const char *volume, __u32 flags, bool no_root)
 {
 	memset(policy, 0, sizeof(*policy));
-	read_records(records, &policy->rec);
-	for (__u32 i = 0; i < policy->rec.header.root_count; i++) {
+	if (records)
+		read_records(records, &policy->rec);
+	else if (!no_root)
+		die("a policy with roots needs the records file");
+	for (__u32 i = 0; !no_root && i < policy->rec.header.root_count; i++) {
 		char path[PATH_MAX];
 
 		if (policy->rec.guarded[i].len)
@@ -457,13 +466,14 @@ static inline void expect_policy(struct policy *policy, const char *records, con
 		if (strcmp(type, policy->cfg.fs_type))
 			refuse("fixture-fs-type", "fixture=%s type=%s workspace_type=%s", fixture, type,
 			       policy->cfg.fs_type);
-		add_root(policy, ROOT_WORKSPACE, fixture);
+		if (!no_root)
+			add_root(policy, ROOT_WORKSPACE, fixture);
 	}
 	if (volume) {
 		fs_type_of(volume, policy->cfg.vol_fs_type, sizeof(policy->cfg.vol_fs_type));
 		add_root(policy, ROOT_VOLUME, volume);
 	}
-	policy->cfg.rule_count = policy->rec.header.rule_count;
+	policy->cfg.rule_count = no_root ? 0 : policy->rec.header.rule_count;
 	policy->cfg.flags = flags;
 	// The runtime's mount namespace is the controller's own ("Phase 3 on WSL"): podman and the
 	// runtime run where the launcher runs the controller and the read-back.
@@ -480,12 +490,75 @@ static inline __u32 parse_flags(const char *text)
 	for (token = strtok_r(copy, ",", &save); token; token = strtok_r(NULL, ",", &save)) {
 		if (!strcmp(token, "short-names"))
 			flags |= FLAG_SHORT_NAMES;
-		else if (!strcmp(token, "unix-sockets"))
+		else if (!strcmp(token, "unix-socket"))
 			flags |= FLAG_UNIX_SOCKETS;
 		else
 			die("--flags: unknown flag %s", token);
 	}
 	return flags;
+}
+
+// The expectation the controller's attach and the read-back's verify and check-pins share: the
+// options after the positional operands, then the hooks. `--no-root` is the read-only session's.
+struct expectation {
+	const char *tags_path;
+	const char *records;
+	const char *workspace;
+	const char *fixture;
+	const char *volume;
+	const char *object;
+	const char *bind_source;
+	const char *spare;
+	__u32 flags;
+	bool no_root;
+	const char **hooks;
+	int hook_count;
+};
+
+static inline int hook_index(const char *name);
+
+static inline void parse_expectation(int argc, char **argv, struct expectation *exp, const char *usage)
+{
+	int first = 0;
+
+	memset(exp, 0, sizeof(*exp));
+	exp->object = "policy.bpf.o";
+	while (first < argc && argv[first][0] == '-') {
+		const char *option = argv[first++];
+
+		if (!strcmp(option, "--no-root")) {
+			exp->no_root = true;
+			continue;
+		}
+		if (first >= argc)
+			die("%s: %s takes a value", usage, option);
+		if (!strcmp(option, "--tags"))
+			exp->tags_path = argv[first++];
+		else if (!strcmp(option, "--records"))
+			exp->records = argv[first++];
+		else if (!strcmp(option, "--workspace"))
+			exp->workspace = argv[first++];
+		else if (!strcmp(option, "--fixture"))
+			exp->fixture = argv[first++];
+		else if (!strcmp(option, "--volume"))
+			exp->volume = argv[first++];
+		else if (!strcmp(option, "--flags"))
+			exp->flags = parse_flags(argv[first++]);
+		else if (!strcmp(option, "--object"))
+			exp->object = argv[first++];
+		else if (!strcmp(option, "--bind-source"))
+			exp->bind_source = argv[first++];
+		else if (!strcmp(option, "--spare"))
+			exp->spare = argv[first++];
+		else
+			die("%s: unknown option %s", usage, option);
+	}
+	if (first >= argc)
+		die("%s: no hook named", usage);
+	exp->hooks = (const char **)argv + first;
+	exp->hook_count = argc - first;
+	for (int i = 0; i < exp->hook_count; i++)
+		hook_index(exp->hooks[i]);
 }
 
 static inline int hook_index(const char *name)

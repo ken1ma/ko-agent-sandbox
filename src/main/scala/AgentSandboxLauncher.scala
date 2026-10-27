@@ -20,6 +20,8 @@
 //   ClaudePlugins.scala         --claude-plugin-dir: host plugin directories run as Claude Code's managed plugins
 //   LaunchMessages.scala        the weakened-boundary lines and the agent instructions' appended section
 //   KoAgentFs.scala             the workspace FUSE filter: build, install, identity, mount lifecycle
+//   KoAgentBpf.scala            the BPF cgroup-LSM backend of --workspace=...,bpf: build, install, the
+//                               probe, the launch's attach and proof, the teardown and the reconcile
 //   SandboxWorkspace.scala      the workspace root: real path, refusals, identity, mount guards
 //   CertificateHelper.scala     certificates as PEM: creating, parsing, checking
 //   JdkTrust.scala              making the image's JVM reach the proxy — locate, prepare, mount
@@ -45,8 +47,11 @@
 //    +-- workspace root (the current directory) --> the same path (Windows: /mnt/<drive>/...)
 //    |     (SandboxWorkspace.mountPathOf; --workspace selects the mount: live — the default — is the
 //    |      ko-agent-fs mountpoint, RW with Git entries and launcher
-//    |      configuration protected (mountKoAgentFs); read-only binds
-//    |      the raw tree with podman's `ro` option)
+//    |      configuration protected (mountKoAgentFs), or under the bpf
+//    |      backend the raw tree RW with the same protections held by a
+//    |      BPF policy on the container's cgroup (KoAgentBpf); read-only binds
+//    |      the raw tree with podman's `ro` option, under the bpf backend
+//    |      with a policy refusing every write on the share)
 //    |
 //    +-- .ko-agent-sandbox: the egress rules, the file rules and each
 //    |      run-on-host program's egress rules, read on the host; the
@@ -1297,9 +1302,14 @@ object AgentSandboxLauncher:
     egressNetwork: String,
   )
 
-  /** The filter's mountpoint for a live session, and the file rules the session runs under. */
+  /** The filter's mountpoint for a live session, the probe's answer where the BPF backend serves this
+    * run (KoAgentBpf), and the file rules the session runs under. */
   private case class LaunchMount(
     filteredWorkspace: Option[KoAgentFsPrepared],
+    bpf: Option[KoAgentBpf.Facts],
+    /** The settings this run runs under, which differ from the asked ones where the probe left a
+      * read-only session without a policy. */
+    settings: CommandLine.WorkspaceSettings,
     joinedRules: Option[RunningMount],
     sessionRuleLines: Vector[FileRules.Line],
     sessionRulesText: String,
@@ -1323,9 +1333,10 @@ object AgentSandboxLauncher:
     // (ownLines), so each is printed once.
     options.fileLines(ownLines(settings, parsed), os).foreach(System.err.println)
     val workspace = launchWorkspace(parsed, settings, os)
-    import parsed.{command, workspaceMode}
+    import parsed.command
     import settings.{workspaceRoot, runOnHost, sessionStartMode}
-    import workspace.workspaceId
+    import workspace.{mountPath, workspaceId}
+    val workspaceSettings = parsed.workspaceSettings
     val machineMemory = requirePodman(os)
 
     // One suffix ties this run's containers, networks and log directory together in podman output and the retained
@@ -1340,9 +1351,13 @@ object AgentSandboxLauncher:
 
     // The filter's read-only checks run beside the image and rule checks below; prepareKoAgentFs
     // reads their answer once this run's cleanup is armed.
-    val startedKoAgentFsChecks = Option.when(workspaceMode == "live"):
+    val startedKoAgentFsChecks = Option.when(workspaceSettings.filtered):
       val sourceId = bundledKoAgentFsSourceId()
       (sourceId, inBackground("ko-agent-fs checks")(koAgentFsChecks(podman, os, sourceId)))
+    // The BPF backend's capability probe, the same way (KoAgentBpf.checksScript); its answer is read
+    // below, before anything of the run exists.
+    val startedBpfChecks = Option.when(workspaceSettings.bpf):
+      inBackground("ko-agent-bpf checks")(run(koAgentFsScriptCommand(podman, os, KoAgentBpf.checksScript(mountPath))*))
 
     val images = launchImages(settings, workspace, os)
     val rules = launchRules(parsed, settings, workspace, images, os)
@@ -1368,17 +1383,46 @@ object AgentSandboxLauncher:
     )
     import names.{egressNetwork, proxyContainer, sandboxContainer, sandboxNetwork}
 
+    // The BPF backend's probe, read now: a live session it cannot serve is refused with what the
+    // machine lacks, each line with its remedy; a read-only one keeps the raw `ro` bind alone and
+    // says so, since the no-root policy is the mode's defence against a descriptor a live session
+    // passes and the bind refuses the session's own writes either way ("The hooks", `file_receive`).
+    val bpfFacts: Option[KoAgentBpf.Facts] = startedBpfChecks.flatMap: awaitChecks =>
+      val checks = awaitChecks()
+      if !checks.ok then fail(s"error: the BPF backend's probe did not run in the podman machine:\n${checks.err}")
+      val facts = KoAgentBpf.parseFacts(checks.text)
+      val missing = KoAgentBpf.requirementFailures(facts, os, KoAgentBpf.bundledSourceId(), bundledKoAgentFsSourceId())
+      if missing.isEmpty then Some(facts)
+      else if workspaceSettings.live then
+        val heading = s"error: --workspace=${workspaceSettings.spelled} cannot run on this podman machine:"
+        fail((heading +: missing.map(line => s"  - $line")).mkString("\n"))
+      else
+        System.err.println(
+          ("note: the read-only session runs under podman's `ro` bind alone; the BPF policy needs:" +:
+            missing.map(line => s"  - $line")).mkString("\n"),
+        )
+        None
+    // What this run is, for its labels and the comparison with the live sessions: a read-only session
+    // the probe left without a policy is a filter session with no socket setting, whatever was asked,
+    // so a live `bpf` session beside it is refused as it would be beside any other filter session.
+    val effectiveSettings =
+      if workspaceSettings.bpf && bpfFacts.isEmpty then
+        workspaceSettings.copy(backend = CommandLine.DefaultWorkspaceBackend, unixSocket = false)
+      else workspaceSettings
+
     // The workspace FUSE filter, checked before any volume is assembled and mounted once the
     // sandbox container exists (the lifecycle banner above koAgentFsMountScript has the layout).
-    // Every live session's enforcement, on every platform.
+    // Every live session's enforcement under the fuse backend, on every platform; under the bpf
+    // backend the policy's teardown takes the reap's place (KoAgentBpf.teardownScript).
     //
     // Derived from the mode rather than from the mount, so it exists before the mount does: the
     // mount script writes this session's marker as its first act (KoAgentFs, koAgentFsMountScript),
     // and a failure after that would otherwise leave the marker to a later reap. Only live
     // sessions have a mount to reap.
-    val filterReap = Option.when(workspaceMode == "live")(
-      koAgentFsReapScript(koAgentFsReapPodman(podman, os), workspaceId, sandboxContainer),
-    )
+    val filterReap =
+      if workspaceSettings.filtered then
+        Some(koAgentFsReapScript(koAgentFsReapPodman(podman, os), workspaceId, sandboxContainer))
+      else bpfFacts.map(facts => KoAgentBpf.teardownScript(sandboxContainer, facts.manager))
 
     // This workspace's TLS/trust state, and this run's own copies of the files podman will mount —
     // shared state is derived under the workspace lock further down, and what a container mounts is
@@ -1423,6 +1467,18 @@ object AgentSandboxLauncher:
     // container exists (mountKoAgentFs has why), which is after the proxy and the hold.
     val filteredWorkspace = startedKoAgentFsChecks.map: (sourceId, awaitChecks) =>
       prepareKoAgentFs(podman, os, workspaceId, sourceId, awaitChecks())
+    // The backend's reconcile at this launcher's start ("Lifecycle", 7), under the launch lock, so
+    // no launch in flight has its pins taken for an orphan's.
+    bpfFacts.foreach: facts =>
+      val reconciled = withFileLock(KoAgentBpf.launchLockFile(stateRoot(os))):
+        run(koAgentFsScriptCommand(podman, os, KoAgentBpf.reconcileScript(facts.manager))*)
+      if !reconciled.ok then
+        System.err.println(
+          s"note: the BPF backend's reconcile did not run; stale sessions stay until the next\n${reconciled.err}",
+        )
+      reconciled.text.linesIterator.filter(line => line.contains("action=refused") || line.contains("action=removed"))
+        .foreach(line => System.err.println(s"  $line"))
+      KoAgentBpf.reconcileNote(reconciled.text).foreach(System.err.println)
     // A live mount under other file rules, after an edit of file/rule, is joined under its rules,
     // which an earlier session of the workspace accepted; the start prompt below is the consent.
     val joinedRules = joinUnderOtherRules(
@@ -1471,7 +1527,8 @@ object AgentSandboxLauncher:
     val proxyIp = addressOn(proxyNetworks, sandboxNetwork)
       .getOrElse(fail(s"error: could not determine the egress proxy's address on $sandboxNetwork"))
 
-    val mount = LaunchMount(filteredWorkspace, joinedRules, sessionRuleLines, sessionRulesText)
+    val mount =
+      LaunchMount(filteredWorkspace, bpfFacts, effectiveSettings, joinedRules, sessionRuleLines, sessionRulesText)
     printLaunchLines(parsed, settings, workspace, rules, mount, git, hostLogFile, os)
     val createCommand = sandboxCreateCommand(
       parsed, settings, workspace, images, rules, names, mount, git, proxyIp, sandboxFiles, machineMemory, os,
@@ -1507,7 +1564,7 @@ object AgentSandboxLauncher:
       sys.exit(0)
 
     startSandbox(
-      parsed, settings, workspace, rules, names, mount, createCommand, filterReap, runFiles, channelLogFile,
+      parsed, settings, workspace, rules, names, mount, git, createCommand, filterReap, runFiles, channelLogFile,
       microphoneLogFile, cleanup, os,
     )
 
@@ -1575,6 +1632,18 @@ object AgentSandboxLauncher:
         forwardRegion = !parsed.env.exists(_.name == AwsCredential.RegionName),
       ).fold(fail(_), identity)
 
+    // The podman machines under --nesting=none only, for the first version: native Linux and the
+    // nesting modes keep the filter (doc/plan-bpf-lsm-cgroup.md, "Later versions"), since under
+    // podman's default profile a session mounts and creates user namespaces, routes the hooks do
+    // not judge yet ("Mounts").
+    if parsed.workspaceSettings.bpf && os == Os.Linux then
+      fail(
+        s"error: --workspace=${parsed.workspaceSettings.spelled} runs on the podman machines of macOS and Windows; " +
+          "on native Linux the ko-agent-fs filter holds the workspace's protections (SECURITY.md, \"The BPF " +
+          "backend\")",
+      )
+    KoAgentBpf.nestingRefusal(parsed.workspaceSettings, parsed.nestingMode).foreach(fail(_))
+
     // macOS only (run-on-host.md "Why only macOS"): elsewhere there is no Seatbelt backend, and a
     // container build already runs at host speed on host memory.
     val runOnHost = parsed.runOnHost.getOrElse(Vector.empty)
@@ -1636,7 +1705,7 @@ object AgentSandboxLauncher:
     val mountPath = mountPathOf(os, workspaceRoot).fold(fail(_), identity)
     System.err.println(
       pathLine("workspace root", workspaceRoot, os, tint = chosen(_)) +
-        workspaceModeClause(workspaceMode, settings.options.from("--workspace", os), mountPath, os),
+        workspaceModeClause(parsed.workspaceSettings.spelled, settings.options.from("--workspace", os), mountPath, os),
     )
     mainWorktree.foreach(main => System.err.println(pathLine("main git worktree", main, os)))
     sharedVolume.foreach: shared =>
@@ -2017,7 +2086,7 @@ object AgentSandboxLauncher:
     // The profile and provider need no stamp input of their own — the resolved text's first line
     // names both.
     val agentDocStamp = agentDocumentStamp(
-      imageId, workspaceMode, rulesetText, runOnHost, gitInstruction, parsed.credentialBindings,
+      imageId, parsed.workspaceSettings.spelled, rulesetText, runOnHost, gitInstruction, parsed.credentialBindings,
     )
 
     withFileLock(tlsDir.resolve(".lock")):
@@ -2153,6 +2222,9 @@ object AgentSandboxLauncher:
           String(imageDoc, StandardCharsets.UTF_8).stripLineEnd
             + appendedSection(
               mountPath, workspaceMode, rulesetText, runOnHost, os == Os.Mac, gitInstruction, parsed.credentialBindings,
+              backend = parsed.workspaceSettings.backend,
+              unixSocket = parsed.workspaceSettings.unixSocket,
+              windowsShare = os == Os.Windows,
             ),
         )
         writeReadable(agentDocStampFile, agentDocStamp + "\n")
@@ -2348,6 +2420,11 @@ object AgentSandboxLauncher:
       EgressCredentials.bannerLines(credentials, sourceOf).foreach(System.err.println)
       System.err.println(s"note: ${EgressCredentials.SubstitutionNote}")
 
+  /** The sandbox container's `podman create`: the options, then the image and the command, so that
+    * the start can add the options known only once the backend's steps ran (KoAgentBpf). */
+  final case class CreateCommand(options: Vector[String], imageAndCommand: Vector[String]):
+    def withOptions(more: Vector[String]): Vector[String] = options ++ more ++ imageAndCommand
+
   /** The sandbox container's `podman create`, saying aloud each loosening it carries. */
   private def sandboxCreateCommand(
     parsed: ParsedCommandLine,
@@ -2362,7 +2439,7 @@ object AgentSandboxLauncher:
     sandboxFiles: Vector[String],
     machineMemory: Option[Long],
     os: Os,
-  ): Vector[String] =
+  ): CreateCommand =
     import parsed.{command, workspaceMode}
     import settings.{
       awsCredential, clipboard, credentials, forwardedEnv, microphone, nesting, programRules, workspaceRoot, runOnHost,
@@ -2372,7 +2449,7 @@ object AgentSandboxLauncher:
     import images.imageId
     import rules.{fileRulesInForce, rulesetText}
     import names.{sandboxContainer, sandboxNetwork}
-    import mount.{filteredWorkspace, sessionRuleLines}
+    import mount.{bpf, filteredWorkspace, sessionRuleLines}
     import git.mountedGitdir
     // -----------------------------------------------------------------------
     // How the sandbox reaches it
@@ -2442,7 +2519,13 @@ object AgentSandboxLauncher:
     // -----------------------------------------------------------------------
     // Workspace bind mount
     // -----------------------------------------------------------------------
-    val workspaceVolume = workspaceBind(filteredWorkspace.map(_.mountpoint), workspaceRoot, mountPath)
+    //
+    // Under the bpf backend a live session binds the raw tree writable: the policy attached to the
+    // container's cgroup holds the protections the filter holds elsewhere (KoAgentBpf), and no
+    // launch binds it so without the policy attached and verified (startSandbox's order).
+    val workspaceVolume =
+      if bpf.isDefined && workspaceMode == "live" then s"$workspaceRoot:$mountPath:rw"
+      else workspaceBind(filteredWorkspace.map(_.mountpoint), workspaceRoot, mountPath)
 
     // -----------------------------------------------------------------------
     // Memory limit
@@ -2464,7 +2547,7 @@ object AgentSandboxLauncher:
     // create + start --attach rather than one `podman run`, so the reaper's `podman wait` has a container to bind to
     // before anything watches it. Killed between the two, the launcher leaves a never-started stray; the reaper removes
     // it after a bounded wait, the resets sweep the rest.
-    Vector(
+    val options = Vector(
       podman, "create",
 
       // What the reaper waits on; --rm, so a session normally leaves nothing behind with this name.
@@ -2518,10 +2601,55 @@ object AgentSandboxLauncher:
       // Chromium treats podman's 64 MB /dev/shm default as fatal; agy's browser automation needs more. Not a host RAM
       // reservation.
       "--shm-size=512m",
-    ) ++ memoryArgs ++ Vector(
-      "--workdir", mountPath,
-      imageId,
-    ) ++ command.toVector
+    ) ++ memoryArgs ++ Vector("--workdir", mountPath)
+    CreateCommand(options, imageId +: command.toVector)
+
+  /**
+   * The backend's steps, then the settings every sandbox container carries as labels
+   * (KoAgentBpf.labelArguments) and the comparison with the live sessions, under the launch lock
+   * from the listing until this run's container exists ("The hooks", `file_receive`): the backend
+   * and the socket setting must equal those of every live session sharing the volume or a raw
+   * mount. `prepare` runs the backend's steps 1 to 3 where the backend serves this run, under the
+   * lock too, since the reconcile of another launcher takes a session with pins and no container
+   * for an orphan ("Lifecycle", 7). `identities` is each path's identity in the machine, as the
+   * labels record it; on native Linux no backend but the filter runs, so no identity is read and no
+   * live session is compared.
+   */
+  private def createUnderLaunchLock(
+    createCommand: CreateCommand,
+    settings: CommandLine.WorkspaceSettings,
+    persistentVolume: String,
+    mountPaths: Vector[String],
+    prepare: () => Option[KoAgentBpf.Launched],
+    identities: Option[KoAgentBpf.Launched] => Vector[String] => Map[String, String],
+    environment: Map[String, String],
+    os: Os,
+  ): (Option[KoAgentBpf.Launched], HostCommands.Run) =
+    def bpfOptions(launched: Option[KoAgentBpf.Launched]): Vector[String] =
+      launched.toVector.flatMap: done =>
+        Vector(s"--cgroup-parent=${done.parent}", "--restart=no", s"--label=${KoAgentBpf.CgroupLabel}=${done.cgroup}")
+    if os == Os.Linux then
+      val labels = KoAgentBpf.labelArguments(settings, persistentVolume, Vector.empty, None)
+      return (None, runWithEnvironment(environment, createCommand.withOptions(labels)*))
+    withFileLock(KoAgentBpf.launchLockFile(stateRoot(os))):
+      val launched = prepare()
+      val listed = run(podman, "ps", "--all", "--filter", "name=ko-agent-sandbox-run-", "--format", "{{.Names}}")
+      if !listed.ok then
+        fail(s"error: could not list the live sessions, which the backend's launch compares with\n${listed.err}")
+      val live = listed.text.linesIterator.map(_.trim).filter(_.nonEmpty).toVector.map: name =>
+        val inspected = run(podman, "inspect", "--format", KoAgentBpf.LabelsFormat, name)
+        if !inspected.ok then fail(s"error: could not read the labels of the live session $name\n${inspected.err}")
+        KoAgentBpf.liveSessionOf(name, inspected.text)
+      val paths = (mountPaths ++ live.flatMap(_.mounts.map(_.path))).distinct
+      val known = identities(launched)(paths)
+      val mine = mountPaths.map: path =>
+        val identity = known.getOrElse(path, fail(s"error: the machine answered no identity for $path"))
+        if identity == "gone" then fail(s"error: the machine finds nothing at $path, which this launch mounts")
+        KoAgentBpf.RawMount(path, identity)
+      KoAgentBpf.refusalBeside(settings, persistentVolume, mine, live, path => known.get(path).filter(_ != "gone"))
+        .foreach(reason => fail(reason))
+      val labels = KoAgentBpf.labelArguments(settings, persistentVolume, mine, None)
+      (launched, runWithEnvironment(environment, createCommand.withOptions(labels ++ bpfOptions(launched))*))
 
   /** The create, the reaper, the filter's mount and the command runner, then the handover to the
     * sandbox: what follows the hold. */
@@ -2532,7 +2660,8 @@ object AgentSandboxLauncher:
     rules: LaunchRules,
     names: RunNames,
     mount: LaunchMount,
-    createCommand: Vector[String],
+    git: GitAccess,
+    createCommand: CreateCommand,
     filterReap: Option[String],
     runFiles: Path,
     channelLogFile: Path,
@@ -2541,16 +2670,65 @@ object AgentSandboxLauncher:
     os: Os,
   ): Nothing =
     import settings.{awsCredential, clipboard, clipboardHost, credentials, microphone, workspaceRoot, runOnHost}
-    import workspace.{mountPath, workspaceId}
+    import workspace.{mountPath, persistentVolume, workspaceId}
     import rules.readOnlyFileRules
     import names.{egressNetwork, proxyContainer, sandboxContainer, sandboxNetwork}
-    import mount.{filteredWorkspace, sessionRulesText}
+    import mount.{bpf, filteredWorkspace, sessionRulesText}
+    val workspaceSettings = mount.settings
     // The AWS values in the create's own environment, where its value-less `--env=NAME` reads them;
     // checked again here, since the hold above may have outlasted them.
     awsCredential.flatMap(AwsCredential.expiredSince(_, Instant.now())).foreach(message => fail(message))
-    val created = runWithEnvironment(awsCredential.map(_.environment).getOrElse(Map.empty), createCommand*)
+
+    // The backend's steps 1 to 3 ("Lifecycle"), before the container exists: the attach cgroup, the
+    // policy attached from the spare or loaded, the read-back and the proof, in one script in the
+    // machine; a failure names the step and the launch ends with nothing bound writable. Under the
+    // image-build lock as the filter's mount is, so a --build replacing the binaries waits.
+    // The gitdir bind's source as the machine spells it, as the workspace root is (mountPathOf).
+    val gitdirSource = git.mountedGitdir.map(bind => mountPathOf(os, bind.source).fold(fail(_), identity))
+    val mountPaths = mountPath +: gitdirSource.toVector
+    def backendSteps(facts: KoAgentBpf.Facts): KoAgentBpf.Launched =
+      val fixture = mountPathOf(os, KoAgentBpf.fixtureRoot(stateRoot(os), workspaceId)).fold(fail(_), identity)
+      val placement =
+        mountPathOf(os, KoAgentBpf.placementFile(stateRoot(os), sandboxContainer)).fold(fail(_), identity)
+      val script = KoAgentBpf.launchScript(
+        sandboxContainer, workspaceSettings, facts, mountPath, fixture, placement, sessionRulesText, persistentVolume,
+        gitdirSource, Vector.empty, bundledKoAgentFsSourceId(), KoAgentBpf.bundledSourceId(), os,
+      )
+      val ran = withFileLock(ImageBuilds.imageBuildLockFile(os)):
+        run(koAgentFsScriptCommand(podman, os, script)*)
+      if !ran.ok then
+        fail(
+          s"error: the BPF backend's launch failed at its ${KoAgentBpf.stepReached(ran.text)} step; nothing is bound " +
+            s"writable\n${ran.text.linesIterator.filter(_.contains("mismatch")).mkString("\n")}${ran.err}",
+          ran.exit,
+        )
+      KoAgentBpf.parseLaunched(ran.text).fold(reason => fail(s"error: $reason\n${ran.text}"), identity)
+    // The identities the labels record: the launch script's where the backend ran, else read now.
+    val identities: Option[KoAgentBpf.Launched] => Vector[String] => Map[String, String] = launched =>
+      paths =>
+        launched.map(_.identities).filter(known => paths.forall(known.contains)).getOrElse:
+          val asked = run(koAgentFsScriptCommand(podman, os, KoAgentBpf.identScript(paths))*)
+          if !asked.ok then fail(s"error: the machine did not answer the mounts' identities\n${asked.err}")
+          KoAgentBpf.parseIdentities(asked.text)
+    val (launched, created) = createUnderLaunchLock(
+      createCommand, workspaceSettings, persistentVolume, mountPaths, () => bpf.map(backendSteps), identities,
+      awsCredential.map(_.environment).getOrElse(Map.empty), os,
+    )
     if !created.ok then
-      fail(s"error: could not create the sandbox container\n${created.err}")
+      fail(
+        s"error: could not create the sandbox container\n${created.err}" +
+          KoAgentBpf.createFailureNote(os, created.err).filter(_ => bpf.isDefined).fold("")(note => s"\n$note"),
+      )
+    launched.foreach: done =>
+      System.err.println(KoAgentBpf.launchLine(done, workspaceSettings))
+      if done.spare then
+        System.err.println("ko-agent-bpf backend: a program set for the next launch is being verified behind this one")
+    // Step 4's placement check ("Lifecycle", 4): `podman init` makes the container now, so that the
+    // machine's watcher reads its cgroup while the launch goes on; the start below waits for the verdict.
+    val initializing = launched.map: _ =>
+      val task = java.util.concurrent.FutureTask(() => run(podman, "init", sandboxContainer))
+      Thread.startVirtualThread(task)
+      task
 
     // In this run's own directory: the reaper's microphone job reports its probe here.
     val microphoneJob = microphone.filter(_ => os != Os.Windows).map: recorders =>
@@ -2614,7 +2792,8 @@ object AgentSandboxLauncher:
         else "ko-agent-fs filter: mounted",
       )
       resolved
-    val resolvedFileRules = mountedFileRules.orElse(readOnlyFileRules)
+    val resolvedFileRules = mountedFileRules.orElse(launched.filter(_ => workspaceSettings.live).map(_.resolved))
+      .orElse(readOnlyFileRules)
     resolvedFileRules.map(FileRules.guardLines).getOrElse(Vector.empty).foreach(System.err.println)
 
     // The command runner, detached like the reaper: it must outlive the exec below, and it ends
@@ -2634,6 +2813,19 @@ object AgentSandboxLauncher:
           credentials = credentials,
         )
       then fail("error: could not spawn the command runner, which serves --run-on-host")
+
+    launched.zip(initializing).foreach: (done, task) =>
+      val initialized = task.get()
+      val waiting = System.nanoTime()
+      val report = KoAgentBpf.placementFile(stateRoot(os), sandboxContainer)
+      KoAgentBpf.confirmPlacement(initialized, KoAgentBpf.awaitPlacement(report), done.cgroup) match
+        case Right(_) =>
+          System.err.println(
+            s"ko-agent-bpf backend: the container lies below the attach cgroup, confirmed after " +
+              s"${(System.nanoTime() - waiting) / 1_000_000} ms of waiting",
+          )
+        case Left(reason) =>
+          fail(s"error: $reason; the container has not started. Launch with --workspace=live,fuse meanwhile")
 
     // Separate the launch diagnostics from the agent's terminal UI.
     System.err.println()

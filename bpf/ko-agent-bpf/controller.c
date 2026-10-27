@@ -1,19 +1,27 @@
-// Phase 4 of doc/plan-bpf-lsm-cgroup.md: the privileged side of the probe, the launcher's controller
-// ("Lifecycle", 2, 5, 6 and 7). It loads policy.bpf.o from beside itself and never from a path,
-// fills the maps from the guard's records file and the identities it reads for itself, attaches by
-// link below the invoking user's slice alone, pins the links and the programs, attaches pinned
-// programs again for a restart, and reconciles pins and cgroups at a launcher's start. phase4.sh
-// drives it through `podman machine ssh` under sudo; each subcommand prints `key=value` lines. Exit
-// status 3 is a refusal (`refused reason=...`), 2 a failure.
+// The BPF cgroup-LSM backend of doc/plan-bpf-lsm-cgroup.md: the privileged side, the launcher's
+// controller ("Lifecycle", 2, 5, 6 and 7). It loads policy.bpf.o from beside itself and never from
+// a path, fills the maps from the guard's records file and the identities it reads for itself,
+// attaches by link below the invoking user's slice alone, pins the links and the programs, keeps a
+// spare program set verified ahead of the launches, attaches pinned programs again for a restart,
+// and reconciles pins and cgroups at a launcher's start. The launcher (KoAgentBpf.scala) and the
+// Phase 4 and 5 probes drive it through `podman machine ssh` under sudo; each subcommand prints
+// `key=value` lines. Exit status 3 is a refusal (`refused reason=...`), 2 a failure.
 //
 //   controller attach CGROUP PINDIR --records FILE --workspace PATH [--fixture PATH] [--volume PATH]
-//                    [--flags F,F] [--object NAME] [--bind-source PATH] HOOK...
-//                                        load the object, fill the maps from FILE (fixture.c writes
-//                                        it as the guard would) with the roots' identities, attach
-//                                        HOOK... to CGROUP by link, pin each link at PINDIR/links/HOOK
-//                                        and each program at PINDIR/progs/HOOK. --object names another
-//                                        object beside the binary, the probe's defective controller;
-//                                        --bind-source refuses the launch when a mount lies below PATH
+//                    [--flags F,F] [--object NAME] [--bind-source PATH] [--spare DIR] [--no-root] HOOK...
+//                                        load the object, fill the maps from FILE (the guard's
+//                                        `--bpf-records`; fixture.c writes one for the probes) with
+//                                        the roots' identities, attach HOOK... to CGROUP by link, pin
+//                                        each link at PINDIR/links/HOOK and each program at
+//                                        PINDIR/progs/HOOK. --object names another object beside the
+//                                        binary, the probe's defective controller; --bind-source
+//                                        refuses the launch when a mount lies below PATH; --spare
+//                                        takes the spare set pinned under DIR by renaming DIR to
+//                                        PINDIR and fills its maps through the pinned programs,
+//                                        loading nothing, and loads as without it when DIR is gone;
+//                                        --no-root is a read-only session's policy (backend.h)
+//   controller prepare-spare PINDIR      load the object with every program, maps empty, and pin the
+//                                        programs at PINDIR/progs/HOOK: the spare a launch takes
 //   controller attach-pinned CGROUP PINDIR HOOK...
 //                                        attach the pinned programs to a new cgroup, loading nothing
 //   controller query CGROUP              the programs attached to CGROUP, and every lsm_cgroup link
@@ -39,7 +47,7 @@
 #include <bpf/libbpf.h>
 
 #define PROGRAM_NAME "controller"
-#include "probe.h"
+#include "backend.h"
 
 #define MAX_SESSIONS 64
 
@@ -72,10 +80,16 @@ static int map_fd_by_name(struct bpf_object *obj, const char *name)
 	return fd;
 }
 
+// bpffs refuses a name holding a `.` with EPERM at the lookup (kernel/bpf/inode.c, bpf_lookup:
+// reserved for its own special files), so a pin path below the mount may hold none.
 static void require_pin_dir(const char *pindir)
 {
-	if (!relative_beneath(PIN_FS, pindir))
+	const char *rel = relative_beneath(PIN_FS, pindir);
+
+	if (!rel)
 		refuse("pindir-outside-bpffs", "pindir=%s", pindir);
+	if (strchr(rel, '.'))
+		refuse("pindir-dotted", "pindir=%s", pindir);
 }
 
 static void print_link(const char *hook, int link_fd)
@@ -89,10 +103,20 @@ static void print_link(const char *hook, int link_fd)
 	       (unsigned long long)info.cgroup.cgroup_id);
 }
 
+// The pin directory with its `links` and `progs`, and the pin root above it, which a fresh
+// install and every machine boot leave absent: bpffs holds nothing across a boot.
 static void make_pin_dirs(const char *pindir)
 {
-	char path[PATH_MAX];
+	char path[PATH_MAX], parent[PATH_MAX];
+	char *slash;
 
+	snprintf(parent, sizeof(parent), "%s", pindir);
+	slash = strrchr(parent, '/');
+	if (slash && slash != parent) {
+		*slash = 0;
+		if (strcmp(parent, PIN_FS) && mkdir(parent, 0700) && errno != EEXIST)
+			die("mkdir %s: %s", parent, strerror(errno));
+	}
 	if (mkdir(pindir, 0700) && errno != EEXIST)
 		die("mkdir %s: %s", pindir, strerror(errno));
 	snprintf(path, sizeof(path), "%s/links", pindir);
@@ -103,120 +127,241 @@ static void make_pin_dirs(const char *pindir)
 		die("mkdir %s: %s", path, strerror(errno));
 }
 
+// The map descriptors a fill writes: by name out of a loaded object, or out of the maps a pinned
+// program references, for the spare.
+struct fill_maps {
+	int roots, rules, aliases, config;
+};
+
+static void fill_policy(const struct fill_maps *maps, const struct policy *policy)
+{
+	__u32 zero = 0;
+
+	for (int i = 0; i < policy->root_count; i++) {
+		if (bpf_map_update_elem(maps->roots, &policy->idents[i], &policy->roots[i], BPF_ANY))
+			die("roots update: %s", strerror(errno));
+		printf("root kind=%s path=%s mkdev=%llu ino=%llu\n", root_kinds[policy->roots[i].kind],
+		       policy->root_paths[i], (unsigned long long)policy->idents[i].s_dev,
+		       (unsigned long long)policy->idents[i].i_ino);
+	}
+	for (__u32 i = 0; i < policy->cfg.rule_count; i++)
+		if (bpf_map_update_elem(maps->rules, &i, &policy->rec.rules[i], BPF_ANY))
+			die("rules update: %s", strerror(errno));
+	for (__u32 i = 0; policy->cfg.rule_count && i < policy->rec.header.alias_count; i++)
+		if (bpf_map_update_elem(maps->aliases, &i, &policy->rec.aliases[i], BPF_ANY))
+			die("aliases update: %s", strerror(errno));
+	if (bpf_map_update_elem(maps->config, &zero, &policy->cfg, BPF_ANY))
+		die("config update: %s", strerror(errno));
+}
+
+static void pin_link(struct bpf_link *link, const char *pindir, const char *hook)
+{
+	char pin[PATH_MAX];
+
+	snprintf(pin, sizeof(pin), "%s/links/%s", pindir, hook);
+	if (bpf_link__pin(link, pin))
+		die("pin %s: %s", pin, strerror(errno));
+	print_link(hook, bpf_link__fd(link));
+}
+
+// The maps the spare's pinned programs reference, by name through their ids: the fill writes the
+// same objects the programs read ("Lifecycle", the spare set).
+static void spare_maps(int prog_fd, struct fill_maps *maps)
+{
+	struct bpf_prog_info info = {};
+	__u32 len = sizeof(info), ids[32];
+
+	info.nr_map_ids = 32;
+	info.map_ids = (__u64)(uintptr_t)ids;
+	if (bpf_prog_get_info_by_fd(prog_fd, &info, &len))
+		die("prog info: %s", strerror(errno));
+	if (info.nr_map_ids > 32)
+		die("a pinned program references more than 32 maps");
+	maps->roots = maps->rules = maps->aliases = maps->config = -1;
+	for (__u32 i = 0; i < info.nr_map_ids; i++) {
+		struct bpf_map_info minfo = {};
+		__u32 mlen = sizeof(minfo);
+		int fd = bpf_map_get_fd_by_id(ids[i]);
+
+		if (fd < 0)
+			die("map %u: %s", ids[i], strerror(errno));
+		if (bpf_map_get_info_by_fd(fd, &minfo, &mlen))
+			die("map info %u: %s", ids[i], strerror(errno));
+		if (!strcmp(minfo.name, "roots"))
+			maps->roots = fd;
+		else if (!strcmp(minfo.name, "rules"))
+			maps->rules = fd;
+		else if (!strcmp(minfo.name, "aliases"))
+			maps->aliases = fd;
+		else if (!strcmp(minfo.name, "policy_config"))
+			maps->config = fd;
+		else
+			close(fd);
+	}
+	if (maps->roots < 0 || maps->rules < 0 || maps->aliases < 0 || maps->config < 0)
+		die("the spare's programs reference no complete map set");
+}
+
 static int cmd_attach(int argc, char **argv)
 {
-	const char *cgroup, *pindir, *records = NULL, *workspace = NULL, *fixture = NULL, *volume = NULL;
-	const char *object = "policy.bpf.o", *bind_source = NULL;
-	__u32 flags = 0, zero = 0;
-	int first, cgroup_fd, roots_fd, rules_fd, aliases_fd;
-	struct bpf_object *obj;
+	const char *cgroup, *pindir;
+	struct expectation exp;
+	int cgroup_fd;
+	struct bpf_object *obj = NULL;
 	struct bpf_program *prog;
 	struct policy policy;
+	struct fill_maps maps;
 	double start, loaded, filled, attached;
+	bool from_spare = false;
 
 	if (argc < 3)
 		die("usage: attach CGROUP PINDIR [options] HOOK...");
 	cgroup = argv[0];
 	pindir = argv[1];
-	first = 2;
-	while (first < argc && argv[first][0] == '-') {
-		const char *option = argv[first++];
-
-		if (first >= argc)
-			die("attach: %s takes a value", option);
-		if (!strcmp(option, "--records"))
-			records = argv[first++];
-		else if (!strcmp(option, "--workspace"))
-			workspace = argv[first++];
-		else if (!strcmp(option, "--fixture"))
-			fixture = argv[first++];
-		else if (!strcmp(option, "--volume"))
-			volume = argv[first++];
-		else if (!strcmp(option, "--flags"))
-			flags = parse_flags(argv[first++]);
-		else if (!strcmp(option, "--object"))
-			object = argv[first++];
-		else if (!strcmp(option, "--bind-source"))
-			bind_source = argv[first++];
-		else
-			die("attach: unknown option %s", option);
-	}
-	if (first >= argc)
-		die("attach: no hook named");
-	if (!records || !workspace)
-		die("attach: --records and --workspace are required");
-	for (int i = first; i < argc; i++)
-		hook_index(argv[i]);
+	parse_expectation(argc - 2, argv + 2, &exp, "attach");
+	if (!exp.workspace)
+		die("attach: --workspace is required");
 	require_pin_dir(pindir);
 	// The refusals come before any load: the cgroup, the bind source's mounts, the fixture's type.
 	cgroup_fd = open_cgroup(cgroup);
-	if (bind_source) {
+	if (exp.bind_source) {
 		char mount[PATH_MAX];
-		int below = mounts_below(bind_source, mount, sizeof(mount));
+		int below = mounts_below(exp.bind_source, mount, sizeof(mount));
 
 		if (below)
-			refuse("mount-under-bind-source", "bind_source=%s mounts=%d first=%s", bind_source, below,
+			refuse("mount-under-bind-source", "bind_source=%s mounts=%d first=%s", exp.bind_source, below,
 			       mount);
 	}
-	expect_policy(&policy, records, workspace, fixture, volume, flags);
+	expect_policy(&policy, exp.records, exp.workspace, exp.fixture, exp.volume, exp.flags, exp.no_root);
 	start = now_ms();
-	obj = open_object(object);
-	for (int i = first; i < argc; i++)
-		if (!bpf_object__find_program_by_name(obj, argv[i]))
-			die("attach: no program %s in %s", argv[i], object);
-	bpf_object__for_each_program(prog, obj) {
-		bool selected = false;
-
-		for (int i = first; i < argc; i++)
-			selected |= !strcmp(bpf_program__name(prog), argv[i]);
-		bpf_program__set_autoload(prog, selected);
+	// The spare, taken by one rename: of two launches racing for it, one finds it gone and loads.
+	if (exp.spare) {
+		require_pin_dir(exp.spare);
+		if (!rename(exp.spare, pindir))
+			from_spare = true;
+		else if (errno != ENOENT)
+			die("rename %s to %s: %s", exp.spare, pindir, strerror(errno));
+		else
+			printf("spare taken=0 reason=absent spare=%s\n", exp.spare);
 	}
-	if (bpf_object__load(obj))
-		die("load: %s", strerror(errno));
+	if (from_spare) {
+		char pin[PATH_MAX];
+		int prog_fd;
+
+		snprintf(pin, sizeof(pin), "%s/progs/%s", pindir, exp.hooks[0]);
+		prog_fd = bpf_obj_get(pin);
+		if (prog_fd < 0)
+			die("no pinned program %s in the spare: %s", pin, strerror(errno));
+		spare_maps(prog_fd, &maps);
+		close(prog_fd);
+		printf("spare taken=1 spare=%s\n", exp.spare);
+	} else {
+		obj = open_object(exp.object);
+		for (int i = 0; i < exp.hook_count; i++)
+			if (!bpf_object__find_program_by_name(obj, exp.hooks[i]))
+				die("attach: no program %s in %s", exp.hooks[i], exp.object);
+		bpf_object__for_each_program(prog, obj) {
+			bool selected = false;
+
+			for (int i = 0; i < exp.hook_count; i++)
+				selected |= !strcmp(bpf_program__name(prog), exp.hooks[i]);
+			bpf_program__set_autoload(prog, selected);
+		}
+		if (bpf_object__load(obj))
+			die("load: %s", strerror(errno));
+		maps.roots = map_fd_by_name(obj, "roots");
+		maps.rules = map_fd_by_name(obj, "rules");
+		maps.aliases = map_fd_by_name(obj, "aliases");
+		maps.config = map_fd_by_name(obj, "policy_config");
+	}
 	loaded = now_ms();
 	// The records, written before the attach and never after ("The policy").
-	roots_fd = map_fd_by_name(obj, "roots");
-	rules_fd = map_fd_by_name(obj, "rules");
-	aliases_fd = map_fd_by_name(obj, "aliases");
-	for (int i = 0; i < policy.root_count; i++) {
-		if (bpf_map_update_elem(roots_fd, &policy.idents[i], &policy.roots[i], BPF_ANY))
-			die("roots update: %s", strerror(errno));
-		printf("root kind=%s path=%s mkdev=%llu ino=%llu\n", root_kinds[policy.roots[i].kind],
-		       policy.root_paths[i], (unsigned long long)policy.idents[i].s_dev,
-		       (unsigned long long)policy.idents[i].i_ino);
-	}
-	for (__u32 i = 0; i < policy.rec.header.rule_count; i++)
-		if (bpf_map_update_elem(rules_fd, &i, &policy.rec.rules[i], BPF_ANY))
-			die("rules update: %s", strerror(errno));
-	for (__u32 i = 0; i < policy.rec.header.alias_count; i++)
-		if (bpf_map_update_elem(aliases_fd, &i, &policy.rec.aliases[i], BPF_ANY))
-			die("aliases update: %s", strerror(errno));
-	if (bpf_map_update_elem(map_fd_by_name(obj, "policy_config"), &zero, &policy.cfg, BPF_ANY))
-		die("config update: %s", strerror(errno));
+	fill_policy(&maps, &policy);
 	filled = now_ms();
 	make_pin_dirs(pindir);
-	for (int i = first; i < argc; i++) {
+	for (int i = 0; i < exp.hook_count; i++) {
 		struct bpf_link *link;
 		char pin[PATH_MAX];
 
-		prog = bpf_object__find_program_by_name(obj, argv[i]);
+		if (from_spare) {
+			int prog_fd, link_fd;
+
+			snprintf(pin, sizeof(pin), "%s/progs/%s", pindir, exp.hooks[i]);
+			prog_fd = bpf_obj_get(pin);
+			if (prog_fd < 0)
+				die("no pinned program %s in the spare: %s", pin, strerror(errno));
+			link_fd = bpf_link_create(prog_fd, cgroup_fd, BPF_LSM_CGROUP, NULL);
+			if (link_fd < 0)
+				die("attach %s: %s", exp.hooks[i], strerror(errno));
+			snprintf(pin, sizeof(pin), "%s/links/%s", pindir, exp.hooks[i]);
+			if (bpf_obj_pin(link_fd, pin))
+				die("pin %s: %s", pin, strerror(errno));
+			print_link(exp.hooks[i], link_fd);
+			close(link_fd);
+			close(prog_fd);
+			continue;
+		}
+		prog = bpf_object__find_program_by_name(obj, exp.hooks[i]);
 		link = bpf_program__attach_cgroup(prog, cgroup_fd);
 		if (!link)
-			die("attach %s: %s", argv[i], strerror(errno));
-		snprintf(pin, sizeof(pin), "%s/links/%s", pindir, argv[i]);
-		if (bpf_link__pin(link, pin))
-			die("pin %s: %s", pin, strerror(errno));
-		snprintf(pin, sizeof(pin), "%s/progs/%s", pindir, argv[i]);
+			die("attach %s: %s", exp.hooks[i], strerror(errno));
+		snprintf(pin, sizeof(pin), "%s/progs/%s", pindir, exp.hooks[i]);
 		if (bpf_program__pin(prog, pin))
 			die("pin %s: %s", pin, strerror(errno));
-		print_link(argv[i], bpf_link__fd(link));
+		pin_link(link, pindir, exp.hooks[i]);
 	}
 	attached = now_ms();
-	printf("attach cgroup=%s pindir=%s object=%s hooks=%d rule_count=%u aliases=%u roots=%d fs_type=%s "
-	       "vol_fs_type=%s flags=%u runtime_mnt_ns=%u load_ms=%.1f fill_ms=%.1f attach_ms=%.1f total_ms=%.1f\n",
-	       cgroup, pindir, object, argc - first, policy.cfg.rule_count, policy.rec.header.alias_count,
-	       policy.root_count, policy.cfg.fs_type, policy.cfg.vol_fs_type, policy.cfg.flags,
-	       policy.cfg.runtime_mnt_ns, loaded - start, filled - loaded, attached - filled, attached - start);
+	printf("attach cgroup=%s pindir=%s object=%s spare=%d hooks=%d rule_count=%u aliases=%u roots=%d fs_type=%s "
+	       "vol_fs_type=%s flags=%u no_root=%d runtime_mnt_ns=%u load_ms=%.1f fill_ms=%.1f attach_ms=%.1f "
+	       "total_ms=%.1f\n",
+	       cgroup, pindir, exp.object, from_spare, exp.hook_count, policy.cfg.rule_count,
+	       policy.cfg.rule_count ? policy.rec.header.alias_count : 0, policy.root_count, policy.cfg.fs_type,
+	       policy.cfg.vol_fs_type, policy.cfg.flags, exp.no_root, policy.cfg.runtime_mnt_ns, loaded - start,
+	       filled - loaded, attached - filled, attached - start);
+	return 0;
+}
+
+static int cmd_unpin(const char *pindir);
+
+// The spare set ("Lifecycle"): every program of the object loaded and verified with empty maps,
+// the programs pinned and attached to nothing, for a launch to take by renaming PINDIR. Pinned
+// under a directory of this process's own, PINDIR-<pid>, and published whole by one rename, so no
+// launch or reconcile sees a set with programs still missing; a spare already present wins, and
+// this one is unpinned.
+static int cmd_prepare_spare(const char *pindir)
+{
+	struct bpf_object *obj;
+	struct bpf_program *prog;
+	double start = now_ms();
+	int count = 0;
+	struct stat st;
+	char staging[PATH_MAX];
+
+	require_pin_dir(pindir);
+	if (!lstat(pindir, &st))
+		refuse("spare-present", "pindir=%s", pindir);
+	snprintf(staging, sizeof(staging), "%s-%d", pindir, getpid());
+	obj = open_object("policy.bpf.o");
+	if (bpf_object__load(obj))
+		die("load: %s", strerror(errno));
+	make_pin_dirs(staging);
+	bpf_object__for_each_program(prog, obj) {
+		char pin[PATH_MAX];
+
+		snprintf(pin, sizeof(pin), "%s/progs/%s", staging, bpf_program__name(prog));
+		if (bpf_program__pin(prog, pin))
+			die("pin %s: %s", pin, strerror(errno));
+		count++;
+	}
+	if (rename(staging, pindir)) {
+		int err = errno;
+
+		cmd_unpin(staging);
+		if (err == EEXIST || err == ENOTEMPTY)
+			refuse("spare-present", "pindir=%s staging=%s", pindir, staging);
+		die("rename %s to %s: %s", staging, pindir, strerror(err));
+	}
+	printf("spare pindir=%s programs=%d load_ms=%.1f\n", pindir, count, now_ms() - start);
 	return 0;
 }
 
@@ -430,6 +575,17 @@ struct session {
 	unsigned long long cgroup_id;
 };
 
+// The session's pin directory under the pin root: bpffs refuses a dotted name (require_pin_dir),
+// and a container name carries the workspace directory's, so the launcher and this map `.` to `_`
+// (KoAgentBpf.pinDir); the record and the cgroup keep the name.
+static void pin_name(const char *session, char *out, size_t size)
+{
+	snprintf(out, size, "%s", session);
+	for (char *at = out; *at; at++)
+		if (*at == '.')
+			*at = '_';
+}
+
 static bool named_in(const char *name, const char **names, int count)
 {
 	for (int i = 0; i < count; i++)
@@ -639,14 +795,16 @@ static int cmd_reconcile(int argc, char **argv)
 			close(cgroup_fd);
 			continue;
 		}
+		// No pin root at all, as after a machine boot: the session has no pins, and its cgroup
+		// alone is judged below.
 		pinroot_fd = open_beneath(bpffs_fd, pinroot_rel, O_RDONLY | O_DIRECTORY);
-		if (pinroot_fd < 0)
+		if (pinroot_fd < 0 && errno != ENOENT)
 			die("open %s: %s", pinroot, strerror(errno));
-		snprintf(pins_rel, sizeof(pins_rel), "%s", session->name);
-		pins_fd = open_beneath(pinroot_fd, pins_rel, O_RDONLY | O_DIRECTORY);
-		if (pins_fd < 0 && errno != ENOENT) {
+		pin_name(session->name, pins_rel, sizeof(pins_rel));
+		pins_fd = pinroot_fd < 0 ? -1 : open_beneath(pinroot_fd, pins_rel, O_RDONLY | O_DIRECTORY);
+		if (pinroot_fd >= 0 && pins_fd < 0 && errno != ENOENT) {
 			printf("reconcile session=%s action=refused reason=pins-open path=%s/%s error=%s\n",
-			       session->name, pinroot, session->name, strerror(errno));
+			       session->name, pinroot, pins_rel, strerror(errno));
 			refused++;
 			close(cgroup_fd);
 			close(pinroot_fd);
@@ -675,10 +833,11 @@ static int cmd_reconcile(int argc, char **argv)
 				close(pinroot_fd);
 				continue;
 			}
-			if (unlinkat(pinroot_fd, session->name, AT_REMOVEDIR))
-				die("rmdir %s/%s: %s", pinroot, session->name, strerror(errno));
+			if (unlinkat(pinroot_fd, pins_rel, AT_REMOVEDIR))
+				die("rmdir %s/%s: %s", pinroot, pins_rel, strerror(errno));
 		}
-		close(pinroot_fd);
+		if (pinroot_fd >= 0)
+			close(pinroot_fd);
 		close(cgroup_fd);
 		// Under systemd the launcher stops the slice unit, which removes the cgroup; under
 		// cgroupfs the directory is removed here, through the slice root's descriptor.
@@ -707,6 +866,8 @@ int main(int argc, char **argv)
 		return cmd_attach(argc - 2, argv + 2);
 	if (!strcmp(argv[1], "attach-pinned"))
 		return cmd_attach_pinned(argc - 2, argv + 2);
+	if (!strcmp(argv[1], "prepare-spare") && argc == 3)
+		return cmd_prepare_spare(argv[2]);
 	if (!strcmp(argv[1], "query") && argc == 3)
 		return cmd_query(argv[2]);
 	if (!strcmp(argv[1], "link-info") && argc == 3)

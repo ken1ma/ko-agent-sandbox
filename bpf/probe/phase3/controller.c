@@ -172,7 +172,7 @@ static const char *const reasons[] = {
 	"allow", "outside", "walk-noroot", "walk-bound", "walk-torn", "name-too-long", "git-protected",
 	"git-pinned", "git-name", "sandbox-name", "head", "rule-read-only", "rule-pinned", "region",
 	"socket", "internal", "reentry", "short-name", "alias-overflow", "symlink-syntax", "symlink-short",
-	"symlink-gitdir", "symlink-region", "socket-gitdir", "receive-ns", "receive-dir",
+	"symlink-gitdir", "symlink-region", "socket-gitdir", "receive-ns", "receive-dir", "fifo",
 };
 #define REASONS (sizeof(reasons) / sizeof(reasons[0]))
 

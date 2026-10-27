@@ -1,4 +1,4 @@
-policy.bpf.c
+../../ko-agent-bpf/policy.bpf.c
 controller.c
 exercise.c
 Containerfile

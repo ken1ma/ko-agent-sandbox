@@ -386,7 +386,9 @@ protects the path it is mounted at, from the moment of the launch, which leaves:
 unfiltered writable control run one outside the launcher
 (`../fuse/ko-agent-fs/probe/unfiltered.sh`). The filter's cost is measured in
 `../fuse/ko-agent-fs/doc/verification-log.md` ("The cost of a path walk"), and
-`plan-bpf-lsm-cgroup.md` is the backend planned to replace it.
+`plan-bpf-lsm-cgroup.md` is the backend that mounts the workspace directory itself and judges each
+operation in the kernel instead, `--workspace=live,bpf` on the podman machines; the filter stays the
+default until that plan's "Acceptance" passes.
 
 ### No DLP/entropy/LLM firewall
 

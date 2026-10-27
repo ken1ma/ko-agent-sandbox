@@ -54,7 +54,7 @@ object ImageBuilds:
       val context = unpackBuildContext()
       val fsSourceId = koAgentFsSourceId(context)
       val selfTestSourceId = contextSourceId(context, "ko-agent-self-test")
-      val bpfSourceId = contextSourceId(context, "bpf/probe/phase3")
+      val bpfSourceId = contextSourceId(context, KoAgentBpf.SourceDir)
       val sandboxBundleId = contextSourceId(context, "ko-agent-sandbox")
       val proxyBundleId = contextSourceId(context, "ko-agent-egress-proxy")
       val readContainerfile = buildContextReader(context)
@@ -62,11 +62,21 @@ object ImageBuilds:
         contextSourceId(context, "debian-temurin"),
         contextSourceId(context, "debian-coursier"),
       )
-      val commands =
-        buildCommands(podman, ImgTagVersion, baseId, fsSourceId, sandboxBundleId, proxyBundleId)
-      val remoteImages =
-        remoteImagesForBuildCommands(commands, readContainerfile, managedImageTags(ImgTagVersion).toSet)
-      val images = buildOutputImages(commands)
+      // The BPF backend, on the podman machines alone: native Linux keeps the filter
+      // (doc/plan-bpf-lsm-cgroup.md, "Later versions"), and the build reads the machine's kernel BTF.
+      // A machine that lacks what the backend needs gets the filter's build without it.
+      val bpfBackendSourceId = KoAgentBpf.sourceId(context)
+      val buildBpfBackend = os != Os.Linux && bpfBuildPossible(os)
+      val bpfBackendCommands =
+        if !buildBpfBackend then Vector.empty
+        else KoAgentBpf.buildCommands(podman, KoAgentBpf.machineKernel(podman), bpfBackendSourceId)
+      val commands = buildCommands(podman, ImgTagVersion, baseId, fsSourceId, sandboxBundleId, proxyBundleId)
+      val remoteImages = remoteImagesForBuildCommands(
+        commands ++ bpfBackendCommands,
+        readContainerfile,
+        managedImageTags(ImgTagVersion).toSet,
+      )
+      val images = buildOutputImages(commands ++ bpfBackendCommands)
       val existingTags = existingImageTags(podman)
       val staleBaseTags = staleVersionedBaseImageTags(existingTags, buildImageTags(ImgTagVersion))
       val initialCandidates = prepareImageCleanupJournal(
@@ -74,14 +84,22 @@ object ImageBuilds:
         imageIdsForTags(existingTags, images),
         staleBaseTags,
       )
-      runBuilds(context, remoteImagePullCommands(podman, remoteImages) ++ commands)
+      // The backend's build after the rest, and not fatal: a kernel the checks above cannot tell apart,
+      // one lacking a BPF feature the program uses, fails it, and `fuse`, the default, needs none of it.
+      val bpfBuildFailure =
+        runBuilds(context, remoteImagePullCommands(podman, remoteImages) ++ commands, optional = bpfBackendCommands)
       verifyBuiltBundleLabels(Seq(
         SandboxImage -> sandboxBundleId,
         ProxyImage -> proxyBundleId,
       ))
       verifyBuiltBundleLabels(Seq(coursierImage(ImgTagVersion) -> baseId), BaseBundleLabel)
       installKoAgentFs(podman, os, fsSourceId)
+      // The profile before the backend: the backend's launches need this build's attribute rules
+      // (SeccompProfile.AttributeSyscalls), and the backend's install may stop at its consent prompt.
       SeccompProfile.install(podman, os, SandboxImage)
+      if buildBpfBackend then
+        bpfBuildFailure.toLeft(()).flatMap(_ => KoAgentBpf.installKoAgentBpf(podman, os, bpfBackendSourceId))
+          .left.foreach(reason => warn(KoAgentBpf.buildFailedNote(reason, os)))
       val (candidates, staleTags) = includeStaleSelfTestCleanup(
         podman,
         journal,
@@ -100,6 +118,17 @@ object ImageBuilds:
       writeImageCleanupJournal(journal, remaining)
     sys.exit(0)
 
+  /**
+   * Whether the machine can build the BPF backend; says why not when it cannot. A probe that does not
+   * answer fails the build, which needs the machine anyway.
+   */
+  private def bpfBuildPossible(os: Os): Boolean =
+    val probed = run(koAgentFsScriptCommand(podman, os, KoAgentBpf.checksScript("/"))*)
+    if !probed.ok then fail(s"error: the machine did not answer the BPF backend's checks\n${probed.err}")
+    val failures = KoAgentBpf.buildFailures(KoAgentBpf.parseFacts(probed.text), os)
+    if failures.nonEmpty then System.err.println(KoAgentBpf.buildSkippedNote(failures))
+    failures.isEmpty
+
   /** `--update` (README.md has what it rebuilds). */
   def update(os: Os): Nothing =
     withImageBuildLock(os): journal =>
@@ -113,7 +142,7 @@ object ImageBuilds:
       val context = unpackBuildContext()
       val fsSourceId = koAgentFsSourceId(context)
       val selfTestSourceId = contextSourceId(context, "ko-agent-self-test")
-      val bpfSourceId = contextSourceId(context, "bpf/probe/phase3")
+      val bpfSourceId = contextSourceId(context, KoAgentBpf.SourceDir)
       val sandboxBundleId = contextSourceId(context, "ko-agent-sandbox")
       val readContainerfile = buildContextReader(context)
       val commands = updateCommands(podman, ImgTagVersion, sandboxBundleId)
@@ -323,16 +352,21 @@ object ImageBuilds:
    * the launcher reads the id before and after and says whether the image changed, as its own
    * `pull:` line.
    */
-  def runBuilds(context: Path, commands: Vector[Vector[String]]): Unit =
+  /**
+   * Runs the builds, each failure ending the launcher, then the optional ones, the first failure of
+   * which is returned instead. The context is removed either way.
+   */
+  def runBuilds(
+    context: Path,
+    commands: Vector[Vector[String]],
+    optional: Vector[Vector[String]] = Vector.empty,
+    execute: (Path, Vector[String]) => Int = executeIn,
+  ): Option[String] =
     commands.foreach: command =>
       echoCommand(command)
       val pulled = if command.lift(1).contains("pull") then command.lift(2) else None
       val before = pulled.flatMap(imageId(command.head, _))
-      val exit = ProcessBuilder(command*)
-        .directory(context.toFile)
-        .inheritIO()
-        .start()
-        .waitFor()
+      val exit = execute(context, command)
       if exit != 0 then
         if pulled.isDefined then
           deleteRecursively(context)
@@ -345,7 +379,17 @@ object ImageBuilds:
           )
       pulled.foreach: image =>
         System.err.println("pull: " + pullVerdict(before, imageId(command.head, image)))
+    val optionalFailure = optional.iterator
+      .map: command =>
+        echoCommand(command)
+        command -> execute(context, command)
+      .collectFirst { case (command, exit) if exit != 0 => s"build failed: ${shownCommand(command)}" }
     deleteRecursively(context)
+    optionalFailure
+
+  /** A build command run in the context, its output the user's, and its exit status. */
+  private def executeIn(context: Path, command: Vector[String]): Int =
+    ProcessBuilder(command*).directory(context.toFile).inheritIO().start().waitFor()
 
   private def imageId(podman: String, image: String): Option[String] =
     val inspected = run(podman, "image", "inspect", "--format", "{{.Id}}", image)
@@ -421,7 +465,7 @@ object ImageBuilds:
       val bundleId = selfTestBundleId(
         fsSourceId,
         contextSourceId(context, "ko-agent-self-test"),
-        contextSourceId(context, "bpf/probe/phase3"),
+        contextSourceId(context, KoAgentBpf.SourceDir),
         sandboxImageId,
       )
       val commands = selfTestBuildCommands(

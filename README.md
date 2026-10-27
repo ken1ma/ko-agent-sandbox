@@ -243,6 +243,11 @@ credentials another cloud's login produced, and what forwarding costs.
    workspace mount and the agent-state volume.
 
     1. When sessions change the same file concurrently, later writes can overwrite earlier changes.
+    1. Each `--workspace=live,bpf` session runs under its own policy. A new launch is refused while
+       a session that shares the workspace or the agent-state volume runs under the other backend
+       or the other `unix-socket` setting; a session an older launcher started counts as a filter
+       session. An older launcher refuses nothing, so do not start one beside a `bpf` or
+       `unix-socket` session.
 
 1. From a Git linked worktree, the launch asks whether to share the main worktree's agent state,
    and where the container can follow the worktree's `.git` pointer (a relative one anywhere, an
@@ -306,14 +311,24 @@ restore permission prompts and set the Claude Code status line.
     Session options, selected on every launch and never persisted, on the command line or in the
     options file below. An empty value, as in --memory=, returns an option to its default; a closed
     choice such as --clipboard names its default instead:
-      --workspace=read-only|live
+      --workspace=read-only|live[,fuse|bpf][,unix-socket]
                          read-only makes the workspace read-only to the
                          sandbox's processes; live (default) lets the agent
                          edit the shared workspace files and the Git state the
                          filter lists (refs, objects, the index, HEAD and the
                          like); every other Git entry, such as config and
                          hooks, .ko-agent-sandbox and what the file rules
-                         protect are frozen at any depth (SECURITY.md)
+                         protect are frozen at any depth (SECURITY.md).
+                         The values after the mode, in any order: the backend
+                         holding those protections, fuse (default), a filter
+                         mount of the workspace, or bpf, which mounts the
+                         workspace directory itself and has the podman
+                         machine's kernel enforce the protections on the
+                         container (SECURITY.md, "The BPF backend"); and
+                         unix-socket, which allows Unix sockets in the
+                         workspace and under the agent-state volume, with bpf
+                         only; on Windows under the volume alone, since the
+                         share refuses a socket bind itself
       --egress=deny-all|deny-unless-model|deny-unless-allowed
                          which hosts the session reaches; the default,
                          deny-unless-allowed, allows the launcher-owned
@@ -506,6 +521,11 @@ restore permission prompts and set the Claude Code status line.
 
     1. To remove it:
        `podman machine ssh rm .local/share/ko-agent-sandbox/ko-agent-fs` (plain `rm` on Linux).
+
+1. On macOS and Windows, installs the BPF backend, compiled from bundled source against the
+   machine's kernel, inside the podman machine, and may ask to install a system unit there that
+   loads and verifies the policy's BPF programs at boot, ahead of the first launch, shown first
+   (SECURITY.md, "Silent changes to what you own").
 
 1. Use `--update` to install new agent releases.
 

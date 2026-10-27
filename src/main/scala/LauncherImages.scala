@@ -29,9 +29,11 @@ object LauncherImages:
   val SandboxImage = "ko-agent-sandbox:latest"
   val ProxyImage = "ko-agent-egress-proxy:latest"
   val KoAgentFsImage = "ko-agent-fs:latest"
+  val KoAgentBpfImage = "ko-agent-bpf:latest"
   val SelfTestImage = "ko-agent-self-test:latest"
   val ProxyBuildImage = "ko-agent-egress-proxy-build:cache"
   val KoAgentFsBuildImage = "ko-agent-fs-build:cache"
+  val KoAgentBpfBuildImage = "ko-agent-bpf-build:cache"
   val SelfTestBuildImage = "ko-agent-self-test-build:cache"
 
   /** In dependency order. */
@@ -46,12 +48,16 @@ object LauncherImages:
       KoAgentFsImage,
     )
 
+  /** The BPF backend's images, built on the podman machines alone (KoAgentBpf.buildCommands). */
+  val KoAgentBpfImageTags = Vector(KoAgentBpfBuildImage, KoAgentBpfImage)
+
   /** In dependency order. */
   val SelfTestImageTags = Vector(SelfTestBuildImage, SelfTestImage)
 
-  def managedImageTags(version: String): Vector[String] = buildImageTags(version) ++ SelfTestImageTags
+  def managedImageTags(version: String): Vector[String] =
+    buildImageTags(version) ++ KoAgentBpfImageTags ++ SelfTestImageTags
 
-  /** `bpfSourceId` is the bundled `bpf/probe/phase3`, whose classifier the image compiles for the suite. */
+  /** `bpfSourceId` is the bundled `bpf/ko-agent-bpf`, whose classifier the image compiles for the suite. */
   def selfTestBundleId(
     fsSourceId: String,
     selfTestSourceId: String,
