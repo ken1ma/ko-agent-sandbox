@@ -378,12 +378,12 @@ object RulesetHelper:
     if grants(Grant.Tunnel) && inspected.nonEmpty then
       throw IllegalArgumentException(
         s"${source.spelled} makes $host a tunnel while it holds ${inspected.map(_.source.spelled).mkString("; ")}; " +
-          s"a host has one treatment — deny https://$host/ first, or drop the line",
+          s"a host has one treatment: deny https://$host/ first, or drop the line",
       )
     if Grant.isInspected(grants) && tunnels.nonEmpty then
       throw IllegalArgumentException(
         s"${source.spelled} inspects $host while it is a tunnel (${tunnels.map(_.source.spelled).mkString("; ")}); " +
-          s"a host has one treatment — deny https://$host/ tunnel first, or drop the line",
+          s"a host has one treatment: deny https://$host/ tunnel first, or drop the line",
       )
     val warning =
       if !check || !grants.subsetOf(state.enclosing(host, path)) then None

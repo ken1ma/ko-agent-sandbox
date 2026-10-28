@@ -222,9 +222,8 @@ class KoAgentBpfTest extends munit.FunSuite:
     assertEquals(launched.resolved.readOnlyPaths, Vector("/Users/me/project/.husky/_"))
     assert(launched.spare)
     assertEquals(
-      launchLine(launched, settings("live,bpf")),
-      "ko-agent-bpf backend: the policy attached, 8 hooks from the program set verified ahead in 0.9 ms, " +
-        "read back in 14.2 ms, proved in 40.3 ms",
+      stepsLogLine(launched),
+      "attached 8 hooks in 0.9 ms from the program set verified ahead; read back in 14.2 ms; tested in 40.3 ms",
     )
     assertEquals(stepReached(output), "done")
     assertEquals(stepReached("step=checks\nstep=records\nerror"), "records")

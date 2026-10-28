@@ -119,7 +119,7 @@ object RunOnHostPrereqs:
     case Refusal.PrereqMvnWrapperUnreadable(reason) => reason
     case Refusal.PrereqMvnDistributionIsMvnd(url) =>
       s"distributionUrl in .mvn/wrapper/maven-wrapper.properties names mvnd, a daemon: '$url'; " +
-        "point it at an apache-maven-…-bin.zip URL"
+        "point it at an apache-maven-<version>-bin.zip URL"
     case Refusal.PrereqMvnDistributionMissing(url, home) =>
       s"Maven from $url is not unpacked at ${shown(home)}; run `./mvnw --version` once on the host"
     case Refusal.PrerequisiteFileUnreadable(path, reason) => s"${shown(path)} cannot be read: $reason"
@@ -135,7 +135,7 @@ object RunOnHostPrereqs:
     case Refusal.SessionTmpTooLong(path, max) =>
       s"the command's temporary directory ${shown(path)} is longer than $max characters, sbt's socket path budget"
     case Refusal.RuleOutsideProgramGrammar(line) =>
-      s"'$line' is outside the program's rule grammar — one `$ProgramRuleForm` per line"
+      s"'$line' is outside the program's rule grammar: one `$ProgramRuleForm` per line"
 
   /** Everything settled before a command is asked for; every path canonical. */
   case class CommandPrereqs(
@@ -1042,8 +1042,8 @@ object RunOnHostPrereqs:
       .orElse:
         val stray = strays(dir, programs.toSet) ++ programs.flatMap(name => strays(dir.resolve(name), Set("egress")))
         Option.when(stray.nonEmpty):
-          s"error: ${stray.mkString(", ")}: not configuration this launcher reads — " +
-            "a typo, or a newer launcher's file; check the spelling or update the launcher"
+          s"error: ${stray.mkString(", ")}: not configuration this launcher reads (a typo, or a newer " +
+            "launcher's file); check the spelling or update the launcher"
 
   /** The one line form the program's rule file holds, for `host`. */
   def programRuleLine(host: String): String = s"allow https://$host/ read"

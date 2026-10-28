@@ -33,9 +33,9 @@ class EgressCredentialsTest extends munit.FunSuite:
       List("--egress-cred=GH_TOKEN@a.example", "--egress-cred=GH_TOKEN@b.example") ->
         "error: --egress-cred=GH_TOKEN@b.example:Authorization; GH_TOKEN is bound twice; one name, one host",
       List("--egress-cred=GH_TOKEN@a.example", "--env=GH_TOKEN") ->
-        "error: --env=GH_TOKEN and --egress-cred=GH_TOKEN@…; pass GH_TOKEN to one of them",
+        "error: --env=GH_TOKEN and --egress-cred=GH_TOKEN@...; pass GH_TOKEN to one of them",
       List("--env=GH_TOKEN=x", "--egress-cred=GH_TOKEN@a.example") ->
-        "error: --env=GH_TOKEN and --egress-cred=GH_TOKEN@…; pass GH_TOKEN to one of them",
+        "error: --env=GH_TOKEN and --egress-cred=GH_TOKEN@...; pass GH_TOKEN to one of them",
       List("--egress-cred=KO_AGENT_SANDBOX_X@a.example") ->
         "error: --egress-cred=KO_AGENT_SANDBOX_X@a.example; the launcher sets KO_AGENT_SANDBOX_* itself",
       List("--egress-cred=X@a.example:Host") ->
@@ -74,7 +74,7 @@ class EgressCredentialsTest extends munit.FunSuite:
     assertEquals(
       refused,
       Left(
-        "error: --egress-cred=GH_TOKEN=…; a credential's value is not given on the command line; set the variable " +
+        "error: --egress-cred=GH_TOKEN=...; a credential's value is not given on the command line; set the variable " +
           "for the launch and pass NAME@HOST",
       ),
     )
@@ -227,18 +227,18 @@ class EgressCredentialsTest extends munit.FunSuite:
     assertEquals(placeholderArgs(credentials), Vector(s"--env=GH_TOKEN=ghp_${"P" * 36}"))
     assertEquals(
       EgressCredentials.bannerLines(credentials, color = false),
-      Vector(s"brokered credential: GH_TOKEN → api.github.com (Authorization), placeholder ghp_${"P" * 36}"),
+      Vector(s"brokered credential: GH_TOKEN -> api.github.com (Authorization), placeholder ghp_${"P" * 36}"),
     )
     assertEquals(
       EgressCredentials.bannerLines(credentials, _ => " (from F)", color = false),
-      Vector(s"brokered credential: GH_TOKEN → api.github.com (Authorization), placeholder ghp_${"P" * 36} (from F)"),
+      Vector(s"brokered credential: GH_TOKEN -> api.github.com (Authorization), placeholder ghp_${"P" * 36} (from F)"),
     )
     // The variable and where it goes are what the user chose; the source is not.
     val (on, off) = ("\u001b[38;5;207m", "\u001b[0m")
     assertEquals(
       EgressCredentials.bannerLines(credentials, _ => " (from F)", color = true),
       Vector(
-        s"brokered credential: ${on}GH_TOKEN$off → ${on}api.github.com$off (Authorization), " +
+        s"brokered credential: ${on}GH_TOKEN$off -> ${on}api.github.com$off (Authorization), " +
           s"placeholder ghp_${"P" * 36} (from F)",
       ),
     )

@@ -214,8 +214,8 @@ object SandboxLifecycle:
       |# `podman wait` alone would bind a created-but-never-started container
       |# (launcher killed between create and start) forever. After ten
       |# minutes of that, remove the stray and fall through. A container
-      |# already gone — it ran and --rm removed it before this loop first
-      |# looked — falls through too: removing the proxy is what matters.
+      |# already gone (it ran and --rm removed it before this loop first
+      |# looked) falls through too: removing the proxy is what matters.
       |i=0
       |while [ "$("$3" container inspect --format '{{.State.Running}}' "$1" 2>/dev/null)" != true ]; do
       |  "$3" container exists "$1" 2>/dev/null || break
@@ -225,7 +225,7 @@ object SandboxLifecycle:
       |done
       |
       |# An `if`, not `[ ... ] || cmd &`: `&` backgrounds the whole and-or list, so that spelling
-      |# starts a job under `off` too. The job keeps the trap above — a terminal's INT or HUP, or
+      |# starts a job under `off` too. The job keeps the trap above: a terminal's INT or HUP, or
       |# a TERM sent to the group, reaches it as it reaches this shell, and one that ended the job
       |# before the wait returned would free its pid for another process, which the cleanup below
       |# would then signal; sh has no process handle to tell the two apart, and dash refuses

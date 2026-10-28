@@ -63,7 +63,7 @@ object ClipboardRelay:
    */
   def hostShellFunctions(sandboxDir: String = SandboxDir): String =
     """# The host clipboard as three commands: is there an image, print it as PNG, set the clipboard
-      |# from stdin. macOS prints the PNG as AppleScript hex («data PNGf…»).
+      |# from stdin. macOS prints the PNG as AppleScript hex («data PNGf...»).
       |clipboard_relay() {
       |  clipboard_xclip=$4
       |  clipboard_wl_paste=$5
@@ -104,7 +104,7 @@ object ClipboardRelay:
       |          case "$$line" in *" "*) action=$${line%% *}; arg=$${line#* } ;; *) action=$$line; arg= ;; esac
       |          case "$$action" in
       |            set)
-      |              # Digits, no leading zero — octal to the shell, decimal to head — within the cap's
+      |              # Digits, no leading zero (octal to the shell, decimal to head), within the cap's
       |              # width before `[` compares: a longer number is undefined there.
       |              case "$$arg" in ''|*[!0-9]*|0?*) exit $$status ;; esac
       |              [ "$${#arg}" -le ${MaxRequestBytes.toString.length} ] || exit $$status
@@ -118,8 +118,8 @@ object ClipboardRelay:
       |                exec 3<> "$$body" 4< "$$body" 5< "$$body"
       |                rm -f "$$body" || exit $$status
       |                head -c "$$arg" >&3
-      |                # Answered only for a whole body: a short one — which only a raw writer,
-      |                # never the shim, sends — is dropped unanswered, so a FIFO that writer never
+      |                # Answered only for a whole body: a short one (which only a raw writer,
+      |                # never the shim, sends) is dropped unanswered, so a FIFO that writer never
       |                # reads does not hold the relay. The copy's stdout is not the response pipe:
       |                # xclip forks a child that serves the selection and inherits stdout, and on
       |                # the pipe it would hold the shim's read past `ok` until the response

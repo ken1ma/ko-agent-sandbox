@@ -749,16 +749,27 @@ object KoAgentBpf:
       lines.find(_.startsWith("fixture ops")).getOrElse(""),
     )
 
-  /** The launch line: the backend, the hooks and what each step cost. */
-  def launchLine(launched: Launched, settings: WorkspaceSettings): String =
+  /** The launch line. A check that fails ends the launch, so what each step cost goes to the run's
+    * log (stepsLogLine) rather than the terminal. */
+  val LaunchLine = "ko-agent-bpf backend: the policy attached and tested"
+
+  /** What each of steps 1 to 3 cost, for the run's log. */
+  def stepsLogLine(launched: Launched): String =
     val hooksAttached = field("hooks", launched.attachLine).getOrElse("?")
     val load = field("load_ms", launched.attachLine).getOrElse("?")
     val verify = field("ms", launched.verifyLine).getOrElse("?")
     val proof = field("ms", launched.proofLine).getOrElse("?")
     val how = if launched.spare then "the program set verified ahead" else "programs verified now"
-    val policy = if settings.readOnly then "the no-root policy" else "the policy"
-    s"ko-agent-bpf backend: $policy attached, $hooksAttached hooks from $how in $load ms, read back in $verify ms, " +
-      s"proved in $proof ms"
+    s"attached $hooksAttached hooks in $load ms from $how; read back in $verify ms; tested in $proof ms"
+
+  /** The run's log of the backend's steps, which `log dir` names; a failed write costs the line alone. */
+  def appendLog(file: Path, line: String): Unit =
+    try
+      Files.writeString(
+        file, s"$line\n", StandardCharsets.UTF_8,
+        java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND,
+      )
+    catch case _: java.io.IOException => ()
 
   // ---------------------------------------------------------------------------
   // Teardown and the reconcile

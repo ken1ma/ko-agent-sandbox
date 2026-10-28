@@ -2071,13 +2071,13 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    container placed below the attach cgroup, with the WSL setting named where that fails; the
    reconcile of "Lifecycle", 7, at the launcher's start; the no-root policy for
    `--workspace=read-only` where the probe passes and the raw `ro` bind with the printed host
-   requirements where it fails, the launch line naming the backend and the accepted differences, the
-   removal of the filter from the first version's sessions, with the selector keeping it for the
-   rest ("Later versions") and refusing a launch whose backend or `unix-socket` setting differs
-   from a live session's sharing its volume or a raw mount, or that of an unlabelled or renamed one
-   ("The hooks", `file_receive`), and the documentation changes "The recorded decisions this
-   answers" names. It needs the profile "Mounts" relies on to have shipped. Its rows, which
-   need the launcher:
+   requirements where it fails, the launch line naming the backend and the steps' times in the
+   run's `ko-agent-bpf.log`, the removal of the filter from the first version's sessions, with the
+   selector keeping it for the rest ("Later versions") and refusing a launch whose backend or
+   `unix-socket` setting differs from a live session's sharing its volume or a raw mount, or that
+   of an unlabelled or renamed one ("The hooks", `file_receive`), and the documentation changes
+   "The recorded decisions this answers" names. It needs the profile "Mounts" relies on to have
+   shipped. Its rows, which need the launcher:
    - under the profile the launcher installs, `io_uring_setup` answers `ENOSYS` from the
      container's first process and from a `podman exec` process ("The hooks", `file_receive`);
    - a launch under the other backend or the other setting of `unix-socket` while a session

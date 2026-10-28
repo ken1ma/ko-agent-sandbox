@@ -524,7 +524,7 @@ final class RunnerRuntimes(
       case Some(kept) if kept.keeps =>
         Left(
           s"another launch's runner (${owner.getFileName}) owns the $what for $buildDirectory; this launch " +
-            s"cannot attach to it — $why — and its group is not ended: $kept; retry, or use a different build " +
+            s"cannot attach to it ($why), and its group is not ended: $kept; retry, or use a different build " +
             "directory",
         )
       case _ =>

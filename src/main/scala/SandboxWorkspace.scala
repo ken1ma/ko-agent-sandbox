@@ -774,7 +774,7 @@ object SandboxWorkspace:
             s"""error: ${shown(boundaryDir.toString)} contains $named, which this launcher does not read
                |The directory is boundary configuration and holds only:
                |${BoundaryDirEntries.toVector.sorted.mkString(", ")}. A stray name must fail the
-               |launch, never remain as ignored config — and it is either a typo or a boundary file a
+               |launch, never remain as ignored config: it is either a typo or a boundary file a
                |newer launcher reads, so check the spelling or update the launcher and image.""".stripMargin,
           )
 

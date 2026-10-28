@@ -1513,6 +1513,7 @@ object AgentSandboxLauncher:
     val hostLogFile = runLogs.resolve("proxy.log")
     val channelLogFile = runLogs.resolve("run-on-host.log")
     val microphoneLogFile = runLogs.resolve("microphone.log")
+    val backendLogFile = runLogs.resolve("ko-agent-bpf.log")
 
     val git = gitAccess(settings, workspace, images, rules, os)
     val sandboxFiles =
@@ -1565,7 +1566,7 @@ object AgentSandboxLauncher:
 
     startSandbox(
       parsed, settings, workspace, rules, names, mount, git, createCommand, filterReap, runFiles, channelLogFile,
-      microphoneLogFile, cleanup, os,
+      microphoneLogFile, backendLogFile, cleanup, os,
     )
 
   /** The options another launch line states when in force, which names the options file when the
@@ -1743,8 +1744,8 @@ object AgentSandboxLauncher:
       fail(
         s"""error: --workspace=read-only cannot mount $workspaceRoot on this SELinux-enforcing host
            |Reading an unfiltered bind mount here requires relabeling the workspace (:Z), a recursive
-           |host-metadata write that --workspace=read-only never makes. Use --workspace=live — the filter's
-           |mountpoint needs no relabel — or relabel the workspace yourself
+           |host-metadata write that --workspace=read-only never makes. Use --workspace=live, whose filter
+           |mountpoint needs no relabel, or relabel the workspace yourself
            |(chcon -R -t container_file_t -l s0 <dir>; the level clears any categories a
            |previous :Z assigned to one container) and relaunch.""".stripMargin,
       )
@@ -2666,6 +2667,7 @@ object AgentSandboxLauncher:
     runFiles: Path,
     channelLogFile: Path,
     microphoneLogFile: Path,
+    backendLogFile: Path,
     cleanup: RunCleanup,
     os: Os,
   ): Nothing =
@@ -2720,9 +2722,10 @@ object AgentSandboxLauncher:
           KoAgentBpf.createFailureNote(os, created.err).filter(_ => bpf.isDefined).fold("")(note => s"\n$note"),
       )
     launched.foreach: done =>
-      System.err.println(KoAgentBpf.launchLine(done, workspaceSettings))
+      System.err.println(KoAgentBpf.LaunchLine)
+      KoAgentBpf.appendLog(backendLogFile, KoAgentBpf.stepsLogLine(done))
       if done.spare then
-        System.err.println("ko-agent-bpf backend: a program set for the next launch is being verified behind this one")
+        KoAgentBpf.appendLog(backendLogFile, "a program set for the next launch is being verified behind this one")
     // Step 4's placement check ("Lifecycle", 4): `podman init` makes the container now, so that the
     // machine's watcher reads its cgroup while the launch goes on; the start below waits for the verdict.
     val initializing = launched.map: _ =>
@@ -2820,8 +2823,9 @@ object AgentSandboxLauncher:
       val report = KoAgentBpf.placementFile(stateRoot(os), sandboxContainer)
       KoAgentBpf.confirmPlacement(initialized, KoAgentBpf.awaitPlacement(report), done.cgroup) match
         case Right(_) =>
-          System.err.println(
-            s"ko-agent-bpf backend: the container lies below the attach cgroup, confirmed after " +
+          KoAgentBpf.appendLog(
+            backendLogFile,
+            s"the container lies below the attach cgroup, confirmed after " +
               s"${(System.nanoTime() - waiting) / 1_000_000} ms of waiting",
           )
         case Left(reason) =>
