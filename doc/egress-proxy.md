@@ -293,6 +293,7 @@ and the proxy appends the log to a file in the run's directory on the host, whic
         proxy.log                  the container proxy's audit log
         run-on-host.log            the host command runner's log; only with --run-on-host
         microphone.log             the relay's log; only with --audio=mic
+        ko-agent-bpf.log           the BPF backend's launch steps and their times; only under bpf
         <proxy log>-<session>.log  a host program proxy's audit log
 
 - With no arguments, `--egress-log` prints each run's proxy audit logs, oldest run first and
@@ -495,6 +496,11 @@ origin connection of the session's proxy through that upstream proxy.
 - `--build`'s pulls and builds, and `podman machine start`, use the host's variables as podman
   does on its own; of a session's containers only the proxy receives the one selected variable,
   and the sandbox none of them.
+- An upstream proxy running on a Windows host is `host.containers.internal` in `HTTPS_PROXY`, and
+  needs an inbound firewall rule for its port on the WSL interface (`-InterfaceAlias
+  'vEthernet (WSL*)'`): the firewall drops connections from the podman machine to a host listener
+  no rule allows, and every origin connection fails with `Connect timed out`. A rule naming the
+  program let none through (development.md, "On Windows x64").
 
 What changes is only how an allowed address is reached:
 

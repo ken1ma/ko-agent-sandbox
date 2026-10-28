@@ -114,7 +114,7 @@ class SandboxMarkdownLinkCheckTest extends munit.FunSuite:
 
   /** `program` and its arguments, run by `sh` in `directory`. */
   private def runIn(directory: String, program: Seq[String]): Vector[String] =
-    Vector("sh", "-c", """cd "$1" && shift && exec "$@"""", "sh", directory) ++ program
+    quoteFreeSh("""cd "$1" && shift && exec "$@"""", (directory +: program)*)
 
   /** Every case, against the program as `linkCheck` runs it: in a directory given relative to the fixtures', with
     * arguments. */

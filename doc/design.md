@@ -787,6 +787,26 @@ Every launch prints each grant and each option the file supplies.
   choice names its default and keeps refusing an empty value, which a script's unset variable
   produces: `--workspace=$MODE` would otherwise launch `live`.
 
+### The launcher's text is ASCII
+
+Every string in the launcher's sources is ASCII, except characters it matches or writes into a
+script; `AsciiTextTest` enforces this and lists those characters. A Windows host shows any other
+character wrong wherever the text goes, and some of the text is consent or refusal text a reader
+must be able to trust verbatim. Measured on Japanese Windows (Windows Server 2025):
+
+- In Windows Terminal, Java writes `System.out` in the console's code page, 932: `—`, which code
+  page 932 lacks, prints as `?`.
+- Redirected to a file, Java writes in the system's code page (`native.encoding`, MS932), while
+  podman's lines in the same file are UTF-8.
+- Written as UTF-8, `→—` shows in Windows Terminal as `竊停・`.
+
+ASCII is the same bytes in every one of these encodings. Text the launcher passes along, such as a
+path with a non-ASCII name or podman's own lines, is printed as it is.
+
+Revisit if Windows consoles default to code page 65001 (UTF-8), or if the launcher sets the
+console's code page itself (`SetConsoleOutputCP`), which every process attached to that console
+then shares.
+
 ## The properties verification has to separate
 
 Conflating them is what makes verification look larger than it is.

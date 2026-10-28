@@ -32,7 +32,7 @@ object EgressCredentials:
    * the variable alone: whatever follows its `=` may be the secret.
    */
   def parseOption(spelled: String, refusedPrefix: String): Either[String, CredentialBinding] =
-    val shown = if spelled.takeWhile(_ != '@').contains('=') then s"${spelled.takeWhile(_ != '=')}=…" else spelled
+    val shown = if spelled.takeWhile(_ != '@').contains('=') then s"${spelled.takeWhile(_ != '=')}=..." else spelled
     CredentialGrammar.parseBinding(spelled) match
       case Left(reason) => Left(s"error: --egress-cred=$shown; $reason")
       case Right(binding) if binding.name.startsWith(refusedPrefix) =>
@@ -168,7 +168,7 @@ object EgressCredentials:
   ): Vector[String] =
     credentials.toVector.map: credential =>
       val binding = credential.binding
-      s"brokered credential: ${chosen(binding.name, color)} → ${chosen(binding.target, color)} " +
+      s"brokered credential: ${chosen(binding.name, color)} -> ${chosen(binding.target, color)} " +
         s"(${binding.place.shown}), " +
         s"placeholder ${credential.placeholder}${source(credential)}"
 
@@ -185,7 +185,7 @@ object EgressCredentials:
         if sessionInspected(binding.host) then "substituted by the session's proxy"
         else if sessionTunnels(binding.host) then "a tunnel here: refused unless a run-on-host program's rules allow it"
         else "not allowed here: refused unless a run-on-host program's rules allow it"
-      s"brokered credential: ${binding.name} → ${binding.target} (${binding.place.shown}); $where"
+      s"brokered credential: ${binding.name} -> ${binding.target} (${binding.place.shown}); $where"
 
   val SubstitutionNote = "brokered values are substituted in the bound header or parameter only"
 

@@ -234,7 +234,7 @@ object SelfTestShare:
               val detail = if ok then s"$millis ms after the write" else "not within 120 s"
               row(ok, "a host write becomes visible to read()", detail)
             case ProbeEvent.MmapSeen(Some(lag)) =>
-              val marginal = if lag > 2000 then " — MARGINAL: git mmaps .git/index and packfiles" else ""
+              val marginal = if lag > 2000 then " (MARGINAL: git mmaps .git/index and packfiles)" else ""
               row(true, "the write reaches an established mmap", s"$lag ms behind read()$marginal")
             case ProbeEvent.MmapSeen(None) =>
               row(false, "the write reaches an established mmap", "AUTO_INVAL_DATA is not invalidating")

@@ -302,7 +302,7 @@ object KoAgentFs:
        |  exit 1
        |fi
        |# The binary prepareKoAgentFs verified can be replaced by a --build between that check and
-       |# here — execution pauses at the start prompt. Checked again beside the start, under the
+       |# here, since execution pauses at the start prompt. Checked again beside the start, under the
        |# image-build lock the launcher holds across this script and the installer holds while it
        |# replaces the binary (mountKoAgentFs), so the daemon started is the build source-id names.
        |case "$$("$$HOME/$KoAgentFsBinary" --version 2>/dev/null || true)" in
@@ -369,15 +369,15 @@ object KoAgentFs:
        |# reap; recreated to take the lock in, it would name the workspace to the next reset again.
        |[ -d "$$dir" ] || exit 0
        |# The workspace lock (see above). A shell that cannot even open it exits here, which leaves
-       |# the mount up — as every other failure in this script does.
+       |# the mount up, as every other failure in this script does.
        |exec 9>"$$dir/lock"
        |flock 9 2>/dev/null || true
        |for marker in "$$dir/sessions"/*; do
        |  [ -e "$$marker" ] || continue
        |  gone=0
        |  "$podman" container exists "$$(basename "$$marker")" >/dev/null 2>&1 || gone=$$?
-       |  # Only podman's own "no such container" answer (exit 1) prunes. Anything else — a broken
-       |  # podman is exit 125 — is unknown liveness, and pruning on unknown is how the last-session
+       |  # Only podman's own "no such container" answer (exit 1) prunes. Anything else (a broken
+       |  # podman is exit 125) is unknown liveness, and pruning on unknown is how the last-session
        |  # unmount below runs under a live session; the marker leaks toward a later reap instead.
        |  [ "$$gone" -eq 1 ] && rm -f "$$marker"
        |done

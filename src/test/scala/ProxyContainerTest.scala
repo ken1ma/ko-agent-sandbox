@@ -110,10 +110,12 @@ class ProxyContainerTest extends munit.FunSuite:
    * head, dials the authority itself and relays the bytes, which is an upstream proxy's whole
    * contract. Bound on every interface, since the container reaches this host by the name podman
    * gives it, never by loopback. It dials the origin directly, so this test needs a host with a
-   * direct route out.
+   * direct route out. On Windows its port is fixed, since the firewall rule names it. It tunnels
+   * only to a public address on port 443, all the test asks of it: a client the rule lets in from
+   * elsewhere reaches neither this host's services nor its network.
    */
   private class HostProxy:
-    private val server = ServerSocket(0, 8)
+    private val server = ServerSocket(if currentOs == Os.Windows then WindowsUpstreamPort else 0, 8)
     val port: Int = server.getLocalPort
     val received = AtomicReference(Vector.empty[String])
     private val accepting = Thread.startVirtualThread: () =>
@@ -128,7 +130,10 @@ class ProxyContainerTest extends munit.FunSuite:
         val head = agentsandbox.egress.HTTPHelper.readHttpHeader(client.getInputStream, 64 * 1024)
         received.updateAndGet(_ :+ String(head, StandardCharsets.ISO_8859_1))
         val request = agentsandbox.egress.HTTPHelper.ConnectRequest.parse(head)
-        val origin = Socket(request.host, request.port)
+        val address = java.net.InetAddress.getByName(request.host)
+        if request.port != 443 || !agentsandbox.egress.IPAddrHelper.isPublicDestination(address) then
+          throw IOException(s"refused: ${request.host}:${request.port}")
+        val origin = Socket(address, request.port)
         try
           val established = "HTTP/1.1 200 Connection established\r\n\r\n"
           client.getOutputStream.write(established.getBytes(StandardCharsets.US_ASCII))
@@ -185,7 +190,12 @@ class ProxyContainerTest extends munit.FunSuite:
       // with the credential on that CONNECT alone; the sandbox's own variables still name this
       // run's proxy.
       val checked = exec(live, "ko-sandbox-egress-check", "docs.python.org")
-      assert(checked.ok, s"${checked.text}\n${checked.err}")
+      val firewall =
+        if currentOs == Os.Windows then
+          s"\nWithout an inbound rule for TCP port $WindowsUpstreamPort, the firewall drops the connection to " +
+            "this test's upstream proxy (development.md, \"On Windows x64\")."
+        else ""
+      assert(checked.ok, s"${checked.text}\n${checked.err}$firewall")
       assert(checked.text.startsWith("CONNECT docs.python.org:443: 200; HEAD / -> HTTP/1.1"), checked.text)
       val heads = upstream.received.get
       assert(heads.nonEmpty, "the upstream proxy saw no CONNECT")
@@ -235,14 +245,14 @@ class ProxyContainerTest extends munit.FunSuite:
       assert(!live.output.contains(value), live.output)
 
       // The sandbox holds the placeholder, which the proxy substitutes on the bound host alone.
-      val placeholder = exec(live, "sh", "-c", "printf %s \"$BROKERED_TOKEN\"").text
+      val placeholder = execSh(live, "printf %s \"$BROKERED_TOKEN\"").text
       assertEquals(placeholder.length, EgressCredentials.UnformattedPlaceholderLength)
       assertNotEquals(placeholder, value)
       val bannerLine =
-        s"brokered credential: BROKERED_TOKEN → docs.python.org (Authorization), placeholder $placeholder"
+        s"brokered credential: BROKERED_TOKEN -> docs.python.org (Authorization), placeholder $placeholder"
       assert(live.output.contains(bannerLine), live.output)
-      val requested = exec(
-        live, "sh", "-c",
+      val requested = execSh(
+        live,
         "curl -sS -o /dev/null -w '%{http_code}' -H \"Authorization: Bearer $BROKERED_TOKEN\" " +
           "https://docs.python.org/3/",
       )
@@ -274,6 +284,9 @@ class ProxyContainerTest extends munit.FunSuite:
     finally
       session.foreach(stop)
       discard(workspace)
+
+  // The port the firewall rule in development.md, "On Windows x64", allows.
+  private val WindowsUpstreamPort = 58036
 
   private def contains(haystack: Array[Byte], needle: Array[Byte]): Boolean =
     haystack.indices.exists(start => haystack.startsWith(needle, start))

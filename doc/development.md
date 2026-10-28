@@ -178,3 +178,28 @@ Alternatively, on the host: copy the worktree
    [Windows 11 Enterprise 25H2 x64 Evaluation](https://www.microsoft.com/en-us/evalcenter/evaluate-windows-11-enterprise)
    runs for 90 days without a product key, but QEMU TCG is very slow and does not support the
    nested virtualization podman needs.
+1. In an Administrator PowerShell, allow the podman machine to reach TCP port 58036, where
+   `ProxyContainerTest`'s upstream proxy listens on Windows: the firewall drops a container's
+   connections to a host listener no rule allows, and the case fails with `Connect timed out`.
+   The rule is limited to the WSL interface, since the test proxy accepts any client. A rule
+   naming the listener's `java.exe` instead let no connection through (measured 2026-10-27).
+
+   ```powershell
+   New-NetFirewallRule -DisplayName 'ko-agent-sandbox upstream proxy test' -Direction Inbound `
+     -Protocol TCP -LocalPort 58036 -InterfaceAlias 'vEthernet (WSL*)' -Action Allow
+   ```
+
+   `Remove-NetFirewallRule -DisplayName 'ko-agent-sandbox upstream proxy test'` removes it.
+1. Run only the container-launching suites: the other suites assume a Unix JVM (TODO.md, "The
+   ordinary suites on a Windows host").
+
+   ```powershell
+   $suites = '*RunTopologyTest *MountLifecycleTest *MountPathTest ' +
+     '*EgressSessionTest *ProxyContainerTest *BundleLockTest ' +
+     '*ResetRecordTest *WithPodmanTest *SandboxMarkdownLinkCheckTest'
+   sbt "testWithPodman $suites"
+   ```
+1. When a run aborts with `ZipFile invalid LOC header`, or the server fails to start with
+   `Could not create lock for \\.\pipe\sbt-server-…`, an earlier sbt server is still running,
+   which the thin client no longer reaches: `sbt shutdownall` ends it, `sbt shutdown` does not.
+   Then run `sbt dist`, since the next start recompiles.

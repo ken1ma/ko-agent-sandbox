@@ -313,17 +313,17 @@ the proof until this is built.
 ## The ordinary suites on a Windows host
 
 `sbt testWithPodman` typed in PowerShell runs `testFull` in the Windows JVM, and the ordinary
-suites assume a Unix one; until they are fixed, run only the container-launching suites there:
-`sbt "testWithPodman *RunTopologyTest *MountLifecycleTest *MountPathTest *EgressSessionTest
-*ProxyContainerTest *BundleLockTest *ResetRecordTest *WithPodmanTest
-*SandboxMarkdownLinkCheckTest"`. The failures below are from Codex's run of 2026-10-27 on the
-EC2 machine (`development.md`, "On Windows x64").
+suites assume a Unix one; until they are fixed, `development.md` ("On Windows x64") runs only the
+container-launching suites there, and its command returns to `sbt testWithPodman` once they are.
+The failures below are from Codex's run of 2026-10-27 on the EC2 machine, and a run of 2026-10-28
+fails the same suites.
 
 - [ ] Skip, with a clue, the tests that need a Unix host:
   - those running `sh`, `/bin/bash` or `/usr/bin/perl` (`RunOnHostAcceptanceSetupTest`,
     `RunOnHostSandboxTest`, `RunOnHostSessionTest`);
   - those setting POSIX permissions or reading the `unix` attribute view
-    (`RunOnHostProvisioningTest`, `MicrophoneRelayTest`, `RunOnHostSessionTest`);
+    (`RunOnHostProvisioningTest`, `MicrophoneRelayTest`, `RunOnHostSessionTest`, and
+    `SandboxStatsTest` and `RunOnHostSandboxTest` through `RunOnHostSession.publish`);
   - those calling `com.sun.security.auth.module.UnixSystem`, whose `UnsatisfiedLinkError` munit
     treats as fatal, aborting the rest of `RunOnHostSandboxTest`;
   - the Mill file and lock cases of `RunOnHostSandboxTest`, whose code answers `None` without a
@@ -335,15 +335,6 @@ EC2 machine (`development.md`, "On Windows x64").
   `SandboxStatsTest`, `SandboxWorkspaceTest`, `ClaudePluginsTest` and `SandboxLifecycleTest`).
 - [ ] `ClaudePluginsTest`'s directory-symlink fixture loses `elsewhere/sbt-global` on Windows. It
   makes the link before its target; which link type Windows then makes is unchecked.
-
-## The launcher's output on a Windows code page other than UTF-8
-
-- [ ] Read the bytes of a launcher's redirected output on the EC2 machine. `ProxyContainerTest`'s
-  brokered-credential case failed reading `WithPodman.Session.output` as UTF-8
-  (`MalformedInputException`, 2026-10-27), and the run's log holds `窶・`, which is `—` in UTF-8
-  read as MS932. The launcher sets no output encoding, so redirected, Java writes the platform's
-  (unverified there). If the bytes confirm it, choose between the launcher writing UTF-8 and the
-  test reading the platform's encoding, and cover a line holding `—`.
 
 ## Capabilities a `NESTING=none` session could keep
 

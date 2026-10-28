@@ -1808,7 +1808,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       appendedSection(Mount, "live", resolution, Vector.empty, hostCommandsAvailable = true)
     assert(discoverable.contains("absent from this session"), discoverable)
     assert(discoverable.contains("--run-on-host=sbt,mill,gradle,mvn"), discoverable)
-    assert(!discoverable.contains("ko-sandbox-run-on-host sbt …"), discoverable)
+    assert(!discoverable.contains("ko-sandbox-run-on-host sbt ..."), discoverable)
     assert(!discoverable.contains(RunOnHostChannel.RunOnHostVariable), discoverable)
     // The read-only mode's instruction flips when a host command can write the workspace (the --run-on-host
     // composition):

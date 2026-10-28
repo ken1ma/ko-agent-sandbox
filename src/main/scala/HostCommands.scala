@@ -20,10 +20,8 @@ object HostCommands:
     else Os.Linux
 
   /** Stderr and exit; a stack trace would read as a launcher bug, not
-    * operator guidance. Console text stays ASCII: a Windows console decodes
-    * in its legacy codepage and renders anything else as `?`, and some of
-    * these lines are consent or refusal text a reader must be able to trust
-    * verbatim. */
+    * operator guidance. The message is ASCII (design.md, "The launcher's text
+    * is ASCII"). */
   def fail(message: String, code: Int = 1): Nothing =
     if shuttingDown then
       val interrupted = "the launch was interrupted; the failure below is its consequence, not a fault of its own"

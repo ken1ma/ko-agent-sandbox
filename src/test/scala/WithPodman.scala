@@ -320,9 +320,17 @@ object WithPodman extends munit.Assertions:
     val workspaceRoot = SandboxWorkspace.canonicalWorkspaceRoot(session.workspaceRoot, currentOs)
     SandboxWorkspace.mountPathOf(currentOs, workspaceRoot).fold(reason => throw AssertionError(reason), identity)
 
-  /** A command inside a live session, run the way the agent in it would. */
+  /** A command inside a live session, run the way the agent in it would. No word holds a double quote
+    * or a newline, which a Windows host cannot pass to podman (HostCommands.quoteFreeSh); the check
+    * runs on every platform, so a macOS or Linux run finds such a word first. */
   def exec(session: Session, command: String*): Run =
+    val unpassable = command.filter(_.exists(char => char == '"' || char == '\n'))
+    assert(unpassable.isEmpty, s"a Windows host cannot pass these words to podman; use execSh: $unpassable")
     run((Vector(podman, "exec", session.container) ++ command)*)
+
+  /** `sh -c` inside a live session, the script crossing quote-free. */
+  def execSh(session: Session, script: String, arguments: String*): Run =
+    exec(session, quoteFreeSh(script, arguments*)*)
 
   /** `podman inspect` through a Go template, as one trimmed string. An inspect that did not
     * answer fails here: read as an empty string, it would pass every assertion of

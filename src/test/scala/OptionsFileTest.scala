@@ -135,7 +135,7 @@ class OptionsFileTest extends munit.FunSuite:
     )
     assertEquals(
       fileOptions("--env=X\n--egress-cred=X@a.example").flatMap(merge(_, NoOptions)),
-      Left("error: --env=X and --egress-cred=X@…; pass X to one of them"),
+      Left("error: --env=X and --egress-cred=X@...; pass X to one of them"),
     )
     // An absent last newline and CRLF line ends are lines like any other.
     assertEquals(file("--memory=8g\r\n--nesting=same-uid").nesting, Some("same-uid"))
@@ -290,7 +290,7 @@ class OptionsFileTest extends munit.FunSuite:
     // The checks across options run on the merged set, whichever source each option comes from.
     assertEquals(
       merged("--env=X", "--egress-cred=X@a.example").map(_._1),
-      Left("error: --env=X and --egress-cred=X@…; pass X to one of them"),
+      Left("error: --env=X and --egress-cred=X@...; pass X to one of them"),
     )
     assert(merged("--env=X\n--egress-cred=X@a.example", "--env=").isRight)
     assert(merged("--env-aws-cred", "--env=AWS_SESSION_TOKEN").swap.exists(_.contains("forwards AWS_SESSION_TOKEN")))

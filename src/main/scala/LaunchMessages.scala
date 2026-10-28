@@ -178,7 +178,7 @@ object LaunchMessages:
     val runOnHostSection =
       if runOnHost.nonEmpty then
         val names = runOnHost.mkString(", ")
-        val commands = runOnHost.map(program => s"`ko-sandbox-run-on-host $program …`").mkString(" or ")
+        val commands = runOnHost.map(program => s"`ko-sandbox-run-on-host $program ...`").mkString(" or ")
         // Each sentence below names only the programs this session serves: the channel refuses the others.
         def selected(programs: String*): Vector[String] = programs.filter(runOnHost.contains).toVector
         def listed(programs: Vector[String]): String = programs match
@@ -227,16 +227,16 @@ object LaunchMessages:
            |
            |`ko-sandbox-run-on-host` is absent from this session. If sbt, `mill`, Gradle or Maven
            |builds here are slow, or the machine is short on memory, tell the user: relaunching with
-           |`--run-on-host=sbt,mill,gradle,mvn` runs them on the host — memory reclaimed on exit
-           |rather than left with the podman machine, and at host speed.
+           |`--run-on-host=sbt,mill,gradle,mvn` runs them on the host, at host speed, with their memory
+           |reclaimed on exit rather than left with the podman machine.
            |""".stripMargin
       else ""
     val refused =
       """If a package registry or clone host you need is not allowed, do not look for another
         |route: name the host to the user, who adds `allow https://<host>/ read` to
-        |`.ko-agent-sandbox/egress/rule` on the host and relaunches — under the default
+        |`.ko-agent-sandbox/egress/rule` on the host and relaunches (under the default
         |deny-unless-allowed profile, if this session's profile ignores the file's allow
-        |lines.""".stripMargin
+        |lines).""".stripMargin
     s"""
        |
        |# What this session may do

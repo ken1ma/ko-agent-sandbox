@@ -161,7 +161,7 @@ object RunOnHostSbtServer:
     shutdownDeadlineMillis: Long = 120_000,
     releaseDeadlineMillis: Long = 10_000,
   ): Either[String, Unit] =
-    def refused(cause: String) = Left(s"${foreignServerRefusal(portfileSocket)} — $cause")
+    def refused(cause: String) = Left(s"${foreignServerRefusal(portfileSocket)} ($cause)")
     val derived = sbtServerSocket(buildDirectory, env, userHome)
     if reachableThroughCommandWritable(derived, workspaceRoot, runOnHostCaches) then
       refused(

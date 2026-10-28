@@ -988,7 +988,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assert(wording(Refusal.PrereqMvnWrapperNotOnlyScript).contains("./mvnw wrapper:wrapper -Dtype=only-script"))
     val mvndWording = wording(Refusal.PrereqMvnDistributionIsMvnd(mvnUrl))
     assert(mvndWording.contains(".mvn/wrapper/maven-wrapper.properties"))
-    assert(mvndWording.contains("apache-maven-…-bin.zip URL"))
+    assert(mvndWording.contains("apache-maven-<version>-bin.zip URL"))
 
   test("the Maven user home is MAVEN_USER_HOME, else ~/.m2, as the script takes it"):
     assertEquals(mvnUserHome(env("HOME" -> home)), Some(Paths.get(s"$home/.m2")))
