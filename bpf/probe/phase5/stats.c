@@ -1,8 +1,8 @@
 // Phase 5 of doc/plan-bpf-lsm-cgroup.md: the program's own counters, read from the stats map the
 // session's programs share, zeroed before each measured workload and read after it, so that each
 // workload's figure comes with the number of calls each hook judged and the time the program took
-// in them. Phase 3's controller has the same two commands; Phase 4's, whose sources the measured
-// sections of Phase 4 name, has not, so they live here rather than in a changed controller.c.
+// in them. Phase 3's controller has the same two commands; the launcher's
+// (bpf/ko-agent-bpf/controller.c) has not, since no launch reads the counters.
 //
 //   stats read PIN     one line per hook: calls, decisions, walks, retries, the mean and maximum time
 //                      from entry to decision over the judged calls (those not ending at the
@@ -20,7 +20,7 @@
 #define PROGRAM_NAME "stats"
 #include "backend.h"
 
-// policy.bpf.c's layout; probe.h's map table leaves this map's value size unchecked, so it is checked here.
+// policy.bpf.c's layout; backend.h's map table leaves this map's value size unchecked, so it is checked here.
 struct hook_stats {
 	__u64 calls;
 	__u64 allowed;

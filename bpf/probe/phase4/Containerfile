@@ -8,7 +8,7 @@
 # earlier phases' drivers do; the same image is the session container the rows run.
 #
 # vmlinux.h is generated from the kernel this build runs on, the machine's, the one the programs
-# attach to. The three binaries are static: the controller and the read-back run in the machine,
+# attach to. The binaries are static: the controllers, the read-back and rewrite run in the machine,
 # the fixture in the machine and in the container.
 
 # Debian 13 (trixie), matching the rest of this project's images.
@@ -21,7 +21,7 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY policy.bpf.c records.h backend.h controller.c readback.c fixture.c ./
+COPY policy.bpf.c records.h backend.h controller.c readback.c fixture.c rewrite.c ./
 
 # The kernel whose BTF the step below reads is not a build input podman sees, so a cached layer
 # would outlive a kernel upgrade; the driver passes the machine's `uname -r` here to key the cache.
@@ -33,6 +33,8 @@ ARG BUILD_KERNEL=unknown
 # (A bound such as WALK_BOUND is no candidate: BOUNDED masks an index with `count - 1`.)
 # other-data.bpf.o differs in one string literal of the same length: its instructions and so its
 # tags equal the installed object's, and only its read-only data map tells it apart.
+# controller-unfrozen is the controller without the freeze of the record maps, which only the
+# read-back's frozen check tells apart; the cast keeps the unused function from failing -Werror.
 RUN set -eux; \
     mkdir -p /out; \
     test "$(uname -r)" = "$BUILD_KERNEL"; \
@@ -53,9 +55,15 @@ RUN set -eux; \
         -c other-data.bpf.c -o /out/other-data.bpf.o; \
     sha256sum /out/policy.bpf.o /out/other.bpf.o /out/other-data.bpf.o >> /out/objects.sha256; \
     clang-19 -O2 -Wall -Werror -static -I. -o /out/controller controller.c -lbpf -lelf -lz -lzstd; \
+    grep -q 'freeze_records(&maps);' controller.c; \
+    sed 's/^\tfreeze_records(&maps);$/\t(void)freeze_records;/' controller.c > controller-unfrozen.c; \
+    cmp -s controller.c controller-unfrozen.c && exit 1; \
+    clang-19 -O2 -Wall -Werror -static -I. -o /out/controller-unfrozen controller-unfrozen.c \
+        -lbpf -lelf -lz -lzstd; \
     clang-19 -O2 -Wall -Werror -static -I. -o /out/readback readback.c -lbpf -lelf -lz -lzstd; \
     clang-19 -O2 -Wall -Werror -static -I. -o /out/fixture fixture.c; \
-    for bin in controller readback fixture; do \
+    clang-19 -O2 -Wall -Werror -static -I. -o /out/rewrite rewrite.c -lbpf -lelf -lz -lzstd; \
+    for bin in controller controller-unfrozen readback fixture rewrite; do \
         ldd /out/$bin 2>&1 | grep -q "statically linked\|not a dynamic executable"; \
     done; \
     uname -r > /out/build-kernel.txt

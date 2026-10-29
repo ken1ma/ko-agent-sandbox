@@ -98,7 +98,8 @@ static const char *const policy_hooks[] = {
 static const char *const root_kinds[] = {"none", "workspace", "gitdir", "volume", "guarded-git", "guarded-sandbox"};
 #define ROOT_KINDS (sizeof(root_kinds) / sizeof(root_kinds[0]))
 
-// The program's maps: name, type, key and value sizes, entries. A value size of 0 is the program's
+// The program's maps: name, type, key and value sizes, entries, and whether the map holds the
+// session's records, which the controller freezes once filled. A value size of 0 is the program's
 // own scratch, not compared. The object also carries one read-only map for its string literals.
 struct map_shape {
 	const char *name;
@@ -106,16 +107,17 @@ struct map_shape {
 	__u32 key_size;
 	__u32 value_size;
 	__u32 max_entries;
+	bool records;
 };
 static const struct map_shape policy_maps[] = {
-	{"roots", BPF_MAP_TYPE_HASH, sizeof(struct ident), sizeof(struct root), ROOTS},
-	{"rules", BPF_MAP_TYPE_ARRAY, 4, sizeof(struct rule_line), RULE_LINES},
-	{"aliases", BPF_MAP_TYPE_ARRAY, 4, sizeof(struct alias_context), ALIASES},
-	{"policy_config", BPF_MAP_TYPE_ARRAY, 4, sizeof(struct policy_config), 1},
-	{"scratch", BPF_MAP_TYPE_PERCPU_ARRAY, 4, 0, SCRATCH_SLOTS},
-	{"guard", BPF_MAP_TYPE_PERCPU_ARRAY, 4, 8, 1},
-	{"stats", BPF_MAP_TYPE_ARRAY, 4, 0, POLICY_HOOKS},
-	{"last_decision", BPF_MAP_TYPE_ARRAY, 4, 0, 1},
+	{"roots", BPF_MAP_TYPE_HASH, sizeof(struct ident), sizeof(struct root), ROOTS, true},
+	{"rules", BPF_MAP_TYPE_ARRAY, 4, sizeof(struct rule_line), RULE_LINES, true},
+	{"aliases", BPF_MAP_TYPE_ARRAY, 4, sizeof(struct alias_context), ALIASES, true},
+	{"policy_config", BPF_MAP_TYPE_ARRAY, 4, sizeof(struct policy_config), 1, true},
+	{"scratch", BPF_MAP_TYPE_PERCPU_ARRAY, 4, 0, SCRATCH_SLOTS, false},
+	{"guard", BPF_MAP_TYPE_PERCPU_ARRAY, 4, 8, 1, false},
+	{"stats", BPF_MAP_TYPE_ARRAY, 4, 0, POLICY_HOOKS, false},
+	{"last_decision", BPF_MAP_TYPE_ARRAY, 4, 0, 1, false},
 };
 #define POLICY_MAPS (sizeof(policy_maps) / sizeof(policy_maps[0]))
 
@@ -508,7 +510,7 @@ struct expectation {
 	const char *volume;
 	const char *object;
 	const char *bind_source;
-	const char *spare;
+	const char *preloaded;
 	__u32 flags;
 	bool no_root;
 	const char **hooks;
@@ -548,8 +550,8 @@ static inline void parse_expectation(int argc, char **argv, struct expectation *
 			exp->object = argv[first++];
 		else if (!strcmp(option, "--bind-source"))
 			exp->bind_source = argv[first++];
-		else if (!strcmp(option, "--spare"))
-			exp->spare = argv[first++];
+		else if (!strcmp(option, "--preloaded"))
+			exp->preloaded = argv[first++];
 		else
 			die("%s: unknown option %s", usage, option);
 	}

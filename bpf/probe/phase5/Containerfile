@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
-# Build the Phase 5 probe of doc/plan-bpf-lsm-cgroup.md: Phase 4's controller, read-back and fixture
-# over Phase 3's policy program, and the counters reader beside them
+# Build the Phase 5 probe of doc/plan-bpf-lsm-cgroup.md: the launcher's controller, read-back and
+# fixture of bpf/ko-agent-bpf/ over its policy program, and the counters reader beside them
 # ---------------------------------------------------------------------------
 #
 # Phase5.scala builds this on the host from a context it assembles out of the files sources.txt

@@ -2,26 +2,28 @@
 // controller ("Lifecycle", 2, 5, 6 and 7). It loads policy.bpf.o from beside itself and never from
 // a path, fills the maps from the guard's records file and the identities it reads for itself,
 // attaches by link below the invoking user's slice alone, pins the links and the programs, keeps a
-// spare program set verified ahead of the launches, attaches pinned programs again for a restart,
-// and reconciles pins and cgroups at a launcher's start. The launcher (KoAgentBpf.scala) and the
+// program set loaded and verified ahead of the next launch, attaches pinned programs again for a
+// restart, and reconciles pins and cgroups at a launcher's start. The launcher (KoAgentBpf.scala) and the
 // Phase 4 and 5 probes drive it through `podman machine ssh` under sudo; each subcommand prints
 // `key=value` lines. Exit status 3 is a refusal (`refused reason=...`), 2 a failure.
 //
 //   controller attach CGROUP PINDIR --records FILE --workspace PATH [--fixture PATH] [--volume PATH]
-//                    [--flags F,F] [--object NAME] [--bind-source PATH] [--spare DIR] [--no-root] HOOK...
+//                    [--flags F,F] [--object NAME] [--bind-source PATH] [--preloaded DIR] [--no-root]
+//                    HOOK...
 //                                        load the object, fill the maps from FILE (the guard's
 //                                        `--bpf-records`; fixture.c writes one for the probes) with
 //                                        the roots' identities, attach HOOK... to CGROUP by link, pin
 //                                        each link at PINDIR/links/HOOK and each program at
 //                                        PINDIR/progs/HOOK. --object names another object beside the
 //                                        binary, the probe's defective controller; --bind-source
-//                                        refuses the launch when a mount lies below PATH; --spare
-//                                        takes the spare set pinned under DIR by renaming DIR to
+//                                        refuses the launch when a mount lies below PATH; --preloaded
+//                                        takes the preloaded set pinned under DIR by renaming DIR to
 //                                        PINDIR and fills its maps through the pinned programs,
 //                                        loading nothing, and loads as without it when DIR is gone;
 //                                        --no-root is a read-only session's policy (backend.h)
-//   controller prepare-spare PINDIR      load the object with every program, maps empty, and pin the
-//                                        programs at PINDIR/progs/HOOK: the spare a launch takes
+//   controller preload PINDIR            load the object with every program, maps empty, and pin the
+//                                        programs at PINDIR/progs/HOOK: the preloaded set a launch
+//                                        takes
 //   controller attach-pinned CGROUP PINDIR HOOK...
 //                                        attach the pinned programs to a new cgroup, loading nothing
 //   controller query CGROUP              the programs attached to CGROUP, and every lsm_cgroup link
@@ -128,7 +130,7 @@ static void make_pin_dirs(const char *pindir)
 }
 
 // The map descriptors a fill writes: by name out of a loaded object, or out of the maps a pinned
-// program references, for the spare.
+// program references, for the preloaded set.
 struct fill_maps {
 	int roots, rules, aliases, config;
 };
@@ -154,6 +156,22 @@ static void fill_policy(const struct fill_maps *maps, const struct policy *polic
 		die("config update: %s", strerror(errno));
 }
 
+// The four record maps frozen once filled: the kernel then refuses every write to them from user
+// space, a stray one by a tool of the machine's root among them, for the maps' lifetime, while the
+// programs, which only read them, run unchanged. The program writes the other maps.
+static void freeze_records(const struct fill_maps *maps)
+{
+	const struct {
+		const char *name;
+		int fd;
+	} records[] = {{"roots", maps->roots}, {"rules", maps->rules}, {"aliases", maps->aliases},
+		       {"policy_config", maps->config}};
+
+	for (unsigned i = 0; i < sizeof(records) / sizeof(records[0]); i++)
+		if (bpf_map_freeze(records[i].fd))
+			die("freeze %s: %s", records[i].name, strerror(errno));
+}
+
 static void pin_link(struct bpf_link *link, const char *pindir, const char *hook)
 {
 	char pin[PATH_MAX];
@@ -164,9 +182,9 @@ static void pin_link(struct bpf_link *link, const char *pindir, const char *hook
 	print_link(hook, bpf_link__fd(link));
 }
 
-// The maps the spare's pinned programs reference, by name through their ids: the fill writes the
-// same objects the programs read ("Lifecycle", the spare set).
-static void spare_maps(int prog_fd, struct fill_maps *maps)
+// The maps the preloaded set's pinned programs reference, by name through their ids: the fill
+// writes the same objects the programs read ("Lifecycle", the preloaded set).
+static void preloaded_maps(int prog_fd, struct fill_maps *maps)
 {
 	struct bpf_prog_info info = {};
 	__u32 len = sizeof(info), ids[32];
@@ -199,7 +217,7 @@ static void spare_maps(int prog_fd, struct fill_maps *maps)
 			close(fd);
 	}
 	if (maps->roots < 0 || maps->rules < 0 || maps->aliases < 0 || maps->config < 0)
-		die("the spare's programs reference no complete map set");
+		die("the preloaded set's programs reference no complete map set");
 }
 
 static int cmd_attach(int argc, char **argv)
@@ -212,7 +230,7 @@ static int cmd_attach(int argc, char **argv)
 	struct policy policy;
 	struct fill_maps maps;
 	double start, loaded, filled, attached;
-	bool from_spare = false;
+	bool from_preloaded = false;
 
 	if (argc < 3)
 		die("usage: attach CGROUP PINDIR [options] HOOK...");
@@ -234,27 +252,28 @@ static int cmd_attach(int argc, char **argv)
 	}
 	expect_policy(&policy, exp.records, exp.workspace, exp.fixture, exp.volume, exp.flags, exp.no_root);
 	start = now_ms();
-	// The spare, taken by one rename: of two launches racing for it, one finds it gone and loads.
-	if (exp.spare) {
-		require_pin_dir(exp.spare);
-		if (!rename(exp.spare, pindir))
-			from_spare = true;
+	// The preloaded set, taken by one rename: of two launches racing for it, one finds it gone and
+	// loads.
+	if (exp.preloaded) {
+		require_pin_dir(exp.preloaded);
+		if (!rename(exp.preloaded, pindir))
+			from_preloaded = true;
 		else if (errno != ENOENT)
-			die("rename %s to %s: %s", exp.spare, pindir, strerror(errno));
+			die("rename %s to %s: %s", exp.preloaded, pindir, strerror(errno));
 		else
-			printf("spare taken=0 reason=absent spare=%s\n", exp.spare);
+			printf("preloaded taken=0 reason=absent preloaded=%s\n", exp.preloaded);
 	}
-	if (from_spare) {
+	if (from_preloaded) {
 		char pin[PATH_MAX];
 		int prog_fd;
 
 		snprintf(pin, sizeof(pin), "%s/progs/%s", pindir, exp.hooks[0]);
 		prog_fd = bpf_obj_get(pin);
 		if (prog_fd < 0)
-			die("no pinned program %s in the spare: %s", pin, strerror(errno));
-		spare_maps(prog_fd, &maps);
+			die("no pinned program %s in the preloaded set: %s", pin, strerror(errno));
+		preloaded_maps(prog_fd, &maps);
 		close(prog_fd);
-		printf("spare taken=1 spare=%s\n", exp.spare);
+		printf("preloaded taken=1 preloaded=%s\n", exp.preloaded);
 	} else {
 		obj = open_object(exp.object);
 		for (int i = 0; i < exp.hook_count; i++)
@@ -277,19 +296,20 @@ static int cmd_attach(int argc, char **argv)
 	loaded = now_ms();
 	// The records, written before the attach and never after ("The policy").
 	fill_policy(&maps, &policy);
+	freeze_records(&maps);
 	filled = now_ms();
 	make_pin_dirs(pindir);
 	for (int i = 0; i < exp.hook_count; i++) {
 		struct bpf_link *link;
 		char pin[PATH_MAX];
 
-		if (from_spare) {
+		if (from_preloaded) {
 			int prog_fd, link_fd;
 
 			snprintf(pin, sizeof(pin), "%s/progs/%s", pindir, exp.hooks[i]);
 			prog_fd = bpf_obj_get(pin);
 			if (prog_fd < 0)
-				die("no pinned program %s in the spare: %s", pin, strerror(errno));
+				die("no pinned program %s in the preloaded set: %s", pin, strerror(errno));
 			link_fd = bpf_link_create(prog_fd, cgroup_fd, BPF_LSM_CGROUP, NULL);
 			if (link_fd < 0)
 				die("attach %s: %s", exp.hooks[i], strerror(errno));
@@ -311,10 +331,10 @@ static int cmd_attach(int argc, char **argv)
 		pin_link(link, pindir, exp.hooks[i]);
 	}
 	attached = now_ms();
-	printf("attach cgroup=%s pindir=%s object=%s spare=%d hooks=%d rule_count=%u aliases=%u roots=%d fs_type=%s "
-	       "vol_fs_type=%s flags=%u no_root=%d runtime_mnt_ns=%u load_ms=%.1f fill_ms=%.1f attach_ms=%.1f "
-	       "total_ms=%.1f\n",
-	       cgroup, pindir, exp.object, from_spare, exp.hook_count, policy.cfg.rule_count,
+	printf("attach cgroup=%s pindir=%s object=%s preloaded=%d hooks=%d rule_count=%u aliases=%u roots=%d "
+	       "fs_type=%s vol_fs_type=%s flags=%u no_root=%d runtime_mnt_ns=%u load_ms=%.1f fill_ms=%.1f "
+	       "attach_ms=%.1f total_ms=%.1f\n",
+	       cgroup, pindir, exp.object, from_preloaded, exp.hook_count, policy.cfg.rule_count,
 	       policy.cfg.rule_count ? policy.rec.header.alias_count : 0, policy.root_count, policy.cfg.fs_type,
 	       policy.cfg.vol_fs_type, policy.cfg.flags, exp.no_root, policy.cfg.runtime_mnt_ns, loaded - start,
 	       filled - loaded, attached - filled, attached - start);
@@ -323,12 +343,12 @@ static int cmd_attach(int argc, char **argv)
 
 static int cmd_unpin(const char *pindir);
 
-// The spare set ("Lifecycle"): every program of the object loaded and verified with empty maps,
+// The preloaded set ("Lifecycle"): every program of the object loaded and verified with empty maps,
 // the programs pinned and attached to nothing, for a launch to take by renaming PINDIR. Pinned
 // under a directory of this process's own, PINDIR-<pid>, and published whole by one rename, so no
-// launch or reconcile sees a set with programs still missing; a spare already present wins, and
-// this one is unpinned.
-static int cmd_prepare_spare(const char *pindir)
+// launch or reconcile sees a set with programs still missing; a preloaded set already present wins,
+// and this one is unpinned.
+static int cmd_preload(const char *pindir)
 {
 	struct bpf_object *obj;
 	struct bpf_program *prog;
@@ -339,7 +359,7 @@ static int cmd_prepare_spare(const char *pindir)
 
 	require_pin_dir(pindir);
 	if (!lstat(pindir, &st))
-		refuse("spare-present", "pindir=%s", pindir);
+		refuse("preloaded-present", "pindir=%s", pindir);
 	snprintf(staging, sizeof(staging), "%s-%d", pindir, getpid());
 	obj = open_object("policy.bpf.o");
 	if (bpf_object__load(obj))
@@ -358,10 +378,10 @@ static int cmd_prepare_spare(const char *pindir)
 
 		cmd_unpin(staging);
 		if (err == EEXIST || err == ENOTEMPTY)
-			refuse("spare-present", "pindir=%s staging=%s", pindir, staging);
+			refuse("preloaded-present", "pindir=%s staging=%s", pindir, staging);
 		die("rename %s to %s: %s", staging, pindir, strerror(err));
 	}
-	printf("spare pindir=%s programs=%d load_ms=%.1f\n", pindir, count, now_ms() - start);
+	printf("preloaded pindir=%s programs=%d load_ms=%.1f\n", pindir, count, now_ms() - start);
 	return 0;
 }
 
@@ -866,8 +886,8 @@ int main(int argc, char **argv)
 		return cmd_attach(argc - 2, argv + 2);
 	if (!strcmp(argv[1], "attach-pinned"))
 		return cmd_attach_pinned(argc - 2, argv + 2);
-	if (!strcmp(argv[1], "prepare-spare") && argc == 3)
-		return cmd_prepare_spare(argv[2]);
+	if (!strcmp(argv[1], "preload") && argc == 3)
+		return cmd_preload(argv[2]);
 	if (!strcmp(argv[1], "query") && argc == 3)
 		return cmd_query(argv[2]);
 	if (!strcmp(argv[1], "link-info") && argc == 3)

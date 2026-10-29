@@ -248,7 +248,6 @@ object Phase5:
   val Session = "policy"
   val Pins = s"$PinRoot/$Session"
   val ProbeImage = "ko-agent-bpf-probe:phase5"
-  val SandboxImage = "ko-agent-sandbox:latest"
   val Volume = "ko-agent-bpf5-vol"
   val Label = "ko-agent-bpf5"
   val PerfDefaultFiles = 1800

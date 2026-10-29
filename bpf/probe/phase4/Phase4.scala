@@ -25,16 +25,16 @@
 // with the installed object's tags; the launch of a session through the launcher's steps 1 to 4
 // ("Lifecycle"): the attach cgroup, the controller's attach with pins, the read-back, the proof
 // fixture run by a process of the launcher's own below the cgroup, then the container, whose first
-// process is refused a protected write; `podman exec`, `podman restart`, `podman kill`, the
-// controller gone, a recreate that attaches the pinned programs and loads nothing, the socket rule's
-// dependence on the mounts, the cgroup that cannot be removed while the container is in it and the
-// enforcement that ends only when root unpins; the defective controllers, caught before any
-// container exists; a launch under --unix-socket with the ninth hook and its proof; the pins reused
-// across a rule change and a new build; the controller's refusals; the reconcile over its orphans,
-// its kept sessions, its contradictions and its cleanup refusals; the costs of the launch's steps;
-// and last, the restart invariant across a machine restart, which stops the podman machine and with
-// it every session running on it, so the driver asks first, on stdin, and skips the rows unless
-// answered yes.
+// process is refused a protected write; a write from user space to each record map, refused;
+// `podman exec`, `podman restart`, `podman kill`, the controller gone, a recreate that attaches the
+// pinned programs and loads nothing, the socket rule's dependence on the mounts, the cgroup that
+// cannot be removed while the container is in it and the enforcement that ends only when root
+// unpins; the defective controllers, caught before any container exists; a launch under
+// --unix-socket with the ninth hook and its proof; the pins reused across a rule change and a new
+// build; the controller's refusals; the reconcile over its orphans, its kept sessions, its
+// contradictions and its cleanup refusals; the costs of the launch's steps; and last, the restart
+// invariant across a machine restart, which stops the podman machine and with it every session
+// running on it, so the driver asks first, on stdin, and skips the rows unless answered yes.
 //
 // The platforms differ in data alone: the cgroup manager podman reports (a transient slice under
 // systemd; under cgroupfs a directory under the user's delegated subtree, which the proof joins from a
@@ -134,8 +134,11 @@ object Phase4:
 
   val VmDir = ".local/share/ko-agent-sandbox/bpf-probe4"
   val Controller = s"./$VmDir/controller"
+  /** The controller without the freeze of the record maps (Containerfile). */
+  val ControllerUnfrozen = s"./$VmDir/controller-unfrozen"
   val Readback = s"./$VmDir/readback"
   val Fixture = s"./$VmDir/fixture"
+  val Rewrite = s"./$VmDir/rewrite"
   /** The fixture binary in the session container, where the probe image holds it. */
   val FixtureInContainer = "/out/fixture"
   val Tags = s"./$VmDir/tags.txt"
@@ -148,6 +151,8 @@ object Phase4:
   val Label = s"$Prefix.session"
   val CgroupLabel = s"$Prefix.cgroup"
   val Hooks7 = Hooks8.filterNot(_ == "inode_setattr")
+  /** The maps holding a session's records, which the controller freezes once filled. */
+  val RecordMaps = Seq("roots", "rules", "aliases", "policy_config")
 
   /** How a launch treats the session's pins: removed first, or reused when the read-back's check passes. */
   enum Mode:
@@ -249,7 +254,8 @@ object Phase4:
       ))
       for sourcesSha <- buildProbeImage(transcript, probeDir, scratchDir, ProbeImage, facts.kernel)
       yield
-        val installed = installProbe(vm, ProbeImage, VmDir, Prefix, Seq("controller", "readback", "fixture"))
+        val installed = installProbe(vm, ProbeImage, VmDir, Prefix,
+          Seq("controller", "controller-unfrozen", "readback", "fixture", "rewrite"))
         // The installed object kept aside: the rows of a new build put another in its place, then restore it.
         val kept = vm(s"cp $VmDir/policy.bpf.o $VmDir/policy-installed.bpf.o")
         check("probe installed in the machine", installed.ok && kept.ok)
@@ -359,10 +365,11 @@ object Phase4:
       /** Steps 1 to 4 of "Lifecycle" for session NAME under the rule set: the attach cgroup, the
         * controller's attach with pins, which a restart reuses when the read-back's check passes them, the
         * read-back, the proof, then the container created and started. The read-back expects the eight
-        * hooks, or the nine under --unix-socket, of the installed tags over the rule set's records; DEFECT
-        * and HOOKS make the controller deviate from that. No container is created once a step fails. */
+        * hooks, or the nine under --unix-socket, of the installed tags over the rule set's records; DEFECT,
+        * HOOKS and CONTROLLER make the controller deviate from that. No container is created once a step
+        * fails. */
       def launch(name: String, mode: Mode, ruleSet: RuleSet = workspace.a, defect: String = "",
-          hooks: Seq[String] = Hooks8, unixSocket: Boolean = false): Launched =
+          hooks: Seq[String] = Hooks8, unixSocket: Boolean = false, controller: String = Controller): Launched =
         val cgroup = attach(name)
         val pins = s"$PinRoot/$name"
         val flags = if unixSocket then " --flags unix-socket" else ""
@@ -375,7 +382,7 @@ object Phase4:
         val attached =
           if reuse then vm(s"sudo -n $Controller attach-pinned ${cgroup.path} $pins ${hooks.mkString(" ")}").text
           else
-            vm(s"sudo -n $Controller attach ${cgroup.path} $pins ${workspace.roots(ruleSet)}$flags $defect " +
+            vm(s"sudo -n $controller attach ${cgroup.path} $pins ${workspace.roots(ruleSet)}$flags $defect " +
               hooks.mkString(" ")).text
         transcript.indent(lines(attached, "^(attach|attach-pinned|refused) ".r).mkString("\n"))
         val atAttach = Launched(cgroup, Reached.Attach, attached, checked)
@@ -426,8 +433,10 @@ object Phase4:
           field("hooks", s1.attach) == "8" && field("roots", s1.attach) == "5",
         )
         check(
-          "the read-back finds eight programs of the installed tags over one map set holding the records",
-          field("programs", s1.verify) == "8" && field("maps", s1.verify) == "9",
+          "the read-back finds eight programs of the installed tags over one map set holding the records, " +
+            "the four record maps frozen",
+          field("programs", s1.verify) == "8" && field("maps", s1.verify) == "9" &&
+            field("records_frozen", s1.verify) == "1",
         )
         check(
           s"the proof: ${fixtureLine(s1.proof)}",
@@ -438,6 +447,18 @@ object Phase4:
           "the first process is refused the protected write and makes the ordinary one",
           logs.contains(".git/config result=EPERM") && logs.contains("tree/ordinary result=ok"),
         )
+        // A write from user space, as a stray tool of the machine's root makes one: each map's first entry
+        // written back unchanged, so that a write the kernel allows changes nothing either.
+        val rewritten = vm(s"sudo -n $Rewrite $PinRoot/s1/progs/file_open").text
+        transcript.indent(rewritten)
+        check(
+          "a write from user space to each of the four record maps is refused, EPERM, and one to stats succeeds",
+          RecordMaps.forall(map => rewritten.contains(s"rewrite map=$map result=EPERM")) &&
+            rewritten.contains("rewrite map=stats result=ok"),
+        )
+        val reverified =
+          vm(s"sudo -n $Readback verify ${s1.cgroup.path} ${workspace.expect(workspace.a)} $hooks8").text
+        check(s"the read-back after those writes passes: ${oneLine(reverified)}", reverified.contains("verify ok=1"))
         // The link's cgroup id is the attach cgroup's inode number: the identity the reconcile records.
         val s1Id = cgroupId(s1.cgroup.path)
         check(
@@ -510,12 +531,13 @@ object Phase4:
         check(
           "with its cgroup removed the pinned link is detached, cgroup_id 0, and the pinned programs stay",
           field("cgroup_id", link) == "0" &&
-            vm.line(s"sudo -n test -e $PinRoot/s2/progs/file_open && echo PRESENT") == "PRESENT",
+            vm.rootSees(s"$PinRoot/s2/progs/file_open").contains(true),
         )
         val s2 = launch("s2", Mode.Restart)
         check(
           s"the recreate checked the pins, attached them to the new cgroup and started (reached ${s2.reached.label})",
-          s2.check.contains("check-pins ok=1") && s2.reached == Reached.Started &&
+          s2.check.contains("check-pins ok=1") && field("records_frozen", s2.check) == "1" &&
+            s2.reached == Reached.Started &&
             lines(s2.attach, "^attach-pinned ".r).nonEmpty,
         )
         val logs = waitLogs("s2", "result=", 2)
@@ -536,7 +558,9 @@ object Phase4:
             s"$description: ${verdict(launched.verify)}",
             launched.reached == Reached.Verify && field("reason", launched.verify) == reason,
           )
-          check(s"no container $name exists", !podman("container", "exists", name).ok)
+          // By name alone: `podman container exists` also takes an id prefix, which d1 to d5 are.
+          val named = podman("ps", "-a", "--filter", s"name=^$name$$", "--format", "{{.Names}}")
+          check(s"no container $name exists", named.ok && named.text.trim.isEmpty)
         val d1 = launch("d1", Mode.Fresh, hooks = Hooks7)
         caught("d1", "a controller attaching seven of the eight hooks is caught by the read-back", d1, "hook-set")
         unpin("d1")
@@ -561,6 +585,10 @@ object Phase4:
         caught("d4", "a controller attaching a build differing in data alone", d4, "rodata")
         unpin("d4")
         remove("d4")
+        val d5 = launch("d5", Mode.Fresh, controller = ControllerUnfrozen)
+        caught("d5", "a controller leaving the record maps writable is caught by the read-back", d5, "map-frozen")
+        unpin("d5")
+        remove("d5")
 
       def unixSocketLaunch(): Unit =
         step("a launch under --unix-socket: nine hooks, the proof's socket in .git and file_receive")
@@ -648,7 +676,7 @@ object Phase4:
             s"--fixture /tmp --volume ${quoted(workspace.volumeMountpoint)} $hooks8", "fixture-fs-type")
         check(
           "none of the refused attaches pinned anything",
-          vm.line(s"sudo -n test -e $PinRoot/x1 && echo PRESENT || echo ABSENT") == "ABSENT",
+          vm.rootSees(s"$PinRoot/x1").contains(false),
         )
         remove("x1")
 
@@ -937,7 +965,7 @@ object Phase4:
           mountPseudoFilesystems(vm)
           check(
             s"after the machine restart no pin survives: ${oneLine(vm(s"sudo -n ls $PinRoot 2>&1").text)}",
-            vm.line(s"sudo -n test -e $PinRoot && echo PRESENT || echo ABSENT") == "ABSENT",
+            vm.rootSees(PinRoot).contains(false),
           )
           check(
             "the attach cgroups are gone",

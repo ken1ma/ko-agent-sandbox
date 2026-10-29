@@ -523,9 +523,7 @@ restore permission prompts and set the Claude Code status line.
        `podman machine ssh rm .local/share/ko-agent-sandbox/ko-agent-fs` (plain `rm` on Linux).
 
 1. On macOS and Windows, installs the BPF backend, compiled from bundled source against the
-   machine's kernel, inside the podman machine, and may ask to install a system unit there that
-   loads and verifies the policy's BPF programs at boot, ahead of the first launch, shown first
-   (SECURITY.md, "Silent changes to what you own").
+   machine's kernel, inside the podman machine.
 
 1. Use `--update` to install new agent releases.
 

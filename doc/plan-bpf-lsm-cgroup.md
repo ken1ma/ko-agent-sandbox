@@ -24,17 +24,18 @@ within 0.6 s on macOS and 2.1 s on WSL; the guard compiles the policy's records
 (`../fuse/ko-agent-fs/src/bpf_records.rs`); the classifier's host build runs the corpus through both
 classifiers (`../fuse/ko-agent-fs/tests/bpf_equivalence.rs`); Phase 4's probe
 (`../bpf/probe/phase4/`) passes every row on both machines ("Phase 4 on macOS", "Phase 4 on WSL"),
-its gate met, and `../bpf/probe/CheckEvidence.scala` passes for every measured section; Phase 5's
-probe (`../bpf/probe/phase5/Phase5.scala`) passes every row on both machines ("Phase 5 on macOS",
-"Phase 5 on WSL"), its gate met: on `perf-probe.py`'s repeated rows the policy's rounds overlap the
-unfiltered bind's on both machines, its single runs of the walk and the build lie within 11 % of the
-bind's on the per-file rows, `git status` and the build and scatter either way on the walk's depth
-rows, and the filter costs the bind 5 to 32 times on `perf-probe.py`'s rows. Phase 6's integration
-is built ("Phases", 6: `../src/main/scala/KoAgentBpf.scala`, the launcher's `--workspace` values,
-the binaries of `../bpf/ko-agent-bpf/`, the FIFO rules in the program and the attribute rules in the
-seccomp profile) and owes its rows on both machines, and the program's change reran Phases 3 to 5
-there, their sections rewritten from the reruns. The filter stays the default until "Acceptance"
-passes, and no launch ever binds the workspace writable without the policy attached and verified.
+its gate met; Phase 5's probe (`../bpf/probe/phase5/Phase5.scala`) passes every row on both machines
+("Phase 5 on macOS", "Phase 5 on WSL"), its gate met: on `perf-probe.py`'s repeated rows the
+policy's rounds overlap the unfiltered bind's on both machines, its single runs of the walk and the
+build lie within 6 % of the bind's on the per-file rows, `git status` and the build and scatter
+either way on the walk's depth rows, and the filter costs the bind 5 to 32 times on
+`perf-probe.py`'s rows. Phase 6's integration is built ("Phases", 6:
+`../src/main/scala/KoAgentBpf.scala`, the launcher's `--workspace` values, the binaries of
+`../bpf/ko-agent-bpf/`, the FIFO rules in the program and the attribute rules in the seccomp
+profile); its rows are measured on both machines ("Phase 6 on macOS", "Phase 6 on WSL"), and
+`../bpf/probe/CheckEvidence.scala` passes every measured section. The filter
+stays the default until "Acceptance" passes, and no launch ever binds the workspace writable without
+the policy attached and verified.
 
 The reader acting on this plan starts at "Phases" and "What is gained and what is lost". The
 sections before them are what the phases rest on.
@@ -441,7 +442,7 @@ Hooks the plan does not need, and the fact that excuses each:
     question for that version ("Later versions"). Sockets under `/tmp` and the rest of `~`,
     each container's own, stay allowed. What binds where is measured in "Environment
     evidence": the one program with a socket on shared storage is Codex's app-server daemon,
-    under `~/.codex`, and whether `codex exec` works without it is a Phase 3 row.
+    under `~/.codex`, and `codex exec` works without it ("Phase 6 on macOS", "Phase 6 on WSL").
   - `unix-socket` lifts the refusal and attaches
     `file_receive` as a ninth hook, run on the receiver's cgroup since the hook's argument is a file
     (`kernel/bpf/bpf_lsm.c`, `bpf_lsm_find_cgroup_shim`). Of a file whose mount belongs to
@@ -740,9 +741,12 @@ The program classifies by object and position, never by a path string:
   with that sandbox's maps, so a program references its own sandbox's records and no other's,
   which is what the read-back in "Lifecycle" compares. The maps are written before attach and
   never after: a rule change is a relaunch, as with the filter, so no record changes under a
-  running program. The slots are per hook, not per program
+  running program. The controller freezes the four record maps once filled (`BPF_MAP_FREEZE`),
+  after which the kernel refuses every write to them from user space for their lifetime
+  (`kernel/bpf/syscall.c`, `map_get_sys_perms`); this stops a stray write by a tool of the
+  machine's root, not root, who can detach the programs. The slots are per hook, not per program
   (`bpf_cgroup_atype_find` keys them by `attach_btf_id`), so this takes no slot; its cost is the
-  verifier's time per program set, paid ahead of the launch ("Lifecycle", the spare set).
+  verifier's time per program set, paid ahead of the launch ("Lifecycle", the preloaded set).
 - An error in the walk, a name too long for the bound, or a missing map entry denies.
 
 
@@ -757,21 +761,24 @@ has those privileges, and the controller never reads the workspace: its input is
 fixed-size records, made by the unprivileged guard ("The policy"), and its output is links and
 maps.
 
-`--build` installs the BPF object and the controller into the machine, as it installs the
-filter. The controller then runs at every launch, restart and recreate, since each attaches to a
-new cgroup and only a privileged caller can: one `sudo -n` per launch, in the machine or on the
-host. The verifier checks a sandbox's nine programs within 0.6 s on the macOS machine and 2.0 s
-on the WSL one ("Phase 4 on macOS", "Phase 4 on WSL"), time no launch waits for: the controller
-keeps one spare set per machine, loaded and pinned with empty maps and attached to nothing, which
-a launch takes by renaming its pin directory to the session's name, fills and attaches (step 2),
-and the controller prepares the next spare afterwards, in the background, as a boot-time unit
-prepares the first. Without a spare, a launch loads as the spare would and is slow once. A restart
-or recreate attaches the programs the launch pinned (step 5). A spare is used once, dies with the
-boot as every pin does, and fails the read-back's tag check when `--build` installed another
-object since, as a stale pin does; the fill through the pinned programs' map ids is the one step
-Phase 4 did not run, which Phase 6 measures. The pins outlive the controller, and a pin in `bpffs`
-does not survive a machine restart.
-For each session:
+`--build` installs the BPF object and the controller into the machine, as it installs the filter.
+The controller then runs at every launch, restart and recreate, since each attaches to a new cgroup
+and only a privileged caller can: one `sudo -n` per launch, in the machine or on the host. The
+verifier checks a sandbox's nine programs within 0.6 s on the macOS machine and 2.0 s on the WSL one
+("Phase 4 on macOS", "Phase 4 on WSL"), time a launch waits for only when no preloaded set is ready
+at its attach: the controller keeps one preloaded set per machine, loaded and pinned with empty maps
+and attached to nothing, which a launch takes by renaming its pin directory to the session's name,
+fills and attaches (step 2), and the controller prepares the next preloaded set afterwards, in the
+background. A boot leaves no preloaded set; the reconcile at the launcher's start prepares one in
+the background (step 7), seconds before the launch's attach, and Phase 6's launches that found none
+took the set their own reconcile prepared, on both machines. No boot-time unit prepares one: by the
+user's decision of 2026-10-28, a wait of at most one load per boot costs less than a system unit in
+the machine's configuration, installed only with the user's consent. A restart or recreate attaches
+the programs the launch pinned (step 5). A preloaded set is used once, dies with the boot as every
+pin does, and fails the read-back's tag check when `--build` installed another object since, as a
+stale pin does; the fill through the pinned programs' map ids is the one step Phase 4 did not run,
+which Phase 6 measures. The pins outlive the controller, and a pin in `bpffs` does not survive a
+machine restart. For each session:
 
 1. Create the attach cgroup before any container process exists, and keep it alive: under the
    systemd manager, a transient slice held by a VM-side unit, under which `podman create
@@ -800,12 +807,12 @@ For each session:
      on WSL, runs it inside the container's own cgroup below the attach cgroup, where the policy
      refused its write ("Phase 1 on macOS", "Phase 1 on WSL"); a crun that ran a hook outside
      would reopen this step.
-2. Take the spare set, or load the sandbox's programs and maps where none is ready; fill the
-   records, attach every program by link, pin the links and the programs where the session cannot
-   reach, and read them back. A pinned link holds its program and the program its maps
-   (`kernel/bpf/syscall.c`, `bpf_link_free`), so the maps need no pin; the programs are pinned for
-   step 5 and for the spare, so that a restart, a recreate or a launch attaches them without the
-   verifier's time again.
+2. Take the preloaded set, or load the sandbox's programs and maps where none is ready; fill the
+   records and freeze their maps ("The policy"), attach every program by link, pin the links and the
+   programs where the session cannot reach, and read them back. A pinned link holds its program and
+   the program its maps (`kernel/bpf/syscall.c`, `bpf_link_free`), so the maps need no pin; the
+   programs are pinned for step 5 and for the preloaded set, so that a restart, a recreate or a
+   launch attaches them without the verifier's time again.
    The controller attaches only below the invoking user's slice, in the machine as on native
    Linux ("Native Linux"); any other cgroup is refused before the attach.
 3. Prove the enforcement without trusting step 2's report, in two parts, both before any
@@ -820,13 +827,14 @@ For each session:
      - One query lists the programs of every hook together (`kernel/bpf/cgroup.c`,
        `__cgroup_bpf_query`, `CGROUP_LSM_START` to `CGROUP_LSM_END`). For each program,
        `BPF_OBJ_GET_INFO_BY_FD` gives its `attach_btf_id`, tag and `map_ids`
-       (`kernel/bpf/syscall.c`, `bpf_prog_get_info_by_fd`): the ids must name each hook of the
-       set once and nothing else, the tag must equal the installed object's, and every map,
-       opened by id (`BPF_MAP_GET_FD_BY_ID`, which needs `CAP_SYS_ADMIN`), must have the record
-       format's type, key and value sizes and entry count, and the records the guard produced
-       as its contents; the string literals' read-only map must hold the installed object's
-       bytes, since the tag covers instructions alone and a build differing in data alone keeps
-       every tag.
+       (`kernel/bpf/syscall.c`, `bpf_prog_get_info_by_fd`): the ids must name each hook of the set
+       once and nothing else, the tag must equal the installed object's, and every map, opened by id
+       (`BPF_MAP_GET_FD_BY_ID`, which needs `CAP_SYS_ADMIN`), must have the record format's type,
+       key and value sizes and entry count, and the records the guard produced as its contents, the
+       four record maps frozen, which the descriptor's fdinfo shows (`frozen:`,
+       `bpf_map_show_fdinfo`) and `bpf_map_info` does not; the string literals' read-only map must
+       hold the installed object's bytes, since the tag covers instructions alone and a build
+       differing in data alone keeps every tag.
      - The tag alone proves nothing about the maps: the kernel zeroes map references before
        computing it (`kernel/bpf/core.c`, `bpf_prog_calc_tag`).
    - A fixture the kernel judges, under the launcher's state root on the machine's share, so a
@@ -903,16 +911,19 @@ For each session:
    programs, whose release frees the programs and maps, and remove the cgroup.
 7. Reconcile at every launcher start, under the per-machine launch lock ("The hooks",
    `file_receive`): list the pinned links, programs and attach cgroups beside podman's
-   containers. The spare's pin directory is kept while its tags are the installed object's and
-   unpinned otherwise; a directory named for a session the lock holder is not launching and no
-   container names is a launch that died after taking the spare, and goes as an orphan. A pin
-   and its cgroup are removed only when no container, a stopped or initialized one included,
+   containers. The preloaded set's pin directory is kept while its tags are the installed object's
+   and unpinned otherwise; a directory named for a session the lock holder is not launching and no
+   container names is a launch that died after taking the preloaded set, and goes as an orphan. A
+   pin and its cgroup are removed only when no container, a stopped or initialized one included,
    names the cgroup, no launch or restart holds the lock, and the cgroup's
    `cgroup.events` reads `populated 0`, which counts the descendants' tasks as `cgroup.procs`
    does not
    (`Documentation/admin-guide/cgroup-v2.rst`, "Core Interface Files"); under systemd the hold
    unit is stopped first, once the cgroup has no container, so that it does not count. A stopped
-   container keeps its pins (step 5), so an empty cgroup alone is no orphan. A listing or a
+   container keeps its pins (step 5), so an empty cgroup alone is no orphan. A record whose
+   session has no container, no attach cgroup and no pins, as a machine restart leaves a live
+   session, is dropped by the launcher's reconcile script before the controller, which could not
+   open its cgroup (`KoAgentBpf.reconcileScript`). A listing or a
    label that cannot be read leaves every pin in place and is reported, each named. The reconcile
    removes only cgroups below the user's slice and pins below the controller's own directory,
    each by the identity the launcher recorded, and refuses a symlink, another filesystem or a
@@ -1375,7 +1386,7 @@ they are the reason for a rule or the only measurement of their kind, and named 
 
 ### Phase 4 on macOS
 
-Measured on 2026-10-27 with `../bpf/probe/phase4/Phase4.scala` on the machine of "Phase 1 on
+Measured on 2026-10-29 with `../bpf/probe/phase4/Phase4.scala` on the machine of "Phase 1 on
 macOS", podman 6.1.2, crun 1.30, clang 19.1.7, `policy.bpf.o` of SHA-256
 `81b80f90f32c1c751b4a8904c498e57c592a297317377b121367c8eac00b14f0`, the object "Phase 3 on macOS"
 measures, built again byte for byte, beside `other.bpf.o` of SHA-256
@@ -1383,11 +1394,12 @@ measures, built again byte for byte, beside `other.bpf.o` of SHA-256
 call twice in its statistics, which stands for another build, and `other-data.bpf.o` of SHA-256
 `4901d9e57541470a03087e9fc039b55b89068896fdeac7805b4a135b86dac341`, the source with one string
 literal of the same length changed, whose instructions and tags equal the installed object's; all
-built from sources of SHA-256 `76bbe1e5c74a646962ce0821170a67aa6fcf5b35cbec748ceea6bb083fc4b55e`
+built from sources of SHA-256 `bdfd784e8cfad3bef2e07a08eec7498520d358d9b940185b5f37a7625db2cc77`
 (`sources.txt` lists them in hashing order; `../bpf/probe/CheckEvidence.scala` recomputes it):
 the program with the FIFO rules and the launcher's controller, read-back and fixture, from
-`../bpf/ko-agent-bpf/`. Every one of the 67 rows passes in one run, the four machine-restart rows
-among them. The containers run as in Phase 2; thirteen launches ran through the launcher's steps
+`../bpf/ko-agent-bpf/`, the controller freezing the record maps, and the probe's `rewrite.c`,
+which writes to them. Every one of the 71 rows passes in one run, the four machine-restart rows
+among them. The containers run as in Phase 2; fourteen launches ran through the launcher's steps
 1 to 4, and the reconcile's rows ran the controller's attach alone nine times. A fact of the runs
 of 2026-10-25, under the program before the FIFO rules, is kept as a reason for them and named as
 such.
@@ -1395,18 +1407,23 @@ such.
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
 | install                  | the read-back loads the nine programs once and records their tags and |
-|                          | the read-only data's 758 bytes: 532 ms                                |
-| step 2 at launch         | over the twenty-one attaches that loaded, the controller's load took  |
-|                          | 406 to 553 ms, filling the maps 0.1 to 0.2 ms, the eight or nine      |
-|                          | attaches 0.4 to 0.7 ms                                                |
-| step 2 at a recreate     | the pinned programs checked in 17 ms and attached to the new cgroup   |
-|                          | in 0.4 ms, nothing loaded; the old links read cgroup_id 0 after their |
+|                          | the read-only data's 758 bytes: 553 ms                                |
+| step 2 at launch         | over the twenty-two attaches that loaded, the controller's load took  |
+|                          | 389 to 513 ms, filling and freezing the maps 0.1 ms, the eight or     |
+|                          | nine attaches 0.4 to 0.7 ms, once 1.7 ms                              |
+| step 2 at a recreate     | the pinned programs checked in 16 ms and attached to the new cgroup   |
+|                          | in 0.3 ms, nothing loaded; the old links read cgroup_id 0 after their |
 |                          | cgroup went, the programs stayed pinned                               |
-| step 3                   | the read-back 15 to 18 ms: eight programs, nine maps (the eight of    |
+| step 3                   | the read-back 14 to 18 ms: eight programs, nine maps (the eight of    |
 |                          | the policy and the string literals' read-only map, its bytes the      |
-|                          | installed object's), five roots, 56 rules; the proof's 68 operations  |
-|                          | (69 under `unix-socket`, 67 under the launcher's defaults alone) 38   |
-|                          | to 47 ms, 0 mismatches, in a scope under the slice                    |
+|                          | installed object's), five roots, 56 rules, the four record maps       |
+|                          | frozen; the proof's 68 operations (69 under `unix-socket`, 67 under   |
+|                          | the launcher's defaults alone) 39 to 50 ms, 0 mismatches, in a scope  |
+|                          | under the slice                                                       |
+| the record maps          | root's write of each map's first entry back unchanged, through the    |
+|                          | pinned program's map ids: `EPERM` from `roots`, `rules`, `aliases`    |
+|                          | and `policy_config`, success on `stats`; the read-back passes after   |
+|                          | it, and the recreate's check finds the four frozen                    |
 | the session              | the first process is refused `.git/config` and writes an ordinary     |
 |                          | file; `podman exec` is refused; after `podman restart` the first      |
 |                          | process is refused again; after `podman kill` the container is exited |
@@ -1422,9 +1439,10 @@ such.
 | defective controllers    | seven hooks: `hook-set attached=7 expected=8`; the other build: `tag` |
 |                          | on `file_open`; the build differing in data alone: `rodata`, its 758  |
 |                          | bytes differing from the installed object's under equal tags; another |
-|                          | rule file's records: `map-contents rules index=55`; no container      |
-|                          | exists after any; the proof alone catches the records too, one        |
-|                          | mismatch (`.vscode/settings.json`)                                    |
+|                          | rule file's records: `map-contents rules index=55`; one leaving the   |
+|                          | record maps unfrozen: `map-frozen` on `roots`; no container exists    |
+|                          | after any; the proof alone catches the records too, one mismatch      |
+|                          | (`.vscode/settings.json`)                                             |
 | `unix-socket`            | nine hooks attached and verified; the proof's `bind` in `.git`        |
 |                          | refused, and a directory descriptor sent from a mount namespace of    |
 |                          | the sender's own refused on arrival                                   |
@@ -1442,7 +1460,7 @@ such.
 |                          | stopped and a live container keep theirs; the created one's go once   |
 |                          | it is removed                                                         |
 | contradicting identities | a container whose label names another cgroup: kept, unassociated; a   |
-|                          | cgroup recreated at its path (inode 352098, then 353013): refused; a  |
+|                          | cgroup recreated at its path (inode 52865, then 53780): refused; a    |
 |                          | pin directory renamed to another session's name: refused by its       |
 |                          | links' cgroup id; nothing removed                                     |
 | cleanup refusals         | a session name and a cgroup path with `..`; a symlink in place of the |
@@ -1452,7 +1470,7 @@ such.
 | a refusal removes        | one foreign link among a session's eight: refused, its 9 links and 8  |
 | nothing                  | programs all surviving; a programs directory that is a symlink        |
 |                          | (`ELOOP`): refused, all 8 links surviving                             |
-| machine restart          | `podman machine stop` 3 s, `start` 12 s; the pin root is gone with    |
+| machine restart          | `podman machine stop` 62 s, `start` 12 s; the pin root is gone with   |
 |                          | bpffs, the attach cgroups are gone, the two containers stay exited    |
 |                          | and the reconcile keeps both, since their containers name them        |
 | bpffs                    | holds symlinks and renames of pin directories                         |
@@ -1465,26 +1483,26 @@ such.
 
 ### Phase 4 on WSL
 
-Measured on 2026-10-27 with `../bpf/probe/phase4/Phase4.scala` on the Windows machine of "Phase 1
+Measured on 2026-10-29 with `../bpf/probe/phase4/Phase4.scala` on the Windows machine of "Phase 1
 on WSL", podman 6.1.4 under the cgroupfs manager, crun 1.28, clang 19.1.7, `policy.bpf.o` of SHA-256
 `463cfe8660a9f165cdff072bcf99efd47edbb9d82596030ecd337841ee2bd0a5`, the object "Phase 3 on WSL"
 measures, built again byte for byte, beside `other.bpf.o` of SHA-256
 `43af7b4d6bb547246b8cc6728d956059c699111f9d2112aa0eaf214802ae7ab4` and `other-data.bpf.o` of
 SHA-256 `7099595b9d5d308eadb99538a915ecdd2fce7980e2a60ed140485fff4f7eb78f`; all built from sources
-of SHA-256 `76bbe1e5c74a646962ce0821170a67aa6fcf5b35cbec748ceea6bb083fc4b55e`, those "Phase 4 on
-macOS" measures. Every one of the 67 rows passes in one run, the four machine-restart rows among
+of SHA-256 `bdfd784e8cfad3bef2e07a08eec7498520d358d9b940185b5f37a7625db2cc77`, those "Phase 4 on
+macOS" measures. Every one of the 71 rows passes in one run, the four machine-restart rows among
 them. The rows below name what differs from macOS; every other row passed as there, the reconcile
 removing the cgroup directories itself under cgroupfs.
 
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
-| install                  | the tags and the read-only data recorded in 1.98 s                    |
-| step 2 at launch         | over the twenty-one attaches that loaded, the load 1.63 to 2.23 s,    |
-|                          | filling 0.1 to 0.2 ms, the attaches 13 to 53 ms in ten, once 161 ms,  |
-|                          | and 0.2 to 0.4 ms in the other ten                                    |
-| step 2 at a recreate     | the pins checked in 45 ms and attached in 24 ms                       |
-| step 3                   | the read-back 40 to 47 ms; the proof's 68 operations (69 under        |
-|                          | `unix-socket`, 67 under the launcher's defaults alone) 306 to 386 ms  |
+| install                  | the tags and the read-only data recorded in 2.03 s                    |
+| step 2 at launch         | over the twenty-two attaches that loaded, the load 1.53 to 1.91 s,    |
+|                          | filling and freezing 0.1 to 3.8 ms, the attaches 12.5 to 19.5 ms in   |
+|                          | twelve and 0.2 to 0.6 ms in the other ten                             |
+| step 2 at a recreate     | the pins checked in 43 ms and attached in 18 ms                       |
+| step 3                   | the read-back 27 to 56 ms; the proof's 68 operations (69 under        |
+|                          | `unix-socket`, 67 under the launcher's defaults alone) 339 to 372 ms  |
 |                          | on 9p, 0 mismatches; its `mkfifo` and `bind` answer `EPERM`, the      |
 |                          | policy's, since 9p answers both after the hooks                       |
 | the proof's cgroup       | a process of the ssh session cannot join the leaf below the attach    |
@@ -1497,79 +1515,80 @@ removing the cgroup directories itself under cgroupfs.
 |                          | among them. A launcher reaching the machine over ssh takes that step  |
 | sockets and mounts       | `rename` of the socket's directory into the volume (ext4) and into    |
 |                          | the workspace (9p) answers `EXDEV`                                    |
-| machine restart          | `podman machine stop` 2 s, `start` 10 s; the rows as on macOS         |
+| machine restart          | `podman machine stop` 2 s, `start` 8 s; the rows as on macOS          |
 
 
 ### Phase 5 on macOS
 
-Measured on 2026-10-27 with `../bpf/probe/phase5/Phase5.scala` on the machine of "Phase 1 on
-macOS", podman 6.1.2, crun 1.30, clang 19.1.7, `policy.bpf.o` of SHA-256
+Measured on 2026-10-29 with `../bpf/probe/phase5/Phase5.scala` on the machine of "Phase 1 on macOS",
+podman 6.1.2, crun 1.30, clang 19.1.7, `policy.bpf.o` of SHA-256
 `81b80f90f32c1c751b4a8904c498e57c592a297317377b121367c8eac00b14f0`, the object "Phase 3 on macOS"
 and "Phase 4 on macOS" measure, built again byte for byte, from sources of SHA-256
-`caabf361ee5b1cf67e76004bf7e88abd496fa2da3fc166b7b62680575e3ed390`. The tree is sbt/sbt at
-`8b211995`, 4,498 tracked files at mean depth 7.0 among 7,987 entries, the corpus `perf-probe.py`'s
+`23f59acacf3751e2e22ee1f244c7a2f37e2a6729d761987895db1f9d80c5a576`. The tree is sbt/sbt at
+`09a886e3`, 4,509 tracked files at mean depth 7.0 among 8,004 entries, the corpus `perf-probe.py`'s
 2,101 entries, and the build a clone of this repository at the tree's root, under the launcher's
 default rules, 55 lines. Every one of the 26 rows passes in one run. The three stacks run the
-sandbox image with the session's user mapping, the policy's containers below the attach cgroup,
-the filter's through the launcher under `--workspace=live,fuse`; `perf-probe.py` ran three rounds
-a stack, interleaved, after one round on the bare bind before the launch; the figures are the
-mean, with the range, over the rounds. A live session of the backend held its nine links
-throughout, so the shim was installed in every round; the bare bind's control is the run of
-2026-10-25, under the program before the FIFO rules, named as such.
+sandbox image with the session's user mapping, the policy's containers below the attach cgroup, the
+filter's through the launcher under `--workspace=live,fuse`; `perf-probe.py` ran three rounds a
+stack, interleaved, after one round on the bare bind before the launch; the figures are the mean,
+with the range, over the rounds. A live session of the backend held its eight links throughout, so
+the shim was installed in every round; the bare bind's control is the run of 2026-10-25, under the
+program before the FIFO rules, named as such.
 
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
-| the launch               | load 460 ms, attach 0.4 ms, read-back 14.3 ms, the proof's 67         |
-|                          | operations 38.2 ms, 0 mismatches; a hook file in `.git/hooks` made on |
+| the launch               | load 469 ms, attach 0.6 ms, read-back 14.1 ms, the proof's 67         |
+|                          | operations 37.3 ms, 0 mismatches; a hook file in `.git/hooks` made on |
 |                          | the bare bind, refused under the policy and through the filter        |
-| the bare bind, µs an     | this run, with a live session's nine links attached and so the shim   |
-| entry                    | installed: `find` 68, `find -printf` 150, `ls -lR` 677, `cp -r`       |
-|                          | 1,234, `rm -rf` 310, each inside the range of the bind's rounds. On   |
-|                          | 2026-10-25, before the launcher could start a session of the backend, |
-|                          | with nothing under the probe's pin root (other attachments not        |
-|                          | checked): 76, 167, 719, 1,258, 342, each inside the range of that     |
+| the bare bind, µs an     | this run, with a live session's eight links attached and so the shim  |
+| entry                    | installed: `find` 72, `find -printf` 156, `ls -lR` 694, `cp -r`       |
+|                          | 1,204, `rm -rf` 326, each inside the range of the bind's rounds but   |
+|                          | `rm -rf`, above the bind's 284 to 307 and inside the policy's 302 to  |
+|                          | 326. On 2026-10-25, before the launcher could start a session of the  |
+|                          | backend, with nothing under the probe's pin root (other attachments   |
+|                          | not checked): 76, 167, 719, 1,258, 342, each inside the range of that |
 |                          | run's bind rounds: the shim the first attach installs costs tasks     |
 |                          | outside the cgroup nothing the rounds' spread shows                   |
-| `perf-probe.py`, µs an   | `find`: bind 72 (68 to 77), policy 67 (66 to 68), filter 372; `find   |
-| entry, bind / policy /   | -printf`: 150 (148 to 154), 156 (143 to 172), 1,218; `ls -lR`: 676    |
-| filter                   | (661 to 690), 680 (672 to 685), 11,825; `cp -r`: 1,186 (1,127 to      |
-|                          | 1,284), 1,222 (1,195 to 1,270), 8,343; `rm -rf`: 296 (283 to 314),    |
-|                          | 311 (300 to 317), 2,186. Policy over bind 0.93 to 1.05 times over     |
-|                          | overlapping ranges in every row; filter over bind 5.1 to 17.5 times,  |
+| `perf-probe.py`, µs an   | `find`: bind 71 (68 to 75), policy 72 (67 to 75), filter 384;         |
+| entry, bind / policy /   | `find -printf`: 153 (145 to 161), 151 (150 to 151), 1,247; `ls -lR`:  |
+| filter                   | 685 (677 to 700), 685 (666 to 705), 12,119; `cp -r`: 1,182 (1,125 to  |
+|                          | 1,214), 1,181 (1,171 to 1,188), 8,555; `rm -rf`: 298 (284 to 307),    |
+|                          | 316 (302 to 326), 2,267. Policy over bind 0.99 to 1.06 times over     |
+|                          | overlapping ranges in every row; filter over bind 5.4 to 17.7 times,  |
 |                          | as "The cost of a path walk" measured in 2026-09                      |
 | the program's share of a | 3,600 judged calls each of `file_open`, `inode_create` and            |
 | `perf-probe.py` round    | `inode_unlink` (the corpus's 1,800 files made, copied and removed     |
 |                          | twice over), 126, 32 and 36 more answered at the superblock check,    |
 |                          | every walk 4 deep and none retried or without a slot; one create      |
 |                          | refused a round, the probe's own hook file in `.git/hooks`; 15.0 to   |
-|                          | 15.5 µs mean from entry to decision, 0.07 ms at most: the three       |
+|                          | 15.5 µs mean from entry to decision, 0.08 ms at most: the three       |
 |                          | hooks' 10,800 judged calls take 164 to 165 ms of a round's 8 to 9 s   |
 | the build                | `sbt 'testOnly *SandboxTextWidthTest'`, output in the workspace: bind |
-|                          | 86 s wall, sbt's own 56 s; policy 84 s, 54 s; 10 of 10 tests under    |
-|                          | both. The policy judged 1,700 opens, 1,358 creates, 214 renames (428  |
-|                          | walks, source and destination), 108 unlinks and 514 attribute         |
-|                          | changes, walks up to 20 deep, 39 to 46 µs mean a call and 90 for a    |
-|                          | rename, 0.18 ms at most; it refused 5 symlinks at depth 7, the        |
+|                          | 87 s wall, sbt's own 58 s; policy 84 s, 55 s; 10 of 10 tests under    |
+|                          | both. The policy judged 1,717 opens, 1,379 creates, 210 renames (420  |
+|                          | walks, source and destination), 106 unlinks and 508 attribute         |
+|                          | changes, walks up to 20 deep, 40 to 46 µs mean a call and 91 for a    |
+|                          | rename, 0.14 ms at most; it refused 4 symlinks at depth 7, the        |
 |                          | absolute targets "The policy" refuses as the filter refuses sbt's     |
 |                          | links into its cache, under which sbt writes copies ("sbt over        |
-|                          | dangling cache links"); the machine 21 % busy mean, 45 to 51 % max,   |
-|                          | memory used rising from 1.5 to 3.5 GB under both                      |
-| `walk-probe.py`, bind /  | `lstat` by path: depth 1 0.11 / 0.09 / 0.58 ms, depth 7 0.34 / 0.34 / |
-| policy / filter          | 5.34 ms, depth 15 0.67 / 0.81 / 16.1 ms; every tracked file by path   |
-|                          | 0.34 / 0.37 / 5.41 ms a file, through a directory fd 0.09 / 0.10 /    |
-|                          | 1.37 ms; `find . -type f` 1.8 / 1.8 / 13.9 s; `git status` 3.7 / 3.7  |
-|                          | / 67.6 s, `--untracked-files=no` 0.9 / 0.9 / 38.0 s. The depth rows,  |
-|                          | 200 `lstat` each of 0.1 to 1 ms, scatter 0.80 to 1.36 times policy    |
-|                          | over bind, the per-file rows 1.09 and 1.11; the policy judged 4       |
+|                          | dangling cache links"); the machine 21 % busy mean, 46 % max, memory  |
+|                          | used rising to 2.9 GB under both, from 1.0 and 1.2                    |
+| `walk-probe.py`, bind /  | `lstat` by path: depth 1 0.09 / 0.09 / 0.59 ms, depth 7 0.33 / 0.37 / |
+| policy / filter          | 5.29 ms, depth 15 0.68 / 0.67 / 16.1 ms; every tracked file by path   |
+|                          | 0.34 / 0.36 / 5.44 ms a file, through a directory fd 0.09 / 0.09 /    |
+|                          | 1.37 ms; `find . -type f` 1.9 / 1.9 / 13.8 s; `git status` 3.8 / 3.8  |
+|                          | / 69.1 s, `--untracked-files=no` 0.9 / 0.9 / 38.8 s. The depth rows,  |
+|                          | 200 `lstat` each of 0.1 to 1 ms, scatter 0.92 to 1.12 times policy    |
+|                          | over bind, the per-file rows 1.06 and 1.00; the policy judged 4       |
 |                          | opens, 4 creates and 4 unlinks in the whole run, git's lock at depth  |
-|                          | 2, 15 to 20 µs each; the filter's figures lie near "a real tree" of   |
+|                          | 2, 16 to 20 µs each; the filter's figures lie near "a real tree" of   |
 |                          | 2026-09-19 (5.97 ms a file, 71.5 s)                                   |
 | the machine during the   | `/proc/stat` over the run, ten CPUs: bind 8 % busy mean, 20 % max     |
-| stat storm               | over 31 s; policy 8 %, 20 % over 25 s; filter 6 %, 18 % over 479 s;   |
-|                          | iowait at most 1 %; memory used 1.4 to 1.8 GB of 11.9 GB under each,  |
-|                          | memory pressure `some avg10` 0.00 throughout, io at most 0.32         |
-| the machine during       | bare, bind and policy 5 to 7 % busy mean, 6 to 10 % max over 8 to 9 s |
-| `perf-probe.py`          | a round; filter 7 % mean, 18 to 23 % max over 74 s a round            |
+| stat storm               | over 31 s; policy 8 %, 21 % over 25 s; filter 6 %, 19 % over 484 s;   |
+|                          | no iowait; memory used 1.0 to 1.5 GB of 11.9 GB under each, memory    |
+|                          | pressure `some avg10` 0.00 throughout, io at most 0.18                |
+| the machine during       | bare, bind and policy 5 to 7 % busy mean, 6 to 14 % max over 8 to 9 s |
+| `perf-probe.py`          | a round; filter 7 % mean, 19 to 21 % max over 76 s a round            |
 | the probe's own label    | `perf-probe.py` reports `unfiltered bind mount`, `BPF policy` and     |
 |                          | `filtered`: it tells the policy from the bind by a hook file in       |
 |                          | `.git/hooks`, which the policy refuses by name and allows the         |
@@ -1580,66 +1599,172 @@ throughout, so the shim was installed in every round; the bare bind's control is
 
 ### Phase 5 on WSL
 
-Measured on 2026-10-27 with `../bpf/probe/phase5/Phase5.scala` (`scala shebang`) on the Windows
+Measured on 2026-10-29 with `../bpf/probe/phase5/Phase5.scala` (`scala shebang`) on the Windows
 machine of "Phase 1 on WSL", podman 6.1.4 under the cgroupfs manager, crun 1.28, clang 19.1.7,
 `policy.bpf.o` of SHA-256 `463cfe8660a9f165cdff072bcf99efd47edbb9d82596030ecd337841ee2bd0a5`, the
 object "Phase 3 on WSL" and "Phase 4 on WSL" measure, built again byte for byte, from sources of
-SHA-256 `caabf361ee5b1cf67e76004bf7e88abd496fa2da3fc166b7b62680575e3ed390`, those "Phase 5 on
-macOS" measures. The tree is sbt/sbt at `00b58625`, 4,498 tracked files, the corpus and the build as
-on macOS, the machine of four CPUs and 7.8 GB on the 9p share. Every one of the 26 rows passes in
-one run of 2 h 32 min, of which the filter's `walk-probe.py` took 88 min. No session of the backend
-was live, so the bare round is the shim's control. The rows below name what differs from macOS; the
-stacks and the rounds are the same.
+SHA-256 `23f59acacf3751e2e22ee1f244c7a2f37e2a6729d761987895db1f9d80c5a576`, those "Phase 5 on macOS"
+measures. The tree is sbt/sbt at `09a886e3`, 4,509 tracked files, the corpus and the build as on
+macOS, the machine of four CPUs and 7.8 GB on the 9p share. Every one of the 26 rows passes in one
+run, whose workloads took 2 h 19 min, the filter's `walk-probe.py` 77 min of it. No session of the
+backend was live and nothing was pinned under the launcher's pin root, so the bare round is the
+shim's control. The rows below name what differs from macOS; the stacks and the rounds are the same.
 
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
-| the launch               | load 1,914 ms, attach 18.2 ms, read-back 32.2 ms, the proof's 67      |
-|                          | operations 309 ms on 9p, 0 mismatches; the attach cgroup a directory  |
+| the launch               | load 1,914 ms, attach 19.0 ms, read-back 39.7 ms, the proof's 67      |
+|                          | operations 341 ms on 9p, 0 mismatches; the attach cgroup a directory  |
 |                          | under `app.slice`, the proof joined from a transient scope            |
-| the bare bind, µs an     | before the launch, no link of any session attached, the launcher's    |
-| entry                    | spare set pinned and attached to nothing: `find` 596, `find -printf`  |
-|                          | 1,446, `ls -lR` 3,047, `cp -r` 15,303, `rm -rf` 2,015; each inside    |
-|                          | the range of the bind's rounds but `cp -r`, above it in this first    |
-|                          | round after the clone (iowait 17 %, io pressure 4.0): the shim the    |
-|                          | first attach installs costs tasks outside the cgroup nothing the      |
-|                          | rounds' spread shows                                                  |
-| `perf-probe.py`, µs an   | `find`: bind 619 (542 to 660), policy 605 (567 to 635), filter 3,729; |
-| entry, bind / policy /   | `find -printf`: 1,475 (1,368 to 1,536), 1,556 (1,419 to 1,658),       |
-| filter                   | 12,287; `ls -lR`: 3,082 (2,917 to 3,196), 3,191 (2,798 to 3,460),     |
-|                          | 97,605; `cp -r`: 14,203 (13,476 to 14,676), 14,478 (13,040 to         |
-|                          | 15,875), 73,722; `rm -rf`: 1,958 (1,897 to 2,041), 1,931 (1,797 to    |
-|                          | 2,030), 20,370. Policy over bind 0.98 to 1.06 times over overlapping  |
-|                          | ranges in every row; filter over bind 5.2 to 31.7 times               |
+| the bare bind, µs an     | before the launch, no link of any session attached: `find` 609,       |
+| entry                    | `find -printf` 1,530, `ls -lR` 3,149, `cp -r` 14,430, `rm -rf` 1,934; |
+|                          | each inside the range of the bind's rounds but `cp -r`, 70 above it   |
+|                          | in this first round after the clone (iowait 6 %, io pressure 74.7):   |
+|                          | the shim the first attach installs costs tasks outside the cgroup     |
+|                          | nothing the rounds' spread shows                                      |
+| `perf-probe.py`, µs an   | `find`: bind 651 (597 to 699), policy 639 (599 to 671), filter 3,423; |
+| entry, bind / policy /   | `find -printf`: 1,528 (1,462 to 1,635), 1,505 (1,365 to 1,579),       |
+| filter                   | 12,076; `ls -lR`: 3,056 (2,940 to 3,234), 3,139 (3,013 to 3,212),     |
+|                          | 96,491; `cp -r`: 13,472 (13,017 to 14,360), 13,929 (13,648 to         |
+|                          | 14,182), 71,326; `rm -rf`: 1,825 (1,716 to 2,034), 1,831 (1,748 to    |
+|                          | 1,985), 19,733. Policy over bind 0.98 to 1.03 times over overlapping  |
+|                          | ranges in every row; filter over bind 5.3 to 31.6 times               |
 | the program's share of a | the same 3,600 judged calls a hook, 6, 10 and 0 answered at the       |
 | `perf-probe.py` round    | superblock check, every walk 4 deep, the probe's own hook file        |
-|                          | refused once a round; 13.0 to 18.1 µs mean from entry to decision,    |
-|                          | 2.5 ms at most once: 155 to 176 ms of a round's 71 to 82 s            |
-| the build                | bind 320 s wall, sbt's own 246 s; policy 305 s, 239 s; 10 of 10 tests |
-|                          | under both. The policy judged 1,740 opens, 1,770 creates, 210 renames |
-|                          | (420 walks), 106 unlinks and 752 attribute changes, walks up to 20    |
-|                          | deep, 39 to 62 µs mean a call and 82 for a rename, 3.6 ms at most; it |
-|                          | refused 4 symlinks at depth 7, as on macOS; the machine 38 % busy     |
-|                          | mean, 93 to 96 % max, memory used rising from 0.6 to 2.6 GB under     |
-|                          | both                                                                  |
-| `walk-probe.py`, bind /  | `lstat` by path: depth 1 0.91 / 1.00 / 4.52 ms, depth 7 5.18 / 5.72 / |
-| policy / filter          | 58.5 ms, depth 15 10.6 / 11.9 / 216.5 ms; every tracked file by path  |
-|                          | 5.03 / 5.57 / 58.8 ms a file, through a directory fd 0.94 / 1.03 /    |
-|                          | 18.6 ms; `find . -type f` 14.1 / 15.1 / 186.8 s; `git status` 22.2 /  |
-|                          | 23.2 / 779.9 s, `--untracked-files=no` 11.0 / 11.1 / 448.9 s. Policy  |
-|                          | over bind 1.04 to 1.25 times on the depth rows, 1.10 and 1.11 per     |
-|                          | file, 1.01 to 1.07 on the commands; the policy judged 4 opens, 4      |
-|                          | creates and 4 unlinks, 18 to 46 µs each; the bare 9p bind costs 10    |
-|                          | times the macOS virtiofs bind on every row, and the filter 5 to 41    |
-|                          | times the bind on top                                                 |
-| the machine during the   | four CPUs: bind 15 % busy mean, 36 % max over 339 s; policy 17 %, 35  |
-| stat storm               | % over 250 s; filter 14 %, 55 % over 5,283 s; iowait at most 5, 4 and |
-|                          | 14 %; memory used 0.53 to 0.70 GB of 7.8 GB under each, memory        |
-|                          | pressure `some avg10` 0.00 throughout; io pressure at most 1.8, 0.8   |
-|                          | and 5.4                                                               |
-| the machine during       | bare, bind and policy 14 % busy mean, 16 to 18 % max (41 % once under |
-| `perf-probe.py`          | the policy) over 71 to 82 s a round; filter 14 to 15 % mean, 57 to 59 |
-|                          | % max over 617 to 662 s a round, with iowait peaks of 8 to 22 %;      |
-|                          | memory pressure 0.00 under every stack                                |
+|                          | refused once a round; 12.7 to 14.5 µs mean from entry to decision,    |
+|                          | 0.73 ms at most once: 148 to 149 ms of a round's 74 to 78 s           |
+| the build                | bind 318 s wall, sbt's own 250 s; policy 316 s, 244 s; 10 of 10 tests |
+|                          | under both. The policy judged 1,745 opens, 1,775 creates, 210 renames |
+|                          | (420 walks), 107 unlinks and 752 attribute changes, walks up to 20    |
+|                          | deep, 42 to 65 µs mean a call and 89 for a rename, 3.8 ms at most; it |
+|                          | refused 3 symlinks at depth 7, as on macOS; the machine 33 and 35 %   |
+|                          | busy mean, 84 and 93 % max, memory used rising from 0.6 to 2.3 GB     |
+|                          | under both                                                            |
+| `walk-probe.py`, bind /  | `lstat` by path: depth 1 1.14 / 0.94 / 3.99 ms, depth 7 6.02 / 5.70 / |
+| policy / filter          | 53.3 ms, depth 15 12.0 / 11.4 / 189.5 ms; every tracked file by path  |
+|                          | 5.86 / 5.48 / 54.8 ms a file, through a directory fd 1.06 / 1.02 /    |
+|                          | 15.7 ms; `find . -type f` 15.6 / 15.4 / 161.3 s; `git status` 22.1 /  |
+|                          | 21.7 / 674.4 s, `--untracked-files=no` 10.9 / 11.0 / 388.9 s. Policy  |
+|                          | over bind 0.82 to 1.06 times on the depth rows, 0.94 and 0.96 per     |
+|                          | file, 0.98 to 1.01 on the commands; the policy judged 4 opens, 4      |
+|                          | creates and 4 unlinks, 16 µs each; the bare 9p bind costs 6 to 18     |
+|                          | times the macOS virtiofs bind, and the filter 3.5 to 36 times the     |
+|                          | bind on top                                                           |
+| the machine during the   | four CPUs: bind 14 % busy mean, 37 % max over 364 s; policy 17 %, 36  |
+| stat storm               | % over 246 s; filter 14 %, 55 % over 4,649 s; iowait at most 5, 5 and |
+|                          | 15 %; memory used 0.56 to 0.71 GB of 7.8 GB under each, memory        |
+|                          | pressure `some avg10` at most 0.14, 0.00 and 3.19; io pressure at     |
+|                          | most 1.8, 1.2 and 5.1                                                 |
+| the machine during       | bind and policy 13 to 14 % busy mean, 16 to 18 % max over 71 to 79 s  |
+| `perf-probe.py`          | a round, the bare round 172 s; filter 14 to 15 % mean, 55 to 62 % max |
+|                          | over 604 to 641 s a round, with iowait peaks of 20 to 39 %; memory    |
+|                          | pressure at most 0.37 under bare, bind and policy, 1.08 under the     |
+|                          | filter                                                                |
+
+
+### Phase 6 on macOS
+
+Measured on 2026-10-30 with `../bpf/probe/phase6/Phase6.scala` on the machine of "Phase 1 on macOS",
+podman 6.1.2, crun 1.30, through the launcher's jar from `sbt dist` and its `--build`, the installed
+backend that of "Phase 4 on macOS", from sources of SHA-256
+`a7f24910b48ecf81a890ca146388e63fe134a5ec314979965219e43863487863` (`sources.txt`: the backend and
+`KoAgentBpf.scala`, the launcher's side of it). Every one of the 61 rows passes in one run of 57
+launches, each a `java -jar` of the launcher from a scratch git repository under `~`, with no other
+session on the machine; the `codex exec` row, which needs a signed-in Codex, ran by hand.
+
+| row                      | measured                                                              |
+| ------------------------ | --------------------------------------------------------------------- |
+| `io_uring_setup`         | answers `ENOSYS` to the session's first process and to a              |
+|                          | `podman exec` process                                                 |
+| the preloaded set        | every launch took one: attached in 0.0 to 0.1 ms, read back in 13.2   |
+|                          | to 14.4 ms, tested in 28.2 to 49.4 ms; the read-back finds the taken  |
+|                          | set's records the launch's and the four record maps frozen, and the   |
+|                          | next set prepared, passing its check, unfrozen. A live session's      |
+|                          | records read back the same before and after another launch took a     |
+|                          | set, the two sessions' eight program ids disjoint; two launches       |
+|                          | racing both took one, their programs disjoint                         |
+| a launch finding none    | with the preloaded set removed, the launch took the one its own       |
+|                          | reconcile prepared at the launcher's start                            |
+| another build installed  | with Phase 4's `other.bpf.o` in the installed object's place and its  |
+|                          | tags recorded, a launch ran and its read-back passed against the new  |
+|                          | tags, so the set of the earlier build was not attached; it took a set |
+|                          | of the new build. The installed object restored by SHA-256            |
+| a launch dead after the  | a session's record, its attach cgroup and the taken set's programs    |
+| take                     | attached there with no container: the next launch's reconcile removed |
+|                          | the pins, the record and the cgroup                                   |
+| `unix-socket` session    | a `podman exec` process starts under `file_receive` and is refused    |
+|                          | the write to `.git/config`; after `podman restart` the container runs |
+|                          | again, its `podman exec` process starts and is refused again          |
+| the linked worktree      | the main checkout's session binds a socket in its tree, and a         |
+|                          | host-made `.git/objects/s` links to it as `../../sock`: the main      |
+|                          | session connects through the link; the linked worktree's session,     |
+|                          | beside it under the same settings, answers `ENOENT`, the main tree    |
+|                          | not being mounted there                                               |
+| a FIFO the host made     | the session's `lstat` of it answers `EACCES`: the share refuses it    |
+|                          | before any hook, the policy having none on `lookup` or `getattr`      |
+| the refusals             | one workspace with two volumes, a main checkout and its linked        |
+|                          | worktree sharing its volume, a workspace below another's root, a      |
+|                          | linked worktree with its own volume beside its main checkout, and a   |
+|                          | host rename of the workspace between the launches: each refused       |
+|                          | beside a live session of the other backend and of the other           |
+|                          | `unix-socket` setting, in both orders, 20 refusals; beside an         |
+|                          | unlabelled container named as the launcher's, a `bpf` launch refused  |
+|                          | and a filter launch run; of two launches of one workspace under the   |
+|                          | two backends racing, one ran and one was refused; a second session of |
+|                          | one workspace under the same backend and setting ran                  |
+| in a session             | measured on 2026-10-26 in a `live,bpf,unix-socket` session: a socket  |
+|                          | bind on the share and beneath the volume, and a bind, rename and link |
+|                          | into `.git` and a bind in `.ko-agent-sandbox` refused, a share        |
+|                          | descriptor passed over a socketpair inside the session                |
+| `codex exec`             | by hand on 2026-10-30 in a `live,bpf` session, Codex 0.165.0 signed   |
+|                          | in: `codex exec` answered, the socket of its app-server daemon under  |
+|                          | `~/.codex` removed first; no socket lay under `~/.codex` or the       |
+|                          | persistent volume after it, and a socket bind beneath the volume in   |
+|                          | the same session answered `EPERM`, the policy's refusal               |
+| the kernel's memory      | program sets loaded with the installed controller's `preload` into    |
+|                          | one cgroup kept for the measurement, unattached: 1,542 to 1,544 KiB a |
+|                          | set, nine programs and their maps, at one, four and eight sets        |
+|                          | (`memory.current` 208,896 bytes before, 12,840,960 at eight), and     |
+|                          | 225,280 after their removal                                           |
+
+
+### Phase 6 on WSL
+
+Measured on 2026-10-30 with `../bpf/probe/phase6/Phase6.scala` (`scala shebang`) on the Windows
+machine of "Phase 1 on WSL", podman 6.1.4 under the cgroupfs manager, crun 1.28, through the
+launcher's jar and its `--build`, the installed backend that of "Phase 4 on WSL", from sources of
+SHA-256 `a7f24910b48ecf81a890ca146388e63fe134a5ec314979965219e43863487863`, those "Phase 6 on macOS"
+measures. Every one of the 43 rows passes in one run of 30 launches. The rows below name what
+differs from macOS; every other row passed as there.
+
+| row                      | measured                                                              |
+| ------------------------ | --------------------------------------------------------------------- |
+| the preloaded set        | every launch took one: attached in 0.1 ms, read back in 23.1 to 28.8  |
+|                          | ms, tested in 231 to 338 ms on 9p                                     |
+| the proof's cgroup       | on every launch the launcher's own proof joined the leaf below the    |
+|                          | attach cgroup from a transient scope of the user manager, as "Phase 4 |
+|                          | on WSL" measured of the probe's; a scope that cannot be made or a     |
+|                          | join that fails ends the launch script with status 4 before its       |
+|                          | placement step, which `KoAgentBpfTest` runs with those failures       |
+|                          | stubbed                                                               |
+| `unix-socket` session    | after `podman restart` the container ran again under `file_receive`,  |
+|                          | then the launcher's cleanup removed it, its `podman wait` having      |
+|                          | returned at the restart's stop, and the session's pins went with it   |
+| the linked worktree      | not measured: the share answers a socket bind `ENOTSUP`, so no socket |
+|                          | lies in the main checkout's tree                                      |
+| a FIFO the host made     | not measured: NTFS makes none                                         |
+| the refusals             | the cases without a linked worktree or a host rename, 8 refusals, as  |
+|                          | on macOS. A linked worktree's launch is refused by the guard for the  |
+|                          | worktree's absolute pointer (`TODO.md`, "Deferred — a linked         |
+|                          | worktree's absolute pointer on Windows"), and the host refuses to     |
+|                          | rename a directory a live session's share holds                       |
+| in a session             | measured on 2026-10-27 in a `live,bpf,unix-socket` session, the rows  |
+|                          | of macOS's; the share's `ENOTSUP` answers every bind on it, so the    |
+|                          | share rows measure the share, not the policy. A launch took the       |
+|                          | preloaded set, attached in 0.1 ms, read back in 20.3 ms, proved in    |
+|                          | 269.2 ms                                                              |
+| `codex exec`             | as on macOS, by hand on 2026-10-30, Codex 0.165.0                     |
+| the kernel's memory      | 1,539 to 1,540 KiB a set (`memory.current` 0 bytes before, 12,611,584 |
+|                          | at eight), and 4,096 after their removal                              |
 
 
 ## Inventory
@@ -1985,8 +2110,9 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
 4. **Lifecycle.** The ordering of "Lifecycle" on rootless podman: first-process denial, restart,
    recreate, `podman exec`, stop and kill, controller exit, machine restart, link loss; and the
    proof's catches, a controller that attaches a subset of the hooks, one that attaches another
-   build's program, one whose build differs in data alone, and one that loads wrong records, each
-   of which must end the launch. The
+   build's program, one whose build differs in data alone, one that loads wrong records, and one
+   that leaves the record maps unfrozen, each of which must end the launch; a write from user
+   space to each record map of a live session, refused. The
    reconcile of "Lifecycle", 7: a launcher killed between the pins and `podman create`, and a
    `podman create` that fails after the pins, each leave a cgroup and pins the next start
    removes; a launcher killed between `podman create` and `podman start` leaves a container
@@ -2004,14 +2130,14 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    fixture's proof runs at every launch, the user's decision of 2026-10-26, with the controller
    keeping the two parts of step 3 separable for the skip rule `../doc/TODO.md` records ("The
    proof fixture skipped on an unchanged launch"), since its 306 to 386 ms on WSL ("Phase 4 on
-   WSL") is a cost that launch pays. The verifier's time leaves the launch through the spare set
+   WSL") is a cost that launch pays. The verifier's time leaves the launch through the preloaded set
    ("Lifecycle"), the user's decision of 2026-10-25 over the alternative of one program set per
    machine, verified once per boot, whose hooks would find the session's records in inner maps of
    a map-of-maps keyed by
    the attach cgroup, found through the task's cgroup ancestry: that would cost the per-sandbox
    programs "The policy" relies on, the invariant that no record changes under a running program,
    and the read-back's showing that a cgroup's programs read that cgroup's records, where the
-   spare costs an idle set per machine and a background preparation.
+   preloaded set costs one idle program set per machine and a background preparation.
    The rows the reuse of pins, the reconcile's identities and the cleanup add, on both machines:
    - a restart after `--build` installed another object, and one after a rule change, each
      loading and verifying fresh programs and attaching none of the old pins, which are
@@ -2077,7 +2203,13 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    `unix-socket` setting differs from a live session's sharing its volume or a raw mount, or that
    of an unlabelled or renamed one ("The hooks", `file_receive`), and the documentation changes
    "The recorded decisions this answers" names. It needs the profile "Mounts" relies on to have
-   shipped. Its rows, which need the launcher:
+   shipped. Its rows, which need the launcher, follow; `../bpf/probe/phase6/Phase6.scala` runs
+   them by the user's decisions of 2026-10-29: from a host terminal with no other sandbox session
+   on the machine, which it refuses otherwise (A); the earlier build Phase 4's `other.bpf.o`,
+   swapped in for the installed object and restored (B); the memory row's sets loaded by the
+   installed controller, unattached (D); `codex exec`, which needs a signed-in Codex, by hand (E);
+   the WSL proof's failure a unit test of the launch script (F); the boot-time unit's row gone
+   with the unit (C):
    - under the profile the launcher installs, `io_uring_setup` answers `ENOSYS` from the
      container's first process and from a `podman exec` process ("The hooks", `file_receive`);
    - a launch under the other backend or the other setting of `unix-socket` while a session
@@ -2091,27 +2223,27 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
      "Deferred — writable git from a linked worktree"), and a symlink under its main checkout's
      `.git/objects` to a socket outside, through which the worktree's container cannot connect;
    - `codex exec` run with the daemon directory unwritable ("The hooks", `file_receive`);
-   - the spare set ("Lifecycle"): a launch taking it by rename and filling its maps through the
-     pinned programs' ids, passing the read-back and the proof, its step 2 at a recreate's cost;
-     two launches racing for one spare, one loading; a spare of a build `--build` replaced,
-     unpinned by its tags; a launch that died after taking the spare, removed by the reconcile;
-     and the first spare prepared at boot; a live session's records, read back before and after
-     another launch takes the spare and the next spare is prepared, unchanged, and the two
-     sessions' program and map ids disjoint;
-   - the sessions' cost in the kernel: the programs, links and maps and their memory at one,
-     four and eight live sessions, and the same after their teardown, so that the per-sandbox
-     sets "The policy" relies on have a measured price. The kernel charges a map's and a
-     program's memory to the memory cgroup of the process that made them, and the charge
-     outlives the process (`kernel/bpf/syscall.c`, `bpf_map_save_memcg`, the map's `objcg`), so
-     every load, the launch's, the boot-time spare's and each replenishment's, runs in a cgroup
-     kept for the measurement and summed by it, whose `memory.current` is read after the loader
-     exits: under systemd a scope holding a sleeping process beside it, since a scope ends with
-     its last process (`systemd.scope(5)`), under cgroupfs a directory of the delegated subtree,
-     which stays until removed; a set loaded elsewhere, the spare's preparer's cgroup for one, is
-     charged there and missing from the sum. The machine's root offers no reading, `memory.current`
-     being a file of non-root cgroups alone (`Documentation/admin-guide/cgroup-v2.rst`), and
-     `bpftool`'s `memlock` is each map's own estimate (`kernel/bpf/syscall.c`,
-     `bpf_map_memory_usage`), not the charge;
+   - the preloaded set ("Lifecycle"): a launch taking it by rename and filling its maps through the
+     pinned programs' ids, passing the read-back and the proof, its step 2 at a recreate's cost; two
+     launches racing for one preloaded set never sharing one, their programs disjoint (both took a
+     set in the runs, the second the one prepared behind the first); a preloaded set of a build
+     `--build` replaced, unpinned by its tags; a launch that died after taking the preloaded set,
+     removed by the reconcile, built as such a launch leaves it: the record, the attach cgroup and
+     the taken set attached there; a launch finding no preloaded set, as the first after a boot,
+     which took the one its own reconcile prepared; a live session's records, read back before and
+     after another launch takes the preloaded set and the next one is prepared, unchanged, and the
+     two sessions' program ids disjoint;
+   - the sessions' cost in the kernel: the memory of one, four and eight program sets, and the same
+     after their removal, so that the per-sandbox sets "The policy" relies on have a measured price;
+     the sets are loaded unattached, so links are not counted. The kernel charges a map's and a
+     program's memory to the memory cgroup of the process that made them, and the charge outlives
+     the process (`kernel/bpf/syscall.c`, `bpf_map_save_memcg`, the map's `objcg`), so every load
+     runs in a cgroup kept for the measurement and summed by it, whose `memory.current` is read
+     after the loader exits: under systemd a hold unit's service in a slice, under cgroupfs a
+     directory of the delegated subtree, which stays until removed. The machine's root offers no
+     reading, `memory.current` being a file of non-root cgroups alone
+     (`Documentation/admin-guide/cgroup-v2.rst`), and `bpftool`'s `memlock` is each map's own
+     estimate (`kernel/bpf/syscall.c`, `bpf_map_memory_usage`), not the charge;
    - on WSL, the proof run by the launcher itself: its process enters the leaf below the attach
      cgroup through a transient scope of the user manager ("Phase 4 on WSL"), and a scope that
      cannot be created or a migration that fails ends the launch before any container;
@@ -2133,20 +2265,19 @@ Each phase ends at its gate; a failed gate leaves the launcher as it is.
    BTF pass, and otherwise names what is missing and builds the rest (`KoAgentBpf.buildFailures`);
    the backend's build and install run after the rest and, failing on a kernel those checks cannot
    tell apart, warn and leave the rest built; it installs the binaries beside the filter under
-   `~/.local/share/ko-agent-sandbox/bpf/`, records the tags, prepares the spare set and offers the
-   boot-time unit `ko-agent-bpf-spare.service` with the user's consent. A launch runs the probe
-   (`checksScript`), reconciles under the launch lock (`reconcileScript`, the controller's
-   `reconcile`), and in `startSandbox` holds the launch lock from the backend's steps 1 to 3
-   (`launchScript`: the guard's records, the fixture, the attach cgroup, the controller's `attach`
-   taking the spare `readback check-spare` passed or loading, `readback verify`, the proof) through
-   the listing of the live sessions, the comparison (`refusalBeside`) and `podman create`, whose
-   `--cgroup-parent`, `--restart=no` and labels (`labelArguments`) come from those steps; the
-   session's teardown (`teardownScript`) takes the filter reap's place in the reaper. A read-only
-   launch runs the same steps with `--no-root` and no records, and keeps the raw `ro` bind alone,
-   printing what the machine lacks, where the probe fails; a live launch is refused with the same
-   lines, each with the remedy per provider (`upgradeRemedy`). The fill through the pinned programs'
-   map ids is the controller's `--spare` path, which no machine has run yet, as none has run the
-   rows above.
+   `~/.local/share/ko-agent-sandbox/bpf/`, records the tags and prepares the preloaded set. A launch
+   runs the probe (`checksScript`), reconciles under the launch lock (`reconcileScript`, the
+   controller's `reconcile`), and in `startSandbox` holds the launch lock from the backend's steps 1
+   to 3 (`launchScript`: the guard's records, the fixture, the attach cgroup, the controller's
+   `attach` taking the preloaded set `readback check-preloaded` passed or loading,
+   `readback verify`, the proof) through the listing of the live sessions, the comparison
+   (`refusalBeside`) and `podman create`, whose `--cgroup-parent`, `--restart=no` and labels
+   (`labelArguments`) come from those steps; the session's teardown (`teardownScript`) takes the
+   filter reap's place in the reaper. A read-only launch runs the same steps with `--no-root` and no
+   records, and keeps the raw `ro` bind alone, printing what the machine lacks, where the probe
+   fails; a live launch is refused with the same lines, each with the remedy per provider
+   (`upgradeRemedy`). The fill through the pinned programs' map ids is the controller's
+   `--preloaded` path, which every launch of "Phase 6 on macOS" and "Phase 6 on WSL" took.
 
 
 ## What is gained and what is lost
@@ -2162,18 +2293,18 @@ Gained:
 
   | workload                             | through the filter | unfiltered bind | under the policy |
   | ------------------------------------ | ------------------ | --------------- | ---------------- |
-  | `ls -lR`, per entry                  | 12.7 ms            | 0.68 ms         | 0.68 ms          |
-  | `git status`, 4,475 files at depth 7 | 72 s               | 3.7 s           | 3.7 s            |
-  | `sbt` build of this repository       | 604 s              | 86 s            | 84 s             |
+  | `ls -lR`, per entry                  | 12.7 ms            | 0.69 ms         | 0.69 ms          |
+  | `git status`, 4,475 files at depth 7 | 72 s               | 3.8 s           | 3.8 s            |
+  | `sbt` build of this repository       | 604 s              | 87 s            | 84 s             |
 
   The `sbt` row's bind and policy figures keep the output in the workspace as the filter's does; the
   43 s of "an sbt build, by where its output goes" had it outside. The policy's own cost over the
   unfiltered bind is measured in "Phase 5 on macOS" and "Phase 5 on WSL": `perf-probe.py`'s
   rounds overlap the bind's in every row on both machines; the single runs of the walk and the
-  build lie within 11 % of the bind's on the per-file rows, `git status` and the build, and
-  scatter up to 1.2 times on `find` and 2.1 times on the depth rows, 200 `lstat` of 0.1 to 1 ms
-  each, either way across runs; the program itself takes 13 to 18 µs a judged call on either
-  kernel, 39 to 62 µs at the build's depth of 20. It runs on mutations and opens, never on
+  build lie within 6 % of the bind's on the per-file rows, `find`, `git status` and the build,
+  and scatter up to 1.2 times either way on the depth rows, 200 `lstat` of 0.1 to 1 ms each; the
+  program itself takes 13 to 16 µs a judged call on either kernel, 40 to 65 µs at the build's
+  depth of 20. It runs on mutations and opens, never on
   `lookup` or `getattr`, the operations that dominate those columns.
 - **The daemon's share of the machine's hangs.** `git status` in a worktree of hundreds of
   files has frozen the podman machine for over an hour, with memory not short and
@@ -2445,44 +2576,18 @@ It is not a backend for this policy.
 
 ## Remaining work
 
-Phase 6 is built and its rows are owed on both machines ("Phases", 6, and the status paragraph),
-each a launch of the launcher itself under `--workspace=live,bpf` and its variants; the reruns of
-Phases 3 to 5 on the program that holds the FIFO rules are done. Once the rows are, the plan
-retires: it is the design record and the evidence of a backend that ships, and the production
-sources live outside the probe tree (`../bpf/ko-agent-bpf/policy.bpf.c` and its host build
-`../bpf/ko-agent-bpf/host/`). What stays is what a later program change needs, the three suites
-that rerun on every such change and the evidence they are checked against; each retired item
-names what covers it.
+Phase 6 is built and its rows are measured on both machines ("Phases", 6, and the status
+paragraph). Once the items below are done, the plan retires: it is the design record and the
+evidence of a backend that ships, and the production sources live outside the probe tree
+(`../bpf/ko-agent-bpf/policy.bpf.c` and its host build `../bpf/ko-agent-bpf/host/`). What stays is
+what a later program change needs, the four suites that rerun on every such change and the
+evidence they are checked against; each retired item names what covers it.
 
-- [ ] Phase 6's rows, in the order of "Phases", 6; a driver for them is not written:
-  - `io_uring_setup` under the installed profile;
-  - the refusals beside a live session of the other backend or setting, in each pairing;
-  - `podman exec` and `podman restart` of a `unix-socket` session: the runtime's work succeeding
-    under `file_receive` and a protected write refused, which Phase 4 measured without the option;
-  - the linked worktree's socket symlink, and `codex exec` with its daemon directory unwritable;
-  - the spare set's take, race, replacement and replenishment;
-  - the kernel's memory at one, four and eight sessions;
-  - the proof on WSL through the user manager's scope, and the FIFO rules' cases.
-  - Measured in-session on 2026-10-26 (macOS) and 2026-10-27 (WSL), each a `live,bpf,unix-socket`
-    launch: a bind on the share and beneath the volume, a bind, rename and link into `.git` and a
-    bind in `.ko-agent-sandbox` refused, a share descriptor passed over a socketpair inside the
-    session; on WSL the share's `ENOTSUP` answers every bind on it, so the share rows there measure
-    the share, not the policy.
-  - A `live,bpf` launch on WSL (2026-10-27) took the spare: attached in 0.1 ms, read back in 20.3
-    ms, proved in 269.2 ms, with the next spare's verification started behind it.
-- [ ] `sbt testWithPodman` on both machines, and `SessionBoundaryTest` inside a `live,bpf` session,
-  whose attribute rows are new:
-  - macOS, 2026-10-27, with the placement check: `sbt testWithPodman` passed (691 passed, 101
-    skipped), and `SessionBoundaryTest` inside a `live,bpf` session (18 passed, 1 skipped, no
-    `--claude-plugin-dir`).
-  - WSL: `SessionBoundaryTest` inside a `live,bpf` session passed on 2026-10-27 (18 passed, 1
-    skipped). Owed: the container-launching suites on the Windows host, whose ordinary suites assume
-    a Unix JVM (`TODO.md`, "The ordinary suites on a Windows host", has the command).
 - [ ] The design sections of this plan: `../SECURITY.md` ("The BPF backend"), `design.md`,
   `../fuse/ko-agent-fs/doc/architecture.md` and `git-metadata.md` hold the shipped design; a
   sentence only this plan holds moves to the document that owns its subject before the plan goes.
   "Decisions still open" and "Later versions" become items of `TODO.md`.
-- [ ] The measured sections, "Phase 1 on macOS" to "Phase 5 on WSL": kept whole in an evidence
+- [ ] The measured sections, "Phase 1 on macOS" to "Phase 6 on WSL": kept whole in an evidence
   document beside the backend, `../bpf/ko-agent-bpf/doc/evidence.md`, which
   `../bpf/probe/CheckEvidence.scala` then reads in place of this plan. Later documents cite their
   rows: "Phase 2 on WSL" (the shares' answers) closes the ioctl rows, "Phase 4" the launch costs.
@@ -2491,11 +2596,11 @@ names what covers it.
   which the launcher's capability probe asks at every launch (`KoAgentBpf.checksScript`) and the
   Phase 3 suite shows; Phase 2 inventoried what each hook sees and what each share answers, which
   the Phase 3 corpus exercises and the kept "Phase 2" sections record. Neither is rerun.
-- [ ] `../bpf/probe/phase3/`, `phase4/` and `phase5/` stay, with `../bpf/probe/ProbeHelper.scala`,
-  what their drivers share: the program's suite, the launcher lifecycle's and the cost
-  measurement, rerun on every program change (the decision of 2026-10-26 against a
-  superseded-section marker). Their headers then cite the evidence document, not this plan, and
-  the probe tree's name says what it is.
+- [ ] `../bpf/probe/phase3/` to `phase6/` stay, with `../bpf/probe/ProbeHelper.scala`, what their
+  drivers share: the program's suite, the launcher lifecycle's, the cost measurement and the
+  launcher's own rows, rerun on every change of the sources each `sources.txt` lists (the
+  decision of 2026-10-26 against a superseded-section marker). Their headers then cite the
+  evidence document, not this plan, and the probe tree's name says what it is.
 
 
 ## Sources
