@@ -8,7 +8,6 @@ import java.nio.file.Files
 import CommandLine.{parseWorkspace, WorkspaceSettings}
 import HostCommands.Os
 import KoAgentBpf.*
-import KoAgentFs.koAgentFsScriptCommand
 
 class KoAgentBpfTest extends munit.FunSuite:
 
@@ -31,44 +30,76 @@ class KoAgentBpfTest extends munit.FunSuite:
       assert(command.contains(ImageBuilds.NoRegistryLookup))
     assertEquals(commands.last(commands.last.indexOf("-t") + 1), LauncherImages.KoAgentBpfImage)
 
-  test("the install extracts the image, checks the source id, records the tags and prepares the spare"):
+  test("the install extracts the image, checks the source id, records the tags and prepares the preloaded set"):
     val script = installScript("abc")
     Vector(
       "podman create --replace", "podman cp ko-agent-bpf-extract:/out/.", "podman rm", "expected abc",
-      "readback\" tags policy.bpf.o", "prepare-spare /sys/fs/bpf/ko-agent-bpf/spare", "mount -t bpf",
+      "readback\" tags policy.bpf.o", "preload /sys/fs/bpf/ko-agent-bpf/preloaded", "mount -t bpf",
     ).foreach(step => assert(script.contains(step), s"missing '$step':\n$script"))
     // Root only through the machine's sudo, for the controller and the read-back.
     assert(script.linesIterator.filter(_.contains("sudo")).forall(line => line.contains("sudo -n")), script)
-    val installed = "tags object=policy.bpf.o programs=9 kernel=x out=y ms=500.1\nspare pindir=p programs=9 load_ms=410"
+    val installed =
+      "tags object=policy.bpf.o programs=9 kernel=x out=y ms=500.1\npreloaded pindir=p programs=9 load_ms=410"
     assertEquals(
       installedLine(installed),
       "ko-agent-bpf installed: 9 programs verified; a program set for the next launch loaded in 410 ms",
     )
 
-  test("the spare unit names the controller under the machine user's home and runs once at boot"):
-    val unit = spareUnitText("/var/home/core")
-    assert(unit.contains("ExecStart=/var/home/core/.local/share/ko-agent-sandbox/bpf/controller prepare-spare"), unit)
-    assert(unit.contains("Type=oneshot") && unit.contains("WantedBy=multi-user.target"), unit)
-    assert(unit.contains("mount -t bpf"), "the WSL machine mounts no bpffs")
-    // The prompt shows the unit's lines as the file holds them, the `|| mount` continuation included.
-    for line <- spareUnitText("$HOME").linesIterator do
-      assert(spareUnitPrompt.contains(s"\n  $line\n"), s"'$line' in:\n$spareUnitPrompt")
-    assert(spareUnitPrompt.contains("\n    || mount -t securityfs"), spareUnitPrompt)
-    // The check and the install substitute the machine's home in the machine, never the host's.
-    assert(spareUnitCheckScript.contains("@HOME@") && spareUnitCheckScript.contains("$HOME"), spareUnitCheckScript)
-    assert(spareUnitInstallScript.contains("sudo -n tee /etc/systemd/system/ko-agent-bpf-spare.service"))
-    assert(!spareUnitInstallScript.contains("/var/home"), spareUnitInstallScript)
-    // Both scripts quote the substitution, so they cross the machine's ssh base64-encoded: Windows hands
-    // the VM a double quote unescaped, splitting `sed "s|@HOME@|$HOME|g"` into four commands.
-    for (script, command) <- Vector(
-        (spareUnitCheckScript, spareUnitCheckCommand("podman", Os.Windows)),
-        (spareUnitInstallScript, spareUnitInstallCommand("podman", Os.Windows)),
+  /** The retired unit's text as a839d14 and ee8793c wrote it, the home as `@HOME@`: what RetiredUnitSha256
+    * stands for. */
+  private val retiredUnitText = Vector(
+    "[Unit]",
+    "Description=ko-agent-sandbox: load and verify the workspace policy's BPF programs ahead of the first launch",
+    "# Written by ko-agent-sandbox --build with your consent (KoAgentBpf.scala); remove with",
+    "# `sudo systemctl disable --now ko-agent-bpf-spare.service && " +
+      "sudo rm /etc/systemd/system/ko-agent-bpf-spare.service`.",
+    "",
+    "[Service]",
+    "Type=oneshot",
+    "ExecStartPre=/bin/sh -c 'findmnt -n /sys/kernel/security >/dev/null \\",
+    "  || mount -t securityfs securityfs /sys/kernel/security'",
+    "ExecStartPre=/bin/sh -c 'findmnt -n /sys/fs/bpf >/dev/null || mount -t bpf bpf /sys/fs/bpf'",
+    "ExecStart=@HOME@/.local/share/ko-agent-sandbox/bpf/controller prepare-spare /sys/fs/bpf/ko-agent-bpf/spare",
+    "",
+    "[Install]",
+    "WantedBy=multi-user.target",
+  ).mkString("", "\n", "\n")
+
+  test("the retired boot unit is removed while its text is the one written, and kept once changed"):
+    assume(!System.getProperty("os.name").toLowerCase.contains("win"), "the stubs are /bin/sh scripts")
+    val digest = java.security.MessageDigest.getInstance("SHA-256").digest(retiredUnitText.getBytes("UTF-8"))
+    assertEquals(digest.map("%02x".format(_)).mkString, RetiredUnitSha256)
+    val dir = Files.createTempDirectory("retired-unit").toRealPath()
+    try
+      val log = dir.resolve("systemctl.log")
+      def stub(name: String, body: String): Unit =
+        Files.writeString(dir.resolve(name), s"#!/bin/sh\n$body\n")
+        dir.resolve(name).toFile.setExecutable(true)
+      stub("sudo", "[ \"$1\" = -n ] && shift\nexec \"$@\"")
+      stub("systemctl", s"echo \"$$*\" >> $log")
+      // macOS, where the host's suite runs, has shasum where the machine has sha256sum.
+      if HostCommands.findOnPath("sha256sum", Os.Linux).isEmpty then stub("sha256sum", "exec shasum -a 256")
+      val unit = dir.resolve("ko-agent-bpf-spare.service")
+      def answer(): String =
+        val builder = ProcessBuilder("/bin/sh", "-c", retiredUnitScript(unit.toString)).redirectErrorStream(true)
+        builder.environment().put("HOME", dir.toString)
+        builder.environment().put("PATH", s"$dir:${System.getenv("PATH")}")
+        val process = builder.start()
+        val text = String(process.getInputStream.readAllBytes()).trim
+        process.waitFor()
+        text
+      assertEquals(answer(), "", "no unit")
+      Files.writeString(unit, retiredUnitText.replace("@HOME@", dir.toString) + "# edited\n")
+      assertEquals(answer(), "changed")
+      assert(Files.exists(unit) && !Files.exists(log), "a changed unit is left alone")
+      Files.writeString(unit, retiredUnitText.replace("@HOME@", dir.toString))
+      assertEquals(answer(), "removed")
+      assert(!Files.exists(unit))
+      assertEquals(
+        Files.readAllLines(log).toArray.toVector,
+        Vector[Object](s"disable --now $RetiredUnit", "daemon-reload"),
       )
-    do
-      assert(script.contains('"'), script)
-      assertEquals(command.take(3), Vector("podman", "machine", "ssh"))
-      assert(command.drop(3).forall(word => !word.contains('"') && !word.contains('\n')), command)
-      assertEquals(command, koAgentFsScriptCommand("podman", Os.Windows, script))
+    finally FileHelper.deleteRecursively(dir)
 
   test("a build skips the backend on a machine without its kernel prerequisites, and builds it otherwise"):
     val capable = parseFacts("sudo=1\nlsm=lockdown,capability,bpf\ncgroup2=cgroup2fs\nmounted=1\nbtf=1")
@@ -127,6 +158,58 @@ class KoAgentBpfTest extends munit.FunSuite:
     assert(!script.contains("My Project") && script.contains("base64 -d"), script)
     assert(script.contains("findmnt -n -o FSTYPE -T"), script)
 
+  test("under cgroupfs a proof whose scope or join fails ends the launch script before the container's steps"):
+    assume(!System.getProperty("os.name").toLowerCase.contains("win"), "the stubs are /bin/sh scripts")
+    val dir = Files.createTempDirectory("launch-script").toRealPath()
+    try
+      val bin = Files.createDirectories(dir.resolve("bin"))
+      val home = dir.resolve("home")
+      val install = Files.createDirectories(home.resolve(InstallDir))
+      def stub(file: java.nio.file.Path, body: String): Unit =
+        Files.writeString(file, s"#!/bin/sh\n$body\n")
+        file.toFile.setExecutable(true)
+      Files.writeString(install.resolve("source-id"), "bpf-id")
+      stub(home.resolve(KoAgentFs.KoAgentFsBinary), "case $1 in --version) echo 'ko-agent-fs source fs-id' ;; esac")
+      stub(install.resolve("controller"), "[ \"$1\" = attach ] && echo 'attach preloaded=0 hooks=8 load_ms=1'; true")
+      stub(install.resolve("readback"), "[ \"$1\" = verify ] && echo 'verify ok=1'; true")
+      // The proof's two ways to fail on WSL: the user manager's scope, and the move into the leaf.
+      stub(install.resolve("fixture"),
+        """case $1 in
+          |  join) [ -n "$STUB_JOIN_FAILS" ] && { echo 'join: Permission denied' >&2; exit 2; }; shift 2; exec "$@" ;;
+          |  run) echo 'fixture ops=68 mismatches=0 share_answered=0 ms=1.0' ;;
+          |esac""".stripMargin)
+      stub(bin.resolve("systemd-run"),
+        """[ -n "$STUB_SCOPE_FAILS" ] && { echo 'Failed to start transient scope unit' >&2; exit 1; }
+          |while [ "$1" != -q ]; do shift; done; shift; exec "$@"""".stripMargin)
+      stub(bin.resolve("sudo"), "[ \"$1\" = -n ] && shift\nexec \"$@\"")
+      stub(bin.resolve("podman"),
+        "case \"$1 $2\" in 'volume inspect') echo /vol ;; inspect*) echo 'initialized 1' ;; esac")
+      stub(bin.resolve("stat"), "echo 1")
+      if HostCommands.findOnPath("sha256sum", Os.Linux).isEmpty then
+        stub(bin.resolve("sha256sum"), "exec shasum -a 256")
+      val cgroupRoot = dir.resolve("cgroup").toString
+      val script = launchScript(
+        "s1", settings("live,bpf"), parseFacts("manager=cgroupfs\nuid=1000"), dir.toString,
+        dir.resolve("proof").toString, dir.resolve("placement").toString, "", "vol", None, Vector.empty, "fs-id",
+        "bpf-id", Os.Windows,
+      ).linesIterator.drop(1).mkString("\n").replace("/sys/fs/cgroup", cgroupRoot)
+      def ran(failure: Option[String]): (Int, String) =
+        val builder = ProcessBuilder("/bin/sh", "-c", script).redirectErrorStream(true)
+        builder.environment().put("HOME", home.toString)
+        builder.environment().put("PATH", s"$bin:${System.getenv("PATH")}")
+        failure.foreach(name => builder.environment().put(name, "1"))
+        val process = builder.start()
+        val output = String(process.getInputStream.readAllBytes())
+        (process.waitFor(), output)
+      val (passed, passedOutput) = ran(None)
+      assertEquals(passed, 0, passedOutput)
+      assert(passedOutput.contains("step=done"), passedOutput)
+      for failure <- Vector("STUB_SCOPE_FAILS", "STUB_JOIN_FAILS") do
+        val (status, output) = ran(Some(failure))
+        assertEquals(status, 4, s"$failure:\n$output")
+        assert(output.contains("step=proof") && !output.contains("step=placement"), s"$failure:\n$output")
+    finally FileHelper.deleteRecursively(dir)
+
   test("the attach cgroup is a slice under systemd and a directory under the user's delegated subtree under cgroupfs"):
     val systemd = parseFacts("manager=systemd\nuid=501")
     val cgroupfs = parseFacts("manager=cgroupfs\nuid=1000")
@@ -159,14 +242,20 @@ class KoAgentBpfTest extends munit.FunSuite:
     assert(script.linesIterator.filter(_.contains("sudo")).forall(_.contains("sudo -n")), script)
     assert(script.contains("--resolve --file-rules") && script.contains("--bpf-records"), "the guard writes them")
     assert(script.contains("systemd-run --user --unit=ko-agent-bpf-hold-s1 --slice=ko-agent-bpf-s1.slice"), script)
-    assert(script.contains("check-spare /sys/fs/bpf/ko-agent-bpf/spare"), "the spare is checked before it is taken")
+    assert(
+      script.contains("check-preloaded /sys/fs/bpf/ko-agent-bpf/preloaded"),
+      "the preloaded set is checked before it is taken",
+    )
     assert(script.contains("--bind-source \"$backing\""), "a mount under the bind source refuses the launch")
-    assert(script.contains("--spare $SparePinDir") || script.contains("$spare"), script)
+    assert(script.contains("--preloaded $PreloadedPinDir") || script.contains("$preloaded"), script)
     assert(script.contains("systemd-run --user --scope --slice=ko-agent-bpf-s1.slice -q"), "the proof below the slice")
     assert(!script.contains("--no-root") && !script.contains("unix-socket"), script)
     assert(script.contains(Hooks.mkString(" ")), script)
     assert(script.contains(FileRules.ResolvedMarker))
-    assert(script.contains("prepare-spare"), "the next spare is prepared after a launch took one")
+    assert(
+      script.contains(s"controller\" preload $PreloadedPinDir"),
+      "the next preloaded set is prepared after a launch took one",
+    )
     assert(script.contains("pins=/sys/fs/bpf/ko-agent-bpf/s1\n"), script)
     assert(script.contains("stamp=\"$({ echo bpf-id; cat \"$sess/rules\" "), "a backend upgrade lays the fixture again")
 
@@ -191,7 +280,7 @@ class KoAgentBpfTest extends munit.FunSuite:
     assert(script.contains("cg=/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/ko-agent-bpf-s2"))
 
   test("the launch script's output parses to the cgroup, the identities, the resolved rules and the costs"):
-    val attachRest = "spare=1 hooks=8 rule_count=56 aliases=0 roots=5 fs_type=virtiofs vol_fs_type=xfs flags=0 " +
+    val attachRest = "preloaded=1 hooks=8 rule_count=56 aliases=0 roots=5 fs_type=virtiofs vol_fs_type=xfs flags=0 " +
       "no_root=0 runtime_mnt_ns=1 load_ms=0.9 fill_ms=0.1 attach_ms=8.5 total_ms=9.5"
     val output =
       s"""step=checks
@@ -200,7 +289,7 @@ class KoAgentBpfTest extends munit.FunSuite:
          |step=cgroup
          |cgroup path=/sys/fs/cgroup/user.slice/x/ko-agent-bpf-s1.slice id=4711 parent=ko-agent-bpf-s1.slice
          |step=attach
-         |spare taken=1 spare=/sys/fs/bpf/ko-agent-bpf/spare
+         |preloaded taken=1 preloaded=/sys/fs/bpf/ko-agent-bpf/preloaded
          |root kind=workspace path=/w mkdev=1 ino=2
          |attach cgroup=/sys/fs/cgroup/x pindir=/sys/fs/bpf/ko-agent-bpf/s1 object=policy.bpf.o $attachRest
          |step=verify
@@ -220,7 +309,7 @@ class KoAgentBpfTest extends munit.FunSuite:
     assertEquals(launched.parent, "ko-agent-bpf-s1.slice")
     assertEquals(launched.identities, Map("/Users/me/My Project" -> "36:1234", "/Users/me/gone" -> "gone"))
     assertEquals(launched.resolved.readOnlyPaths, Vector("/Users/me/project/.husky/_"))
-    assert(launched.spare)
+    assert(launched.preloaded)
     assertEquals(
       stepsLogLine(launched),
       "attached 8 hooks in 0.9 ms from the program set verified ahead; read back in 14.2 ms; tested in 40.3 ms",
@@ -374,21 +463,61 @@ class KoAgentBpfTest extends munit.FunSuite:
       assert(check >= 0 && check < unpin, script)
       assert(script.contains("[ \"$gone\" -ne 1 ]") && script.contains("exit 0"), script)
 
-  test("the reconcile hands the controller the sessions beside the containers' labels and refreshes the spare"):
+  test("the reconcile drops the record of a session with no container, cgroup or pins, and passes on the rest"):
+    assume(!System.getProperty("os.name").toLowerCase.contains("win"), "the stubs are /bin/sh scripts")
+    val dir = Files.createTempDirectory("reconcile-script").toRealPath()
+    try
+      val bin = Files.createDirectories(dir.resolve("bin"))
+      val home = dir.resolve("home")
+      val install = Files.createDirectories(home.resolve(InstallDir))
+      val handed = dir.resolve("handed")
+      def stub(file: java.nio.file.Path, body: String): Unit =
+        Files.writeString(file, s"#!/bin/sh\n$body\n")
+        file.toFile.setExecutable(true)
+      stub(install.resolve("controller"), s"[ \"$$1\" = reconcile ] && echo \"$$*\" > $handed; true")
+      stub(install.resolve("readback"), "echo 'check-preloaded ok=1'")
+      stub(bin.resolve("sudo"), "[ \"$1\" = -n ] && shift\nexec \"$@\"")
+      stub(bin.resolve("podman"), "true")
+      stub(bin.resolve("systemctl"), "true")
+      // The live session's cgroup exists; the gone one's does not, nor does any pin on this host.
+      val liveCgroup = Files.createDirectories(dir.resolve("cgroup-live"))
+      def record(name: String, cgroup: String): java.nio.file.Path =
+        val session = Files.createDirectories(install.resolve("sessions").resolve(name))
+        Files.writeString(session.resolve("cgroup"), s"cgroup=$cgroup cgroup_id=7\n")
+        session
+      val gone = record("ko-agent-sandbox-run-gone-0123456789ab-deadbeef", dir.resolve("cgroup-gone").toString)
+      val live = record("ko-agent-sandbox-run-live-0123456789ab-feedface", liveCgroup.toString)
+      val script = reconcileScript("cgroupfs").linesIterator.drop(1).mkString("\n")
+      val builder = ProcessBuilder("/bin/sh", "-c", script).redirectErrorStream(true)
+      builder.environment().put("HOME", home.toString)
+      builder.environment().put("PATH", s"$bin:${System.getenv("PATH")}")
+      val process = builder.start()
+      val output = String(process.getInputStream.readAllBytes())
+      assertEquals(process.waitFor(), 0, output)
+      assert(output.contains(s"session=${gone.getFileName} action=removed reason=gone"), output)
+      assert(!Files.exists(gone), "the gone session's record is removed")
+      assert(Files.exists(live), "a session whose cgroup exists is the controller's to judge")
+      val arguments = Files.readString(handed)
+      assert(arguments.contains(s"--session ${live.getFileName} $liveCgroup 7"), arguments)
+      assert(!arguments.contains(gone.getFileName.toString), arguments)
+    finally FileHelper.deleteRecursively(dir)
+
+  test("the reconcile hands the controller the sessions beside the containers' labels and refreshes the preloaded set"):
     val script = reconcileScript("systemd")
     Vector(
       "podman ps -aq --filter name=ko-agent-sandbox-run-", s"""{{index .Config.Labels "$CgroupLabel"}}""",
       "--listing-failed", "--named $name", "--hold $name", "--session $name $cg $id",
-      "controller\" reconcile /sys/fs/bpf/ko-agent-bpf", "cgroup=stop-slice", "check-spare", "prepare-spare",
+      "controller\" reconcile /sys/fs/bpf/ko-agent-bpf", "cgroup=stop-slice", "check-preloaded",
+      "controller\" preload ",
     ).foreach(part => assert(script.contains(part), s"missing '$part':\n$script"))
     assert(script.contains("systemctl --user stop ko-agent-bpf-hold-$name"), "a sessionless hold is released first")
     // The controller makes the pin root 0700, so every test of it runs as root, and a preparer's
     // staging directory is unpinned once that process is gone.
     assert(
-      script.linesIterator.filter(_.contains(SparePinDir)).forall(line => line.contains("sudo -n")),
+      script.linesIterator.filter(_.contains(PreloadedPinDir)).forall(line => line.contains("sudo -n")),
       s"a test of the pin root as the machine user:\n$script",
     )
-    assert(script.contains(s"for d in $SparePinDir-*") && script.contains("kill -0"), script)
+    assert(script.contains(s"for d in $PreloadedPinDir-*") && script.contains("kill -0"), script)
     if !scala.util.Properties.isWin then
       Vector("systemd", "cgroupfs").foreach: manager =>
         val checked = ProcessBuilder("/bin/sh", "-n", "-c", reconcileScript(manager)).redirectErrorStream(true).start()

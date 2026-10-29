@@ -1,0 +1,8 @@
+../../ko-agent-bpf/policy.bpf.c
+../../../fuse/ko-agent-fs/include/records.h
+../../ko-agent-bpf/backend.h
+../../ko-agent-bpf/controller.c
+../../ko-agent-bpf/readback.c
+../../ko-agent-bpf/fixture.c
+../../ko-agent-bpf/Containerfile
+../../../src/main/scala/KoAgentBpf.scala

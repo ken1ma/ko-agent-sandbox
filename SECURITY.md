@@ -305,10 +305,6 @@ are:
   mount target in the workspace,
   the policy's proof fixture lies under the launcher's state root, and `--workspace=read-only`
   makes the entire tree read-only;
-- the podman **machine's** `/etc/systemd/system/ko-agent-bpf-spare.service`, which loads and
-  verifies the BPF policy's programs at boot ahead of the first launch, is written only after
-  `--build` shows the unit and you consent; declining costs the first launch after each boot that
-  load;
 - **`--self-test` without a case filter** writes to its own scratch directory in the workspace
   ([testing.md](fuse/ko-agent-fs/doc/testing.md));
 - the **workspace's SELinux labels** are never changed. On an enforcing host a container reads
@@ -632,10 +628,11 @@ is checked:
 - **No container process runs before the policy is proven.** A read-back with the controller's
   privileges and none of its code lists what the kernel attached and compares the hook set, each
   program's tag and read-only data with the installed object's, and each map's shape and contents
-  with the launch's records; then the launcher's own process below the attach cgroup runs one
-  refused operation per hook and one write per rule line against a fixture under the state root.
-  A difference ends the launch with nothing bound writable. The container then starts only once
-  the machine has read its initialized process's cgroup below the attach cgroup.
+  with the launch's records, the four holding them frozen against writes from user space; then the
+  launcher's own process below the attach cgroup runs one refused operation per hook and one write
+  per rule line against a fixture under the state root. A difference ends the launch with nothing
+  bound writable. The container then starts only once the machine has read its initialized process's
+  cgroup below the attach cgroup.
 - **The policy outlives the controller and cannot lapse without root.** A pinned link detaches
   only when its cgroup is removed, and a cgroup holding the container cannot be. A read-only
   session (`--workspace=read-only,bpf`) gets a policy recording no root, so a descriptor a live

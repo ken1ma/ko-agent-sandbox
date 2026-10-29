@@ -288,20 +288,12 @@ the proof until this is built.
     the tags and the records. Record that residual beside the rule when it ships.
   - The controller keeps the two parts of step 3 separable for this ("Phases", 4).
 
-## The policy's record maps frozen
+## The retired boot unit's removal
 
-- [ ] With the next change to `bpf/ko-agent-bpf/`, have the controller freeze `roots`, `rules`,
-  `aliases` and `policy_config` (`BPF_MAP_FREEZE`) once `fill_policy` wrote them, before any
-  attach, so that no write from user space changes a session's records afterwards.
-  - It guards against a stray write by a tool of the machine's root, not against root, who can
-    detach the policy.
-  - `stats`, `last_decision`, `scratch` and `guard` stay unfrozen: the program writes them, and
-    `stats` is reset from user space.
-  - Deferred to a program change since `controller.c` is in the hashed sources of Phases 4 and 5,
-    whose evidence a change reopens (`plan-bpf-lsm-cgroup.md`, "Remaining work").
-  - Test by behaviour, since the read-back may not see the frozen state: an update of each frozen
-    map fails, the program's decisions are unchanged, and a fresh load, a spare's take and a
-    recreate on the pinned programs all work.
+- [ ] Before the first release, delete what removes the boot unit a839d14 and ee8793c installed
+  with consent: `KoAgentBpf`'s "The boot unit of the builds a839d14 and ee8793c" section and its
+  call in `installKoAgentBpf`, and its test in `KoAgentBpfTest`. No release ever installed the
+  unit.
 
 ## The status-line test reads a settings key the launch now supplies
 

@@ -4,7 +4,7 @@
 // program's tag against the installed object's, and each map's shape and contents against the
 // guard's records and the identities it reads for itself. A difference ends the launch. It also
 // records the installed object's tags, once per installation and kernel, checks pinned programs
-// before a restart reuses them ("Lifecycle", 5), and checks the spare set before a launch takes
+// before a restart reuses them ("Lifecycle", 5), and checks the preloaded set before a launch takes
 // it. Exit status 1 is a difference, 2 a failure.
 //
 //   readback tags OBJ OUT             load OBJ, beside this binary, and write each program's name,
@@ -14,16 +14,16 @@
 //                  [--flags F,F] [--no-root] HOOK...
 //                                     the programs attached to CGROUP must be HOOK..., once each and
 //                                     nothing else, with FILE's tags, sharing one map set whose
-//                                     records are those the guard produced for this launch and whose
-//                                     read-only data is FILE's; --no-root expects a read-only
+//                                     records are those the guard produced for this launch, frozen,
+//                                     and whose read-only data is FILE's; --no-root expects a read-only
 //                                     session's policy (backend.h), for which --records may be absent
 //   readback check-pins PINDIR --tags FILE --records FILE --workspace PATH [--fixture PATH]
 //                      [--volume PATH] [--flags F,F] [--no-root] HOOK...
 //                                     the same of the programs pinned under PINDIR/progs
-//   readback check-spare PINDIR --tags FILE HOOK...
+//   readback check-preloaded PINDIR --tags FILE HOOK...
 //                                     the programs pinned under PINDIR/progs are HOOK... with FILE's
-//                                     tags and read-only data, over one map set holding no record:
-//                                     the spare a launch may take
+//                                     tags and read-only data, over one map set holding no record and
+//                                     not frozen: the preloaded set a launch may take
 #define _GNU_SOURCE
 #include <libgen.h>
 #include <sys/utsname.h>
@@ -333,10 +333,31 @@ static int compare_config(int fd, const struct policy_config *want)
 	return 0;
 }
 
+// Whether the kernel holds the map frozen, which the descriptor's fdinfo says and struct
+// bpf_map_info does not.
+static bool map_frozen(int fd)
+{
+	char path[64], line[128];
+	int frozen = -1;
+	FILE *file;
+
+	snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", fd);
+	file = fopen(path, "r");
+	if (!file)
+		die("%s: %s", path, strerror(errno));
+	while (frozen < 0 && fgets(line, sizeof(line), file))
+		sscanf(line, "frozen: %d", &frozen);
+	fclose(file);
+	if (frozen < 0)
+		die("%s names no frozen state", path);
+	return frozen;
+}
+
 // The map set of one sandbox: the eight of the table by shape, one read-only map of string
 // literals holding the installed object's bytes, nothing else; then the records in the four the
-// launch filled.
-static int verify_maps(const __u32 *ids, int count, const struct policy *policy, const struct tags *tags)
+// launch filled, frozen as RECORDS_FROZEN says: an attached set's are, a preloaded set's not yet.
+static int verify_maps(const __u32 *ids, int count, const struct policy *policy, const struct tags *tags,
+		       bool records_frozen)
 {
 	bool seen[POLICY_MAPS] = {};
 	int rodata = 0;
@@ -384,6 +405,11 @@ static int verify_maps(const __u32 *ids, int count, const struct policy *policy,
 				      info.max_entries, policy_maps[shape].type, policy_maps[shape].key_size,
 				      policy_maps[shape].value_size, policy_maps[shape].max_entries);
 		}
+		if (policy_maps[shape].records && map_frozen(fd) != records_frozen) {
+			close(fd);
+			return differ("map-frozen", "map=%s frozen=%d expected=%d", info.name, !records_frozen,
+				      records_frozen);
+		}
 		if (!strcmp(info.name, "roots") && compare_roots(fd, policy))
 			return 1;
 		if (!strcmp(info.name, "rules") &&
@@ -408,7 +434,7 @@ static int verify_maps(const __u32 *ids, int count, const struct policy *policy,
 
 // The programs, by descriptor: the hook set exact, every tag the installed object's, one map set.
 static int verify_programs(int *prog_fds, int count, const struct expectation *exp, const struct policy *policy,
-			   const struct tags *tags, const char *what, double start)
+			   const struct tags *tags, bool records_frozen, const char *what, double start)
 {
 	__u32 expected_ids[POLICY_HOOKS], first_maps[MAX_MAPS];
 	bool matched[POLICY_HOOKS] = {};
@@ -461,11 +487,11 @@ static int verify_programs(int *prog_fds, int count, const struct expectation *e
 				      exp->hooks[0]);
 		}
 	}
-	if (verify_maps(first_maps, first_count, policy, tags))
+	if (verify_maps(first_maps, first_count, policy, tags, records_frozen))
 		return 1;
-	printf("%s ok=1 programs=%d maps=%d roots=%d rule_count=%u aliases=%u fs_type=%s ms=%.1f\n", what, count,
-	       first_count, policy->root_count, policy->rec.header.rule_count, policy->rec.header.alias_count,
-	       policy->cfg.fs_type, now_ms() - start);
+	printf("%s ok=1 programs=%d maps=%d roots=%d rule_count=%u aliases=%u fs_type=%s records_frozen=%d "
+	       "ms=%.1f\n", what, count, first_count, policy->root_count, policy->rec.header.rule_count,
+	       policy->rec.header.alias_count, policy->cfg.fs_type, records_frozen, now_ms() - start);
 	return 0;
 }
 
@@ -504,7 +530,7 @@ static int cmd_verify(int argc, char **argv)
 		if (prog_fds[i] < 0)
 			die("prog %u: %s", ids[i], strerror(errno));
 	}
-	result = verify_programs(prog_fds, opts.prog_cnt, &exp, &policy, &tags, "verify", start);
+	result = verify_programs(prog_fds, opts.prog_cnt, &exp, &policy, &tags, true, "verify", start);
 	return result ? 1 : 0;
 }
 
@@ -535,12 +561,12 @@ static int cmd_check_pins(int argc, char **argv)
 			return 1;
 		}
 	}
-	return verify_programs(prog_fds, exp.hook_count, &exp, &policy, &tags, "check-pins", start) ? 1 : 0;
+	return verify_programs(prog_fds, exp.hook_count, &exp, &policy, &tags, true, "check-pins", start) ? 1 : 0;
 }
 
-// The spare ("Lifecycle"): the pinned programs of every hook, the installed object's, over maps
-// holding no record and a zero configuration, which is what a zeroed policy expects.
-static int cmd_check_spare(int argc, char **argv)
+// The preloaded set ("Lifecycle"): the pinned programs of every hook, the installed object's, over
+// maps holding no record and a zero configuration, which is what a zeroed policy expects.
+static int cmd_check_preloaded(int argc, char **argv)
 {
 	int prog_fds[POLICY_HOOKS];
 	struct expectation exp;
@@ -549,10 +575,10 @@ static int cmd_check_spare(int argc, char **argv)
 	double start = now_ms();
 
 	if (argc < 2)
-		die("usage: check-spare PINDIR --tags FILE HOOK...");
-	parse_expectation(argc - 1, argv + 1, &exp, "check-spare");
+		die("usage: check-preloaded PINDIR --tags FILE HOOK...");
+	parse_expectation(argc - 1, argv + 1, &exp, "check-preloaded");
 	if (!exp.tags_path)
-		die("check-spare: --tags is required");
+		die("check-preloaded: --tags is required");
 	if (!relative_beneath(PIN_FS, argv[0]))
 		die("pindir %s is not under %s", argv[0], PIN_FS);
 	read_tags(exp.tags_path, &tags);
@@ -563,11 +589,12 @@ static int cmd_check_spare(int argc, char **argv)
 		snprintf(pin, sizeof(pin), "%s/progs/%s", argv[0], exp.hooks[i]);
 		prog_fds[i] = bpf_obj_get(pin);
 		if (prog_fds[i] < 0) {
-			printf("check-spare ok=0 reason=missing-pin pin=%s error=%s\n", pin, strerror(errno));
+			printf("check-preloaded ok=0 reason=missing-pin pin=%s error=%s\n", pin, strerror(errno));
 			return 1;
 		}
 	}
-	return verify_programs(prog_fds, exp.hook_count, &exp, &policy, &tags, "check-spare", start) ? 1 : 0;
+	return verify_programs(prog_fds, exp.hook_count, &exp, &policy, &tags, false, "check-preloaded",
+			       start) ? 1 : 0;
 }
 
 int main(int argc, char **argv)
@@ -582,7 +609,7 @@ int main(int argc, char **argv)
 		return cmd_verify(argc - 2, argv + 2);
 	if (!strcmp(argv[1], "check-pins"))
 		return cmd_check_pins(argc - 2, argv + 2);
-	if (!strcmp(argv[1], "check-spare"))
-		return cmd_check_spare(argc - 2, argv + 2);
+	if (!strcmp(argv[1], "check-preloaded"))
+		return cmd_check_preloaded(argc - 2, argv + 2);
 	die("unknown subcommand %s", argv[1]);
 }

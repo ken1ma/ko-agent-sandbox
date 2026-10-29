@@ -2682,8 +2682,8 @@ object AgentSandboxLauncher:
     awsCredential.flatMap(AwsCredential.expiredSince(_, Instant.now())).foreach(message => fail(message))
 
     // The backend's steps 1 to 3 ("Lifecycle"), before the container exists: the attach cgroup, the
-    // policy attached from the spare or loaded, the read-back and the proof, in one script in the
-    // machine; a failure names the step and the launch ends with nothing bound writable. Under the
+    // policy attached from the preloaded set or loaded, the read-back and the proof, in one script in
+    // the machine; a failure names the step and the launch ends with nothing bound writable. Under the
     // image-build lock as the filter's mount is, so a --build replacing the binaries waits.
     // The gitdir bind's source as the machine spells it, as the workspace root is (mountPathOf).
     val gitdirSource = git.mountedGitdir.map(bind => mountPathOf(os, bind.source).fold(fail(_), identity))
@@ -2724,7 +2724,7 @@ object AgentSandboxLauncher:
     launched.foreach: done =>
       System.err.println(KoAgentBpf.LaunchLine)
       KoAgentBpf.appendLog(backendLogFile, KoAgentBpf.stepsLogLine(done))
-      if done.spare then
+      if done.preloaded then
         KoAgentBpf.appendLog(backendLogFile, "a program set for the next launch is being verified behind this one")
     // Step 4's placement check ("Lifecycle", 4): `podman init` makes the container now, so that the
     // machine's watcher reads its cgroup while the launch goes on; the start below waits for the verdict.

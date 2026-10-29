@@ -4,4 +4,5 @@
 ../../ko-agent-bpf/controller.c
 ../../ko-agent-bpf/readback.c
 ../../ko-agent-bpf/fixture.c
+rewrite.c
 Containerfile

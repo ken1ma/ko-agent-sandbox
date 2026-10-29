@@ -6,6 +6,7 @@
 // attach cgroup and the proof of "Lifecycle", steps 1 and 3. A driver keeps what is its own: its rows,
 // its readers of its own binaries' lines and what its cleanup removes.
 
+import scala.jdk.CollectionConverters.*
 import scala.util.Properties
 import scala.util.matching.Regex
 import scala.util.Using
@@ -16,6 +17,7 @@ import java.nio.file.{Files, Path, StandardCopyOption, StandardOpenOption}
 import java.security.MessageDigest
 import java.util.Comparator
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.jar.JarFile
 
 object ProbeHelper:
 
@@ -153,8 +155,10 @@ object ProbeHelper:
     private val closed = AtomicBoolean(false)
     def close(): Unit = if closed.compareAndSet(false, true) then
       transcript.step("cleanup")
-      val containers = host(transcript, Seq("podman", "ps", "-aq", "--filter", s"label=$label")).text.trim
-      if containers.nonEmpty then host(transcript, Seq("podman", "rm", "-f") ++ containers.linesIterator.toSeq)
+      val containers =
+        host(transcript, Seq("podman", "ps", "-aq", "--filter", s"label=$label"), timeoutSeconds = Some(120)).text.trim
+      if containers.nonEmpty then
+        host(transcript, Seq("podman", "rm", "-f", "-v") ++ containers.linesIterator.toSeq, timeoutSeconds = Some(120))
       removeRest()
       transcript.log("")
       transcript.log(s"passed=${transcript.passed} failed=${transcript.failed} transcript=${transcript.path}")
@@ -177,17 +181,39 @@ object ProbeHelper:
     def has(needle: String): Boolean = text.contains(needle)
 
   /** A command on the host, its output recorded unless polled; a merged stream, a closed stdin unless
-    * inherited. */
+    * inherited. With `timeoutSeconds`, a command still running then is killed and answers status -1. */
   def host(transcript: Transcript, command: Seq[String], cwd: Path = workingDir, inheritStdin: Boolean = false,
-      record: Boolean = true): Output =
+      record: Boolean = true, timeoutSeconds: Option[Int] = None): Output =
     val builder = ProcessBuilder(command*).directory(cwd.toFile).redirectErrorStream(true)
     if inheritStdin then builder.redirectInput(Redirect.INHERIT)
+    // Bounded, the output goes to a file: a pipe's reader would block past the deadline.
+    val captured = timeoutSeconds.map(_ => Files.createTempFile("probe-host", ".out"))
+    captured.foreach(file => builder.redirectOutput(file.toFile))
     val process = builder.start()
     if !inheritStdin then process.getOutputStream.close()
-    val text = String(process.getInputStream.readAllBytes(), UTF_8)
-    val status = process.waitFor()
+    val (status, text) = (captured, timeoutSeconds) match
+      case (Some(file), Some(seconds)) =>
+        val finished = process.waitFor(seconds.toLong, java.util.concurrent.TimeUnit.SECONDS)
+        if !finished then
+          process.destroyForcibly()
+          process.waitFor()
+        val output = String(Files.readAllBytes(file), UTF_8)
+        Files.delete(file)
+        if finished then (process.exitValue, output)
+        else (-1, s"$output\n(${command.mkString(" ")} killed after $seconds s)")
+      case _ =>
+        val output = String(process.getInputStream.readAllBytes(), UTF_8)
+        (process.waitFor(), output)
     if record then transcript.record(text)
     Output(status, text)
+
+  /** The longest a driver's podman command may take: a machine whose container storage went
+    * read-only answered no `podman rm` within hours. */
+  val PodmanSeconds = 120
+
+  def podman(transcript: Transcript, arguments: Seq[String], record: Boolean = true,
+      seconds: Int = PodmanSeconds): Output =
+    host(transcript, "podman" +: arguments, record = record, timeoutSeconds = Some(seconds.max(1)))
 
   /** One shell command of several statements, for `Vm`. */
   def sh(statements: String*): String = statements.mkString("; ")
@@ -196,9 +222,21 @@ object ProbeHelper:
   def quoted(path: String): String = "'" + path.replace("'", "'\\''") + "'"
 
   /** A command in the podman machine, as the machine's user, over `podman machine ssh`. */
-  class Vm(transcript: Transcript):
-    def apply(command: String): Output = host(transcript, Seq("podman", "machine", "ssh", command))
+  /** With `timeoutSeconds`, every command is killed past it: a driver whose machine commands are all
+    * short passes PodmanSeconds, one with long workloads in the machine passes none. */
+  class Vm(transcript: Transcript, timeoutSeconds: Option[Int] = None):
+    def apply(command: String): Output =
+      host(transcript, Seq("podman", "machine", "ssh", command), timeoutSeconds = timeoutSeconds)
     def line(command: String): String = apply(command).text.trim
+    /** Whether root sees PATH, None when the inspection itself failed, a refused sudo or a lost ssh among
+      * them, so that a failure never reads as absence. bpffs is mode 0700 in the machine, so the machine
+      * user's own test sees no pin. */
+    def rootSees(path: String): Option[Boolean] =
+      val answer = apply(s"sudo -n sh -c 'if [ -e $$1 ]; then echo PRESENT; else echo ABSENT; fi' sh $path")
+      answer.text.trim match
+        case "PRESENT" if answer.ok => Some(true)
+        case "ABSENT" if answer.ok => Some(false)
+        case _ => None
 
   def removeTree(platform: Platform, path: Path): Unit =
     if Files.exists(path) then
@@ -211,6 +249,36 @@ object ProbeHelper:
           process.waitFor()
         case Platform.Mac =>
           Using.resource(Files.walk(path))(_.sorted(Comparator.reverseOrder()).forEach(Files.delete(_)))
+
+  // --- The launcher -----------------------------------------------------------------------------------------
+
+  /** The sandbox image the launcher's `--build` makes, which the sessions and the stacks run. */
+  val SandboxImage = "ko-agent-sandbox:latest"
+
+  /** Where a bundled build context's entry lies in the checkout: build.sbt stores each relative to its
+    * context root, container/ for the images, fuse/ for the filter and the root for bpf/ko-agent-bpf. */
+  def checkoutFile(repoDir: Path, bundled: String): Path =
+    if bundled.startsWith("bpf/") then repoDir / bundled
+    else if bundled.startsWith("ko-agent-fs/") then repoDir / "fuse" / bundled
+    else repoDir / "container" / bundled
+
+  /** The jar's bundled build context against the checkout: the first file the bundle's INDEX lists,
+    * the launcher's own listing (LauncherImages.bundleIndex), whose entry differs from the checkout's
+    * file or has none, or None. The jar can hold more under `sandbox-build/`: sbt 2 leaves files an
+    * earlier bundle copied into its classes directory, and the launcher reads none of them. */
+  def staleEntry(jar: Path, repoDir: Path): Option[String] =
+    Using.resource(JarFile(jar.toFile)): opened =>
+      def read(name: String): Option[Array[Byte]] =
+        Option(opened.getJarEntry(name)).map(entry => Using.resource(opened.getInputStream(entry))(_.readAllBytes()))
+      read("sandbox-build/INDEX") match
+        case None => Some("sandbox-build/INDEX")
+        case Some(index) =>
+          String(index, java.nio.charset.StandardCharsets.UTF_8).linesIterator.map(_.trim).filter(_.nonEmpty)
+            .find: listed =>
+              val file = checkoutFile(repoDir, listed)
+              !Files.isRegularFile(file) || !read(s"sandbox-build/$listed").exists(java.util.Arrays.equals(Files
+                .readAllBytes(file), _))
+            .map("sandbox-build/" + _)
 
   // --- The environment and the build -----------------------------------------------------------------------
 
@@ -236,17 +304,48 @@ object ProbeHelper:
       "sudo -n sh -c 'findmnt -n /sys/fs/bpf >/dev/null || mount -t bpf bpf /sys/fs/bpf'",
     ))
 
-  /** The environment step: refused without a default machine or without sudo in it; the machine's user,
-    * kernel, podman, cgroup manager, runtime and size; the pseudo filesystems; the scratch directory made
-    * afresh on the share, whose mount lands in OUT/findmnt.txt; and the pin root. */
+  /** The free space a run needs on the host drive holding the user's home, where podman keeps the
+    * machine's disk by default, and in the machine: a full host drive stopped the machine's disk from
+    * growing mid-run on Windows, its container storage turning read-only. */
+  val MinFreeGiB = 10L
+
+  /** Free GiB on the host drive holding the user's home and in the machine's home, -1 where unreadable.
+    * Both count: WSL's machine reports free space against its disk's maximum size, which the host drive
+    * holding the disk bounds, and macOS's machine disk has a maximum size of its own. */
+  case class FreeSpace(hostGiB: Long, machineGiB: Long):
+    def enough: Boolean = hostGiB >= MinFreeGiB && machineGiB >= MinFreeGiB
+    /** What is short, and where, for a refusal. */
+    def shortfall: String =
+      val home = sys.props("user.home")
+      Seq(
+        Option.when(hostGiB < MinFreeGiB)(
+          s"only $hostGiB GiB free on the drive holding $home, which holds the podman machine's disk by default"),
+        Option.when(machineGiB < MinFreeGiB)(
+          s"only $machineGiB GiB free in the machine's home (podman system df shows what holds it)"),
+      ).flatten.mkString("; ") + s"; free $MinFreeGiB GiB or more first"
+    override def toString: String = s"$hostGiB GiB on the host's home drive, $machineGiB GiB in the machine"
+
+  def freeSpace(vm: Vm): FreeSpace =
+    FreeSpace(
+      Files.getFileStore(Path.of(sys.props("user.home"))).getUsableSpace / (1L << 30),
+      vm.line("df -Pk ~ | awk 'NR == 2 { print int($4 / 1048576) }'").toLongOption.getOrElse(-1L),
+    )
+
+  /** The environment step: refused without a default machine, without sudo in it, or with less than
+    * MinFreeGiB free on the host's home drive or in the machine; the machine's user, kernel, podman, cgroup
+    * manager, runtime and size; the pseudo filesystems; the scratch directory made afresh on the share,
+    * whose mount lands in OUT/findmnt.txt; and the pin root. */
   def readVmFacts(transcript: Transcript, vm: Vm, out: Path, scratchDir: Path, scratchDirVm: String,
       pinRoot: String): Either[Int, VmFacts] =
     transcript.step("environment")
     for
-      _ <- transcript.refuse(host(transcript, Seq("podman", "machine", "inspect", "--format", "{{.State}}")).ok,
+      _ <- transcript.refuse(podman(transcript, Seq("machine", "inspect", "--format", "{{.State}}")).ok,
         "no default podman machine")
       _ <- transcript.refuse(vm("sudo -n true").ok, "sudo -n fails in the machine")
+      free = freeSpace(vm)
+      _ <- transcript.refuse(free.enough, free.shortfall)
     yield
+      transcript.info(s"free: $free")
       val uid = vm.line("id -u")
       val kernel = vm.line("uname -r")
       val manager = vm.line("podman info --format '{{.Host.CgroupManager}}'")

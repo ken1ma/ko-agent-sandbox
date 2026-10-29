@@ -24,9 +24,9 @@ object KoAgentBpf:
   /** Where the backend is installed, relative to the machine user's home, beside the filter. */
   val InstallDir = s"$KoAgentFsInstallDir/bpf"
 
-  /** Where the sessions' links and programs are pinned, and the spare set ("Lifecycle"). */
+  /** Where the sessions' links and programs are pinned, and the preloaded set ("Lifecycle"). */
   val PinRoot = "/sys/fs/bpf/ko-agent-bpf"
-  val SparePinDir = s"$PinRoot/spare"
+  val PreloadedPinDir = s"$PinRoot/preloaded"
 
   /** A session's pin directory: bpffs refuses a name holding a `.` (`EPERM` at the lookup), and a
     * container name carries the workspace directory's, so the dot becomes `_` here and in the
@@ -229,7 +229,7 @@ object KoAgentBpf:
 
   /**
    * The install, in the machine: the image's /out into the install directory, the source id checked,
-   * the installed object's tags recorded under the running kernel ("Lifecycle", 3), and the spare
+   * the installed object's tags recorded under the running kernel ("Lifecycle", 3), and the preloaded
    * set prepared afresh, since the one of an earlier build fails the tag check.
    */
   def installScript(sourceId: String): String =
@@ -247,19 +247,20 @@ object KoAgentBpf:
          |fi
          |$MountPseudoFilesystems
          |sudo -n "$$dir/readback" tags policy.bpf.o "$$dir/tags.txt"
-         |sudo -n "$$dir/controller" unpin $SparePinDir >/dev/null 2>&1 || true
-         |sudo -n "$$dir/controller" prepare-spare $SparePinDir
+         |sudo -n "$$dir/controller" unpin $PreloadedPinDir >/dev/null 2>&1 || true
+         |sudo -n "$$dir/controller" preload $PreloadedPinDir
          |cat "$$dir/clang-version.txt" "$$dir/build-kernel.txt" "$$dir/objects.sha256\"""".stripMargin,
     )
 
   def installedLine(installOutput: String): String =
     val lines = installOutput.linesIterator.toVector
     val tags = lines.find(_.startsWith("tags ")).map(line => field("programs", line).getOrElse("?")).getOrElse("?")
-    val spare = lines.find(_.startsWith("spare ")).map(line => field("load_ms", line).getOrElse("?")).getOrElse("?")
-    s"ko-agent-bpf installed: $tags programs verified; a program set for the next launch loaded in $spare ms"
+    val preloaded =
+      lines.find(_.startsWith("preloaded ")).map(line => field("load_ms", line).getOrElse("?")).getOrElse("?")
+    s"ko-agent-bpf installed: $tags programs verified; a program set for the next launch loaded in $preloaded ms"
 
-  /** Install the freshly built backend into the machine and prepare its spare. Linux has no machine
-    * and keeps the filter ("Later versions"), so the caller does not come here. */
+  /** Install the freshly built backend into the machine and preload a program set. Linux has no
+    * machine and keeps the filter ("Later versions"), so the caller does not come here. */
   def installKoAgentBpf(podman: String, os: Os, sourceId: String): Either[String, Unit] =
     val command = koAgentFsScriptCommand(podman, os, installScript(sourceId))
     echoCommand(command)
@@ -267,97 +268,51 @@ object KoAgentBpf:
     if !installed.ok then Left(s"install failed:\n${installed.err.trim}")
     else
       System.err.println(installedLine(installed.text))
-      System.err.println(
-        s"  to remove it: podman machine ssh rm -r $InstallDir, and the unit below as its comment says",
-      )
-      Right(ensureSpareUnit(podman, os))
+      System.err.println(s"  to remove it: podman machine ssh rm -r $InstallDir")
+      removeRetiredUnit(podman, os)
+      Right(())
 
   // ---------------------------------------------------------------------------
-  // The boot-time unit that prepares the first spare
+  // The boot unit of the builds a839d14 and ee8793c (doc/TODO.md has when this code goes)
   // ---------------------------------------------------------------------------
 
-  val SpareUnit = "ko-agent-bpf-spare.service"
-  val SpareUnitPath = s"/etc/systemd/system/$SpareUnit"
+  /** The unit those builds installed with the user's consent. It runs `controller prepare-spare`,
+    * which the controller no longer has, so it fails at every machine boot. */
+  val RetiredUnit = "ko-agent-bpf-spare.service"
+  val RetiredUnitPath = s"/etc/systemd/system/$RetiredUnit"
+  /** The SHA-256 of the unit's text as those builds wrote it, the machine user's home as `@HOME@`. */
+  val RetiredUnitSha256 = "3eed605caf1ee3b8789331c809b715be3d350415194f09487830cba730b8df88"
 
-  /** The unit's text; `home` is the machine user's home, where the controller is installed. */
-  def spareUnitText(home: String): String =
-    s"""[Unit]
-       |Description=ko-agent-sandbox: load and verify the workspace policy's BPF programs ahead of the first launch
-       |# Written by ko-agent-sandbox --build with your consent (KoAgentBpf.scala); remove with
-       |# `sudo systemctl disable --now $SpareUnit && sudo rm $SpareUnitPath`.
-       |
-       |[Service]
-       |Type=oneshot
-       |ExecStartPre=/bin/sh -c 'findmnt -n /sys/kernel/security >/dev/null \\
-       |  || mount -t securityfs securityfs /sys/kernel/security'
-       |ExecStartPre=/bin/sh -c 'findmnt -n /sys/fs/bpf >/dev/null || mount -t bpf bpf /sys/fs/bpf'
-       |ExecStart=$home/$InstallDir/controller prepare-spare $SparePinDir
-       |
-       |[Install]
-       |WantedBy=multi-user.target
-       |""".stripMargin
-
-  /** Whether the installed unit is the expected text and enabled; the text is compared in the machine,
-    * where the home is known. */
-  def spareUnitCheckScript: String =
+  /** Disables and deletes the unit while its text is the one those builds wrote, the launcher's own
+    * file; a changed text is no longer the launcher's to remove (SECURITY.md, "Silent changes to what
+    * you own"). Prints `removed`, `failed` or `changed`, and nothing where there is no unit. */
+  def retiredUnitScript(path: String = RetiredUnitPath): String =
     s"""set -u
-       |expected="$$(${printingCommand(spareUnitText("@HOME@"))} | sed "s|@HOME@|$$HOME|g")"
-       |[ "$$(cat $SpareUnitPath 2>/dev/null)" = "$$expected" ] || exit 1
-       |systemctl is-enabled $SpareUnit >/dev/null 2>&1""".stripMargin
+       |[ -e $path ] || exit 0
+       |if [ "$$(sed "s|$$HOME|@HOME@|g" $path | sha256sum | cut -d' ' -f1)" != $RetiredUnitSha256 ]; then
+       |  echo changed; exit 0
+       |fi
+       |sudo -n systemctl disable --now $RetiredUnit >/dev/null 2>&1 && sudo -n rm -f $path \\
+       |  && sudo -n systemctl daemon-reload && echo removed || echo failed""".stripMargin
 
-  def spareUnitInstallScript: String =
-    s"""set -eu
-       |${printingCommand(spareUnitText("@HOME@"))} | sed "s|@HOME@|$$HOME|g" | sudo -n tee $SpareUnitPath >/dev/null
-       |sudo -n systemctl daemon-reload
-       |sudo -n systemctl enable $SpareUnit >/dev/null 2>&1""".stripMargin
-
-  /** The two scripts hold double quotes, so they cross the machine's ssh as koAgentFsScriptCommand
-    * sends them: Windows passes a quote through unescaped (KoAgentFs.koAgentFsScriptCommand). */
-  def spareUnitCheckCommand(podman: String, os: Os): Vector[String] =
-    koAgentFsScriptCommand(podman, os, spareUnitCheckScript)
-
-  def spareUnitInstallCommand(podman: String, os: Os): Vector[String] =
-    koAgentFsScriptCommand(podman, os, spareUnitInstallScript)
-
-  /**
-   * The boot-time unit, installed with the user's consent: a system unit is the machine's
-   * configuration (SECURITY.md, "Silent changes to what you own"), as /etc/fuse.conf is for the
-   * filter. Declined, the first launch after each boot loads its programs itself, once.
-   */
-  /** The consent prompt's text. The unit is joined after `stripMargin`, which would otherwise take the
-    * leading spaces and the first `|` of its `|| mount` continuation line, showing text the file does not
-    * hold. */
-  def spareUnitPrompt: String =
-    val indentedUnit = spareUnitText("$HOME").linesIterator.map(line => s"  $line").mkString("\n")
-    s"""Each launch of --workspace=live,bpf attaches BPF programs the kernel must verify first, a wait
-       |of up to a few seconds that depends on the machine's kernel. The launcher keeps one program set
-       |loaded and verified ahead of the next launch, so no launch waits for that (SECURITY.md, "The BPF
-       |backend").
-       |After a machine boot the first such set comes from a system unit, $SpareUnitPath,
-       |run as root at boot. Your machine's configuration is not changed without asking. The unit, with
-       |$$HOME the machine user's home:
-       |""".stripMargin + "\n" + indentedUnit + "\n" +
-      """
-        |Without it, the first launch after each boot loads and verifies its programs itself and waits
-        |that time; every later launch finds the set the launch before it left ready.""".stripMargin
-
-  def ensureSpareUnit(podman: String, os: Os): Unit =
-    if run(spareUnitCheckCommand(podman, os)*).ok then return
-    System.err.println(spareUnitPrompt)
-    val reader = AgentSandboxLauncher.terminalReader
-    val answer = reader.flatMap: console =>
-      console.prompt("Install the unit now? [y/N] ")
-      console.readLine()
-    if !consented(answer) then
-      System.err.println(
-        "note: the unit is not installed; the first launch after each machine boot verifies its programs itself",
-      )
-      return
-    val installed = run(spareUnitInstallCommand(podman, os)*)
-    if !installed.ok then fail(s"error: installing $SpareUnit failed: ${installed.err}", installed.exit)
-    if !run(spareUnitCheckCommand(podman, os)*).ok then
-      fail(s"error: $SpareUnit is not installed as expected after enabling; check the machine's $SpareUnitPath")
-    System.err.println(s"unit installed: $SpareUnitPath")
+  def removeRetiredUnit(podman: String, os: Os): Unit =
+    val removal = s"podman machine ssh 'sudo systemctl disable --now $RetiredUnit && sudo rm $RetiredUnitPath'"
+    val answered = run(koAgentFsScriptCommand(podman, os, retiredUnitScript())*)
+    if !answered.ok then
+      warn(s"checking the machine for $RetiredUnitPath failed: ${answered.err.trim}")
+    else answered.text.trim match
+      case "removed" =>
+        System.err.println(
+          s"removed the machine's $RetiredUnitPath, which an earlier --build installed: it runs a controller " +
+            "command this build no longer has",
+        )
+      case "changed" =>
+        System.err.println(
+          s"note: the machine's $RetiredUnitPath differs from what an earlier --build wrote, so it is " +
+            s"left in place; it fails at every boot. To remove it: $removal",
+        )
+      case "" => ()
+      case _ => warn(s"removing the machine's $RetiredUnitPath failed. To remove it: $removal")
 
   // ---------------------------------------------------------------------------
   // The capability probe, at every launch
@@ -598,12 +553,12 @@ object KoAgentBpf:
          |echo "cgroup path=$$cg id=$$(stat -c %i "$$cg") parent=$parent"
          |echo "${StepMarker}attach"
          |pins=${pinDir(session)}
-         |spare=""
-         |if sudo -n "$$dir/readback" check-spare $SparePinDir --tags "$$dir/tags.txt" ${hooks(true).mkString(" ")} \\
-         |    2>/dev/null | grep -q ' ok=1'; then spare="--spare $SparePinDir"
-         |else sudo -n "$$dir/controller" unpin $SparePinDir >/dev/null 2>&1 || true; fi
+         |preloaded=""
+         |if sudo -n "$$dir/readback" check-preloaded $PreloadedPinDir --tags "$$dir/tags.txt" \\
+         |    ${hooks(true).mkString(" ")} 2>/dev/null | grep -q ' ok=1'; then preloaded="--preloaded $PreloadedPinDir"
+         |else sudo -n "$$dir/controller" unpin $PreloadedPinDir >/dev/null 2>&1 || true; fi
          |sudo -n "$$dir/controller" attach "$$cg" "$$pins" $recordsOption --workspace "$$backing" \\
-         |  --fixture "$$fixture" --volume "$$volmp" --bind-source "$$backing" $flags $noRootFlag $$spare $hookList
+         |  --fixture "$$fixture" --volume "$$volmp" --bind-source "$$backing" $flags $noRootFlag $$preloaded $hookList
          |echo "${StepMarker}verify"
          |sudo -n "$$dir/readback" verify "$$cg" --tags "$$dir/tags.txt" $recordsOption --workspace "$$backing" \\
          |  --fixture "$$fixture" --volume "$$volmp" $flags $noRootFlag $hookList
@@ -620,8 +575,8 @@ object KoAgentBpf:
          |rm -f "$$placement"
          |${printingCommand(PlacementWatcher)} > "$$sess/watch-placement"
          |(nohup sh "$$sess/watch-placement" "$$placement" $session >/dev/null 2>&1 &)
-         |if [ -n "$$spare" ]; then
-         |  (nohup sudo -n "$$dir/controller" prepare-spare $SparePinDir >/dev/null 2>&1 &)
+         |if [ -n "$$preloaded" ]; then
+         |  (nohup sudo -n "$$dir/controller" preload $PreloadedPinDir >/dev/null 2>&1 &)
          |fi
          |echo "${StepMarker}done"
          |${identities.mkString("\n")}
@@ -705,7 +660,7 @@ object KoAgentBpf:
     parent: String,
     identities: Map[String, String],
     resolved: FileRules.Resolved,
-    spare: Boolean,
+    preloaded: Boolean,
     attachLine: String,
     verifyLine: String,
     proofLine: String,
@@ -743,7 +698,7 @@ object KoAgentBpf:
       field("parent", cgroup).getOrElse(""),
       identities,
       resolved,
-      field("spare", attach).contains("1"),
+      field("preloaded", attach).contains("1"),
       attach,
       lines.find(_.startsWith("verify ")).getOrElse(""),
       lines.find(_.startsWith("fixture ops")).getOrElse(""),
@@ -759,7 +714,7 @@ object KoAgentBpf:
     val load = field("load_ms", launched.attachLine).getOrElse("?")
     val verify = field("ms", launched.verifyLine).getOrElse("?")
     val proof = field("ms", launched.proofLine).getOrElse("?")
-    val how = if launched.spare then "the program set verified ahead" else "programs verified now"
+    val how = if launched.preloaded then "the program set verified ahead" else "programs verified now"
     s"attached $hooksAttached hooks in $load ms from $how; read back in $verify ms; tested in $proof ms"
 
   /** The run's log of the backend's steps, which `log dir` names; a failed write costs the line alone. */
@@ -809,11 +764,11 @@ object KoAgentBpf:
    * cgroup's identity; a container's label names the cgroup it was created under. A listing or a
    * label that cannot be read tells the controller so, which then removes nothing. Under systemd a
    * session without a container has its hold unit stopped first, so that the hold does not count
-   * as populated, and the slices the controller names are stopped after it. The spare is kept
-   * while its tags are the installed object's, unpinned otherwise, and prepared in the background
-   * where there is none; a preparer's staging directory, `spare-<pid>`, is unpinned once that
-   * process is gone, as after a failed pin or a killed preparation. Every test of the pin root runs
-   * as root: the controller makes it 0700.
+   * as populated, and the slices the controller names are stopped after it. The preloaded set is
+   * kept while its tags are the installed object's, unpinned otherwise, and prepared in the
+   * background where there is none; a preparer's staging directory, `preloaded-<pid>`, is unpinned
+   * once that process is gone, as after a failed pin or a killed preparation. Every test of the pin
+   * root runs as root: the controller makes it 0700.
    */
   def reconcileScript(manager: String): String =
     val release =
@@ -838,6 +793,14 @@ object KoAgentBpf:
          |  id="$$(sed -n 's/.*cgroup_id=\\([^ ]*\\).*/\\1/p' "$$record")"
          |  named="$$(printf '%s\\n' "$$labels" \\
          |    | awk -v n="$$name" -v m="/$$name" '$$1 == n || $$1 == m { print $$2 }')"
+         |  # A session the machine no longer has, as after a restart cut it off: no container, no cgroup
+         |  # and no pins leave nothing to judge but the record, which the controller cannot open.
+         |  if [ -z "$$named" ] && [ "$$listing_failed" = no ] && [ -n "$$cg" ] && [ ! -e "$$cg" ] \\
+         |      && ! sudo -n test -e "$PinRoot/$$(printf %s "$$name" | tr . _)"; then
+         |    rm -rf "$$dir/sessions/$$name"
+         |    echo "reconcile session=$$name action=removed reason=gone"
+         |    continue
+         |  fi
          |  if [ -z "$$named" ]; then
          |    [ "$$listing_failed" = no ] && $release
          |  elif [ "$$named" = "$$cg" ]; then args="$$args --named $$name"
@@ -854,16 +817,16 @@ object KoAgentBpf:
          |    | while read -r n; do
          |  rm -rf "$$dir/sessions/$$n"
          |done
-         |if sudo -n test -d $SparePinDir; then
-         |  sudo -n "$$dir/readback" check-spare $SparePinDir --tags "$$dir/tags.txt" ${hooks(true).mkString(" ")} \\
-         |    2>/dev/null | grep -q ' ok=1' \\
-         |    || { sudo -n "$$dir/controller" unpin $SparePinDir >/dev/null 2>&1; echo "spare stale=1"; }
+         |if sudo -n test -d $PreloadedPinDir; then
+         |  sudo -n "$$dir/readback" check-preloaded $PreloadedPinDir --tags "$$dir/tags.txt" \\
+         |    ${hooks(true).mkString(" ")} 2>/dev/null | grep -q ' ok=1' \\
+         |    || { sudo -n "$$dir/controller" unpin $PreloadedPinDir >/dev/null 2>&1; echo "preloaded stale=1"; }
          |fi
-         |sudo -n sh -c 'for d in $SparePinDir-*; do [ -d "$$d" ] || continue; \\
+         |sudo -n sh -c 'for d in $PreloadedPinDir-*; do [ -d "$$d" ] || continue; \\
          |  kill -0 "$${d##*-}" 2>/dev/null && continue; \\
-         |  "$$1" unpin "$$d" >/dev/null 2>&1; echo "spare abandoned=$$d"; done' sh "$$dir/controller"
-         |sudo -n test -d $SparePinDir \\
-         |  || (nohup sudo -n "$$dir/controller" prepare-spare $SparePinDir >/dev/null 2>&1 &)
+         |  "$$1" unpin "$$d" >/dev/null 2>&1; echo "preloaded abandoned=$$d"; done' sh "$$dir/controller"
+         |sudo -n test -d $PreloadedPinDir \\
+         |  || (nohup sudo -n "$$dir/controller" preload $PreloadedPinDir >/dev/null 2>&1 &)
          |exit 0""".stripMargin,
     )
 
