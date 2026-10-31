@@ -23,8 +23,8 @@ boundary, name it and its consequence, and ask a question; act only on its answe
 everything they gain and cost, not only what the current task or plan needs, and report an
 improvement found beyond it.
 
-Before reasoning, designing, experimenting or editing, read the relevant official documentation,
-source, issues and workspace documents, including earlier decisions on the subject. Reason and
+Read the relevant official documentation, source, issues and workspace documents, including
+earlier decisions on the subject, before reasoning, designing, experimenting or editing. Reason and
 experiment about what they leave open. State as fact only what you read or measured; mark anything
 else as unverified in replies, and keep it out of persisted text.
 
@@ -46,10 +46,18 @@ comments that only do this with better names.
 
 Use concrete subject–verb–object wording. Use abstractions or metaphors (such as "invariant",
 "venue", "prose", the verb "mint") only when concrete wording loses meaning or precision; name
-what they stand for in the same sentence. Report existing names and wording that fail this. For
-what a tool or service does, use the verb its own documentation uses. Read each sentence alone:
-compared nouns must be the same kind, and `only` or `every` must match behavior. Rewrite the
-sentence rather than mechanically replacing words.
+what they stand for in the same sentence. Report existing names and wording that fail this, and
+rewrite rather than imitate it in the passage you edit. Describe what a tool or service does with
+the verb its own documentation uses. Read each sentence alone: compared nouns must be the same
+kind, and `only` or `every` must match behavior. Rewrite the sentence rather than mechanically
+replacing words.
+
+Write for an experienced developer reading at speed. Terse means fewer claims, not fewer words per
+claim: keep articles and verbs, and give each sentence one main clause.
+
+- Use a verb, not a noun phrase: "the controller runs", not "the controller's run".
+- Name the noun again when a pronoun or "one" would point outside its sentence.
+- Put citations at the end of the sentence, never between subject and verb.
 
 Record a standing practice or fact once, in the document that made the decision or the code
 enforcing it, and reference it elsewhere. Record a deliberate absence and its reason once; do not
@@ -63,12 +71,12 @@ where the reader needs them, or, when the removal is allowed, give a concrete re
 belong. Check for duplication and clauses more specific or general than their neighbors: those
 belong in a different document.
 
-In a completeness checklist — a security boundary, list of refused operations or test checklist —
-each element states its contribution. Restatement there serves the audit.
+A completeness checklist, such as a security boundary or a test list, states each element's
+contribution, even when that repeats another document: an auditor reads the list alone.
 
-For a reader about to act, say what to do and expect; explain mechanisms only when the why is the
+Tell a reader about to act what to do and expect; explain mechanisms only when the why is the
 shorter instruction. Test each sentence by what the reader does differently in the task described.
-For a reader seeking understanding, explain mechanisms; test what the reader understands
+Explain mechanisms to a reader seeking understanding; test what the reader understands
 differently. The reader's state determines the mode, not the filename; a document holds both in
 separate sections, the acting reader's first. A list item or paragraph states one claim in one or
 two lines, with the condition it depends on in the same line; its mechanism, edge cases and
@@ -82,8 +90,8 @@ measurements.
 Delete completed TODO rows once the document or code their facts belong in records them.
 
 Replies lead with the result and include only details affecting the reader's next action; narrate
-the process only when necessary, and report a check only when it fails. For a proposal, objection
-or decision, first say how far you agree.
+the process only when necessary, and report a check only when it fails. Open a proposal,
+objection or decision with how far you agree.
 
 Do not assume the writer speaks English natively. Report unnatural English and suggest a
 correction; do not explain the grammar unless asked.
@@ -117,3 +125,5 @@ following it, and revise it; add a rule only when none covers the case.
 # git
 
 Run only read-only git commands unless explicitly asked.
+The user stages and commits on the host while you work: leave the index as you find it, and report
+its changes only when one looks like a mistake.

@@ -1,0 +1,16 @@
+# Build output must not reach the context: sending it is slow, and a stale artifact could be copied
+# instead of one this build produced. Keep this list in step with the launcher jar's bundled copy of
+# this directory (the resourceGenerators task in the repository root's build.sbt). The file is
+# `.dockerignore`, not `.containerignore`, because both podman and docker look for it.
+target
+
+# None is a build input (build.sbt, the resourceGenerators task).
+doc
+policy/doc
+fuse/doc
+bpf/doc
+policy/probe
+fuse/probe
+bench
+bpf/test
+!bpf/test/host

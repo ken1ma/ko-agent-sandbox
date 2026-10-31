@@ -1,7 +1,7 @@
 // The file rules as the launcher deals with them: the defaults, the workspace's
 // .ko-agent-sandbox/file/rule, their grammar and resolution, and the text the filter daemon and
 // the run-on-host profile receive (doc/file-rules.md). The launcher owns the
-// grammar; the filter reads only the resolved form (fuse/ko-agent-fs/src/rulefile.rs), and the
+// grammar; the filter reads only the resolved form (ko-agent-fs/policy/src/rulefile.rs), and the
 // Seatbelt profile renders it (SeatbeltProfile.fileRuleFilters).
 
 package agentsandbox.launcher

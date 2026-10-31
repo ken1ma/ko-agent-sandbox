@@ -493,7 +493,7 @@ restore permission prompts and set the Claude Code status line.
                          case or family. Without a filter, also check the host share;
                          its scratch directory in the workspace is removed on success
                          and retained on failure. Removes replaced self-test images
-                         (fuse/ko-agent-fs/doc/testing.md)
+                         (ko-agent-fs/doc/testing.md)
 
       --help             this text
 
@@ -515,12 +515,13 @@ restore permission prompts and set the Claude Code status line.
 ### `--build`
 
 1. Builds the sandbox and egress-proxy images from the jar; no checkout is needed.
-1. Installs the workspace filter, `ko-agent-fs`, compiled from bundled source, at
-   `~/.local/share/ko-agent-sandbox/ko-agent-fs` — inside the podman machine on macOS and Windows,
-   in your home on native Linux.
+1. Installs the workspace filter, `ko-agent-fs-fuse`, and the policy's resolver, `ko-agent-fs`,
+   compiled from bundled source, in `~/.local/share/ko-agent-sandbox/` — inside the podman machine
+   on macOS and Windows, in your home on native Linux.
 
-    1. To remove it:
-       `podman machine ssh rm .local/share/ko-agent-sandbox/ko-agent-fs` (plain `rm` on Linux).
+    1. To remove them:
+       `podman machine ssh rm .local/share/ko-agent-sandbox/ko-agent-fs
+       .local/share/ko-agent-sandbox/ko-agent-fs-fuse` (plain `rm` on Linux).
 
 1. On macOS and Windows, installs the BPF backend, compiled from bundled source against the
    machine's kernel, inside the podman machine.
@@ -535,7 +536,7 @@ restore permission prompts and set the Claude Code status line.
 
 1. May ask to add `user_allow_other` to the podman machine's `/etc/fuse.conf`, shown as a diff
    first (SECURITY.md, "Silent changes to what you own"). A native Linux host is never prompted.
-1. For workspace-filter failures, see [troubleshooting.md](fuse/ko-agent-fs/doc/troubleshooting.md).
+1. For workspace-filter failures, see [troubleshooting.md](ko-agent-fs/fuse/doc/troubleshooting.md).
 1. `--build`, `--update` and `--self-test` all end by removing the container images they
    superseded, never a pulled image.
 
@@ -592,7 +593,8 @@ The file's format:
 
 1. The launcher is the sbt project at the repository root.
 2. The egress proxy is its own sbt project under `container/ko-agent-egress-proxy/app`.
-3. The workspace filter is the Rust crate under `fuse/ko-agent-fs`.
+3. The workspace policy and the FUSE filter are the Cargo workspace under `ko-agent-fs`, beside
+   the BPF backend in `ko-agent-fs/bpf`.
 
 Run the commands below from the repository root.
 
@@ -621,6 +623,7 @@ Run the commands below from the repository root.
 
     sbt dist && java -jar target/dist/ko-agent-sandbox.jar --build
 
+1. If sbt fails, `sbt shutdownall` and try again, especially on Windows.
 1. This assembles one self-contained jar — a single file is the whole install.
 1. On Windows, PowerShell 7 or later is recommended. Windows PowerShell 5.1 does not support `&&`.
 

@@ -147,7 +147,7 @@ two stricter spots:
 Concurrent sessions of a workspace share one filter mount, which serves the rules its first session
 resolved. Under `--workspace=live,bpf` there is no mount: each session's policy holds the rules its
 own launch resolved, and a launch under the other backend beside a live session of the workspace is
-refused (`../bpf/ko-agent-bpf/doc/architecture.md`, "The hooks", `file_receive`).
+refused (`../ko-agent-fs/bpf/doc/architecture.md`, "The hooks", `file_receive`).
 
 - A launch after an edit of the rule file, while other sessions of the workspace run, joins their
   mount under their rules. It prints a warning naming them, and its start prompt is the consent;

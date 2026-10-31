@@ -1,0 +1,1606 @@
+//! The mutation checks, exercised through a real mount by an attacker who is *not* git: raw
+//! filesystem operations against every path that could make a later host `git` execute code or
+//! open a path the sandbox chose.
+//!
+//! Each refusal is asserted to be `EPERM` specifically — a policy denial, not merely "an error".
+//! The exception is the stale-handle tests, whose refusal comes from the resolver rather than the
+//! policy: `ELOOP` for the reason `stale` gives, `ESTALE` for the one `replaced` gives.
+
+mod common;
+
+use std::ffi::CString;
+use std::fs::{self, File, OpenOptions, Permissions};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::fs::{PermissionsExt, symlink};
+use std::path::{Path, PathBuf};
+
+use common::{TestMount, allowed, denied, denied_nix};
+use ko_agent_fs::policy::FileRules;
+use ko_agent_fs::rulefile;
+use nix::errno::Errno;
+use nix::sys::stat::{Mode, SFlag, mknodat};
+
+const HOOK: &str = ".git/hooks/pre-commit";
+const HOOK_BODY: &str = "#!/bin/sh\n# the host's own hook\n";
+
+/// `RENAME_EXCHANGE` through the raw syscall, which is what `fs.rs` issues and for the reason stated
+/// there. Going through the syscall here too means the test drives the exact request the filter has
+/// to decide on, on either libc.
+fn rename_exchange(dirfd: &OwnedFd, old: &str, new: &str) -> nix::Result<()> {
+    let old = CString::new(old).expect("an old path without a NUL");
+    let new = CString::new(new).expect("a new path without a NUL");
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            dirfd.as_raw_fd(),
+            old.as_ptr(),
+            dirfd.as_raw_fd(),
+            new.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(nix::errno::Errno::last())
+    }
+}
+
+/// `utimensat(2)` by path, the call `touch` makes, through libc as the other raw calls here are.
+fn set_times(path: &Path) -> nix::Result<()> {
+    let path = CString::new(path.as_os_str().as_encoded_bytes()).expect("a path without a NUL");
+    let times = [
+        libc::timespec {
+            tv_sec: 1,
+            tv_nsec: 0,
+        },
+        libc::timespec {
+            tv_sec: 1,
+            tv_nsec: 0,
+        },
+    ];
+    let result = unsafe { libc::utimensat(libc::AT_FDCWD, path.as_ptr(), times.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(nix::errno::Errno::last())
+    }
+}
+
+/// `openat(2)` on a directory handle the caller still holds — the operation the stale-handle tests
+/// below are about, and one no path-based call can express: the kernel addresses the directory by
+/// the handle, so the daemon is asked about an inode rather than about a path the kernel has just
+/// walked for it.
+fn openat_write(dirfd: &File, relative: &str) -> nix::Result<OwnedFd> {
+    let path = CString::new(relative).expect("a relative path without a NUL");
+    let raw = unsafe {
+        libc::openat(
+            dirfd.as_raw_fd(),
+            path.as_ptr(),
+            libc::O_WRONLY | libc::O_TRUNC,
+        )
+    };
+    if raw < 0 {
+        Err(Errno::last())
+    } else {
+        Ok(unsafe { OwnedFd::from_raw_fd(raw) })
+    }
+}
+
+/// `linkat(2)` from a held directory handle to a name at the mount root: the same stale-handle
+/// question asked of the source-side rule that refuses aliasing a protected inode out to a writable
+/// name (`ko-agent-fs/policy/doc/git-metadata.md`, "Operations that make these mutations").
+fn linkat_out(dirfd: &File, relative: &str, root: &OwnedFd, newname: &str) -> nix::Result<()> {
+    let old = CString::new(relative).expect("a relative path without a NUL");
+    let new = CString::new(newname).expect("a name without a NUL");
+    let result = unsafe {
+        libc::linkat(
+            dirfd.as_raw_fd(),
+            old.as_ptr(),
+            root.as_raw_fd(),
+            new.as_ptr(),
+            0,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(Errno::last())
+    }
+}
+
+/// Assert the resolver refused to serve a handle whose rebuilt path no longer names it.
+/// - The answer is `ELOOP`, not `EPERM`, because no policy decision is reached. The path runs
+///   through a symlink, so it no longer describes the object the classification was computed for,
+///   and `RESOLVE_NO_SYMLINKS` refuses it there (`src/fs.rs`, `open_ino`).
+/// - Two other answers would also refuse, but would mean a different layer refused first: `EIO`
+///   from the kernel invalidating a reused inode number, or `ESTALE` because the chain's own entry
+///   was forgotten. They fail here instead of passing quietly, since either would leave this test
+///   proving nothing about the resolver.
+#[track_caller]
+fn stale<T>(what: &str, result: nix::Result<T>) {
+    match result {
+        Ok(_) => panic!("SECURITY: {what} succeeded"),
+        Err(errno) => assert_eq!(
+            errno,
+            Errno::ELOOP,
+            "{what} failed with {errno}, but not as a refused resolution (ELOOP)"
+        ),
+    }
+}
+
+/// `openat(2)` with `O_CREAT` on a held directory handle: [`openat_write`]'s question asked of a
+/// name that does not exist yet.
+fn openat_create(dirfd: &File, relative: &str) -> nix::Result<OwnedFd> {
+    let path = CString::new(relative).expect("a relative path without a NUL");
+    let raw = unsafe {
+        libc::openat(
+            dirfd.as_raw_fd(),
+            path.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT,
+            0o644,
+        )
+    };
+    if raw < 0 {
+        Err(Errno::last())
+    } else {
+        Ok(unsafe { OwnedFd::from_raw_fd(raw) })
+    }
+}
+
+/// The refusal of a held handle whose names now resolve to another object than the one it was
+/// classified as: `ESTALE` from the resolver's identity comparison (`src/fs.rs`, `open_ino`).
+#[track_caller]
+fn replaced<T>(what: &str, result: nix::Result<T>) {
+    match result {
+        Ok(_) => panic!("SECURITY: {what} succeeded"),
+        Err(errno) => assert_eq!(
+            errno,
+            Errno::ESTALE,
+            "{what} failed with {errno}, but not as a replaced object (ESTALE)"
+        ),
+    }
+}
+
+/// A second name for a directory, as NTFS gives one with an 8.3 short name: a bind mount shows the
+/// same `(st_dev, st_ino)` under both names. Unmounted on drop, before the harness removes the tree.
+struct SecondNames(Vec<std::path::PathBuf>);
+
+impl SecondNames {
+    fn bind(&mut self, directory: &Path, second_name: &Path) {
+        fs::create_dir(second_name).unwrap();
+        let source = CString::new(directory.as_os_str().as_encoded_bytes()).unwrap();
+        let target = CString::new(second_name.as_os_str().as_encoded_bytes()).unwrap();
+        let result = unsafe {
+            libc::mount(
+                source.as_ptr(),
+                target.as_ptr(),
+                std::ptr::null(),
+                libc::MS_BIND,
+                std::ptr::null(),
+            )
+        };
+        assert_eq!(result, 0, "bind mount: {}", Errno::last());
+        self.0.push(second_name.to_path_buf());
+    }
+}
+
+impl Drop for SecondNames {
+    fn drop(&mut self) {
+        for mounted in &self.0 {
+            let target = CString::new(mounted.as_os_str().as_encoded_bytes()).unwrap();
+            unsafe { libc::umount2(target.as_ptr(), libc::MNT_DETACH) };
+        }
+    }
+}
+
+/// A host repository plus an ordinary source tree — the realistic starting state.
+fn repository(backing: &Path) {
+    fs::create_dir_all(backing.join(".git/hooks")).unwrap();
+    fs::create_dir_all(backing.join(".git/refs/heads")).unwrap();
+    fs::create_dir_all(backing.join(".git/objects")).unwrap();
+    fs::create_dir_all(backing.join(".git/modules/sub/hooks")).unwrap();
+    fs::create_dir_all(backing.join(".git/worktrees/wt")).unwrap();
+    fs::write(backing.join(".git/HEAD"), b"ref: refs/heads/main\n").unwrap();
+    fs::write(backing.join(".git/config"), b"[core]\n\tbare = false\n").unwrap();
+    // The submodule's own `HEAD`, which is what makes `.git/modules/sub` a gitdir rather than a
+    // directory named like one — and what the filter asks the tree to tell them apart
+    // (`fs.rs`, `is_gitdir_root`). Without it this fixture asserts nothing about a submodule.
+    fs::write(
+        backing.join(".git/modules/sub/HEAD"),
+        b"ref: refs/heads/main\n",
+    )
+    .unwrap();
+    fs::write(backing.join(HOOK), HOOK_BODY).unwrap();
+    fs::write(
+        backing.join(".git/worktrees/wt/gitdir"),
+        b"/elsewhere/.git\n",
+    )
+    .unwrap();
+    fs::write(backing.join(".git/worktrees/wt/commondir"), b"../..\n").unwrap();
+    fs::create_dir_all(backing.join("src")).unwrap();
+    fs::write(backing.join("src/main.rs"), b"fn main() {}\n").unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Planting a new repository for the host to discover
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn creating_a_dotgit_entry_is_refused_for_every_entry_type() {
+    let mount = TestMount::new(repository);
+
+    denied("mkdir .git", fs::create_dir(mount.at("src/.git")));
+    denied("create a .git file", File::create(mount.at("src/.git")));
+    denied(
+        "symlink named .git",
+        symlink("/etc/passwd", mount.at("src/.git")),
+    );
+    denied(
+        "hard link named .git",
+        fs::hard_link(mount.at("src/main.rs"), mount.at("src/.git")),
+    );
+
+    // A rename is the same violation seen from the destination side.
+    allowed(
+        "stage an ordinary file",
+        fs::write(mount.at("src/decoy"), b"x"),
+    );
+    denied(
+        "rename a file to .git",
+        fs::rename(mount.at("src/decoy"), mount.at("src/.git")),
+    );
+
+    let dirfd = mount.mount_dirfd();
+    denied_nix(
+        "mknod named .git",
+        mknodat(
+            &dirfd,
+            "src/.git",
+            SFlag::S_IFREG,
+            Mode::from_bits_truncate(0o644),
+            0,
+        ),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_fifo_is_neither_made_nor_retimed_through_the_mount() {
+    // The one refusal here that is not about git: a FIFO on the macOS machine's share hangs the
+    // machine once its times reach libkrun (`doc/upstream-issues.md`, "Setting a FIFO's times
+    // blocks the macOS virtio-fs server"), so the filter makes none and retimes none, on every
+    // platform (`fs.rs`, `mknod` and `setattr`). Other attribute changes stay allowed: the hang is
+    // the time change's open.
+    let mount = TestMount::new(|backing| {
+        fs::write(backing.join("plain"), b"x").unwrap();
+        nix::unistd::mkfifo(&backing.join("host-fifo"), Mode::from_bits_truncate(0o644)).unwrap();
+    });
+    let dirfd = mount.mount_dirfd();
+    denied_nix(
+        "mknod of a FIFO at an ordinary name",
+        mknodat(
+            &dirfd,
+            "fifo",
+            SFlag::S_IFIFO,
+            Mode::from_bits_truncate(0o644),
+            0,
+        ),
+    );
+    assert!(
+        !mount.backing_at("fifo").exists(),
+        "the refused FIFO must not exist on the backing tree"
+    );
+    denied_nix(
+        "setting a host-made FIFO's times",
+        set_times(&mount.at("host-fifo")),
+    );
+    allowed(
+        "chmod of the host-made FIFO",
+        fs::set_permissions(mount.at("host-fifo"), Permissions::from_mode(0o600)),
+    );
+    set_times(&mount.at("plain")).expect("a regular file's times are set as before");
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn the_launcher_configuration_directory_cannot_be_created_or_written() {
+    // `policy::is_sandbox_config_name`, the one protection this directory has in a writable session.
+    let mount = TestMount::new(repository);
+
+    denied(
+        "mkdir .ko-agent-sandbox",
+        fs::create_dir(mount.at(".ko-agent-sandbox")),
+    );
+    denied(
+        "create a .ko-agent-sandbox file",
+        File::create(mount.at(".ko-agent-sandbox")),
+    );
+    denied(
+        "symlink named .ko-agent-sandbox",
+        symlink("/etc/passwd", mount.at(".ko-agent-sandbox")),
+    );
+    denied(
+        "case-folded spelling",
+        fs::create_dir(mount.at(".KO-AGENT-SANDBOX")),
+    );
+    denied(
+        "kelvin sign for k",
+        fs::create_dir(mount.at(".\u{212a}o-agent-sandbox")),
+    );
+    denied(
+        "long s for s",
+        fs::create_dir(mount.at(".ko-agent-\u{17f}andbox")),
+    );
+    // A launch takes its boundary configuration from the directory it starts in, so a subdirectory's copy is
+    // boundary configuration too.
+    denied(
+        "mkdir a nested .ko-agent-sandbox",
+        fs::create_dir(mount.at("src/.ko-agent-sandbox")),
+    );
+
+    allowed("stage an ordinary file", fs::write(mount.at("decoy"), b"x"));
+    denied(
+        "rename a file to .ko-agent-sandbox",
+        fs::rename(mount.at("decoy"), mount.at(".ko-agent-sandbox")),
+    );
+
+    // Nothing under a host-created one is writable either.
+    let mount = TestMount::new(|backing| {
+        repository(backing);
+        fs::create_dir_all(backing.join(".ko-agent-sandbox/egress")).unwrap();
+        fs::write(
+            backing.join(".ko-agent-sandbox/egress/rule"),
+            b"allow https://docs.python.org/ read\n",
+        )
+        .unwrap();
+    });
+
+    allowed(
+        "read the rule file the host wrote",
+        fs::read_to_string(mount.at(".ko-agent-sandbox/egress/rule")).map(|_| ()),
+    );
+    denied(
+        "rewrite the rule file",
+        fs::write(
+            mount.at(".ko-agent-sandbox/egress/rule"),
+            b"allow https://evil.example/ tunnel\n",
+        ),
+    );
+    denied(
+        "add a file beside the rule file",
+        File::create(mount.at(".ko-agent-sandbox/egress/extra")),
+    );
+    denied(
+        "remove the rule file",
+        fs::remove_file(mount.at(".ko-agent-sandbox/egress/rule")),
+    );
+    denied(
+        "remove the directory",
+        fs::remove_dir_all(mount.at(".ko-agent-sandbox/egress")),
+    );
+    denied(
+        "rename the boundary directory away",
+        fs::rename(
+            mount.at(".ko-agent-sandbox"),
+            mount.at(".ko-agent-sandbox-old"),
+        ),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn the_name_rule_covers_the_case_folded_and_collapsing_spellings() {
+    // The spellings a case-insensitive or ignorable-collapsing backing resolves to `.git`
+    // (CVE-2014-9390's classes). Denied on every platform, because the backing may be either.
+    let mount = TestMount::new(repository);
+    for name in [
+        ".GIT",
+        ".Git",
+        ".gIt",
+        ".git.",
+        ".git ",
+        ".gıt",         // U+0131 dotless i
+        ".gİt",         // U+0130 dotted capital I
+        ".gi\u{200c}t", // zero width non-joiner
+        ".g\u{200b}it", // zero width space
+        "\u{feff}.git", // byte order mark
+        ".git\u{00ad}", // soft hyphen
+        ".gi\u{200e}t", // left-to-right mark
+        ".g\u{202e}it", // right-to-left override
+        ".git\u{206f}", // nominal digit shapes
+    ] {
+        denied(
+            &format!("mkdir {name:?}"),
+            fs::create_dir(mount.at(&format!("src/{name}"))),
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn ordinary_dot_git_prefixed_names_are_allowed() {
+    // The superset must not include the names real projects use.
+    let mount = TestMount::new(repository);
+    for name in [
+        ".gitignore",
+        ".gitattributes",
+        ".gitmodules",
+        ".github",
+        "git",
+    ] {
+        allowed(
+            &format!("create {name}"),
+            fs::write(mount.at(&format!("src/{name}")), b"ordinary\n"),
+        );
+    }
+    // An accented name in both normalization forms: the control proving we need no normalization
+    // handling, and that legitimate Unicode is not rejected.
+    allowed("NFC name", fs::write(mount.at("src/.gít"), b"x"));
+    allowed("NFD name", fs::write(mount.at("src/.gi\u{301}t"), b"x"));
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn an_existing_dotgit_pointer_file_is_immutable() {
+    // A `.git` file holding `gitdir:` re-aims a real repository's Git metadata; rewriting it must
+    // be refused, not just its creation.
+    let mount = TestMount::new(|backing| {
+        fs::create_dir_all(backing.join("linked")).unwrap();
+        fs::write(backing.join("linked/.git"), b"gitdir: /host/real/.git\n").unwrap();
+    });
+    denied(
+        "rewrite a .git pointer file",
+        fs::write(mount.at("linked/.git"), b"gitdir: /tmp/attacker\n"),
+    );
+    denied(
+        "truncate a .git pointer file",
+        OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(mount.at("linked/.git")),
+    );
+    denied(
+        "delete a .git pointer file",
+        fs::remove_file(mount.at("linked/.git")),
+    );
+    assert_eq!(
+        fs::read_to_string(mount.backing_at("linked/.git")).unwrap(),
+        "gitdir: /host/real/.git\n"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Mutating an existing repository's protected entries
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn existing_hooks_are_immutable_against_every_mutation() {
+    let mount = TestMount::new(repository);
+    let hook = mount.at(HOOK);
+
+    denied("write a hook", fs::write(&hook, b"evil"));
+    denied(
+        "open a hook for writing",
+        OpenOptions::new().write(true).open(&hook),
+    );
+    denied(
+        "O_TRUNC a hook",
+        OpenOptions::new().write(true).truncate(true).open(&hook),
+    );
+    denied(
+        "chmod a hook",
+        fs::set_permissions(&hook, Permissions::from_mode(0o755)),
+    );
+    denied("delete a hook", fs::remove_file(&hook));
+    denied(
+        "create a new hook",
+        File::create(mount.at(".git/hooks/post-checkout")),
+    );
+    denied(
+        "symlink into hooks",
+        symlink("/etc/passwd", mount.at(".git/hooks/pre-push")),
+    );
+    denied(
+        "mkdir inside hooks",
+        fs::create_dir(mount.at(".git/hooks/sub")),
+    );
+
+    allowed(
+        "stage an ordinary file",
+        fs::write(mount.at("src/evil"), b"evil\n"),
+    );
+    denied(
+        "rename a file onto a hook",
+        fs::rename(mount.at("src/evil"), &hook),
+    );
+
+    let dirfd = mount.mount_dirfd();
+    denied_nix(
+        "mknod inside hooks",
+        mknodat(
+            &dirfd,
+            ".git/hooks/pre-merge",
+            SFlag::S_IFREG,
+            Mode::from_bits_truncate(0o755),
+            0,
+        ),
+    );
+
+    // The assertion the attempts above exist for: the host's hook is byte-for-byte untouched.
+    assert_eq!(
+        fs::read_to_string(mount.backing_at(HOOK)).unwrap(),
+        HOOK_BODY
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn config_and_redirections_are_immutable() {
+    let mount = TestMount::new(repository);
+
+    denied(
+        "write .git/config",
+        fs::write(mount.at(".git/config"), b"[core]\n\thooksPath = /tmp\n"),
+    );
+    denied(
+        "append to .git/config",
+        OpenOptions::new()
+            .append(true)
+            .open(mount.at(".git/config")),
+    );
+    denied(
+        "delete .git/config",
+        fs::remove_file(mount.at(".git/config")),
+    );
+    denied(
+        "create config.worktree",
+        File::create(mount.at(".git/config.worktree")),
+    );
+    denied(
+        "rewrite a worktree gitdir pointer",
+        fs::write(mount.at(".git/worktrees/wt/gitdir"), b"/tmp/attacker\n"),
+    );
+    denied(
+        "rewrite a worktree commondir",
+        fs::write(mount.at(".git/worktrees/wt/commondir"), b"/tmp/attacker\n"),
+    );
+    // Re-rooting applies the same protection to the nested gitdir.
+    denied(
+        "write a submodule gitdir's config",
+        fs::write(mount.at(".git/modules/sub/config"), b"[core]\n"),
+    );
+    denied(
+        "create a submodule hook",
+        File::create(mount.at(".git/modules/sub/hooks/pre-commit")),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn rebase_and_sequencer_todo_state_is_immutable() {
+    // Their `exec` lines are run by a later host `git rebase --continue`: the same class as a hook.
+    let mount = TestMount::new(repository);
+    denied(
+        "create rebase-merge",
+        fs::create_dir(mount.at(".git/rebase-merge")),
+    );
+    denied(
+        "create rebase-apply",
+        fs::create_dir(mount.at(".git/rebase-apply")),
+    );
+    denied(
+        "create sequencer",
+        fs::create_dir(mount.at(".git/sequencer")),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn alternates_cannot_be_written_or_moved_into_place() {
+    // Host git opens each object directory `objects/info/alternates` names, by any path.
+    let mount = TestMount::new(repository);
+    allowed(
+        "mkdir objects/info",
+        fs::create_dir(mount.at(".git/objects/info")),
+    );
+    allowed(
+        "write the commit-graph",
+        fs::write(mount.at(".git/objects/info/commit-graph"), b"graph\n"),
+    );
+    denied(
+        "create alternates",
+        fs::write(
+            mount.at(".git/objects/info/alternates"),
+            b"/elsewhere/objects\n",
+        ),
+    );
+    denied(
+        "create http-alternates",
+        fs::write(
+            mount.at(".git/objects/info/http-alternates"),
+            b"https://elsewhere.example/objects\n",
+        ),
+    );
+    denied(
+        "symlink alternates",
+        symlink("../pack", mount.at(".git/objects/info/alternates")),
+    );
+    denied(
+        "rename objects/info",
+        fs::rename(
+            mount.at(".git/objects/info"),
+            mount.at(".git/objects/moved"),
+        ),
+    );
+    denied(
+        "rename objects",
+        fs::rename(mount.at(".git/objects"), mount.at(".git/refs/objects")),
+    );
+
+    // Written in another directory, it cannot be moved into place.
+    allowed(
+        "empty objects/info",
+        fs::remove_file(mount.at(".git/objects/info/commit-graph")),
+    );
+    allowed(
+        "rmdir the empty objects/info",
+        fs::remove_dir(mount.at(".git/objects/info")),
+    );
+    allowed(
+        "mkdir objects/staged",
+        fs::create_dir(mount.at(".git/objects/staged")),
+    );
+    allowed(
+        "write alternates in objects/staged",
+        fs::write(
+            mount.at(".git/objects/staged/alternates"),
+            b"/elsewhere/objects\n",
+        ),
+    );
+    denied(
+        "rename a directory onto objects/info",
+        fs::rename(
+            mount.at(".git/objects/staged"),
+            mount.at(".git/objects/info"),
+        ),
+    );
+    denied(
+        "symlink objects/info",
+        symlink("staged", mount.at(".git/objects/info")),
+    );
+
+    // Re-rooting applies the same protection to the nested gitdir.
+    allowed(
+        "mkdir a submodule's objects/info",
+        fs::create_dir_all(mount.at(".git/modules/sub/objects/info")),
+    );
+    denied(
+        "create a submodule's alternates",
+        fs::write(
+            mount.at(".git/modules/sub/objects/info/alternates"),
+            b"/elsewhere/objects\n",
+        ),
+    );
+
+    assert!(!mount.backing_at(".git/objects/info").exists());
+    assert!(
+        !mount
+            .backing_at(".git/modules/sub/objects/info/alternates")
+            .exists()
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn hardlink_aliasing_cannot_smuggle_protected_entries_out() {
+    // A hard link shares the inode, so aliasing a hook to a writable name would let a write through
+    // the alias mutate the frozen inode. Refused on the source side as well as the destination.
+    let mount = TestMount::new(repository);
+
+    denied(
+        "hard-link a hook out to a writable name",
+        fs::hard_link(mount.at(HOOK), mount.at("src/hooklink")),
+    );
+    denied(
+        "hard-link config out to a writable name",
+        fs::hard_link(mount.at(".git/config"), mount.at("src/cfglink")),
+    );
+    assert!(!mount.at("src/hooklink").exists());
+    assert_eq!(
+        fs::read_to_string(mount.backing_at(HOOK)).unwrap(),
+        HOOK_BODY
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_second_name_of_a_guarded_entry_is_guarded_like_it() {
+    // What an NTFS 8.3 short name is to a guarded directory
+    // (`ko-agent-fs/policy/doc/security-research.md`, "Windows 8.3 short names"), a host hard link
+    // is to a guarded file, and Linux can make the link.
+    const POINTER: &str = "gitdir: /host/real/.git\n";
+    let mount = TestMount::new(|backing| {
+        fs::write(backing.join(".git"), POINTER).unwrap();
+        fs::hard_link(backing.join(".git"), backing.join("GIT~1")).unwrap();
+        fs::write(backing.join(".ko-agent-sandbox"), b"rule\n").unwrap();
+        fs::hard_link(backing.join(".ko-agent-sandbox"), backing.join("KO-AGE~1")).unwrap();
+        fs::write(backing.join("ordinary"), b"data\n").unwrap();
+    });
+
+    for alias in ["GIT~1", "KO-AGE~1"] {
+        denied(
+            "append through an alias",
+            OpenOptions::new().append(true).open(mount.at(alias)),
+        );
+        // `File::create` sends no `O_EXCL`, which is the form that would reopen the entry.
+        denied("create over an alias", File::create(mount.at(alias)));
+        denied("delete an alias", fs::remove_file(mount.at(alias)));
+        denied(
+            "rename an alias away",
+            fs::rename(mount.at(alias), mount.at("moved")),
+        );
+        denied(
+            "rename onto an alias",
+            fs::rename(mount.at("ordinary"), mount.at(alias)),
+        );
+        denied(
+            "hard-link an alias out",
+            fs::hard_link(mount.at(alias), mount.at("linked")),
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(mount.backing_at(".git")).unwrap(),
+        POINTER
+    );
+    assert_eq!(
+        fs::read_to_string(mount.backing_at(".ko-agent-sandbox")).unwrap(),
+        "rule\n"
+    );
+    allowed(
+        "write an ordinary neighbour",
+        fs::write(mount.at("ordinary"), b"changed\n"),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn rename_exchange_is_refused_on_a_protected_operand() {
+    // RENAME_EXCHANGE mutates both operands, so each is checked as both source and destination —
+    // swapping an ordinary file with a hook would install the file as the hook.
+    let mount = TestMount::new(repository);
+    allowed(
+        "stage an ordinary file",
+        fs::write(mount.at("src/evil"), b"evil\n"),
+    );
+    let dirfd = mount.mount_dirfd();
+
+    denied_nix(
+        "RENAME_EXCHANGE an ordinary file with a hook",
+        rename_exchange(&dirfd, "src/evil", HOOK),
+    );
+    denied_nix(
+        "RENAME_EXCHANGE in the other direction",
+        rename_exchange(&dirfd, HOOK, "src/evil"),
+    );
+    assert_eq!(
+        fs::read_to_string(mount.backing_at(HOOK)).unwrap(),
+        HOOK_BODY
+    );
+}
+
+/// The starting state for the two stale-handle tests: `repository`, plus the directories they hold
+/// open across a rename.
+/// - Both are names a real project has: a `hooks/` module in the source tree, and a `hooks/*`
+///   branch namespace under `refs/heads`. That makes them realistic fixtures, not invented ones.
+/// - The attack needs the *held* directory's own basename to exist under the gitdir the planted
+///   symlink points at, since that basename is the last component of the path the resolver
+///   rebuilds.
+fn repository_with_hook_named_directories(backing: &Path) {
+    repository(backing);
+    fs::create_dir_all(backing.join("src/hooks")).unwrap();
+    fs::write(backing.join("src/hooks/use-thing.ts"), b"export {}\n").unwrap();
+    fs::create_dir_all(backing.join(".git/refs/heads/hooks")).unwrap();
+    fs::write(backing.join(".git/refs/heads/hooks/add-precommit"), b"0\n").unwrap();
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_handle_held_across_a_rename_cannot_be_re_aimed_at_a_gitdir() {
+    // The resolver rebuilds an inode's path from the names it was looked up under, and the kernel
+    // keeps addressing a renamed directory by the inode it already holds. So the sandbox can:
+    // 1. rename a directory it is inside,
+    // 2. leave a symlink to `.git` at the name that directory moved from, and
+    // 3. reach the gitdir through the handle, with the ordinary directory's classification,
+    //    because the classification follows from that stale chain.
+    // Nothing races: these are three ordinary operations, in order.
+    //
+    // The handle is on `src/hooks`, not on `src` itself, and that choice matters. Planting the
+    // symlink reports the old name's inode number again with a new file type, and the kernel then
+    // invalidates that inode. So the kernel, not this filter, would stop a handle on `src`, and the
+    // test would prove nothing about either. A handle one level down has a different inode number,
+    // which that does not touch, and its rebuilt path still runs through the symlink.
+    let mount = TestMount::new(repository_with_hook_named_directories);
+
+    // Taken while `src/hooks` is what its name says.
+    let held = File::open(mount.at("src/hooks")).expect("open the source directory");
+
+    // Both steps stay allowed, and must: a build renames directories and creates symlinks all day.
+    // Without file rules, the filter does not check a symlink's target *for policy*: the kernel
+    // resolves a symlink itself, and the resolved path is classified by its own names. The one
+    // refusal a target can still get is unrelated to policy and is asserted separately below
+    // (`a_symlink_target_with_nonportable_syntax_is_refused_and_an_ordinary_one_is_not`).
+    allowed(
+        "rename an ordinary directory",
+        fs::rename(mount.at("src"), mount.at("old")),
+    );
+    allowed(
+        "symlink the vacated name at .git",
+        symlink(".git", mount.at("src")),
+    );
+
+    // The third step, which must not follow from the first two.
+    stale(
+        "write a hook through the held handle",
+        openat_write(&held, "pre-commit"),
+    );
+    stale(
+        "alias a hook out through the held handle",
+        linkat_out(&held, "pre-commit", &mount.mount_dirfd(), "hooklink"),
+    );
+
+    assert_eq!(
+        fs::read_to_string(mount.backing_at(HOOK)).unwrap(),
+        HOOK_BODY,
+        "the host's hook was written through a handle held across a rename"
+    );
+    assert!(
+        !mount.backing_at("hooklink").exists(),
+        "a hook was aliased out through a handle held across a rename"
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_handle_held_across_a_rename_cannot_reach_a_guarded_directory_by_its_second_name() {
+    // A second name carries no guarded spelling, so a held handle's chain of ordinary names can
+    // come to resolve through one after two ordinary renames. The handle was classified as the
+    // ordinary directory it opened; the resolver must refuse it once it is another object.
+    let mount = TestMount::new(|backing| {
+        fs::create_dir_all(backing.join("scratch/GIT~1/hooks")).unwrap();
+        fs::create_dir_all(backing.join("scratch/KO-AGE~1/egress")).unwrap();
+        fs::create_dir_all(backing.join("repo/.git/hooks")).unwrap();
+        fs::write(backing.join("repo/.git/hooks/pre-commit"), HOOK_BODY).unwrap();
+        fs::create_dir_all(backing.join("repo/.ko-agent-sandbox/egress")).unwrap();
+        fs::write(
+            backing.join("repo/.ko-agent-sandbox/egress/rule"),
+            b"rule\n",
+        )
+        .unwrap();
+    });
+    // Declared after `mount`, so a panic unmounts before the harness removes the tree.
+    let mut second_names = SecondNames(Vec::new());
+    second_names.bind(
+        &mount.backing_at("repo/.git"),
+        &mount.backing_at("repo/GIT~1"),
+    );
+    second_names.bind(
+        &mount.backing_at("repo/.ko-agent-sandbox"),
+        &mount.backing_at("repo/KO-AGE~1"),
+    );
+    // The bind mounts move with `repo`, so the unmount also tries their paths after the rename.
+    second_names.0.extend([
+        mount.backing_at("scratch/GIT~1"),
+        mount.backing_at("scratch/KO-AGE~1"),
+    ]);
+
+    // The control: a fresh lookup knows the second names for what they are.
+    denied(
+        "write a hook through the second name",
+        fs::write(mount.at("repo/GIT~1/hooks/pre-commit"), b"evil"),
+    );
+    denied(
+        "write a rule through the second name",
+        fs::write(mount.at("repo/KO-AGE~1/egress/rule"), b"evil"),
+    );
+
+    let held_hooks = File::open(mount.at("scratch/GIT~1/hooks")).expect("open the ordinary hooks");
+    let held_egress =
+        File::open(mount.at("scratch/KO-AGE~1/egress")).expect("open the ordinary egress");
+
+    allowed(
+        "rename the ordinary tree away",
+        fs::rename(mount.at("scratch"), mount.at("parked")),
+    );
+    allowed(
+        "rename the repository to the vacated name",
+        fs::rename(mount.at("repo"), mount.at("scratch")),
+    );
+
+    replaced(
+        "write a hook through the held handle",
+        openat_write(&held_hooks, "pre-commit"),
+    );
+    replaced(
+        "create a hook through the held handle",
+        openat_create(&held_hooks, "post-checkout"),
+    );
+    replaced(
+        "write a rule through the held handle",
+        openat_write(&held_egress, "rule"),
+    );
+    replaced(
+        "create a rule file through the held handle",
+        openat_create(&held_egress, "planted"),
+    );
+
+    assert_eq!(
+        fs::read_to_string(mount.backing_at("scratch/.git/hooks/pre-commit")).unwrap(),
+        HOOK_BODY,
+    );
+    assert!(
+        !mount
+            .backing_at("scratch/.git/hooks/post-checkout")
+            .exists()
+    );
+    assert_eq!(
+        fs::read_to_string(mount.backing_at("scratch/.ko-agent-sandbox/egress/rule")).unwrap(),
+        "rule\n",
+    );
+    assert!(
+        !mount
+            .backing_at("scratch/.ko-agent-sandbox/egress/planted")
+            .exists()
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_descriptor_held_on_a_file_cannot_change_or_alias_a_guarded_file_that_takes_its_name() {
+    // The directory stays what it was and only the file's name changes hands: the sandbox opens an
+    // ordinary `GIT~1`, and the host moves that file away and makes `GIT~1` a second name of its
+    // `.git` pointer file. `fchmod`, `futimens` and a link through the descriptor reach the daemon
+    // as the node, with no handle, and must not act on what the node's name leads to by then.
+    const POINTER: &str = "gitdir: /host/real/.git\n";
+    let mount = TestMount::new(|backing| {
+        fs::write(backing.join(".git"), POINTER).unwrap();
+        fs::write(backing.join(".ko-agent-sandbox"), b"rule\n").unwrap();
+        fs::write(backing.join("GIT~1"), b"ordinary\n").unwrap();
+        fs::write(backing.join("KO-AGE~1"), b"ordinary\n").unwrap();
+        fs::create_dir(backing.join("out")).unwrap();
+    });
+
+    for (guarded, second_name) in [(".git", "GIT~1"), (".ko-agent-sandbox", "KO-AGE~1")] {
+        let held = File::open(mount.at(second_name)).expect("open the ordinary file");
+        fs::rename(
+            mount.backing_at(second_name),
+            mount.backing_at(&format!("{second_name}.moved")),
+        )
+        .unwrap();
+        fs::hard_link(mount.backing_at(guarded), mount.backing_at(second_name)).unwrap();
+        let before = fs::metadata(mount.backing_at(guarded)).unwrap();
+
+        replaced(
+            "chmod the guarded file through the held descriptor",
+            nix::sys::stat::fchmod(&held, Mode::from_bits_truncate(0o777)),
+        );
+        replaced(
+            "set the guarded file's times through the held descriptor",
+            nix::sys::stat::futimens(
+                &held,
+                &nix::sys::time::TimeSpec::new(1, 0),
+                &nix::sys::time::TimeSpec::new(1, 0),
+            ),
+        );
+        // The answer does not decide it: a change made by name lands first and meets the `ESTALE`
+        // of the reply's own stat afterwards.
+        let after = fs::metadata(mount.backing_at(guarded)).unwrap();
+        assert_eq!(
+            after.permissions(),
+            before.permissions(),
+            "SECURITY: {guarded}: mode"
+        );
+        assert_eq!(
+            after.modified().unwrap(),
+            before.modified().unwrap(),
+            "SECURITY: {guarded}: mtime"
+        );
+
+        let leaked = format!("out/leaked-{second_name}");
+        let through_descriptor =
+            CString::new(format!("/proc/self/fd/{}", held.as_raw_fd())).unwrap();
+        replaced(
+            "alias the guarded file out through the held descriptor",
+            nix::unistd::linkat(
+                nix::fcntl::AT_FDCWD,
+                through_descriptor.as_c_str(),
+                mount.mount_dirfd(),
+                leaked.as_str(),
+                nix::fcntl::AtFlags::AT_SYMLINK_FOLLOW,
+            ),
+        );
+
+        assert!(
+            !mount.backing_at(&leaked).exists(),
+            "{guarded} was aliased out"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_handle_held_across_a_rename_inside_a_gitdir_cannot_reach_its_protected_entries() {
+    // The same divergence reached from inside a gitdir, which is why the answer cannot be a rule
+    // about the workspace root: everything under `refs/` is operational, so renaming a directory
+    // there and symlinking the vacated name back at the gitdir root are both legitimately allowed —
+    // and the handle then reaches `hooks/` while classified through `refs/`.
+    let mount = TestMount::new(repository_with_hook_named_directories);
+
+    let held = File::open(mount.at(".git/refs/heads/hooks")).expect("open a branch namespace");
+
+    allowed(
+        "rename an operational directory",
+        fs::rename(mount.at(".git/refs/heads"), mount.at(".git/refs/moved")),
+    );
+    // `..` and not `../..`: a symlink's target resolves against the directory *holding* the link,
+    // which is `.git/refs`, so one level up is the gitdir root and two would be the workspace's.
+    allowed(
+        "symlink the vacated name at the gitdir root",
+        symlink("..", mount.at(".git/refs/heads")),
+    );
+
+    stale(
+        "write a hook through the held handle",
+        openat_write(&held, "pre-commit"),
+    );
+
+    assert_eq!(
+        fs::read_to_string(mount.backing_at(HOOK)).unwrap(),
+        HOOK_BODY,
+        "the host's hook was written through a handle held across a rename inside the gitdir"
+    );
+}
+
+/// A repository whose hooks the host has relocated into the worktree, by symlink.
+fn relocated_hooks(backing: &Path) {
+    fs::create_dir_all(backing.join(".git")).unwrap();
+    fs::create_dir_all(backing.join("shared-hooks")).unwrap();
+    fs::write(backing.join(".git/HEAD"), b"ref: refs/heads/main\n").unwrap();
+    fs::write(
+        backing.join("shared-hooks/pre-commit"),
+        b"#!/bin/sh\n# host\n",
+    )
+    .unwrap();
+    symlink("../shared-hooks", backing.join(".git/hooks")).unwrap();
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_symlinked_hooks_entry_cannot_be_re_aimed() {
+    // What does hold: the symlink *node* is protected, so the sandbox cannot point hook
+    // resolution at a directory of its choosing. (Where the host already points it is served
+    // read-only, below.)
+    let mount = TestMount::new(relocated_hooks);
+
+    denied(
+        "delete the hooks symlink",
+        fs::remove_file(mount.at(".git/hooks")),
+    );
+    // A *file*, not a directory: renaming a directory onto a non-directory is refused by the kernel
+    // with ENOTDIR before the request ever reaches the filter, which would test nothing.
+    allowed(
+        "stage a decoy file",
+        fs::write(mount.at("decoy"), b"evil\n"),
+    );
+    denied(
+        "rename a decoy onto the hooks symlink",
+        fs::rename(mount.at("decoy"), mount.at(".git/hooks")),
+    );
+    assert_eq!(
+        fs::read_link(mount.backing_at(".git/hooks")).unwrap(),
+        Path::new("../shared-hooks"),
+        "the hooks symlink was re-aimed"
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn relocated_hooks_are_served_read_only() {
+    // The guard resolves the relocated directory (`ko-agent-fs/policy/doc/git-metadata.md`,
+    // "Relocated hook directories") and the mount serves it as a read-only root, where the
+    // name-based rules alone would leave its target ordinary writable data.
+    let mount = mount_with_rules("", relocated_hooks);
+
+    allowed(
+        "read the host's hook",
+        fs::read_to_string(mount.at("shared-hooks/pre-commit")).map(|_| ()),
+    );
+    denied(
+        "rewrite the host's hook at its own name",
+        fs::write(mount.at("shared-hooks/pre-commit"), b"#!/bin/sh\nevil\n"),
+    );
+    denied(
+        "add a hook beside it",
+        File::create(mount.at("shared-hooks/post-checkout")),
+    );
+    denied(
+        "rename the directory away",
+        fs::rename(mount.at("shared-hooks"), mount.at("hooks-old")),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn an_ordinary_repository_passes_the_startup_guard() {
+    // The refusal must stay narrow: a repository with hooks in the default place is served, and
+    // needs nothing beyond the names. The guarded objects are the record of what the names
+    // protect, for the BPF backend, not an addition to the rules.
+    let mount = TestMount::new(repository);
+    let additions =
+        ko_agent_fs::guard::resolve(&mount.backing, &FileRules::default(), &[PathBuf::from("/")])
+            .expect("an ordinary repository is served");
+    assert!(
+        additions.read_only.is_empty()
+            && additions.pinned.is_empty()
+            && additions.aliases.is_empty(),
+        "the guard added rules: {additions:?}"
+    );
+    let kinds: Vec<_> = additions.guarded.iter().map(|object| object.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            ko_agent_fs::guard::GuardedKind::Workspace,
+            ko_agent_fs::guard::GuardedKind::GitEntry,
+            ko_agent_fs::guard::GuardedKind::Gitdir,
+        ],
+        "{additions:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The file rules: workspace files a host program executes on an event
+// ---------------------------------------------------------------------------
+
+/// A mount serving `rule_lines` — resolved lines, as the launcher writes them — with the guard's
+/// additions over the tree `setup` lays out, as the daemon serves them.
+fn mount_with_rules(rule_lines: &str, setup: impl FnOnce(&Path)) -> TestMount {
+    let file = rulefile::parse(rule_lines).expect("resolved rule lines");
+    TestMount::with_rules(setup, |backing| {
+        let additions = ko_agent_fs::guard::resolve(backing, &file.rules, &file.host_view)
+            .expect("the guard serves the tree");
+        file.with_additions(&additions.lines(), &additions.aliases)
+            .0
+    })
+}
+
+const DEFAULTS_LIKE: &str = "read-only .vscode\nread-only .claude/settings.json\n\
+                             writable node_modules\n";
+
+fn listed_files(backing: &Path) {
+    repository(backing);
+    fs::create_dir_all(backing.join(".vscode")).unwrap();
+    fs::write(backing.join(".vscode/tasks.json"), b"{}\n").unwrap();
+    fs::create_dir_all(backing.join(".claude")).unwrap();
+    fs::write(backing.join(".claude/settings.json"), b"{}\n").unwrap();
+    fs::create_dir_all(backing.join("node_modules")).unwrap();
+    fs::create_dir_all(backing.join("apps")).unwrap();
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_listed_file_cannot_be_written_created_or_replaced() {
+    let mount = mount_with_rules(DEFAULTS_LIKE, listed_files);
+
+    allowed(
+        "read a listed file",
+        fs::read_to_string(mount.at(".vscode/tasks.json")).map(|_| ()),
+    );
+    denied(
+        "rewrite a listed file",
+        fs::write(
+            mount.at(".vscode/tasks.json"),
+            b"{\"runOn\": \"folderOpen\"}\n",
+        ),
+    );
+    denied(
+        "add a file below a listed directory",
+        File::create(mount.at(".vscode/launch.json")),
+    );
+    denied(
+        "remove a listed file",
+        fs::remove_file(mount.at(".vscode/tasks.json")),
+    );
+    denied(
+        "rename a listed directory away",
+        fs::rename(mount.at(".vscode"), mount.at("vscode-old")),
+    );
+    denied(
+        "create a listed name deeper",
+        fs::create_dir(mount.at("apps/.vscode")),
+    );
+    denied(
+        "create a folded spelling",
+        fs::create_dir(mount.at("apps/.VSCODE")),
+    );
+    denied(
+        "symlink at a listed name",
+        symlink("../src", mount.at("apps/.vscode")),
+    );
+    allowed(
+        "stage an ordinary file",
+        fs::write(mount.at("apps/decoy"), b"x"),
+    );
+    denied(
+        "rename a file onto a listed name",
+        fs::rename(mount.at("apps/decoy"), mount.at("apps/.vscode")),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_directory_a_line_names_through_cannot_be_swapped() {
+    let mount = mount_with_rules(DEFAULTS_LIKE, listed_files);
+
+    allowed(
+        "write beside the listed file",
+        fs::write(mount.at(".claude/notes.md"), b"x"),
+    );
+    denied(
+        "rename the pinned directory away",
+        fs::rename(mount.at(".claude"), mount.at("saved")),
+    );
+    allowed("stage a directory", fs::create_dir(mount.at("staged")));
+    allowed(
+        "fill it",
+        fs::write(mount.at("staged/settings.json"), b"{\"hooks\": {}}\n"),
+    );
+    let root = mount.mount_dirfd();
+    denied_nix(
+        "exchange the staged directory with the pinned one",
+        rename_exchange(&root, "staged", ".claude"),
+    );
+    denied(
+        "rename the staged directory onto a fresh pinned name",
+        fs::rename(mount.at("staged"), mount.at("apps/.claude")),
+    );
+    allowed(
+        "mkdir a pinned name",
+        fs::create_dir(mount.at("apps/.claude")),
+    );
+    denied(
+        "create the listed file below it",
+        File::create(mount.at("apps/.claude/settings.json")),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_writable_region_keeps_the_listed_names_it_holds() {
+    let mount = mount_with_rules(DEFAULTS_LIKE, listed_files);
+
+    // What `npm install` does with pino-abstract-transport's `.husky` and inflection's `.vscode`.
+    allowed(
+        "create a listed name inside the region",
+        fs::create_dir_all(mount.at("node_modules/p/.vscode")),
+    );
+    allowed(
+        "write it",
+        fs::write(mount.at("node_modules/p/.vscode/tasks.json"), b"{}\n"),
+    );
+    allowed(
+        "rename a package within the region",
+        fs::rename(
+            mount.at("node_modules/p"),
+            mount.at("node_modules/.p-retired"),
+        ),
+    );
+    allowed(
+        "link within the region",
+        fs::create_dir(mount.at("node_modules/.bin"))
+            .and_then(|()| symlink("../.p-retired/tsc", mount.at("node_modules/.bin/tsc"))),
+    );
+    denied(
+        "move the package out of the region",
+        fs::rename(mount.at("node_modules/.p-retired"), mount.at("apps/p")),
+    );
+    denied(
+        "rename the region's root",
+        fs::rename(mount.at("node_modules"), mount.at("nm")),
+    );
+    denied(
+        "link into the region from outside it",
+        symlink("../node_modules/.p-retired", mount.at("apps/p")),
+    );
+    denied(
+        "hard-link the region's symlink out of it",
+        fs::hard_link(mount.at("node_modules/.bin/tsc"), mount.at("apps/tsc")),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_directory_a_symlinked_interior_reaches_keeps_the_line_s_rest() {
+    let mount = mount_with_rules(DEFAULTS_LIKE, |backing| {
+        repository(backing);
+        fs::create_dir_all(backing.join("shared/claude")).unwrap();
+        std::os::unix::fs::symlink("shared/claude", backing.join(".claude")).unwrap();
+    });
+
+    denied(
+        "create the listed file under the target's own name",
+        File::create(mount.at("shared/claude/settings.json")),
+    );
+    denied(
+        "create it through the symlink",
+        File::create(mount.at(".claude/settings.json")),
+    );
+    allowed(
+        "write beside it",
+        fs::write(mount.at("shared/claude/notes.md"), b"x"),
+    );
+    denied(
+        "rename the target away",
+        fs::rename(mount.at("shared/claude"), mount.at("shared/saved")),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_gitdir_keeps_the_listed_names_it_holds() {
+    let mount = mount_with_rules(DEFAULTS_LIKE, listed_files);
+
+    allowed(
+        "create a listed name in Git's operational state",
+        fs::create_dir_all(mount.at(".git/objects/x/.vscode")),
+    );
+    allowed(
+        "write it",
+        fs::write(mount.at(".git/objects/x/.vscode/tasks.json"), b"{}\n"),
+    );
+    allowed(
+        "link to it there",
+        symlink("x/.vscode", mount.at(".git/objects/l")),
+    );
+    denied(
+        "move the directory into the workspace",
+        fs::rename(mount.at(".git/objects/x"), mount.at("apps/x")),
+    );
+    allowed("stage a directory", fs::create_dir(mount.at("apps/y")));
+    let root = mount.mount_dirfd();
+    denied_nix(
+        "exchange it with the directory in the gitdir",
+        rename_exchange(&root, "apps/y", ".git/objects/x"),
+    );
+    denied(
+        "move the symlink into the workspace",
+        fs::rename(mount.at(".git/objects/l"), mount.at("apps/l")),
+    );
+    denied(
+        "hard-link the symlink into the workspace",
+        fs::hard_link(mount.at(".git/objects/l"), mount.at("apps/l")),
+    );
+    denied(
+        "link to it from the workspace",
+        symlink("../.git/objects/x", mount.at("apps/web")),
+    );
+    denied(
+        "link to the gitdir itself",
+        symlink("../.git", mount.at("apps/gitdir")),
+    );
+    denied(
+        "link to it past a protected directory",
+        symlink("../.git/hooks/..", mount.at("apps/gitdir")),
+    );
+    // A later `apps/web -> hooks/../objects/x` would reach the gitdir's state through it.
+    denied(
+        "link to a protected Git directory",
+        symlink("../.git/hooks", mount.at("apps/hooks")),
+    );
+    denied(
+        "link to a protected Git file",
+        symlink("../.git/config", mount.at("apps/config")),
+    );
+    allowed(
+        "move a directory into the gitdir",
+        fs::rename(mount.at("apps/y"), mount.at(".git/objects/y")),
+    );
+
+    // A target spelling an NTFS 8.3 short name is refused whatever the name holds when the link is
+    // made: a Windows host resolves it in the symlink WSL writes when it reads the link, so an
+    // ordinary `pivot/GIT~1`, removed and replaced by `pivot -> .`, would aim the link at `.git`.
+    denied(
+        "link to the gitdir's state by its short name",
+        symlink("../GIT~1/objects/x", mount.at("apps/short-web")),
+    );
+    denied(
+        "link into the region by its short name",
+        symlink("../NODE_M~1", mount.at("apps/short-nm")),
+    );
+    allowed(
+        "create an ordinary directory spelled like a short name",
+        fs::create_dir_all(mount.at("pivot/GIT~1")),
+    );
+    denied(
+        "link through it",
+        symlink("../pivot/GIT~1/objects/x", mount.at("apps/short-pivot")),
+    );
+    allowed(
+        "link past it by long names",
+        symlink("../pivot/apps", mount.at("apps/long-pivot")),
+    );
+    allowed(
+        "link by long names into a directory that does not exist yet",
+        symlink("../later/objects/x", mount.at("apps/long-later")),
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_writable_line_frees_one_file_below_a_read_only_directory() {
+    let mount = mount_with_rules(
+        "read-only .vscode\nwritable .vscode/settings.json\n",
+        |backing| {
+            listed_files(backing);
+            fs::write(backing.join(".vscode/settings.json"), b"{}\n").unwrap();
+        },
+    );
+
+    allowed(
+        "write the freed file",
+        fs::write(
+            mount.at(".vscode/settings.json"),
+            b"{\"editor.tabSize\": 2}\n",
+        ),
+    );
+    denied(
+        "write its read-only sibling",
+        fs::write(mount.at(".vscode/tasks.json"), b"{}\n"),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// What must keep working
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn ordinary_workspace_work_is_unaffected() {
+    let mount = TestMount::new(repository);
+
+    allowed(
+        "edit a source file",
+        fs::write(mount.at("src/main.rs"), b"fn main() { }\n"),
+    );
+    allowed(
+        "create a source file",
+        fs::write(mount.at("src/new.rs"), b"x\n"),
+    );
+    allowed("create a directory", fs::create_dir(mount.at("src/sub")));
+    allowed(
+        "create .gitignore",
+        fs::write(mount.at(".gitignore"), b"target\n"),
+    );
+    allowed(
+        "rename a source file",
+        fs::rename(mount.at("src/new.rs"), mount.at("src/moved.rs")),
+    );
+    allowed(
+        "hard-link an ordinary file",
+        fs::hard_link(mount.at("src/main.rs"), mount.at("src/alias.rs")),
+    );
+    allowed(
+        "symlink an ordinary file",
+        symlink("main.rs", mount.at("src/link.rs")),
+    );
+    allowed(
+        "chmod an ordinary file",
+        fs::set_permissions(mount.at("src/main.rs"), Permissions::from_mode(0o600)),
+    );
+    allowed(
+        "delete an ordinary file",
+        fs::remove_file(mount.at("src/moved.rs")),
+    );
+
+    assert_eq!(
+        fs::read_to_string(mount.backing_at("src/main.rs")).unwrap(),
+        "fn main() { }\n"
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn a_symlink_target_with_nonportable_syntax_is_refused_and_an_ordinary_one_is_not() {
+    // Syntax is asserted and nothing more: `fs.rs`, `target_has_portable_syntax`.
+    //
+    // sbt 2 is why it exists: `fs.rs`, `symlink`.
+    let mount = TestMount::new(repository);
+    allowed(
+        "a subdirectory to link from",
+        fs::create_dir(mount.at("src/sub")),
+    );
+
+    denied(
+        "symlink to an absolute path outside the workspace",
+        symlink("/home/nonroot/.cache/blob", mount.at("src/cached.o")),
+    );
+    // Refused for being absolute, not for where it points: the syntax decides, and this one names
+    // the mount itself.
+    denied(
+        "symlink to an absolute path inside the workspace",
+        symlink(mount.at("src/main.rs"), mount.at("src/self.rs")),
+    );
+    denied(
+        "symlink up out of the workspace",
+        symlink("../../elsewhere", mount.at("src/escape.rs")),
+    );
+    denied(
+        "symlink up out of the workspace and back down",
+        symlink("../../../etc/passwd", mount.at("src/sub/passwd")),
+    );
+
+    // What the rule must not cost: everything resolving inside, `..` included.
+    allowed(
+        "symlink to a sibling",
+        symlink("main.rs", mount.at("src/sibling.rs")),
+    );
+    allowed(
+        "symlink up and across",
+        symlink("../main.rs", mount.at("src/sub/up.rs")),
+    );
+    // The last `..` that is still the workspace: the root itself.
+    allowed(
+        "symlink at the workspace root",
+        symlink("../..", mount.at("src/sub/top")),
+    );
+
+    // The allowed ones reach the host as themselves, unresolved.
+    assert_eq!(
+        fs::read_link(mount.backing_at("src/sibling.rs")).unwrap(),
+        Path::new("main.rs")
+    );
+}
+
+#[test]
+#[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
+fn operational_git_state_stays_writable() {
+    // Freezing protected entries must not freeze the state git rewrites constantly, or no git
+    // command would work inside the workspace at all.
+    let mount = TestMount::new(repository);
+
+    allowed(
+        "write a ref",
+        fs::write(mount.at(".git/refs/heads/main"), b"0000\n"),
+    );
+    allowed("write the index", fs::write(mount.at(".git/index"), b"idx"));
+    allowed(
+        "write an index lock",
+        fs::write(mount.at(".git/index.lock"), b"lock"),
+    );
+    allowed(
+        "rename the index lock into place",
+        fs::rename(mount.at(".git/index.lock"), mount.at(".git/index")),
+    );
+    allowed(
+        "write HEAD",
+        fs::write(mount.at(".git/HEAD"), b"ref: refs/heads/other\n"),
+    );
+    allowed("write a loose object", {
+        fs::create_dir_all(mount.at(".git/objects/ab"))
+            .and_then(|()| fs::write(mount.at(".git/objects/ab/cdef"), b"object"))
+    });
+    allowed("write a reflog", {
+        fs::create_dir_all(mount.at(".git/logs"))
+            .and_then(|()| fs::write(mount.at(".git/logs/HEAD"), b"log"))
+    });
+    allowed(
+        "write COMMIT_EDITMSG",
+        fs::write(mount.at(".git/COMMIT_EDITMSG"), b"msg"),
+    );
+    // A submodule gitdir re-roots, so its operational state is writable too.
+    allowed(
+        "write a submodule's HEAD",
+        fs::write(mount.at(".git/modules/sub/HEAD"), b"ref: x\n"),
+    );
+}

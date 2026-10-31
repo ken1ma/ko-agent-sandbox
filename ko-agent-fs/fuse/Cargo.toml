@@ -1,0 +1,23 @@
+[package]
+name = "ko-agent-fs-fuse"
+description = "FUSE filter that keeps a sandbox from planting host-executable Git metadata in a shared workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# fuser for the FUSE protocol, nix/libc for the fd-relative syscalls. fuser without its libfuse
+# feature has no C linkage and mounts unprivileged (`doc/architecture.md`, "Build and install").
+[dependencies]
+ko-agent-fs = { path = "../policy" }
+fuser = { version = "0.18", default-features = false }
+libc = "0.2"
+nix = { version = "0.31", default-features = false, features = ["fs", "dir", "uio"] }
+
+[lib]
+name = "ko_agent_fs_fuse"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ko-agent-fs-fuse"
+path = "src/main.rs"

@@ -1,7 +1,7 @@
 // The workspace root as the launcher judges it: identity, the refused directories, and the
 // .ko-agent-sandbox forms — where a wrong answer either exposes the host or lets a session write
 // the configuration governing the next one. What a session may write under .git is the FUSE
-// filter's policy, tested in fuse/ko-agent-fs.
+// filter's policy, tested in ko-agent-fs/policy and ko-agent-fs/fuse.
 
 package agentsandbox.launcher
 

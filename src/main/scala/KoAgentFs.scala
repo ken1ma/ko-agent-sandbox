@@ -1,9 +1,10 @@
-// Everything the launcher does about ko-agent-fs, the workspace FUSE filter: digesting the source it
-// bundles, building and installing the binary, proving the installed one is that source's build, and
-// the per-workspace mount lifecycle every session that mounts it runs through.
+// Everything the launcher does about ko-agent-fs, the workspace policy, and ko-agent-fs-fuse, the FUSE
+// filter that serves it: digesting the source it bundles, building and installing the binaries, proving
+// the installed ones are that source's build, and the per-workspace mount lifecycle every session that
+// mounts the filter runs through.
 //
-// It is a separate program with its own source tree, docs, tests and version check
-// (fuse/ko-agent-fs/), and it reaches the launch through prepareKoAgentFs and
+// They are separate programs with their own source tree, docs, tests and version check
+// (ko-agent-fs/policy/, ko-agent-fs/fuse/), and they reach the launch through prepareKoAgentFs and
 // mountKoAgentFs. That is why it is a file rather than a section.
 
 package agentsandbox.launcher
@@ -18,23 +19,26 @@ import LauncherImages.{bundledSourceId, contextSourceId}
 object KoAgentFs:
 
   /**
-   * The bundled filter source's identity, passed to the image build as KO_AGENT_FS_SOURCE_ID and
-   * reported back by the installed binary's `--version`, so a binary that is not the one this
-   * launcher would build is detected rather than trusted (fuse/ko-agent-fs/doc/architecture.md,
+   * The bundled source's identity, passed to the image build as KO_AGENT_FS_SOURCE_ID and
+   * reported back by both installed binaries' `--version`, so a binary that is not the one this
+   * launcher would build is detected rather than trusted (ko-agent-fs/fuse/doc/architecture.md,
    * "Build and install").
    *
-   * Every bundled file counts, tests included: the digest names the source a binary was built
-   * from, which is also the source its suites covered (the developer's run and `--self-test`),
-   * and picking out which of the bundled files "really" affect it is a judgement that can rot.
-   * The exclusions are drawn where they cannot rot into a second opinion: ko-agent-fs/doc and
-   * ko-agent-fs/probe are not bundled at all (build.sbt), so they are neither distributed nor
-   * digested, and editing a design document or a platform probe does not invalidate every
-   * installed binary.
+   * Every bundled file the image copies counts, tests included: the digest names the source a
+   * binary was built from, which is also the source its suites covered (the developer's run and
+   * `--self-test`), and picking out which of the copied files "really" affect it is a judgement
+   * that can rot. The exclusions are drawn where they cannot rot into a second opinion: the doc/
+   * and probe/ directories are not bundled at all (build.sbt), so they are neither distributed
+   * nor digested, and editing a design document or a platform probe does not invalidate every
+   * installed binary; bpf/ is the BPF backend's, which the image does not copy (KoAgentBpf.sourceId).
    */
-  def koAgentFsSourceId(context: Path): String = contextSourceId(context, "ko-agent-fs")
+  def koAgentFsSourceId(context: Path): String = contextSourceId(context, "ko-agent-fs", rustImageInput)
+
+  /** The bundled ko-agent-fs/ files the Rust image builds from: its Containerfile and what that copies, not bpf/. */
+  private def rustImageInput(path: String): Boolean = !path.startsWith("bpf/")
 
   /**
-   * Where the filter binary is installed, relative to the home of the user the
+   * Where the binaries are installed, relative to the home of the user the
    * daemon runs as — the VM user's home on podman machine, the host user's
    * on native Linux. Relative on purpose: `podman machine ssh` starts in the
    * VM user's home whoever that is (core on macOS, the WSL user on
@@ -42,11 +46,13 @@ object KoAgentFs:
    */
   val KoAgentFsInstallDir = ".local/share/ko-agent-sandbox"
   val KoAgentFsBinary = s"$KoAgentFsInstallDir/ko-agent-fs"
+  val KoAgentFsFuseBinary = s"$KoAgentFsInstallDir/ko-agent-fs-fuse"
+  val KoAgentFsBinaries: Vector[String] = Vector(KoAgentFsBinary, KoAgentFsFuseBinary)
 
   /**
-   * Steps 3–4 of the filter pipeline (fuse/ko-agent-fs/doc/architecture.md,
-   * "Build and install"): take /ko-agent-fs out of the image's scratch stage
-   * and put it where the daemon must run. On podman machine both the image
+   * Steps 3–4 of the filter pipeline (ko-agent-fs/fuse/doc/architecture.md,
+   * "Build and install"): take both binaries out of the image's scratch stage
+   * and put them where the daemon must run. On podman machine both the image
    * storage and the daemon are inside the VM, so the whole extraction runs
    * there through `machine ssh` — a host-side `podman cp` would put the
    * binary on the wrong side of the boundary. The ssh script is fixed text;
@@ -59,6 +65,7 @@ object KoAgentFs:
         Vector(
           Vector(podman, "create", "--replace", "--name", "ko-agent-fs-extract", LauncherImages.KoAgentFsImage),
           Vector(podman, "cp", "ko-agent-fs-extract:/ko-agent-fs", s"$home/$KoAgentFsBinary"),
+          Vector(podman, "cp", "ko-agent-fs-extract:/ko-agent-fs-fuse", s"$home/$KoAgentFsFuseBinary"),
           Vector(podman, "rm", "ko-agent-fs-extract"),
         )
       case Os.Mac | Os.Windows =>
@@ -67,6 +74,7 @@ object KoAgentFs:
              |mkdir -p $KoAgentFsInstallDir
              |podman create --replace --name ko-agent-fs-extract ${LauncherImages.KoAgentFsImage} >/dev/null
              |podman cp ko-agent-fs-extract:/ko-agent-fs $KoAgentFsBinary
+             |podman cp ko-agent-fs-extract:/ko-agent-fs-fuse $KoAgentFsFuseBinary
              |podman rm ko-agent-fs-extract >/dev/null""".stripMargin
         Vector(Vector(podman, "machine", "ssh", script))
 
@@ -144,29 +152,30 @@ object KoAgentFs:
     if !run(koAgentFsFuseConfCheckCommand(podman)*).ok then
       fail("error: user_allow_other still not set after enabling; check the machine's /etc/fuse.conf")
 
-  private def koAgentFsInvocation(podman: String, os: Os, home: String, flag: String): Vector[String] =
+  private def koAgentFsInvocation(podman: String, os: Os, home: String, binary: String, flag: String): Vector[String] =
     os match
-      case Os.Linux => Vector(s"$home/$KoAgentFsBinary", flag)
-      case Os.Mac | Os.Windows => Vector(podman, "machine", "ssh", s"./$KoAgentFsBinary $flag")
+      case Os.Linux => Vector(s"$home/$binary", flag)
+      case Os.Mac | Os.Windows => Vector(podman, "machine", "ssh", s"./$binary $flag")
 
-  def koAgentFsVersionCommand(podman: String, os: Os, home: String): Vector[String] =
-    koAgentFsInvocation(podman, os, home, "--version")
+  def koAgentFsVersionCommand(podman: String, os: Os, home: String, binary: String): Vector[String] =
+    koAgentFsInvocation(podman, os, home, binary, "--version")
 
   def koAgentFsSelfTestCommand(podman: String, os: Os, home: String): Vector[String] =
-    koAgentFsInvocation(podman, os, home, "--self-test")
+    koAgentFsInvocation(podman, os, home, KoAgentFsFuseBinary, "--self-test")
 
-  /** The --version line without its leading program name, which the label already says. */
+  /** "<program> installed: <the rest of its --version line>". */
   def koAgentFsInstalledLine(versionLine: String): String =
-    s"ko-agent-fs installed: ${versionLine.trim.stripPrefix("ko-agent-fs ")}"
+    val program = versionLine.trim.takeWhile(!_.isWhitespace)
+    s"$program installed: ${versionLine.trim.stripPrefix(program).trim}"
 
-  /** "ko-agent-fs <version> source <id>" → the id; None for anything else. */
+  /** "ko-agent-fs <version> source <id>", or ko-agent-fs-fuse's line, → the id; None for anything else. */
   def koAgentFsReportedSourceId(versionLine: String): Option[String] =
     versionLine.trim.split("\\s+") match
-      case Array("ko-agent-fs", _, "source", id) => Some(id)
+      case Array("ko-agent-fs" | "ko-agent-fs-fuse", _, "source", id) => Some(id)
       case _ => None
 
   /**
-   * Step 5: install the freshly built filter and prove the installed binary
+   * Step 5: install the freshly built binaries and prove each installed one
    * is the one this launcher's bundled source builds — its --version must
    * echo the digest that was passed to the image build. A mismatch after a
    * fresh install means the image tagged ko-agent-fs:latest is not the one
@@ -181,25 +190,27 @@ object KoAgentFs:
       val result = run(command*)
       if !result.ok then
         fail(s"error: ko-agent-fs install failed: ${shownCommand(command)}\n${result.err}", result.exit)
-    val version = run(koAgentFsVersionCommand(podman, os, home)*)
-    if !version.ok then
-      fail(s"error: the installed ko-agent-fs does not run: ${version.err}", version.exit)
-    koAgentFsReportedSourceId(version.text) match
-      case Some(id) if id == expectedId =>
-        System.err.println(koAgentFsInstalledLine(version.text))
-      case Some(id) =>
-        fail(
-          s"""error: the installed ko-agent-fs reports source $id, expected $expectedId
-             |
-             |The image tagged ko-agent-fs:latest is not the one this --build produced.""".stripMargin,
-        )
-      case None =>
-        fail(s"error: unrecognized ko-agent-fs --version output: ${version.text}")
+    KoAgentFsBinaries.foreach: binary =>
+      val program = Paths.get(binary).getFileName
+      val version = run(koAgentFsVersionCommand(podman, os, home, binary)*)
+      if !version.ok then
+        fail(s"error: the installed $program does not run: ${version.err}", version.exit)
+      koAgentFsReportedSourceId(version.text) match
+        case Some(id) if id == expectedId =>
+          System.err.println(koAgentFsInstalledLine(version.text))
+        case Some(id) =>
+          fail(
+            s"""error: the installed $program reports source $id, expected $expectedId
+               |
+               |The image tagged ko-agent-fs:latest is not the one this --build produced.""".stripMargin,
+          )
+        case None =>
+          fail(s"error: unrecognized $program --version output: ${version.text}")
     // The whole stack, proven where it will run: an unprivileged mount over a scratch tree, with
     // the policy shown to refuse. Its failure text names the environment fix.
     val selfTest = run(koAgentFsSelfTestCommand(podman, os, home)*)
     if !selfTest.ok then
-      fail(s"error: ko-agent-fs self-test failed after install:\n${selfTest.err}", selfTest.exit)
+      fail(s"error: ko-agent-fs-fuse self-test failed after install:\n${selfTest.err}", selfTest.exit)
     System.err.println(selfTest.text)
 
   // ---------------------------------------------------------------------------
@@ -220,7 +231,7 @@ object KoAgentFs:
   // ENOTCONN, never a fallthrough to the unfiltered tree.
   // ---------------------------------------------------------------------------
 
-  def bundledKoAgentFsSourceId(): String = bundledSourceId("ko-agent-fs")
+  def bundledKoAgentFsSourceId(): String = bundledSourceId("ko-agent-fs", rustImageInput)
 
   /** Runs an unmount script and prints its [[unmountReport]]; true when the script acted on any filter state. */
   def unmountKoAgentFs(os: Os, script: String): Boolean =
@@ -305,9 +316,9 @@ object KoAgentFs:
        |# here, since execution pauses at the start prompt. Checked again beside the start, under the
        |# image-build lock the launcher holds across this script and the installer holds while it
        |# replaces the binary (mountKoAgentFs), so the daemon started is the build source-id names.
-       |case "$$("$$HOME/$KoAgentFsBinary" --version 2>/dev/null || true)" in
+       |case "$$("$$HOME/$KoAgentFsFuseBinary" --version 2>/dev/null || true)" in
        |  *" source $sourceId") ;;
-       |  *) echo "the installed ko-agent-fs is no longer this launcher's build; launch again" >&2; exit 1 ;;
+       |  *) echo "the installed ko-agent-fs-fuse is no longer this launcher's build; launch again" >&2; exit 1 ;;
        |esac
        |printf %s "$sourceId" > "$$dir/source-id"
        |mv -f "$$dir/file-rules.new" "$$dir/file-rules"
@@ -315,7 +326,7 @@ object KoAgentFs:
        |mv -f "$$dir/daemon.log" "$$dir/daemon.log.1" 2>/dev/null || true
        |# 9>&- so the daemon does not inherit the workspace lock and hold it for the session's
        |# whole life, which would block every later reap forever.
-       |nohup "$$HOME/$KoAgentFsBinary" --source "$$backing" --mount "$$mnt" \\
+       |nohup "$$HOME/$KoAgentFsFuseBinary" --source "$$backing" --mount "$$mnt" \\
        |  --file-rules "$$dir/file-rules" --foreground 9>&- >>"$$dir/daemon.log" 2>&1 &
        |i=0
        |while [ $$i -lt 100 ]; do
@@ -536,7 +547,7 @@ object KoAgentFs:
    *     prefix that turns the mountpoint into an absolute `--volume` source. On native Linux it is
    *     `home`, the JVM's `user.home` as installKoAgentFs uses it; the working directory there is
    *     the workspace root;
-   *   - the installed binary's `--version`;
+   *   - the installed filter's `--version`;
    *   - only when that names `sourceId`, ChecksSelfTestMarker and then the self-test, whose status
    *     is the script's.
    */
@@ -549,14 +560,14 @@ object KoAgentFs:
       s"""set -u
        |$homeLine
        |printf '%s\\n' "$$home"
-       |version="$$("$$home/$KoAgentFsBinary" --version)"
+       |version="$$("$$home/$KoAgentFsFuseBinary" --version)"
        |printf '%s\\n' "$$version"
        |case "$$version" in
        |  *" source $sourceId") ;;
        |  *) exit 0 ;;
        |esac
        |echo "$ChecksSelfTestMarker"
-       |exec "$$home/$KoAgentFsBinary" --self-test""".stripMargin,
+       |exec "$$home/$KoAgentFsFuseBinary" --self-test""".stripMargin,
     )
 
   /** The line koAgentFsChecksScript prints once the version matched, before the self-test runs. */
@@ -571,7 +582,7 @@ object KoAgentFs:
    * The checks before each session, before anything of the run exists. Every failure aborts the
    * launch — there is no fallback to an unfiltered bind mount.
    *
-   *   - `checks`, koAgentFsChecks's answer, which the caller runs: the installed binary is this
+   *   - `checks`, koAgentFsChecks's answer, which the caller runs: the installed filter is this
    *     launcher's build, and it can mount and the policy refuses (self-test).
    *   - koAgentFsPrepareScript makes the mountpoint one a `podman create` can bind.
    *
@@ -602,14 +613,15 @@ object KoAgentFs:
     else if marker < 0 || !koAgentFsReportedSourceId(version).contains(expected) then
       Left(
         (
-          s"""error: the installed ko-agent-fs is not this launcher's build
+          s"""error: the installed ko-agent-fs-fuse is not this launcher's build
              |  (${if version.nonEmpty then version else checks.err})
              |
              |Run --build first.""".stripMargin,
           1,
         ),
       )
-    else if !checks.ok then Left((s"error: ko-agent-fs self-test failed; not launching:\n${checks.err}", checks.exit))
+    else if !checks.ok then
+      Left((s"error: ko-agent-fs-fuse self-test failed; not launching:\n${checks.err}", checks.exit))
     else Right(home)
 
   /** What prepareKoAgentFs proved and where: the installed build's source id, the absolute

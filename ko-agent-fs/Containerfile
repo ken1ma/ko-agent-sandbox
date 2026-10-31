@@ -1,0 +1,133 @@
+# ---------------------------------------------------------------------------
+# Build ko-agent-fs and ko-agent-fs-fuse
+# ---------------------------------------------------------------------------
+#
+# `fuse/doc/architecture.md` ("Build and install") says who runs this and what
+# happens to the result. In short:
+#
+# - The launcher unpacks this directory from its own jar and builds it.
+# - It passes the digest of the bundled source this copies as
+#   KO_AGENT_FS_SOURCE_ID.
+# - It then extracts the binaries from the image and installs them where the
+#   filter runs. On macOS and Windows that is inside the podman machine, not
+#   the host.
+#
+#     podman build --target build --build-arg KO_AGENT_FS_SOURCE_ID=<digest> \
+#         -t ko-agent-fs-build:cache ko-agent-fs
+#     podman build --build-arg KO_AGENT_FS_SOURCE_ID=<digest> \
+#         -t ko-agent-fs:latest ko-agent-fs
+#
+# The binaries are compiled from source on the user's own machine, not shipped
+# prebuilt, so what runs is what the user can read. They are *static* musl
+# executables because they are installed into a VM, and we cannot assume which
+# libc that VM has. The final stage is `scratch` and holds only the binaries,
+# so the extraction step takes nothing else.
+
+# Debian 13 (trixie), matching the rest of this project's images.
+ARG RUST_VERSION=1.98.1
+FROM docker.io/library/rust:${RUST_VERSION}-slim-trixie AS build
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends musl-tools; \
+    rm -rf /var/lib/apt/lists/*
+
+# `uname -m` (aarch64, x86_64) is exactly the first part of the Rust target
+# triple, so no architecture mapping is needed. The sandbox image uses the same
+# trick for rustup.
+RUN set -eux; \
+    rustup target add "$(uname -m)-unknown-linux-musl"
+
+# The license check (`deny.toml`).
+ARG CARGO_DENY_VERSION=0.20.2
+RUN set -eux; \
+    cargo install cargo-deny --version "${CARGO_DENY_VERSION}" --locked
+
+WORKDIR /build
+# Copy named paths, not the whole context: bpf/ belongs to the BPF backend's image.
+COPY Cargo.toml Cargo.lock deny.toml expire-build-cache.sh ./
+COPY policy policy
+COPY fuse fuse
+
+# The identity the launcher checks (header above).
+ARG KO_AGENT_FS_SOURCE_ID=unstamped
+ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
+
+# `cargo deny` runs here because its license and source checks apply to the
+# artifact this step produces, and it takes seconds.
+#
+# `cargo test` deliberately does not run here:
+#
+# - This step runs on every user's --build. A test proves a property of the
+#   source, and the developer proves it once: the toolchain is pinned above,
+#   `--locked` fixes the dependencies, and the source id ties the binary to the
+#   bundle the suites covered.
+# - Here it would compile the dependency tree a second time, in the test
+#   profile, and show test output to a user who can do nothing about it.
+# - The suites run on the developer's machine (`doc/testing.md`) and, on any
+#   machine with podman, in the ko-agent-self-test image that the launcher's
+#   `--self-test` builds.
+# - What differs per machine is checked on each machine: the filter binary's
+#   own `--self-test` runs at install and before every session that mounts it.
+#
+# The source id is compiled in (`option_env!`). Every change to it invalidates
+# the cached ENV layer and reruns this step. Without the cache mounts, that
+# would recompile the whole dependency tree, not just the two packages here. A
+# mount is not a layer, so the `install` below copies the binaries out of it
+# while still inside this RUN.
+#
+# A warm cache cannot leave a stale source id compiled into a binary. The
+# reason is not cargo's tracking of environment variables:
+#
+# - The launcher unpacks this context to a new temporary directory on every
+#   --build (ImageBuilds.unpackBuildContext), so every file reaches podman with
+#   a fresh mtime.
+# - Cargo fingerprints a path dependency by mtime, so whenever this step runs
+#   at all, both packages recompile.
+# - When nothing changed, the COPY and ENV layers are cached and the step does
+#   not run.
+# - `installKoAgentFs` refuses a binary whose `--version` does not echo the
+#   digest. That is the last check, not the reason.
+#
+# /usr/local/cargo is the rust image's CARGO_HOME. It is spelled out because a
+# mount target is not expanded like a shell word.
+#
+# The step empties a cache mount that a cleanup may have deleted files from:
+#
+# - buildah keeps a cache mount under its temporary directory: /var/tmp, unless
+#   TMPDIR names another.
+# - systemd-tmpfiles deletes each file there whose access, modification,
+#   change and creation times are all older than the directory's age: 30 days
+#   for /var/tmp and 10 for /tmp in systemd's own tmp.conf.
+# - Cargo reads some cached files at every build and others never. For
+#   example, it reads a crate's `.cargo-ok` and manifest every time, but never
+#   the sources of a Windows-only crate. A cache that a cleanup thinned out
+#   file by file then fails the build with `failed to parse manifest … no
+#   targets specified`.
+# - expire-build-cache.sh writes a marker file into an empty cache before
+#   cargo writes anything. It empties a cache whose marker is missing or more
+#   than 7 days old. So every entry of a cache this step uses is younger than
+#   the cleanup ages, and no cleanup has deleted from it.
+# - The locks make a second step wait for this one, instead of emptying a
+#   cache while this step uses it.
+RUN --mount=type=cache,target=/build/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    set -eux; \
+    exec 8</build/target 9</usr/local/cargo/registry; \
+    flock 8; \
+    flock 9; \
+    sh expire-build-cache.sh /build/target /usr/local/cargo/registry; \
+    triple="$(uname -m)-unknown-linux-musl"; \
+    cargo deny --locked check licenses bans sources; \
+    cargo build --locked --release --target "${triple}"; \
+    mkdir /out; \
+    for bin in ko-agent-fs ko-agent-fs-fuse; do \
+        install -m 0755 "target/${triple}/release/${bin}" "/out/${bin}"; \
+        # A dynamically linked binary here would fail in the VM rather than in
+        # the build, which is the wrong place to find out.
+        ldd "/out/${bin}" 2>&1 | grep -q "statically linked\|not a dynamic executable"; \
+    done
+
+
+FROM scratch
+COPY --from=build /out /

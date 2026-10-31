@@ -143,7 +143,7 @@ Compile / resourceGenerators += Def.task {
 
   // (context root, the directories under it to bundle). Entries are stored relative to their context
   // root, so a jar entry — and the podman build path --build uses — stays a bare <image>/... whichever
-  // tree the source is in. ko-agent-fs is under fuse/ rather than container/ because it runs in the
+  // tree the source is in. ko-agent-fs is at the root rather than under container/ because it runs in the
   // podman machine, not in a container.
   val contexts = Seq(
     baseDirectory.value / "container" ->
@@ -152,30 +152,29 @@ Compile / resourceGenerators += Def.task {
         "ko-agent-sandbox", "ko-agent-egress-proxy",  // runtime images
         "ko-agent-self-test",                         // test image
       ),
-    baseDirectory.value / "fuse" -> Seq("ko-agent-fs"),
-    // The BPF classifier and its host build, which the self-test image compiles for
-    // tests/bpf_equivalence.rs (ko-agent-self-test/Containerfile), and the BPF backend's binaries,
-    // which --build compiles with that classifier (bpf/ko-agent-bpf/Containerfile).
-    baseDirectory.value -> Seq("bpf/ko-agent-bpf"),
+    // The policy and the FUSE filter, which --build compiles (ko-agent-fs/Containerfile), and the BPF
+    // backend (ko-agent-fs/bpf/Containerfile); the self-test image compiles the suites and the BPF
+    // classifier's host build for policy/tests/bpf_equivalence.rs (ko-agent-self-test/Containerfile).
+    baseDirectory.value -> Seq("ko-agent-fs"),
   )
 
   // Build output and editor caches a worked-in checkout accumulates; keep in step with the .dockerignore files, which
   // exclude the same set from the podman build context. Two known divergences, neither reachable: "project/project" is
   // a substring test here but segment-anchored (**/) there, so a path like myproject/project would be dropped only
-  // here, and no bundled directory is named that way; and ko-agent-fs's .dockerignore lists only target, doc, probe
-  // and bench, since no sbt or editor program creates the directories below inside a Rust crate — a stray .DS_Store
-  // there would reach a hand-run `podman build` that this task drops, costing a cache miss and nothing else (the source
-  // digest is computed from the bundle, never from a checkout).
+  // here, and no bundled directory is named that way; and ko-agent-fs/.dockerignore lists only target and the
+  // directories of the next paragraph, since no sbt or editor program creates the directories below inside a Rust
+  // workspace — a stray .DS_Store there would reach a hand-run `podman build` that this task drops, costing a cache
+  // miss and nothing else (the source digest is computed from the bundle, never from a checkout).
   //
-  // ko-agent-fs/doc, ko-agent-fs/probe and ko-agent-fs/bench are excluded for a different reason: none is a build
-  // input nor distribution — probe/ holds the platform-verification probes a developer runs by hand, bench/ the
+  // ko-agent-fs's doc/ and probe/ directories and its bench/ are excluded for a different reason: none is a build
+  // input nor distribution — the probes are the platform-verification probes a developer runs by hand, bench/ the
   // benchmarks the BPF backend's benchmark suite reruns, neither under cargo — and leaving them out keeps them out of
-  // KoAgentFs.koAgentFsSourceId too, so editing a design document, a probe or a benchmark does not invalidate every
-  // installed filter binary. Its .dockerignore drops the same paths, so a direct
-  // `podman build` from a checkout sees what a jar-built one does. bpf/ko-agent-bpf/doc and bpf/ko-agent-bpf/test,
-  // the backend's evidence and the suites that measure it, are excluded for the same reason: the self-test image's
-  // id digests the whole bundled directory (LauncherImages.contextSourceId). Their builds run from the bundle's root,
-  // so no .dockerignore repeats them. bpf/ko-agent-bpf/test/host stays: the self-test image compiles that host build.
+  // the source ids too (KoAgentFs.koAgentFsSourceId, KoAgentBpf.sourceId), so editing a design document, a probe or a
+  // benchmark does not invalidate every installed binary. bpf/test, the suites that measure the BPF backend, is
+  // excluded for the same reason, since the self-test image's id digests the whole bpf/ directory
+  // (LauncherImages.contextSourceId); bpf/test/host stays, since the self-test image compiles that host build.
+  // ko-agent-fs/.dockerignore drops the same paths, so a direct `podman build` from a checkout sees what a jar-built
+  // one does.
   // IO.relativize answers in the platform's separator, and everything downstream reads `/` — the
   // exclusion tests here, the jar's own entry names, and the INDEX the launcher resolves them by.
   // Unnormalized, a Windows build bundles the excluded directories and writes an INDEX no jar
@@ -183,15 +182,14 @@ Compile / resourceGenerators += Def.task {
   def bundlePath(root: File, file: File): Option[String] =
     IO.relativize(root, file).map(_.replace('\\', '/'))
 
+  val unbundled = Seq("doc", "policy/doc", "fuse/doc", "bpf/doc", "policy/probe", "fuse/probe", "bench")
+
   def included(root: File, file: File): Boolean =
     val relative = bundlePath(root, file).getOrElse("")
     val parts = relative.split("/").toSet
     file.isFile &&
-      !relative.startsWith("ko-agent-fs/doc/") &&
-      !relative.startsWith("ko-agent-fs/probe/") &&
-      !relative.startsWith("ko-agent-fs/bench/") &&
-      !relative.startsWith("bpf/ko-agent-bpf/doc/") &&
-      !(relative.startsWith("bpf/ko-agent-bpf/test/") && !relative.startsWith("bpf/ko-agent-bpf/test/host/")) &&
+      !unbundled.exists(directory => relative.startsWith(s"ko-agent-fs/$directory/")) &&
+      !(relative.startsWith("ko-agent-fs/bpf/test/") && !relative.startsWith("ko-agent-fs/bpf/test/host/")) &&
       !parts.contains("target") &&
       !parts.contains(".scala-build") &&
       !parts.contains(".bsp") &&

@@ -18,13 +18,13 @@ class KoAgentBpfTest extends munit.FunSuite:
     assertEquals(hooks(unixSocket = true), Hooks :+ "file_receive")
     assert(!Hooks.contains("file_receive"))
 
-  test("the build runs from the bundle's root against the machine's kernel, the cache stage first"):
+  test("the build runs from the bundle's ko-agent-fs/ against the machine's kernel, the cache stage first"):
     val commands = buildCommands("podman", "7.2.5-200.fc44.aarch64", "abc")
     assertEquals(commands.size, 2)
     assert(commands.head.contains("--target") && commands.head.contains("build"))
     commands.foreach: command =>
-      assertEquals(command.last, ".")
-      assert(command.containsSlice(Vector("-f", "bpf/ko-agent-bpf/Containerfile")), command.mkString(" "))
+      assertEquals(command.last, "ko-agent-fs")
+      assert(command.containsSlice(Vector("-f", "ko-agent-fs/bpf/Containerfile")), command.mkString(" "))
       assert(command.contains("BUILD_KERNEL=7.2.5-200.fc44.aarch64"))
       assert(command.contains("KO_AGENT_BPF_SOURCE_ID=abc"))
       assert(command.contains(ImageBuilds.NoRegistryLookup))
@@ -113,9 +113,12 @@ class KoAgentBpfTest extends munit.FunSuite:
     assert(checksScript("/").contains("btf="), "the probe reports the kernel's BTF")
     // A kernel that passes these checks and still lacks a feature the program uses fails the backend's
     // own build or install; the build warns, names the upgrade, and completes the rest.
-    val failed = buildFailedNote("build failed: podman build -f bpf/ko-agent-bpf/Containerfile .", Os.Windows)
+    val failed = buildFailedNote("build failed: podman build -f ko-agent-fs/bpf/Containerfile ko-agent-fs", Os.Windows)
     assert(failed.contains("rest of the build is complete") && failed.contains("wsl --update"), failed)
-    assert(failed.endsWith("The backend's build failed: podman build -f bpf/ko-agent-bpf/Containerfile ."), failed)
+    assert(
+      failed.endsWith("The backend's build failed: podman build -f ko-agent-fs/bpf/Containerfile ko-agent-fs"),
+      failed,
+    )
 
   test("the probe reads every requirement, and each failure names what to do"):
     val answer =
@@ -559,15 +562,16 @@ class KoAgentBpfTest extends munit.FunSuite:
     assert(id.matches("[0-9a-f]{64}"), id)
     val context = Files.createTempDirectory("ko-agent-bpf-context")
     try
-      LauncherImages.bundleIndex().filter(entry => entry.startsWith("bpf/") || entry.startsWith("ko-agent-fs/include/"))
+      LauncherImages.bundleIndex()
+        .filter(entry => entry.startsWith("ko-agent-fs/bpf/") || entry.startsWith("ko-agent-fs/policy/include/"))
         .foreach: entry =>
           val target = context.resolve(entry)
           Files.createDirectories(target.getParent)
           Files.write(target, LauncherImages.bundleResource(entry))
       assertEquals(sourceId(context), id)
       // The host build under test/host/ is the self-test's input, not the backend's: a change there leaves the id.
-      Files.write(context.resolve("bpf/ko-agent-bpf/test/host/policy_host.c"), "// changed\n".getBytes)
+      Files.write(context.resolve("ko-agent-fs/bpf/test/host/policy_host.c"), "// changed\n".getBytes)
       assertEquals(sourceId(context), id)
-      Files.write(context.resolve("bpf/ko-agent-bpf/backend.h"), "// changed\n".getBytes)
+      Files.write(context.resolve("ko-agent-fs/bpf/backend.h"), "// changed\n".getBytes)
       assertNotEquals(sourceId(context), id)
     finally FileHelper.deleteRecursively(context)

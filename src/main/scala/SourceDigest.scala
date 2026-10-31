@@ -1,7 +1,7 @@
 // What of a source file a digest covers: its code, comments aside, so that a comment edit changes no
 // digest and any change to code does. The launcher's source ids (LauncherImages.bundleSourceId), which
 // decide when --build must rebuild, and the source digests the BPF backend's evidence names
-// (bpf/ko-agent-bpf/doc/evidence.md, "Suites") both take it. Self-contained, with no dependency on the
+// (ko-agent-fs/bpf/doc/evidence.md, "Suites") both take it. Self-contained, with no dependency on the
 // launcher, so that it can leave the project as it is.
 //
 // What counts as a comment, by file name:

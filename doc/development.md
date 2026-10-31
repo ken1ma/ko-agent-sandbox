@@ -37,7 +37,7 @@ Run the commands in this section from the repository root.
 
 1. `--self-test` runs the suite that needs no mount and the suite that mounts a real filter in a
    privileged container, on any machine with podman; running either suite directly is documented in
-   [testing.md](../fuse/ko-agent-fs/doc/testing.md).
+   [testing.md](../ko-agent-fs/doc/testing.md).
 
 
 # Test environments
@@ -156,7 +156,7 @@ Alternatively, on the host: copy the worktree
 
    Without this, `--build` fails with
 
-       ko-agent-fs self-test failed in its setup, before any check: mount failed:
+       ko-agent-fs-fuse self-test failed in its setup, before any check: mount failed:
        fusermount3: option allow_other only allowed if 'user_allow_other' is set in /etc/fuse.conf
 
 1. Build the container images

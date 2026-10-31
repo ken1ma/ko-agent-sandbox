@@ -1,0 +1,18 @@
+[package]
+name = "ko-agent-fs"
+description = "The policy, guard and BPF records compiler that keep a sandbox from planting host-executable Git metadata in a shared workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# No dependencies: the policy core (src/policy.rs) imports nothing external — that is the audited
+# core — and the guard and the records compiler need nothing beyond std.
+
+[lib]
+name = "ko_agent_fs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ko-agent-fs"
+path = "src/main.rs"

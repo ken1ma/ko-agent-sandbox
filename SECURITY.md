@@ -151,7 +151,7 @@ an empty directory may be made at a `.git` name and gains no `HEAD` ("Directorie
 - It treats a second name of a host-created `.git` or `.ko-agent-sandbox` as that entry: an NTFS
   8.3 short name (`GIT~1`, `KO-AGE~1`) or a hard link is the same object on the host filesystem,
   and the filter compares objects where spellings cannot be listed
-  (`fuse/ko-agent-fs/doc/security-research.md`, "Windows 8.3 short names", has the cases it
+  (`ko-agent-fs/policy/doc/security-research.md`, "Windows 8.3 short names", has the cases it
   does not cover).
 
 An additional open exception affects these claims, a change the host makes to the workspace
@@ -165,11 +165,11 @@ while a session mutates it:
   hooks, or its egress rules, are writable under the new name.
 - On Windows, the test that a `create` never reopens a guarded entry arriving under a second
   name failed in two of three runs ("a create opened the host's pointer file"); the cause is
-  unverified (`fuse/ko-agent-fs/doc/TODO.md`, "A second name arriving during a name-based
+  unverified (`ko-agent-fs/fuse/doc/TODO.md`, "A second name arriving during a name-based
   mutation").
 - This exception affects the claims above, including protection of repositories created
-  mid-session and `.ko-agent-sandbox` (`fuse/ko-agent-fs/doc/security-research.md`, "Windows 8.3
-  short names"; `fuse/ko-agent-fs/doc/TODO.md` keeps it open).
+  mid-session and `.ko-agent-sandbox` (`ko-agent-fs/policy/doc/security-research.md`, "Windows 8.3
+  short names"; `ko-agent-fs/fuse/doc/TODO.md` keeps it open).
 
 Every path through which host git reaches these entries must also be protected. The mount-time guard
 checks the repository host git discovers from the workspace root, and refuses:
@@ -306,7 +306,7 @@ are:
   the policy's proof fixture lies under the launcher's state root, and `--workspace=read-only`
   makes the entire tree read-only;
 - **`--self-test` without a case filter** writes to its own scratch directory in the workspace
-  ([testing.md](fuse/ko-agent-fs/doc/testing.md));
+  ([testing.md](ko-agent-fs/doc/testing.md));
 - the **workspace's SELinux labels** are never changed. On an enforcing host a container reads
   an unfiltered bind mount only under `:Z`, which relabels the directory recursively, and no
   launch passes it:
@@ -540,28 +540,28 @@ The tree is also shared live with the host:
 - On Windows a file a live session holds open refuses some host writers until the session lets
   go: the machine's 9p handle imposes Windows sharing rules, so PowerShell's `Set-Content` meets
   "used by another process", while Notepad's save and .NET's `WriteAllText` succeed
-  (`fuse/ko-agent-fs/doc/verification-log.md` has the measurement).
+  (`ko-agent-fs/fuse/doc/verification-log.md` has the measurement).
 - Concurrent sandbox sessions of one workspace race each other the same way, under the workspace
   filter too: they share the one filter mount — the same files, the same live view, the same
   races.
 
 **The workspace filter, on the platforms where it is unverified.**
 
-- The workspace reaches the sandbox through `ko-agent-fs` (`fuse/ko-agent-fs/`), a FUSE mount
+- The workspace reaches the sandbox through `ko-agent-fs-fuse` (`ko-agent-fs/fuse/`), a FUSE mount
   enforcing the policy stated under "The host's git executing what the sandbox wrote".
 - The filter refuses new `.git` entries and protects the listed Git entries at any depth;
   `doc/design.md`, "Read-only mounts over the protected entries are not a backend", has why
   read-only bind mounts cannot.
 - The design uses FUSE to mediate the VM's filesystem view across host platforms;
-  `fuse/ko-agent-fs/doc/architecture.md` ("Mediation mechanism") compares the alternatives.
+  `ko-agent-fs/fuse/doc/architecture.md` ("Mediation mechanism") compares the alternatives.
 
-The mount-time guard has two scope limits (`fuse/ko-agent-fs/doc/git-metadata.md`, "Relocated hook
+The mount-time guard has two scope limits (`ko-agent-fs/policy/doc/git-metadata.md`, "Relocated hook
 directories"):
 
 - It checks the repository discovered from the workspace root, not every nested repository.
   - The protected entries under a nested repository's `.git` cannot be modified, but pre-existing
     redirections into writable worktree files — relocated hooks or a redirected gitdir — remain
-    writable (`fuse/ko-agent-fs/doc/TODO.md`), as do the targets of symlinks at or inside listed
+    writable (`ko-agent-fs/fuse/doc/TODO.md`), as do the targets of symlinks at or inside listed
     entries deeper than the root's.
   - Bare layouts below the workspace root are also outside that check; a bare layout present at
     the root at launch is refused ("The host's git executing what the sandbox wrote").
@@ -579,20 +579,20 @@ What an auditor trusts, and how each link is checked:
   own machine.
 - **The dependency tree**, pinned by `Cargo.lock` (`--locked` at every cargo step) and checked by a
   pinned `cargo-deny` — permissive licenses only — before any binary exists.
-- **The installed binary's source version.** The launcher digests the bundled source, passes the
-  digest into the image build, and checks the installed binary's `--version` against it. A mismatch
-  fails `--build`. This detects a mismatched installation; the binary reports the value, so the
+- **The installed binaries' source version.** The launcher digests the bundled source, passes the
+  digest into the image build, and checks each installed binary's `--version` against it. A mismatch
+  fails `--build`. This detects a mismatched installation; a binary reports the value, so the
   check does not independently attest its contents or the build toolchain.
 - **The filter daemon is unprivileged.** It runs without root or capabilities and uses the
   existing setuid `fusermount3` helper to mount FUSE.
   - It is installed in the podman machine user's home on macOS and Windows, or the host user's
     home on native Linux (the README names the path).
   - Enabling `user_allow_other` in the machine's `/etc/fuse.conf`, which the filter's
-    `allow_other` mount needs (`fuse/ko-agent-fs/doc/architecture.md`, "Who may reach the
+    `allow_other` mount needs (`ko-agent-fs/fuse/doc/architecture.md`, "Who may reach the
     mount"), requires consent ("Silent changes to what you own", above).
 
 What is measured, each through the whole production stack
-(`fuse/ko-agent-fs/doc/verification-log.md` has the runs):
+(`ko-agent-fs/fuse/doc/verification-log.md` has the runs):
 
 - the name rule, on macOS against both APFS variants and on Windows against a real NTFS volume;
 - coherency, on macOS for `read()` and an established `mmap`, and on Windows for `read()`, with
@@ -605,23 +605,24 @@ platform.
 A version mismatch, a failed self-test or a failed mount aborts the launch; none falls back to an
 unfiltered bind.
 
-Implementation, policy derivation and test evidence: `fuse/ko-agent-fs/doc/`.
+Implementation, policy derivation and test evidence: `ko-agent-fs/fuse/doc/`,
+`ko-agent-fs/policy/doc/` and `ko-agent-fs/doc/testing.md`.
 
 **The BPF backend.** `--workspace=live,bpf` mounts the workspace directory itself, writable, and
 holds the filter's rules with BPF programs of type `BPF_LSM_CGROUP`, attached to a cgroup of the
 session's own in the podman machine, so the host and every other container keep unfiltered access
 to the same files; `doc/bpf-lsm-cgroup.md` states what the backend promises and what it changes
-("What is gained and what is lost"), `bpf/ko-agent-bpf/doc/architecture.md` how it holds that, and
-`bpf/ko-agent-bpf/doc/evidence.md` what the suites measured. On the podman
+("What is gained and what is lost"), `ko-agent-fs/bpf/doc/architecture.md` how it holds that, and
+`ko-agent-fs/bpf/doc/evidence.md` what the suites measured. On the podman
 machines of macOS and Windows alone: native Linux keeps the filter (`doc/TODO.md`, "The BPF
 backend's later versions"). What an auditor trusts, and how each link
 is checked:
 
-- **The program.** C, `bpf/ko-agent-bpf/policy.bpf.c`, compiled in the machine against its own
+- **The program.** C, `ko-agent-fs/bpf/policy.bpf.c`, compiled in the machine against its own
   kernel by `--build`; the kernel's verifier refuses at load any read or write outside the bounds
   it proves, so a memory fault of the C kind is a failed launch, never a running program. The
   classifier is compiled a second time for the host and run through the filter's own corpus
-  (`fuse/ko-agent-fs/tests/bpf_equivalence.rs`), so the two decide alike.
+  (`ko-agent-fs/policy/tests/bpf_equivalence.rs`), so the two decide alike.
 - **The controller is privileged and parses nothing of the workspace.** It runs once per launch
   under the machine's `sudo -n`, loads the object from beside itself, fills the maps from records
   the unprivileged guard compiled (`ko-agent-fs --resolve --bpf-records`) and the identities it
@@ -666,7 +667,7 @@ is checked:
   FIFO in the workspace").
 
 What is measured: the sections "One hook on macOS" to "Launcher on WSL" of
-`bpf/ko-agent-bpf/doc/evidence.md`, the launcher's own rows among them; each section of the policy,
+`ko-agent-fs/bpf/doc/evidence.md`, the launcher's own rows among them; each section of the policy,
 lifecycle, benchmark and launcher suites binds its figures to the digest of its sources' code.
 `fuse` stays the default of both modes until the release decision `doc/TODO.md` plans ("The BPF
 backend as the default").
@@ -757,7 +758,7 @@ and the mount syscalls, and claims nothing about an exploit already running.
 The podman machine on macOS and Windows is not that layer: a process that escapes the container
 into the podman machine reaches every host directory it shares, `/Users`, `/private` and
 `/var/folders` on macOS and the `C:` drive at `/mnt/c` on Windows
-(`fuse/ko-agent-fs/doc/verification-log.md` records these observed mounts). On macOS the podman
+(`ko-agent-fs/fuse/doc/verification-log.md` records these observed mounts). On macOS the podman
 machine's user also runs `sudo` without a password (Fedora CoreOS 44.20260817.3.1, over
 `podman machine ssh`, 2026-09-22).
 
@@ -1760,13 +1761,13 @@ profile:
   for any other (`SeccompProfile.NamespaceSyscalls` has the sources);
 - answers `setns` and every mount syscall, `mount` to `pivot_root`, with `EPERM`. Without a user
   namespace each already fails for want of a capability; the rules keep a mistake in the namespace
-  rules from reopening a mount or a join, which `bpf/ko-agent-bpf/doc/architecture.md` ("Mounts")
+  rules from reopening a mount or a join, which `ko-agent-fs/bpf/doc/architecture.md` ("Mounts")
   relies on. The whole mount family, because a mount `fsmount` or `open_tree` returns is writable
   through its descriptor before `move_mount` attaches it (measured 2026-10-17);
 - answers the `setxattr` and `removexattr` families, ACLs among them, and `file_setattr` with
   `ENOTSUP` (`SeccompProfile.AttributeSyscalls`). The filter refuses these routes by not
   implementing them, and the BPF policy holds no hook for them
-  (`bpf/ko-agent-bpf/doc/architecture.md`, "Attributes, flags and ioctls"); the rule holds them in
+  (`ko-agent-fs/bpf/doc/architecture.md`, "Attributes, flags and ioctls"); the rule holds them in
   every `--nesting=none` session, under `~` too. No `ioctl` command is refused: libseccomp clears a
   syscall's argument rules when an unconditional rule for it arrives (`src/db.c`, `_db_rule_add`),
   so refusing the commands that set a file's flags means spelling every allowed command as a masked
@@ -1797,7 +1798,7 @@ them.
 `same-uid`; without the option it is `none`, and any other value fails the launch. `user-namespace`
 runs the session under podman's default profile: every process in it, untrusted repository code
 included, can create user namespaces and mount within them, which
-`bpf/ko-agent-bpf/doc/architecture.md` ("Mounts") judges as it judges `same-uid`'s mounts.
+`ko-agent-fs/bpf/doc/architecture.md` ("Mounts") judges as it judges `same-uid`'s mounts.
 `same-uid` runs under the default profile too and relaxes these controls for every process in the
 session. `NestingLoosenings` records why each change is required:
 
