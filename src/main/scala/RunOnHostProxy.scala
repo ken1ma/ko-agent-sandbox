@@ -1,6 +1,9 @@
-// A host command's egress proxy: the launcher re-invoked under the proxy profile with the program's
-// rules, its port read from its ready line, its audit log kept in the run's log directory,
-// and the refusals read back from that log after a command.
+// A host command's egress proxy:
+//
+// - The proxy is the launcher, re-invoked under the proxy profile with the program's rules.
+// - The runner reads the proxy's port from the proxy's ready line.
+// - The proxy's audit log is kept in the run's log directory.
+// - After a command, the runner reads the refusals back from that log.
 
 package agentsandbox.launcher
 
@@ -17,14 +20,15 @@ import FileHelper.realPath
 
 object RunOnHostProxy:
 
-  /** The bound port, from the ready line the proxy prints after `bind`; its log file is its
-    * stderr, so the line is written where this polls. `ended` says how the proxy ended, once it
-    * has: a proxy refusing at start is then reported at once, with its log, instead of after the
-    * deadline, and one gone after its ready line is not a port. */
+  /** The bound port, read from the ready line that the proxy prints after `bind`.
+    *
+    *   - The proxy's log file is its stderr, so the proxy writes the line where this method polls.
+    *   - `ended` says how the proxy ended, once it has. A proxy that refuses at start is then reported at once, with
+    *     its log, instead of after the deadline. A proxy gone after its ready line gives no port. */
   def awaitProxyPort(log: Path, deadlineMillis: Long, ended: () => Option[String] = () => None): Either[String, Int] =
     val Ready = agentsandbox.egress.AgentEgressProxy.ReadyPort
     val deadline = System.nanoTime + deadlineMillis * 1_000_000
-    // Decoded leniently: the log carries what the proxy's clients asked for.
+    // Decoded leniently, because the log carries what the proxy's clients asked for.
     def text = if Files.exists(log) then String(Files.readAllBytes(log), UTF_8) else ""
     def said =
       if Files.exists(log) then text.linesIterator.take(5).mkString("\n")
@@ -32,7 +36,7 @@ object RunOnHostProxy:
     var outcome: Option[Either[String, Int]] = None
     while outcome.isEmpty && System.nanoTime < deadline do
       val port = text.linesIterator.collectFirst { case Ready(port) => port.toInt }
-      // After the log: a proxy ending right after its ready line is seen ended, not ready.
+      // Asked after reading the log, so a proxy that ends right after its ready line reads as ended, not ready.
       ended() match
         case Some(how) =>
           val when = if port.isDefined then "after" else "before"
@@ -41,7 +45,7 @@ object RunOnHostProxy:
         case None                   => Thread.sleep(50)
     outcome.getOrElse(Left(s"the proxy did not report ready within ${deadlineMillis / 1000}s:\n$said"))
 
-  /** The proxy registered at `record`, logging to `proxyLog`: its bound port. */
+  /** Starts the proxy registered at `record` and logging to `proxyLog`, and returns its bound port. */
   private[launcher] def createProxy(
     systemPaths: SeatbeltProfile.SystemPaths,
     credentials: Seq[BrokeredCredential],
@@ -52,21 +56,23 @@ object RunOnHostProxy:
     startProxy(
       record, program, fileHosts, proxyLog, systemPaths, credentialsFor(program, fileHosts, credentials), channelLog,
     ).flatMap: leader =>
-      // The leader stays after its command (RunOnHostSession.registeredSpawn): the exit record and
-      // not the handle says whether the proxy ended.
+      // The leader stays after its command (RunOnHostSession.registeredSpawn), so the exit record, not the handle,
+      // says whether the proxy ended.
       def ended(): Option[String] =
         RunOnHostSession.exitSoFar(RunOnHostSession.exitRecord(record), leader)
           .map(_.fold(identity, status => s"exit $status"))
       awaitProxyPort(proxyLog, deadlineMillis = 30_000, ended)
 
   /**
-   * The proxy profile's inputs for this executable (SeatbeltProfile.ProxyInputs): the native
-   * image alone, or the JDK and each class-path entry of the jar form — what
-   * RunOnHostSandbox.selfInvocation runs, the executable itself checked first
-   * (RunOnHostSandbox.selfPresent, both forms). Any other entry that does not exist is skipped, as the
-   * JVM skips it; a relative or empty one is resolved as RunOnHostSandbox.selfClassPath spells it.
-   * The JDK and class path are parameters for the acceptance test's emitter, which renders the
-   * profile from inside sbt's JVM for the java it runs the rows with.
+   * The proxy profile's inputs for this executable (SeatbeltProfile.ProxyInputs): what
+   * RunOnHostSandbox.selfInvocation runs.
+   *
+   *   - The inputs are the native image alone, or the JDK and each class-path entry of the jar form.
+   *   - The executable itself is checked first, in both forms (RunOnHostSandbox.selfPresent).
+   *   - Any other entry that does not exist is skipped, as the JVM skips it.
+   *   - A relative or empty entry is resolved as RunOnHostSandbox.selfClassPath spells it.
+   *   - The JDK and class path are parameters for the acceptance test's emitter. The emitter renders the profile
+   *     from inside sbt's JVM, for the java that runs the test's rows.
    */
   def proxyInputs(
     systemPaths: SeatbeltProfile.SystemPaths,
@@ -83,40 +89,45 @@ object RunOnHostProxy:
           SeatbeltProfile.ProxyInputs(Seq(jdk), selfClassPath(classPath).map(Path.of(_)).flatMap(realPath), systemPaths)
 
   /**
-   * The name of a host proxy's audit log in the run's log directory, as the two parts a later start's
-   * number goes between (workspaceAuditLog): a session `r123`'s `proxy-sbt-<hash>.log` gives
-   * `proxy-sbt-<hash>-r123` and `.log`. The session's name tells apart the runner's and a command's
-   * proxy logs of the same name, and `--egress-log` lists a name beginning `proxy` as a proxy's log
-   * (EgressRules.proxyLogsOf).
+   * The name of a host proxy's audit log in the run's log directory, split into the two parts between which a later
+   * start's number goes (workspaceAuditLog).
+   *
+   *   - For example, a session `r123`'s `proxy-sbt-<hash>.log` gives `proxy-sbt-<hash>-r123` and `.log`.
+   *   - The session's name tells the runner's proxy log apart from a command's proxy log of the same name.
+   *   - `--egress-log` lists a name beginning with `proxy` as a proxy's log (EgressRules.proxyLogsOf).
    */
   private def auditLogName(proxyLog: Path): Option[(String, String)] =
     Option(proxyLog.getParent).flatMap(session => Option(session.getFileName)).map: session =>
       (s"${proxyLog.getFileName.toString.stripSuffix(".log")}-$session", ".log")
 
   /**
-   * The file for the session's `proxyLog` in the channel log's directory, the run's log directory (auditLogName).
+   * The file for the session's `proxyLog` in the channel log's directory, which is the run's log directory
+   * (auditLogName).
    *
-   * A runtime's proxy started again in the launch — the earlier one died, or its runtime's creation
-   * failed (RunnerRuntimes.prepared, created) — has a session file of the same name, and the earlier
-   * proxy's log keeps its own here: the `start`-th has `-<start>` before `.log`, from the second on.
+   * A runtime's proxy may start again in the launch, when the earlier proxy died or its runtime's creation failed
+   * (RunnerRuntimes.prepared, created). The new proxy's session file has the same name, and the earlier proxy's log
+   * keeps its own file here. From the second start on, the `start`-th file has `-<start>` before `.log`.
    */
   def workspaceAuditLog(channelLog: Path, proxyLog: Path, start: Int = 1): Option[Path] =
     auditLogName(proxyLog).map: (prefix, suffix) =>
       channelLog.resolveSibling(prefix + (if start == 1 then "" else s"-$start") + suffix)
 
   /**
-   * Before the proxy starts, makes its log a file in the run's log directory, under the first name of
-   * workspaceAuditLog no earlier proxy's log has, and the session's `proxyLog` a symbolic link to it. The
-   * lines are there while the proxy writes them and stay however the session's directory is removed.
-   * A symbolic link, not a hard link: XDG_STATE_HOME can place the log directory on another filesystem
-   * than the session's.
+   * Before the proxy starts, creates the proxy's log as a file in the run's log directory, and makes the session's
+   * `proxyLog` a symbolic link to that file.
    *
-   * Left when the file or the link cannot be made, for the caller to start no proxy: one logging to the
-   * session's file alone loses its lines with that directory, all of them when a command's own session
-   * ends without a signal (RunOnHostSandbox.appendSessionLogs).
+   *   - The file takes the first name of workspaceAuditLog that no earlier proxy's log has.
+   *   - The lines are in the file while the proxy writes them, and they stay however the session's directory is
+   *     removed.
+   *   - The link is symbolic, not hard, because XDG_STATE_HOME can place the log directory on a different filesystem
+   *     than the session's.
+   *
+   * The result is Left when the file or the link cannot be made, so that the caller starts no proxy. A proxy that
+   * logs to the session's file alone loses its lines with that directory. Such a proxy loses all of its lines when a
+   * command's own session ends without a signal (RunOnHostSandbox.appendSessionLogs).
    */
   private[launcher] def keepAuditLog(channelLog: Path, proxyLog: Path): Either[String, Unit] =
-    // Owner-only, as the container proxy's log is: the targets it records are what a GET carries out.
+    // Owner-only, as the container proxy's log is, because the targets the log records are what a GET carries out.
     val ownerOnly = PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------"))
     def created(start: Int): Option[Path] =
       workspaceAuditLog(channelLog, proxyLog, start).flatMap: kept =>
@@ -129,7 +140,7 @@ object RunOnHostProxy:
           Files.createSymbolicLink(proxyLog, kept)
         catch
           case ex: (IOException | UnsupportedOperationException) =>
-            // No line was written to it: without the link it would read as a proxy that logged nothing.
+            // No line was written to the file. Without the link, the file would read as a proxy that logged nothing.
             try Files.deleteIfExists(kept)
             catch case _: IOException => ()
             throw ex
@@ -144,10 +155,13 @@ object RunOnHostProxy:
         )
 
   /**
-   * The file keepAuditLog made the session's `sessionLog` a link to, for the session's end to read in the
-   * link's place: None unless the link names an audit log of `sessionLog` in the channel log's directory.
-   * The sandboxed command cannot write where either is — the session directory outside `tmp/`, the log
-   * directory — and a link naming anything else is not followed.
+   * The file that keepAuditLog made the session's `sessionLog` a link to. The session's end reads this file in the
+   * link's place.
+   *
+   *   - The result is None unless the link names an audit log of `sessionLog` in the channel log's directory. A link
+   *     naming anything else is not followed.
+   *   - The sandboxed command cannot write to the link's directory or to the file's: the session directory outside
+   *     `tmp/`, and the log directory.
    */
   def keptAuditLog(channelLog: Path, sessionLog: Path): Option[Path] =
     auditLogName(sessionLog).flatMap: (prefix, suffix) =>
@@ -162,7 +176,7 @@ object RunOnHostProxy:
   /** The proxy's profile, beside its log. */
   private[launcher] def proxyProfileFile(proxyLog: Path): Path = RunOnHostInspection.sibling(proxyLog, ".sb")
 
-  /** The proxy under its profile (SeatbeltProfile.renderProxy), beside its log. */
+  /** Starts the proxy under its profile (SeatbeltProfile.renderProxy), which lies beside the proxy's log. */
   private def startProxy(
     record: Path, program: Program, fileHosts: Vector[String], proxyLog: Path,
     systemPaths: SeatbeltProfile.SystemPaths, credentials: Vector[BrokeredCredential], channelLog: Option[Path],
@@ -174,7 +188,7 @@ object RunOnHostProxy:
       profile <- SeatbeltProfile.renderProxy(
         inputs.copy(reads = inputs.reads :+ RunOnHostInspection.leafDirectory(proxyLog)),
       )
-      // Last before the start, so a start refused above leaves no empty log in the log directory.
+      // Last before the start, so that a start refused above leaves no empty log in the log directory.
       _ <- channelLog.fold(Right(()))(keepAuditLog(_, proxyLog))
       started <- startProxyUnder(profile, record, program, fileHosts, proxyLog, credentials)
     yield started
@@ -186,22 +200,21 @@ object RunOnHostProxy:
     try
       val profileFile = proxyProfileFile(proxyLog)
       Files.writeString(profileFile, profile, UTF_8)
-      // The property the command's environment sets (RunOnHostSandbox.commandEnvironment), on the
-      // command line since the proxy's environment is closed: a dual-stack JVM binds
-      // ::ffff:127.0.0.1, which the profile's "localhost" class does not cover (measured: the
-      // acceptance test's proxy rows).
+      // The command's environment sets the same property (RunOnHostSandbox.commandEnvironment). The proxy gets it on
+      // the command line, since the proxy's environment is closed. A dual-stack JVM binds ::ffff:127.0.0.1, which the
+      // profile's "localhost" class does not cover (measured by the acceptance test's proxy rows).
       val invocation = selfInvocation("--serve-proxy-on-host")
       val command = RunOnHostSession.registeredSpawn(
         record,
         sandboxExec(profileFile, invocation.head +: "-Djava.net.preferIPv4Stack=true" +: invocation.tail),
       )
       val builder = ProcessBuilder(command*)
-      // The JVM asks for its working directory at start (SystemProps), and the profile grants
-      // no directory of the starter's; the root it does grant.
+      // The JVM asks for its working directory at start (SystemProps). The profile grants no directory of the
+      // starter's, but it does grant the root.
       builder.directory(java.io.File("/"))
-      // Closed like the command's: the proxy needs its own settings and, to leave through an
-      // upstream proxy as the container's copy does, the one selected variable. Nothing else of
-      // the launcher's environment has a reader here.
+      // Closed like the command's environment. The proxy needs its own settings, and the one selected variable to leave
+      // through an upstream proxy as the container's copy does. Nothing else of the launcher's environment has a reader
+      // here.
       builder.environment.clear()
       agentsandbox.egress.TransportHelper.upstreamProxyVariable(name => Option(System.getenv(name)))
         .foreach(builder.environment.put(_, _))
@@ -209,8 +222,8 @@ object RunOnHostProxy:
       builder.environment.put(RulesetHelper.ProfileVariable, RulesetHelper.DefaultProfile)
       builder.environment.put(RulesetHelper.RuleVariable, egressRuleText(program, fileHosts))
       builder.environment.put(agentsandbox.egress.AgentEgressProxy.BindVariable, "127.0.0.1:0")
-      // The leaf is why `read` in the rules is enforced: a proxy given none tunnels its hosts
-      // without inspecting them.
+      // The leaf makes the proxy enforce `read` in the rules. A proxy given no leaf tunnels its hosts without
+      // inspecting them.
       builder.environment.put(
         agentsandbox.egress.AgentEgressProxy.CertificateVariable,
         RunOnHostInspection.leafCertificate(proxyLog).toString,
@@ -218,18 +231,19 @@ object RunOnHostProxy:
       builder.environment.put(
         agentsandbox.egress.AgentEgressProxy.PrivateKeyVariable, RunOnHostInspection.leafKey(proxyLog).toString,
       )
-      // The credentials by pipe, never an environment or an argument (SECURITY.md, "Who holds a brokered value").
+      // The credentials go by pipe, never by an environment variable or an argument (SECURITY.md, "Who holds a
+      // brokered value").
       if credentials.nonEmpty then
         builder.environment.put(CredentialGrammar.StdinVariable, CredentialGrammar.StdinValue)
       builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
-      // Its stderr is its log, opened here and inherited: the profile grants no write
-      // (RunOnHostSbtServer.serverLog), and what sandbox-exec or the JVM says before the proxy prints anything
-      // lands where the ready line is awaited.
+      // The proxy's stderr is its log, opened here and inherited, because the profile grants no write
+      // (RunOnHostSbtServer.serverLog). What sandbox-exec or the JVM says before the proxy prints anything thus lands
+      // where the ready line is awaited.
       builder.redirectError(ProcessBuilder.Redirect.appendTo(proxyLog.toFile))
       val process = builder.start()
-      // On its own thread, so the wait for its port bounds it: up to 256 bindings exceed a pipe's
-      // buffer, and a proxy that stops before reading them would hold a blocking write. A proxy gone
-      // already is reported by that wait.
+      // The write runs on its own thread, so that the wait for the proxy's port bounds it. Up to 256 bindings exceed a
+      // pipe's buffer, and a proxy that stops before reading them would hold a blocking write. The wait for the port
+      // reports a proxy that is already gone.
       Thread.startVirtualThread: () =>
         try
           if credentials.nonEmpty then
@@ -239,20 +253,20 @@ object RunOnHostProxy:
       Right(process)
     catch case ex: IOException => Left(s"starting the proxy: ${ex.getMessage}")
 
-  /** The hosts the proxy refused, from its audit log's `deny <host> CONNECT` lines at byte
-    * offset `from` and after. */
+  /** The hosts the proxy refused, read from its audit log's `deny <host> CONNECT` lines at byte offset `from` and
+    * after. */
   def deniedHosts(proxyLog: Path, from: Long = 0): Vector[String] =
     proxyLogLines(proxyLog, from).flatMap(LogHelper.auditFields)
       .collect { case LogHelper.AuditFields("deny", host, "CONNECT", _) => host }.distinct
 
   /** A request the proxy refused inside a tunnel, and the audit line's reason. */
   case class RefusedRequest(method: String, host: String, target: String, reason: String):
-    /** An origin-form target is a path; any other form is refused for being one, and shown as sent. */
+    /** An origin-form target is a path. A target of any other form is refused for its form, and shown as sent. */
     def spelled: String =
       if target.startsWith("/") then s"$method https://$host$target" else s"$method $target ($host)"
 
-  /** The requests the proxy refused inside a tunnel, once each (SECURITY.md, "The audit line
-    * grammar"): a line with a method and a target, where a refused CONNECT has an empty target. */
+  /** The requests the proxy refused inside a tunnel, once each (SECURITY.md, "The audit line grammar"). Such a line
+    * has a method and a target, where a refused CONNECT has an empty target. */
   def refusedRequests(proxyLog: Path, from: Long = 0): Vector[RefusedRequest] =
     proxyLogLines(proxyLog, from).flatMap(LogHelper.auditFields)
       .collect:
@@ -271,14 +285,16 @@ object RunOnHostProxy:
         .linesIterator.toVector
 
   /**
-   * The reason the proxy on `port` serves nothing, when a write to its log failed: the `details`
-   * of its Proxy-Status field (Refusals.proxyStatus). Asked of the proxy, since the log that
-   * would say so is what failed, and the programs need not print it (run-on-host.md has what
-   * sbt and mill print). `OPTIONS *` is HTTP's request about the server itself, and no
-   * CONNECT: a proxy still logging answers 400 and logs `deny - -`, which deniedHosts does not
-   * read as a refused host. `Max-Forwards: 0` is for a recipient that is not this proxy, should
-   * the proxy have died and another program taken its port: an HTTP proxy there must answer
-   * itself, not forward (RFC 9110, 7.6.2). This proxy forwards no OPTIONS and does not read it.
+   * The reason the proxy on `port` serves nothing when a write to its log failed: the `details` of its Proxy-Status
+   * field (Refusals.proxyStatus).
+   *
+   *   - This method asks the proxy, since the log that would say so is what failed. The programs need not print the
+   *     reason; run-on-host.md has what sbt and mill print.
+   *   - `OPTIONS *` is HTTP's request about the server itself, and it is no CONNECT. A proxy that still logs answers
+   *     400 and logs `deny - -`, which deniedHosts does not read as a refused host.
+   *   - `Max-Forwards: 0` is for a recipient that is not this proxy, in case the proxy died and another program took
+   *     its port. An HTTP proxy there must answer itself, not forward (RFC 9110, 7.6.2). This proxy forwards no
+   *     OPTIONS and does not read the header.
    */
   def unwritableProxyLog(port: Int): Option[String] =
     try
@@ -292,12 +308,13 @@ object RunOnHostProxy:
           .filter(_.startsWith(Refusals.AuditLogUnwritable))
     catch case _: IOException => None
 
-  /** The file the proxy writing to the session's `proxyLog` appends to: the one in the run's log
-    * directory (keptAuditLog), not the session's link to it, which goes with the session. */
+  /** The file that the proxy writing to the session's `proxyLog` appends to. The result is the file in the run's
+    * log directory (keptAuditLog), not the session's link to it, which goes with the session. */
   private[launcher] def proxyLogFile(channelLog: Option[Path], proxyLog: Path): Path =
     channelLog.flatMap(keptAuditLog(_, proxyLog)).getOrElse(proxyLog)
 
-  // Relaunch: a proxy that cannot log keeps running, so the runner keeps reusing its runtime (RunnerRuntimes.prepared).
+  // The user's step is a relaunch, because a proxy that cannot log keeps running, and the runner keeps reusing its
+  // runtime (RunnerRuntimes.prepared).
   private[launcher] def reportUnwritableProxyLog(
     runtime: Runtime, channelLog: Option[Path], log: String => Unit,
   ): Unit =
@@ -307,11 +324,12 @@ object RunOnHostProxy:
           s"Tell the user: make ${proxyLogFile(channelLog, runtime.proxyLog)} writable again, then relaunch.",
       )
 
-  /** The denied-host report, once per refused host, and the refused requests, after the command — never an
-    * automatic addition. A program need not print a 403's body, so each request carries what that body
-    * said: the reason, and for a refusal the command answers by changing the request, that step
-    * (RefusalAdvice.requestStep). The user's step follows only a refusal of a grant, which the
-    * rule file cannot give. */
+  /** Reports the denied hosts, once per refused host, and the refused requests, after the command. The report never
+    * adds a rule automatically.
+    *
+    *   - A program need not print a 403's body, so each request carries what that body said: the reason, and the step
+    *     for a refusal that the command answers by changing the request (RefusalAdvice.requestStep).
+    *   - The user's step follows only a refusal of a grant, which the rule file cannot give. */
   private[launcher] def reportDenied(proxyLog: Path, from: Long, program: Program, log: String => Unit): Unit =
     val hosts = deniedHosts(proxyLog, from)
     if hosts.nonEmpty then

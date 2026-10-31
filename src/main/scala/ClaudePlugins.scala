@@ -1,6 +1,8 @@
-// --claude-plugin-dir=<dir>: a Claude Code plugin directory of the host's, mounted read-only into the
-// sandbox and named to Claude Code's managed settings, so that its hooks and its mod run under the
-// image's allowManagedHooksOnly, which blocks every plugin a session installs.
+// --claude-plugin-dir=<dir> mounts a host directory that holds a Claude Code plugin read-only into the
+// sandbox, and names the plugin in Claude Code's managed settings.
+//
+// - The image sets allowManagedHooksOnly, which blocks every plugin that a session installs.
+// - The plugin's hooks and mod run under that setting, because managed settings name the plugin.
 
 package agentsandbox.launcher
 
@@ -18,14 +20,22 @@ object ClaudePlugins:
   val OptionName = "--claude-plugin-dir"
 
   /**
-   * Claude Code runs a plugin's hooks and mod under `allowManagedHooksOnly` only when it counts
-   * as the organization's: managed `enabledPlugins` enables it, managed `extraKnownMarketplaces`
-   * names its marketplace as a `directory` by absolute path, and the marketplace lists it by a
-   * relative path (https://code.claude.com/docs/en/plugins/mods/admin, "Install your
-   * organization's mods"). The launcher makes that marketplace per run: the root is a directory
-   * it generates, each plugin a bind of the host directory under it, and the drop-in below
-   * names both. A plugin loaded this way is `<name>@host`, `<name>` being the directory's name:
-   * the marketplace entry's name, which the manifest's own `name` does not have to equal.
+   * Claude Code runs a plugin's hooks and mod under `allowManagedHooksOnly` only when the plugin counts
+   * as the organization's (https://code.claude.com/docs/en/plugins/mods/admin, "Install your
+   * organization's mods"):
+   *
+   * - managed `enabledPlugins` enables the plugin;
+   * - managed `extraKnownMarketplaces` names the plugin's marketplace as a `directory` by absolute path;
+   * - the marketplace lists the plugin by a relative path.
+   *
+   * The launcher makes that marketplace per run:
+   *
+   * - The marketplace root is a directory that the launcher generates.
+   * - Each plugin is a bind of the host directory under that root.
+   * - The drop-in below names both.
+   *
+   * A plugin loaded this way is `<name>@host`, where `<name>` is the directory's name. That name is the
+   * marketplace entry's name, which does not have to equal the manifest's own `name`.
    */
   val MountRoot = "/etc/claude-code/host-plugins"
   val MarketplaceName = "host"
@@ -38,18 +48,19 @@ object ClaudePlugins:
   val RunFilesDirectory = "claude-plugins"
 
   /**
-   * The plugins the image loads through `CLAUDE_CODE_PLUGIN_DIRS` (the sandbox Containerfile), as
-   * `<name>@inline`. A managed id locks its name: a host plugin of the same name would keep the
-   * image's copy from loading (https://code.claude.com/docs/en/plugins/loading, "Name conflicts").
+   * The plugins that the image loads through `CLAUDE_CODE_PLUGIN_DIRS` as `<name>@inline` (the sandbox
+   * Containerfile). A managed id locks its name: a host plugin of the same name would keep the image's
+   * copy from loading (https://code.claude.com/docs/en/plugins/loading, "Name conflicts").
    */
   val ImagePluginNames = Vector("ko-review")
-  /** A mod whose one hook draws a band: a launch with it measures whether the hooks run as managed. */
+  /** A mod whose one hook draws a band. A launch with this mod measures whether the hooks run as managed. */
   val ProbePlugin = "src/test/claude-plugins/managed-probe"
 
   /** The characters a plugin id's parts may use (the marketplace reference, "Plugin entries"). */
   private val EntryName = raw"[A-Za-z0-9][A-Za-z0-9._-]*".r
 
-  /** A plugin the launch mounts: its entry name, the directory's name, and the directory's real path. */
+  /** A plugin that the launch mounts: its entry name, which is the directory's name, and the directory's
+    * real path. */
   case class Plugin(name: String, directory: Path):
     def id: String = s"$name@$MarketplaceName"
     def mountPath: String = s"$MountRoot/$name"
@@ -58,32 +69,33 @@ object ClaudePlugins:
   private case class Resolved(plugin: Plugin, manifestName: String)
 
   /**
-   * A directory the session writes, itself or through a host command `--run-on-host` lets it run,
-   * and `what` it is, as the refusal names it: "the workspace, which the session writes".
+   * A directory that the session writes, directly or through a host command that `--run-on-host` lets
+   * the session run. `what` names the directory as the refusal names it: "the workspace, which the
+   * session writes".
    */
   case class SessionWritten(directory: Path, what: String)
 
   /**
-   * The plugins for the directories as spelled, or why one is refused. Each refusal names the
-   * option as spelled. Refused:
-   *   - a path that is not a directory, or not a plugin (no `.claude-plugin/plugin.json`: the
-   *     marketplace root passed in place of one of its plugins is the likely mistake);
-   *   - a manifest that is not JSON, or whose `name` is not a string;
-   *   - a directory name that cannot be a plugin id;
-   *   - a directory name or manifest name that is an image plugin's, or that an earlier plugin of
-   *     the launch has: Claude Code loads one hooks module per manifest name and leaves the other's
-   *     out (the loading reference, "Hooks when two enabled plugins share a name");
-   *   - a directory that holds or is inside one of `written`, in any of the host's spellings of
-   *     either: the workspace, and the directories `--run-on-host` commands write, where a mod would
-   *     be the session's to change and the next launch's to run;
-   *   - a symlink under the directory, which Claude Code does not follow out of a plugin either;
-   *   - an entry that is neither a regular file nor a directory: a Windows junction, which Java
-   *     reports as a directory and not as a symlink, so a walk would enter it, a device or a pipe;
-   *   - a file with a second name, which a write through that name changes in place, or whose
-   *     names the host cannot count;
-   *   - where `containerReadable` says so, a directory an SELinux-enforcing host would let the
-   *     container read only after a relabel, a host-metadata write on the user's directory the
-   *     launcher does not make.
+   * The plugins for the directories as spelled, or why the launcher refuses one of them. Each refusal
+   * names the option as spelled. The launcher refuses:
+   *   - a path that is not a directory, or not a plugin because it has no `.claude-plugin/plugin.json`.
+   *     The likely mistake is the marketplace root passed in place of one of its plugins.
+   *   - a manifest that is not JSON, or whose `name` is not a string.
+   *   - a directory name that cannot be a plugin id.
+   *   - a directory name or manifest name that an image plugin or an earlier plugin of the launch has.
+   *     Claude Code loads one hooks module per manifest name and leaves the other plugin's module out
+   *     (the loading reference, "Hooks when two enabled plugins share a name").
+   *   - a directory that holds or is inside one of `written`, in any of the host's spellings of either.
+   *     `written` holds the workspace and the directories that `--run-on-host` commands write. A mod
+   *     there would be the session's to change and the next launch's to run.
+   *   - a symlink under the directory. Claude Code does not follow a symlink out of a plugin either.
+   *   - an entry that is neither a regular file nor a directory: a Windows junction, a device or a pipe.
+   *     Java reports a junction as a directory and not as a symlink, so a walk would enter it.
+   *   - a file with a second name, through which a write changes the file in place, or a file whose
+   *     names the host cannot count.
+   *   - where `containerReadable` says so, a directory that an SELinux-enforcing host would let the
+   *     container read only after a relabel. The relabel is a host-metadata write on the user's
+   *     directory, which the launcher does not make.
    */
   def resolve(
     spelled: Vector[String],
@@ -95,7 +107,7 @@ object ClaudePlugins:
       root.copy(directory = realPath(root.directory).getOrElse(root.directory.toAbsolutePath.normalize))
     def refuse(spelling: String, reason: String): Left[String, Nothing] =
       Left(s"error: $OptionName=$spelling; $reason")
-    /** The plugin, once its directory is one the launch may mount: the name checks and the walk. */
+    /** Runs the name checks and the walk on a directory that the launch may mount, and returns the plugin. */
     def named(spelling: String, directory: Path): Either[String, Resolved] =
       val name = Option(directory.getFileName).map(_.toString).getOrElse("")
       if !EntryName.matches(name) then
@@ -149,7 +161,7 @@ object ClaudePlugins:
                 case None => Right(plugins :+ resolved)
     .map(_.map(_.plugin))
 
-  /** The name the manifest gives the plugin, or the directory's where it gives none. */
+  /** The name that the manifest gives the plugin, or the directory's name where the manifest gives none. */
   private def manifestName(directory: Path, name: String): Either[String, String] =
     val manifest = directory.resolve(ManifestFile)
     val text =
@@ -164,9 +176,9 @@ object ClaudePlugins:
       case _ => Left(s"its $ManifestFile is not a JSON object")
 
   /**
-   * Why the tree under `directory` is not the plugin's alone, if it is not: the first symlink, the
-   * first file with a second name, or the first whose names the host cannot count. The directory
-   * itself is not examined.
+   * Why the tree under `directory` is not the plugin's alone, if it is not: the first symlink, the first
+   * entry that is neither a file nor a directory, the first file with a second name, or the first file
+   * whose names the host cannot count. The method does not examine the directory itself.
    */
   private def notItsOwn(directory: Path): Option[String] =
     try
@@ -203,9 +215,15 @@ object ClaudePlugins:
        |""".stripMargin
 
   /**
-   * The managed drop-in: the marketplace, each plugin enabled, and the order the plugins run
-   * their mods in, the one spelling, ahead of the built-in guard, which a `prependPlugins` list must
-   * name to keep. Only these keys, so what the option can set in managed settings is this.
+   * The managed drop-in: the marketplace, each plugin enabled, and the order in which the plugins run
+   * their mods.
+   *
+   * - The plugins run their mods ahead of the built-in guard. A `prependPlugins` list must name the
+   *   guard to keep it.
+   * - The list names the guard `sec-default@builtin`. Claude Code renamed the guard to
+   *   `cc-plugin-sec-default`, and its settings help (2.1.314) says to list the old id, which every
+   *   release reads.
+   * - The drop-in sets only these keys, so the option can set nothing else in managed settings.
    */
   def dropInText(plugins: Vector[Plugin]): String =
     val enabled = plugins.map(plugin => s"    ${quoted(plugin.id)}: true")
@@ -222,10 +240,14 @@ object ClaudePlugins:
        |""".stripMargin
 
   /**
-   * The sandbox's `--volume` words: the generated marketplace root, relabeled like every launcher
-   * file; each plugin's directory under it, never relabeled, being the user's (resolve has what
-   * an enforcing host needs instead); and the drop-in. Podman mounts a destination's parent
-   * before the destination, whatever the order here.
+   * The sandbox's `--volume` words:
+   *
+   * - the generated marketplace root, relabeled like every launcher file;
+   * - each plugin's directory under the root, never relabeled, because the directory is the user's
+   *   (resolve has what an enforcing host needs instead);
+   * - the drop-in.
+   *
+   * Podman mounts a destination's parent before the destination, whatever the order here.
    */
   def mountArgs(
     marketplaceRoot: Path,
@@ -239,8 +261,8 @@ object ClaudePlugins:
         +: plugins.map(plugin => s"--volume=${plugin.directory}:${plugin.mountPath}:ro")
         :+ fileBind(dropIn, DropInPath, "ro", selinuxEnforcing)
 
-  /** What the launch says: the plugins run under managed status, hooks and mods included, a
-    * loosening whose grant is the plugins (HostCommands.weakened). */
+  /** The launch's line: the plugins run under managed status, hooks and mods included. The line marks
+    * this as a loosening whose grant is the plugins (HostCommands.weakened). */
   def bannerLine(plugins: Vector[Plugin], source: Plugin => String = _ => "", color: Boolean = colorStderr): String =
     val ids = plugins.map(plugin => plugin.id + source(plugin))
     weakened(s"claude plugins: ${ids.mkString(", ")}", color) + "; their hooks and mods run as managed"

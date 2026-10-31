@@ -1,7 +1,11 @@
-// The brokered credential's rewrite of a request head (doc/egress-proxy.md, "Where the value goes"):
-// the value in place of its placeholder in the one place a binding names, and the target as the
-// audit line prints it. Pure, so it is tested on heads alone; AgentEgressProxy applies it before a
-// request is authorized.
+// The rewrite of a request head for brokered credentials (doc/egress-proxy.md, "Where the value goes"). This file
+// holds:
+//
+// - the substitution of each value for its placeholder, in the one place that the value's binding names;
+// - the target as the audit line prints it.
+//
+// The rewrite is pure, so the tests exercise it on heads alone. AgentEgressProxy applies the rewrite before it
+// authorizes a request.
 
 package agentsandbox.egress
 
@@ -18,13 +22,16 @@ object CredentialRewrite:
 
   extension (head: HttpRequestHead)
     /**
-     * The head with each brokered value in place of its placeholder, for a request to `host`. A
-     * credential is substituted only where its binding covers the request and the whole token in its
-     * one place equals its placeholder: the token of `Bearer`, `token`, or `Basic`'s password half in
-     * `Authorization`, the whole value of another bound header, or the percent-decoded value of a
-     * bound query parameter. Each occurrence of the place is rewritten on its own, so a header or
-     * parameter sent twice keeps one meaning whichever occurrence the origin reads. A placeholder
-     * anywhere else is forwarded as it is: it authenticates nothing.
+     * The head with each brokered value in place of its placeholder, for a request to `host`.
+     *
+     * - A credential is substituted only where its binding covers the request and the whole token in its one
+     *   place equals its placeholder. The token is one of these:
+     *   - in `Authorization`, the token of `Bearer` or `token`, or `Basic`'s password half;
+     *   - the whole value of another bound header;
+     *   - the percent-decoded value of a bound query parameter.
+     * - Each occurrence of the place is rewritten on its own. So a header or parameter sent twice keeps one
+     *   meaning, whichever occurrence the origin reads.
+     * - A placeholder anywhere else is forwarded as it is: it authenticates nothing.
      */
     def withCredentials(host: String, credentials: Seq[BrokeredCredential]): Substituted =
       val bound = credentials.filter(_.binding.covers(host, head.path))
@@ -61,9 +68,9 @@ object CredentialRewrite:
         head.printedTarget(credentials),
       )
 
-    /** The target as the audit line prints it: each parameter whose value is a placeholder, and each
-      * placeholder spelled out anywhere else, as its binding's name, so no placeholder spelled as the launch
-      * issued it reaches the log; a percent-escaped spelling prints as sent. */
+    /** The target as the audit line prints it. Each parameter whose value is a placeholder prints that value as
+      * its binding's name, and so does each placeholder spelled out anywhere else. So no placeholder spelled as the
+      * launch issued it reaches the log. A percent-escaped spelling prints as sent. */
     def printedTarget(credentials: Seq[BrokeredCredential]): String =
       def named(text: String): String =
         credentials.foldLeft(text)((printed, credential) =>
@@ -79,8 +86,8 @@ object CredentialRewrite:
             case None             => named(piece)
         s"${named(head.path)}?${pieces.mkString("&")}"
 
-  /** `Bearer` or `token` and the token, or `Basic` and its password half, replaced when it is a placeholder;
-    * any other scheme is left as sent. The scheme's spelling and the spaces after it are kept. */
+  /** Replaces the token after `Bearer` or `token`, or the password half after `Basic`, when that token or half is a
+    * placeholder. Any other scheme stays as sent. The scheme's spelling and the spaces after it are kept. */
   private def authorizationWith(
     value: String,
     candidates: Seq[BrokeredCredential],
@@ -106,11 +113,13 @@ object CredentialRewrite:
     else None
 
   /**
-   * One decode pass, a malformed escape kept as is: whichever way the sandbox spelled a bound parameter,
-   * the origin reads its name and value decoded. GitHelper keeps a decoder of its own, deny-side, and
-   * gives why none is shared. This one decides a substitution, and that is safe to decide on one pass:
-   * an origin decoding otherwise reads a name or a value this pass did not match, so the value is not
-   * substituted and the origin answers the placeholder with 401.
+   * One decode pass, which keeps a malformed escape as it is. Whichever way the sandbox spelled a bound
+   * parameter, the origin reads the parameter's name and value decoded.
+   *
+   * - GitHelper keeps a decoder of its own on the deny side, and says why the two share none.
+   * - This decoder decides a substitution, and one pass is safe for that decision. An origin that decodes
+   *   otherwise reads a name or a value that this pass did not match. The value is then not substituted, and the
+   *   origin answers the placeholder with 401.
    */
   private def percentDecoded(text: String): String =
     val out = StringBuilder()
@@ -127,8 +136,8 @@ object CredentialRewrite:
         loop(index + 1)
     loop(0)
 
-  /** RFC 3986's unreserved characters as they are, every other byte as `%XX`: the value grammar admits
-    * `&`, `=`, `#` and `%`, which raw would split or re-parse the query. */
+  /** RFC 3986's unreserved characters as they are, every other byte as `%XX`. The value grammar admits `&`, `=`,
+    * `#` and `%`, which would split or re-parse the query if sent raw. */
   private def percentEncoded(value: String): String =
     value.getBytes(StandardCharsets.UTF_8).map: byte =>
       val char = (byte & 0xff).toChar

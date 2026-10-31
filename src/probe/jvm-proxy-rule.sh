@@ -1,21 +1,24 @@
 #!/bin/sh
-# Does a JVM under the generated profile reach the build proxy through the standard proxy
-# properties? Three rows split the failure the acceptance test cannot: with props and a live proxy (must
-# fetch), without props (must be denied — the direct path), with props and no proxy (must be
-# refused by connect, proving the profile allows the port and nothing listened).
+# Measures whether a JVM under the generated profile reaches the build proxy through the standard proxy properties.
+# Three rows separate the failures that the acceptance test cannot tell apart:
+# - with the properties and a live proxy, the JVM must fetch;
+# - without the properties, the profile must deny the direct path;
+# - with the properties and no proxy, connect must fail with "connection refused", which proves that the profile
+#   allows the port and that nothing listened.
+# A fourth row adds java.net.preferIPv4Stack; its comment below gives the reason.
 #
 #   sh src/probe/jvm-proxy-rule.sh <emitted acceptance-sbt.sb from an acceptance-test run>
 #
-# The emitted profile grants port 51234 (EmitRunOnHostProfile's constant), so the proxy is bound
-# there. Run it on macOS from the repository root, on each new macOS or JDK release: the JVM's
-# path to the proxy under the profile is what either can move.
+# The emitted profile grants port 51234 (EmitRunOnHostProfile's constant), so the script binds the proxy there.
+# Run the script on macOS from the repository root on each new macOS or JDK release, because either release can change
+# the JVM's path to the proxy under the profile.
 set -u
 profile=${1:?usage: sh src/probe/jvm-proxy-rule.sh <acceptance-sbt.sb>}
 [ -f "$profile" ] || { echo "$profile does not exist" >&2; exit 2; }
 JAVA="${JAVA_HOME:?JAVA_HOME must name the granted JDK}/bin/java"
 
-# Under the workspace, not /tmp: the profile grants reads here, and the JVM must read F.java
-# through it (an unreadable path silently degrades to class-name interpretation).
+# Work under the workspace, not /tmp: the profile grants reads here, and the JVM must read F.java through the
+# profile. The java launcher silently treats an unreadable source path as a class name.
 mkdir -p target/acceptance && work=$(mktemp -d target/acceptance/jvm-proxy.XXXXXX)
 cat > "$work/F.java" <<'EOF'
 public class F {
@@ -58,9 +61,8 @@ row() { # label java-args...
 
 row "with props, proxy live (must fetch)" \
     -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=51234
-# Java connects through dual-stack AF_INET6 sockets, reaching 127.0.0.1 as v4-mapped
-# ::ffff:127.0.0.1; if the "localhost" class covers only native 127.0.0.1 and ::1, this row
-# passes where the one above fails.
+# Java connects through dual-stack AF_INET6 sockets and reaches 127.0.0.1 as the v4-mapped ::ffff:127.0.0.1. If
+# the "localhost" class covers only native 127.0.0.1 and ::1, this row passes where the row above fails.
 row "with props and preferIPv4Stack" \
     -Djava.net.preferIPv4Stack=true -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=51234
 row "no props (control: direct must be denied)"

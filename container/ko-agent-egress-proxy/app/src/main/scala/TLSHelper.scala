@@ -39,9 +39,9 @@ object TLSHelper:
       throw Refusal(s"SNI $sni differs from target", RefusalAdvice.clientHello)
 
   /**
-   * A TLS client over `transport`, its handshake done: the default trust store, and the server's
-   * certificate checked against `host`. Both TLS clients here — to an inspected origin and to an
-   * HTTPS upstream proxy — open through this. `sni` is false for an address literal.
+   * A TLS client over `transport`, with its handshake done: the default trust store, and the server's certificate
+   * checked against `host`. Both TLS clients here open through this method: the one to an inspected origin and the
+   * one to an HTTPS upstream proxy. `sni` is false for an address literal.
    */
   def verifiedClient(
     transport: Socket,
@@ -62,23 +62,22 @@ object TLSHelper:
     if sni then parameters.setServerNames(java.util.List.of[SNIServerName](SNIHostName(host)))
     socket.setSSLParameters(parameters)
 
-    // A stalled handshake would hold this connection's slot; each caller widens the timeout once
-    // bytes flow (relayInspected, UpstreamProxy.tunnelTo), so a slow clone is unaffected.
+    // A stalled handshake would hold this connection's slot. Each caller widens the timeout once bytes flow
+    // (relayInspected, UpstreamProxy.tunnelTo), so a slow clone is unaffected.
     socket.setSoTimeout(AgentEgressProxy.HandshakeTimeoutMillis)
     socket.startHandshake()
     socket
 
   /**
-   * The MITM, and the one place holding a private key: the leaf's only. The CA key never enters
-   * this container, so nothing in it can issue a certificate for a name the launcher did not
-   * already choose (SECURITY.md, "Who holds the CA key").
+   * The MITM, and the one place that holds a private key: the leaf's, and no other. The CA key never enters this
+   * container, so nothing in the container can issue a certificate for a name that the launcher did not already
+   * choose (SECURITY.md, "Who holds the CA key").
    */
   class TlsInspection private (context: SSLContext):
 
     /**
-     * `consumed` replays the already-read ClientHello ahead of the socket. ALPN is restricted to
-     * http/1.1: an h2-only client fails the handshake rather than establishing an HTTP/2 connection
-     * this proxy cannot parse.
+     * `consumed` replays the already-read ClientHello ahead of the socket. ALPN is restricted to http/1.1: an
+     * h2-only client fails the handshake rather than establishing an HTTP/2 connection that this proxy cannot parse.
      */
     def accept(client: Socket, consumed: Array[Byte]): SSLSocket =
       val socket =
@@ -108,7 +107,8 @@ object TLSHelper:
       val chain = readCertificateChain(certificate)
       val key = readPrivateKey(privateKey)
 
-      // Either direction is a leaf that does not match this ruleset (SECURITY.md, "Who holds the CA key").
+      // A leaf that misses a host or names an extra one does not match this ruleset (SECURITY.md, "Who holds the CA
+      // key").
       inspectedNamesError(subjectAlternativeNames(chain.head), hosts).foreach: reason =>
         throw IllegalArgumentException(s"${AgentEgressProxy.CertificateVariable} $reason")
 
@@ -161,9 +161,8 @@ object TLSHelper:
       certificates
 
     /**
-     * PKCS#8 PEM, which is what the launcher's JCA `getEncoded` produces.
-     * The algorithm is not named in the PEM header, so the candidates are
-     * tried in turn rather than guessed from the file.
+     * PKCS#8 PEM, which is what the launcher's JCA `getEncoded` produces. The PEM header does not name the
+     * algorithm, so the candidates are tried in turn rather than guessed from the file.
      */
     def readPrivateKey(path: Path): PrivateKey =
       val text = Files.readString(path, StandardCharsets.US_ASCII)
@@ -217,14 +216,13 @@ object TLSHelper:
     val ServerNameExtension = 0x0000
 
     /*
-     * Encrypted ClientHello. Rejecting it is what makes the SNI check
-     * mean anything: with ECH the visible outer SNI is a public name the CDN
-     * shares, and the name that actually selects a backend is encrypted. A
-     * connection whose outer SNI is an allowed host could then be served as
-     * any other host on the same CDN. GREASE ECH (RFC 9849, 6.2) — the dummy
-     * extension an ECH-capable client without a config sends, browsers by
-     * default — is made indistinguishable from the real one, so it is refused
-     * with it; doc/TODO.md has the narrowing an inspected host would allow.
+     * Encrypted ClientHello. Refusing ECH is what makes the SNI check mean anything. With ECH, the visible outer
+     * SNI is a public name that the CDN shares, and the name that actually selects a backend is encrypted. A
+     * connection whose outer SNI is an allowed host could then be served as any other host on the same CDN.
+     *
+     * GREASE ECH (RFC 9849, 6.2) is the dummy extension that an ECH-capable client without a config sends, as
+     * browsers do by default. GREASE ECH is made indistinguishable from the real extension, so the proxy refuses
+     * both. doc/TODO.md has the narrowing that an inspected host would allow.
      */
     val EncryptedClientHelloExtension = 0xfe0d
     val MaxTlsRecordPayloadBytes = 18 * 1024
@@ -273,8 +271,8 @@ object TLSHelper:
 
           if accumulated.length < messageLength + 4 then loop()
           else if accumulated.length > messageLength + 4 then
-            // never legitimate before the ServerHello — and wireBytes is forwarded verbatim on opaque tunnels, so
-            // exact parsing keeps unexamined bytes from being forwarded
+            // A trailing byte is never legitimate before the ServerHello. wireBytes is forwarded verbatim on opaque
+            // tunnels, so exact parsing keeps unexamined bytes from being forwarded.
             throw BadTls("trailing bytes after ClientHello")
           else
             val payload = accumulated.slice(4, messageLength + 4)

@@ -1,10 +1,13 @@
-// The workspace root mounted at its own path, against real sessions: the working directory is the
-// launch line's path and both guards hold there under every mode, a macOS launch from the
-// data-volume alias mounts at the plain path, and a path the image has an entry at is refused
-// before anything is created. What a session may write there is the other suites' — this one
-// asks where the session is.
+// Tests, against real sessions, that the workspace root is mounted at its own path:
 //
-// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the condition):
+// - the working directory is the launch line's path, and both guards hold there under every mode;
+// - a macOS launch from the data-volume alias mounts at the plain path;
+// - a path at which the image has an entry is refused before anything is created.
+//
+// The other suites test what a session may write there; this suite asks where the session is.
+//
+// The suite runs only under testWithPodman, like the other container-launching suites (WithPodman has the
+// condition):
 //
 //     sbt "testWithPodman *MountPathTest"
 
@@ -29,9 +32,9 @@ class MountPathTest extends munit.FunSuite:
   private def sessionFrom(from: Path, log: Path, mode: String): Session =
     launchWith(from, log, Vector(s"--workspace=$mode", "--egress=deny-unless-allowed"))
 
-  /** Where the session is, and that the protection is there too: the launch line names the path,
-    * `pwd` answers it, and the two protected writes are refused at it. Appending nothing to
-    * `.git/config` asks without changing the repository. */
+  /** Asserts where the session is, and that the protection holds there too: the launch line names the
+    * path, `pwd` answers it, and both protected writes are refused there. Appending nothing to
+    * `.git/config` tests the refusal without changing the repository. */
   private def assertAtOwnPath(session: Session, expected: String, mode: String): Unit =
     assert(session.output.contains(expected), s"$mode: the launch line does not name $expected:\n${session.output}")
     assertEquals(exec(session, "pwd").text.trim, expected, s"$mode: pwd")
@@ -64,7 +67,7 @@ class MountPathTest extends munit.FunSuite:
         finally stop(session)
     finally discard(workspaceRoot)
 
-  /** The state a launch may create before its container, listed by name so an addition shows. */
+  /** The state that a launch may create before its container, listed by name so that an addition shows. */
   private def stateEntries(): Vector[String] =
     Vector(
       LauncherState.rulesetStateRoot(currentOs),
@@ -75,7 +78,8 @@ class MountPathTest extends munit.FunSuite:
 
   test("a path the image has an entry at is refused, naming it, before anything is created"):
     requireTestWithPodman()
-    // Judged on additions: another session's teardown may remove its networks meanwhile.
+    // The test judges by additions, because another session's teardown may remove that session's networks
+    // meanwhile.
     def refusedFrom(from: Path, entry: String): Unit =
       assume(Files.isDirectory(from), s"$from exists on this host")
       val before = stateEntries() ++ networks()
@@ -84,6 +88,6 @@ class MountPathTest extends munit.FunSuite:
       assert(output.contains(s"has an entry at $entry"), output)
       assertEquals((stateEntries() ++ networks()).diff(before), Vector.empty, "the refusal created state or a network")
     refusedFrom(Paths.get("/usr/local/bin"), "/usr/local/bin")
-    // /tmp is the image's on every host, but only a Linux host launches from its own /tmp: the
-    // macOS one is /private/tmp, which the image lacks and the machine does not share.
+    // /tmp belongs to the image on every host, but only a Linux host launches from its own /tmp. The
+    // macOS /tmp is /private/tmp, which the image lacks and the machine does not share.
     if currentOs == Os.Linux then refusedFrom(Paths.get("/tmp"), "/tmp")

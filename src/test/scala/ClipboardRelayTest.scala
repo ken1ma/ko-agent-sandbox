@@ -1,6 +1,6 @@
-// The clipboard protocol, end to end on one host: the reaper's real shell functions against the
-// image's real shim, with podman and the host clipboard programs replaced by scripts. What it holds
-// is the contract between the three parties, which no unit of either side can hold alone.
+// Tests the clipboard protocol end to end on one host: the reaper's real shell functions against the
+// image's real shim, with scripts in place of podman and the host clipboard programs. The suite holds
+// the contract between the three parties, which no unit test of either side can hold alone.
 
 package agentsandbox.launcher
 
@@ -13,7 +13,7 @@ import scala.util.Using
 
 class ClipboardRelayTest extends munit.FunSuite:
 
-  // The shim runs in the Debian image, so its programs are the image's; a macOS host has neither.
+  // The shim runs in the Debian image, so its programs are the image's; a macOS host lacks them.
   private val programs = Vector("sh", "flock", "timeout", "setsid", "mkfifo")
   private def onPath(program: String): Boolean =
     sys.env.getOrElse("PATH", "").split(":").exists(dir => Files.isExecutable(Paths.get(dir, program)))
@@ -21,18 +21,18 @@ class ClipboardRelayTest extends munit.FunSuite:
   private val Image = "PNG binary".getBytes(UTF_8)
 
   /**
-   * Never the production path. A suite is run inside a sandbox session as readily as outside one,
-   * and there `/tmp/ko-agent-sandbox/clipboard` holds the FIFOs that session's relay is reading:
-   * removing them leaves its reader blocked on an unlinked inode, and nothing inside the container can
-   * restore the channel. Both sides are pointed here instead — the relay's shell functions by
-   * their argument, the shim by the one line rewritten below.
+   * The suite never uses the production path. A suite runs inside a sandbox session as readily as
+   * outside one, and there `/tmp/ko-agent-sandbox/clipboard` holds the FIFOs that the session's relay
+   * is reading. Removing them leaves the relay's reader blocked on an unlinked inode, and nothing inside
+   * the container can restore the channel. The suite points both sides here instead: the relay's shell
+   * functions by their argument, and the shim by the one line rewritten below.
    */
   private val FifoDir = Files.createTempDirectory("clipboard-fifos")
 
-  /** The image's shim with its directory line rewritten and nothing else. A spelling this no
-    * longer finds fails the suite rather than testing a script the image does not ship. Made on
-    * first use, so a platform whose tests all skip never sets POSIX permissions — not at cleanup
-    * either, which is why the copy is tracked rather than the value forced. */
+  /** The image's shim with its directory line rewritten and nothing else. When the rewrite no longer
+    * finds that line's spelling, the suite fails rather than test a script that the image does not ship.
+    * The copy is made on first use, so a platform whose tests all skip never sets POSIX permissions, not
+    * at cleanup either. The suite therefore tracks the copy rather than forcing the value. */
   private var shimCopy: Option[Path] = None
   private def Shim: Path = shimCopy.getOrElse:
     val source = Paths.get("container/ko-agent-sandbox/ko-sandbox-clipboard").toAbsolutePath
@@ -54,8 +54,8 @@ class ClipboardRelayTest extends munit.FunSuite:
     Files.writeString(path, body)
     Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rwxr-xr-x"))
 
-  // The shim by its symlink name, as Claude Code invokes it; ProcessBuilder resolves through the
-  // parent's PATH, so the name is spelled absolute here.
+  // Calls the shim by its symlink name, as Claude Code invokes it. ProcessBuilder resolves a bare name
+  // through the parent's PATH, so this method spells the name absolute.
   private def sandboxCall(sandboxBin: Path, stdin: Array[Byte], command: String*): (Int, Array[Byte]) =
     val builder = ProcessBuilder((sandboxBin.resolve(command.head).toString +: command.tail)*)
     builder.redirectError(ProcessBuilder.Redirect.DISCARD)
@@ -65,10 +65,12 @@ class ClipboardRelayTest extends munit.FunSuite:
     val out = process.getInputStream.readAllBytes()
     (process.waitFor(), out)
 
-  // `wayland`: the host has only wl-clipboard, so the relay's xclip-first chain must fall through.
-  // `blockingCopy`: the host's copy never returns, as a clipboard program waiting on its display
-  // may not. `failingCopy`: the host's copy exits nonzero, as one with no display does. The relay's
-  // temporary files go under `host/tmp`.
+  // - `wayland`: the host has only wl-clipboard, so the relay's xclip-first chain must fall through.
+  // - `blockingCopy`: the host's copy never returns, as a clipboard program that waits on its display
+  //   may not.
+  // - `failingCopy`: the host's copy exits nonzero, as a copy with no display does.
+  //
+  // The relay's temporary files go under `host/tmp`.
   private def exchange(
     mode: String,
     wayland: Boolean = false,
@@ -82,8 +84,8 @@ class ClipboardRelayTest extends munit.FunSuite:
     val host = Files.createDirectory(dir.resolve("host"))
     val sandboxBin = Files.createDirectory(dir.resolve("sandbox"))
     Files.write(host.resolve("image.bin"), Image)
-    // "podman exec -i --detach-keys= C sh -c S" runs S here, and an exec -i that leaves the detach keys on
-    // fails; the container is always running.
+    // The fake podman runs S here for "podman exec -i --detach-keys= C sh -c S", and fails an exec -i that
+    // leaves the detach keys on. The container is always running.
     executable(
       host.resolve("podman"),
       """#!/bin/sh
@@ -95,10 +97,11 @@ class ClipboardRelayTest extends munit.FunSuite:
         |esac
         |""".stripMargin
     )
-    // The host's real clipboard programs, answering the three calls the relay makes, by absolute
-    // path as the launcher resolves them; the host's PATH is deliberately not offered. xclip's copy
-    // leaves a child behind holding stdout, as its selection owner does (wl-copy's has stdout on
-    // /dev/null): on the response pipe it would hold the shim past `ok` until the writer's timeout.
+    // Stand-ins for the host's real clipboard programs answer the three calls that the relay makes. The
+    // relay calls them by absolute path, as the launcher resolves them; the test deliberately offers no
+    // host PATH. xclip's copy leaves a child behind that holds stdout, as xclip's selection owner does
+    // (wl-copy's child has stdout on /dev/null). On the response pipe, that child would hold the shim
+    // past `ok` until the writer's timeout.
     val copyAction =
       if blockingCopy then "sleep 60"
       else if failingCopy then "cat >/dev/null; exit 1"
@@ -140,8 +143,8 @@ class ClipboardRelayTest extends munit.FunSuite:
       Thread.sleep(500)
       check(sandboxBin, host)
     finally
-      // The fake exec's `cat` on the FIFO is what a stopped container would have ended; it ignores
-      // TERM by design, so forcibly.
+      // A stopped container would have ended the fake exec's `cat` on the FIFO. That `cat` ignores
+      // TERM by design, so the teardown kills it forcibly.
       process.descendants().forEach(_.destroyForcibly())
       process.destroyForcibly()
       deleteRecursively(FifoDir)
@@ -166,8 +169,9 @@ class ClipboardRelayTest extends munit.FunSuite:
       assert(!Files.exists(host.resolve("copied.txt")), "paste mode set the host clipboard")
       assertEquals(String(sandboxCall(sandboxBin, Array.empty, "wl-paste", "-l")._2, UTF_8), "image/png\n")
 
-  /** The call's exit status, asserting it returned on the relay's answer rather than on the
-    * response writer's ten-second timeout — what a copy's child left holding the pipe costs. */
+  /** Returns the call's exit status, and asserts that the call returned on the relay's answer rather
+    * than on the response writer's ten-second timeout. That timeout is what a copy's child that holds
+    * the pipe costs. */
   private def promptly(call: => (Int, Array[Byte])): Int =
     val started = System.nanoTime()
     val (rc, _) = call
@@ -190,14 +194,14 @@ class ClipboardRelayTest extends munit.FunSuite:
       assertEquals(sandboxCall(sandboxBin, "via copilot".getBytes(UTF_8), "wl-copy", "--type", "text/plain")._1, 0)
       assertEquals(copied(), "via copilot")
 
-  /** A write to the request FIFO that is not the shim's: what any process in the sandbox can do. */
+  /** Writes to the request FIFO without the shim, as any process in the sandbox can. */
   private def rawRequest(bytes: Array[Byte]): Int =
     val writer = ProcessBuilder("timeout", "5", "sh", "-c", s"cat > $FifoDir/req").start()
     writer.getOutputStream.write(bytes)
     writer.getOutputStream.close()
     writer.waitFor()
 
-  /** One response read to EOF, retaining the newline the shim's command substitution removes. */
+  /** Reads one response to EOF, and keeps the newline that the shim's command substitution removes. */
   private def rawResponse(): Array[Byte] =
     val reader = ProcessBuilder("timeout", "10", "cat", s"$FifoDir/rsp").start()
     val out = reader.getInputStream.readAllBytes()
@@ -226,8 +230,8 @@ class ClipboardRelayTest extends munit.FunSuite:
       def copied(): Option[String] =
         Thread.sleep(300)
         Option.when(Files.exists(host.resolve("copied.txt")))(Files.readString(host.resolve("copied.txt")))
-      // A line outside the grammar, with a request behind it: the reading ends at the line, so
-      // the `get` is never read as a request — a PNG answered to nobody would hold the relay for
+      // A line outside the grammar, with a request behind it: the reading ends at the line, so the
+      // relay never reads the `get` as a request. A PNG answered to nobody would hold the relay for
       // the response writer's ten seconds, past the shim's own wait.
       // A `types` with an argument and a `get` without one are outside the grammar too, as the
       // Windows relay reads them.
@@ -235,22 +239,22 @@ class ClipboardRelayTest extends munit.FunSuite:
         assertEquals(rawRequest(refused.getBytes(UTF_8)), 0, refused)
         val (_, types) = sandboxCall(sandboxBin, Array.empty, "wl-paste", "-l")
         assertEquals(String(types, UTF_8), "image/png\n", refused)
-      // Two requests in one stream — a writer opening before the reader saw the last one's end —
-      // are both served, in order: the boundary is the line and its count, not the exec.
+      // Two requests in one stream, from a writer that opened before the reader saw the last request's
+      // end, are both served in order: the line and its count form the boundary, not the exec.
       assertEquals(rawRequest("types\nget image/png\n".getBytes(UTF_8)), 0)
       assertEquals(String(rawResponse(), UTF_8), "image/png\n")
       assertEquals(rawResponse().toVector, Image.toVector)
-      // A `set` past the cap, and one whose count `[` could not compare: nothing copied, the
-      // writer's end read as for a served request.
+      // A `set` past the cap, and a `set` whose count `[` could not compare, copy nothing. The relay
+      // reads the writer's end as it does for a served request.
       assertEquals(rawRequest(s"set ${ClipboardRelay.MaxRequestBytes + 1}\nabc".getBytes(UTF_8)), 0)
       assertEquals(rawRequest("set 99999999999999999999\nabc".getBytes(UTF_8)), 0)
       assertEquals(copied(), None)
-      // A body the writer cut short, and a count with a leading zero: nothing copied.
+      // A body that the writer cut short, and a count with a leading zero, copy nothing.
       assertEquals(rawRequest("set 6\nabc".getBytes(UTF_8)), 0)
       assertEquals(rawRequest("set 03\nabc".getBytes(UTF_8)), 0)
       assertEquals(copied(), None)
-      // The count's bytes and no more, as the Windows relay reads them (`requests`). Without a
-      // response reader, the relay waits for the response writer's timeout before serving the next request.
+      // The relay reads the count's bytes and no more, as the Windows relay reads them (`requests`). Without
+      // a response reader, the relay waits for the response writer's timeout before it serves the next request.
       assertEquals(rawRequest("set 3\nabcdef".getBytes(UTF_8)), 0)
       assertEquals(String(rawResponse(), UTF_8), "ok\n")
       assertEquals(copied(), Some("abc"))
@@ -259,18 +263,19 @@ class ClipboardRelayTest extends munit.FunSuite:
 
   test("a copy blocked in the clipboard program leaves no body file for the session's end"):
     exchange("bidirectional", blockingCopy = true): (sandboxBin, host) =>
-      // The copy never returns, so the shim waits out its own timeout for the `ok` that never comes;
-      // this checks the body file while it waits, in a thread the exchange's teardown abandons.
+      // The copy never returns, so the shim waits out its own timeout for the `ok` that never comes. The
+      // test checks the body file during that wait, in a thread that the exchange's teardown abandons.
       val call = Thread(() => { sandboxCall(sandboxBin, "held".getBytes(UTF_8), "wl-copy"); () })
       call.setDaemon(true)
       call.start()
       Thread.sleep(500)
-      // The body must have no name while copy is blocked: a session ending here KILLs the relay's tree.
+      // The body must have no name while the copy is blocked, because a session that ends here KILLs the
+      // relay's tree.
       assertEquals(Files.list(host.resolve("tmp")).count(), 0L)
 
   test("a copy the host program fails is reported to the caller, not answered ok"):
     exchange("bidirectional", failingCopy = true): (sandboxBin, _) =>
-      // xclip exits nonzero, so the relay answers nothing and the shim fails the copy rather than
+      // xclip exits nonzero, so the relay answers nothing, and the shim fails the copy rather than
       // report success on a write that never reached the host.
       assertEquals(sandboxCall(sandboxBin, "lost".getBytes(UTF_8), "wl-copy")._1, 1)
 
@@ -286,12 +291,13 @@ class ClipboardRelayTest extends munit.FunSuite:
     assertEquals(requests(stream("get text/plain\n")), Vector(Request.Get("text/plain")))
     assertEquals(bodies("set 3\nabc"), Vector("abc"))
     assertEquals(bodies("set 0\n"), Vector(""))
-    // In order, to the first request that cannot be read: the counted body frames the next line.
+    // The parser reads requests in order, up to the first request that cannot be read: the counted body
+    // frames the next line.
     assertEquals(bodies("types\nget image/png\n"), Vector("Types", "Get(image/png)"))
     assertEquals(bodies("set 5\nhe\nlotypes\n"), Vector("he\nlo", "Types"))
     assertEquals(bodies("set 3\nabcdef"), Vector("abc"))
     assertEquals(bodies("types\njunk\ntypes\n"), Vector("Types"))
-    // A body the stream does not hold whole — the writer stopped, or the cut did — is refused.
+    // A body that the stream does not hold whole, because the writer stopped or the cut did, is refused.
     Vector(
       "types", "junk\nget image/png\n", "types x\n", "types \n", "get\n",
       "set\n", "set -1\nx", "set +1\nx", "set 1 2\nx", "set 6\nabc",
@@ -316,7 +322,8 @@ class ClipboardRelayTest extends munit.FunSuite:
     Files.createSymbolicLink(sandboxBin.resolve("xclip"), Shim)
     deleteRecursively(FifoDir)
     assertEquals(sandboxCall(sandboxBin, Array.empty, "xclip", "-selection", "clipboard", "-t", "TARGETS", "-o")._1, 1)
-    // A relay present, an argument pattern the shim does not answer: refused before any FIFO is touched.
+    // With a relay present, an argument pattern that the shim does not answer is refused before any FIFO
+    // is touched.
     Files.createDirectories(FifoDir)
     try
       ProcessBuilder("mkfifo", FifoDir.resolve("req").toString).start().waitFor()

@@ -57,7 +57,8 @@ allow https://route53.amazonaws.com/                  read method=POST,DELETE   
 #allow https://route53domains.us-east-1.amazonaws.com/ read method=POST             # domain registration
 #allow https://shield.us-east-1.amazonaws.com/         read method=POST             # Shield Advanced
 
-# Those integrated with the global services are already allowed above, unlike in other regions
+# The regional services that the global services integrate with are already allowed above, unlike
+# in other regions.
 
 # pulumi installer script, and the fallback for the CLI tarball and the provider plugins
 # when a GitHub release download fails

@@ -1,8 +1,11 @@
-// The file rules as the launcher deals with them: the defaults, the workspace's
-// .ko-agent-sandbox/file/rule, their grammar and resolution, and the text the filter daemon and
-// the run-on-host profile receive (doc/file-rules.md). The launcher owns the
-// grammar; the filter reads only the resolved form (ko-agent-fs/policy/src/rulefile.rs), and the
-// Seatbelt profile renders it (SeatbeltProfile.fileRuleFilters).
+// The file rules as the launcher handles them (doc/file-rules.md):
+// - the defaults and the workspace's .ko-agent-sandbox/file/rule;
+// - their grammar and resolution;
+// - the text that the filter daemon and the run-on-host profile receive.
+//
+// The launcher owns the grammar. The filter reads only the resolved form
+// (ko-agent-fs/policy/src/rulefile.rs), and the Seatbelt profile renders that form
+// (SeatbeltProfile.fileRuleFilters).
 
 package agentsandbox.launcher
 
@@ -22,11 +25,12 @@ object FileRules:
     def text: String = s"${word.keyword} $name"
 
   /**
-   * What the resolved set holds beyond the rule lines: the paths the filter's guard found, relative
-   * to the workspace root and spelled as the host spells them — directories and files served read-only
-   * whole, components pinned against rename, replacement and removal, and `(directory, rest)`
-   * pairs: a directory a symlink makes an interior component of a `read-only` line, with the
-   * line's rest below it as a pattern.
+   * What the resolved set holds beyond the rule lines: the paths that the filter's guard found,
+   * relative to the workspace root and spelled as the host spells them.
+   * - `readOnlyPaths` are directories and files served read-only as a whole.
+   * - `pinnedPaths` are components pinned against rename, replacement and removal.
+   * - `readOnlyUnder` holds `(directory, rest)` pairs. The directory is one that a symlink makes an
+   *   interior component of a `read-only` line, and the line's rest is the pattern below it.
    */
   case class Resolved(
       lines: Vector[Line],
@@ -49,24 +53,27 @@ object FileRules:
     catch case ex: java.io.IOException => Left(s"error: cannot read the file rules $file: ${ex.getMessage}")
 
   /**
-   * The lines for `workspaceRoot` without the filter's guard: what a host command gets when no launch
-   * handed it a resolved set, the acceptance test's own entry. The guard's paths, a relocated
-   * hook directory among them, come only from a launch's mount or `--resolve`.
+   * The lines for `workspaceRoot` without the filter's guard. A host command gets these lines when no
+   * launch handed it a resolved set, as in the acceptance test's own entry. The guard's paths, a
+   * relocated hook directory among them, come only from a launch's mount or `--resolve`.
    */
   def ofWorkspace(workspaceRoot: Path): Either[String, Resolved] =
     readRuleFile(SandboxWorkspace.boundaryDirOf(workspaceRoot).resolve("file")).map: file =>
       Resolved(resolve(file.fold(Vector.empty[Line])(_(1))), Vector.empty, Vector.empty)
 
-  /** The names the filter's own rules govern, which a rule line cannot reach. The host command's
-    * profile guards the same names (SeatbeltProfile), and the launcher's walks of the workspace
-    * enter neither. */
+  /** The names that the filter's own rules govern, which a rule line cannot reach. The host command's
+    * profile guards the same names (SeatbeltProfile), and the launcher's walks of the workspace enter
+    * neither. */
   val GuardedComponents: Seq[String] = Seq(".git", ".ko-agent-sandbox")
 
   /**
-   * The lines of `text`, `origin` naming it in a refusal. Comments and whitespace are
-   * egress/rule's (EgressRules.normalizeRuleText); every ambiguity refuses: a line that is not one
-   * word and one name, a `#` inside a token, an empty, `.` or `..` component, a character outside
-   * `a`–`z`, `0`–`9`, `.`, `_`, `-` and `*`, and a `.git` or `.ko-agent-sandbox` component.
+   * The lines of `text`, with `origin` naming the text in a refusal. Comments and whitespace follow
+   * egress/rule (EgressRules.normalizeRuleText). Every ambiguity refuses:
+   * - a line that is not one word and one name;
+   * - a `#` inside a token;
+   * - an empty, `.` or `..` component;
+   * - a character outside `a`–`z`, `0`–`9`, `.`, `_`, `-` and `*`;
+   * - a `.git` or `.ko-agent-sandbox` component.
    */
   def parse(text: String, origin: String): Either[String, Vector[Line]] =
     val lines = EgressRules.normalizeRuleText(text).linesIterator.toVector
@@ -105,8 +112,9 @@ object FileRules:
     parse(text, "the launcher's file-rule-defaults").fold(why => throw IllegalStateException(why), identity)
 
   /**
-   * The workspace's `.ko-agent-sandbox/file/rule`, as (normalized text, lines), or None when absent;
-   * `fileDir` is its `file/` directory (SandboxWorkspace.readBoundaryRuleFiles has the refusals).
+   * The workspace's `.ko-agent-sandbox/file/rule`, as (normalized text, lines), or None when the file
+   * is absent. `fileDir` is the file's `file/` directory (SandboxWorkspace.readBoundaryRuleFiles has
+   * the refusals).
    */
   def readRuleFile(fileDir: Path): Either[String, Option[(String, Vector[Line])]] =
     SandboxWorkspace.readBoundaryRuleFiles(fileDir, Vector("rule"), "doc/file-rules.md", EgressRules.normalizeRuleText)
@@ -120,10 +128,13 @@ object FileRules:
   def resolve(workspaceLines: Vector[Line]): Vector[Line] = Defaults ++ workspaceLines
 
   /**
-   * The directories whose objects the filter's daemon sees as the host does, for its guard
-   * (`guard.rs`, `resolve`): all of it on native Linux, the podman machine's shares elsewhere
-   * (SECURITY.md, "Container, runtime and kernel escape", has the observed mounts). On Windows the
-   * workspace's own drive, which WSL mounts where the workspace's mount path says.
+   * The directories whose objects the filter's daemon sees as the host does, for the daemon's guard
+   * (`guard.rs`, `resolve`).
+   * - On native Linux, the daemon sees the whole filesystem as the host does.
+   * - Elsewhere, the daemon sees the podman machine's shares as the host does (SECURITY.md,
+   *   "Container, runtime and kernel escape", has the observed mounts).
+   * - On Windows, that share is the workspace's own drive, which WSL mounts where the workspace's
+   *   mount path says.
    */
   def hostView(os: Os, mountPath: String): Vector[String] =
     os match
@@ -136,9 +147,10 @@ object FileRules:
     (s"host-view ${hostView.mkString(" ")}" +: lines.map(_.text)).map(_ + "\n").mkString
 
   /**
-   * The resolved set out of the filter's output, `--resolve`'s or the mount script's after
-   * ResolvedMarker. A line of any other form is another filter version's, and so is a rule name or
-   * rest the grammar refuses: the Seatbelt profile writes them into its regexes.
+   * The resolved set out of the filter's output: `--resolve`'s output, or the mount script's output
+   * after ResolvedMarker. A line of any other form comes from another filter version, and so does a
+   * rule name or rest that the grammar refuses, because the Seatbelt profile writes names and rests
+   * into its regexes.
    */
   def parseResolved(text: String): Either[String, Resolved] =
     val lines = text.linesIterator.filter(_.nonEmpty).toVector
@@ -178,17 +190,19 @@ object FileRules:
   /** The line the mount script prints before the resolved set. */
   val ResolvedMarker = "file rules resolved:"
 
-  /** The launch lines about the workspace's file (HostCommands.ruleFileReport), none without one:
-    * the defaults are every launch's. Its `writable` lines, the only kind that can widen, are the
-    * widening. What the guard added is printed once the filter has answered (guardLines). */
+  /** The launch lines about the workspace's rule file (HostCommands.ruleFileReport). A workspace
+    * without the file gets no lines, because the defaults are every launch's. The file's `writable`
+    * lines, the only kind that can widen, are reported as the widening. What the guard added is printed
+    * once the filter has answered (guardLines). */
   def launchLines(
     workspaceFile: Option[(String, Vector[Line])],
     color: Boolean = HostCommands.colorStderr,
   ): Vector[String] =
     workspaceFile.toVector.flatMap((_, lines) => report(".ko-agent-sandbox/file/rule", lines, color))
 
-  /** The launch lines about a running mount's rules a launch joins: its lines beyond the defaults,
-    * all of them when it runs under other defaults, the `writable` ones as their widening. */
+  /** The launch lines about the rules of a running mount that a launch joins: the mount's lines beyond
+    * the defaults, or all of them when the mount runs under other defaults, with the `writable` lines
+    * reported as the widening. */
   def runningLaunchLines(running: Vector[Line], color: Boolean = HostCommands.colorStderr): Vector[String] =
     val beyond = if running.startsWith(Defaults) then running.drop(Defaults.size) else running
     if beyond.isEmpty then Vector("the running mount's file rules: the launcher-owned defaults")
@@ -198,8 +212,8 @@ object FileRules:
     val writable = lines.filter(_.word == Word.Writable)
     HostCommands.ruleFileReport(source, lines.map(_.text), writable.map(_.text), color, joinedWritable)
 
-  /** Two or more `writable` lines as one, `writable: <name>, <name>`, as egress joins its hosts
-    * (EgressRules.groupedByHost); one stays as written. A name holds no `,` (parse). */
+  /** Joins two or more `writable` lines into one, `writable: <name>, <name>`, as egress joins its hosts
+    * (EgressRules.groupedByHost). A single line stays as written. A name holds no `,` (parse). */
   private def joinedWritable(rules: Seq[String]): Seq[String] =
     val names = rules.map(_.stripPrefix(s"${Word.Writable.keyword} ")).distinct
     if names.size < 2 then rules.distinct else Vector(s"${Word.Writable.keyword}: ${names.mkString(", ")}")

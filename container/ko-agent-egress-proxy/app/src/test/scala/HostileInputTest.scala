@@ -1,16 +1,17 @@
-// The second layer over AgentEgressProxyTest: the parsers under hostile and randomized input,
-// aimed at parser disagreement, canonicalization and fail-open rule parsing rather than at more
-// examples of rules that file already tests — and the reference evaluator the ruleset is
-// property-tested against. Where a rule is tested there, this file asserts only
-// what it adds — the two Smokescreen bypasses and the alternate IPv4 spellings are there, and this
-// is the wider corpus around them.
+// The second layer over AgentEgressProxyTest. This file holds:
 //
-// The randomized tests count both outcomes and assert each happened. A generator that drifts into
-// refusing everything leaves the branch that matters unexecuted, and the suite would keep passing.
+// - the parsers under hostile and randomized input, aimed at parser disagreement, canonicalization and fail-open
+//   rule parsing rather than at more examples of rules that AgentEgressProxyTest already tests;
+// - the reference evaluator that the ruleset is property-tested against.
 //
-// The randomized tests seed a plain `scala.util.Random` rather than pulling in a property library:
-// the proxy's dependency list is part of its attack surface, and a fixed seed buys reproducibility
-// for the one line it costs.
+// Where AgentEgressProxyTest tests a rule, this file asserts only what it adds. The two Smokescreen bypasses and the
+// alternate IPv4 spellings are in AgentEgressProxyTest, and this file holds the wider corpus around them.
+//
+// The randomized tests count both outcomes and assert that each happened. A generator that drifts into refusing
+// everything leaves the branch that matters unexecuted, and the suite would keep passing.
+//
+// The randomized tests seed a plain `scala.util.Random` rather than pulling in a property library. The proxy's
+// dependency list is part of its attack surface, and a fixed seed buys reproducibility for the one line it costs.
 
 package agentsandbox.egress
 
@@ -50,9 +51,9 @@ class HostileInputTest extends munit.FunSuite:
     value.map(ch => if ch < 0x20 || ch > 0x7e then f"\\u${ch.toInt}%04x" else ch).mkString
 
   private val RefusedAuthorities = Vector(
-    // Malformed bracket/port combinations. A bracketed *hostname* is accepted and canonicalized
-    // (AgentEgressProxyTest checks that, the Smokescreen bypass class); these are the cases where
-    // the brackets do not close a name at all.
+    // Malformed bracket and port combinations. A bracketed *hostname* is accepted and canonicalized:
+    // AgentEgressProxyTest checks that case, the Smokescreen bypass class. The cases below are those where the brackets
+    // do not close a name at all.
     "[]:443",
     "[github.com]",
     "[github.com]443",
@@ -90,8 +91,8 @@ class HostileInputTest extends munit.FunSuite:
     "github.com:+443",
     "github.com:44 3",
 
-    // Canonicalization: normalizeHost strips one trailing dot, so a doubled one leaves a name the
-    // ruleset does not hold. Refused rather than reduced again — the fail-closed direction.
+    // Canonicalization: normalizeHost strips one trailing dot, so a doubled dot leaves a name that the ruleset does
+    // not hold. The name is refused rather than reduced again, which is the fail-closed direction.
     "github.com..:443",
 
     // Percent-encoding means nothing in an authority, and a punycode label nobody allowed is
@@ -104,9 +105,9 @@ class HostileInputTest extends munit.FunSuite:
     "0x7f.0.0.1:443",
   )
 
-  /** A form one parser accepts and another would not, which reaches an allowed host all the same:
-    * RFC 3986's port is `*DIGIT`, so leading zeros spell 443. Tested because it is surprising, not
-    * because it is dangerous — the proxy dials the port it parsed. */
+  /** A form that one parser accepts and another would not, which reaches an allowed host all the same: RFC 3986's
+    * port is `*DIGIT`, so leading zeros spell 443. The test exists because the form is surprising, not because it is
+    * dangerous: the proxy dials the port it parsed. */
   private val ReachingAuthorities = Vector(
     "github.com:443" -> "github.com",
     "github.com:0443" -> "github.com",
@@ -121,11 +122,11 @@ class HostileInputTest extends munit.FunSuite:
       assertEquals(outcomeOf(ascii(authority)), s"reached $host", printable(authority))
 
   test("the CONNECT path is ASCII-only, so IDN mapping never runs on anything from the wire"):
-    // normalizeHost maps confusables to ASCII — nameprep folds a fullwidth `g` to `g` and an
-    // ideographic full stop to a dot, and drops zero-width characters — so on paper these spell
-    // `github.com`. Over the wire they never get that far: the bytes arrive as UTF-8, decode as
-    // ISO-8859-1 into characters above 0x7f, and the authority is refused before any mapping.
-    // The mapping is reachable only from a rule file, where an operator wrote the name.
+    // normalizeHost maps confusables to ASCII: nameprep folds a fullwidth `g` to `g` and an ideographic full stop to
+    // a dot, and drops zero-width characters. So on paper these spell `github.com`.
+    // Over the wire, they never get that far: the bytes arrive as UTF-8, decode as ISO-8859-1 into characters above
+    // 0x7f, and the authority is refused before any mapping. Only a rule file, where an operator wrote the name,
+    // reaches the mapping.
     Vector("\uff47ithub.com:443", "GITHUB\u3002com:443", "github\u200b.com:443", "\u00adgithub.com:443")
       .foreach: authority =>
         assertEquals(
@@ -138,12 +139,12 @@ class HostileInputTest extends munit.FunSuite:
     assertEquals(normalizeHost("github\u200b.com"), "github.com")
 
   test("an authorized host is a fixed point of normalization, and never an IP literal"):
-    // Not "normalization is idempotent" — it is not. One trailing dot is stripped per pass, so
-    // `github.com..` becomes `github.com.`, which another pass would reduce again. That
-    // non-idempotence fails closed, because the once-normalized form is what the ruleset is
-    // compared against and it is not in it. What has to hold is the property enforcement rests
-    // on: whatever authorizeRequest returns is unchanged by normalizing it again, since that is
-    // the name later resolved and bound to SNI.
+    // The property is not "normalization is idempotent": normalization is not idempotent. One trailing dot is
+    // stripped per pass, so `github.com..` becomes `github.com.`, which another pass would reduce again. That
+    // non-idempotence fails closed: the ruleset is compared against the once-normalized form, and that form is not in
+    // the ruleset.
+    // The property that must hold is the one enforcement rests on: whatever authorizeRequest returns is unchanged by
+    // normalizing it again, since that name is later resolved and bound to SNI.
     assertEquals(normalizeHost("github.com.."), "github.com.")
     assertNotEquals(normalizeHost(normalizeHost("github.com..")), normalizeHost("github.com.."))
     DefaultHosts.keySet.foreach: host =>
@@ -151,9 +152,9 @@ class HostileInputTest extends munit.FunSuite:
       assert(!isIpLiteral(host), host)
 
   test("the hostname the ruleset authorized is the one SNI is bound to"):
-    // A mismatched SNI and an encrypted one are AgentEgressProxyTest's; what is added here is the
-    // join between the two halves — that the name authorizeRequest *returned* is the one the
-    // binding is made against, whichever spelling asked for it.
+    // AgentEgressProxyTest covers a mismatched SNI and an encrypted one. This test adds the join between the two
+    // halves: the name that authorizeRequest *returned* is the one the binding is made against, whichever spelling
+    // asked for it.
     val spellings = Vector("github.com", "GitHub.COM", "github.com.")
     spellings.foreach: spelling =>
       val authorized = authorize(ascii(s"$spelling:443"))
@@ -171,9 +172,9 @@ class HostileInputTest extends munit.FunSuite:
     '[', ']', '@', '%', ':', '.', ' ', '\t', '\r', '\n', '+', '-', '0', '\u0000', '\u007f',
   )
 
-  /** Mutations of a real authority, never uniform noise: a uniform draw is refused at its first
-    * character, which leaves the branch that matters — a draw that *does* reach a host — never
-    * executed, and a fuzz test whose interesting branch never runs passes for the wrong reason. */
+  /** Mutations of a real authority, never uniform noise. A uniform draw is refused at its first character, so the
+    * branch that matters, a draw that *does* reach a host, never runs. A fuzz test whose interesting branch never
+    * runs passes for the wrong reason. */
   private def mutate(value: String): String =
     if value.isEmpty then Noise(random.nextInt(Noise.size)).toString
     else
@@ -205,9 +206,9 @@ class HostileInputTest extends munit.FunSuite:
     assert(refused > 0, "no mutation was refused; the generator stopped mutating")
 
   test("a path that would select a refusal's advice is refused at the parser when it contains a control"):
-    // RefusalAdvice.forRefusedPost reads HttpRequestHead.path, so no advice is ever chosen for a
-    // target the audit log would refuse to print; and the absolute form is refused before the
-    // path is looked at, with the origin-form step, not GraphQL's.
+    // RefusalAdvice.forRefusedPost reads HttpRequestHead.path, so no advice is ever chosen for a target that the
+    // audit log would refuse to print. The absolute form is refused before the path is looked at, with the
+    // origin-form step, not GraphQL's.
     Vector("/graphql\u0007", "/graphql\u001b[0m", "/o/r.git/info/lfs/objects/batch\t").foreach: path =>
       intercept[BadRequest]:
         HttpRequestHead.parse(ascii(s"POST $path HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n"))
@@ -222,8 +223,8 @@ class HostileInputTest extends munit.FunSuite:
     assertEquals(absolute.advice, RefusalAdvice.originForm)
 
   test("the TLS parser survives arbitrary bytes"):
-    // Nothing else feeds the ClientHello parser bytes it did not build itself. A typed refusal or
-    // an EOF is the whole contract; anything else escapes and fails.
+    // Nothing else feeds the ClientHello parser bytes that it did not build itself. A typed refusal or an EOF is the
+    // whole contract; anything else escapes and fails.
     (1 to 500).foreach: _ =>
       val bytes = Array.fill(random.nextInt(96))(random.nextInt(256).toByte)
       try
@@ -247,9 +248,9 @@ class HostileInputTest extends munit.FunSuite:
       Vector("Transfer-Encoding: chunked", "Transfer-Encoding: chunked"),
       Vector("Content-Length: 5", "Transfer-Encoding: chunked"),
     )
-    // Which of these are refused is AgentEgressProxyTest's; the refusals are ignored here. What
-    // is added is what holds of the ones that are *not* refused: the answer is stable, and it is
-    // never the response-only framing whose request forwarder throws on sight.
+    // AgentEgressProxyTest decides which of these are refused, and this test ignores the refusals. This test adds
+    // what holds of the heads that are *not* refused: the answer is stable, and it is never the response-only
+    // framing, on which the request forwarder throws at once.
     var framed = 0
     framings.foreach: headers =>
       val request =
@@ -262,11 +263,12 @@ class HostileInputTest extends munit.FunSuite:
     assert(framed > 0, "every header set was refused; the table asserts nothing about framing")
 
   test("no control character survives into a forwarded request or an audit line"):
-    // The request head's two halves. The parser is the only check before both destinations: what is
-    // forwarded to an origin, and what is written to a log the operator later reads on a terminal —
-    // where a tab breaks the audit grammar's own fields and an escape sequence rewrites the line
-    // around it. CR and LF are tested elsewhere, as smuggling; these are the ones a whitespace test
-    // lets through. The authority half is in the corpus above.
+    // The request head's two halves. The parser is the only check before both destinations:
+    // - what is forwarded to an origin;
+    // - what is written to a log that the operator later reads on a terminal, where a tab breaks the audit
+    //   grammar's own fields and an escape sequence rewrites the line around it.
+    // CR and LF are tested elsewhere, as smuggling; these are the characters that a whitespace test lets through.
+    // The authority half is in the corpus above.
     val controls = Vector('\u0000', '\u0001', '\u0007', '\u001b', '\t', '\u001f', '\u007f')
 
     controls.foreach: ch =>
@@ -274,8 +276,8 @@ class HostileInputTest extends munit.FunSuite:
         HttpRequestHead.parse(ascii(s"GET /a${ch}b HTTP/1.1\r\nHost: github.com\r\n\r\n")),
       )
 
-    // HTAB is legal in a field value and nowhere else, so it is the one that must survive here and
-    // be refused above.
+    // HTAB is legal in a field value and nowhere else, so HTAB is the one character that must survive here and be
+    // refused above.
     controls.filter(_ != '\t').foreach: ch =>
       intercept[BadRequest](
         HttpRequestHead.parse(
@@ -288,9 +290,9 @@ class HostileInputTest extends munit.FunSuite:
     assertEquals(tabbed.values("X-Probe"), Vector("a\tb"))
 
   test("no rule file, however malformed, allows a host or a grant nobody named"):
-    // The fail-open direction for rule parsing: a file that resolves at all must resolve to
-    // defaults hosts plus the ones its own text spells, never to a host the arithmetic invented,
-    // and every grant on a resolved scope is a word some line wrote.
+    // The fail-open direction for rule parsing. A file that resolves at all must resolve to the defaults hosts plus
+    // the hosts that its own text spells, never to a host that the arithmetic invented. Every grant on a resolved
+    // scope is a word that some line wrote.
     val lines = Vector(
       "allow https://github.com/ read git-fetch", "deny https://github.com/", "deny https://**.github.com/",
       "allow https://pypi.org/ read", "deny https://pypi.org/ read", "allow https://mirror.example/ tunnel",
@@ -356,14 +358,18 @@ class HostileInputTest extends munit.FunSuite:
       intercept[IllegalArgumentException](resolveRuleset(Some("deny-unless-allowed"), None, Some(line)))
 
   // ---------------------------------------------------------------------------
-  // The reference evaluator: the simple order is the specification, and the fold must be invisible
-  // to it — PF's own discipline for its skip steps. A deliberately plain evaluator, applying each
-  // line's contributions and removals to one request in textual order and building no resolved
-  // scope, property-tested against the ruleset's authorization over a drawn domain that
-  // names every equation: each profile, the provider selected and not, files with `deny defaults`
-  // and without, providers allowed and denied, `tunnel` taken and re-granted, hosts the defaults lack
-  // and hosts they tunnel, and requests to hosts no line names, to inspected ones under a denied
-  // subtree, and at both sides of a boundary.
+  // The reference evaluator. The simple order is the specification, and the fold must be invisible to it: PF's own
+  // discipline for its skip steps.
+  //
+  // The evaluator is deliberately plain: it applies each line's contributions and removals to one request in textual
+  // order and builds no resolved scope. The evaluator is property-tested against the ruleset's authorization over a
+  // drawn domain that names every equation:
+  // - each profile, with the provider selected and not;
+  // - files with `deny defaults` and without;
+  // - providers allowed and denied, and `tunnel` taken and re-granted;
+  // - hosts the defaults lack and hosts the defaults tunnel;
+  // - requests to hosts that no line names, to inspected hosts under a denied subtree, and at both sides of a
+  //   boundary.
   // ---------------------------------------------------------------------------
 
   /** A line in structured form: rendered to text for the proxy, applied as is by the evaluator. */
@@ -553,8 +559,8 @@ class HostileInputTest extends munit.FunSuite:
     ).foreach(outcome => assert(outcomes(outcome) > 0, s"no $outcome outcome was ever drawn"))
 
   test("a substituted head re-parses as one request, with the header count and the parameter count it had"):
-    // Values are drawn from the whole value grammar, including bytes that would end a field or split a
-    // query; the substituted head must keep its framing all the same.
+    // Values are drawn from the whole value grammar, including bytes that would end a field or split a query. The
+    // substituted head must keep its framing all the same.
     val alphabet = (0x21 to 0x7e).map(_.toChar).mkString
     def value(): String = Vector.fill(1 + random.nextInt(40))(alphabet(random.nextInt(alphabet.length))).mkString
     def parsed(bytes: Array[Byte]): HttpRequestHead =

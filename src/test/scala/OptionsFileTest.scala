@@ -1,5 +1,5 @@
-// The options file: its location and refusals, its syntax, the merge of its options under the
-// command line's, what an action reads of it, and the startup lines naming it.
+// Tests the options file: its location and refusals, its syntax, the merge of its options under the
+// command line's, what an action reads of the file, and the startup lines that name the file.
 
 package agentsandbox.launcher
 
@@ -25,7 +25,7 @@ class OptionsFileTest extends munit.FunSuite:
 
   private def commandLine(args: String*): ParsedCommandLine = parseArguments(args.toList).fold(fail(_), identity)
 
-  /** The options in force with `text` as the file, and the startup lines it prints. */
+  /** The options in force with `text` as the file, and the startup lines that the merge prints. */
   private def merged(text: String, args: String*): Either[String, (ParsedCommandLine, Vector[FileSupplied])] =
     merge(file(text), commandLine(args*))
 
@@ -57,8 +57,8 @@ class OptionsFileTest extends munit.FunSuite:
     // Outside quotes every backslash is literal, so a Windows path needs none.
     assertEquals(argument("--claude-plugin-dir=C:\\mods\\band"), Right(Some("--claude-plugin-dir=C:\\mods\\band")))
     assert(argument("--env=NAME=\"a b\"").swap.exists(_.contains("unquoted value")))
-    // The status line's line as doc/agent-settings.md spells it: a status-line placeholder is a
-    // literal `${...}` to the file, not a variable of the launcher's.
+    // The KO_CLAUDE_STATUSLINE_FORMAT line as doc/agent-settings.md spells it. To the file, a
+    // status-line placeholder is a literal `${...}`, not a variable that the launcher expands.
     assertEquals(
       argument(
         "--env=\"KO_CLAUDE_STATUSLINE_FORMAT=\\${model.display_name} \\${effort.level} · context " +
@@ -79,7 +79,7 @@ class OptionsFileTest extends munit.FunSuite:
     assertEquals(argument("--env=A=${名前}", env), Right(Some("--env=A=v")))
     assertEquals(argument("--env=\"A=\\${MEM}\"", env), Right(Some("--env=A=${MEM}")))
     assertEquals(argument("--env=P=C:\\${DIR}", env), Right(Some("--env=P=C:\\x")))
-    // A value is taken as it is: no second expansion, comment, quote or escape inside it.
+    // The parser takes a value as it is: no second expansion, comment, quote or escape inside it.
     assertEquals(argument("--env=A=${V}", env), Right(Some("--env=A=${MEM}#\"\\")))
     assertEquals(argument("--env=\"A=${V}\"", env), Right(Some("--env=A=${MEM}#\"\\")))
     assertEquals(argument("--memory=${MISSING}", env), Left("${MISSING} is not set in the launcher's environment"))
@@ -187,19 +187,20 @@ class OptionsFileTest extends munit.FunSuite:
     assertEquals(OptionsFile.refusal(Os.Linux, outside, workspace), None)
     val inside = workspace.resolve(".config/ko-agent-sandbox/options")
     assert(OptionsFile.refusal(Os.Linux, inside, workspace).exists(_.contains("inside the workspace root")))
-    // A configuration root linked into the workspace is inside it, as pathOf resolves it.
+    // A configuration root linked into the workspace counts as inside the workspace, because pathOf
+    // resolves the link.
     val linkTarget = Files.createDirectories(workspace.resolve("cfg"))
     val linked = Files.createSymbolicLink(base.resolve("linked-config"), linkTarget)
     val resolved = OptionsFile.pathOf(Os.Linux, Map("XDG_CONFIG_HOME" -> linked.toString).get).fold(fail(_), identity)
     assertEquals(resolved, workspace.resolve("cfg/ko-agent-sandbox/options"))
-    // Refused once there is a file to read; with none, nothing chooses a grant.
+    // The load refuses such a root once there is a file to read; with no file, nothing chooses a grant.
     val linkedConfig = Map("XDG_CONFIG_HOME" -> linked.toString).get
     assertEquals(OptionsFile.load(Os.Linux, workspace, linkedConfig), Right(None))
     Files.createDirectories(resolved.getParent)
     Files.writeString(resolved, "--nesting=same-uid\n")
     assert(OptionsFile.load(Os.Linux, workspace, linkedConfig).swap.exists(_.contains("inside the workspace root")))
 
-    // An absent file supplies nothing; a present one is parsed; one that cannot be read fails.
+    // An absent file supplies nothing, a present file is parsed, and a file that cannot be read fails.
     val config = Map("XDG_CONFIG_HOME" -> base.resolve("config").toString).get
     assertEquals(OptionsFile.load(Os.Linux, workspace, config), Right(None))
     Files.writeString(outside, "--memory=8g\n")
@@ -251,9 +252,10 @@ class OptionsFileTest extends munit.FunSuite:
     )
     // --env-aws-cred alone keeps reading AWS_PROFILE.
     assertEquals(inForce("--env-aws-cred=team", "--env-aws-cred").awsCredential, Some(AwsCredential.Request(None)))
-    // A repeatable option's empty value drops the file's entries; the entries after it still add.
+    // A repeatable option's empty value drops the file's entries; the entries after the empty value
+    // still add.
     assertEquals(inForce("--env=A\n--env=B", "--env=", "--env=FOO").env, Vector(EnvForward("FOO", None)))
-    // A closed choice keeps refusing an empty value, which an unset variable in a script produces.
+    // A closed choice still refuses an empty value, which an unset variable in a script produces.
     Vector("--workspace", "--egress", "--clipboard", "--audio", "--nesting", "--session-start").foreach: option =>
       assert(parseArguments(List(s"$option=")).isLeft, option)
       assert(fileOptions(s"$option=").swap.exists(_.startsWith(s"error: $Shown:1: ")), option)
@@ -304,7 +306,8 @@ class OptionsFileTest extends munit.FunSuite:
     def lines(color: Boolean) =
       options.fileLines(Set("--nesting"), Os.Linux, color).map(_.replace("/home/me/.config", "~/.config"))
     assertEquals(lines(color = false), Vector(s"--memory=8g$FromFile", s"--env=SECRET$FromFile"))
-    // The value is what the user chose, and the source is there to look up, parentheses included.
+    // The line tints the value as the user's choice, and shows the source in gray for the reader to
+    // look up, parentheses included.
     val (chosen, gray, off) = ("\u001b[38;5;207m", "\u001b[38;5;245m", "\u001b[0m")
     val source = s" $gray(from $Shown)$off"
     assertEquals(
@@ -314,7 +317,7 @@ class OptionsFileTest extends munit.FunSuite:
     assert(!options.fileLines(os = Os.Linux, color = false).exists(_.contains("hunter2")))
     assertEquals(options.from("--nesting", Os.Linux, color = false).replace("/home/me/.config", "~/.config"), FromFile)
     assertEquals(options.from("--image", Os.Linux, color = false), "")
-    // The egress line credits the file with its own provider names alone.
+    // The egress line credits the file with the file's own provider names alone.
     val (withProviders, providersSupplied) =
       merged("--model-provider=anthropic,openai", "--model-provider=google").fold(fail(_), identity)
     def providersFrom(selected: String*): String =
@@ -347,7 +350,7 @@ class OptionsFileTest extends munit.FunSuite:
     val reset = read(ResetReads, "--reset")
     assertEquals(reset.parsed.persistentVolume, Some("shared"))
     assertEquals(reset.supplied.map(_.option), Vector("--persistent-volume"))
-    // The file's --env and --egress-cred of one name meet only where both are read.
+    // The file's --env and --egress-cred of one name conflict only in an action that reads both options.
     val effective = read(EgressEffectiveReads, "--egress-effective")
     assertEquals(
       (effective.parsed.egress, effective.parsed.modelProviders, effective.parsed.proxyImage),

@@ -1,14 +1,17 @@
-// The certificates of TLS inspection, from one builder so that every chain has one profile: the CA
-// the launcher creates for a workspace and the leaf it issues for the inspected hosts (the launcher
-// compiles this file in; its CertificateHelper.scala calls it). The builder is the JDK's own
-// internal one — the classes keytool and CertificateFactory run — because JCA has no public
-// certificate builder and every library that has one is a dependency neither program carries:
-// BouncyCastle is 12 MB of jars, against a launcher jar of 12 MB and a native
-// image that holds nothing it does not run, WildFly Elytron's `x500-cert` brings an application
-// server's logging facade, and a DER encoder written here would be a second X.509 implementation
-// to keep correct. The package is not exported, so the JDK major is part of this file's source
-// contract: the proxy build pins its GraalVM, the launcher requires Java 25, and the
-// `--add-exports` the build passes is what lets it run.
+// The certificates of TLS inspection: the CA that the launcher creates for a workspace, and the leaf that the
+// launcher issues for the inspected hosts. One builder makes both, so every chain has one profile. The launcher
+// compiles this file in, and the launcher's CertificateHelper.scala calls it.
+//
+// The builder is the JDK's own internal one, the classes that keytool and CertificateFactory run. JCA has no public
+// certificate builder, and every library that has one is a dependency that neither program carries:
+//
+// - BouncyCastle is 12 MB of jars, against a launcher jar of 12 MB and a native image that holds nothing it does
+//   not run;
+// - WildFly Elytron's `x500-cert` brings an application server's logging facade;
+// - a DER encoder written here would be a second X.509 implementation to keep correct.
+//
+// The package is not exported, so the JDK major is part of this file's source contract. The proxy build pins its
+// GraalVM, the launcher requires Java 25, and the `--add-exports` that the build passes lets this file run.
 
 package agentsandbox.egress
 
@@ -24,8 +27,8 @@ import sun.security.x509.*
 
 object X509Helper:
 
-  /** The longest validity Apple's TLS trust evaluation accepts for a server certificate from a CA
-    * outside its own root store, this one included (its shipped roots are held to 398 days). */
+  /** The longest validity that Apple's TLS trust evaluation accepts for a server certificate from a CA outside
+    * Apple's root store, this CA included. Apple holds its shipped roots to 398 days. */
   val LeafValidityDays = 825L
 
   /** RFC 5280's bound on a common name (ub-common-name), which the JDK's builder does not enforce. */
@@ -35,9 +38,8 @@ object X509Helper:
 
   case class IssuedCertificate(certificate: X509Certificate, privateKey: PrivateKey)
 
-  /** A self-signed P-256 CA that signs certificates and CRLs and nothing else, with no CA below
-    * it (path length 0). Its Subject Key Identifier is what a leaf's Authority Key Identifier points
-    * at; the whys are with the leaf's. */
+  /** A self-signed P-256 CA that signs certificates and CRLs and nothing else, with no CA below it (path length 0).
+    * A leaf's Authority Key Identifier points at the CA's Subject Key Identifier; issueLeaf records why. */
   def createCa(commonName: String, now: Instant = Instant.now(), days: Long): IssuedCertificate =
     require(
       commonName.length <= MaxCommonNameLength,
@@ -60,11 +62,10 @@ object X509Helper:
     IssuedCertificate(certificate, keyPair.getPrivate)
 
   /**
-   * A leaf naming `hosts` and nothing else, signed by `ca` with `caKey`: P-256, `serverAuth`, and
-   * a fresh key of its own, so the leaf key the launcher mounts into the proxy cannot issue
-   * certificates. Its lifetime is clamped to the CA's, so a
-   * ten-year workspace CA's last years are not a launch failure; the launcher's reissue margin
-   * normally keeps the clamp inactive under that CA.
+   * A leaf naming `hosts` and nothing else, signed by `ca` with `caKey`: P-256, `serverAuth`, and a fresh key of
+   * the leaf's own, so the leaf key that the launcher mounts into the proxy cannot issue certificates.
+   * The leaf's lifetime is clamped to the CA's, so the last years of a ten-year workspace CA do not fail a launch.
+   * The launcher's reissue margin normally keeps the clamp inactive under that CA.
    */
   def issueLeaf(
     hosts: Seq[String],
@@ -90,10 +91,9 @@ object X509Helper:
     val serverAuth = java.util.Vector[ObjectIdentifier]()
     serverAuth.add(ObjectIdentifier.of(KnownOIDs.serverAuth))
     extensions.setExtension(ExtendedKeyUsageExtension.NAME, ExtendedKeyUsageExtension(serverAuth))
-    // Strict verifiers refuse a chain without the key identifiers — OpenSSL's X509_STRICT, which
-    // Python enables by default since 3.13, fails with "Missing Authority Key Identifier"
-    // (measured: the image's own urllib against every inspected host). curl and apt merely
-    // tolerate the omission.
+    // Strict verifiers refuse a chain without the key identifiers. OpenSSL's X509_STRICT, which Python enables by
+    // default since 3.13, fails with "Missing Authority Key Identifier": the image's own urllib failed so against
+    // every inspected host. curl and apt merely tolerate the omission.
     extensions.setExtension(
       SubjectKeyIdentifierExtension.NAME,
       SubjectKeyIdentifierExtension(KeyIdentifier(keyPair.getPublic).getIdentifier),
@@ -115,10 +115,11 @@ object X509Helper:
     IssuedCertificate(certificate, keyPair.getPrivate)
 
   /**
-   * Backdated five minutes: the launcher issues on the host and the sandbox verifies inside a
-   * podman machine VM whose clock can run slightly behind the host's, where a notBefore in the
-   * future fails as an unexplained TLS error. A run-on-host proxy's leaf is issued and verified on
-   * the host, and is backdated only so that all leaves have one profile.
+   * Backdated five minutes. The launcher issues on the host, and the sandbox verifies inside a podman machine VM
+   * whose clock can run slightly behind the host's. In that VM, a notBefore in the future fails as an unexplained
+   * TLS error.
+   * A run-on-host proxy's leaf is issued and verified on the host, and is backdated only so that all leaves have
+   * one profile.
    */
   def notBefore(now: Instant): Date = Date.from(now.minus(5, ChronoUnit.MINUTES))
 

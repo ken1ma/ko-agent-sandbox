@@ -1,5 +1,5 @@
-// The reaper's arguments, where a wrong positional argument removes the wrong container,
-// and the run's cleanup, whose whole mechanism is one hook answering to the run's own state.
+// Tests the reaper's arguments, where a wrong positional argument removes the wrong container, and
+// the run's cleanup, whose whole mechanism is one hook that answers to the run's own state.
 
 package agentsandbox.launcher
 
@@ -28,8 +28,8 @@ class SandboxLifecycleTest extends munit.FunSuite:
     cleanup.perform()
     assertEquals(removals, 0, "the cleanup removed while the sandbox may have been starting")
 
-    // With a process, the removal follows its exit rather than racing it. Any short-lived process
-    // serves; each platform supplies its own shell.
+    // With a process, the removal follows the process's exit rather than racing it. Any short-lived
+    // process serves, and each platform supplies its own shell.
     val process =
       if scala.util.Properties.isWin then ProcessBuilder("cmd", "/c", "exit 0").start()
       else ProcessBuilder("/bin/sh", "-c", "exit 0").start()
@@ -47,8 +47,8 @@ class SandboxLifecycleTest extends munit.FunSuite:
     assertEquals(removals, 1, "a launch whose podman never started leaked what it had made")
 
   test("arming registers the cleanup as a shutdown hook"):
-    // The registration is the entire mechanism and a launch cannot show whether it happened.
-    // Removing it again is also what keeps this suite from leaving hooks behind.
+    // The registration is the entire mechanism, and a launch cannot show whether the registration
+    // happened. Removing the hook again also keeps this suite from leaving hooks behind.
     val armed = armRunCleanup(() => ())
     assert(
       Runtime.getRuntime.removeShutdownHook(armed.hook),
@@ -56,10 +56,10 @@ class SandboxLifecycleTest extends munit.FunSuite:
     )
 
   test("the resident cleanup removes the sandbox first, and tolerates one already gone"):
-    // The sandbox may be created and never started (a refusal, a Ctrl-C before the handover), in
-    // which case only a forced rm frees its network; after an ordinary run --rm has already taken
-    // it, and a failing rm must not stop the rest. The fake podman logs each call and fails the rm
-    // of the absent sandbox, as the real one does.
+    // The sandbox may be created and never started, after a refusal or a Ctrl-C before the handover.
+    // Then only a forced rm frees the sandbox's network. After an ordinary run, --rm has already taken
+    // the sandbox, and a failing rm must not stop the rest. The fake podman logs each call and fails
+    // the rm of the absent sandbox, as the real podman does.
     assume(java.nio.file.Files.isExecutable(java.nio.file.Paths.get("/bin/sh")), "needs /bin/sh")
     val dir = java.nio.file.Files.createTempDirectory("cleanup")
     val log = dir.resolve("log")
@@ -120,11 +120,11 @@ class SandboxLifecycleTest extends munit.FunSuite:
       withMicrophone.drop(4 + 12),
       Vector("/run/status", "/log/microphone.log", "/usr/bin/aplay\u001f-C", "/usr/bin/pacat\u001f--record"),
     )
-    // The names travel as arguments, never interpolated into the script.
+    // The names travel as arguments and are never interpolated into the script.
     assert(!ReaperScript.contains("run-container"))
 
   test("the reaper ignores terminal signals and removes only this run's resources"):
-    // The trap is installed before any command a signal could interrupt; only the PATH assignment precedes it.
+    // The trap comes before any command that a signal could interrupt; only the PATH assignment precedes it.
     assertEquals(ReaperScript.linesIterator.drop(1).next(), "trap '' INT HUP TERM")
     assert(ReaperScript.contains("\"$3\" rm --force \"$1\""))
     assert(ReaperScript.contains("\"$3\" rm --force --time 2 \"$2\""))
@@ -137,8 +137,8 @@ class SandboxLifecycleTest extends munit.FunSuite:
       ReaperScript.indexOf("case \"$6\"") > ReaperScript.indexOf("network rm"),
       "the teardown step must come after this run's own cleanup",
     )
-    // The script text is checked here; what it does — no job under off, a pid held, a signal
-    // delivered, a tree ended — is the lifecycle tests below.
+    // This test checks the script text. The lifecycle tests below check what the script does: no job
+    // under off, a pid held, a signal delivered, a tree ended.
     val wait = ReaperScript.indexOf("\"$3\" wait \"$1\"")
     val relay = ReaperScript.indexOf(
       "if [ \"$8\" != off ]; then\n  ( clipboard_relay \"$3\" \"$1\" \"$8\" \"$9\" \"${10}\" \"${11}\"\n" +
@@ -147,23 +147,24 @@ class SandboxLifecycleTest extends munit.FunSuite:
     assert(relay >= 0 && relay < wait, "the relay must be backgrounded before the wait")
     assert(ReaperScript.indexOf("end_tree \"$relay\"") > wait, "the tree must be ended after the wait")
     assert(!ReaperScript.contains("kill $!"), "an unconditional kill of the last background pid")
-    // The job must keep the reaper's ignores: a reset would let a group TERM free its pid.
+    // The job must keep the reaper's ignores, because a reset would let a group TERM free the job's pid.
     assert(!ReaperScript.contains("trap -"), "a trap reset inside the reaper")
 
   /** What one reaper run against the fake podman left to observe. */
   private case class ReaperRun(
-    /** `container inspect` calls the run made before the reaper exited: one is the reaper's own
-      * running check, the rest are the relay's turns. */
+    /** The `container inspect` calls that the run made before the reaper exited. One is the reaper's own
+      * running check, and the rest are the relay's turns. */
     inspects: Int,
-    /** More inspect calls in the two seconds after the reaper exited: the relay outliving it. */
+    /** More inspect calls in the two seconds after the reaper exited, which show the relay outliving the
+      * reaper. */
     inspectsAfter: Int,
-    /** The reaper's live (non-zombie) children at `podman wait`, the waiting podman itself
-      * excluded: the relay job, when one is held. Handles captured while they were the fixture's
-      * own — a handle knows its process's start time, so one whose pid was since reused answers
-      * dead and cannot be signalled into another process. */
+    /** The reaper's live (non-zombie) children at `podman wait`, excluding the waiting podman itself:
+      * the relay job, when the reaper holds one. The handles were captured while the processes were the
+      * fixture's own. A handle knows its process's start time, so a handle whose pid was since reused
+      * answers dead and cannot signal another process. */
     childrenAtWait: Vector[ProcessHandle],
-    /** Whether the blocking `exec` child — the stand-in for a hung clipboard program — is still alive,
-      * by the handle captured for the pid it recorded before blocking. */
+    /** Whether the blocking `exec` child, the stand-in for a hung clipboard program, is still alive. The
+      * check uses the handle captured for the pid that the child recorded before blocking. */
     hungChildAlive: Boolean,
   )
 
@@ -171,14 +172,18 @@ class SandboxLifecycleTest extends munit.FunSuite:
   private def hostPs(): String = HostPs.answering()
 
   /**
-   * The reaper run for real under /bin/sh against a fake podman, the clipboard mode as given. The
-   * sandbox "runs" for the first `runningAnswers` inspect calls and is stopped after; `wait`
-   * returns after a second; `exec` either returns at once (the relay then loops, one inspect per
-   * turn) or blocks for good (a hung child under the job). With `groupTerm`, `wait` first sends
-   * TERM to the reaper's whole process group — an explicit group signal, the form a terminal's
-   * INT or HUP take — from a fake that ignores it itself; the reaper then runs under `setsid`, so
-   * that group is its own and not this JVM's, and the caller assumes `setsid` is present (stock
-   * macOS has none). Beyond /bin/sh and its `wc` and `sleep`, the host program this executes is its
+   * Runs the reaper for real under /bin/sh against a fake podman, in the given clipboard mode.
+   *
+   *  - The sandbox "runs" for the first `runningAnswers` inspect calls and is stopped after them.
+   *  - `wait` returns after a second.
+   *  - `exec` either returns at once, so the relay loops with one inspect per turn, or blocks for good,
+   *    which leaves a hung child under the job.
+   *  - With `groupTerm`, `wait` first sends TERM to the reaper's whole process group, from a fake that
+   *    ignores the TERM itself. The TERM is an explicit group signal, the form that a terminal's INT or HUP
+   *    takes. The reaper then runs under `setsid`, so that group is the reaper's own and not this JVM's.
+   *    The caller assumes that `setsid` is present (stock macOS has none).
+   *
+   * Beyond /bin/sh and its `wc` and `sleep`, the host program that this method executes is the host's
    * `ps` (hostPs), as the launcher would pass it.
    */
   private def reaperRun(
@@ -218,11 +223,11 @@ class SandboxLifecycleTest extends munit.FunSuite:
     // `-w`: setsid forks when its caller leads a group, and the parent's exit would leave nothing
     // to capture descendants from.
     val launched = if groupTerm then Vector("setsid", "-w") ++ command else command
-    // Output to a file, and a bounded wait: reading the pipe to EOF would block on any descendant
-    // a regressed cleanup left holding it — the very failure this measures — for the whole of a
-    // `sleep 3029`. The fixture's descendants are captured as handles, continuously while the
-    // reaper runs, so both the assertions and the forcible cleanup below act on the processes
-    // that were the fixture's, never on a reused pid.
+    // The output goes to a file, with a bounded wait. Reading the pipe to EOF would block for the
+    // whole of a `sleep 3029` on any descendant that a regressed cleanup left holding the pipe, which
+    // is the very failure this test measures. The test captures the fixture's descendants as handles,
+    // continuously while the reaper runs. Both the assertions and the forcible cleanup below therefore
+    // act on the processes that were the fixture's, never on a reused pid.
     val output = dir.resolve("reaper.out")
     val process = ProcessBuilder(launched*).redirectErrorStream(true).redirectOutput(output.toFile).start()
     def pidsIn(file: java.nio.file.Path): Vector[Long] =
@@ -250,7 +255,8 @@ class SandboxLifecycleTest extends munit.FunSuite:
       owned.values.foreach(_.destroyForcibly())
 
   test("under off the reaper starts no relay job"):
-    // Measured, not read off the script text (ReaperScript has the `if`-not-`||` pitfall).
+    // The test measures this rather than reading it off the script text (ReaperScript has the
+    // `if`-not-`||` pitfall).
     assume(java.nio.file.Files.isExecutable(java.nio.file.Paths.get("/bin/sh")), "needs /bin/sh")
     val run = reaperRun("off", runningAnswers = 99, hangExec = false)
     assertEquals(run.inspects, 1, "a caller besides the reaper's own check called inspect")
@@ -293,7 +299,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
     assert(ReaperScript.contains(ClipboardRelay.sandboxRequestReader()))
     assert(ReaperScript.contains(ClipboardRelay.sandboxResponseWriter()))
     assert(ClipboardRelay.sandboxResponseWriter().startsWith("timeout "))
-    // Comments may name podman; no executable line may invoke it bare.
+    // Comments may name podman, but no executable line may invoke podman bare.
     assert(
       ReaperScript.linesIterator.forall: line =>
         line.trim.startsWith("#") || !line.contains("podman")

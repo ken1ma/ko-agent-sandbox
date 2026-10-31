@@ -1,7 +1,6 @@
-// The upstream transport: HTTPS_PROXY's parser, and the CONNECT state machine against a
-// scripted upstream proxy on loopback. Every failure here is asserted twice — for the outcome
-// and for the credential's absence from it — because the message is what reaches the audit log
-// and the sandbox's 502 body.
+// The upstream transport: HTTPS_PROXY's parser, and the CONNECT state machine against a scripted upstream proxy on
+// loopback. Every failure here is asserted twice, for the outcome and for the credential's absence from it, because
+// the message reaches the audit log and the sandbox's 502 body.
 
 package agentsandbox.egress
 
@@ -65,7 +64,7 @@ class TransportHelperTest extends munit.FunSuite:
       Some("Basic " + Base64.getEncoder.encodeToString(credential.getBytes(StandardCharsets.UTF_8)))
     // A user alone is a user with an empty password, as curl sends it.
     assertEquals(parse("http://alice@proxy.corp.example:3128").authorization, basic("alice:"))
-    // The password may hold a colon; only the user may not, being what the colon delimits.
+    // The password may hold a colon; only the user may not, since the colon delimits the user.
     assertEquals(parse("http://alice:a:b@proxy.corp.example:3128").authorization, basic("alice:a:b"))
     // A literal non-ASCII character and its percent-encoding are one credential, a supplementary
     // character included.
@@ -144,10 +143,11 @@ class TransportHelperTest extends munit.FunSuite:
   private val TunnelBanner = "tunnel-open"
 
   /**
-   * One scripted connection per response: the CONNECT head is recorded, the response written —
-   * cut to `truncateAt` bytes when set — and after a final 2xx the banner follows on the same stream,
-   * which is how a test proves the socket it got back is the tunnel. The listener closes after
-   * the script, so an attempt the script did not expect is a refused connection, not a hang.
+   * One scripted connection per response. The script records the CONNECT head and writes the response, cut to
+   * `truncateAt` bytes when set. After a final 2xx, the banner follows on the same stream, which is how a test proves
+   * that the socket it got back is the tunnel.
+   * The listener closes after the script, so an attempt that the script did not expect is a refused connection, not
+   * a hang.
    */
   private class ScriptedProxy(script: Vector[String], truncateAt: Option[Int] = None):
     private val server = ServerSocket(0, 8, loopback)
@@ -174,7 +174,7 @@ class TransportHelperTest extends munit.FunSuite:
       val endpoint = UpstreamEndpoint("HTTPS_PROXY", false, "127.0.0.1", Some(loopback), port, authorization)
       UpstreamProxy(endpoint, Vector(loopback))
 
-    /** Ends the script: whatever it still expected is not coming, and a connection it did not
+    /** Ends the script: whatever the script still expected is not coming, and a connection that the script did not
       * expect is refused from here on. */
     def close(): Unit =
       server.close()
@@ -256,7 +256,8 @@ class TransportHelperTest extends munit.FunSuite:
       "upstream proxy returned 503",
     )
 
-    // A second scripted 200 would be reached by a retry; these must not retry, so it is never read.
+    // Only a retry would reach a second scripted 200. These responses must not cause a retry, so the second 200 is
+    // never read.
     Vector(
       "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"corp\"\r\n\r\n" ->
         "upstream proxy authentication required",

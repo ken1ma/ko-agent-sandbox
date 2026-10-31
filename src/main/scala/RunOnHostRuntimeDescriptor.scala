@@ -1,14 +1,18 @@
-// What a launch's runner publishes about each runtime it owns, for another launch on the same
-// workspace to attach its commands to (RunnerRuntimes.attached): the file
-// `runtime-<program>-<hash>` in the owner's session directory, which no confined process can
-// write, since the profiles grant `tmp/` and nothing else of the session. Published by rename once
-// the server or daemon is up, deleted before any record of the runtime is discarded, and so
-// republished with every replacement; the owner's teardown renames the whole session out of the
-// root, where an attaching launch never looks. The fingerprint is over the server's or daemon's
-// confinement and environment — the profile's inputs, the closed environment and the proxy's rules
-// — so equal fingerprints mean the attaching launch would start one under the same confinement and
-// environment; the forwarded values are in it, since a launch that forwards a secret must not serve
-// one that does not, and it is a hash so that none of them is persisted.
+// What a launch's runner publishes about each runtime it owns, so that another launch on the same workspace can
+// attach its commands to the runtime (RunnerRuntimes.attached).
+//
+// - The descriptor is the file `runtime-<program>-<hash>` in the owner's session directory.
+// - No confined process can write the descriptor, since the profiles grant `tmp/` and nothing else of the session.
+// - The runner publishes the descriptor by rename once the server or daemon is up. The runner deletes the
+//   descriptor before it discards any record of the runtime, and so republishes it with every replacement.
+// - The owner's teardown renames the whole session out of the root, where an attaching launch never looks.
+// - The fingerprint covers the server's or daemon's confinement and environment: the profile's inputs, the closed
+//   environment and the proxy's rules.
+//   - Equal fingerprints mean that the attaching launch would start a server or daemon under the same confinement
+//     and environment.
+//   - The fingerprint covers the forwarded values, since a launch that forwards a secret must not serve a launch
+//     that does not.
+//   - The fingerprint is a hash, so that none of the forwarded values is persisted.
 
 package agentsandbox.launcher
 
@@ -21,11 +25,13 @@ import agentsandbox.egress.LogHelper.sha256Hex
 import RunOnHostPrereqs.Program
 import RunOnHostSession.{parseRecord, Record}
 
-/** One runtime as its owner describes it: `proxy` and `group` are the owner's `proxy-<program>-<hash>`
-  * and `server-sbt-<hash>` or `daemon-mill-<hash>` records as they read at publication, so a
-  * descriptor left from a replaced runtime fails against the successor's records; `daemon` and
-  * `daemonConfig` — the daemon's pid and start time, taken at its start, and `RunOnHostPrereqs.millDaemonConfig`
-  * digested — are a mill runtime's. */
+/** One runtime as its owner describes it.
+  *
+  *   - `proxy` and `group` are the owner's `proxy-<program>-<hash>` record and its `server-sbt-<hash>` or
+  *     `daemon-mill-<hash>` record, as the records read at publication. A descriptor left from a replaced runtime
+  *     therefore fails against the successor's records.
+  *   - Only a mill runtime has `daemon` and `daemonConfig`: the daemon's pid and start time, taken at the daemon's
+  *     start, and the digest of `RunOnHostPrereqs.millDaemonConfig`. */
 case class RunOnHostRuntimeDescriptor(
   fingerprint: String,
   proxyPort: Int,
@@ -39,7 +45,7 @@ object RunOnHostRuntimeDescriptor:
 
   val Prefix = "runtime-"
 
-  /** The first line; a descriptor under another format is one this launcher does not read. */
+  /** The first line. This launcher does not read a descriptor under another format. */
   val Format = "ko-agent-runtime 1"
 
   def file(sessionDirectory: Path, program: Program, hash: String): Path =
@@ -56,8 +62,8 @@ object RunOnHostRuntimeDescriptor:
       ++ descriptor.daemonConfig.map(digest => s"daemon-config $digest")
     lines.mkString("", "\n", "\n")
 
-  /** None for any other format or a missing or malformed line: the start times carry spaces, so
-    * each record is the line's rest. */
+  /** None for any other format, or for a missing or malformed line. The start times carry spaces, so each record is
+    * the rest of its line. */
   def parse(text: String): Option[RunOnHostRuntimeDescriptor] =
     val lines = text.linesIterator.toVector
     def value(key: String): Option[String] =
@@ -91,27 +97,31 @@ object RunOnHostRuntimeDescriptor:
     try Option.when(Files.isRegularFile(file))(Files.readString(file, UTF_8)).flatMap(parse)
     catch case _: IOException => None
 
-  /** SHA-256, hex, of the confinement and environment the runtime's server or daemon is started
-    * under (RunOnHostSandbox.runtimeInputs) and of the rule text its proxy was created with — the
-    * rules as captured then, since a warm proxy keeps them: a launch reading the file afresh
-    * fingerprints what its own proxy would get.
+  /** The hex SHA-256 of two inputs:
     *
-    * Not in it: the request's own launcher flags, which an sbt server is started with
-    * (RunOnHostSbtServer.serverCommand). Within one launch the warm server keeps the flags of the
-    * command that started it and every later command attaches regardless, as stock sbt's thin
-    * client attaches to whatever server holds the portfile; attaching across launches follows
-    * the same rule. They widen nothing this fingerprint guards: the profile is rendered from the
-    * assembly and the session, never from the request; the supervisor's properties ride
-    * `_JAVA_OPTIONS`, which HotSpot applies after argv, so a `-D` moves neither the global base
-    * nor the socket directory; a bind under the sbt profile gets EPERM, so `-jvm-debug` listens
-    * nowhere; a cache flag naming a path outside the grants fails the server at its first write;
-    * and the flags naming a program are dropped before the start. What remains of them for the
-    * attaching launch's build — the properties it sees, the memory it gets — is what the owner's
-    * own later commands see, the behavior SECURITY.md "Run on host" accepts for every request.
+    *   - the confinement and environment under which the runtime's server or daemon is started
+    *     (RunOnHostSandbox.runtimeInputs);
+    *   - the rule text the runtime's proxy was created with. The text holds the rules as captured then, since a warm
+    *     proxy keeps them. A launch that reads the rule file afresh fingerprints what its own proxy would get.
     *
-    * Each field is length-framed, so no two inputs render alike. Every profile input is named, so
-    * a field added to `ProfileInputs` or `CommandPrereqs` fails to compile here until it is
-    * fingerprinted. */
+    * The fingerprint leaves out the request's own launcher flags, which an sbt server is started with
+    * (RunOnHostSbtServer.serverCommand).
+    *
+    *   - Within one launch, the warm server keeps the flags of the command that started it, and every later command
+    *     attaches regardless. Stock sbt's thin client likewise attaches to whatever server holds the portfile.
+    *     Attaching across launches follows the same rule.
+    *   - The flags widen nothing this fingerprint guards:
+    *     - The profile is rendered from the assembly and the session, never from the request.
+    *     - The supervisor's properties ride `_JAVA_OPTIONS`, which HotSpot applies after argv. A `-D` flag therefore
+    *       moves neither the global base nor the socket directory.
+    *     - A bind under the sbt profile gets EPERM, so `-jvm-debug` listens nowhere.
+    *     - A cache flag that names a path outside the grants fails the server at its first write.
+    *     - The flags that name a program are dropped before the start.
+    *   - The flags still affect the attaching launch's build: the properties the build sees and the memory it gets.
+    *     The owner's own later commands see the same, which SECURITY.md, "Run on host", accepts for every request.
+    *
+    * Each field is length-framed, so no two inputs render alike. This method names every profile input, so a field
+    * added to `ProfileInputs` or `CommandPrereqs` fails to compile here until it is fingerprinted. */
   def fingerprint(inputs: RunOnHostSandbox.RuntimeInputs, rules: String): String =
     val SeatbeltProfile.ProfileInputs(
       prereqs, sessionTmp, distribution, sbtGlobal, ivyHome, gradleUserHome, m2Repository, proxyPort, trust,

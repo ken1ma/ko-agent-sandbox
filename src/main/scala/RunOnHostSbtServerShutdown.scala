@@ -1,11 +1,14 @@
-// Speaks sbt's local-socket shutdown: the tokenless `initialize` the pinned client sends, then
-// `sbt/exec shutdown` — the sequence sbt v2.0.4's NetworkClient/Serialization implement and
-// src/probe/session-recovery.sh M4 measured, framing per ServerConnection.sendString (the length
-// counts the body plus its trailing CRLF). Local-mode servers authenticate nothing
-// (Defaults.serverAuthentication is TCP-only), so there is no token to pass.
+// Speaks sbt's local-socket shutdown: the tokenless `initialize` that the pinned client sends, then
+// `sbt/exec shutdown`.
 //
-// Never sbt's own client here: its measured answer to a dead socket is to delete the portfile and
-// start its own server — from a scavenger, an unconfined one.
+// - sbt v2.0.4's NetworkClient and Serialization implement this sequence, and src/probe/session-recovery.sh M4
+//   measured it.
+// - The framing follows ServerConnection.sendString: the length counts the body plus its trailing CRLF.
+// - Local-mode servers authenticate nothing (Defaults.serverAuthentication is TCP-only), so there is no token to
+//   pass.
+//
+// This file never runs sbt's own client. Faced with a dead socket, sbt's client deletes the portfile and starts its
+// own server (measured). Started from a scavenger, that server would be unconfined.
 
 package agentsandbox.launcher
 
@@ -38,18 +41,20 @@ object RunOnHostSbtServerShutdown:
   import Awaited.*
 
   /**
-   * Connect, initialize, wait for the server's first bytes, send the shutdown exec, and wait for
-   * the server to close the socket — the measured sequence of a successful shutdown. Bounded
-   * throughout, the connect included; a definitive no-listener answer is Unreachable, and
-   * everything else — an unanswered protocol, a transient connect failure — is Unanswered, for
-   * the caller to retry, never a verdict to guess at by pid. The default bound is minutes, not
-   * seconds: a server mid-exec runs `shutdown` after the command it is on, so the bound covers a
-   * queued exec, not only a dead socket.
+   * Connects, initializes, waits for the server's first bytes, sends the shutdown exec, and waits for the server to
+   * close the socket. The steps follow the measured sequence of a successful shutdown.
+   *
+   *   - A deadline bounds every step, the connect included.
+   *   - A definitive answer that no listener exists is Unreachable.
+   *   - Everything else is Unanswered, for the caller to retry, such as an unanswered protocol or a transient
+   *     connect failure. The caller never guesses a verdict by pid.
+   *   - The default bound is minutes, not seconds. A server in the middle of an exec runs `shutdown` after its
+   *     current command, so the bound covers a queued exec, not only a dead socket.
    */
   def shutdown(socket: Path, deadlineMillis: Long = 120_000): ServerAnswer =
     val deadline = System.nanoTime + deadlineMillis * 1_000_000
-    // notExists, not !exists: both are false when the status cannot be determined (an unreadable
-    // parent, say), and only proven absence is definitive.
+    // notExists, not !exists: both are false when the status cannot be determined, for example under an
+    // unreadable parent. Only proven absence is definitive.
     if java.nio.file.Files.notExists(socket) then ServerAnswer.Unreachable(s"$socket does not exist")
     else
       connect(socket, deadline) match
@@ -70,11 +75,13 @@ object RunOnHostSbtServerShutdown:
           finally channel.close()
 
   /**
-   * Non-blocking, and under the deadline: a blocking Unix-domain connect can wait on a full
-   * backlog, which is a live and busy server. Only a definitive refusal is Unreachable — proven
-   * absence is answered by the notExists check above; anything else (EACCES, exhausted
-   * descriptors) may hide a live listener and stays retryable. Measured mapping: no listener is a
-   * ConnectException, an absent path a generic SocketException, EACCES a BindException.
+   * Connects without blocking, under the deadline. A blocking Unix-domain connect can wait on a full backlog, and a
+   * full backlog means a live and busy server.
+   *
+   *   - Only a definitive refusal is Unreachable. The notExists check in `shutdown` answers proven absence.
+   *   - Anything else, such as EACCES or exhausted descriptors, may hide a live listener and stays retryable.
+   *   - The measured mapping: no listener raises a ConnectException, an absent path a generic SocketException, and
+   *     EACCES a BindException.
    */
   private def connect(socket: Path, deadline: Long): Either[ServerAnswer, SocketChannel] =
     try
@@ -115,7 +122,7 @@ object RunOnHostSbtServerShutdown:
     val buffer = ByteBuffer.wrap(bytes)
     while buffer.hasRemaining do if channel.write(buffer) == 0 then Thread.sleep(1)
 
-  /** A reset here is the peer exiting mid-close — the outcome being waited for, not a failure. */
+  /** A reset here means that the peer exited while closing, which is the awaited outcome, not a failure. */
   private def drainToEof(channel: SocketChannel, deadline: Long): Boolean =
     var outcome: Option[Boolean] = None
     while outcome.isEmpty do

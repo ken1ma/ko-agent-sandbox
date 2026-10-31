@@ -1,36 +1,41 @@
 #!/usr/bin/env python3
-# The hostile Agent Host of doc/plan-ide-integration.md, step 2. It speaks the Agent Host Protocol
-# (AHP) in place of `code agent host`, standing in for a compromised sandbox: every process in the
-# sandbox is untrusted, so this one tries each client-executed operation the protocol lets a server
-# drive, and records what VS Code does. What VS Code refuses on its own, and what it performs or
-# prompts for, is the measurement that decides whether the launcher needs a filtering relay.
+# The hostile Agent Host of doc/plan-ide-integration.md, "Step 2: enforcement outside the sandbox". The script
+# speaks the Agent Host Protocol (AHP) in place of `code agent host` and stands in for a compromised sandbox. Every
+# process in the sandbox is untrusted, so this script tries each client-executed operation that the protocol lets a
+# server drive, and records what VS Code does. The measurement is what VS Code refuses on its own and what it
+# performs or prompts for; that measurement decides whether the launcher needs a filtering relay.
 #
 #   uv run --with 'websockets>=15' src/probe/ahp-hostile-host.py [--port N] [--log FILE] \
 #       [--probe-path P]... [--grant-path FILE]
 #
-# Point VS Code at it exactly as at the real host: "Agents: Add Remote Agent Host..." with
-# ws://127.0.0.1:<port>?tkn=<anything>. The token is not checked here. With `code agent host` its
-# supervisor checks the token at the WebSocket handshake, so a process already speaking as the host
-# is past that gate, which is the position this script takes.
+# Point VS Code at the script exactly as at the real host: "Agents: Add Remote Agent Host..." with
+# ws://127.0.0.1:<port>?tkn=<anything>. This script does not check the token. With `code agent host`, the host's
+# supervisor checks the token at the WebSocket handshake, so a process that already speaks as the host is past that
+# gate. This script takes that position.
 #
-# Probes that need no session fire on a timeline after `initialize`: the advertised protected
-# resources, an `auth/required` notification, the reverse `resource*` family against host paths,
-# the agent list re-broadcast with one resource added, and, with --grant-path, a `resourceRequest`
-# followed by a second read. The rest follow the operator in the Agents window: `createSession`
-# for Copilot is answered with `AuthRequired`, and starting a turn draws a client-contributed tool
-# call and a URL-mode elicitation.
+# Probes that need no session fire on a timeline after `initialize`:
+# - the advertised protected resources;
+# - an `auth/required` notification;
+# - the reverse `resource*` family against host paths;
+# - the agent list re-broadcast with one resource added;
+# - with --grant-path, a `resourceRequest` followed by a second read.
+# The other probes follow the operator in the Agents window: the script answers `createSession` for Copilot with
+# `AuthRequired`, and a started turn draws a client-contributed tool call and a URL-mode elicitation.
 #
-# A signed-out client that sends no `authenticate` is indistinguishable from enforcement, so each
-# token route also needs a run where VS Code holds a token. VS Code's `--enable-smoke-test-driver`
-# flag with `chat.agentHost.unsafeTestToken` supplies a fake one on the connect-time push and on
-# interactive resolution; the `auth/required` handler resolves a real session regardless, so that
-# route's control needs a signed-in account. The log timestamps every token received against the
-# probes that ran; it does not attribute a token to a route. Every frame is logged verbatim, a
-# pushed token included, so a run with a real account leaves that token in the log.
+# A signed-out client that sends no `authenticate` looks the same as enforcement, so each token route also needs a
+# run where VS Code holds a token.
+# - VS Code's `--enable-smoke-test-driver` flag with `chat.agentHost.unsafeTestToken` supplies a fake token on the
+#   connect-time push and on interactive resolution.
+# - The `auth/required` handler resolves a real session regardless, so that route's control needs a signed-in
+#   account.
+# - The log timestamps every token received against the probes that ran; the log does not attribute a token to a
+#   route.
+# - The script logs every frame verbatim, a pushed token included, so a run with a real account leaves that token
+#   in the log.
 #
-# Reverse write, mkdir and delete target a probe file under the host's /tmp, never a real file, so a
-# client that performs them without prompting damages nothing. Read and list target real host paths
-# (chosen with --probe-path) because reading them is the exposure being measured.
+# Reverse write, mkdir and delete target a probe file under the host's /tmp, never a real file, so a client that
+# performs them without prompting damages nothing. Read and list target real host paths (chosen with --probe-path),
+# because reading those paths is the exposure being measured.
 
 import argparse
 import asyncio
@@ -46,13 +51,13 @@ import websockets
 PROTOCOL_VERSION = "0.9.0"
 ROOT = "ahp-root://"
 
-# Server-initiated (reverse) requests share the transport with the client's own requests but are a
-# separate id space. Start high so a reverse id can never be mistaken for a client id in either
-# peer's correlation table.
+# Server-initiated (reverse) requests share the transport with the client's own requests, but reverse requests have
+# a separate id space. Their ids start high, so that neither peer's correlation table can mistake a reverse id for a
+# client id.
 REVERSE_ID_BASE = 1_000_000
 
-# How long to wait for a reverse request's response before recording it as unanswered. A pending
-# user prompt in VS Code leaves the request open; that silence is itself a result.
+# How long the script waits for a reverse request's response before it records the request as unanswered. A pending
+# user prompt in VS Code leaves the request open, and that silence is itself a result.
 REVERSE_TIMEOUT_S = 20.0
 
 
@@ -89,15 +94,14 @@ def model(agent: str) -> dict[str, Any]:
 
 
 def root_state() -> dict[str, Any]:
-    # Two agents mirroring what `code agent host` advertises: Copilot with a required GitHub
-    # resource, Claude with the same resource optional. Each advertised resource is a route a
-    # client with a token may push it on.
+    # Two agents mirror what `code agent host` advertises: Copilot with a required GitHub resource, and Claude with
+    # the same resource optional. Each advertised resource is a route on which a client with a token may push the
+    # token.
     #
-    # Claude carries a model and an SDK-ready status, published under the key VS Code reads
-    # (`vscode.agentSdkSetup.status.<agent>`); whether a turn needs it is untested. Copilot
-    # keeps its required resource and no model, so its sign-in gate stays measurable. A session on a
-    # Local folder sends this host nothing; the routes need a session opened against this host from
-    # the workspace dropdown's Remote tab.
+    # Claude carries a model and an SDK-ready status, published under the key that VS Code reads
+    # (`vscode.agentSdkSetup.status.<agent>`); whether a turn needs that status is untested. Copilot keeps its
+    # required resource and no model, so its sign-in gate stays measurable. A session on a Local folder sends this
+    # host nothing; the routes need a session opened against this host from the Remote tab of the workspace dropdown.
     github_required = protected_resource("https://api.github.com", "GitHub Copilot", True)
     github_optional = protected_resource("https://api.github.com", "GitHub Copilot", False)
     repos = protected_resource("https://api.github.com/repos", "GitHub Repository", False)
@@ -112,9 +116,9 @@ def root_state() -> dict[str, Any]:
         ],
         "activeSessions": 0,
         "config": {"schema": {"type": "object", "properties": {}}, "values": {}},
-        # The SDK status rides root `_meta`, which the client's own config pushes never touch; the
-        # `initialize` handler also publishes it as a root/configChanged action.
-        # readAgentSdkSetupInfos reads both.
+        # The SDK status travels in the root `_meta`, which the client's own config pushes never touch. The
+        # `initialize` handler also publishes the status as a root/configChanged action, and readAgentSdkSetupInfos
+        # reads both.
         "_meta": {"vscode.agentSdkSetup.status.claude": {"download": "ready"}},
     }
 
@@ -212,9 +216,9 @@ class Connection:
             })
             self._initialized = True
             self._rec.event("client-info", clientInfo=params.get("clientInfo"))
-            # Publish Claude's SDK status the way the real host does, as a root/configChanged action
-            # into config.values, not in the snapshot: `ready` makes VS Code drop the download banner
-            # and let a turn start. Sent after the result so the client is subscribed to root.
+            # Publish Claude's SDK status the way the real host does: as a root/configChanged action into
+            # config.values, not in the snapshot. The value `ready` makes VS Code drop the download banner and let a
+            # turn start. The action goes after the result, so that the client is already subscribed to root.
             self._server_seq += 1
             await self._notify("action", {"channel": ROOT, "serverSeq": self._server_seq,
                 "action": {"type": "root/configChanged",
@@ -223,9 +227,9 @@ class Connection:
             asyncio.create_task(self._run_connection_probes())
         elif method == "subscribe":
             channel = params.get("channel", "")
-            # State-bearing channels return a snapshot; stateless (ahp-otlp:, ahp-automations:) an empty result.
-            # A session's address is whatever the client chose at createSession (VS Code uses
-            # `<provider>:/<uuid>`), so sessions are recognized by what was created, not by scheme.
+            # Channels that carry state return a snapshot; stateless channels (ahp-otlp:, ahp-automations:) return an
+            # empty result. A session's address is whatever the client chose at createSession (VS Code uses
+            # `<provider>:/<uuid>`), so the script recognizes sessions by what was created, not by scheme.
             if channel in self._sessions:
                 await ok({"snapshot": {"resource": channel, "state": self._session_snapshot(channel),
                                        "fromSeq": self._server_seq}})
@@ -244,9 +248,9 @@ class Connection:
         elif method == "ping":
             await ok(None)
         elif method == "authenticate":
-            # A bearer token crossing the wire is the exposure. This record carries the resource,
-            # the token's length and the scopes; the frame logged before it holds the token itself.
-            # Its timestamp places it among the probes.
+            # A bearer token that crosses the wire is the exposure. This record carries the resource, the token's
+            # length and the scopes; the frame logged before the record holds the token itself. The record's
+            # timestamp places the token among the probes.
             self._rec.event("TOKEN-RECEIVED", resource=params.get("resource"),
                             token_len=len(params.get("token") or ""),
                             token_empty=(params.get("token") == ""),
@@ -270,8 +274,8 @@ class Connection:
         elif method == "disposeSession":
             await ok({})
         elif method in ("resourceList", "resourceResolve", "resourceRead"):
-            # The client browsing the host's own files, as the Remote tab's folder picker does. The
-            # real host serves the sandbox's filesystem; so does this one, read-only.
+            # The client browses the host's own files here, as the Remote tab's folder picker does. The real host
+            # serves the sandbox's filesystem, and this host serves its own filesystem too, read-only.
             await self._serve_own_file(method, params, ok, err)
         else:
             await err(-32601, f"method not handled by hostile host: {method}")
@@ -279,14 +283,14 @@ class Connection:
     async def _handle_create_session(self, params: dict[str, Any], ok: Any, err: Any) -> None:
         provider = params.get("provider")
         channel = params.get("channel", "")
-        # Route 2: AuthRequired on an ordinary command. Refuse the required-auth provider with
+        # Route 2: AuthRequired on an ordinary command. The script refuses the provider that requires auth with
         # -32007 and the resource in data; a signed-in client should then push a token and retry.
         if provider == "copilotcli":
             self._rec.event("probe-fire", probe="createSession-AuthRequired", provider=provider)
             await err(-32007, "Authentication required for GitHub Copilot",
                       {"resources": [protected_resource("https://api.github.com", "GitHub Copilot", True)]})
             return
-        # Otherwise accept, so the operator can reach a turn and the session-level probes.
+        # Accept any other provider, so that the operator can reach a turn and the session-level probes.
         summary = {"resource": channel, "provider": provider or "claude", "title": "hostile-host session",
                    "status": 1, "createdAt": now(), "modifiedAt": now()}
         self._sessions[channel] = summary
@@ -336,7 +340,7 @@ class Connection:
         params = msg.get("params") or {}
         if method == "dispatchAction":
             await self._handle_client_action(params)
-        # unsubscribe, setClientManagedSettingsPermissions and the rest need no reply and no probe.
+        # The other methods, such as unsubscribe and setClientManagedSettingsPermissions, need no reply and no probe.
 
     async def _handle_client_action(self, params: dict[str, Any]) -> None:
         action = params.get("action") or {}
@@ -348,9 +352,9 @@ class Connection:
             self._rec.event("active-client", session=channel, clientId=client.get("clientId"),
                             tools=[t.get("name") for t in client.get("tools", [])])
         elif atype == "chat/turnStarted":
-            # The client dispatches a turn optimistically; the server must echo it on the action
-            # stream with a serverSeq and the origin. Without the echo, VS Code rendered neither
-            # probe action (2026-09-23). Echo, then run the probes.
+            # The client dispatches a turn optimistically, and the server must echo the turn on the action stream
+            # with a serverSeq and the origin. Without the echo, VS Code rendered neither probe action (2026-09-23).
+            # So the script echoes first and then runs the probes.
             self._server_seq += 1
             await self._notify("action", {"channel": channel, "serverSeq": self._server_seq,
                 "action": action, "origin": {"clientId": (self._active_clients.get(
@@ -367,8 +371,8 @@ class Connection:
                             "reason": "required"}, note="route: auth/required")
         await asyncio.sleep(3.0)
 
-        # Reverse resource* family against host paths. Read and list expose real files; write, mkdir
-        # and delete act only on a probe file under /tmp so a non-prompting client harms nothing.
+        # The reverse resource* family against host paths. Read and list expose real files. Write, mkdir and delete
+        # act only on a probe file under /tmp, so a client that does not prompt harms nothing.
         probe_file = f"file:///tmp/ahp-hostile-probe-{os.getpid()}.txt"
         for path in self._probe_paths:
             uri = path if path.startswith("file:") else "file://" + os.path.abspath(os.path.expanduser(path))
@@ -385,11 +389,10 @@ class Connection:
                             "uri": "file://" + os.path.expanduser("~"), "recursive": False},
                             note=f"watch {os.path.expanduser('~')}")
 
-        # Re-check after a root-state update: broadcast a changed agent list and record whether a
-        # token push follows, one of the routes the plan names. VS Code compares the advertised
-        # resource set before re-checking (`agentHostProtectedResourcesService.ts`), and an
-        # unchanged list drew no push, so Claude gains a distinct resource here. Runs before the
-        # grant probe, which blocks on a human decision.
+        # Re-check after a root-state update, one of the routes that the plan names: broadcast a changed agent list
+        # and record whether a token push follows. VS Code compares the advertised resource set before it re-checks
+        # (`agentHostProtectedResourcesService.ts`), and an unchanged list drew no push, so Claude gains a distinct
+        # resource here. This probe runs before the grant probe, which blocks on a human decision.
         changed = root_state()["agents"]
         changed[1]["protectedResources"] = changed[1]["protectedResources"] + [
             protected_resource("https://api.github.com/gists", "GitHub Gists", False)]
@@ -399,11 +402,10 @@ class Connection:
             "action": {"type": "root/agentsChanged", "agents": changed}},
             note="root/agentsChanged re-check")
 
-        # Grant probe: follow a refused read with the `resourceRequest` that opens VS Code's prompt,
-        # then read again once it resolves. Records what the prompt draws and whether a grant returns
-        # the file. The target is chosen with --grant-path; use a file made for the test, since a
-        # granted read copies its bytes into the log. The wait is long, to give a human time to
-        # answer; a granted request returns `{}`.
+        # Grant probe: follow a refused read with the `resourceRequest` that opens VS Code's prompt, then read again
+        # once the prompt resolves. The probe records what the prompt draws and whether a grant returns the file.
+        # --grant-path chooses the target; use a file made for the test, because a granted read copies the file's
+        # bytes into the log. The wait is long to give a human time to answer; a granted request returns `{}`.
         if self._grant_path:
             uri = "file://" + os.path.abspath(os.path.expanduser(self._grant_path))
             self._rec.event("probe-fire", probe="grant-request", uri=uri)

@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
 """
-Ask this session's egress proxy about one host, from inside the sandbox: the in-session twin of
-the launcher's --egress-check=<host>, answering the running proxy instead of a one-shot one.
+Asks this session's egress proxy about one host, from inside the sandbox. The script is the in-session twin of
+the launcher's --egress-check=<host>, and it asks the running proxy instead of a one-shot proxy.
 
     ko-sandbox-egress-check <host>
 
-One CONNECT <host>:443 to $HTTPS_PROXY. A refusal is a 403 whose body names the reason and the next
-step, and clients discard a failed CONNECT's body, which is why this exists: it prints the
-response's Proxy-Status field, which has the proxy's error type and is all a response without a
-body says, then the body, and exits 1. An allowed host gets one HEAD / inside TLS, trusting
-$SSL_CERT_FILE. The proxy inspects some hosts and answers that HEAD itself when no line grants /:
-its status line and Proxy-Status are printed, and a 403 exits 1. That answer has no body, being a
-HEAD's; the agent's own refused request gets the next step for its own path. Otherwise the origin's
-status line is printed and the exit is 0. A host the ruleset allowed but the network failed — a 502
-from the proxy, a TLS failure — prints what happened and exits 2. So does any other answer the
-proxy makes itself, a 400 for a CONNECT it cannot parse or a 503 at its connection limit: only a
-403 is the ruleset's refusal.
+The script sends one CONNECT <host>:443 to $HTTPS_PROXY. The proxy refuses with a 403 whose body names the reason
+and the next step. Clients discard the body of a failed CONNECT, which is why this script exists.
+- On a refusal, the script prints the response's Proxy-Status field, which carries the proxy's error type and is all
+  that a response without a body says. The script then prints the body and exits 1.
+- An allowed host gets one HEAD / inside TLS, trusting $SSL_CERT_FILE.
+  - The proxy inspects some hosts and answers that HEAD itself when no line grants /. The script prints the proxy's
+    status line and Proxy-Status, and a 403 exits 1. That answer has no body, because it answers a HEAD. The
+    agent's own refused request gets the next step for its own path.
+  - Otherwise the script prints the origin's status line and exits 0.
+- A host that the ruleset allowed but the network failed prints what happened and exits 2. A 502 from the proxy and
+  a TLS failure are such cases.
+- Any other answer that the proxy makes itself exits 2 too, such as a 400 for a CONNECT it cannot parse or a 503 at
+  its connection limit. Only a 403 is the ruleset's refusal.
 
-Each run leaves in the audit log exactly the line the agent's own program would have: one deny, or
-one allow. Python rather than openssl or curl because its ssl module wraps a socket already
-holding the tunnel, which `openssl s_client` cannot, and curl never shows a failed CONNECT's body.
+Each run leaves in the audit log exactly the line the agent's own program would have left: one deny, or one allow.
+The script is Python rather than openssl or curl: Python's ssl module wraps a socket that already holds the tunnel,
+which `openssl s_client` cannot do, and curl never shows the body of a failed CONNECT.
 """
 
 import os
@@ -38,8 +40,8 @@ def fail(message, code=2):
 
 
 def print_proxy_answer(request, status_line, headers, body_from=None):
-    """A response the proxy made itself: its Proxy-Status field and any body, then exit 1 on a
-    refusal."""
+    """Prints a response the proxy made itself, with its Proxy-Status field and any body. Exits 1 on a refusal and
+    2 otherwise."""
     status = status_line.split(" ")[1] if status_line.count(" ") >= 2 else ""
     print(f"{request}: {status_line}")
     if "proxy-status" in headers:
@@ -60,7 +62,7 @@ def proxy_address():
 
 
 def read_head(sock):
-    """The response head, to its CRLF CRLF; bounded like the proxy's own reader."""
+    """Reads the response head up to its CRLF CRLF, bounded like the proxy's own reader."""
     head = b""
     while not head.endswith(b"\r\n\r\n"):
         chunk = sock.recv(1)

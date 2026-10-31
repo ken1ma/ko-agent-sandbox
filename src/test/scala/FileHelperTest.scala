@@ -1,5 +1,5 @@
-// State-file replacement must preserve permissions and keep mount-source names present.
-// Path resolution and lock release are checked here; DirectoryStreamsTest checks descriptor lifetime.
+// Tests that state-file replacement preserves permissions and keeps mount-source names present. This
+// suite also checks path resolution and lock release; DirectoryStreamsTest checks descriptor lifetime.
 
 package agentsandbox.launcher
 
@@ -16,8 +16,8 @@ class FileHelperTest extends munit.FunSuite:
   test("a stamped entry is its own validation, so an interleaved pair misses rather than mixes"):
     // Concurrent launches of one workspace under different session options write the ruleset
     // cache without a lock. With the stamp in a file of its own, one launch's content could end up
-    // under the other's stamp and stay there; with it inside each file, the pairing a caller
-    // requires does not match and the cache re-derives.
+    // under the other launch's stamp and stay there. With the stamp inside each file, the pairing
+    // that a caller requires does not match, and the cache re-derives.
     val dir = Files.createTempDirectory("stamped")
     val hosts = dir.resolve("resolved.hosts")
     val warnings = dir.resolve("resolved.warnings")
@@ -27,7 +27,7 @@ class FileHelperTest extends munit.FunSuite:
     assertEquals(stampedEntry(hosts, "stamp-a"), Some("one\ntwo"))
     assertEquals(stampedEntry(warnings, "stamp-a"), Some(""))
 
-    // The interleaving: another selection replaced the content of one file and not the other.
+    // The interleaving: another selection replaced the content of one file and not of the other.
     writeStamped(hosts, "stamp-b", "three")
     assertEquals(stampedEntry(hosts, "stamp-a"), None)
     assertEquals(stampedEntry(warnings, "stamp-b"), None)
@@ -39,9 +39,9 @@ class FileHelperTest extends munit.FunSuite:
 
   test("a future path canonicalizes through its nearest existing ancestor"):
     val base = Files.createTempDirectory("future-path").toRealPath()
-    // Exists already: plain canonicalization.
+    // A path that exists already gets plain canonicalization.
     assertEquals(canonicalizedFuturePath(base), Right(base))
-    // Does not exist yet: the missing tail is appended to the canonicalized ancestor.
+    // For a path that does not exist yet, the missing tail is appended to the canonicalized ancestor.
     assertEquals(canonicalizedFuturePath(base.resolve("a/b/c")), Right(base.resolve("a/b/c")))
     // A symlinked ancestor resolves, so a comparison against the answer sees the real location.
     val real = Files.createDirectories(base.resolve("real"))
@@ -50,11 +50,12 @@ class FileHelperTest extends munit.FunSuite:
       canonicalizedFuturePath(linked.resolve("missing/tail")),
       Right(real.resolve("missing/tail")),
     )
-    // `..` in the spelling is normalized before the walk, not left for the filesystem.
+    // `..` in the spelling is normalized before the walk, not left to the filesystem.
     assertEquals(canonicalizedFuturePath(base.resolve("a/../b")), Right(base.resolve("b")))
-    // A dangling symlink is presence, not absence: `exists` would follow it, call it missing, and
-    // hand it back as an unchecked "future" component for a concurrent writer to materialize
-    // after validation. NOFOLLOW discovery finds the link itself, and toRealPath then refuses it.
+    // A dangling symlink counts as present, not absent. `exists` would follow the link, call it
+    // missing, and hand it back as an unchecked "future" component, which a concurrent writer could
+    // create after validation. Discovery with NOFOLLOW finds the link itself, and toRealPath then
+    // refuses the link.
     val dangling = Files.createSymbolicLink(base.resolve("dangling"), base.resolve("nowhere"))
     assert(canonicalizedFuturePath(dangling).isLeft)
     assert(canonicalizedFuturePath(dangling.resolve("tail")).isLeft)
@@ -68,8 +69,8 @@ class FileHelperTest extends munit.FunSuite:
     val lock = dir.resolve(".lock")
     assertEquals(withFileLock(lock)(41 + 1), 42)
     assert(Files.exists(lock))
-    // Cross-process exclusion is FileChannel's contract; this test checks the wrapper's release
-    // by acquiring again, which a leaked lock would prevent.
+    // Cross-process exclusion is FileChannel's contract. This test checks the wrapper's release by
+    // acquiring the lock again, which a leaked lock would prevent.
     assertEquals(withFileLock(lock)("again"), "again")
 
   test("state-file writes set the required permissions and correct a planted mode"):
@@ -84,7 +85,7 @@ class FileHelperTest extends munit.FunSuite:
     writeReadable(readable, "CERT")
     assertEquals(modeOf(readable), "rw-r--r--")
 
-    // Replacing a file does not inherit its mode: a world-writable one planted at the path is
+    // Replacing a file does not inherit its mode. A world-writable file planted at the path is
     // replaced, not opened, so nothing carries the old permissions into the new content.
     val planted = dir.resolve("leaf.key")
     Files.createFile(planted)
@@ -93,16 +94,16 @@ class FileHelperTest extends munit.FunSuite:
     assertEquals(modeOf(planted), "rw-------")
     assertEquals(Files.readString(planted), "PRIVATE KEY")
 
-    // A failed rename can leave a temporary beside the bind source, where no launch mounts it;
-    // successful writes must leave no such files behind either.
+    // A failed rename can leave a temporary file beside the bind source, where no launch mounts it.
+    // Successful writes must leave no such files behind either.
     assertEquals(
       directoryEntries(dir).map(_.getFileName.toString).sorted,
       Vector("bundle.crt", "ca.key", "leaf.key"),
     )
 
   test("a tree holding a read-only file is deleted"):
-    // FileHelper.deleteEntry has the Windows refusal. POSIX asks the directory alone, so there
-    // this tree is deleted with or without the retry.
+    // FileHelper.deleteEntry has the Windows refusal. POSIX checks only the directory's permissions,
+    // so on POSIX this tree is deleted with or without the retry.
     val tree = Files.createTempDirectory("delete-read-only")
     val run = Files.createDirectories(tree.resolve("run-0"))
     val file = Files.writeString(run.resolve("cacerts"), "x")
@@ -115,9 +116,9 @@ class FileHelperTest extends munit.FunSuite:
     val mounted = dir.resolve("agents.md")
     writeReadable(mounted, "FIRST")
 
-    // The failure this rules out: a rewrite that unlinks first leaves the name missing for as long
-    // as it takes to produce the new content, and a launch of the same workspace assembling its
-    // containers in that window dies on `statfs <path>: no such file or directory`.
+    // This test rules out the following failure. A rewrite that unlinks first leaves the name
+    // missing while the rewrite produces the new content. A launch of the same workspace that
+    // assembles its containers in that window dies on `statfs <path>: no such file or directory`.
     val seenMissing = java.util.concurrent.atomic.AtomicBoolean(false)
     val watcher = Thread: () =>
       while !Thread.currentThread().isInterrupted do
@@ -132,8 +133,8 @@ class FileHelperTest extends munit.FunSuite:
     assertEquals(Files.readString(mounted), "ROUND 200")
 
   test("a rewrite that changes nothing leaves the mount source's inode alone"):
-    // POSIX only: planting a mode needs POSIX permissions, and
-    // Windows answers no fileKey for the inode assertions to compare.
+    // The test runs on POSIX only: planting a mode needs POSIX permissions, and Windows answers no
+    // fileKey for the inode assertions to compare.
     assume(posixPermissions(Files.createTempDirectory("perm-probe")), "POSIX permissions only")
     val dir = Files.createTempDirectory("unchanged-write").toRealPath()
     val mounted = dir.resolve("agents.md")
@@ -144,12 +145,12 @@ class FileHelperTest extends munit.FunSuite:
     writeReadable(mounted, "POLICY")
     val first = inode()
 
-    // What a running session pays for: the replacement is what its bind mount does not survive
+    // A running session depends on this: the session's bind mount does not survive the replacement
     // through a podman machine, so identical content must not reach the rename at all.
     writeReadable(mounted, "POLICY")
     assertEquals(inode(), first, "an unchanged write replaced the file a live session had mounted")
 
-    // A mode planted on it is a change like any other: identical content does not exempt it.
+    // A mode planted on the file is a change like any other: identical content does not exempt it.
     Files.setPosixFilePermissions(mounted, PosixFilePermissions.fromString("rw-rw-rw-"))
     writeReadable(mounted, "POLICY")
     assertEquals(modeOf(mounted), "rw-r--r--")

@@ -22,7 +22,8 @@ class AwsCredentialTest extends munit.FunSuite:
     "AWS_SESSION_TOKEN" -> "token==",
   )
 
-  /** The host's `aws`: the export's result, and the profile's region, none when `region` is None. */
+  /** The host's `aws`. It answers the export with the given result, and the region query with `region`; it
+    * fails the region query when `region` is None. */
   private def host(exit: Int, out: String, err: String = "", region: Option[String] = Some("ap-northeast-1")) =
     (args: Seq[String]) =>
       if args.contains("export-credentials") then Run(exit, out.getBytes("UTF-8"), err)
@@ -34,10 +35,10 @@ class AwsCredentialTest extends munit.FunSuite:
       Right(Some(Request(Some("team")))),
     )
     assertEquals(parseCommandLine(List("--env-aws-cred", "claude")).map(_.awsCredential), Right(Some(Request(None))))
-    // The empty value is the default: no credential, rather than AWS_PROFILE's.
+    // The empty value means the default: the launcher forwards no credential, rather than AWS_PROFILE's.
     assertEquals(parseCommandLine(List("--env-aws-cred=", "claude")).map(_.awsCredential), Right(None))
     assert(parseCommandLine(List("--env-aws-cred", "--env-aws-cred=team")).swap.exists(_.contains("twice")))
-    // The names it forwards are its own: a second route for one of them is a refusal, not a race.
+    // The option owns the names it forwards: a second route for one of those names is refused, not raced.
     assert(
       parseCommandLine(List("--env-aws-cred", "--env=AWS_SESSION_TOKEN")).swap
         .exists(_.contains("--env=AWS_SESSION_TOKEN and --env-aws-cred")),
@@ -46,11 +47,11 @@ class AwsCredentialTest extends munit.FunSuite:
       parseCommandLine(List("--egress-cred=AWS_ACCESS_KEY_ID@a.example", "--env-aws-cred=team")).swap
         .exists(_.contains("--egress-cred=AWS_ACCESS_KEY_ID@a.example:Authorization and --env-aws-cred")),
     )
-    // The region is the user's to name beside the option, which then leaves it alone (resolve).
+    // The user may name the region beside the option, and the option then leaves AWS_REGION alone (resolve).
     assert(parseCommandLine(List("--env-aws-cred", "--env=AWS_REGION=us-east-1", "claude")).isRight)
-    // Without the option, the names are the user's to forward as any other.
+    // Without the option, the user may forward these names like any other.
     assert(parseCommandLine(List("--env=AWS_SESSION_TOKEN", "claude")).isRight)
-    // After the command, it is the command's.
+    // After the command, `--env-aws-cred` is an argument of the command.
     assertEquals(parseCommandLine(List("claude", "--env-aws-cred")).map(_.awsCredential), Right(None))
 
   test("the commands name the profile as an argument: one line per value, then the region"):
@@ -81,7 +82,7 @@ class AwsCredentialTest extends munit.FunSuite:
           "expire in 11h 58m; AWS_REGION=ap-northeast-1",
       ),
     )
-    // The profile is what the user chose.
+    // The banner tints the profile as a value the user chose (HostCommands.chosen).
     val tinted = resolved.map(bannerLine(_, now, color = true))
     assert(tinted.exists(_.contains(" from profile \u001b[38;5;207mteam\u001b[0m, ")), tinted)
     // A profile named on the option wins over the host's.
@@ -115,7 +116,7 @@ class AwsCredentialTest extends munit.FunSuite:
     val expired = refusal(Request(Some("team")), Map.empty, _ => Some(aws), host(255, "", "Error loading SSO Token"))
     assert(expired.contains("Error loading SSO Token"), expired)
     assert(expired.contains("aws sso login --profile team"), expired)
-    // A static key has no expiration line: not a login's credential, and never forwarded by this option.
+    // A static key has no expiration line. A static key is not a login's credential, and this option never forwards it.
     val static = refusal(
       Request(Some("team")), Map.empty, _ => Some(aws),
       host(0, "AWS_ACCESS_KEY_ID=AKIAEXAMPLE\nAWS_SECRET_ACCESS_KEY=secret\n"),
@@ -131,7 +132,7 @@ class AwsCredentialTest extends munit.FunSuite:
       Request(Some("team")), Map.empty, _ => Some(aws), host(0, output.replace("AWS_SESSION_TOKEN=token==\n", "")),
     )
     assert(partial.contains("printed no AWS_SESSION_TOKEN"), partial)
-    // No value in any refusal.
+    // No refusal holds a value.
     Vector(expired, static, past, partial).foreach: message =>
       assert(!message.contains("secret"), message)
       assert(!message.contains("token=="), message)
@@ -155,7 +156,7 @@ class AwsCredentialTest extends munit.FunSuite:
     assert(late.contains("--env-aws-cred; the credentials of profile team expired at 2026-10-08T21:58:30Z"), late)
     assert(late.contains("aws sso login --profile team"), late)
     assert(!late.contains("token=="), late)
-    // An expiry OffsetDateTime does not read is never refused here, as it is not at resolution.
+    // An expiry that OffsetDateTime does not read is never refused here, just as resolution does not refuse it.
     val unread = resolved.copy(expiration = "2026-10-08T21:58:30")
     assertEquals(expiredSince(unread, Instant.parse("2026-10-09T00:00:00Z")), None)
 

@@ -1,5 +1,5 @@
-// The brokered credential's grammar, the lines a proxy reads its bindings from, and the head rewrite
-// (doc/egress-proxy.md, "Where the value goes"). The whole inspected path is AgentEgressProxyTest's.
+// The brokered credential's grammar, the lines from which a proxy reads its bindings, and the head rewrite
+// (doc/egress-proxy.md, "Where the value goes"). AgentEgressProxyTest covers the whole inspected path.
 
 package agentsandbox.egress
 
@@ -98,7 +98,7 @@ class CredentialTest extends munit.FunSuite:
           "normalized and its place named",
       ),
     )
-    // `:Authorization`, which the launcher writes for a binding naming no place, counts.
+    // `:Authorization`, which the launcher writes for a binding that names no place, counts toward the length.
     val unnamed = s"X@h.example/${"a" * (MaxBindingBytes - "X@h.example//".length)}/"
     assert(CredentialGrammar.parseBinding(unnamed).isLeft)
 
@@ -251,7 +251,7 @@ class CredentialTest extends munit.FunSuite:
     assertEquals(here.head.values("Authorization"), Vector(s"Bearer $GhValue"))
 
   test("a bound header sent twice is rewritten in each occurrence holding the placeholder, and no other"):
-    // Whichever occurrence the origin reads, it reads what the client meant there.
+    // Whichever occurrence the origin reads, the origin reads what the client meant there.
     val bearer = s"Bearer $GhPlaceholder"
     val own = "Bearer ghp_theapplicationsown000000000000000000"
     val twice = head("/user", "Authorization" -> bearer, "authorization" -> bearer)
@@ -290,8 +290,8 @@ class CredentialTest extends munit.FunSuite:
     Vector("/other/repo/a.jar", "/owner", "/owner/%2e%2e/other/a.jar", "/owner/../other/a.jar", "/owner//a",
       "/owner/..;/other/a.jar", "/owner/a;b", "/owner/a#/b", "/owner/\u00e4.jar", "/owner/%EF%BC%8F/a.jar")
       .foreach(path => assertEquals(sent(path), Vector.empty, path))
-    // Non-ASCII text, escaped in UTF-8 as RFC 3986 spells it, in the prefix and under it; hex case is
-    // compared byte for byte, so the other case is not under the prefix.
+    // Non-ASCII text, escaped in UTF-8 as RFC 3986 spells it, in the prefix and under it. Hex case is compared byte
+    // for byte, so the other case is not under the prefix.
     assertEquals(sent("/owner/%C3%A4%20b.jar"), Vector("GH_TOKEN"))
     assertEquals(sent("/owner/%c3%a4.jar"), Vector("GH_TOKEN"))
     val named = bound("GH_TOKEN@h.example/%E3%81%82/", GhPlaceholder, GhValue)
@@ -314,7 +314,8 @@ class CredentialTest extends munit.FunSuite:
     Vector("/c/b?sig=x", "/c/b?sig", "/c/b?other=PLACEHOLDERsig").foreach: target =>
       assertEquals(substituted(target).head.target, target)
       assertEquals(substituted(target).injected, Vector.empty, target)
-    // Sent twice, each occurrence holding the placeholder is rewritten, and an occurrence that does not stays.
+    // In a parameter sent twice, each occurrence that holds the placeholder is rewritten, and the other occurrence
+    // stays.
     val twice = substituted("/c/b?sig=PLACEHOLDERsig&sig=x&sig=PLACEHOLDERsig")
     assertEquals(twice.head.target, "/c/b?sig=a%26b%3Dc%25d%23e%2Bf%2Fg&sig=x&sig=a%26b%3Dc%25d%23e%2Bf%2Fg")
     assertEquals(twice.injected, Vector("SAS_SIG"))

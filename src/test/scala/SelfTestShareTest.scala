@@ -1,5 +1,5 @@
-// The share rows' pure half: the probe command with a session's own flags, the line protocol
-// both sides speak, and the names that keep a killed run inside the reset sweep's reach.
+// Tests the pure half of the share rows: the probe command with a session's own flags, the line
+// protocol that both sides speak, and the names that keep a killed run inside the reset sweep's reach.
 
 package agentsandbox.launcher
 
@@ -20,8 +20,8 @@ class SelfTestShareTest extends FunSuite:
     assert(command.contains("--user=65532:65532"))
     assert(command.contains(s"--volume=$mountpoint:$ProbeMount:rw"))
     assert(SessionProbe.contains(s"os.chdir(\"$ProbeMount\")"))
-    // No image build and no volume creation: the probe reuses the sandbox image as it is, so
-    // a second run rebuilds nothing and leaves no second container or volume behind.
+    // The probe builds no image and creates no volume. The probe reuses the sandbox image as it is,
+    // so a second run rebuilds nothing and leaves no second container or volume behind.
     assertEquals(command.takeRight(3), Vector("ko-agent-sandbox:latest", "python3", "-"))
 
   test("a killed run's mount and container fall inside the sweeps a reset already makes"):
@@ -32,7 +32,7 @@ class SelfTestShareTest extends FunSuite:
       ),
       Seq(probeContainerName("1a2b3c4d")),
     )
-    // The generated name itself, so the sweep and the builder cannot drift apart.
+    // The test checks the generated name itself, so the sweep and the builder cannot drift apart.
     assert(probeContainers(Seq(probeContainerName(AgentSandboxLauncher.newRunSuffix()))).nonEmpty)
 
   test("the probe program speaks exactly the protocol the orchestrator reads"):
@@ -46,8 +46,8 @@ class SelfTestShareTest extends FunSuite:
     assertEquals(interpret("mmap-visible ??"), ProbeEvent.Noise("mmap-visible ??"))
     assertEquals(interpret("abort: the seed reads b'CCCC'"), ProbeEvent.Aborted("the seed reads b'CCCC'"))
     assertEquals(interpret("WARNING: something"), ProbeEvent.Noise("WARNING: something"))
-    // The program interpolates the same constants interpret reads; their presence is the drift
-    // guard for the python side.
+    // The program interpolates the same constants that interpret reads. Their presence guards the
+    // Python side against drift.
     for marker <- Seq("READY", "read-visible", "mmap-visible", "stack ", SeedName, OldBytes, NewBytes) do
       assert(SessionProbe.contains(marker), marker)
 
@@ -56,6 +56,6 @@ class SelfTestShareTest extends FunSuite:
     assert(!script.contains("/Users/x/proj"))
     assert(script.contains("base64 -d"))
     assert(script.contains("uname -r"))
-    // findmnt, not stat: virtiofs registers under FUSE's statfs magic, and the machine line exists
-    // to tell the share from the filter's own mounts.
+    // The script uses findmnt, not stat: virtiofs registers under FUSE's statfs magic, and the machine
+    // line exists to tell the share from the filter's own mounts.
     assert(script.contains("findmnt"))

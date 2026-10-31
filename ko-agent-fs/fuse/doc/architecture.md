@@ -142,7 +142,7 @@ operation:
     `child_rule_context`). A mutation reads the cached context (`authorize_rule`).
   - The name is not always the one the session used. An entry that is the same backing object as
     the `.git` or `.ko-agent-sandbox` beside it takes that name's context (`fs.rs`, `policy_name`;
-    `../../policy/doc/security-research.md`, "Windows 8.3 short names", has why).
+    `../../policy/doc/security-research.md`, "Windows 8.3 short names", explains why).
     - Outside a gitdir, that costs a lookup two `fstatat` calls, and an operation on a parent and a
       name one more.
 

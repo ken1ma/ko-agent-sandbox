@@ -1,8 +1,10 @@
-// Which images the bundled Containerfiles start from: the remote ones, so the image-producing
-// actions can refresh them before a build, and the launcher-built ones, which order every cleanup
-// list. Reading is deliberately narrow: these Containerfiles are this repository's own, so a pattern
-// this does not resolve is a deliberate edit, and refusing it beats approximating it — an
-// approximation would skip a refresh in silence.
+// Which images the bundled Containerfiles start from:
+// - the remote images, so that the image-producing actions can refresh them before a build;
+// - the launcher-built images, which order every cleanup list.
+//
+// Reading is deliberately narrow. These Containerfiles are this repository's own, so a pattern this
+// file does not resolve is a deliberate edit, and refusing it beats approximating it: an approximation
+// would skip a refresh in silence.
 
 package agentsandbox.launcher
 
@@ -13,10 +15,10 @@ import HostCommands.{fail, shownCommand}
 object ContainerfileSources:
 
   /**
-   * The patterns those Containerfiles use, and only those: one `ARG NAME[=value]` a line,
+   * The patterns those Containerfiles use, and only those: one `ARG NAME[=value]` per line,
    * `FROM <ref> [AS <name>]`, `COPY --from=<ref>`, `RUN --mount=...,from=<ref>`, and `${NAME}`.
-   * Extend it when a bundled Containerfile needs one it refuses — the remote-source test reads
-   * every one of them, so the file and line reach CI rather than a build.
+   * Extend the patterns when a bundled Containerfile needs one they refuse. The remote-source test
+   * reads every bundled Containerfile, so the file and line reach CI rather than a build.
    */
   private val ContainerfileArg = """(?i:ARG)\s+([^\s"'\\]+)""".r
   private val ContainerfileFrom = """(?i:FROM)\s+(\S+)(?:\s+(?i:AS)\s+(\S+))?""".r
@@ -27,17 +29,18 @@ object ContainerfileSources:
 
   /**
    * A parser directive reads as a comment but is not one: `# escape=` alone rewrites what a line
-   * continuation looks like, which would hide a `--from=` on the line after it. podman (through
-   * imagebuilder, as BuildKit does) reads directives only from the lines before the first
-   * instruction, blank line, or plain comment; a `# key=value` after that point is a comment.
+   * continuation looks like, which would hide a `--from=` on the line after it. podman, through
+   * imagebuilder as BuildKit does, reads directives only from the lines before the first instruction,
+   * blank line or plain comment. A `# key=value` after that point is a comment.
    */
   private val ContainerfileDirective = """#\s*[A-Za-z][A-Za-z0-9_-]*\s*=.*""".r
 
   /**
-   * Whether a reference names its registry, by the rule containers/image applies to the component
-   * before the first slash (distribution/reference's splitDockerDomain): `localhost`, or a `.` or
-   * `:` in it, or any uppercase — a namespace cannot hold uppercase, so it must be a host. Without
-   * one podman resolves the name through the host's registries.conf, which this cannot do for it.
+   * Whether a reference names its registry, by the rule that containers/image applies to the
+   * component before the first slash (distribution/reference's splitDockerDomain): the component is
+   * `localhost`, holds a `.` or `:`, or holds any uppercase letter. A namespace cannot hold uppercase,
+   * so such a component must be a host. Without a registry, podman resolves the name through the
+   * host's registries.conf, which this method cannot do for podman.
    */
   private def isQualifiedImage(reference: String): Boolean =
     val slash = reference.indexOf('/')
@@ -48,11 +51,13 @@ object ContainerfileSources:
         first != first.toLowerCase(java.util.Locale.ROOT)
 
   /**
-   * What one Containerfile builds on, with its ARG values resolved: the registry-held images it
-   * names anywhere, and the launcher-built images its stages start `FROM` — its parents, without
-   * `localhost/`, so they compare with the tags the launcher builds. A `COPY --from` or mount of a
-   * launcher-built image is not a parent: the copied bytes outlive the source, and podman removes
-   * it freely.
+   * What one Containerfile builds on, with its ARG values resolved:
+   * - `remote` holds the registry-held images the Containerfile names anywhere;
+   * - `parents` holds the launcher-built images its stages start `FROM`, without `localhost/`, so that
+   *   they compare with the tags the launcher builds.
+   *
+   * A `COPY --from` or mount of a launcher-built image is not a parent: the copied bytes outlive the
+   * source, and podman removes the source freely.
    */
   case class ImageSources(remote: Vector[String], parents: Vector[String])
 
@@ -63,11 +68,11 @@ object ContainerfileSources:
     localImages: Set[String],
     target: Option[String],
   ): Either[String, ImageSources] =
-    // A FROM reads only the arguments declared before the first one; every other instruction reads
-    // its own stage, which inherits a global only where the stage redeclares it (Dockerfile ARG
-    // scope). One map for both would let a later stage's value pick a different image than podman.
-    // podman stores a locally built image under `localhost/`, so both spellings name it: one
-    // normalization for the declared set and the reference, or a name matches under neither.
+    // A FROM reads only the arguments declared before the first FROM. Every other instruction reads its
+    // own stage, which inherits a global only where the stage redeclares it (Dockerfile ARG scope). One
+    // map for both would let a later stage's value pick a different image than podman picks.
+    // podman stores a locally built image under `localhost/`, so both spellings name it. The declared set
+    // and the reference get one normalization; otherwise a name matches under neither spelling.
     val declared = localImages.map(_.stripPrefix("localhost/"))
     var global = Map.empty[String, String]
     var stage = Map.empty[String, String]
@@ -100,10 +105,10 @@ object ContainerfileSources:
               "",
         )
         if refusal.isEmpty then
-          // A name is one of four kinds, and the order decides which: the empty base or an
-          // earlier stage, an image this launcher builds, an image a registry holds, or a short
-          // name only the host's registries.conf could place. Testing the registry syntax before
-          // the launcher's own images would schedule a pull for one it is about to build.
+          // A name is one of four kinds, and the order of the tests decides which: the empty base or an
+          // earlier stage, an image this launcher builds, an image a registry holds, or a short name that
+          // only the host's registries.conf could place. Testing the registry syntax before the
+          // launcher's own images would schedule a pull for an image the launcher is about to build.
           if expanded.contains('$') then refuse("unsupported build-image variable")
           else if expanded == "scratch" || stages.contains(expanded) then ()
           else if declared.contains(expanded.stripPrefix("localhost/")) then
@@ -111,8 +116,8 @@ object ContainerfileSources:
           else if isQualifiedImage(expanded) then images += expanded
           else refuse(s"unqualified image source $expanded")
 
-      // Only the leading run of directive-shaped lines can hold a directive; the first line of
-      // any other shape ends it for the rest of the file.
+      // Only the leading run of directive-shaped lines can hold a directive. The first line of any
+      // other shape ends that run for the rest of the file.
       val directive = leading && line.startsWith("#") && ContainerfileDirective.matches(line)
       leading = directive
       if refusal.isEmpty && !complete && directive then refuse("unsupported parser directive")
@@ -120,18 +125,18 @@ object ContainerfileSources:
         val content = if line.endsWith("\\") then line.dropRight(1).trim else line
         val words = content.split("\\s+").toVector
         // A continuation carries its instruction and its place in it, so an option on a later
-        // physical line is read, and `from=` in a command's own words is not mistaken for one.
+        // physical line is read, and `from=` in a command's own words is not mistaken for an option.
         val keyword =
           if continued then carried else words.head.toUpperCase(java.util.Locale.ROOT)
         val operands = if continued then words else words.drop(1)
         if !continued then inOptions = true
         carried = keyword
 
-        // A here-document's body is shell input, not instructions: reading it would take a COPY
+        // A here-document's body is shell input, not instructions. Reading it would take a COPY
         // written for the shell as an image to pull, and a FROM in it would reset the stage.
         if content.contains("<<") then refuse("unsupported here-document")
         // A continued ARG hides half its value, and a continued FROM reads the escape as its
-        // reference; a continued COPY or RUN is read option by option below.
+        // reference. A continued COPY or RUN is read option by option below.
         else if (keyword == "ARG" || keyword == "FROM") && line.endsWith("\\") then
           refuse("continued instruction")
         else if keyword == "ARG" then
@@ -150,17 +155,17 @@ object ContainerfileSources:
         else if keyword == "FROM" then
           line match
             case ContainerfileFrom(reference, name) =>
-              // A stage built on an earlier one starts from that stage's arguments, and every
-              // stage answers to its position as well as its name — `COPY --from=0` reaches an
-              // unnamed one (imagebuilder's NewStages keys argInstructionsInStages by both).
-              // Closing the previous stage first is what lets this FROM name it.
+              // A stage built on an earlier one starts from that stage's arguments, and every stage
+              // answers to its position as well as its name: `COPY --from=0` reaches an unnamed stage
+              // (imagebuilder's NewStages keys argInstructionsInStages by both). Closing the previous
+              // stage first lets this FROM name it.
               if stageIndex >= 0 then
                 stages = stages.updated(stageIndex.toString, stage)
                 stageName.foreach(previous => stages = stages.updated(previous, stage))
               // `--target` stops the build there, and Buildah builds only that stage and what it
-              // depends on. Modelling a later one needs the stage graph, so only a first-stage
-              // target is read — every one this launcher passes names the first stage, and
-              // anything else stops the action rather than reading what podman never evaluates.
+              // depends on. Modelling a later stage needs the stage graph, so only a first-stage
+              // target is read. Every target this launcher passes names the first stage, and any other
+              // target stops the action rather than reading what podman never evaluates.
               if target.isDefined && stageIndex >= 0 then
                 if stageIndex == 0 && namesStage(target.get) then complete = true
                 else refuse(s"unsupported build target ${target.get}: only the first stage is read")
@@ -168,8 +173,8 @@ object ContainerfileSources:
                 collect(reference, global, parent = true)
                 stageIndex += 1
                 // Buildah compares a stage name exactly (executor.go's stageIndexUnlocked), so
-                // `AS Build` is not reachable as `build`: matching case-insensitively would
-                // inherit a scope podman does not, and resolve the descendant differently.
+                // `AS Build` is not reachable as `build`. Matching case-insensitively would inherit a
+                // scope that podman does not, and resolve the descendant differently.
                 stage = stages.getOrElse(reference, Map.empty)
                 if Option(name).exists(_.contains('$')) then refuse("unsupported stage alias")
                 stageName = Option(name)
@@ -195,18 +200,18 @@ object ContainerfileSources:
 
   /**
    * Every flag the launcher's own build commands pass, and whether it takes a following value.
-   * Anything else — `--build-arg=NAME=value`, `--file`, a `--build-context` naming an image, or a
-   * `--build-arg NAME` whose value podman takes from the environment — would resolve a different
-   * source from the one podman builds, so it is refused rather than read. The generated-command
-   * test checks this set against the commands the launcher produces.
+   * Anything else would resolve a different source from the one podman builds, so it is refused
+   * rather than read: `--build-arg=NAME=value`, `--file`, a `--build-context` naming an image, or a
+   * `--build-arg NAME` whose value podman takes from the environment. The generated-command test
+   * checks this set against the commands the launcher produces.
    */
   val BuildCommandFlags =
     Map("--build-arg" -> true, "--label" -> true, "--target" -> true, "-t" -> true, "-f" -> true,
       "--no-cache" -> false, "--pull=never" -> false)
 
   /**
-   * The Containerfile and build arguments one launcher build command hands podman, read back from
-   * the command itself so no Containerfile an action builds can be left out of the refresh.
+   * The Containerfile and build arguments that one launcher build command hands podman, read back
+   * from the command itself so that no Containerfile an action builds can be left out of the refresh.
    */
   private case class BuildSpecification(
     containerfile: String,
@@ -267,17 +272,20 @@ object ContainerfileSources:
     imageSourcesForBuildCommands(commands, readContainerfile, localImages).flatMap(_.remote).distinct
 
   /**
-   * Pull separately: downstream Containerfiles mix remote sources with launcher-owned local bases,
-   * so putting --pull=always on their builds would also look for those local names in registries.
-   * Bare `pull` always pulls; spelling that as --policy=always requires podman 5.6 for no
-   * behavior change. Do not use `newer`: it suppresses pull errors when a local image exists.
+   * Pulls separately: downstream Containerfiles mix remote sources with launcher-owned local bases, so
+   * --pull=always on their builds would also look for those local names in registries.
+   * - Bare `pull` always pulls. Spelling that as --policy=always requires podman 5.6 for no behavior
+   *   change.
+   * - Do not use `newer`: it suppresses pull errors when a local image exists.
    *
    * --quiet, because the default output answers the wrong question: it is the copier's per-layer
-   * report. On a terminal each layer's progress bar ends in "done" or "skipped: already exists";
-   * elsewhere every layer prints the same "Copying blob" line, before the store is asked whether
-   * it already holds it, so an unchanged image and a fresh download look alike. What is wanted is
-   * whether the image changed, and podman does not say either way; --quiet leaves the image id,
-   * and runBuilds adds the verdict.
+   * report.
+   * - On a terminal, each layer's progress bar ends in "done" or "skipped: already exists".
+   * - Elsewhere, every layer prints the same "Copying blob" line before the store is asked whether it
+   *   already holds the layer, so an unchanged image and a fresh download look alike.
+   *
+   * The wanted answer is whether the image changed, and podman does not say either way. --quiet leaves
+   * the image id, and runBuilds adds the verdict.
    */
   def remoteImagePullCommands(podman: String, images: Vector[String]): Vector[Vector[String]] =
     images.map(image => Vector(podman, "pull", image, "--quiet"))

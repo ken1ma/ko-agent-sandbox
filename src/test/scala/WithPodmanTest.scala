@@ -1,5 +1,5 @@
-// The sweep's selection over the scratch registry, pure: what the container suites delete from an
-// earlier run, and what they leave to another JVM that may still be using it.
+// Tests the sweep's selection over the scratch registry, which is pure: what the container suites
+// delete from an earlier run, and what the suites leave to another JVM that may still use the registry.
 
 package agentsandbox.launcher
 

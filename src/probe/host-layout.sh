@@ -1,16 +1,17 @@
 #!/bin/sh
-# What is installed on this host and where — the layout RunOnHostPrereqs encodes.
+# Lists what is installed on this host and where: the layout that RunOnHostPrereqs encodes.
 #
-# Run it on a new machine, and after upgrading Coursier or the JDK. Every "MISSING" line is a
-# case the prerequisite classifier has to name, not a gap to fill in silently; a line that
-# disagrees with RunOnHostPrereqsTest's fixtures is a finding, not a test to relax.
+# Run the script on a new machine, and after upgrading Coursier or the JDK.
+# - Every "MISSING" line is a case that the prerequisite classifier has to name, not a gap to fill in silently.
+# - A line that disagrees with RunOnHostPrereqsTest's fixtures is a finding, not a test to relax.
 #
-# Run from the workspace root. Read-only but for one temporary directory it removes.
+# Run the script from the workspace root. The script only reads, except for one temporary directory that it creates and
+# removes.
 
 set -u
 
-# Run this on macOS. Inside a sandbox session every answer below would
-# describe the container instead, and would read as a host missing its whole toolchain.
+# Run the script on macOS. Inside a sandbox session, every answer below would describe the container, and the output
+# would read as a host that misses its whole toolchain.
 if [ "$(uname -s)" != "Darwin" ]; then
     echo "This probe reports a macOS host's layout; this is $(uname -s). Run it on macOS." >&2
     exit 2

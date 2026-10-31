@@ -1,20 +1,23 @@
-# The launcher's default file rules: workspace files a program on your host runs a command from
-# when you start an agent in the workspace, commit, open it in an editor, enter its directory, or
-# reopen it in a Dev Container, and the file git-lfs on your host takes its server from when you
-# check out or push. A session cannot change them at any depth, except inside node_modules (the
-# last line). Build files, scripts and package.json stay writable, because you run those yourself.
+# The launcher's default file rules. The rules list two kinds of workspace file:
+# - files from which a program on your host runs a command when you start an agent in the
+#   workspace, commit, open the workspace in an editor, enter its directory, or reopen it in a Dev
+#   Container;
+# - the file from which git-lfs on your host takes its server when you check out or push.
+#
+# A session cannot change these files at any depth, except inside node_modules (the last line).
+# Build files, scripts and package.json stay writable, because you run those yourself.
 #
 # - A file is listed unless a command you run for another purpose rewrites it, the way
-#   `npm install` rewrites package-lock.json, or its program asks you again when it changes, as
-#   direnv does for .envrc (doc/file-rule-example/direnv/rule lists it).
+#   `npm install` rewrites package-lock.json, or unless its program asks you again when it changes,
+#   as direnv does for .envrc (doc/file-rule-example/direnv/rule lists it).
 # - A command meant to change a listed file, such as `pre-commit autoupdate`, `mise use` or
 #   `claude mcp add --scope project`, runs on the host, as `--update` does for the agents.
 # - Editors are assumed to run on the host. A workspace whose editor or agent maintains a listed
 #   file in the sandbox adds a `writable` line for it to .ko-agent-sandbox/file/rule.
 #
-# The reasons, source by source: doc/file-rules.md, "Why these files".
+# doc/file-rules.md gives the reasons, source by source ("Why these files").
 
-# Agents on the host: hooks, helper commands and the MCP servers their files in the workspace name.
+# Agents on the host: the hooks, helper commands and MCP servers that their workspace files name.
 read-only .claude/settings.json         # Claude Code, Copilot CLI
 read-only .claude/settings.local.json
 read-only .claude/skills                # Claude Code: hooks and !`command` lines
@@ -40,7 +43,7 @@ read-only .opencode                     # OpenCode: plugins, tools and commands 
 read-only opencode.json
 read-only opencode.jsonc
 
-# Git hook managers: the hook installed in .git runs what these name at each commit.
+# Git hook managers: the hook installed in .git runs what these files name at each commit.
 read-only .husky
 read-only .pre-commit-config.yaml
 read-only lefthook.*                    # .config/lefthook.* too: a name matches at any depth
@@ -48,7 +51,7 @@ read-only .lefthook.*
 read-only lefthook-local.*
 read-only .lefthook-local.*
 
-# Editors: configuration a trusted folder runs.
+# Editors: the configuration they run for a trusted folder.
 read-only .vscode                       # VS Code, and Zed for its tasks and launch files
 read-only *.code-workspace
 read-only .vs                           # Visual Studio
@@ -80,5 +83,6 @@ read-only miserc.toml                   # .config/miserc.toml, without pinning e
 # Git LFS: the server a checkout downloads from and a push uploads to.
 read-only .lfsconfig
 
-# Last, so it decides inside node_modules: npm installs packages that carry listed names.
+# This line comes last, so it decides inside node_modules: npm installs packages that carry listed
+# names.
 writable node_modules

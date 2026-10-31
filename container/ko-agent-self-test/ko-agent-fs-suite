@@ -1,6 +1,6 @@
 #!/bin/sh
-# What the launcher's `--self-test` runs inside the self-test image
-# (ko-agent-fs/doc/testing.md). One optional argument, a test-name filter handed to every suite.
+# The launcher's `--self-test` runs this script inside the self-test image (ko-agent-fs/doc/testing.md).
+# The script takes one optional argument, a test-name filter that it hands to every suite.
 set -eu
 
 suite=/opt/ko-agent-fs-suite
@@ -8,20 +8,20 @@ filter=${1:-}
 
 echo "machine: $(uname -srm), uid $(id -u)"
 
-# The setup check first, and the filter's own: --self-test mounts with the product's options,
-# allow_other among them, so it is the only check here that exercises what user_allow_other permits.
-# It grades its own failure by the stage it reached — exit 3 for anything before its behavioral
-# checks begin, the scratch tree and the mount alike, which the launcher answers by retrying with
-# more privilege; 1 for anything past that, which no machine or privilege change repairs.
-# mount_probe cannot serve as this check: it mounts with fuser's defaults, so an allow_other refusal
-# passes it and appears later as an apparent defect.
+# The filter's own setup check runs first. --self-test mounts with the product's options, allow_other among them, so
+# it is the only check here that exercises what user_allow_other permits.
+# - The check grades its own failure by the stage it reached. The check exits 3 for anything before its behavioral
+#   checks begin, the scratch tree and the mount alike, and the launcher answers exit 3 by retrying with more privilege.
+#   The check exits 1 for anything past that stage, which no machine or privilege change repairs.
+# - mount_probe cannot serve as this check: it mounts with fuser's defaults, so an allow_other refusal passes it and
+#   appears later as an apparent defect.
 selftest=0
 "$suite/ko-agent-fs-fuse" --self-test || selftest=$?
 [ "$selftest" -ne 3 ] || exit 3
 
-# A filter naming nothing would otherwise report success having run no test at all: a rust harness
-# exits 0 when its filter matches none, saying only "N filtered out". `--list` counts what would
-# run — it lists ignored tests too, so it needs no --include-ignored of its own.
+# Otherwise a filter that names nothing would report success without running a single test: a rust harness exits 0
+# when its filter matches none, saying only "N filtered out". `--list` counts what would run. `--list` lists ignored
+# tests too, so the count needs no --include-ignored of its own.
 if [ -n "$filter" ]; then
     matched=0
     for binary in "$suite"/deps/*; do
@@ -35,13 +35,13 @@ if [ -n "$filter" ]; then
     echo "filter '$filter' selects $matched tests"
 fi
 
-# Past the mount it is a check like any other: the policy refusing a .git entry, a host write
+# Past the mount, the self-test is a check like any other: the policy refusing a .git entry, and a host write
 # reaching both a cached read and an established mapping.
 status=0
 [ "$selftest" -eq 0 ] || status=1
 
-# --include-ignored, not --ignored: the image build runs neither half
-# (ko-agent-fs/Containerfile), so this container is where all of it runs.
+# --include-ignored, not --ignored: the image build runs neither half (ko-agent-fs/Containerfile), so this container
+# runs all of the tests.
 for binary in "$suite"/deps/*; do
     echo "== ${binary##*/}"
     "$binary" --include-ignored ${filter:+"$filter"} || status=1

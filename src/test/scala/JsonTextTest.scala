@@ -48,7 +48,7 @@ class JsonTextTest extends munit.FunSuite:
     val manifest = JsonText.parse("""{ "author": { "name": "me" }, "name": "band" }""").toOption.get
     assertEquals(manifest.field("name"), Some(Str("band")))
     assertEquals(manifest.field("version"), None)
-    // A repeated key: the last value, as JSON.parse keeps it.
+    // A repeated key yields the last value, as JSON.parse keeps it.
     val repeated = JsonText.parse("""{ "name": "safe", "name": "ko-review" }""").toOption.get
     assertEquals(repeated.field("name"), Some(Str("ko-review")))
     assertEquals(Str("x").field("name"), None)

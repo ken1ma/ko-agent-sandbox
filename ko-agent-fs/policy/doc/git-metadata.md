@@ -544,7 +544,7 @@ security reason for each.
     `git branch --set-upstream-to`, `git switch --track`, `git sparse-checkout`.
   - `git branch -m` renames the branch and then fails. `git branch -d` deletes it and warns.
 - `git rerere`: its `rr-cache/` stays protected, since creating it enables rerere for host merges
-  (`classify_within_gitdir` has why).
+  (`classify_within_gitdir` explains why).
 - Removing `objects/info/alternates` after `git repack -a`, to detach a repository from the object
   directories it borrows from, is blocked (group 4). Do it on the host.
   - Git writes the file only when it creates a repository with `git clone --shared` or
@@ -630,7 +630,7 @@ fail against it.
   `rename` from and to, `link`, `symlink` and `mknod` against `<gitdir>/hooks/**`. Each fails.
 - The same suite against `modules/<n>/hooks/**` and `worktrees/<n>/hooks/**`, to prove the
   recursion.
-- Not `setxattr` or `removexattr` ("Operations that make these mutations" has why).
+- Not `setxattr` or `removexattr` ("Operations that make these mutations" explains why).
 
 **Config (group 2):**
 

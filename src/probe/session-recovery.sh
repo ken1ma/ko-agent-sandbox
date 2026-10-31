@@ -1,21 +1,22 @@
 #!/bin/sh
 # Five measurements of the assumptions behind the supervisor's orphan recovery and proxy hosting:
 #
-#   M1  the egress proxy runs on macOS from its dist jars, allows repo1.maven.org under
-#       replacement rules (deny defaults plus one read line), and refuses unlisted hosts;
-#       it listens on wildcard :3128 unless the supervisor supplies a bind address
+#   M1  the egress proxy runs on macOS from its dist jars, allows repo1.maven.org under replacement rules (deny
+#       defaults plus one read line), and refuses unlisted hosts. The proxy listens on wildcard :3128 unless the
+#       supervisor supplies a bind address.
 #   M2  a local-mode sbt server's portfile carries no token
 #   M3  the sbt server stays in the client's process group after the client exits
-#   M4  the tokenless initialize + sbt/exec shutdown handshake, sent to the socket's pathname
-#       after its directory is renamed, ends the server
-#   M5  the server's socket is <serverDir>/<half-sha1 of the portfile path's file:// URI>/sock —
-#       the derivation the runner's foreign shutdown sends to (RunOnHostSbtServer.sbtServerSocket).
-#       It runs after M2 in the script, because M4 ends the server and takes the portfile with it
+#   M4  the tokenless handshake, initialize and then sbt/exec shutdown, ends the server when the handshake goes to
+#       the socket's pathname after the socket's directory is renamed
+#   M5  the server's socket is <serverDir>/<half-sha1 of the portfile path's file:// URI>/sock, the path to which
+#       the runner's foreign shutdown sends (RunOnHostSbtServer.sbtServerSocket). The script runs M5 right after
+#       M2, because M4 ends the server and takes the portfile with it.
 #
-# Run it on macOS, from this repository's root, when sbt or the proxy changes. It builds the
-# proxy dist if absent or older than AgentEgressProxy.scala, starts one sbt server using the pin
-# below in a scratch project under /private/tmp, and ends what it started. When a reported check
-# fails, it keeps the scratch tree and names it.
+# Run the script on macOS from this repository's root when sbt or the proxy changes.
+# - The script builds the proxy dist if the dist is absent or older than AgentEgressProxy.scala.
+# - The script starts one sbt server with the sbt version pinned below, in a scratch project under /private/tmp,
+#   and ends what it started.
+# - When a reported check fails, the script keeps the scratch tree and names it.
 
 set -u
 
@@ -41,12 +42,12 @@ report() { # PASS|FAIL label detail
 JAVA="$(cs java-home 2>/dev/null)/bin/java"
 [ -x "$JAVA" ] || JAVA=java
 
-work=$(mktemp -d /private/tmp/ko-probe.XXXXXX)   # short: the boot socket path budget is 53
+work=$(mktemp -d /private/tmp/ko-probe.XXXXXX)   # short, because the budget for the boot socket's path is 53
 proxy_pid=""
 leader=""
 cleanup() {
     [ -n "$proxy_pid" ] && kill "$proxy_pid" 2>/dev/null
-    # End every process still in the probe's group — the orphan class this probe exists to end.
+    # End every process still in the probe's group: these are the orphans that this probe exists to end.
     [ -n "$leader" ] && kill -TERM -- "-$leader" 2>/dev/null
     if [ "$fail" -eq 0 ]; then rm -rf "$work"; else echo "kept for inspection: $work"; fi
 }

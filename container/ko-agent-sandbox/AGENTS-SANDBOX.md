@@ -116,7 +116,7 @@ If a task needs a private remote or any credential, report the operation to the 
 to mount or copy credentials in, or look for another route.
 
 Clone and build under `~`, not `/tmp`: `/tmp` is RAM, and a large checkout or build there can
-take the whole podman machine down with it.
+take the whole podman machine down.
 
 When every command turns slow, check `/proc/pressure/memory`: `some avg60` above 10 means the
 machine, not this container, is short on memory. In `/sys/fs/cgroup/memory.events`, non-zero
@@ -124,8 +124,8 @@ machine, not this container, is short on memory. In `/sys/fs/cgroup/memory.event
 in parallel and report which occurred.
 
 LFS files check out as pointer stubs: the image's git-lfs skips the smudge, so a clone or checkout
-needs no egress. `git lfs pull` fetches them once the egress rules allow its two requests, the
-batch `POST` on the forge and the `GET`s on the host its answer names, which the failed pull
+needs no egress. `git lfs pull` fetches the files once the egress rules allow its two requests:
+the batch `POST` on the forge, and the `GET`s on the host its answer names, which the failed pull
 prints. For GitHub, on the host, in `.ko-agent-sandbox/egress/rule`:
 
 ```text
@@ -156,11 +156,11 @@ ko-sandbox-apt-get update
 ko-sandbox-apt-get install shellcheck   # shellcheck is then on PATH
 ```
 
-It unpacks rather than installs, so a package expecting users, services or setuid bits will not
-work.
+`ko-sandbox-apt-get` unpacks rather than installs, so a package expecting users, services or
+setuid bits will not work.
 
-Tell the user what you installed and why. Report recurring needs; only they can add programs to
-the image.
+Tell the user what you installed and why. Report recurring needs; only the user can add
+programs to the image.
 
 
 ## Network

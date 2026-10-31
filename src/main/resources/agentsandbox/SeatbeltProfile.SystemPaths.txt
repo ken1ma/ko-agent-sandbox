@@ -1,38 +1,45 @@
-# The system paths (run-on-host.md "The Seatbelt profile"): paths the toolchain needs that
-# are not the prerequisites' own. One absolute path per line; prefix with "x " if it must also be
-# executable. Entries resolve through realPath, so a symlink entry becomes a grant on its target;
-# list a symlink's directory instead.
+# The system paths: paths the toolchain needs that are not the prerequisites' own
+# (doc/run-on-host.md, "The Seatbelt profile").
+# - One absolute path per line; prefix the path with "x " if it must also be executable.
+# - Entries resolve through realPath, so a symlink entry becomes a grant on its target. List a
+#   symlink's directory instead.
 #
-# Measured by `sh src/probe/run-on-host-profile-iterate.sh paths`, which grants every root entry and
-# then removes them cumulatively — a tree stays only if the set without it stops working. Every
-# entry is measured rather than inferred: the intuitive entries — /usr/lib, /System/Library, the
-# dyld cryptexes — all measure as unnecessary, because the shared cache is mapped without any
-# filesystem access.
+# `sh src/probe/run-on-host-profile-iterate.sh paths` measures the entries. It grants every root
+# entry, then removes the entries cumulatively, and a tree stays only if the set without it stops
+# working. Every entry is measured rather than inferred. The intuitive entries, /usr/lib,
+# /System/Library and the dyld cryptexes, all measure as unnecessary, because the shared cache is
+# mapped without any filesystem access.
 #
-# To find a missing entry, run `checks` to test each program in order from a shell to a real build,
-# stopping at the first that fails; `paths` then measures the candidates, and you edit this file.
+# To find a missing entry:
+# 1. Run `checks`, which tests each program in order from a shell to a real build and stops at the
+#    first that fails.
+# 2. Run `paths`, which measures the candidates.
+# 3. Edit this file.
 
 # The launcher chain starts with a shell.
 x /bin
 
-# The system program directories. The launcher chain itself needs nine binaries from /usr/bin (env,
-# uname, dirname, basename, readlink, expr, sed, grep, tr — src/probe/sbt-exec-chain.sh), but a
-# command's own scripts call whatever they like: this repository's suite needs find and mount, and
-# a profile that names programs one by one fails every workspace's tests differently. These are
-# Apple-signed binaries whose effects on files and sockets are bounded by this same profile, so
-# running them adds nothing the JVM could not do — except through Mach services, which the profile
-# admits by name (SeatbeltProfile.MachServices), not a reason to name programs.
+# The system program directories.
+# - The launcher chain itself needs nine binaries from /usr/bin: env, uname, dirname, basename,
+#   readlink, expr, sed, grep and tr (src/probe/sbt-exec-chain.sh).
+# - A command's own scripts call whatever they like: this repository's suite needs find and mount,
+#   and a profile that names programs one by one fails every workspace's tests differently.
+# - The programs there are Apple-signed binaries whose effects on files and sockets are bounded by
+#   this same profile, so running them adds nothing the JVM could not do. Mach services are the
+#   exception, and the profile admits them by name (SeatbeltProfile.MachServices), which is no
+#   reason to name programs.
 x /usr/bin
 x /sbin
 x /usr/sbin
 
-# /private/var/select, whose one entry is the `sh` symlink /bin/sh consults to choose its
-# personality. The shell runs without the read, so this row suppresses a warning, not a failure:
-# denied, every /bin/sh in the launcher chain complains "Error opening /private/var/select/sh" on
-# stderr, and a benign line repeated on every command teaches readers to skip the stream where the
-# real denials are printed. What it grants is one world-readable symlink naming the shell flavor.
+# /private/var/select, whose one entry is the `sh` symlink that /bin/sh consults to choose its
+# personality. The shell runs without the read, so this row suppresses a warning, not a failure.
+# - Without the row, every /bin/sh in the launcher chain prints "Error opening
+#   /private/var/select/sh" on stderr. A benign line repeated on every command teaches readers to
+#   skip the stream where the real denials are printed.
+# - The row grants one world-readable symlink naming the shell flavor.
 /private/var/select
 
-# The JVM reads the OS version from here; without it java refuses to start with
-# "os.version malformed: -1.0". Measured by `paths`, which descended /System to this one file.
+# The JVM reads the OS version from here. Without this entry, java refuses to start with
+# "os.version malformed: -1.0". `paths` measured the entry by descending /System to this one file.
 /System/Library/CoreServices/SystemVersion.plist

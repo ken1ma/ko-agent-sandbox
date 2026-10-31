@@ -5,8 +5,8 @@ import java.util.concurrent.TimeUnit
 
 class KoReviewTest extends munit.FunSuite:
 
-  // Longer than the longest wait a test here gives its process (`run`): munit's 30 s default would
-  // end the test first, without the process's output.
+  // The timeout exceeds the longest wait that a test here gives its process (`run`). munit's 30 s
+  // default would end the test first, without the process's output.
   override val munitTimeout = scala.concurrent.duration.Duration(6, "min")
 
   private val plugin = Path.of("container/ko-agent-sandbox/claude-code/plugins/ko-review").toAbsolutePath
@@ -14,8 +14,9 @@ class KoReviewTest extends munit.FunSuite:
   private def run(timeoutSeconds: Long, command: String*): (Int, String) = runIn(timeoutSeconds, Map.empty, command*)
 
   private def runIn(timeoutSeconds: Long, environment: Map[String, String], command: String*): (Int, String) =
-    // Into a file, which nothing has to read while the process runs: a pipe read only after the wait
-    // stalls a process that writes more than the pipe holds (doc/limitations.md, "Pipes as small as 8 KiB").
+    // The output goes into a file, which nothing has to read while the process runs. A pipe that is read
+    // only after the wait stalls a process that writes more than the pipe holds (doc/limitations.md,
+    // "Pipes as small as 8 KiB").
     val output = Files.createTempFile("ko-review-test", ".log")
     val builder = ProcessBuilder(command*).redirectErrorStream(true).redirectOutput(output.toFile)
     environment.foreach((name, value) => builder.environment().put(name, value))
@@ -37,8 +38,9 @@ class KoReviewTest extends munit.FunSuite:
     )
     assertEquals(status, 0, output)
 
-  // The plugin's bin/ joins only Claude's Bash tool's PATH, so a plain shell in the session, where
-  // `sbt testFull` runs, cannot check that; readability and the helper's mode are what the image sets.
+  // The plugin's bin/ joins only the PATH of Claude's Bash tool, so a plain shell in the session, where
+  // `sbt testFull` runs, cannot check that PATH entry. This test checks what the image sets instead: the
+  // plugin's readability and the helper's mode.
   test("the image's copy of the plugin is readable and its helper executable"):
     assume(Files.isRegularFile(Path.of("/etc/claude-code/managed-settings.json")), "runs inside the sandbox image")
     val installed = Path.of("/etc/claude-code/plugins/ko-review")
@@ -64,7 +66,7 @@ class KoReviewTest extends munit.FunSuite:
     assertEquals(status, 0, output)
     assert(output.contains("Validation passed"), output)
 
-  // A copy, as the image installs it; the Containerfile has why.
+  // The test copies the skill, as the image installs it; the Containerfile gives the reason.
   test("Codex loads a copy of the skill as ko-review"):
     val codex = onPath("codex")
     assume(codex.isDefined, "needs codex on PATH")

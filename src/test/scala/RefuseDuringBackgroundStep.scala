@@ -1,5 +1,5 @@
-// A refusal on the main thread while an inBackground step still runs. HostCommandsTest runs it in a
-// JVM of its own, since the refusal exits the JVM.
+// Stages a refusal on the main thread while an inBackground step still runs. HostCommandsTest runs
+// this program in a JVM of its own, because the refusal exits the JVM.
 
 package agentsandbox.launcher
 
@@ -10,7 +10,7 @@ object RefuseDuringBackgroundStep:
     val stepStarted = CountDownLatch(1)
     HostCommands.inBackground("step"):
       stepStarted.countDown()
-      // Longer than an exit that does not wait takes, so a regression loses this line.
+      // The step sleeps longer than an exit that does not wait for it takes, so a regression loses this line.
       Thread.sleep(500)
       System.err.println("step: finished")
     stepStarted.await()

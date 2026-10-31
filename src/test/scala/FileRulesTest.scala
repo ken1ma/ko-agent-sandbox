@@ -52,7 +52,7 @@ class FileRulesTest extends munit.FunSuite:
     ).foreach(name => assert(names.contains(name), name))
     assertEquals(Defaults.last, Line(Word.Writable, "node_modules"))
     assertEquals(Defaults.count(_.word == Word.Writable), 1)
-    // What a model reads and no host program runs stays writable.
+    // A file that a model reads and no host program runs stays writable.
     Vector("CLAUDE.md", "AGENTS.md", ".cursor/rules", ".agents/skills", ".envrc")
       .foreach(name => assert(!names.contains(name), name))
 
@@ -90,7 +90,7 @@ class FileRulesTest extends munit.FunSuite:
       runningLaunchLines(Defaults, color = false),
       Vector("the running mount's file rules: the launcher-owned defaults"),
     )
-    // A mount a launcher of other defaults started is described whole.
+    // The launch describes in full a mount that a launcher with other defaults started.
     val otherDefaults = lines("read-only .vscode\n")
     assertEquals(
       runningLaunchLines(otherDefaults, color = false),

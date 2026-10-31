@@ -1,4 +1,4 @@
-# our baseline
+# Entries most of our projects ignore
 log/
 tmp/
 
@@ -27,7 +27,7 @@ replay_pid*
 node_modules/
 
 # Python
-# AI agents would use python frequently
+# AI agents often run Python.
 __pycache__/
 
 # VS Code

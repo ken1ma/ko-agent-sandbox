@@ -1,9 +1,9 @@
 // What the container-launching suites share: the testWithPodman condition, a scratch workspace of their
 // own, and starting and stopping real sessions.
 //
-// Split out so each suite reads as its assertions rather than its setup — and so a run's
-// resource names come from the launcher's own builders rather than from a second spelling of them,
-// which is the drift a test like this is otherwise the first to introduce.
+// The shared code lets each suite read as its assertions rather than its setup. The shared code also
+// takes a run's resource names from the launcher's own builders rather than from a second spelling of
+// them; a second spelling is the drift that a test like this would otherwise be the first to introduce.
 
 package agentsandbox.launcher
 
@@ -22,14 +22,15 @@ object WithPodman extends munit.Assertions:
 
   val jar: Path = Paths.get("target/dist/ko-agent-sandbox.jar").toAbsolutePath
 
-  /** Whether this is a `testWithPodman` run, never detected from the machine: these launch
-    * containers, and an ordinary `sbt test` must never start a session. The property is that
-    * command's, set for its run alone (build.sbt has why a command rather than an environment
+  /** Whether this is a `testWithPodman` run, never detected from the machine: these suites launch
+    * containers, and an ordinary `sbt test` must never start a session. That command sets the
+    * property for its run alone (build.sbt gives the reason for a command rather than an environment
     * variable). */
   def underTestWithPodman: Boolean = sys.props.contains("ko-agent-sandbox.testWithPodman")
 
-  /** Skips outside a `testWithPodman` run; inside one, a missing jar is a broken run, not a machine
-    * without one, and fails rather than lets the run pass with every session suite skipped. */
+  /** Skips outside a `testWithPodman` run. Inside such a run, a missing jar means a broken run, not a
+    * machine without a jar, so the check fails rather than let the run pass with every session suite
+    * skipped. */
   def requireTestWithPodman(): Unit =
     assume(underTestWithPodman, "run `sbt testWithPodman` to run the container-launching suites")
     assert(Files.isRegularFile(jar), s"testWithPodman needs $jar: run `sbt dist` first")
@@ -38,11 +39,11 @@ object WithPodman extends munit.Assertions:
     sweepEarlierRuns()
 
   /** The distribution jar must contain every class and resource compiled for this test JVM, byte
-    * for byte. Otherwise a stale parser or source digest fails only after launch begins, with the
-    * reason at the bottom of its log. Check before starting any session; sbt may expose compiled
-    * output as a directory or jar, so both are read. A hidden entry, such as the `.DS_Store`
-    * Finder writes into a directory it opened, is skipped: sbt packages no hidden file, so the jar
-    * can never hold it. */
+    * for byte. Otherwise a stale parser or source digest fails only after the launch begins, with the
+    * reason at the bottom of the launch's log. The check runs before any session starts. sbt exposes
+    * compiled output either as a directory or as a jar, so the check reads both forms. The check skips
+    * a hidden entry, such as the `.DS_Store` that Finder writes into a directory it opened: sbt
+    * packages no hidden file, so the jar can never hold one. */
   private def requireJarCurrent(): Unit =
     val built = Paths.get(AgentSandboxLauncher.getClass.getProtectionDomain.getCodeSource.getLocation.toURI)
     Using.resource(JarFile(jar.toFile)): distJar =>
@@ -63,10 +64,11 @@ object WithPodman extends munit.Assertions:
             .map(_.getName)
       assert(stale.isEmpty, s"$jar differs from the compiled ${stale.get}: run `sbt dist` first")
 
-  /** The launch's version lock, applied before any launch: the launcher rejects images another jar
-    * built, which each test would otherwise wait for, one poll at a time, with the refusal at
-    * the bottom of its log. The digests are the jar's, by the check above. The suites launch the
-    * default images (launcherCommand reads no options file), so each must be current. */
+  /** Applies the launch's version lock before any launch. The launcher rejects images that another
+    * jar built, and each test would otherwise wait for that refusal one poll at a time, with the
+    * refusal at the bottom of the test's log. The digests are the jar's, by the check above. The
+    * suites launch the default images (launcherCommand reads no options file), so each default image
+    * must be current. */
   private def requireImagesCurrent(): Unit =
     Seq(LauncherImages.SandboxImage -> "ko-agent-sandbox", LauncherImages.ProxyImage -> "ko-agent-egress-proxy")
       .foreach: (image, context) =>
@@ -74,9 +76,9 @@ object WithPodman extends munit.Assertions:
         val label = inspect(image, LauncherImages.BundleLabelTemplate)
         LauncherImages.bundleMismatch(image, LauncherImages.bundledSourceId(context), label).foreach(fail(_))
 
-  /** One scratch workspace as the registry records it: the id the launcher gives its directory, the
-    * JVM that created it — its pid and start time, since a pid alone is reused — and the directory
-    * itself, so it is deleted even when no launch ever wrote state for it. */
+  /** One scratch workspace as the registry records it: the id that the launcher gives its directory;
+    * the JVM that created it, by pid and start time, because a pid alone is reused; and the directory
+    * itself, so the sweep deletes the directory even when no launch ever wrote state for it. */
   case class Scratch(id: String, ownerPid: Long, ownerStart: Long, directory: Path)
 
   /** A process as an owner: its pid and its start time in epoch milliseconds, 0 where the platform
@@ -85,17 +87,18 @@ object WithPodman extends munit.Assertions:
     (handle.pid, handle.info.startInstant.map(_.toEpochMilli).orElse(0L))
 
   /** Whether the owner recorded in `entry` is still running: the pid is live and, where start
-    * times are known, is the same process rather than one that inherited the number. */
+    * times are known, belongs to the same process rather than to one that inherited the number. */
   private def ownerAlive(entry: Scratch): Boolean =
     ProcessHandle.of(entry.ownerPid).map[Boolean]: handle =>
       val (_, start) = owner(handle)
       handle.isAlive && (entry.ownerStart == 0L || start == 0L || start == entry.ownerStart)
     .orElse(false)
 
-  /** The scratch workspaces the suites created and have not discarded: the sweep's evidence that
-    * an id is theirs, since a name matching the id pattern is one a real workspace could carry. Under target/ so
-    * it outlives the scratch directory and the run, and goes with `sbt clean`, after which a
-    * leftover is the user's `--reset <id>`. */
+  /** The scratch workspaces that the suites created and have not discarded. The registry is the
+    * sweep's evidence that an id belongs to the suites, because a real workspace could carry a name
+    * that matches the id pattern. The registry lies under target/, so it outlives the scratch
+    * directory and the run, and `sbt clean` removes it; after that, a leftover is the user's to
+    * remove with `--reset <id>`. */
   private val ScratchRegistry = Paths.get("target/ko-agent-scratch-workspaces").toAbsolutePath
   private val ScratchRegistryLock = ScratchRegistry.resolveSibling("ko-agent-scratch-workspaces.lock")
 
@@ -108,8 +111,9 @@ object WithPodman extends munit.Assertions:
             for p <- pid.toLongOption; s <- start.toLongOption yield Scratch(id, p, s, Paths.get(directory))
           case _ => None
 
-  /** Read, changed and replaced whole under a lock across processes: two runs on one machine must
-    * not lose each other's entries, and an interrupted write must not truncate the evidence. */
+  /** Reads, changes and replaces the registry whole under a lock across processes. Two runs on one
+    * machine must not lose each other's entries, and an interrupted write must not truncate the
+    * evidence. */
   private def updateRegistry(change: Vector[Scratch] => Vector[Scratch]): Unit =
     withFileLock(ScratchRegistryLock):
       val lines = change(registered()).map: entry =>
@@ -126,19 +130,20 @@ object WithPodman extends munit.Assertions:
 
   private def forget(id: String): Unit = updateRegistry(_.filterNot(_.id == id))
 
-  /** The registered scratch workspaces a sweep may delete: the orphans, whose owning JVM is gone, and
-    * this JVM's own, whose test runs are sequential — never another live JVM's, whichever of its
-    * sessions are running at the moment. `alive` reports whether an entry's recorded owner still runs. */
+  /** The registered scratch workspaces that a sweep may delete: the orphans, whose owning JVM is gone,
+    * and this JVM's own, whose test runs are sequential. A sweep never deletes another live JVM's
+    * workspaces, whichever of that JVM's sessions are running at the moment. `alive` reports whether an
+    * entry's recorded owner still runs. */
   def orphanScratch(entries: Vector[Scratch], selfPid: Long, alive: Scratch => Boolean): Vector[Scratch] =
     entries.filter(entry => entry.ownerPid == selfPid || !alive(entry))
 
   private var swept = false
 
-  /** Scratch workspaces an earlier run left — the test failed before `discard` removed them, or a
-    * launch wrote after its poll ended and after the reset — are discarded now: reset by id
-    * where state remains, and the registered directory deleted where it remains. Once per JVM,
-    * before this run's first launch; marked done only when it succeeded, so a failed sweep fails
-    * every test rather than one. */
+  /** Discards the scratch workspaces that an earlier run left, because the test failed before
+    * `discard` removed them, or a launch wrote after its poll ended and after the reset. The sweep
+    * resets by id where state remains, and deletes the registered directory where the directory
+    * remains. The sweep runs once per JVM, before this run's first launch. The sweep is marked done
+    * only when it succeeded, so a failed sweep fails every test rather than one. */
   private def sweepEarlierRuns(): Unit =
     if !swept then
       val volumes = listed(podman, "volume", "ls", "--format", "{{.Name}}")
@@ -199,10 +204,10 @@ object WithPodman extends munit.Assertions:
     workspace
 
   /**
-   * The shared sessions state --egress=deny-unless-allowed rather than inheriting it as the
-   * default: the suites' assertions are written against the defaults and must not drift
-   * with the default. A suite asserting a profile's own behavior launches through launchWith
-   * and passes its own options.
+   * The shared sessions state --egress=deny-unless-allowed rather than inherit it as the default.
+   * The suites' assertions are written against the defaults and must not drift with the default.
+   * A suite that asserts a profile's own behavior launches through launchWith and passes its own
+   * options.
    */
   def launch(workspace: Path, log: Path, extra: (String, String)*): Session =
     launchWith(workspace, log, Vector("--egress=deny-unless-allowed"), extra*)
@@ -213,9 +218,9 @@ object WithPodman extends munit.Assertions:
     options: Vector[String],
     extra: (String, String)*
   ): Session =
-    // The id the launcher will compute for this directory, derived through its own function rather
-    // than parsed back out of whatever container turns up. Waiting for *any* new session instead
-    // could select one another suite started concurrently.
+    // The id that the launcher will compute for this directory, derived through the launcher's own
+    // function rather than parsed back out of whatever container turns up. Waiting for *any* new
+    // session instead could select a session that another suite started concurrently.
     val id = launcherId(workspace)
     val prefix = AgentSandboxLauncher.sandboxRunContainer(id, "")
 
@@ -243,13 +248,14 @@ object WithPodman extends munit.Assertions:
 
   def stop(session: Session): Unit =
     run(podman, "stop", "--time", "2", session.container)
-    // On Windows the launcher remains running after the container exits while it removes the run's
-    // resources — and it holds session.log open, which on Windows makes the discard's delete a sharing violation.
-    // On POSIX the exec'd podman exits with the container and the wait is instant.
+    // On Windows, the launcher keeps running after the container exits, while it removes the run's
+    // resources. The launcher holds session.log open meanwhile, which on Windows makes the discard's
+    // delete a sharing violation. On POSIX, the exec'd podman exits with the container, and the wait is
+    // instant.
     session.launcher.waitFor(Patience, java.util.concurrent.TimeUnit.SECONDS): Unit
 
-  /** A launch expected to end on its own, a refusal, from `from`: its exit status and output. A
-    * launch that ran instead ends with its command, `true`, and answers 0. */
+  /** Runs a launch from `from` that is expected to end on its own with a refusal, and returns its exit
+    * status and output. A launch that ran instead ends with its command, `true`, and answers 0. */
   def launchOutcome(from: Path, log: Path, options: Vector[String] = Vector.empty): (Int, String) =
     val builder = ProcessBuilder((launchCommand ++ options ++ Vector("--", "true"))*)
     builder.directory(from.toFile)
@@ -261,18 +267,18 @@ object WithPodman extends munit.Assertions:
       fail(s"a launch from $from did not end; its output:\n${Files.readString(log)}")
     (launcher.exitValue, Files.readString(log))
 
-  /** `--reset` in a workspace, as the user runs it after a crash: whether it succeeded, and its own
-    * output, all that is worth printing when it did not. */
+  /** Runs `--reset` in a workspace, as the user runs it after a crash. Returns whether the reset
+    * succeeded, and its own output, which is all that is worth printing when it did not. */
   def reset(workspace: Path, options: Vector[String] = Vector.empty): (Boolean, String) =
     action(workspace, Vector("--reset"), options)
 
-  /** `--reset <id>...`, run from `from`: the workspaces' own directories are gone. */
+  /** Runs `--reset <id>...` from `from`, because the workspaces' own directories are gone. */
   def resetIds(from: Path, ids: String*): (Boolean, String) = action(from, Vector("--reset") ++ ids, Vector.empty)
 
   def resetRunOnHost(workspace: Path): (Boolean, String) =
     action(workspace, Vector("--reset-run-on-host"), Vector.empty)
 
-  /** `--reset-all`, run from `from`, under the roots `extra` names: never the test host's own. */
+  /** Runs `--reset-all` from `from`, under the roots that `extra` names, never the test host's own. */
   def resetAll(from: Path, extra: (String, String)*): (Boolean, String) =
     action(from, Vector("--reset-all"), Vector.empty, extra*)
 
@@ -283,7 +289,7 @@ object WithPodman extends munit.Assertions:
   /** A launch that holds nothing: the suites read its lines from the log, and no one answers the prompt. */
   val launchCommand: Vector[String] = launcherCommand :+ "--session-start=immediate"
 
-  /** `action` with its arguments, the launch `options` before it. */
+  /** Runs `action` with its arguments, with the launch `options` before it. */
   private def action(
     workspace: Path,
     action: Vector[String],
@@ -303,9 +309,9 @@ object WithPodman extends munit.Assertions:
   def workspaceRecord(workspace: Path): Path =
     LauncherState.workspacesStateRoot(currentOs).resolve(launcherId(workspace))
 
-  /** Each session creates workspace state — a volume, a CA, a ruleset cache, logs and the mount
-    * tree — so a scratch workspace is reset before it is deleted. A scratch
-    * workspace never builds on the host, so the reset removes its --stats record with the rest. */
+  /** Each session creates workspace state: a volume, a CA, a ruleset cache, logs and the mount
+    * tree. A scratch workspace is therefore reset before it is deleted. A scratch workspace never
+    * builds on the host, so the reset removes its --stats record with the rest. */
   def discard(workspace: Path): Unit =
     try
       val (ok, output) = reset(workspace)
@@ -320,15 +326,15 @@ object WithPodman extends munit.Assertions:
     val workspaceRoot = SandboxWorkspace.canonicalWorkspaceRoot(session.workspaceRoot, currentOs)
     SandboxWorkspace.mountPathOf(currentOs, workspaceRoot).fold(reason => throw AssertionError(reason), identity)
 
-  /** A command inside a live session, run the way the agent in it would. No word holds a double quote
-    * or a newline, which a Windows host cannot pass to podman (HostCommands.quoteFreeSh); the check
-    * runs on every platform, so a macOS or Linux run finds such a word first. */
+  /** Runs a command inside a live session, the way the agent in it would. No word may hold a double
+    * quote or a newline, which a Windows host cannot pass to podman (HostCommands.quoteFreeSh). The
+    * check runs on every platform, so a macOS or Linux run finds such a word first. */
   def exec(session: Session, command: String*): Run =
     val unpassable = command.filter(_.exists(char => char == '"' || char == '\n'))
     assert(unpassable.isEmpty, s"a Windows host cannot pass these words to podman; use execSh: $unpassable")
     run((Vector(podman, "exec", session.container) ++ command)*)
 
-  /** `sh -c` inside a live session, the script crossing quote-free. */
+  /** Runs `sh -c` inside a live session, with the script crossing quote-free. */
   def execSh(session: Session, script: String, arguments: String*): Run =
     exec(session, quoteFreeSh(script, arguments*)*)
 

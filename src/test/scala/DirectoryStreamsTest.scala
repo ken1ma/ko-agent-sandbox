@@ -19,7 +19,8 @@ class DirectoryStreamsTest extends munit.FunSuite:
     val operatingSystem = ManagementFactory.getOperatingSystemMXBean
     assume(operatingSystem.isInstanceOf[UnixOperatingSystemMXBean], "descriptor counts require a Unix JVM")
     val unix = operatingSystem.asInstanceOf[UnixOperatingSystemMXBean]
-    // Warm class loading before counting; allow unrelated JVM activity, but not a descriptor per scan.
+    // The first run warms class loading before the count. The bound allows unrelated JVM activity, but not
+    // one descriptor per scan.
     body
     val before = unix.getOpenFileDescriptorCount
     for _ <- 0 until 32 do body

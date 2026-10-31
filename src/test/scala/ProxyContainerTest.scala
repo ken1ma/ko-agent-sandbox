@@ -1,8 +1,9 @@
-// The egress proxy's own container, inspected from the host — the half of the hardening rows that
-// no session can see, because from inside the sandbox the proxy is reachable and opaque, which is
-// the point of it.
+// Inspects the egress proxy's own container from the host. The suite holds the half of the
+// hardening rows that no session can see, because from inside the sandbox the proxy is reachable
+// and opaque, which is the proxy's purpose.
 //
-// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the condition):
+// The suite runs only under testWithPodman, like the other container-launching suites (WithPodman has the
+// condition):
 //
 //     sbt "testWithPodman *ProxyContainerTest"
 
@@ -47,7 +48,7 @@ class ProxyContainerTest extends munit.FunSuite:
         "combined memory and swap limit",
       )
       assertEquals(inspect(proxy, "{{json .HostConfig.Tmpfs}}"), "{}", "explicit tmpfs mounts")
-      // Without a binding the proxy's standard input is closed, and nothing tells it to read one.
+      // Without a binding, the proxy's standard input is closed, and nothing tells the proxy to read one.
       assertEquals(inspect(proxy, "{{.Config.OpenStdin}}"), "false", "open standard input")
       assert(!inspect(proxy, "{{range .Config.Env}}{{println .}}{{end}}").contains("EGRESS_CREDS"))
       assert(
@@ -60,24 +61,25 @@ class ProxyContainerTest extends munit.FunSuite:
         "native entrypoint",
       )
 
-      // The two builds spell the ready line separately; this session launched, so the launcher's
-      // spelling was matched against the image's — asserted here so a drift fails a test and not
-      // every launch, by its bound.
+      // The two builds spell the ready line separately. This session launched, so the launcher's
+      // spelling matched the image's. The test asserts the match here, so that a drift fails this
+      // test rather than every launch at the launch's bound.
       val said = run(podman, "logs", proxy).err
       assert(
         said.linesIterator.exists(AgentSandboxLauncher.isProxyReadyLine),
         s"the proxy image's ready line is not the launcher's:\n$said",
       )
 
-      // Exactly this run's two networks: the internal one it shares with its sandbox, and its own
-      // route out. A proxy on any third network would be reachable from somewhere nobody chose.
+      // Exactly this run's two networks: the internal network that the proxy shares with its sandbox,
+      // and the proxy's own route out. A proxy on any third network would be reachable from somewhere
+      // nobody chose.
       val attached = inspect(proxy, "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}}\n{{end}}")
         .linesIterator.map(_.trim).filter(_.nonEmpty).toVector.sorted
       assertEquals(attached, Vector(live.egressNetwork, live.sandboxNetwork).sorted)
 
-      // What is mounted in: the leaf certificate and its own key, and this run's audit log. The
-      // workspace CA's key stays on the host — "Who holds the CA key" is the whole of SECURITY.md's
-      // argument — and an earlier run's log would hand this proxy a record it never wrote.
+      // The mounts are the leaf certificate with its own key, and this run's audit log. The workspace
+      // CA's key stays on the host, because "Who holds the CA key" is the whole of SECURITY.md's
+      // argument. An earlier run's log would hand this proxy a record that the proxy never wrote.
       val binds = inspect(proxy, "{{range .HostConfig.Binds}}{{println .}}{{end}}")
         .linesIterator.map(_.trim).filter(_.nonEmpty).toVector
       val sources = binds.map(_.takeWhile(_ != ':'))
@@ -101,18 +103,22 @@ class ProxyContainerTest extends munit.FunSuite:
       session.foreach(stop)
       discard(workspace)
 
-  /** The workspace CA's key, by its path: what no proxy of any profile may mount. */
+  /** The workspace CA's key, by its path, which no proxy of any profile may mount. */
   private def workspaceCaKey(live: Session): java.nio.file.Path =
     LauncherState.tlsStateRoot(currentOs).resolve(live.id).resolve("ca.key")
 
   /**
-   * A CONNECT proxy on this host for the proxy container to leave through: it records each request
-   * head, dials the authority itself and relays the bytes, which is an upstream proxy's whole
-   * contract. Bound on every interface, since the container reaches this host by the name podman
-   * gives it, never by loopback. It dials the origin directly, so this test needs a host with a
-   * direct route out. On Windows its port is fixed, since the firewall rule names it. It tunnels
-   * only to a public address on port 443, all the test asks of it: a client the rule lets in from
-   * elsewhere reaches neither this host's services nor its network.
+   * A CONNECT proxy on this host for the proxy container to leave through. The host proxy records
+   * each request head, dials the authority itself and relays the bytes, which is an upstream proxy's
+   * whole contract.
+   *
+   *  - The host proxy binds on every interface, because the container reaches this host by the name
+   *    that podman gives it, never by loopback.
+   *  - The host proxy dials the origin directly, so this test needs a host with a direct route out.
+   *  - On Windows, the host proxy's port is fixed, because the firewall rule names the port.
+   *  - The host proxy tunnels only to a public address on port 443, which is all the test asks of it.
+   *    A client that the rule lets in from elsewhere reaches neither this host's services nor this
+   *    host's network.
    */
   private class HostProxy:
     private val server = ServerSocket(if currentOs == Os.Windows then WindowsUpstreamPort else 0, 8)
@@ -165,14 +171,14 @@ class ProxyContainerTest extends munit.FunSuite:
       session = Some(live)
 
       // The value-less pass-through resolved on this platform: the variable is in the proxy's
-      // environment, and the create command carries its name alone.
+      // environment, and the create command carries the variable's name alone.
       val environment = inspect(live.proxy, "{{range .Config.Env}}{{println .}}{{end}}")
       assert(environment.linesIterator.contains(s"HTTPS_PROXY=$value"), environment)
       val created = inspect(live.proxy, "{{json .Config.CreateCommand}}")
       assert(created.contains("\"--env=HTTPS_PROXY\"") && !created.contains("s3cret"), created)
 
-      // A host value forwarded with --env reaches the sandbox the same way (SECURITY.md,
-      // "Credential theft"): in its environment, and in its create command by name alone.
+      // A host value forwarded with --env reaches the sandbox the same way: in the sandbox's
+      // environment, and in the sandbox's create command by name alone (SECURITY.md, "Credential theft").
       val sandboxEnvironment = inspect(live.container, "{{range .Config.Env}}{{println .}}{{end}}")
       assert(sandboxEnvironment.linesIterator.contains("FORWARDED_TOKEN=f0rwarded-s3cret"), sandboxEnvironment)
       val sandboxCreated = inspect(live.container, "{{json .Config.CreateCommand}}")
@@ -181,14 +187,14 @@ class ProxyContainerTest extends munit.FunSuite:
         sandboxCreated,
       )
 
-      // The banner names the endpoint, from the proxy's own parse, and never the credential.
+      // The banner names the endpoint from the proxy's own parse, and never names the credential.
       val banner = live.output
       assert(banner.contains(s"egress transport: upstream proxy $endpoint -> "), banner)
       assert(!banner.contains("s3cret") && !banner.contains("alice"), banner)
 
-      // An inspected host reached through the tunnel: opened to a numeric address, never the name,
-      // with the credential on that CONNECT alone; the sandbox's own variables still name this
-      // run's proxy.
+      // The proxy reaches an inspected host through the tunnel. The proxy opens the tunnel to a numeric
+      // address, never to the name, and sends the credential on that CONNECT alone. The sandbox's own
+      // variables still name this run's proxy.
       val checked = exec(live, "ko-sandbox-egress-check", "docs.python.org")
       val firewall =
         if currentOs == Os.Windows then
@@ -229,14 +235,15 @@ class ProxyContainerTest extends munit.FunSuite:
       )
       session = Some(live)
 
-      // The launcher ended the attached podman start once the proxy was ready; --sig-proxy=false kept
-      // the signal from the proxy (src/probe/podman-attach-stdin.sh measures it on macOS).
+      // The launcher ended the attached podman start once the proxy was ready, and --sig-proxy=false kept
+      // the signal from the proxy (src/probe/podman-attach-stdin.sh measures this on macOS).
       assertEquals(inspect(live.proxy, "{{.State.Running}}"), "true", "the proxy after its client ended")
       assertEquals(inspect(live.proxy, "{{.Config.OpenStdin}}"), "true", "open standard input")
       val environment = inspect(live.proxy, "{{range .Config.Env}}{{println .}}{{end}}")
       assert(environment.linesIterator.contains("EGRESS_CREDS=stdin"), environment)
 
-      // Nowhere podman records: the containers' inspections and logs, and the launch's output.
+      // The value appears nowhere that podman records: the containers' inspections and logs, and the
+      // launch's output.
       for container <- Vector(live.proxy, live.container) do
         val inspected = run(podman, "inspect", container)
         assert(inspected.ok && !inspected.text.contains(value), s"$container's inspection holds the value")
@@ -263,8 +270,8 @@ class ProxyContainerTest extends munit.FunSuite:
       assert(audit.linesIterator.exists(_.matches(substituted)), audit)
       assert(!audit.contains(value) && !audit.contains(placeholder), audit)
 
-      // After the session: no file under the state root or in the workspace holds the value, nor does the
-      // persistent volume — the openai/codex #30971 check, over every agent's state directory.
+      // After the session, no file under the state root, in the workspace or in the persistent volume holds
+      // the value. The assertion is the openai/codex #30971 check, over every agent's state directory.
       stop(live)
       session = None
       val bytes = value.getBytes(StandardCharsets.US_ASCII)
@@ -285,7 +292,7 @@ class ProxyContainerTest extends munit.FunSuite:
       session.foreach(stop)
       discard(workspace)
 
-  // The port the firewall rule in development.md, "On Windows x64", allows.
+  // The port that the firewall rule allows (development.md, "On Windows x64").
   private val WindowsUpstreamPort = 58036
 
   private def contains(haystack: Array[Byte], needle: Array[Byte]): Boolean =

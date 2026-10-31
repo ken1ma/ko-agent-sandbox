@@ -6,22 +6,21 @@ import scala.annotation.tailrec
 import HTTPHelper.HttpRequestHead
 
 /**
- * What requests mean in git's smart-HTTP protocol. The decisions about them
- * — what is allowed to reach a forge — stay in
- * RulesetHelper.authorizeInspectedRequest; this file only names the
- * requests.
+ * What requests mean in git's smart-HTTP protocol. RulesetHelper.authorizeInspectedRequest decides what may reach a
+ * forge; this file only names the requests.
  */
 object GitHelper:
 
   /**
-   * Where `clone` and `fetch` POST after ref discovery. A whole-path match,
-   * never a suffix match — that would leave the proxy relying on the origin
-   * router to agree where the path ends. `{2,}`: GitHub and Codeberg are
-   * exactly owner/repo, gitlab.com nests subgroups deeper; a single segment
-   * is a repository nowhere. RulePath.requireUnambiguousPath has already rejected
-   * percent-encoding and dot segments. No `#` in a segment: the target is
-   * forwarded as sent, and an origin whose parser cuts the path there routes
-   * `/o/r/git-receive-pack#/git-upload-pack` to the push.
+   * Where `clone` and `fetch` POST after ref discovery.
+   *
+   * - The pattern matches the whole path, never a suffix. A suffix match would leave the proxy relying on the
+   *   origin's router to agree where the path ends.
+   * - `{2,}`: GitHub and Codeberg paths are exactly owner/repo, and gitlab.com nests subgroups deeper. A single
+   *   segment is a repository nowhere.
+   * - RulePath.requireUnambiguousPath has already refused percent-encoding and dot segments.
+   * - A segment holds no `#`. The target is forwarded as sent, and an origin whose parser cuts the path at `#`
+   *   routes `/o/r/git-receive-pack#/git-upload-pack` to the push.
    */
   private val UploadPackPath = "(/[^/#]+){2,}/git-upload-pack".r
 
@@ -32,29 +31,27 @@ object GitHelper:
   def isReceivePackDiscovery(head: HttpRequestHead): Boolean = isDiscovery(head, "git-receive-pack")
 
   /**
-   * `git fetch`'s first request: GET .../info/refs?service=git-upload-pack. It is the `git-fetch`
-   * grant's own request, not `read`'s (RulesetHelper.authorizeInspectedRequest); the decode can
-   * only widen that refusal.
+   * `git fetch`'s first request: GET .../info/refs?service=git-upload-pack. This request belongs to the
+   * `git-fetch` grant, not to `read` (RulesetHelper.authorizeInspectedRequest). The decode can only widen the
+   * refusal of this request under `read`.
    */
   def isUploadPackDiscovery(head: HttpRequestHead): Boolean = isDiscovery(head, "git-upload-pack")
 
   /**
-   * Classified on a once-percent-decoded spelling — the decode a forge's router applies — so an
-   * encoded spelling cannot slip past. Deny-side only: decoding here can widen a refusal, never a
-   * grant.
+   * The check runs on a spelling decoded once, as a forge's router decodes it, so an encoded spelling cannot slip
+   * past. The check is deny-side only: decoding here can widen a refusal, never a grant.
    */
   private def isDiscovery(head: HttpRequestHead, service: String): Boolean =
     percentDecoded(head.path).endsWith("/info/refs") &&
       head.query.split("&", -1).exists(param => percentDecoded(param).toLowerCase(Locale.ROOT) == s"service=$service")
 
   /**
-   * One decode pass — the forge router's decoding, not HTTP's, which
-   * assigns no meaning to %-escapes in a target; the forwarded bytes stay
-   * as sent. Private and deny-side on purpose: in HTTPHelper as a reusable
-   * decoder it would invite allow-side use and recreate the parser-disagreement
-   * problem RulePath.requireUnambiguousPath refuses; CredentialRewrite keeps its
-   * own for the substitution, and says why one pass is safe there. A malformed
-   * escape is kept as is — the most an origin would make of it.
+   * One decode pass, as the forge's router decodes. HTTP assigns no meaning to %-escapes in a target, and the
+   * forwarded bytes stay as sent. A malformed escape is kept as it is, which is the most an origin would make of it.
+   *
+   * - The decoder is private and deny-side on purpose. As a reusable decoder in HTTPHelper, it would invite use on
+   *   the allow side and recreate the parser disagreement that RulePath.requireUnambiguousPath refuses.
+   * - CredentialRewrite keeps its own decoder for the substitution, and says why one pass is safe there.
    */
   private def percentDecoded(value: String): String =
     val out = StringBuilder()

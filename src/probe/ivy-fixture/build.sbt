@@ -1,6 +1,6 @@
-// The acceptance test's "packageBin across dependsOn" row: resolving an inter-project edge enters Ivy, which
-// takes its lock file in the Ivy home first (run-on-host.md "sbt", which also says when this
-// fixture retires). Two projects, one edge, no external dependency: the row measures the
-// redirected Ivy home, not the proxy.
+// The acceptance test's row "packageBin across dependsOn" runs in this project. sbt resolves a dependency between
+// projects through Ivy, and Ivy first takes its lock file in the Ivy home (run-on-host.md, "sbt", which also says
+// when this fixture retires). The row measures the redirected Ivy home, not the proxy, so the build has two
+// projects, one dependency between them and no external dependency.
 lazy val core = project
 lazy val app = project.dependsOn(core)

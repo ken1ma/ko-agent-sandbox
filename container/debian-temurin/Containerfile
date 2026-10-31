@@ -1,26 +1,24 @@
-# Debian 13 (trixie)
-#
-# This aligns with the distroless java25-debian13 runtime base.
+# Debian 13 (trixie), which matches the distroless java25-debian13 runtime base.
 ARG DEBIAN_VERSION=13.7
 FROM docker.io/library/debian:${DEBIAN_VERSION}-slim
 
 ARG TEMURIN_VERSION=25.0.4
 
-# TARGETARCH is populated by Podman 5.2.0+ (Buildah 1.37.0+).
+# Podman 5.2.0+ (Buildah 1.37.0+) populates TARGETARCH.
 ARG TARGETARCH
 
-# Debian recommends C.UTF-8; musl recognizes that spelling while bionic rejects the glibc-normalized C.utf8.
+# Debian recommends C.UTF-8. musl recognizes that spelling, while bionic rejects the glibc-normalized C.utf8.
 ENV LANG=C.UTF-8
 
-# Avoid `debconf: unable to initialize frontend: Dialog` and similar warnings.
-# This is `ENV` rather than `ARG` so descendant images and containers inherit it.
+# The variable avoids `debconf: unable to initialize frontend: Dialog` and similar warnings.
+# It is `ENV` rather than `ARG`, so descendant images and containers inherit it.
 ENV DEBIAN_FRONTEND=noninteractive
 
-# The uid/gid distroless :nonroot uses; USER still decides who runs.
-# `--no-log-init`: uid 65532 would otherwise leave a large sparse faillog.
+# The uid and gid that distroless :nonroot uses; USER still decides who runs.
+# `--no-log-init`: otherwise uid 65532 would leave a large sparse faillog.
 #
-# `;` not `&&` throughout: `set -e` already sequences. dash supports
-# pipefail since Debian 13.
+# The commands use `;`, not `&&`, throughout, because `set -e` already sequences them. Debian 13's dash supports
+# pipefail.
 RUN set -euxo pipefail; \
     groupadd --gid 65532 nonroot; \
     useradd \
@@ -42,14 +40,13 @@ RUN set -euxo pipefail; \
         curl \
         # avoids `curl: (77) error setting certificate file: /etc/ssl/certs/ca-certificates.crt`
         ca-certificates \
-        # jlink --strip-debug on needs objcopy
+        # jlink --strip-debug needs objcopy (https://github.com/docker-library/openjdk/issues/351).
         # See https://github.com/adoptium/containers/blob/main/25/jdk/ubuntu/resolute/Dockerfile
         binutils; \
     rm -rf /var/lib/apt/lists/*
 
-# `%%.*` (25.0.4 -> 25) is not in the Dockerfile spec; podman accepts it
-# since 5.2.0. The closing `test -x` fails the build if that ever stops
-# holding.
+# `%%.*` (25.0.4 -> 25) is not in the Dockerfile spec, but podman accepts it since 5.2.0. The closing `test -x` fails
+# the build if podman ever stops accepting it.
 ENV JAVA_HOME=/usr/lib/jvm/temurin-${TEMURIN_VERSION%%.*}-jdk-${TARGETARCH}
 
 RUN set -euxo pipefail; \
@@ -79,11 +76,11 @@ RUN set -euxo pipefail; \
     rm -rf /var/lib/apt/lists/*; \
     test -x "$JAVA_HOME/bin/java"
 
-# The image's tag names the major versions alone (LauncherImages.ImgTagVersion), so these labels
-# are where an image shows the two versions above; the images built on this one inherit them.
-# They follow the last RUN because podman reuses a cached LABEL step whose ARG value changed
-# (buildah #5501). A changed DEBIAN_VERSION changes FROM, and a changed TEMURIN_VERSION changes the
-# RUN above; either misses the cache along with every step after it.
+# The image's tag names the major versions alone (LauncherImages.ImgTagVersion), so these labels show the two full
+# versions above. The images built on this one inherit the labels.
+# The labels follow the last RUN, because podman reuses a cached LABEL step whose ARG value changed (buildah #5501).
+# A changed DEBIAN_VERSION changes FROM, and a changed TEMURIN_VERSION changes the RUN above. Either change misses
+# the cache, along with every step after it.
 ARG DEBIAN_VERSION
 LABEL debian-temurin.debian-version=${DEBIAN_VERSION}
 LABEL debian-temurin.temurin-version=${TEMURIN_VERSION}

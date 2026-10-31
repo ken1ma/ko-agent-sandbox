@@ -1,7 +1,8 @@
-// --stats: a read-only report, because a size seen only while resetting is seen too late. The live
-// section is answered first and skipped when the podman machine is stopped — a report starts
-// nothing — and the directory walk is last: a real Coursier cache is millions of inodes, which is
-// why this is an action and not a line printed at every launch.
+// --stats prints a read-only report, because a size seen only while resetting is seen too late.
+// - The report answers the live section first, and skips that section when the podman machine is stopped, because a
+//   report starts nothing.
+// - The directory walk comes last. A real Coursier cache holds millions of inodes, which is why the report is an
+//   action and not a line printed at every launch.
 
 package agentsandbox.launcher
 
@@ -22,8 +23,8 @@ object SandboxStats:
   // Counts
   // -------------------------------------------------------------------------
 
-  /** `0 live sessions`, `1 workspace`, `3 workspaces`: the line over each table, and the whole
-    * section when there is nothing to tabulate. */
+  /** `0 live sessions`, `1 workspace`, `3 workspaces`: the line over each table, and the whole section when there is
+    * nothing to tabulate. */
   def counted(count: Int, noun: String, plural: String = ""): String =
     if count == 1 then s"1 $noun" else s"$count ${if plural.isEmpty then noun + "s" else plural}"
 
@@ -42,14 +43,15 @@ object SandboxStats:
   )
 
   /**
-   * Raw bytes and a full-precision percentage: the default `MemUsage` and `CPUPerc` are
-   * podman's own rendering — decimal megabytes, two decimals — and the report renders every
-   * figure itself so one unit and one rounding hold across it. The nested `ContainerStats` is
-   * the one route to the usage in bytes, since `.MemUsage` at the top level is the rendered one.
+   * Raw bytes and a full-precision percentage.
+   * - The default `MemUsage` and `CPUPerc` are podman's own rendering, in decimal megabytes with two decimals. The
+   *   report renders every figure itself, so one unit and one rounding hold across the report.
+   * - The nested `ContainerStats` is the one route to the usage in bytes, since `.MemUsage` at the top level is the
+   *   rendered usage.
    */
   val StatsFormat = "{{.Name}} {{.ContainerStats.MemUsage}} {{.MemLimit}} {{.CPU}}"
 
-  /** Only this launcher's containers: another workload on the same machine is not the report's. */
+  /** Only this launcher's containers, because another workload on the same machine does not belong in the report. */
   def liveContainers(lines: Vector[String]): Vector[LiveContainer] =
     lines.flatMap: line =>
       line.trim.split("\\s+") match
@@ -65,11 +67,12 @@ object SandboxStats:
         case _ => None
 
   /**
-   * One row per session, largest combined memory first: the sandbox's memory, its proxy's, and
-   * the cpu the two use together, the session's cost to the machine. A workspace is named as the
-   * workspace table names it: by its recorded directory, or by its id where none is recorded.
-   * Each memory column aligns on its slash, so used and limit each read down as a column; a
-   * session missing one of its containers shows a dash there.
+   * One row per session, largest combined memory first. A row shows the session's cost to the machine: the sandbox's
+   * memory, the proxy's memory, and the cpu that the two use together.
+   * - The table names a workspace as the workspace table names it: by its recorded directory, or by its id where no
+   *   directory is recorded.
+   * - Each memory column aligns on its slash, so used and limit each read down as a column.
+   * - A session missing one of its containers shows a dash in that container's column.
    */
   def liveTable(containers: Vector[LiveContainer], directories: Map[String, String]): String =
     if containers.isEmpty then counted(0, "live session") + "\n"
@@ -103,22 +106,24 @@ object SandboxStats:
   // Run-on-host runners
   // -------------------------------------------------------------------------
 
-  /** One live runner: its launch's run suffix, its workspace root, and for each build directory it has
-    * served, the programs whose runtime it keeps there — a proxy and the server or daemon it
-    * serves, which a `shutdown` or an idle exit leaves without the latter until the next command
-    * (RunnerRuntimes), so a runtime is not a process up this instant. */
+  /** One live runner: its launch's run suffix, its workspace root, and, for each build directory that the runner has
+    * served, the programs whose runtime the runner keeps there.
+    * - A runtime is a proxy and the server or daemon that the proxy serves.
+    * - A `shutdown` or an idle exit leaves the proxy without its server or daemon until the next command
+    *   (RunnerRuntimes), so a runtime is not a process that is up this instant. */
   final case class Runner(run: String, workspaceRoot: String, warm: Vector[(String, Vector[String])])
 
   /**
-   * The live runners under the session root (`RunOnHostSession.root`): each a locked runner
-   * session, its `run` file naming the launch's sandbox container, its build files the
-   * directories served, and its proxy records the programs kept warm there — the proxy is the
-   * runtime's constant part, a server or daemon gone on its own being replaced under it
-   * (RunnerRuntimes). A runner without a run file, one from a launch that
-   * predates it, has a run the report cannot name. macOS only, like the runners.
+   * The live runners under the session root (`RunOnHostSession.root`). Each runner is a locked runner session:
+   * - its `run` file names the launch's sandbox container;
+   * - its build files name the directories served;
+   * - its proxy records name the programs kept warm there. The proxy is the runtime's constant part: a server or
+   *   daemon that exits on its own is replaced under the proxy (RunnerRuntimes).
+   * A runner without a run file comes from a launch that predates the run file, and the report cannot name that
+   * runner's run. The method runs on macOS only, like the runners.
    */
   def runners(root: Path): Vector[Runner] =
-    // `except` names the caller's own session; the report has none, and the root is no child of itself.
+    // `except` names the caller's own session. The report has no session, and the root is no child of itself.
     RunOnHostSession.liveRunnerSessions(root, except = root).map: session =>
       def file(name: String): Option[String] = readIfPresent(session.resolve(name)).map(_.trim).filter(_.nonEmpty)
       val run = file(RunOnHostSession.RunFile).flatMap(runContainerParts).map(_._3).getOrElse("?")
@@ -131,9 +136,9 @@ object SandboxStats:
       Runner(run, workspaceRoot, warm.sortBy(_._1))
     .sortBy(runner => (runner.run, runner.workspaceRoot))
 
-  /** One row per directory a runner has served, by run, `runtime` the programs whose runtime
-    * the runner keeps there. A runner that has served none yet has no row: its session is in the
-    * live table, and a runner is one per session. */
+  /** One row per directory that a runner has served, sorted by run. The `runtime` column names the programs whose
+    * runtime the runner keeps there. A runner that has served no directory yet has no row: the runner's session is in
+    * the live table, and each session has one runner. */
   def runnerTable(runners: Vector[Runner]): String =
     val rows = runners.flatMap: runner =>
       runner.warm.map: (directory, programs) =>
@@ -146,10 +151,11 @@ object SandboxStats:
   // -------------------------------------------------------------------------
 
   /**
-   * Each volume's bytes out of `podman system df -v`, whose "Local Volumes space usage" table is
-   * the one route to a volume's size: `--format json` refuses `-v`, and `volume inspect` has no
-   * size. The figures are podman's decimal rendering read back, four significant digits, which
-   * keeps the size order and the total the column exists for.
+   * Each volume's bytes out of `podman system df -v`.
+   * - The "Local Volumes space usage" table is the one route to a volume's size: `--format json` refuses `-v`, and
+   *   `volume inspect` has no size.
+   * - The figures are podman's decimal rendering read back, with four significant digits. That precision keeps the
+   *   size order and the total, which are what the column exists for.
    */
   def volumeSizes(dfVerbose: String): Map[String, Long] =
     dfVerbose.linesIterator
@@ -163,14 +169,14 @@ object SandboxStats:
   private val DecimalUnits = Vector("B", "kB", "MB", "GB", "TB", "PB", "EB")
   private val DecimalSize = "([0-9]+(?:\\.[0-9]+)?)(B|kB|MB|GB|TB|PB|EB)".r
 
-  /** `1.234GB` as podman prints sizes: powers of 1000, `kB` lower-case. */
+  /** `1.234GB`, as podman prints sizes: powers of 1000, with `kB` in lower case. */
   def decimalSize(text: String): Option[Long] =
     text match
       case DecimalSize(number, unit) =>
         Some(Math.round(number.toDouble * Math.pow(1000, DecimalUnits.indexOf(unit))))
       case _ => None
 
-  /** Free and total bytes of the filesystem `df -P -k` reported, from the podman machine. */
+  /** The free and total bytes of the filesystem that `df -P -k` in the podman machine reported. */
   def dfSpace(text: String): Option[(Long, Long)] =
     text.linesIterator.toVector.lastOption.map(_.trim.split("\\s+")).flatMap:
       case Array(_, total, _, available, _*) =>
@@ -181,15 +187,15 @@ object SandboxStats:
       case _ => None
 
   /**
-   * One of the launcher's host roots and the filesystem holding it: `filesystem` is the same
-   * string for two roots on one filesystem, so the report can say how many figures there are.
+   * One of the launcher's host roots and the filesystem that holds the root. `filesystem` is the same string for two
+   * roots on one filesystem, so the report can say how many figures there are.
    */
   final case class HostRoot(path: Path, filesystem: String, freeBytes: Long, totalBytes: Long)
 
   /**
-   * One line per filesystem, labelled by which machine holds it — the mount point alone would
-   * not say whether `/home` is the host's or the VM's. The root's own path joins the label only
-   * when the host's roots are split, the one case where it tells the lines apart.
+   * One line per filesystem, labelled by the machine that holds the filesystem. The mount point alone would not say
+   * whether `/home` is the host's or the VM's. The root's own path joins the label only when the host's roots are
+   * split, because that is the one case where the path tells the lines apart.
    */
   def storageLines(os: Os, roots: Vector[HostRoot], machine: Option[(Long, Long)]): Vector[String] =
     val hostLabel = if os == Os.Linux then "storage" else "host storage"
@@ -205,11 +211,12 @@ object SandboxStats:
   // -------------------------------------------------------------------------
 
   /**
-   * One workspace's disk use: the launcher's state and build-cache roots, and its agents' volume —
-   * None when podman was not there to size it. `directory` is the recorded one where it still
-   * exists; None for a workspace last launched before the record existed, or whose directory is gone.
-   * `lastWrite` is the newest modification under the workspace's state and cache trees — the
-   * volume is in podman's store, out of the walk — and None where neither tree exists.
+   * One workspace's disk use: the launcher's state and build-cache roots, and the workspace's agent volume.
+   * - `volumeBytes` is None when podman was not there to size the volume.
+   * - `directory` is the recorded directory where that directory still exists. `directory` is None for a workspace
+   *   last launched before the record existed, or for a workspace whose directory is gone.
+   * - `lastWrite` is the newest modification under the workspace's state and cache trees, and None where neither tree
+   *   exists. The volume is in podman's store, outside the walk.
    */
   final case class WorkspaceUsage(
     id: String,
@@ -222,9 +229,9 @@ object SandboxStats:
     def totalBytes: Long = stateBytes + cacheBytes + volumeBytes.getOrElse(0L)
 
   /**
-   * Each workspace's recorded directory, by id, where the directory still exists. When the recorded
-   * directory is missing, the table prints the id instead: a missing directory may be on an
-   * unmounted filesystem, and `--reset <id>` accepts the id without that directory.
+   * Each workspace's recorded directory, by id, where the directory still exists. When the recorded directory is
+   * missing, the table prints the id instead. A missing directory may be on an unmounted filesystem, and
+   * `--reset <id>` accepts the id without that directory.
    */
   def workspaceDirectories(workspacesRoot: Path): Map[String, String] =
     childNames(workspacesRoot).filter(SandboxWorkspace.isWorkspaceId).flatMap: id =>
@@ -233,19 +240,19 @@ object SandboxStats:
         .map(id -> _)
     .toMap
 
-  /** The roots holding one directory per workspace id, sized into the state column. */
+  /** The roots that hold one directory per workspace id. The report sizes these roots into the state column. */
   private def stateDirs(os: Os): Vector[Path] =
     perWorkspaceStateRoots(os) :+ workspacesStateRoot(os)
 
   private def cacheDir(os: Os): Option[Path] =
     RunOnHostPrereqs.cacheRootOf(os, env).toOption.map(RunOnHostPrereqs.runOnHostCachesOf)
 
-  /** Workspace ids found under the state or cache roots, or extracted from persistent-volume names. */
+  /** The workspace ids found under the state or cache roots, or extracted from persistent-volume names. */
   def workspaceIds(os: Os, volumeNames: Seq[String]): Vector[String] =
     workspaceIdsUnder(stateDirs(os) ++ cacheDir(os), volumeNames)
 
-  /** Names matching the id's pattern only (SandboxWorkspace.WorkspaceIdPattern): a stray file under a root is
-    * not a workspace, and would be a row `--reset <id>` refuses. */
+  /** Only the names that match the id's pattern (SandboxWorkspace.WorkspaceIdPattern). A stray file under a root is
+    * not a workspace, and the file's row would name an id that `--reset <id>` refuses. */
   def workspaceIdsUnder(roots: Seq[Path], volumeNames: Seq[String]): Vector[String] =
     val volumeIds = persistentVolumes(volumeNames).map(_.stripPrefix(SandboxWorkspace.PersistentVolumePrefix))
     (roots.flatMap(childNames) ++ volumeIds).filter(SandboxWorkspace.isWorkspaceId).distinct.sorted.toVector
@@ -253,12 +260,14 @@ object SandboxStats:
   private val WriteFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
   /**
-   * Largest first, each workspace named by its directory — where `--reset-run-on-host` runs — and
-   * by its id, which `--reset <id>` takes, where none is recorded or the recorded one is gone,
-   * dated by its newest write in the reader's zone, to the minute. The flag threshold is 1% of
-   * the cache filesystem's free space, so the report says which workspace to
-   * `--reset-run-on-host` rather than leaving a column of numbers to compare by eye; it reads
-   * only cache usage because `--reset-run-on-host` removes only that cache.
+   * One row per workspace, largest first.
+   * - The table names each workspace by its directory, where `--reset-run-on-host` runs. Where no directory is
+   *   recorded, or the recorded directory is gone, the table names the workspace by its id, which `--reset <id>`
+   *   takes.
+   * - The table dates each workspace by its newest write, in the reader's zone, to the minute.
+   * - The flag threshold is 1% of the cache filesystem's free space. The report thus says which workspace to
+   *   `--reset-run-on-host`, rather than leaving a column of numbers to compare by eye. The flag reads only cache
+   *   usage, because `--reset-run-on-host` removes only that cache.
    */
   def workspaceTable(
     usages: Vector[WorkspaceUsage],
@@ -285,7 +294,7 @@ object SandboxStats:
           Vector("total", "state", "cache", "volume", "last write", "workspace"), rows, rightAligned = Set(0, 1, 2, 3),
         )
 
-  /** Columns padded to their widest cell, the header included; rows indented two spaces. */
+  /** Columns padded to their widest cell, the header included, and rows indented two spaces. */
   private def table(header: Vector[String], rows: Vector[Vector[String]], rightAligned: Set[Int]): String =
     val all = header +: rows
     val widths = header.indices.map(column => all.map(_(column).length).max)
@@ -333,8 +342,8 @@ object SandboxStats:
     val stateDirs = this.stateDirs(os)
     val cacheDir = this.cacheDir(os)
 
-    // The volumes are in podman's store: a host path on native Linux, the VM's disk
-    // elsewhere, which only the machine itself can size.
+    // The volumes are in podman's store. The store is a host path on native Linux. Elsewhere the store is on the VM's
+    // disk, which only the machine itself can size.
     val graphRoot = service.toOption.flatMap: podman =>
       val answer = run(podman, "info", "--format", "{{.Store.GraphRoot}}")
       Option.when(answer.ok)(answer.text.trim).filter(_.nonEmpty)
@@ -367,8 +376,8 @@ object SandboxStats:
     System.out.print(workspaceTable(usages, cacheFreeBytes))
     sys.exit(0)
 
-  /** The podman to ask, or why the live figures are not queried: a missing podman or a stopped
-    * machine is a note, never a start. */
+  /** The podman to ask, or the reason the live figures are not queried. A missing podman or a stopped machine yields a
+    * note, never a start. */
   private def podmanService(os: Os): Either[String, String] =
     findOnPath("podman", os).map(_.toString) match
       case None => Left("podman is not on PATH")
@@ -381,8 +390,8 @@ object SandboxStats:
 
   private def firstLine(text: String): String = text.linesIterator.nextOption().getOrElse("").trim
 
-  /** Read at the nearest existing ancestor: the cache root does not exist before the first host
-    * build. None when the filesystem will not answer. */
+  /** The filesystem figures, read at the nearest existing ancestor, because the cache root does not exist before the
+    * first host build. None when the filesystem does not answer. */
   private def hostRoot(path: Path): Option[HostRoot] =
     var probe = path.toAbsolutePath
     while !Files.exists(probe) && probe.getParent != null do probe = probe.getParent
@@ -391,12 +400,11 @@ object SandboxStats:
       Some(HostRoot(path, store.toString, store.getUsableSpace, store.getTotalSpace)).filter(_.totalBytes > 0)
     catch case _: IOException => None
 
-  /** A tree's regular-file bytes and its newest modification, of a file or of a directory
-    * whose entries changed; None for a tree that does not exist. */
+  /** A tree's regular-file bytes and the tree's newest modification, of a file or of a directory whose entries changed.
+    * `newestWrite` is None for a tree that does not exist. */
   final case class TreeUsage(bytes: Long, newestWrite: Option[Instant])
 
-  /** Continues past races and permission holes: sizing must not fail on a tree a session is
-    * changing. */
+  /** Continues past races and permission holes, because sizing must not fail on a tree that a session is changing. */
   def treeUsage(root: Path): TreeUsage =
     if !Files.exists(root) then TreeUsage(0L, None)
     else

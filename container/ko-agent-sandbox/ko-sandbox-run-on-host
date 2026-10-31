@@ -1,13 +1,14 @@
 #!/bin/sh
 #
-# Requests the host to run a command, inside a sandbox of its own.
-# This can be used only when the session was launched with --run-on-host listing this command.
+# Asks the host to run a command, inside a sandbox of its own.
+# The script works only in a session launched with --run-on-host listing the command.
 #
-# One transaction, serialized by the lock: hand the runner this pid, then send the request over
-# `ctl.$$` and hold it open — the request travels on the liveness descriptor, so the runner ends
-# the command the moment this process dies, Ctrl-C included, and no request is ever runnable
-# without its liveness. The data FIFOs are this transaction's own, so no later invocation can
-# attach to another's streams. RunOnHostChannel.scala is the other side and documents the framing.
+# Each invocation is one transaction, and the lock serializes the transactions:
+# - The script hands the runner this pid, then sends the request over `ctl.$$` and holds that FIFO open.
+# - The request travels on the liveness descriptor. The runner therefore ends the command the moment this process
+#   dies, Ctrl-C included, and no request is ever runnable without its liveness.
+# - The data FIFOs belong to this transaction, so no later invocation can attach to another invocation's streams.
+# RunOnHostChannel.scala is the other side and documents the framing.
 set -eu
 
 usage() { echo "usage: ko-sandbox-run-on-host <sbt|mill|gradle|mvn> [args...]" >&2; exit 64; }
@@ -34,8 +35,8 @@ fi
 exec 9> "$dir/lock"
 flock 9
 
-# Create fresh FIFOs so a reused pid cannot adopt a killed predecessor's transaction.
-# SIGKILL bypasses cleanup: the watchdog can survive until its deadline and signal a reused pid.
+# Fresh FIFOs keep a reused pid from adopting a killed predecessor's transaction.
+# SIGKILL bypasses cleanup, so the watchdog can survive until its deadline and signal a reused pid.
 pid=$$
 fifos="$dir/ctl.$pid $dir/out.$pid $dir/err.$pid $dir/exit.$pid"
 unanswered="$dir/unanswered.$pid"
@@ -65,17 +66,18 @@ trap finish EXIT
 rm -f $fifos "$unanswered"
 mkfifo -m 600 $fifos
 
-# The startup watchdog bounds writing the handshake and request and opening both output streams.
-# A dead runner can leave any of these blocked. The watchdog ends this shell after leaving the
-# marker finish() reports on, and is disarmed once both streams are open, which the runner does
-# when it starts the command (RunOnHostChannel.dispatch). It holds no lock, and its output goes
-# nowhere: the sleep it leaves behind must keep neither the next command nor the agent's pipes
-# waiting.
+# The startup watchdog bounds writing the handshake and the request, and opening both output streams. A dead runner
+# can leave any of these steps blocked.
+# - The watchdog leaves the marker that finish() reports on, then ends this shell.
+# - The script disarms the watchdog once both streams are open. The runner opens them when it starts the command
+#   (RunOnHostChannel.dispatch).
+# - The watchdog holds no lock, and its output goes nowhere: the sleep it leaves behind must keep neither the next
+#   command nor the agent's pipes waiting.
 ( sleep "$bound"; : > "$unanswered"; kill -TERM "$pid" ) >/dev/null 2>&1 9>&- &
 watchdog=$!
-# bash retries an open a handled signal interrupted, so the handler must exit. dash fails the
-# open and exits under set -e, running the handler on its way out — but not the EXIT trap after
-# a handler that exits, so each signal calls finish() directly.
+# bash retries an open that a handled signal interrupted, so the handler must exit. dash fails the open and exits
+# under set -e, running the handler on its way out. dash skips the EXIT trap after a handler that exits, so each
+# signal calls finish() directly.
 trap 'finish 129' HUP
 trap 'finish 130' INT
 trap 'finish 143' TERM
@@ -85,32 +87,33 @@ exec 7> "$dir/req"
 printf '%s\n' "$pid" >&7
 exec 7>&-
 
-# The runner opens ctl's reading side once it has the handshake; dying before this open leaves a
-# transaction the runner expires on its own deadline, with no command started.
+# The runner opens the reading side of ctl once it has the handshake. If this shell dies before this open, the
+# runner expires the transaction on its own deadline, with no command started.
 exec 8> "$dir/ctl.$pid"
 { printf '%s %s\n' "$program" "$#"; printf '%s\0' "$PWD" "$@"; } >&8
 
-# Opened by this shell, where the watchdog's signal lands, and handed to the readers below.
+# This shell, where the watchdog's signal lands, opens the streams and hands them to the readers below.
 exec 3< "$dir/out.$pid" 4< "$dir/err.$pid"
 stop_watchdog
-# The watchdog can be ended between leaving its marker and sending its signal; a signal it did
-# send runs finish() before this line, which then still finds the marker.
+# The watchdog can be ended between leaving its marker and sending its signal. A signal it did send runs finish()
+# before this line, and finish() then still finds the marker.
 rm -f "$unanswered"
 
-# 3<&- 4<&- 8>&- 9>&-: the jobs outlive an interrupt that kills only this shell, and holding its
-# ctl or lock descriptor would stall the cancel, or the next command, until the runner ends them.
+# 3<&- 4<&- 8>&- 9>&-: the jobs outlive an interrupt that kills only this shell. A job that held this shell's ctl or
+# lock descriptor would stall the cancel, or the next command, until the runner ends the job.
 cat <&3 3<&- 4<&- 8>&- 9>&- &
 # HotSpot prints this banner with no option to suppress it, so the relay filters it out.
 # RunOnHostSandbox.commandEnvironment explains why the commands need _JAVA_OPTIONS.
 # -a: one NUL byte on stderr would otherwise make grep call the stream binary and print none of it.
-# --line-buffered: grep block-buffers to a pipe, holding the command's stderr back by a bufferful.
+# --line-buffered: grep otherwise block-buffers its output to a pipe and holds the command's stderr back by a
+# bufferful.
 # Unterminated stderr waits for a newline or EOF, even with --line-buffered.
 grep -a --line-buffered -v '^Picked up _JAVA_OPTIONS: ' <&4 3<&- 4<&- 8>&- 9>&- >&2 &
 exec 3<&- 4<&-
 wait
-# Bounded because with a live runner the exit code follows the drained output within
-# milliseconds; only a runner that died mid-command leaves this FIFO unwritten, and hanging on it
-# would turn that death into a command that never returns.
+# The read is bounded: with a live runner, the exit code follows the drained output within milliseconds. Only a
+# runner that died mid-command leaves this FIFO unwritten, and hanging on the FIFO would turn that death into a
+# command that never returns.
 # `|| true`: a timed-out substitution would otherwise trip set -e before the diagnostic below.
 code=$(timeout "$bound" cat "$dir/exit.$pid" 8>&- 9>&- || true)
 [ -n "$code" ] || {

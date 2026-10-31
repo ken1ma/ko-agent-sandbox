@@ -12,17 +12,18 @@ object FFMHelper:
   /** Windows. */
   object kernel32:
 
-    // ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING: SetConsoleMode's documentation
-    // asks for the first wherever the second is used, and an inherited mode can lack it.
+    // ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING. SetConsoleMode's documentation asks
+    // for the first flag wherever the second is used, and an inherited mode can lack the first.
     private val EscapeProcessing = 0x0001 | 0x0004
 
-    /** Whether the console behind `fd` (1 or 2) renders escape sequences, asking it to if it does
-      * not yet: a console only interprets them under ENABLE_VIRTUAL_TERMINAL_PROCESSING, and
-      * prints them as text otherwise. GetConsoleMode fails on a redirected stream, so this is
-      * also Windows' `isatty`. The mode is left set at exit, as the shells and Windows Terminal
-      * set it themselves.
+    /** Whether the console behind `fd` (1 or 2) renders escape sequences, asking the console to if it
+      * does not yet.
+      * - A console interprets escape sequences only under ENABLE_VIRTUAL_TERMINAL_PROCESSING, and
+      *   prints them as text otherwise.
+      * - GetConsoleMode fails on a redirected stream, so this method is also Windows' `isatty`.
+      * - The mode is left set at exit, as the shells and Windows Terminal set it themselves.
       *
-      * Every failure answers false, as `libc.isatty` below. kernel32 is one of the KnownDLLs, which
+      * Every failure answers false, as `libc.isatty` below does. kernel32 is one of the KnownDLLs, which
       * Windows loads from System32 whatever the search path holds.
       */
     def enableVirtualTerminalProcessing(fd: Int): Boolean =
@@ -54,8 +55,9 @@ object FFMHelper:
             accepted != 0
       catch case _: Throwable => false
 
-    /** `SetEnvironmentVariableW(name, NULL)`: the variable gone from what a process this one creates
-      * inherits. Throws on failure: a value a child should not inherit must not be left there quietly. */
+    /** `SetEnvironmentVariableW(name, NULL)`: removes the variable from what a process this one creates
+      * inherits. Throws on failure, because a value a child should not inherit must not stay there
+      * quietly. */
     def clearEnvironmentVariable(name: String): Unit =
       val linker = Linker.nativeLinker()
       val lookup = SymbolLookup.libraryLookup("kernel32", Arena.global())
@@ -67,9 +69,12 @@ object FFMHelper:
         val cleared: Int = handle.invokeExact(wide(arena, name), MemorySegment.NULL)
         if cleared == 0 then throw IOException(s"SetEnvironmentVariableW could not remove $name")
 
-    // CreateFileW arguments: no access right, which opens a file for its attributes alone; every
-    // share mode; OPEN_EXISTING; FILE_FLAG_BACKUP_SEMANTICS, which a directory handle needs, and
-    // FILE_FLAG_OPEN_REPARSE_POINT, which opens a link itself rather than its target.
+    // CreateFileW arguments:
+    // - no access right, which opens a file for its attributes alone;
+    // - every share mode;
+    // - OPEN_EXISTING;
+    // - FILE_FLAG_BACKUP_SEMANTICS, which a directory handle needs, and FILE_FLAG_OPEN_REPARSE_POINT,
+    //   which opens a link itself rather than its target.
     private val ShareAll = 0x1 | 0x2 | 0x4
     private val OpenExisting = 3
     private val BackupSemantics = 0x02000000
@@ -80,9 +85,9 @@ object FFMHelper:
     private val NumberOfLinksOffset = 40L
 
     /**
-     * How many names the file has (`nNumberOfLinks`), or None where the file cannot be opened or
-     * asked: Windows' `basic` and `dos` attribute views carry no link count, so `unix:nlink` has no
-     * counterpart in java.nio there. Every failure answers None; the caller refuses what it cannot count.
+     * How many names the file has (`nNumberOfLinks`), or None where the file cannot be opened or asked.
+     * Windows' `basic` and `dos` attribute views carry no link count, so `unix:nlink` has no counterpart
+     * in java.nio there. Every failure answers None, and the caller refuses what it cannot count.
      */
     def numberOfLinks(file: Path): Option[Int] =
       try
@@ -138,13 +143,13 @@ object FFMHelper:
   /** macOS and Linux. */
   object libc:
 
-    /** `isatty`. The launcher asks it about the stream a line goes to — stderr for its own lines,
-      * stdout for the `--stats` report — which a reader redirects to keep them, so
-      * `System.console()` — which answers for stdin — is a different question. Restricted, as
-      * execvp below.
+    /** `isatty`. The launcher asks it about the stream that a line goes to: stderr for the launcher's
+      * own lines, stdout for the `--stats` report. A reader redirects that stream to keep the lines, so
+      * `System.console()`, which answers for stdin, asks a different question. The method is
+      * restricted, as execvp below is.
       *
-      * Every failure answers "not a terminal": the first caller is `fail`, and a platform without
-      * the symbol, or one that denies the call, must lose the color rather than the refusal text.
+      * Every failure answers "not a terminal". The first caller is `fail`, and a platform without the
+      * symbol, or one that denies the call, must lose the color rather than the refusal text.
       */
     def isatty(fd: Int): Boolean =
       try
@@ -158,8 +163,8 @@ object FFMHelper:
         answer != 0
       catch case _: Throwable => false
 
-    /** `unsetenv`: the variable gone from what a process this one starts inherits. Throws on failure,
-      * as kernel32.clearEnvironmentVariable does. */
+    /** `unsetenv`: removes the variable from what a process this one starts inherits. Throws on
+      * failure, as kernel32.clearEnvironmentVariable does. */
     def unsetenv(name: String): Unit =
       val linker = Linker.nativeLinker()
       val handle = linker.downcallHandle(
@@ -170,8 +175,8 @@ object FFMHelper:
         val removed: Int = handle.invokeExact(arena.allocateFrom(name))
         if removed != 0 then throw IOException(s"unsetenv could not remove $name")
 
-    /** A restricted method — the build bakes `--enable-native-access=ALL-UNNAMED` into the
-      * manifest and run task. Returns only by throwing (SandboxLifecycle.handOver has the fallback).
+    /** A restricted method: the build bakes `--enable-native-access=ALL-UNNAMED` into the manifest and
+      * the run task. Returns only by throwing (SandboxLifecycle.handOver has the fallback).
       */
     def execvp(command: Vector[String]): Unit =
       val linker = Linker.nativeLinker()
@@ -189,11 +194,11 @@ object FFMHelper:
           argv.setAtIndex(ValueLayout.ADDRESS, i, arena.allocateFrom(arg))
         argv.setAtIndex(ValueLayout.ADDRESS, command.length, MemorySegment.NULL)
         val state = arena.allocate(captureLayout)
-        // The `: Int` ascription is necessary: invokeExact is signature-polymorphic, so the expected type at the
-        // call site selects the compiled method descriptor, and a mismatch with the handle's
-        // (MemorySegment,MemorySegment,MemorySegment)int is a runtime WrongMethodTypeException. In bare statement
-        // position the descriptor would be (...)void. The value itself is discarded: execvp only returns on failure,
-        // and the captured errno below is the detail.
+        // The `: Int` ascription is necessary. invokeExact is signature-polymorphic, so the expected type at
+        // the call site selects the compiled method descriptor, and a mismatch with the handle's
+        // (MemorySegment,MemorySegment,MemorySegment)int is a runtime WrongMethodTypeException. In bare
+        // statement position the descriptor would be (...)void. The value itself is discarded: execvp returns
+        // only on failure, and the captured errno below is the detail.
         val _: Int = handle.invokeExact(state, file, argv)
         val errno: Int = errnoHandle.get(state, 0L)
         throw IOException(s"execvp failed with errno $errno")

@@ -3,11 +3,12 @@ allow https://api.anthropic.com/   tunnel  # model traffic, the WebFetch domain 
 allow https://claude.ai/           tunnel  # interactive login
 allow https://platform.claude.com/ tunnel  # OAuth token exchange and refresh, every session
 
-# Absent, of Claude Code's own list (code.claude.com/docs/en/network-config):
-# - mcp-proxy.anthropic.com: claude.ai connectors, on by default for a claude.ai sign-in — a write
-#   path to third-party services through an opaque tunnel, the trade SECURITY.md prices for
-#   Copilot's MCP; ENABLE_CLAUDEAI_MCP_SERVERS=false silences the fetch
-# - the two Datadog intake hosts: telemetry and error reports, each attempt a refusal in the log,
-#   or none with CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC set
-# - downloads.claude.ai: the auto-updater
-# - claude.com and *.claudeusercontent.com: the sign-in redirect page and artifact content
+# These hosts of Claude Code's own list are absent (code.claude.com/docs/en/network-config):
+# - mcp-proxy.anthropic.com serves the claude.ai connectors, which a claude.ai sign-in turns on by default.
+#   - The host would open a write path to third-party services through an opaque tunnel. SECURITY.md prices the
+#     same trade for Copilot's MCP.
+#   - ENABLE_CLAUDEAI_MCP_SERVERS=false silences the fetch.
+# - The two Datadog intake hosts receive telemetry and error reports. Each attempt leaves a refusal in the log, or
+#   none with CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC set.
+# - downloads.claude.ai serves the auto-updater.
+# - claude.com and *.claudeusercontent.com serve the sign-in redirect page and artifact content.

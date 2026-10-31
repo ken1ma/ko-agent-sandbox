@@ -1,7 +1,8 @@
-// ko-sandbox-apt-get's unpack loop, run as the shell script it is: which cached archives an install
-// unpacks, and what a package upgrade leaves in $HOME/.local/deb and the wrappers beside it. apt is
-// stubbed — the archives placed in the cache stand in for what it would download, and the stub's
-// simulation names them as apt's would — so the test exercises the unpack, not the fetch.
+// Runs ko-sandbox-apt-get's unpack loop as the shell script that it is. The suite checks which cached
+// archives an install unpacks, and what a package upgrade leaves in $HOME/.local/deb and in the wrappers
+// beside it. The suite stubs apt: the archives placed in the cache stand in for what apt would download,
+// and the stub's simulation names them as apt's simulation would. The test therefore exercises the
+// unpack, not the fetch.
 
 package agentsandbox.launcher
 
@@ -16,8 +17,8 @@ class SandboxAptGetTest extends munit.FunSuite:
   private val script = Path.of("container/ko-agent-sandbox/ko-sandbox-apt-get").toAbsolutePath
   private val sh = Path.of("/bin/sh")
 
-  // dpkg builds and lists the archives; the script runs only in the Debian image, and so does this
-  // suite's host there. A host without them — a developer's macOS or Fedora — skips.
+  // dpkg builds and lists the archives. The script runs only in the Debian image, and this suite runs
+  // only there too. A host without these tools, such as a developer's macOS or Fedora, skips.
   private def tooling: Boolean =
     Files.isExecutable(sh) && Vector("dpkg-deb", "dpkg", "tar").forall(onPath)
   private def onPath(program: String): Boolean =
@@ -27,8 +28,8 @@ class SandboxAptGetTest extends munit.FunSuite:
     Files.writeString(path, body)
     Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rwxr-xr-x"))
 
-  /** A .deb of `pkg` at `version` holding the given paths, each a script printing its package and
-    * version; those under usr/bin are the commands the script wraps. */
+  /** A .deb of `pkg` at `version` that holds the given paths, each a script that prints its package
+    * and version. The paths under usr/bin are the commands that the script wraps. */
   private def buildDeb(into: Path, pkg: String, version: String, architecture: String, paths: String*): Path =
     val stage = Files.createDirectories(into.resolve(s"stage-$pkg-$version-$architecture"))
     Files.createDirectories(stage.resolve("DEBIAN"))
@@ -64,10 +65,13 @@ class SandboxAptGetTest extends munit.FunSuite:
       entries.iterator().asScala.toVector.reverse.foreach(Files.deleteIfExists)
 
   /**
-   * A HOME with the package lists an install requires, a cache to place archives in, and the
-   * script bound to them. apt is not on the path: the stub's `update` seeds the list, its
-   * `install` downloads nothing and fails while `apt-get.failing` exists, and its `install -s`
-   * prints the `Inst` lines in `apt-get.resolved` and fails while `apt-get.failing-simulation` exists.
+   * A HOME with the package lists that an install requires, a cache to place archives in, and the
+   * script bound to them. apt is not on the path, and the stub stands in for it:
+   *
+   *  - `update` seeds the list;
+   *  - `install` downloads nothing, and fails while `apt-get.failing` exists;
+   *  - `install -s` prints the `Inst` lines in `apt-get.resolved`, and fails while
+   *    `apt-get.failing-simulation` exists.
    */
   private final class Fixture(root: Path):
     val home: Path = Files.createDirectories(root.resolve("home"))
@@ -77,7 +81,7 @@ class SandboxAptGetTest extends munit.FunSuite:
     private val stubBin = Files.createDirectories(root.resolve("stub"))
     private val failing = stubBin.resolve("apt-get.failing")
     private val failingSimulation = stubBin.resolve("apt-get.failing-simulation")
-    /** An architecture apt qualifies the package name with: neither dpkg's native one nor `all`. */
+    /** An architecture that apt qualifies the package name with: neither dpkg's native one nor `all`. */
     private val foreign = if run(Path.of("dpkg"), "--print-architecture").trim == "amd64" then "arm64" else "amd64"
     private val resolved = Files.createFile(stubBin.resolve("apt-get.resolved"))
     private var resolvedVersions = Map.empty[String, String]
@@ -105,7 +109,7 @@ class SandboxAptGetTest extends munit.FunSuite:
 
     def sandboxAptGet(args: String*): Int = sandboxAptGetOutput(args*)(0)
 
-    /** The exit status, and stdout and stderr together. */
+    /** Runs the script and returns the exit status, and stdout and stderr together. */
     def sandboxAptGetOutput(args: String*): (Int, String) =
       val builder = ProcessBuilder((sh.toString +: script.toString +: args)*).redirectErrorStream(true)
       builder.environment().put("HOME", home.toString)
@@ -114,18 +118,19 @@ class SandboxAptGetTest extends munit.FunSuite:
       val out = String(process.getInputStream.readAllBytes())
       (process.waitFor(), out)
 
-    /** Places the archive in the cache as apt would have after a download, and has the following
-      * installs resolve `pkg` to it — in apt's upgrade form when they resolved to a version before. */
+    /** Places the archive in the cache as apt would after a download, and makes the following installs
+      * resolve `pkg` to the archive. The stub uses apt's upgrade form when an earlier install resolved
+      * `pkg` to a version. */
     def place(pkg: String, version: String, paths: String*): Unit =
       cached(pkg, version, "all", paths*)
       resolvesTo(pkg, version)
 
-    /** As `place`, for an archive of the foreign architecture, which apt names `pkg:architecture`. */
+    /** Like `place`, for an archive of the foreign architecture, which apt names `pkg:architecture`. */
     def placeForeign(pkg: String, version: String, paths: String*): Unit =
       cached(pkg, version, foreign, paths*)
       resolvesTo(s"$pkg:$foreign", version)
 
-    /** A foreign-architecture archive in the cache that no install resolves to. */
+    /** Places a foreign-architecture archive in the cache that no install resolves to. */
     def strandForeign(pkg: String, version: String, paths: String*): Unit =
       cached(pkg, version, foreign, paths*)
 
@@ -143,14 +148,14 @@ class SandboxAptGetTest extends munit.FunSuite:
       Files.copy(deb, cache.resolve(deb.getFileName), StandardCopyOption.REPLACE_EXISTING)
       ()
 
-    /** An install whose download fails after this archive reached the cache. */
+    /** Runs an install whose download fails after this archive reached the cache. */
     def failedInstall(pkg: String, version: String, paths: String*): Unit =
       cached(pkg, version, "all", paths*)
       Files.createFile(failing)
       try assertNotEquals(sandboxAptGet("install", pkg), 0, s"failed install of $pkg $version")
       finally Files.delete(failing)
 
-    /** An install whose download succeeds and whose simulation then fails. */
+    /** Runs an install whose download succeeds and whose simulation then fails. */
     def installFailingSimulation(pkg: String): (Int, String) =
       Files.createFile(failingSimulation)
       try sandboxAptGetOutput("install", pkg)
@@ -173,7 +178,7 @@ class SandboxAptGetTest extends munit.FunSuite:
       assert(Files.exists(f.localBin.resolve("old-only")), "old-only was wrapped")
 
       // 1.10 arrives beside 1.9 in the cache, as a mid-session `update` then `install` leaves it,
-      // and precedes it by filename; the install resolves to 1.10 alone.
+      // and sorts before 1.9 by filename. The install resolves to 1.10 alone.
       f.install("demo", "1.10", "usr/bin/common")
       assert(!Files.exists(f.usrBin.resolve("old-only")), "the upgrade removed old-only")
       assert(!Files.exists(f.localBin.resolve("old-only")), "the upgrade swept old-only's wrapper")
@@ -187,8 +192,8 @@ class SandboxAptGetTest extends munit.FunSuite:
   test("an install resolving to an older version than the one extracted replaces it"):
     fixture: f =>
       f.install("demo", "2.0", "usr/bin/common", "usr/bin/new-only")
-      // `install demo=1.0`: neither version is in the image's dpkg status, apt's baseline, so apt
-      // resolves to 1.0 as a new install and reports no downgrade.
+      // `install demo=1.0`: neither version is in the image's dpkg status, which is apt's baseline, so
+      // apt resolves to 1.0 as a new install and reports no downgrade.
       f.install("demo", "1.0", "usr/bin/common", "usr/bin/old-only")
       assertEquals(run(f.usrBin.resolve("common")), "demo common 1.0\n", "common is the selected version")
       assert(Files.exists(f.localBin.resolve("old-only")), "1.0's own command is wrapped")
@@ -210,8 +215,9 @@ class SandboxAptGetTest extends munit.FunSuite:
   test("a file that moved to another package survives the upgrade that stopped shipping it"):
     fixture: f =>
       f.install("demo", "1.0", "usr/bin/moved")
-      // The upgrade and the package taking the file over arrive in one download; `demo-data`
-      // precedes `demo_2.0` by filename, so its copy is extracted before demo's cleanup runs.
+      // The upgrade and the package that takes the file over arrive in one download. `demo-data`
+      // sorts before `demo_2.0` by filename, so the script extracts demo-data's copy before demo's
+      // cleanup runs.
       f.place("demo-data", "1.0", "usr/bin/moved")
       f.place("demo", "2.0")
       assertEquals(f.sandboxAptGet("install", "demo"), 0)
@@ -224,8 +230,8 @@ class SandboxAptGetTest extends munit.FunSuite:
     fixture: f =>
       val obsolete = f.home.resolve(".local/deb/usr/share/demo")
       f.install("demo", "1.9", "usr/bin/common", "usr/share/demo/old-only")
-      // The obsolete file's directory refuses the deletion; 1.10 ships nothing under it, so the
-      // extraction itself succeeds and only the cleanup fails.
+      // The obsolete file's directory refuses the deletion. 1.10 ships nothing under that directory,
+      // so the extraction itself succeeds and only the cleanup fails.
       Files.setPosixFilePermissions(obsolete, PosixFilePermissions.fromString("r-xr-xr-x"))
       assume(!Files.isWritable(obsolete), "a directory this user cannot write to; root can")
       try
@@ -245,13 +251,13 @@ class SandboxAptGetTest extends munit.FunSuite:
       assert(Files.exists(f.localBin.resolve("wanted-cmd")), "the requested package is unpacked")
       assert(!Files.exists(f.usrBin.resolve("stale-cmd")), "the stranded archive stays unopened")
       assert(!Files.exists(f.localBin.resolve("stale-cmd")), "and gets no wrapper")
-      // The install that does resolve to it unpacks it from the cache.
+      // The install that does resolve to the archive unpacks the archive from the cache.
       f.install("stale", "1.0", "usr/bin/stale-cmd")
       assert(Files.exists(f.localBin.resolve("stale-cmd")), "a successful install of it unpacks it")
 
   test("an archive of a foreign architecture is unpacked under the qualified name apt resolves to"):
     fixture: f =>
-      // The same package and version as the native install resolves to, stranded in the cache.
+      // The same package and version that the native install resolves to, stranded in the cache.
       f.strandForeign("demo", "1.0", "usr/bin/foreign-only")
       f.install("demo", "1.0", "usr/bin/native-only")
       assert(Files.exists(f.usrBin.resolve("native-only")), "the native archive is unpacked")

@@ -1,6 +1,8 @@
-// A JSON reader for the files the launcher reads, such as a plugin manifest, and a writer for the
-// one it derives from a read file, the seccomp profile (SeccompProfile): the launcher has no JSON
-// library, and its other output is literal text.
+// The launcher has no JSON library, so this file holds its JSON reader and writer.
+//
+// - The reader parses the JSON files the launcher reads, such as a plugin manifest.
+// - The writer renders the one JSON file the launcher derives from a file it read: the seccomp profile
+//   (SeccompProfile). The launcher writes its other output as literal text.
 
 package agentsandbox.launcher
 
@@ -14,13 +16,13 @@ object JsonText:
     case Bool(value: Boolean)
     case Null
 
-    /** The object's field, if this is an object that has it: the last of a repeated key, which is
-      * the value JavaScript's JSON.parse keeps (ECMA-262, ParseJSON), so the one Claude Code reads. */
+    /** The object's field, if this is an object that has it. For a repeated key, the field is the last
+      * one: JavaScript's JSON.parse keeps that value (ECMA-262, ParseJSON), so Claude Code reads it. */
     def field(key: String): Option[Json] = this match
       case Obj(fields) => fields.reverse.collectFirst { case (name, value) if name == key => value }
       case _           => None
 
-  /** The document's one value, or what made the text not JSON, with the offset it was found at. */
+  /** The document's one value, or an error that says what made the text not JSON and at which offset. */
   def parse(text: String): Either[String, Json] =
     val parser = Parser(text)
     try
@@ -30,8 +32,9 @@ object JsonText:
       if parser.at < text.length then Left(parser.error("text after the value")) else Right(value)
     catch case ex: Malformed => Left(ex.getMessage)
 
-  /** The value as JSON text: each object field and array item on a line of its own, nested ones
-    * indented two spaces further, an empty object or array on one line. Numbers as they were read. */
+  /** The value as JSON text. Each object field and array item goes on a line of its own. A nested value
+    * is indented two spaces further, and an empty object or array stays on one line. A number keeps the
+    * text it was read as. */
   def render(json: Json): String =
     val out = StringBuilder()
     def quoted(value: String): Unit =

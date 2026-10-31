@@ -1,27 +1,26 @@
 ARG IMG_TAG_VER
 FROM debian-temurin:${IMG_TAG_VER}
 
-# Coursier, from https://get-coursier.io/docs/cli-installation — latest
-# rather than stable, intentionally. Installs to the default ~/.local/share
-# path: this is a development environment.
+# Coursier, from https://get-coursier.io/docs/cli-installation. The download is the latest launcher rather than the
+# stable one, on purpose. Coursier installs to the default ~/.local/share path, because this image is a development
+# environment.
 USER nonroot
 RUN set -euxo pipefail; \
     curl -fsSL "https://github.com/coursier/launchers/raw/master/cs-$(uname -m)-pc-linux.gz" | gzip -d > /tmp/cs; \
     chmod 0755 /tmp/cs; \
-    # cs setup detects the Temurin installed in the parent image; `--env` avoids updating `.profile`.
-    # Select coursier's default apps except two redundant launchers.
-    # Omit `scala-cli`: the Scala distribution behind `scala` bundles the same Scala CLI native image.
-    # Omit `coursier`: it is the JAR-based fallback; both architecture builds install a native `cs`.
+    # cs setup detects the Temurin that the parent image installed, and `--env` keeps it from updating `.profile`.
+    # The app list is coursier's default apps except two redundant launchers:
+    # - `scala-cli` stays out, because the Scala distribution behind `scala` bundles the same Scala CLI native image.
+    # - `coursier` stays out, because it is the JAR-based fallback, and both architecture builds install a native `cs`.
     /tmp/cs setup --yes --env --apps cs,scala,scalac,sbt,sbtn,scalafmt; \
     rm /tmp/cs
 
-# Make `apt-get install` usable again; descendant images set `USER nonroot` themselves
+# root makes `apt-get install` usable again. Descendant images set `USER nonroot` themselves.
 USER root
 
-# Modify `PATH` since `$HOME/.profile` will not be sourced by `podman run --rm -it image bash`
+# The image sets `PATH` here, because `podman run --rm -it image bash` does not source `$HOME/.profile`.
 ENV PATH="/home/nonroot/.local/share/coursier/bin:$PATH"
 
 
-# Known problem: `cs java --installed` OOMs (memory.events shows oom_kill).
-# A Coursier JVM-index problem — the JVM-based coursier launcher also throws
-# OutOfMemoryError even with a 2GB heap.
+# Known problem: `cs java --installed` runs out of memory (memory.events shows oom_kill). The cause is a problem in
+# Coursier's JVM index: the JVM-based coursier launcher also throws OutOfMemoryError, even with a 2GB heap.

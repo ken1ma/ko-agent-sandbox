@@ -1,10 +1,10 @@
-# Antigravity. Signed in with a Google account, model traffic and account state go to one of the
-# two hosts below by account kind; daily-cloudcode-pa is a production endpoint despite its name.
-# Google's Code Assist page names cloudcode-pa, "an internal API that provides IDE-related
-# features": https://docs.cloud.google.com/gemini/docs/codeassist/set-up-gemini
-# No page read names daily-cloudcode-pa or the split; agy's own log under
-# ~/.gemini/antigravity-cli/log/ shows it after a consumer sign-in.
-# The Business and API-key modes below are agy's changelog entries 1.1.10 and 1.1.13:
+# Antigravity. With a Google-account sign-in, model traffic and account state go to one of the two hosts below,
+# chosen by account kind. daily-cloudcode-pa is a production endpoint despite its name.
+# - Google's Code Assist page names cloudcode-pa, "an internal API that provides IDE-related features":
+#   https://docs.cloud.google.com/gemini/docs/codeassist/set-up-gemini
+# - No page that was read names daily-cloudcode-pa or the split. agy's own log under ~/.gemini/antigravity-cli/log/
+#   shows the split after a consumer sign-in.
+# The Business and API-key modes below come from agy's changelog entries 1.1.10 and 1.1.13:
 # https://github.com/google-antigravity/antigravity-cli/blob/main/CHANGELOG.md
 allow https://cloudcode-pa.googleapis.com/        tunnel  # GCP-licensed accounts
 allow https://daily-cloudcode-pa.googleapis.com/  tunnel  # consumer accounts: AI Pro/Ultra/One/Free
@@ -12,16 +12,17 @@ allow https://daily-cloudcode-pa.googleapis.com/  tunnel  # consumer accounts: A
 # GEMINI_API_KEY, the Gemini API with no sign-in: https://antigravity.google/docs/cli/install
 allow https://generativelanguage.googleapis.com/  tunnel
 
-# Business sign-in with a Gemini Enterprise license in a Google Cloud project uses the Business AI
-# Code API (license, configuration, generateContent) and the Agent Platform API the enterprise doc
-# has the project enable, at the host of the license's location: `global`, `us` or `eu`, the doc's
-# whole choice: https://antigravity.google/docs/enterprise
+# Business sign-in with a Gemini Enterprise license in a Google Cloud project uses two APIs, at the host of the
+# license's location:
+# - the Business AI Code API, for the license, the configuration and generateContent;
+# - the Agent Platform API, which the enterprise doc has the project enable.
+# The location is `global`, `us` or `eu`, the doc's whole choice: https://antigravity.google/docs/enterprise
 # Business AI Code "provides AI-powered code generation for Antigravity in Gemini Enterprise":
 # https://docs.cloud.google.com/gemini/enterprise/docs/ai-developer-tools-settings
 # The multi-region hosts: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/learn/locations
 # SECURITY.md, "Not defended", has what the aiplatform tunnels open to the credential.
-# Advanced WIF sign-in's token exchange, at sts.googleapis.com and iamcredentials.googleapis.com,
-# is a workspace's own setup, added in .ko-agent-sandbox/egress/rule when the proxy's 403 names it.
+# Advanced WIF sign-in exchanges tokens at sts.googleapis.com and iamcredentials.googleapis.com. That exchange is a
+# workspace's own setup: add the host to .ko-agent-sandbox/egress/rule when the proxy's 403 names the host.
 allow https://businessaicode.googleapis.com/      tunnel
 allow https://aiplatform.googleapis.com/          tunnel  # global
 allow https://aiplatform.us.rep.googleapis.com/   tunnel  # us
@@ -31,19 +32,20 @@ allow https://aiplatform.eu.rep.googleapis.com/   tunnel  # eu
 allow https://accounts.google.com/                tunnel  # printed sign-in URL
 allow https://oauth2.googleapis.com/              tunnel  # code exchange and token refresh
 
-# Eligibility check. Signed in, agy reads the account at userinfo, then the profile picture at
-# the URL the `picture` field names; a refusal at either is its "Eligibility check failed" banner,
-# with the model list loaded. Google constrains `picture` only to a URL, not a host or path; its
-# examples use this host with differently shaped paths, so the whole host is allowed:
+# Eligibility check. Signed in, agy reads the account at userinfo, then the profile picture at the URL that the
+# `picture` field names. A refusal at either host shows agy's "Eligibility check failed" banner, with the model list
+# loaded.
+# Google constrains `picture` only to a URL, not to a host or path. Google's examples use this host with paths of
+# different shapes, so the rule allows the whole host:
 # https://developers.google.com/identity/openid-connect/reference
 # https://developers.google.com/identity/siwg/security-bundle
 # https://developers.google.com/identity/gsi/web/reference/js-reference
 allow https://www.googleapis.com/oauth2/v2/userinfo read
 allow https://lh3.googleusercontent.com/            read
 
-# `/voice` under --audio=mic streams the recording over gRPC, which needs HTTP/2 and so a tunnel;
-# the host is the one the proxy refused in agy 1.3.4's "Could not start transcription" error.
+# `/voice` under --audio=mic streams the recording over gRPC, which needs HTTP/2 and so a tunnel. The proxy refused
+# this host in agy 1.3.4's "Could not start transcription" error.
 allow https://aicode.googleapis.com/              tunnel
 
-# play.googleapis.com — telemetry and experiment polling — is absent, as ab.chatgpt.com is in
+# play.googleapis.com serves telemetry and experiment polling. The host is absent, as ab.chatgpt.com is absent from
 # model-provider/openai.

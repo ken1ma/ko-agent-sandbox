@@ -1,26 +1,27 @@
 #!/bin/sh
 #
-# The sandbox's apt-get: same actions, different destination — packages unpack into $HOME with
-# dependencies resolved, because real `apt-get install` can never work on a read-only rootfs as
-# uid 65532, which is why this exists.
+# The sandbox's apt-get takes apt-get's actions but unpacks the packages into $HOME, with dependencies resolved.
+# A real `apt-get install` can never work on a read-only rootfs as uid 65532, which is why this script exists.
 #
-#   ko-sandbox-apt-get update           # fetch the package lists — explicit, exactly as apt-get's
+#   ko-sandbox-apt-get update           # fetches the package lists, explicitly, exactly as apt-get does
 #   ko-sandbox-apt-get install podman   # dependencies arrive too; `podman` is then on PATH
 #
-# What install does: apt-get with its directories under ~/.local/deb — the image's real dpkg
-# status stays apt's baseline, so only what the image lacks is fetched, and Release signatures are
-# still verified against the image's own /etc/apt keyrings — then the archives this install resolved
-# to are unpacked and each new command gets a wrapper in ~/.local/bin (already on PATH) setting the
-# library path it needs. Nothing is exported, so it works from any shell, script, or pipe.
+# What install does:
+# - install runs apt-get with its directories under ~/.local/deb. The image's real dpkg status stays apt's baseline, so
+#   apt fetches only what the image lacks. apt still verifies Release signatures against the image's own /etc/apt
+#   keyrings.
+# - install unpacks the archives this install resolved to. Each new command gets a wrapper in ~/.local/bin, which is
+#   already on PATH, and the wrapper sets the library path the command needs.
+# - install exports nothing, so the commands work from any shell, script or pipe.
 #
-# install's arguments reach apt-get as given, so its options and package forms (`-o ...`,
+# install passes its arguments to apt-get as given, so apt-get's options and package forms (`-o ...`,
 # `--no-install-recommends`, `pkg=version`, `pkg:arch`) select packages as stock apt-get's do.
 # `update` and `install` are the only actions.
 #
-# What it is not: an install. No maintainer scripts run, nothing registers with dpkg, and services,
-# users or setuid bits a package expects do not materialize. Like everything under ~, it is gone
-# when the session ends — if the same program gets installed session after session, tell the user;
-# only the image installs it for good, one line in the Containerfile.
+# What it is not: an install. No maintainer scripts run, nothing registers with dpkg, and the services, users or
+# setuid bits a package expects do not appear. Like everything under ~, the unpacked packages are gone when the
+# session ends. If the same program gets installed session after session, tell the user: only the image installs
+# the program for good, with one line in the Containerfile.
 set -eu
 
 root=$HOME/.local/deb
@@ -52,14 +53,13 @@ aptc() {
         "$@"
 }
 
-# The rm complaint about /var/cache/apt/archives/partial is apt touching the read-only system
-# cache; expected and harmless, so it is filtered rather than left to read like a failure. The
-# filtering goes through a file, not a pipe: a pipeline reports its last stage, and apt's own
-# failure must be the one that decides.
+# apt touches the read-only system cache, and rm complains about /var/cache/apt/archives/partial. The complaint is
+# expected and harmless, so the script filters it out rather than leave it to read like a failure.
+# The filter reads a file, not a pipe: a pipeline reports its last stage, and apt's own failure must decide.
 update_lists() {
     status=0
-    # Error-Mode=any: a failed index fetch is otherwise a warning and exit 0 — with one
-    # configured repository, "ignored, or old ones used instead" is a silent stale resolve.
+    # Error-Mode=any: otherwise a failed index fetch is a warning with exit 0. With one configured repository,
+    # "ignored, or old ones used instead" means a silent resolve against stale lists.
     aptc update -qq -o APT::Update::Error-Mode=any > "$apt/update.log" 2>&1 || status=$?
     grep -v "/var/cache/apt/archives/partial" "$apt/update.log" >&2 || true
     return $status
@@ -79,34 +79,37 @@ case $action in
         ;;
 esac
 
-# install, from here on. Lists come only from an explicit `update`, exactly as apt-get behaves —
-# but the bare-lists failure here is a hint instead of apt's "Unable to locate package".
+# The rest of the script is install. Lists come only from an explicit `update`, exactly as with apt-get. Missing
+# lists produce a hint here instead of apt's "Unable to locate package".
 if [ -z "$(find "$apt/lists" -maxdepth 1 -name '*Packages*' -print -quit 2>/dev/null)" ]; then
     echo "${0##*/}: no package lists yet — run '${0##*/} update' first" >&2
     exit 1
 fi
 
-# --download-only resolves against the image's installed set (the default, still-readable dpkg
-# status), so only genuinely missing packages and their dependencies are fetched. Through a file
-# for the same reason as update above — a download that still fails after the retries must fail
-# the install here, or the stranded archive shows only much later, as some unpacked binary
-# failing to load a library it arrived without.
+# --download-only resolves against the image's installed set, the default dpkg status, which stays readable. apt
+# therefore fetches only the packages that are actually missing, and their dependencies.
+# The output goes through a file for the same reason as in update above. A download that still fails after the
+# retries must fail the install here. Otherwise the stranded archive shows only much later, as an unpacked binary
+# that fails to load a library it arrived without.
 if ! aptc install --download-only -y -o Acquire::Retries=3 "$@" > "$apt/install.log" 2>&1; then
     grep -E "newly installed|^Get:|^Err|^E:" "$apt/install.log" | tail -5 >&2
-    # Renamed aside, or the retry that succeeds after a transient failure overwrites the evidence of it.
+    # The log moves aside, or a retry that succeeds after a transient failure overwrites the evidence of that failure.
     mv "$apt/install.log" "$apt/install-failed.log"
     echo "${0##*/}: download failed; nothing unpacked (apt output kept: $apt/install-failed.log)" >&2
     exit 1
 fi
 grep -E "newly installed|^Get:" "$apt/install.log" | tail -1
 
-# The packages and versions this install resolved to, one "package version" per line, from apt's
-# simulation of the same install: "Inst demo (1.10 Debian:13/stable [arm64])", with "[1.9] " before
-# the parenthesis when the image holds an older version, and "demo:amd64" for the name when the
-# architecture is neither the native one nor "all". The cache outlives the install that filled it,
-# so it also holds what a failed or killed download left; only the archives listed here are
-# unpacked, or a later install of an unrelated package would unpack those. Through a file once
-# more: a simulation that fails must fail the install, not read as an install resolving to nothing.
+# apt's simulation of the same install gives the packages and versions this install resolved to. The script writes
+# them to $apt/resolved, one "package version" per line.
+# - A simulation line reads "Inst demo (1.10 Debian:13/stable [arm64])". The line has "[1.9] " before the
+#   parenthesis when the image holds an older version, and "demo:amd64" for the name when the architecture is
+#   neither the native one nor "all".
+# - The cache outlives the install that filled it, so the cache also holds what a failed or killed download left.
+#   Only the archives listed here are unpacked; otherwise a later install of an unrelated package would unpack the
+#   leftovers.
+# - The output goes through a file once more: a simulation that fails must fail the install, not read as an install
+#   that resolved to nothing.
 if ! aptc install -s "$@" > "$apt/simulate.log" 2>&1; then
     grep -E "^E:" "$apt/simulate.log" | tail -5 >&2
     echo "${0##*/}: the download succeeded but apt's simulation of the install failed; nothing unpacked" \
@@ -115,20 +118,22 @@ if ! aptc install -s "$@" > "$apt/simulate.log" 2>&1; then
 fi
 sed -n 's/^Inst \([^ ]*\) \(\[[^]]*\] \)\{0,1\}(\([^ ]*\) .*/\1 \3/p' "$apt/simulate.log" > "$apt/resolved"
 
-# The cache is the only record of what was fetched — nothing registers with dpkg — and it is
-# deliberately not cleaned: deleting archives would turn every repeated install of the same
-# package into a re-download. A manifest per package, filed under the name the simulation gives it,
-# stands in for the ownership database dpkg would have kept: it names the extracted archive, its
-# version, and every path that archive holds.
-# A rerun of the same archive is skipped. Any other version the install resolved to extracts over
-# $root and then deletes the paths its predecessor owned that no manifest lists any more, so no
-# command the replaced version alone shipped stays behind, while a path that moved to another
-# package — a Debian transition, and the other package may well have been extracted first — stays.
-# An older version too: `pkg=version` selects it, and apt reports no downgrade, since its baseline,
-# the image's dpkg status, holds neither. The manifest is replaced only once the extraction and the
-# deletions are through:
-# an aborted extraction, or a deletion refused by an unwritable directory, leaves the old one, so a
-# retry deletes what remains instead of skipping the archive as done.
+# The cache is the only record of what was fetched, since nothing registers with dpkg. The script deliberately
+# leaves the cache uncleaned: deleting archives would turn every repeated install of the same package into a
+# re-download.
+# A manifest per package stands in for the ownership database dpkg would have kept. The manifest is filed under the
+# name the simulation gives the package, and it names the extracted archive, its version, and every path the archive
+# holds.
+# - A rerun of the same archive is skipped.
+# - Any other version the install resolved to extracts over $root. The loop then deletes the paths the predecessor
+#   owned that no manifest lists any more, so no command that only the replaced version shipped stays behind.
+# - A path that moved to another package stays. Such a move is a Debian transition, and the other package may well
+#   have been extracted first.
+# - An older version replaces a newer one the same way: `pkg=version` selects it, and apt reports no downgrade,
+#   because apt's baseline, the image's dpkg status, holds neither version.
+# - The loop replaces the manifest only once the extraction and the deletions are through. An aborted extraction,
+#   or a deletion that an unwritable directory refuses, leaves the old manifest, so a retry deletes what remains
+#   instead of skipping the archive as done.
 unpacked=$root/.unpacked
 mkdir -p "$unpacked"
 native=$(dpkg --print-architecture)
@@ -162,18 +167,18 @@ for archive in "$apt/cache/archives"/*.deb; do
     mv "$manifest.new" "$manifest"
 done
 
-# The command a wrapper this script wrote execs, or nothing: the exec line under $root marks our own
-# wrappers, so the image's commands and anything else in ~/.local/bin answer nothing.
+# Prints the command that a wrapper written by this script execs, or nothing. The exec line under $root marks this
+# script's wrappers, so the image's commands and anything else in ~/.local/bin print nothing.
 wrapper_target() {
     sed -n "s|^exec \\($root/[^\"]*\\) \"\$@\"\$|\\1|p" "$1" 2>/dev/null
 }
 
-# One wrapper per unpacked command: LD_LIBRARY_PATH scoped to that process tree instead of exported
-# globally, so nothing agent-unpacked shadows libraries for the image's own binaries. Left alone:
-# - a command already on PATH, for the same reason: a dependency chain that happens to include
-#   python3 must not change which python3 the session runs;
-# - any other file of its name in ~/.local/bin, such as a `uv tool` or `cs install` command.
-# Our own earlier wrappers do get rewritten, so rerunning stays idempotent.
+# Each unpacked command gets one wrapper, which scopes LD_LIBRARY_PATH to that process tree instead of exporting it
+# globally. Nothing an agent unpacked then shadows libraries for the image's own binaries. The loop leaves alone:
+# - a command already on PATH, for the same reason: a dependency chain that happens to include python3 must not
+#   change which python3 the session runs;
+# - any other file of the command's name in ~/.local/bin, such as a `uv tool` or `cs install` command.
+# The loop rewrites this script's own earlier wrappers, so a rerun stays idempotent.
 libs="$root/usr/lib/$(uname -m)-linux-gnu:$root/usr/lib:$root/lib"
 wrapped=""
 skipped=""
@@ -199,8 +204,8 @@ WRAP
     done
 done
 
-# A wrapper for a command the replacement above deleted would still answer `command -v`; drop the
-# ones whose $root target no longer exists.
+# A wrapper for a command that the replacement above deleted would still answer `command -v`. This loop drops the
+# wrappers whose $root target no longer exists.
 for wrapper in "$HOME/.local/bin"/*; do
     [ -f "$wrapper" ] || continue
     target=$(wrapper_target "$wrapper")

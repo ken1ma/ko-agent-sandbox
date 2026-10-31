@@ -1,16 +1,16 @@
 #!/bin/sh
 #
-# Install a rootless podman in this session, configured the one way that works here.
+# Installs a rootless podman in this session, configured the one way that works here.
 #
 #     ko-sandbox-install-podman
 #     export XDG_RUNTIME_DIR=/tmp/xdg          # in every shell that runs podman
 #     podman run --rm docker.io/library/alpine:latest echo hello
 #
-# Refuses unless the session was launched with --nesting=same-uid: at the default
-# `none` the container deliberately lacks what a runtime needs, every pull dies at layer unpack,
-# and the failure reads like a podman bug rather than the decision it is.
+# The script refuses unless the session was launched with --nesting=same-uid. At the default `none`, the container
+# deliberately lacks what a runtime needs. Every pull would then die at layer unpack, and the failure would read like
+# a podman bug rather than the decision it is.
 #
-# Everything is installed under $HOME and dies with the session, so this runs again next time.
+# Everything installs under $HOME and dies with the session, so the next session runs this script again.
 set -eu
 
 nesting=${KO_AGENT_SANDBOX_NESTING:-none}

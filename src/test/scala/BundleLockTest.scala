@@ -1,16 +1,21 @@
-// The bundle version lock, end to end: a default-named image whose label does not hold this
-// jar's digest refuses the launch with the rebuild hint, while an explicitly overridden image
-// only warns (LauncherImages.bundleMismatch decides both; this drives the real launcher). The
-// proxy image is locked for the egress actions as well as for a launch, since they run it too.
+// Tests the bundle version lock end to end, through the real launcher. LauncherImages.bundleMismatch decides
+// both cases:
 //
-// Each mislabelled fixture is built here, FROM the real image with only the label replaced, so
-// nothing else about the image changes. The refusal path needs the *default* name to be the
-// mislabelled one, so the `:latest` tag is retagged aside and restored in the teardown. A
-// run that dies between the two leaves the original under `<image>:bundle-lock-backup` —
-// `podman tag ko-agent-sandbox:bundle-lock-backup ko-agent-sandbox:latest` restores it by hand,
-// and likewise for ko-agent-egress-proxy.
+// - An image under the default name whose label does not hold this jar's digest refuses the launch with the
+//   rebuild hint.
+// - An explicitly overridden image only warns.
+// - The lock covers the proxy image for the egress actions as well as for a launch, because those actions
+//   run the proxy image too.
 //
-// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the condition):
+// The suite builds each mislabelled fixture FROM the real image and replaces only the label, so nothing
+// else about the image changes. The refusal path needs the mislabelled image under the *default* name, so
+// the suite retags the `:latest` image aside and restores the tag in the teardown. A run that dies between
+// the two steps leaves the original image under `<image>:bundle-lock-backup`. To restore it by hand, run
+// `podman tag ko-agent-sandbox:bundle-lock-backup ko-agent-sandbox:latest`, and likewise for
+// ko-agent-egress-proxy.
+//
+// The suite runs only under testWithPodman, like the other container-launching suites (WithPodman has the
+// condition):
 //
 //     sbt "testWithPodman *BundleLockTest"
 
@@ -36,8 +41,8 @@ class BundleLockTest extends munit.FunSuite:
 
   private val LockRefusal = "was not built from the sources this launcher bundles"
 
-  /** The launcher run to completion, for the paths that end without a session: its exit status
-    * and output. */
+  /** Runs the launcher to completion, for the paths that end without a session, and returns its exit
+    * status and output. */
   private def launcherOutcome(workspace: Path, log: Path, arguments: Vector[String]): (Int, String) =
     val builder = ProcessBuilder((launcherCommand ++ arguments)*)
     builder.directory(workspace.toFile)
@@ -75,7 +80,8 @@ class BundleLockTest extends munit.FunSuite:
       assert(output.contains(LockRefusal), s"the refusal does not name the version lock:\n$output")
       assert(output.contains("rebuild with --build"), s"no rebuild hint:\n$output")
 
-      // The real image back under its name before the warn path, which must not depend on the default tag.
+      // The test puts the real image back under its name before the warn path, which must not depend on the
+      // default tag.
       assert(runOk(podman, "tag", Backup, Latest))
       retagged = false
 
@@ -120,7 +126,8 @@ class BundleLockTest extends munit.FunSuite:
         )
         assert(output.contains("rebuild with --build"), s"no rebuild hint from $name:\n$output")
 
-      // The real image back under its name before the warn paths, which must not depend on the default tag.
+      // The test puts the real image back under its name before the warn paths, which must not depend on the
+      // default tag.
       assert(runOk(podman, "tag", ProxyBackup, ProxyLatest))
       retagged = false
 
@@ -134,9 +141,9 @@ class BundleLockTest extends munit.FunSuite:
       assertEquals(effectiveExit, 0, s"--egress-effective failed on the overridden image:\n$effective")
       assert(warned(effective), s"no warning from --egress-effective:\n$effective")
 
-      // The proxy's own `ruleset:` line shows the check ran after the warning. Its exit status is
-      // not asserted: with HTTPS_PROXY set, the proxy exits 2 when it cannot set up the upstream
-      // proxy (AgentEgressProxy.checkHost).
+      // The proxy's own `ruleset:` line shows that the check ran after the warning. The test does not
+      // assert the exit status: with HTTPS_PROXY set, the proxy exits 2 when it cannot set up the
+      // upstream proxy (AgentEgressProxy.checkHost).
       val (_, checked) = launcherOutcome(
         workspace, workspace.resolve("warned-egress-check.log"), Vector(overridden, "--egress-check=unlisted.invalid"),
       )

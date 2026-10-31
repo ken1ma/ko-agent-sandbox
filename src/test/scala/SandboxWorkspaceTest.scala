@@ -1,7 +1,7 @@
-// The workspace root as the launcher judges it: identity, the refused directories, and the
-// .ko-agent-sandbox forms — where a wrong answer either exposes the host or lets a session write
-// the configuration governing the next one. What a session may write under .git is the FUSE
-// filter's policy, tested in ko-agent-fs/policy and ko-agent-fs/fuse.
+// Tests the workspace root as the launcher judges it: identity, the refused directories, and the
+// .ko-agent-sandbox forms. A wrong answer there either exposes the host or lets a session write the
+// configuration that governs the next session. What a session may write under .git is the FUSE
+// filter's policy, which ko-agent-fs/policy and ko-agent-fs/fuse test.
 
 package agentsandbox.launcher
 
@@ -14,7 +14,8 @@ class SandboxWorkspaceTest extends munit.FunSuite:
 
   private val isWindows = System.getProperty("os.name").toLowerCase.contains("win")
 
-  /** A workspace root's mount path as noGitInstruction receives it: any absolute path, since it only spells it. */
+  /** A workspace root's mount path as noGitInstruction receives it: any absolute path, because
+    * noGitInstruction only spells the path. */
   private val Mount = "/Users/me/src/app"
 
   private def protectedHomes(os: Os, values: Map[String, String]): HomeProtection =
@@ -105,7 +106,7 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     val homes = protectedHomes(Os.Mac, Map("HOME" -> "/Users/user"))
     assert(isForbiddenWorkspaceRoot(Paths.get("/System/Volumes/Data/Users/user"), homes))
     assert(isForbiddenWorkspaceRoot(Paths.get("/System/Volumes/Data/Users"), homes))
-    // The container's children too, in both spellings.
+    // The container's children are refused too, in both spellings.
     assert(isForbiddenWorkspaceRoot(Paths.get("/System/Volumes/Data/Users/someone"), homes))
     assert(!isForbiddenWorkspaceRoot(Paths.get("/System/Volumes/Data/Users/user/project"), homes))
 
@@ -119,8 +120,8 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     assert(forbiddenWorkspaceRootReason(Paths.get("/home/user"), homes).exists(_.contains("home directory")))
     assert(forbiddenWorkspaceRootReason(Paths.get("/work/.config/app"), homes).exists(_.contains("'.config'")))
     assertEquals(forbiddenWorkspaceRootReason(Paths.get("/work/app"), homes), None)
-    // The container's own home, at any depth: mounted at its own path, the workspace would sit among
-    // the session's home, the persistent volume and the agents' state.
+    // The container's own home is refused at any depth. Mounted at its own path, the workspace would
+    // sit among the session's home, the persistent volume and the agents' state.
     assert(forbiddenWorkspaceRootReason(Paths.get("/home/nonroot/app"), homes).exists(_.contains("/home/nonroot")))
     assert(forbiddenWorkspaceRootReason(Paths.get("/home/nonroot/src/deep"), homes).exists(_.contains("/home/nonroot")))
     assertEquals(forbiddenWorkspaceRootReason(Paths.get("/home/nonroot-2/app"), homes), None)
@@ -129,11 +130,12 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     def mount(os: Os, path: String): Either[String, String] = mountPathOf(os, Paths.get(path))
     assertEquals(mount(Os.Windows, """C:\work\ko-agent-sandbox"""), Right("/mnt/c/work/ko-agent-sandbox"))
     assertEquals(mount(Os.Windows, """D:\a b\proj"""), Right("/mnt/d/a b/proj"))
-    // A UNC path has no /mnt spelling: refused with the reason and the remedy, never guessed at.
+    // A UNC path has no /mnt spelling, so the launcher refuses it with the reason and the remedy and
+    // never guesses.
     val unc = mount(Os.Windows, """\\server\share\proj""")
     assert(unc.left.exists(_.contains("fixed drive")), unc.toString)
-    // POSIX paths pass through as the runner's Path type spells them — a POSIX host is the only
-    // one that produces them for real, and a Windows runner respells them with its own separator.
+    // POSIX paths pass through as the runner's Path type spells them. Only a POSIX host produces
+    // them for real, and a Windows runner respells them with its own separator.
     assertEquals(mount(Os.Mac, "/Users/me/proj"), Right(Paths.get("/Users/me/proj").toString))
     assertEquals(mount(Os.Linux, "/home/me/proj"), Right(Paths.get("/home/me/proj").toString))
 
@@ -149,11 +151,12 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     val alias = Paths.get("/System/Volumes/Data/Users/me/src/app")
     assertEquals(canonicalWorkspaceRoot(alias, Os.Mac), Paths.get("/Users/me/src/app"))
     assertEquals(canonicalWorkspaceRoot(Paths.get("/Users/me/src/app"), Os.Mac), Paths.get("/Users/me/src/app"))
-    // The prefix alone is a root, refused later; a name that merely begins like it is a directory.
+    // The prefix alone is a root, which is refused later; a name that merely begins like the prefix
+    // is a directory.
     assertEquals(canonicalWorkspaceRoot(Paths.get("/System/Volumes/Data"), Os.Mac), Paths.get("/System/Volumes/Data"))
     val lookalike = Paths.get("/System/Volumes/DataX/app")
     assertEquals(canonicalWorkspaceRoot(lookalike, Os.Mac), lookalike)
-    // Only macOS has the firmlink; a Linux directory of that name is itself.
+    // Only macOS has the firmlink; a Linux directory of that name stays itself.
     assertEquals(canonicalWorkspaceRoot(alias, Os.Linux), alias)
 
   test("a dot-prefixed current or ancestor directory is refused"):
@@ -196,7 +199,7 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     assert(isForbiddenWorkspaceRoot(userProfile, homes))
     assert(isForbiddenWorkspaceRoot(userProfile.getParent, homes))
     // SystemDrive\Users stays protected although the current profile is elsewhere, and so do
-    // the profiles it holds.
+    // the profiles that SystemDrive\Users holds.
     assert(isForbiddenWorkspaceRoot(base.resolve("Users"), homes))
     assert(isForbiddenWorkspaceRoot(base.resolve("Users").resolve("someone"), homes))
     assert(!isForbiddenWorkspaceRoot(userProfile.resolve("src"), homes))
@@ -237,8 +240,8 @@ class SandboxWorkspaceTest extends munit.FunSuite:
 
   test("a session without git is reported with the launch that would have it"):
     val root = Files.createTempDirectory("no-git").toRealPath()
-    // A home of this test's own, beside the fixtures rather than above them, so that only the
-    // cases meant to reach it do.
+    // The test has a home of its own, beside the fixtures rather than above them, so that only the
+    // cases meant to reach the home do.
     val home = Files.createTempDirectory("no-git-home").toRealPath()
     val homes = protectedHomes(Os.Linux, Map("HOME" -> home.toString))
     def noGit(dir: Path, os: Os = Os.Linux): Option[NoGit] = SandboxWorkspace.noGit(dir, homes, os)
@@ -269,9 +272,9 @@ class SandboxWorkspaceTest extends munit.FunSuite:
       Some(NoGit.Gitdir("../.git/modules/lib", moduleGitdir, Some(superproject))),
     )
     // A linked worktree names its gitdir absolutely, under the main worktree's .git. The container
-    // spells the workspace root as the host does, so the tree holding both checkouts is a launch with git;
-    // on Windows, where it spells drives under /mnt, an absolute pointer leads nowhere, and there
-    // is no launch to offer.
+    // spells the workspace root as the host does, so the tree that holds both checkouts is a launch
+    // with git. On Windows, where the container spells drives under /mnt, an absolute pointer leads
+    // nowhere, and there is no launch to offer.
     val main = Files.createDirectories(root.resolve("main"))
     val mainGitdir = gitdirAt(main.resolve(".git"))
     val worktreeGitdir = worktreeGitdirAt(mainGitdir.resolve("worktrees/feature"), mainGitdir)
@@ -279,7 +282,7 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     Files.writeString(linked.resolve(".git"), s"gitdir: $worktreeGitdir\n")
     assertEquals(noGit(linked), Some(NoGit.Gitdir(worktreeGitdir.toString, worktreeGitdir, Some(root))))
     assertEquals(noGit(linked, Os.Windows), Some(NoGit.Gitdir(worktreeGitdir.toString, worktreeGitdir, None)))
-    // --separate-git-dir, the same way.
+    // --separate-git-dir behaves the same way.
     val separate = gitdirAt(root.resolve("repo.git"))
     val workspaceRoot = Files.createDirectories(root.resolve("project"))
     Files.writeString(workspaceRoot.resolve(".git"), s"gitdir: $separate\n")
@@ -288,26 +291,26 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     assert(noGitWarning(noGit(workspaceRoot).get).contains(s"launch from $root"))
     assert(noGitWarning(noGit(workspaceRoot, Os.Windows).get).contains("stay on the host"))
     // An absolute gitdir inside the workspace is reachable where the container spells the workspace
-    // root as the host does, and is a host path the container lacks where it does not: on Windows,
-    // whose drive paths the container has under /mnt (this POSIX path has no /mnt spelling at all).
+    // root as the host does. Elsewhere the gitdir is a host path that the container lacks: on Windows,
+    // the container has drive paths under /mnt (this POSIX path has no /mnt spelling at all).
     val absolute = Files.createDirectories(root.resolve("absolute"))
     val ownGitdir = gitdirAt(absolute.resolve("real.git"))
     Files.writeString(absolute.resolve(".git"), s"gitdir: $ownGitdir\n")
     assertEquals(noGit(absolute), None)
     assertEquals(noGit(absolute, Os.Windows), Some(NoGit.Gitdir(ownGitdir.toString, ownGitdir, None)))
     // A `.git` symlink is the same absence when it leads out of the workspace. A live session never
-    // starts on that form (the filter's guard refuses it, guard.rs); a read-only session does.
+    // starts on that form (the filter's guard refuses it, guard.rs), but a read-only session does.
     val symlinked = Files.createDirectories(root.resolve("symlinked"))
     Files.createSymbolicLink(symlinked.resolve(".git"), separate)
     assertEquals(noGit(symlinked), Some(NoGit.Gitdir(separate.toString, separate, Some(root))))
     assertEquals(noGit(symlinked, Os.Windows), Some(NoGit.Gitdir(separate.toString, separate, None)))
-    // Launched below the repository root: the host finds .git above, and the container has
-    // neither it nor anything else above the workspace.
+    // Launched below the repository root, the host finds .git above, and the container has neither
+    // that .git nor anything else above the workspace.
     val below = Files.createDirectories(superproject.resolve("src/main"))
     assertEquals(noGit(below), Some(NoGit.Above(superproject, Some(superproject))))
     assert(noGitWarning(noGit(below).get).contains(superproject.toString))
-    // Below a submodule checkout, and below a linked worktree: host git discovers a repository
-    // whose Git directory is elsewhere, which the launch predicate would never call one. The
+    // Below a submodule checkout, and below a linked worktree, host git discovers a repository whose
+    // Git directory is elsewhere, which the launch predicate would never call a repository. The
     // launch offered is the nearest tree that holds the workspace and has git of its own.
     assertEquals(
       noGit(Files.createDirectories(submodule.resolve("src"))),
@@ -316,8 +319,8 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     val belowLinked = Files.createDirectories(linked.resolve("src"))
     assertEquals(noGit(belowLinked), Some(NoGit.Above(linked, Some(root))))
     assertEquals(noGit(belowLinked, Os.Windows), Some(NoGit.Above(linked, None)))
-    // An empty .git directory is no repository: the search passes it as git's does, and reaches the one
-    // above, which is also the launch offered.
+    // An empty .git directory is no repository: the search passes it as git's search does, and reaches
+    // the repository above, which is also the launch offered.
     val hollow = Files.createDirectories(superproject.resolve("hollow"))
     Files.createDirectories(hollow.resolve(".git"))
     assertEquals(noGit(hollow), Some(NoGit.Above(superproject, Some(superproject))))
@@ -325,9 +328,9 @@ class SandboxWorkspaceTest extends munit.FunSuite:
       noGit(Files.createDirectories(hollow.resolve("deep"))),
       Some(NoGit.Above(superproject, Some(superproject))),
     )
-    // Nothing said where the host's own git fails: a `.git` naming a gitdir git rejects — absent,
-    // or an unrelated directory — ends git's search inside the superproject, and so ends this one;
-    // a pointer that is not a path at all never reaches the filesystem.
+    // Nothing is said where the host's own git fails. A `.git` that names a gitdir which git rejects,
+    // absent or an unrelated directory, ends git's search inside the superproject, and so ends this
+    // search. A pointer that is not a path at all never reaches the filesystem.
     val dangling = Files.createDirectories(superproject.resolve("dangling"))
     Files.writeString(dangling.resolve(".git"), "gitdir: ../gone/.git/modules/x\n")
     assertEquals(noGit(dangling), None)
@@ -338,19 +341,20 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     val unparseable = Files.createDirectories(root.resolve("unparseable"))
     Files.writeString(unparseable.resolve(".git"), "gitdir: ../mod" + 0.toChar + "ule\n")
     assertEquals(noGit(unparseable), None)
-    // A `.git` file git does not read as a pointer at all — the spelling is not at its start — is
-    // the same silence: git fails there rather than searching above.
+    // A `.git` file that git does not read as a pointer at all, because the spelling is not at the
+    // file's start, gets the same silence: git fails there rather than searching above.
     val prefixed = Files.createDirectories(superproject.resolve("prefixed"))
     Files.writeString(prefixed.resolve(".git"), "# note\ngitdir: ../.git/modules/lib\n")
     assertEquals(noGit(prefixed), None)
-    // And the same silence from below each of them: git's search ends at the `.git` it rejects,
-    // so the superproject above is not the repository it would have used, nor a launch to offer.
+    // Each of those pointers gets the same silence from below: git's search ends at the `.git` that git
+    // rejects, so the superproject above is neither the repository that git would have used nor a
+    // launch to offer.
     for rejected <- Vector(dangling, stray, prefixed) do
       assertEquals(noGit(Files.createDirectories(rejected.resolve("src"))), None, rejected.toString)
     // A nested repository whose pointer is absolute stays as absolute under its parent, so the
-    // parent's own good `.git` earns it no suggestion — from the nested root, or from below it. The
-    // launch offered is the tree holding both the workspace and what the pointer names, where the
-    // container spells it as the host does; on Windows there is none.
+    // parent's own good `.git` earns the nested repository no suggestion, from the nested root or from
+    // below it. The launch offered is the tree that holds both the workspace and what the pointer
+    // names, where the container spells that tree as the host does; on Windows there is none.
     val nested = Files.createDirectories(superproject.resolve("nested"))
     Files.writeString(nested.resolve(".git"), s"gitdir: $separate\n")
     assertEquals(noGit(nested), Some(NoGit.Gitdir(separate.toString, separate, Some(root))))
@@ -364,10 +368,10 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     val pointing = Files.createDirectories(siblings.resolve("a"))
     Files.writeString(pointing.resolve(".git"), "gitdir: ../b/real.git\n")
     assertEquals(noGit(pointing), Some(NoGit.Gitdir("../b/real.git", sibling, Some(siblings))))
-    // A launch the launcher would refuse is none: the home directory and its ancestors, the
-    // filesystem root, a dot-prefixed directory. A pointer that climbs to one of those and back
-    // is reachable from there and nowhere nearer, so from the first two nothing is offered, and
-    // past the third the next directory up is.
+    // A launch that the launcher would refuse is no launch: the home directory and its ancestors,
+    // the filesystem root, and a dot-prefixed directory. A pointer that climbs to one of those and
+    // back is reachable from there and from nowhere nearer. From the first two, nothing is offered;
+    // past the third, the next directory up is offered.
     val underHome = Files.createDirectories(home.resolve("proj"))
     gitdirAt(underHome.resolve("real.git"))
     Files.writeString(underHome.resolve(".git"), "gitdir: ../proj/real.git\n")
@@ -386,32 +390,33 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     Files.writeString(oversized.resolve(".git"), "gitdir: " + "x" * (1 << 20))
     assertEquals(noGit(oversized), None)
     // A relative gitdir that climbs out and re-enters the workspace root by its host name resolves
-    // inside on the host and nowhere in the container, which has nothing above the workspace — and
-    // one level up it climbs nowhere, so the parent is the launch.
+    // inside on the host and nowhere in the container, which has nothing above the workspace. One
+    // level up, the gitdir climbs nowhere, so the parent is the launch.
     val reentrant = Files.createDirectories(root.resolve("reentrant"))
     val reentered = gitdirAt(reentrant.resolve("real.git"))
     Files.writeString(reentrant.resolve(".git"), "gitdir: ../reentrant/real.git\n")
     assertEquals(noGit(reentrant), Some(NoGit.Gitdir("../reentrant/real.git", reentered, Some(root))))
     // A `.git` symlink to a pointer file in a subdirectory: the OS follows the link to read the
-    // file, and the gitdir it names resolves against the directory holding `.git` — the workspace root —
-    // not against the pointer's own, which would resolve inside and hide that the container cannot
-    // follow it. From the parent both steps stay inside, so the parent is the launch.
+    // file. The gitdir that the file names resolves against the directory that holds `.git`, the
+    // workspace root, not against the pointer's own directory. Resolving against the pointer's own
+    // directory would land inside and hide that the container cannot follow the gitdir. From the
+    // parent both steps stay inside, so the parent is the launch.
     val chained = Files.createDirectories(root.resolve("chained"))
     val elsewhere = gitdirAt(root.resolve("elsewhere.git"))
     Files.createDirectories(chained.resolve("metadata"))
     Files.writeString(chained.resolve("metadata/pointer"), "gitdir: ../elsewhere.git\n")
     Files.createSymbolicLink(chained.resolve(".git"), Paths.get("metadata/pointer"))
     assertEquals(noGit(chained), Some(NoGit.Gitdir("../elsewhere.git", elsewhere, Some(root))))
-    // The warning names the pointer as written, the resolved gitdir and the launch; the agent's
-    // sentence names the path git fails on inside.
+    // The warning names the pointer as written, the resolved gitdir and the launch. The agent's
+    // sentence names the path that git fails on inside.
     val warning = noGitWarning(noGit(submodule).get)
     assert(warning.contains("../.git/modules/lib"), warning)
     assert(warning.contains(moduleGitdir.toString), warning)
     assert(warning.contains(superproject.toString), warning)
     assert(noGitInstruction(noGit(submodule).get, Mount).contains(s"`$Mount/.git`"))
     assert(noGitInstruction(noGit(below).get, Mount).contains("above the workspace, which"))
-    // Nothing said where git works: a relative pointer into the workspace, a symlink to one, a .git
-    // directory, and a directory in no repository at all.
+    // Nothing is said where git works: a relative pointer into the workspace, a symlink to such a
+    // pointer, a .git directory, and a directory in no repository at all.
     val inside = Files.createDirectories(root.resolve("inside"))
     gitdirAt(inside.resolve("real.git"))
     Files.writeString(inside.resolve(".git"), "gitdir: real.git\n")
@@ -492,14 +497,14 @@ class SandboxWorkspaceTest extends munit.FunSuite:
       linkedAt(name, mainGitdir.resolve("worktrees").resolve(name), commondir)
     val linked = underMain("feature")
     assertEquals(mainWorktreeOf(linked, homes, Os.Linux), Some(main))
-    // On Windows too: the volume is named from host paths, which the container's spelling of the
-    // workspace root does not enter.
+    // This holds on Windows too: the volume is named from host paths, which the container's spelling
+    // of the workspace root does not enter.
     assertEquals(mainWorktreeOf(linked, homes, Os.Windows), Some(main))
-    // The main worktree itself has none; an absolute commondir names the same directory.
+    // The main worktree itself has no main worktree; an absolute commondir names the same directory.
     assertEquals(mainWorktreeOf(main, homes, Os.Linux), None)
     assertEquals(mainWorktreeOf(underMain("absolute", Some(s"$mainGitdir\n")), homes, Os.Linux), Some(main))
-    // Spelled as a launch from the main worktree spells it: a pointer through a symlink to the
-    // main worktree still names the real path, and so the same workspace id.
+    // The main worktree is spelled as a launch from the main worktree spells it: a pointer through a
+    // symlink to the main worktree still names the real path, and so the same workspace id.
     val alias = root.resolve("alias")
     Files.createSymbolicLink(alias, main)
     val viaAlias = Files.createDirectories(root.resolve("via-alias"))
@@ -509,21 +514,22 @@ class SandboxWorkspaceTest extends munit.FunSuite:
       mainWorktreeOf(viaAlias, homes, Os.Linux).map(workspaceIdOf(_, Os.Linux)),
       Some(workspaceIdOf(main, Os.Linux)),
     )
-    // A commondir that is missing, names nothing, or names a `.git` that does not hold this
-    // gitdir: no main worktree can be named from it.
+    // A commondir that is missing, names nothing, or names a `.git` that does not hold this gitdir
+    // names no main worktree.
     assertEquals(mainWorktreeOf(underMain("no-commondir", None), homes, Os.Linux), None)
     assertEquals(mainWorktreeOf(underMain("dangling", Some("../../gone\n")), homes, Os.Linux), None)
-    // A NUL between path characters: trim would take one at the end away with the newline.
+    // The NUL sits between path characters, because trim would remove a NUL at the end along with the
+    // newline.
     assertEquals(mainWorktreeOf(underMain("malformed", Some("../" + 0.toChar + "..\n")), homes, Os.Linux), None)
     val other = gitdirAt(root.resolve("other/.git"))
     assertEquals(mainWorktreeOf(underMain("elsewhere", Some(s"$other\n")), homes, Os.Linux), None)
-    // A gitdir the common gitdir holds other than under `worktrees` is not a linked worktree's.
+    // A gitdir that the common gitdir holds other than under `worktrees` belongs to no linked worktree.
     assertEquals(
       mainWorktreeOf(linkedAt("module", mainGitdir.resolve("modules/x"), Some("..\n")), homes, Os.Linux),
       None,
     )
-    // A bare repository's worktrees, and those of a main worktree with a separate gitdir: the
-    // common gitdir is not a `.git` directory, so the main checkout is not named by it.
+    // A bare repository's worktrees, and the worktrees of a main worktree with a separate gitdir: the
+    // common gitdir is not a `.git` directory, so the common gitdir names no main checkout.
     val bare = gitdirAt(root.resolve("bare.git"))
     assertEquals(
       mainWorktreeOf(linkedAt("of-bare", bare.resolve("worktrees/of-bare"), Some("../..\n")), homes, Os.Linux),
@@ -539,9 +545,10 @@ class SandboxWorkspaceTest extends munit.FunSuite:
       None,
     )
     // git's `get_main_worktree`, like the name check, takes a bare repository whose directory is
-    // called `.git` for a main worktree; `core.bare` marks it bare — in the common config, or in
-    // the linked gitdir's `config.worktree`, where `git config --worktree` in the linked worktree
-    // writes it. A config that cannot be read decides nothing, so it names no main worktree either.
+    // called `.git` for a main worktree. `core.bare` marks the repository bare, either in the common
+    // config or in the linked gitdir's `config.worktree`, where `git config --worktree` in the linked
+    // worktree writes it. A config that cannot be read decides nothing, so it names no main worktree
+    // either.
     val bareDotGit = gitdirAt(root.resolve("bare-dot/.git"), bare = true)
     assertEquals(
       mainWorktreeOf(
@@ -574,8 +581,8 @@ class SandboxWorkspaceTest extends munit.FunSuite:
       ),
       Some(root.resolve("main-wt")),
     )
-    // A main worktree the launcher refuses as a workspace root — the home directory — is no volume
-    // owner, whether the pointer spells it directly or through a symlink that hides it.
+    // A main worktree that the launcher refuses as a workspace root, the home directory, owns no
+    // volume, whether the pointer spells it directly or through a symlink that hides it.
     val homeGitdir = gitdirAt(home.resolve(".git"))
     assertEquals(
       mainWorktreeOf(linkedAt("of-home", homeGitdir.resolve("worktrees/of-home"), Some("../..\n")), homes, Os.Linux),
@@ -607,20 +614,21 @@ class SandboxWorkspaceTest extends munit.FunSuite:
       gitdir
     val bind = GitdirBind(mainGitdir, mainGitdir.toString)
     // The pointer as `git worktree add` writes it, absolute: followed where the container spells
-    // the workspace root as the host does, and not on Windows, whose drives it has under /mnt.
+    // the workspace root as the host does, and not on Windows, whose drives the container has under
+    // /mnt.
     val absolute = linkedAt("absolute", worktreeAt("absolute").toString)
     assertEquals(linkedGitdirBind(absolute, main, Os.Linux), Some(bind))
     assertEquals(linkedGitdirBind(absolute, main, Os.Mac), Some(bind))
     assertEquals(linkedGitdirBind(absolute, main, Os.Windows), None)
     // A relative pointer, as `--relative-paths` writes it, resolves the same way from either
-    // spelling of the workspace root, so it is followed everywhere; this fixture's host spelling has no
-    // drive, which is what mountPathOf refuses on Windows.
+    // spelling of the workspace root, so it is followed everywhere. This fixture's host spelling has
+    // no drive, which mountPathOf refuses on Windows.
     worktreeAt("relative")
     val relative = linkedAt("relative", "../main/.git/worktrees/relative")
     assertEquals(linkedGitdirBind(relative, main, Os.Linux), Some(bind))
     assertEquals(linkedGitdirBind(relative, main, Os.Windows), None)
-    // Through a symlink alias of the main worktree: the target is the alias's spelling, where the
-    // container's git looks, and the source the real directory.
+    // Through a symlink alias of the main worktree, the target is the alias's spelling, where the
+    // container's git looks, and the source is the real directory.
     val alias = root.resolve("alias")
     Files.createSymbolicLink(alias, main)
     worktreeAt("via-alias")
@@ -639,9 +647,10 @@ class SandboxWorkspaceTest extends munit.FunSuite:
       Files.createSymbolicLink(colonAlias, colonMain)
       val viaColonAlias = linkedAt("via-colon-alias", colonAlias.resolve(".git/worktrees/via-colon-alias").toString)
       assertEquals(linkedGitdirBind(viaColonAlias, colonMain, Os.Linux), None)
-    // The commondir is git's second step, used as written: absolute in the target's spelling it
-    // lands on the bind, absolute in the real spelling behind an alias it names a path the
-    // container lacks, and relative it climbs within the bind or not at all.
+    // The commondir is git's second step, used as written. Absolute in the target's spelling, the
+    // commondir lands on the bind. Absolute in the real spelling behind an alias, the commondir
+    // names a path that the container lacks. Relative, the commondir climbs within the bind or not
+    // at all.
     val absoluteCommon = linkedAt("absolute-common", worktreeAt("absolute-common", s"$mainGitdir\n").toString)
     assertEquals(linkedGitdirBind(absoluteCommon, main, Os.Linux), Some(bind))
     assertEquals(linkedGitdirBind(absoluteCommon, main, Os.Windows), None)
@@ -671,8 +680,8 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     val innerWorktree = gitdirAt(inner.resolve(".git/worktrees/holding"))
     Files.writeString(holding.resolve(".git"), s"gitdir: $innerWorktree\n")
     assertEquals(linkedGitdirBind(holding, inner, Os.Linux), None)
-    // The extension `--relative-paths` sets, which the image's git refuses: read from the common
-    // config in any section, an unreadable config counting as set.
+    // The extension that `--relative-paths` sets, which the image's git refuses. The check reads the
+    // extension from the common config in any section, and counts an unreadable config as set.
     Files.writeString(mainGitdir.resolve("config"), "[core]\n\tbare = false\n")
     assert(!setsRelativeWorktrees(mainGitdir))
     Files.writeString(mainGitdir.resolve("config"), "[extensions]\n\trelativeWorktrees = true\n")
@@ -683,8 +692,8 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     assert(setsRelativeWorktrees(mainGitdir))
     Files.delete(mainGitdir.resolve("config"))
     assert(setsRelativeWorktrees(mainGitdir))
-    // The warning names the directory as every host path is named; the agent's sentence names
-    // the path git reads inside and what fails there.
+    // The warning names the directory as every host path is named. The agent's sentence names the
+    // path that git reads inside and what fails there.
     val warning = readOnlyGitWarning(bind, Os.Linux)
     assert(warning.contains(mainGitdir.toString) && warning.contains("stay on the host"), warning)
     val instruction = readOnlyGitInstruction(bind, Mount)
@@ -711,7 +720,7 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     val dir = Files.createTempDirectory("boundary-guard").resolve(".ko-agent-sandbox")
     Files.createFile(dir)
     assert(boundaryDirRefusal(dir).isDefined)
-    // Refused, not replaced: whatever is there is the user's to remove.
+    // The path is refused, not replaced: whatever is there is the user's to remove.
     assert(Files.isRegularFile(dir))
 
   test(".ko-agent-sandbox refuses unrecognized configuration entries but accepts editor and OS metadata"):
@@ -726,7 +735,7 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     assert(refused.exists(_.contains("egres")), refused.toString)
     Files.delete(dir.resolve("egres"))
 
-    // The other entry is allowed by name, and a symlink of it refused like egress.
+    // The other entry is allowed by name, and a symlink at that name is refused like egress.
     Files.createDirectory(dir.resolve("run-on-host"))
     assertEquals(boundaryDirRefusal(dir), None)
     Files.delete(dir.resolve("run-on-host"))

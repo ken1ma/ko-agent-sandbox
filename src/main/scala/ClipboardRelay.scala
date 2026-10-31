@@ -1,6 +1,10 @@
-// The host clipboard, offered to the sandbox on request: the protocol both relays speak, the POSIX
-// relay's shell (a job of the reaper, SandboxLifecycle), and the Windows relay (a thread of the
-// resident launcher). SECURITY.md "Clipboard" has what the channel grants and withholds.
+// The relays offer the host clipboard to the sandbox on request. This file holds:
+//
+// - the protocol that both relays speak;
+// - the POSIX relay's shell, which runs as a job of the reaper (SandboxLifecycle);
+// - the Windows relay, which runs as a thread of the resident launcher.
+//
+// SECURITY.md, "Clipboard", has what the channel grants and withholds.
 
 package agentsandbox.launcher
 
@@ -13,34 +17,42 @@ import HostCommands.{containerRunning, ExecWithInput, Os, findOnPath, quoteFreeS
 object ClipboardRelay:
 
   /**
-   * Two FIFOs under the sandbox's /tmp, both made by the relay's first exec so that a session
-   * without a relay has neither and the shim fails at once. The shim opens `req` once per
-   * request and writes one line — `types`, `get image/png`, or `set <bytes>` followed by that
-   * many bytes — then reads `rsp` to EOF: the MIME type (or nothing), the PNG (or nothing), or for
-   * `set` the word `ok` once the host clipboard is set (or paste mode has dropped the body) and
-   * nothing when the copy failed, so the shim reports a write that did not reach the host. The
-   * relay reads requests through an exec that ends with the FIFO's writers — one open of it, or
-   * several that overlap — parsing them by line and count, and answers each through an exec of its
-   * own, so the sandbox opens nothing outward and the host runs nothing it did not start.
+   * The directory of two FIFOs under the sandbox's /tmp. The relay's first exec makes both FIFOs, so a
+   * session without a relay has neither and the shim fails at once.
    *
-   * The response writer is bounded from inside the sandbox — the host may have no `timeout` — so
-   * a shim that gave up waiting cannot hold the relay on a FIFO nobody reads.
+   * - The shim opens `req` once per request and writes one line: `types`, `get image/png`, or
+   *   `set <bytes>` followed by that many bytes.
+   * - The shim then reads `rsp` to EOF. For `types`, the response is the MIME type or nothing. For
+   *   `get`, the response is the PNG or nothing.
+   * - For `set`, the response is the word `ok` once the host clipboard is set or paste mode has dropped
+   *   the body. The response is empty when the copy failed, so the shim reports a write that did not
+   *   reach the host.
+   * - The relay reads requests through an exec that ends with the FIFO's writers, whether one open of
+   *   the FIFO or several that overlap. The relay parses the requests by line and count, and answers
+   *   each request through an exec of its own.
+   * - The sandbox therefore opens nothing outward, and the host runs nothing it did not start.
+   * - The response writer is bounded from inside the sandbox, because the host may have no `timeout`.
+   *   A shim that gave up waiting therefore cannot hold the relay on a FIFO that nobody reads.
    */
   val SandboxDir = "/tmp/ko-agent-sandbox/clipboard"
 
   /**
-   * What the host reads of one exec's stream, lines and bodies together, and no more: anything in
-   * the sandbox can write the FIFO, and what the host holds — the resident launcher's heap on
-   * Windows, the clipboard program's memory on POSIX — is bounded by this, not by the writer: the
-   * stream is cut here whatever a request declares. A `set` whose count passes it is refused, and
-   * a body is copied only whole, so neither the cut nor a writer that stopped short puts part of
-   * one on the clipboard; the largest copy a TUI makes is a transcript, well under a megabyte. A
-   * request the grammar refuses ends the stream's reading, the rest of it unread.
+   * The most that the host reads of one exec's stream, lines and bodies together.
+   *
+   * - Anything in the sandbox can write the FIFO. This limit, not the writer, bounds what the host
+   *   holds: the resident launcher's heap on Windows, and the clipboard program's memory on POSIX.
+   * - The stream is cut here, whatever a request declares.
+   * - The relay refuses a `set` whose count passes this limit. The largest copy a TUI makes is a
+   *   transcript, well under a megabyte.
+   * - The relay copies a body only whole, so neither the cut nor a writer that stopped short puts part
+   *   of a body on the clipboard.
+   * - A request that the grammar refuses ends the reading of the stream, and the rest of the stream
+   *   stays unread.
    */
   val MaxRequestBytes = 16 * 1024 * 1024
 
-  // Each takes the directory rather than reading the constant, so a test can serve a channel of
-  // its own: a suite on the live one would delete the FIFOs this session's relay is holding.
+  // Both functions take the directory rather than read the constant, so a test can serve a channel of
+  // its own. A suite on the live channel would delete the FIFOs that this session's relay holds.
   def sandboxRequestReader(sandboxDir: String = SandboxDir): String =
     s"trap \"\" INT HUP TERM; d=$sandboxDir; mkdir -p -m 700 $$d; " +
       s"for f in req rsp; do [ -p $$d/$$f ] || mkfifo -m 600 $$d/$$f; done; cat $$d/req"
@@ -49,17 +61,23 @@ object ClipboardRelay:
     s"timeout 10 sh -c \"cat > $sandboxDir/rsp\""
 
   /**
-   * The POSIX relay: `clipboard_relay <podman> <sandbox> <mode> <xclip> <wl-paste> <wl-copy>`, for
-   * the reaper to run as a job. The programs are [[hostBackend]]'s, absolute — the reaper's PATH is
-   * [[HostCommands.ScriptPath]], not the one they were found on — and empty where absent, or
-   * everywhere on macOS, whose osascript and pbcopy are in /usr/bin. xclip is tried first and the
-   * Wayland program answers when it fails, as on a Wayland session without XWayland. One request at a
-   * time, which the shim's lock guarantees. An exec's stream, cut at [[MaxRequestBytes]], is parsed
-   * in a subshell as the requests it carries ([[requests]] is the same grammar in Scala); a `set`
-   * paste mode will not copy is read by its count and dropped, then answered `ok` like one copied,
-   * since the drop is the mode working as asked. A stream with no request in it — an exec that
-   * failed, or a writer that wrote nothing — pauses the loop a second, so a container that is gone
-   * or a writer opening and closing the FIFO costs one exec a second, not a spin.
+   * The POSIX relay, `clipboard_relay <podman> <sandbox> <mode> <xclip> <wl-paste> <wl-copy>`, for the
+   * reaper to run as a job.
+   *
+   * - The programs are [[hostBackend]]'s, as absolute paths, because the reaper's PATH is
+   *   [[HostCommands.ScriptPath]], not the PATH the programs were found on.
+   * - A program is empty where it is absent. All three are empty on macOS, whose osascript and pbcopy
+   *   are in /usr/bin.
+   * - The relay tries xclip first, and the Wayland program answers when xclip fails, as on a Wayland
+   *   session without XWayland.
+   * - The relay serves one request at a time, which the shim's lock guarantees.
+   * - A subshell parses an exec's stream, cut at [[MaxRequestBytes]], as the requests the stream
+   *   carries ([[requests]] is the same grammar in Scala).
+   * - The relay reads a `set` that paste mode will not copy by its count, drops the body, and answers
+   *   `ok` as for a copied body, because the drop is the mode working as asked.
+   * - A stream with no request in it pauses the loop for a second: an exec that failed, or a writer
+   *   that wrote nothing. A container that is gone, or a writer that opens and closes the FIFO, then
+   *   costs one exec a second rather than a spin.
    */
   def hostShellFunctions(sandboxDir: String = SandboxDir): String =
     """# The host clipboard as three commands: is there an image, print it as PNG, set the clipboard
@@ -145,33 +163,42 @@ object ClipboardRelay:
   // The Windows relay
   // -------------------------------------------------------------------------
   //
-  // Windows has no reaper — the launcher stays resident — so the relay is a daemon thread here,
-  // ending when its loop finds the sandbox stopped. Windows PowerShell rather than pwsh: it is
-  // always present, and its default STA apartment is what the clipboard API demands.
+  // Windows has no reaper, because the launcher stays resident there. The relay is therefore a daemon
+  // thread here, and the thread ends when its loop finds the sandbox stopped. The relay runs Windows
+  // PowerShell rather than pwsh: Windows PowerShell is always present, and the clipboard API demands
+  // its default STA apartment.
 
   private val PowerShellArgs = Vector("-NoProfile", "-NonInteractive", "-Sta", "-Command")
 
   /**
-   * What the host runs for the mode: PowerShell for the Windows relay, or the programs the POSIX relay
-   * calls, each as [[findOnPath]] resolved it (a bare name would be searched for in the workspace root,
-   * design.md "No repository-controlled host executable resolution"). Each program is its own field rather than a name
-   * the shell would classify: findOnPath canonicalizes, so the file need not be called `xclip`.
-   * Empty where absent, and everywhere on macOS.
+   * What the host runs for the mode: PowerShell for the Windows relay, or the programs that the POSIX
+   * relay calls.
+   *
+   * - Each program is the path that [[findOnPath]] resolved. A bare name would be searched for in the
+   *   workspace root (design.md, "No repository-controlled host executable resolution").
+   * - Each program has its own field rather than a name that the shell would classify. findOnPath
+   *   canonicalizes, so the file need not be called `xclip`.
+   * - The xclip, wl-paste and wl-copy fields are empty where the program is absent, and always on
+   *   macOS.
    */
   final case class HostBackend(
     powershell: Option[Path] = None,
     xclip: String = "",
     wlPaste: String = "",
     wlCopy: String = "",
-    /** The `ps` the reaper ends the relay's process tree with; empty on Windows and under off. */
+    /** The `ps` with which the reaper ends the relay's process tree. The field is empty on Windows and
+      * under off. */
     ps: String = "",
   )
 
   /**
-   * Resolved before the launch makes anything, because a program missing at request time would read
-   * as an empty clipboard or a successful copy. On Linux, xclip serves both directions; without it
-   * wl-paste, and wl-copy when the mode writes. macOS always has osascript and pbcopy. Both need
-   * the `ps` the reaper's cleanup rests on (probedPs).
+   * The launcher resolves the backend before the launch makes anything, because a program missing at
+   * request time would read as an empty clipboard or a successful copy.
+   *
+   * - On Linux, xclip serves both directions. Without xclip, the relay needs wl-paste, and wl-copy when
+   *   the mode writes.
+   * - macOS always has osascript and pbcopy.
+   * - Linux and macOS both need the `ps` that the reaper's cleanup rests on (probedPs).
    */
   def hostBackend(mode: String, os: Os, pathValue: String): Either[String, HostBackend] =
     def program(name: String): String = findOnPath(name, pathValue, os).map(_.toString).getOrElse("")
@@ -191,12 +218,14 @@ object ClipboardRelay:
       case _ => probedPs(s"--clipboard=$mode", os, pathValue).map(ps => HostBackend(ps = ps))
 
   /**
-   * The `ps` the reaper enumerates a relay's process tree with, proven on this host before the
-   * `option` that needs a relay is accepted: an absent `ps`, or one that answers
-   * `ps -A -o pid=,ppid=` with nothing (BusyBox's prints another format), would leave a blocked
-   * clipboard program or a recorder alive after the session while the cleanup silently ended the
-   * job alone. The proof is this launcher's own row — its pid, and its parent's when the JVM knows
-   * one — in exactly the output the reaper parses.
+   * The `ps` with which the reaper enumerates a relay's process tree. The launcher proves the `ps` on
+   * this host before it accepts the `option` that needs a relay.
+   *
+   * - An absent `ps`, or a `ps` that answers `ps -A -o pid=,ppid=` with nothing, would leave a blocked
+   *   clipboard program or a recorder alive after the session. The cleanup would silently end the job
+   *   alone. BusyBox's `ps` prints another format.
+   * - The proof is this launcher's own row in exactly the output that the reaper parses: the launcher's
+   *   pid, and its parent's pid when the JVM knows the parent.
    */
   def probedPs(option: String, os: Os, pathValue: String): Either[String, String] =
     findOnPath("ps", pathValue, os).map(_.toString)
@@ -222,8 +251,8 @@ object ClipboardRelay:
       "$m = New-Object System.IO.MemoryStream; $i.Save($m, [System.Drawing.Imaging.ImageFormat]::Png); " +
       "$o = [System.Console]::OpenStandardOutput(); $m.WriteTo($o); $o.Flush() }"
 
-  // Stop turns a Set-Clipboard failure into a nonzero exit the caller reads as a copy that did not
-  // reach the host; without it the cmdlet's error is non-terminating and PowerShell still exits 0.
+  // `Stop` turns a Set-Clipboard failure into a nonzero exit, which the caller reads as a copy that did
+  // not reach the host. Without `Stop`, the cmdlet's error is non-terminating, and PowerShell still exits 0.
   private val Copy =
     "$ErrorActionPreference = 'Stop'; " +
       "[System.Console]::InputEncoding = [System.Text.Encoding]::UTF8; " +
@@ -238,9 +267,10 @@ object ClipboardRelay:
       thread.start()
 
   /**
-   * The Windows relay's loop, the POSIX relay's `while` in Java: wait for the sandbox to run, then
-   * an exec at a time while it runs, pausing a second after a stream with no request in it. The
-   * first wait is bounded like the reaper's, for a launcher that never reaches the start.
+   * The Windows relay's loop, which is the POSIX relay's `while` in Java. The loop waits for the
+   * sandbox to run, then runs one exec at a time while the sandbox runs. After a stream with no request
+   * in it, the loop pauses for a second. The first wait is bounded like the reaper's, for a launcher
+   * that never reaches the start.
    */
   private def serve(powershell: Path, podman: String, sandboxContainer: String, mode: String): Unit =
     def running(): Boolean = containerRunning(podman, sandboxContainer)
@@ -261,11 +291,17 @@ object ClipboardRelay:
     case Set(body: Array[Byte])
 
   /**
-   * The requests one stream carries — one exec's output, at most [[MaxRequestBytes]] — in order,
-   * up to the first it cannot read: a line without its newline, a line outside the grammar, or
-   * a `set` whose count is not digits without a leading zero within the cap's width, or whose
-   * body the stream does not hold whole, whether the writer stopped short or the cut did.
-   * Nothing past that is read. The POSIX relay keeps this grammar in `hostShellFunctions`.
+   * The requests that one stream carries, in order. A stream is one exec's output, at most
+   * [[MaxRequestBytes]]. The method stops at the first request that it cannot read, and reads nothing
+   * past that request:
+   *
+   * - a line without its newline;
+   * - a line outside the grammar;
+   * - a `set` whose count is not digits without a leading zero, within the cap's width;
+   * - a `set` whose body the stream does not hold whole, whether the writer stopped short or the cut
+   *   did.
+   *
+   * The POSIX relay keeps this grammar in `hostShellFunctions`.
    */
   def requests(stream: Array[Byte]): Vector[Request] =
     val found = Vector.newBuilder[Request]
@@ -290,8 +326,8 @@ object ClipboardRelay:
           case _ => reading = false
     found.result()
 
-  /** One exec's stream, its requests served in order: whether there was one. A stream that
-    * reaches the cap is cut there, the exec ended under it. */
+  /** Serves the requests of one exec's stream in order, and returns whether the stream held a request.
+    * A stream that reaches the cap is cut there, and the method ends the exec under it. */
   private def serveOnce(powershell: Path, podman: String, sandboxContainer: String, mode: String): Boolean =
     val command = (podman +: ExecWithInput :+ sandboxContainer) ++ quoteFreeSh(sandboxRequestReader())
     val reader = ProcessBuilder(command*)

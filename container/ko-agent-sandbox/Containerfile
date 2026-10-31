@@ -1,8 +1,8 @@
 ARG IMG_TAG_VER
 FROM debian-coursier:${IMG_TAG_VER}
 
-# This image stays on `latest`: rebuilds pick up agent releases, which
-# IMG_TAG_VER says nothing about; the label records the base instead.
+# This image keeps the tag `latest`, because a rebuild picks up agent releases that IMG_TAG_VER does not name.
+# The label records the base image instead.
 ARG IMG_TAG_VER
 LABEL org.opencontainers.image.base.name="debian-coursier:${IMG_TAG_VER}"
 
@@ -17,15 +17,15 @@ ARG NODE_VERSION=24.21.0
 # Development utilities
 # ---------------------------------------------------------------------------
 #
-# ripgrep: Claude Code bundles `rg`, but generated scripts use it.
-# openssl: present anyway — ca-certificates depends on it.
+# ripgrep: Claude Code bundles its own `rg`, but the scripts it generates call `rg` too.
+# openssl: the image has it without a line here, because ca-certificates depends on it.
 # git-lfs: `git lfs pull` fetches once the egress rules allow it (AGENTS-SANDBOX.md, "git").
-# Excluded: sqlite3 (python3 covers it); shellcheck (40 MB).
+# Excluded: sqlite3, because python3 covers it; shellcheck, because it takes 40 MB.
 
 RUN set -euxo pipefail; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        # curl and ca-certificates are installed in the parent image
+        # The parent image installs curl and ca-certificates.
         git \
         git-lfs \
         ripgrep \
@@ -40,12 +40,13 @@ RUN set -euxo pipefail; \
         file \
         jq; \
     rm -rf /var/lib/apt/lists/*; \
-    # The filter driver in the system config, without a repository's hooks, which the workspace
-    # filter refuses anyway, and without fetching at checkout: a clone or checkout writes pointers
-    # and needs no egress, and `git lfs pull` is the fetch.
+    # `git lfs install` here installs the LFS filter driver in the system config only:
+    # - --skip-repo installs no repository hooks, which the workspace filter refuses anyway.
+    # - --skip-smudge fetches nothing at checkout. A clone or checkout writes pointer files and needs no egress,
+    #   and `git lfs pull` fetches the content.
     git lfs install --system --skip-repo --skip-smudge
 
-# Avoid interactive pagers when Claude executes commands and needs their complete output.
+# Claude runs commands and needs their complete output, so the image turns interactive pagers off.
 ENV GIT_PAGER=cat
 ENV PAGER=cat
 
@@ -54,24 +55,23 @@ ENV PAGER=cat
 # uv + Python
 # ---------------------------------------------------------------------------
 #
-# 2026 models like to use python.
+# Models in 2026 tend to use Python.
 #
 COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /uvx /bin/
 
-# /opt/uv/python and /usr/local/bin are image-managed; runtime uv keeps
-# using ~/.local.
+# The image manages /opt/uv/python and /usr/local/bin. uv in a session still installs under ~/.local.
 RUN set -euxo pipefail; \
     UV_PYTHON_INSTALL_DIR=/opt/uv/python \
     UV_PYTHON_BIN_DIR=/usr/local/bin \
     uv python install "${PYTHON_VERSION}" --default
 
-# ko-sandbox-text-width's import comment explains why this is outside site-packages.
+# The comment at ko-sandbox-text-width's import of wcwidth says why wcwidth lives outside site-packages.
 RUN set -euxo pipefail; \
     uv pip install --no-cache --target /opt/ko-sandbox/python "wcwidth==${WCWIDTH_VERSION}"
 
-# git filter-repo, which the filter lets a session run (ko-agent-fs/policy/doc/git-metadata.md, "Blocked
-# operations"): a Python script, installed with the image's Python; Debian's package would pull
-# Debian's python3 beside it.
+# The filter lets a session run git filter-repo (ko-agent-fs/policy/doc/git-metadata.md, "Consequences: git
+# operations blocked inside the workspace"). git filter-repo is a Python script, so it installs with the image's
+# Python. Debian's package would pull in Debian's python3 beside the image's.
 RUN set -euxo pipefail; \
     UV_TOOL_DIR=/opt/uv/tools UV_TOOL_BIN_DIR=/usr/local/bin \
     uv tool install --no-cache "git-filter-repo==${GIT_FILTER_REPO_VERSION}"; \
@@ -95,16 +95,16 @@ ENV PATH="/home/nonroot/.local/bin:$PATH"
 # Node.js
 # ---------------------------------------------------------------------------
 #
-# Not for Node development — `npx` is the de-facto MCP launcher, and agents
-# reach for one-off JS tooling. Debian's nodejs+npm resolve to 374 packages
-# and lag LTS; the official tarball is one artifact.
+# Node is not here for Node development: `npx` is the de-facto MCP launcher, and agents reach for one-off JS tools.
+# Debian's nodejs and npm resolve to 374 packages and lag the LTS. The official tarball is one artifact.
 #
-# SHASUMS256.txt over TLS from the same host is an integrity check, not a
-# signature (the .sig would need gnupg plus the release keyring).
+# SHASUMS256.txt over TLS from the same host checks integrity, but it is no signature. Checking the .sig would need
+# gnupg and the release keyring.
 #
-# Dropped: include/ (63 MB, only for native addons — node-gyp fetches its
-# own headers, and the image has no make or g++ to build one anyway) and
-# share/ + docs (no man reader). Bump NODE_VERSION and rebuild to move LTS.
+# The install drops two parts of the tarball. Bump NODE_VERSION and rebuild to move to a newer LTS.
+# - include/ (63 MB) serves only native addons. node-gyp fetches its own headers, and the image has no make or g++
+#   to build an addon anyway.
+# - share/ and the docs need a man reader, which the image lacks.
 RUN set -euxo pipefail; \
     case "$(uname -m)" in \
         aarch64) NODE_ARCH=arm64 ;; \
@@ -128,20 +128,20 @@ RUN set -euxo pipefail; \
         /opt/node/README.md; \
     /opt/node/bin/node --version
 
-# `npm` and `npx` are `#!/usr/bin/env node` scripts, so this is what makes them work at all, not merely a convenience.
+# `npm` and `npx` are `#!/usr/bin/env node` scripts, so they run only with node on PATH.
 ENV PATH="/opt/node/bin:$PATH"
 
-# npm's default global prefix is the read-only Node installation; without
-# this, `npm install -g` and `npx` both fail. ~/.local is per-session by
-# intent: an npx run in one repository must not leave code behind for the
-# next.
+# npm's default global prefix is the read-only Node installation, where `npm install -g` and `npx` both fail.
+# ~/.local is discarded with each session on purpose: an npx run in one repository must not leave code behind for
+# the next repository.
 ENV npm_config_prefix=/home/nonroot/.local
 
-# The builtin config file is npm's lowest-precedence layer, so a project's `.npmrc` overrides
-# it. SECURITY.md, "The supply chain", has what the seven days defend against, what they leave
-# through, and why uv gets no counterpart. An unpinned request refused reads as `ENOVERSIONS`
-# with no cause, in the log too; a pinned one names its date cutoff, and `npm config ls` prints
-# the setting under this file.
+# The builtin config file is npm's lowest-precedence layer, so a project's `.npmrc` overrides it.
+# SECURITY.md says what the seven days defend against, what they let through, and why uv gets no counterpart
+# (SECURITY.md, "The supply chain").
+# - npm reports a refused unpinned request as `ENOVERSIONS` with no cause, in the log too.
+# - npm reports a refused pinned request with its date cutoff.
+# - `npm config ls` prints the setting under this file's path.
 RUN printf 'min-release-age=7\n' > /opt/node/lib/node_modules/npm/npmrc
 
 
@@ -149,22 +149,20 @@ RUN printf 'min-release-age=7\n' > /opt/node/lib/node_modules/npm/npmrc
 # Rust
 # ---------------------------------------------------------------------------
 #
-# Tracks stable and moves on rebuild, like the agents.
+# Rust tracks stable and moves on rebuild, like the agents.
 #
-# gcc + libc6-dev are here as Rust's linker driver, not as a C toolchain:
-# rustc's own LLVM emits the objects and only shells out to cc to drive ld
-# against glibc's crt*.o. Kept out of AGENTS-SANDBOX.md's program list for that
-# reason — nothing here invites C development, though gcc compiles C if asked.
+# gcc and libc6-dev serve as Rust's linker driver, not as a C toolchain. rustc's own LLVM emits the objects and
+# calls cc only to drive ld against glibc's crt*.o. AGENTS-SANDBOX.md's program list leaves the two packages out
+# for that reason: nothing here invites C development, though gcc compiles C if asked.
 #
-# Needed even though ko-agent-fs both ships and tests as static musl: proc-macro
-# dylibs always build for the host whatever the final target, so a working host
-# linker is unavoidable, and the musl target added below does not displace it.
-# musl-tools is the other half — musl-gcc, which linking that target wants, the
-# same package ko-agent-fs's own build container installs.
+# ko-agent-fs ships and tests as static musl, and it still needs the host linker:
+# - Proc-macro dylibs always build for the host, whatever the final target. The musl target added below does not
+#   replace the host linker.
+# - musl-tools provides musl-gcc, which linking the musl target needs. ko-agent-fs's own build container installs
+#   the same package.
 #
-# RUSTUP_HOME holds the toolchain in the image; CARGO_HOME is deliberately
-# left unset, so registry caches are written to ~/.cargo and die with the session
-# like every other cache.
+# RUSTUP_HOME holds the toolchain in the image. CARGO_HOME stays unset on purpose, so cargo writes its registry
+# caches to ~/.cargo, which the session discards like every other cache.
 
 ENV RUSTUP_HOME=/opt/rust/rustup
 
@@ -176,19 +174,18 @@ RUN set -euxo pipefail; \
         musl-tools; \
     rm -rf /var/lib/apt/lists/*; \
     cd /tmp; \
-    # uname -m (aarch64, x86_64) is the exact first component of Rust's target triple, so no arch mapping.
+    # uname -m (aarch64, x86_64) is the exact first component of Rust's target triple, so the URL needs no mapping.
     RUSTUP_URL="https://static.rust-lang.org/rustup/dist/$(uname -m)-unknown-linux-gnu/rustup-init"; \
     curl -fsSL -O "$RUSTUP_URL"; \
-    # The .sha256 file's name field carries a dist path, so compare the digest alone.
+    # The name field of the .sha256 file carries a dist path, so the check compares the digest alone.
     expected="$(curl -fsSL "$RUSTUP_URL.sha256" | awk '{print $1}')"; \
     echo "$expected  rustup-init" | sha256sum -c -; \
     chmod 0755 rustup-init; \
     CARGO_HOME=/opt/rust/cargo ./rustup-init -y --no-modify-path \
         --profile minimal --default-toolchain stable \
         --component rustfmt --component clippy; \
-    # The triple ko-agent-fs ships as, so a session can run its tests against the
-    # libc that ships (ko-agent-fs/doc/testing.md). It has to be added here:
-    # RUSTUP_HOME is read-only at runtime, so a session cannot add it later.
+    # ko-agent-fs ships for this triple, so a session can run its tests against the shipped libc
+    # (ko-agent-fs/doc/testing.md). The build adds the target here, because RUSTUP_HOME is read-only in a session.
     CARGO_HOME=/opt/rust/cargo /opt/rust/cargo/bin/rustup target add \
         "$(uname -m)-unknown-linux-musl"; \
     rm rustup-init
@@ -200,27 +197,26 @@ ENV PATH="/opt/rust/cargo/bin:$PATH"
 # Persisted agent state
 # ---------------------------------------------------------------------------
 #
-# The launcher mounts a per-workspace named volume at ~/persistent-volume;
-# each agent's dot-directory is a relative symlink into it, so no relocation
-# variables are needed. opencode's three XDG directories are linked one by
-# one for the same reason: XDG_*_HOME variables would move every other
-# program's directories too. Its data directory holds the logins (auth.json)
-# and the sessions, so its config directory alone would lose them; its
-# cache, ~/.cache/opencode, dies with the session like every cache.
-# kiro-cli is split the same way — settings, agents and steering under
-# ~/.kiro, the logins and the rest of its data under
-# ~/.local/share/kiro-cli — so both of its directories are linked.
-# The volume's content starts as the seed below, which
-# ko-sandbox-entrypoint copies in per agent directory wherever the volume lacks one:
-# not only into a fresh volume, as Podman's copy-up would, but into one an
-# older image created before an agent was added. A directory the volume has
-# is agent state and is never touched, so a seed change reaches existing
-# volumes only through --reset, which also discards their logins.
+# The launcher mounts a per-workspace named volume at ~/persistent-volume.
+# - Each agent's dot-directory is a relative symlink into the volume, so no agent needs a relocation variable.
+# - opencode's three XDG directories are linked one by one for the same reason: XDG_*_HOME variables would move
+#   every other program's directories too. opencode's data directory holds the logins (auth.json) and the sessions,
+#   so a link for its config directory alone would lose them. opencode's cache, ~/.cache/opencode, dies with the
+#   session like every cache.
+# - kiro-cli splits its state the same way, so both of its directories are linked: settings, agents and steering
+#   under ~/.kiro, and the logins and the rest of its data under ~/.local/share/kiro-cli.
+#
+# The volume's content starts as the seed below. ko-sandbox-entrypoint copies each agent directory of the seed into
+# the volume wherever the volume lacks that directory.
+# - The entrypoint copies into a fresh volume, as Podman's copy-up would, and also into a volume that an older
+#   image created before an agent was added.
+# - The entrypoint never touches a directory the volume has, because that directory is agent state. A seed change
+#   therefore reaches an existing volume only through --reset, which also discards the volume's logins.
 
 ENV KO_SANDBOX_VOLUME_SEED=/etc/ko-agent-sandbox/persistent-volume-seed
 RUN set -euxo pipefail; \
     install -d -o nonroot -g nonroot -m 0700 /home/nonroot/persistent-volume; \
-    # nonroot-owned: ko-sandbox-entrypoint reads the seed as nonroot, and the copies keep the mode
+    # nonroot owns the seed: ko-sandbox-entrypoint reads it as nonroot, and the copies keep the mode.
     install -d -o nonroot -g nonroot -m 0700 \
         $KO_SANDBOX_VOLUME_SEED/claude \
         $KO_SANDBOX_VOLUME_SEED/codex \
@@ -242,7 +238,7 @@ RUN set -euxo pipefail; \
         /home/nonroot/.local/state; \
     ln -s persistent-volume/claude /home/nonroot/.claude; \
     ln -s persistent-volume/codex /home/nonroot/.codex; \
-    # agy reads its state from ~/.gemini, not a name of its own
+    # agy reads its state from ~/.gemini, not from a directory of its own name.
     ln -s persistent-volume/antigravity /home/nonroot/.gemini; \
     ln -s persistent-volume/kiro/config /home/nonroot/.kiro; \
     ln -s ../../persistent-volume/kiro/data /home/nonroot/.local/share/kiro-cli; \
@@ -266,9 +262,8 @@ RUN set -euxo pipefail; \
 # Claude Code
 # ---------------------------------------------------------------------------
 #
-# `latest` rather than `stable`: the update check compares against `latest`,
-# and `stable` lags it into a permanent "Update available!" banner. Updates
-# arrive by rebuilding.
+# The suite is `latest`, not `stable`. Claude Code's update check compares against `latest`, and `stable` lags
+# behind it, so the "Update available!" banner would never go away. Updates arrive by rebuilding.
 
 RUN set -euxo pipefail; \
     install -d -m 0755 /etc/apt/keyrings; \
@@ -285,17 +280,17 @@ RUN set -euxo pipefail; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         claude-code \
-        # Claude Code's own sandbox for Bash commands, off in the managed settings below.
-        # Carried because an organization's server-managed settings, which override that
-        # file, can enforce sandbox.failIfUnavailable: without these the session exits,
-        # with the reason on stderr, which the TUI discards. Enabled in here it would
-        # also need a --nesting=user-namespace launch, since the default's seccomp
-        # profile refuses the user namespace bwrap creates, and enableWeakerNestedSandbox:
-        # bwrap cannot mount a fresh /proc under podman's masked /proc entries (measured,
-        # as for Codex below).
+        # bubblewrap and socat run Claude Code's own sandbox for Bash commands, which the managed settings below
+        # turn off. The image carries them because an organization's server-managed settings override that file
+        # and can enforce sandbox.failIfUnavailable. Without the two packages, the session then exits with the
+        # reason on stderr, which the TUI discards. Enabling the sandbox in here would also need two settings
+        # (measured, as for Codex below):
+        # - a --nesting=user-namespace launch, since the default's seccomp profile refuses the user namespace
+        #   that bwrap creates;
+        # - enableWeakerNestedSandbox, since bwrap cannot mount a fresh /proc under podman's masked /proc entries.
         bubblewrap \
         socat \
-        # `/voice`'s recorder under --audio=mic, through its PulseAudio backend below
+        # sox records for Claude Code's `/voice` under --audio=mic, through SoX's PulseAudio backend below
         # (doc/microphone.md).
         sox; \
     rm -rf /var/lib/apt/lists/*
@@ -305,15 +300,15 @@ RUN set -euxo pipefail; \
 # The host microphone under --audio=mic
 # ---------------------------------------------------------------------------
 #
-# A PulseAudio daemon whose microphone is a FIFO the launcher's relay fills
-# (ko-sandbox-entrypoint starts it; doc/microphone.md, "The daemon"), and
-# its clients' paths to it: libsox-fmt-pulse for Claude Code's `rec`,
-# pulseaudio-utils for agy's `parec`, libasound2-plugins and asound.conf for
-# Codex's voice helper, which opens ALSA's default PCM; that helper's call
-# cannot leave the sandbox (doc/TODO.md). alsa-utils stays out:
-# Claude Code tries `arecord` before SoX, and one path is enough.
-# pulse-client.conf turns autospawn off, so without --audio=mic no client starts a
-# daemon of its own.
+# Under --audio=mic, a PulseAudio daemon serves a microphone that is a FIFO the launcher's relay fills.
+# ko-sandbox-entrypoint starts the daemon (doc/microphone.md, "The daemon"). Each client reaches the daemon
+# through its own packages:
+# - libsox-fmt-pulse serves Claude Code's `rec`.
+# - pulseaudio-utils serves agy's `parec`.
+# - libasound2-plugins and asound.conf serve Codex's voice helper, which opens ALSA's default PCM. That helper's
+#   call cannot leave the sandbox (doc/TODO.md).
+# alsa-utils stays out: Claude Code tries `arecord` before SoX, and one path is enough.
+# pulse-client.conf turns autospawn off, so without --audio=mic no client starts a daemon of its own.
 RUN set -euxo pipefail; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
@@ -327,55 +322,46 @@ COPY --chmod=0644 microphone/asound.conf /etc/asound.conf
 COPY --chmod=0644 microphone/pulse-client.conf /etc/pulse/client.conf.d/99-ko-agent-sandbox.conf
 COPY --chmod=0755 microphone/ko-sandbox-mic /usr/local/bin/ko-sandbox-mic
 
-# .claude.json defaults to $HOME; move it under ~/.claude so it persists through the symlink.
+# Claude Code keeps .claude.json in $HOME by default. CLAUDE_CONFIG_DIR moves it under ~/.claude, so it persists through
+# the symlink.
 ENV CLAUDE_CONFIG_DIR=/home/nonroot/.claude
 
-# Skip permission prompts (README.md explains why).
+# The managed settings below skip permission prompts (README.md explains why).
 #
-# Managed settings in the read-only image take precedence over user and
-# project settings, survive removal of the persistent volume, and apply
-# without launcher flags. An organization's remote managed settings can
-# supersede the image's permission, hook and sandbox settings, including
-# requiring the sandbox installed in the apt step above. By default Claude
-# Code selects one managed source for most keys; administrators can enable
-# merging across sources.
-# `/status` identifies the active sources. Precedence and exceptions:
-# https://code.claude.com/docs/en/managed-settings#how-claude-code-combines-managed-sources
+# Managed settings in the read-only image take precedence over user and project settings. The managed settings survive
+# removal of the persistent volume, and they apply without launcher flags.
+# - An organization's remote managed settings can supersede the image's permission, hook and sandbox settings.
+#   Those settings can also require the sandbox that the apt step above installs.
+# - By default Claude Code selects one managed source for most keys; administrators can enable merging across
+#   sources. `/status` names the active sources. Precedence and exceptions:
+#   https://code.claude.com/docs/en/managed-settings#how-claude-code-combines-managed-sources
 #
 # `bypassPermissions` refuses to start as root; USER below is nonroot.
-# `skipDangerousModePermissionPrompt` pre-accepts bypass mode's one-time
-# dialog. These settings do not prevent prompt injection (SECURITY.md).
-# Consider `"defaultMode": "auto"` to screen tool calls induced by prompt
-# injection.
+# `skipDangerousModePermissionPrompt` pre-accepts the one-time dialog of bypass mode.
+# These settings do not prevent prompt injection (SECURITY.md). Consider `"defaultMode": "auto"` to screen tool
+# calls that prompt injection induces.
 #
-# Hook commands run without the model choosing them as tool calls, so
-# restoring permission prompts or enabling auto mode does not review those
-# commands. `allowManagedHooksOnly` blocks this automatic execution path
-# from project settings and writable user settings in the persistent volume.
-# ko-sandbox-entrypoint pre-accepts workspace trust, so the trust dialog
-# reviews neither source. Sandbox commands can still modify persistent
-# state (SECURITY.md, "What the persistent volume holds").
-# Managed hooks, SDK hooks and hooks from plugins force-enabled by managed
-# settings remain allowed:
-# https://code.claude.com/docs/en/settings-reference#allowmanagedhooksonly
-# The launcher's --claude-plugin-dir uses that exception: it mounts a host
-# plugin directory and a managed-settings.d drop-in force-enabling it
-# (ClaudePlugins.scala). The image's own plugins below load through
-# CLAUDE_CODE_PLUGIN_DIRS as `@inline` plugins, which the key leaves
-# unmanaged, and carry no hooks.
+# Hook commands run without the model choosing them as tool calls, so neither restored permission prompts nor auto
+# mode reviews those commands.
+# - `allowManagedHooksOnly` blocks this path from project settings and from writable user settings in the
+#   persistent volume. ko-sandbox-entrypoint pre-accepts workspace trust, so the trust dialog reviews neither
+#   source. Sandbox commands can still modify persistent state (SECURITY.md, "What the persistent volume holds").
+# - Managed hooks, SDK hooks and hooks from plugins that managed settings force-enable remain allowed:
+#   https://code.claude.com/docs/en/settings-reference#allowmanagedhooksonly
+# - The launcher's --claude-plugin-dir uses that exception. The option mounts a host plugin directory and a
+#   managed-settings.d drop-in that force-enables the plugin (ClaudePlugins.scala).
+# - The image's own plugins below load through CLAUDE_CODE_PLUGIN_DIRS as `@inline` plugins. The key leaves
+#   `@inline` plugins unmanaged, and the image's plugins carry no hooks.
 #
-# Host verification with Claude Code 2.1.274 shows that a project's
-# SessionStart hook is blocked under this image and runs under a variant
-# image without the key. The comparison uses a variant image because /etc
-# is read-only in a session. A project cannot instead redirect the managed
-# settings through its settings env: that version's
+# A host check with Claude Code 2.1.274 shows that this image blocks a project's SessionStart hook, and that a
+# variant image without the key runs it. The check uses a variant image because /etc is read-only in a session.
+# A project cannot instead redirect the managed settings through the env of its settings: in that version,
 # CLAUDE_CODE_MANAGED_SETTINGS_PATH is a stub that returns nothing.
 #
-# `sandbox` off: this container is the boundary, and Claude Code's own
-# bubblewrap sandbox would be a second one inside it, which a project's
-# `sandbox.failIfUnavailable` could otherwise demand. Off also keeps
-# anthropics/claude-code#88059 out: with that sandbox active on a merged-usr
-# distro, 2.1.232 and later lose every Bash call. Debian is merged-usr.
+# `sandbox` is off: this container is the boundary, and Claude Code's own bubblewrap sandbox would be a second one
+# inside it. Without the setting, a project's `sandbox.failIfUnavailable` could demand that sandbox.
+# The setting also keeps anthropics/claude-code#88059 out: with that sandbox active on a merged-usr distro, Claude
+# Code 2.1.232 and later lose every Bash call. Debian is merged-usr.
 RUN set -euxo pipefail; \
     install -d -m 0755 /etc/claude-code; \
     printf '%s\n' \
@@ -393,17 +379,15 @@ RUN set -euxo pipefail; \
         '}' \
         > /etc/claude-code/managed-settings.json
 
-# allowManagedHooksOnly also blocks user and project status-line commands.
-# The managed command accepts a data-only project template so display
-# customization does not require a project-supplied command.
+# allowManagedHooksOnly also blocks user and project status-line commands. The managed command accepts a data-only
+# project template, so a project customizes the display without supplying a command.
 # Usage: doc/agent-settings.md, "Claude Code status line".
 #
-# tui.json keeps Claude Code's classic renderer. The fullscreen renderer
-# keeps the conversation out of the terminal's scrollback and copies a mouse
-# selection through OSC 52, which some terminals ignore; in some, holding
-# Shift does not bypass it. Setting `tui` to either value also stops Claude
-# Code's tip and dialog suggesting `/tui fullscreen`.
-# doc/plan-clipboard.md reconsiders this.
+# tui.json keeps Claude Code's classic renderer. doc/plan-clipboard.md reconsiders this choice.
+# - The fullscreen renderer keeps the conversation out of the terminal's scrollback.
+# - The fullscreen renderer copies a mouse selection through OSC 52, which some terminals ignore. In some terminals,
+#   holding Shift does not bypass the renderer's selection.
+# - Setting `tui` to either value also stops Claude Code's tip and dialog that suggest `/tui fullscreen`.
 COPY --chmod=0644 claude-code/command/ /etc/claude-code/command/
 COPY --chmod=0644 claude-code/managed-settings.d/ /etc/claude-code/managed-settings.d/
 
@@ -412,10 +396,9 @@ COPY --chmod=0644 claude-code/managed-settings.d/ /etc/claude-code/managed-setti
 # Codex CLI
 # ---------------------------------------------------------------------------
 #
-# OpenAI publishes no APT repository, and the npm package wraps the same
-# native build. The musl build is static. `releases/latest` mirrors the
-# Claude `latest` suite; verifying the *.sigstore bundles would need cosign,
-# so TLS to github.com is the integrity boundary.
+# OpenAI publishes no APT repository, and the npm package wraps the same native build. The musl build is static.
+# `releases/latest` mirrors Claude Code's `latest` suite. Verifying the *.sigstore bundles would need cosign, so TLS
+# to github.com is the integrity boundary.
 RUN set -euxo pipefail; \
     CODEX_ARTIFACT="codex-package-$(uname -m)-unknown-linux-musl"; \
     install -d -m 0755 /opt/codex; \
@@ -423,29 +406,27 @@ RUN set -euxo pipefail; \
         "https://github.com/openai/codex/releases/latest/download/${CODEX_ARTIFACT}.tar.gz" \
         | tar -xzf - -C /opt/codex
 
-# Codex is run from the package directory rather than symlinked into
-# /usr/local/bin, so that nothing depends on how the helper lookup resolves a
-# symlinked argv[0].
+# Codex runs from the package directory, not through a symlink in /usr/local/bin. Nothing then depends on how the
+# helper lookup resolves a symlinked argv[0].
 ENV PATH="/opt/codex/bin:$PATH"
 
-# What codex/bash-env restores (codex/config.toml has why).
+# codex/bash-env restores this path (codex/config.toml says why).
 ENV KO_SANDBOX_TOOLCHAIN_PATH="$PATH"
 
-# /etc/codex/config.toml is the documented system layer, lowest precedence:
-# in the read-only image like managed settings, but supplying *defaults* the
-# user config can override — opting back into approval prompts for a scary
-# repository should not need an image rebuild (enforcement would be
-# managed_config.toml).
+# /etc/codex/config.toml is Codex's documented system layer, with the lowest precedence. The file sits in the
+# read-only image like the managed settings, but it supplies *defaults* that the user config can override. Opting
+# back into approval prompts for a scary repository should not need an image rebuild. Enforcement would use
+# managed_config.toml.
 #
-# danger-full-access: the container is the boundary, and Codex's own Linux
-# sandbox cannot finish setting up here. Measured, not assumed: under podman's
-# default seccomp profile unshare -Ur works under --cap-drop=ALL, but mounting
-# a fresh /proc fails while podman's masked /proc entries are in place, and the
-# bubblewrap-style sandbox needs one for its pid namespace; the launcher's
-# --nesting=none profile refuses the unshare itself.
+# danger-full-access: the container is the boundary, and Codex's own Linux sandbox cannot finish setting up here.
+# These facts are measured, not assumed:
+# - Under podman's default seccomp profile, unshare -Ur works under --cap-drop=ALL. Mounting a fresh /proc fails
+#   while podman's masked /proc entries are in place, and the bubblewrap-style sandbox needs a fresh /proc for its
+#   pid namespace.
+# - The launcher's --nesting=none profile refuses the unshare itself.
 #
-# The project's trust_level is ko-sandbox-entrypoint's, in the user layer
-# ~/.codex/config.toml: it is per project, and this layer is the image's.
+# ko-sandbox-entrypoint writes the project's trust_level into the user layer, ~/.codex/config.toml: the trust level
+# is per project, and this layer belongs to the image.
 COPY --chmod=0644 codex/config.toml /etc/codex/config.toml
 COPY --chmod=0644 codex/bash-env /etc/codex/bash-env
 
@@ -454,13 +435,12 @@ COPY --chmod=0644 codex/bash-env /etc/codex/bash-env
 # VS Code CLI
 # ---------------------------------------------------------------------------
 #
-# `code agent host` is what an IDE attaches to over the Agent Host Protocol.
-# Microsoft publishes the CLI through its update service, not GitHub: one
-# call names the latest release, a second gives that release's download URL
-# and SHA-256, which the CDN itself does not publish. The server release the
-# host runs is not bundled: it updates independently of the CLI, through the
-# host's own update loop, so the CLI downloads it on the host's first start,
-# through the proxy's default rules.
+# An IDE attaches to `code agent host` over the Agent Host Protocol.
+# Microsoft publishes the CLI through its update service, not GitHub. One call names the latest release, and a
+# second call gives that release's download URL and SHA-256, which the CDN itself does not publish.
+# The image does not bundle the server release that the host runs:
+# - The server release updates independently of the CLI, through the host's own update loop.
+# - The CLI downloads the server release on the host's first start, through the proxy's default rules.
 RUN set -euxo pipefail; \
     case "$(uname -m)" in aarch64) VSCODE_ARCH=arm64;; x86_64) VSCODE_ARCH=x64;; esac; \
     VSCODE_UPDATE=https://update.code.visualstudio.com/api; \
@@ -479,13 +459,12 @@ RUN set -euxo pipefail; \
 # Antigravity CLI
 # ---------------------------------------------------------------------------
 #
-# Google distributes agy through an install script that resolves a
-# per-platform manifest {version, url, sha512}; the manifest is used
-# directly so the binary is stored in the read-only image, keeping the sha512
-# check and skipping the shell-profile editing. agy self-updates only where
-# its binary is writable; /usr/local/bin is not, so it updates on rebuild
-# like the others. The smoke test gets a throwaway HOME because agy writes
-# state on every invocation and this RUN is root.
+# Google distributes agy through an install script that resolves a per-platform manifest {version, url, sha512}.
+# The build reads the manifest directly, so the binary lands in the read-only image. The build keeps the sha512
+# check and skips the script's shell-profile editing.
+# agy updates itself only where its binary is writable. /usr/local/bin is read-only, so agy updates on rebuild like
+# the others.
+# The smoke test gets a throwaway HOME, because agy writes state on every invocation and this RUN runs as root.
 
 RUN set -euxo pipefail; \
     AGY_MANIFEST="$(curl -fsSL \
@@ -500,10 +479,10 @@ RUN set -euxo pipefail; \
     HOME=/tmp/agy-smoke agy --version >/dev/null; \
     rm -rf /tmp/agy-smoke
 
-# All agy state is under ~/.gemini, a symlink into the persistent volume.
-# toolPermission=always-proceed auto-approves tool execution (the counterpart of
-# Claude's bypassPermissions and Codex's approval_policy="never"); the workspace's
-# trust entry is ko-sandbox-entrypoint's, per launch.
+# agy keeps all its state under ~/.gemini, a symlink into the persistent volume.
+# toolPermission=always-proceed approves tool execution automatically, as the counterpart of Claude Code's
+# bypassPermissions and Codex's approval_policy="never". ko-sandbox-entrypoint writes the workspace's trust entry at
+# each launch.
 RUN set -euxo pipefail; \
     install -d -o nonroot -g nonroot -m 0700 \
         $KO_SANDBOX_VOLUME_SEED/antigravity/antigravity-cli; \
@@ -518,13 +497,12 @@ RUN set -euxo pipefail; \
 # Kiro CLI
 # ---------------------------------------------------------------------------
 #
-# AWS distributes kiro-cli as a zip whose install script copies the binaries
-# to ~/.local/bin and edits the shell profile; the binaries go into the
-# read-only image straight from the zip, checked against the .sha256
-# published beside it. All of bin/: kiro-cli execs kiro-cli-chat for the
-# chat and agent commands. `latest`, as for the others; the glibc build,
-# not the musl one, as for OpenCode. The smoke test gets a throwaway HOME
-# because kiro-cli writes state on every invocation and this RUN is root.
+# AWS distributes kiro-cli as a zip whose install script copies the binaries to ~/.local/bin and edits the shell
+# profile. The build installs the binaries into the read-only image straight from the zip, checked against the
+# .sha256 file published beside it.
+# - The build installs all of bin/, because kiro-cli execs kiro-cli-chat for the chat and agent commands.
+# - The build takes `latest`, as for the other agents, and the glibc build, not the musl one, as for OpenCode.
+# The smoke test gets a throwaway HOME, because kiro-cli writes state on every invocation and this RUN runs as root.
 RUN set -euxo pipefail; \
     KIRO_ZIP="https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-$(uname -m)-linux.zip"; \
     curl -fsSL "$KIRO_ZIP" -o /tmp/kirocli.zip; \
@@ -536,19 +514,17 @@ RUN set -euxo pipefail; \
     HOME=/tmp/kiro-smoke kiro-cli --version >/dev/null; \
     rm -rf /tmp/kiro-smoke
 
-# Tool prompts off, the Codex counterpart above. kiro-cli's own switch is
-# the per-launch flag --trust-all-tools, so the default agent is instead a
-# seeded custom agent whose allowedTools names every built-in tool and
-# every tool of every MCP server (allowedTools takes no bare "*"). Like
-# agy's settings.json it is user state in the persistent volume: opting
-# back into prompts is an edit there. kiro-cli 2.34 rejects an agent file
-# without `name` as invalid and falls back to kiro_default, which prompts.
-# No resources entry: a custom agent
-# inherits the global steering, where the instructions link below lands,
-# unless chat.disableInheritingDefaultResources is set.
-# app.disableAutoupdates: the startup update check would only be refused
-# by the proxy, its host being absent from model-provider/aws, and updates
-# arrive by rebuilding like the others.
+# Tool prompts are off, the counterpart of Codex's setting above.
+# - kiro-cli's own switch is the per-launch flag --trust-all-tools. The default agent is instead a seeded custom
+#   agent whose allowedTools names every built-in tool and every tool of every MCP server. allowedTools takes no
+#   bare "*".
+# - Like agy's settings.json, the agent file is user state in the persistent volume. Opting back into prompts is an
+#   edit there.
+# - kiro-cli 2.34 rejects an agent file without `name` as invalid and falls back to kiro_default, which prompts.
+# - The agent has no resources entry. A custom agent inherits the global steering, where the instructions link
+#   below lands, unless chat.disableInheritingDefaultResources is set.
+# app.disableAutoupdates: the proxy would refuse the startup update check, because the check's host is absent from
+# model-provider/aws. Updates arrive by rebuilding like the others.
 RUN set -euxo pipefail; \
     install -d -o nonroot -g nonroot -m 0700 \
         $KO_SANDBOX_VOLUME_SEED/kiro/config/settings \
@@ -578,13 +554,13 @@ RUN set -euxo pipefail; \
 # Copilot CLI
 # ---------------------------------------------------------------------------
 #
-# GitHub's install script (gh.io/copilot-install) fetches the release tarball
-# and checks it against the release's SHA256SUMS; the same two fetches here,
-# without the shell-profile editing. The npm package wraps the same binary.
-# `releases/latest` as for Codex, so a release published between the two
-# fetches fails the checksum and the build, never installs a mismatch. The
-# smoke test gets a throwaway HOME because copilot writes a package cache on
-# every invocation and this RUN is root.
+# GitHub's install script (gh.io/copilot-install) fetches the release tarball and checks it against the release's
+# SHA256SUMS. The build makes the same two fetches without the shell-profile editing. The npm package wraps the same
+# binary.
+# The build reads `releases/latest` as for Codex. A release published between the two fetches therefore fails the
+# checksum and the build, and never installs a mismatched binary.
+# The smoke test gets a throwaway HOME, because copilot writes a package cache on every invocation and this RUN runs
+# as root.
 RUN set -euxo pipefail; \
     COPILOT_ASSET="copilot-linux-$(dpkg --print-architecture | sed s/amd64/x64/).tar.gz"; \
     COPILOT_RELEASE=https://github.com/github/copilot-cli/releases/latest/download; \
@@ -599,17 +575,15 @@ RUN set -euxo pipefail; \
     HOME=/tmp/copilot-smoke copilot --version >/dev/null; \
     rm -rf /tmp/copilot-smoke
 
-# A read-only binary does not stop copilot's updater: it extracts new
-# versions into a package cache under ~/.cache/copilot and runs those. Off,
-# so it updates on rebuild like the others.
+# A read-only binary does not stop copilot's updater: the updater extracts new versions into a package cache under
+# ~/.cache/copilot and runs them. This variable turns the updater off, so copilot updates on rebuild like the others.
 ENV COPILOT_AUTO_UPDATE=false
 
-# Tool prompts off, the Codex counterpart above. Copilot has no system config
-# layer, so the default is an environment variable a launch can override
-# (COPILOT_ALLOW_ALL=false). It covers tools only; --yolo adds paths outside
-# the workspace and URLs, whose prompts the user keeps otherwise. The
-# workspace's trust entry in ~/.copilot/config.json is ko-sandbox-entrypoint's,
-# per launch.
+# Tool prompts are off, the counterpart of Codex's setting above. Copilot has no system config layer, so the default
+# is an environment variable that a launch can override (COPILOT_ALLOW_ALL=false).
+# - The variable covers tools only. --yolo also covers paths outside the workspace and URLs, whose prompts the user
+#   keeps otherwise.
+# - ko-sandbox-entrypoint writes the workspace's trust entry in ~/.copilot/config.json at each launch.
 ENV COPILOT_ALLOW_ALL=true
 
 
@@ -617,14 +591,14 @@ ENV COPILOT_ALLOW_ALL=true
 # OpenCode
 # ---------------------------------------------------------------------------
 #
-# The release ships no checksum file; the release API's asset `digest` is the
-# one source. One read of `releases/latest` names the asset and its digest
-# together, so a release published mid-build cannot mismatch them.
-# The x64 build needs AVX2, and the CPU building the image is the CPU running
-# it — the podman machine's, or the Linux host's — so its flag decides. The
-# glibc build, not the musl one: Debian has glibc. The smoke test gets a
-# throwaway HOME because OpenCode creates its XDG directories on every start,
-# and this RUN is root.
+# The release ships no checksum file, so the asset `digest` in the release API is the one source.
+# One read of `releases/latest` names the asset and its digest together, so a release published mid-build cannot
+# mismatch them.
+# The x64 build needs AVX2. The CPU that builds the image is the CPU that runs it, the podman machine's or the Linux
+# host's, so the building CPU's flag decides.
+# The build takes the glibc build, not the musl one, because Debian has glibc.
+# The smoke test gets a throwaway HOME, because OpenCode creates its XDG directories on every start and this RUN
+# runs as root.
 RUN set -euxo pipefail; \
     case "$(uname -m)" in \
         aarch64) OPENCODE_ASSET=opencode-linux-arm64.tar.gz ;; \
@@ -646,15 +620,15 @@ RUN set -euxo pipefail; \
     HOME=/tmp/opencode-smoke opencode --version >/dev/null; \
     rm -rf /tmp/opencode-smoke
 
-# /etc/opencode/opencode.json is OpenCode's managed layer, merged after the
-# user's and the project's files, so neither can turn these back.
-# permission allow: the counterpart of Claude's bypassPermissions above.
-# OPENCODE_PERMISSION is read after this file, so a launch that forwards it
-# puts the prompts back (doc/agent-settings.md, "Restoring permission prompts").
-# share disabled: /share would post the session to opncd.ai, or to an
-# enterprise's own URL, either of which a workspace rule line could allow.
-# autoupdate false: the binary is the image's, and the check alone reads the
-# GitHub release API at every start.
+# /etc/opencode/opencode.json is OpenCode's managed layer. OpenCode merges it after the user's and the project's
+# files, so neither file can turn these settings back.
+# - permission allow: the counterpart of Claude Code's bypassPermissions above. OpenCode reads OPENCODE_PERMISSION
+#   after this file, so a launch that forwards the variable puts the prompts back (doc/agent-settings.md,
+#   "Restoring permission prompts").
+# - share disabled: /share would post the session to opncd.ai, or to an enterprise's own URL, and a workspace rule
+#   line could allow either destination.
+# - autoupdate false: the binary belongs to the image, and the check alone reads the GitHub release API at every
+#   start.
 RUN set -euxo pipefail; \
     install -d -m 0755 /etc/opencode; \
     printf '%s\n' \
@@ -670,20 +644,17 @@ RUN set -euxo pipefail; \
 # Claude Code plugins, and ko-review for Codex
 # ---------------------------------------------------------------------------
 #
-# Image-owned plugins, loaded beside whatever the user installs: nothing in the
-# persistent volume can drop or replace them. A plugin's bin/ joins Claude
-# Code's Bash tool's PATH. The Codex CLI above and Claude Code are what ko-review calls
-# (doc/ko-review.md).
-# Copied after the agent downloads, so that a plugin edit leaves their layers
-# cached. The modes are set after the copy: COPY --chmod gives the copied
-# subdirectories the file mode too, ko-review/ comes out `drw-r--r--`, and
-# Claude Code cannot read the manifest (EACCES).
+# Image-owned plugins load beside whatever the user installs, and nothing in the persistent volume can drop or
+# replace them. A plugin's bin/ joins the PATH of Claude Code's Bash tool. ko-review calls the Codex CLI above and
+# Claude Code (doc/ko-review.md).
+# - The copy comes after the agent downloads, so a plugin edit leaves the agents' layers cached.
+# - The RUN sets the modes after the copy. COPY --chmod gives the copied subdirectories the file mode too, so
+#   ko-review/ comes out `drw-r--r--` and Claude Code cannot read the manifest (EACCES).
 #
-# Codex runs the same skill from its admin scope, /etc/codex/skills, as a
-# copy: through a symlink, Codex finds the plugin's .claude-plugin/plugin.json
-# above the target and names the skill `ko-review:ko-review`. Codex's shell
-# PATH is the toolchain path codex/bash-env restores, without the plugin's
-# bin/, hence the helper's link in /usr/local/bin.
+# Codex runs the same skill from its admin scope, /etc/codex/skills, as a copy. Through a symlink, Codex would find
+# the plugin's .claude-plugin/plugin.json above the target and name the skill `ko-review:ko-review`.
+# Codex's shell PATH is the toolchain path that codex/bash-env restores, without the plugin's bin/. The helper
+# therefore gets a link in /usr/local/bin.
 COPY claude-code/plugins/ /etc/claude-code/plugins/
 RUN set -eu; \
     find /etc/claude-code/plugins -type d -exec chmod 0755 {} +; \
@@ -699,34 +670,32 @@ ENV CLAUDE_CODE_PLUGIN_DIRS=/etc/claude-code/plugins
 # Environment documentation for the agents
 # ---------------------------------------------------------------------------
 #
-# AGENTS-SANDBOX.md tells the running agent what this container is. It ships
-# as AGENTS.md, the target of every link below. The launcher mounts a copy over
-# AGENTS.md with the session's permissions and ruleset lookup instructions
-# appended.
-# Without it an agent reads `Read-only file system` as breakage, or writes
-# deliverables somewhere discarded on exit.
+# AGENTS-SANDBOX.md tells the running agent what this container is. The image ships the file as AGENTS.md, the
+# target of every link below. The launcher mounts a copy over AGENTS.md, with the session's permissions and the
+# ruleset lookup instructions appended.
+# Without the file, an agent reads `Read-only file system` as breakage, or writes deliverables somewhere that is
+# discarded on exit.
 #
-#   claude  /etc/claude-code/CLAUDE.md — the managed-policy location: loads
-#           first, project-unexcludable, read-only like managed-settings
-#   codex   ~/.codex/AGENTS.md; agy ~/.gemini/GEMINI.md; kiro-cli
-#           ~/.kiro/steering/AGENTS.md; copilot
-#           ~/.copilot/copilot-instructions.md; opencode
-#           ~/.config/opencode/AGENTS.md — no system scope, so each
-#           resolves through the persistent volume. (Codex's
-#           model_instructions_file would *replace* the built-in
-#           instructions, so it is not used.)
+#   claude    /etc/claude-code/CLAUDE.md, the managed-policy location: it loads first, a project cannot exclude
+#             it, and it is read-only like the managed settings
+#   codex     ~/.codex/AGENTS.md
+#   agy       ~/.gemini/GEMINI.md
+#   kiro-cli  ~/.kiro/steering/AGENTS.md
+#   copilot   ~/.copilot/copilot-instructions.md
+#   opencode  ~/.config/opencode/AGENTS.md
 #
-# Symlinks, not copies: a seeded directory is never touched again, and this
-# text must change with the image. Absolute, because a relative link would
-# have to climb out of the volume.
+# The agents after claude have no system scope, so each of their links resolves through the persistent volume.
+# Codex's model_instructions_file would *replace* the built-in instructions, so the image does not use it.
 #
-# Each script's own header says what it is for; they ship because an agent would otherwise retype
-# them from the instructions.
+# The links are symlinks, not copies: the entrypoint never touches a seeded directory again, and this text must
+# change with the image. The links are absolute, because a relative link would have to climb out of the volume.
 #
-# The image's own programs are named ko-sandbox-*, and the variables it sets for them KO_SANDBOX_*:
-# the agent CLIs installed above share /usr/local/bin and the environment, where a bare sandbox-*
-# or SANDBOX_* name does not say whose it is. KO_AGENT_SANDBOX_* are the launcher's variables
-# (AgentSandboxLauncher.LauncherVariablePrefix).
+# Each script's own header says what the script is for. The image ships the scripts because an agent would
+# otherwise retype them from the instructions.
+#
+# The image names its own programs ko-sandbox-* and the variables it sets for them KO_SANDBOX_*. The agent CLIs
+# installed above share /usr/local/bin and the environment, where a bare sandbox-* or SANDBOX_* name does not say
+# whose it is. KO_AGENT_SANDBOX_* are the launcher's variables (AgentSandboxLauncher.LauncherVariablePrefix).
 COPY --chmod=0755 \
     ko-sandbox-jdk-use-proxy ko-sandbox-apt-get ko-sandbox-install-podman ko-sandbox-run-on-host \
     ko-sandbox-egress-check ko-sandbox-clipboard ko-sandbox-text-width ko-sandbox-markdown-link-check \
@@ -734,16 +703,16 @@ COPY --chmod=0755 \
     /usr/local/bin/
 RUN set -eu; for name in xclip xsel wl-paste wl-copy; do ln -s ko-sandbox-clipboard /usr/local/bin/$name; done
 
-# sbt 2 reads its global settings from ~/.config/sbt/2, not ~/.sbt/2, unless SBT_CONFIG_HOME or
-# XDG_CONFIG_HOME names another place; the image sets neither. sbt 1 has no rootOutputDirectory,
-# so there is no such file for ~/.sbt/1.0.
-# nonroot-owned: sbt keeps its staging and zinc directories beside the settings.
+# sbt 2 reads its global settings from ~/.config/sbt/2, not ~/.sbt/2, unless SBT_CONFIG_HOME or XDG_CONFIG_HOME
+# names another place. The image sets neither variable.
+# sbt 1 has no rootOutputDirectory, so ~/.sbt/1.0 gets no such file.
+# nonroot owns the directory, because sbt keeps its staging and zinc directories beside the settings.
 RUN install -d -o nonroot -g nonroot /home/nonroot/.config/sbt /home/nonroot/.config/sbt/2
 COPY --chown=nonroot:nonroot --chmod=0644 config/sbt/2/ /home/nonroot/.config/sbt/2/
 
-# The image has no Maven, so there is no ${maven.home}/conf to hold this: a project's `./mvnw`
-# brings its own, and the user settings are the one file every Maven reads.
-# nonroot-owned: Maven keeps its local repository beside it.
+# The image has no Maven, so no ${maven.home}/conf exists to hold this file. A project's `./mvnw` brings its own
+# Maven, and the user settings are the one file every Maven reads.
+# nonroot owns the directory, because Maven keeps its local repository beside the settings.
 RUN install -d -o nonroot -g nonroot /home/nonroot/.m2
 COPY --chown=nonroot:nonroot --chmod=0644 m2/settings.xml /home/nonroot/.m2/settings.xml
 
@@ -763,17 +732,17 @@ RUN set -euxo pipefail; \
 # Unprivileged runtime user
 # ---------------------------------------------------------------------------
 
-# No workspace directory and no WORKDIR: the launcher mounts the workspace root at its own path,
-# which podman creates in the read-only root at create, and starts the session there.
+# No workspace directory and no WORKDIR: the launcher mounts the workspace root at its own path, which podman
+# creates in the read-only root at create, and starts the session there.
 USER nonroot
 
 ENTRYPOINT ["ko-sandbox-entrypoint"]
 CMD ["bash"]
 
-# The digest of this directory as the launcher bundled it (LauncherImages.contextSourceId). A launch
-# recomputes it from its own jar and refuses a default-named image another jar built — the
-# version lock between launcher and image (LauncherImages.bundleMismatch).
-# Last: every RUN after an ARG is keyed on its value, and this one changes whenever a file in
-# this directory does, so declared any earlier it would rerun every RUN after it.
+# The label holds the digest of this directory as the launcher bundled it (LauncherImages.contextSourceId).
+# A launch recomputes the digest from its own jar and refuses a default-named image that another jar built. The
+# label thereby locks the launcher and the image to one version (LauncherImages.bundleMismatch).
+# The label comes last: every RUN after an ARG is keyed on the ARG's value, and this value changes whenever a file
+# in this directory changes. Declared any earlier, the ARG would rerun every RUN after it.
 ARG BUNDLE_ID
 LABEL ko-agent-sandbox.bundle=${BUNDLE_ID}

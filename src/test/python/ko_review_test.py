@@ -1,5 +1,5 @@
-"""Tests of the ko-review plugin's helper against a fake `codex` and a fake `claude` on PATH, and of its
-`stream_events` and `children_of` loaded into this process; no model is used."""
+"""Tests the ko-review plugin's helper against a fake `codex` and a fake `claude` on PATH, and tests the helper's
+`stream_events` and `children_of` loaded into this process. No model is used."""
 
 import datetime
 import fcntl
@@ -22,9 +22,8 @@ PROJECT = Path(__file__).resolve().parents[3]
 PLUGIN = PROJECT / "container/ko-agent-sandbox/claude-code/plugins/ko-review"
 HELPER = PLUGIN / "bin/ko-review"
 
-# One script installed under both names; its basename says which CLI it imitates. Steps are consumed
-# one per invocation from the file FAKE_REVIEWER_SCRIPT names; each invocation appends its argv and
-# stdin to FAKE_REVIEWER_LOG.
+# One script is installed under both names, and its basename says which CLI it imitates. Each invocation consumes one
+# step from the file that FAKE_REVIEWER_SCRIPT names, and appends its argv and stdin to FAKE_REVIEWER_LOG.
 FAKE_REVIEWER = r'''#!/usr/bin/env python3
 import json, os, subprocess, sys, time
 name = os.path.basename(sys.argv[0])
@@ -142,7 +141,7 @@ USER_DECIDES = {
 
 
 def both_reviewers(test):
-    """Marks a test ClaudeHelperTest runs again with Claude as the reviewer."""
+    """Marks a test that ClaudeHelperTest runs again with Claude as the reviewer."""
     test.both_reviewers = True
     return test
 
@@ -224,7 +223,7 @@ class HelperTest(unittest.TestCase):
         )
 
     def reviews(self):
-        """Every review of the checkout in full: `list` gives each one's id, `show` its state."""
+        """Returns every review of the checkout in full: `list` gives each review's id, and `show` gives its state."""
         return [self.helper("show", row["reviewId"]) for row in self.helper("list")["reviews"]]
 
     def calls(self):
@@ -265,13 +264,13 @@ class HelperTest(unittest.TestCase):
             self.assertEqual(argv[argv.index("--effort") + 1], effort)
 
     def thread_started_line(self, thread_id):
-        """The fake's first event line, as the reviewer names its thread."""
+        """Returns the fake's first event line, in which the reviewer names its thread."""
         if self.reviewer == "codex":
             return json.dumps({"type": "thread.started", "thread_id": thread_id}) + "\n"
         return json.dumps({"type": "system", "subtype": "init", "session_id": thread_id}) + "\n"
 
     def reviewer_failure_cases(self):
-        """Failure shapes in the reviewer's own event stream, each with the error it must become."""
+        """Returns failure shapes in the reviewer's own event stream, each with the error it must become."""
         if self.reviewer == "codex":
             return [
                 ({"events": [{"type": "turn.failed", "error": {"message": "model overloaded"}}]}, "REVIEWER_FAILED"),
@@ -508,8 +507,8 @@ class HelperTest(unittest.TestCase):
         set_created_at(first, 100)
         self.assertEqual(listed(), sorted([first, second]))
 
-    # An approved exit and a failed one, each leaving a background process behind, whose marker file
-    # must still be missing once its sleep has passed.
+    # An approved exit and a failed exit each leave a background process behind. The process's marker file must still
+    # be missing once the process's sleep has passed.
     def assert_background_process_killed(self, **background):
         cases = [
             ("approved", {"result": APPROVED}, 0, "APPROVED"),
@@ -541,8 +540,8 @@ class HelperTest(unittest.TestCase):
     @both_reviewers
     @unittest.skipUnless(sys.platform == "linux", "the helper adopts orphans through prctl")
     def test_an_escaped_process_holding_the_reviewer_stdout_ends_with_the_turn(self):
-        """The turn ends with the reviewer's exit, or the timeout, not with the end of its output: the
-        escaped holder is killed then, before its sleep ends, so it never writes its marker."""
+        """The turn ends with the reviewer's exit, or with the timeout, not with the end of its output. The escaped
+        holder is killed then, before its sleep ends, so it never writes its marker."""
         cases = [
             ("approved", {"result": APPROVED}, (), 0, "APPROVED"),
             ("timeout", {"result": APPROVED, "sleep": 5}, ("--timeout", "1"), 1, "TURN_INTERRUPTED"),
@@ -560,9 +559,9 @@ class HelperTest(unittest.TestCase):
         threading.Event().wait(4)
         self.assertEqual([marker.name for marker in markers if marker.exists()], [])
 
-    # The tests of `stream_events` and `children_of` in this process: the helper loaded as a module,
-    # its `os.killpg` recording the groups it signals, and a leader with a reviewer, `sleep 0` unless
-    # given, started as `run_reviewer` starts them.
+    # The tests of `stream_events` and `children_of` in this process. The helper is loaded as a module, and its
+    # `os.killpg` records the groups it signals. A leader and a reviewer, `sleep 0` unless given, start as
+    # `run_reviewer` starts them.
     def helper_module(self):
         loader = importlib.machinery.SourceFileLoader("ko_review_helper", str(HELPER))
         helper = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
@@ -586,9 +585,9 @@ class HelperTest(unittest.TestCase):
     REVIEW = types.SimpleNamespace(reviewer=types.SimpleNamespace(name="fake", thread_id=lambda event: None))
 
     def test_a_timeout_firing_as_the_reviewer_exits_signals_the_group_once_and_before_the_leader_is_reaped(self):
-        """A timer callback that started before its cancellation is paused until the reviewer has exited
-        and the helper is cleaning up, where it must still find the group's leader unreaped, and the
-        helper must not signal the group a second time."""
+        """A timer callback that started before its cancellation is paused until the reviewer has exited and the
+        helper is cleaning up. The callback must then still find the group's leader unreaped, and the helper must not
+        signal the group a second time."""
         helper, signalled = self.helper_module()
         leader, process = self.reviewer_group()
         released = threading.Event()
@@ -618,7 +617,7 @@ class HelperTest(unittest.TestCase):
         self.assertIsNotNone(leader.returncode)
 
     def test_an_interruption_after_the_leader_is_reaped_does_not_signal_the_group_again(self):
-        """An interrupt raised as the normal cleanup returns from reaping the leader: the cleanup the
+        """An interrupt is raised as the normal cleanup returns from reaping the leader. The cleanup that the
         exception handler repeats must not signal the group, whose id the reaping freed."""
         import signal
         helper, signalled = self.helper_module()
@@ -871,7 +870,7 @@ class HelperTest(unittest.TestCase):
         self.environment = {}
 
     def filtered_repository(self, directory):
-        """A repository whose `conf` file has a clean filter stripping `local` and `changed` lines."""
+        """Commits into `directory` a `conf` file with a clean filter that strips `local` and `changed` lines."""
         run = lambda *args: subprocess.run(
             ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", str(directory), *args],
             check=True, capture_output=True,
@@ -1541,8 +1540,8 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(self.helper("show", review_id)["staleReasons"], [])
 
     def test_coverage_names_the_paths_an_earlier_approval_still_covers(self):
-        """An approved review covers the paths its reviewer was told to look at whose content is still the
-        approved one; a continued review tells the reviewer which paths changed since its last answer."""
+        """An approved review covers the paths that its reviewer was told to look at and whose content is still the
+        approved content. A continued review tells the reviewer which paths changed since its last answer."""
         self.assertEqual(self.helper("coverage")["approvals"], [])
         review_id = self.start(APPROVED)["reviewId"]
         self.write("app.py", "print('edited')\n")
@@ -1605,9 +1604,10 @@ class HelperTest(unittest.TestCase):
         self.assertTrue(error["inspect"][0].startswith(f"ko-review export {review_id}"))
         self.assertNotIn("reviewId", self.helper("show", "no-such-review", expect=1))
 
-    # Fenced code the export must leave as written: fences in a list item and in a block quote; lines
-    # that do not close a fence: a delimiter indented four columns (CommonMark example 137), also
-    # after an opener indented one, and a list item holding a delimiter.
+    # Fenced code that the export must leave as written:
+    # - fences in a list item and in a block quote;
+    # - lines that do not close a fence: a delimiter indented four columns (CommonMark example 137), also after an
+    #   opener indented one column, and a list item holding a delimiter.
     QUOTED_CODE = (
         "~~~sh\n# a comment\n~~~\n\n- ```c\n  # include <stdio.h>\n  ```\n\n> ```\n> # quoted\n> ```\n\n"
         "```\n    ```\n# still code\n```\n\n ```\n    ```\n# still code\n ```\n\n"
@@ -1738,7 +1738,7 @@ class HelperTest(unittest.TestCase):
 
 
 class ClaudeHelperTest(HelperTest):
-    """The tests marked for both reviewers, against the fake `claude`, plus what is Claude's own."""
+    """The tests marked for both reviewers, run against the fake `claude`, plus the tests of what is Claude's own."""
 
     reviewer = "claude"
     display = "Claude"
@@ -1774,7 +1774,7 @@ class ClaudeHelperTest(HelperTest):
         self.environment = {}
 
     def managed_settings(self, main=None, drop_ins=None):
-        """A managed settings directory of its own, as the environment that points the helper at it."""
+        """Creates a managed settings directory of its own, and returns the environment that points the helper at it."""
         directory = self.root / "managed"
         shutil.rmtree(directory, ignore_errors=True)
         (directory / "managed-settings.d").mkdir(parents=True)
@@ -1862,8 +1862,8 @@ class ClaudeHelperTest(HelperTest):
         self.environment = {}
 
 
-# Only the tests marked for both reviewers run again under ClaudeHelperTest: the rest are hidden
-# from unittest, which collects callable `test_*` attributes, by shadowing them with None.
+# Only the tests marked for both reviewers run again under ClaudeHelperTest. unittest collects callable `test_*`
+# attributes, so shadowing the other tests with None hides them from unittest.
 for _name, _test in list(vars(HelperTest).items()):
     if _name.startswith("test_") and not getattr(_test, "both_reviewers", False):
         setattr(ClaudeHelperTest, _name, None)

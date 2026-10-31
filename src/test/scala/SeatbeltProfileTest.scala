@@ -1,6 +1,8 @@
-// Unit tests assert the generated SBPL without requiring macOS. The rules under test
-// are the ones src/probe/seatbelt-semantics.sh measured. Callers resolve symlinks; the renderer
-// requires absolute, normalized paths and puts guard denies last, because SBPL is last-match-wins.
+// Unit tests assert the generated SBPL without requiring macOS. src/probe/seatbelt-semantics.sh measured the rules
+// under test.
+// - Callers resolve symlinks.
+// - The renderer requires absolute, normalized paths.
+// - The renderer puts the guard's denies last, because the last matching SBPL rule wins.
 
 package agentsandbox.launcher
 
@@ -137,8 +139,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(text.contains(scope + """(regex #"/\.ko-agent-sandbox(/|$)")))"""))
 
   test("the guard does not reach the command's temporary directory: a test's throwaway .git is under it"):
-    // The workspace root is the only path in the guard, and it is a subpath filter, never part of
-    // the regex.
+    // The workspace root is the only path in the guard. The guard names it in a subpath filter, never in the regex.
     val guard = rendered().linesIterator.filter(_.startsWith("(deny file")).toSeq
     assert(guard.forall(_.contains(s"""(subpath "$workspace")""")))
     assert(guard.forall(line => !line.contains("/tmp/")))
@@ -196,16 +197,18 @@ class SeatbeltProfileTest extends munit.FunSuite:
         assert(grants.forall(line => line.contains("file-read*") && !line.contains("process-exec*")), cache.toString)
 
   test("every ancestor of a granted path is a literal metadata read, never a listing"):
-    // Measured: a subpath grant covers what is under it, never the directories above, and without
-    // the chain the JVM dies in the loader; and file-read* on the chain lists every ancestor.
+    // Measured:
+    // - A subpath grant covers what is under it, never the directories above it.
+    // - Without the chain of ancestors, the JVM dies in the loader.
+    // - file-read* on the chain would let a process list every ancestor.
     val text = rendered()
     for ancestor <- Seq("/Users", "/Users/kenichi", "/Users/kenichi/Library/Caches") do
       assert(clue(text).contains(s"""(allow file-read-metadata file-test-existence (literal "$ancestor"))"""), ancestor)
     val literalReads = text.linesIterator.filter(line => line.contains("(literal") && line.contains("file-read*")).toSeq
-    // A file granted alone — a device, the proxy's CA certificate — is a literal read; no directory is.
+    // A file granted alone, such as a device or the proxy's CA certificate, gets a literal read. No directory gets one.
     val trustReads = Seq("ca.crt", "truststore.p12").map(name => s"""(allow file-read* (literal "$trust/$name"))""")
     assertEquals(literalReads, (RootComponent +: Devices.linesIterator.toSeq) ++ trustReads)
-    // The root is its own line and not repeated in the chain.
+    // The root has its own line, and the chain does not repeat it.
     assertEquals(text.linesIterator.count(_.contains("""(literal "/")""")), 1)
 
   test("no /dev/tty: a closed stdin does not detach the controlling terminal; random devices read-only"):
@@ -254,7 +257,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
         """(allow network-outbound (remote unix-socket (subpath "/private/tmp/ko-agent-command/bxyz/tmp")))""",
       ),
     )
-    // The socket's directory resolves; the runner's directory is an ancestor like any other.
+    // The socket's directory resolves, and the runner's directory is an ancestor like any other.
     assert(text.contains(
       """(allow file-read-metadata file-test-existence (subpath "/private/tmp/ko-agent-command/bxyz/tmp"))""",
     ))
@@ -291,7 +294,10 @@ class SeatbeltProfileTest extends munit.FunSuite:
         """(allow network-outbound (remote ip "localhost:50123"))""",
       ),
     )
-    // Neither grant reaches another program, the client's port is a port, and its daemon's pid a pid.
+    // The renderer refuses three kinds of input:
+    // - either grant for another program;
+    // - a client port outside the range of ports;
+    // - a daemon pid that is not a pid.
     assert(render(inputs().copy(network = Network.MillDaemon)).isLeft)
     assert(render(inputs().copy(network = Network.MillClient(50123, 4321))).isLeft)
     assert(render(mvnInputs.copy(network = Network.MillClient(50123, 4321))).isLeft)
@@ -389,7 +395,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(renderProxy(proxyInputs(reads = Seq(Paths.get("launcher.jar")))).isLeft)
     assert(renderProxy(proxyInputs(executables = Seq(Paths.get("/Library/../usr/bin")))).isLeft)
     assert(renderProxy(proxyInputs(executables = Seq.empty)).isLeft)
-    // The native image: the binary alone, nothing to load beside it.
+    // The native image needs only the binary, since it loads nothing beside it.
     val native =
       renderedProxy(proxyInputs(executables = Seq(Paths.get("/usr/local/bin/ko-agent-sandbox")), reads = Seq.empty))
     assert(native.contains("""(allow process-exec* file-read* (subpath "/usr/local/bin/ko-agent-sandbox"))"""))
@@ -447,7 +453,8 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(clue(text).contains("""(allow network-bind network-inbound (local ip "localhost:*"))"""))
     assert(text.contains("""(allow network-outbound (remote ip "localhost:*"))"""))
     assert(text.contains("""(allow network-outbound (remote ip "localhost:51234"))"""))
-    // Under any other program the wide outbound rule is absent, and Gradle's network names no other program.
+    // The wide outbound rule is absent under any other program, and the renderer refuses Gradle's network for another
+    // program.
     for other <- Seq(inputs(), millInputs, mvnInputs) do
       assert(!rendered(other).contains("""(remote ip "localhost:*")"""), other.prereqs.program.name)
     assert(render(mvnInputs.copy(network = Network.Gradle)).isLeft)
@@ -523,7 +530,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     val textLines = text.linesIterator.toVector
     val positions = rules.map(rule => textLines.indexOf(rule))
     rules.zip(positions).foreach((rule, position) => assert(position >= 0, s"$rule\n$text"))
-    // SBPL's last matching filter decides, as the filter's last matching line does, so the order is the lines' own.
+    // SBPL's last matching filter decides, as the filter's last matching line does, so the rules keep the lines' order.
     assertEquals(positions, positions.sorted)
     val lastOtherAllow = textLines.lastIndexWhere(line => line.startsWith("(allow") && !line.contains("node_modules"))
     val guard = textLines.indexWhere(_.contains("\\.git(/|$)"))
@@ -570,7 +577,8 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assertEquals(conformanceAnswer(oddFilters, s"$workspace/cxx (x)/claude/skills/new.md"), "free")
 
   test("what the filter prints for a symlinked directory renders as the filter decides it"):
-    // rulefile.rs, an_alias_prints_the_read_only_rests_it_carries_and_decides_below_its_path.
+    // The printed text comes from ko-agent-fs/policy/src/rulefile.rs,
+    // an_alias_prints_the_read_only_rests_it_carries_and_decides_below_its_path.
     val printed = "read-only .claude/settings.json\nread-only .claude/skills\npinned-path Shared/claude\n" +
       "read-only-under Shared/claude settings.json\nread-only-under Shared/claude skills\n"
     val resolved = FileRules.parseResolved(printed).fold(reason => fail(reason), identity)
@@ -593,11 +601,13 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(conformanceAnswer(filters, "/Users/u/c++ (work)/p.1/src/.vscode/tasks.json") == "read-only")
     assert(conformanceAnswer(filters, "/Users/u/cxx (work)/p.1/src/.vscode/tasks.json") == "free")
 
-  /** How SBPL decides a path against the file-rule filters alone: the last filter matching it.
-    * An allow, or no match, leaves it free; a deny keeps it read-only when the last read-only or
-    * writable filter matching it is read-only, since that one's subtree is what a child sees, and
-    * pinned otherwise. The regexes use no syntax where Java's and SBPL's differ: anchors, groups,
-    * alternation, `.*`, `[^/]` and backslash escapes. */
+  /** How SBPL decides a path against the file-rule filters alone: the last filter that matches the path decides.
+    * - An allow, or no match, leaves the path free.
+    * - A deny keeps the path read-only when the last read-only or writable filter that matches it is read-only, since
+    *   that filter's subtree is what a child sees. Otherwise the deny pins the path.
+    *
+    * The regexes use only syntax on which Java and SBPL agree: anchors, groups, alternation, `.*`, `[^/]` and
+    * backslash escapes. */
   private def conformanceAnswer(filters: Vector[(Protection, String)], path: String): String =
     val Regex = """\(regex #"(.*)"\)""".r
     val Subpath = """\(subpath "(.*)"\)""".r
@@ -614,8 +624,8 @@ class SeatbeltProfileTest extends munit.FunSuite:
       case _ => "pinned"
 
   test("the profile answers the file rules' conformance table as the filter does"):
-    // The table the filter's own test reads (ko-agent-fs/policy/tests/file_rules.rs): one contract,
-    // both enforcement points. `folded` rows are the filter's alone.
+    // The filter's own test reads the same table (ko-agent-fs/policy/tests/file_rules.rs), so one contract binds both
+    // enforcement points. `folded` rows apply to the filter alone.
     val text = Files.readString(Paths.get("ko-agent-fs/policy/tests/data/file-rules.conformance"))
     case class Case(name: String, lines: Vector[(String, String)], rows: Vector[(String, String)])
     val cases = text.linesIterator.foldLeft(Vector.empty[Case]): (cases, line) =>

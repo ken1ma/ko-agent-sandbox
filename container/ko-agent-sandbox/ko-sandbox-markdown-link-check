@@ -55,8 +55,8 @@ from urllib.parse import unquote, urlsplit
 
 NAME = "ko-sandbox-markdown-link-check"
 
-# The file types lychee looks for a fragment in, compared in lowercase. SandboxMarkdownLinkCheckTest
-# has a missing anchor in each: a lychee release that stops checking one fails it.
+# The file types that lychee looks for a fragment in, compared in lowercase. SandboxMarkdownLinkCheckTest has a
+# missing anchor in each type, so a lychee release that stops checking one type fails the test.
 FRAGMENT_CHECKED_SUFFIXES = {".md", ".markdown", ".html", ".htm"}
 
 
@@ -69,8 +69,8 @@ def git(*args):
 
 
 def markdown_files_git_does_not_ignore():
-    # :(top) — the whole repository, not the current directory's part of it: a renamed heading's
-    # links can be anywhere. The names are still relative to the current directory.
+    # :(top) lists the whole repository, not the current directory's part of it, because a renamed heading's links
+    # can be anywhere. The names stay relative to the current directory.
     listing = git("ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ":(top)*.md")
     if listing.returncode != 0:
         raise CannotCheck("not in a git repository: name the files to check")
@@ -84,9 +84,9 @@ def default_root():
 
 
 def lychee(root, files):
-    """lychee's JSON report on `files`, keyed by their absolute paths."""
-    # lychee reads lychee.toml and .lycheeignore from its working directory, and either can hide
-    # a broken link; an empty directory has neither.
+    """Returns lychee's JSON report on `files`, keyed by their absolute paths."""
+    # lychee reads lychee.toml and .lycheeignore from its working directory, and either file can hide a broken
+    # link. An empty directory has neither.
     with tempfile.TemporaryDirectory() as empty:
         try:
             # --verbose: without it the report leaves out the references that passed.
@@ -105,9 +105,9 @@ def lychee(root, files):
 
 def references(report_map):
     """
-    (source, line, column, target path, fragment, entry) for each reference in one of the report's
-    maps. The path is None when lychee did not attribute the entry to a file: URL, as for a link
-    it could not parse.
+    Yields (source, line, column, target path, fragment, entry) for each reference in one of the report's maps.
+    The path is None when lychee did not attribute the entry to a file: URL, as for a link that lychee could not
+    parse.
     """
     for source, entries in report_map.items():
         for entry in entries:

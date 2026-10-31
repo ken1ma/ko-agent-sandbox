@@ -328,7 +328,7 @@ impl KoAgentFs {
     }
 
     /// Whether `name` under `parentfd` is a gitdir root in its own right. This is the one position
-    /// the policy core is told instead of deriving it ([`GitContext::ModuleNamespace`] has why).
+    /// the policy core is told instead of deriving it ([`GitContext::ModuleNamespace`] explains why).
     ///
     /// - It is asked only where it can matter, and answered by the fact that defines a gitdir: the
     ///   directory holds a `HEAD`.
@@ -1789,7 +1789,7 @@ impl Filesystem for KoAgentFs {
         if let Err(err) = self.allow_ino(ino.0, Mutation::SetAttr, "setattr") {
             return reply.error(err);
         }
-        // A FIFO's times never reach the backing share (`mknod` above has why): `touch` sends them
+        // A FIFO's times never reach the backing share (`mknod` above explains why): `touch` sends them
         // by `utimensat`, and the kernel sends them itself after a write through the FIFO, when it
         // flushes the inode's changed times to this daemon (`fs/fuse/file.c`, `fuse_write_inode`),
         // the one path by which a host-made FIFO's use would reach libkrun. Refused, nothing reaches

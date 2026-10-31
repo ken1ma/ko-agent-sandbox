@@ -1,33 +1,37 @@
 #!/bin/sh
 #
-# The image's ENTRYPOINT. Seeds ~/persistent-volume one agent directory at a time, only where the
-# directory is absent: a fresh volume receives every seed, one created by an older image only the
-# directories it lacks, and a directory that exists is agent state, never touched. Podman's own
-# copy-up into an empty volume would cover only the first case.
+# The image's ENTRYPOINT. Before it execs the command, the script does the following, in this order.
 #
-# Each directory is published by one rename, so a session racing another on the same volume sees
-# either nothing or the whole seed; the loser's rename fails on the winner's directory, which is
-# the outcome wanted, and its staging directory is removed.
+# 1. The script refuses a session whose container lacks its seccomp filter, no-new-privileges or exact capabilities. The
+#    script also refuses a --nesting=none session that can create a user namespace.
 #
-# Before seeding, it refuses a session whose container lacks its seccomp filter, no-new-privileges
-# or exact capabilities, and a --nesting=none session that can create a user namespace.
+# 2. The script seeds ~/persistent-volume one agent directory at a time, only where the directory is absent.
+#    - A fresh volume receives every seed. A volume that an older image created receives only the directories it
+#      lacks. A directory that exists is agent state, and the script never touches it.
+#    - Podman's own copy-up into an empty volume would cover only the first case.
+#    - One rename publishes each directory, so a session racing another on the same volume sees either nothing or
+#      the whole seed. The loser's rename fails on the winner's directory, which is the outcome wanted, and the
+#      loser removes its staging directory.
 #
-# Then each agent's trust entry for the workspace, keyed by the path it is mounted at: the working
-# directory, which the launcher sets to the workspace root's own path. Per launch rather than
-# seeded, because the entry is per workspace while a seeded directory is never touched again and
-# the volume may be shared (the launcher's --persistent-volume). Merged into the agent's own file,
-# which the agent rewrites: user state, in the volume. The keys are the agents' internals and may
-# change between releases; an entry that cannot be written is said, and the agent then asks.
-# Claude's file also gets its LSP plugin recommendations switched off where the key is absent:
-# the dialog otherwise returns once per session, on the first file edited in a language it has a
-# plugin for, since Claude Code records "No, not now" nowhere; a user who set the key false keeps
-# the dialog.
+# 3. The script writes each agent's trust entry for the workspace, keyed by the path the workspace is mounted at. That
+#    path is the working directory, which the launcher sets to the workspace root's own path.
+#    - The script writes the entry per launch rather than seeding it: the entry is per workspace, a seeded directory
+#      is never touched again, and the volume may be shared (the launcher's --persistent-volume).
+#    - The script merges the entry into the agent's own file, which the agent rewrites: that file is user state in
+#      the volume.
+#    - The keys are the agents' internals and may change between releases. When an entry cannot be written, the
+#      script says so, and the agent then asks.
+#    - Claude Code's file also gets its LSP plugin recommendations switched off where the key is absent. Otherwise
+#      the dialog returns once per session, on the first file edited in a language that Claude Code has a plugin
+#      for, since Claude Code records "No, not now" nowhere. A user who set the key to false keeps the dialog.
 #
-# Then the machine's health, read from here rather than by the launcher: /proc/meminfo and
-# /proc/pressure are the VM's own, not the container's, and the same read serves a podman machine
-# and a native Linux host. It is a warning at the last moment the terminal is still this script's,
-# held on screen because the agent's TUI clears it; the launcher's SESSION_START setting is
-# honoured, and a launch with no terminal is never held.
+# 4. Under --audio=mic, the script starts the microphone's daemon and controller (described below).
+#
+# 5. The script reads the machine's health here rather than in the launcher: /proc/meminfo and /proc/pressure are the
+#    VM's own, not the container's, and the same read serves a podman machine and a native Linux host.
+#    - A problem shows as a warning at the last moment the terminal still belongs to this script. The script holds
+#      the warning on screen, because the agent's TUI clears the screen.
+#    - The script honours the launcher's SESSION_START setting, and it never holds a launch that has no terminal.
 set -eu
 
 seed=$KO_SANDBOX_VOLUME_SEED
@@ -35,9 +39,9 @@ volume=$HOME/persistent-volume
 # The tests substitute a fixture for /proc; nothing else sets it.
 proc=${KO_SANDBOX_PROC:-/proc}
 
-# The confinement as the kernel applied it; SECURITY.md, "Compromise the host", has why it is read
-# here. The launcher always sets KO_AGENT_SANDBOX_NESTING, so unset means a container run by hand,
-# not a session.
+# The script reads the confinement as the kernel applied it (SECURITY.md, "Compromise the host", says why).
+# The launcher always sets KO_AGENT_SANDBOX_NESTING, so an unset variable means a container run by hand, not a
+# session.
 status_field() { awk -v key="$1:" '$1 == key { print $2 }' "$proc/self/status" 2>/dev/null; }
 case "${KO_AGENT_SANDBOX_NESTING-}" in
     '') capabilities= ;;
@@ -58,8 +62,8 @@ if [ -n "$capabilities" ]; then
         exit 1
     fi
 fi
-# Seccomp 2 shows a filter, not which: under none the launcher's own profile must be the one, and
-# it answers this unshare with EPERM (SeccompProfile.scala).
+# Seccomp 2 shows that a filter is in force, not which filter. Under none, the launcher's own profile must be that
+# filter, and the profile answers this unshare with EPERM (SeccompProfile.scala).
 if [ "${KO_AGENT_SANDBOX_NESTING-}" = none ] && unshare -U true 2>/dev/null; then
     {
         echo "error: this session's container can create a user namespace, which --nesting=none refuses (SECURITY.md);"
@@ -68,19 +72,18 @@ if [ "${KO_AGENT_SANDBOX_NESTING-}" = none ] && unshare -U true 2>/dev/null; the
     exit 1
 fi
 
-# No $volume, no seeding: a session always has the directory — the image ships nonroot's, and the
-# launcher mounts the named volume over it — so its absence means a container run by hand, likely
-# as root, whose $HOME holds none. Seeding would only abort on the mktemp under set -eu and take
-# the command down with it, over state such a container was never going to keep.
+# Without $volume, the script seeds nothing. A session always has the directory: the image ships nonroot's, and the
+# launcher mounts the named volume over it. A missing directory therefore means a container run by hand, likely as
+# root, whose $HOME holds none. Seeding would only abort on the mktemp under set -eu and take the command down with
+# it, over state that such a container was never going to keep.
 if [ -d "$volume" ]; then
     for entry in "$seed"/*; do
         name=$(basename "$entry")
         [ -e "$volume/$name" ] && continue
         staging=$(mktemp -d "$volume/.seeding-$name.XXXXXX")
-        # Do not preserve metadata: on SELinux, the image seed carries this container's private MCS
-        # categories. Copying that context into the shared volume makes the directory unreadable to
-        # every later session. The staging directory and new children inherit the volume's shared
-        # label.
+        # cp must not preserve metadata: on SELinux, the image seed carries this container's private MCS
+        # categories. Copying that context into the shared volume makes the directory unreadable to every later
+        # session. The staging directory and its new children inherit the volume's shared label.
         cp -R "$entry/." "$staging/"
         mv -T "$staging" "$volume/$name" 2>/dev/null || { rm -rf "$staging"; [ -e "$volume/$name" ]; }
     done
@@ -89,13 +92,14 @@ fi
 # A container run by hand starts at /, which is no workspace.
 workspace=$PWD
 trust_warning() { echo "warning: could not record $workspace as trusted in $1; $2 may ask" >&2; }
-# Rewrite a JSON file through a jq filter over $workspace, creating an empty object where the agent
-# has written none yet. Replaced whole by rename, so a session or agent reading it sees one
-# version or the other. Copilot writes two `//` comment lines above its JSON, which jq does not
-# read; whole-line comments are dropped before the merge, and Copilot restores its own on its next
-# write. Any failure — a directory that cannot be written, a file that cannot be read or is not
-# JSON — costs the entry, never the session: each step stands alone, since jq answers an empty
-# input with no output and no error, which a pipeline would take for a merge.
+# Rewrites a JSON file through a jq filter over $workspace, and creates an empty object where the agent has written
+# none yet.
+# - A rename replaces the file whole, so a session or agent reading the file sees one version or the other.
+# - Copilot writes two `//` comment lines above its JSON, which jq does not read. The function drops whole-line
+#   comments before the merge, and Copilot restores its own comments on its next write.
+# - Any failure costs the entry, never the session: a directory that cannot be written, or a file that cannot be
+#   read or is not JSON. Each step stands alone, since jq answers an empty input with no output and no error, which
+#   a pipeline would take for a merge.
 merge_json() {
     file=$1
     filter=$2
@@ -116,12 +120,13 @@ merge_json() {
     [ -n "$staging" ] && rm -f "$staging"
     return 0
 }
-# Codex's user layer over the image's /etc/codex/config.toml. The file is read, judged and
-# extended by a TOML parser, since the workspace root's key has several spellings ([projects."/p"],
-# [projects.'/p'], an inline table under [projects]) and a second definition makes the file
-# invalid; a table Codex or the user wrote with another trust level is left as it is. The table
-# is appended only after the document it would make has parsed: an inline `projects = {…}` cannot
-# take a table outside its braces, and is left as written.
+# Records the trust entry in Codex's user layer, which sits over the image's /etc/codex/config.toml.
+# - A TOML parser reads, judges and extends the file. The workspace root's key has several spellings
+#   ([projects."/p"], [projects.'/p'], an inline table under [projects]), and a second definition makes the file
+#   invalid.
+# - A table that Codex or the user wrote with another trust level stays as it is.
+# - The function appends the table only after the document it would make has parsed. An inline `projects = {…}`
+#   cannot take a table outside its braces, so the function leaves it as written.
 record_codex() {
     config=$volume/codex/config.toml
     state=$(mkdir -p "$volume/codex" && python3 - "$config" "$workspace" 2>/dev/null <<'PY'
@@ -157,9 +162,9 @@ PY
         *) echo "warning: $config marks $workspace $state; codex may ask" >&2 ;;
     esac
 }
-# Under a lock on the volume, since launches of one workspace, and of several workspaces sharing a
-# volume, record entries into the same files at once: unserialized, a read-modify-rename loses
-# the other's entry and two appends leave Codex two tables.
+# The script writes the trust entries under a lock on the volume. Launches of one workspace, and of several
+# workspaces that share a volume, write entries into the same files at once. Without the lock, a read-modify-rename
+# loses the other launch's entry, and two appends leave Codex two tables.
 if [ -d "$volume" ] && [ "$workspace" != / ]; then
     # `command`: a failed redirection on the special builtin would exit the shell, not take the else.
     if command exec 9<"$volume" && flock 9; then
@@ -181,13 +186,14 @@ if [ -d "$volume" ] && [ "$workspace" != / ]; then
     fi
 fi
 
-# Under --audio=mic, the PulseAudio daemon whose microphone the host relay feeds, and the controller
-# that asks the relay for audio while an agent records (ko-sandbox-mic; doc/microphone.md). Their
-# directory holds the launcher's PULSE_RUNTIME_PATH, where the daemon makes its socket. setsid, so
-# no signal from the terminal reaches either; both end with the container, whose main process is
-# the agent exec'd below. The daemon is that shell's child, so the shell sees its end; the
-# controller is started again while the daemon runs, since a writer ends its forwarding when the
-# controller is gone, and a controller that died would leave every later dictation unserved.
+# Under --audio=mic, the script starts the PulseAudio daemon whose microphone the host relay feeds, and the controller
+# that asks the relay for audio while an agent records (ko-sandbox-mic; doc/microphone.md).
+# - The directory of the two holds the launcher's PULSE_RUNTIME_PATH, where the daemon makes its socket.
+# - setsid keeps signals from the terminal away from both. Both end with the container, whose main process is the
+#   agent exec'd below.
+# - The daemon is the child of the setsid shell, so that shell sees the daemon end. The shell starts the controller
+#   again while the daemon runs: a writer ends its forwarding when the controller is gone, and a controller that
+#   died would leave every later dictation unserved.
 case ",${KO_AGENT_SANDBOX_AUDIO-}," in *,mic,*) mic=on ;; *) mic= ;; esac
 if [ -n "$mic" ]; then
     microphone=${PULSE_RUNTIME_PATH%/*}
@@ -203,13 +209,14 @@ if [ -n "$mic" ]; then
         done' sh "$microphone" </dev/null >/dev/null 2>&1 &
 fi
 
-# kB, as /proc/meminfo counts; empty when the field is absent.
+# Prints a field in kB, as /proc/meminfo counts, or nothing when the field is absent.
 meminfo() { awk -v key="$1:" '$1 == key { print $2 }' "$proc/meminfo" 2>/dev/null; }
-# A size in bytes as `df -h`, `du -h` and `ls -lh` print it, humanBytes in SandboxStats.scala
-# spelled in awk: the largest unit reached, one decimal below 10 of it and none from 10 up, rounded
-# up, 1023.6M carrying to 1.0G. Given a second size, the first in the second's unit, no suffix.
-# awk counts in doubles, and the remainder's fivefold keeps every step exact to 2^53 bytes, 8 PiB:
-# past every figure a machine reports here, short of what the Scala renderer takes.
+# Prints a size in bytes as `df -h`, `du -h` and `ls -lh` print it. The function is humanBytes in HostCommands.scala
+# spelled in awk: the largest unit reached, one decimal below 10 of that unit and none from 10 up, rounded up, so
+# 1023.6M carries to 1.0G. Given a second size, the function prints the first size in the second's unit, without a
+# suffix.
+# awk counts in doubles, and the fivefold remainder keeps every step exact up to 2^53 bytes, 8 PiB. That bound lies
+# past every figure a machine reports here, though short of what the Scala renderer takes.
 human() {
     awk -v bytes="$1" -v whole="${2:-}" '
         function ceil(x) { return int(x) + (x > int(x)) }
@@ -237,8 +244,8 @@ if [ -n "$available" ] && [ "$available" -lt 1048576 ]; then
     warn "$(human $((available * 1024)) $((total * 1024))) of $(human $((total * 1024))) memory available"
 fi
 
-# Pages left in swap after pressure has passed stay there until touched, so occupied swap alone
-# says nothing; it is pressure when memory is tight now as well: under a quarter available.
+# Pages left in swap after pressure has passed stay there until touched, so occupied swap alone says nothing.
+# Occupied swap counts as pressure only when memory is tight now as well: under a quarter available.
 swap_total=$(meminfo SwapTotal)
 swap_free=$(meminfo SwapFree)
 if [ -n "$swap_total" ] && [ -n "$swap_free" ] && [ "$swap_total" -gt "$swap_free" ] \
@@ -246,15 +253,15 @@ if [ -n "$swap_total" ] && [ -n "$swap_free" ] && [ "$swap_total" -gt "$swap_fre
     warn "$(human $(((swap_total - swap_free) * 1024))) of swap in use"
 fi
 
-# A kernel built with PSI disabled has the file and refuses the read (RHEL); then no line.
+# A kernel built with PSI disabled has the file but refuses the read (RHEL); the script then warns nothing.
 pressure=$(cat "$proc/pressure/memory" 2>/dev/null \
     | awk '$1 == "some" { split($3, avg, "="); print avg[2] }')
 if [ -n "$pressure" ] && awk -v p="$pressure" 'BEGIN { exit !(p > 10) }'; then
     warn "memory pressure: tasks stalled on memory $pressure% of the last minute"
 fi
 
-# The persistent volume uses the machine's own filesystem, which is what image layers
-# and containers fill; the root here is an overlay whose free space is one step removed.
+# The persistent volume uses the machine's own filesystem, which image layers and containers fill. The root here is
+# an overlay, whose free space is one step removed from the machine's.
 disk=$(df -Pk "$volume" 2>/dev/null | awk 'NR == 2 { print $4 }')
 if [ -n "$disk" ] && [ "$disk" -lt 2097152 ]; then
     warn "$(human $((disk * 1024))) of disk left on the machine"

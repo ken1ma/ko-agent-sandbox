@@ -35,7 +35,8 @@ class SandboxStatsTest extends munit.FunSuite:
   test("live sessions are one row each, by combined memory, the cpu summed, named by directory"):
     val small = "small-0123456789ab"
     val big = "big-0123456789ab"
-    // An idle sandbox under its own proxy is still the row's first figure: the columns name roles.
+    // An idle sandbox that uses less memory than its own proxy still fills the row's first figure, because
+    // the columns name roles.
     val rendered = liveTable(
       Vector(
         LiveContainer(small, "1a2b3c4d", "proxy", 40L << 20, 256L << 20, 0.12),
@@ -53,7 +54,7 @@ class SandboxStatsTest extends munit.FunSuite:
         |  1a2b3c4d  0.1 / 6.7G  40 / 256M   8.2%  small-0123456789ab
         |""".stripMargin,
     )
-    // A session whose proxy podman did not list shows a dash there, not a row less.
+    // A session whose proxy podman did not list shows a dash in the proxy column; the table keeps the row.
     val alone =
       liveTable(Vector(LiveContainer(small, "1a2b3c4d", "sandbox", 30L << 20, (67L << 30) / 10, 8.04)), Map.empty)
     assert(alone.contains("  1a2b3c4d  0.1 / 6.7G  -      8.0%  small-0123456789ab\n"), alone)
@@ -75,11 +76,12 @@ class SandboxStatsTest extends munit.FunSuite:
       RunOnHostSession.publishBuildFile(live.directory, hash, directory)
       records.foreach(record => Files.writeString(live.records.resolve(s"$record-$hash"), "1 x\n"))
     Files.writeString(live.records.resolve("daemon-gradle-4242"), "4242 x\n")
-    // A runner that has served nothing yet, and one whose launch predates the run file.
+    // A runner that has served nothing yet, and a runner whose launch predates the run file.
     val fresh = RunOnHostSession.publish(root, workspaceRoot, RunOnHostSession.Kind.Runner).toOption.get
     named(fresh, "1a2b3c4d")
     RunOnHostSession.publish(root, workspaceRoot, RunOnHostSession.Kind.Runner).toOption.get
-    // A dead runner's session, unlocked, is the scavenger's, not the report's; a command's is no runner.
+    // A dead runner's session, unlocked, belongs to the scavenger, not the report. A command's session is
+    // no runner.
     val dead = RunOnHostSession.publish(root, workspaceRoot, RunOnHostSession.Kind.Runner).toOption.get
     dead.close()
     RunOnHostSession.publish(root, workspaceRoot, RunOnHostSession.Kind.Command).toOption.get
@@ -216,7 +218,7 @@ class SandboxStatsTest extends munit.FunSuite:
     Files.writeString(sub.resolve("b"), "123")
     Seq(file, sub, sub.resolve("b"), root).foreach(Files.setLastModifiedTime(_, FileTime.from(old)))
     assertEquals(treeUsage(root), TreeUsage(8L, Some(old)))
-    // A file removed from `sub` writes `sub`, and the tree's date follows.
+    // A file removed from `sub` changes the modification time of `sub`, and the tree's date follows.
     Files.setLastModifiedTime(sub, FileTime.from(newer))
     assertEquals(treeUsage(root), TreeUsage(8L, Some(newer)))
 
@@ -236,11 +238,11 @@ class SandboxStatsTest extends munit.FunSuite:
     val root = Files.createTempDirectory("workspaces")
     val workspaceRoot = Files.createTempDirectory("app")
     LauncherState.recordWorkspaceRoot(root, "app-0123456789ab", workspaceRoot)
-    // A record whose directory is gone: the row falls back to the id, the handle --reset takes.
+    // For a record whose directory is gone, the row falls back to the id, which is the handle --reset takes.
     LauncherState.recordWorkspaceRoot(root, "gone-0123456789ab", workspaceRoot.resolve("gone"))
     Files.createDirectories(root.resolve("odd-0123456789ab"))
     Files.writeString(root.resolve("blank-0123456789ab"), "\n")
-    // A stray file under the root is not a record: its name is no id --reset would take.
+    // A stray file under the root is not a record, because its name is no id that --reset would take.
     Files.writeString(root.resolve(".DS_Store"), workspaceRoot.toString)
     assertEquals(workspaceDirectories(root), Map("app-0123456789ab" -> workspaceRoot.toString))
     if FileHelper.posixPermissions(root) then
@@ -253,7 +255,7 @@ class SandboxStatsTest extends munit.FunSuite:
     Files.createDirectories(tls.resolve("b-0123456789ab"))
     Files.createDirectories(cache.resolve("b-0123456789ab"))
     Files.createDirectories(cache.resolve("a-0123456789ab"))
-    // Strays a root accumulates — Finder metadata, a hand-made directory — are no workspaces.
+    // Strays that a root accumulates, such as Finder metadata or a hand-made directory, are no workspaces.
     Files.writeString(tls.resolve(".DS_Store"), "")
     Files.createDirectories(cache.resolve("scratch"))
     val ids = workspaceIdsUnder(
@@ -261,7 +263,8 @@ class SandboxStatsTest extends munit.FunSuite:
       Vector("ko-agent-sandbox-persistent-c-0123456789ab", "ko-agent-sandbox-persistent-backup", "other"),
     )
     assertEquals(ids, Vector("a-0123456789ab", "b-0123456789ab", "c-0123456789ab"))
-    // The contract --stats prints and --reset reads: every id listed is one --reset accepts.
+    // The test holds the contract between what --stats prints and what --reset reads: --reset accepts every
+    // listed id.
     assertEquals(LauncherState.workspaceIdOperands("--reset", ids.toList), Right(ids))
 
   test("podman's exists answers present on 0, absent on 1, and nothing on any other exit"):

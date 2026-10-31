@@ -1,15 +1,16 @@
 #!/bin/sh
 #
-# The host clipboard, through the launcher's relay: SECURITY.md "Clipboard" has the channel and its
-# limits. Installed under the names Claude Code, Copilot CLI and OpenCode shell out to on Linux
-# (xclip, xsel, wl-paste, wl-copy), answering only the argument patterns they use; anything else is
-# a usage error.
+# The host clipboard, through the launcher's relay (SECURITY.md, "Clipboard", describes the channel and its limits).
+# The image installs this script under the names that Claude Code, Copilot CLI and OpenCode shell out to on Linux:
+# xclip, xsel, wl-paste and wl-copy. The script answers only the argument patterns those agents use, and anything
+# else is a usage error.
 #
-# One transaction: take the lock, write a request line (plus body for `set`) to the request FIFO,
-# read the whole response FIFO. The relay's absence is a missing FIFO: an immediate failure in a
-# session launched without --clipboard, and a short wait in one launched with it, where the
-# launcher sets KO_AGENT_SANDBOX_CLIPBOARD, since the relay makes the FIFO only once the container
-# runs. A relay that has died leaves the FIFO, which is the bounded wait further down.
+# Each call is one transaction: take the lock, write a request line (plus a body for `set`) to the request FIFO,
+# and read the whole response FIFO.
+# - A missing FIFO means the relay is absent. In a session launched without --clipboard, the call fails at once.
+# - In a session launched with --clipboard, the launcher sets KO_AGENT_SANDBOX_CLIPBOARD, and the call waits a short
+#   time for the FIFO, since the relay makes the FIFO only once the container runs.
+# - A relay that has died leaves the FIFO behind, and the timeouts further down bound the wait for it.
 set -eu
 
 dir=/tmp/ko-agent-sandbox/clipboard
@@ -39,9 +40,9 @@ if [ "$request" = set ]; then
   trap 'rm -f "$body"' EXIT
   cat > "$body"
   { printf 'set %s\n' "$(wc -c < "$body")"; cat "$body"; } | timeout 5 sh -c "cat > $dir/req"
-  # `ok` is the host clipboard set, or paste mode's drop; anything else — a copy that failed, or a
-  # relay that is gone, which the read's timeout bounds — fails the copy here rather than passing
-  # a write that never reached the host as done.
+  # `ok` means the relay set the host clipboard, or paste mode dropped the copy. Any other answer fails the copy
+  # here rather than pass a write that never reached the host as done. Such an answer comes from a copy that
+  # failed, or from a relay that is gone, which the read's timeout bounds.
   [ "$(timeout 10 cat "$dir/rsp")" = ok ] || exit 1
   exit 0
 fi

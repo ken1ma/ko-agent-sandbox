@@ -21,7 +21,7 @@ What the first version covers:
 - `NESTING=none` sessions on the podman machines, launched with the launcher's own seccomp profile.
   The kernel there is the machine's.
 - A `--workspace=read-only` session there gets a policy that records no root ("The hooks",
-  `file_receive`, has why).
+  `file_receive`, explains why).
 - `NESTING=same-uid` and `NESTING=user-namespace` sessions (`../SECURITY.md`, "No containers inside
   the sandbox by default") and native Linux hosts keep the filter (`TODO.md`, "The BPF backend's
   later versions").
@@ -39,8 +39,8 @@ What the first version covers:
   - One exception: a directory may be created and removed at any name, under the rules in
     "Directories".
 - No non-directory entry is created inside a `.ko-agent-sandbox` at any depth, and nothing under
-  one is written (`../SECURITY.md`, "A workspace loosening its own confinement"). "Directories" has
-  why directories may be created there.
+  one is written (`../SECURITY.md`, "A workspace loosening its own confinement"). "Directories"
+  explains why directories may be created there.
 - The file rules keep the files the host executes read-only, including the `read-only-path` lines
   the launcher resolves for relocated hooks and symlink aliases (`file-rules.md`).
 - The policy applies to the sandbox's cgroup before any program of the image runs in the

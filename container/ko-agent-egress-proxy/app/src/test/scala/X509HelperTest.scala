@@ -114,8 +114,8 @@ class X509HelperTest extends munit.FunSuite:
     assert(leaf.getExtensionValue(SkiOid) != null, "leaf Subject Key Identifier")
     val leafAki = leaf.getExtensionValue(AkiOid)
     assert(leafAki != null, "leaf Authority Key Identifier")
-    // The SKI extension value is DER octet-string wrapping; its last 20 bytes are the key id, which
-    // the AKI must contain verbatim.
+    // The SKI extension value is a DER octet string wrapping the key id. Its last 20 bytes are the key id, which the
+    // AKI must contain verbatim.
     assert(leafAki.toVector.containsSlice(caSki.takeRight(20).toVector), "leaf AKI names the CA's key id")
 
   test("a leaf never outlives its CA, and two leaves for one host are two certificates"):

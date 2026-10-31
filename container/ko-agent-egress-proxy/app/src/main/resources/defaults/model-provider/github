@@ -1,17 +1,17 @@
-# Copilot CLI. Its model endpoint doubles as its GitHub MCP server (/mcp on the same host), a
-# write path to the forge that opacity cannot separate from model traffic — the trade SECURITY.md
-# prices under "The web reached through the model provider".
-# Model traffic goes to whichever of the four the token exchange below names for the account's
-# plan; the first is the generic host, and the MCP server.
+# Copilot CLI. Copilot CLI's model endpoint doubles as its GitHub MCP server (/mcp on the same host). The MCP server is
+# a write path to the forge, and an opaque tunnel cannot separate that path from model traffic. SECURITY.md prices this
+# trade under "The web reached through the model provider".
+# Model traffic goes to whichever of the four hosts the token exchange below names for the account's plan. The first
+# host is the generic host, and it also serves the MCP server.
 allow https://api.githubcopilot.com/            tunnel
 allow https://api.individual.githubcopilot.com/ tunnel  # individual plan
 allow https://api.business.githubcopilot.com/   tunnel  # business plan
 allow https://api.enterprise.githubcopilot.com/ tunnel  # enterprise plan
 
-# The forge stays TLS-inspected here as in the catalog, and these rules grant no read of it: this
-# file is what deny-unless-model allows for copilot, and it must not allow git push or a browse of
-# the forge. In Copilot CLI's device flow, the first endpoint issues the code the agent prints;
-# the second polls for the token once the browser has approved.
+# The forge stays TLS-inspected here as in the catalog, and these rules grant no read of the forge. This file is what
+# deny-unless-model allows for copilot, and it must not allow git push or browsing the forge.
+# In Copilot CLI's device flow, the first endpoint issues the code that the agent prints. The CLI polls the second
+# endpoint for the token once the browser has approved the code.
 allow https://github.com/login/device/code             method=POST
 allow https://github.com/login/oauth/access_token      method=POST
 allow https://api.github.com/copilot_internal/v2/token read         # the Copilot token exchange

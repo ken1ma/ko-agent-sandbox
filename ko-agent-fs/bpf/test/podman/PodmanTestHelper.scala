@@ -43,10 +43,10 @@ object PodmanTestHelper:
   val SuitesPath = "ko-agent-fs/bpf/test/podman"
 
   /** The hosts whose podman machine the suites measure, each with the name the output uses for it; that
-    * name also names its output directory. A native Linux host has no machine. It keeps the filter until a
-    * later version of the backend runs on its own kernel ("Later versions", "Native Linux"). It joins this
-    * list when that version's suites measure it, with the controller run under the host's `sudo -n`
-    * instead of the machine's. */
+    * name also names its output directory. A native Linux host has no machine. Such a host keeps the filter
+    * until a later version of the backend runs on its own kernel (doc/TODO.md, "The BPF backend's later
+    * versions"; architecture.md, "Native Linux"). The host joins this list when that version's suites
+    * measure it, with the controller run under the host's `sudo -n` instead of the machine's. */
   enum Platform(val label: String):
     case Mac     extends Platform("macOS")
     case Windows extends Platform("WSL")

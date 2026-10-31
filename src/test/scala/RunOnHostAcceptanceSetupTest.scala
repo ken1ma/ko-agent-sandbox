@@ -8,8 +8,8 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
   private val setup = Path.of("src/probe/run-on-host-acceptance-setup.sh").toAbsolutePath.toString
 
   private def preflight(root: Path, workspaces: String*): (Int, String) =
-    // The lock file stands in for lsof's observed open descriptors. The real setup function runs
-    // unchanged; these cases need neither macOS nor a live runner in the developer's checkout.
+    // The lock file stands in for the open descriptors that lsof observes. The real setup function runs
+    // unchanged, so these cases need neither macOS nor a live runner in the developer's checkout.
     val process = ProcessBuilder(
       (Seq(
         "sh", "-c",

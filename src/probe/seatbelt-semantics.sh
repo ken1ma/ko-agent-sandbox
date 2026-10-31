@@ -1,30 +1,29 @@
 #!/bin/sh
-# Whether SBPL still behaves the way the guard depends on. The answers are recorded in
-# run-on-host.md "The Seatbelt profile" and encoded in SeatbeltProfile.scala;
-# this is what measured them, and what re-measures them.
+# Measures whether SBPL still behaves the way the guard depends on. run-on-host.md, "The Seatbelt profile", records
+# the answers, and SeatbeltProfile.scala encodes them. This script measured the answers and re-measures them.
 #
-# Run it on each new macOS release. If E3, E4, E5, E9 or E12 stops answering DENIED, the guard has
-# silently weakened and the profile no longer enforces what SECURITY.md claims — a release blocker,
-# not a test to update. The same holds for the first answer of E13 and of E14, on which the file
-# rules' pinned directories rest. A row of E13-E16 reading DENIED / ALLOWED / ALLOWED / ALLOWED /
-# ALLOWED is a rule that would let a --run-on-host session keep node_modules writable. E17's
-# narrowed rule reading DENIED / DENIED lets the profile's deny on a directory a line passes
-# through narrow to the operations E13 and E14 measure (run-on-host.md, "The host command's
-# filesystem rules").
+# Run the script on each new macOS release, and read the rows this way:
+# - If E3, E4, E5, E9 or E12 stops answering DENIED, the guard has silently weakened, and the profile stops
+#   enforcing what SECURITY.md claims. Such a change is a release blocker, not a test to update.
+# - The same holds for the first answer of E13 and of E14, on which the file rules' pinned directories rest.
+# - A row of E13-E16 that reads DENIED / ALLOWED / ALLOWED / ALLOWED / ALLOWED is a rule that would let a
+#   --run-on-host session keep node_modules writable.
+# - If E17's narrowed rule reads DENIED / DENIED, the profile's deny on a directory that a line passes through can
+#   narrow to the operations that E13 and E14 measure (run-on-host.md, "The host command's filesystem rules").
 #
-# Each experiment isolates one variable: the profile is `(allow default)` plus the single deny
-# under test, so the shell always runs and only that rule decides the outcome. The real profile is
-# deny-by-default; matching semantics do not depend on the default.
+# Each experiment isolates one variable: the profile is `(allow default)` plus the single deny under test, so the
+# shell always runs and only that rule decides the outcome. The real profile denies by default, and matching
+# semantics do not depend on the default.
 #
-# The scratch workspace is named with a space and a '+' on purpose — the two characters a real host
-# puts in these paths (cs's install directory, the Coursier JDK home).
+# The scratch workspace's name holds a space and a '+' on purpose: a real host puts those two characters in these
+# paths (cs's install directory, the Coursier JDK home).
 set -u
 if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
 [ -x /usr/bin/sandbox-exec ] || { echo "no /usr/bin/sandbox-exec" >&2; exit 2; }
 
-# Canonical, because a rule naming a non-canonical path matches nothing and so fails *open*:
-# /tmp is a symlink to /private/tmp, and SBPL canonicalizes the access but not the rule. E8 keeps
-# that finding demonstrated rather than merely avoided.
+# Use the canonical path, because a rule that names a non-canonical path matches nothing and so fails *open*. /tmp
+# is a symlink to /private/tmp, and SBPL canonicalizes the access but not the rule. E8 keeps demonstrating that
+# finding rather than merely avoiding it.
 raw=$(mktemp -d /tmp/seatbelt-probe.XXXXXX) || exit 1
 root=$(cd "$raw" && pwd -P)
 workspace="$root/work space+1"
@@ -38,7 +37,8 @@ ln -s .git "$workspace/link"
 
 profile() { sed "s|@WORKSPACE@|$workspace|g" > "$root/p.sb"; }
 
-# Prints DENIED, ALLOWED, or ERROR. A write is allowed only if it both succeeded and is on disk.
+# Prints DENIED, ALLOWED or ALLOWED-NO-EFFECT. A write counts as ALLOWED only if it succeeded and its marker is on
+# disk.
 attempt() {
     marker=$1; shift
     if /usr/bin/sandbox-exec -f "$root/p.sb" /bin/sh -c "$*" >/dev/null 2>"$root/err"; then
@@ -133,9 +133,9 @@ report "E8 a rule naming a non-canonical path" \
     "ALLOWED: rules are matched as written, so a non-canonical rule fails OPEN. DENIED: rules canonicalize too."
 
 # ---------------------------------------------------------------------------
-# E9-E12: a guarded name the command creates under another spelling, where no entry of the
-# guard's own spelling exists for the access to resolve to (E5's case). A DENIED here may be a
-# pattern sandbox-exec did not compile, so these rows print its first stderr line.
+# In E9-E12, the command creates a guarded name under another spelling. Unlike in E5, no entry of the guard's own
+# spelling exists for the access to resolve to. A DENIED here can come from a pattern that sandbox-exec did not
+# compile, so these rows print the first line of sandbox-exec's stderr.
 mkdir -p "$workspace/fresh9" "$workspace/fresh10" "$workspace/fresh12" "$workspace/fold"
 spelled() { printf '%s (%s)' "$1" "$(sed -n 1p "$root/err")"; }
 
@@ -163,8 +163,8 @@ report "E10b the anchor under character classes" \
     "does .GITignore stay outside the class pattern?" "$(spelled "$r")" \
     "ALLOWED: the (/|\$) anchor holds. DENIED: the pattern is wider than the name."
 
-# U+212A KELVIN SIGN and U+017F LATIN SMALL LETTER LONG S case-fold to k and s; .git has no such
-# letter. No profile: this is the volume's own answer.
+# U+212A KELVIN SIGN and U+017F LATIN SMALL LETTER LONG S case-fold to k and s, and .git has no such letter. E11
+# uses no profile, so its answer is the volume's own.
 mkdir "$workspace/fold/.ko-agent-sandbox"
 kelvin=$(printf '.\342\204\252o-agent-sandbox')
 long_s=$(printf '.ko-agent-\305\277andbox')
@@ -175,7 +175,7 @@ for spelling in "$kelvin" "$long_s"; do
         "ALIAS: an entry so spelled is the guarded name to the launcher; see E12. DISTINCT: it is another name."
 done
 
-# The guard's own pattern for the name (SeatbeltProfile.anyDepth).
+# E12 uses the guard's own pattern for the name (SeatbeltProfile.anyDepth).
 profile <<'SB'
 (version 1)
 (allow default)
@@ -190,11 +190,11 @@ for spelling in "$kelvin" "$long_s"; do
 done
 
 # ---------------------------------------------------------------------------
-# E13-E16: whether any rule can refuse moving a directory out of a writable region (node_modules)
-# while leaving what npm does inside it — renames within it, rmdir, unlink — allowed. Without one,
-# --run-on-host leaves the limit doc/file-rules.md, "Under --run-on-host", states.
-# Each rule is judged on one path, so the only discriminators are the operation SBPL checks on
-# each side of a rename and the vnode type.
+# E13-E16 ask whether any rule can refuse moving a directory out of a writable region (node_modules) while the rule
+# allows what npm does inside the region: renames within it, rmdir and unlink. Without such a rule, --run-on-host
+# keeps the limit that doc/file-rules.md, "Under --run-on-host", states.
+# SBPL judges each rule on one path, so the only discriminators are the operation that SBPL checks on each side of a
+# rename and the vnode type.
 
 region() { # a fresh node_modules with a package, an empty directory and a file, and a target
     rm -rf "$workspace/nm" "$workspace/out"
@@ -202,8 +202,8 @@ region() { # a fresh node_modules with a package, an empty directory and a file,
     echo original > "$workspace/nm/file"
 }
 compiles() { /usr/bin/sandbox-exec -f "$root/p.sb" /usr/bin/true 2>/dev/null; }
-# The five operations, each against a fresh region: out of it, within it, rmdir and unlink in it,
-# and mkdir outside it.
+# Runs the five operations, each against a fresh region: a move out of the region, a move within it, rmdir and
+# unlink in it, and mkdir outside it.
 region_ops() { # label
     region; out=$(attempt "" "mv '$workspace/nm/x' '$workspace/out/x'")
     region; within=$(attempt "" "mv '$workspace/nm/x' '$workspace/nm/.x-retired'")
@@ -238,7 +238,8 @@ if compiles; then region_ops "E15 file-write-unlink denied on directories alone 
 else report "E15 vnode-type on file-write-unlink" "does the profile compile?" "REJECTED" \
     "vnode-type cannot narrow the unlink deny to directories."; fi
 
-# An operation of a rename's own, if SBPL has one: a name it does not know refuses the profile.
+# E16 looks for an operation of a rename's own, if SBPL has one. sandbox-exec refuses a profile that names an
+# operation SBPL does not know.
 for operation in file-write-rename file-rename; do
     printf '(version 1)\n(allow default)\n(deny %s (subpath "%s/nm"))\n' "$operation" "$workspace" > "$root/p.sb"
     if compiles; then region_ops "E16 $operation denied in the region"
@@ -248,18 +249,18 @@ done
 rm -rf "$workspace/nm" "$workspace/out"
 
 # ---------------------------------------------------------------------------
-# E17: which operations a renamex_np(RENAME_SWAP) exchange is checked as. The profile's deny on a
-# directory a line passes through, `pin`, covers every write to the entry; narrowed to
-# file-write-unlink and file-write-create, it would still refuse renaming it either way (E13, E14),
-# and the question is whether it refuses exchanging it. No shell command exchanges, so python3's
-# ctypes calls libSystem's renamex_np, as ko-agent-fs/fuse/probe/lower-probe-host.py does.
+# E17 asks which operations SBPL checks a renamex_np(RENAME_SWAP) exchange as. The profile's deny on a directory
+# that a line passes through, `pin`, covers every write to the entry. Narrowed to file-write-unlink and
+# file-write-create, the deny would still refuse renaming the entry either way (E13, E14). The question is whether
+# the narrowed deny refuses exchanging the entry. No shell command exchanges, so python3's ctypes calls libSystem's
+# renamex_np, as ko-agent-fs/fuse/probe/lower-probe-host.py does.
 cat > "$root/swap.py" <<'PY'
 import ctypes, sys
 RENAME_SWAP = 0x2
 renamex_np = ctypes.CDLL(None).renamex_np
 sys.exit(renamex_np(sys.argv[1].encode(), sys.argv[2].encode(), ctypes.c_uint(RENAME_SWAP)) != 0)
 PY
-swap() { printf "python3 '%s' '%s' '%s'" "$root/swap.py" "$1" "$2"; } # the exchange, as a command
+swap() { printf "python3 '%s' '%s' '%s'" "$root/swap.py" "$1" "$2"; } # prints the exchange as a command
 pinned() { # a fresh pinned directory and another one to exchange it with
     rm -rf "$workspace/pin" "$workspace/other"
     mkdir -p "$workspace/pin" "$workspace/other"

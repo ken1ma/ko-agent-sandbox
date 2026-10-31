@@ -1,14 +1,15 @@
-// The boundary as a session sees it. ProxyContainerTest checks the proxy's runtime separately.
+// Tests the boundary as a session sees it. ProxyContainerTest checks the proxy's runtime separately.
 //
-// It runs itself: `sbt testFull` from inside a session executes it, and `assume` skips it
-// everywhere else, so there is no separate command to remember. KO_AGENT_SANDBOX_EGRESS_RULESET is
-// the condition because the launcher sets it for every session and nothing else does. The workspace root
-// is the working directory: the launcher starts the session there, at the workspace root's own path.
+// The suite needs no separate command: `sbt testFull` from inside a session runs it, and `assume` skips it everywhere
+// else.
+// - KO_AGENT_SANDBOX_EGRESS_RULESET is the condition, because the launcher sets it for every session and nothing else
+//   sets it.
+// - The workspace root is the working directory, because the launcher starts the session there, at the workspace
+//   root's own path.
 //
-// The network checks drive `curl` and `getent` as processes rather than Java's own HTTP and TLS:
-// the proxy meets those clients in practice, and a JDK client would be testing a different one.
-// The one exception is the query to the network's own resolver: no program in the image sends a
-// DNS query to a chosen server.
+// The network checks drive `curl` and `getent` as processes rather than Java's own HTTP and TLS. The proxy meets those
+// clients in practice, and a JDK client would test a different client. The one exception is the query to the network's
+// own resolver, because no program in the image sends a DNS query to a chosen server.
 
 package agentsandbox.launcher
 
@@ -30,7 +31,8 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   private val ProxyVariables = Vector("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
 
-  /** HostCommands.run with the environment altered, which it deliberately does not expose. */
+  /** HostCommands.run with variables removed from the environment, which HostCommands.run deliberately does not
+    * offer. */
   private def runWithout(removed: Seq[String], command: String*): Run =
     val builder = ProcessBuilder(command*)
     removed.foreach(builder.environment().remove)
@@ -46,15 +48,16 @@ class SessionBoundaryTest extends munit.FunSuite:
   private def curl(args: String*): Run =
     run((Vector("curl", "-sS", "--max-time", "25") ++ args)*)
 
-  /** The HTTP status, or "000" when the connection never became one — which is what a refusal at
-    * the CONNECT checks looks like, as opposed to a 403 handed back inside a tunnel. */
+  /** The HTTP status, or "000" when the connection never got a response. A refusal at the CONNECT checks looks like
+    * "000", whereas a refusal inside a tunnel returns a 403. */
   private def status(args: String*): String =
     curl((Vector("-o", "/dev/null", "-w", "%{http_code}") ++ args)*).text.trim
 
-  /** `EPERM` specifically — the filter's policy denial — rather than merely "an error", which is
-    * the same distinction the mounted Rust suites draw. Java reports `EPERM` as a bare
-    * `FileSystemException`; `AccessDeniedException` is `EACCES`, a different answer that would mean
-    * the tree was laid out differently than the test assumed. */
+  /** Asserts `EPERM` specifically, which is the filter's policy denial, rather than any error. The mounted Rust suites
+    * draw the same distinction.
+    * - Java reports `EPERM` as a bare `FileSystemException`.
+    * - `AccessDeniedException` is `EACCES`, a different answer. That answer would mean that the tree is laid out
+    *   differently than the test assumed. */
   private def deniedByFilter(what: String)(thunk: => Any): Unit =
     val refusal = intercept[java.nio.file.FileSystemException](thunk)
     assert(
@@ -62,7 +65,7 @@ class SessionBoundaryTest extends munit.FunSuite:
       s"$what failed with '${refusal.getMessage}', but not as a policy denial (EPERM)",
     )
 
-  /** One DNS A query over UDP, answered as (response code, answer count). */
+  /** Sends one DNS A query over UDP and returns (response code, answer count). */
   private def queryA(server: java.net.InetAddress, name: String): (Int, Int) =
     val header = Array[Byte](0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0) // recursion desired, one question
     val labels = name.split('.').flatMap(label => label.length.toByte +: label.getBytes(StandardCharsets.US_ASCII))
@@ -85,8 +88,8 @@ class SessionBoundaryTest extends munit.FunSuite:
       .map(_.split("\\s+").last)
       .getOrElse(s"($name absent from $status)")
 
-  /** The kernel writes a space, tab, newline or backslash in a mountinfo path as `\NNN` octal
-    * (`show_mountinfo`, `mangle_path`), so a workspace path holding one matches only decoded. */
+  /** The kernel writes a space, tab, newline or backslash in a mountinfo path as `\NNN` octal (`show_mountinfo`,
+    * `mangle_path`). A workspace path that holds such a character therefore matches only after decoding. */
   private def unescapeMountinfo(field: String): String =
     "\\\\([0-7]{3})".r.replaceAllIn(
       field,
@@ -112,9 +115,9 @@ class SessionBoundaryTest extends munit.FunSuite:
     assertEquals(field("/proc/self/status", "NoNewPrivs"), "1")
     assertEquals(field("/proc/self/status", "Seccomp"), "2")
 
-    // "All capabilities dropped" is the wrong assertion: the nesting opt-in grants exactly one, so
-    // demanding an empty set fails a correctly configured nested session while missing the failure
-    // that matters — a capability arriving without the variable that grants it.
+    // "All capabilities dropped" is the wrong assertion, because the nesting opt-in grants exactly one capability.
+    // Demanding an empty set would fail a correctly configured nested session. That assertion would also miss the
+    // failure that matters: a capability that arrives without the variable that grants it.
     val nesting = env(AgentSandboxLauncher.NestingVariable).getOrElse("none")
     val expectedCapabilities = nesting match
       case "none" | "user-namespace" => "0000000000000000"
@@ -125,19 +128,19 @@ class SessionBoundaryTest extends munit.FunSuite:
     assert(mountOptions("/").exists(_.startsWith("ro")), "the root filesystem is writable")
     assertEquals(Files.readString(Paths.get("/sys/fs/cgroup/pids.max")).trim, "2048")
 
-    // A memory limit on every launch, explicit or the machine-derived default, and no swap beyond
-    // it.
+    // Every launch has a memory limit, either explicit or the default derived from the machine, and no swap beyond it.
     val memoryLimit = Files.readString(Paths.get("/sys/fs/cgroup/memory.max")).trim
     assertNotEquals(memoryLimit, "max")
     assertEquals(Files.readString(Paths.get("/sys/fs/cgroup/memory.swap.max")).trim, "0")
 
-  /** Each syscall SeccompProfile decides, called with arguments the kernel answers before its
-    * capability check where it has such a check: `ENOENT`, `EINVAL` or `EBADF` from the kernel,
-    * `EPERM` or `ENOSYS` from the filter (measured on the machine's kernel 7.2.5 under podman's
-    * default profile, 2026-10-26). `fsopen`, `fspick` and `move_mount` check the capability first
-    * and answer `EPERM` either way. The `clone` with `CLONE_NEWUSER` is a fork when allowed, and
-    * the child exits at once. Then a thread and a child process, which the profile must leave
-    * working. */
+  /** Calls each syscall that SeccompProfile decides. Where the kernel has a capability check, the arguments are ones
+    * that the kernel answers before that check.
+    * - The kernel answers `ENOENT`, `EINVAL` or `EBADF`; the filter answers `EPERM` or `ENOSYS`. Measured on the
+    *   machine's kernel 7.2.5 under podman's default profile, 2026-10-26.
+    * - `fsopen`, `fspick` and `move_mount` check the capability first and answer `EPERM` either way.
+    * - The `clone` with `CLONE_NEWUSER` is a fork when the profile allows it, and the child exits at once.
+    *
+    * The probe then starts a thread and a child process, which the profile must leave working. */
   private val SyscallProbe: String =
     """import ctypes, errno, os, subprocess, threading
       |libc = ctypes.CDLL(None, use_errno=True)
@@ -206,18 +209,18 @@ class SessionBoundaryTest extends munit.FunSuite:
       )
       filtered.foreach(name => assertEquals(answers.get(name), Some("EPERM"), name))
       assertEquals(answers.get("clone3"), Some("ENOSYS"))
-      // Capability-first: the kernel answers `EPERM` to any arguments without CAP_SYS_ADMIN, so a
-      // session cannot tell the filter's refusal from the kernel's. They sit in the one rule whose
-      // other names the assertions above prove installed (SeccompProfile.AddedRules), and the
-      // derivation test proves the rule names them.
+      // These syscalls check the capability first: the kernel answers `EPERM` to any arguments without CAP_SYS_ADMIN,
+      // so a session cannot tell the filter's refusal from the kernel's. The syscalls sit in one rule
+      // (SeccompProfile.AddedRules), and the assertions above prove that the rule's other names are installed. The
+      // derivation test proves that the rule names these syscalls.
       Vector("fsopen", "fspick", "move_mount").foreach(name => assertEquals(answers.get(name), Some("EPERM"), name))
-      // `open_tree_attr` (Linux 6.15): `ENOSYS` where libseccomp does not know the name and the
-      // default action refuses it, `EPERM` where it does.
+      // `open_tree_attr` (Linux 6.15) answers `ENOSYS` where libseccomp does not know the name and the default action
+      // refuses the syscall. The syscall answers `EPERM` where libseccomp knows the name.
       assert(Set("EPERM", "ENOSYS").exists(answers.get("open_tree_attr").contains), answers.get("open_tree_attr"))
-      // The attribute syscalls: `ENOTSUP`, which the kernel never answers for a `user.` xattr on the
-      // container's own filesystem; an ioctl reaches the kernel (FIONREAD on a regular file: the
-      // filesystem's own answer, not the filter's). `file_setattr` (Linux 6.17): `ENOSYS` where
-      // libseccomp lacks the name.
+      // - The attribute syscalls answer `ENOTSUP`, which the kernel never answers for a `user.` xattr on the
+      //   container's own filesystem.
+      // - An ioctl reaches the kernel. FIONREAD on a regular file gets the filesystem's own answer, not the filter's.
+      // - `file_setattr` (Linux 6.17) answers `ENOSYS` where libseccomp lacks the name.
       Vector("setxattr", "fsetxattr", "removexattr").foreach: name =>
         assert(Set("ENOTSUP", "EOPNOTSUPP").exists(answers.get(name).contains), s"$name: ${answers.get(name)}")
       assert(answers.contains("ioctl_fionread"), "the ioctl probe ran")
@@ -233,8 +236,8 @@ class SessionBoundaryTest extends munit.FunSuite:
     val interfaces = procLines("/proc/net/dev").drop(2).count(!_.trim.startsWith("lo:"))
     assertEquals(interfaces, 1, "more than the one internal network is attached")
 
-    // The structural reason the proxy variables are advisory: the internal network has no gateway,
-    // so nothing outside its /24 is addressable at all.
+    // The internal network has no gateway, so nothing outside its /24 is addressable at all. That structure is why the
+    // proxy variables are advisory.
     val defaultRoutes = procLines("/proc/net/route").drop(1).count(_.split("\\s+")(1) == "00000000")
     assertEquals(defaultRoutes, 0, "a default route exists")
 
@@ -243,8 +246,8 @@ class SessionBoundaryTest extends munit.FunSuite:
       "the proxy is not named in /etc/hosts, so it is being learned from a resolver",
     )
 
-    // NO_PROXY names exemptions rather than a proxy; every variable that does name one must name
-    // this run's.
+    // NO_PROXY names exemptions rather than a proxy. Every other variable that names a proxy must name this run's
+    // proxy.
     val foreign = System.getenv().asScala.toMap
       .filter((name, _) => name.toLowerCase.endsWith("proxy"))
       .filterNot((name, _) => name.equalsIgnoreCase("NO_PROXY"))
@@ -256,7 +259,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     assert(!runWithout(ProxyVariables, "curl", "-sS", "--max-time", "10", "https://pypi.org/").ok)
     assert(!runWithout(ProxyVariables, "curl", "-sS", "--max-time", "10", "https://1.1.1.1/").ok)
 
-    // The stricter check: the failure is immediate and structural, not a timeout.
+    // The stricter check: the connection fails at once for a structural reason, not by a timeout.
     val reached =
       try
         val socket = java.net.Socket()
@@ -271,29 +274,29 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("the network's own resolver answers the run's names and no external one"):
     inSession()
-    // getent never asks this resolver: resolv.conf does not name it. The on-link route is the
-    // network, in little-endian hex; the resolver listens on its first address.
+    // getent never asks this resolver, because resolv.conf does not name it. The on-link route gives the network in
+    // little-endian hex, and the resolver listens on the network's first address.
     val network = procLines("/proc/net/route").drop(1).map(_.split("\\s+")(1)).find(_ != "00000000")
       .getOrElse(fail("no on-link route"))
     val firstAddress = Integer.reverseBytes(Integer.parseUnsignedInt(network, 16)) + 1
     val resolver = java.net.InetAddress.getByAddress(java.nio.ByteBuffer.allocate(4).putInt(firstAddress).array())
 
-    // The run's own name must resolve, so the NXDOMAIN answers below come from the network's name
+    // The run's own name must resolve. That answer shows that the NXDOMAIN answers below come from the network's name
     // service rather than from another listener at that address.
     val ownName = Files.readString(Paths.get("/etc/hostname")).trim
     val (ownCode, ownAnswers) = queryA(resolver, ownName)
     assert(ownCode == 0 && ownAnswers > 0, s"$resolver does not answer this container's name")
 
-    // example.com exists, so a resolver that forwarded it would answer.
+    // example.com exists, so a resolver that forwarded the query would answer it.
     Vector("example.com", "secret-payload.attacker.example").foreach: name =>
       assertEquals(queryA(resolver, name), (3, 0), s"$resolver did not answer NXDOMAIN for $name")
 
   test("the CONNECT checks refuse everything but a listed host on 443"):
     inSession()
-    // A refusal here fails the CONNECT rather than answering inside a tunnel, so curl reports it
-    // as an error with the proxy's status instead of as an HTTP code.
+    // A refusal here fails the CONNECT rather than answering inside a tunnel. curl therefore reports the refusal as an
+    // error with the proxy's status instead of as an HTTP code.
     Vector(
-      "https://unlisted.invalid/",  // reserved (RFC 6761): never an allowed host
+      "https://unlisted.invalid/",  // reserved (RFC 6761), so never an allowed host
       "https://8.8.8.8/",
       "https://169.254.169.254/",
       "https://10.0.0.1/",
@@ -307,13 +310,13 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("the two treatments are told apart by the certificate each host presents"):
     inSession()
-    // The decisive in-session test for "a tunnel host is still opaque": an
-    // inspected host presents a leaf this workspace's CA signed, an opaque one the origin's own chain.
+    // The decisive in-session test for "a tunnel host is still opaque". An inspected host presents a leaf that this
+    // workspace's CA signed, and an opaque host presents the origin's own chain.
     val ca = run("openssl", "x509", "-noout", "-subject", "-in", "/etc/ko-agent-sandbox/egress-proxy-ca.crt")
       .text.stripPrefix("subject=").trim
 
-    // curl indents its certificate lines under the `*` marker, and by more than one space, so this
-    // keys on the field name rather than on the format of the prefix.
+    // curl indents its certificate lines under the `*` marker, and by more than one space, so issuer keys on the field
+    // name rather than on the format of the prefix.
     def issuer(host: String): String =
       curl("-v", "-o", "/dev/null", s"https://$host/").err.linesIterator
         .map(_.trim)
@@ -343,7 +346,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     )
     assertEquals(status("-X", "POST", "https://api.github.com/graphql"), "403")
     assertEquals(status("-X", "POST", "https://github.com/o/r.git/info/lfs/objects/batch"), "403")
-    // No line grants a POST at npm's audit endpoint, so it is a POST like any other.
+    // No rule line grants a POST at npm's audit endpoint, so the proxy treats it like any other POST.
     assertEquals(
       status("-X", "POST", "-H", "Content-Type: application/json", "-d", "{}",
              "https://registry.npmjs.org/-/npm/v1/security/advisories/bulk"), "403",
@@ -353,9 +356,10 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("a refusal says what to do next, in the words curl, git and the check print"):
     inSession()
-    // RefusalAdvice's rows as the programs show them: curl prints a 403's body
-    // as it is, git prints a text/plain body as `remote:` lines, and ko-sandbox-egress-check is the
-    // only reader of a failed CONNECT's body.
+    // RefusalAdvice's rows as the programs show them:
+    // - curl prints a 403's body as it is;
+    // - git prints a text/plain body as `remote:` lines;
+    // - ko-sandbox-egress-check is the only reader of a failed CONNECT's body.
     import agentsandbox.egress.RefusalAdvice
     def body(args: String*): String = curl(args*).text
     assert(body("-X", "PUT", "https://docs.python.org/3/").contains(RefusalAdvice.methodNotGranted))
@@ -388,8 +392,8 @@ class SessionBoundaryTest extends munit.FunSuite:
     val allowed = run("ko-sandbox-egress-check", "api.github.com")
     assertEquals(allowed.exit, 0, allowed.err)
     assert(allowed.text.contains("HEAD / -> HTTP/1.1 "), allowed.text)
-    // A host granted below / alone, when the session's providers list one: the proxy refuses the
-    // HEAD / inside the tunnel, and the check reports that as the refusal it is.
+    // This check needs a host granted only below /, when the session's providers list one. The proxy refuses the
+    // HEAD / inside the tunnel, and the check reports that answer as a refusal.
     val grants = raw"allow https://([^/\s]+)(/\S*)".r
       .findAllMatchIn(env("KO_AGENT_SANDBOX_EGRESS_RULESET").getOrElse(""))
       .map(found => found.group(1) -> found.group(2))
@@ -402,9 +406,9 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("a JVM reaches an allowed host with no proxy variable of its own"):
     inSession()
-    // Driven as a program rather than asserted against the mounted file, because what matters is
-    // that the default ProxySelector acts on it — and that it does so without setting a system
-    // property (ko-sandbox-jdk-use-proxy has why).
+    // The test drives a program rather than asserting against the mounted file. What matters is that the default
+    // ProxySelector acts on the file, and that it does so without a system property being set. ko-sandbox-jdk-use-proxy
+    // records why.
     val probe = Files.createTempDirectory("jvm-proxy-probe")
     try
       val source = probe.resolve("Probe.java")
@@ -433,10 +437,9 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("the image JDK's trust store holds this workspace's CA beside every root it shipped"):
     inSession()
-    // Dropping a shipped root would be the silent half of preparing the store wrong: the sandbox
-    // would keep working until a request needed a public CA. The shipped store is under the
-    // mount, so the check is for a root every Temurin ships and for a count no per-workspace
-    // addition could reach on its own.
+    // A store can be prepared wrong in two ways, and a dropped shipped root is the silent one: the sandbox keeps
+    // working until a request needs a public CA. The mount hides the shipped store, so the test checks for a root that
+    // every Temurin ships and for a count that no per-workspace addition could reach on its own.
     val listing = run("keytool", "-list", "-cacerts", "-storepass", "changeit")
     assert(listing.ok, s"keytool could not read the mounted store: ${listing.err}")
     val aliases = listing.text.linesIterator.filter(_.contains("trustedCertEntry")).map(_.takeWhile(_ != ',')).toVector
@@ -446,18 +449,18 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("npm refuses package versions younger than seven days, and uv has no window"):
     inSession()
-    // SECURITY.md, "The supply chain". This project has no `.npmrc` and no `[tool.uv]` table, so
-    // the image's layer is what each reads.
+    // This project has no `.npmrc` and no `[tool.uv]` table, so npm and uv read the image's layer (SECURITY.md, "The
+    // supply chain").
     assertEquals(run("npm", "config", "get", "min-release-age").text, "7")
-    // uv logs the cutoff it solves with at -vv; an empty requirement list on stdin needs no index.
+    // uv logs the cutoff that it solves with at -vv. An empty requirement list on stdin needs no index.
     val solve = run("uv", "-vv", "--offline", "pip", "compile", "--no-cache", "-")
     assert(solve.ok, s"uv could not solve an empty requirement list: ${solve.err}")
     assert(!solve.err.contains("Solving with exclude-newer"), s"uv solves under a window:\n${solve.err}")
 
   test("a git host serves an anonymous clone"):
     inSession()
-    // Under /tmp, never the workspace: cloning into it is refused by the filter itself,
-    // which would make this a test of the wrong boundary.
+    // The clone goes under /tmp, never into the workspace. The filter itself refuses a clone into the workspace, which
+    // would make this a test of the wrong boundary.
     val into = Files.createTempDirectory("clone-probe")
     try
       val clone = run(
@@ -467,10 +470,11 @@ class SessionBoundaryTest extends munit.FunSuite:
       assert(clone.ok, s"an anonymous clone failed: ${clone.err}")
     finally deleteRecursively(into)
 
-  /** The workspace mount's filesystem type and source from mountinfo: the filter mounts as `fuse`
-    * from `ko-agent-fs` (fs.rs, `MountOption::FSName`); the podman machine's share, which the BPF
-    * backend mounts itself, is `virtiofs` or `9p`. The share's magic is FUSE's too on macOS, so
-    * `stat -f %T` cannot tell them apart. */
+  /** The workspace mount's filesystem type and source, read from mountinfo.
+    * - The filter mounts as `fuse` from `ko-agent-fs` (ko-agent-fs/fuse/src/fs.rs, `MountOption::FSName`).
+    * - The BPF backend mounts the podman machine's share itself, and the share is `virtiofs` or `9p`.
+    *
+    * On macOS the share's magic number is FUSE's too, so `stat -f %T` cannot tell the two mounts apart. */
   private def workspaceMount: Option[(String, String)] =
     procLines("/proc/self/mountinfo").collectFirst {
       case line if unescapeMountinfo(line.split(" ")(4)) == workspace.toString =>
@@ -488,10 +492,11 @@ class SessionBoundaryTest extends munit.FunSuite:
       Files.writeString(work.resolve("ordinary"), "x")
       assert(Files.exists(work.resolve("ordinary")), s"$workspace is not writable")
 
-      // A writable workspace mounted from elsewhere is the BPF backend's share
-      // (--workspace=live,bpf, the other live mode). The policy lets an empty
-      // `.git` directory be made at any depth and refuses the first entry under it; the filter
-      // refuses the directory itself (SECURITY.md, "The BPF backend").
+      // A writable workspace mounted from elsewhere is the BPF backend's share: --workspace=live,bpf, the live mode's
+      // other backend (SECURITY.md, "The BPF backend").
+      // - The BPF policy lets a process make an empty `.git` directory at any depth and refuses the first entry under
+      //   it.
+      // - The filter refuses the `.git` directory itself.
       val deep = Files.createDirectories(work.resolve("deep/nested"))
       Vector(work, deep).foreach: at =>
         if filtered then
@@ -505,19 +510,20 @@ class SessionBoundaryTest extends munit.FunSuite:
 
       val config = workspace.resolve(".git/config")
       if Files.exists(config) then
-        // Appending nothing rather than truncating: the question is whether a write is
-        // permitted, and asking it must not perform one on the user's own repository.
+        // The test appends nothing rather than truncating. The question is whether the filter permits a write, and
+        // asking the question must not write to the user's own repository.
         deniedByFilter("opening this repository's .git/config for writing"):
           Files.newOutputStream(config, StandardOpenOption.APPEND).close()
     finally deleteRecursively(work)
 
   test("the session cannot write the boundary directory governing the next launch"):
     inSession()
-    // Which mechanism refuses depends on the session's workspace mode: the filter's reserved-name
-    // rule answers EPERM for `.ko-agent-sandbox` at any depth, creation of the directory itself
-    // included; --workspace=read-only's read-only tree answers EROFS. Either way the write must
-    // fail — a session able to create or edit the directory writes the rules governing the
-    // *next* session (SECURITY.md).
+    // The session's workspace mode decides which mechanism refuses the write:
+    // - the filter's reserved-name rule answers EPERM for `.ko-agent-sandbox` at any depth, including creation of the
+    //   directory itself;
+    // - the read-only tree of --workspace=read-only answers EROFS.
+    // Either way the write must fail. A session that could create or edit the directory would write the rules that
+    // govern the *next* session (SECURITY.md).
     val boundaryDir = workspace.resolve(".ko-agent-sandbox")
     val probe =
       if Files.isDirectory(boundaryDir) then boundaryDir.resolve("probe")
@@ -533,28 +539,29 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("no host path is mounted into the session beyond the launcher's set"):
     inSession()
-    // Existence proves nothing — the session's home is its own writable volume, and any program it
-    // runs may create `.config` there. What matters is whether a host path was *mounted*.
+    // Existence proves nothing: the session's home is its own writable volume, and any program that the session runs
+    // may create `.config` there. What matters is whether a host path was *mounted*.
     val home = env("HOME").getOrElse("/home/nonroot")
     Vector(s"$home/.ssh", s"$home/.aws", s"$home/.config",
            "/var/run/docker.sock", "/run/podman/podman.sock")
       .foreach(path => assert(!mountPoints.contains(path), s"$path is mounted into the session"))
 
-    // The workspace root at its own path, and the guard mounts beneath it.
+    // The expected mounts include the workspace root at its own path and the guard mounts beneath it.
     val quotedWorkspace = java.util.regex.Pattern.quote(workspace.toString)
     val expected =
       raw"^/$$|^/(proc|sys|dev|run|tmp|var/tmp|home/nonroot)($$|/)|^$quotedWorkspace($$|/)".r.unanchored
-    // `/etc/ssl/certs` covers two mounts, not one: the PEM bundle, and the merged JDK trust store —
-    // which the launcher mounts at `$JAVA_HOME/lib/security/cacerts` (JdkTrust) but which ends up
-    // here, because Temurin's Debian packaging symlinks that path to
-    // /etc/ssl/certs/adoptium/cacerts and podman resolves a bind target before mounting it.
-    // The --claude-plugin-dir mounts: the generated marketplace root, each plugin under it, the drop-in.
+    // `/etc/ssl/certs` covers two mounts, not one:
+    // - the PEM bundle;
+    // - the merged JDK trust store. The launcher mounts the store at `$JAVA_HOME/lib/security/cacerts` (JdkTrust), but
+    //   the mount ends up here. Temurin's Debian packaging symlinks that path to /etc/ssl/certs/adoptium/cacerts, and
+    //   podman resolves a bind target before mounting it.
+    // The --claude-plugin-dir mounts are the generated marketplace root, each plugin under it, and the drop-in.
     val pluginMounts = raw"^/etc/claude-code/(host-plugins($$|/)|managed-settings\.d/50-host-plugins\.json$$)"
     val alsoExpected =
       (raw"^/etc/(hosts|hostname|resolv\.conf)$$|^/etc/(ko-agent-sandbox|ssl/certs)($$|/)|" + pluginMounts).r.unanchored
-    // The JDK's proxy configuration, the other half of jdkMounts' technique. Unlike `cacerts`
-    // this one is a real file, so its mount stays where the launcher put it and is named from
-    // JAVA_HOME rather than matched by a fixed prefix.
+    // The JDK's proxy configuration is the other half of the technique in jdkMounts. Unlike `cacerts`, net.properties
+    // is a real file, so its mount stays where the launcher put it. The test therefore names the mount from JAVA_HOME
+    // rather than matching it by a fixed prefix.
     val netProperties = env("JAVA_HOME").map(_ + "/conf/net.properties")
     val unexpected = mountPoints.distinct.filterNot: at =>
       expected.matches(at) || alsoExpected.matches(at) || netProperties.contains(at)
@@ -581,13 +588,14 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("no private key is mounted into the session"):
     inSession()
-    // The certificate this session trusts is public by construction; the key that signs with it
-    // stays on the host.
+    // The certificate that this session trusts is public by construction. The key that signs with it stays on the
+    // host.
     //
-    // Listed rather than walked, and every entry accounted for: a mount whose host source the user
-    // removed mid-session leaves the name in place but unresolvable, which a walk reports as an
-    // opaque UncheckedIOException. Naming it is the same diagnosis the boundary-directory test above
-    // gives, and refusing to skip it is what keeps this assertion about every file that is there.
+    // The test lists the directory rather than walking it, and it accounts for every entry. When the user removes a
+    // mount's host source mid-session, the name stays in place but does not resolve, and a walk reports that as an
+    // opaque UncheckedIOException.
+    // - Naming the unresolvable entry gives the same kind of diagnosis as the boundary-directory test above.
+    // - Refusing to skip the entry keeps this assertion about every file that is there.
     val entries = directoryEntries(Paths.get("/etc/ko-agent-sandbox"))
     val unresolvable = entries.filterNot(Files.exists(_))
     assertEquals(

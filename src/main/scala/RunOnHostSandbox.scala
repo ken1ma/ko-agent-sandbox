@@ -1,10 +1,13 @@
-// The supervisor: from a workspace and a program to a confined command's exit code, through its
-// steps — validate, scavenge, publish, runtime, profile, run, end what was started, remove — and how
-// the launcher's own executable is re-invoked as the runner, the supervisor and the proxy
-// (selfInvocation). The runtimes the commands of one build directory share are RunnerRuntimes.scala,
-// the sbt server RunOnHostSbtServer.scala, the proxy RunOnHostProxy.scala. macOS only, like everything it drives;
-// the assembly and refusal logic are in RunOnHostPrereqs and are unit-tested there, so this file
-// is the sequence of steps plus the host observations no Linux test can make.
+// The supervisor: it takes a workspace and a program to a confined command's exit code.
+//
+// - The supervisor's steps are: validate, scavenge, publish, runtime, profile, run, end what was started, remove.
+// - This file also holds how the launcher's own executable is re-invoked as the runner, the supervisor and the proxy
+//   (selfInvocation).
+// - RunnerRuntimes.scala holds the runtimes that the commands of one build directory share,
+//   RunOnHostSbtServer.scala the sbt server, and RunOnHostProxy.scala the proxy.
+// - The supervisor runs on macOS only, like everything it drives. The assembly and refusal logic are in
+//   RunOnHostPrereqs and are unit-tested there. This file is therefore the sequence of steps, plus the host
+//   observations that no Linux test can make.
 
 package agentsandbox.launcher
 
@@ -29,25 +32,28 @@ object RunOnHostSandbox:
 
   case class Assembled(
     prereqs: CommandPrereqs,
-    /** The unpacked distribution the command also runs from: sbt's in the Coursier archive cache,
-      * Gradle's and Maven's under their wrappers' `dists`; for mill, whose executable is one file,
-      * the JDK a pinned or unset `mill-jvm-version` runs the daemon on
-      * (RunOnHostPrereqs.millRecordedJdk), none under `system`. */
+    /** The unpacked distribution that the command also runs from.
+      *
+      *   - For sbt, the distribution in the Coursier archive cache.
+      *   - For Gradle and Maven, the distribution under the wrapper's `dists`.
+      *   - For mill, whose executable is one file, the JDK on which a pinned or unset `mill-jvm-version` runs the
+      *     daemon (RunOnHostPrereqs.millRecordedJdk). Under `system`, none. */
     distribution: Option[Path],
-    /** The per-workspace sbt global base and Ivy home, Gradle's user home and Maven's local
-      * repository: created and granted for the program that reads each (`sbtCachesGranted`,
-      * `gradleUserHomeGranted`, `m2RepositoryGranted`), and for the other programs paths nothing
-      * reads, named all the same so the environment has the same variable names for every program
-      * — as `millDownloads` is for sbt. */
+    /** The per-workspace sbt global base and Ivy home, Gradle's user home and Maven's local repository.
+      *
+      *   - Each path is created and granted for the program that reads it (`sbtCachesGranted`,
+      *     `gradleUserHomeGranted`, `m2RepositoryGranted`).
+      *   - For the other programs, nothing reads the path. The path is named all the same, so that the environment has
+      *     the same variable names for every program, as `millDownloads` is for sbt. */
     sbtGlobal: Path,
     ivyHome: Path,
     gradleUserHome: Path,
     m2Repository: Path,
-    /** Where mill's bootstrap keeps launchers, as derived from this environment: what a mill
-      * command is granted, and what its build script is pointed at (commandEnvironment). */
+    /** Where mill's bootstrap keeps launchers, as derived from this environment. A mill command is granted this
+      * directory, and its build script is pointed at it (commandEnvironment). */
     millDownloads: Option[Path],
-    /** The launcher version the bootstrap is told to run, `<v>-jvm`, for a mill command
-      * (RunOnHostPrereqs.millLauncherVersion); None for the other programs. */
+    /** The launcher version that the bootstrap is told to run, `<v>-jvm`, for a mill command
+      * (RunOnHostPrereqs.millLauncherVersion). None for the other programs. */
     millLauncherVersion: Option[String],
   ):
     def sbtGlobalGranted: Option[Path] = Option.when(prereqs.program == Program.Sbt)(sbtGlobal)
@@ -59,8 +65,8 @@ object RunOnHostSandbox:
     /** A mill command whose build runs without the runner's daemon (RunOnHostPrereqs.millRunsWithoutDaemon). */
     def millWithoutDaemon: Boolean = millLauncherVersion.exists(millRunsWithoutDaemon)
 
-    /** The profile's inputs for a process of this command: what the assembly grants, and the rest
-      * as the caller has it. */
+    /** The profile's inputs for a process of this command: what the assembly grants, and the rest as the caller has
+      * it. */
     def profileInputs(
       sessionTmp: Path,
       proxyPort: Int,
@@ -84,10 +90,12 @@ object RunOnHostSandbox:
         fileRules = fileRules,
       )
 
-  /** A file the prerequisites cannot read, carried out of the readers — whose callers are pure
-    * and take a reader that answers absent or present — to the assembly's boundary, where it is
-    * one worded refusal. Existing-but-unreadable never falls to the next source: mill would
-    * select the file and then fail reading it. */
+  /** A file that the prerequisites cannot read.
+    *
+    *   - The exception carries the file out of the readers to the assembly's boundary, where it becomes one worded
+    *     refusal. The readers' callers are pure, and take a reader that answers absent or present.
+    *   - A file that exists but cannot be read never falls through to the next source: mill would select the file
+    *     and then fail reading it. */
   private[launcher] final class Unreadable(val refusal: Refusal) extends RuntimeException(null, null, false, false)
 
   private def reading[A](path: Path)(read: => A): A =
@@ -109,34 +117,37 @@ object RunOnHostSandbox:
 
   private def readBytes(path: Path): Array[Byte] = reading(path)(Files.readAllBytes(path))
 
-  /** Absent is None. ISO-8859-1, as `java.util.Properties` reads a stream. */
+  /** Absent is None. The text is read as ISO-8859-1, as `java.util.Properties` reads a stream. */
   private def readLatin1(path: Path): Option[String] =
     reading(path)(Option.when(Files.exists(path))(String(Files.readAllBytes(path), ISO_8859_1)))
 
-  /** Only so that the read is bounded: far above any key and path mill writes, the key's
-    * `mill-repositories` included, and small beside the launcher's heap. */
+  /** A bound for the read, and nothing else. The bound lies far above any key and path that mill writes, the key's
+    * `mill-repositories` included, and it is small beside the launcher's heap. */
   private val MillJavaHomeMaxBytes = 256 * 1024
   private val MillJavaHomeReadMillis = 2000L
 
-  /** The reads of mill's `java-home` file running or abandoned at once (millJavaHomeText). */
+  /** How many reads of mill's `java-home` file may be running or abandoned at once (millJavaHomeText). */
   private val MillJavaHomeReaders = java.util.concurrent.Semaphore(4)
 
   /**
-   * The text of mill's `java-home` file in `buildDirectory` (RunOnHostPrereqs.MillJavaHomeFile),
-   * None when it is absent or cannot be read as the build's own file.
+   * The text of mill's `java-home` file in `buildDirectory` (RunOnHostPrereqs.MillJavaHomeFile), or None when the
+   * file is absent or cannot be read as the build's own file.
    *
-   * The launcher reads it outside any profile, under the runner's monitor, while a command in the
-   * workspace may be writing under `out/`. So each directory is opened relative to the one before
-   * it and the file relative to the last, none through a symlink, whatever a command renames
-   * meanwhile; the read stops at `MillJavaHomeMaxBytes`, whatever size the file reports; and the
-   * whole is abandoned after `MillJavaHomeReadMillis`, since the open of a FIFO moved into the
-   * file's place after the type check would not return. The text is never printed.
+   * The launcher reads the file outside any profile, under the runner's monitor, while a command in the workspace
+   * may be writing under `out/`. The read therefore works as follows:
    *
-   * An abandoned read keeps its thread and its directories until a writer opens that FIFO, so
-   * `readers` bounds how many exist: with none free the file reads as absent, and the build is
-   * refused as not provisioned until one returns.
+   *   - Each directory is opened relative to the one before it, and the file relative to the last, none through a
+   *     symlink, whatever a command renames meanwhile.
+   *   - The read stops at `MillJavaHomeMaxBytes`, whatever size the file reports.
+   *   - The whole read is abandoned after `MillJavaHomeReadMillis`. A FIFO moved into the file's place after the type
+   *     check would make the open never return.
+   *   - The text is never printed.
    *
-   * `raced` runs between the type check and the open: tests replace it to stand in for that command.
+   * An abandoned read keeps its thread and its directories until a writer opens that FIFO, so `readers` bounds how
+   * many such reads exist. With no reader free, the file reads as absent, and the build is refused as not
+   * provisioned until a reader returns.
+   *
+   * `raced` runs between the type check and the open. Tests replace it to stand in for that command.
    */
   private[launcher] def millJavaHomeText(
     buildDirectory: Path,
@@ -152,14 +163,16 @@ object RunOnHostSandbox:
       Option.when(buffer.position() <= MillJavaHomeMaxBytes):
         UTF_8.newDecoder().decode(buffer.flip()).toString
 
-  /** The probes of `out/mill-out-lock` running or abandoned at once (millOutLockHeld). */
+  /** How many probes of `out/mill-out-lock` may be running or abandoned at once (millOutLockHeld). */
   private val MillOutLockProbes = java.util.concurrent.Semaphore(4)
 
   /**
-   * Whether a process holds Mill's lock on the build directory's `out/` (`MillOutLockFile`), opened
-   * as millJavaHomeText opens the `java-home` file and abandoned after as long; None when the file is
-   * absent or cannot be opened as the build's own. A shared lock, taken and released at once,
-   * conflicts with the exclusive one Mill takes; this JVM holds no lock on the file.
+   * Whether a process holds Mill's lock on the build directory's `out/` (`MillOutLockFile`).
+   *
+   *   - The file is opened as millJavaHomeText opens the `java-home` file, and the probe is abandoned after as long.
+   *   - The result is None when the file is absent or cannot be opened as the build's own file.
+   *   - A shared lock, taken and released at once, conflicts with the exclusive lock that Mill takes. This JVM holds
+   *     no lock on the file.
    */
   private[launcher] def millOutLockHeld(
     buildDirectory: Path,
@@ -175,9 +188,11 @@ object RunOnHostSandbox:
             Some(false)
       case _ => None
 
-  /** `use` of the file at `relative` under `buildDirectory`, opened for reading as millJavaHomeText
-    * describes, on a thread of its own abandoned after `millis`; None when the file is absent, is
-    * not the build's own regular file, or `use` gave none in time. */
+  /** Applies `use` to the file at `relative` under `buildDirectory`, opened for reading as millJavaHomeText describes.
+    *
+    *   - The read runs on a thread of its own, abandoned after `millis`.
+    *   - The result is None when the file is absent, is not the build's own regular file, or `use` gave no result in
+    *     time. */
   private def buildFileOpened[A](
     buildDirectory: Path, relative: String, threadName: String, millis: Long, raced: () => Unit,
     readers: java.util.concurrent.Semaphore,
@@ -219,31 +234,32 @@ object RunOnHostSandbox:
       Files.newDirectoryStream(buildDirectory) match
         case secure: SecureDirectoryStream[Path] =>
           opened(secure, Path.of(relative).iterator().asScala.toList)
-        // A JVM without openat has no way to hold a directory while a command renames it.
+        // A JVM without openat has no way to hold a directory while a command renames the directory.
         case plain =>
           plain.close()
           None
     catch case _: IOException => None
 
-  /** The directories directly inside `path`; none when it is absent. */
+  /** The directories directly inside `path`, or none when `path` is absent. */
   private def directories(path: Path): Seq[Path] =
     reading(path):
       if !Files.isDirectory(path) then Seq.empty
       else directoryEntries(path).filter(Files.isDirectory(_))
 
   /** The assembly: everything the profile derives authority from, decided before anything runs.
-    * `buildDirectory` is where the command runs, the workspace root or a directory beneath it: mill's
-    * bootstrap, version pin and `mill-jvm-version` are that directory's, as the bootstrap reads
-    * them from its working directory, so a nested build is another build; the grants stay the
-    * workspace's. */
+    *
+    *   - `buildDirectory` is where the command runs: the workspace root or a directory beneath it.
+    *   - mill's bootstrap, version pin and `mill-jvm-version` are that directory's, as the bootstrap reads them from
+    *     its working directory. A nested build is therefore another build.
+    *   - The grants stay the workspace's. */
   def assemble(
     workspaceRoot: Path, program: Program, env: String => Option[String], buildDirectory: Path,
   ): Either[String, Assembled] =
     try assembled(workspaceRoot, program, env, buildDirectory).left.map(_.worded)
     catch case ex: Unreadable => Left(wording(ex.refusal))
 
-  /** Why one step of the assembly refuses, kept typed to the assembly's boundary: the launch's
-    * provisioning (RunOnHostProvisioning) runs one of three scripts for four of the cases and words the rest. */
+  /** Why one step of the assembly refuses, kept typed up to the assembly's boundary. The launch's provisioning
+    * (RunOnHostProvisioning) runs one of three scripts for four of the cases, and words the rest. */
   final case class StepRefusal(step: String, refusal: Refusal | String):
     def worded: String = wordedShowing(_.toString)
     /** As [[RunOnHostPrereqs.wording]] words it with `shown`. */
@@ -254,9 +270,11 @@ object RunOnHostSandbox:
   private def context[A](step: String)(value: Either[Refusal | String, A]): Either[StepRefusal, A] =
     value.left.map(StepRefusal(step, _))
 
-  /** The executable a `mill`, `gradle` or `mvn` command from `buildDirectory` — the workspace root, for
-    * Maven — would be granted, the one the user provisions (run-on-host.md "Program
-    * prerequisites"), or the step refusing it. */
+  /** The executable that a `mill`, `gradle` or `mvn` command from `buildDirectory` would be granted, or the step that
+    * refuses it.
+    *
+    *   - For Maven, `buildDirectory` is the workspace root.
+    *   - The executable is the one the user provisions (run-on-host.md, "Program prerequisites"). */
   def provisionedExecutable(
     program: Program, env: String => Option[String], buildDirectory: Path,
   ): Either[StepRefusal, Path] =
@@ -269,13 +287,13 @@ object RunOnHostSandbox:
           Left(StepRefusal("sbt executable", "sbt's executable is the user's, not the workspace's"))
     catch case ex: Unreadable => Left(StepRefusal(program.name, ex.refusal))
 
-  /** Mill's provisioned JVM launcher, its version, `<v>-jvm`, and the JDK a pinned or unset
-    * `mill-jvm-version` runs the daemon on. */
+  /** Mill's provisioned JVM launcher, its version `<v>-jvm`, and the JDK on which a pinned or unset
+    * `mill-jvm-version` runs the daemon. */
   private case class MillLauncher(executable: Path, version: String, recordedJdk: Option[Path])
 
-  /** Resolved as the bootstrap and mill's launcher in `buildDirectory` resolve them. The
-    * executable before the recorded JDK: the host run that provisions the one provisions the
-    * other. */
+  /** Resolves the launcher as the bootstrap and mill's launcher in `buildDirectory` resolve it. The executable is
+    * resolved before the recorded JDK, because the host run that provisions the executable also provisions the
+    * JDK. */
   private def millLauncher(env: String => Option[String], buildDirectory: Path): Either[StepRefusal, MillLauncher] =
     def recordedJdk(id: Option[String], launcher: String): Either[StepRefusal, Option[Path]] =
       for
@@ -298,8 +316,8 @@ object RunOnHostSandbox:
         case MillJvm.Unset      => recordedJdk(None, launcher)
     yield MillLauncher(real, launcher, jdk)
 
-  /** Gradle's home as the wrapper in `buildDirectory` would run it: a nested build directory with
-    * a wrapper of its own is another build, as under mill. */
+  /** Gradle's home as the wrapper in `buildDirectory` would run it. A nested build directory with a wrapper of its own
+    * is another build, as under mill. */
   private def gradleDistribution(env: String => Option[String], buildDirectory: Path): Either[StepRefusal, Path] =
     val properties = buildDirectory.resolve("gradle").resolve("wrapper").resolve("gradle-wrapper.properties")
     for
@@ -345,8 +363,8 @@ object RunOnHostSandbox:
             sbt <- context("sbt executable")(
               validateSbtExecutable(installDir.resolve("sbt"), installDir, realPath, isExecutableFile),
             )
-            // ISO-8859-1, not UTF-8: cs appends a jar to the scripts it installs, so the file is not text.
-            // Every byte maps to a char, which leaves the ASCII path this searches for intact.
+            // ISO-8859-1, not UTF-8: cs appends a jar to the scripts it installs, so the file is not text. Every
+            // byte maps to a char, which leaves intact the ASCII path that this step searches for.
             inner <- context("sbt distribution")(
               sbtDistribution(String(readBytes(sbt), ISO_8859_1), coursierCache)
                 .toRight(s"$sbt names no distribution inside $coursierCache"),
@@ -366,7 +384,7 @@ object RunOnHostSandbox:
       cacheRoot <- context("cache root")(
         cacheRootOutsideWorkspace(configuredRoot, workspaceRoot, os, FileHelper.canonicalizedFuturePath),
       )
-      // stateRootOf words its refusals for `fail`, which prints them whole.
+      // stateRootOf words its refusals for `fail`, which prints them whole, so the prefix is stripped here.
       stateRoot <- context("state root")(
         LauncherState.stateRootOf(os, env).left.map(_.stripPrefix("error: ")),
       )
@@ -376,8 +394,8 @@ object RunOnHostSandbox:
       ivyHomeDir = ivyHomeOf(cacheRoot, workspaceId)
       gradleUserHomeDir = gradleUserHomeOf(cacheRoot, workspaceId)
       m2RepositoryDir = m2RepositoryOf(cacheRoot, workspaceId)
-      // Each directory as it will be granted, before it is created: an existing symlink among its
-      // ancestors — `run-on-host`, the workspace's directory — places it wherever the link points.
+      // Each directory is checked as it will be granted, before it is created. An existing symlink among its
+      // ancestors, such as `run-on-host` or the workspace's directory, places it wherever the link points.
       _ <- Vector(v1Dir, sbtGlobalDir, ivyHomeDir, gradleUserHomeDir, m2RepositoryDir)
         .foldLeft(Right(()): Either[StepRefusal, Unit]): (checked, dir) =>
           checked.flatMap: _ =>
@@ -411,11 +429,12 @@ object RunOnHostSandbox:
     )
 
   /**
-   * The grammar of SeatbeltProfile.SystemPaths.txt: one absolute path per line, `#` comments,
-   * `x ` prefix for a path that must also be executable. A system path is granted only where
-   * testing proves the read is stable; the resource agentsandbox/SeatbeltProfile.SystemPaths.txt
-   * is the measured set, and src/probe/run-on-host-profile-iterate.sh is how candidate entries are
-   * measured.
+   * The grammar of SeatbeltProfile.SystemPaths.txt: one absolute path per line, `#` comments, and an `x ` prefix for
+   * a path that must also be executable.
+   *
+   *   - A system path is granted only where testing proves the read is stable.
+   *   - The resource agentsandbox/SeatbeltProfile.SystemPaths.txt is the measured set.
+   *   - src/probe/run-on-host-profile-iterate.sh measures candidate entries.
    */
   def parseSystemPaths(all: Seq[String]): SeatbeltProfile.SystemPaths =
     val lines = all.map(_.trim).filter(line => line.nonEmpty && !line.startsWith("#"))
@@ -438,17 +457,19 @@ object RunOnHostSandbox:
       finally stream.close()
     parseSystemPaths(text.linesIterator.toSeq)
 
-  /** What opens the JDK's internal certificate builder to X509Helper, which has why. The jar's
-    * manifest carries the same two for `java -jar` (build.sbt), and a manifest is read for `-jar`
-    * alone: a re-invocation is `java -cp`, and the runner and the supervisor it starts issue each
-    * proxy's certificates (RunOnHostInspection), which without these dies of IllegalAccessError. */
+  /** The options that open the JDK's internal certificate builder to X509Helper, which explains why.
+    *
+    *   - The jar's manifest carries the same two options for `java -jar` (build.sbt).
+    *   - The JVM reads a manifest for `-jar` alone, and a re-invocation is `java -cp`.
+    *   - The runner and the supervisor it starts issue each proxy's certificates (RunOnHostInspection). Without these
+    *     options, the issuing dies of IllegalAccessError. */
   val CertificateBuilderExports: Seq[String] = Seq(
     "--add-exports=java.base/sun.security.x509=ALL-UNNAMED",
     "--add-exports=java.base/sun.security.util=ALL-UNNAMED",
   )
 
-  /** How the supervisor re-invokes its own executable — the running JVM and classpath, or the native
-    * image binary itself — under one of the launcher's private actions. */
+  /** How the supervisor re-invokes its own executable under one of the launcher's private actions. The executable is
+    * the running JVM and classpath, or the native image binary itself. */
   def selfInvocation(actionAndArguments: String*): Seq[String] =
     if isNativeImage then
       launchFile.getOrElse(throw IllegalStateException("the native image cannot name itself")).toString
@@ -460,32 +481,37 @@ object RunOnHostSandbox:
         "agentsandbox.launcher.AgentSandboxLauncher",
       ) ++ actionAndArguments
 
-  /** This JVM's class path with every element absolute against this JVM's working directory —
-    * `java -jar target/dist/ko-agent-sandbox.jar` names it relative, and an empty element is
-    * that directory itself — since the proxy runs from `/` (RunOnHostProxy.startProxy), where a relative
-    * element names nothing. */
+  /** This JVM's class path, with every element made absolute against this JVM's working directory.
+    *
+    *   - `java -jar target/dist/ko-agent-sandbox.jar` names the element relative, and an empty element is the working
+    *     directory itself.
+    *   - The proxy runs from `/` (RunOnHostProxy.startProxy), where a relative element names nothing. */
   def selfClassPath(classPath: String = System.getProperty("java.class.path")): Seq[String] =
     classPath.split(java.io.File.pathSeparator, -1).toSeq.map(entry => Path.of(entry).toAbsolutePath.toString)
 
   /** Whether this launcher runs as the GraalVM native image rather than as a JVM over the jar. */
   def isNativeImage: Boolean = System.getProperty("org.graalvm.nativeimage.imagecode") != null
 
-  /** The class-path entry this process's code was loaded from, spelled as the class path spells
-    * it, or none when that code is off the class path — under sbt, which loads the project's
-    * classes through loaders of its own. Matched by resolved path, since the JDK canonicalizes an
-    * entry as it loads it: the CodeSource has a launch symlink resolved away, while the
-    * re-invocation (selfInvocation) spells the link, and it is the link that must remain. Any
-    * other entry is the JVM's to skip when missing. */
+  /** The class-path entry that this process's code was loaded from, spelled as the class path spells it.
+    *
+    *   - The result is none when that code is off the class path. That happens under sbt, which loads the project's
+    *     classes through loaders of its own.
+    *   - The entry is matched by resolved path, since the JDK canonicalizes an entry as it loads it. The CodeSource has
+    *     a launch symlink resolved away, while the re-invocation (selfInvocation) spells the link. The link is what
+    *     must remain.
+    *   - The JVM skips any other entry when it is missing. */
   def launchEntry(classPath: String, codeSource: Option[Path]): Option[Path] =
     codeSource.flatMap(realPath).flatMap: source =>
       selfClassPath(classPath).map(Path.of(_)).find(entry => realPath(entry).contains(source))
 
-  /** The file this launcher's own executable is re-invoked from (selfInvocation): the native
-    * image binary, which is self-contained and reads no jar, or the jar form's launch entry
-    * (launchEntry). Read once, when this object initializes — at each launcher process's start,
-    * since every one calls in here before it serves or spawns — so it is the file the process was
-    * loaded from. The JDK is left out: coursier's under the cache root, which no clean in the
-    * workspace removes. */
+  /** The file from which this launcher's own executable is re-invoked (selfInvocation).
+    *
+    *   - The file is the native image binary, which is self-contained and reads no jar, or the jar form's launch entry
+    *     (launchEntry).
+    *   - The value is read once, when this object initializes. Every launcher process calls in here before it serves
+    *     or spawns, so the read happens at the process's start, and the value is the file the process was loaded
+    *     from.
+    *   - The JDK is left out: it is coursier's JDK under the cache root, which no clean in the workspace removes. */
   private[launcher] val launchFile: Option[Path] =
     if isNativeImage then
       val command = ProcessHandle.current().info().command()
@@ -496,18 +522,20 @@ object RunOnHostSandbox:
         Option(getClass.getProtectionDomain.getCodeSource).map(source => Path.of(source.getLocation.toURI)),
       )
 
-  /** The launch file resolved, still present, or the reason to refuse the re-invocation with,
-    * naming it as spelled; none to check passes, there being no file a re-invocation loads this
-    * process's code from. Both forms alike: the jar and the native image are each one file, built
-    * under `target/dist`, which `sbt clean` or `git clean` removes while a session runs. Checked
-    * before a supervisor is exec'd (RunnerRuntimes.prepare, every program) and before a proxy is
-    * started (RunOnHostProxy.proxyInputs): a JVM starts with a missing class-path entry and fails only at loading
-    * the main class, so unchecked, the jar form's failure is the proxy's ready wait timing out over
-    * a Java error in its log, and the native form's is a spawn that fails to exec. Not checked at
-    * the launch's own runner spawn (RunOnHostChannel.spawnRunner), which follows the launcher's
-    * own load from that file. A rebuild at the same path is not a removal, nor is a symlink's
-    * retargeting: the running processes keep their inode, and the next re-invocation runs the new
-    * file. */
+  /** The launch file resolved and still present, or the reason to refuse the re-invocation, naming the file as
+    * spelled.
+    *
+    *   - No file to check passes, since then no file exists from which a re-invocation loads this process's code.
+    *   - Both forms are checked alike. The jar and the native image are each one file, built under `target/dist`,
+    *     which `sbt clean` or `git clean` removes while a session runs.
+    *   - The check runs before a supervisor is exec'd (RunnerRuntimes.prepare, every program) and before a proxy is
+    *     started (RunOnHostProxy.proxyInputs). A JVM starts with a missing class-path entry and fails only at loading
+    *     the main class. Unchecked, the jar form's failure would be the proxy's ready wait timing out over a Java
+    *     error in its log, and the native form's failure would be a spawn that fails to exec.
+    *   - The check does not run at the launch's own runner spawn (RunOnHostChannel.spawnRunner), which follows the
+    *     launcher's own load from that file.
+    *   - A rebuild at the same path is not a removal, and neither is a symlink's retargeting. The running processes
+    *     keep their inode, and the next re-invocation runs the new file. */
   def selfPresent(file: Option[Path] = launchFile): Either[String, Option[Path]] =
     file match
       case None => Right(None)
@@ -520,9 +548,11 @@ object RunOnHostSandbox:
   /** `--run-command-on-host <program> <workspace-root> <cwd> [--env=<name>...] [--channel-log=<file>]
     * [--runtime-session=<dir> --proxy-port=<port> --proxy-log=<file> [--daemon-port=<port> --daemon-pid=<pid>]]
     * [--credentials-on-stdin] --
-    * <args...>`: one channel request as a process of its own, so the runner's cancel is a SIGTERM
-    * whose answer is this supervisor's shutdown hook. The runtime options name the runner's runtime
-    * (Runtime). */
+    * <args...>`.
+    *
+    *   - Each channel request runs as a process of its own. The runner's cancel is therefore a SIGTERM, which this
+    *     supervisor's shutdown hook answers.
+    *   - The runtime options name the runner's runtime (Runtime). */
   def runCommandMain(args: Seq[String]): Unit =
     def start(
       programName: String,
@@ -553,7 +583,7 @@ object RunOnHostSandbox:
         reason => { Console.err.println(s"--run-command-on-host: $reason"); sys.exit(2) },
         identity,
       )
-      // The frame the runner wrote after its word, before anything else reads this pipe.
+      // The frame that the runner wrote after its word, read before anything else reads this pipe.
       val credentials =
         if !options.contains(CredentialsOption) then Vector.empty
         else
@@ -561,10 +591,10 @@ object RunOnHostSandbox:
             reason => { Console.err.println(s"--run-command-on-host: the brokered credentials: $reason"); sys.exit(2) },
             identity,
           )
-      // The runner's pipe (RunOnHostChannel.dispatch): its EOF is the runner gone, and the command
-      // ends with it through the shutdown hook, as it ends with the requester's ctl. The status is
-      // nobody's to read. A def, not the thread's own lambda: a lambda ending in sys.exit types
-      // as Nothing, which the JVM's lambda factory refuses for Runnable's void at link time.
+      // The runner's pipe (RunOnHostChannel.dispatch). The pipe's EOF means that the runner is gone. The command then
+      // ends through the shutdown hook, as it ends with the requester's ctl. Nobody reads the status. endWithRunner is
+      // a def, not the thread's own lambda: a lambda ending in sys.exit types as Nothing, which the JVM's lambda
+      // factory refuses for Runnable's void at link time.
       def endWithRunner(): Unit =
         try while System.in.read() != -1 do ()
         catch case _: IOException => ()
@@ -592,34 +622,39 @@ object RunOnHostSandbox:
         Console.err.println(s"--run-command-on-host: unexpected arguments: ${other.mkString(" ")}")
         sys.exit(2)
 
-  /** `--env=<name>` as the runner and the command receive it: the name alone, the value read from
-    * the receiving process's own environment under `carrierName` (RunOnHostChannel.spawnRunner).
-    * A forward is thus never an argument with a secret in it below the launcher. */
+  /** `--env=<name>` as the runner and the command receive it: the name alone. The receiving process reads the value
+    * from its own environment under `carrierName` (RunOnHostChannel.spawnRunner). Below the launcher, a forward is
+    * thus never an argument with a secret in it. */
   val EnvOption = "--env="
 
   def forwardedNames(options: Seq[String]): Vector[String] =
     options.filter(_.startsWith(EnvOption)).map(_.stripPrefix(EnvOption)).toVector
 
   /** `--credentials-on-stdin`: the process's brokered credentials follow on its standard input
-    * (CredentialGrammar.bindingInput), the runner's from the launcher and a supervisor's after the
-    * runner's word (RunOnHostChannel.dispatch). The option carries no value; values never appear in arguments. */
+    * (CredentialGrammar.bindingInput).
+    *
+    *   - The launcher writes the runner's credentials, and the runner writes a supervisor's credentials after its word
+    *     (RunOnHostChannel.dispatch).
+    *   - The option carries no value. Values never appear in arguments. */
   val CredentialsOption = "--credentials-on-stdin"
 
-  /** Reads one byte at a time, consuming nothing after the bindings; call it before anything else reads
-    * standard input. */
+  /** Reads one byte at a time, and consumes nothing after the bindings. Call it before anything else reads standard
+    * input. */
   def readStdinCredentials(): Either[String, Vector[BrokeredCredential]] =
     CredentialGrammar.readBindings(java.io.FileInputStream(java.io.FileDescriptor.in))
 
   /**
-   * The hosts a program's proxy substitutes credentials for: every host its rules allow, all of which it
-   * inspects (egressRuleText), as the proxy's own resolution names them (RunOnHostInspection.leafNames).
-   * A binding's host has that form (CredentialGrammar), and the proxy's start refuses a binding to any
-   * other host. Empty for rules the proxy refuses, which readProgramRules does not return.
+   * The hosts for which a program's proxy substitutes credentials.
+   *
+   *   - The hosts are every host the program's rules allow, all of which the proxy inspects (egressRuleText). The hosts
+   *     are named as the proxy's own resolution names them (RunOnHostInspection.leafNames).
+   *   - A binding's host has that form (CredentialGrammar), and the proxy's start refuses a binding to any other host.
+   *   - The set is empty for rules the proxy refuses, which readProgramRules does not return.
    */
   def credentialHosts(program: Program, fileHosts: Vector[String]): Set[String] =
     RunOnHostInspection.leafNames(egressRuleText(program, fileHosts)).fold(_ => Set.empty, _.toSet)
 
-  /** What a program's proxy is given: the credentials for its credentialHosts, and no other. */
+  /** What a program's proxy is given: the credentials for its credentialHosts, and no others. */
   def credentialsFor(
     program: Program,
     fileHosts: Vector[String],
@@ -627,23 +662,23 @@ object RunOnHostSandbox:
   ): Vector[BrokeredCredential] =
     EgressCredentials.bindingsFor(credentials, credentialHosts(program, fileHosts))
 
-  /** `--channel-log=<file>`: the runner's own log, where the supervisor appends a signal-ended
-    * command's logs (appendSessionLogs). */
+  /** `--channel-log=<file>`: the runner's own log. The supervisor appends a signal-ended command's logs there
+    * (appendSessionLogs). */
   val ChannelLogOption = "--channel-log="
 
-  /** `--file-rules=<file>`: the resolved file rules the launch wrote for its runner, which hands the
-    * option on to each command (RunOnHostChannel.spawnRunner). */
+  /** `--file-rules=<file>`: the resolved file rules that the launch wrote for its runner. The runner hands the option
+    * on to each command (RunOnHostChannel.spawnRunner). */
   val FileRulesOption = "--file-rules="
 
-  /** The file rules a command's or runtime's profile denies writes to: the launch's resolved set
-    * when the runner handed one on, else the workspace's lines alone (FileRules.ofWorkspace). */
+  /** The file rules whose files a command's or runtime's profile denies writes to. The rules are the launch's
+    * resolved set when the runner handed one on, or else the workspace's lines alone (FileRules.ofWorkspace). */
   def fileRulesOf(options: Seq[String], workspaceRoot: Path): Either[String, FileRules.Resolved] =
     options.find(_.startsWith(FileRulesOption)) match
       case Some(option) => FileRules.readResolved(Path.of(option.stripPrefix(FileRulesOption)))
       case None         => FileRules.ofWorkspace(workspaceRoot)
 
-  /** The runner's runtime as the supervisor's options: the first three together or none, the
-    * daemon's port and pid with them for a mill runtime. */
+  /** The runner's runtime as the supervisor's options. The first three come together or not at all. For a mill
+    * runtime, the daemon's port and pid come with them. */
   val RuntimeSessionOption = "--runtime-session="
   val ProxyPortOption = "--proxy-port="
   val ProxyLogOption = "--proxy-log="
@@ -674,28 +709,30 @@ object RunOnHostSandbox:
         yield Some(Runtime(Path.of(session), proxyPort, Path.of(log), daemonPort, daemonPid))
       case _ => Left(s"$RuntimeSessionOption, $ProxyPortOption and $ProxyLogOption come together")
 
-  /** The last bytes of each command log appended to the channel log: a stalled command's last
-    * lines are the finding, and a build's audit log can run long. */
+  /** How many of the last bytes of each command log are appended to the channel log. A stalled command's last lines
+    * are the finding, and a build's audit log can run long. */
   val SessionLogTailBytes = 64 << 10
 
-  /** Logs retained before a session's directory is removed: the proxy audit logs — a command's
-    * `proxy.log`, the runner's one per runtime — the sbt servers' logs (RunOnHostSbtServer.serverLog),
-    * the mill starters' output (RunOnHostMillDaemons.starterLog), and the stderr file a thin client
-    * leaves under `tmp/` when it forked a server of its own.
-    * run-on-host.md "The channel and the command" has why every signal keeps them and what a
-    * server's file holds. `condemned` is the session directory at its condemned pathname with
-    * its groups ended (RunOnHostSession.endSession), so no process the session started can
-    * change what is read; the tmp check below and sessionLogTail keep each read inside the
-    * directory, except a proxy's audit log, which is read where the launcher keeps it
-    * (RunOnHostProxy.keptAuditLog). `ended` is the block's first line, naming the session and how it ended. */
+  /** Retains a session's logs before the session's directory is removed.
+    *
+    *   - The logs are the proxy audit logs, the sbt servers' logs (RunOnHostSbtServer.serverLog), the mill starters'
+    *     output (RunOnHostMillDaemons.starterLog), and the stderr file that a thin client leaves under `tmp/` when it
+    *     forked a server of its own. A command has one `proxy.log`, and the runner has one audit log per runtime.
+    *   - run-on-host.md, "The channel and the command", explains why every signal keeps these logs and what a
+    *     server's file holds.
+    *   - `condemned` is the session directory at its condemned pathname, with its groups ended
+    *     (RunOnHostSession.endSession). No process that the session started can therefore change what is read.
+    *   - The tmp check below and sessionLogTail keep each read inside the directory. The exception is a proxy's audit
+    *     log, which is read where the launcher keeps it (RunOnHostProxy.keptAuditLog).
+    *   - `ended` is the block's first line, which names the session and how it ended. */
   def appendSessionLogs(channelLog: Path, condemned: Path, ended: String): Unit =
     val block = StringBuilder()
     block.append(s"${java.time.Instant.now()} $ended; its logs follow\n")
     val proxyLogs =
       directoryEntriesIfAny(condemned)
         .filter(file => file.getFileName.toString.matches("(proxy|server|daemon).*\\.log")).sorted
-    // The command's write grant includes tmp itself, so the command can replace it with a symlink
-    // that survives the session directory's rename.
+    // The command's write grant includes tmp itself, so the command can replace tmp with a symlink that survives the
+    // session directory's rename.
     val tmp = condemned.resolve(RunOnHostSession.TmpDir)
     val clientForkedStderr =
       if !Files.isDirectory(tmp, LinkOption.NOFOLLOW_LINKS) then
@@ -709,11 +746,13 @@ object RunOnHostSandbox:
     try Files.writeString(channelLog, block.toString, UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND)
     catch case _: IOException => ()
 
-  /** The tail of one session log, as the file the listing named and nothing it could point to:
-    * the attributes are read without following a link, the open refuses one, and the read is
-    * positioned at the tail rather than sized by the file — a sparse file's size is the command's
-    * to choose. Absent is None; anything but a regular file is named and not opened, since an
-    * open FIFO would hold this teardown. */
+  /** The tail of one session log, read from the file that the listing named and from nothing that file could point to.
+    *
+    *   - The attributes are read without following a link, and the open refuses a link.
+    *   - The read is positioned at the tail rather than sized by the file, because the command chooses a sparse file's
+    *     size.
+    *   - Absent is None.
+    *   - Anything but a regular file is named and not opened, since an open FIFO would hold this teardown. */
   private[launcher] def sessionLogTail(file: Path, bytes: Int = SessionLogTailBytes): Option[String] =
     try
       val attributes = Files.readAttributes(file, classOf[BasicFileAttributes], LinkOption.NOFOLLOW_LINKS)
@@ -734,11 +773,13 @@ object RunOnHostSandbox:
       case _: java.nio.file.NoSuchFileException => None
       case ex: IOException => Some(s"[unreadable: ${ex.getMessage}]\n")
 
-  /** The name a forwarded value is carried under from the launcher to the confined command: one nothing
-    * reads by accident. The runner and the supervisor are unconfined JVMs of the launcher's own code, and an
-    * explicit `--env=NAME=VALUE` installed under its own name — a loader variable, say — would be
-    * read by them first; the requested name is restored inside the command's environment alone,
-    * where the supervisor's own settings still win over it. */
+  /** The name under which a forwarded value is carried from the launcher to the confined command. Nothing reads this
+    * name by accident.
+    *
+    *   - The runner and the supervisor are unconfined JVMs of the launcher's own code. An explicit `--env=NAME=VALUE`
+    *     installed under its own name, such as a loader variable, would be read by them first.
+    *   - The requested name is restored inside the command's environment alone, where the supervisor's own settings
+    *     still win over it. */
   def carrierName(name: String): String = s"KO_AGENT_RUN_ON_HOST_ENV_$name"
 
   // ---------------------------------------------------------------------------
@@ -754,8 +795,8 @@ object RunOnHostSandbox:
     log: String => Unit,
     // The channel's validated WORKING_DIRECTORY: only the child's cwd, never a grant.
     workingDirectory: Option[Path] = None,
-    // What `--env` named at launch, the same authority; the values are in this process's
-    // environment under carrierName.
+    // What `--env` named at launch, with the same authority. The values are in this process's environment under
+    // carrierName.
     forwarded: Vector[String] = Vector.empty,
     // Where a command ended by signal leaves its session's logs (appendSessionLogs).
     channelLog: Option[Path] = None,
@@ -763,7 +804,7 @@ object RunOnHostSandbox:
     runtime: Option[Runtime] = None,
     // The launch's resolved file rules (fileRulesOf).
     fileRules: FileRules.Resolved = FileRules.Resolved.Empty,
-    // The brokered credentials, for the proxy this command starts when the runner holds none for it.
+    // The brokered credentials, for the proxy that this command starts when the runner holds no runtime for it.
     credentials: Vector[BrokeredCredential] = Vector.empty,
   ): Int =
     val env: String => Option[String] = name => Option(System.getenv(name))
@@ -776,11 +817,13 @@ object RunOnHostSandbox:
           catch case ex: IOException => Left(s"$workspaceArg: ${ex.getMessage}")
         assembled <- assemble(workspaceRoot, program, env, workingDirectory.getOrElse(workspaceRoot))
         _ <- RunOnHostSession.ensureRoot(root, uid)
-        // Scavenge before anything runs — an orphan a kill left is ours to end here — but only
-        // when not dispatched by a runner: the runner owns scavenging (at its startup and before
-        // each runtime it prepares), and a dispatched command scavenging the root could condemn
-        // the live runner's own session. channelLog is set exactly when the runner dispatched
-        // this command; the acceptance test's own entry, with none, still scavenges.
+        // Scavenge before anything runs, since an orphan that a kill left is ours to end here. Scavenge only when no
+        // runner dispatched this command:
+        //
+        // - The runner owns scavenging, at its startup and before each runtime it prepares.
+        // - A dispatched command that scavenges the root could condemn the live runner's own session.
+        // - channelLog is set exactly when the runner dispatched this command. The acceptance test's own entry has
+        //   no channelLog and still scavenges.
         _ =
           if channelLog.isEmpty then
             RunOnHostSession
@@ -799,8 +842,8 @@ object RunOnHostSandbox:
         RunOnHostSession.publish(root, assembled.prereqs.workspaceRoot) match
           case Left(reason) => refused(reason)
           case Right(session) =>
-            // Also on a shutdown hook (RunOnHostSession.Teardown): the registered groups are
-            // outside the terminal's own, so nothing but this would end them on a Ctrl-C.
+            // The teardown also runs on a shutdown hook (RunOnHostSession.Teardown). The registered groups are outside
+            // the terminal's own group, so nothing but this hook would end them on a Ctrl-C.
             val teardown = RunOnHostSession.Teardown: bySignal =>
               RunOnHostSession
                 .endSession(root, session, RunOnHostSession.HostProcesses,
@@ -834,16 +877,21 @@ object RunOnHostSandbox:
               case Left(reason) => refused(reason)
               case Right(exit)  => exit
 
-  /** One program's runtime, as a command runs against it: the session holding its records —
-    * whose `tmp/` an sbt client reaches its server's socket under — the port of its proxy, which
-    * the profile and the environment name, the proxy's log, which the denied-host report
-    * reads and whose name the proxy's trust directory has (RunOnHostInspection), and for mill the
-    * one port of its daemon, the port a client's profile admits, and its pid, whose arguments the
-    * client's profile lets it read (SeatbeltProfile.Network.MillClient).
-    * Created with the program's rule file as read then, in the session whose records
-    * name its groups — the runner's for its launch's sbt, mill and gradle commands, or another launch's
-    * runner's when this launch attaches to its runtime (RunnerRuntimes), the command's own for
-    * Maven and for the acceptance test's entry — and ended with that session. */
+  /** One program's runtime, as a command runs against it.
+    *
+    *   - `session` holds the runtime's records. An sbt client reaches its server's socket under the session's `tmp/`.
+    *   - `proxyPort` is the port of the runtime's proxy, which the profile and the environment name.
+    *   - `proxyLog` is the proxy's log. The denied-host report reads it, and the proxy's trust directory takes its
+    *     name from it (RunOnHostInspection).
+    *   - For mill, `daemonPort` is the one port of the daemon, which a client's profile admits. `daemonPid` is the
+    *     daemon's pid, whose arguments the client's profile lets the client read (SeatbeltProfile.Network.MillClient).
+    *
+    * The runtime is created with the program's rule file as read then, in the session whose records name its groups,
+    * and it ends with that session. That session is:
+    *
+    *   - the runner's session, for the launch's sbt, mill and gradle commands;
+    *   - another launch's runner's session, when this launch attaches to that runtime (RunnerRuntimes);
+    *   - the command's own session, for Maven and for the acceptance test's entry. */
   case class Runtime(
     session: Path,
     proxyPort: Int,
@@ -854,12 +902,13 @@ object RunOnHostSandbox:
     def tmp: Path = session.resolve(RunOnHostSession.TmpDir)
     def trust: Path = RunOnHostInspection.trustDirectory(proxyLog)
 
-  /** What a runtime's server or daemon is started with: its profile's inputs and its
-    * environment, derived from the assembly, the runtime's `tmp/` and proxy port, and the
-    * launch's forwards. Derived once per start (RunnerRuntimes), carried in the RuntimeStart to
-    * the starter and to the descriptor's fingerprint, and derived again by a launch deciding
-    * whether to attach (RunOnHostRuntimeDescriptor), so that equal fingerprints mean a start
-    * under the same confinement and environment. */
+  /** What a runtime's server or daemon is started with: its profile's inputs and its environment.
+    *
+    *   - Both are derived from the assembly, the runtime's `tmp/` and proxy port, and the launch's forwards.
+    *   - They are derived once per start (RunnerRuntimes), and carried in the RuntimeStart to the starter and to the
+    *     descriptor's fingerprint.
+    *   - A launch deciding whether to attach derives them again (RunOnHostRuntimeDescriptor). Equal fingerprints thus
+    *     mean a start under the same confinement and environment. */
   case class RuntimeInputs(profile: SeatbeltProfile.ProfileInputs, environment: Map[String, String])
 
   def runtimeInputs(
@@ -879,26 +928,31 @@ object RunOnHostSandbox:
       commandEnvironment(host, forwards, assembled, tmp, tmp, proxyPort, trust, userName),
     )
 
-  /** What one sbt server or mill daemon is started from: the runtime whose proxy it uses, the
-    * record its group — the daemon's, for mill — is registered at (RunOnHostSbtServer.startSbtServer,
-    * RunOnHostMillDaemons.start), its inputs, and for sbt the request's launcher flags
-    * (RunOnHostSbtServer.serverCommand). */
+  /** What one sbt server or mill daemon is started from:
+    *
+    *   - the runtime whose proxy it uses;
+    *   - the record at which its group is registered, the daemon's group for mill (RunOnHostSbtServer.startSbtServer,
+    *     RunOnHostMillDaemons.start);
+    *   - its inputs;
+    *   - for sbt, the request's launcher flags (RunOnHostSbtServer.serverCommand). */
   case class RuntimeStart(
     assembled: Assembled, buildDirectory: Path, hash: String, record: Path, runtime: Runtime, inputs: RuntimeInputs,
     arguments: Seq[String] = Seq.empty,
   )
 
-  /** How long a starting server may make no progress — neither its log nor the proxy
-    * log growing, and no portfile — before the start fails. Progress rather than time, because
-    * a first start resolves sbt's own dependencies through the proxy; sbt's own client waits
-    * with no bound at all (doc/TODO.md, "a bound on a silent host command"). */
+  /** How long a starting server may make no progress before the start fails. No progress means that neither its log
+    * nor the proxy log grows, and that no portfile appears.
+    *
+    *   - The bound is on progress rather than time, because a first start resolves sbt's own dependencies through the
+    *     proxy.
+    *   - sbt's own client waits with no bound at all (doc/TODO.md, "a bound on a silent host command"). */
   val ServerStartSilenceMillis = 120_000L
 
   def sandboxExec(profileFile: Path, command: Seq[String]): Seq[String] =
     Seq("/usr/bin/sandbox-exec", "-f", profileFile.toString) ++ command
 
-  /** Where the profile of the server or daemon a record names is written: beside the session's
-    * logs, named after the record. */
+  /** Where the profile of the server or daemon that a record names is written: beside the session's logs, named
+    * after the record. */
   def runtimeProfileFile(session: Session, recordName: String): Path = session.directory.resolve(s"$recordName.sb")
 
   /** That profile, rendered from the start's inputs and written. */
@@ -908,9 +962,9 @@ object RunOnHostSandbox:
       try Right(Files.writeString(file, profile, UTF_8))
       catch case ex: IOException => Left(s"writing $file: ${ex.getMessage}")
 
-  /** The sbt server or mill's starter (`mill version`), registered under `record`
-    * (registeredSpawn). Both streams go to `output`: sbt asks on stdout whether to create a build
-    * where it finds none, and a refused start quotes what it said. */
+  /** Starts the sbt server or mill's starter (`mill version`), registered under `record` (registeredSpawn). Both
+    * streams go to `output`: sbt asks on stdout whether to create a build where it finds none, and a refused start
+    * quotes what it said. */
   def startRuntimeStarter(
     record: Path, profileFile: Path, command: Seq[String], buildDirectory: Path, environment: Map[String, String],
     output: Path,
@@ -930,8 +984,8 @@ object RunOnHostSandbox:
   enum StartProgress:
     case Grew, Waiting, Silent
 
-  /** Polled while a server or daemon starts: Grew when its output or the proxy log grew since the
-    * last poll, Silent once neither has for ServerStartSilenceMillis. */
+  /** Polled while a server or daemon starts. Grew when its output or the proxy log grew since the last poll, and
+    * Silent once neither has grown for ServerStartSilenceMillis. */
   final class StartWatch(output: Path, proxyLog: Path):
     private def sizes = (logLength(output), logLength(proxyLog))
     private var last = sizes
@@ -968,12 +1022,12 @@ object RunOnHostSandbox:
           log,
         ),
       )
-      // The runner's log has served earlier commands: the report reads what this one adds.
+      // The runner's log has served earlier commands, so the report reads only what this command adds.
       reportFrom = logLength(runtime.proxyLog)
       (tmp, socketDir) = temporaryDirectories(program, session.tmp, runtime.tmp)
       network <- program match
         case Program.Sbt => Right(SeatbeltProfile.Network.SbtClient(runtime.tmp))
-        // The build runs in the command's own profile, so it gets the grant it would get in the daemon's.
+        // The build runs in the command's own profile, so the profile gets the grant the daemon's profile would get.
         case Program.Mill if assembled.millWithoutDaemon => Right(SeatbeltProfile.Network.MillDaemon)
         case Program.Mill =>
           runtime.daemonPort.zip(runtime.daemonPid).map(SeatbeltProfile.Network.MillClient(_, _))
@@ -993,7 +1047,7 @@ object RunOnHostSandbox:
         session, assembled, profile, runtime, commandArgs, workingDirectory, forwards, tmp, socketDir, log,
       )
     yield
-      // Under the runner the daemons are the runner's to record (RunnerRuntimes.commandEnded).
+      // Under the runner, the runner records the daemons (RunnerRuntimes.commandEnded).
       if program == Program.Gradle && runnerRuntime.isEmpty then
         val processes = RunOnHostSession.HostProcesses
         val found = RunOnHostGradleDaemons.daemons(runtime.tmp, processes)
@@ -1003,10 +1057,11 @@ object RunOnHostSandbox:
       if exit != 0 && assembled.millWithoutDaemon then reportMillOutLockTaken(buildDirectory, log)
       exit
 
-  /** The runtime a command without the runner's runs against: the acceptance test's entry, and Maven under
-    * the runner. Created in the command's own session — by the runner's functions for the
-    * programs whose runtime the runner holds, and as the command's proxy alone for Maven — and
-    * ended with the session. */
+  /** The runtime for a command without the runner's runtime: the acceptance test's entry, and Maven under the runner.
+    *
+    *   - The runtime is created in the command's own session, and ends with the session.
+    *   - For the programs whose runtime the runner holds, the runner's functions create it.
+    *   - For Maven, the runtime is the command's proxy alone. */
   private def ownRuntime(
     session: Session,
     assembled: Assembled,
@@ -1041,19 +1096,22 @@ object RunOnHostSandbox:
     catch case _: IOException => 0L
 
   /**
-   * Where a command's processes keep temporary files, and where sbt's sockets are: `(tmp,
-   * socketDir)`. Under sbt the command's own `tmp/`, and the runner's for the sockets its server
-   * listens under. Under mill the runner's `tmp/` for both: the daemon's forked JVMs — a `run`,
-   * a test — inherit the daemon's profile, which grants the runner's `tmp/`, but get the client's
-   * environment (`RunModule.scala`, `ctx.env`), so a `TMPDIR` or `java.io.tmpdir` naming the
-   * command's own `tmp/` would be denied there; and with one directory the starter's environment
-   * and every client's are one map, so an option file Mill interpolates from the environment
-   * (`MillProcessLauncher.loadMillConfig`) yields the same value in both, and a client never meets
-   * a fingerprint mismatch of the supervisor's own making. Under Gradle the runner's too, for the
-   * first reason: the daemon the first command's client starts serves the commands that follow
-   * with the profile and environment it was started with, so what it writes must be a directory
-   * every later command's profile grants and no command's end removes. Under Maven the command's
-   * own.
+   * Where a command's processes keep temporary files, and where sbt's sockets are: `(tmp, socketDir)`.
+   *
+   *   - Under sbt, temporary files go to the command's own `tmp/`, and the sockets the server listens under go to the
+   *     runner's.
+   *   - Under mill, both go to the runner's `tmp/`, for two reasons:
+   *     - The daemon's forked JVMs, such as a `run` or a test, inherit the daemon's profile, which grants the runner's
+   *       `tmp/`. The forked JVMs get the client's environment, though (`RunModule.scala`, `ctx.env`). A `TMPDIR` or
+   *       `java.io.tmpdir` naming the command's own `tmp/` would therefore be denied there.
+   *     - With one directory, the starter's environment and every client's environment are one map. An option file
+   *       that Mill interpolates from the environment (`MillProcessLauncher.loadMillConfig`) then yields the same
+   *       value in both, and a client never meets a fingerprint mismatch of the supervisor's own making.
+   *   - Under Gradle, both also go to the runner's `tmp/`, for the first reason. The daemon that the first command's
+   *     client starts serves the commands that follow, with the profile and environment it was started with. What it
+   *     writes must therefore go to a directory that every later command's profile grants and no command's end
+   *     removes.
+   *   - Under Maven, both go to the command's own `tmp/`.
    */
   def temporaryDirectories(program: Program, sessionTmp: Path, runtimeTmp: Path): (Path, Path) =
     program match
@@ -1061,23 +1119,27 @@ object RunOnHostSandbox:
       case Program.Mill | Program.Gradle => (runtimeTmp, runtimeTmp)
       case Program.Mvn                   => (sessionTmp, sessionTmp)
 
-  /** The build directory's own bootstrap, which runs the JVM launcher the environment's
-    * MILL_VERSION names: the launcher attaches to the daemon on the one port the profile admits, or
-    * runs the build itself, `--no-daemon` first among Mill's options (millWithoutDaemon). */
+  /** The build directory's own bootstrap, which runs the JVM launcher that the environment's MILL_VERSION names. The
+    * launcher attaches to the daemon on the one port the profile admits. Otherwise it runs the build itself, with
+    * `--no-daemon` first among Mill's options (millWithoutDaemon). */
   def millCommand(buildDirectory: Path, assembled: Assembled, commandArgs: Seq[String]): Seq[String] =
     buildDirectory.resolve("mill").toString +: (Option.when(assembled.millWithoutDaemon)("--no-daemon").toSeq ++
       commandArgs)
 
   /**
-   * Before a mill command running its build without a daemon: while a process holds `out/`'s lock
-   * (millOutLockHeld) — a Mill build of yours, outside any profile — wait for it, up to the bound a
-   * busy daemon of yours gets (RunOnHostMillDaemons.ForeignIdleDeadlineMillis), then refuse. Mill
-   * words its own wait from the start time of the launcher the newest record names
-   * (`SharedOutLockManager.activeOtherProcessPrefix`, `LauncherOutFilesRecordStore.mostRecentActive`,
-   * 1.3.0), and that read throws under the profile (upstream-issues.md, openjdk/jdk); a daemon's
-   * build writes such a record, one without a daemon none (`MillMain0.createLauncherResources`). A
-   * build taking the lock after the last probe fails the command that way, which no probe before the
-   * command closes; reportMillOutLockTaken names it after.
+   * Runs before a mill command that runs its build without a daemon.
+   *
+   *   - While a process holds `out/`'s lock (millOutLockHeld), this method waits for it. Such a process is one of the
+   *     user's Mill builds, outside any profile.
+   *   - The wait lasts up to the bound that a busy daemon of the user's gets
+   *     (RunOnHostMillDaemons.ForeignIdleDeadlineMillis). This method then refuses.
+   *   - Mill words its own wait from the start time of the launcher that the newest record names
+   *     (`SharedOutLockManager.activeOtherProcessPrefix`, `LauncherOutFilesRecordStore.mostRecentActive`, 1.3.0).
+   *     That read throws under the profile (upstream-issues.md, openjdk/jdk).
+   *   - A daemon's build writes such a record, and a build without a daemon writes none
+   *     (`MillMain0.createLauncherResources`).
+   *   - A build that takes the lock after the last probe fails the command that way, and no probe before the command
+   *     closes that window. reportMillOutLockTaken names the case afterwards.
    */
   def awaitMillOutLock(
     buildDirectory: Path,
@@ -1103,8 +1165,8 @@ object RunOnHostSandbox:
         Thread.sleep(pollMillis)
     result.get
 
-  /** After a mill command without a daemon failed: a process holding `out/`'s lock now may have
-    * taken it after awaitMillOutLock's last probe, which fails the command as that wait describes. */
+  /** Runs after a mill command without a daemon failed. A process that holds `out/`'s lock now may have taken the lock
+    * after awaitMillOutLock's last probe, which fails the command as awaitMillOutLock describes. */
   def reportMillOutLockTaken(
     buildDirectory: Path, log: String => Unit, held: Path => Option[Boolean] = millOutLockHeld(_),
   ): Unit =
@@ -1115,10 +1177,12 @@ object RunOnHostSandbox:
           "that build is done",
       )
 
-  /** A mill command running its build without a daemon reads the daemon's classpath file too
-    * (`CoursierClient.resolveMillDaemon`, 1.3.0), and a host run can rewrite the file between
-    * commands, so it is checked before each such command, under the command's profile, as a daemon
-    * start checks it (RunOnHostMillDaemons.discardForeignClasspath). None for any other command. */
+  /** Checks the daemon's classpath file before a mill command that runs its build without a daemon.
+    *
+    *   - Such a command reads the daemon's classpath file too (`CoursierClient.resolveMillDaemon`, 1.3.0).
+    *   - A host run can rewrite the file between commands. The file is therefore checked before each such command,
+    *     under the command's profile, as a daemon start checks it (RunOnHostMillDaemons.discardForeignClasspath).
+    *   - The result is None for any other command. */
   def discardForeignClasspathWithoutDaemon(
     assembled: Assembled, buildDirectory: Path, confined: RunOnHostMillDaemons.Confined,
   ): Option[String] =
@@ -1145,15 +1209,15 @@ object RunOnHostSandbox:
     discardForeignClasspathWithoutDaemon(assembled, buildDirectory, RunOnHostMillDaemons.confined(profileFile))
       .foreach(log)
     val programCommand = prereqs.program match
-      // With the portfile live the client connects and forks nothing
+      // With the portfile live, the client connects and forks nothing
       // (NetworkClient.connectOrStartServerAndConnect, v1.13.0 and v2.0.9).
       case Program.Sbt =>
         sbtCommand(prereqs.executable, assembled.sbtGlobal) ++
           Seq("--jvm-client", "-batch", "-java-home", prereqs.jdkHome.toString) ++ commandArgs
       case Program.Mill => millCommand(buildDirectory, assembled, commandArgs)
       case Program.Gradle => gradleCommand(prereqs, tmp) ++ commandArgs
-      // The distribution's own `mvn`, not the workspace's `mvnw` (run-on-host.md "Maven");
-      // --batch-mode as sbt's -batch.
+      // The distribution's own `mvn`, not the workspace's `mvnw` (run-on-host.md, "Maven"). --batch-mode serves as
+      // sbt's -batch does.
       case Program.Mvn =>
         Seq(prereqs.executable.toString, "--batch-mode") ++ commandArgs
 
@@ -1164,7 +1228,7 @@ object RunOnHostSandbox:
     )
     val builder = ProcessBuilder(command*)
     builder.directory(buildDirectory.toFile)
-    // Not the supervisor's own stdin, which under the runner is its liveness pipe (runCommandMain).
+    // Not the supervisor's own stdin, which is the supervisor's liveness pipe under the runner (runCommandMain).
     builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
     builder.redirectOutput(ProcessBuilder.Redirect.INHERIT)
     builder.redirectError(ProcessBuilder.Redirect.INHERIT)
@@ -1176,23 +1240,26 @@ object RunOnHostSandbox:
       ).asJava,
     )
 
-    // The leader publishes the command's exit status and then stays alive, for teardown to check its
-    // start time (RunOnHostSession): the answer is the exit file, never the leader's own end.
+    // The leader publishes the command's exit status and then stays alive, so that teardown can check its start time
+    // (RunOnHostSession). The answer is therefore the exit file, never the leader's own end.
     try RunOnHostSession.awaitExit(RunOnHostSession.exitRecord(record), builder.start())
     catch case ex: IOException => Left(s"starting the command: ${ex.getMessage}")
 
   /**
-   * The distribution's own `gradle`, not the workspace's `gradlew` (run-on-host.md "Gradle"), with
-   * its settings on the command line, where a `-D` overrides every gradle.properties. The daemon
-   * registry is the launch's own, under the runner's `tmp/`, which every Gradle process of the
-   * launch is granted and which ends with the launch: `gradle --stop` stops every daemon in the
-   * registry, whatever its JVM (`DaemonStopClient`), so a registry under the per-workspace user
-   * home would let one launch's `--stop` end another launch's builds in the same workspace. Attaching
-   * is already the launch's own: the client's `java.io.tmpdir`, the runner's `tmp/`, is among the
-   * immutable properties Gradle's daemon compatibility compares (`InitialPropertiesConverter`,
-   * `DaemonCompatibilitySpec`). The daemons the registry holds are recorded after each command
-   * and ended with the launch (RunOnHostGradleDaemons). The toolchain inventory is closed to the JDK the
-   * profile grants, so a project asking for another toolchain fails naming it, not by a denial.
+   * The distribution's own `gradle`, not the workspace's `gradlew` (run-on-host.md, "Gradle").
+   *
+   *   - The settings go on the command line, where a `-D` overrides every gradle.properties.
+   *   - The daemon registry is the launch's own, under the runner's `tmp/`, which every Gradle process of the launch
+   *     is granted and which ends with the launch. `gradle --stop` stops every daemon in the registry, whatever its
+   *     JVM (`DaemonStopClient`). A registry under the per-workspace user home would therefore let one launch's
+   *     `--stop` end another launch's builds in the same workspace.
+   *   - Attaching is already the launch's own. The client's `java.io.tmpdir`, the runner's `tmp/`, is among the
+   *     immutable properties that Gradle's daemon compatibility compares (`InitialPropertiesConverter`,
+   *     `DaemonCompatibilitySpec`).
+   *   - The daemons that the registry holds are recorded after each command and ended with the launch
+   *     (RunOnHostGradleDaemons).
+   *   - The toolchain inventory is closed to the JDK the profile grants. A project asking for another toolchain
+   *     therefore fails with an error naming the toolchain, not with a denial.
    */
   def gradleCommand(prereqs: CommandPrereqs, tmp: Path): Seq[String] =
     Seq(
@@ -1205,41 +1272,47 @@ object RunOnHostSandbox:
 
   val PassedThrough = Vector("HOME", "LANG", "LC_ALL")
 
-  /** Never the forwarded value. The version overrides: the supervisor resolved the version from the
-    * build directory alone and granted that launcher (RunOnHostPrereqs.millVersion,
-    * millLauncherVersion), and either would make the bootstrap select another; `MILL_VERSION` is
-    * the supervisor's own setting for a mill command, naming that launcher. The output-directory
-    * overrides (`OutFiles.java`): the daemon's rendezvous, its port candidate and the foreign
-    * daemons are all looked for under `out/`, and Mill sent elsewhere would be checked nowhere. */
+  /** Variables whose forwarded value the command never gets.
+    *
+    *   - The version overrides: the supervisor resolved the version from the build directory alone and granted that
+    *     launcher (RunOnHostPrereqs.millVersion, millLauncherVersion). Either override would make the bootstrap select
+    *     another launcher. `MILL_VERSION` is the supervisor's own setting for a mill command, and names that launcher.
+    *   - The output-directory overrides (`OutFiles.java`): the daemon's rendezvous, its port candidate and the foreign
+    *     daemons are all looked for under `out/`. A Mill sent elsewhere would be checked nowhere. */
   val MillOverrides = Set("MILL_VERSION", "DEFAULT_MILL_VERSION", "MILL_OUTPUT_DIR", "MILL_BSP_OUTPUT_DIR")
 
-  // sbt's getPreloaded also splits JVM environment options without unquoting them. Its first
-  // lookup is argv: give it the global base as one argument, before any user options.
+  // sbt's getPreloaded also splits JVM environment options without unquoting them. getPreloaded's first lookup is argv,
+  // so the global base goes there as one argument, before any user options.
   def sbtCommand(executable: Path, sbtGlobal: Path): Seq[String] =
     Seq(executable.toString, s"-Dsbt.global.base=$sbtGlobal")
 
   /**
-   * HotSpot splits _JAVA_OPTIONS on whitespace; an unquoted path with a space can produce
-   * an extra option that prevents JVM startup.
-   * HotSpot's _JAVA_OPTIONS parser (`Arguments::parse_options_buffer`) joins adjacent quoted
-   * runs and drops their delimiters. Unlike a shell, it does not interpret backslash escapes;
-   * a literal double quote therefore needs a single-quoted run between double-quoted runs.
+   * A JVM property as one `_JAVA_OPTIONS` word.
+   *
+   *   - HotSpot splits _JAVA_OPTIONS on whitespace. An unquoted path with a space can produce an extra option that
+   *     prevents JVM startup.
+   *   - HotSpot's _JAVA_OPTIONS parser (`Arguments::parse_options_buffer`) joins adjacent quoted runs and drops their
+   *     delimiters.
+   *   - Unlike a shell, the parser does not interpret backslash escapes. A literal double quote therefore needs a
+   *     single-quoted run between double-quoted runs.
    */
   def jvmProperty(name: String, value: String): String =
     "-D" + name + "=\"" + value.replace("\"", "\"'\"'\"") + "\""
 
   /**
-   * The command's whole environment, a closed set: `PassedThrough`, then what `--env` named, then
-   * the supervisor's own settings, which win. doc/run-on-host.md, "The command's lifetime and environment",
-   * has the table of what is in it; SECURITY.md, "Run on host", has why it is closed.
+   * The command's whole environment, a closed set: `PassedThrough`, then what `--env` named, then the supervisor's
+   * own settings, which win.
+   *
+   *   - doc/run-on-host.md, "The command's lifetime and environment", has the table of what the environment holds.
+   *   - SECURITY.md, "Run on host", explains why the environment is closed.
    */
   def commandEnvironment(
     host: String => Option[String],
     forwards: Vector[(String, String)],
     assembled: Assembled,
     sessionTmp: Path,
-    // Where sbt's server binds its sockets and its clients find them: the runtime's `tmp/` for
-    // sbt, mill and gradle, the command's own for Maven.
+    // Where sbt's server binds its sockets and its clients find them: the runtime's `tmp/` for sbt, mill and gradle,
+    // and the command's own for Maven.
     socketDir: Path,
     proxyPort: Int,
     // The runtime's proxy's CA certificate, in both formats (RunOnHostInspection).
@@ -1248,44 +1321,47 @@ object RunOnHostSandbox:
   ): Map[String, String] =
     import assembled.{gradleUserHome, ivyHome, m2Repository, millDownloads, millLauncherVersion, prereqs, sbtGlobal}
     val passed = PassedThrough.flatMap(name => host(name).map(name -> _)).toMap
-    // The settings must reach the JVMs the command forks — a forked test or `run` — and such a JVM
-    // inherits the environment and nothing else: its options come from the build definition, so
-    // SBT_OPTS and JAVA_OPTS, which the sbt script and the mill executable do read, would reach
-    // only the program's own JVMs. sbt 2.0.9 also copies JAVA_TOOL_OPTIONS and JDK_JAVA_OPTIONS
-    // into argv without unquoting them; _JAVA_OPTIONS reaches HotSpot unchanged. HotSpot applies
-    // it after argv, so the supervisor's properties also win over command-line properties.
-    // The shim handles the resulting startup banner.
+    // Why _JAVA_OPTIONS carries the settings:
+    //
+    // - The settings must reach the JVMs the command forks, such as a forked test or `run`. Such a JVM inherits the
+    //   environment and nothing else, because its options come from the build definition.
+    // - SBT_OPTS and JAVA_OPTS, which the sbt script and the mill executable do read, would therefore reach only the
+    //   program's own JVMs.
+    // - sbt 2.0.9 copies JAVA_TOOL_OPTIONS and JDK_JAVA_OPTIONS into argv without unquoting them. _JAVA_OPTIONS
+    //   reaches HotSpot unchanged.
+    // - HotSpot applies _JAVA_OPTIONS after argv, so the supervisor's properties also win over command-line
+    //   properties.
+    // - The shim handles the resulting startup banner.
     val javaOptions = (Seq(
       jvmProperty("java.io.tmpdir", sessionTmp.toString),
       jvmProperty("java.util.prefs.userRoot", sessionTmp.toString),
-      // ipcsocket extracts its native socket library to sbt.ipcsocket.tmpdir, else
-      // $XDG_RUNTIME_DIR, else java.io.tmpdir (org.scalasbt.ipcsocket.NativeLoader). An sbt
-      // client's XDG_RUNTIME_DIR is the runner's tmp/, which its profile grants no write or
-      // exec, so the load fails there; this points it at the command's own tmp/, always
-      // read-write-exec. The rendezvous sockets still go under XDG_RUNTIME_DIR.
+      // ipcsocket extracts its native socket library to sbt.ipcsocket.tmpdir, else $XDG_RUNTIME_DIR, else
+      // java.io.tmpdir (org.scalasbt.ipcsocket.NativeLoader). An sbt client's XDG_RUNTIME_DIR is the runner's tmp/,
+      // where the client's profile grants no write or exec, so the load fails there. This property points the
+      // library at the command's own tmp/, which is always read-write-exec. The rendezvous sockets still go under
+      // XDG_RUNTIME_DIR.
       jvmProperty("sbt.ipcsocket.tmpdir", sessionTmp.toString),
       jvmProperty("sbt.global.base", sbtGlobal.toString),
       jvmProperty("sbt.ivy.home", ivyHome.toString),
       jvmProperty("maven.repo.local", m2Repository.toString),
-      // Maven's resolver ignores the JVM proxy properties unless told (run-on-host.md "Maven").
+      // Maven's resolver ignores the JVM proxy properties unless told to use them (run-on-host.md, "Maven").
       "-Daether.connector.http.useSystemProperties=true",
     ) ++ JdkTrust.proxyProperties("127.0.0.1", proxyPort).map((name, value) => s"-D$name=$value") ++ Vector(
-      // The proxy answers for every host it allows under a leaf of its own CA, so that CA is the
-      // whole store: the JDK's own roots would verify nothing the command can reach.
+      // The proxy answers for every host it allows under a leaf of its own CA, so that CA is the whole store. The
+      // JDK's own roots would verify nothing the command can reach.
       jvmProperty("javax.net.ssl.trustStore", RunOnHostInspection.trustStore(trust).toString),
       "-Djavax.net.ssl.trustStoreType=PKCS12",
       s"-Djavax.net.ssl.trustStorePassword=${RunOnHostInspection.TrustStorePassword}",
-      // Without this a JVM reaches 127.0.0.1 through a dual-stack AF_INET6 socket as v4-mapped
-      // ::ffff:127.0.0.1, which the profile's "localhost" class does not cover: the connect to
-      // the proxy dies with EPERM (measured, src/probe/jvm-proxy-rule.sh).
+      // Without this property, a JVM reaches 127.0.0.1 through a dual-stack AF_INET6 socket as v4-mapped
+      // ::ffff:127.0.0.1, which the profile's "localhost" class does not cover. The connect to the proxy then dies
+      // with EPERM (measured, src/probe/jvm-proxy-rule.sh).
       "-Djava.net.preferIPv4Stack=true",
     )).mkString(" ")
     val own = Map(
-      // The JDK, then the system directories a command may execute from
-      // (SeatbeltProfile.SystemPaths.txt) — never the host's PATH: an entry of it the confinement refuses,
-      // a version manager's shim or a Homebrew program ahead of the system one, fails the lookup
-      // with EPERM at that entry, and the shell tries no further, so a command the system PATH
-      // serves would break on the shell's.
+      // The JDK, then the system directories a command may execute from (SeatbeltProfile.SystemPaths.txt), and
+      // never the host's PATH. The confinement may refuse an entry of the host's PATH, such as a version manager's
+      // shim or a Homebrew program ahead of the system one. The lookup then fails with EPERM at that entry, and the
+      // shell tries no further. A command that the system PATH serves would therefore break on the host's PATH.
       "PATH" -> s"${prereqs.jdkHome.resolve("bin")}:/usr/bin:/bin:/usr/sbin:/sbin",
       "JAVA_HOME" -> prereqs.jdkHome.toString,
       "_JAVA_OPTIONS" -> javaOptions,
@@ -1297,40 +1373,42 @@ object RunOnHostSandbox:
       "USER" -> userName,
       "LOGNAME" -> userName,
     ) ++
-      // Set for every program, not mill alone: sbt ignores it, and one unconditional setting is
-      // simpler than a conditional. Mill's bootstrap otherwise derives the folder from HOME and
-      // XDG_CACHE_HOME, and this sets it to the folder holding the executable the command is
-      // granted.
+      // Set for every program, not mill alone: sbt ignores it, and one unconditional setting is simpler than a
+      // conditional one. Mill's bootstrap otherwise derives the folder from HOME and XDG_CACHE_HOME. This variable
+      // sets it to the folder that holds the executable the command is granted.
       millDownloads.map(dir => "MILL_FINAL_DOWNLOAD_FOLDER" -> dir.toString) ++
-      // The bootstrap's own override, set to the JVM launcher of the pinned version: the
-      // bootstrap would run the native image for a bare pin (RunOnHostPrereqs.millLauncherVersion).
+      // The bootstrap's own override, set to the JVM launcher of the pinned version. For a bare pin, the bootstrap
+      // would run the native image (RunOnHostPrereqs.millLauncherVersion).
       millLauncherVersion.map("MILL_VERSION" -> _) ++
       commandProxyVariables(proxyPort) ++
-      // For the programs HTTPS_PROXY serves, which read no JVM property.
+      // For the programs that HTTPS_PROXY serves, which read no JVM property.
       AgentSandboxLauncher.CaBundleVariables.map(_ -> RunOnHostInspection.caBundle(trust).toString)
     passed ++ (forwards.toMap -- MillOverrides) ++ own
 
   /**
-   * The proxy variables the command's environment gets (AgentSandboxLauncher.proxyVariables), for
-   * the programs that read the environment rather than the JVM properties; the loopback exemption
-   * lets a test server on it be reached directly. The rest of the family — ALL_PROXY, FTP_PROXY —
-   * requires explicit forwarding. The launcher's own HTTPS_PROXY is absent: that one names an
-   * upstream proxy the confinement refuses, with a credential the command has no business reading.
+   * The proxy variables that the command's environment gets (AgentSandboxLauncher.proxyVariables), for the programs
+   * that read the environment rather than the JVM properties.
+   *
+   *   - The loopback exemption lets the command reach a test server on loopback directly.
+   *   - The rest of the variable family, such as ALL_PROXY and FTP_PROXY, requires explicit forwarding.
+   *   - The launcher's own HTTPS_PROXY is absent. That variable names an upstream proxy that the confinement refuses,
+   *     with a credential the command has no business reading.
    */
   def commandProxyVariables(proxyPort: Int): Map[String, String] =
     AgentSandboxLauncher.proxyVariables(s"http://127.0.0.1:$proxyPort").toMap
 
   /**
-   * The cost of switching where a build runs, paid before each sbt server starts
-   * (RunnerRuntimes.sweepTargetLinks). sbt 2 leaves `target/` outputs as
-   * symlinks into its global base's content-addressed store, so a tree the user's own sbt built
-   * links into a store this profile cannot reach — and zinc treats the unreadable state as an
-   * error, not a cold start (measured: `previousCompile` fails on `inc_compile_3.zip`). Every
-   * symlink under a `target/` directory that does not resolve inside a granted root — the
-   * dangling included — is removed then; the artifacts it named still exist in the
-   * store of the sbt that made them, which relinks on its own next run. The roots are compared
-   * resolved, as the links are: a root reached through a symlink, macOS's `/var`, would
-   * otherwise match nothing and the sweep would take every link.
+   * The cost of switching where a build runs, paid before each sbt server starts (RunnerRuntimes.sweepTargetLinks).
+   *
+   *   - sbt 2 leaves `target/` outputs as symlinks into its global base's content-addressed store. A tree that the
+   *     user's own sbt built therefore links into a store this profile cannot reach.
+   *   - zinc treats the unreadable state as an error, not as a cold start (measured: `previousCompile` fails on
+   *     `inc_compile_3.zip`).
+   *   - This method removes every symlink under a `target/` directory that does not resolve inside a granted root,
+   *     dangling links included. The artifacts a link named still exist in the store of the sbt that made them,
+   *     which relinks them on its own next run.
+   *   - The roots are compared resolved, as the links are. A root reached through a symlink, such as macOS's `/var`,
+   *     would otherwise match nothing, and the sweep would take every link.
    */
   def cleanForeignTargetLinks(workspaceRoot: Path, granted: Seq[Path]): Vector[Path] =
     val roots = granted.flatMap(realPath)
