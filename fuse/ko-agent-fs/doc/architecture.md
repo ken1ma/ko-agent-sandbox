@@ -27,12 +27,12 @@ operations the kernel forwards. Three other mechanisms were considered and rejec
   the rule we most need, *refusing creation of an entry named `.git`*. Partial fit.
 - **BPF-LSM** — hook `security_inode_create`/`rename`/`link`/`setattr` and deny by name in-kernel.
   Elegant and native-speed. Rejected for the filter's design for the three reasons below, each
-  answered since by `../../../doc/plan-bpf-lsm-cgroup.md` ("The recorded decisions this answers"):
+  answered since by `../../../doc/bpf-lsm-cgroup.md` ("The recorded decisions this answers"):
   `BPF_LSM_CGROUP` programs attached to the session's own cgroup give the asymmetry in the kernel,
   a probe at every launch answers the configuration risk, and the C classifier is compiled for the
   host and run through this crate's corpus (`tests/bpf_equivalence.rs`). That backend is
   `--workspace=live,bpf` on the podman machines, with the filter the default of both modes until
-  the plan's "Acceptance" passes.
+  the release decision `../../../doc/TODO.md` plans ("The BPF backend as the default").
 
 The deciding requirement is the **host/container asymmetry**: the container's view is filtered, the
 host's direct writes to the same files are not (`git-metadata.md`, "What this intentionally does
@@ -305,7 +305,7 @@ untrusted FUSE layer around it. The FUSE layer decides *where* an op is; `policy
 (`allow_symlink_target`, `symlink`). Keeping that separation strict is what keeps the
 authorization rules auditable at 100k-file scale, where the FUSE layer is necessarily busy.
 `src/bpf_records.rs` decides nothing either: it renders the resolved rules and the guard's findings
-as the map records of the BPF backend (`../../../doc/plan-bpf-lsm-cgroup.md`, "The policy").
+as the map records of the BPF backend (`../../../bpf/ko-agent-bpf/doc/architecture.md`, "The policy").
 
 The line is worth reading precisely, because *where* is not always a function of the names. Under
 `<gitdir>/modules` it is not: a submodule's name defaults to its path, so the same path can be a

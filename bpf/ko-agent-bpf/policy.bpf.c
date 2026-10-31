@@ -1,17 +1,17 @@
-// Phase 3 of doc/plan-bpf-lsm-cgroup.md, the policy program: Phase 2's representative program
-// (../phase2/classify.bpf.c) with what that phase left to this one ("The policy"): the identities
-// of guarded objects as second names, the guard's alias contexts (policy.rs, `RuleContext::also`),
-// the NTFS short-name form, the symlink target rules (fs.rs, `target_has_portable_syntax` and
-// `allow_symlink_target`), `file_receive` under `unix-socket`, the walk's state guarded against
-// reentry ("Phases", 3), and the FIFO rules ("The policy": no FIFO made, opened, retimed or
-// received on the share). The verifier's answer to it on both kernels and the corpus's decisions
-// are what the phase measures; the launcher installs this object (bpf/ko-agent-bpf/).
+// The policy program of bpf/ko-agent-bpf/doc/architecture.md, measured by the policy suite: the every-hook suite's
+// representative program (bpf/probe/phase2/classify.bpf.c, commit 654586d) with what that suite left to this one ("The
+// policy"): the identities of guarded objects as second names, the guard's alias contexts (policy.rs,
+// `RuleContext::also`), the NTFS short-name form, the symlink target rules (fs.rs, `target_has_portable_syntax` and
+// `allow_symlink_target`), `file_receive` under `unix-socket`, the walk's state guarded against reentry ("The policy",
+// the walk's state), and the FIFO rules ("The policy": no FIFO made, opened, retimed or received on the share). The
+// verifier's answer to it on both kernels and the corpus's decisions are what the policy suite measures; the launcher
+// installs this object (bpf/ko-agent-bpf/).
 //
 // Every loop is a `bpf_for` over the kernel's numeric iterator (bpf_iter_num_*, Linux 6.4), which
 // the verifier checks by convergence rather than by simulating every iteration, and every value a
-// loop carries between iterations lives in map memory ("Phase 2 on macOS", convergence). The walk,
-// the rule match and the symlink judgment are global functions, verified once per program ("Phase
-// 2 on WSL", global function).
+// loop carries between iterations lives in map memory ("Every hook on macOS", convergence). The walk,
+// the rule match and the symlink judgment are global functions, verified once per program ("Every
+// hook on WSL", global function).
 //
 // Return convention (kernel/bpf/cgroup.c, bpf_prog_run_array_cg): 1 allows, 0 becomes -EPERM.
 #include "vmlinux.h"
@@ -275,7 +275,7 @@ struct rule_state {
 
 // The walk's names, leaf first, and the classifier's working state. Per CPU and per slot: 512
 // bytes of stack hold none of it, and a task preempted inside the program leaves its slot taken
-// for the task that then enters on the same CPU ("Phases", 3).
+// for the task that then enters on the same CPU ("The policy", the walk's state).
 struct scratch {
 	char raw[WALK_BOUND][NAME_BYTES];
 	__u8 raw_len[WALK_BOUND];
@@ -445,7 +445,7 @@ static __always_inline void barrier_fetch_add(struct scratch *sc)
 // discards the walk. A global function, as the walk's two loops' bodies are: the verifier checks a
 // global function once for any arguments, where it checks a loop's inlined body at every iteration
 // until the states converge, which for this body took 919,220 instructions of the 1,000,000 limit
-// on 6.18 ("Phase 3 on WSL") and 33,135 on 7.2.5.
+// on 6.18 ("Policy on WSL") and 33,135 on 7.2.5.
 __noinline int walk_level(__u64 slot, __u64 level)
 {
 	struct scratch *sc = get_scratch(slot);
@@ -542,7 +542,7 @@ __noinline int walk_recheck(__u64 slot, __u64 level)
 // probe helper, and the program runs under the caller's RCU read lock, which keeps a dentry's
 // memory a dentry (fs/dcache.c, `__d_free`). A rename elsewhere in the VM discards nothing
 // (measured: a global `rename_lock` check retried at every rename of sixteen processes and gave
-// up, "Phase 3 on macOS").
+// up, "Policy on macOS").
 static __always_inline int walk_once(__u64 slot, struct dentry *start, struct scratch *sc, struct walk *out)
 {
 	volatile struct loop_state *ls = &sc->loop;
@@ -1582,8 +1582,8 @@ static __always_inline int finish(enum hook hook, __u32 reason, const struct pos
 
 // The walk and the position into `sc->pos[pos_index]`, as a global function: the verifier checks a
 // global function once per program, where it checks an inlined or static one at each call, and
-// the two-walk hooks exceed its budget with the walk checked twice on Linux 6.18 (measured, "Phase
-// 2 on WSL": 640,000 to 790,000 insns for one walk there against 14,500 on 7.2). The dentry
+// the two-walk hooks exceed its budget with the walk checked twice on Linux 6.18 (measured, "Every
+// hook on WSL": 640,000 to 790,000 insns for one walk there against 14,500 on 7.2). The dentry
 // arrives as a scalar, which the walk's probe reads take as they take a pointer: the verifier
 // passes a global function a pointer only as a declared trusted argument (measured on 7.2: "R2 is
 // not a scalar" for a hook's dentry), which `file_open`'s dentry, read through a probe, is not.
@@ -1990,7 +1990,7 @@ int BPF_PROG(inode_rename, struct inode *old_dir, struct dentry *old_dentry, str
 // the namespace the controller recorded as the runtime's; or an anonymous one holding a mount
 // the runtime built and has not moved into place. The recorded namespace alone does not hold on
 // WSL, where the runtime passes the volume mountpoint from a namespace that is neither the
-// controller's nor pid 1's, which are one there ("Phase 3 on WSL").
+// controller's nor pid 1's, which are one there ("Policy on WSL").
 static __always_inline int ns_is_runtime(struct mnt_namespace *ns, struct task_struct *task,
 					 const struct policy_config *cfg)
 {
@@ -2008,7 +2008,7 @@ static __always_inline int ns_is_runtime(struct mnt_namespace *ns, struct task_s
 		return 1;
 	// An anonymous namespace: by its flag on 7.2, by its sequence on kernels that keep one at 0
 	// for it, and by the one inode number all of them share on 6.18, which has neither (measured,
-	// "Phase 3 on WSL": crun passes the volume as an `open_tree` clone whose root is the volume
+	// "Policy on WSL": crun passes the volume as an `open_tree` clone whose root is the volume
 	// directory and whose number is 0xEFFFFFF7).
 	if (BPF_CORE_READ(ns, ns.inum) == MNT_NS_ANON_INO)
 		return 1;
@@ -2047,7 +2047,7 @@ static __always_inline void note_receive(struct mnt_namespace *ns, struct task_s
 // mount (a pipe, a socket, an anonymous inode), passes, and so does one of the runtime's
 // namespaces (`ns_is_runtime`), which pass the container's mount sources into it as it starts
 // (measured: the volume's mountpoint directory, refused as a directory, failed crun's start,
-// "Phase 3 on macOS"). Of another container's namespace, or of a mount that has left its
+// "Policy on macOS"). Of another container's namespace, or of a mount that has left its
 // namespace because the sender's container ended before the receiver read the message
 // (fs/namespace.c, `umount_tree` clears `mnt_ns`), a directory is
 // refused, whatever it names; a non-directory of the share's type passes only beneath a recorded
@@ -2055,7 +2055,7 @@ static __always_inline void note_receive(struct mnt_namespace *ns, struct task_s
 // FMODE_WRITE; one of the volume's type passes only beneath the recorded volume root, so another
 // workspace's volume file does not arrive; one of any other type passes, since it reaches no share
 // and starts no lookup, which is what the runtime passes into the container's namespace while it
-// starts (measured: with every other namespace's file refused, crun's start failed, "Phase 3 on
+// starts (measured: with every other namespace's file refused, crun's start failed, "Policy on
 // macOS").
 SEC("lsm_cgroup/file_receive")
 int BPF_PROG(file_receive, struct file *file)

@@ -63,7 +63,7 @@ object ImageBuilds:
         contextSourceId(context, "debian-coursier"),
       )
       // The BPF backend, on the podman machines alone: native Linux keeps the filter
-      // (doc/plan-bpf-lsm-cgroup.md, "Later versions"), and the build reads the machine's kernel BTF.
+      // (doc/TODO.md, "The BPF backend's later versions"), and the build reads the machine's kernel BTF.
       // A machine that lacks what the backend needs gets the filter's build without it.
       val bpfBackendSourceId = KoAgentBpf.sourceId(context)
       val buildBpfBackend = os != Os.Linux && bpfBuildPossible(os)

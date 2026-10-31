@@ -4,6 +4,7 @@
 # `.containerignore` because both podman and docker look for it.
 target
 
-# Neither is a build input (build.sbt, the resourceGenerators task).
+# None is a build input (build.sbt, the resourceGenerators task).
 doc
 probe
+bench

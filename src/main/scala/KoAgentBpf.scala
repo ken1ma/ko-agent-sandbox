@@ -1,4 +1,4 @@
-// The BPF cgroup-LSM backend of doc/plan-bpf-lsm-cgroup.md as the launcher drives it, on the podman
+// The BPF cgroup-LSM backend of bpf/ko-agent-bpf/doc/architecture.md as the launcher drives it, on the podman
 // machines: the build and install of its binaries (bpf/ko-agent-bpf/), the capability probe, the
 // launch's steps 1 to 3 ("Lifecycle": the attach cgroup, the controller, the read-back and the proof),
 // the teardown, the reconcile at every launcher start, and the labels and the launch lock by which
@@ -52,7 +52,7 @@ object KoAgentBpf:
         "workspace's protections there (SECURITY.md, \"The BPF backend\")",
     )
 
-  /** The share types the plan measured; another refuses the launch ("Phases", 6). */
+  /** The share types the suites measured; another refuses the launch ("The launcher's side"). */
   val MeasuredShareTypes: Set[String] = Set("virtiofs", "9p")
 
   // ---------------------------------------------------------------------------
@@ -191,7 +191,7 @@ object KoAgentBpf:
     bundleSourceId(own ++ shared)
 
   /** The same id out of the jar, for a launch's check of the installation: the directory's own files, not
-    * `host/`, the classifier's host build the self-test image compiles (its id is the self-test's). */
+    * `test/host/`, the classifier's host build the self-test image compiles (its id is the self-test's). */
   def bundledSourceId(): String =
     val own = bundleIndex()
       .filter(entry => entry.startsWith(s"$SourceDir/") && !entry.drop(SourceDir.length + 1).contains('/'))

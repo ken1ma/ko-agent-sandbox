@@ -525,6 +525,9 @@ restore permission prompts and set the Claude Code status line.
 1. On macOS and Windows, installs the BPF backend, compiled from bundled source against the
    machine's kernel, inside the podman machine.
 
+    1. Run `--build` again after `podman machine os upgrade` or `wsl --update`: a `bpf` launch
+       refuses a backend built under another kernel, and one from another launcher build.
+
 1. Use `--update` to install new agent releases.
 
     1. It rebuilds without cache; `--build` may reuse cached versions. Agents cannot update

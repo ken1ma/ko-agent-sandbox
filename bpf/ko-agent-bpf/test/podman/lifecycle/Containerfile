@@ -1,0 +1,74 @@
+# ---------------------------------------------------------------------------
+# Build the lifecycle suite of bpf/ko-agent-bpf/doc/evidence.md, and the container its sessions run in
+# ---------------------------------------------------------------------------
+#
+# Lifecycle.scala builds this on the host from a context it assembles out of the files sources.txt lists,
+# since the policy program and the binaries are bpf/ko-agent-bpf/'s and the records header the
+# guard's, outside this directory, then extracts /out from the image inside the podman machine, as the
+# other suites' drivers do; the same image is the session container the rows run.
+#
+# vmlinux.h is generated from the kernel this build runs on, the machine's, the one the programs
+# attach to. The binaries are static: the controllers, the read-back and rewrite run in the machine,
+# the fixture in the machine and in the container.
+
+# Debian 13 (trixie), matching the rest of this project's images.
+FROM docker.io/library/debian:trixie-slim AS build
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        clang-19 llvm-19 bpftool libbpf-dev libelf-dev zlib1g-dev libzstd-dev linux-libc-dev libc6-dev; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY policy.bpf.c records.h backend.h controller.c readback.c fixture.c rewrite.c ./
+
+# The kernel whose BTF the step below reads is not a build input podman sees, so a cached layer
+# would outlive a kernel upgrade; the driver passes the machine's `uname -r` here to key the cache.
+ARG BUILD_KERNEL=unknown
+
+# other.bpf.o is policy.bpf.c counting each call twice in its statistics: a build whose programs
+# differ from the installed ones by one immediate, so that its tags differ and no decision does. It
+# stands for a stale pin after `--build` and for a controller loading another object ("Suites", lifecycle).
+# (A bound such as WALK_BOUND is no candidate: BOUNDED masks an index with `count - 1`.)
+# other-data.bpf.o differs in one string literal of the same length: its instructions and so its
+# tags equal the installed object's, and only its read-only data map tells it apart.
+# controller-unfrozen is the controller without the freeze of the record maps, which only the
+# read-back's frozen check tells apart; the cast keeps the unused function from failing -Werror.
+RUN set -eux; \
+    mkdir -p /out; \
+    test "$(uname -r)" = "$BUILD_KERNEL"; \
+    test -r /sys/kernel/btf/vmlinux; \
+    bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h; \
+    clang-19 --version | head -1 > /out/clang-version.txt; \
+    clang-19 -O2 -g -target bpf -mcpu=v3 -Wall -Wno-missing-declarations -Werror \
+        -c policy.bpf.c -o /out/policy.bpf.o; \
+    grep -q '__sync_fetch_and_add(&st->calls, 1)' policy.bpf.c; \
+    sed 's/__sync_fetch_and_add(&st->calls, 1)/__sync_fetch_and_add(\&st->calls, 2)/' policy.bpf.c > other.bpf.c; \
+    cmp -s policy.bpf.c other.bpf.c && exit 1; \
+    clang-19 -O2 -g -target bpf -mcpu=v3 -Wall -Wno-missing-declarations -Werror \
+        -c other.bpf.c -o /out/other.bpf.o; \
+    grep -q 'IS("filter-repo")' policy.bpf.c; \
+    sed 's/IS("filter-repo")/IS("filter-rep0")/' policy.bpf.c > other-data.bpf.c; \
+    cmp -s policy.bpf.c other-data.bpf.c && exit 1; \
+    clang-19 -O2 -g -target bpf -mcpu=v3 -Wall -Wno-missing-declarations -Werror \
+        -c other-data.bpf.c -o /out/other-data.bpf.o; \
+    sha256sum /out/policy.bpf.o /out/other.bpf.o /out/other-data.bpf.o >> /out/objects.sha256; \
+    clang-19 -O2 -Wall -Werror -static -I. -o /out/controller controller.c -lbpf -lelf -lz -lzstd; \
+    grep -q 'freeze_records(&maps);' controller.c; \
+    sed 's/^\tfreeze_records(&maps);$/\t(void)freeze_records;/' controller.c > controller-unfrozen.c; \
+    cmp -s controller.c controller-unfrozen.c && exit 1; \
+    clang-19 -O2 -Wall -Werror -static -I. -o /out/controller-unfrozen controller-unfrozen.c \
+        -lbpf -lelf -lz -lzstd; \
+    clang-19 -O2 -Wall -Werror -static -I. -o /out/readback readback.c -lbpf -lelf -lz -lzstd; \
+    clang-19 -O2 -Wall -Werror -static -I. -o /out/fixture fixture.c; \
+    clang-19 -O2 -Wall -Werror -static -I. -o /out/rewrite rewrite.c -lbpf -lelf -lz -lzstd; \
+    for bin in controller controller-unfrozen readback fixture rewrite; do \
+        ldd /out/$bin 2>&1 | grep -q "statically linked\|not a dynamic executable"; \
+    done; \
+    uname -r > /out/build-kernel.txt
+
+# The session container: nothing beyond the fixture binary is needed in it.
+FROM docker.io/library/debian:trixie-slim
+
+COPY --from=build /out /out

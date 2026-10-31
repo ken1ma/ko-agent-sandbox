@@ -10,7 +10,7 @@ column is:
 
     cp .../xattr-probe.py <scratch-workspace>/
     java -jar ko-agent-sandbox.jar python3 xattr-probe.py
-    .../probe/unfiltered.sh python3 xattr-probe.py      # the control
+    .../bench/unfiltered.sh python3 xattr-probe.py      # the control
 
 Rows that differ between the two runs are what implementing xattrs would enable. Rows that fail in both
 are the environment's, not the filter's. Record the result in doc/verification-log.md with the OS

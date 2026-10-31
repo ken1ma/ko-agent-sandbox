@@ -1,11 +1,11 @@
-// The BPF cgroup-LSM backend of doc/plan-bpf-lsm-cgroup.md: what the controller, the read-back and
+// The BPF cgroup-LSM backend of bpf/ko-agent-bpf/doc/architecture.md: what the controller, the read-back and
 // the fixture share, the formats and the readings each side takes for itself. policy.bpf.c
-// (bpf/probe/phase3/) defines its map records for itself, since a BPF program includes vmlinux.h
+// defines its map records for itself, since a BPF program includes vmlinux.h
 // and records.h follows it; the layouts here must equal the program's, and the read-back compares
 // the kernel's map info with this table. What is not here is any action of the controller's: the
 // read-back learns what is attached from the kernel alone. The launcher installs the three binaries
-// built from this directory (Containerfile) into the podman machine (KoAgentBpf.scala); the Phase 4
-// and 5 probes build the same sources (their sources.txt).
+// built from this directory (Containerfile) into the podman machine (KoAgentBpf.scala); the lifecycle
+// and benchmark suites build the same sources (their sources.txt).
 #ifndef BACKEND_H
 #define BACKEND_H
 
@@ -155,7 +155,7 @@ static inline double now_ms(void)
 	return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
 }
 
-// What the plan's controller records for a root: statx's major, minor and inode number, laid out
+// What the controller records for a root: statx's major, minor and inode number, laid out
 // as the kernel's MKDEV lays s_dev out ("The policy").
 static inline void ident_of(const char *path, struct ident *id)
 {
@@ -477,7 +477,7 @@ static inline void expect_policy(struct policy *policy, const char *records, con
 	}
 	policy->cfg.rule_count = no_root ? 0 : policy->rec.header.rule_count;
 	policy->cfg.flags = flags;
-	// The runtime's mount namespace is the controller's own ("Phase 3 on WSL"): podman and the
+	// The runtime's mount namespace is the controller's own ("Policy on WSL"): podman and the
 	// runtime run where the launcher runs the controller and the read-back.
 	policy->cfg.runtime_mnt_ns = mnt_ns_inum("self");
 	ident_of("/", &policy->cfg.host_root);

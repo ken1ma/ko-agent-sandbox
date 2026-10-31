@@ -66,7 +66,7 @@ impl Additions {
 
 /// A guarded object by workspace-relative path, empty for the root itself. The BPF backend's
 /// controller records its identity, so that any name of the object is judged as the object
-/// (`doc/plan-bpf-lsm-cgroup.md` at the repository root, "The policy", the second-name rule).
+/// (`bpf/ko-agent-bpf/doc/architecture.md` at the repository root, "The policy", the second-name rule).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuardedPath {
     pub kind: GuardedKind,
@@ -247,7 +247,7 @@ impl Workspace {
     /// found through its gitdir's `core.worktree`, which `git submodule` writes when it connects
     /// the two; a gitdir whose config names no regular `.git` inside the workspace records none,
     /// and that pointer file is then guarded by its name alone, a host-made second name of it
-    /// being the residual the plan records.
+    /// being the residual `bpf/ko-agent-bpf/doc/architecture.md` records.
     fn collect_guarded(&mut self) -> Result<(), Refusal> {
         self.additions.guarded.push(GuardedPath {
             kind: GuardedKind::Workspace,

@@ -1,7 +1,7 @@
 // The seccomp profile a `--nesting=none` session runs under: podman's installed default profile
 // with creating a user namespace, joining a namespace and every mount syscall refused, and with the
 // syscalls that change a file's extended attributes, ACLs or flags refused too
-// (doc/plan-bpf-lsm-cgroup.md, "Attributes, flags and ioctls": the BPF policy holds no hook for
+// (bpf/ko-agent-bpf/doc/architecture.md, "Attributes, flags and ioctls": the BPF policy holds no hook for
 // them, and the filter refuses them by not implementing them). Derived by --build and --update from
 // the default the podman server applies, kept under the launcher's state root, and named to
 // `podman create` by path, which the server reads (SECURITY.md, "No containers inside the sandbox
@@ -82,13 +82,14 @@ object SeccompProfile:
     * session holds in no namespace but one it created; refused so that a mistake in the two rules
     * above reopens nothing. The attribute syscalls are refused whole. The filesystem ioctls that
     * change a file (`FS_IOC_SETFLAGS`, `FS_IOC_FSSETXATTR`, the ext4, fscrypt, verity and btrfs
-    * commands of the plan's row 18) have no rule: libseccomp refuses some commands of a syscall
-    * and allows the rest only with the allowed commands spelled as masked prefixes, since an
-    * unconditional rule for a syscall clears its argument rules (`src/db.c`, `_db_rule_add`) and
-    * a rule holds one comparison per argument (`db_col_rule_add`): 255 allow rules for today's 19
-    * commands. The podman machines' shares answer those commands `ENOTTY` themselves (the plan's
-    * "Phase 2 on macOS" and "Phase 2 on WSL", `share`), and the rules stay unbuilt for the first
-    * version by the user's decision (the plan, "Decisions still open", has what reopens it). */
+    * commands of row 18 of bpf/ko-agent-bpf/doc/architecture.md's "Inventory") have no rule: libseccomp refuses
+    * some commands of a syscall and allows the rest only with the allowed commands spelled as masked
+    * prefixes, since an unconditional rule for a syscall clears its argument rules (`src/db.c`,
+    * `_db_rule_add`) and a rule holds one comparison per argument (`db_col_rule_add`): 255 allow
+    * rules for today's 19 commands. The podman machines' shares answer those commands `ENOTTY`
+    * themselves (bpf/ko-agent-bpf/doc/evidence.md, "Every hook on macOS" and "Every hook on WSL", `share`),
+    * and the rules stay unbuilt for the first version by the user's decision (doc/TODO.md, "Attribute
+    * routes as `--workspace` values, spending the free hook slots", has what reopens it). */
   val AddedRules: Vector[Json] = Vector(
     rule(
       Vector("clone", "unshare"), "SCMP_ACT_ALLOW", Vector(userNamespaceFlag(0)),

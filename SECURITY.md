@@ -127,13 +127,13 @@ costs are described below.
     concurrent host change;
   - under `--workspace=live,bpf` the BPF policy holds the same, with one difference: an empty
     directory of the name can be made and removed, and no file enters it at any depth
-    (`doc/plan-bpf-lsm-cgroup.md`, "Directories").
+    (`doc/bpf-lsm-cgroup.md`, "Directories").
 
 **The host's git executing what the sandbox wrote.** Host `git` runs what `.git` configures:
 hooks, and commands named in `.git/config` — `core.hooksPath`, `core.fsmonitor`, filters, the
 pager. By default the workspace FUSE filter prevents a session from injecting commands into the
 user's next host `git` invocation; under `--workspace=live,bpf` the BPF policy of
-`doc/plan-bpf-lsm-cgroup.md` holds the same rules on the workspace directory itself, except that
+`doc/bpf-lsm-cgroup.md` holds the same rules on the workspace directory itself, except that
 an empty directory may be made at a `.git` name and gains no `HEAD` ("Directories" there), and
 "The BPF backend" below has what an auditor trusts for it:
 
@@ -610,9 +610,11 @@ Implementation, policy derivation and test evidence: `fuse/ko-agent-fs/doc/`.
 **The BPF backend.** `--workspace=live,bpf` mounts the workspace directory itself, writable, and
 holds the filter's rules with BPF programs of type `BPF_LSM_CGROUP`, attached to a cgroup of the
 session's own in the podman machine, so the host and every other container keep unfiltered access
-to the same files; `doc/plan-bpf-lsm-cgroup.md` is the design, its evidence and what the backend
-changes ("What is gained and what is lost"). On the podman machines of macOS and Windows alone:
-native Linux keeps the filter ("Later versions" there). What an auditor trusts, and how each link
+to the same files; `doc/bpf-lsm-cgroup.md` states what the backend promises and what it changes
+("What is gained and what is lost"), `bpf/ko-agent-bpf/doc/architecture.md` how it holds that, and
+`bpf/ko-agent-bpf/doc/evidence.md` what the suites measured. On the podman
+machines of macOS and Windows alone: native Linux keeps the filter (`doc/TODO.md`, "The BPF
+backend's later versions"). What an auditor trusts, and how each link
 is checked:
 
 - **The program.** C, `bpf/ko-agent-bpf/policy.bpf.c`, compiled in the machine against its own
@@ -651,18 +653,23 @@ is checked:
   `podman machine ssh rm -r .local/share/ko-agent-sandbox/bpf`, and the unit as its comment says),
   records the installed object's tags under the running kernel and keeps one program set loaded
   and verified ahead of the next launch, which that launch takes by renaming its pin directory
-  after the read-back checked it; a launch finds its binaries by a source id of the bundled
-  sources, as the filter's `--version` is checked.
+  after the read-back checked it. A `bpf` launch refuses an installation whose source id is not
+  its own bundle's, as the filter's `--version` is checked, or whose tags were recorded under
+  another kernel than the machine runs, as after `podman machine os upgrade` or `wsl --update`;
+  either refusal names `--build`.
 - **Refused routes the hooks do not hold.** The seccomp profile refuses xattrs, ACLs and file
-  flags ("The default's seccomp profile", below); the filesystem ioctls that change a file through
-  a read-only descriptor are answered `ENOTTY` by the machines' shares, measured in the plan's
-  Phase 2 on both, and a seccomp refusal of them stays unbuilt in the first version (the plan,
-  "Decisions still open", has what reopens it); a FIFO on the share is refused by type: made,
-  opened, retimed or received (`doc/limitations.md`, "No FIFO in the workspace").
+  flags ("The default's seccomp profile", below); the filesystem ioctls that change a file through a
+  read-only descriptor are answered `ENOTTY` by the machines' shares, measured by the every-hook
+  suite on both, and a seccomp refusal of them stays unbuilt in the first version (`doc/TODO.md`,
+  "Attribute routes as `--workspace` values, spending the free hook slots", has what reopens it); a
+  FIFO on the share is refused by type: made, opened, retimed or received (`doc/limitations.md`, "No
+  FIFO in the workspace").
 
-What is measured: the plan's "Phase 1 on macOS" to "Phase 5 on WSL" sections, each binding its
-figures to the sources' hash; the launcher's own rows of Phase 6 are owed on both machines, and
-`fuse` stays the default of both modes until the plan's "Acceptance" passes.
+What is measured: the sections "One hook on macOS" to "Launcher on WSL" of
+`bpf/ko-agent-bpf/doc/evidence.md`, the launcher's own rows among them; each section of the policy,
+lifecycle, benchmark and launcher suites binds its figures to the digest of its sources' code.
+`fuse` stays the default of both modes until the release decision `doc/TODO.md` plans ("The BPF
+backend as the default").
 
 **What is inside TLS, for the hosts that stay opaque.**
 
@@ -1753,18 +1760,19 @@ profile:
   for any other (`SeccompProfile.NamespaceSyscalls` has the sources);
 - answers `setns` and every mount syscall, `mount` to `pivot_root`, with `EPERM`. Without a user
   namespace each already fails for want of a capability; the rules keep a mistake in the namespace
-  rules from reopening a mount or a join, which `doc/plan-bpf-lsm-cgroup.md` ("Mounts") relies
-  on. The whole mount family, because a mount `fsmount` or `open_tree` returns is writable through
-  its descriptor before `move_mount` attaches it (measured 2026-10-17);
+  rules from reopening a mount or a join, which `bpf/ko-agent-bpf/doc/architecture.md` ("Mounts")
+  relies on. The whole mount family, because a mount `fsmount` or `open_tree` returns is writable
+  through its descriptor before `move_mount` attaches it (measured 2026-10-17);
 - answers the `setxattr` and `removexattr` families, ACLs among them, and `file_setattr` with
   `ENOTSUP` (`SeccompProfile.AttributeSyscalls`). The filter refuses these routes by not
-  implementing them, and the BPF policy holds no hook for them (`doc/plan-bpf-lsm-cgroup.md`,
-  "Attributes, flags and ioctls"); the rule holds them in every `--nesting=none` session, under
-  `~` too. No `ioctl` command is refused: libseccomp clears a syscall's argument rules when an
-  unconditional rule for it arrives (`src/db.c`, `_db_rule_add`), so refusing the commands that
-  set a file's flags means spelling every allowed command as a masked prefix, some 255 rules,
-  which the first version does without (`doc/plan-bpf-lsm-cgroup.md`, "Decisions still open");
-  on the podman machines the shares answer them `ENOTTY` themselves.
+  implementing them, and the BPF policy holds no hook for them
+  (`bpf/ko-agent-bpf/doc/architecture.md`, "Attributes, flags and ioctls"); the rule holds them in
+  every `--nesting=none` session, under `~` too. No `ioctl` command is refused: libseccomp clears a
+  syscall's argument rules when an unconditional rule for it arrives (`src/db.c`, `_db_rule_add`),
+  so refusing the commands that set a file's flags means spelling every allowed command as a masked
+  prefix, some 255 rules, which the first version does without (`doc/TODO.md`, "Attribute routes as
+  `--workspace` values, spending the free hook slots"); on the podman machines the shares answer
+  them `ENOTTY` themselves.
 
 `--build` and `--update` derive it from the default profile the podman host has installed, so a
 podman upgrade's changes reach it at the next build, and name it to `podman create` by path; the
@@ -1786,12 +1794,12 @@ configured. `setfattr`, `setfacl` and `chattr` fail everywhere in the session, `
 them.
 
 **The opt-ins, and the controls they relax.** `--nesting` accepts `none`, `user-namespace` or
-`same-uid`; without the option it is `none`, and any other value fails the launch.
-`user-namespace` runs the session under podman's default profile: every process in it, untrusted
-repository code included, can create user namespaces and mount within them, which
-`doc/plan-bpf-lsm-cgroup.md` ("Mounts") judges as it judges `same-uid`'s mounts. `same-uid` runs
-under the default profile too and relaxes these controls for every process in the session.
-`NestingLoosenings` records why each change is required:
+`same-uid`; without the option it is `none`, and any other value fails the launch. `user-namespace`
+runs the session under podman's default profile: every process in it, untrusted repository code
+included, can create user namespaces and mount within them, which
+`bpf/ko-agent-bpf/doc/architecture.md` ("Mounts") judges as it judges `same-uid`'s mounts.
+`same-uid` runs under the default profile too and relaxes these controls for every process in the
+session. `NestingLoosenings` records why each change is required:
 
 - `--security-opt=unmask=ALL` re-exposes the informational files — `/proc/keys`,
   `/proc/timer_list`, `/proc/sched_debug` — while `/proc/kcore` stays unreadable, owned by a real

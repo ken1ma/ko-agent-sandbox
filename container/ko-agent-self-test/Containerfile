@@ -68,8 +68,8 @@ RUN --mount=type=cache,target=/build/target \
 # compiler and the sources are, and named to the test by KO_AGENT_FS_POLICY_HOST below, since the
 # test's own build looks for the sources beside the crate, which the runtime image has not got.
 RUN set -eux; \
-    cc -std=gnu17 -O1 -Wall -I /bpf/ko-agent-bpf/host -I /build/include -o /suite/policy-host \
-        /bpf/ko-agent-bpf/host/policy_host.c /bpf/ko-agent-bpf/host/records_file.c; \
+    cc -std=gnu17 -O1 -Wall -I /bpf/ko-agent-bpf/test/host -I /build/include -o /suite/policy-host \
+        /bpf/ko-agent-bpf/test/host/policy_host.c /bpf/ko-agent-bpf/test/host/records_file.c; \
     test -x /suite/policy-host
 
 

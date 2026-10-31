@@ -1,21 +1,21 @@
-// The BPF cgroup-LSM backend of doc/plan-bpf-lsm-cgroup.md: the privileged side, the launcher's
+// The BPF cgroup-LSM backend of bpf/ko-agent-bpf/doc/architecture.md: the privileged side, the launcher's
 // controller ("Lifecycle", 2, 5, 6 and 7). It loads policy.bpf.o from beside itself and never from
 // a path, fills the maps from the guard's records file and the identities it reads for itself,
 // attaches by link below the invoking user's slice alone, pins the links and the programs, keeps a
 // program set loaded and verified ahead of the next launch, attaches pinned programs again for a
 // restart, and reconciles pins and cgroups at a launcher's start. The launcher (KoAgentBpf.scala) and the
-// Phase 4 and 5 probes drive it through `podman machine ssh` under sudo; each subcommand prints
+// lifecycle and benchmark suites drive it through `podman machine ssh` under sudo; each subcommand prints
 // `key=value` lines. Exit status 3 is a refusal (`refused reason=...`), 2 a failure.
 //
 //   controller attach CGROUP PINDIR --records FILE --workspace PATH [--fixture PATH] [--volume PATH]
 //                    [--flags F,F] [--object NAME] [--bind-source PATH] [--preloaded DIR] [--no-root]
 //                    HOOK...
 //                                        load the object, fill the maps from FILE (the guard's
-//                                        `--bpf-records`; fixture.c writes one for the probes) with
+//                                        `--bpf-records`; fixture.c writes one for the suites) with
 //                                        the roots' identities, attach HOOK... to CGROUP by link, pin
 //                                        each link at PINDIR/links/HOOK and each program at
 //                                        PINDIR/progs/HOOK. --object names another object beside the
-//                                        binary, the probe's defective controller; --bind-source
+//                                        binary, the lifecycle suite's defective controller; --bind-source
 //                                        refuses the launch when a mount lies below PATH; --preloaded
 //                                        takes the preloaded set pinned under DIR by renaming DIR to
 //                                        PINDIR and fills its maps through the pinned programs,
@@ -28,7 +28,7 @@
 //                                        attach the pinned programs to a new cgroup, loading nothing
 //   controller query CGROUP              the programs attached to CGROUP, and every lsm_cgroup link
 //   controller link-info PIN             a pinned link's id, program and cgroup id (0 once detached)
-//   controller statx PATH                PATH's identity as the plan's controller records it
+//   controller statx PATH                PATH's identity as the controller records a root
 //   controller unpin PINDIR              remove every pin under PINDIR
 //   controller reconcile PINROOT --manager systemd|cgroupfs [--listing-failed] [--named NAME]...
 //                       [--hold NAME]... [--session NAME CGROUP ID]...

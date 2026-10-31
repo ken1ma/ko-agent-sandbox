@@ -153,15 +153,15 @@ measurement.
 
 Decided 2026-10-25: a FIFO's creation in the workspace and a time change on one are refused, by the
 filter (`fuse/ko-agent-fs/src/fs.rs`, `mknod` and `setattr`; `tests/mounted_mutate.rs`,
-`a_fifo_is_neither_made_nor_retimed_through_the_mount`) and, with any open of one and its
-descriptor under the `unix-socket` value of `--workspace`, by the BPF backend's hooks
-(`doc/plan-bpf-lsm-cgroup.md`, "The policy"), on every platform, until libkrun opens the FIFO
-without blocking (`upstream-issues.md`, containers/libkrun). Why more than the creation: a
+`a_fifo_is_neither_made_nor_retimed_through_the_mount`) and, with any open of one and its descriptor
+under the `unix-socket` value of `--workspace`, by the BPF backend's hooks
+(`../bpf/ko-agent-bpf/doc/architecture.md`, "The policy"), on every platform, until libkrun opens
+the FIFO without blocking (`upstream-issues.md`, containers/libkrun). Why more than the creation: a
 session's write through a FIFO makes the guest kernel flush the FIFO's changed times to the share
-itself, with no `utimensat` from any process, so refusing creation alone leaves a host-made FIFO
-as a hang a session can trigger by writing to it; the filter's daemon receives that flush as a
-`SETATTR` request and refuses it, where the BPF hooks never see it, so the backend refuses the
-open instead.
+itself, with no `utimensat` from any process, so refusing creation alone leaves a host-made FIFO as
+a hang a session can trigger by writing to it; the filter's daemon receives that flush as a
+`SETATTR` request and refuses it, where the BPF hooks never see it, so the backend refuses the open
+instead.
 
 - [ ] File the libkrun report (`upstream-issues.md`, "Setting a FIFO's times blocks the macOS
   virtio-fs server"), with the kernel's flush path as the reason mere use of a FIFO triggers it.
@@ -181,15 +181,16 @@ open instead.
 
 A podman machine keeps the OS image `podman machine init` gave it until the user runs
 `podman machine os upgrade --restart`, which the launcher prints and never runs (`SECURITY.md`,
-"Silent changes to what you own"). Measured 2026-10-19: the machine of `plan-bpf-lsm-cgroup.md`'s
-evidence ran an August image with kernel 7.1.8 while September's carried 7.2.5.
+"Silent changes to what you own"). Measured 2026-10-19: the machine of the BPF backend's evidence
+(`../bpf/ko-agent-bpf/doc/evidence.md`) ran an August image with kernel 7.1.8 while September's
+carried 7.2.5.
 
 - [ ] At `--build`, a notice when the machine's OS has an update, from the dry run
   `podman machine os upgrade -n -f json`, whose output holds a boolean for it
   (https://docs.podman.io/en/latest/markdown/podman-machine-os-upgrade.1.html). It queries the
   registry, so it runs at `--build`, not at every launch. The command is unsupported for the
   WSL provider, whose kernel `wsl --update` brings (`README.md`); the notice there is the WSL
-  kernel version beside the one the plan's evidence names.
+  kernel version beside the one that evidence names.
 - [ ] The machine's kernel version in the launch line, so a report says which kernel a session
   ran on; `podman info` has it as `host.kernel`.
 
@@ -206,6 +207,19 @@ are workspaces only the test uses.
 - [ ] If that check is not built: list each fixture's host run in the script's header —
   `./mvnw --version` in `mvn-fixture`, `./gradlew --version` in `gradle-fixture`, and
   `MILL_VERSION=1.1.10-jvm ./mill --no-daemon version` in `mill-fixture`, which the header has.
+
+## `src/probe/`: the rerun acceptance test apart from the one-off probes
+
+`src/probe/` holds two kinds of file under one name. sbt runs some on every test run:
+`run-on-host-acceptance-setup.sh` and `run-on-host-acceptance-test.sh` with the `*-fixture`
+directories (`RunOnHostAcceptanceSetupTest`, `EmitRunOnHostProfile`). The rest measured something
+once, such as `ProcArgs.java`, `ahp-hostile-host.py` and `seatbelt-semantics.sh`, and the code
+cites them for what they measured.
+
+- [ ] Move the acceptance test and its fixtures to a test location named for them, and keep
+  `src/probe/` for the one-off probes; update `run-on-host.md` and the code comments that cite
+  the moved paths. The BPF backend's suites made the same split
+  (`bpf/ko-agent-bpf/test/podman/`).
 
 ## Measure the agents under the `--nesting=none` seccomp profile
 
@@ -242,42 +256,172 @@ refused; a thread and a child process in Python 3.14, Node 24 and Java 25, `git 
     and reached through `LD_LIBRARY_PATH`. Decide whether the image ships them.
   - `agy`'s Auto mode: `limitations.md` measures it under podman's default profile only.
 
+## One `ko-agent-fs/` tree for the shared policy, the FUSE filter and the BPF backend
+
+The next change. The guard, `policy.rs`, `rulefile.rs` and `bpf_records.rs` serve both backends and
+use nothing of the FUSE layer (`fs.rs`, `inode.rs`), yet sit in the filter's crate; the BPF
+backend sits apart under `bpf/`. Once the BPF backend serves every session the filter does, the
+FUSE layer goes and the shared part stays.
+
+- [ ] Lay the tree out as:
+  - `ko-agent-fs/`: a Cargo workspace whose root package is the shared crate, holding the policy,
+    the rule file, the guard and the records compiler, `include/records.h`, the corpus tests
+    (`file_rules.rs`, `git_corpus.rs`, `corpus/`, `data/`), `bpf_equivalence.rs`, and the
+    documents about the policy (`git-metadata.md`, `security-research.md`). Its binary keeps the
+    name `ko-agent-fs` and the guard's modes (`--resolve`, `--bpf-records`,
+    `--bpf-records-header`), so the launch scripts' calls survive the filter's removal;
+  - `ko-agent-fs/ko-agent-fs-fuse/`: `fs.rs`, `inode.rs`, the mount daemon and its `--self-test`,
+    the `mounted_*.rs` tests, `bench/`, `probe/` and the filter's documents (`architecture.md`,
+    `verification-log.md`, `troubleshooting.md`), with the binary `ko-agent-fs-fuse`;
+  - `ko-agent-fs/ko-agent-fs-bpf/`: today's `bpf/ko-agent-bpf/`.
+- [ ] Follow it through `build.sbt`'s bundle contexts and exclusions, the source ids and installs
+  of the two binaries (`KoAgentFs`, `KoAgentBpf`, `ImageBuilds`, `LauncherImages`), the self-test
+  Containerfile, `KoAgentFsTest` and `KoAgentBpfTest`, the suites' `sources.txt` paths and the
+  documents' paths; the evidence digests survive, since they cover code, not paths.
+- [ ] Run `sbt testWithPodman` on both machines.
+
+## The BPF backend's later versions
+
+The first version of the BPF backend (`bpf-lsm-cgroup.md`) leaves these to the versions after it,
+each behind gates the suites name for it (`../bpf/ko-agent-bpf/doc/evidence.md`, "Suites"). Until
+then the backend selector launches those sessions with the filter, and on the podman machines their
+`--workspace=read-only` sessions under the no-root policy, which denies the share wholly and needs
+none of the routes the first item names. A quoted section name below without a
+document is one of the BPF backend's three documents, whose section names are distinct.
+
+- [ ] `NESTING=same-uid` and `NESTING=user-namespace` sessions, where the session mounts and creates
+  user namespaces: the routes a nested podman needs and the free slots, overlayfs's `user.overlay.*`
+  names, the every-hook suite's nested-podman measurement, the policy suite's alias and overlay
+  rows, among them a copy-up that moves a protected object to a new inode in the overlay's upper
+  layer, written during the copy and right after it, which must stay protected by its position alone
+  and by nothing that waits on a notification from user space, and a key for `file_receive` other
+  than the mount namespace, which a nested container of such a session would fail
+  (`../bpf/ko-agent-bpf/doc/architecture.md`, "The hooks"). Its policy suite rows: the session binds
+  the workspace and a nested filesystem at other paths in a mount namespace of its own and mutates
+  through the aliases, and through an overlay mount; and a host hard link to a nested `.git` pointer
+  file, made before and after launch, the residual `../bpf/ko-agent-bpf/doc/architecture.md` records
+  under the second-name rule. Its gate stays unmet until the user takes the two decisions below;
+  nothing is pre-accepted.
+  - Which routes stay open under `NESTING=same-uid`: the seccomp rule cannot refuse the syscalls a
+    nested podman needs ("Every hook on macOS", nested podman, in
+    `../bpf/ko-agent-bpf/doc/evidence.md`), and the two free slots
+    (`../bpf/ko-agent-bpf/doc/architecture.md`, "The hooks") can hold two of their hooks. A
+    `NESTING=none` session attaches eight hooks and such a session ten, so both fit the machine's
+    ten slots at once, unless something else in the VM holds one or a `unix-socket` session holds
+    the ninth, when one route's hook has no slot. Each route's consequence when left open:
+    - `inode_set_acl` open: an ACL set on a protected file rewrites its mode bits
+      (`posix_acl_update_mode`), a `chmod` the hooks never see;
+    - `inode_remove_acl` open: an ACL the host set on a protected file can be removed; the mode bits
+      stay, since `fuse_set_acl`, `ext4_set_acl`, `xfs_set_acl` and `btrfs_set_acl` update the mode
+      only for a non-null ACL;
+    - `inode_setxattr` open: a `user.` xattr can be set on a protected file, which no host program
+      here reads (`xattr_permission`; `cap_inode_setxattr` needs `CAP_SYS_ADMIN` for the other
+      `security.` names);
+    - `inode_setxattr` open, from a user namespace the session creates ("The policy"):
+      `security.capability` can be set on a protected file, since `cap_inode_setxattr` exempts it
+      and `cap_convert_nscap` admits it with `CAP_SETFCAP` in the caller's namespace for a file
+      whose owner is mapped there (`security/commoncap.c`), as the session's own files are. The
+      capability written is namespaced to that user namespace, and no host process is in it;
+    - `inode_removexattr` open: a `user.` xattr the host set can be removed, and so can a
+      `security.capability` the host set, from a user namespace the session creates
+      (`cap_inode_removexattr`, `capable_wrt_inode_uidgid(..., CAP_SETFCAP)`);
+    - `inode_file_setattr` open: a flag other than the append-only and immutable ones, or an
+      `fsxattr` field other than the project id, can be set on a protected file the session owns
+      ("Inventory", row 17);
+    - `file_ioctl` and `file_ioctl_compat` open: row 18's commands reach a protected entry, which
+      can have its ext4 generation and ctime set, get an encryption policy if it is an empty
+      directory, or be made permanently read-only.
+  - overlayfs's `user.overlay.*` names on protected directories, where the session can mount: no
+    taken slot holds `inode_setxattr`, and the seccomp rule does not see overlayfs's own writes
+    (`../bpf/ko-agent-bpf/doc/architecture.md`, "Attributes, flags and ioctls"). Between:
+    - accepting them: a `user.` xattr on a protected directory, which no host program here reads;
+    - `inode_setxattr` in a free slot on such sessions, which holds row 15 there too and leaves one
+      free slot to the decision above.
+- [ ] Native Linux hosts, as `bpf-lsm-cgroup.md`, "Native Linux", designs them: the controller's two
+  refusals and the mount under the bind source there, with a nested mount holding a `.git` (the
+  lifecycle suite measures them in the machines), and the host's own mount topology under the
+  workspace (`../bpf/ko-agent-bpf/doc/architecture.md`, "Mounts").
+- [ ] The classifier in Rust, once `rustc` emits the CO-RE field relocations the walk's reads need
+  (https://github.com/aya-rs/aya/issues/349): the port keeps the shape the verifier accepted in C,
+  the numeric-iterator loops with their state in map memory, the masks `barrier_var` keeps and the
+  global functions verified once per program, each to be found under Rust's BPF target and measured
+  on both kernels as the every-hook and policy suites measured the C program. The user: "Rust should
+  give us fewer vulnerabilities and fewer things to harden with great efforts." What the language
+  can and cannot cost in the program is under `bpf-lsm-cgroup.md`, "The recorded decisions this
+  answers". A loader other than libbpf, for the controller or the port, is shown first to resolve
+  the object's CO-RE relocations as libbpf does on both kernels, with a fixture whose BTF holds two
+  types of one name, since a loader that picks the wrong one reads the wrong field without an error
+  (reported against Aya as its issue 1727, not verified here).
+
+## The BPF backend as the default
+
+`fuse` stays the default of both `--workspace` modes until a release decision.
+
+- [ ] Make `bpf` the default once the backend holds every promise of `bpf-lsm-cgroup.md` ("What a
+  session can and cannot do", "Launches"), shown on both podman machines
+  (`../bpf/ko-agent-bpf/doc/evidence.md`), and a later version ("The BPF backend's later versions")
+  holds the `.git` and protected-entry rows through an alias the session binds, an overlay mount it
+  makes and a nested mount the host made, for the sessions it admits, and on native Linux the two
+  refusals of `bpf-lsm-cgroup.md`, "Native Linux".
+
+## A self-test of the BPF backend on the user's kernel
+
+- [ ] Run the policy suite's corpus against the installed policy on the user's machine, as
+  `--self-test` runs the filter's corpus. The evidence covers two kernels, 7.2.5 and 6.18.54.1
+  (`../bpf/ko-agent-bpf/doc/evidence.md`), and a user's machine runs the kernel its OS or WSL
+  brings; a launch's proof covers one refused operation per hook and one write per rule line, not
+  the corpus's 252 cases.
+  - One corpus, two runners: `exercise.c` moves into the bundled `bpf/ko-agent-bpf/`, beside
+    `fixture.c`, since `--build` builds only what the jar bundles and `test/` is excluded; the
+    policy suite builds it from there and keeps its other rows: the race, the storm, the
+    descriptors across sandboxes and the verifier figures.
+  - Measure it on both machines before it ships.
+
 ## Attribute routes as `--workspace` values, spending the free hook slots
 
 Under `--nesting=none` the seccomp profile refuses extended attributes, ACLs and `file_setattr`
 everywhere in the session, `/home` and `/tmp` included, since a filter sees no path and no
-descriptor's file (`SECURITY.md`, "The default's seccomp profile"; `plan-bpf-lsm-cgroup.md`,
-"Attributes, flags and ioctls"); the ioctl commands that set a file's flags it refuses only with
-every allowed command spelled as a masked prefix, some 255 rules, left unbuilt by the user's
-decision of 2026-10-26 (the plan's "Decisions still open" has what reopens it), and on the machines
-the shares answer them `ENOTTY`. The BPF hooks could judge them by
-position instead, as the rest of the policy is judged, but the seven hooks they need
-(`inode_{set,remove}xattr`, `inode_{set,remove}_acl`, `inode_file_setattr`,
-`file_ioctl{,_compat}`) exceed the two slots the policy leaves free of the kernel's ten, one under
-`unix-socket`. Decided 2026-10-26: the rule stays for every session, and the routes become
-values of `--workspace` a user selects, like `unix-socket`, each costing its slots.
+descriptor's file (`SECURITY.md`, "The default's seccomp profile";
+`../bpf/ko-agent-bpf/doc/architecture.md`, "Attributes, flags and ioctls"); the ioctl commands that
+set a file's flags it refuses only with every allowed command spelled as a masked prefix, some 255
+rules, left unbuilt by the user's decision of 2026-10-26 (the last item has what reopens it), and on
+the machines the shares answer them `ENOTTY`. The BPF hooks could judge them by position instead, as
+the rest of the policy is judged, but the seven hooks they need (`inode_{set,remove}xattr`,
+`inode_{set,remove}_acl`, `inode_file_setattr`, `file_ioctl{,_compat}`) exceed the two slots the
+policy leaves free of the kernel's ten, one under `unix-socket`. Decided 2026-10-26: the rule stays
+for every session, and the routes become values of `--workspace` a user selects, like `unix-socket`,
+each costing its slots.
 
 - [ ] Values `xattr` (two hooks) and `acl` (two hooks), each allowed with `bpf` alone: the
   session's hooks judge that family by position, the seccomp profile of that launch omits the
   family's rule, and the launch is refused when the selected values need more slots than the
   machine has free, naming the count. The user cannot have every value at once. File flags and
   the ioctls (three hooks) stay with the shares' own answers until a value for them fits; native
-  Linux ("Later versions") needs that value or the hooks, since its filesystems implement them.
+  Linux ("The BPF backend's later versions") needs that value or the hooks, since its filesystems
+  implement them.
   - The per-launch profile: one derived file per combination of values under the state root,
     beside `nesting-none.json`, named to `podman create` by path.
   - The read-back and the proof take the added hooks as they take `file_receive`: one refused
-    operation per hook of the set ("Lifecycle", 3).
+    operation per hook of the set (`../bpf/ko-agent-bpf/doc/architecture.md`, "Lifecycle", 3).
   - The slots are shared by every sandbox on the machine, and the `same-uid` version's nested
-    podman needs some of these routes ("Decisions still open" in the plan): record there which
+    podman needs some of these routes ("The BPF backend's later versions"): record there which
     values that version admits.
+- [ ] Refuse the ioctl commands of rows 17 and 18 (`../bpf/ko-agent-bpf/doc/architecture.md`,
+  "Inventory") in the seccomp profile by masked prefixes, about 255 rules, once any of these holds:
+  a share, a kernel or a virtiofs server starts implementing `FS_IOC_SETFLAGS` or a row 18 command,
+  which reopens the row (`../bpf/ko-agent-bpf/doc/evidence.md`, "Environment evidence"); native
+  Linux is admitted, whose filesystems implement them; or the compiled prefix filter is measured on
+  both machines and found small enough beside podman's profile. The user's decision of 2026-10-26
+  left it out of the first version: the shares' `ENOTTY` on both machines closes the rows. The
+  alternative is the value for file flags and the ioctls above.
 
 ## The proof fixture skipped on an unchanged launch
 
 The BPF backend proves its attachment at every launch, restart and recreate in two parts
-(`plan-bpf-lsm-cgroup.md`, "Lifecycle", 3): the read-back, 40 to 47 ms on WSL, and the fixture's
-proof, 68 operations the kernel judges, 306 to 386 ms on WSL and 38 to 47 ms on macOS ("Phase 4
-on WSL", "Phase 4 on macOS"). The user, 2026-10-26: 0.4 s on Windows matters; every launch pays
-the proof until this is built.
+(`../bpf/ko-agent-bpf/doc/architecture.md`, "Lifecycle", 3): the read-back, 40 to 47 ms on WSL, and
+the fixture's proof, 68 operations the kernel judges, 306 to 386 ms on WSL and 38 to 47 ms on macOS
+("Lifecycle on WSL", "Lifecycle on macOS", in `../bpf/ko-agent-bpf/doc/evidence.md`). The user,
+2026-10-26: 0.4 s on Windows matters; every launch pays the proof until this is built.
 
 - [ ] Run the proof on the first launch after a boot, after `--build`, after a rule change and
   after a failed proof; the read-back on every launch. The launcher keeps a marker beside the
@@ -286,7 +430,8 @@ the proof until this is built.
   - What a skipped proof does not catch: a defect none of the three signals, such as a controller
     bug that depends on the session's own records; the read-back still proves the attached set,
     the tags and the records. Record that residual beside the rule when it ships.
-  - The controller keeps the two parts of step 3 separable for this ("Phases", 4).
+  - The controller keeps the two parts of step 3 separable for this
+    (`../bpf/ko-agent-bpf/doc/architecture.md`, "Lifecycle", 3).
 
 ## The retired boot unit's removal
 
@@ -345,13 +490,13 @@ fails the same suites.
   only those a tool the sessions run needs. For each:
   - the kernel checks that test it, and in which user namespace: podman grants it in the rootless
     container's user namespace, so a check against the initial namespace still fails, as for
-    `CAP_LINUX_IMMUTABLE` and `CAP_DAC_READ_SEARCH` in `plan-bpf-lsm-cgroup.md` ("Inventory",
-    rows 17 and 21);
+    `CAP_LINUX_IMMUTABLE` and `CAP_DAC_READ_SEARCH` in `../bpf/ko-agent-bpf/doc/architecture.md`
+    ("Inventory", rows 17 and 21);
   - the syscalls the seccomp profile allows only with it, such as `chroot` for `CAP_SYS_CHROOT`
     and `open_by_handle_at` for `CAP_DAC_READ_SEARCH` (`includes.caps` in
     https://github.com/containers/container-libs/blob/main/common/pkg/seccomp/seccomp.json; read
     the copy the podman machine's containers-common package installs);
-  - which boundary in `SECURITY.md` or `plan-bpf-lsm-cgroup.md` relies on its absence.
+  - which boundary in `SECURITY.md` or `bpf-lsm-cgroup.md` relies on its absence.
 - [ ] A capability granted changes, in the same change, the set the entrypoint's check
   (`ko-sandbox-entrypoint`) and `SessionBoundaryTest.scala` expect, and the statements of it: the
   first section of `container/ko-agent-sandbox/AGENTS-SANDBOX.md`, and, for `CAP_SYS_CHROOT`, the

@@ -67,7 +67,7 @@ object LauncherImages:
     bundleSourceId(Vector(
       "ko-agent-fs" -> fsSourceId.getBytes(StandardCharsets.UTF_8),
       "ko-agent-self-test" -> selfTestSourceId.getBytes(StandardCharsets.UTF_8),
-      "bpf-probe-phase3" -> bpfSourceId.getBytes(StandardCharsets.UTF_8),
+      "ko-agent-bpf" -> bpfSourceId.getBytes(StandardCharsets.UTF_8),
       "ko-agent-sandbox-image" -> sandboxImageId.getBytes(StandardCharsets.UTF_8),
     ))
 
@@ -75,13 +75,15 @@ object LauncherImages:
    * The one source-identity digest, for the filter binary and the image bundle labels alike:
    * SHA-256 over (path, content) pairs in path order, each entry framed by its path, a NUL and its
    * big-endian length — the sort makes bundling order irrelevant, the length keeps file boundaries
-   * unambiguous, and the path makes a rename a new identity. The algorithm is only here,
-   * deliberately: a build is told the answer and repeats it, so there is no second implementation
-   * to drift from this one.
+   * unambiguous, and the path makes a rename a new identity. The content is a file's code, comments
+   * aside, where SourceDigest knows its syntax, so that a comment edit asks for no rebuild. The
+   * algorithm is only here, deliberately: a build is told the answer and repeats it, so there is no
+   * second implementation to drift from this one.
    */
   def bundleSourceId(entries: Seq[(String, Array[Byte])]): String =
     val digest = MessageDigest.getInstance("SHA-256")
-    entries.sortBy(_._1).foreach: (path, content) =>
+    entries.sortBy(_._1).foreach: (path, bytes) =>
+      val content = SourceDigest.content(path, bytes)
       digest.update(path.getBytes(StandardCharsets.UTF_8))
       digest.update(0.toByte)
       digest.update(java.nio.ByteBuffer.allocate(8).putLong(content.length.toLong).array())

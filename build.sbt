@@ -162,17 +162,20 @@ Compile / resourceGenerators += Def.task {
   // Build output and editor caches a worked-in checkout accumulates; keep in step with the .dockerignore files, which
   // exclude the same set from the podman build context. Two known divergences, neither reachable: "project/project" is
   // a substring test here but segment-anchored (**/) there, so a path like myproject/project would be dropped only
-  // here, and no bundled directory is named that way; and ko-agent-fs's .dockerignore lists only target, doc and probe,
-  // since no sbt or editor program creates the directories below inside a Rust crate — a stray .DS_Store there
-  // would reach
-  // a hand-run `podman build` that this task drops, costing a cache miss and nothing else (the source digest is
-  // computed from the bundle, never from a checkout).
+  // here, and no bundled directory is named that way; and ko-agent-fs's .dockerignore lists only target, doc, probe
+  // and bench, since no sbt or editor program creates the directories below inside a Rust crate — a stray .DS_Store
+  // there would reach a hand-run `podman build` that this task drops, costing a cache miss and nothing else (the source
+  // digest is computed from the bundle, never from a checkout).
   //
-  // ko-agent-fs/doc and ko-agent-fs/probe are excluded for a different reason: neither is a build input nor
-  // distribution — probe/ holds the platform-verification probes a developer runs by hand, not under cargo — and
-  // leaving them out keeps them out of KoAgentFs.koAgentFsSourceId too, so editing a design document or a
-  // probe does not invalidate every installed filter binary. Its .dockerignore drops the same paths, so a direct
-  // `podman build` from a checkout sees what a jar-built one does.
+  // ko-agent-fs/doc, ko-agent-fs/probe and ko-agent-fs/bench are excluded for a different reason: none is a build
+  // input nor distribution — probe/ holds the platform-verification probes a developer runs by hand, bench/ the
+  // benchmarks the BPF backend's benchmark suite reruns, neither under cargo — and leaving them out keeps them out of
+  // KoAgentFs.koAgentFsSourceId too, so editing a design document, a probe or a benchmark does not invalidate every
+  // installed filter binary. Its .dockerignore drops the same paths, so a direct
+  // `podman build` from a checkout sees what a jar-built one does. bpf/ko-agent-bpf/doc and bpf/ko-agent-bpf/test,
+  // the backend's evidence and the suites that measure it, are excluded for the same reason: the self-test image's
+  // id digests the whole bundled directory (LauncherImages.contextSourceId). Their builds run from the bundle's root,
+  // so no .dockerignore repeats them. bpf/ko-agent-bpf/test/host stays: the self-test image compiles that host build.
   // IO.relativize answers in the platform's separator, and everything downstream reads `/` — the
   // exclusion tests here, the jar's own entry names, and the INDEX the launcher resolves them by.
   // Unnormalized, a Windows build bundles the excluded directories and writes an INDEX no jar
@@ -186,6 +189,9 @@ Compile / resourceGenerators += Def.task {
     file.isFile &&
       !relative.startsWith("ko-agent-fs/doc/") &&
       !relative.startsWith("ko-agent-fs/probe/") &&
+      !relative.startsWith("ko-agent-fs/bench/") &&
+      !relative.startsWith("bpf/ko-agent-bpf/doc/") &&
+      !(relative.startsWith("bpf/ko-agent-bpf/test/") && !relative.startsWith("bpf/ko-agent-bpf/test/host/")) &&
       !parts.contains("target") &&
       !parts.contains(".scala-build") &&
       !parts.contains(".bsp") &&

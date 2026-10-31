@@ -7,7 +7,7 @@ Container's `initializeCommand` when you reopen it. One names a server instead: 
 git-lfs on your host downloads from when you check out and uploads to when you push.
 
 - In a writable session the workspace filter keeps these files read-only, or under
-  `--workspace=live,bpf` the BPF policy (`plan-bpf-lsm-cgroup.md`), and under `--run-on-host` so
+  `--workspace=live,bpf` the BPF policy (`bpf-lsm-cgroup.md`), and under `--run-on-host` so
   does the host command's profile.
 - Build files, scripts and `package.json` stay writable: you run those yourself, and review their
   diff as any other (SECURITY.md, "The workspace").
@@ -147,7 +147,7 @@ two stricter spots:
 Concurrent sessions of a workspace share one filter mount, which serves the rules its first session
 resolved. Under `--workspace=live,bpf` there is no mount: each session's policy holds the rules its
 own launch resolved, and a launch under the other backend beside a live session of the workspace is
-refused (`plan-bpf-lsm-cgroup.md`, "The hooks", `file_receive`).
+refused (`../bpf/ko-agent-bpf/doc/architecture.md`, "The hooks", `file_receive`).
 
 - A launch after an edit of the rule file, while other sessions of the workspace run, joins their
   mount under their rules. It prints a warning naming them, and its start prompt is the consent;

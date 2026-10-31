@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""The metadata cost of the filter, as a command rather than a reconstruction (doc/TODO.md,
+"Performance"). It builds its own corpus, so two runs are comparable even on different machines,
+and reports microseconds per entry for the workloads the tables in doc/verification-log.md, "The
+cost of a path walk", are built from.
+
+Run it in a scratch workspace, once per stack, and compare the columns — the unfiltered run is
+the control (unfiltered.sh has what it is), and the BPF policy's run is the same command below the
+attach cgroup, which bpf/ko-agent-bpf/test/podman/benchmark/Benchmark.scala drives:
+
+    cp .../entry-cost.py <scratch-workspace>/ && cd <scratch-workspace>
+    java -jar ko-agent-sandbox.jar python3 entry-cost.py         # filtered
+    .../bench/unfiltered.sh python3 entry-cost.py
+
+The control matters more than the absolute numbers: on the measured macOS stack the hypervisor
+answers an uncached guest lookup quickly, while the filter adds a FUSE round trip and full-path
+resolution. What the ratio measures is the filter's cost, not the backing share's (doc/architecture.md).
+
+Everything is written under a temporary directory in the workspace, the working directory — which
+is the point, /tmp is not the filesystem under test — and removed afterwards. FILES=n varies the
+corpus size.
+"""
+
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+FILES = int(os.environ.get("FILES", "1800"))
+
+
+def stack() -> str:
+    """Which stack, decided by two properties a bind mount does not have: the filter refuses a
+    `.git` directory at any depth, and the BPF policy, which allows the directory
+    (doc/bpf-lsm-cgroup.md, "Directories"), refuses a hook file inside it by the name alone."""
+    check = tempfile.mkdtemp(prefix=".entry-cost-stack-", dir=".")
+    try:
+        try:
+            os.mkdir(os.path.join(check, ".git"))
+        except PermissionError:
+            return "filtered"
+        try:
+            os.mkdir(os.path.join(check, ".git", "hooks"))
+            with open(os.path.join(check, ".git", "hooks", "pre-commit"), "wb"):
+                pass
+        except PermissionError:
+            return "BPF policy"
+    finally:
+        shutil.rmtree(check, ignore_errors=True)
+    return "unfiltered bind mount"
+
+
+def build(root: str) -> int:
+    """A tree a build program actually produces: a few hundred directories, a handful of small files
+    in each. 4 KB of content, so the run measures metadata rather than bandwidth."""
+    payload = b"x" * 4096
+    for index in range(FILES):
+        directory = os.path.join(root, "tree", str(index // 6))
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, "file-%d" % index), "wb") as handle:
+            handle.write(payload)
+    return sum(len(files) + len(dirs) for _, dirs, files in os.walk(os.path.join(root, "tree"))) + 1
+
+
+def timed(label: str, entries: int, *command: str) -> None:
+    """A failed command aborts the benchmark rather than being timed: its wall time measures nothing,
+    and a number that can come from a failure is not evidence."""
+    start = time.monotonic()
+    done = subprocess.run(command, capture_output=True)
+    if done.returncode != 0:
+        sys.exit(
+            "abort: %s failed: %s"
+            % (" ".join(command), done.stderr.decode(errors="replace").strip()),
+        )
+    print("  %-32s %8d us/entry" % (label, (time.monotonic() - start) * 1e6 / entries))
+
+
+def main() -> int:
+    # podman's marker in every container it runs.
+    if not os.path.exists("/run/.containerenv"):
+        print("abort: not in a container — run this inside the sandbox, not on the host")
+        return 2
+
+    under_test = stack()
+    work = tempfile.mkdtemp(prefix=".entry-cost-", dir=os.getcwd())
+    try:
+        print("building a %d-entry corpus ..." % FILES)
+        entries = build(work)
+        tree = os.path.join(work, "tree")
+
+        print("\nstack under test: %s   (%d entries)\n" % (under_test, entries))
+        timed("find (readdir only)", entries, "find", tree)
+        timed("find -printf (readdir+stat)", entries, "find", tree, "-printf", "%s %p\n")
+        timed("ls -lR (stat + xattr)", entries, "ls", "-lR", tree)
+        timed("cp -r (create + write)", entries, "cp", "-r", tree, os.path.join(work, "copy"))
+        timed("rm -rf", entries, "rm", "-rf", os.path.join(work, "copy"))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+    print("\nRun this again in the other stack; the ratio between the two columns is the")
+    print('filter\'s own cost (doc/TODO.md, "Performance").')
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

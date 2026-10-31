@@ -24,11 +24,11 @@ object CommandLine:
   /**
    * `--workspace`'s other values, beside the mode, in any order, each at most once: the backend that
    * holds the workspace's protections, `fuse`, the ko-agent-fs filter, the default of both modes
-   * until the release decision, or `bpf`, the cgroup-LSM policy of doc/plan-bpf-lsm-cgroup.md
-   * ("Phases", 6); and `unix-socket`, which allows Unix sockets in the workspace and beneath the
+   * until the release decision, or `bpf`, the cgroup-LSM policy of doc/bpf-lsm-cgroup.md
+   * ("Launches"); and `unix-socket`, which allows Unix sockets in the workspace and beneath the
    * persistent volume at the cost of the policy's ninth hook, and so needs `bpf`: the filter cannot
    * honor it. On Windows the share refuses every socket bind itself (`ENOTSUP`), so there the value
-   * reaches the volume alone (doc/plan-bpf-lsm-cgroup.md, "What is gained and what is lost").
+   * reaches the volume alone (doc/bpf-lsm-cgroup.md, "What is gained and what is lost").
    */
   val WorkspaceBackends = Vector("fuse", "bpf")
   val DefaultWorkspaceBackend = "fuse"
