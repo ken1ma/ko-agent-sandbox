@@ -1,5 +1,5 @@
-// The BPF cgroup-LSM backend of bpf/ko-agent-bpf/doc/architecture.md as the launcher drives it, on the podman
-// machines: the build and install of its binaries (bpf/ko-agent-bpf/), the capability probe, the
+// The BPF cgroup-LSM backend of ko-agent-fs/bpf/doc/architecture.md as the launcher drives it, on the podman
+// machines: the build and install of its binaries (ko-agent-fs/bpf/), the capability probe, the
 // launch's steps 1 to 3 ("Lifecycle": the attach cgroup, the controller, the read-back and the proof),
 // the teardown, the reconcile at every launcher start, and the labels and the launch lock by which
 // a launch is refused beside a live session of the other backend or socket setting ("The hooks",
@@ -178,8 +178,8 @@ object KoAgentBpf:
   // ---------------------------------------------------------------------------
 
   /** The bundled files the backend is built from: the directory, the classifier and the records header. */
-  val SourcePaths: Vector[String] = Vector("bpf/ko-agent-bpf/policy.bpf.c", "ko-agent-fs/include/records.h")
-  val SourceDir = "bpf/ko-agent-bpf"
+  val SourcePaths: Vector[String] = Vector("ko-agent-fs/bpf/policy.bpf.c", "ko-agent-fs/policy/include/records.h")
+  val SourceDir = "ko-agent-fs/bpf"
 
   /** The source id of the backend out of an unpacked context, over exactly what the Containerfile copies. */
   def sourceId(context: Path): String =
@@ -198,19 +198,19 @@ object KoAgentBpf:
       .map(entry => entry -> bundleResource(entry))
     bundleSourceId(own ++ SourcePaths.map(path => path -> bundleResource(path)))
 
-  /** The build, from the unpacked bundle's root (bpf/ko-agent-bpf/Containerfile has why): the compile
+  /** The build, from the unpacked bundle's ko-agent-fs/ (ko-agent-fs/bpf/Containerfile has why): the compile
     * stage under its cache tag, then the image the install extracts. `kernel` is the machine's. */
   def buildCommands(podman: String, kernel: String, sourceId: String): Vector[Vector[String]] =
     Vector(
       Vector(
         podman, "build", ImageBuilds.NoRegistryLookup, "--target", "build",
         "--build-arg", s"BUILD_KERNEL=$kernel", "--build-arg", s"KO_AGENT_BPF_SOURCE_ID=$sourceId",
-        "-f", s"$SourceDir/Containerfile", "-t", KoAgentBpfBuildImage, ".",
+        "-f", s"$SourceDir/Containerfile", "-t", KoAgentBpfBuildImage, "ko-agent-fs",
       ),
       Vector(
         podman, "build", ImageBuilds.NoRegistryLookup,
         "--build-arg", s"BUILD_KERNEL=$kernel", "--build-arg", s"KO_AGENT_BPF_SOURCE_ID=$sourceId",
-        "-f", s"$SourceDir/Containerfile", "-t", KoAgentBpfImage, ".",
+        "-f", s"$SourceDir/Containerfile", "-t", KoAgentBpfImage, "ko-agent-fs",
       ),
     )
 

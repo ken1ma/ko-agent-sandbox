@@ -483,7 +483,7 @@ object SandboxWorkspace:
    *     the gitdir (`git worktree add` writes `../..`; the filter's guard, `common_of` in guard.rs,
    *     reads it the same way);
    *   - what it names is a directory called `.git`, and the gitdir is one component under that
-   *     directory's `worktrees` (fuse/ko-agent-fs/doc/git-metadata.md, P1);
+   *     directory's `worktrees` (ko-agent-fs/policy/doc/git-metadata.md, P1);
    *   - that directory's `config` is readable, and neither it nor the gitdir's `config.worktree`
    *     sets `bare` true or leaves the question open (scanBare):
    *       - git in a linked worktree reads `core.bare` from these two files and not from the main

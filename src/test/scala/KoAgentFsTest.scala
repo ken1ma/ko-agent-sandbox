@@ -34,37 +34,40 @@ class KoAgentFsTest extends munit.FunSuite:
     val linux = koAgentFsInstallCommands("podman", Os.Linux, "/home/me")
     assertEquals(linux.map(_.head).distinct, Vector("podman"))
     assert(linux.exists(_.contains("ko-agent-fs-extract:/ko-agent-fs")))
-    assert(linux.exists(_.contains(s"/home/me/$KoAgentFsBinary")))
+    assert(linux.exists(_.contains("ko-agent-fs-extract:/ko-agent-fs-fuse")))
+    KoAgentFsBinaries.foreach: binary =>
+      assert(linux.exists(_.contains(s"/home/me/$binary")), binary)
+      assert(script.contains(s" $binary\n"), s"the machine's script does not install $binary:\n$script")
     assert(!linux.exists(_.contains("machine")), "native Linux has no VM to ssh into")
     assert(!linux.exists(_.exists(_.contains("sudo"))), "the launcher must never sudo on the host")
 
-  test("the installed ko-agent-fs is asked for its version and self-test where it runs"):
+  test("the installed binaries are asked for their versions, and the filter for its self-test, where they run"):
     assertEquals(
-      koAgentFsVersionCommand("podman", Os.Linux, "/home/me"),
+      koAgentFsVersionCommand("podman", Os.Linux, "/home/me", KoAgentFsBinary),
       Vector(s"/home/me/$KoAgentFsBinary", "--version"),
     )
     assertEquals(
-      koAgentFsVersionCommand("podman", Os.Mac, "/Users/me"),
-      Vector("podman", "machine", "ssh", s"./$KoAgentFsBinary --version"),
+      koAgentFsVersionCommand("podman", Os.Mac, "/Users/me", KoAgentFsFuseBinary),
+      Vector("podman", "machine", "ssh", s"./$KoAgentFsFuseBinary --version"),
     )
     assertEquals(
       koAgentFsSelfTestCommand("podman", Os.Linux, "/home/me"),
-      Vector(s"/home/me/$KoAgentFsBinary", "--self-test"),
+      Vector(s"/home/me/$KoAgentFsFuseBinary", "--self-test"),
     )
     assertEquals(
       koAgentFsSelfTestCommand("podman", Os.Windows, "C:\\Users\\me"),
-      Vector("podman", "machine", "ssh", s"./$KoAgentFsBinary --self-test"),
+      Vector("podman", "machine", "ssh", s"./$KoAgentFsFuseBinary --self-test"),
     )
 
   test("a launch's filter checks are one script: home, version, and the self-test only for this build"):
-    assume(!isWindows, "the stub ko-agent-fs is a /bin/sh script")
+    assume(!isWindows, "the stub ko-agent-fs-fuse is a /bin/sh script")
     val home = Files.createTempDirectory("ko-agent-fs-checks").toRealPath()
     try
       val selfTested = home.resolve("self-tested")
-      Files.createDirectories(home.resolve(KoAgentFsBinary).getParent)
+      Files.createDirectories(home.resolve(KoAgentFsFuseBinary).getParent)
       def stub(reported: String, selfTestExit: Int): Unit =
         val binary = Files.writeString(
-          home.resolve(KoAgentFsBinary),
+          home.resolve(KoAgentFsFuseBinary),
           s"""#!/bin/sh
              |case "$$1" in
              |  --version) echo '$reported' ;;
@@ -83,26 +86,26 @@ class KoAgentFsTest extends munit.FunSuite:
         val err = String(process.getErrorStream.readAllBytes()).stripLineEnd
         HostCommands.Run(process.waitFor(), out, err)
 
-      stub("ko-agent-fs 0.1.0 source abc", selfTestExit = 0)
+      stub("ko-agent-fs-fuse 0.1.0 source abc", selfTestExit = 0)
       for knownHome <- Vector(None, Some(home.toString)) do
         assertEquals(checkedKoAgentFsHome(checks(knownHome), "abc"), Right(home.toString))
 
-      stub("ko-agent-fs 0.1.0 source abc", selfTestExit = 3)
+      stub("ko-agent-fs-fuse 0.1.0 source abc", selfTestExit = 3)
       assertEquals(
         checkedKoAgentFsHome(checks(Some(home.toString)), "abc"),
-        Left(("error: ko-agent-fs self-test failed; not launching:\nself-test failed: no fusermount3", 3)),
+        Left(("error: ko-agent-fs-fuse self-test failed; not launching:\nself-test failed: no fusermount3", 3)),
       )
 
       Files.delete(selfTested)
-      stub("ko-agent-fs 0.1.0 source other", selfTestExit = 0)
+      stub("ko-agent-fs-fuse 0.1.0 source other", selfTestExit = 0)
       val foreign = checkedKoAgentFsHome(checks(Some(home.toString)), "abc")
-      val named = "not this launcher's build\n  (ko-agent-fs 0.1.0 source other)"
+      val named = "not this launcher's build\n  (ko-agent-fs-fuse 0.1.0 source other)"
       assert(foreign.swap.exists(_._1.contains(named)), foreign)
       assert(!Files.exists(selfTested), "another build's self-test must not run")
 
-      Files.delete(home.resolve(KoAgentFsBinary))
+      Files.delete(home.resolve(KoAgentFsFuseBinary))
       val missing = checkedKoAgentFsHome(checks(Some(home.toString)), "abc")
-      assert(missing.swap.exists(_._1.contains(KoAgentFsBinary)), missing)
+      assert(missing.swap.exists(_._1.contains(KoAgentFsFuseBinary)), missing)
       assert(!Files.exists(selfTested))
     finally deleteRecursively(home)
 
@@ -472,14 +475,20 @@ class KoAgentFsTest extends munit.FunSuite:
     assertEquals(koAgentFsReportedSourceId("ko-agent-fs 0.1.0 source probe"), Some("probe"))
     assertEquals(koAgentFsReportedSourceId("ko-agent-fs 1.2.3 source " + "a" * 64), Some("a" * 64))
     assertEquals(koAgentFsReportedSourceId("ko-agent-fs 0.1.0 source unstamped"), Some("unstamped"))
+    assertEquals(koAgentFsReportedSourceId("ko-agent-fs-fuse 0.1.0 source probe"), Some("probe"))
+    assertEquals(koAgentFsReportedSourceId("ko-agent-fs-bpf 0.1.0 source probe"), None)
     assertEquals(koAgentFsReportedSourceId(""), None)
     assertEquals(koAgentFsReportedSourceId("bash: ./ko-agent-fs: No such file or directory"), None)
     assertEquals(koAgentFsReportedSourceId("ko-agent-fs 0.1.0"), None)
 
-  test("the install line names ko-agent-fs once, then its version and source"):
+  test("the install line names the binary once, then its version and source"):
     assertEquals(
       koAgentFsInstalledLine("ko-agent-fs 0.1.0 source " + "a" * 64 + "\n"),
       "ko-agent-fs installed: 0.1.0 source " + "a" * 64,
+    )
+    assertEquals(
+      koAgentFsInstalledLine("ko-agent-fs-fuse 0.1.0 source " + "a" * 64 + "\n"),
+      "ko-agent-fs-fuse installed: 0.1.0 source " + "a" * 64,
     )
 
   test("the ko-agent-fs source id keys on code, name and file set — nothing else"):
@@ -509,18 +518,20 @@ class KoAgentFsTest extends munit.FunSuite:
     val context = Files.createTempDirectory("ko-agent-fs-id-test")
     try
       val root = context.resolve("ko-agent-fs")
-      Files.createDirectories(root.resolve("src"))
-      Files.write(root.resolve("src/lib.rs"), "pub mod policy;".getBytes("UTF-8"))
-      Files.write(root.resolve("Cargo.toml"), "[package]".getBytes("UTF-8"))
-      // A sibling image's files are not part of this identity.
+      Files.createDirectories(root.resolve("policy/src"))
+      Files.write(root.resolve("policy/src/lib.rs"), "pub mod policy;".getBytes("UTF-8"))
+      Files.write(root.resolve("Cargo.toml"), "[workspace]".getBytes("UTF-8"))
+      // A sibling image's files are not part of this identity, nor the BPF backend's beside the packages.
       Files.createDirectories(context.resolve("ko-agent-sandbox"))
       Files.write(context.resolve("ko-agent-sandbox/Containerfile"), "FROM scratch".getBytes("UTF-8"))
+      Files.createDirectories(root.resolve("bpf"))
+      Files.write(root.resolve("bpf/Containerfile"), "FROM scratch".getBytes("UTF-8"))
 
       assertEquals(
         koAgentFsSourceId(context),
         bundleSourceId(Seq(
-          "src/lib.rs" -> "pub mod policy;".getBytes("UTF-8"),
-          "Cargo.toml" -> "[package]".getBytes("UTF-8"),
+          "policy/src/lib.rs" -> "pub mod policy;".getBytes("UTF-8"),
+          "Cargo.toml" -> "[workspace]".getBytes("UTF-8"),
         )),
       )
     finally deleteRecursively(context)
@@ -529,9 +540,9 @@ class KoAgentFsTest extends munit.FunSuite:
     // Two spellings of one number: drift makes the launcher retry a defect as root, or report a
     // setup failure as a bug.
     val declared = """(?m)^const SELF_TEST_SETUP_EXIT: u8 = (\d+);$""".r
-      .findFirstMatchIn(Files.readString(Paths.get("fuse/ko-agent-fs/src/main.rs")))
+      .findFirstMatchIn(Files.readString(Paths.get("ko-agent-fs/fuse/src/main.rs")))
       .map(_.group(1).toInt)
-      .getOrElse(fail("src/main.rs declares no SELF_TEST_SETUP_EXIT"))
+      .getOrElse(fail("fuse/src/main.rs declares no SELF_TEST_SETUP_EXIT"))
     assertEquals(declared, ImageBuilds.SelfTestSetupExit)
 
   test("the rig's container script parses under the bash that runs it"):
@@ -539,7 +550,7 @@ class KoAgentFsTest extends munit.FunSuite:
     // container, so nothing else parses it. `sh -n` over rig.sh itself is no check — the heredoc
     // makes the outer file parse whatever the inner text says.
     assume(!isWindows, "no /bin/bash to parse with")
-    val rig = Files.readString(Paths.get("fuse/ko-agent-fs/probe/rig.sh"))
+    val rig = Files.readString(Paths.get("ko-agent-fs/fuse/probe/rig.sh"))
     val body = """(?s)<<'INNER'\n(.*?)\nINNER\n""".r
       .findFirstMatchIn(rig)
       .map(_.group(1))
@@ -553,7 +564,7 @@ class KoAgentFsTest extends munit.FunSuite:
     import scala.jdk.CollectionConverters.*
     assume(!isWindows, "no /bin/sh to run expire-build-cache.sh with")
     def expire(cache: Path): Unit =
-      val ran = ProcessBuilder("/bin/sh", "fuse/ko-agent-fs/expire-build-cache.sh", cache.toString)
+      val ran = ProcessBuilder("/bin/sh", "ko-agent-fs/expire-build-cache.sh", cache.toString)
         .redirectErrorStream(true).start()
       val output = String(ran.getInputStream.readAllBytes())
       assertEquals(ran.waitFor(), 0, output)
@@ -593,10 +604,10 @@ class KoAgentFsTest extends munit.FunSuite:
     // ARG with no default (pinnedRustVersion has why). rig.sh is read from the checkout, since it
     // is not bundled into the jar (as the SECURITY.md test does, and for the same reason).
     val pinned = """(?m)^ARG RUST_VERSION=(\S+)$""".r
-      .findFirstMatchIn(Files.readString(Paths.get("fuse/ko-agent-fs/Containerfile")))
+      .findFirstMatchIn(Files.readString(Paths.get("ko-agent-fs/Containerfile")))
       .map(_.group(1))
       .getOrElse(fail("ko-agent-fs's Containerfile pins no RUST_VERSION"))
-    val rig = Files.readString(Paths.get("fuse/ko-agent-fs/probe/rig.sh"))
+    val rig = Files.readString(Paths.get("ko-agent-fs/fuse/probe/rig.sh"))
     assert(rig.contains("ARG RUST_VERSION="), "probe/rig.sh does not read the Containerfile's pin")
     assert(rig.contains("docker.io/library/rust:"), "probe/rig.sh names no rust image")
     assert(

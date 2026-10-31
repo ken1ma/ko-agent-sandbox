@@ -57,7 +57,7 @@ object LauncherImages:
   def managedImageTags(version: String): Vector[String] =
     buildImageTags(version) ++ KoAgentBpfImageTags ++ SelfTestImageTags
 
-  /** `bpfSourceId` is the bundled `bpf/ko-agent-bpf`, whose classifier the image compiles for the suite. */
+  /** `bpfSourceId` is the bundled `ko-agent-fs/bpf`, whose classifier the image compiles for the suite. */
   def selfTestBundleId(
     fsSourceId: String,
     selfTestSourceId: String,
@@ -72,7 +72,7 @@ object LauncherImages:
     ))
 
   /**
-   * The one source-identity digest, for the filter binary and the image bundle labels alike:
+   * The one source-identity digest, for the ko-agent-fs binaries and the image bundle labels alike:
    * SHA-256 over (path, content) pairs in path order, each entry framed by its path, a NUL and its
    * big-endian length — the sort makes bundling order irrelevant, the length keeps file boundaries
    * unambiguous, and the path makes a rename a new identity. The content is a file's code, comments
@@ -92,14 +92,17 @@ object LauncherImages:
 
   /**
    * Digest one directory of the unpacked context — the literal build input,
-   * so the id describes exactly what podman build is about to see.
+   * so the id describes exactly what podman build is about to see — or the
+   * paths under it that `copied` accepts, where the build copies only those.
    */
-  def contextSourceId(context: Path, dir: String): String =
+  def contextSourceId(context: Path, dir: String, copied: String => Boolean = _ => true): String =
     val root = context.resolve(dir)
     val entries = Using.resource(Files.walk(root)): files =>
       files.iterator().asScala
         .filter(Files.isRegularFile(_))
-        .map(file => (root.relativize(file).toString.replace('\\', '/'), Files.readAllBytes(file)))
+        .map(file => root.relativize(file).toString.replace('\\', '/'))
+        .filter(copied)
+        .map(relative => (relative, Files.readAllBytes(root.resolve(relative))))
         .toVector
     bundleSourceId(entries)
 
@@ -110,10 +113,12 @@ object LauncherImages:
    * `--version` must report, and what --build stamps into the sandbox and
    * proxy images as their bundle label (bundleMismatch).
    */
-  def bundledSourceId(dir: String): String =
+  def bundledSourceId(dir: String, copied: String => Boolean = _ => true): String =
     val entries = bundleIndex()
       .filter(_.startsWith(s"$dir/"))
-      .map(entry => entry.stripPrefix(s"$dir/") -> bundleResource(entry))
+      .map(_.stripPrefix(s"$dir/"))
+      .filter(copied)
+      .map(relative => relative -> bundleResource(s"$dir/$relative"))
     bundleSourceId(entries)
 
   /** One entry of the build context the jar bundles (build.sbt), by its path in the context. */

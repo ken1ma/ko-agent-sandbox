@@ -2,14 +2,14 @@
 # Build ko-agent-self-test
 # ---------------------------------------------------------------------------
 #
-# The container the launcher's `--self-test` runs the crate's suites in
-# (`fuse/ko-agent-fs/doc/testing.md`). Their mounted half needs /dev/fuse and CAP_SYS_ADMIN, which no
+# The container the launcher's `--self-test` runs the ko-agent-fs workspace's suites in
+# (`ko-agent-fs/doc/testing.md`). Their mounted half needs /dev/fuse and CAP_SYS_ADMIN, which no
 # image build has, so they compile here and run later:
 # `--no-run` in the builder means nothing is compiled, and nothing fetched, at verification time.
 # Built by the launcher's `--self-test` (ImageBuilds.selfTestBuildCommands).
 #
-# The context is the unpacked bundle root rather than this directory, because the crate to compile
-# is beside it. RUST_VERSION has no default here: it is the version ko-agent-fs/Containerfile
+# The context is the unpacked bundle root rather than this directory, because the workspace to
+# compile is beside it. RUST_VERSION has no default here: it is the version ko-agent-fs/Containerfile
 # pins, passed in by whoever builds, so this cannot drift into exercising a second compiler.
 
 ARG RUST_VERSION
@@ -25,7 +25,6 @@ RUN set -eux; rustup target add "$(uname -m)-unknown-linux-musl"
 
 WORKDIR /build
 COPY ko-agent-fs .
-COPY bpf/ko-agent-bpf /bpf/ko-agent-bpf
 
 # The identity the installed filter reports. The suites run against the same source the launcher
 # bundles, so the digest travels here too rather than being left unstamped.
@@ -33,11 +32,12 @@ ARG KO_AGENT_FS_SOURCE_ID=unstamped
 ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 
 # The shipping triple, for the reason ko-agent-fs/Containerfile builds with it: the static-musl link
-# constraint src/fs.rs records at its rename is invisible to a glibc build.
+# constraint fuse/src/fs.rs records at its rename is invisible to a glibc build.
 #
-# The artifacts are written in the layout tests/binary.rs resolves by — <dir>/deps/<test> beside
-# <dir>/ko-agent-fs — reproduced rather than flattened. `--message-format=json` names each
-# executable; guessing at hash-suffixed filenames would silently miss a test target added later.
+# The artifacts are written in the layout each tests/binary.rs resolves by — <dir>/deps/<test>
+# beside <dir>/ko-agent-fs and <dir>/ko-agent-fs-fuse — reproduced rather than flattened.
+# `--message-format=json` names each executable; guessing at hash-suffixed filenames would silently
+# miss a test target added later.
 # A cache mount is not a layer, hence lifting them out inside this RUN.
 #
 # The mounts are the ones ko-agent-fs/Containerfile's build step uses, and it has what the locks
@@ -62,20 +62,21 @@ RUN --mount=type=cache,target=/build/target \
         done; \
     # The pipeline above runs its loop in a subshell, so these are what actually fail the build.
     test -x /suite/ko-agent-fs; \
+    test -x /suite/ko-agent-fs-fuse; \
     test -n "$(ls /suite/deps)"
 
-# The BPF classifier's host build, which tests/bpf_equivalence.rs runs: compiled here, where a C
-# compiler and the sources are, and named to the test by KO_AGENT_FS_POLICY_HOST below, since the
-# test's own build looks for the sources beside the crate, which the runtime image has not got.
+# The BPF classifier's host build, which policy/tests/bpf_equivalence.rs runs: compiled here, where
+# a C compiler and the sources are, and named to the test by KO_AGENT_FS_POLICY_HOST below, since
+# the test's own build looks for the sources beside the package, which the runtime image has not got.
 RUN set -eux; \
-    cc -std=gnu17 -O1 -Wall -I /bpf/ko-agent-bpf/test/host -I /build/include -o /suite/policy-host \
-        /bpf/ko-agent-bpf/test/host/policy_host.c /bpf/ko-agent-bpf/test/host/records_file.c; \
+    cc -std=gnu17 -O1 -Wall -I /build/bpf/test/host -I /build/policy/include -o /suite/policy-host \
+        /build/bpf/test/host/policy_host.c /build/bpf/test/host/records_file.c; \
     test -x /suite/policy-host
 
 
 # The base is the sandbox image for two reasons beyond convenience: it is already on the user's
-# machine, so verifying pulls nothing, and it carries `git`, which tests/mounted_git.rs needs and a
-# podman machine has not got. Its `nonroot` user is the third — see the fuse3 step below.
+# machine, so verifying pulls nothing, and it carries `git`, which fuse/tests/mounted_git.rs needs
+# and a podman machine has not got. Its `nonroot` user is the third — see the fuse3 step below.
 FROM ko-agent-sandbox:latest
 
 USER root
@@ -83,7 +84,7 @@ USER root
 # fuse3 supplies fusermount3. An unprivileged uid holds no effective CAP_SYS_ADMIN and so cannot
 # mount(2); the mount takes the setuid helper instead, which is the route a real session takes and
 # one the dev rig running as root never reaches. Podman keeps SYS_ADMIN in the bounding set for a
-# non-root USER, so the helper can reach it (fuse/ko-agent-fs/doc/verification-log.md); the
+# non-root USER, so the helper can reach it (ko-agent-fs/fuse/doc/verification-log.md); the
 # launcher retries as root if some machine ever does not.
 RUN set -eux; \
     apt-get update; \

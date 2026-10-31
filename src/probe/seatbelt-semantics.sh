@@ -252,7 +252,7 @@ rm -rf "$workspace/nm" "$workspace/out"
 # directory a line passes through, `pin`, covers every write to the entry; narrowed to
 # file-write-unlink and file-write-create, it would still refuse renaming it either way (E13, E14),
 # and the question is whether it refuses exchanging it. No shell command exchanges, so python3's
-# ctypes calls libSystem's renamex_np, as fuse/ko-agent-fs/probe/lower-probe-host.py does.
+# ctypes calls libSystem's renamex_np, as ko-agent-fs/fuse/probe/lower-probe-host.py does.
 cat > "$root/swap.py" <<'PY'
 import ctypes, sys
 RENAME_SWAP = 0x2

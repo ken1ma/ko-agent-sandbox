@@ -44,7 +44,7 @@ instructions. Future migrations are separate work.
 ## Proving the engine per platform
 
 The properties that vary between machines are listed in `design.md`, and
-`../fuse/ko-agent-fs/doc/testing.md` has the places to run the suites. What follows is only which
+`../ko-agent-fs/doc/testing.md` has the places to run the suites. What follows is only which
 one settles which part of the staged contract.
 
 | contract item                                      | settled by                  |
@@ -72,7 +72,7 @@ session.
 Windows has one measured hazard to settle before the apply state machine is built rather than
 during it: a file a live session holds open refuses some host writers with a sharing violation,
 PowerShell's `Set-Content` among them (SECURITY.md, "The workspace";
-`../fuse/ko-agent-fs/doc/verification-log.md` has the measurement). Apply writes to the host while
+`../ko-agent-fs/fuse/doc/verification-log.md` has the measurement). Apply writes to the host while
 sessions are attached, and sealing rebinds write authority without necessarily closing the lower
 descriptor, so apply's atomic replacement can be refused on exactly the paths it is applying.
 
@@ -131,7 +131,7 @@ Apply holds the stage's control lock for its whole state transition. The sealed 
 ordered set of operation groups: a rename, hard-link relationship or other indivisible change is
 selected and applied as one group. A link relationship cannot be recovered from what a session
 observed — the filter assigns an inode per `(parent, name)`, so two names for one object are two
-inodes there (`../fuse/ko-agent-fs/doc/verification-log.md`) — so the stage records it at copy-up,
+inodes there (`../ko-agent-fs/fuse/doc/verification-log.md`) — so the stage records it at copy-up,
 from the backing object's identity, and the plan records it. The lower keeps the relationship;
 only the view through the filter does not. For each group, trusted code:
 
@@ -216,7 +216,7 @@ This rule cannot distinguish a bare repository from a fixture in the workspace c
 valid triple. Live mode deliberately refuses completing either one, and recursive preflight refuses
 an existing one; staged mode may hold the fixture privately, but apply refuses to reproduce it on
 the host. This narrower completion rule supersedes the current per-name infeasibility conclusion in
-`../fuse/ko-agent-fs/doc/git-metadata.md` ("Consequences"), whose text — with `guard.rs` and its
+`../ko-agent-fs/policy/doc/git-metadata.md` ("Consequences"), whose text — with `guard.rs` and its
 tests — changes in the same increment.
 
 Initialized submodules and the permitted Git commands named in `AGENTS-SANDBOX.md` continue
@@ -228,7 +228,7 @@ its private Git metadata cannot be applied.
 1. Characterize the supported lower filesystems before the stage representation is fixed.
    Hard-link identity, rename and exchange, symlink creation, case folding between upper and lower
    and the reach of an open-file hold each decide a representation choice, and none can be reasoned
-   to a conclusion (`../fuse/ko-agent-fs/doc/TODO.md`, "P1"). Settling them first avoids revising
+   to a conclusion (`../ko-agent-fs/fuse/doc/TODO.md`, "P1"). Settling them first avoids revising
    an implemented representation.
 2. Close the nested-git and bare-layout gaps and add the live mutation journal.
 3. Implement and prove the staged `ko-agent-fs` engine, versioned storage, and shared per-workspace
@@ -274,7 +274,7 @@ between workspace modes. Workspace-controlled commands remain the user's workflo
 than a claimed host-wide boundary.
 
 Deferred staged work is `TODO.md` ("staged-workspace extensions and hardening"); the optional
-no-symlink profile and the executable-bit decision are `../fuse/ko-agent-fs/doc/TODO.md`.
+no-symlink profile and the executable-bit decision are `../ko-agent-fs/fuse/doc/TODO.md`.
 
 ## Unresolved: a staged workspace under `--run-on-host`
 

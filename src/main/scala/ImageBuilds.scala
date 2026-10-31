@@ -270,12 +270,12 @@ object ImageBuilds:
     )
 
   /**
-   * `--self-test`'s image: the crate's suites compiled against the pinned toolchain, on top of the
-   * sandbox image. Built on demand rather than by --build, so a user who only wants to run agents
-   * never compiles a test suite; a rebuild is a cache hit whenever the bundled sources and the
-   * Rust image --build pulled are unchanged (`fuse/ko-agent-fs/doc/testing.md`).
+   * `--self-test`'s image: the ko-agent-fs workspace's suites compiled against the pinned toolchain,
+   * on top of the sandbox image. Built on demand rather than by --build, so a user who only wants to
+   * run agents never compiles a test suite; a rebuild is a cache hit whenever the bundled sources and
+   * the Rust image --build pulled are unchanged (`ko-agent-fs/doc/testing.md`).
    *
-   * `-f` with `.` as the context, not the directory: the crate this compiles is beside the
+   * `-f` with `.` as the context, not the directory: the workspace this compiles is beside the
    * Containerfile in the unpacked bundle, not under it.
    */
   def selfTestBuildCommands(
@@ -311,7 +311,7 @@ object ImageBuilds:
    * `--cap-add SYS_ADMIN` is the one place this project runs a container with more than a session
    * gets, and it is never a session's container. It is not redundant with the setuid fusermount3
    * the image installs: a setuid binary does not escape the container's capability bounding set,
-   * measured rather than assumed (`fuse/ko-agent-fs/doc/verification-log.md`).
+   * measured rather than assumed (`ko-agent-fs/fuse/doc/verification-log.md`).
    *
    * `--network=none` because no case reaches a host, and nothing is fetched at this point.
    */
@@ -327,7 +327,7 @@ object ImageBuilds:
    * of those checks failing. The filter's own `--self-test` decides which, being the only party
    * that knows the stage it reached, and ko-agent-fs-suite passes the verdict up; its message says
    * what it can about the cause, which this launcher repeats without adding detail
-   * (fuse/ko-agent-fs/src/main.rs, SelfTestFailure). Spelled there as SELF_TEST_SETUP_EXIT, and a
+   * (ko-agent-fs/fuse/src/main.rs, SelfTestFailure). Spelled there as SELF_TEST_SETUP_EXIT, and a
    * test holds the two together.
    */
   val SelfTestSetupExit = 3
@@ -428,8 +428,8 @@ object ImageBuilds:
   def imageCleanupJournal(os: Os): Path = stateRoot(os).resolve("image-build").resolve("cleanup.ids")
 
   /**
-   * `--self-test`: build the self-test images, then run the crate's suites in a container with no
-   * host bind mounts (`fuse/ko-agent-fs/doc/testing.md`). Unchanged inputs reuse the build cache.
+   * `--self-test`: build the self-test images, then run the workspace's suites in a container with no
+   * host bind mounts (`ko-agent-fs/doc/testing.md`). Unchanged inputs reuse the build cache.
    * No pull: its only remote source is the Rust image --build pulls to compile the filter that
    * ships (the test "self-test builds refresh no remote source of their own" holds that), and
    * verifying against that same image is the point. A successful run without a case filter also
@@ -517,7 +517,7 @@ object ImageBuilds:
         "  root. Its own message above is the report of what failed, and this launcher does not\n" +
         "  narrow it further. If root serves, this machine never exercises the setuid fusermount3\n" +
         "  route a session takes, which is worth recording with its machine\n" +
-        "  (fuse/ko-agent-fs/doc/verification-log.md).",
+        "  (ko-agent-fs/fuse/doc/verification-log.md).",
     )
     val privileged = selfTestRunCommand(podman, filter, asRoot = true)
     echoCommand(privileged)

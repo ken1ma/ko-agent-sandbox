@@ -1,0 +1,11 @@
+# The shared policy (`policy/`) and the FUSE filter (`fuse/`). The BPF backend (`bpf/`) is C and
+# builds in its own image; it takes `policy/include/records.h` and the records `ko-agent-fs` writes.
+[workspace]
+members = ["policy", "fuse"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false

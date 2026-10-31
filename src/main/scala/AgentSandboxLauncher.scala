@@ -1636,7 +1636,7 @@ object AgentSandboxLauncher:
     // The podman machines under --nesting=none only, for the first version: native Linux and the
     // nesting modes keep the filter (doc/TODO.md, "The BPF backend's later versions"), since under
     // podman's default profile a session mounts and creates user namespaces, routes the hooks do
-    // not judge yet (bpf/ko-agent-bpf/doc/architecture.md, "Mounts").
+    // not judge yet (ko-agent-fs/bpf/doc/architecture.md, "Mounts").
     if parsed.workspaceSettings.bpf && os == Os.Linux then
       fail(
         s"error: --workspace=${parsed.workspaceSettings.spelled} runs on the podman machines of macOS and Windows; " +
@@ -2325,7 +2325,7 @@ object AgentSandboxLauncher:
   /**
    * The warning for a host git older than 2.34, whose `git bisect` is a shell script that runs `eval`
    * over `.git/BISECT_NAMES`, a file the filter lets a session write since 2.34 reads it as data
-   * (`fuse/ko-agent-fs/src/policy.rs`, `classify_within_gitdir`). For every live workspace: a session
+   * (`ko-agent-fs/policy/src/policy.rs`, `classify_within_gitdir`). For every live workspace: a session
    * writes the gitdir of any repository below the root, whether or not the root's own git works or its
    * main gitdir is mounted read-only. `versionLine` is read only then.
    */
@@ -2534,7 +2534,7 @@ object AgentSandboxLauncher:
     //
     // The Coursier OOM in container/debian-coursier/Containerfile demonstrates why memoryLimit
     // reserves memory for Podman's service, which every session needs. For diagnosis, see
-    // "The whole machine degrades" in fuse/ko-agent-fs/doc/troubleshooting.md.
+    // "The whole machine degrades" in ko-agent-fs/fuse/doc/troubleshooting.md.
     val explicitMemory = parsed.memory.map(_.trim).filter(_.nonEmpty)
     val availableMemory = hostMemoryAvailable(os, readIfPresent(Paths.get("/proc/meminfo")).getOrElse(""))
     if machineMemory.isEmpty && explicitMemory.isEmpty then

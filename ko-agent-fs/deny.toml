@@ -1,0 +1,44 @@
+# The license check. It runs in the build container before the binaries are produced
+# (`Containerfile`), so a dependency under an unexpected license fails the build instead of shipping
+# unnoticed.
+#
+# - Only permissive licenses, and only the ones the tree actually has. cargo-deny warns about an
+#   allowed license nothing uses, so a speculative entry adds noise to every build. Extend the list
+#   when a dependency actually arrives under a new (still permissive) license.
+# - Copyleft is left out deliberately, weak copyleft such as MPL-2.0 included: these binaries ship
+#   inside a user's environment, and `SECURITY.md` ("The workspace filter") says this check allows
+#   only permissive licenses.
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "Unlicense",
+]
+confidence-threshold = 0.9
+
+[bans]
+# A duplicate major version of a dependency is noise, not an error, in a tree this small.
+multiple-versions = "allow"
+# Nothing here should need a C toolchain beyond the linker. Neither crate is in Cargo.lock today.
+# This makes the build fail the day a dependency brings one in; it says nothing about the current
+# tree.
+deny = ["cc", "bindgen"]
+
+[advisories]
+# The image build runs `check licenses bans sources` and deliberately not `advisories`.
+# - Cargo.lock decides those three checks, so they give the same answer today and next year. The
+#   advisory database is an external input that keeps changing.
+# - Failing the build on it would make a build that passed yesterday fail today with no source
+#   change. This build is how a user installs the filter, so it would also block the `--build` that
+#   ships the fix.
+# - Advisories belong in a scheduled run instead: the CI row in `doc/TODO.md` at the repository
+#   root. Nothing runs them today.
+yanked = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

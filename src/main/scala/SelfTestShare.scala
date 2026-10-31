@@ -1,5 +1,5 @@
-// --self-test's share rows: the host-writer/session-reader direction the crate's suites cannot reach,
-// because their backing tree is the container's own storage (fuse/ko-agent-fs/doc/testing.md). A
+// --self-test's share rows: the host-writer/session-reader direction the ko-agent-fs suites cannot reach,
+// because their backing tree is the container's own storage (ko-agent-fs/doc/testing.md). A
 // scratch lower created inside the current directory puts the real share in the path — host
 // filesystem -> share -> ko-agent-fs -> container — with the launcher performing the host-side steps.
 // doc/TODO.md, "--self-test's remaining share rows", sets the standard: driven by the launcher,

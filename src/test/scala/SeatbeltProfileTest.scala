@@ -614,9 +614,9 @@ class SeatbeltProfileTest extends munit.FunSuite:
       case _ => "pinned"
 
   test("the profile answers the file rules' conformance table as the filter does"):
-    // The table the filter's own test reads (fuse/ko-agent-fs/tests/file_rules.rs): one contract,
+    // The table the filter's own test reads (ko-agent-fs/policy/tests/file_rules.rs): one contract,
     // both enforcement points. `folded` rows are the filter's alone.
-    val text = Files.readString(Paths.get("fuse/ko-agent-fs/tests/data/file-rules.conformance"))
+    val text = Files.readString(Paths.get("ko-agent-fs/policy/tests/data/file-rules.conformance"))
     case class Case(name: String, lines: Vector[(String, String)], rows: Vector[(String, String)])
     val cases = text.linesIterator.foldLeft(Vector.empty[Case]): (cases, line) =>
       line.split(" ").toVector match

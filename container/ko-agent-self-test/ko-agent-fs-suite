@@ -1,6 +1,6 @@
 #!/bin/sh
 # What the launcher's `--self-test` runs inside the self-test image
-# (fuse/ko-agent-fs/doc/testing.md). One optional argument, a test-name filter handed to every suite.
+# (ko-agent-fs/doc/testing.md). One optional argument, a test-name filter handed to every suite.
 set -eu
 
 suite=/opt/ko-agent-fs-suite
@@ -16,7 +16,7 @@ echo "machine: $(uname -srm), uid $(id -u)"
 # mount_probe cannot serve as this check: it mounts with fuser's defaults, so an allow_other refusal
 # passes it and appears later as an apparent defect.
 selftest=0
-"$suite/ko-agent-fs" --self-test || selftest=$?
+"$suite/ko-agent-fs-fuse" --self-test || selftest=$?
 [ "$selftest" -ne 3 ] || exit 3
 
 # A filter naming nothing would otherwise report success having run no test at all: a rust harness

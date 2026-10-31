@@ -60,9 +60,9 @@ The words the documents share, each defined in the document its entry names and 
 - **boundary directory** — `.ko-agent-sandbox`, read on the host before launch and unwritable in
   every workspace mode (SECURITY.md, "Why the rules are per workspace, in the workspace, and
   read-only").
-- **workspace filter** — `ko-agent-fs`, the FUSE mount the workspace is shared through, which
+- **workspace filter** — `ko-agent-fs-fuse`, the FUSE mount the workspace is shared through, which
   refuses the Git entries and links a session must not write
-  (`../fuse/ko-agent-fs/doc/architecture.md`).
+  (`../ko-agent-fs/fuse/doc/architecture.md`).
 - **launch** — one invocation of the launcher for one workspace, from its command line to the
   sandbox's end; the run and the session are its two views.
 - **run** — the launch as the host sees it, the objects created for it:
@@ -252,7 +252,7 @@ A symlinked `.ko-agent-sandbox`, a symlinked entry of it (`egress`, `file` or `r
 symlinked file inside an entry refuses the launch (`boundaryDirRefusal`, `ruleDirectoryRefusal`,
 `RunOnHostPrereqs.readProgramRules`, tested). The workspace filter refuses to mount a workspace
 whose `.git` is a symlink; a `.git/hooks` symlinked to a directory inside the workspace is served
-read-only instead (`../fuse/ko-agent-fs/doc/git-metadata.md`, "Relocated hook directories").
+read-only instead (`../ko-agent-fs/policy/doc/git-metadata.md`, "Relocated hook directories").
 
 - The launcher reads the rules on the host, so a repository-controlled link would choose which
   host file it reads as this workspace's rules.
@@ -384,8 +384,8 @@ protects the path it is mounted at, from the moment of the launch, which leaves:
 
 `--workspace=read-only` is the read-only session, with no policy to enforce. The probes that need an
 unfiltered writable control run one outside the launcher
-(`../fuse/ko-agent-fs/bench/unfiltered.sh`). The filter's cost is measured in
-`../fuse/ko-agent-fs/doc/verification-log.md` ("The cost of a path walk"), and
+(`../ko-agent-fs/bench/unfiltered.sh`). The filter's cost is measured in
+`../ko-agent-fs/fuse/doc/verification-log.md` ("The cost of a path walk"), and
 `bpf-lsm-cgroup.md` is the backend that mounts the workspace directory itself and judges each
 operation in the kernel instead, `--workspace=live,bpf` on the podman machines; the filter stays the
 default until the release decision `TODO.md` plans ("The BPF backend as the default").
@@ -812,11 +812,11 @@ then shares.
 Conflating them is what makes verification look larger than it is.
 
 - **The code's own logic** depends on neither of the others. The privileged dev rig settles it once,
-  on whichever host a developer has (`../fuse/ko-agent-fs/doc/testing.md`).
+  on whichever host a developer has (`../ko-agent-fs/doc/testing.md`).
 - **The kernel** is not one kernel: every podman machine runs its own — Fedora CoreOS on macOS, a
   Microsoft build on Windows, the user's own on native Linux — and this mount already hinges on
   what a kernel offers, refusing to mount at all when `init` cannot negotiate `AUTO_INVAL_DATA`
-  (`../fuse/ko-agent-fs/doc/architecture.md`).
+  (`../ko-agent-fs/fuse/doc/architecture.md`).
 - **The share**, and the backing under it: the host's workspace as it arrives inside the
   machine, over virtiofs on macOS and the WSL share on Windows. On native Linux the upper varies
   instead, a named volume stored in the host's container storage — btrfs, ZFS, XFS or overlay —
@@ -824,7 +824,7 @@ Conflating them is what makes verification look larger than it is.
 
 Every case asserts a premise behaviorally, at the layer the product uses it — never a version, a
 mount option or a declared feature. That is the rule the virtiofs premise is already recorded under
-(`../fuse/ko-agent-fs/doc/verification-log.md`), and it keeps the suite indifferent to *why* an
+(`../ko-agent-fs/fuse/doc/verification-log.md`), and it keeps the suite indifferent to *why* an
 environment changed: a podman upgrade, a recreated machine, a host OS update and a changed storage
 driver each appear to it as a changed behavior, and no case has to anticipate which.
 

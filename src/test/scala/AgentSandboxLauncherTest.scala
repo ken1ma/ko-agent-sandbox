@@ -1403,7 +1403,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val containerRoot = Paths.get("container")
     val containerfiles = FileHelper.directoryEntries(containerRoot)
       .map(_.resolve("Containerfile")).filter(Files.isRegularFile(_))
-    val allContainerfiles = containerfiles :+ Paths.get("fuse/ko-agent-fs/Containerfile")
+    val allContainerfiles = containerfiles :+ Paths.get("ko-agent-fs/Containerfile")
     val multiStage = allContainerfiles.filter: path =>
       Files.readAllLines(path).asScala.count(_.startsWith("FROM ")) > 1
 
@@ -1417,14 +1417,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         val context = command.last
         val containerPath = containerRoot.resolve(context).resolve("Containerfile")
         if Files.isRegularFile(containerPath) then containerPath
-        else Paths.get("fuse").resolve(context).resolve("Containerfile")
+        else Paths.get(context).resolve("Containerfile")
     assertEquals(tracked.toSet, multiStage.toSet)
     commands.filter(_.containsSlice(Seq("--target", "build"))).foreach: command =>
       assert(buildOutputImages(Vector(command)).head.endsWith(":cache"), command.mkString(" "))
 
   test("every build step with a cache mount locks its caches and expires them before its commands"):
-    // fuse/ko-agent-fs/Containerfile has what a cache deleted from file by file does to the step.
-    val filterContainerfile = Paths.get("fuse/ko-agent-fs/Containerfile")
+    // ko-agent-fs/Containerfile has what a cache deleted from file by file does to the step.
+    val filterContainerfile = Paths.get("ko-agent-fs/Containerfile")
     val containerfiles = FileHelper.directoryEntries(Paths.get("container"))
       .map(_.resolve("Containerfile")).filter(Files.isRegularFile(_)) :+ filterContainerfile
     val cachedSteps = containerfiles.flatMap: path =>
@@ -1631,16 +1631,22 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
     // ko-agent-fs is compiled from source on the user's machine rather than shipped as a binary, so its sources —
     // not just its Containerfile — have to travel in the jar. The policy core is the one that matters most.
-    Vector("ko-agent-fs/src/policy.rs", "ko-agent-fs/Cargo.lock", "ko-agent-fs/deny.toml").foreach: path =>
+    Vector(
+      "ko-agent-fs/policy/src/policy.rs", "ko-agent-fs/fuse/src/fs.rs",
+      "ko-agent-fs/Cargo.toml", "ko-agent-fs/Cargo.lock", "ko-agent-fs/deny.toml",
+    ).foreach: path =>
       assert(index.contains(path), s"INDEX missing $path")
-    assert(BundledBuildContext.resource("ko-agent-fs/src/policy.rs").contains("is_dotgit_name"))
+    assert(BundledBuildContext.resource("ko-agent-fs/policy/src/policy.rs").contains("is_dotgit_name"))
 
     // Build output must not have been swept into the bundle — Rust's target/ as well as sbt's.
     assert(!index.exists(_.split("/").contains("target")), "target leaked")
 
-    // ko-agent-fs/doc and probe are deliberately absent (build.sbt, the bundling task, has why).
-    Vector("ko-agent-fs/doc/", "ko-agent-fs/probe/").foreach: prefix =>
-      assert(!index.exists(_.startsWith(prefix)), s"$prefix leaked into the jar")
+    // ko-agent-fs's doc/ and probe/ directories and its bench/ are deliberately absent (build.sbt, the bundling task,
+    // has why).
+    Vector("doc", "policy/doc", "fuse/doc", "bpf/doc", "policy/probe", "fuse/probe", "bench")
+      .map(dir => s"ko-agent-fs/$dir/")
+      .foreach: prefix =>
+        assert(!index.exists(_.startsWith(prefix)), s"$prefix leaked into the jar")
 
   test("ImgTagVersion names the Debian and Temurin major versions debian-temurin installs"):
     val versionArg = "ARG (DEBIAN|TEMURIN)_VERSION=([0-9]+)\\.[0-9.]+".r
