@@ -1,4 +1,4 @@
-// The BPF cgroup-LSM backend of doc/plan-bpf-lsm-cgroup.md: the read-back ("Lifecycle", 3), a
+// The BPF cgroup-LSM backend of bpf/ko-agent-bpf/doc/architecture.md: the read-back ("Lifecycle", 3), a
 // program with the controller's privileges and none of its code. It asks the kernel what is
 // attached to the attach cgroup and compares it with what the launch meant: the hook set, each
 // program's tag against the installed object's, and each map's shape and contents against the

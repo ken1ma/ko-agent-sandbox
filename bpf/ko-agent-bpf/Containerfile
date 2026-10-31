@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Build the BPF cgroup-LSM backend of doc/plan-bpf-lsm-cgroup.md: the policy program, the
+# Build the BPF cgroup-LSM backend of bpf/ko-agent-bpf/doc/architecture.md: the policy program, the
 # controller, the read-back and the fixture
 # ---------------------------------------------------------------------------
 #

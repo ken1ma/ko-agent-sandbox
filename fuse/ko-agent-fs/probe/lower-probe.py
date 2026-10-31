@@ -12,7 +12,7 @@ Run in a SCRATCH workspace; it creates and deletes files:
 
     cp .../lower-probe.py .../lower-probe-host.py <scratch-workspace>/
     java -jar ko-agent-sandbox.jar python3 lower-probe.py
-    .../probe/unfiltered.sh python3 lower-probe.py      # the control, a second run
+    .../bench/unfiltered.sh python3 lower-probe.py      # the control, a second run
 
     python3 lower-probe-host.py        # in a HOST terminal, same directory
 

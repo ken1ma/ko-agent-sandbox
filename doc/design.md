@@ -365,7 +365,7 @@ protects the path it is mounted at, from the moment of the launch, which leaves:
 - The mounts are chosen at launch, for the repository at the workspace root. A repository nested
   deeper, by the host or by the session, has none, and one the session creates mid-session cannot
   get one. A policy judging each operation protects every repository's entries at any depth, as
-  the filter does and as the backend of `plan-bpf-lsm-cgroup.md` does.
+  the filter does and as the backend of `bpf-lsm-cgroup.md` does.
 - On an NTFS volume with 8.3 names, `.git` is also `GIT~1` and `.ko-agent-sandbox` `KO-AGE~1`, and
   a path through the short name does not pass the mount. Measured on Windows Server 2025 with
   podman 6.1.0: appends to `.git/config` and `.ko-agent-sandbox/egress/rule` and a `touch` under
@@ -384,11 +384,11 @@ protects the path it is mounted at, from the moment of the launch, which leaves:
 
 `--workspace=read-only` is the read-only session, with no policy to enforce. The probes that need an
 unfiltered writable control run one outside the launcher
-(`../fuse/ko-agent-fs/probe/unfiltered.sh`). The filter's cost is measured in
+(`../fuse/ko-agent-fs/bench/unfiltered.sh`). The filter's cost is measured in
 `../fuse/ko-agent-fs/doc/verification-log.md` ("The cost of a path walk"), and
-`plan-bpf-lsm-cgroup.md` is the backend that mounts the workspace directory itself and judges each
+`bpf-lsm-cgroup.md` is the backend that mounts the workspace directory itself and judges each
 operation in the kernel instead, `--workspace=live,bpf` on the podman machines; the filter stays the
-default until that plan's "Acceptance" passes.
+default until the release decision `TODO.md` plans ("The BPF backend as the default").
 
 ### No DLP/entropy/LLM firewall
 

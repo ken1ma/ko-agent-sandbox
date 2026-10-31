@@ -124,7 +124,7 @@ object LaunchMessages:
     // told where a Unix socket can be bound, since the policy answers a bind with a bare EPERM.
     unixSocket: Boolean = false,
     // Whether the host is Windows, whose 9p share refuses every socket bind itself with ENOTSUP
-    // (doc/plan-bpf-lsm-cgroup.md, "What is gained and what is lost"), so the value reaches the
+    // (doc/bpf-lsm-cgroup.md, "What is gained and what is lost"), so the value reaches the
     // agent-state volume alone there.
     windowsShare: Boolean = false,
   ): String =

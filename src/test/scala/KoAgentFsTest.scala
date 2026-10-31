@@ -482,15 +482,17 @@ class KoAgentFsTest extends munit.FunSuite:
       "ko-agent-fs installed: 0.1.0 source " + "a" * 64,
     )
 
-  test("the ko-agent-fs source id keys on content, name and file set — nothing else"):
+  test("the ko-agent-fs source id keys on code, name and file set — nothing else"):
     def bytes(text: String) = text.getBytes("UTF-8")
     val base = Seq("src/lib.rs" -> bytes("pub mod policy;"), "Cargo.toml" -> bytes("[package]"))
     val id = bundleSourceId(base)
     assertEquals(id.length, 64)
     assert(id.forall(c => c.isDigit || ('a' to 'f').contains(c)))
 
-    // Bundling order is not identity.
+    // Bundling order is not identity, and neither is a comment in a syntax SourceDigest knows.
     assertEquals(bundleSourceId(base.reverse), id)
+    assertEquals(bundleSourceId(Seq("src/lib.rs" -> bytes("// The policy.\npub mod policy;"), base(1))), id)
+    assertNotEquals(bundleSourceId(Seq("src/lib.rs" -> bytes("pub mod rules;"), base(1))), id)
     // Content, a rename, and an added file each are.
     assertNotEquals(bundleSourceId(Seq(base(0), "Cargo.toml" -> bytes("[patch]"))), id)
     assertNotEquals(bundleSourceId(Seq(base(0), "Cargo.lock" -> bytes("[package]"))), id)

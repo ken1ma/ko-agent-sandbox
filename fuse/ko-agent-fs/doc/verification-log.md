@@ -207,7 +207,7 @@ names" has the creation, and the short names of an existing `.git` and `.ko-agen
 
 ### Measured: cost per operation and per component (macOS 26.4.1, podman 6.1.1; 2026-09-19)
 
-`probe/walk-probe.py`, from inside a filtered session over this repository's tree on an arm64 Mac
+`bench/walk-cost.py`, from inside a filtered session over this repository's tree on an arm64 Mac
 (container → FUSE → daemon → virtiofs), warm, 200 iterations per point. `lstat` of a file by
 absolute path, by the file's depth under the mount:
 
@@ -221,8 +221,8 @@ left is one FUSE operation including the daemon's own full-path resolution.
 
 ### Measured: the filter's ratio over a bind mount (macOS 26.4.1, podman 6.1.1; 2026-09-19)
 
-`probe/perf-probe.py`, 2,101 entries of 4 KB files, container → FUSE → daemon → virtiofs, against
-the same corpus over an unfiltered bind mount of the same directory (`probe/unfiltered.sh`).
+`bench/entry-cost.py`, 2,101 entries of 4 KB files, container → FUSE → daemon → virtiofs, against
+the same corpus over an unfiltered bind mount of the same directory (`bench/unfiltered.sh`).
 
 | operation                       | unfiltered | filtered | ratio |
 | ------------------------------- | ---------- | -------- | ----- |
@@ -250,7 +250,7 @@ layer's cost alone.
 
 The same probe through the Windows production stack — container → FUSE → daemon in the WSL2
 machine → the machine's drive mount of NTFS — on an EC2 m7i-flex.xlarge, against the same corpus
-over an unfiltered bind mount of the same directory (the command in `probe/unfiltered.ps1`):
+over an unfiltered bind mount of the same directory (the command in `bench/unfiltered.ps1`):
 
 | operation                       | unfiltered | filtered  | ratio |
 | ------------------------------- | ---------- | --------- | ----- |
@@ -267,7 +267,7 @@ different class from the macOS rows': compare the columns within this table, not
 
 ### Measured: a real tree (macOS 26.4.1, podman 6.1.1; 2026-09-19)
 
-`probe/walk-probe.py` on the machine and stack of the depth table above, over a shallow clone of
+`bench/walk-cost.py` on the machine and stack of the depth table above, over a shallow clone of
 sbt/sbt: 4,249 tracked files at mean depth 7.0 among 7,524 entries, warm:
 
 | operation                              | per file      | total                                   |

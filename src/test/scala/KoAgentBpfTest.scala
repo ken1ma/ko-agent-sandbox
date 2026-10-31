@@ -565,8 +565,8 @@ class KoAgentBpfTest extends munit.FunSuite:
           Files.createDirectories(target.getParent)
           Files.write(target, LauncherImages.bundleResource(entry))
       assertEquals(sourceId(context), id)
-      // The host build under host/ is the self-test's input, not the backend's: a change there leaves the id.
-      Files.write(context.resolve("bpf/ko-agent-bpf/host/policy_host.c"), "// changed\n".getBytes)
+      // The host build under test/host/ is the self-test's input, not the backend's: a change there leaves the id.
+      Files.write(context.resolve("bpf/ko-agent-bpf/test/host/policy_host.c"), "// changed\n".getBytes)
       assertEquals(sourceId(context), id)
       Files.write(context.resolve("bpf/ko-agent-bpf/backend.h"), "// changed\n".getBytes)
       assertNotEquals(sourceId(context), id)

@@ -1634,9 +1634,9 @@ object AgentSandboxLauncher:
       ).fold(fail(_), identity)
 
     // The podman machines under --nesting=none only, for the first version: native Linux and the
-    // nesting modes keep the filter (doc/plan-bpf-lsm-cgroup.md, "Later versions"), since under
+    // nesting modes keep the filter (doc/TODO.md, "The BPF backend's later versions"), since under
     // podman's default profile a session mounts and creates user namespaces, routes the hooks do
-    // not judge yet ("Mounts").
+    // not judge yet (bpf/ko-agent-bpf/doc/architecture.md, "Mounts").
     if parsed.workspaceSettings.bpf && os == Os.Linux then
       fail(
         s"error: --workspace=${parsed.workspaceSettings.spelled} runs on the podman machines of macOS and Windows; " +

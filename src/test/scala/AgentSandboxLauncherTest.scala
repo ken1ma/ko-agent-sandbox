@@ -1834,7 +1834,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val sockets = appendedSection(Mount, "live", resolution, backend = "bpf", unixSocket = true)
     assert(sockets.contains("Unix sockets can be bound wherever a file can be made in the workspace"), sockets)
     assert(!sockets.contains("No Unix socket"), sockets)
-    // The Windows share answers every bind itself (plan-bpf-lsm-cgroup.md, "What is gained and what is lost").
+    // The Windows share answers every bind itself (doc/bpf-lsm-cgroup.md, "What is gained and what is lost").
     val windows = appendedSection(Mount, "live", resolution, backend = "bpf", unixSocket = true, windowsShare = true)
     assert(windows.contains("the share refuses a bind in the workspace with `ENOTSUP`"), windows)
     assert(!windows.contains("wherever a file can be made"), windows)

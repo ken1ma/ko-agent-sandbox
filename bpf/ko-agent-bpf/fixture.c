@@ -1,12 +1,12 @@
-// The BPF cgroup-LSM backend of doc/plan-bpf-lsm-cgroup.md: the unprivileged side, the launcher's
+// The BPF cgroup-LSM backend of bpf/ko-agent-bpf/doc/architecture.md: the unprivileged side, the launcher's
 // own process in the attach cgroup. It lays out the proof fixture and runs the proof ("Lifecycle",
 // 3), deriving each expected answer from the whole ordered rule set as the filter decides it, makes
-// the single syscalls the lifecycle rows need, and, for the probes, writes a records file from a
+// the single syscalls the lifecycle rows need, and, for the suites, writes a records file from a
 // rule file in place of the guard. Static, so it runs in the machine and in a container alike.
 //
 //   fixture records RULES OUT [--guarded KIND=RELPATH]...
-//                                   the records file (records.h) of RULES, a rule file as the Phase 3
-//                                   probe reads one, and of the guarded objects by workspace-relative
+//                                   the records file (records.h) of RULES, a rule file as the policy
+//                                   suite reads one, and of the guarded objects by workspace-relative
 //                                   path; KIND is workspace, gitdir, guarded-git or guarded-sandbox
 //   fixture make ROOT RULES         the proof fixture: a tree laid out as a workspace with a .git
 //                                   holding config and a hook, a .ko-agent-sandbox, ordinary files
@@ -129,7 +129,7 @@ static bool glob_matches(const char *pattern, const char *name)
 	return p == plen;
 }
 
-// policy.rs, `child_rule_context`, as the Phase 3 probe's controller computes it: the alias context
+// policy.rs, `child_rule_context`, as the policy suite's controller computes it: the alias context
 // of a symlink's position, over the lines above it by their own indices.
 static void child_rule_context(const struct rule_line *lines, __u32 count, struct alias_context *ctx,
 			       bool parent_is_root, const char *folded)
@@ -197,7 +197,7 @@ static bool read_records_as_rules(const char *path, struct rules *rules)
 }
 
 // A rule file: `word comp/comp[/comp...] [anchored] [alias=PATH]` per line, `#` comments and blank
-// lines ignored, as the Phase 3 probe reads one (its controller.c, read_rules); or the guard's
+// lines ignored, as the policy suite reads one (its controller.c, read_rules); or the guard's
 // records file.
 static void read_rules(const char *path, struct rules *rules)
 {

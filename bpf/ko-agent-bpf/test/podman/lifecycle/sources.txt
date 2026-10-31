@@ -1,0 +1,8 @@
+../../../policy.bpf.c
+../../../../../fuse/ko-agent-fs/include/records.h
+../../../backend.h
+../../../controller.c
+../../../readback.c
+../../../fixture.c
+rewrite.c
+Containerfile

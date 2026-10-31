@@ -1,7 +1,7 @@
 //! The BPF cgroup-LSM backend's classifier (`bpf/ko-agent-bpf/policy.bpf.c` at the repository
-//! root), built for the host against the stand-in headers in `bpf/ko-agent-bpf/host/`, and the
+//! root), built for the host against the stand-in headers in `bpf/ko-agent-bpf/test/host/`, and the
 //! policy's corpus (`corpus`) run through it and through `policy.rs`: the two classifiers give one
-//! answer to every query (`doc/plan-bpf-lsm-cgroup.md`, "What is gained and what is lost"). The
+//! answer to every query (`doc/bpf-lsm-cgroup.md`, "What is gained and what is lost"). The
 //! rules reach the program as the guard writes them, through `bpf_records::compile`, so the
 //! compiler is under test too. What the host build cannot show is the glue around the
 //! classifier: the CO-RE reads, the walk's bounds under the verifier and the hooks' arguments,
@@ -31,7 +31,7 @@ const FS_TYPE: &str = "virtiofs";
 const MOVED: &str = "moved";
 
 fn host_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bpf/ko-agent-bpf/host")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bpf/ko-agent-bpf/test/host")
 }
 
 /// This run's files, under the system's temporary directory: the packaged suite has no Cargo
@@ -120,7 +120,7 @@ struct Case {
 
 /// `policy.rs`'s answers, combined as the FUSE layer combines them (`fs.rs`, `allow_child`,
 /// `allow_create` and `allow_region_move`), with the three rules the program adds for the
-/// directories it cannot refuse (`doc/plan-bpf-lsm-cgroup.md`, "Directories"): no new `HEAD` in a
+/// directories it cannot refuse (`doc/bpf-lsm-cgroup.md`, "Directories"): no new `HEAD` in a
 /// `.git`, the rules applying in git state too, and a `.ko-agent-sandbox` protected in git state.
 impl Case {
     fn contexts(&self, path: &str) -> (GitContext, RuleContext) {

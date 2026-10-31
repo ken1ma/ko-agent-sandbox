@@ -217,9 +217,9 @@ What the suites cover and how to run them, the self-test image and the privilege
 ## P1 — Performance (the measurements say the target workload would hurt)
 
 The filter enforces the default mode, `--workspace=live`, so its cost is the sandbox's own.
-`probe/perf-probe.py` builds its own corpus, so two runs are comparable across machines, and
+`bench/entry-cost.py` builds its own corpus, so two runs are comparable across machines, and
 reports per-entry times per workload. Run it once in a filtered session and once under
-`probe/unfiltered.sh` (`probe\unfiltered.ps1` on Windows) — the ratio between the columns is the
+`bench/unfiltered.sh` (`bench\unfiltered.ps1` on Windows) — the ratio between the columns is the
 answer, and the control isolates the filter's cost from the backing share. The runs are
 `verification-log.md`, "The cost of a path walk". For the profiling rows below, a daemon started
 with `--trace` logs each request and the time it took (`troubleshooting.md`, "Tracing requests").

@@ -208,8 +208,8 @@ guest's FUSE client flushes the changed times at writeback as a `SETATTR` with `
 `utimensat`, so a FIFO merely written through reaches the passthrough's `setattr` seconds later.
 
 **This project's guard until the fix:** the filter refuses `mknod` of a FIFO and a time change on
-one (`fuse/ko-agent-fs/src/fs.rs`), the BPF backend will by type in its hooks
-(`plan-bpf-lsm-cgroup.md`, "The policy"); `TODO.md`, "A FIFO in the workspace hangs the podman
+one (`fuse/ko-agent-fs/src/fs.rs`), the BPF backend refuses one by type in its hooks, with any open
+of one (`../bpf/ko-agent-bpf/doc/architecture.md`, "The policy"); `TODO.md`, "A FIFO in the workspace hangs the podman
 machine", has the decision.
 
 ## openai/codex, anthropic-experimental/sandbox-runtime, google-gemini/gemini-cli
