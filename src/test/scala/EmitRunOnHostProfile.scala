@@ -1,18 +1,20 @@
-// The generated Seatbelt profile for the workspace this runs in, so a real build can be driven
-// under it by hand.
+// Writes the generated Seatbelt profile for the workspace that this driver runs in, so that a developer can drive a
+// real build under the profile by hand.
 //
-// Test scope on purpose: src/probe/run-on-host-acceptance-test.sh and src/probe/run-on-host-profile-iterate.sh are its
-// only callers, and a profile emitter in the shipped jar would be a command nobody documented.
+// The driver lives in test scope on purpose. src/probe/run-on-host-acceptance-test.sh and
+// src/probe/run-on-host-profile-iterate.sh are its only callers, and a profile emitter in the shipped jar would be a
+// command that no document describes.
 //
 //   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> [system-paths-file] [<program>] [workspace]"
 //   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> <system-paths-file> proxy <jdk> <classpath>"
 //   sbt "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile <out.sb> <system-paths-file> proxy-image <binary>"
 //
-// The workspace defaults to the working directory; the acceptance test's mill rows name src/probe/mill-fixture.
-// The system-paths-file grammar is RunOnHostSandbox.readSystemPaths's. The proxy form renders
-// the host proxy's own profile for the java and class path the acceptance test runs its proxy rows with; the
-// proxy-image form renders it for a native image, whose inputs RunOnHostProxy.proxyInputs builds
-// only when it runs as one.
+// - The workspace defaults to the working directory. The acceptance test's mill rows name src/probe/mill-fixture.
+// - RunOnHostSandbox.readSystemPaths defines the grammar of the system-paths file.
+// - The proxy form renders the host proxy's own profile for the java and the class path that the acceptance test runs
+//   its proxy rows with.
+// - The proxy-image form renders the host proxy's profile for a native image. RunOnHostProxy.proxyInputs builds the
+//   inputs for a native image only when the proxy runs as one.
 
 package agentsandbox.launcher
 
@@ -68,22 +70,24 @@ object EmitRunOnHostProfile:
     val inputs = assembled.profileInputs(
       sessionTmp = sessionTmp,
       proxyPort = 51234,
-      // No proxy runs under the emitted profile, so nothing is here: the supervisor rows have the real one.
+      // No proxy runs under the emitted profile, so this trust directory stays empty. The supervisor rows have the real
+      // trust directory.
       trust = RunOnHostInspection.trustDirectory(sessionTmp.resolveSibling("proxy.log")),
       systemPaths = systemPaths,
-      // A mill command without a daemon gets the grant RunOnHostSandbox gives it; a client's port is the runner's.
+      // A mill command without a daemon gets the grant that RunOnHostSandbox gives it. A mill client's port belongs to
+      // the runner.
       network = program match
         case Program.Gradle                              => SeatbeltProfile.Network.Gradle
         case Program.Mill if assembled.millWithoutDaemon => SeatbeltProfile.Network.MillDaemon
         case _                                           => SeatbeltProfile.Network.ProxyOnly,
-      // The workspace's lines, as a command the acceptance test starts without a launch gets.
+      // The workspace's file-rule lines, as a command gets them when the acceptance test starts it without a launch.
       fileRules = FileRules.ofWorkspace(workspace).fold(fail, identity),
     )
 
     val profile = SeatbeltProfile.render(inputs).fold(fail, identity)
     Files.writeString(Paths.get(args(0)), profile)
-    // The driver needs the command's temporary directory: the profile grants it, and the JVM otherwise writes to the
-    // per-user temporary directory, which it does not grant.
+    // The driver needs the command's temporary directory, because the profile grants that directory. Without it, the
+    // JVM writes to the per-user temporary directory, which the profile does not grant.
     Files.writeString(Paths.get(args(0) + ".env"), s"SESSION_TMP=$sessionTmp\n")
     Console.err.println(s"profile: ${args(0)}")
     Console.err.println(s"env: ${args(0)}.env")
@@ -95,13 +99,13 @@ object EmitRunOnHostProfile:
     Console.err.println(s"ivy home: ${assembled.ivyHome}")
     Console.err.println(s"gradle user home: ${assembled.gradleUserHome}")
     Console.err.println(s"m2 repository: ${assembled.m2Repository}")
-    // The acceptance test reruns this classpath as RunOnHost, plain java with no sbt in front, because a
-    // supervisor driven through `sbt Test/runMain` would find its own server holding the workspace's
-    // portfile and end it (one server per build directory). Walked from the class loaders, not
-    // java.class.path — runMain ran this inside the build JVM, whose own classpath is sbt's — and
-    // copied beside the profile,
-    // because the walk answers `target/bg-jobs/` jars sbt removes with its server (measured: the
-    // acceptance test's java -cp found none of them).
+    // The acceptance test reruns this classpath as RunOnHost in plain java, with no sbt in front. A supervisor driven
+    // through `sbt Test/runMain` would find its own server holding the workspace's portfile and would end that server,
+    // since a build directory has one server.
+    // - The driver walks the classpath from the class loaders, not from java.class.path. runMain runs the driver inside
+    //   the build JVM, whose own java.class.path is sbt's.
+    // - The driver copies the classpath beside the profile. The walk answers jars under `target/bg-jobs/`, and sbt
+    //   removes them with its server. Measured: the acceptance test's java -cp found none of those jars.
     Console.err.println(s"classpath: ${relaunchClasspath(Paths.get(args(0) + ".cp"))}")
 
   private[launcher] def classpathForRelaunch: String =
@@ -124,11 +128,12 @@ object EmitRunOnHostProfile:
       .mkString(java.io.File.pathSeparator)
 
   /**
-   * `/private/tmp/ko-agent-<uid>-accept/<session>/tmp`: short enough for SessionTmpMaxLength where
-   * the per-user temporary directory is not, vetted like the supervisor root. Its own root on
-   * purpose: the acceptance test drives many builds against one emitted profile with nothing holding a
-   * session lock, and inside the supervisor root any scavenge would rightly collect that; this root
-   * is outside every scan and the acceptance test's to clean.
+   * `/private/tmp/ko-agent-<uid>-accept/<session>/tmp`, which fits SessionTmpMaxLength where the per-user temporary
+   * directory does not. The driver vets this root like the supervisor root.
+   *
+   * The directory has its own root on purpose. The acceptance test drives many builds against one emitted profile,
+   * and nothing holds a session lock for them. Any scavenge would rightly collect such a directory inside the
+   * supervisor root. This root lies outside every scan, and the acceptance test cleans it.
    */
   private def newSessionTmp(): Path =
     import java.nio.file.attribute.PosixFilePermissions

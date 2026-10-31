@@ -1,4 +1,4 @@
-# Loaded through BASH_ENV, set in /etc/codex/config.toml.
+# Each non-interactive bash under Codex loads this file through BASH_ENV, which /etc/codex/config.toml sets.
 if [ -n "${KO_SANDBOX_TOOLCHAIN_PATH-}" ]; then
     case ":${PATH}:" in
         *":${KO_SANDBOX_TOOLCHAIN_PATH}:"*) ;;

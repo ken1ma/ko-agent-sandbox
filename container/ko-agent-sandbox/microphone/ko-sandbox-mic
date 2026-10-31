@@ -1,16 +1,15 @@
 #!/usr/local/bin/python3 -I
-"""The sandbox side of the microphone relay under --audio=mic (SECURITY.md "Microphone",
-doc/microphone.md): the PulseAudio daemon's microphone is a FIFO the host relay writes, and
-this program decides when it writes.
+"""The sandbox side of the microphone relay under --audio=mic (SECURITY.md, "Microphone"; doc/microphone.md).
+The PulseAudio daemon's microphone is a FIFO that the host relay writes, and this program decides when the relay
+writes.
 
-  ko-sandbox-mic control [DIR]   the controller the entrypoint starts beside the daemon: asks the
-                                 host for audio while an agent records, ends the writer when the
-                                 last recording stream closes
-  ko-sandbox-mic write FIFO      the writer the host relay's `podman exec` runs: copies its stdin,
-                                 the host microphone, into the daemon's FIFO
+  ko-sandbox-mic control [DIR]   the controller that the entrypoint starts beside the daemon: it asks the host for
+                                 audio while an agent records, and it ends the writer when the last recording
+                                 stream closes
+  ko-sandbox-mic write FIFO      the writer that the host relay's `podman exec` runs: it copies its stdin, the
+                                 host microphone, into the daemon's FIFO
 
-DIR, the FIFO's directory, holds the relay's request FIFO `req` and the controller's and the
-writer's pid files.
+DIR, the FIFO's directory, holds the relay's request FIFO `req` and the pid files of the controller and the writer.
 """
 
 import os
@@ -23,24 +22,25 @@ import time
 from typing import NamedTuple
 
 DIRECTORY = "/tmp/ko-agent-sandbox/microphone"
-# The pipe source's name in /etc/ko-agent-sandbox/microphone.pa: module-pipe-source's default.
+# The pipe source's name in /etc/ko-agent-sandbox/microphone.pa, which is module-pipe-source's default.
 SOURCE = "fifo_input"
-# The driver of a client's stream; the loopback's output is module-loopback.c's.
+# The driver of a client's stream. The loopback's output has module-loopback.c as its driver.
 CLIENT_DRIVER = "protocol-native.c"
 WRITER_PID_FILE = "writer.pid"
 CONTROLLER_PID_FILE = "controller.pid"
 
 TICK_SECONDS = 5.0
-# A delivered `start` waits this long for a writer before the next one, so a slow exec gets one.
+# After a delivered `start`, the controller waits this long for a writer before it sends the next `start`, so a slow
+# exec still gets its writer started.
 START_WAIT_SECONDS = 3.0
-# A `start` the relay did not take — no FIFO yet, or nobody reading it, as between two of the
-# relay's execs — is retried this soon rather than at the next tick.
+# The controller retries a `start` that the relay did not take this soon, rather than at the next tick. The relay
+# takes no `start` while its FIFO is missing, or while nobody reads the FIFO, as between two of the relay's execs.
 UNDELIVERED_RETRY_SECONDS = 0.2
 DAEMON_WAIT_SECONDS = 30.0
 
 
 def pactl(*arguments):
-    """pactl's stdout, or None when it failed: the daemon is not up, or is gone."""
+    """Returns pactl's stdout, or None when pactl failed, as when the daemon is not up or is gone."""
     try:
         result = subprocess.run(
             ["pactl", *arguments], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
@@ -62,8 +62,8 @@ def source_index():
 
 
 def recording_streams(source):
-    """How many clients have a stream open on the microphone, or None when the listing failed.
-    Corked streams count: the short listing has no cork column."""
+    """Counts the clients that have a stream open on the microphone, or returns None when the listing failed.
+    Corked streams count, because the short listing has no cork column."""
     listing = pactl("list", "short", "source-outputs")
     if listing is None:
         return None
@@ -76,8 +76,8 @@ def recording_streams(source):
 
 
 def start_time(pid):
-    """Field 22 of /proc/<pid>/stat, which with the pid names one process: a pid alone outlives
-    its process in a file and is reused."""
+    """Returns field 22 of /proc/<pid>/stat, which together with the pid names one process. A pid alone outlives
+    its process in a file, and the kernel reuses it."""
     try:
         with open(f"/proc/{pid}/stat", "rb") as file:
             text = file.read()
@@ -89,7 +89,7 @@ def start_time(pid):
 
 
 def write_pid_file(path):
-    """This process's pid and start time, renamed into place so a reader never sees a partial line."""
+    """Writes this process's pid and start time, renamed into place, so a reader never sees a partial line."""
     temporary = f"{path}.{os.getpid()}"
     with open(temporary, "w") as file:
         file.write(f"{os.getpid()} {start_time(os.getpid())}\n")
@@ -97,9 +97,9 @@ def write_pid_file(path):
 
 
 def recorded_pidfd(path):
-    """A pidfd for the process a pid file names, or None: no file, no such process, or a process
-    the pid was reused for. The start time is checked after the pidfd is open, so the process
-    checked is the one the pidfd holds, and a pid reused later is never signalled or watched."""
+    """Returns a pidfd for the process that a pid file names, or None: no file, no such process, or a process that
+    the pid was reused for. The start time is checked after the pidfd is open. The process checked is then the one
+    the pidfd holds, and a pid reused later is never signalled or watched."""
     try:
         with open(path) as file:
             pid_text, recorded = file.read().split()
@@ -117,15 +117,14 @@ def recorded_pidfd(path):
 
 
 def exited(pidfd):
-    """A pidfd reads as readable once its process has exited."""
+    """Returns whether the pidfd's process has exited: a pidfd reads as readable once its process has exited."""
     return bool(select.select([pidfd], [], [], 0)[0])
 
 
 def frame_prefix(pending):
-    """How many of the pending bytes to write at once: whole 16-bit frames, at most PIPE_BUF,
-    which pipe(7) keeps atomic. module-pipe-source posts each read's length as a chunk, and
-    PulseAudio asserts a chunk is frame-aligned (doc/microphone.md, "The controller and the
-    writer")."""
+    """Returns how many of the pending bytes to write at once: whole 16-bit frames, at most PIPE_BUF, which
+    pipe(7) keeps atomic. module-pipe-source posts each read's length as a chunk, and PulseAudio asserts that a
+    chunk is frame-aligned (doc/microphone.md, "The controller and the writer")."""
     whole = len(pending) - len(pending) % 2
     return min(whole, select.PIPE_BUF - select.PIPE_BUF % 2)
 
@@ -137,38 +136,39 @@ class Writer(NamedTuple):
 
 
 class Controller:
-    """The one holder of the recording state inside the sandbox, level-triggered: demand (a client
-    stream on the microphone) and supply (a live writer), reconciled on every source-output event
-    and on the timer."""
+    """The one holder of the recording state inside the sandbox. The controller is level-triggered: it reconciles
+    demand (a client stream on the microphone) with supply (a live writer) on every source-output event and on the
+    timer."""
 
     def __init__(self, directory, source, clock=time.monotonic):
         self.directory = directory
         self.source = source
         self.clock = clock
-        # When the last delivered `start` was written, while its wait lasts.
+        # When the controller wrote the last delivered `start`, while the wait for its writer lasts.
         self.started_at = None
         self.undelivered = False
         self.writer = None  # a Writer, the one last seen alive
         self.reconciled_at = clock()
 
     def deadline(self):
-        """Seconds until the next reconciliation the timer owes, counted from the last one, so a
-        wakeup that reconciles nothing does not postpone it; zero or less when it is due."""
+        """Returns the seconds until the next reconciliation that the timer owes, or zero or less when it is due.
+        The count starts from the last reconciliation, so a wakeup that reconciles nothing does not postpone the
+        next one."""
         due = self.reconciled_at + (UNDELIVERED_RETRY_SECONDS if self.undelivered else TICK_SECONDS)
         if self.started_at is not None:
             due = min(due, self.started_at + START_WAIT_SECONDS)
         return due - self.clock()
 
     def woken(self, lines):
-        """One wakeup: the subscription's `lines`, or None when the wait ran out. Only stream events
-        and the timer reconcile: every listing is a client of its own, so reconciling on client
-        events would list forever."""
+        """Handles one wakeup: the subscription's `lines`, or None when the wait ran out. Only stream events and
+        the timer reconcile. Every listing is a client of its own, so reconciling on client events would list
+        forever."""
         if lines is None or self.deadline() <= 0 or any(b" on source-output " in line for line in lines):
             self.reconcile()
 
     def supply(self):
-        """The live writer's pidfd, or None. Held as a pidfd, so a pid reused between this check
-        and a signal is never signalled."""
+        """Returns the live writer's pidfd, or None. The controller holds the writer as a pidfd, so a pid reused
+        between this check and a signal is never signalled."""
         try:
             with open(os.path.join(self.directory, WRITER_PID_FILE)) as file:
                 named = tuple(file.read().split())
@@ -189,11 +189,11 @@ class Controller:
         return self.writer.pidfd
 
     def send_start(self):
-        """Whether `start` reached a reader of the relay's FIFO."""
+        """Returns whether `start` reached a reader of the relay's FIFO."""
         try:
             fd = os.open(os.path.join(self.directory, "req"), os.O_WRONLY | os.O_NONBLOCK | os.O_CLOEXEC)
         except OSError:
-            # ENOENT: the relay's first exec has not made it; ENXIO: nobody reads it.
+            # ENOENT: the relay's first exec has not made the FIFO yet. ENXIO: nobody reads the FIFO.
             return False
         try:
             return os.write(fd, b"start\n") == 6
@@ -230,9 +230,9 @@ class Controller:
 
 
 def await_subscription(subscription, give_up):
-    """The subscription's first bytes, which arrive once it is registered: `pactl subscribe` prints
-    nothing when it registers, and from then on reports each listing's client. None if the daemon ended
-    it, or it reported nothing before `give_up`."""
+    """Returns the subscription's first bytes, which arrive once the subscription is registered. `pactl subscribe`
+    prints nothing when it registers, and from then on it reports each listing's client. Returns None if the daemon
+    ended the subscription, or if the subscription reported nothing before `give_up`."""
     while time.monotonic() < give_up:
         source_index()
         ready, _, _ = select.select([subscription.stdout], [], [], 0.2)
@@ -242,7 +242,7 @@ def await_subscription(subscription, give_up):
 
 
 def control(directory):
-    # The writer watches this process through it, and ends its forwarding when it is gone.
+    # The writer watches this process through the pid file, and ends its forwarding when this process is gone.
     write_pid_file(os.path.join(directory, CONTROLLER_PID_FILE))
     give_up = time.monotonic() + DAEMON_WAIT_SECONDS
     source = source_index()
@@ -256,7 +256,7 @@ def control(directory):
         ["pactl", "subscribe"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
     )
     try:
-        # Registered before the first listing, so no stream opens unseen between the two.
+        # The subscription registers before the first listing, so no stream opens unseen between the two.
         first = await_subscription(subscription, time.monotonic() + DAEMON_WAIT_SECONDS)
         if first is None:
             print("ko-sandbox-mic: the daemon's events did not arrive", file=sys.stderr)
@@ -265,13 +265,14 @@ def control(directory):
         controller = Controller(directory, source)
         controller.reconcile()
         while True:
-            # Never zero: a reconciliation whose listing failed keeps the wait, and would spin.
+            # The wait is never zero: a reconciliation whose listing failed can leave the deadline due, and a zero
+            # wait would then spin.
             ready, _, _ = select.select([subscription.stdout], [], [], max(0.05, controller.deadline()))
             lines = None
             if ready:
                 chunk = os.read(subscription.stdout.fileno(), 4096)
                 if not chunk:
-                    # The subscription ended with the daemon: no demand, and nothing left to serve.
+                    # The subscription ended with the daemon: no demand remains, and nothing is left to serve.
                     return 0
                 *lines, pending = (pending + chunk).split(b"\n")
             controller.woken(lines)
@@ -284,13 +285,13 @@ def write(fifo):
     source = source_index()
     streams = recording_streams(source) if source is not None else None
     if not streams:
-        # A `start` read after its stream closed: one exec, and no microphone.
+        # A `start` read after its stream closed costs one exec and opens no microphone.
         return 0
     pid_file = os.path.join(directory, WRITER_PID_FILE)
     write_pid_file(pid_file)
     try:
-        # The controller alone ends a forwarding when the last stream closes: without it, this
-        # writer would forward the host microphone until the session's end.
+        # Only the controller ends a forwarding when the last stream closes. Without the controller, this writer
+        # would forward the host microphone until the session ends.
         controller, _ = recorded_pidfd(os.path.join(directory, CONTROLLER_PID_FILE))
         if controller is None or exited(controller):
             print("ko-sandbox-mic: no controller is running", file=sys.stderr)
@@ -298,15 +299,15 @@ def write(fifo):
         if not stat.S_ISFIFO(os.lstat(fifo).st_mode):
             print(f"ko-sandbox-mic: {fifo} is not a FIFO", file=sys.stderr)
             return 1
-        # Non-blocking: a FIFO whose daemon is gone fails with ENXIO instead of waiting for a
-        # reader, and a full one leaves the copy below free to see the controller's death.
+        # The open is non-blocking: a FIFO whose daemon is gone fails with ENXIO instead of waiting for a reader,
+        # and a full FIFO leaves the copy below free to see the controller's death.
         target = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
-        # After the FIFO is open, and unbuffered: the host records into this writer from here on,
+        # The line goes out after the FIFO is open, and unbuffered: the host records into this writer from here on,
         # and Python's stdout would hold the line while the copy below waits on stdin.
         os.write(1, b"ready\n")
         return copy(target, controller)
     finally:
-        # Removed by the writer alone; the controller only reads it.
+        # Only the writer removes its pid file; the controller only reads it.
         try:
             with open(pid_file) as file:
                 ours = file.read().split()[:1] == [str(os.getpid())]
@@ -317,10 +318,11 @@ def write(fifo):
 
 
 def copy(target, controller):
-    """Stdin into the FIFO until stdin ends or the controller is gone, waiting on the controller
-    and on stdin while no frame is pending, on the controller and the FIFO while one is. os.read
-    and os.write, not Python's buffered streams, which would hold up to their buffer of audio;
-    -I ignores PYTHONUNBUFFERED."""
+    """Copies stdin into the FIFO until stdin ends or the controller is gone.
+    - While no frame is pending, the copy waits on the controller and on stdin. While a frame is pending, the copy
+      waits on the controller and on the FIFO.
+    - The copy uses os.read and os.write, not Python's buffered streams, which would hold up to a buffer of audio.
+      -I ignores PYTHONUNBUFFERED."""
     pending = bytearray()
     ended = False
     while not (ended and len(pending) < 2):
@@ -345,7 +347,7 @@ def copy(target, controller):
 
 
 def terminate(signum, frame):
-    # Raised, not returned: PEP 475 would resume a blocked os.read or os.write after a handler that
+    # The handler raises rather than returns: PEP 475 would resume a blocked os.read or os.write after a handler that
     # returns.
     raise SystemExit(0)
 

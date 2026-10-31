@@ -57,7 +57,7 @@ allow https://route53.amazonaws.com/                  read method=POST,DELETE   
 #allow https://route53domains.us-east-1.amazonaws.com/ read method=POST             # domain registration
 #allow https://shield.us-east-1.amazonaws.com/         read method=POST             # Shield Advanced
 
-# Those integrated with the global services
+# The regional services that the global services integrate with
 allow https://acm.us-east-1.amazonaws.com/        read method=POST             # CloudFront certificate
 allow https://wafv2.us-east-1.amazonaws.com/      read method=POST             # CloudFront WAF
 allow https://logs.us-east-1.amazonaws.com/       read method=POST             # CloudFront WAF and Route 53 log

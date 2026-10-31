@@ -31,8 +31,8 @@ class RunOnHostInspectionTest extends munit.FunSuite:
     val trusted = store.aliases.asScala.toVector.map(store.getCertificate(_).asInstanceOf[X509Certificate])
     assertEquals(trusted, Vector(CertificateHelper.parseCertificate(caPem)))
 
-    // The proxy's profile grants the leaf's directory and the command's the trust directory, so
-    // neither holds the other's files, and the CA's key is in neither.
+    // The proxy's profile grants the leaf's directory, and the command's profile grants the trust directory. Neither
+    // directory holds the other's files, and neither directory holds the CA's key.
     def entries(directory: java.nio.file.Path) =
       FileHelper.directoryEntries(directory).map(_.getFileName.toString).toSet
     assertEquals(entries(RunOnHostInspection.leafDirectory(proxyLog)), Set("leaf.crt", "leaf.key"))
@@ -56,9 +56,11 @@ class RunOnHostInspectionTest extends munit.FunSuite:
     import agentsandbox.egress.AgentEgressProxy
     for program <- RunOnHostPrereqs.Program.values do
       val proxyLog = Files.createTempDirectory("session").resolve("proxy.log")
-      // Each a spelling the rule grammar takes and the proxy's resolution rewrites: a trailing
-      // dot, which the JDK refuses in a certificate's name, capitals, a Unicode name, and the
-      // program's own Maven Central host restated.
+      // Each host is a spelling that the rule grammar accepts and the proxy's resolution rewrites:
+      // - a trailing dot, which the JDK refuses in a certificate's name;
+      // - capitals;
+      // - a Unicode name;
+      // - the program's own Maven Central host, restated.
       val fileHosts =
         Vector("repo.example.com.", "Repo.Example.ORG", "b\u00fccher.example", RunOnHostPrereqs.centralHost(program))
       val hosts = RunOnHostInspection.leafNames(RunOnHostPrereqs.egressRuleText(program, fileHosts))
@@ -77,5 +79,6 @@ class RunOnHostInspectionTest extends munit.FunSuite:
       )
       val resolved = AgentEgressProxy.configuredRuleset(environment.get)
       assertEquals(resolved.inspected, hosts.toSet, program.name)
-      // Refuses a leaf whose names differ from the inspected set, so this is their equality.
+      // loadInspection refuses a leaf whose names differ from the inspected set, so this assertion checks that the
+      // names equal the set.
       assert(AgentEgressProxy.loadInspection(resolved, environment.get).nonEmpty, program.name)

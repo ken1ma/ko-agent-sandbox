@@ -1,5 +1,5 @@
-// What a launch tells the user and the agent about the session's options: the stderr lines naming
-// a boundary the options weaken, and the section appended to the image's agent instructions.
+// What a launch tells the user and the agent about the session's options: the stderr lines that name a boundary the
+// options weaken, and the section that the launch appends to the image's agent instructions.
 
 package agentsandbox.launcher
 
@@ -8,15 +8,17 @@ import agentsandbox.egress.LogHelper.sha256Hex
 
 import HostCommands.*
 
-/** Each grant's line tints its label and what it grants (HostCommands.weakened), and takes `source`,
-  * what the line adds when the options file supplied the option (OptionsInForce.from). */
+/** Each grant's line tints its label and what the option grants (HostCommands.weakened). Each line takes `source`,
+  * which is what the line adds when the options file supplied the option (OptionsInForce.from). */
 object LaunchMessages:
 
-  /** The launch's host-command lines: the programs chosen — authority a container session alone
-    * does not have, so a weakened boundary's grant (HostCommands.weakened) — and what running them
-    * on the host costs the user; under `--workspace=read-only` an extra line under the same label,
-    * a boundary weaker than the option says, since a host command writes the workspace as its
-    * program does while the session's own writes are refused (SECURITY.md "Run on host"). */
+  /** The launch's host-command lines:
+    * - the chosen programs, which hold authority that a container session alone does not have, so the line shows a
+    *   weakened boundary's grant (HostCommands.weakened);
+    * - what running the programs on the host costs the user;
+    * - under `--workspace=read-only`, an extra line under the same label. The boundary is weaker than the option
+    *   says: a host command writes the workspace as its program does, while the session's own writes are refused
+    *   (SECURITY.md, "Run on host"). */
   def runOnHostLines(
     runOnHost: Seq[String],
     workspaceMode: String,
@@ -37,24 +39,24 @@ object LaunchMessages:
     )
     Vector(programs) ++ shutdown ++ readOnly
 
-  /** What the workspace root line says after the root: the workspace mode, and on Windows the mount
-    * path, which is not the root's spelling but the /mnt/<drive> one the agent will print. */
+  /** What the workspace root line says after the root: the workspace mode, and on Windows the mount path. The mount
+    * path is not the root's spelling but the /mnt/<drive> spelling that the agent will print. */
   def workspaceModeClause(
     mode: String, source: String, mountPath: String, os: Os, color: Boolean = colorStderr,
   ): String =
     val mountedAt = if os == Os.Windows then s" at $mountPath" else ""
     s" (${chosen(mode, color)}$mountedAt)$source"
 
-  /** The forwarded variables by name, each what the user chose; `source` follows those the options
-    * file supplied (`fromFile`). */
+  /** The forwarded variables by name, each tinted as what the user chose. `source` follows each variable that the
+    * options file supplied (`fromFile`). */
   def forwardedEnvironmentLine(
     names: Seq[String], fromFile: String => Boolean, source: String, color: Boolean = colorStderr,
   ): String =
     val said = names.map(name => chosen(name, color) + (if fromFile(name) then source else ""))
     s"forwarded environment: ${said.mkString(", ")}"
 
-  /** The two `--nesting` values that weaken the default's seccomp profile, which refuses creating a
-    * user namespace and mounting (SeccompProfile). */
+  /** The line for the two `--nesting` values that weaken the default's seccomp profile. That profile refuses creating
+    * a user namespace and mounting (SeccompProfile). */
   def nestingLine(mode: String, source: String = "", color: Boolean = colorStderr): String =
     val loosened = mode match
       case "same-uid" =>
@@ -62,7 +64,7 @@ object LaunchMessages:
       case _ => "user namespaces and mounts allowed"
     weakened(s"nesting: $mode", color) + s"$source; $loosened, for the whole session"
 
-  /** The shared agent-state volume, said whichever source named it. */
+  /** The line for the shared agent-state volume, which the launch prints whichever source named the volume. */
   def sharedVolumeLine(volume: String, source: String = "", color: Boolean = colorStderr): String =
     s"agent state: volume $volume, ${chosen("shared", color)} by --persistent-volume=$volume$source"
 
@@ -70,17 +72,18 @@ object LaunchMessages:
     weakened(s"clipboard: $mode", color) + s"$source; the agent can read an image you copy" +
       (if mode == "bidirectional" then " and set your clipboard" else "")
 
-  /** Said before the hold, so the user agrees to it: the probe that opens the microphone runs
-    * after the hold, before the sandbox starts. */
+  /** The launch prints this line before the hold, so the user agrees to the open microphone. The probe that opens the
+    * microphone runs after the hold, before the sandbox starts. */
   def micLine(source: String = "", color: Boolean = colorStderr): String =
     weakened("audio: mic", color) +
       s"$source; the host microphone is open for the whole session, and its audio reaches the sandbox " +
       "while any process there records"
 
-  /** One widening report per program whose rule file names hosts, each a grant beyond the
-    * program's Maven Central host (RunOnHostPrereqs.egressRuleText). The launch reads the files for
-    * this report and the bindings' check (EgressCredentials.checkHosts): the runner reads them again
-    * at a program's first command, where a refusal reaches the agent and not the user. */
+  /** One widening report per program whose rule file names hosts. Each host is a grant beyond the program's Maven
+    * Central host (RunOnHostPrereqs.egressRuleText).
+    * - The launch reads the files for this report and for the bindings' check (EgressCredentials.checkHosts).
+    * - The runner reads the files again at a program's first command, where a refusal reaches the agent and not the
+    *   user. */
   def runOnHostWideningLines(
     programHosts: Seq[(String, Vector[String])],
     color: Boolean = colorStderr,
@@ -93,39 +96,40 @@ object LaunchMessages:
       case _ => Vector.empty
 
   /**
-   * The section appended to the image's agent instructions, telling the agent what to do under
-   * this session's options rather than leaving it to be inferred from failing
-   * commands. Directive by design: it says what to do, never how to probe. It states the *grant*
-   * vocabulary and the proxy owns that: an agent told a grant word the proxy does not define writes
-   * a rule file that fails the next launch with "which is no grant", which is a confusing way to
-   * learn that these instructions drifted. AgentSandboxLauncherTest holds the
-   * instruction vocabulary to the proxy source.
+   * The section appended to the image's agent instructions. The section tells the agent what to do under this
+   * session's options, so the agent need not infer the options from failing commands.
+   * - The section is directive by design: the section says what to do, never how to probe.
+   * - The section states the *grant* vocabulary, and the proxy owns that vocabulary. An agent told a grant word that
+   *   the proxy does not define writes a rule file, and the next launch fails on that file with "which is no grant".
+   *   That failure is a confusing way to learn that these instructions drifted. AgentSandboxLauncherTest holds the
+   *   instruction vocabulary to the proxy source.
    */
   def appendedSection(
-    /** Where the container has the workspace root (SandboxWorkspace.mountPathOf): the one place
-      * the instructions name it, since the image's own text says "the workspace root". */
+    /** Where the container has the workspace root (SandboxWorkspace.mountPathOf). This section is the one place that
+      * the instructions name the path, since the image's own text says "the workspace root". */
     mountPath: String,
     workspaceMode: String,
     resolved: String,
     runOnHost: Vector[String] = Vector.empty,
-    // Whether this host could serve --run-on-host at all (macOS): decides the discovery line
-    // (doc/run-on-host.md, "The channel and the command"). Constant per machine, so the agents.md
-    // stamp needs no part of it.
+    // Whether this host could serve --run-on-host at all (macOS). The value decides the discovery line
+    // (doc/run-on-host.md, "The channel and the command"). The value is constant per machine, so the agents.md stamp
+    // needs no part of the value.
     hostCommandsAvailable: Boolean = false,
     // What git cannot do in this session, in the container's words (SandboxWorkspace.noGitInstruction
-    // and readOnlyGitInstruction): the agent hears it before its first command.
+    // and readOnlyGitInstruction). The agent reads the limits before its first command.
     git: Option[String] = None,
-    // The --egress-cred bindings: the variables holding a placeholder, and where the proxy substitutes it.
+    // The --egress-cred bindings: the variables that hold a placeholder, and where the proxy substitutes the
+    // placeholder.
     brokered: Vector[CredentialBinding] = Vector.empty,
-    // Which backend holds a live session's protections (CommandLine.WorkspaceBackends): the filter's
-    // name is in the text the agent reads, and the bpf backend changes two facts of it.
+    // Which backend holds a live session's protections (CommandLine.WorkspaceBackends). The text that the agent reads
+    // names the filter, and the bpf backend changes two facts in that text.
     backend: String = CommandLine.DefaultWorkspaceBackend,
-    // The `unix-socket` value of --workspace (CommandLine.WorkspaceSettings): under bpf the agent is
-    // told where a Unix socket can be bound, since the policy answers a bind with a bare EPERM.
+    // The `unix-socket` value of --workspace (CommandLine.WorkspaceSettings). Under bpf the text tells the agent where
+    // a Unix socket can be bound, because the policy answers a bind with a bare EPERM.
     unixSocket: Boolean = false,
-    // Whether the host is Windows, whose 9p share refuses every socket bind itself with ENOTSUP
-    // (doc/bpf-lsm-cgroup.md, "What is gained and what is lost"), so the value reaches the
-    // agent-state volume alone there.
+    // Whether the host is Windows. The Windows 9p share itself refuses every socket bind with ENOTSUP
+    // (doc/bpf-lsm-cgroup.md, "What is gained and what is lost"), so `unixSocket` reaches only the agent-state volume
+    // there.
     windowsShare: Boolean = false,
   ): String =
     val socketSentence =
@@ -140,8 +144,8 @@ object LaunchMessages:
           "`~/persistent-volume`."
     val profileLine = resolved.linesIterator.next()
     val workspace = workspaceMode match
-      // The plain read-only instruction would be false under --run-on-host: a host command writes the
-      // workspace (SECURITY.md "Run on host", the --workspace=read-only composition).
+      // The plain read-only instruction would be false under --run-on-host, because a host command writes the
+      // workspace (SECURITY.md, "Run on host", the --workspace=read-only composition).
       case "read-only" if runOnHost.nonEmpty =>
         s"""`$mountPath` is read-only to this session's own writes; only commands through
           |`ko-sandbox-run-on-host` write there, on the host. For anything a command does not
@@ -179,7 +183,7 @@ object LaunchMessages:
       if runOnHost.nonEmpty then
         val names = runOnHost.mkString(", ")
         val commands = runOnHost.map(program => s"`ko-sandbox-run-on-host $program ...`").mkString(" or ")
-        // Each sentence below names only the programs this session serves: the channel refuses the others.
+        // Each sentence below names only the programs that this session serves, because the channel refuses the others.
         def selected(programs: String*): Vector[String] = programs.filter(runOnHost.contains).toVector
         def listed(programs: Vector[String]): String = programs match
           case Vector(one)     => one
@@ -262,8 +266,8 @@ object LaunchMessages:
        |$refused
        |${brokeredParagraph(brokered)}""".stripMargin
 
-  /** The agent's paragraph for a launch with bindings: a 401 from another host or place is the placeholder
-    * sent, not a wrong token. */
+  /** The agent's paragraph for a launch with bindings. The paragraph says that a 401 from another host or place means
+    * the placeholder was sent, not that the token is wrong. */
   def brokeredParagraph(brokered: Vector[CredentialBinding]): String =
     if brokered.isEmpty then ""
     else

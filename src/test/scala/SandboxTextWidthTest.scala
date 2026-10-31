@@ -1,10 +1,10 @@
-// ko-sandbox-text-width, run as the Python script it is. It needs wcwidth, which the image has in
-// /opt/ko-sandbox/python and the script looks for there; elsewhere, PYTHONPATH supplies it:
+// Runs ko-sandbox-text-width as the Python script that it is. The script needs wcwidth. The image has
+// wcwidth in /opt/ko-sandbox/python, where the script looks for it; elsewhere, PYTHONPATH supplies it:
 //
-//   uv pip install --target ~/wcwidth wcwidth==$WCWIDTH_VERSION   # the Containerfile's
+//   uv pip install --target ~/wcwidth wcwidth==$WCWIDTH_VERSION   # the Containerfile's version
 //   PYTHONPATH=~/wcwidth sbt 'testOnly *SandboxTextWidthTest'
 //
-// A host with neither skips.
+// A host with neither skips the suite.
 
 package agentsandbox.launcher
 

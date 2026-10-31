@@ -32,7 +32,7 @@ pub struct Inode {
     pub rule: RuleContext,
     /// The backing object this position named when the entry was allocated, as `(st_dev, st_ino)`.
     /// `lookup` compares it with a fresh `stat`, so a host replacement (a different object at the
-    /// same name) gets a new number instead of this entry's (`lookup` has why, and what happens to
+    /// same name) gets a new number instead of this entry's (`lookup` explains why, and what happens to
     /// this entry). The root's is never read: the root is inserted here, never looked up, so
     /// nothing compares its identity.
     dev: u64,

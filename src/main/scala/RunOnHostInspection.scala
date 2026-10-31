@@ -1,5 +1,7 @@
-// A host proxy's TLS inspection files (SECURITY.md "Run on host"): the leaf the proxy serves its
-// rules' hosts with, and what the command trusts that leaf through.
+// The TLS inspection files of a host proxy (SECURITY.md, "Run on host"):
+//
+// - the leaf certificate the proxy serves for its rules' hosts;
+// - the CA certificate through which the command trusts that leaf.
 
 package agentsandbox.launcher
 
@@ -12,9 +14,10 @@ import FileHelper.{writePrivate, writeReadable}
 
 object RunOnHostInspection:
 
-  /** The proxy's two directories, siblings of its log as its profile is
-    * (RunOnHostProxy.proxyProfileFile), so a runtime's log names them for whoever attaches to
-    * it. Two, because each is one profile's grant: `leaf` the proxy's, `trust` the command's. */
+  /** A path beside the proxy's log, where the proxy's profile also lies (RunOnHostProxy.proxyProfileFile). A
+    * runtime's log thus names the proxy's two directories for whoever attaches to the runtime. The proxy has
+    * two directories because each directory is the grant of one profile: the proxy's profile grants `leaf`, and the
+    * command's profile grants `trust`. */
   private[launcher] def sibling(proxyLog: Path, suffix: String): Path =
     proxyLog.resolveSibling(proxyLog.getFileName.toString.stripSuffix(".log") + suffix)
 
@@ -30,17 +33,20 @@ object RunOnHostInspection:
   /** The same certificate as a PKCS12 store, for `javax.net.ssl.trustStore`. */
   def trustStore(trust: Path): Path = trust.resolve("truststore.p12")
 
-  /** No secret: the store holds a certificate, and the value is the one the JDK's own `cacerts`
-    * has. A JVM given no password loads no certificate from a PKCS12 store (measured, JDK 25:
-    * "the trustAnchors parameter must be non-empty"), so the command's JVMs are given it. */
+  /** The password is no secret: the store holds a certificate and no key, and the JDK's own `cacerts` uses the
+    * same value. The command's JVMs are given the password because a JVM given none loads no certificate from a
+    * PKCS12 store. JDK 25 then fails with "the trustAnchors parameter must be non-empty" (measured). */
   val TrustStorePassword = "changeit"
 
   /**
-   * The names the proxy's leaf must have: the hosts its rules inspect, as the proxy's own
-   * resolution of those rules spells them — a trailing dot removed, case folded, a Unicode name
-   * in its ASCII form. A rule file may spell a host any of those ways; the proxy refuses a leaf
-   * whose names differ from its inspected set, and the JDK refuses a name with a trailing dot.
-   * The sandbox session's leaf takes its names the same way (SECURITY.md, "Who holds the CA key").
+   * The names the proxy's leaf must have: the hosts the proxy's rules inspect, spelled as the proxy's own
+   * resolution of the rules spells them.
+   *
+   *   - The resolution removes a trailing dot, folds case and gives a Unicode name in its ASCII form. A rule file
+   *     may spell a host in any of those ways.
+   *   - The proxy refuses a leaf whose names differ from its inspected set.
+   *   - The JDK refuses a name with a trailing dot.
+   *   - The sandbox session's leaf takes its names the same way (SECURITY.md, "Who holds the CA key").
    */
   def leafNames(ruleText: String): Either[String, Vector[String]] =
     val environment = Map(
@@ -51,12 +57,14 @@ object RunOnHostInspection:
     catch case ex: IllegalArgumentException => Left(s"the proxy's rules: ${ex.getMessage}")
 
   /**
-   * A CA of this proxy's own, the leaf it signs for `hosts`, and the CA's certificate in both
-   * trust formats. The CA's key is never written and is dropped here, so nothing signs a second
-   * leaf under it; the sandbox container trusts another CA, so whoever holds this leaf's key can
-   * answer as its hosts to this proxy's host commands and to nothing else. The store and the PEM
-   * file hold the CA certificate alone: the proxy inspects every host it allows, so no origin's
-   * own certificate reaches the command.
+   * Creates a CA for this proxy alone, the leaf the CA signs for `hosts`, and the CA's certificate in both trust
+   * formats.
+   *
+   *   - This method drops the CA's key without writing it, so nothing signs a second leaf under that CA.
+   *   - The sandbox container trusts a different CA. Whoever holds this leaf's key can therefore answer as the
+   *     leaf's hosts to this proxy's host commands, and to nothing else.
+   *   - The store and the PEM file hold the CA certificate alone. The proxy inspects every host it allows, so no
+   *     origin's own certificate reaches the command.
    */
   def create(proxyLog: Path, hosts: Seq[String]): Either[String, Unit] =
     try
@@ -77,9 +85,9 @@ object RunOnHostInspection:
     catch
       case ex: (IOException | java.security.GeneralSecurityException | IllegalArgumentException) =>
         Left(s"creating the proxy's inspection certificate: ${ex.getMessage}")
-      // A JVM started without RunOnHostSandbox.CertificateBuilderExports. An Error, which no
-      // caller's NonFatal handler takes. Measured: a runner started without them logged the
-      // request and nothing after it, and the requester waited out the row's 1800 s bound.
+      // The JVM was started without RunOnHostSandbox.CertificateBuilderExports. IllegalAccessError is an Error, so
+      // no caller's NonFatal handler takes it. A runner started without those exports logged the request and
+      // nothing after it, and the requester waited out the row's 1800 s bound (measured).
       case ex: IllegalAccessError =>
         Left(
           "creating the proxy's inspection certificate: this JVM was started without " +

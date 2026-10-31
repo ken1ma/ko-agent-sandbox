@@ -1,8 +1,10 @@
-// The security acceptance test's Gradle fixture has one module and one test class. Keep it limited to what
-// the acceptance test exercises. The build uses the Gradle distribution its wrapper downloaded
-// (RunOnHostPrereqs.gradleDistributionDir). `acceptanceToolchain` asks for a toolchain the launch does
-// not grant, the toolchain row's request; `run` prints the temporary directory the forked JVM
-// sees and, with `sleep`, stays up for the cancel and teardown rows.
+// The security acceptance test's Gradle fixture has one module and one test class. Keep it limited to what the
+// acceptance test exercises.
+// - The build uses the Gradle distribution that its wrapper downloaded (RunOnHostPrereqs.gradleDistributionDir).
+// - The property `acceptanceToolchain` asks for a toolchain that the launch does not grant; the toolchain row sends
+//   this request.
+// - `run` prints the temporary directory that the forked JVM sees. With the argument `sleep`, `run` stays up for
+//   the cancel and teardown rows.
 plugins {
     id 'java'
     id 'application'

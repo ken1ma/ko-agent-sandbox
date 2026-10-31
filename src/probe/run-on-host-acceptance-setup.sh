@@ -1,7 +1,8 @@
 #!/bin/sh
 
-# A runner retains its build-directory claims after its sbt server ends. Check its open session
-# lock before emit starts an unconfined sbt in the same checkout; killing only sbt does not free it.
+# Fails when a live run-on-host runner claims one of the given workspaces. A runner keeps its claims on build
+# directories after its sbt server ends, and ending only sbt does not free the claims. The probes call this check on
+# the runner's open session lock before emit starts an unconfined sbt in the same checkout.
 acceptance_require_idle() (
     acceptance_root=$1; shift
     for acceptance_session in "$acceptance_root"/r[0-9]* "$acceptance_root"/condemned/r[0-9]*; do
@@ -38,7 +39,8 @@ acceptance_require_idle() (
     done
 )
 
-# A session can start after preflight. Directory matches alone do not make its runtimes the acceptance test's.
+# Ends a process only when no live runner claims its working directory. A session can start after the preflight, so
+# a process whose directory matches a workspace can belong to that session rather than to the acceptance test.
 acceptance_end_unclaimed_process() (
     acceptance_root=$1; acceptance_pid=$2
     acceptance_start=$(ps -o lstart= -p "$acceptance_pid" 2>/dev/null)
@@ -52,7 +54,8 @@ acceptance_end_unclaimed_process() (
     kill "$acceptance_pid"
 )
 
-# Seeing startup output alone is insufficient: the requester must still be alive when cancelled.
+# Waits for the check to pass while the requester process lives. Startup output alone does not suffice, because the
+# requester must still be alive when the row cancels it.
 acceptance_wait_started() (
     acceptance_pid=$1; acceptance_limit=$2; shift 2
     acceptance_tries=0

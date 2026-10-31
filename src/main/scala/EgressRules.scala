@@ -1,12 +1,15 @@
-// The egress proxy as the launcher deals with it: reading this workspace's rules, asking the proxy
-// image what they resolve to, keeping the audit log, and the actions that report on them
-// (--egress-log, --egress-effective, --egress-check). A session's proxy *container* is not
-// started here — it is a dozen flags in AgentSandboxLauncher.prepareRunFiles, and moving it would
-// drag the launch with it.
+// The launcher's side of the egress proxy:
 //
-// The proxy owns the defaults, the profile equations and the rule resolution; nothing here
-// re-implements any of them, so there is no second opinion about what is allowed. See
-// container/ko-agent-egress-proxy.
+// - reading this workspace's rules;
+// - asking the proxy image what the rules resolve to;
+// - keeping the audit log;
+// - the actions that report on the rules and the log (--egress-log, --egress-effective, --egress-check).
+//
+// This file does not start a session's proxy *container*. AgentSandboxLauncher.prepareRunFiles starts the
+// container with a dozen flags, and moving that code here would drag the launch with it.
+//
+// The proxy owns the defaults, the profile equations and the rule resolution (container/ko-agent-egress-proxy).
+// Nothing here re-implements any of them, so there is no second opinion about what is allowed.
 
 package agentsandbox.launcher
 
@@ -23,12 +26,15 @@ import SandboxWorkspace.*
 object EgressRules:
 
   /**
-   * Comment-stripped, whitespace-collapsed rule text, one line per line — the format the
-   * environment variable holds. A rule is a multi-token line (`allow https://x/ read`), so line
-   * structure is what separates them and must be preserved. A comment starts at the start of a
-   * line or after whitespace; a `#` inside a token is kept, so the proxy's parser sees and
-   * refuses it rather than this pass turning `https://x/a/#b/` into the wider `https://x/a/`.
-   * What is in force is the proxy's to say — a rule file's ruleset is not this text.
+   * The rule text with comments stripped and whitespace collapsed, one line per rule line: the format
+   * that the environment variable holds.
+   *
+   * - A rule is a multi-token line (`allow https://x/ read`), so the line breaks separate the rules and
+   *   must stay.
+   * - A comment starts at the start of a line or after whitespace.
+   * - A `#` inside a token stays, so the proxy's parser sees and refuses the token. Stripping the `#`
+   *   here would turn `https://x/a/#b/` into the wider `https://x/a/`.
+   * - The proxy says what is in force: a rule file's ruleset is not this text.
    */
   def normalizeRuleText(text: String): String =
     text.linesIterator
@@ -40,13 +46,15 @@ object EgressRules:
     normalized.linesIterator.mkString("; ")
 
   /**
-   * The rule lines the ruleset reports as granting beyond the defaults, read from its
-   * `widening lines (N): ...` line, `; ` between rule lines. The launch prints them under an
-   * `<file>: N widening lines` heading, so that a file which only removes or narrows grants
-   * prints no such report and the report is a signal rather than a habit. The proxy classifies
-   * against the defaults it ships (resolveRuleset has the classes), so a custom image reports
-   * against its own; an image printing no such line reports nothing, never a classification
-   * against defaults it does not have.
+   * The rule lines that the ruleset reports as granting beyond the defaults. The method reads them from
+   * the ruleset's `widening lines (N): ...` line, which puts `; ` between rule lines.
+   *
+   * - The launch prints the lines under an `<file>: N widening lines` heading. A file that only removes
+   *   or narrows grants prints no such report, so the report is a signal rather than a habit.
+   * - The proxy classifies against the defaults it ships (resolveRuleset has the classes), so a custom
+   *   image reports against its own defaults.
+   * - An image that prints no such line reports nothing, never a classification against defaults the
+   *   image does not have.
    */
   def wideningLines(resolved: String): Vector[String] =
     resolved.linesIterator.find(_.startsWith(RulesetHelper.WideningLineHead)).toVector.flatMap: line =>
@@ -54,45 +62,48 @@ object EgressRules:
 
   private val WholeHostRule = """allow https://([^/ ]+)/ (.+)""".r
 
-  /** Whole-host rules sharing their grant words, `allow https://<host>/ <words>`, joined into one
-    * line `allow <words>: <host>, <host>` at the first one's place, so that a report listing many
-    * hosts stays short. A rule with no such partner, and any other line, stays as written. */
+  /** Joins whole-host rules (`allow https://<host>/ <words>`) that share their grant words into one
+    * line, `allow <words>: <host>, <host>`, at the first rule's place. A report that lists many hosts
+    * then stays short. A rule with no such partner, and any other line, stays as written. */
   def groupedByHost(rules: Seq[String]): Vector[String] =
     val hostsOf = rules
       .collect { case WholeHostRule(host, words) => words -> host }
       .groupMap((words, _) => words)((_, host) => host)
       .map((words, hosts) => words -> hosts.distinct)
       .filter((_, hosts) => hosts.size > 1)
-    // Every rule of a group maps to the same line; distinct keeps it at the first one's place.
+    // Every rule of a group maps to the same line, and distinct keeps that line at the first rule's place.
     rules.toVector
       .map:
         case WholeHostRule(_, words) if hostsOf.contains(words) => s"allow $words: ${hostsOf(words).mkString(", ")}"
         case rule => rule
       .distinct
 
-  /** The lines the proxy prints after the ruleset lines, describing the ruleset's size and the
-    * workspace's file rather than the ruleset: the summary line, then the widening line. Everything
-    * from the first of them on is metadata (RulesetHelper.metadataLines). */
+  /** The prefixes of the lines that the proxy prints after the ruleset lines: the summary line, then the
+    * widening line. These lines describe the ruleset's size and the workspace's file rather than the
+    * ruleset. Everything from the first of them on is metadata (RulesetHelper.metadataLines). */
   val MetadataPrefixes: Vector[String] = Vector(RulesetHelper.SummaryLineHead, RulesetHelper.WideningLineHead)
 
-  /** Exclude metadata about the workspace's file from the resolved rules exported in
-    * `KO_AGENT_SANDBOX_EGRESS_RULESET` and used to select the inspection certificate's hosts. */
+  /** Removes the metadata about the workspace's file from the resolved rules. The launcher exports the
+    * result in `KO_AGENT_SANDBOX_EGRESS_RULESET`, and selects the inspection certificate's hosts from it. */
   def rulesetLinesOf(resolved: String): String =
     resolved.linesIterator.takeWhile(line => !MetadataPrefixes.exists(line.startsWith)).mkString("\n")
 
   /**
-   * The launch banner's one-line summary of the ruleset: the profile as the ruleset's
-   * first line spells it, then the counts of the summary line, which say how wide it is — each
-   * source alone insufficient. The full lines are one `--egress-effective` away, and the proxy
-   * writes them into this session's own log; a thousand characters of hostnames in the banner is
-   * a line people learn to skip, and skipping it is how a ruleset nobody expected goes unnoticed.
-   * A dry run without the profile line, the provider field every profile but deny-all carries
-   * (RulesetHelper.rulesetLines) or the summary's counts is refused, so no launch starts without
-   * this line stating its egress.
+   * The launch banner's one-line summary of the ruleset: the profile as the ruleset's first line spells
+   * it, then the counts of the summary line, which say how wide the ruleset is. Neither source alone is
+   * enough.
    *
-   * @param profileSource follows the profile, and `providerSource` the provider selection: what the
-   *   line adds when the options file supplied `--egress` (OptionsInForce.from) or provider names
-   *   (OptionsInForce.providersFrom).
+   * - The banner leaves out the full lines. The lines are one `--egress-effective` away, and the proxy
+   *   writes them into this session's own log.
+   * - A thousand characters of hostnames in the banner make a line that people learn to skip. A ruleset
+   *   that nobody expected then goes unnoticed.
+   * - The method refuses a dry run that lacks the profile line, the summary's counts, or the provider
+   *   field that every profile but deny-all carries (RulesetHelper.rulesetLines). No launch therefore
+   *   starts without this line stating its egress.
+   *
+   * @param profileSource what the line adds after the profile when the options file supplied `--egress`
+   *   (OptionsInForce.from). `providerSource` is what the line adds after the provider selection when
+   *   the options file supplied provider names (OptionsInForce.providersFrom).
    * @param color tints the profile and the provider selection (HostCommands.chosen).
    */
   def egressBanner(
@@ -126,18 +137,19 @@ object EgressRules:
         .mkString("; ")
 
   /**
-   * Which of `names`, the entries of the workspace's log directory, to delete: every run directory
-   * (runLogDir) but the newest retain-1, so `retain` remain with the new run's. A run directory's
-   * name sorts chronologically by its UTC stamp.
+   * Which of `names`, the entries of the workspace's log directory, to delete.
    *
-   * A live run's directory is never pruned, however old: its proxy, runner and relay are appending
-   * to its files, and unlinking them would leave the session writing where nothing can read, losing
-   * the whole record at exit — which is what a retention rule counting sessions rather than
-   * liveness does to a workspace running more than `retain` of them at once. More than `retain`
-   * directories can remain while their runs are live.
-   *
-   * Also the flat files of the layout before run directories, unless their run is live. That branch
-   * can go after the first release.
+   * - The method deletes every run directory (runLogDir) except the newest retain-1, so `retain`
+   *   directories remain, counting the new run's. A run directory's name sorts chronologically by its
+   *   UTC stamp.
+   * - The method never prunes a live run's directory, however old. The run's proxy, runner and relay
+   *   append to the directory's files. Unlinking the files would leave the session writing where nothing
+   *   can read, and the whole record would be lost at exit.
+   *   - A retention rule that counts sessions rather than liveness does this to a workspace that runs
+   *     more than `retain` sessions at once.
+   *   - More than `retain` directories can remain while their runs are live.
+   * - The method also deletes the flat files of the layout before run directories, unless their run is
+   *   live. That branch can go after the first release.
    */
   def runLogDirsToPrune(names: Seq[String], retain: Int, liveRuns: Set[String]): Seq[String] =
     val runDirs = names.filter(_.matches(RunLogDirPattern)).sorted
@@ -152,18 +164,21 @@ object EgressRules:
   val RuleFiles: Vector[(String, String)] = Vector(RulesetHelper.RuleFile -> RulesetHelper.RuleVariable)
 
   /**
-   * Present egress rule files as (name, normalized text), under the refusals
+   * The egress rule files that are present, as (name, normalized text) pairs, under the refusals that
    * SandboxWorkspace.readBoundaryRuleFiles lists.
    */
   def readRuleFiles(egressDir: Path): Either[String, Vector[(String, String)]] =
     SandboxWorkspace.readBoundaryRuleFiles(egressDir, RuleFiles.map(_(0)), "doc/egress-proxy.md", normalizeRuleText)
 
   /**
-   * Only the basename of the directly launched command is classified; the launcher does not inspect
-   * a script's arguments or guess what it may later execute — a script that starts an agent selects
-   * no provider and gets the startup warning instead of a guessed grant, unless the launch names
-   * its providers (selectedProvider). The names are the proxy's (RulesetHelper.ModelProviders), and
-   * the proxy checks them, so this file keeps no list of providers.
+   * The model provider of each agent command, keyed by the basename of the directly launched command.
+   *
+   * - The launcher classifies only that basename. The launcher does not inspect a script's arguments
+   *   or guess what the script may later execute.
+   * - A script that starts an agent therefore selects no provider, and gets the startup warning instead
+   *   of a guessed grant, unless the launch names its providers (selectedProvider).
+   * - The provider names are the proxy's (RulesetHelper.ModelProviders). The proxy checks them, so this
+   *   file keeps no list of providers.
    */
   val AgentProviders: Map[String, String] =
     Map(
@@ -174,8 +189,8 @@ object EgressRules:
       "copilot" -> "github",
     )
 
-  /** The agents that run against any provider, so no classification stands for a choice: a
-    * launch of one names its providers or is refused. */
+  /** The agents that run against any provider, so no classification can stand in for a choice. A launch
+    * of such an agent names its providers or is refused. */
   val ProviderlessAgents: Set[String] = Set("opencode")
 
   private def commandName(command: Option[String]): Option[String] = command.map(_.split("[/\\\\]").last)
@@ -183,13 +198,16 @@ object EgressRules:
   def commandProvider(command: Option[String]): Option[String] = commandName(command).flatMap(AgentProviders.get)
 
   /**
-   * The provider selection a launch hands the proxy (RulesetHelper.selectedProviders): the
-   * command's classification, followed by the `--model-provider` names it does not repeat, which
-   * the proxy would refuse as named twice. An options file's `--model-provider` applies to every
-   * agent, so a selection that replaced the classification would cut each other agent off from its
-   * own provider. The option is refused under deny-all, where it would select nothing; a
-   * providerless agent without it is refused under the other profiles, where every other agent's
-   * launch selects a provider and that one's would silently select none.
+   * The provider selection that a launch hands the proxy (RulesetHelper.selectedProviders): the
+   * command's classification, followed by the `--model-provider` names that the classification does
+   * not repeat. The proxy would refuse a repeated name as named twice.
+   *
+   * - An options file's `--model-provider` applies to every agent. A selection that replaced the
+   *   classification would cut each other agent off from its own provider.
+   * - The method refuses the option under deny-all, where the option would select nothing.
+   * - Under the other profiles, the method refuses a providerless agent without the option. Every
+   *   other agent's launch selects a provider there, and the providerless agent's launch would
+   *   silently select none.
    */
   def selectedProvider(
     named: Vector[String],
@@ -210,9 +228,9 @@ object EgressRules:
           )
         case selected => Right(selected)
 
-  /** The launch's warning that no provider is selected, under a profile where one could be: the
-    * proxy never sees the command or the option, so the line cannot come from its resolution.
-    * `command` is the command's first word; a launch with none runs the image's default. */
+  /** The launch's warning that no provider is selected, under a profile where a provider could be. The
+    * proxy never sees the command or the option, so the warning cannot come from the proxy's resolution.
+    * `command` is the command's first word; a launch without a command runs the image's default. */
   def noProviderLine(command: Option[String], profile: String): Option[String] =
     Option.when(profile != "deny-all"):
       val subject = command.fold("no command is given")(name => s"'$name' is not a recognized agent command")
@@ -221,8 +239,8 @@ object EgressRules:
         else "starts from the catalog alone; the workspace's rule file applies after it"
       s"$subject and no ${CommandLine.ModelProviderOption} is given, so $profile selects no model provider and $effect"
 
-  /** The launch's failure when the dry run refuses: the proxy names the variable it refused, and
-    * the launcher names the option or file that variable carries. */
+  /** The launch's failure when the dry run refuses. The proxy names the variable it refused, and the
+    * launcher names the option or file that the variable carries. */
   def rulesetRefusal(err: String): String =
     val subject =
       if err.contains(RulesetHelper.ModelProviderVariable) then s"${CommandLine.ModelProviderOption} is not valid"
@@ -230,12 +248,13 @@ object EgressRules:
     s"error: $subject\n$err"
 
   /**
-   * A --print-ruleset dry run of the proxy image (--rm, --network=none,
-   * nothing mounted): the ruleset, or the reason it is invalid. The
-   * proxy combines its defaults, the profile and the workspace's rules; both
-   * --egress-effective and every launch use this one dry run's result — for
-   * the banner and for the leaf certificate's names alike. `provenance`
-   * additionally reports every line's sources (--egress-effective's view).
+   * A --print-ruleset dry run of the proxy image (--rm, --network=none, nothing mounted): the ruleset,
+   * or the reason the ruleset is invalid.
+   *
+   * - The proxy combines its defaults, the profile and the workspace's rules.
+   * - --egress-effective and every launch use this dry run's result, for the banner and for the leaf
+   *   certificate's names alike.
+   * - `provenance` also reports every line's sources (--egress-effective's view).
    */
   def resolvedRuleset(
     podman: String,
@@ -253,23 +272,26 @@ object EgressRules:
     )
 
   /**
-   * The upstream proxy HTTPS_PROXY names, handed to the proxy container as the variable itself,
-   * with no value: podman fills a value-less `--env` from this process's environment, so the URL
-   * — its userinfo included — is in no argument and no process listing, and the proxy is its one
-   * parser (TransportHelper.UpstreamEndpoint). Selected as the proxy selects it.
-   * Empty for a direct run.
+   * The upstream proxy that HTTPS_PROXY names, handed to the proxy container as the variable itself,
+   * with no value.
+   *
+   * - podman fills a value-less `--env` from this process's environment. The URL, userinfo included,
+   *   therefore appears in no argument and no process listing.
+   * - The proxy is the URL's one parser (TransportHelper.UpstreamEndpoint).
+   * - The method selects the variable as the proxy selects it, and returns no argument for a direct
+   *   run.
    */
   def upstreamProxyArgs(read: String => Option[String]): Vector[String] =
     agentsandbox.egress.TransportHelper.upstreamProxyVariable(read).map((name, _) => s"--env=$name").toVector
 
-  /** The proxy's transport line out of its log, the instant stamp removed. Written before the
-    * ready line (AgentEgressProxy.serve), so it is there once the launch is. */
+  /** The proxy's transport line from its log, without the instant stamp. The proxy writes the line
+    * before the ready line (AgentEgressProxy.serve), so the line is there once the launch is. */
   def transportLineOf(log: String): Option[String] =
     log.linesIterator.map(_.dropWhile(_ != ' ').drop(1))
       .find(_.startsWith(agentsandbox.egress.TransportHelper.TransportLineHead))
 
-  /** The --env arguments passing the selected profile, provider and rule files to the proxy — the
-    * dry run and the real container get identical ones, so what was vetted is what is enforced. */
+  /** The --env arguments that pass the selected profile, provider and rule files to the proxy. The dry
+    * run and the real container get identical arguments, so the proxy enforces what the dry run vetted. */
   def rulesetEnvArgs(
     profile: String,
     provider: Option[String],
@@ -311,14 +333,18 @@ object EgressRules:
       OtherFormat
 
   /**
-   * The inspected hosts out of a --print-ruleset answer: the hosts of its `allow https://` lines,
-   * one line per resolved scope, a `tunnel` line never among them — the host is the URL's part
-   * between the scheme and its first `/`, and a host under several scopes is one name. This is
-   * how the launcher learns which names the leaf certificate must list — the proxy image's own
-   * answer under this workspace's rules, so no second copy of any list exists to drift, and a proxy
-   * image or rules of the user's choosing get a matching leaf too. Empty means the ruleset
-   * inspects nothing; the launcher then issues no leaf and hands the proxy no inspection material.
-   * A resolution without its profile line is another launcher version's format, refused.
+   * The inspected hosts in a --print-ruleset answer: the hosts of its `allow https://` lines, one line
+   * per resolved scope. A `tunnel` line is never among them.
+   *
+   * - The host is the URL's part between the scheme and its first `/`. A host under several scopes
+   *   counts as one name.
+   * - The launcher learns from this list which names the leaf certificate must list. The list is the
+   *   proxy image's own answer under this workspace's rules, so no second copy of any list exists to
+   *   drift. A proxy image or rules of the user's choosing get a matching leaf too.
+   * - An empty list means that the ruleset inspects nothing. The launcher then issues no leaf and hands
+   *   the proxy no inspection material.
+   * - The method refuses a resolution without its profile line, which is another launcher version's
+   *   format.
    */
   def inspectedHostsOf(dryRunOutput: String): Either[String, Vector[String]] =
     val lines = dryRunOutput.linesIterator.toVector
@@ -338,9 +364,10 @@ object EgressRules:
       .sorted
 
   /**
-   * No arguments: the retained host files, oldest first — works after every
-   * container is gone. With arguments: passed through to `podman logs` on
-   * the running proxies, the live view of the same lines.
+   * - Without arguments, the action prints the retained host files, oldest first. The listing works
+   *   after every container is gone.
+   * - With arguments, the action passes them to `podman logs` on the running proxies, which shows the
+   *   live view of the same lines.
    */
   def egressLog(os: Os, extra: List[String]): Nothing =
     val workspaceRoot = resolveWorkspaceRoot(os)
@@ -375,11 +402,11 @@ object EgressRules:
       val command = List(podman, "logs") ++ extra ++ proxies
       sys.exit(if stepOk(command*) then 0 else 1)
 
-  /** The shared front half of the egress preflights: this workspace's vetted rule files,
-    * the provider the given command selects, and the Id of the proxy image to consult, under the
-    * same version lock as a launch (proxyImageLock) — with the command-selection notes a launch
-    * would print. `operands` is the action's optional `[--] [command [arguments...]]`, accepted
-    * without launching anything. */
+  /** The front half that the egress preflights share: this workspace's vetted rule files, the provider
+    * that the given command selects, and the Id of the proxy image to consult. The proxy image is under
+    * the same version lock as a launch (proxyImageLock). The method prints the command-selection notes
+    * that a launch would print. `operands` is the action's optional `[--] [command [arguments...]]`,
+    * which the action accepts without launching anything. */
   private def egressPreflight(
     os: Os,
     profile: String,
@@ -419,16 +446,19 @@ object EgressRules:
 
   private def ruleFileSource(name: String): String = s".ko-agent-sandbox/egress/$name"
 
-  /** The workspace's rule file as written, one line. Printed by the egress actions, which report no
-    * widening on stderr; a launch prints launchLines. */
+  /** Prints the workspace's rule file as written, on one line. The egress actions print this line and
+    * report no widening on stderr; a launch prints launchLines instead. */
   def printRuleFiles(ruleFiles: Vector[(String, String)]): Unit =
     ruleFiles.foreach: (name, text) =>
       System.err.println(s"${ruleFileSource(name)}: ${lineSummary(text)}")
 
-  /** A launch's lines about the workspace's rule file, once the dry run has answered: the lines it
-    * reports as granting beyond the defaults (wideningLines) tinted as a weakened boundary and
-    * grouped by host (groupedByHost), the file's other lines after them (HostCommands.ruleFileReport).
-    * The proxy reads one rule file (RuleFiles), so every widening line is that file's. */
+  /** A launch's lines about the workspace's rule file, once the dry run has answered.
+    *
+    * - The lines that the dry run reports as granting beyond the defaults (wideningLines) come first,
+    *   tinted as a weakened boundary and grouped by host (groupedByHost).
+    * - The file's other lines follow (HostCommands.ruleFileReport).
+    *
+    * The proxy reads one rule file (RuleFiles), so every widening line belongs to that file. */
   def launchLines(
     ruleFiles: Vector[(String, String)],
     rulesetText: String,
@@ -439,9 +469,9 @@ object EgressRules:
       ruleFileReport(ruleFileSource(name), text.linesIterator.toVector, widens, color, groupedByHost)
 
   /**
-   * The ruleset this workspace would apply, without a session: the same readRuleFiles +
-   * resolvedRuleset a launch uses, under the accompanying --egress=<profile>, plus per-line
-   * provenance. Data to stdout, context to stderr, so the effective lists pipe cleanly.
+   * Prints the ruleset this workspace would apply, without a session. The action uses the same
+   * readRuleFiles and resolvedRuleset as a launch, under the accompanying --egress=<profile>, and adds
+   * per-line provenance. Data goes to stdout and context to stderr, so the effective lists pipe cleanly.
    */
   def egressEffective(
     os: Os,
@@ -469,9 +499,9 @@ object EgressRules:
     sys.exit(0)
 
   /**
-   * One host's ruleset decision and current DNS resolution, through a one-shot proxy container on a
-   * per-run network built like a session's egress network (AgentEgressProxy.checkHost has why the
-   * two are reported apart and why the resolver must be enforcement's).
+   * Reports one host's ruleset decision and current DNS resolution. A one-shot proxy container answers
+   * on a per-run network built like a session's egress network. AgentEgressProxy.checkHost explains why the
+   * two answers are reported apart, and why the resolver must be the one that enforcement uses.
    */
   def egressCheck(
     os: Os,

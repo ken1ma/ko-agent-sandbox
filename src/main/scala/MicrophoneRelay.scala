@@ -1,7 +1,12 @@
-// The host microphone under --audio=mic: the recorder programs each host runs, the launch probe, the
-// POSIX relay's shell (a job of the reaper, SandboxLifecycle), and the Windows relay (threads of the
-// resident launcher). The sandbox side is the image's ko-sandbox-mic and its PulseAudio daemon;
-// SECURITY.md "Microphone" has what the channel grants, doc/microphone.md the design.
+// The relays forward the host microphone under --audio=mic. This file holds:
+//
+// - the recorder programs that each host runs;
+// - the launch probe;
+// - the POSIX relay's shell, which runs as a job of the reaper (SandboxLifecycle);
+// - the Windows relay, which runs as threads of the resident launcher.
+//
+// The sandbox side is the image's ko-sandbox-mic and its PulseAudio daemon. SECURITY.md, "Microphone", has
+// what the channel grants, and doc/microphone.md has the design.
 
 package agentsandbox.launcher
 
@@ -16,9 +21,12 @@ import HostCommands.{containerRunning, ExecWithInput, Os, findOnPath, quoteFreeS
 object MicrophoneRelay:
 
   /**
-   * The channel's directory under the sandbox's /tmp: the daemon's FIFO `mic` (the image's
-   * microphone.pa spells it), the request FIFO `req` the relay's first exec makes, the writer's pid
-   * file, and the daemon's three configuration directories, its socket in `pulse-runtime`.
+   * The channel's directory under the sandbox's /tmp. The directory holds:
+   *
+   * - the daemon's FIFO `mic`, whose name the image's microphone.pa spells;
+   * - the request FIFO `req`, which the relay's first exec makes;
+   * - the writer's pid file;
+   * - the daemon's three configuration directories, with the daemon's socket in `pulse-runtime`.
    */
   val SandboxDir = "/tmp/ko-agent-sandbox/microphone"
 
@@ -26,9 +34,9 @@ object MicrophoneRelay:
   val AudioVariable = "KO_AGENT_SANDBOX_AUDIO"
 
   /**
-   * The variables the sandbox gets under --audio=mic; doc/microphone.md, "The daemon", has why the
-   * PULSE_* ones. No SOX_OPTS: the CLI's `rec` overrides its `--buffer`, and the image's SoX writes
-   * 4096 bytes at a time either way (doc/microphone.md, "Latency").
+   * The variables the sandbox gets under --audio=mic. doc/microphone.md, "The daemon", explains why the
+   * sandbox gets the PULSE_* variables. The sandbox gets no SOX_OPTS: the CLI's `rec` overrides its
+   * `--buffer`, and the image's SoX writes 4096 bytes at a time either way (doc/microphone.md, "Latency").
    */
   def sandboxEnvironment(sandboxDir: String = SandboxDir): Vector[(String, String)] =
     Vector(
@@ -40,7 +48,7 @@ object MicrophoneRelay:
       "PULSE_COOKIE" -> s"$sandboxDir/pulse-config/cookie",
     )
 
-  /** One request per exec: the first line written to `req`, whatever a writer adds after it. */
+  /** Reads one request per exec: the first line written to `req`, whatever a writer adds after it. */
   def sandboxRequestReader(sandboxDir: String = SandboxDir): String =
     s"trap \"\" INT HUP TERM; d=$sandboxDir; mkdir -p -m 700 $$d; " +
       s"[ -p $$d/req ] || mkfifo -m 600 $$d/req; head -n 1 $$d/req"
@@ -49,7 +57,8 @@ object MicrophoneRelay:
   def writerCommand(sandboxDir: String = SandboxDir): Vector[String] =
     Vector("ko-sandbox-mic", "write", s"$sandboxDir/mic")
 
-  /** What the host reads of one request exec's output: `start` and its newline, with room. */
+  /** The most that the host reads of one request exec's output: `start` and its newline, with room to
+    * spare. */
   val MaxRequestBytes = 64
 
   // -------------------------------------------------------------------------
@@ -57,18 +66,18 @@ object MicrophoneRelay:
   // -------------------------------------------------------------------------
 
   /**
-   * A recorder program writing raw signed 16-bit little-endian mono at 16000 Hz to stdout, by the
-   * path findOnPath resolved. Each command names its mode, since findOnPath canonicalizes:
-   * `arecord` is a link to `aplay`, `parecord` to `pacat`, Homebrew's `rec` to `sox`, and each of
-   * those decides by its name what it does.
+   * A recorder program that writes raw signed 16-bit little-endian mono at 16000 Hz to stdout, by the
+   * path that findOnPath resolved. Each command names its mode, because findOnPath canonicalizes:
+   * `arecord` is a link to `aplay`, `parecord` to `pacat`, and Homebrew's `rec` to `sox`. Each of those
+   * programs decides by its name what it does.
    */
   final case class Recorder(label: String, command: Vector[String])
 
   /**
-   * SoX writes its output in `--buffer`-sized blocks, 8192 bytes by default, which is 256 ms of
-   * this stream; 640 bytes is one 20 ms period. `-D`: SoX dithers its 16-bit output by default,
-   * which turns a silent input into samples of plus and minus one; the probe's silence warning
-   * reads exact zeros.
+   * - SoX writes its output in `--buffer`-sized blocks, 8192 bytes by default, which is 256 ms of this
+   *   stream. 640 bytes is one 20 ms period.
+   * - `-D` turns dithering off. SoX dithers its 16-bit output by default, which turns a silent input
+   *   into samples of plus and minus one, and the probe's silence warning reads exact zeros.
    */
   private val SoxOutput = Vector("-q", "-D", "--buffer", "640")
   private val RawStream = Vector("-t", "raw", "-r", "16000", "-e", "signed", "-b", "16", "-c", "1", "-")
@@ -82,9 +91,9 @@ object MicrophoneRelay:
     case _ => "install alsa-utils, which provides arecord, or pulseaudio-utils, which provides parecord"
 
   /**
-   * The candidates on this host's PATH, in probe order. On Linux `arecord` on ALSA's `default`
-   * PCM first, one command whichever server owns the microphone where the desktop routes
-   * `default` to it, then `parecord` for a host where it does not, as on WSLg.
+   * The candidates on this host's PATH, in probe order. On Linux, `arecord` on ALSA's `default` PCM
+   * comes first: where the desktop routes `default` to the microphone, one command works whichever
+   * server owns the microphone. `parecord` follows for a host where the desktop does not, as on WSLg.
    */
   def recorders(os: Os, pathValue: String): Either[String, Vector[Recorder]] =
     def found(name: String): Option[Path] = findOnPath(name, pathValue, os)
@@ -134,25 +143,24 @@ object MicrophoneRelay:
   // The launch probe, read by the launcher
   // -------------------------------------------------------------------------
 
-  /** How long a candidate may take to deliver its first bytes; on macOS this spans the
-    * microphone permission prompt the first recording raises. */
+  /** How long a candidate may take to deliver its first bytes. On macOS, the bound spans the
+    * microphone permission prompt that the first recording raises. */
   def probeBoundSeconds(os: Os): Int = if os == Os.Mac then 60 else 10
 
-  /** On macOS, how long without bytes before the launch says it waits for the prompt. */
+  /** On macOS, how long the launch goes without bytes before it says that it waits for the prompt. */
   val PromptNoticeSeconds = 3
 
   /**
-   * The probe's moment, in reads of at most one 20 ms period: about a second. A macOS launch can
-   * warn of exact silence and then dictate, at ten reads and at fifty (doc/microphone.md, "The
-   * launch").
+   * The probe's moment, in reads of at most one 20 ms period: about a second. A macOS launch can warn
+   * of exact silence and then dictate, both at ten reads and at fifty (doc/microphone.md, "The launch").
    */
   val ProbeReads = 50
 
   /**
-   * How far into the launch recorder's audio its first sound came, which both relays log once: the
-   * launches that warn of a silent start and then dictate are measured by it (doc/microphone.md,
-   * "The launch"). Audio time, 32 bytes a millisecond, from the recorder's first byte; the watch
-   * ends at the bound or the first request.
+   * How far into the launch recorder's audio its first sound came. Both relays log this line once, and
+   * the line measures the launches that warn of a silent start and then dictate (doc/microphone.md,
+   * "The launch"). The offset is audio time, 32 bytes a millisecond, counted from the recorder's first
+   * byte. The watch ends at the bound or at the first request.
    */
   val FirstSoundPrefix = "the recorder's first sound came after"
   val FirstSoundBoundBytes: Long = 30 * 32_000
@@ -166,9 +174,14 @@ object MicrophoneRelay:
     case Failed(reasons: Vector[String])
 
   /**
-   * The probe's status lines as the POSIX relay writes them, in order: `waiting` once on macOS,
-   * `failed <label>: <reason>` per candidate that did not record, `silent` before the
-   * `recording <label>` of the one kept, or `none` after the last failure. None while undecided.
+   * Reads the probe's outcome from its status lines. The POSIX relay writes these lines in order:
+   *
+   * - `waiting`, once, on macOS;
+   * - `failed <label>: <reason>` per candidate that did not record;
+   * - `recording <label>` for the kept candidate, preceded by `silent` when its first moment was all
+   *   zero samples, or `none` after the last failure.
+   *
+   * The result is None while the probe is undecided.
    */
   def probeOutcome(lines: Vector[String]): Option[ProbeOutcome] =
     val failures = lines.collect { case line if line.startsWith("failed ") => line.stripPrefix("failed ") }
@@ -179,9 +192,9 @@ object MicrophoneRelay:
     }
 
   /**
-   * Waits for the POSIX relay's probe through its status file, printing the prompt notice when it
-   * appears. The bound is the relay's own plus room for its exec and polling; past it the job is
-   * taken for dead.
+   * Waits for the POSIX relay's probe through its status file, and prints the prompt notice when the
+   * `waiting` line appears. The bound is the relay's own plus room for its exec and polling. Past the
+   * bound, the method takes the job for dead.
    */
   def awaitProbe(status: Path, os: Os, notice: () => Unit): ProbeOutcome =
     val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(probeBoundSeconds(os) * 2L + 10)
@@ -202,9 +215,12 @@ object MicrophoneRelay:
     outcome.get
 
   /**
-   * The launch error when every candidate on PATH failed, so installing it again is not the step:
-   * on macOS the terminal's permission, which an unanswered prompt leaves undecided until the bound;
-   * on Windows what the diagnosis names; on Linux the device, or the other recorder.
+   * The launch error when every candidate on PATH failed, so installing a recorder again is not the
+   * next step. The error names the next step instead:
+   *
+   * - on macOS, the terminal's permission, which an unanswered prompt leaves undecided until the bound;
+   * - on Windows, what the diagnosis names;
+   * - on Linux, the device, or the other recorder.
    */
   def failureMessage(reasons: Vector[String], os: Os, diagnosis: Vector[String] = Vector.empty): String =
     val next = os match
@@ -235,23 +251,32 @@ object MicrophoneRelay:
   // -------------------------------------------------------------------------
 
   /**
-   * `microphone_relay <engine> <sandbox> <dir> <status> <log> <candidate>...`, the engine being the
-   * resolved podman, for the reaper to run as a job from before the sandbox starts to its end.
-   * `dir` is the job's own directory, mode 0700, which the reaper makes and removes; `status` is
-   * the file the launcher reads the probe from ([[awaitProbe]]); `log` is the microphone log; each
-   * candidate is [[encodedCandidate]]. Everything it runs is the user's own on the host.
+   * `microphone_relay <engine> <sandbox> <dir> <status> <log> <candidate>...`, for the reaper to run as
+   * a job from before the sandbox starts to the sandbox's end.
    *
-   * The recorder's FIFO is held read-write for the session, so the recorder never meets a closed
-   * pipe and no open waits for the other end; Linux and macOS allow that where POSIX leaves it
-   * undefined (fifo(7)). Between requests a pump drains it to /dev/null; from a `start` the pump
-   * stops and the FIFO keeps what the recorder writes, up to its capacity (64 KiB, 2 s, on Linux),
-   * until the writer's `ready`, when the pump copies it into the exec's stdin FIFO, oldest first.
+   * - `engine` is the resolved podman.
+   * - `dir` is the job's own directory, mode 0700, which the reaper makes and removes.
+   * - `status` is the file from which the launcher reads the probe ([[awaitProbe]]).
+   * - `log` is the microphone log.
+   * - Each candidate is [[encodedCandidate]].
+   * - Everything the relay runs is the user's own on the host.
+   *
+   * The relay holds the recorder's FIFO read-write for the session, so the recorder never meets a
+   * closed pipe and no open waits for the other end. Linux and macOS allow this, where POSIX leaves it
+   * undefined (fifo(7)).
+   *
+   * - Between requests, a pump drains the FIFO to /dev/null.
+   * - From a `start`, the pump stops, and the FIFO keeps what the recorder writes, up to its capacity
+   *   (64 KiB, 2 s, on Linux).
+   * - At the writer's `ready`, the pump copies the kept bytes into the exec's stdin FIFO, oldest first.
    *
    * The pump copies with dd in batches of 50 reads of at most one period, about a second, and marks
-   * each batch: the recorder's supervisor ends a recorder that leaves five seconds unmarked, as one
-   * that ended. Children of the reaper inherit its ignored TERM, which a program resets only by
-   * installing a handler of its own, so ending a child is TERM, then the tree KILLed after a
-   * second ([[SandboxLifecycle.TreeFunctions]]' stop_tree and end_tree).
+   * each batch. The recorder's supervisor ends a recorder that leaves five seconds unmarked, and treats
+   * it as one that ended.
+   *
+   * Children of the reaper inherit its ignored TERM, which a program resets only by installing a handler
+   * of its own. Ending a child is therefore TERM, then a KILL of the tree after a second
+   * ([[SandboxLifecycle.TreeFunctions]]' stop_tree and end_tree).
    */
   def hostShellFunctions(sandboxDir: String = SandboxDir, probeBound: Option[Int] = None): String =
     """# The host microphone, recorded for the session and forwarded while an agent records.
@@ -486,12 +511,18 @@ object MicrophoneRelay:
   // The Windows relay
   // -------------------------------------------------------------------------
   //
-  // Windows has no reaper — the launcher stays resident — so the relay is threads of the launcher:
-  // the recorder its child for the session, a pump reading the recorder's output, a request loop,
-  // and a watchdog. Windows has no SIGTERM: Process.destroy() is TerminateProcess.
+  // Windows has no reaper, because the launcher stays resident there. The relay is therefore made of the
+  // launcher's own child and threads:
+  //
+  // - the recorder, the launcher's child for the session;
+  // - a pump that reads the recorder's output;
+  // - a request loop;
+  // - a watchdog.
+  //
+  // Windows has no SIGTERM: Process.destroy() is TerminateProcess.
 
-  /** The recorder's output, read for the session: dropped while idle, kept from a request on, and
-    * forwarded from the writer's `ready`, what was kept first. */
+  /** Reads the recorder's output for the session. The pump drops the output while idle, keeps it from a
+    * request on, and forwards it from the writer's `ready`, the kept output first. */
   private[launcher] final class Pump(val process: Process, val label: String):
     private var kept: Option[java.io.ByteArrayOutputStream] = None
     private var target: Option[OutputStream] = None
@@ -499,15 +530,16 @@ object MicrophoneRelay:
     @volatile private var latestStderrLine: String = ""
     private var probeNonzero = 0L
     private var probeReads = 0
-    // The first-sound watch: bytes delivered, and where the first nonzero one came; a request ends it.
+    // The first-sound watch: the bytes delivered, and where the first nonzero byte came. A request ends
+    // the watch.
     @volatile private var listening = true
     @volatile private var delivered = 0L
     @volatile var firstSound: Option[Long] = None
 
     private val firstSoundLogged = java.util.concurrent.atomic.AtomicBoolean(false)
 
-    /** Logs what the watch found, once it has: the first sound, or none within the bound. Not under
-      * this pump's monitor, which a write blocked on a stopped writer holds. */
+    /** Logs what the watch found, once the watch has found it: the first sound, or none within the bound.
+      * The method does not take this pump's monitor, which a write blocked on a stopped writer holds. */
     def logFirstSound(log: Path): Unit =
       firstSound.map(firstSoundLine).orElse(Option.when(delivered >= FirstSoundBoundBytes)(NoSoundLine)).foreach:
         line => if firstSoundLogged.compareAndSet(false, true) then say(log, line)
@@ -531,7 +563,7 @@ object MicrophoneRelay:
       latestStderrLine
 
     /** Whether the first [[ProbeReads]] reads, as the POSIX relay's probe reads them, were all zero
-      * bytes; None if the recorder ended or the bound passed first. Like the POSIX relay, it keeps
+      * bytes. None if the recorder ended or the bound passed first. Like the POSIX relay, the pump keeps
       * the count of nonzero bytes, never the audio. */
     def firstMomentSilent(seconds: Int): Option[Boolean] =
       try Some(probed.get(seconds.toLong, TimeUnit.SECONDS))
@@ -579,7 +611,7 @@ object MicrophoneRelay:
           }
           count = in.read(buffer)
       catch case _: IOException => ()
-      // Ended before its last probe read: the POSIX relay's probe fails such a recorder too.
+      // The output ended before the probe's last read. The POSIX relay's probe fails such a recorder too.
       probed.completeExceptionally(IOException("the recorder ended"))
 
     private def readStderr(err: InputStream): Unit =
@@ -600,13 +632,13 @@ object MicrophoneRelay:
     catch case _: IOException => ()
 
   /**
-   * The recorders this launcher started, ended by one shutdown hook whichever way the launcher
-   * ends: during the probe, on a failed launch, or with the session. Windows ends no child with
-   * its parent, and a recorder waiting on its device need not notice its reader is gone.
-   *   - The hook is registered before the first recorder starts. A start during the shutdown
-   *     starts nothing once the JDK refuses the registration or the hook has run; a recorder
-   *     started before the hook runs is ended by it.
-   *   - `register` adds the hook; a test passes its own to run it.
+   * The recorders this launcher started. One shutdown hook ends them whichever way the launcher ends:
+   * during the probe, on a failed launch, or with the session. Windows ends no child with its parent,
+   * and a recorder waiting on its device need not notice that its reader is gone.
+   *   - The class registers the hook before the first recorder starts.
+   *   - A start during the shutdown starts nothing once the JDK refuses the registration or the hook
+   *     has run. The hook ends a recorder that started before the hook runs.
+   *   - `register` adds the hook. A test passes its own `register` to run the hook.
    */
   private[launcher] final class Recorders(register: Thread => Unit = Runtime.getRuntime.addShutdownHook(_)):
     private val live = java.util.concurrent.ConcurrentHashMap.newKeySet[Process]()
@@ -640,12 +672,12 @@ object MicrophoneRelay:
       pump.start()
       pump
 
-  /** The recorder the resident probe kept, running for the session; `silent` when its first moment
-    * was all zero samples. */
+  /** The recorder that the resident probe kept, which runs for the session. `silent` is true when the
+    * recorder's first moment was all zero samples. */
   final class Kept private[launcher] (val recorder: Recorder, val silent: Boolean, private[launcher] val pump: Pump)
 
-  /** The resident probe: the first candidate whose recorder delivers bytes within the bound, else
-    * each candidate's reason. */
+  /** The resident probe returns the first candidate whose recorder delivers bytes within the bound, or
+    * else each candidate's reason. */
   def probeResident(candidates: Vector[Recorder], boundSeconds: Int, log: Path): Either[Vector[String], Kept] =
     var reasons = Vector.empty[String]
     var kept = Option.empty[Kept]
@@ -661,7 +693,7 @@ object MicrophoneRelay:
               pump.logFirstSound(log)
               kept = Some(Kept(recorder, silent, pump))
             case None =>
-              // The output's end can arrive before the process's: an ended output waits for its status.
+              // The output can end before the process does, so an ended output waits for the process's status.
               val ended = pump.endedEarly && pump.process.waitFor(5, TimeUnit.SECONDS)
               pump.process.destroyForcibly()
               pump.process.waitFor(5, TimeUnit.SECONDS)
@@ -673,9 +705,9 @@ object MicrophoneRelay:
     kept.toRight(reasons)
 
   /**
-   * The Windows relay for the session, from the probe's recorder: the request loop and the
-   * watchdog, both daemon threads ending when the sandbox stops. The first wait is bounded like the
-   * reaper's, for a launcher that never reaches the start.
+   * Starts the Windows relay for the session from the probe's recorder: the request loop and the
+   * watchdog. Both are daemon threads that end when the sandbox stops. The first wait is bounded like
+   * the reaper's, for a launcher that never reaches the start.
    */
   def startResident(
     kept: Kept,
@@ -738,9 +770,9 @@ object MicrophoneRelay:
       reader.waitFor()
       String(bytes, UTF_8)
 
-    /** Logs, once, where the launch recorder's first sound came. Ends a recorder that ended or went
-      * silent, and the forwarding with it; the next request starts a new one. Silence is bytes too:
-      * only no bytes at all counts. */
+    /** Logs, once, where the launch recorder's first sound came. The watchdog also ends a recorder that
+      * ended or went silent, and ends the forwarding with it; the next request starts a new recorder.
+      * Going silent here means delivering no bytes at all, because silent audio is bytes too. */
     private def watch(): Unit =
       while !stopped do
         Thread.sleep(1000)
@@ -790,8 +822,8 @@ object MicrophoneRelay:
               catch case _: IOException => ()
           if process.isEmpty then current.idle()
 
-    /** The exec's first line within the bound: Some("") for an exec that ended without one, a
-      * stale start; None when the bound passed. */
+    /** The exec's first line within the bound. The result is Some("") for an exec that ended without a
+      * line, which is a stale start, and None when the bound passed. */
     private def readyLine(process: Process): Option[String] =
       val line = java.util.concurrent.CompletableFuture.supplyAsync: () =>
         val in = process.getInputStream
@@ -811,10 +843,11 @@ object MicrophoneRelay:
   private val ConsentStore = "Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore"
 
   /**
-   * Read only after sox_ng failed, whose message names neither cause: the capture endpoints
-   * Windows shows this session, through IMMDeviceEnumerator, and the three microphone permission
-   * values. A Remote Desktop session can see no endpoint while the device store still lists the
-   * machine's own, so the store is not read.
+   * The launcher runs this script only after sox_ng failed, because sox_ng's message names neither
+   * cause. The script reads the capture endpoints that Windows shows this session, through
+   * IMMDeviceEnumerator, and the three microphone permission values. A Remote Desktop session can see
+   * no endpoint while the device store still lists the machine's own, so the script does not read the
+   * store.
    */
   val DiagnosticsScript: String =
     s"""$$ErrorActionPreference = 'Stop'
@@ -855,10 +888,14 @@ object MicrophoneRelay:
        |""".stripMargin
 
   /**
-   * What the diagnostics' answer explains, first the endpoints, then the first permission value
-   * that stops sox_ng: a Deny in any of the three, or an absent per-user value (measured on
-   * Windows Server 2025; an absent NonPackaged or machine-wide value records). The values explain
-   * a failure and decide nothing: what they mean on other Windows builds is unmeasured.
+   * What the diagnostics' answer explains: first the endpoints, then the first permission value that
+   * stops sox_ng.
+   *
+   * - A Deny in any of the three values stops sox_ng, and so does an absent per-user value (measured on
+   *   Windows Server 2025).
+   * - sox_ng records with an absent NonPackaged or machine-wide value (measured on Windows Server 2025).
+   * - The values explain a failure and decide nothing: what they mean on other Windows builds is
+   *   unmeasured.
    */
   def windowsDiagnosis(answer: String): Vector[String] =
     val fields = answer.linesIterator.map(_.trim.split("\\s+").toVector).toVector
@@ -884,7 +921,8 @@ object MicrophoneRelay:
           switches(index)
     endpointLine.toVector ++ permissionLine.toVector
 
-  /** The diagnostics run in Windows PowerShell; empty when it could not run. */
+  /** The diagnostics' lines, from a run in Windows PowerShell. The result is empty when PowerShell could
+    * not run the script. */
   def windowsDiagnostics(powershell: Path): Vector[String] =
     val encoded = java.util.Base64.getEncoder.encodeToString(DiagnosticsScript.getBytes(UTF_16LE))
     try

@@ -1,9 +1,9 @@
-// ko-sandbox-markdown-link-check on one set of fixture files, run two ways:
+// Runs ko-sandbox-markdown-link-check on one set of fixture files in two ways:
 //
-// - directly, as the Python script in this repository. It needs lychee on PATH (the version is the
-//   Containerfile's LYCHEE_VERSION), and a machine without it skips.
+// - directly, as the Python script in this repository. The script needs lychee on PATH, at the
+//   Containerfile's LYCHEE_VERSION, and a machine without lychee skips this run.
 // - in the image, under `sbt "testWithPodman *SandboxMarkdownLinkCheckTest"` (WithPodman has the condition).
-//   Nothing there is assumed: an image without lychee or the script fails the run.
+//   This run assumes nothing: an image without lychee or the script fails the run.
 //
 // Only the second run shows that the image's lychee and script work together.
 
@@ -33,7 +33,7 @@ class SandboxMarkdownLinkCheckTest extends munit.FunSuite:
         |```
         |""".stripMargin,
     "page.html" -> """<h1 id="top">Top</h1>""",
-    // One file of each type the program counts a fragment as checked in (FRAGMENT_CHECKED_SUFFIXES).
+    // One file of each type in which the program counts a fragment as checked (FRAGMENT_CHECKED_SUFFIXES).
     "types/a.md" -> "# Setup\n",
     "types/b.MD" -> "# Setup\n",
     "types/c.markdown" -> "# Setup\n",
@@ -73,7 +73,7 @@ class SandboxMarkdownLinkCheckTest extends munit.FunSuite:
     "name with space.md" -> "[file](gone.md)\n",
     "ignored.md" -> "[file](gone.md)\n",
     ".gitignore" -> "ignored.md\n",
-    // Either would hide broken.md's findings from a lychee run in this directory.
+    // Either file would hide broken.md's findings from a lychee run in this directory.
     "lychee.toml" -> "exclude_path = [\"broken.md\"]\n",
     ".lycheeignore" -> "gone\n",
   )
@@ -112,12 +112,12 @@ class SandboxMarkdownLinkCheckTest extends munit.FunSuite:
       Files.createDirectories(file.getParent)
       Files.writeString(file, content)
 
-  /** `program` and its arguments, run by `sh` in `directory`. */
+  /** Runs `program` and its arguments with `sh` in `directory`. */
   private def runIn(directory: String, program: Seq[String]): Vector[String] =
     quoteFreeSh("""cd "$1" && shift && exec "$@"""", (directory +: program)*)
 
-  /** Every case, against the program as `linkCheck` runs it: in a directory given relative to the fixtures', with
-    * arguments. */
+  /** Runs every case against the program as `linkCheck` runs it: in a directory given relative to the fixtures'
+    * directory, with arguments. */
   private def assertReports(linkCheck: (String, Seq[String]) => Run): Unit =
     def assertRun(args: Seq[String], exit: Int, output: String): Unit =
       val ran = linkCheck(".", args)
@@ -140,7 +140,8 @@ class SandboxMarkdownLinkCheckTest extends munit.FunSuite:
       Vector("types/links.md"), 1,
       TypesFindings + "summary: files 1; local references 5: valid 0, broken 5, unchecked 0; external excluded 0",
     )
-    // Without FILE: the untracked files, the one with a space in its name included, but not the ignored one.
+    // Without FILE, the program checks the untracked files, including the one with a space in its name, but
+    // not the ignored one.
     val wholeRepository = "summary: files 7; local references 31: valid 12, broken 17, unchecked 2; external excluded 1"
     assertRun(
       Vector.empty, 1,

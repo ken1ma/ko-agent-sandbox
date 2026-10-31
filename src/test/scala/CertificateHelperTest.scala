@@ -1,4 +1,4 @@
-// The certificate profile the egress proxy accepts and the sandbox verifies: issuance, PEM,
+// Tests the certificate profile that the egress proxy accepts and the sandbox verifies: issuance, PEM,
 // fingerprints, expiry.
 
 package agentsandbox.launcher
@@ -32,7 +32,7 @@ class CertificateHelperTest extends munit.FunSuite:
   // -------------------------------------------------------------------------
   // Certificates
   //
-  // The profile asserted here is the one the egress proxy accepts and the
+  // The profile asserted here is the one that the egress proxy accepts and the
   // sandbox verifies.
 
   test("the CA is a signing-only CA with the workspace in its name"):
@@ -52,8 +52,8 @@ class CertificateHelperTest extends munit.FunSuite:
 
   test("the leaf names exactly the inspected hosts and chains to the CA"):
     val ca = createCa("proj")
-    // A sample list: which hosts the leaf must name is the proxy image's to say at launch; this
-    // checks the encoding — every requested name arrives as a DNS SAN, in order.
+    // The list is a sample: the proxy image decides at launch which hosts the leaf must name. This
+    // test checks the encoding: every requested name arrives as a DNS SAN, in order.
     val hosts = Vector("github.com", "gitlab.com", "docs.example.org")
     val leaf = parse(issueLeaf(ca.certificatePem, ca.privateKeyPem, hosts).certificatePem)
     val sans = leaf.getSubjectAlternativeNames.asScala.map(_.get(1).toString).toVector
@@ -76,7 +76,7 @@ class CertificateHelperTest extends munit.FunSuite:
     assert(leaf.getExtensionValue(SkiOid) != null, "leaf Subject Key Identifier")
     val leafAki = leaf.getExtensionValue(AkiOid)
     assert(leafAki != null, "leaf Authority Key Identifier")
-    // The SKI extension value is DER octet-string wrapping; its last 20 bytes are the key id,
+    // The SKI extension value is wrapped in a DER octet string. Its last 20 bytes are the key id,
     // which the AKI must contain verbatim.
     val keyId = caSki.takeRight(20)
     assert(leafAki.toVector.containsSlice(keyId.toVector), "leaf AKI names the CA's key id")
@@ -115,7 +115,7 @@ class CertificateHelperTest extends munit.FunSuite:
 
     val leaf = issueLeaf(one.certificatePem, one.privateKeyPem, Vector("github.com"))
     assert(keyMatchesCertificate(leaf.certificatePem, leaf.privateKeyPem))
-    // Issuance is checked apart from correspondence.
+    // The test checks issuance apart from the key's correspondence.
     assert(signedBy(leaf.certificatePem, one.certificatePem))
     assert(!signedBy(leaf.certificatePem, other.certificatePem))
     assert(!signedBy(leaf.certificatePem, ""))

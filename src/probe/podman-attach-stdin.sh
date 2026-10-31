@@ -1,18 +1,18 @@
 #!/bin/sh
-# Whether a container's standard input carries a secret to its process without the secret reaching
-# `podman inspect` or `podman logs`, and whether the podman process that carried it can end while
+# Measures whether a container's standard input carries a secret to its process without the secret reaching
+# `podman inspect` or `podman logs`. Also measures whether the podman process that carried the secret can end while
 # the container runs on (SECURITY.md, "Who holds a brokered value").
 #
-# The proxy image has no shell, so the measured container is an image that has one, created with
-# the proxy container's options that bear on this: a read-only root with no tmpfs, `--init`, and
-# `--interactive`. Its process reads a count line and that many lines, prints each line's checksum
-# and never the line, prints `ready`, and sleeps.
+# The proxy image has no shell, so the script measures a container of an image that has one. The script creates
+# that container with the proxy container's options that bear on this measurement: a read-only root with no tmpfs,
+# `--init` and `--interactive`. The container's process reads a count line and that many lines, prints each line's
+# checksum and never the line, prints `ready` and sleeps.
 #
 #   sh src/probe/podman-attach-stdin.sh [image]     # default: ko-agent-sandbox:latest
 #
-# A row reads ERROR when an observation could not be made, which is no answer either way; the
-# exit status is 0 only when no row reads FAIL or ERROR. Run it on each podman machine the
-# launcher supports, and on each new podman release.
+# A row reads ERROR when the script could not make an observation, which answers neither way. The exit status is 0 only
+# when no row reads FAIL or ERROR. Run the script on each podman machine that the launcher supports, and on each new
+# podman release.
 set -u
 image=${1:-ko-agent-sandbox:latest}
 podman=${PODMAN:-podman}
@@ -35,15 +35,16 @@ row() { # label result
 # podman-container-exists(1): 0 when the container exists, 1 when it does not, 125 on an error.
 exists() { "$podman" container exists "$1" >/dev/null 2>&1; }
 
-# running, stopped, gone or error. A container created with --rm is gone once it stops; only the
-# status 1 says so, and any other failure is an observation that could not be made.
+# Prints running, stopped, gone or error. A container created with --rm is gone once it stops. Only the status 1 of
+# `podman container exists` says that the container is gone; any other failure is an observation that could not be
+# made.
 state() { # name
     exists "$1"
     case $? in
         0)  if state_running=$("$podman" inspect --format '{{.State.Running}}' "$1" 2>/dev/null); then
                 case "$state_running" in true) echo running ;; false) echo stopped ;; *) echo error ;; esac
             else
-                # Removed between the two calls, or an inspection that failed.
+                # The container was removed between the two calls, or the inspection failed.
                 exists "$1"
                 case $? in 1) echo gone ;; *) echo error ;; esac
             fi ;;
@@ -52,7 +53,7 @@ state() { # name
     esac
 }
 
-# PASS when the command ran and neither of its streams holds the secret.
+# The row reads PASS when the command ran and neither of the command's streams holds the secret.
 lacks() { # label command...
     lacks_label=$1; shift
     if ! "$@" >"$work/observed" 2>"$work/observed.err"; then
@@ -62,9 +63,9 @@ lacks() { # label command...
     fi
 }
 
-# Creates the container, starts it attached with the given options, writes the two lines and keeps
-# the writing end open: nothing measured here depends on an end of input. Sets `client` to the
-# attached podman process. Fails unless the container reported ready and is running.
+# Creates the container, starts it attached with the given options, writes the count line and the secret, and keeps
+# the writing end open, because nothing measured here depends on an end of input. Sets `client` to the attached
+# podman process. Fails unless the container reported ready and is running.
 start_attached() { # name out start-option...
     attached_name=$1; attached_out=$2; shift 2
     "$podman" create --name "$attached_name" --rm --pull=never --init --interactive --read-only \
@@ -107,7 +108,7 @@ case "$(state "$name")" in
 esac
 "$podman" rm -f "$name" >/dev/null 2>&1
 
-# The contrast that says why the option is there: attached, podman forwards a signal by default.
+# The contrast row shows why the proxy container sets the option: an attached podman forwards a signal by default.
 contrast="without the option, ending the attached podman process leaves the container running"
 if ! start_attached "$name-proxied" "$work/out-proxied"; then
     row "$contrast" "ERROR: the container did not report ready and running"

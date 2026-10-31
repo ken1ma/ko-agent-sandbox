@@ -1,8 +1,12 @@
-// The egress rules: the grammar, the launcher-owned defaults, the ordered resolution that turns
-// them into the ruleset a profile enforces, the lines that print it, and the decisions made
-// against it — at the CONNECT and inside an inspected tunnel. Pure: nothing here reads a socket or
-// the environment, which is what lets the launcher run the same code for its dry run
-// (--print-ruleset) and the tests resolve rulesets by the thousand.
+// The egress rules. This file holds:
+//
+// - the grammar and the launcher-owned defaults;
+// - the ordered resolution that turns them into the ruleset a profile enforces;
+// - the lines that print the ruleset;
+// - the decisions made against the ruleset, at the CONNECT and inside an inspected tunnel.
+//
+// Everything here is pure: nothing reads a socket or the environment. So the launcher runs the same code for its dry
+// run (--print-ruleset), and the tests resolve rulesets by the thousand.
 
 package agentsandbox.egress
 
@@ -12,35 +16,38 @@ import IPAddrHelper.*
 
 object RulesetHelper:
   /*
-   * A rule is a line of the workspace's `rule` file; the ruleset is what a launch enforces — the
-   * defaults, the profile and the file resolved together (resolveRuleset).
+   * A rule is a line of the workspace's `rule` file. The ruleset is what a launch enforces: the defaults, the
+   * profile and the file resolved together (resolveRuleset).
    *
-   * A line grants exactly its words, under the path it names, and nothing else on the
-   * host. The lines apply in the order written over the defaults, PF's and relayd's model: an
-   * `allow` adds its grants at its path, a `deny` takes the grants it names from every scope on
-   * the hosts it matches, and for each grant the last applicable line decides. A `deny` names a
-   * host or a subtree, never a path: a grant by path needs one spelling that works while a denial
-   * by path needs every spelling that reaches the tenant, and a proxy comparing literally cannot
-   * know them (SECURITY.md, "Adding hosts, not patterns"). The restrictive ordering therefore puts a
-   * host-wide deny before the narrower allow, which fails closed.
+   * - A line grants exactly its words, under the path it names, and nothing else on the host.
+   * - The lines apply in the order written over the defaults, as in PF's and relayd's model:
+   *   - an `allow` adds its grants at its path;
+   *   - a `deny` takes the grants it names from every scope on the hosts it matches;
+   *   - for each grant, the last applicable line decides.
+   * - A `deny` names a host or a subtree, never a path. A grant by path needs one spelling that works, while a
+   *   denial by path needs every spelling that reaches the tenant, and a proxy that compares literally cannot know
+   *   them all (SECURITY.md, "Adding hosts, not patterns"). The restrictive ordering therefore puts a host-wide
+   *   deny before the narrower allow, which fails closed.
    *
-   * An allowed request can carry sandbox data: even a permitted GET carries its URL. A host's
-   * treatment is either `tunnel`, whose application traffic stays opaque after the TLS identity
-   * check, or inspected: TLS terminated, each request decided against the resolved scope of its
-   * longest literal match (authorizeInspectedRequest). SECURITY.md defines the handshake checks
-   * and the audit events for both treatments.
+   * An allowed request can carry sandbox data: even a permitted GET carries its URL. A host gets one of two
+   * treatments:
    *
-   * Which lines count is the selected profile's answer (resolveRuleset): the defaults — every
-   * provider's default rules plus the inspected catalog — modified by the workspace's file. Whichever
-   * ruleset is in force is printed at startup and every denial is logged, which is how you find out
-   * what an agent actually wanted.
+   * - `tunnel`: the application traffic stays opaque after the TLS identity check;
+   * - inspected: TLS is terminated, and each request is decided against the resolved scope of its longest literal
+   *   match (authorizeInspectedRequest).
    *
-   * The launcher supplies the inspection material. Standalone-image requirements and refusals
-   * are defined by AgentEgressProxy.loadInspection (SECURITY.md, "Who holds the CA key").
+   * SECURITY.md defines the handshake checks and the audit events for both treatments.
+   *
+   * The selected profile decides which lines count (resolveRuleset): the defaults, modified by the workspace's
+   * file. The defaults are every provider's default rules plus the inspected catalog. The proxy prints the ruleset
+   * in force at startup and logs every denial, which is how you find out what an agent actually wanted.
+   *
+   * The launcher supplies the inspection material. AgentEgressProxy.loadInspection defines the standalone image's
+   * requirements and refusals (SECURITY.md, "Who holds the CA key").
    */
 
-  /** The grant words: what a line says after its URL. A method is its own word in the set,
-    * `method=POST,PUT` expanding to two. */
+  /** The grant words: what a line says after its URL. A method is its own word in the set, and `method=POST,PUT`
+    * expands to two words. */
   object Grant:
     val Read = "read"
     val GitFetch = "git-fetch"
@@ -79,8 +86,8 @@ object RulesetHelper:
     case Deny(pattern: HostPattern, grants: Set[String])
     case DenyProvider(name: String)
 
-  /** One parsed line, with where it was written — `rule` for the workspace's file, `defaults/…` for
-    * the launcher-owned files — and its text as written, tokens joined by one space. */
+  /** One parsed line, with the file that holds it and its text as written, tokens joined by one space. The file is
+    * `rule` for the workspace's file, and `defaults/…` for the launcher-owned files. */
   case class Line(file: String, text: String, rule: Rule):
     def spelled: String = s"$file: $text"
 
@@ -90,19 +97,21 @@ object RulesetHelper:
   val ProfileVariable = "EGRESS_PROFILE"
   val ModelProviderVariable = "EGRESS_MODEL_PROVIDER"
 
-  /** The egress profiles, narrowest to widest; deny-unless-allowed is what an unset
-    * EGRESS_PROFILE means — the launcher-owned defaults, every line inspected or a model
-    * provider's own endpoints, so the default is useful without opening the open internet. */
+  /** The egress profiles, narrowest to widest. An unset EGRESS_PROFILE means deny-unless-allowed: the
+    * launcher-owned defaults, where every line is inspected or names a model provider's own endpoints. So the
+    * default is useful without opening the open internet. */
   val Profiles = Vector("deny-all", "deny-unless-model", "deny-unless-allowed")
   val DefaultProfile = "deny-unless-allowed"
 
   val ModelProviders: Vector[String] = Vector("anthropic", "openai", "google", "aws", "github")
 
-  /** The providers an EGRESS_MODEL_PROVIDER value selects — the launcher's `--model-provider`
-    * value as written, provider names separated by commas — in its order, each once; unset or
-    * empty selects none. This file alone defines the names, so the launcher keeps no list of
-    * providers. A name the proxy does not define, an empty name beside a comma or a name twice is
-    * refused: a selection that half-parses would be a half-opened ruleset. */
+  /** The providers that an EGRESS_MODEL_PROVIDER value selects, in the value's order, each once. The value is the
+    * launcher's `--model-provider` value as written, provider names separated by commas. An unset or empty value
+    * selects none.
+    *
+    * - This file alone defines the names, so the launcher keeps no list of providers.
+    * - A name that the proxy does not define, an empty name beside a comma, or a name given twice is refused: a
+    *   selection that half-parses would be a half-opened ruleset. */
   def selectedProviders(value: Option[String]): Vector[String] =
     value.filter(_.nonEmpty) match
       case None => Vector.empty
@@ -126,14 +135,17 @@ object RulesetHelper:
       "deny model-provider NAME"
 
   /**
-   * A file's lines as rules, in order. Blank lines vanish, tokens split on whitespace — never comma,
-   * which stays inside its token and fails validation instead of silently becoming two — and `#`
-   * starts a comment at the start of a line or after whitespace only. Inside a token it is refused:
-   * cut there, `https://host/a#b` would read as `https://host/a`, a line allowing more than it
-   * says. `deny defaults` is the first line or absent: the file reads in the order the words imply,
-   * and a `deny` above it would clear what the next line clears whole. A repeated line is no
-   * refusal: after an intervening line of the other action it is the last word on its grants, and
-   * one changing nothing is warned like any other (contribute, take).
+   * A file's lines as rules, in order.
+   *
+   * - Blank lines vanish. Tokens split on whitespace, never on a comma: a comma stays inside its token and fails
+   *   validation instead of silently making two tokens.
+   * - `#` starts a comment only at the start of a line or after whitespace. Inside a token, `#` is refused: cut
+   *   there, `https://host/a#b` would read as `https://host/a`, a line that allows more than it says.
+   * - `deny defaults` is the first line or absent. The file reads in the order that the words imply, and a `deny`
+   *   above `deny defaults` would clear what the next line clears whole.
+   * - A repeated line is no refusal. After an intervening line of the other action, the repeated line is the last
+   *   word on its grants, and a repeat that changes nothing is warned about like any other line (contribute,
+   *   take).
    */
   def parseRules(file: String, text: String): Vector[Line] =
     val lines = tokenized(file, text).map(tokens => Line(file, tokens.mkString(" "), parseRule(file, tokens)))
@@ -194,9 +206,8 @@ object RulesetHelper:
         Rule.Deny(pattern, parseGrants(refuse, words))
       case _ => refuse(s"is no line of the rule grammar: $GrammarForms")
 
-  /** The URL's host part and path, the scheme literal `https://` already seen; refusals name what
-    * a rule cannot name — a port, userinfo, a query — and a path outside canonical form
-    * (RulePath.literalPathProblem). */
+  /** The URL's host part and path, with the scheme literal `https://` already seen. The refusals name what a rule
+    * cannot name (a port, userinfo, a query) and a path outside canonical form (RulePath.literalPathProblem). */
   private def splitUrl(refuse: String => Nothing, url: String): (String, String) =
     val rest = url.drop("https://".length)
     val slash = rest.indexOf('/')
@@ -250,17 +261,18 @@ object RulesetHelper:
   // ---------------------------------------------------------------------------
 
   /**
-   * The defaults are rules, so they are written as rules: resource files in the grammar,
-   * read through the parser a workspace's file goes through, with the reasoning for each host as a
-   * comment beside it. `defaults/host` lists inspected hosts; `defaults/model-provider/<name>`
-   * supplies the rules for `allow model-provider <name>`. Provider rules cover model,
-   * authentication and control-plane endpoints, including GitHub's inspected login and token
-   * paths and Google's inspected account reads. SECURITY.md, "What is inside TLS", explains why
-   * the model endpoints are not inspected.
+   * The defaults are rules, so they are written as rules: resource files in the grammar, read through the parser
+   * that a workspace's file goes through, with the reasoning for each host as a comment beside it.
    *
-   * A defaults file holds `allow https://` lines and nothing else, and the catalog holds no
-   * tunnel; either is a refused start, not a silent narrowing, so the image's own --print-ruleset
-   * (the launcher's dry run) is where a malformed defaults file is reported.
+   * - `defaults/host` lists inspected hosts.
+   * - `defaults/model-provider/<name>` supplies the rules for `allow model-provider <name>`. Provider rules cover
+   *   model, authentication and control-plane endpoints, including GitHub's inspected login and token paths and
+   *   Google's inspected account reads. SECURITY.md, "What is inside TLS", explains why the model endpoints are
+   *   not inspected.
+   *
+   * A defaults file holds `allow https://` lines and nothing else, and the catalog holds no tunnel. Either
+   * violation refuses the start rather than silently narrowing the ruleset. So the image's own --print-ruleset (the
+   * launcher's dry run) reports a malformed defaults file.
    */
   private def readDefault(name: String): Vector[Line] =
     val file = s"defaults/$name"
@@ -306,9 +318,8 @@ object RulesetHelper:
     CatalogLines.map(line => contributionOf(line, Source(line, None)))
       ++ ModelProviders.flatMap(name => providerContributions(name, None))
 
-  /** The launcher-owned defaults resolved whole, every provider included: what deny-unless-allowed
-    * enforces with every provider selected and no workspace rule file, and what every file is
-    * validated over. */
+  /** The launcher-owned defaults resolved whole, every provider included. deny-unless-allowed enforces these with
+    * every provider selected and no workspace rule file, and every file is validated over them. */
   val DefaultHosts: Map[String, Treatment] = hostsOf(start(DefaultContributions))
 
   /** What a launch starts from under deny-unless-allowed: the catalog and the selected providers'
@@ -322,21 +333,22 @@ object RulesetHelper:
   // ---------------------------------------------------------------------------
 
   enum Treatment:
-    /** TLS-inspected; `scopes` is the host's table of resolved states by path, cumulative: a
-      * scope's grants are the union of every line whose path contains it. A request looks up its
-      * longest literal match (authorizeInspectedRequest). A host without a root scope refuses
-      * every request outside its scopes. */
+    /** TLS-inspected. `scopes` is the host's table of resolved states by path, and the table is cumulative: a
+      * scope's grants are the union of every line whose path contains the scope.
+      *
+      * - A request looks up its longest literal match (authorizeInspectedRequest).
+      * - A host without a root scope refuses every request outside its scopes. */
     case Inspected(scopes: Map[String, Set[String]])
     case Tunnel
 
-  /** Preserve both the default rule and the workspace rule that included it in diagnostics. */
+  /** Keeps both the default rule and the workspace rule that included it, for diagnostics. */
   private case class Source(line: Line, via: Option[Line]):
     def spelled: String = via.fold(line.spelled)(expanded => s"${expanded.spelled} (${line.spelled})")
 
     def fromRule: Boolean = via.exists(_.file == RuleFile) || line.file == RuleFile
 
-  /** One allow line's active grants at its path. Emptied by denies, it stays in the state as the
-    * boundary its path opened: a line is a boundary as well as a grant. */
+  /** One allow line's active grants at its path. A contribution that denies emptied stays in the state as the
+    * boundary that its path opened: a line is a boundary as well as a grant. */
   private case class Contribution(
     host: String,
     path: String,
@@ -363,12 +375,14 @@ object RulesetHelper:
     contributions.foldLeft(State())((state, contribution) => contribute(state, contribution, check = false))
 
   /**
-   * An allow line's step. A host has one treatment, checked at each line: an inspected grant added
-   * to a host holding `tunnel`, or `tunnel` to a host holding an inspected grant, is the refusal,
-   * naming the deny that would clear the way. With `check`, the workspace's line is warned when it
-   * grants nothing its enclosing scope lacks — a redundant grant whose path still defines a boundary — unless a
-   * defaults line at the same path already grants it, the restatement that is how a file stays
-   * valid as the image adopts its hosts.
+   * An allow line's step. A host has one treatment, checked at each line.
+   *
+   * - The step refuses an inspected grant added to a host that holds `tunnel`, and `tunnel` added to a host that
+   *   holds an inspected grant. The refusal names the deny that would clear the way.
+   * - With `check`, the step warns about a workspace line that grants nothing its enclosing scope lacks: a
+   *   redundant grant whose path still defines a boundary.
+   *   - No warning comes when a defaults line at the same path already grants the same words. That restatement is
+   *     how a file stays valid as the image adopts its hosts.
    */
   private def contribute(state: State, contribution: Contribution, check: Boolean): State =
     val Contribution(host, path, grants, source) = contribution
@@ -395,9 +409,9 @@ object RulesetHelper:
         )
     state.copy(contributions = state.contributions :+ contribution, warnings = state.warnings ++ warning)
 
-  /** A URL deny's step: the grants it names, or every grant, taken from each contribution on the
-    * hosts it matches, whichever line gave them. A whole-host or `read` deny is also kept as a
-    * pattern, for the refusal of a host beneath it to name (Provenance.denialOf). */
+  /** A URL deny's step: the grants it names, or every grant, are taken from each contribution on the hosts it
+    * matches, whichever line gave them. A whole-host or `read` deny is also kept as a pattern, so that the refusal
+    * of a host beneath the pattern can name the deny (Provenance.denialOf). */
   private def take(state: State, pattern: HostPattern, grants: Set[String], line: Line): State =
     val (contributions, hit) =
       state.contributions.foldLeft((Vector.empty[Contribution], Set.empty[String])):
@@ -410,8 +424,8 @@ object RulesetHelper:
       if grants.isEmpty || grants(Grant.Read) then state.patterns :+ (pattern -> line) else state.patterns
     State(contributions, patterns, recordRemovals(state.removals, hit, line), state.warnings ++ warning)
 
-  /** A provider denial removes earlier grants on its hosts regardless of which line supplied them.
-    * Attribute the expanded denials and any no-op warning to the single provider line. */
+  /** A provider denial removes earlier grants on its hosts regardless of which line supplied them. The expanded
+    * denials and any no-op warning are attributed to the single provider line. */
   private def takeProvider(state: State, name: String, line: Line): State =
     val hosts = ModelProviderLines(name).collect { case Line(_, _, Rule.Allow(host, _, _)) => host }.distinct
     val denied = hosts.foldLeft(state): (current, host) =>
@@ -442,16 +456,18 @@ object RulesetHelper:
         case Rule.Deny(pattern, grants) => take(state, pattern, grants, line)
         case Rule.DenyProvider(name)    => takeProvider(state, name, line)
 
-  /** The host map a state resolves to: a host holding `tunnel` is opaque; otherwise its scopes are
-    * one per path any of its lines opened, boundaries of emptied lines included, each holding the
-    * union of the active lines containing it, and a scope holding nothing is dropped — its
-    * enclosing scope is empty too, so every request under it is refused with or without the
-    * boundary. A host with no active line is not in the map: denied whole.
+  /** The host map that a state resolves to.
     *
-    * This table is a compilation of the ordered lines, PF's skip steps: the longest match a
-    * request looks up selects a state the order already settled, never a precedence among lines.
-    * A change here must keep HostileInputTest's plain ordered evaluator agreeing with it
-    * (design.md, "No richer rule format"). */
+    * - A host that holds `tunnel` is opaque.
+    * - Otherwise, the host has one scope per path that any of its lines opened, boundaries of emptied lines
+    *   included. Each scope holds the union of the active lines that contain it.
+    * - A scope that holds nothing is dropped. Its enclosing scope is empty too, so every request under it is refused
+    *   with or without the boundary.
+    * - A host with no active line is not in the map: the host is denied whole.
+    *
+    * This table compiles the ordered lines, like PF's skip steps. The longest match that a request looks up selects
+    * a state that the order already settled, never a precedence among lines. A change here must keep
+    * HostileInputTest's plain ordered evaluator agreeing with this table (doc/design.md, "No richer rule format"). */
   private def hostsOf(state: State): Map[String, Treatment] =
     val active = state.active
     active.groupBy(_.host).map: (host, held) =>
@@ -464,12 +480,14 @@ object RulesetHelper:
         host -> Treatment.Inspected(scopes.toMap)
 
   /**
-   * The ruleset in force: the whole of what enforcement reads, and the whole of what the digest
-   * names. Equality of this structure is what "one ruleset" means: two files resolving to it print
-   * one digest and the same lines, and the same file under two profiles never does — the profile
-   * is in it, and the selected providers under the two profiles where they change authority,
-   * deny-unless-model and deny-unless-allowed. The host map embodies every denial, and none is
-   * kept.
+   * The ruleset in force: the whole of what enforcement reads, and the whole of what the digest names.
+   *
+   * - Equality of this structure is what "one ruleset" means. Two files that resolve to it print one digest and the
+   *   same lines.
+   * - The same file under two profiles never resolves to one ruleset, because the profile is part of the
+   *   structure. So are the selected providers, under the two profiles where they change authority:
+   *   deny-unless-model and deny-unless-allowed.
+   * - The host map embodies every denial, and the structure keeps no denial of its own.
    */
   case class Ruleset(
     profile: String,
@@ -482,26 +500,27 @@ object RulesetHelper:
       hosts.collect { case (host, Treatment.Tunnel) => host }.toSet
     val inspected: Set[String] = inspectedScopes.keySet
 
-    /** Whether a CONNECT to `host` is allowed: a host on the map, whatever pattern covers it,
-      * since an inspected host surviving beneath a denied subtree is exactly what the map
-      * records. */
+    /** Whether a CONNECT to `host` is allowed: the host is on the map, whatever pattern covers it. An inspected
+      * host that survives beneath a denied subtree is exactly what the map records. */
     def allows(host: String): Boolean = hosts.contains(host)
 
     /** An allowed inspected host's scopes. */
     def scopesOf(host: String): Map[String, Set[String]] = inspectedScopes.getOrElse(host, Map.empty)
 
-  /** The sources behind a resolved scope: one set for its boundary — the lines at its exact path —
-    * and one per grant it holds, the contributions currently supplying it; a folded scope has no
-    * one "source", so none is invented. */
+  /** The sources behind a resolved scope: one set for its boundary, which is the lines at its exact path, and one
+    * set per grant it holds, which is the contributions currently supplying that grant. A folded scope has no single
+    * "source", so none is invented. */
   case class ScopeProvenance(boundary: Vector[String], grants: Map[String, Vector[String]])
 
   /**
-   * Kept beside the ruleset, never in it: what the structure's equality must not see. `scopes` per
-   * inspected scope; `patterns` per whole-host or `read` deny and per host a deny emptied, under
-   * every profile, so a refusal can say `host denied (<line>)` where a file line matched the host;
-   * `widening`, the workspace lines granting beyond the defaults — a host the defaults lack, a
-   * grant the defaults lack at the line's path, `deny defaults` — for the summary line's count
-   * and `--egress-effective`'s listing.
+   * Kept beside the ruleset, never in it: what the structure's equality must not see.
+   *
+   * - `scopes` has one entry per inspected scope.
+   * - `patterns` has one entry per whole-host or `read` deny and per host that a deny emptied, under every profile.
+   *   So a refusal can say `host denied (<line>)` where a file line matched the host.
+   * - `widening` holds the workspace lines that grant beyond the defaults, for the summary line's count and
+   *   `--egress-effective`'s listing. Such a line names a host the defaults lack, a grant the defaults lack at the
+   *   line's path, or `deny defaults`.
    */
   case class Provenance(
     scopes: Map[(String, String), ScopeProvenance],
@@ -531,23 +550,28 @@ object RulesetHelper:
    *   deny-unless-allowed = the catalog and the selected providers' lines — none after
    *                         `deny defaults` — then every line
    *
-   * Refusals and warnings come from one further fold, every line over the whole defaults, every
-   * provider included, so that a file valid under one profile and selection is valid under every
-   * one.
+   * Refusals and warnings come from one further fold: every line over the whole defaults, every provider included.
+   * So a file that is valid under one profile and selection is valid under every one.
    *
-   * The internal-network denials of the security model are not rules here: they are IPAddrHelper's
-   * address vetting, applied to every resolved destination at connection time, so no rule file
-   * can spell them away.
+   * The internal-network denials of the security model are not rules here. The denials are IPAddrHelper's
+   * address vetting, applied to every resolved destination at connection time, so no rule file can spell them away.
    *
-   * Fails closed on every ambiguity: an unknown profile, provider, word or line form; a line
-   * outside canonical form; a resolved host holding `tunnel` beside an inspected grant; a `tunnel`
-   * line for a host the defaults inspect without `deny defaults`. Warns at every launch, under
-   * every profile: a `deny` matching nothing at its position — the misspelled deny must not fail
-   * silently — a redundant grant, a line every grant of which a later line takes back, and a
-   * selected provider's host the resolved ruleset does not allow. An
-   * empty ruleset is valid and reported as such — deny-all resolves empty by design, as
-   * does deny-unless-model with no provider selected; deny-unless-allowed with none selected is
-   * the catalog alone.
+   * The resolution fails closed on every ambiguity:
+   *
+   * - an unknown profile, provider, word or line form;
+   * - a line outside canonical form;
+   * - a resolved host that holds `tunnel` beside an inspected grant;
+   * - a `tunnel` line for a host that the defaults inspect, without `deny defaults`.
+   *
+   * The resolution warns at every launch, under every profile, about:
+   *
+   * - a `deny` that matches nothing at its position, since a misspelled deny must not fail silently;
+   * - a redundant grant;
+   * - a line every grant of which a later line takes back;
+   * - a selected provider's host that the resolved ruleset does not allow.
+   *
+   * An empty ruleset is valid and reported as such. deny-all resolves empty by design, as does deny-unless-model
+   * with no provider selected. deny-unless-allowed with no provider selected is the catalog alone.
    */
   def resolveRuleset(
     profileValue: Option[String],
@@ -563,8 +587,8 @@ object RulesetHelper:
     val lines = parseRules(RuleFile, ruleText.getOrElse(""))
     val clearsDefaults = lines.headOption.exists(_.rule == Rule.DenyDefaults)
 
-    // Widening to a tunnel is global: it reads the defaults, not the file's state, because an opaque
-    // tunnel ends inspection and the audit record for a host every workspace has.
+    // The check for widening to a tunnel is global: it reads the defaults, not the file's state. An opaque tunnel
+    // ends inspection and the audit record for a host that every workspace has.
     lines.foreach: line =>
       line.rule match
         case Rule.Allow(host, _, grants)
@@ -627,8 +651,8 @@ object RulesetHelper:
           grant -> supplying.filter(_.grants(grant)).map(_.source.spelled)
         (host, path) -> ScopeProvenance(boundary.distinct, grants.toMap)
 
-    // Against what this launch starts from, not the whole defaults: a provider the launch did not
-    // select is a new recipient for this session, however familiar its host.
+    // Widening is measured against what this launch starts from, not the whole defaults. A provider that the launch
+    // did not select is a new recipient for this session, however familiar its host.
     val launchHosts = hostsOf(start(launchDefaults(selected)))
     val widening =
       if profile != "deny-unless-allowed" then Vector.empty
@@ -675,13 +699,15 @@ object RulesetHelper:
       scopes.toVector.sortBy(_(0)).map((path, grants) => s"allow https://$host$path ${Grant.spelled(grants)}")
 
   /**
-   * The ruleset, one line each, in the rule grammar so a reader learns one grammar — the
-   * deterministic serialization of Ruleset, which the digest names, --print-ruleset prints
-   * and serve() logs identically, the launcher reads the leaf's names off and exports in
-   * KO_AGENT_SANDBOX_EGRESS_RULESET. It is a serialization, not a rule file: no
-   * `deny defaults` header, no promise to re-parse to itself, and nothing reads it as input. First
-   * the profile line — the grammar alone cannot say "only this provider's default rules" — then
-   * one allow line per resolved scope with its whole grant set, hosts and paths sorted.
+   * The ruleset, one line each, in the rule grammar, so a reader learns one grammar.
+   *
+   * - The lines are the deterministic serialization of Ruleset. The digest names the lines, --print-ruleset
+   *   prints them, and serve() logs them identically. The launcher reads the leaf's names off the lines and exports
+   *   the lines in KO_AGENT_SANDBOX_EGRESS_RULESET.
+   * - The lines are a serialization, not a rule file: no `deny defaults` header, no promise to re-parse to the same
+   *   lines, and nothing reads them as input.
+   * - The profile line comes first, since the grammar alone cannot say "only this provider's default rules". One
+   *   allow line per resolved scope follows, with its whole grant set, hosts and paths sorted.
    */
   def rulesetLines(resolved: ResolvedEgress): Vector[String] =
     val profileLine = resolved.profile match
@@ -696,25 +722,25 @@ object RulesetHelper:
   val SummaryLineHead = "ruleset summary:"
   val WideningLineHead = "widening lines ("
 
-  /** The lines after the ruleset lines, outside the digest: they describe the ruleset's size and
-    * how the file arrived at it, not the ruleset. The launcher splits the dry run's text at the
-    * first of them (EgressRules.MetadataPrefixes). */
+  /** The lines after the ruleset lines, outside the digest. They describe the ruleset's size and how the file
+    * arrived at it, not the ruleset itself. The launcher splits the dry run's text at the first of these lines
+    * (EgressRules.MetadataPrefixes). */
   def metadataLines(resolved: ResolvedEgress): Vector[String] =
     val summary =
       s"$SummaryLineHead ${resolved.inspected.size} inspected hosts; ${resolved.tunnelHosts.size} tunnel hosts; " +
         s"${resolved.provenance.widening.size} widening lines"
     summary +: wideningLine(resolved).toVector
 
-  /** The workspace lines reaching past the defaults (Provenance.widening); lines, so `; ` separates
-    * them. */
+  /** The workspace lines that reach past the defaults (Provenance.widening). The entries are lines, so `; `
+    * separates them. */
   def wideningLine(resolved: ResolvedEgress): Option[String] =
     val widening = resolved.provenance.widening
     Option.when(widening.nonEmpty)(s"$WideningLineHead${widening.size}): " + widening.map(_.text).mkString("; "))
 
   /**
-   * Each ruleset line followed by its sources — an allow line's boundary and each of its grants —
-   * then the hosts the file's lines denied, which the structure keeps no line for. Printed by
-   * `--print-ruleset --provenance`, which is what `--egress-effective` runs.
+   * Each ruleset line followed by its sources: an allow line's boundary and each of its grants. Then come the hosts
+   * that the file's lines denied, for which the structure keeps no line. `--print-ruleset --provenance` prints these
+   * lines, and `--egress-effective` runs that command.
    */
   def provenanceLines(resolved: ResolvedEgress): Vector[String] =
     val provenance = resolved.provenance
@@ -744,28 +770,37 @@ object RulesetHelper:
   // ---------------------------------------------------------------------------
 
   /**
-   * The one check every inspected request must pass. The request is classified once, into what it is — a
-   * read, fetch discovery, upload-pack, push discovery, or a request using another method — with its path vetted for
-   * the boundary it falls in, and that classification is decided once against the resolved scope
-   * of its longest literal match: GET and HEAD under `read`, bodyless; fetch discovery and
-   * upload-pack under `git-fetch` (GitHelper.isUploadPack), so a clone that could not transfer
-   * fails at its first request; push discovery under a `POST` grant, where the push is the
-   * workspace's own grant; other requests under their method grants, their paths refused for spellings a
-   * forge decodes first (RulePath.requireUnambiguousPath). Where the longest match is a line other than
-   * the root, the request is first refused for any spelling RulePath.literalPathProblem names, on
-   * every method: under such a line the path decides grants the root does not give.
-   * Under the root a read may carry `%` — what keeps npm's `/@scope%2fname` reading — since it
-   * gains nothing by any decoding. A path in no scope is refused.
+   * The one check that every inspected request must pass.
    *
-   * Receive-pack transfer, the LFS batch endpoint and GraphQL stay refused where no line grants
-   * their method: SECURITY.md, "Reading without being able to write".
+   * The check classifies the request once, into what it is: a read, fetch discovery, upload-pack, push discovery,
+   * or a request that uses another method. The check vets the path for the boundary it falls in, and decides the
+   * classification once against the resolved scope of the path's longest literal match:
+   *
+   * - GET and HEAD fall under `read`, bodyless.
+   * - Fetch discovery and upload-pack fall under `git-fetch` (GitHelper.isUploadPack), so a clone that could not
+   *   transfer fails at its first request.
+   * - Push discovery falls under a `POST` grant, where the push is the workspace's own grant.
+   * - Other requests fall under their method grants. Those requests' paths are refused for spellings that a
+   *   forge decodes first (RulePath.requireUnambiguousPath).
+   *
+   * The path's spelling:
+   *
+   * - Where the longest match is a line other than the root, the request is first refused, on every method, for
+   *   any spelling that RulePath.literalPathProblem names. Under such a line, the path decides grants that the root
+   *   does not give.
+   * - Under the root, a read may carry `%`, since the read gains nothing by any decoding. The exception keeps
+   *   npm's `/@scope%2fname` reading.
+   * - A path in no scope is refused.
+   *
+   * Receive-pack transfer, the LFS batch endpoint and GraphQL stay refused where no line grants their method
+   * (SECURITY.md, "Reading without being able to write").
    */
   def authorizeInspectedRequest(
     host: String,
     head: HttpRequestHead,
     scopes: Map[String, Set[String]],
-    // Which hosts this session allows, consulted only where a refusal's advice would name another
-    // host (RefusalAdvice.forRefusedPost); the default names none.
+    // Which hosts this session allows. The check consults the set only where a refusal's advice would name
+    // another host (RefusalAdvice.forRefusedPost); the default allows none.
     allowed: String => Boolean = _ => false,
   ): Unit =
     if !head.target.startsWith("/") then
@@ -795,7 +830,7 @@ object RulesetHelper:
 
     head.method match
       case "GET" | "HEAD" =>
-        // a body on a read method would be an unbounded, unlogged client-to-server channel
+        // A body on a read method would be an unbounded, unlogged client-to-server channel.
         if head.bodyFraming != BodyFraming.Empty then
           throw Refusal("request body framing header", RefusalAdvice.bodyFramingHeader)
 
@@ -821,10 +856,10 @@ object RulesetHelper:
         throw Refusal(s"$method not granted", RefusalAdvice.methodNotGranted)
 
   /*
-   * The IP-literal rejection is defence in depth: the map cannot contain one and resolvePublic
-   * rejects private answers. `Ruleset.allows` makes the decision. The refusal's
-   * reason is presentation: `host denied (<line>)` where a file line matched the host, from
-   * provenance, `host not allowed` otherwise.
+   * The IP-literal refusal is defence in depth: the map cannot contain an IP literal, and resolvePublic refuses
+   * private answers. `Ruleset.allows` makes the decision.
+   * The refusal's reason is presentation: `host denied (<line>)` from provenance where a file line matched the host,
+   * and `host not allowed` otherwise.
    */
   def authorizeRequest(
     request: ConnectRequest,

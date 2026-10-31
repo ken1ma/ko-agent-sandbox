@@ -1,6 +1,11 @@
-// What a brokered credential may be (doc/egress-proxy.md, "Where the value goes"), the binding
-// that says where it goes, and the lines a proxy reads its bindings from. The launcher's jar compiles
-// this file too (build.sbt), so `--egress-cred` and the proxy's start-up run the same checks.
+// This file holds:
+//
+// - what a brokered credential may be (doc/egress-proxy.md, "Where the value goes");
+// - the binding, which says where the credential goes;
+// - the lines from which a proxy reads its bindings.
+//
+// The launcher's jar compiles this file too, so `--egress-cred` and the proxy's start-up run the same checks
+// (build.sbt).
 
 package agentsandbox.egress
 
@@ -33,8 +38,8 @@ case class CredentialBinding(name: String, host: String, prefix: String, place: 
   /** The host and the prefix a binding names, as it spells them: `api.github.com`, `h.example/owner/`. */
   def target: String = if prefix == RulePath.Root then host else s"$host$prefix"
 
-  /** Whether a request to `host` at `path` is one this binding's value may go with. Under a prefix the
-    * path must be literal, as under a rule's own path: a spelling the origin decodes could leave it. */
+  /** Whether this binding's value may go with a request to `requestHost` at `path`. Under a prefix, the path must be
+    * literal, as under a rule's own path: a spelling that the origin decodes could leave the prefix. */
   def covers(requestHost: String, path: String): Boolean =
     requestHost == host
       && (prefix == RulePath.Root || RulePath.literalPathProblem(path).isEmpty && RulePath.contains(prefix, path))
@@ -45,8 +50,8 @@ case class BrokeredCredential(binding: CredentialBinding, placeholder: String, v
 
 object CredentialGrammar:
 
-  /** A value at its longest: it travels in a request head, and the proxy reads no head longer than this.
-    * doc/egress-proxy.md, "Where the value goes", has the tokens and the origins' limits it is set against. */
+  /** The longest value. A value travels in a request head, and the proxy reads no head longer than this. The bound
+    * is set against the tokens and the origins' limits (doc/egress-proxy.md, "Where the value goes"). */
   val MaxValueBytes: Int = AgentEgressProxy.MaxHttpHeaderBytes
 
   /** The headers this proxy reads or removes: a value bound to one would never reach the origin as that header,
@@ -57,15 +62,15 @@ object CredentialGrammar:
 
   val MaxBindings = 256
 
-  /** A binding as `CredentialBinding.spelled` writes it, at its longest: the head of a request a binding
-    * applies to holds its host, its prefix and its header or parameter name, and is no longer than this. */
+  /** The longest binding, as `CredentialBinding.spelled` writes it. The head of a request that a binding applies to
+    * holds the binding's host, prefix and header or parameter name, and that head is no longer than this. */
   val MaxBindingBytes: Int = AgentEgressProxy.MaxHttpHeaderBytes
 
   /** A binding, a placeholder and a value at their longest, and the two spaces between them. */
   private val MaxLineBytes = MaxBindingBytes + 2 * MaxValueBytes + 2
 
-  /** Set to StdinValue in a proxy's environment, tells it its bindings follow on its standard input; without it,
-    * the proxy reads nothing there. */
+  /** Set to StdinValue in a proxy's environment, this variable tells the proxy that its bindings follow on its
+    * standard input. Without the variable, the proxy reads nothing from its standard input. */
   val StdinVariable = "EGRESS_CREDS"
   val StdinValue = "stdin"
 
@@ -83,17 +88,20 @@ object CredentialGrammar:
   /** The launcher's one test of a variable name, for `--env` as for a binding. */
   def environmentName(name: String): Boolean = name.matches("[A-Za-z_][A-Za-z0-9_]*")
 
-  /** A parameter frames nothing, so its name is free within the value grammar, but for what would split or
-    * end the query, and `+`, which a form parser reads as a space: the origin would read `a+b` as `a b`. */
+  /** A parameter frames nothing, so its name is free within the value grammar. The exceptions are the characters
+    * that would split or end the query, and `+`, which a form parser reads as a space: the origin would read `a+b`
+    * as `a b`. */
   private def parameterProblem(name: String): Option[String] =
     Option.when(name.isEmpty || name.exists(char => char < 0x21 || char > 0x7e || "&=#+".contains(char)))(
       s"'$name' is not a query parameter name: visible ASCII without &, =, # or +",
     )
 
   /**
-   * Parses `NAME@HOST[/PREFIX/][:HEADER|?PARAM]`. The host ends at the first `/`, `:` or `?`; a prefix
-   * runs to its last `/`, and the place follows it. A refusal says what is wrong and what a binding is
-   * instead; a name the caller restricts further, as the launcher does `KO_AGENT_SANDBOX_*`, is its own.
+   * Parses `NAME@HOST[/PREFIX/][:HEADER|?PARAM]`.
+   *
+   * - The host ends at the first `/`, `:` or `?`. A prefix runs to its last `/`, and the place follows the prefix.
+   * - A refusal says what is wrong and what a binding is instead.
+   * - A caller that restricts names further refuses them itself, as the launcher refuses `KO_AGENT_SANDBOX_*`.
    */
   def parseBinding(spelled: String): Either[String, CredentialBinding] =
     spelled.indexOf('@') match
@@ -139,7 +147,7 @@ object CredentialGrammar:
         else Right(host)
       catch case ex: BadRequest => Left(s"'$spelled' is not a hostname: ${ex.getMessage}")
 
-  /** A rule's path in canonical form, and a tree: the prefix names the requests under it. */
+  /** A prefix is a rule's path in canonical form, and a tree: the prefix names the requests under it. */
   private def prefixProblem(prefix: String): Option[String] =
     if prefix == RulePath.Root then None
     else if prefix.contains('?') then Some("a prefix ends at its last /, before ?PARAM")
@@ -156,8 +164,8 @@ object CredentialGrammar:
       parameterProblem(name).toLeft(CredentialPlace.Parameter(name))
     else Left(s"'$text' follows the host; a binding is NAME@HOST[/PREFIX/][:HEADER|?PARAM]")
 
-  /** Any header name but those the proxy reads or removes, as the user spells it; `Authorization` is the
-    * default place, whose token the rewrite finds after the scheme. */
+  /** Any header name but those the proxy reads or removes, kept as the user spells it. `Authorization` is the
+    * default place, and the rewrite finds its token after the scheme. */
   private def headerPlace(name: String): Either[String, CredentialPlace] =
     val folded = name.toLowerCase(Locale.ROOT)
     if name.nonEmpty && name.forall(_.isDigit) then
@@ -182,9 +190,9 @@ object CredentialGrammar:
     bindingInput(credentials).getBytes(StandardCharsets.US_ASCII)
 
   /**
-   * Reads what bindingInput wrote, a byte at a time and no further, so the read neither waits for the
-   * end of input nor takes a byte that is not its own. Every binding passes the checks the launcher made,
-   * again; a refusal names the binding, never the value.
+   * Reads what bindingInput wrote, one byte at a time and no further, so the read neither waits for the end of
+   * input nor takes a byte that belongs to another reader. Every binding passes the launcher's checks again. A
+   * refusal names the binding, never the value.
    */
   def readBindings(in: InputStream): Either[String, Vector[BrokeredCredential]] =
     readLine(in).flatMap: countText =>

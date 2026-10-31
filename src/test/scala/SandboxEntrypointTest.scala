@@ -1,7 +1,10 @@
-// The image's ENTRYPOINT, run as the shell script it is: the confinement a session does not start
-// without, what it seeds into a persistent volume that is fresh, that predates an agent, or that
-// two sessions open at once, and the trust entry it records for the workspace — the working
-// directory — in each agent's own file.
+// Runs the image's ENTRYPOINT as the shell script that it is, and checks:
+//
+// - the confinement without which a session does not start;
+// - what the entrypoint seeds into a persistent volume that is fresh, that predates an agent, or that
+//   two sessions open at once;
+// - the trust entry that the entrypoint records for the workspace, which is the working directory, in
+//   each agent's own file.
 
 package agentsandbox.launcher
 
@@ -26,7 +29,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
 
   private def fixture(): (Path, Path) =
     // `mv -T` is GNU coreutils' and `jq` is the image's: the script runs only in the Debian image,
-    // and so does this suite's host.
+    // and this suite runs only there too.
     assume(Files.isExecutable(sh) && gnuMv && jq, "runs the entrypoint under /bin/sh with GNU mv and jq")
     val root = Files.createTempDirectory("ko-sandbox-entrypoint")
     val seed = Files.createDirectories(root.resolve("seed"))
@@ -42,23 +45,23 @@ class SandboxEntrypointTest extends munit.FunSuite:
     (seed, home)
 
   /**
-   * Starts the entrypoint with the fixture's seed and HOME; the command it execs prints its
-   * arguments. `/proc` is the healthy, confined fixture and the nesting mode `none` unless a test
-   * hands over its own, so the machine this suite runs on never decides whether a warning prints
-   * or the session starts.
+   * Starts the entrypoint with the fixture's seed and HOME; the command that the entrypoint execs
+   * prints its arguments. `/proc` is the healthy, confined fixture, and the nesting mode is `none`,
+   * unless a test hands over its own. The machine that this suite runs on therefore never decides
+   * whether a warning prints or the session starts.
    */
   private def start(
     seed: Path,
     home: Path,
     proc: Path = healthyProc(),
     path: Option[Path] = None,
-    // The workspace root, where the launcher starts the session (--workdir); the entrypoint reads it
-    // from its working directory.
+    // The workspace root, where the launcher starts the session (--workdir). The entrypoint reads the
+    // workspace root from its working directory.
     workspace: Path = Workspace,
     // KO_AGENT_SANDBOX_NESTING as the launcher sets it; None for a container run by hand.
     nesting: Option[String] = Some("none"),
-    // What the entrypoint's `unshare -U` probe finds: refused, as the launcher's profile answers
-    // it, unless a test says the container creates user namespaces.
+    // What the entrypoint's `unshare -U` probe finds. The probe is refused, as the launcher's profile
+    // answers it, unless a test says that the container creates user namespaces.
     userNamespaces: Boolean = false,
     environment: Map[String, String] = Map.empty,
   ): Process =
@@ -73,7 +76,8 @@ class SandboxEntrypointTest extends munit.FunSuite:
     )
     val entries = path.toVector :+ fakeUnshare(refused = !userNamespaces)
     builder.environment.put("PATH", entries.map(_.toString).mkString("", ":", ":" + System.getenv("PATH")))
-    // A suite run inside a --audio=mic session inherits its microphone variables; a test gives its own.
+    // A suite run inside a --audio=mic session inherits the session's microphone variables, so this
+    // method removes them; a test gives its own.
     MicrophoneRelay.sandboxEnvironment().foreach((name, _) => builder.environment.remove(name))
     environment.foreach(builder.environment.put(_, _))
     builder.redirectErrorStream(true)
@@ -119,7 +123,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
   private def healthyProc(): Path =
     proc(available = 8L << 20, pressure = Some("some avg10=0.00 avg60=0.00 avg300=0.00 total=0"))
 
-  /** A `df` answering with the given free kB, on a PATH entry to put before the real one. */
+  /** A `df` that answers with the given free kB, on a PATH entry to put before the real one. */
   private def fakeDf(availableKb: Long): Path =
     val dir = Files.createTempDirectory("ko-sandbox-entrypoint-bin")
     val df = dir.resolve("df")
@@ -131,9 +135,9 @@ class SandboxEntrypointTest extends munit.FunSuite:
     df.toFile.setExecutable(true)
     dir
 
-  /** An `unshare` answering as the kernel does under the launcher's profile (refused) or under
-    * podman's default (a user namespace created), on a PATH entry before the real one: the real one
-    * answers for the machine this suite runs on, not for the fixture's session. */
+  /** An `unshare` that answers as the kernel does under the launcher's profile (refused) or under
+    * podman's default (a user namespace created), on a PATH entry before the real one. The real
+    * `unshare` answers for the machine that this suite runs on, not for the fixture's session. */
   private def fakeUnshare(refused: Boolean): Path =
     val dir = Files.createTempDirectory("ko-sandbox-entrypoint-unshare")
     val unshare = dir.resolve("unshare")
@@ -152,13 +156,13 @@ class SandboxEntrypointTest extends munit.FunSuite:
   private def run(seed: Path, home: Path, workspace: Path = Workspace): (Int, String) =
     finish(start(seed, home, workspace = workspace))
 
-  /** A workspace root with a name every agent's file must quote: a space, and for Codex a
-    * double quote and a backslash, the two characters a TOML basic string escapes. */
+  /** A workspace root with a name that every agent's file must quote: a space, and for Codex a
+    * double quote and a backslash, the two characters that a TOML basic string escapes. */
   private lazy val Workspace: Path =
     Files.createDirectories(Files.createTempDirectory("ko-sandbox-entrypoint-workspace").resolve("my \"app\" \\ src"))
 
-  /** Every JSON file the suite reads, canonicalized with jq: keys sorted, no whitespace, after
-    * `filter`. */
+  /** Canonicalizes every JSON file that the suite reads with jq, after `filter`: keys sorted, no
+    * whitespace. */
   private def parsed(file: Path, filter: String = "."): String =
     val process = ProcessBuilder("jq", "-c", "-S", filter, file.toString).redirectErrorStream(true).start()
     val output = String(process.getInputStream.readAllBytes()).trim
@@ -205,7 +209,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val volume = home.resolve("persistent-volume")
     Files.createDirectory(volume.resolve("claude"))
     Files.writeString(volume.resolve("claude").resolve("seeded"), "login state")
-    Files.createDirectory(volume.resolve("codex"))  // present but empty: still the agent's
+    Files.createDirectory(volume.resolve("codex"))  // present but empty, so still the agent's
     val (status, output) = run(seed, home)
     assertEquals(status, 0, output)
     assertEquals(Files.readString(volume.resolve("claude").resolve("seeded")), "login state")
@@ -234,8 +238,9 @@ class SandboxEntrypointTest extends munit.FunSuite:
     results.foreach((status, output) => assertEquals(status, 0, output))
     assertEquals(entries(volume), Set("claude", "codex", "antigravity", "kiro", "copilot", "opencode"))
     assertEquals(entries(volume.resolve("copilot")), Set("seeded", "copilot-instructions.md", "config.json"))
-    // Every launch's entry survives the others', once: no lost update, no second list element,
-    // and one Codex table per workspace, which a second would make invalid TOML.
+    // Every launch's entry survives the other launches' entries, once: no lost update, no second
+    // list element, and one Codex table per workspace, because a second table would make the TOML
+    // invalid.
     val (claude, antigravity, copilot, codex) = trustFiles(home)
     val quoted = "\"" + Workspace.toString.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
     assertEquals(
@@ -244,7 +249,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
         s""""projects":{"$other":{"hasCompletedProjectOnboarding":true,"hasTrustDialogAccepted":true},""" +
         s"""$quoted:{"hasCompletedProjectOnboarding":true,"hasTrustDialogAccepted":true}}}""",
     )
-    // The lists' order is the launches' order under the lock, so each is compared sorted.
+    // The lists' order is the order of the launches under the lock, so the test compares each list sorted.
     assertEquals(parsed(antigravity, ".trustedWorkspaces |= sort"), s"""{"trustedWorkspaces":["$other",$quoted]}""")
     assertEquals(parsed(copilot, ".trustedFolders |= sort"), s"""{"trustedFolders":["$other",$quoted]}""")
     val tables = Files.readString(codex).linesIterator.filter(_.startsWith("[projects.")).toVector
@@ -310,8 +315,8 @@ class SandboxEntrypointTest extends munit.FunSuite:
 
   test("a machine short of memory, swapping, stalled, or out of disk is said before the command, once"):
     val (seed, home) = fixture()
-    // Sizes as numfmt --to=iec prints them, at the rule's edges: 65 MiB in its 10.6 GiB total's
-    // unit, 9.95 MiB of swap rounding up to a whole 10, and 1023.5 MiB of disk carrying to 1.0G.
+    // The sizes are as numfmt --to=iec prints them, at the rule's edges: 65 MiB in the unit of its
+    // 10.6 GiB total, 9.95 MiB of swap rounding up to a whole 10, and 1023.5 MiB of disk carrying to 1.0G.
     val failing = proc(
       available = 65L << 10,
       total = (106L << 20) / 10,
@@ -326,7 +331,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     assert(output.contains("  memory pressure: tasks stalled on memory 25.50% of the last minute\n"), output)
     assert(output.contains("  1.0G of disk left on the machine\n"), output)
     assert(output.contains("podman machine set --memory"), output)
-    // No terminal on stdin, so no hold: the command still ran.
+    // With no terminal on stdin, the entrypoint does not hold, and the command still ran.
     assert(!output.contains("[Y/n]"), output)
     assert(output.endsWith("a b c "), output)
 
@@ -336,7 +341,8 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val (status, output) = finish(start(seed, home, lingering))
     assertEquals(status, 0, output)
     assertEquals(output, "a b c ")
-    // The same swap with memory tight now — under a quarter available, not yet under 1 GiB — is.
+    // The same swap counts as pressure when memory is tight now: under a quarter available, but not yet
+    // under 1 GiB.
     val tight = proc(available = 3L << 20, total = 16L << 20, swapUsed = 1L << 20)
     val (_, warned) = finish(start(seed, home, tight))
     assert(warned.contains("  1.0G of swap in use\n"), warned)
@@ -365,15 +371,16 @@ class SandboxEntrypointTest extends munit.FunSuite:
     )
     assertEquals(parsed(antigravity), s"""{"trustedWorkspaces":[$quoted]}""")
     assertEquals(parsed(copilot), s"""{"trustedFolders":[$quoted]}""")
-    // TOML's basic string escapes the same two characters JSON does.
+    // TOML's basic string escapes the same two characters that JSON does.
     assertEquals(Files.readString(codex), s"\n[projects.$quoted]\ntrust_level = \"trusted\"\n")
 
   test("the trust entry joins what the agent has written, and is written once"):
     val (seed, home) = fixture()
     val volume = home.resolve("persistent-volume")
     val (claude, antigravity, copilot, codex) = trustFiles(home)
-    // Agent state around the entry: another workspace's entry, keys of the agent's own, a list the
-    // agent has ordered. The directories exist, so they are the agent's: edited, never seeded.
+    // Agent state around the entry: another workspace's entry, keys of the agent's own, and a list
+    // that the agent has ordered. The directories exist, so they belong to the agent: the entrypoint
+    // edits them and never seeds them.
     Files.createDirectories(claude.getParent)
     Files.writeString(
       claude,
@@ -404,7 +411,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
         s"\n[projects.\"$simple\"]\ntrust_level = \"trusted\"\n",
     )
     // A second launch of the same workspace changes nothing: no second list element, no second table,
-    // and no staging file left beside the agent's.
+    // and no staging file left beside the agent's file.
     val (again, output2) = run(seed, home, simple)
     assertEquals(again, 0, output2)
     assertEquals(Vector(claude, antigravity, copilot).map(parsed(_)) :+ Files.readString(codex), first)
@@ -424,8 +431,8 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val (_, _, _, codex) = trustFiles(home)
     Files.createDirectories(codex.getParent)
     val simple = Files.createTempDirectory("ko-sandbox-entrypoint-simple")
-    // A literal-string key, which a text search for the basic-string spelling would miss and then
-    // define twice.
+    // A literal-string key: a text search for the basic-string spelling would miss the key, and the
+    // entrypoint would then define the key twice.
     Files.writeString(codex, s"[projects.'$simple']\ntrust_level = \"trusted\"\n")
     val (status, output) = run(seed, home, simple)
     assertEquals(status, 0, output)
@@ -435,15 +442,16 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val (inline, inlineOutput) = run(seed, home, simple)
     assertEquals(inline, 0, inlineOutput)
     assertEquals(Files.readString(codex), s"[projects]\n\"$simple\" = { trust_level = \"trusted\" }\n")
-    // A level Codex or the user set is theirs; the entrypoint says so rather than overriding it.
+    // A level that Codex or the user set belongs to them; the entrypoint says so rather than overriding
+    // the level.
     Files.writeString(codex, s"[projects.\"$simple\"]\ntrust_level = \"untrusted\"\n")
     val (kept, keptOutput) = run(seed, home, simple)
     assertEquals(kept, 0, keptOutput)
     assertEquals(Files.readString(codex), s"[projects.\"$simple\"]\ntrust_level = \"untrusted\"\n")
     assert(keptOutput.contains(s"marks $simple untrusted"), keptOutput)
-    // An inline `projects` table cannot take a table outside its braces: the document the append
-    // would make is parsed first, and the file is left as written, with a warning — empty, and
-    // holding another workspace's entry.
+    // An inline `projects` table cannot take a table outside its braces. The entrypoint first parses
+    // the document that the append would make, and leaves the file as written, with a warning. The
+    // cases are an empty inline table and an inline table that holds another workspace's entry.
     for inline <- Vector("projects = {}\n", "projects = { \"/Users/me/other\" = { trust_level = \"trusted\" } }\n") do
       Files.writeString(codex, inline)
       val (status, output) = run(seed, home, simple)
@@ -477,7 +485,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val (seed, home) = fixture()
     val (_, _, copilot, _) = trustFiles(home)
     Files.createDirectories(copilot.getParent)
-    // As Copilot writes the file (measured 2026-09-18): two comment lines, then the object.
+    // The fixture is the file as Copilot writes it (measured 2026-09-18): two comment lines, then the object.
     Files.writeString(
       copilot,
       "// User settings belong in settings.json.\n// This file is managed automatically.\n" +
@@ -499,8 +507,8 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val (claude, _, copilot, _) = trustFiles(home)
     Files.createDirectories(claude.getParent)
     Files.writeString(claude, "{ not json")
-    // Unreadable, in a writable directory: a rename over it would leave an empty file where the
-    // agent's state was.
+    // The file is unreadable, in a writable directory: a rename over the file would leave an empty
+    // file where the agent's state was.
     assume(System.getProperty("user.name") != "root", "root reads anywhere")
     Files.createDirectories(copilot.getParent)
     Files.writeString(copilot, """{"trustedFolders":["/Users/me/other"]}""")
@@ -528,7 +536,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     val (seed, home) = fixture()
     val bin = Files.createTempDirectory("ko-sandbox-entrypoint-mic-bin")
     val records = Files.createTempDirectory("ko-sandbox-entrypoint-mic-records")
-    // The daemon runs for three seconds; the controller exits at once, each run a line.
+    // The daemon runs for three seconds. The controller exits at once and records each run as a line.
     Files.writeString(
       bin.resolve("pulseaudio"),
       s"#!/bin/sh\necho \"$$*\" > '${records.resolve("pulseaudio")}'\nexec sleep 3\n",

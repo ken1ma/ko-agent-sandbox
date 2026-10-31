@@ -1,5 +1,6 @@
-// Under the image's allowManagedHooksOnly this hook runs only when the plugin is managed, so the
-// band is the measurement: drawn, --claude-plugin-dir made the plugin managed; absent, it did not.
+// Under the image's allowManagedHooksOnly, this hook runs only when the plugin is managed, so the band is the
+// measurement: a drawn band means that --claude-plugin-dir made the plugin managed, and an absent band means that it
+// did not.
 import type { Register } from 'claude-code'
 
 export const register: Register = on => {

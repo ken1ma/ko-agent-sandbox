@@ -1,5 +1,5 @@
-// --claude-plugin-dir: what a plugin directory must be to be mounted, and what the sandbox's Claude
-// Code is told about it.
+// Tests --claude-plugin-dir: what a plugin directory must be for the launcher to mount it, and what the
+// launcher tells the sandbox's Claude Code about the plugin.
 
 package agentsandbox.launcher
 
@@ -33,7 +33,8 @@ class ClaudePluginsTest extends munit.FunSuite:
     assertEquals(resolved(Vector(band.toString), workspace), Right(Vector(Plugin("status-band", band))))
     assertEquals(Plugin("status-band", band).id, "status-band@host")
     assertEquals(Plugin("status-band", band).mountPath, "/etc/claude-code/host-plugins/status-band")
-    // Given through a link or with a trailing part, the real directory is what is mounted.
+    // When the option names the directory through a link or with a trailing part, the launcher mounts the
+    // real directory.
     assertEquals(resolved(Vector(s"$band/."), workspace), Right(Vector(Plugin("status-band", band))))
 
   test("a directory that is not a plugin, a bad name, a duplicate and an image plugin's name are refused"):
@@ -65,20 +66,22 @@ class ClaudePluginsTest extends munit.FunSuite:
     // The workspace given through a link is still the workspace.
     val link = Files.createSymbolicLink(root.resolve("workspace-link"), workspace)
     assert(resolved(Vector(inside.toString), link).swap.exists(_.contains("inside the workspace")))
-    // A workspace inside the plugin: the session would write the plugin's hooks through the workspace.
+    // A workspace inside the plugin is refused: the session would write the plugin's hooks through the
+    // workspace.
     val holder = plugin(root, "holder")
     val refused = resolved(Vector(holder.toString), holder.resolve("hooks")).swap.getOrElse("accepted")
     assert(refused.contains("holds or is inside the workspace"), refused)
-    // A directory --run-on-host commands write, named by the launch: the refusal names it as given.
+    // A plugin inside a directory that --run-on-host commands write is refused, and the refusal names that
+    // directory by the description that the launch gives.
     val cache = Files.createDirectories(root.resolve("cache"))
     val cached = plugin(cache.resolve("run-on-host"), "cached")
     val written = Vector(workspaceWritten(workspace), SessionWritten(cache, "the launcher's cache directory"))
     val cacheRefusal = resolve(Vector(cached.toString), written, Os.Linux, _ => true).swap.getOrElse("accepted")
     assert(cacheRefusal.contains("holds or is inside the launcher's cache directory"), cacheRefusal)
     assertEquals(resolve(Vector(band.toString), written, Os.Linux, _ => true).map(_.map(_.name)), Right(Vector("band")))
-    // The comparison resolve makes, on the two spellings macOS gives one directory, tested on
-    // literal paths: a real path keeps the spelling it was given, so a temporary directory cannot
-    // stand in for the aliased one.
+    // The test checks the comparison that resolve makes between the two spellings that macOS gives one
+    // directory. The test uses literal paths: a real path keeps the spelling it was given, so a
+    // temporary directory cannot stand in for the aliased one.
     val aliased = Path.of("/System/Volumes/Data/Users/me/workspace/mods/x")
     assert(SandboxWorkspace.overlapsInAnySpelling(Os.Mac, aliased, Path.of("/Users/me/workspace")))
     val aliasedWorkspace = Path.of("/System/Volumes/Data/Users/me/workspace")
@@ -90,7 +93,7 @@ class ClaudePluginsTest extends munit.FunSuite:
     val workspace = Files.createDirectories(root.resolve("workspace"))
     val cacheRoot = Files.createDirectories(root.resolve("cache"))
     val external = Files.createDirectories(root.resolve("build-cache"))
-    // The runner follows a symlink at the cache, and one at the workspace's directory (run-on-host/<id>).
+    // The runner follows a symlink at a cache, and a symlink at the workspace's directory (run-on-host/<id>).
     val workspaceCaches = Files.createDirectories(RunOnHostPrereqs.runOnHostCachesOf(cacheRoot).resolve("p1"))
     Files.createSymbolicLink(workspaceCaches.resolve("ivy-home"), external)
     Files.createSymbolicLink(RunOnHostPrereqs.runOnHostCachesOf(cacheRoot).resolve("p2"), root.resolve("elsewhere"))
@@ -103,7 +106,8 @@ class ClaudePluginsTest extends munit.FunSuite:
     val roots = workspaceWritten(workspace) +: written.map(SessionWritten(_, "a --run-on-host cache"))
     val refused = resolve(Vector(band.toString), roots, Os.Linux, _ => true).swap.getOrElse("accepted")
     assert(refused.contains("holds or is inside a --run-on-host cache"), refused)
-    // No tree yet: no caches. A tree that cannot be listed, or a file in its place: unknown, the Left.
+    // A missing tree means no caches. A tree that cannot be listed, or a file in the tree's place, leaves the
+    // caches unknown, which is the Left.
     assertEquals(RunOnHostPrereqs.writtenCacheDirectories(root.resolve("fresh")), Right(Vector.empty))
     val blocked = Files.createDirectories(root.resolve("blocked"))
     Files.writeString(RunOnHostPrereqs.runOnHostCachesOf(blocked), "")
@@ -129,13 +133,14 @@ class ClaudePluginsTest extends munit.FunSuite:
     Files.createSymbolicLink(linked.resolve("hooks/shared"), workspace)
     val refused = resolved(Vector(linked.toString), workspace).swap.getOrElse("accepted")
     assert(refused.contains("symlink") && refused.contains("hooks/shared"), refused)
-    // A file the workspace also names: a session write through the workspace's name changes the module.
+    // A file that the workspace also names is refused: a session write through the workspace's name would
+    // change the module.
     val shared = plugin(root, "shared")
     Files.createLink(workspace.resolve("register-source.ts"), shared.resolve("hooks/register.ts"))
     val linkRefusal = resolved(Vector(shared.toString), workspace).swap.getOrElse("accepted")
     assert(linkRefusal.contains("second name") && linkRefusal.contains("hooks/register.ts"), linkRefusal)
-    // Neither a file nor a directory: a pipe here, the stand-in for a Windows junction, which Java
-    // reports as a directory and as `isOther`, never as a symlink.
+    // A pipe stands in here for a Windows junction, which is neither a file nor a directory. Java reports
+    // a junction as a directory and as `isOther`, never as a symlink.
     val piped = plugin(root, "piped")
     val pipe = piped.resolve("hooks/pipe")
     val made =
@@ -165,8 +170,8 @@ class ClaudePluginsTest extends munit.FunSuite:
     val second = plugin(root, "band-b", Some("""{ "name": "band" }"""))
     val twice = refusal(first.toString, second.toString)
     assert(twice.contains("names it band") && twice.contains(first.toString), twice)
-    // A manifest without a name, and one whose name differs from the directory's, are plugins
-    // named after their directories; the manifest name counts only for the conflicts above.
+    // A manifest without a name, and a manifest whose name differs from the directory's, give plugins
+    // named after their directories. The manifest name counts only for the conflicts above.
     val unnamed = plugin(root, "unnamed", Some("""{ "version": "1.0.0" }"""))
     assertEquals(
       resolved(Vector(unnamed.toString, first.toString), workspace),
@@ -222,13 +227,15 @@ class ClaudePluginsTest extends munit.FunSuite:
       bannerLine(plugins, color = false),
       "claude plugins: status-band@host; their hooks and mods run as managed",
     )
-    // A plugin the options file named carries the file after its id; the others, nothing.
+    // The banner puts the options file after the id of a plugin that the file named, and nothing after
+    // the others.
     val two = plugins :+ Plugin("questions", Path.of("/h/questions"))
     assertEquals(
       bannerLine(two, plugin => if plugin.name == "questions" then " (from ~/options)" else "", color = false),
       "claude plugins: status-band@host, questions@host (from ~/options); their hooks and mods run as managed",
     )
-    // The plugins are the grant, orange, with a gray source among them; the explanation is plain.
+    // The banner colors the plugins orange as the grant, with a gray source among them; the explanation
+    // stays plain.
     val (orange, gray, off) = ("\u001b[38;5;208m", "\u001b[38;5;245m", "\u001b[0m")
     assertEquals(
       bannerLine(two.reverse, plugin => if plugin.name == "questions" then s" $gray(from F)$off" else "", color = true),
@@ -240,7 +247,8 @@ class ClaudePluginsTest extends munit.FunSuite:
     val directories = FileHelper.directoryEntries(Path.of("container/ko-agent-sandbox/claude-code/plugins"))
       .filter(Files.isDirectory(_))
     assertEquals(directories.map(_.getFileName.toString).sorted, ImagePluginNames.sorted)
-    // One list covers both names Claude Code compares: the id's name part and the manifest's.
+    // One list covers both names that Claude Code compares: the name part of the id and the manifest's
+    // name.
     directories.foreach: directory =>
       val manifest = JsonText.parse(Files.readString(directory.resolve(ManifestFile))).toOption.get
       assertEquals(manifest.field("name"), Some(JsonText.Json.Str(directory.getFileName.toString)))

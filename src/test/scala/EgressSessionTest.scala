@@ -1,24 +1,33 @@
-// The egress rules a workspace ships, end to end. A session reads its rules once at startup, so
-// each test here launches its own.
+// Tests the egress rules that a workspace ships, end to end. A session reads its rules once at startup,
+// so each test here launches its own session.
 //
-// Two of these are the refusals no session can demonstrate about itself, because both happen on the
-// proxy's *origin* leg, which inspection moves out of the client's sight: an origin whose
-// certificate does not verify, and a name that resolves into private address space. Skipping either
-// check is invisible in normal operation — the sandbox sees a valid leaf issued by this workspace's
-// CA whatever the origin presented — which is the classic TLS-interception failure.
+// Two tests cover refusals that no session can demonstrate about itself. Both refusals happen on the
+// proxy's *origin* leg, which inspection moves out of the client's sight:
 //
-// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the condition):
+// - an origin whose certificate does not verify;
+// - a name that resolves into private address space.
+//
+// Skipping either check is invisible in normal operation, because the sandbox sees a valid leaf issued
+// by this workspace's CA whatever the origin presented. This invisibility is the classic
+// TLS-interception failure.
+//
+// The suite runs only under testWithPodman, like the other container-launching suites (WithPodman has the
+// condition):
 //
 //     sbt "testWithPodman *EgressSessionTest"
 //
-// The assertions use public hosts, and the suite is only as good as their
-// reachability from the host running it: `example.com` (a plain addition), `expired.badssl.com` and
-// `wrong.host.badssl.com` (origin certificates the proxy must reject, for the two different reasons
-// a certificate can be wrong), `127.0.0.1.nip.io` (a public resolver answering with the address
-// embedded in the name), and `github.com/octocat/Hello-World.git` (a clone small enough to be a
-// fixture). One test takes its fixture from the environment instead — SIGNED_PUT_URL,
-// a presigned upload URL only a bucket owner can sign — and skips when it is unset; its own header
-// has the signing one-liner.
+// The assertions use public hosts, so the suite is only as good as their reachability from the host that
+// runs it:
+//
+// - `example.com`, a plain addition;
+// - `expired.badssl.com` and `wrong.host.badssl.com`, origin certificates that the proxy must reject, for
+//   the two different reasons a certificate can be wrong;
+// - `127.0.0.1.nip.io`, a public resolver that answers with the address embedded in the name;
+// - `github.com/octocat/Hello-World.git`, a clone small enough to be a fixture.
+//
+// One test takes its fixture from the environment instead, and skips when the variable is unset:
+// SIGNED_PUT_URL, a presigned upload URL that only a bucket owner can sign. That test's header has the
+// signing one-liner.
 
 package agentsandbox.launcher
 
@@ -31,7 +40,7 @@ class EgressSessionTest extends munit.FunSuite:
 
   override val munitTimeout = scala.concurrent.duration.Duration(20, "min")
 
-  /** Write this workspace's rule file, as a repository would ship it. */
+  /** Writes this workspace's rule file, as a repository would ship it. */
   private def ruleFile(workspace: Path, rule: Option[String]): Unit =
     val egress = workspace.resolve(".ko-agent-sandbox").resolve("egress")
     Files.createDirectories(egress)
@@ -43,9 +52,9 @@ class EgressSessionTest extends munit.FunSuite:
   private def status(session: Session, args: String*): String =
     curl(session, (Vector("-o", "/dev/null", "-w", "%{http_code}") ++ args)*).text.trim
 
-  /** Which CA signed the certificate a host presented, as the sandbox saw it. curl indents its
-    * certificate lines under the `*` marker and by more than one space, so this keys on the field
-    * name rather than on the format of the prefix. */
+  /** The CA that signed the certificate a host presented, as the sandbox saw it. curl indents its
+    * certificate lines under the `*` marker and by more than one space, so this method keys on the
+    * field name rather than on the format of the prefix. */
   private def issuer(session: Session, host: String): String =
     curl(session, "-v", "-o", "/dev/null", s"https://$host/").err.linesIterator
       .map(_.trim)
@@ -54,9 +63,9 @@ class EgressSessionTest extends munit.FunSuite:
           line.substring(line.indexOf("issuer:") + "issuer:".length).trim
       .getOrElse("(no issuer line)")
 
-  /** A host the ruleset never allowed, or a name resolving outside public address space: both are
-    * refused at the CONNECT, before a tunnel exists, so curl reports the proxy's status as an error
-    * rather than as an HTTP code. */
+  /** Asserts that a host the ruleset never allowed, or a name that resolves outside public address
+    * space, is refused at the CONNECT. The refusal comes before a tunnel exists, so curl reports the
+    * proxy's status as an error rather than as an HTTP code. */
   private def refusedAtConnect(session: Session, url: String, why: String): Unit =
     val attempt = curl(session, "-o", "/dev/null", url)
     assert(!attempt.ok, s"$url was reachable; $why")
@@ -65,10 +74,10 @@ class EgressSessionTest extends munit.FunSuite:
       s"$url failed, but not with a refusal from the proxy: ${attempt.err}",
     )
 
-  /** An allowed host whose *origin* leg the proxy would not complete. Its CONNECT succeeded and
-    * the proxy terminated the client's TLS, so the refusal arrives as a status inside the tunnel
-    * and curl exits 0 — which is precisely why an unverified origin would be indistinguishable from
-    * a verified one in here, and why the proxy's own audit line is what settles the cause. */
+  /** Asserts that the proxy does not complete an allowed host's *origin* leg. The host's CONNECT
+    * succeeded and the proxy terminated the client's TLS, so the refusal arrives as a status inside
+    * the tunnel and curl exits 0. For the same reason, an unverified origin would look like a
+    * verified one in here, so the proxy's own audit line settles the cause. */
   private def refusedAtOrigin(session: Session, host: String, markers: Seq[String], why: String): Unit =
     assertEquals(status(session, s"https://$host/"), "502", s"$host: $why")
 
@@ -105,16 +114,18 @@ class EgressSessionTest extends munit.FunSuite:
     ): session =>
       assertEquals(status(session, "https://example.com/"), "200", "the added host is not reachable")
 
-      // Inspected on the workspace's own CA, like a catalog host: one leaf, issued at launch
-      // from the ruleset, or the addition would be a treatment the proxy does not police.
+      // The proxy inspects the added host on the workspace's own CA, like a catalog host: one leaf,
+      // issued at launch from the ruleset. Otherwise the addition would get a treatment that the
+      // proxy does not police.
       assertEquals(
         issuer(session, "example.com"), issuer(session, "pypi.org"),
         "the added host is not inspected by this workspace's CA",
       )
       assertEquals(status(session, "-X", "POST", "https://example.com/"), "403", "the addition allowed a write")
 
-      // The origin leg. The sandbox cannot tell a verified origin from an unverified one — both
-      // arrive under a leaf it trusts — so the refusal has to come from the proxy or not at all.
+      // The origin leg. The sandbox cannot tell a verified origin from an unverified one, because
+      // both arrive under a leaf that the sandbox trusts. The refusal has to come from the proxy or
+      // not at all.
       refusedAtOrigin(
         session, "expired.badssl.com", Seq("PKIX", "validity", "expired"),
         "SECURITY: the proxy accepted an expired origin certificate",
@@ -124,14 +135,15 @@ class EgressSessionTest extends munit.FunSuite:
         "SECURITY: the proxy accepted an origin certificate issued for another name",
       )
 
-      // Refused before the dial rather than during it: resolution is where the address is vetted.
+      // The proxy refuses the name before the dial rather than during it, because the proxy vets the
+      // address at resolution.
       refusedAtConnect(
         session, "https://127.0.0.1.nip.io/",
         "SECURITY: a name resolving to loopback was not refused after resolution",
       )
 
-      // The bound: allowing four hosts allows four hosts. A reserved name (RFC 6761), so that no
-      // growth of the defaults can ever turn the sentinel into an allowed host.
+      // The bound: allowing four hosts allows four hosts. The sentinel is a reserved name (RFC 6761),
+      // so no growth of the defaults can ever turn the sentinel into an allowed host.
       refusedAtConnect(session, "https://unlisted.invalid/", "a host the ruleset never named was allowed")
 
   test("a deny of one grant takes that grant alone: the forge stays readable and stops being clonable"):
@@ -148,7 +160,8 @@ class EgressSessionTest extends munit.FunSuite:
       assertEquals(status(session, "https://github.com/"), "200", "the deny of git-fetch took the reads too")
       val attempt = exec(session, clone*)
       assert(!attempt.ok, "SECURITY: the clone succeeded; the defaults' git-fetch outlived the deny")
-      // Refused at the clone's first request, and the log says so with the line that refused it.
+      // The proxy refuses the clone at its first request, and the log records the refusal with the
+      // line that refused it.
       val audit = run(podman, "logs", session.proxy)
       assert(
         (audit.text + "\n" + audit.err).linesIterator.exists: line =>
@@ -157,18 +170,18 @@ class EgressSessionTest extends munit.FunSuite:
         "no deny line records the refused clone at ref discovery",
       )
 
-    // The control, without which the refusal above is not evidence: the same clone under
-    // the defaults, which the workspace did not touch.
+    // This control makes the refusal above evidence: the same clone succeeds under the defaults,
+    // which the workspace did not touch.
     withSession(None): session =>
       assert(exec(session, clone*).ok, "the clone fails under the defaults too; this fixture proves nothing")
 
   test("a host-wide deny with a narrower allow beneath it allows one owner and refuses the rest, clone included"):
     requireTestWithPodman()
 
-    // The forge denied whole, then one owner re-granted for the clone and the device login's path
-    // re-granted for its POST; the same form on the raw-content host. The requests outside are
-    // refused inside the tunnel, so curl reports the proxy's own status, and a clone of another
-    // owner fails at ref discovery.
+    // The rules deny the forge whole, re-grant one owner for the clone, and re-grant the device
+    // login's path for its POST; the raw-content host gets the same form. The proxy refuses the
+    // requests outside these lines inside the tunnel, so curl reports the proxy's own status, and
+    // a clone of another owner fails at ref discovery.
     withSession(
       Some(
         """|deny https://github.com/
@@ -193,8 +206,8 @@ class EgressSessionTest extends munit.FunSuite:
         status(session, "https://raw.githubusercontent.com/octocat/%2e%2e/github/docs/main/README.md"), "403",
         "SECURITY: a percent-encoded dot segment under the prefix was allowed",
       )
-      // The device flow's first POST, at its own path: GitHub answers a client-id error, which is
-      // the origin speaking — the proxy's refusal would be a 403 with its own body.
+      // The device flow's first POST goes to its own path. GitHub answers with a client-id error,
+      // which is the origin speaking; the proxy's refusal would be a 403 with the proxy's own body.
       val login = curl(
         session, "-o", "/dev/null", "-w", "%{http_code}", "-X", "POST", "-d", "client_id=x",
         "https://github.com/login/device/code",
@@ -207,7 +220,7 @@ class EgressSessionTest extends munit.FunSuite:
       assert(clone("octocat/Hello-World").ok, "the clone under the owner's line fails")
       assert(!clone("github/docs").ok, "SECURITY: a clone outside the owner's line succeeded")
 
-      // The refusal is the boundary's, at the clone's first request, and the log says so.
+      // The boundary refuses the clone at the clone's first request, and the log records the refusal.
       val audit = run(podman, "logs", session.proxy)
       assert(
         (audit.text + "\n" + audit.err).linesIterator.exists: line =>
@@ -216,14 +229,9 @@ class EgressSessionTest extends munit.FunSuite:
       )
 
   test("an owner-signed upload URL is refused inside the inspected tunnel"):
-    // The inspected treatment's reason to exist (SECURITY.md, "Reading without being able to write").
-    // The rule is host-independent, which is what lets any bucket its owner signs for serve as the fixture.
-    // For an S3 bucket:
-    //
-    // ('boto3[crt]', because the credential provider behind `aws login` needs the CRT extra;
-    // s3v4, because in older regions boto3 still generates deprecated SigV2 URLs; `--server`, because
-    // a resident sbt server would keep the environment it started with and skip this test as if
-    // the variable were never set):
+    // The inspected treatment exists for this refusal (SECURITY.md, "Reading without being able to write").
+    // The rule does not depend on the host, so any bucket that its owner signs for can serve as the fixture.
+    // For an S3 bucket, run:
     //
     //     SIGNED_PUT_URL="$(uv run --with 'boto3[crt]' python3 -c 'import boto3, botocore.config
     //     print(boto3.client("s3", config=botocore.config.Config(signature_version="s3v4"))
@@ -231,20 +239,25 @@ class EgressSessionTest extends munit.FunSuite:
     //         Params={"Bucket": "YOUR-BUCKET", "Key": "ko-agent-sandbox-probe"}, ExpiresIn=1800))')" \
     //         sbt --server "testWithPodman *EgressSessionTest"
     //
-    // The URL's query string is a capability, and it is recorded whole in this run's owner-only audit
-    // log; it expires on its own, and the probe object is the owner's to delete.
+    // - `boto3[crt]`: the credential provider behind `aws login` needs the CRT extra.
+    // - s3v4: boto3 still generates deprecated SigV2 URLs in older regions.
+    // - `--server`: a resident sbt server would keep the environment it started with, and would skip this
+    //   test as if the variable were never set.
+    //
+    // The URL's query string is a capability, and this run's owner-only audit log records the URL whole.
+    // The URL expires on its own, and the probe object is the owner's to delete.
     requireTestWithPodman()
     val signed = env("SIGNED_PUT_URL")
     assume(signed.isDefined, "set SIGNED_PUT_URL to a presigned PUT URL (test header)")
     val url = signed.get
     val bucketHost = java.net.URI(url).getHost
 
-    // The control, from the unconfined host: the URL genuinely accepts the write. Without it, the
-    // refusal below could be the origin's own answer to a stale or malformed URL. The body is
-    // kept because it is the diagnosis when this fails — S3 names AccessDenied, ExpiredToken or
-    // SignatureDoesNotMatch there, and nowhere else.
-    // The emptied Content-Type strips the header curl invents for a body: a SigV2-signed URL
-    // (boto3's default in older regions) covers Content-Type, and the invented one breaks its
+    // The control runs from the unconfined host and shows that the URL genuinely accepts the write.
+    // Without the control, the refusal below could be the origin's own answer to a stale or malformed
+    // URL. The test keeps the response body, because the body is the diagnosis when the control fails:
+    // S3 names AccessDenied, ExpiredToken or SignatureDoesNotMatch there, and nowhere else.
+    // The emptied Content-Type removes the header that curl invents for a body. A SigV2-signed URL
+    // (boto3's default in older regions) covers Content-Type, and the invented header breaks the URL's
     // signature; SigV4 does not care either way.
     val control = run(
       "curl", "-sS", "--max-time", "25", "-w", "\n%{http_code}",
@@ -274,21 +287,21 @@ class EgressSessionTest extends munit.FunSuite:
     requireTestWithPodman()
 
     withSession(Some("deny defaults\nallow model-provider anthropic\n")): session =>
-      // A tunnel is opaque: any status means the CONNECT was granted, and the agent endpoint
+      // A tunnel is opaque: any status means that the proxy granted the CONNECT. The agent endpoint
       // answering at all is what "still signs in" means.
       assert(
         curl(session, "-o", "/dev/null", "https://api.anthropic.com/").ok,
         "the provider's agent endpoint is unreachable under the lockdown",
       )
-      // Nothing inspected survives, so this session inspects nothing — and the defaults are gone.
+      // Nothing inspected survives, so this session inspects nothing, and the defaults are gone.
       refusedAtConnect(session, "https://pypi.org/", "a defaults host survived `deny defaults`")
       refusedAtConnect(session, "https://github.com/", "a defaults host survived `deny defaults`")
 
   test("--model-provider selects the providers a session reaches, over the catalog"):
     requireTestWithPodman()
 
-    // The suite's command, `sleep`, selects no provider, so the option alone names one: the
-    // launcher passes it to the image as written, and the image resolves it.
+    // The suite's command, `sleep`, selects no provider, so the option alone names one. The launcher
+    // passes the option's value to the image as written, and the image resolves the value.
     val workspace = scratchWorkspace()
     var live: Option[Session] = None
     try
@@ -304,10 +317,10 @@ class EgressSessionTest extends munit.FunSuite:
       live.foreach(stop)
       discard(workspace)
 
-    // A name the image does not define fails the launch under the option's name, before a session;
-    // also after a launch without the option warmed the workspace's ruleset cache, where a stamp
-    // shared between no selection and the refused value would skip the dry run and fail at the
-    // proxy's start instead.
+    // A name that the image does not define fails the launch under the option's name, before a session
+    // starts. The launch fails the same way after a launch without the option warmed the workspace's
+    // ruleset cache. There, a stamp shared between no selection and the refused value would skip the
+    // dry run and fail at the proxy's start instead.
     val refused = scratchWorkspace()
     try
       def refusal(value: String): Unit =
@@ -324,9 +337,9 @@ class EgressSessionTest extends munit.FunSuite:
   test("the npm audit line allows the audit POST beside an install with a scoped package"):
     requireTestWithPodman()
 
-    // The example's one line, over the defaults' root read: the install's reads under the root
-    // keep working with the `%2f` npm spells a scoped package's name with, and the audit POST at
-    // its exact path is allowed, logged as such.
+    // The example's one line comes on top of the defaults' root read. The install's reads under the
+    // root keep working with the `%2f` that npm spells a scoped package's name with, and the proxy
+    // allows and logs the audit POST at its exact path.
     withSession(Some("allow https://registry.npmjs.org/-/npm/v1/security/advisories/bulk method=POST\n")): session =>
       val install = exec(
         session,

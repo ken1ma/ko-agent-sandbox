@@ -1,9 +1,9 @@
 #!/bin/sh
-# Which SBPL spelling allows a TCP connect to the loopback proxy port — measured with must-fail
-# controls, the answers SeatbeltProfile's proxy rule encodes.
+# Measures which SBPL spelling allows a TCP connect to the loopback proxy port. Two controls must stay denied.
+# SeatbeltProfile's proxy rule encodes the answers.
 #
-# Run it on macOS, on each new macOS release: the spelling and its controls are SBPL behavior
-# a release can change. ~10 seconds.
+# Run the script on macOS on each new macOS release, because a release can change how SBPL treats the spellings and the
+# controls. The run takes about 10 seconds.
 set -u
 port=45071
 python3 - "$port" <<'PY' &

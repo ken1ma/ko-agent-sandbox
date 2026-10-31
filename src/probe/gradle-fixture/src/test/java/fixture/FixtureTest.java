@@ -12,8 +12,8 @@ class FixtureTest {
     assertEquals(42, Fixture.answer());
   }
 
-  // The test JVM is the daemon's fork under the command's profile, with the command's
-  // environment: a temporary file must be creatable where that environment says.
+  // The test JVM is a fork of the daemon and runs under the command's profile with the command's environment. The
+  // test must be able to create a temporary file where that environment says.
   @Test
   void writesATemporaryFile() throws IOException {
     Files.delete(Files.createTempFile("fixture", ".tmp"));

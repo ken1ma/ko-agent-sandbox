@@ -14,7 +14,7 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     Files.setPosixFilePermissions(Files.createFile(path), permissions("rwxr-xr-x"))
     path
 
-  /** A build directory whose bootstrap pins Mill `version` under a system JVM, or the pinned one. */
+  /** A build directory whose bootstrap pins Mill `version`, run by a system JVM or by the pinned JVM `jvm`. */
   private def millBuild(dir: Path, version: String = "1.1.9", jvm: String = "system"): Path =
     executable(dir.resolve("mill"))
     Files.writeString(dir.resolve("build.mill.yaml"), s"mill-version: $version\nmill-jvm-version: $jvm\n")
@@ -133,7 +133,7 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
       Files.createDirectories(javaHome.getParent)
       Files.writeString(javaHome, s"""["temurin:25:0.0.4-162-4be9be:","$home"]""")
 
-    // The launcher is asked for first: the run that downloads it resolves the pin too.
+    // The check asks for the launcher first, because the run that downloads the launcher also resolves the pin.
     assert(clue(finding(build, env.get)).exists(_.wording.startsWith("mill executable: ")))
     executable(downloads.resolve("1.1.9"))
     val unprovisioned = Some(Finding.Provisionable(
@@ -148,7 +148,7 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     record(jdk)
     assertEquals(finding(build, env.get), None)
 
-    // A home a command planted is no run's to fix: the file is the user's to delete.
+    // No run fixes a home that a command planted: the user deletes the file.
     val planted = workspace.resolve("jdk")
     executable(planted.resolve("bin/java"))
     record(planted)
@@ -156,7 +156,7 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     assert(clue(notCoursier).exists(_.isInstanceOf[Finding.Notice]))
     assert(notCoursier.exists(_.wording.contains("no JDK inside the Coursier cache ~/Library/Caches/Coursier ")))
 
-    // Read only as the build's own file: through a link it is absent.
+    // The check reads the cache only as the build's own file: through a link, the file counts as absent.
     record(jdk)
     val elsewhere = Files.move(workspace.resolve("out/mill-daemon/cache"), root.resolve("cache-elsewhere"))
     Files.createSymbolicLink(workspace.resolve("out/mill-daemon/cache"), elsewhere)
@@ -195,7 +195,7 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     Files.writeString(javaHome, s"""["zulu:21:0.0.4-162-4be9be:","$jdk"]""")
     assertEquals(finding(build, env.get), None)
 
-    // Before 1.1.0 no run provisions it, and the notice comes before the launcher is asked for.
+    // No run provisions the JVM before Mill 1.1.0, and the notice comes before the check asks for the launcher.
     pin("1.0.6")
     val unset = finding(build, env.get)
     assert(clue(unset).exists(_.isInstanceOf[Finding.Notice]))
@@ -292,7 +292,8 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
       declinedPrompts(),
       Vector("run `MILL_VERSION=1.1.9-jvm ./mill version` in /Users/u/project now, unconfined on the host? [y/N] "),
     )
-    // The question in the color of a weakened boundary, the answer after it in the terminal's own.
+    // The question appears in the color of a weakened boundary, and the answer after it appears in the terminal's own
+    // color.
     val (tinted, tintedPrompts) = answering("n")
     provision(
       builds.drop(1), _ => Some(provisionable), Some(tinted), run = _ => Right(0), report = _ => (), color = true,
@@ -359,7 +360,7 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     assertEquals(
       reports.result(),
       Vector(
-        // The directory quoted as displayPath quotes a path the shell would misread, then spelled out.
+        // displayPath quotes the directory because the shell would misread it, and the finding follows, spelled out.
         "run-on-host mill in '/Users/u/project/a\\x1b[2Kb\\rc': mill executable: 1.1.9\\x1b[2K-jvm is not provisioned",
       ),
     )

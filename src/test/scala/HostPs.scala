@@ -1,11 +1,13 @@
 package agentsandbox.launcher
 
-/** The suites that run the reaper's shell for real need the `ps` its tree functions walk with. */
+/** The `ps` that the reaper's tree functions walk the process tree with. The suites that run the reaper's shell for
+  * real need it. */
 object HostPs:
 
-  /** This host's `ps`, probed for the exact arguments the harnesses parse — `-A -o pid=,ppid=,stat=`,
-    * the launcher's own plus `stat=` — so an incompatible one (BusyBox), or one a sandbox keeps from
-    * listing processes (the run-on-host Seatbelt profile), skips the suite rather than failing it. */
+  /** This host's `ps`, probed with the exact arguments that the harnesses parse: `-A -o pid=,ppid=,stat=`, which are
+    * the launcher's own arguments plus `stat=`. The suite skips rather than fails in two cases:
+    * - the `ps` is incompatible, such as BusyBox's;
+    * - a sandbox keeps the `ps` from listing processes, such as the run-on-host Seatbelt profile. */
   def answering(): String =
     val found = HostCommands.findOnPath("ps", sys.env.getOrElse("PATH", ""), HostCommands.currentOs)
     munit.Assertions.assume(found.isDefined, "needs ps on PATH")

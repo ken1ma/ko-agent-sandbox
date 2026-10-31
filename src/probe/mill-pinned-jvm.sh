@@ -1,26 +1,26 @@
 #!/bin/sh
-# What Mill does under the command profile when a build pins its JVM, `mill-jvm-version: temurin:21`:
-# the measurements RunOnHostPrereqs.millRecordedJdk rests on (doc/run-on-host.md, "A pinned JVM").
-# Run it on each new Mill release.
+# Measures what Mill does under the command profile when a build pins its JVM with `mill-jvm-version: temurin:21`.
+# RunOnHostPrereqs.millRecordedJdk rests on these measurements (doc/run-on-host.md, "A pinned JVM"). Run the script on
+# each new Mill release.
 #
-# Mill's launcher writes the JDK home it resolved for the pin to `out/mill-daemon/cache/java-home`,
-# with a key naming the pin, and uses that home while the key matches and the directory exists
-# (`CoursierClient.resolveJavaHome`, Mill 1.1.10). The supervisor grants the JDK that file names, a
-# file a command can write, so the rows measure whether Mill then runs that JDK without fetching,
-# and what it does when the file is absent, under another key, or names another JDK.
+# Mill's launcher writes the JDK home that it resolved for the pin to `out/mill-daemon/cache/java-home`, with a key
+# that names the pin. The launcher uses that home while the key matches and the directory exists
+# (`CoursierClient.resolveJavaHome`, Mill 1.1.10). The supervisor grants the JDK that the file names, and a command
+# can write that file. So the rows measure whether Mill then runs that JDK without fetching, and what Mill does when
+# the file is absent, has another key or names another JDK.
 #
 #   sh src/probe/mill-pinned-jvm.sh [pin]     # a Coursier JVM id; temurin:21 when omitted
 #
-# Run it on macOS from the repository root, with no sandbox session on this workspace. A pin that
-# resolves to the JDK JAVA_HOME names measures no second grant, so pass one that differs.
+# Run the script on macOS from the repository root, with no sandbox session on this workspace. A pin that resolves to
+# the JDK that JAVA_HOME names measures no second grant, so pass a pin that resolves to another JDK.
 #
-# The provisioning run is yours: Mill's launcher, unconfined, in your environment. It downloads the
-# pinned JDK into your Coursier cache, where it stays.
+# The provisioning run runs as you: Mill's launcher runs unconfined in your environment. The run downloads the
+# pinned JDK into your Coursier cache, where the JDK stays.
 #
-# Every row is `mill --no-daemon --version`, which prints the `java.home` of the JVM Mill started
-# and evaluates no build. `--no-daemon` and a daemon start take the JVM from the same call
-# (`MillProcessLauncher.javaExe`), so the rows need no runner. No proxy runs: a row that fetches
-# fails at its first fetch, and its log names the host.
+# Every row runs `mill --no-daemon --version`, which prints the `java.home` of the JVM that Mill started and
+# evaluates no build. `--no-daemon` and a daemon start take the JVM from the same call
+# (`MillProcessLauncher.javaExe`), so the rows need no runner. No proxy runs: a row that fetches fails at its first
+# fetch, and the row's log names the host.
 set -u
 if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
 . "$(dirname "$0")/run-on-host-acceptance-setup.sh"
@@ -35,11 +35,11 @@ source_fixture=$workspace/src/probe/mill-fixture
 [ -x "$source_fixture/mill" ] || { echo "Run this from the repository root." >&2; exit 2; }
 jdk_home=$(cd "${JAVA_HOME:-/nonexistent}" 2>/dev/null && pwd -P) && [ -x "$jdk_home/bin/java" ] ||
     { echo "JAVA_HOME must name the granted JDK." >&2; exit 2; }
-# As RunOnHostPrereqs.coursierCacheRoot reads it.
+# Read the Coursier cache root as RunOnHostPrereqs.coursierCacheRoot reads it.
 coursier_root=$(cd "${COURSIER_CACHE:-$HOME/Library/Caches/Coursier}" 2>/dev/null && pwd -P) ||
     { echo "no Coursier cache at ${COURSIER_CACHE:-$HOME/Library/Caches/Coursier}" >&2; exit 2; }
-# Paths are interpolated into sbt's command parser in the emit and into the profile's string
-# literals, where a quote or backslash would end the quoting.
+# The script interpolates paths into the emit's sbt command, which sbt's command parser reads, and into the
+# profile's string literals. In both places, a quote or backslash would end the quoting.
 safe_path() { # what value
     case "$2" in
         *[\'\"\\]*) echo "$1 contains a quote or backslash and cannot be interpolated safely: $2" >&2; exit 2 ;;
@@ -49,8 +49,8 @@ safe_path "the checkout path" "$workspace"
 safe_path "JAVA_HOME" "$jdk_home"
 acceptance_require_idle "/private/tmp/ko-agent-$(id -u)" "$workspace" || exit 1
 
-# A fixed path: the run-on-host cache is per workspace path, so a path new to each run would leave
-# a cache behind each time.
+# Use a fixed path: the run-on-host cache is kept per workspace path, so a new path in each run would leave a cache
+# behind each time.
 work=$workspace/target/mill-pinned-jvm
 fixture=$work/pinned-jvm-fixture
 java_home_file=$fixture/out/mill-daemon/cache/java-home
@@ -64,17 +64,17 @@ printf '  macOS %s, %s\n' "$(sw_vers -productVersion)" "$(uname -m)"
 printf '  JAVA_HOME: %s (%s)\n' "$jdk_home" "$("$jdk_home/bin/java" -version 2>&1 | sed -n 1p)"
 printf '  mill %s, pin %s\n' "$(grep -m1 -o '"[0-9][^"]*"' "$fixture/mill" | tr -d '"')" "$pin"
 
-# The emit's temporary directory is this run's alone (EmitRunOnHostProfile.newSessionTmp).
+# The emit creates a temporary directory for this run alone (EmitRunOnHostProfile.newSessionTmp).
 SESSION_TMP=""
 cleanup() {
     case "$SESSION_TMP" in /private/tmp/ko-agent-*-accept/*/tmp) rm -rf "${SESSION_TMP%/tmp}" ;; esac
-    # A build directory left under the workspace would be met by the next launch's provisioning.
+    # The next launch's provisioning would meet a build directory left under the workspace.
     rm -rf "$fixture"
 }
 trap cleanup EXIT
 
-# Emitted before the pin replaces `system`, so the profile grants no pinned JDK: the rows add that
-# grant themselves.
+# The script emits the profile before the pin replaces `system`, so the profile grants no pinned JDK. The rows add
+# that grant themselves.
 echo "emitting the mill profile, for $fixture"
 sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile \"$work/base.sb\" \
         src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt mill \"$fixture\"" \
@@ -87,9 +87,9 @@ mill_executable=$(sed -n 's/^executable: //p' "$work/emit.log")
     { echo "emit named no run-on-host cache or no mill executable ($work/emit.log)" >&2; exit 1; }
 safe_path "the command's temporary directory" "$SESSION_TMP"
 
-# The supervisor's closed environment (RunOnHostSandbox.commandEnvironment) less its proxy settings.
-# exec, because with_timeout kills the pid it backgrounds: without it that pid is a subshell and the
-# kill would orphan the command.
+# Runs the command in the supervisor's closed environment (RunOnHostSandbox.commandEnvironment) without the
+# environment's proxy settings. The function uses exec because with_timeout kills the pid that it backgrounds.
+# Without exec, that pid is a subshell, and the kill would orphan the command.
 closed_env() { # command...
     account=$(id -un)
     exec env -i \
@@ -109,18 +109,18 @@ with_timeout() { # seconds command...
     kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
     return $status
 }
-# The launcher file itself, as the acceptance test's "read and execute the mill launcher" row runs it.
+# Runs the launcher file itself, as the acceptance test's row "read and execute the mill launcher" runs it.
 run_mill() { # profile log
     ( cd "$fixture" && with_timeout 300 closed_env \
         /usr/bin/sandbox-exec -f "$1" "$mill_executable" --no-daemon --version ) >"$2" 2>&1
 }
-said() { # log: what it says, less the JVM's own notices, stack frames and Coursier's progress
+said() { # log: what the log says, without the JVM's own notices, stack frames and Coursier's progress
     grep -v -e '^Picked up ' -e '^WARNING: ' -e '^[[:space:]]*at ' -e '^Downloading ' -e '^  not found: ' "$1" |
         sed -n '1,4p' | cut -c1-150 | sed 's/^/      /'
 }
 
-# Unconfined, since no proxy runs here; a supervisor's first command fetches the same jars through
-# its proxy.
+# This fetch runs unconfined, because no proxy runs here. A supervisor's first command fetches the same jars through
+# the supervisor's proxy.
 echo "fetching Mill's own classpath into the run-on-host cache, unconfined ($cache_v1)"
 ( cd "$fixture" && closed_env "$mill_executable" --no-daemon --version ) >"$work/warm.log" 2>&1 ||
     { echo "the fixture does not run unconfined:"; said "$work/warm.log"; exit 1; }
@@ -142,14 +142,14 @@ echo "  the first run for a pin downloads its JDK"
     { echo "the provisioning run failed:"; said "$work/provision.log"; exit 1; }
 [ -f "$java_home_file" ] || { echo "the provisioning run left no $java_home_file" >&2; exit 1; }
 
-# The file is a JSON pair (`CoursierClient.cached`): the key, then the home.
+# The file holds a JSON pair (`CoursierClient.cached`): the key, then the home.
 recorded_field() { # index
     /usr/bin/perl -MJSON::PP -e 'local $/; print JSON::PP->new->decode(<STDIN>)->[$ARGV[0]]' "$1" < "$java_home_file"
 }
 record_home() { # key home
     /usr/bin/perl -MJSON::PP -e 'print JSON::PP->new->encode([@ARGV])' "$1" "$2" > "$java_home_file"
 }
-# The first check of RunOnHostPrereqs.resolveJdkHome a canonical home fails, or nothing.
+# Prints the first check of RunOnHostPrereqs.resolveJdkHome that a canonical home fails, or nothing.
 jdk_home_refusal() { # canonical-home
     java=$(/usr/bin/perl -MCwd=realpath -e 'print realpath(shift) // ""' "$1/bin/java")
     case "$1/" in
@@ -187,8 +187,8 @@ if [ "$pinned_home" = "$jdk_home" ]; then
     echo "  it is the JDK JAVA_HOME names: the rows that withhold or swap the grant are skipped"
 fi
 
-# base.sb with the pinned home granted as JAVA_HOME's is: read and execute on the home, metadata on
-# each ancestor. In place after JAVA_HOME's grant, so the guard denies stay last.
+# granted.sb is base.sb with the pinned home granted the way JAVA_HOME's home is: read and execute on the home, and
+# metadata on each ancestor. The grant goes right after JAVA_HOME's grant, so that the guard denies stay last.
 {
     ancestor=${pinned_home%/*}
     while [ -n "$ancestor" ]; do
@@ -205,7 +205,7 @@ fi
     { echo "$work/base.sb has no grant of $jdk_home to place the pinned home's after" >&2; exit 1; }
 
 rows=0
-row() { # label profile key home: the java-home file the row starts with, none for an empty key
+row() { # label profile key home: the java-home file that the row starts with, or none for an empty key
     rows=$((rows + 1)); log=$work/row-$rows.log
     rm -f "$java_home_file"
     [ -z "$3" ] || record_home "$3" "$4"

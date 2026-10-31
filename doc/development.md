@@ -12,8 +12,8 @@ Run the commands in this section from the repository root.
 
     1. `testOnly` patterns can follow, quoted with the command:
        `sbt "testWithPodman *RunTopologyTest"`.
-    1. One test is skipped unless `SIGNED_PUT_URL` holds a presigned S3 PUT URL for a
-       bucket you own: the refusal of an owner-signed upload inside the inspected tunnel.
+    1. The test that the inspected tunnel refuses an owner-signed upload is skipped unless
+       `SIGNED_PUT_URL` holds a presigned S3 PUT URL for a bucket you own.
 
         1. The case's header in `src/test/scala/EgressSessionTest.scala` has the commands that sign
            the URL and the test command, which uses `sbt --server` so the variable reaches the
@@ -25,7 +25,7 @@ Run the commands in this section from the repository root.
 
    Inside that session, run `sbt testFull`, which also runs `SessionBoundaryTest`.
 
-1. `testFull` executes every test every time, unlike `test` which is incremental.
+1. `testFull` runs every test every time, while `test` is incremental.
 
 ## egress-proxy
 
@@ -35,9 +35,9 @@ Run the commands in this section from the repository root.
 
     java -jar target/dist/ko-agent-sandbox.jar --self-test
 
-1. `--self-test` runs the suite that needs no mount and the suite that mounts a real filter in a
-   privileged container, on any machine with podman; running either suite directly is documented in
-   [testing.md](../ko-agent-fs/doc/testing.md).
+1. `--self-test` runs two suites on any machine with podman: the suite that needs no mount, and the
+   suite that mounts a real filter in a privileged container.
+1. [testing.md](../ko-agent-fs/doc/testing.md) documents how to run either suite directly.
 
 
 # Test environments
@@ -174,22 +174,25 @@ Alternatively, on the host: copy the worktree
 ## On Windows x64
 
 1. We use EC2.
-1. QEMU on Apple silicon does not work: the
+1. QEMU on Apple silicon does not work: QEMU TCG is very slow and does not support the nested
+   virtualization podman needs. The
    [Windows 11 Enterprise 25H2 x64 Evaluation](https://www.microsoft.com/en-us/evalcenter/evaluate-windows-11-enterprise)
-   runs for 90 days without a product key, but QEMU TCG is very slow and does not support the
-   nested virtualization podman needs.
+   itself runs for 90 days without a product key.
 1. In an Administrator PowerShell, allow the podman machine to reach TCP port 58036, where
-   `ProxyContainerTest`'s upstream proxy listens on Windows: the firewall drops a container's
-   connections to a host listener no rule allows, and the case fails with `Connect timed out`.
-   The rule is limited to the WSL interface, since the test proxy accepts any client. A rule
-   naming the listener's `java.exe` instead let no connection through (measured 2026-10-27).
+   `ProxyContainerTest`'s upstream proxy listens on Windows:
 
    ```powershell
    New-NetFirewallRule -DisplayName 'ko-agent-sandbox upstream proxy test' -Direction Inbound `
      -Protocol TCP -LocalPort 58036 -InterfaceAlias 'vEthernet (WSL*)' -Action Allow
    ```
 
-   `Remove-NetFirewallRule -DisplayName 'ko-agent-sandbox upstream proxy test'` removes it.
+   `Remove-NetFirewallRule -DisplayName 'ko-agent-sandbox upstream proxy test'` removes the rule.
+
+    1. Without the rule, the firewall drops a container's connections to a host listener no rule
+       allows, and the case fails with `Connect timed out`.
+    1. The rule is limited to the WSL interface, since the test proxy accepts any client.
+    1. A rule naming the listener's `java.exe` instead let no connection through (measured
+       2026-10-27).
 1. Run only the container-launching suites: the other suites assume a Unix JVM (TODO.md, "The
    ordinary suites on a Windows host").
 
@@ -200,6 +203,8 @@ Alternatively, on the host: copy the worktree
    sbt "testWithPodman $suites"
    ```
 1. When a run aborts with `ZipFile invalid LOC header`, or the server fails to start with
-   `Could not create lock for \\.\pipe\sbt-server-…`, an earlier sbt server is still running,
-   which the thin client no longer reaches: `sbt shutdownall` ends it, `sbt shutdown` does not.
-   Then run `sbt dist`, since the next start recompiles.
+   `Could not create lock for \\.\pipe\sbt-server-…`, run `sbt shutdownall`, then `sbt dist`.
+
+    1. An earlier sbt server is still running, and the thin client cannot reach it.
+       `sbt shutdownall` ends that server; `sbt shutdown` does not.
+    1. `sbt dist` is needed because the next start recompiles.

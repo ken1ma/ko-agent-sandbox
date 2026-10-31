@@ -1,15 +1,15 @@
-// A rule's path and the spelling a request path must have to be compared with one: the grammar a
-// rule file's path, a `--egress-cred` prefix and a request under either share (doc/egress-proxy.md,
-// "The rule file"). The proxy compares paths literally and decodes nothing it forwards: a spelling
-// is validated, never rewritten into the one a rule accepts.
+// A rule's path, and the spelling that a request path must have to be compared with a rule's path. A rule file's
+// path, a `--egress-cred` prefix and a request under either share this grammar (doc/egress-proxy.md, "The rule
+// file").
 //
-// The grammar keeps a path from naming another place under another HTTP or URI reading of it:
-// percent-decoding, dot segments, backslashes, path parameters, empty segments, and Unicode
-// normalization. It does not model an application that reads a segment as something else — an NTFS
-// stream after `:`, an archive entry after `!`, form data where `+` is a space.
-//
-// A POST, PUT, PATCH or DELETE path is stricter still, at every scope: no `%` and no dot segment, since a
-// forge decodes those before routing (requireUnambiguousPath).
+// - The proxy compares paths literally and decodes nothing it forwards. A spelling is validated, never rewritten
+//   into the one that a rule accepts.
+// - The grammar keeps a path from naming another place under another HTTP or URI reading of the path:
+//   percent-decoding, dot segments, backslashes, path parameters, empty segments, and Unicode normalization.
+// - The grammar does not model an application that reads a segment as something else: an NTFS stream after `:`,
+//   an archive entry after `!`, form data where `+` is a space.
+// - A POST, PUT, PATCH or DELETE path is stricter still, at every scope: no `%` and no dot segment, since a forge
+//   decodes both before routing (requireUnambiguousPath).
 
 package agentsandbox.egress
 
@@ -17,7 +17,7 @@ import java.nio.ByteBuffer
 import java.nio.charset.{CharacterCodingException, CodingErrorAction, StandardCharsets}
 import java.text.Normalizer
 
-/** A rule's path: `/` the root, a trailing `/` a tree, none one exact path. */
+/** A rule's path: `/` is the root, a trailing `/` makes a tree, and a path without one names one exact path. */
 object RulePath:
   val Root = "/"
 
@@ -32,22 +32,25 @@ object RulePath:
   private val Delimiters = "/\\.;%?#"
 
   /**
-   * Why `path` cannot be compared literally to a rule's path, or None: the one rule for a rule's path
-   * and an `--egress-cred` prefix at launch, and for a request under either. One spelling per path:
+   * Why `path` cannot be compared literally with a rule's path, or None. This one rule covers a rule's path and an
+   * `--egress-cred` prefix at launch, and a request under either. Each path has one spelling:
    *
-   * - printable ASCII alone, as RFC 3986 spells a URI: a server reading raw bytes above `0x7E` as text
-   *   decides for itself what they become;
-   * - no backslash, which a Windows-hosted or lenient server reads as `/`; no `;`, which servlet
-   *   containers strip as a path parameter, `/a/..;/b` included; no empty segment, which many collapse;
-   *   no `.` or `..` segment; no `#`, which ends a URI's path and no request target carries, though an
-   *   origin's parser may cut the path there;
-   * - `%` only in an escape of UTF-8 text above ASCII, or of a space: a character that has a raw
-   *   spelling has no second one. Hex case is the writer's, compared byte for byte as letter case is:
-   *   a request spelled in the other case falls under the enclosing rule's path, which grants no
-   *   more, and is not under a prefix;
-   * - escapes that decode as strict UTF-8, so no overlong form spells `.` or `/` (`%C0%AE`), and whose
-   *   decoded text gains no delimiter under NFKC, the widest normalization a server or library may
-   *   apply: U+FF0F becomes `/`, and U+037E `;` under NFC already.
+   * - printable ASCII alone, as RFC 3986 spells a URI: a server that reads raw bytes above `0x7E` as text decides
+   *   for itself what they become;
+   * - no backslash, which a Windows-hosted or lenient server reads as `/`;
+   * - no `;`, which servlet containers strip as a path parameter, `/a/..;/b` included;
+   * - no empty segment, which many servers collapse;
+   * - no `.` or `..` segment;
+   * - no `#`, which ends a URI's path and which no request target carries, though an origin's parser may cut the
+   *   path there;
+   * - `%` only in an escape of UTF-8 text above ASCII, or of a space: a character that has a raw spelling has no
+   *   second one.
+   *   - Hex case is the writer's, and the comparison checks it byte for byte, as it checks letter case. A request
+   *     spelled in the other case falls under the enclosing rule's path, which grants no more, and is not under a
+   *     prefix.
+   * - escapes that decode as strict UTF-8, so no overlong form spells `.` or `/` (`%C0%AE`);
+   * - escapes whose decoded text gains no delimiter under NFKC, the widest normalization a server or library may
+   *   apply. NFKC turns U+FF0F into `/`, and NFC already turns U+037E into `;`.
    */
   def literalPathProblem(path: String): Option[String] =
     if path.exists(char => char < 0x21 || char > 0x7e) then Some("a character outside printable ASCII")
@@ -109,12 +112,12 @@ object RulePath:
     else if path.split("/", -1).exists(isDotSegment) then Some("a dot segment")
     else None
 
-  /** A POST, PUT, PATCH or DELETE path, refused rather than normalized when a forge would decode it
-    * first. Forge names never need escaping, so neither is a request git would make. */
+  /** Refuses a POST, PUT, PATCH or DELETE path that a forge would decode first, rather than normalizing the path.
+    * Forge names never need escaping, so git never sends either spelling. */
   def requireUnambiguousPath(path: String): Unit =
     decodedSpelling(path).foreach(problem => throw Refusal(s"$problem in the path", RefusalAdvice.ambiguousPath))
 
-  /** A path whose longest match is a line other than the root, on every method: refused for any
-    * spelling literalPathProblem names. */
+  /** Refuses, on every method, a path whose longest match is a line other than the root, for any spelling that
+    * literalPathProblem names. */
   def requireLiteralPath(path: String): Unit =
     literalPathProblem(path).foreach(problem => throw Refusal(s"$problem in the path", RefusalAdvice.ambiguousPath))

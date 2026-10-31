@@ -1,6 +1,7 @@
-# The security acceptance test's Mill fixture has one module and one test class. Keep it limited to what
-# the acceptance test exercises. `system` is the JVM the supervisor puts first on PATH, so the
-# acceptance test's mill rows need no host-provisioned JDK.
+# The security acceptance test's Mill fixture has one module and one test class. Keep it limited to what the
+# acceptance test exercises.
+# `system` is the JVM that the supervisor puts first on PATH, so the acceptance test's mill rows need no JDK
+# provisioned on the host.
 mill-jvm-version: system
 extends: ScalaModule
 scalaVersion: 3.9.0

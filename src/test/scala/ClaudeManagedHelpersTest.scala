@@ -7,7 +7,7 @@ class ClaudeManagedHelpersTest extends munit.FunSuite:
 
   test("managed Claude status line preserves data-only configuration"):
     assume(System.getProperty("os.name") == "Linux", "runs the image's status-line command with Python 3")
-    // Into a file, not a pipe read only after the wait (KoReviewTest.runIn has why).
+    // The output goes into a file, not a pipe read only after the wait (KoReviewTest.runIn gives the reason).
     val output = Files.createTempFile("claude-managed-helpers-test", ".log")
     val process = ProcessBuilder(
       "python3",

@@ -15,20 +15,21 @@ scalacOptions ++= Seq(
   "-Werror",
 )
 
-// X509Helper issues leaves with the JDK's internal certificate builder, which the JVM keeps behind
-// the module boundary at run time; scalac compiles against it unasked. The launcher carries the same
-// two for the runner and supervisor that issue each host proxy's certificates
-// (RunOnHostSandbox.CertificateBuilderExports). The image's native-image takes neither: nothing the
-// proxy runs reaches X509Helper (measured with GraalVM 25.3.4.1: the same reachable types, fields
-// and methods with and without them).
+// X509Helper issues leaves with the JDK's internal certificate builder. scalac compiles against the builder unasked,
+// but the JVM keeps the builder behind the module boundary at run time, so the forked tests need these two exports.
+// - The launcher carries the same two exports for the runner and the supervisor, which issue each host proxy's
+//   certificates (RunOnHostSandbox.CertificateBuilderExports).
+// - The image's native-image takes neither export, because nothing the proxy runs reaches X509Helper. Measured with
+//   GraalVM 25.3.4.1, the image reaches the same types, fields and methods with and without the exports.
 Test / fork := true
 Test / javaOptions ++= Seq(
   "--add-exports=java.base/sun.security.x509=ALL-UNNAMED",
   "--add-exports=java.base/sun.security.util=ALL-UNNAMED",
 )
 
-// Native Image follows the jar's manifest Class-Path, resolved relative to the application jar. `dist` puts the
-// application and every library jar in one directory so the container build needs no sbt-specific target paths.
+// Native Image follows the jar's manifest Class-Path and resolves its entries relative to the application jar.
+// `dist` puts the application jar and every library jar in one directory, so the container build needs no
+// sbt-specific target paths.
 Compile / packageBin / packageOptions += {
   val converter = fileConverter.value
 
@@ -39,8 +40,8 @@ Compile / packageBin / packageOptions += {
   )
 }
 
-// One directory for Native Image, insulating the Containerfile from sbt 2's target layout. The application jar gets a
-// stable name; library jars keep the names the Class-Path references.
+// `dist` gives Native Image one directory, which keeps sbt 2's target layout out of the Containerfile. The
+// application jar gets a stable name, and the library jars keep the names that the Class-Path references.
 lazy val dist = taskKey[Unit]("Assemble the runtime jars under target/dist")
 
 dist := {

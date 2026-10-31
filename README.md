@@ -53,7 +53,7 @@ The containers run rootless, and the programs run as the `nonroot` user.
 
 A typical workflow:
 
-1. `git clone`/`pull` on the host first — no host credentials are automatically forwarded.
+1. `git clone`/`pull` on the host first: the launcher forwards no host credentials automatically.
 2. Run a program in the sandbox: it should feel mostly like running it on the host.
     1. The program can `git clone` public GitHub repositories into the sandbox's `$HOME`.
 3. Review the changes, then `git commit`/`push` on the host.
@@ -68,8 +68,9 @@ The sandbox image preinstalls:
 1. [OpenCode](https://github.com/anomalyco/opencode)                    (multiple providers)
 1. plus the toolchains: Node.js / Python + uv / Rust / Java / Scala, and the VS Code CLI.
 
-The agents are configured to run without permission prompts, to avoid training users to approve
-without reading. The sandbox enforces the boundary; inside it, the agents can call each other.
+The image configures the agents to run without permission prompts, so that users do not learn to
+approve without reading. The sandbox enforces the boundary, and inside it the agents can call each
+other.
 
 
 ## Install
@@ -111,7 +112,7 @@ Start an agent from a trusted directory, such as `~/my-project`, which becomes t
 
 Insert these launcher options before the agent command (`claude` above):
 
-1. Use `--model-provider=<names>` to reach other model providers than the agent's own:
+1. Use `--model-provider=<names>` to reach model providers other than the agent's own:
    `anthropic`, `openai`, `google`, `aws` or `github`, separated by commas. `opencode` has no
    fixed provider and is refused without the option.
    For example, to run `claude` and review with `codex` through `/ko-review`:
@@ -125,8 +126,8 @@ Insert these launcher options before the agent command (`claude` above):
 
 1. Use `--workspace=read-only` to make the workspace read-only inside the sandbox.
 
-The launcher refuses to use your home directory as the workspace because it would expose credentials
-in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
+The launcher refuses your home directory as the workspace: that workspace would expose the
+credentials in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 ### Running `<command>`
 
@@ -156,9 +157,9 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
    finding on the same reviewer thread until the reviewer approves the exact tree or asks for a
    decision only you can make.
    - A Codex reviewer needs `--model-provider` to name `openai` (the launch example above).
-   - The reviewer's suggestions, opinions on the design that do not block approval, Claude adopts
-     or disputes; it brings to you those that are yours to decide and names the adopted ones that
-     changed the design.
+   - Claude adopts or disputes the reviewer's suggestions, which are opinions on the design that
+     do not block approval. Claude brings you the suggestions that are yours to decide, and names
+     the adopted ones that changed the design.
    - The review covers the uncommitted changes by default.
    - Codex reviews under this workspace's Codex sign-in.
    - Each round's tree and transcript are on a Git ref under `refs/ko-review/` in the repository,
@@ -190,8 +191,8 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
 
 1. Sign in with the URL and pasted code, as for [`claude`](#claude).
 1. `/voice` needs `--audio=mic`.
-1. Its terminal sandbox fails to start in a session, so in Auto mode commands run without it
-   ([doc/limitations.md](doc/limitations.md#agys-terminal-sandbox-and-auto-mode)).
+1. `agy`'s terminal sandbox fails to start in a session, so in Auto mode its commands run without
+   that sandbox ([doc/limitations.md](doc/limitations.md#agys-terminal-sandbox-and-auto-mode)).
 
 #### `kiro-cli`
 
@@ -206,10 +207,11 @@ in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#defended)).
        (SECURITY.md, "The web reached through the model provider").
 
 1. Prompts for paths outside the workspace and for URLs remain unless you run `copilot --yolo`.
-1. Its fullscreen TUI cannot be turned off, so use `/copy` to copy text out. It writes OSC 52,
-   which sets the clipboard on a terminal that honors it
-   ([SECURITY.md](SECURITY.md#terminal-clipboard-requests-osc-52)); on another terminal it needs
-   `--clipboard=bidirectional`.
+1. `copilot`'s fullscreen TUI cannot be turned off, so use `/copy` to copy text out.
+
+    1. `/copy` writes OSC 52, which sets the clipboard on a terminal that honors it
+       ([SECURITY.md](SECURITY.md#terminal-clipboard-requests-osc-52)).
+    1. On another terminal, `/copy` needs `--clipboard=bidirectional`.
 
 #### `opencode`
 
@@ -239,21 +241,24 @@ credentials another cloud's login produced, and what forwarding costs.
 
 1. Each launch prints the workspace mode and the resolved egress profile, plus the rule files, each
    option the options file supplied, and any warning.
-1. More than one session can run at once from the same workspace; they share the
+1. More than one session can run at once from the same workspace. The sessions share the
    workspace mount and the agent-state volume.
 
     1. When sessions change the same file concurrently, later writes can overwrite earlier changes.
-    1. Each `--workspace=live,bpf` session runs under its own policy. A new launch is refused while
-       a session that shares the workspace or the agent-state volume runs under the other backend
-       or the other `unix-socket` setting; a session an older launcher started counts as a filter
-       session. An older launcher refuses nothing, so do not start one beside a `bpf` or
+    1. Each `--workspace=live,bpf` session runs under its own policy.
+    1. The launcher refuses a new launch while a session that shares the workspace or the
+       agent-state volume runs under the other backend or the other `unix-socket` setting.
+       A session that an older launcher started counts as a filter session.
+    1. An older launcher refuses nothing, so do not start an older launcher beside a `bpf` or
        `unix-socket` session.
 
-1. From a Git linked worktree, the launch asks whether to share the main worktree's agent state,
-   and where the container can follow the worktree's `.git` pointer (a relative one anywhere, an
-   absolute one on macOS and Linux) the session also mounts the main worktree's Git directory,
-   read-only, so `git` works there ([SECURITY.md](SECURITY.md#defended), "The host's git executing
-   what the sandbox wrote").
+1. From a Git linked worktree:
+
+    1. The launch asks whether to share the main worktree's agent state.
+    1. The session also mounts the main worktree's Git directory, read-only, so that `git` works
+       there ([SECURITY.md](SECURITY.md#defended), "The host's git executing what the sandbox
+       wrote"). The session does so where the container can follow the worktree's `.git` pointer:
+       a relative pointer anywhere, and an absolute one on macOS and Linux.
 1. A session creates no user namespace and mounts nothing: `unshare -Ur`, bubblewrap and an
    agent's or a browser's own sandbox fail with `Operation not permitted`.
    `--nesting=user-namespace` allows both for the whole session
@@ -272,21 +277,22 @@ and the workspace's `.ko-agent-sandbox/egress/rule` determine which destinations
 allowed. The defaults include tunnels to supported model providers and TLS-inspected access
 to selected documentation sites, package registries, and Git hosting services.
 
-On the host, write one rule per line in `.ko-agent-sandbox/egress/rule`, then relaunch; a running
-session keeps the ruleset it started with:
+On the host, write one rule per line in `.ko-agent-sandbox/egress/rule`, then relaunch:
 
     deny https://github.com/                         # the forge, whole
     allow https://github.com/my-org/ read git-fetch  # then one owner, readable and clonable
     allow https://api.example/ tunnel                # permits traffic without inspection
 
+A running session keeps the ruleset it started with.
+
 See [doc/egress-proxy.md](doc/egress-proxy.md) for profiles, rule syntax, TLS inspection, audit logs
 and diagnostics, and [SECURITY.md](SECURITY.md#egress-proxy) for the limits.
 
-To use an upstream proxy, set `HTTPS_PROXY` in the launcher's environment; the launch banner
-prints the selected endpoint. A proxy that terminates TLS with its own certificate is unsupported;
-connections fail with certificate errors. See
-[doc/egress-proxy.md](doc/egress-proxy.md#through-an-upstream-proxy) for
-upstream-proxy requirements.
+To use an upstream proxy, set `HTTPS_PROXY` in the launcher's environment. The launch banner prints
+the selected endpoint. A proxy that terminates TLS with its own certificate is unsupported:
+connections through it fail with certificate errors. See
+[doc/egress-proxy.md](doc/egress-proxy.md#through-an-upstream-proxy) for the upstream proxy's
+requirements.
 
 
 ### Agent settings
@@ -515,24 +521,24 @@ restore permission prompts and set the Claude Code status line.
 ### `--build`
 
 1. Builds the sandbox and egress-proxy images from the jar; no checkout is needed.
-1. Installs the workspace filter, `ko-agent-fs-fuse`, and the policy's resolver, `ko-agent-fs`,
-   compiled from bundled source, in `~/.local/share/ko-agent-sandbox/` — inside the podman machine
-   on macOS and Windows, in your home on native Linux.
+1. Compiles the workspace filter, `ko-agent-fs-fuse`, and the policy's resolver, `ko-agent-fs`,
+   from bundled source. Installs them in `~/.local/share/ko-agent-sandbox/`: inside the podman
+   machine on macOS and Windows, and in your home on native Linux.
 
     1. To remove them:
        `podman machine ssh rm .local/share/ko-agent-sandbox/ko-agent-fs
        .local/share/ko-agent-sandbox/ko-agent-fs-fuse` (plain `rm` on Linux).
 
-1. On macOS and Windows, installs the BPF backend, compiled from bundled source against the
-   machine's kernel, inside the podman machine.
+1. On macOS and Windows, compiles the BPF backend from bundled source against the machine's
+   kernel, and installs it inside the podman machine.
 
-    1. Run `--build` again after `podman machine os upgrade` or `wsl --update`: a `bpf` launch
-       refuses a backend built under another kernel, and one from another launcher build.
+    1. Run `--build` again after `podman machine os upgrade` or `wsl --update`. A `bpf` launch
+       refuses a backend built under another kernel, and a backend from another launcher build.
 
 1. Use `--update` to install new agent releases.
 
-    1. It rebuilds without cache; `--build` may reuse cached versions. Agents cannot update
-       themselves inside the sandbox.
+    1. `--update` rebuilds without cache, while `--build` may reuse cached versions.
+    1. Agents cannot update themselves inside the sandbox.
 
 1. May ask to add `user_allow_other` to the podman machine's `/etc/fuse.conf`, shown as a diff
    first (SECURITY.md, "Silent changes to what you own"). A native Linux host is never prompted.
@@ -569,24 +575,28 @@ command line:
        drops the file's entries of that option; those after it on the command line still add.
 
 1. `--no-options-file`, before the command, skips the file for one launch or action.
-1. `--reset` reads the file's `--persistent-volume`. `--egress-effective` reads its `--egress`,
-   `--model-provider`, `--egress-cred` and `--proxy-image`, and `--egress-check` the same but
-   for `--egress-cred`. The other actions read none.
+1. Three actions read some of the file's options; the other actions read none.
+
+    1. `--reset` reads `--persistent-volume`.
+    1. `--egress-effective` reads `--egress`, `--model-provider`, `--egress-cred` and
+       `--proxy-image`.
+    1. `--egress-check` reads the same options except `--egress-cred`.
 1. Forward a secret as `--env=NAME`, with the value in the launcher's environment. A value in the
-   file, as `--env=NAME=VALUE` or `--env=NAME=${SECRET}`, is in podman's arguments and in the create
-   command podman records for the container.
+   file, as `--env=NAME=VALUE` or `--env=NAME=${SECRET}`, ends up in podman's arguments and in the
+   create command that podman records for the container.
 
 The file's format:
 
-- `#` outside double quotes starts a comment, inside a word too. Whitespace around the line, the
-  name and the value is removed.
+- `#` outside double quotes starts a comment, even inside a word. The parser removes the whitespace
+  around the line, the name and the value.
 - A value in double quotes keeps its whitespace and `#`, and takes the escapes `\"`, `\\` and `\$`.
   Outside quotes every backslash is literal, so a Windows path needs no quotes.
 - `${NAME}` in a value, quoted or not, expands to the launcher's environment variable `NAME`. An
   unset variable fails the launch, and so does a `$` that starts no `${`.
-- The launch fails naming the file and the line on invalid UTF-8 or syntax, a command, `--`, a
-  management action, `--no-options-file` or an unknown option. It also fails on a file inside the
-  workspace: a repository must not choose its own launch's grants.
+- The launch fails, naming the file and the line, on invalid UTF-8 or syntax, a command, `--`, a
+  management action, `--no-options-file` or an unknown option.
+- The launch also fails on a file inside the workspace: a repository must not choose its own
+  launch's grants.
 
 
 ## Development
@@ -624,7 +634,7 @@ Run the commands below from the repository root.
     sbt dist && java -jar target/dist/ko-agent-sandbox.jar --build
 
 1. If sbt fails, `sbt shutdownall` and try again, especially on Windows.
-1. This assembles one self-contained jar — a single file is the whole install.
+1. `sbt dist` assembles one self-contained jar: a single file is the whole install.
 1. On Windows, PowerShell 7 or later is recommended. Windows PowerShell 5.1 does not support `&&`.
 
 ### Tests

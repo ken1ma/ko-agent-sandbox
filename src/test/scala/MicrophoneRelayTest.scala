@@ -1,9 +1,13 @@
-// The microphone's POSIX and Windows relays, run for real against the same scripts in place of podman, the
-// recorders and the sandbox's writer: the reaper's shell functions under /bin/sh with its tree
-// functions, and the resident launcher's threads, which Windows runs. What they hold is the probe's
-// report to the launcher and the forwarding's contract with the writer: nothing before `ready`, the
-// audio of the round trip first, no gap, and nothing one request left behind reaching the next.
-// Last, the Windows relay's recorders, which end with the launcher.
+// Runs the microphone's POSIX and Windows relays for real, against the same scripts in place of podman, the
+// recorders and the sandbox's writer. The POSIX relay is the reaper's shell functions under /bin/sh with
+// its tree functions; the Windows relay is the resident launcher's threads, which Windows runs. The tests
+// check what the relays hold:
+//
+// - the probe's report to the launcher;
+// - the forwarding's contract with the writer: nothing before `ready`, the audio of the round trip first,
+//   no gap, and nothing that one request left behind reaching the next.
+//
+// The last tests cover the Windows relay's recorders, which end with the launcher.
 
 package agentsandbox.launcher
 
@@ -20,7 +24,8 @@ class MicrophoneRelayTest extends munit.FunSuite:
   private def onPath(program: String): Boolean =
     sys.env.getOrElse("PATH", "").split(":").exists(dir => Files.isExecutable(Paths.get(dir, program)))
 
-  /** The distinct periods in `pcm`, each 320 samples of its index, so a capture reads as a sequence of indices. */
+  /** The number of distinct periods in `pcm`. Each period is 320 samples of its index, so a capture reads as a
+    * sequence of indices. */
   private val Periods = 1000
 
   private def executable(path: Path, body: String): Unit =
@@ -33,7 +38,7 @@ class MicrophoneRelayTest extends munit.FunSuite:
     case Posix extends Relay("POSIX")
     case Windows extends Relay("Windows")
 
-  /** One run of the relay: its directories, the fakes' records under `host`, and whether it runs. */
+  /** One run of the relay: its directories, the fakes' records under `host`, and whether the relay runs. */
   private final class Harness(
     val relay: Relay,
     val host: Path,
@@ -53,7 +58,8 @@ class MicrophoneRelayTest extends munit.FunSuite:
     def count(name: String): Int =
       val file = host.resolve(name)
       if Files.exists(file) then Files.readString(file).trim.toIntOption.getOrElse(0) else 0
-    /** The recorder's latest period, as it last wrote it, read again while a rewrite has emptied it. */
+    /** The recorder's latest period as the recorder last wrote it, read again while a rewrite has emptied
+      * the file. */
     def latestPeriod: Int =
       val file = host.resolve("at")
       Iterator
@@ -74,11 +80,11 @@ class MicrophoneRelayTest extends munit.FunSuite:
       awaitTrue(s"the probe's outcome$diagnostics")(MicrophoneRelay.probeOutcome(statusLines).nonEmpty)
       statusLines
 
-    /** A `start`, as the controller writes it: to a reader of `req`, which the relay's exec makes. */
+    /** Writes a `start` as the controller writes it: to a reader of `req`, which the relay's exec makes. */
     def request(line: String = "start"): Unit =
       val req = sandbox.resolve("req")
       awaitTrue("the relay's request FIFO")(Files.exists(req))
-      // The reader exec may be between two requests; the controller retries the same way.
+      // The reader exec may be between two requests, so this method retries, as the controller does.
       awaitTrue(s"a reader of req for `$line`"):
         val writer = ProcessBuilder("sh", "-c", s"""printf '%s\\n' '$line' > "$req"""").start()
         writer.waitFor(2, java.util.concurrent.TimeUnit.SECONDS) && writer.exitValue() == 0 || {
@@ -86,7 +92,7 @@ class MicrophoneRelayTest extends munit.FunSuite:
           false
         }
 
-    /** The controller's SIGTERM, which a real writer obeys; the stand-in is KILLed, as podman's exec is. */
+    /** Sends the controller's SIGTERM, which a real writer obeys. The stand-in is KILLed, as podman's exec is. */
     def endWriter(): Unit =
       val pid = Files.readString(host.resolve("writer.pid")).trim
       ProcessBuilder("kill", "-KILL", pid).start().waitFor()
@@ -108,11 +114,14 @@ class MicrophoneRelayTest extends munit.FunSuite:
       case _            => true
 
   /**
-   * Recorders by label: `good` paces indexed periods at 20 ms, `late` paces 100 periods of zeros
-   * and then as `good` does, `silent` paces zeros, `failing`
-   * exits at once with SoX's warning then its failure on stderr, `mute` never writes, `stalling`
-   * writes the probe's periods and 30 more, then nothing. Each counts its starts in
-   * `starts-<label>`.
+   * Recorders by label. Each recorder counts its starts in `starts-<label>`.
+   *
+   *  - `good` paces indexed periods at 20 ms.
+   *  - `late` paces 100 periods of zeros, and then paces as `good` does.
+   *  - `silent` paces zeros.
+   *  - `failing` exits at once, with SoX's warning and then its failure on stderr.
+   *  - `mute` never writes.
+   *  - `stalling` writes the probe's periods and 30 more, then nothing.
    */
   private def recorder(host: Path, label: String): String =
     val path = host.resolve(label)
@@ -154,7 +163,7 @@ class MicrophoneRelayTest extends munit.FunSuite:
     )
     path.toString
 
-  /** A scenario run against both relays, under one name each. */
+  /** Runs a scenario against both relays, under one name for each relay. */
   private def bothRelays(name: String, labels: String*)(check: Harness => Unit): Unit =
     Relay.values.foreach: relay =>
       test(s"$name (${relay.label} relay)")(run(relay, labels)(check))
@@ -163,8 +172,8 @@ class MicrophoneRelayTest extends munit.FunSuite:
   private def run(relay: Relay, labels: Seq[String], jobWritable: Boolean = true)(check: Harness => Unit): Unit =
     assume(programs.forall(onPath), s"needs ${programs.mkString(", ")} on PATH")
     val ps = HostPs.answering()
-    // Never under the workspace: on a podman machine served by libkrun, a FIFO there whose times
-    // change hangs the machine's whole /Users share (doc/upstream-issues.md).
+    // The root is never under the workspace: on a podman machine served by libkrun, a FIFO there whose
+    // times change hangs the machine's whole /Users share (doc/upstream-issues.md).
     val root = Files.createTempDirectory("microphone-relay").toRealPath()
     val host = Files.createDirectory(root.resolve("host"))
     val sandbox = Files.createDirectory(root.resolve("sandbox"))
@@ -176,9 +185,9 @@ class MicrophoneRelayTest extends munit.FunSuite:
       (0 until Periods).toArray.flatMap: index =>
         Array.fill(320)(Array((index & 0xff).toByte, (index >> 8).toByte)).flatten,
     )
-    // "exec C sh -c S" runs S here, against the test's sandbox directory; the writer's command
-    // runs the stand-in below, and an exec -i that leaves the detach keys on fails. `stopped` is the
-    // container stopping.
+    // The fake podman runs S here for "exec C sh -c S", against the test's sandbox directory. The
+    // writer's command runs the stand-in below, and an exec -i that leaves the detach keys on fails.
+    // The file `stopped` stands for the container stopping.
     executable(
       host.resolve("podman"),
       s"""#!/bin/sh
@@ -197,9 +206,10 @@ class MicrophoneRelayTest extends munit.FunSuite:
          |""".stripMargin,
     )
     // The writer's stand-in reads its stdin from its start, as podman does whether or not the
-    // process inside reads it, and records how much it had read when it answered `ready`. It reads
-    // in its own process, the one the relay ends, so a `SIGSTOP` of its pid is a daemon that stopped
-    // reading. `stale`: the stream closed before it looked; `ready-delay`: a slow round trip.
+    // process inside reads it. The stand-in records how much it had read when it answered `ready`.
+    // The stand-in reads in its own process, the process that the relay ends, so a `SIGSTOP` of its
+    // pid stands for a daemon that stopped reading. The file `stale` means that the stream closed
+    // before the stand-in looked; `ready-delay` makes a slow round trip.
     executable(
       host.resolve("writer"),
       s"""#!/bin/sh
@@ -219,9 +229,9 @@ class MicrophoneRelayTest extends munit.FunSuite:
     val recorders = labels.toVector.map(label => MicrophoneRelay.Recorder(label, Vector(recorder(host, label))))
     val podman = host.resolve("podman").toString
     val (status, log) = (root.resolve("status"), root.resolve("microphone.log"))
-    // Every process the run starts is this JVM's descendant, the relay and its recorders alike; suites
-    // run one at a time (build.sbt), so those absent before the start are the run's. Collected while it
-    // runs, since a process whose parent ended leaves the tree.
+    // Every process that the run starts is this JVM's descendant, the relay and its recorders alike.
+    // Suites run one at a time (build.sbt), so the descendants absent before the start belong to the run.
+    // The test collects the descendants while the run runs, because a process whose parent ended leaves the tree.
     val before = ProcessHandle.current().descendants().map(_.pid).toList.asScala.toSet
     val owned = scala.collection.mutable.Map.empty[Long, ProcessHandle]
     @volatile var ended = false
@@ -234,8 +244,9 @@ class MicrophoneRelayTest extends munit.FunSuite:
     watcher.setDaemon(true)
     watcher.start()
     var alive: () => Boolean = () => false
-    // The relay starts processes until it finds the container stopped, a request reader among them that
-    // waits on `req` for a writer: ended until the relay ends, for at most ten seconds.
+    // The relay starts processes until it finds the container stopped, and one of them is a request
+    // reader that waits on `req` for a writer. endAll therefore ends the owned processes until the relay
+    // ends, for at most ten seconds.
     def endAll(): Unit =
       Files.writeString(host.resolve("stopped"), "")
       val deadline = System.nanoTime() + 10_000_000_000L
@@ -245,8 +256,8 @@ class MicrophoneRelayTest extends munit.FunSuite:
       ended = true
       watcher.join()
       owned.synchronized(owned.values.foreach(_.destroyForcibly()))
-      // A subshell forked as its parent died leaves the tree before the watcher sees it; every process the
-      // scripts start names the run's directory, or descends from one that does.
+      // A subshell forked as its parent died leaves the tree before the watcher sees it. Every process that
+      // the scripts start names the run's directory, or descends from a process that does.
       ProcessHandle.allProcesses()
         .filter(_.info.commandLine.toScala.exists(_.contains(root.toString)))
         .forEach: handle =>
@@ -266,8 +277,8 @@ class MicrophoneRelayTest extends munit.FunSuite:
           ).redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(root.resolve("relay.err").toFile).start()
           () => process.isAlive
         case Relay.Windows =>
-          // The launcher's own steps (AgentSandboxLauncher.startSandbox), its outcome written as the POSIX
-          // relay's status lines.
+          // The launcher's own steps (AgentSandboxLauncher.startSandbox), with their outcome written as the
+          // POSIX relay's status lines.
           MicrophoneRelay.probeResident(recorders, 3, log) match
             case Right(kept) =>
               Files.write(
@@ -280,7 +291,7 @@ class MicrophoneRelayTest extends munit.FunSuite:
               Files.write(status, (reasons.map("failed " + _) :+ "none").asJava)
               () => false
       check(Harness(relay, host, sandbox, status, log, () => alive()))
-      // Kept after a failure, for its records.
+      // The run's directory stays after a failure, for its records.
       endAll()
       Using.resource(Files.walk(root))(_.iterator().asScala.toVector.reverse.foreach(Files.deleteIfExists))
     finally if !ended then endAll()
@@ -337,7 +348,7 @@ class MicrophoneRelayTest extends munit.FunSuite:
     "good",
   ): harness =>
     assertEquals(harness.awaitStatus().last, "recording good")
-    // While idle the drain keeps nothing: the capture begins at the request, not at the launch.
+    // While the relay is idle, the drain keeps nothing: the capture begins at the request, not at the launch.
     Thread.sleep(1500)
     Files.writeString(harness.host.resolve("ready-delay"), "0.6")
     val requestedAt = harness.latestPeriod
@@ -346,11 +357,11 @@ class MicrophoneRelayTest extends munit.FunSuite:
     assertEquals(harness.beforeReady(1), Some(0L), "audio reached the exec before its ready")
     val first = indices(harness.capture(1))
     assert(consecutive(first), s"a gap or repeat: ${first.take(80)}")
-    // The 0.6 s before `ready` are 30 periods: the capture starts at the request, not after them.
+    // The 0.6 s before `ready` are 30 periods, and the capture starts at the request, not after those periods.
     assert((first.head - requestedAt + Periods) % Periods <= 8, s"requested at $requestedAt, began at ${first.head}")
 
-    // The controller ends the writer; the next request's capture begins at its own request,
-    // with no byte the first exec left behind.
+    // The controller ends the writer. The next request's capture begins at that request, with no
+    // byte that the first exec left behind.
     harness.endWriter()
     Files.writeString(harness.host.resolve("ready-delay"), "0")
     Thread.sleep(1500)
@@ -401,7 +412,7 @@ class MicrophoneRelayTest extends munit.FunSuite:
     harness.endWriter()
     awaitTrue("the relay's end")(!harness.alive())
     assert(harness.logText.contains("recording with good"), harness.logText)
-    // The indexed periods begin with one of zeros.
+    // The indexed periods begin with a period of zeros.
     assert(harness.logText.contains(MicrophoneRelay.firstSoundLine(640)), harness.logText)
 
   bothRelays(
@@ -409,11 +420,11 @@ class MicrophoneRelayTest extends munit.FunSuite:
     "good",
   ): harness =>
     harness.awaitStatus()
-    // Past the two seconds the recorder's FIFO holds and past the relay's bound.
+    // The delay exceeds both the two seconds that the recorder's FIFO holds and the relay's bound.
     Files.writeString(harness.host.resolve("ready-delay"), "12")
     harness.request()
-    // The POSIX relay's recorder blocks on its full FIFO, and its supervisor ends it; the Windows
-    // relay keeps the audio in memory and gives up at the bound.
+    // The POSIX relay's recorder blocks on its full FIFO, and the recorder's supervisor ends it. The
+    // Windows relay keeps the audio in memory and gives up at the bound.
     val failure = harness.relay match
       case Relay.Posix   => "delivered no audio for 5 s"
       case Relay.Windows => "the writer did not answer within 10 s"
@@ -434,7 +445,7 @@ class MicrophoneRelayTest extends munit.FunSuite:
     val writer = Files.readString(harness.host.resolve("writer.pid")).trim
     ProcessBuilder("kill", "-STOP", writer).start().waitFor()
     awaitTrue("the stall in the log", seconds = 20)(harness.logText.contains("delivered no audio for 5 s"))
-    // Reading again: a TERM the stopped writer holds pending ends it now.
+    // The writer reads again, and a TERM that the stopped writer holds pending ends it now.
     ProcessBuilder("kill", "-CONT", writer).start().waitFor()
     harness.request()
     awaitTrue("a second start")(harness.count("starts-good") == 2)
@@ -460,7 +471,7 @@ class MicrophoneRelayTest extends munit.FunSuite:
 
   test("the Windows relay's recorders end with the launcher, and none starts after"):
     assume(onPath("sleep"), "needs sleep on PATH")
-    // The run-on-host Seatbelt profile grants no `signal`, so there this JVM cannot end its child.
+    // The run-on-host Seatbelt profile grants no `signal`, so under that profile this JVM cannot end its child.
     val probe = ProcessBuilder("sleep", "10").start()
     probe.destroyForcibly()
     assume(probe.waitFor(2, java.util.concurrent.TimeUnit.SECONDS), "needs to end its own child process")
@@ -487,7 +498,7 @@ class MicrophoneRelayTest extends munit.FunSuite:
     Vector("rec", "sox_ng.exe", "arecord", "parecord").foreach(name => executable(bin.resolve(name), "#!/bin/sh\n"))
     def commands(os: HostCommands.Os): Vector[Vector[String]] =
       MicrophoneRelay.recorders(os, bin.toString).fold(fail(_), _.map(_.command))
-    // Each command names its mode, since the path resolved is the canonical file.
+    // Each command names its mode, because the resolved path is the canonical file.
     assertEquals(commands(HostCommands.Os.Mac).map(_.head), Vector(bin.resolve("rec").toString))
     assertEquals(commands(HostCommands.Os.Windows).map(_.head), Vector(bin.resolve("sox_ng.exe").toString))
     assert(commands(HostCommands.Os.Windows).head.contains("-d"), "sox_ng without its default device")
@@ -502,7 +513,8 @@ class MicrophoneRelayTest extends munit.FunSuite:
       HostCommands.Os.Windows -> "winget install --id sox_ng.sox_ng -e",
       HostCommands.Os.Linux   -> "pulseaudio-utils",
     )
-    // A recorder that failed is installed: its next step is the cause's, never installing it again.
+    // A recorder that failed is installed, so its next step addresses the cause and never installs the
+    // recorder again.
     val nextSteps = Map(
       HostCommands.Os.Mac     -> "Privacy & Security > Microphone",
       HostCommands.Os.Windows -> "change what the lines above name",
@@ -534,7 +546,8 @@ class MicrophoneRelayTest extends munit.FunSuite:
     assert(diagnosis("0 nodefault", "Allow Allow Allow").head.contains("no active capture device"))
     assert(diagnosis("1 nodefault", "Allow Allow Allow").head.contains("no default communications capture device"))
     assertEquals(diagnosis("1 default", "Allow Allow Allow"), Vector.empty)
-    // A Deny in any value, and an absent per-user value, stop the recorder; the first such names its switch.
+    // A Deny in any value, and an absent per-user value, stop the recorder; the first such value names its
+    // switch.
     assert(diagnosis("1 default", "Deny Allow Allow").head.contains("Microphone access is off"))
     assert(diagnosis("1 default", "absent Allow Allow").head.contains("Microphone access is off"))
     assert(diagnosis("1 default", "Allow Deny Deny").head.contains("Let desktop apps access your microphone"))
@@ -542,7 +555,7 @@ class MicrophoneRelayTest extends munit.FunSuite:
     // An absent NonPackaged or machine-wide value leaves the recorder recording.
     assertEquals(diagnosis("1 default", "Allow absent absent"), Vector.empty)
     assertEquals(diagnosis("0 nodefault", "Deny Allow Allow").length, 2, "the endpoints, then the permission")
-    // Through the script's runner, with a stand-in that answers as the script prints.
+    // The test runs through the script's runner, with a stand-in that answers as the script prints.
     val dir = Files.createTempDirectory("microphone-diagnostics").toRealPath()
     val powershell = dir.resolve("powershell")
     executable(powershell, "#!/bin/sh\nprintf 'endpoints 0 nodefault\\npermissions Allow Allow Allow\\n'\n")

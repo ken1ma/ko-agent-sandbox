@@ -10,16 +10,15 @@ import IPAddrHelper.normalizeHost
 import Refusals.{proxyStatus, refusalBody}
 
 /**
- * HTTP parsing, framing and relay. Everything here refuses ambiguity rather than resolving
- * it — folded headers, Content-Length beside Transfer-Encoding, conflicting
- * Content-Lengths, bare CR or LF — because a proxy and an origin reading
- * the same bytes differently is what request smuggling exploits. (The
- * duplicate-Host refusal is the ruleset's: authorizeInspectedRequest.)
+ * HTTP parsing, framing and relay. Everything here refuses ambiguity rather than resolving it: folded headers,
+ * Content-Length beside Transfer-Encoding, conflicting Content-Lengths, bare CR or LF. Request smuggling exploits a
+ * proxy and an origin that read the same bytes differently. The ruleset refuses a duplicate Host
+ * (authorizeInspectedRequest).
  *
- * Clients speak HTTP/1.1, and an HTTP/1.0 request is refused by name: no
- * such client exists here, and half-supporting one — it could not parse a
- * relayed chunked response — would be a silent gap instead of a log line.
- * Origin responses are accepted at any HTTP/1.x, which framing covers.
+ * - Clients speak HTTP/1.1, and the proxy refuses an HTTP/1.0 request by name. No such client exists here, and
+ *   half-supporting one would be a silent gap instead of a log line: an HTTP/1.0 client could not parse a relayed
+ *   chunked response.
+ * - The proxy accepts origin responses at any HTTP/1.x, which framing covers.
  */
 object HTTPHelper:
 
@@ -48,7 +47,7 @@ object HTTPHelper:
 
       val value = in.read()
       if value < 0 then
-        // ClosedWithoutRequest has why zero bytes is not a refused request.
+        // ClosedWithoutRequest explains why zero bytes is not a refused request.
         if count == 0 then throw ClosedWithoutRequest()
         else throw BadRequest("connection closed before HTTP header completed")
 
@@ -155,9 +154,9 @@ object HTTPHelper:
     case Empty
     case Length(count: Long)
     case Chunked
-    /** Response-only: no framing header, so the body runs to the connection's end — the one
-      * framing where EOF is the terminator rather than a possible truncation. Request parsing
-      * never produces it (a request without framing headers has no body). */
+    /** Response-only: no framing header, so the body runs to the connection's end. UntilClose is the one framing where
+      * EOF is the terminator rather than a possible truncation. Request parsing never produces this case, since a
+      * request without framing headers has no body. */
     case UntilClose
 
   case class HttpRequestHead(
@@ -171,8 +170,7 @@ object HTTPHelper:
 
     def values(name: String): Vector[String] = headerValues(headers, name)
 
-    /** Ambiguous framing is refused rather than resolved, per the file
-      * header. */
+    /** Refuses ambiguous framing rather than resolving it, as HTTPHelper's Scaladoc explains. */
     def bodyFraming: BodyFraming =
       protectedConnectionNomination(values("Connection")).foreach: name =>
         throw BadRequest(s"Connection nominates $name, which this proxy reads")
@@ -200,9 +198,9 @@ object HTTPHelper:
         BodyFraming.Length(declared.head)
       else BodyFraming.Empty
 
-    /** HTTP/1.1, this hop's headers removed — the fixed hop-by-hop set plus whatever the
-      * message's own Connection header names — and `Connection: close` added: end-of-stream
-      * then frames the response. */
+    /** HTTP/1.1, with this hop's headers removed and `Connection: close` added. This hop's headers are the fixed
+      * hop-by-hop set plus whatever the message's own Connection header names. End-of-stream then frames the
+      * response. */
     def toOriginBytes: Array[Byte] =
       val builder = StringBuilder()
 
@@ -255,11 +253,14 @@ object HTTPHelper:
       .filter(_.nonEmpty)
       .toSet
 
-  /** The headers this hop reads for itself — the framing pair, and the Host that must match the authorized
-    * CONNECT host. A Connection header nominating one asks this hop to strip a header it has already acted on: the
-    * body would go out framed by a header the message no longer carries, which is a smuggling
-    * primitive, not a hop-by-hop courtesy. Both bodyFraming implementations refuse it — they are
-    * the framing authorities, and each runs before a byte of its message is forwarded. */
+  /** The headers that this hop reads for itself: the framing pair, and the Host that must match the authorized
+    * CONNECT host.
+    *
+    * - A Connection header that nominates one of them asks this hop to strip a header that it has already acted
+    *   on. The body would go out framed by a header that the message no longer carries, which is a smuggling
+    *   primitive, not a hop-by-hop courtesy.
+    * - Both bodyFraming implementations refuse such a nomination. The two are the framing authorities, and each runs
+    *   before a byte of its message is forwarded. */
   val ConnectionProtectedHeaders: Set[String] = Set("content-length", "transfer-encoding", "host")
 
   def protectedConnectionNomination(connection: Vector[String]): Option[String] =
@@ -293,28 +294,27 @@ object HTTPHelper:
     def parseHeaders(lines: Vector[String]): Vector[(String, String)] =
       lines.map: line =>
         val name = headerName(line)
-        // Checked before the optional whitespace is stripped: Java's `trim` removes every
-        // character up to SP, so trimming first would drop an edge NUL, VT or FF where it should
-        // refuse the head.
+        // The check runs before the optional whitespace is stripped. Java's `trim` removes every character up to
+        // SP, so trimming first would drop an edge NUL, VT or FF where the check should refuse the head.
         val raw = line.substring(name.length + 1)
         if raw.exists(ch => isForbiddenControl(ch) && ch != '\t') then
           throw BadRequest("control character in HTTP header value")
 
         (name, stripOptionalWhitespace(raw))
 
-  /** A field value without its optional whitespace, SP and HTAB at either end (RFC 9110 §5.5);
-    * what the origin receives and what the decision reads. */
+  /** A field value without its optional whitespace, SP and HTAB at either end (RFC 9110 §5.5). The origin
+    * receives this value, and the decision reads it. */
   def stripOptionalWhitespace(value: String): String =
     value.dropWhile(ch => ch == ' ' || ch == '\t').reverse.dropWhile(ch => ch == ' ' || ch == '\t').reverse
 
   /**
-   * The response head, parsed for status and framing only — just enough to tell a completed body
-   * from a truncated one — and relayed with only its version and hop-by-hop headers replaced
-   * (toClientBytes):
-   * this proxy verifies response framing and sets its own connection's headers; it never rewrites or filters
-   * response content, because that would require the response-content rule language this proxy refuses to
-   * have. Origin-side malformations are IOExceptions, never BadRequests: the origin failed, and
-   * the 502 should say so.
+   * The response head, parsed for status and framing only: just enough to tell a completed body from a truncated
+   * one. The proxy relays the head with only its version and hop-by-hop headers replaced (toClientBytes).
+   *
+   * - This proxy verifies response framing and sets its own connection's headers. The proxy never rewrites or
+   *   filters response content, because that would require the response-content rule language that this proxy
+   *   refuses to have.
+   * - Origin-side malformations are IOExceptions, never BadRequests: the origin failed, and the 502 should say so.
    */
   case class HttpResponseHead(
     status: Int,
@@ -325,16 +325,18 @@ object HTTPHelper:
 
     def interim: Boolean = status / 100 == 1
 
-    /** The head as the client receives it, an interim one as well as the final: the status and
-      * reason and the end-to-end headers unchanged, the version this hop's own (RFC 9112 §2.3
-      * has an intermediary send its version, not the origin's), and the hop-by-hop headers this
-      * hop's own too (they describe the origin↔proxy leg). On the final head this proxy's answer
-      * is always `Connection: close` — each connection carries one request, and the client must
-      * hear that even when the origin's headers omit it. A client that misses it reuses or
-      * pipelines, its next request meets the closed socket's RST, and the RST destroys this
-      * response's unread tail in the client's buffer — measured as apt's intermittent
-      * mid-download EOFs, invisible in the proxy's own log. An interim head carries no
-      * Connection at all: the disposition is the final head's to state. */
+    /** The head as the client receives it, an interim head as well as the final one.
+      *
+      * - The status, the reason and the end-to-end headers stay unchanged.
+      * - The version is this hop's own: RFC 9112 §2.3 has an intermediary send its version, not the origin's.
+      * - The hop-by-hop headers are this hop's own too, since the origin's hop-by-hop headers describe the
+      *   origin↔proxy leg.
+      * - On the final head, this proxy always answers `Connection: close`. Each connection carries one request, and
+      *   the client must hear that even when the origin's headers omit it.
+      *   - A client that misses `Connection: close` reuses the connection or pipelines. The client's next request
+      *     meets the closed socket's RST, and the RST destroys this response's unread tail in the client's buffer.
+      *   - apt showed this failure as intermittent mid-download EOFs, invisible in the proxy's own log.
+      * - An interim head carries no Connection at all: the final head states the disposition. */
     def toClientBytes: Array[Byte] =
       val builder = StringBuilder()
 
@@ -346,11 +348,13 @@ object HTTPHelper:
 
       builder.toString.getBytes(StandardCharsets.ISO_8859_1)
 
-    /** RFC 9112 §6.3 for the connections this proxy closes after one request. Mirrors the request side's
-      * refusals of ambiguity, as IOExceptions; the no-framing default differs by design —
-      * UntilClose, because this proxy sends `Connection: close` to the origin. Kept separate from
-      * the request's: every refusal's wording differs, so one implementation would take five
-      * messages as parameters. */
+    /** RFC 9112 §6.3 for the connections that this proxy closes after one request.
+      *
+      * - This method mirrors the request side's refusals of ambiguity, as IOExceptions.
+      * - The no-framing default differs by design: UntilClose, because this proxy sends `Connection: close` to the
+      *   origin.
+      * - This method stays separate from the request's: every refusal's wording differs, so one implementation
+      *   would take five messages as parameters. */
     def bodyFraming(requestMethod: String): BodyFraming =
       protectedConnectionNomination(values("Connection")).foreach: name =>
         throw IOException(s"origin's Connection nominates $name, which this proxy reads")
@@ -391,8 +395,8 @@ object HTTPHelper:
 
       statusLine.split(" ", 3).toList match
         case version :: statusText :: rest if isHttp1Version(version) =>
-          // Three digits exactly (RFC 9112 §4): toClientBytes writes the parsed number, and the
-          // client must not receive a status line the origin did not send.
+          // Three digits exactly (RFC 9112 §4): toClientBytes writes the parsed number, and the client must not
+          // receive a status line that the origin did not send.
           val status =
             Option.when(statusText.length == 3)(statusText).flatMap(parseDecimal)
               .filter(value => value >= 100 && value <= 599)
@@ -411,27 +415,32 @@ object HTTPHelper:
 
         case _ => malformed(s"status line '$statusLine'")
 
-  /** ASCII digits and nothing else: all that the grammars of Content-Length, a port and a status
-    * code allow, and the one spelling the credential pipe, the run-on-host channel and the
-    * clipboard relay take for their counts. `toLongOption` alone also accepts a sign and any
-    * script's digits (`+1`, `١`), and a forwarded `Content-Length: +1` leaves the origin free to
-    * read a length other than the one this proxy framed the body by. */
+  /** ASCII digits and nothing else.
+    *
+    * - ASCII digits are all that the grammars of Content-Length, a port and a status code allow. ASCII digits are
+    *   also the one spelling that the credential pipe, the run-on-host channel and the clipboard relay take for
+    *   their counts.
+    * - `toLongOption` alone also accepts a sign and any script's digits (`+1`, `١`). A forwarded
+    *   `Content-Length: +1` leaves the origin free to read a length other than the one that this proxy framed the
+    *   body by. */
   def parseDecimal(text: String): Option[Long] = Option.when(isDecimal(text))(text.toLongOption).flatten
 
   def isDecimal(text: String): Boolean = text.nonEmpty && text.forall(ch => ch >= '0' && ch <= '9')
 
-  /** `HTTP/1.` and one digit, the grammar of RFC 9112 §2.3; every minor version, since the framing
-    * rules cover them all. */
+  /** `HTTP/1.` and one digit, the grammar of RFC 9112 §2.3. Every minor version passes, since the framing rules
+    * cover them all. */
   def isHttp1Version(text: String): Boolean =
     text.length == 8 && text.startsWith("HTTP/1.") && text(7) >= '0' && text(7) <= '9'
 
   /**
-   * A control character is invalid in a request target and in a field value alike (RFC 9112 §3.2,
-   * RFC 9110 §5.5), and this proxy refuses one rather than passing it on: an origin is entitled to
-   * a well-formed request. CR and LF are already refused above, which is what closes smuggling,
-   * but forwarding NUL or DEL into a header hands the origin's parser a decision this one did not
-   * make. HTAB is the single exception, legal inside a field value and nowhere else. The audit log
-   * escapes controls itself (LogHelper.auditLine), C1 ones included, which this check lets through.
+   * A control character is invalid in a request target and in a field value alike (RFC 9112 §3.2, RFC 9110 §5.5).
+   * This proxy refuses such a character rather than passing it on: an origin is entitled to a well-formed request.
+   *
+   * - CR and LF are already refused above, which is what closes smuggling. But forwarding NUL or DEL into a header
+   *   hands the origin's parser a decision that this proxy's parser did not make.
+   * - HTAB is the single exception, legal inside a field value and nowhere else.
+   * - The audit log escapes controls itself (LogHelper.auditLine), including the C1 controls that this check lets
+   *   through.
    */
   def isForbiddenControl(ch: Char): Boolean = ch < 0x20 || ch == 0x7f
 
@@ -442,9 +451,8 @@ object HTTPHelper:
       "!#$%&'*+-.^_`|~".contains(ch)
 
   /**
-   * A Host header may carry the default port, and nothing else: this proxy
-   * only ever reaches port 443, so any other port names a destination the
-   * CONNECT was not authorized for.
+   * A Host header may carry the default port, and nothing else. This proxy only ever reaches port 443, so any other
+   * port names a destination that the CONNECT was not authorized for.
    */
   def normalizeHostHeader(value: String): String =
     val trimmed = value.trim
@@ -473,13 +481,13 @@ object HTTPHelper:
       case BodyFraming.Length(count) => copyExactly(in, out, count)
       case BodyFraming.Chunked       => copyChunked(in, out)
       case BodyFraming.UntilClose =>
-        // Request parsing never produces it (see the enum case); reaching here is a proxy bug.
+        // Request parsing never produces UntilClose (see the enum case), so reaching here is a proxy bug.
         throw IllegalStateException("request bodies cannot be close-delimited")
 
   /**
    * Premature EOF and invalid chunk framing require TruncatedResponse's abortive close.
-   * Other I/O failures reach relayInspected, which handles them across all framings; UntilClose
-   * accepts EOF as completion, so it depends on that caller to preserve timeouts and resets.
+   * Other I/O failures reach relayInspected, which handles them across all framings. UntilClose accepts EOF as
+   * completion, so UntilClose depends on that caller to preserve timeouts and resets.
    */
   def forwardResponseBody(
     in: InputStream,
@@ -530,8 +538,8 @@ object HTTPHelper:
 
     loop(count)
 
-  /** Re-emitted canonically — extensions and trailers dropped, after each is checked against its
-    * grammar — so nothing in it reads differently at the two ends. */
+  /** Re-emits the chunked body canonically: extensions and trailers are checked against their grammar, then
+    * dropped. So nothing in the body reads differently at the two ends. */
   def copyChunked(in: InputStream, out: OutputStream): Unit =
     val buffer = new Array[Byte](RelayBufferBytes)
 
@@ -598,9 +606,11 @@ object HTTPHelper:
     loop(false)
 
   /** The refusal as curl and git see it: a reason inside the tunnel beats a dropped connection.
-    * Socket rather than SSLSocket, like relayInspected: nothing here is TLS-specific. A response
-    * to a HEAD keeps the header section and omits the body (RFC 9110 §9.3.2); the reason stays in
-    * Proxy-Status. `requestMethod` is `-` when the head did not parse, and that answer has a body. */
+    *
+    * - The parameter is a Socket rather than an SSLSocket, as in relayInspected: nothing here is TLS-specific.
+    * - A response to a HEAD keeps the header section and omits the body (RFC 9110 §9.3.2). The reason stays in
+    *   Proxy-Status.
+    * - `requestMethod` is `-` when the head did not parse, and that answer has a body. */
   def respondInsideTls(
     socket: Socket,
     requestMethod: String,
@@ -612,9 +622,9 @@ object HTTPHelper:
   ): Unit =
     respondQuietly(socket, status, reason, proxyError, Some(detail), advice, answersHead = requestMethod == "HEAD")
 
-  /** `detail` is the Proxy-Status `details` and, unless `bodyless`, the body's first line
-    * (refusalBody). `bodyless` sends no body and says so (Content-Length: 0); `answersHead` sends
-    * the header section a GET would have received, Content-Length included, without the body. */
+  /** `detail` is the Proxy-Status `details` and, unless `bodyless`, the body's first line (refusalBody).
+    * `bodyless` sends no body and says so (Content-Length: 0). `answersHead` sends the header section that a GET
+    * would have received, Content-Length included, without the body. */
   def respondQuietly(
     client: Socket,
     status: Int,

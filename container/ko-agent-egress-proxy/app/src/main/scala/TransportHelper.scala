@@ -1,8 +1,11 @@
-// How an authorized origin address is reached: directly, or through the upstream proxy
-// HTTPS_PROXY names. The ruleset decides before either runs, and neither resolves a name: both take
-// the addresses resolvePublic vetted. The upstream proxy is a transport the host user's
-// environment selected, never an authority — it cannot add a destination, and a failure through
-// it is a 502, never a direct retry (SECURITY.md, "Egress proxy").
+// How the proxy reaches an authorized origin address: directly, or through the upstream proxy that HTTPS_PROXY
+// names.
+//
+// - The ruleset decides before either transport runs. Neither transport resolves a name: both take the addresses
+//   that resolvePublic vetted.
+// - The upstream proxy is a transport that the host user's environment selected, never an authority. The upstream
+//   proxy cannot add a destination, and a failure through it is a 502, never a direct retry (SECURITY.md, "Egress
+//   proxy").
 
 package agentsandbox.egress
 
@@ -20,8 +23,8 @@ import TLSHelper.verifiedClient
 
 object TransportHelper:
 
-  /** Read in that order (upstreamProxyVariable), by the proxy and by the launcher that passes the
-    * variable through. */
+  /** The proxy, and the launcher that passes the variable through, read these names in this order
+    * (upstreamProxyVariable). */
   val UpstreamProxyVariables = Vector("HTTPS_PROXY", "https_proxy")
 
   /** How the transport line a proxy logs at its start begins (EgressRules.transportLineOf). */
@@ -32,22 +35,23 @@ object TransportHelper:
     UpstreamProxyVariables.iterator.flatMap(name => read(name).filter(_.nonEmpty).map(name -> _)).nextOption()
 
   /** A connected origin socket, the TCP connection under it, and the vetted address behind it.
-    * The address is carried apart from the socket because through the upstream proxy the
-    * socket's peer is the proxy, and the audit line records the origin reached. `transport` is
-    * `socket` itself, except through an HTTPS upstream proxy, where `socket` is the proxy's TLS
-    * layer over it; I/O blocked in a TLS layer ends with the transport (relayInspected). */
+    *
+    * - The address is carried apart from the socket, because through the upstream proxy the socket's peer is the
+    *   proxy, and the audit line records the origin reached.
+    * - `transport` is `socket` itself, except through an HTTPS upstream proxy, where `socket` is the proxy's TLS
+    *   layer over `transport`. I/O blocked in a TLS layer ends with the transport (relayInspected). */
   case class OriginSocket(socket: Socket, transport: Socket, address: InetAddress):
-    /** The upstream proxy's TLS, when there is one, told with close_notify and not waited for;
-      * then the transport. */
+    /** Closes the upstream proxy's TLS layer, when there is one, with a close_notify and without waiting for the
+      * peer, then closes the transport. */
     def close(): Unit =
       socket match
         case tls: SSLSocket => closeTlsOutput(tls, transport)
         case _              => ()
       closeQuietly(transport)
 
-  /** No origin socket: `attempted` are the vetted addresses actually tried, in order — every one
-    * for the direct dial, and through the upstream proxy only those up to the refusal that ended
-    * the attempt — so the audit line's `tried` names no address that was never reached for. */
+  /** No origin socket. `attempted` holds the vetted addresses actually tried, in order: every one for the direct
+    * dial, and through the upstream proxy only those up to the refusal that ended the attempt. So the audit line's
+    * `tried` names no address that was never reached for. */
   class TransportFailure(val attempted: Vector[InetAddress], message: String) extends IOException(message)
 
   trait OriginTransport:
@@ -88,11 +92,13 @@ object TransportHelper:
     val summary = s"${TransportLineHead}direct"
 
   /**
-   * The upstream proxy as `variable` — HTTPS_PROXY or its lowercase — spelled it, parsed once at
-   * startup. `host` is the normalized name, or a literal as written; `authorization` is the whole
-   * `Proxy-Authorization` value, `Basic` and the encoded credential, and the one place the
-   * credential is held. Nothing here prints it: `spelled` is the endpoint without userinfo, and
-   * every refusal names the part that is wrong, never the value.
+   * The upstream proxy as `variable` (HTTPS_PROXY or its lowercase) spelled it, parsed once at startup.
+   *
+   * - `host` is the normalized name, or a literal as written.
+   * - `authorization` is the whole `Proxy-Authorization` value, `Basic` and the encoded credential. This field is
+   *   the one place that holds the credential.
+   * - Nothing here prints the credential: `spelled` is the endpoint without userinfo, and every refusal names the
+   *   part that is wrong, never the value.
    */
   case class UpstreamEndpoint(
     variable: String,
@@ -106,10 +112,12 @@ object TransportHelper:
       val authority = if host.contains(':') then s"[$host]" else host
       s"${if tls then "https" else "http"}://$authority:$port"
 
-    /** Resolved once, before `bind`, and reused throughout the run. A private address is fine here —
-      * reaching the upstream proxy is the feature — and so is loopback, which the host-served
-      * proxy of a `--run-on-host` build may legitimately name; in the container it is the
-      * container's own, and connecting fails there per request, naming the endpoint. */
+    /** Resolved once, before `bind`, and reused throughout the run.
+      *
+      * - A private address is fine here, since reaching the upstream proxy is the feature.
+      * - Loopback is fine too: the host-served proxy of a `--run-on-host` build may legitimately name loopback. In
+      *   the container, loopback is the container's own, and connecting fails there per request, naming the
+      *   endpoint. */
     def resolve(): Vector[InetAddress] =
       literal match
         case Some(address) => Vector(address)
@@ -183,8 +191,8 @@ object TransportHelper:
 
       UpstreamEndpoint(variable, tls, host, literal, port, userinfo.map(basicAuthorization(_, refuse)))
 
-    /** RFC 7617: `user:password`, each part as the URL percent-encoded it, the user-id free of
-      * `:` since that is the separator. UTF-8, as curl sends it. */
+    /** RFC 7617: `user:password`, each part decoded from the URL's percent-encoding. The user-id holds no `:`,
+      * since `:` is the separator. The credential is UTF-8, as curl sends it. */
     def basicAuthorization(userinfo: String, refuse: String => Nothing): String =
       val (user, password) = userinfo.indexOf(':') match
         case -1 => (userinfo, "")
@@ -196,8 +204,8 @@ object TransportHelper:
       if credential.exists(isForbiddenControl) then refuse("has a credential containing a control character")
       "Basic " + Base64.getEncoder.encodeToString(credential.getBytes(StandardCharsets.UTF_8))
 
-    /** Escapes to their bytes, everything else — a literal non-ASCII character included — to its
-      * UTF-8 bytes, so the two spellings of one credential decode alike. */
+    /** Decodes escapes to their bytes, and everything else, a literal non-ASCII character included, to its UTF-8
+      * bytes. So the two spellings of one credential decode alike. */
     def percentDecode(text: String, refuse: String => Nothing): String =
       val out = java.io.ByteArrayOutputStream()
       @tailrec
@@ -216,11 +224,11 @@ object TransportHelper:
       String(out.toByteArray, StandardCharsets.UTF_8)
 
   /**
-   * One CONNECT to the upstream proxy per origin address, naming the vetted numeric address —
-   * never the hostname, which would let the upstream proxy resolve it to an address the
-   * private-range check never saw. The tunnel socket then carries the same TLS the direct socket
-   * would: the client's own hello without inspection, the inspected connection with the origin's
-   * name as SNI otherwise.
+   * One CONNECT to the upstream proxy per origin address. The CONNECT names the vetted numeric address, never the
+   * hostname: a hostname would let the upstream proxy resolve it to an address that the private-range check never
+   * saw.
+   * The tunnel socket then carries the same TLS that the direct socket would: the client's own hello without
+   * inspection, and otherwise the inspected connection with the origin's name as SNI.
    */
   class UpstreamProxy(val endpoint: UpstreamEndpoint, val proxyAddresses: Vector[InetAddress]) extends OriginTransport:
 
@@ -251,8 +259,8 @@ object TransportHelper:
 
       loop(addresses.toList, Vector.empty, None)
 
-    /** Left is the retryable outcome — the upstream proxy could not reach this address, as a
-      * failed direct connect is — so the next address is tried; anything else ends the attempt. */
+    /** Left is the retryable outcome: the upstream proxy could not reach this address, like a failed direct
+      * connect, so the next address is tried. Anything else ends the attempt. */
     private def tunnelTo(address: InetAddress, port: Int): Either[IOException, OriginSocket] =
       val transport =
         try dial(proxyAddresses, endpoint.port)
@@ -266,15 +274,15 @@ object TransportHelper:
               closeQuietly(transport)
               throw IOException(s"upstream proxy ${endpoint.spelled}: ${ex.getMessage}")
 
-      // A failed attempt closes the transport, never the TLS link: that close waits on the
-      // upstream proxy (closeTlsOutput), and nothing is owed to it after a refusal.
+      // A failed attempt closes the transport, never the TLS link. Closing the link waits on the upstream proxy
+      // (closeTlsOutput), and nothing is owed to the upstream proxy after a refusal.
       try
         link.setSoTimeout(AgentEgressProxy.HandshakeTimeoutMillis)
         writeAscii(link.getOutputStream, connectRequest(address, port))
         val head = finalResponseHead(link, interimRead = 0)
         head.status match
-          // Content-Length and Transfer-Encoding are ignored here, as RFC 9112 §6.3 requires: the
-          // tunnel starts right after the head.
+          // Content-Length and Transfer-Encoding are ignored here, as RFC 9112 §6.3 requires: the tunnel starts
+          // right after the head.
           case status if status / 100 == 2 =>
             link.setSoTimeout(0)
             Right(OriginSocket(link, transport, address))
@@ -298,9 +306,9 @@ object TransportHelper:
         endpoint.authorization.fold("")(value => s"Proxy-Authorization: $value\r\n") +
         "\r\n"
 
-    /** The final head, past the interim ones RFC 9110 §15.2 lets precede it — 101 excepted: it
-      * switches the connection to a protocol this CONNECT never offered, and ends the attempt as
-      * the final answer it is. */
+    /** The final head, past the interim heads that RFC 9110 §15.2 lets precede it. A 101 is the exception: a 101
+      * switches the connection to a protocol that this CONNECT never offered, so the 101 ends the attempt as the
+      * final answer it is. */
     @tailrec
     private def finalResponseHead(link: Socket, interimRead: Int): HttpResponseHead =
       val head = responseHead(link)
@@ -319,17 +327,17 @@ object TransportHelper:
           case ex: BadRequest          => throw IOException(s"upstream proxy response head: ${ex.getMessage}")
       HttpResponseHead.parse(bytes, "upstream proxy response head")
 
-    /** The endpoint's own TLS, verified against the image's public roots for the name or literal
-      * HTTPS_PROXY spelled, before a byte — the credential included — is sent. */
+    /** The endpoint's own TLS, verified against the image's public roots for the name or literal that HTTPS_PROXY
+      * spelled. The verification happens before any byte is sent, the credential included. */
     private def secure(socket: Socket): SSLSocket =
       verifiedClient(
         socket, endpoint.host, endpoint.port, autoClose = true, sni = endpoint.literal.isEmpty,
         applicationProtocol = None,
       )
 
-  /** The transport a run uses, from its environment: direct unless HTTPS_PROXY is set. Parse
-    * refusals are IllegalArgumentException, a failed endpoint resolution IOException — both end
-    * the start before `bind`. */
+  /** The transport a run uses, chosen from its environment: direct unless HTTPS_PROXY is set. A parse refusal is an
+    * IllegalArgumentException, and a failed endpoint resolution is an IOException. Both end the start before
+    * `bind`. */
   def originTransport(read: String => Option[String]): OriginTransport =
     UpstreamEndpoint.configured(read) match
       case None           => Direct
@@ -339,15 +347,17 @@ object TransportHelper:
     try socket.close()
     catch case _: IOException => ()
 
-  /** Ends this hop's side of a TLS layer, waiting on the peer for DrainTimeoutMillis at most:
-    * close_notify goes out, and the transport, closed by whoever opened it, ends the rest.
-    * SSLSocket.close is never called on a layer: JDK 25's waits for the peer's close_notify
-    * under the socket timeout (bruteForceCloseInput, deplete) and, under TLS 1.2, for the input
-    * lock a read still blocked in the layer holds (waitForClose), each for as long as the idle
-    * timeout. What close_notify itself waits for is the output lock, which a write blocked in
-    * the layer holds, and the transport's send buffer, which a peer that stopped reading leaves
-    * full (SSLSocketOutputRecord writes the alert synchronously); past the deadline the
-    * transport is closed under the layer, which ends the write. */
+  /** Ends this hop's side of a TLS layer, waiting on the peer for DrainTimeoutMillis at most. close_notify goes
+    * out, and the transport ends the rest; whoever opened the transport closes it.
+    *
+    * - SSLSocket.close is never called on a layer. JDK 25's SSLSocket.close waits for these, each for as long as
+    *   the idle timeout:
+    *   - the peer's close_notify, under the socket timeout (bruteForceCloseInput, deplete);
+    *   - under TLS 1.2, the input lock that a read still blocked in the layer holds (waitForClose).
+    * - close_notify itself waits for the output lock, which a write blocked in the layer holds. close_notify also
+    *   waits for the transport's send buffer, which a peer that stopped reading leaves full (SSLSocketOutputRecord
+    *   writes the alert synchronously).
+    * - Past the deadline, the transport is closed under the layer, which ends the write. */
   def closeTlsOutput(tls: SSLSocket, transport: Socket): Unit =
     val sending = Thread.startVirtualThread: () =>
       try tls.shutdownOutput()
@@ -355,10 +365,10 @@ object TransportHelper:
     if !sending.join(Duration.ofMillis(AgentEgressProxy.DrainTimeoutMillis)) then closeQuietly(transport)
 
   /**
-   * The close that must not read as a completed response: no close_notify, and a RST in place of
-   * the FIN (linger 0), which the peer's stack reports as a reset rather than the EOF a
-   * close-delimited body, or a TLS client lenient about a missing close_notify, would take for
-   * the end. Closing the TLS layer over the socket afterwards sends nothing.
+   * The close that must not read as a completed response: no close_notify, and a RST in place of the FIN (linger
+   * 0). The peer's stack reports the RST as a reset. A FIN would give the EOF that a close-delimited body, or a TLS
+   * client lenient about a missing close_notify, takes for the end.
+   * Closing the TLS layer over the socket afterwards sends nothing.
    */
   def abortiveClose(socket: Socket): Unit =
     try

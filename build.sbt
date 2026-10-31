@@ -16,20 +16,22 @@ scalacOptions ++= Seq(
   "-Werror",
 )
 
-// The container-launching suites share one podman, and each asserts on resources scoped to a
-// workspace it created. Run in parallel they interleave — one suite's launch observing another's
-// container, one suite's teardown racing another's `--reset`. The ordinary suites take seconds, so
-// serial costs almost nothing and removes the whole class of interference.
+// The container-launching suites share one podman, and each suite asserts on resources scoped to a workspace it
+// created. Run in parallel, the suites interleave: one suite's launch observes another suite's container, and one
+// suite's teardown races another suite's `--reset`. The ordinary suites take seconds, so a serial run costs almost
+// nothing and removes the whole class of interference.
 Test / parallelExecution := false
 
-// The container-launching suites run only under this command; `test` and `testFull` alone skip
-// them, so no ordinary build starts a session. The command sets a system property the suites'
-// condition reads (WithPodman.underTestWithPodman) for one run of testFull, or of testOnly with the
-// patterns given, and clears it however the run ends. Not an environment variable: the tests run
-// in the sbt server's JVM, whose environment is the one it was started with, so a variable on a
-// thin client's command line never reaches them and the run passes with every session suite
-// skipped. The task is run here rather than pushed as a command, so its failure is the command's
-// failure and the clearing survives an interrupted run, which a test cleanup hook would not.
+// The container-launching suites run only under this command. `test` and `testFull` alone skip them, so no ordinary
+// build starts a session.
+// - The command sets a system property for one run of testFull, or of testOnly with the given patterns, and clears the
+//   property however the run ends. The suites' condition reads the property (WithPodman.underTestWithPodman).
+// - The switch is a system property, not an environment variable. The tests run in the sbt server's JVM, which keeps
+//   the environment it was started with. A variable on a thin client's command line never reaches the tests, and the
+//   run passes with every session suite skipped.
+// - The command runs the task itself rather than pushing the task as a command. The task's failure is then the
+//   command's failure, and the property is cleared even after an interrupted run, which a test cleanup hook would not
+//   survive.
 val TestWithPodmanProperty = "ko-agent-sandbox.testWithPodman"
 commands += Command.args("testWithPodman", "<testOnly patterns>") { (state, patterns) =>
   val extracted = Project.extract(state)
@@ -40,23 +42,23 @@ commands += Command.args("testWithPodman", "<testOnly patterns>") { (state, patt
   finally System.clearProperty(TestWithPodmanProperty)
 }
 
-// munit prints `==> s <test> skipped` without the clue its `assume` gave (doc/upstream-issues.md,
-// "scalameta/munit"), and the clue is what tells one passing run from another:
+// munit prints `==> s <test> skipped` without the clue that its `assume` gave (doc/upstream-issues.md,
+// "scalameta/munit"). The clue tells one passing run from another:
 //
 // - A clue names a missing program, a command to use (`sbt testWithPodman`, for the
-//   container-launching suites), or why the test cannot run in this environment.
-// - A suite can skip whole: a host without wcwidth runs none of SandboxTextWidthTest.
+//   container-launching suites), or the reason the test cannot run in this environment.
+// - A whole suite can skip: a host without wcwidth runs none of SandboxTextWidthTest.
 // - A thin client attaches to whichever sbt server is running, so `sbt testFull` typed in a host
-//   shell can run under the run-on-host profile. Its skips differ there, and the clues show which
+//   shell can run under the run-on-host profile. The skips differ there, and the clues show which
 //   environment ran the tests.
 //
-// The event sbt receives still carries the exception, so the clues of a run's skipped tests are
-// printed before sbt's totals, grouped by clue, with each suite's count:
+// The test event that sbt receives still carries the exception. This listener prints the clues of a run's skipped
+// tests before sbt's totals, grouped by clue, with each suite's count:
 //
 //     skipped 10: needs python3 with wcwidth (SandboxTextWidthTest: 10)
 //
-// A test event names its test as `<suite>.<test name>` and not its suite, so the suite is the
-// started group that name begins with.
+// A test event names its test `<suite>.<test name>` and does not name its suite. The listener takes the suite to be
+// the started group that begins the test's name.
 Test / testListeners += new TestsListener {
   private val suites = scala.collection.mutable.Set.empty[String]
   private val suitesByReason = scala.collection.mutable.LinkedHashMap.empty[String, Vector[String]]
@@ -86,24 +88,24 @@ Test / testListeners += new TestsListener {
   }
 }
 
-// --serve-proxy-on-host runs the proxy of the ko-agent-egress-proxy subproject, compiled into
-// this jar from the same sources so an installed launcher carries it — the Scala sources, and the
-// /defaults resources their class initialization loads eagerly. The subproject's own build still
-// exists for the container image, which builds a native image from the bundled context; its
-// tests run there.
+// --serve-proxy-on-host runs the proxy of the ko-agent-egress-proxy subproject. This jar compiles the proxy from the
+// same sources, so an installed launcher carries it: the Scala sources, and the /defaults resources that their class
+// initialization loads eagerly. The subproject keeps its own build for the container image, which builds a native
+// image from the bundled context. The subproject's tests run in that build.
 Compile / unmanagedSourceDirectories +=
   baseDirectory.value / "container" / "ko-agent-egress-proxy" / "app" / "src" / "main" / "scala"
 Compile / unmanagedResourceDirectories +=
   baseDirectory.value / "container" / "ko-agent-egress-proxy" / "app" / "src" / "main" / "resources"
 
-// execvp is a restricted FFM method: without this, a warning per launch and refusal on a future JDK.
-// The exports open the JDK's internal certificate builder to X509Helper.scala, which has why; the
-// assembly manifest carries both for `java -jar`, the launcher's re-invocation of itself for the
-// runner, supervisor and proxy it starts as `java -cp` (RunOnHostSandbox.CertificateBuilderExports),
-// the native-image command in doc/TODO.md for the binary, and .jvmopts for the tests, which run in
-// sbt's own JVM —
-// a forked test JVM would need sbt's TCP listener to reach it, which the host command sandbox does
-// not grant (doc/run-on-host.md, "Network").
+// execvp is a restricted FFM method. Without --enable-native-access, every launch prints a warning, and a future JDK
+// refuses the call. The exports open the JDK's internal certificate builder to X509Helper.scala, which records why.
+// Besides `sbt run` here, these places carry both:
+// - the assembly manifest, for `java -jar`;
+// - the launcher's re-invocation of itself as `java -cp`, for the runner, supervisor and proxy that the launcher starts
+//   (RunOnHostSandbox.CertificateBuilderExports);
+// - the native-image command in doc/TODO.md, for the binary;
+// - .jvmopts, for the tests, which run in sbt's own JVM. A forked test JVM would need sbt's TCP listener to reach it,
+//   and the host command sandbox does not grant that listener (doc/run-on-host.md, "Network").
 Compile / run / javaOptions ++= Seq(
   "--enable-native-access=ALL-UNNAMED",
   "--add-exports=java.base/sun.security.x509=ALL-UNNAMED",
@@ -111,10 +113,10 @@ Compile / run / javaOptions ++= Seq(
 )
 Compile / run / fork := true
 
-// Extract --help from README.md’s Reference block so the published documentation and installed launcher
-// cannot disagree. The block must run unbroken between headings; malformed input fails the build
-// instead of silently truncating the help.
-// Anchor on the heading so changing the invocation from java -jar to a Coursier command does not break extraction.
+// Extract --help from README.md's Reference block, so the published documentation and the installed launcher cannot
+// disagree. The block must run unbroken between headings. Malformed input fails the build instead of truncating the
+// help silently. The extraction anchors on the heading, so changing the invocation from java -jar to a Coursier
+// command does not break the extraction.
 Compile / resourceGenerators += Def.task {
   val readme = IO.readLines(baseDirectory.value / "README.md")
   val start = readme.indexWhere(_.trim == "### Reference")
@@ -132,19 +134,19 @@ Compile / resourceGenerators += Def.task {
   Seq(target)
 }.taskValue
 
-// Bundle the build contexts into the jar so --build works with no checkout present
-// (ImageBuilds.unpackBuildContext). INDEX lists every bundled path: a jar's resource tree cannot be enumerated
-// at runtime.
-// Native-image's resource discovery misses required files; the native-image command in doc/TODO.md must include
-// sandbox-build/ (build contexts), defaults/ (proxy rules) and agentsandbox/ (--help and Seatbelt system paths).
+// Bundle the build contexts into the jar, so --build works with no checkout present (ImageBuilds.unpackBuildContext).
+// INDEX lists every bundled path, because a jar's resource tree cannot be enumerated at runtime.
+// Native-image's resource discovery misses required files. The native-image command in doc/TODO.md must therefore
+// include sandbox-build/ (build contexts), defaults/ (proxy rules) and agentsandbox/ (--help and Seatbelt system
+// paths).
 Compile / resourceGenerators += Def.task {
   val log = streams.value.log
   val outputRoot = (Compile / resourceManaged).value / "sandbox-build"
 
-  // (context root, the directories under it to bundle). Entries are stored relative to their context
-  // root, so a jar entry — and the podman build path --build uses — stays a bare <image>/... whichever
-  // tree the source is in. ko-agent-fs is at the root rather than under container/ because it runs in the
-  // podman machine, not in a container.
+  // Each entry is (context root, the directories under it to bundle). Entries are stored relative to their context
+  // root, so a jar entry stays a bare <image>/... whichever tree the source is in, and so does the podman build path
+  // that --build uses. ko-agent-fs sits at the repository root rather than under container/, because ko-agent-fs runs
+  // in the podman machine, not in a container.
   val contexts = Seq(
     baseDirectory.value / "container" ->
       Seq(
@@ -152,33 +154,37 @@ Compile / resourceGenerators += Def.task {
         "ko-agent-sandbox", "ko-agent-egress-proxy",  // runtime images
         "ko-agent-self-test",                         // test image
       ),
-    // The policy and the FUSE filter, which --build compiles (ko-agent-fs/Containerfile), and the BPF
-    // backend (ko-agent-fs/bpf/Containerfile); the self-test image compiles the suites and the BPF
-    // classifier's host build for policy/tests/bpf_equivalence.rs (ko-agent-self-test/Containerfile).
+    // ko-agent-fs holds the policy and the FUSE filter, which --build compiles (ko-agent-fs/Containerfile), and the BPF
+    // backend (ko-agent-fs/bpf/Containerfile). The self-test image compiles the suites and the BPF classifier's host
+    // build for policy/tests/bpf_equivalence.rs (ko-agent-self-test/Containerfile).
     baseDirectory.value -> Seq("ko-agent-fs"),
   )
 
-  // Build output and editor caches a worked-in checkout accumulates; keep in step with the .dockerignore files, which
-  // exclude the same set from the podman build context. Two known divergences, neither reachable: "project/project" is
-  // a substring test here but segment-anchored (**/) there, so a path like myproject/project would be dropped only
-  // here, and no bundled directory is named that way; and ko-agent-fs/.dockerignore lists only target and the
-  // directories of the next paragraph, since no sbt or editor program creates the directories below inside a Rust
-  // workspace — a stray .DS_Store there would reach a hand-run `podman build` that this task drops, costing a cache
-  // miss and nothing else (the source digest is computed from the bundle, never from a checkout).
+  // The task excludes the build output and editor caches that accumulate in a worked-in checkout. Keep this set in step
+  // with the .dockerignore files, which exclude the same set from the podman build context. Two known divergences
+  // exist, and neither is reachable:
+  // - "project/project" is a substring test here but segment-anchored (**/) there, so only this task would drop a path
+  //   like myproject/project. No bundled directory has such a name.
+  // - ko-agent-fs/.dockerignore lists only target and the directories of the next paragraph, because no sbt or editor
+  //   program creates the other directories inside a Rust workspace. A stray .DS_Store there would reach a hand-run
+  //   `podman build`, although this task drops the file. The stray file costs a cache miss and nothing else, because
+  //   the source digest is computed from the bundle, never from a checkout.
   //
-  // ko-agent-fs's doc/ and probe/ directories and its bench/ are excluded for a different reason: none is a build
-  // input nor distribution — the probes are the platform-verification probes a developer runs by hand, bench/ the
-  // benchmarks the BPF backend's benchmark suite reruns, neither under cargo — and leaving them out keeps them out of
-  // the source ids too (KoAgentFs.koAgentFsSourceId, KoAgentBpf.sourceId), so editing a design document, a probe or a
-  // benchmark does not invalidate every installed binary. bpf/test, the suites that measure the BPF backend, is
-  // excluded for the same reason, since the self-test image's id digests the whole bpf/ directory
-  // (LauncherImages.contextSourceId); bpf/test/host stays, since the self-test image compiles that host build.
-  // ko-agent-fs/.dockerignore drops the same paths, so a direct `podman build` from a checkout sees what a jar-built
-  // one does.
-  // IO.relativize answers in the platform's separator, and everything downstream reads `/` — the
-  // exclusion tests here, the jar's own entry names, and the INDEX the launcher resolves them by.
-  // Unnormalized, a Windows build bundles the excluded directories and writes an INDEX no jar
-  // lookup can serve.
+  // The task excludes ko-agent-fs's doc/ and probe/ directories and its bench/ for a different reason: none of them is
+  // a build input or part of the distribution. The probes are the platform-verification probes that a developer runs
+  // by hand. bench/ holds the benchmarks that the BPF backend's benchmark suite reruns. Cargo builds neither.
+  // - Leaving these directories out also keeps them out of the source ids (KoAgentFs.koAgentFsSourceId,
+  //   KoAgentBpf.sourceId), so editing a design document, a probe or a benchmark does not invalidate every installed
+  //   binary.
+  // - bpf/test holds the suites that measure the BPF backend. The task excludes bpf/test for the same reason, since
+  //   the self-test image's id digests the whole bpf/ directory (LauncherImages.contextSourceId). bpf/test/host stays,
+  //   because the self-test image compiles that host build.
+  // - ko-agent-fs/.dockerignore drops the same paths, so a direct `podman build` from a checkout sees what a jar-built
+  //   one does.
+  //
+  // IO.relativize answers in the platform's separator, and everything downstream reads `/`: the exclusion tests here,
+  // the jar's own entry names, and the INDEX that the launcher resolves them by. Without the normalization, a Windows
+  // build bundles the excluded directories and writes an INDEX that no jar lookup can serve.
   def bundlePath(root: File, file: File): Option[String] =
     IO.relativize(root, file).map(_.replace('\\', '/'))
 

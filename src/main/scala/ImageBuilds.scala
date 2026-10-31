@@ -1,6 +1,9 @@
-// The image-producing actions — --build, --update and --self-test — with their podman build commands,
-// the bundled build context they run in, and the lock and cleanup journal every image-producing action
-// holds. What the images are called, how they are identified and which are removed is LauncherImages.scala.
+// The image-producing actions, --build, --update and --self-test, with:
+// - their podman build commands;
+// - the bundled build context they run in;
+// - the lock and the cleanup journal that every image-producing action holds.
+//
+// LauncherImages.scala has what the images are called, how they are identified and which are removed.
 
 package agentsandbox.launcher
 
@@ -18,7 +21,7 @@ import SandboxWorkspace.*
 
 object ImageBuilds:
 
-  /** Both build actions run this after AgentSandboxLauncher.requirePodman: --update rebuilds the leaves through the
+  /** Both build actions run this after AgentSandboxLauncher.requirePodman. --update rebuilds the leaves through the
     * same `podman build` without a memory limit, so it shares --build's memory check. */
   def confirmMemoryForBuilds(os: Os): Unit =
     buildMemoryWarning(probedMachineAvailable(os, podman)).foreach: message =>
@@ -28,14 +31,12 @@ object ImageBuilds:
         if !consented(reader.readLine()) then fail("error: build not started")
 
   /**
-   * The build context is bundled into the jar (build.sbt) so --build works
-   * with no checkout present; unpacked to a temp directory, removed by
-   * runBuilds on success.
+   * The build context is bundled into the jar (build.sbt), so --build works with no checkout present.
+   * This method unpacks the context to a temp directory, which runBuilds removes on success.
    *
-   * A new directory every time, and Files.write carries no mtime over from the
-   * jar entry, so every file reaches podman freshly stamped. ko-agent-fs's
-   * Containerfile leans on that: it is what stops a warm cargo cache from
-   * reusing a build with an older source id compiled into it.
+   * The directory is new every time, and Files.write carries no mtime over from the jar entry, so every
+   * file reaches podman freshly stamped. ko-agent-fs's Containerfile relies on that: the fresh stamps
+   * stop a warm cargo cache from reusing a build with an older source id compiled into it.
    */
   def unpackBuildContext(): Path =
     val root = Files.createTempDirectory("ko-agent-sandbox-build")
@@ -62,9 +63,9 @@ object ImageBuilds:
         contextSourceId(context, "debian-temurin"),
         contextSourceId(context, "debian-coursier"),
       )
-      // The BPF backend, on the podman machines alone: native Linux keeps the filter
-      // (doc/TODO.md, "The BPF backend's later versions"), and the build reads the machine's kernel BTF.
-      // A machine that lacks what the backend needs gets the filter's build without it.
+      // The BPF backend builds on the podman machines alone: native Linux keeps the filter (doc/TODO.md,
+      // "The BPF backend's later versions"), and the build reads the machine's kernel BTF. A machine that
+      // lacks what the backend needs gets the filter's build without the backend.
       val bpfBackendSourceId = KoAgentBpf.sourceId(context)
       val buildBpfBackend = os != Os.Linux && bpfBuildPossible(os)
       val bpfBackendCommands =
@@ -84,8 +85,9 @@ object ImageBuilds:
         imageIdsForTags(existingTags, images),
         staleBaseTags,
       )
-      // The backend's build after the rest, and not fatal: a kernel the checks above cannot tell apart,
-      // one lacking a BPF feature the program uses, fails it, and `fuse`, the default, needs none of it.
+      // The backend builds after the rest, and its failure is not fatal. A kernel that the checks above
+      // cannot tell apart, one lacking a BPF feature the program uses, fails the backend's build, and
+      // `fuse`, the default, needs none of it.
       val bpfBuildFailure =
         runBuilds(context, remoteImagePullCommands(podman, remoteImages) ++ commands, optional = bpfBackendCommands)
       verifyBuiltBundleLabels(Seq(
@@ -94,8 +96,8 @@ object ImageBuilds:
       ))
       verifyBuiltBundleLabels(Seq(coursierImage(ImgTagVersion) -> baseId), BaseBundleLabel)
       installKoAgentFs(podman, os, fsSourceId)
-      // The profile before the backend: the backend's launches need this build's attribute rules
-      // (SeccompProfile.AttributeSyscalls), and the backend's install may stop at its consent prompt.
+      // The profile installs before the backend, because the backend's launches need this build's
+      // attribute rules (SeccompProfile.AttributeSyscalls).
       SeccompProfile.install(podman, os, SandboxImage)
       if buildBpfBackend then
         bpfBuildFailure.toLeft(()).flatMap(_ => KoAgentBpf.installKoAgentBpf(podman, os, bpfBackendSourceId))
@@ -119,7 +121,7 @@ object ImageBuilds:
     sys.exit(0)
 
   /**
-   * Whether the machine can build the BPF backend; says why not when it cannot. A probe that does not
+   * Whether the machine can build the BPF backend, saying why not when it cannot. A probe that does not
    * answer fails the build, which needs the machine anyway.
    */
   private def bpfBuildPossible(os: Os): Boolean =
@@ -132,8 +134,8 @@ object ImageBuilds:
   /** `--update` (README.md has what it rebuilds). */
   def update(os: Os): Nothing =
     withImageBuildLock(os): journal =>
-      // Under the lock, so no other launcher replaces the base between this check and the build;
-      // before the context is unpacked, so a refusal leaves nothing behind.
+      // This check runs under the lock, so no other launcher replaces the base between the check and
+      // the build. The check runs before the context is unpacked, so a refusal leaves nothing behind.
       requireBaseFromBundledSources(
         podman,
         coursierImage(ImgTagVersion),
@@ -158,7 +160,8 @@ object ImageBuilds:
       )
       runBuilds(context, remoteImagePullCommands(podman, remoteImages) ++ commands)
       verifyBuiltBundleLabels(Seq(SandboxImage -> sandboxBundleId))
-      // Again here, so a podman upgrade between two --build runs reaches the sessions' profile.
+      // The profile is derived again here, so a podman upgrade between two --build runs reaches the
+      // sessions' profile.
       SeccompProfile.install(podman, os, SandboxImage)
       val (candidates, staleTags) = includeStaleSelfTestCleanup(
         podman,
@@ -179,36 +182,36 @@ object ImageBuilds:
     sys.exit(0)
 
   /**
-   * Every launcher build passes this and reads its `FROM` images from local storage alone. The
-   * launcher-built bases have short names (`debian-coursier:<version>`). Without the flag, podman
-   * on Fedora, whose registries.conf lists several unqualified-search registries, asks the terminal
-   * which registry holds such a base although the image is local. The registry-held images are in
-   * storage before any build starts: --build and --update pull each one themselves
-   * (remoteImagePullCommands), and selfTest refuses to start without the ones --build pulled.
+   * Every launcher build passes this flag and reads its `FROM` images from local storage alone.
+   * - The launcher-built bases have short names (`debian-coursier:<version>`). Without the flag,
+   *   podman on Fedora, whose registries.conf lists several unqualified-search registries, asks the
+   *   terminal which registry holds such a base although the image is local.
+   * - The registry-held images are in storage before any build starts: --build and --update pull each
+   *   one themselves (remoteImagePullCommands), and selfTest refuses to start without the ones --build
+   *   pulled.
    */
   val NoRegistryLookup = "--pull=never"
 
   /**
-   * The product images and named build caches, in dependency order. Leaf images stay on
-   * `latest`: a
-   * rebuild there picks up new agent releases, which the base version says
-   * nothing about; the base is an image label instead. debian-temurin does
-   * not consume IMG_TAG_VER, and neither does ko-agent-fs — it builds on
-   * rust:slim with its own pins, and its identity is the source digest.
+   * The product images and named build caches, in dependency order.
+   * - Leaf images stay on `latest`: a rebuild there picks up new agent releases, which the base
+   *   version says nothing about. The base version is an image label instead.
+   * - debian-temurin does not consume IMG_TAG_VER, and neither does ko-agent-fs: ko-agent-fs builds on
+   *   rust:slim with its own pins, and its identity is the source digest.
    *
-   * Each multi-stage compile stage is built first under a stable cache tag. The final build reuses
-   * its ordinary local layer cache; naming the stage keeps one current cache image and lets the
-   * successful build remove the previous one by the same exact-id rule as every final image.
+   * Each multi-stage compile stage is built first under a stable cache tag. The final build reuses its
+   * ordinary local layer cache. Naming the stage keeps one current cache image, and it lets the
+   * successful build remove the previous cache image by the same exact-id rule as every final image.
    *
-   * The bundle id travels twice: as BUNDLE_ID for the Containerfile's LABEL
-   * (what a hand-run `podman build` from a checkout uses) and as `--label`
-   * on the command line, which wins. The duplication is deliberate: podman's
-   * layer cache does not key ARG-derived config instructions on the arg's
-   * value (buildah #5501, #5095), so a cached LABEL step can commit a stale
-   * digest; a command-line --label is applied at commit, outside that cache.
+   * The bundle id travels twice, and the duplication is deliberate:
+   * - as BUNDLE_ID for the Containerfile's LABEL, which a hand-run `podman build` from a checkout uses;
+   * - as `--label` on the command line, which wins. podman's layer cache does not key ARG-derived
+   *   config instructions on the arg's value (buildah #5501, #5095), so a cached LABEL step can commit
+   *   a stale digest. A command-line --label is applied at commit, outside that cache.
+   *
    * --build still verifies the committed label (verifyBuiltBundleLabels).
    *
-   * debian-coursier's BaseBundleLabel travels as `--label` alone: only the launcher reads it
+   * debian-coursier's BaseBundleLabel travels as `--label` alone. Only the launcher reads it
    * (requireBaseFromBundledSources), so a hand-run build has no use for the Containerfile LABEL.
    */
   def buildCommands(
@@ -254,9 +257,9 @@ object ImageBuilds:
     )
 
   /**
-   * The toolchain the filter ships, read from the image build that pins it rather than repeated
-   * here. A second copy of the version is a self-test image that quietly stops exercising the
-   * compiler that ships, and nothing else would notice — the same rule `probe/rig.sh` follows.
+   * The toolchain the filter ships, read from the image build that pins it rather than repeated here.
+   * A second copy of the version would let the self-test image quietly stop exercising the compiler
+   * that ships, and nothing else would notice. `ko-agent-fs/fuse/probe/rig.sh` follows the same rule.
    */
   def pinnedRustVersion(context: Path): String =
     val containerfile = context.resolve("ko-agent-fs").resolve("Containerfile")
@@ -270,13 +273,15 @@ object ImageBuilds:
     )
 
   /**
-   * `--self-test`'s image: the ko-agent-fs workspace's suites compiled against the pinned toolchain,
-   * on top of the sandbox image. Built on demand rather than by --build, so a user who only wants to
-   * run agents never compiles a test suite; a rebuild is a cache hit whenever the bundled sources and
-   * the Rust image --build pulled are unchanged (`ko-agent-fs/doc/testing.md`).
+   * `--self-test`'s image: the ko-agent-fs workspace's suites compiled against the pinned toolchain, on
+   * top of the sandbox image.
+   * - The image is built on demand rather than by --build, so a user who only wants to run agents
+   *   never compiles a test suite.
+   * - A rebuild is a cache hit whenever the bundled sources and the Rust image --build pulled are
+   *   unchanged (`ko-agent-fs/doc/testing.md`).
    *
-   * `-f` with `.` as the context, not the directory: the workspace this compiles is beside the
-   * Containerfile in the unpacked bundle, not under it.
+   * The build passes `-f` with `.` as the context, not the directory: the workspace this image compiles
+   * lies beside the Containerfile in the unpacked bundle, not under it.
    */
   def selfTestBuildCommands(
     podman: String,
@@ -304,16 +309,16 @@ object ImageBuilds:
     )
 
   /**
-   * The verification container. Nothing is bound in or written out: the suites build their own
-   * trees under the container's /tmp, and `--rm` takes the container with it. Image building and
-   * replacement cleanup belong to selfTest, not this command.
+   * The verification container. Nothing is bound in or written out: the suites build their own trees
+   * under the container's /tmp, and `--rm` removes the container when it exits. Image building and
+   * replacement cleanup belong to selfTest, not to this command.
    *
    * `--cap-add SYS_ADMIN` is the one place this project runs a container with more than a session
-   * gets, and it is never a session's container. It is not redundant with the setuid fusermount3
-   * the image installs: a setuid binary does not escape the container's capability bounding set,
-   * measured rather than assumed (`ko-agent-fs/fuse/doc/verification-log.md`).
+   * gets, and that container is never a session's. The capability is not redundant with the setuid
+   * fusermount3 that the image installs: a setuid binary does not escape the container's capability
+   * bounding set, which was measured rather than assumed (`ko-agent-fs/fuse/doc/verification-log.md`).
    *
-   * `--network=none` because no case reaches a host, and nothing is fetched at this point.
+   * `--network=none`, because no case reaches a host and nothing is fetched at this point.
    */
   def selfTestRunCommand(podman: String, filter: Option[String], asRoot: Boolean): Vector[String] =
     Vector(podman, "run", "--rm", "--pull=never", "--network=none", "--device", "/dev/fuse",
@@ -323,18 +328,19 @@ object ImageBuilds:
       ++ filter.toVector
 
   /**
-   * The exit code for a self-test that failed before its behavioral checks began, as against one
-   * of those checks failing. The filter's own `--self-test` decides which, being the only party
-   * that knows the stage it reached, and ko-agent-fs-suite passes the verdict up; its message says
-   * what it can about the cause, which this launcher repeats without adding detail
-   * (ko-agent-fs/fuse/src/main.rs, SelfTestFailure). Spelled there as SELF_TEST_SETUP_EXIT, and a
-   * test holds the two together.
+   * The exit code for a self-test that failed before its behavioral checks began, as against one of
+   * those checks failing.
+   * - The filter's own `--self-test` decides which, being the only party that knows the stage it
+   *   reached, and ko-agent-fs-suite passes the verdict up.
+   * - The filter's message says what it can about the cause, and this launcher repeats the message
+   *   without adding detail (ko-agent-fs/fuse/src/main.rs, SelfTestFailure).
+   * - main.rs spells the code SELF_TEST_SETUP_EXIT, and a test holds the two together.
    */
   val SelfTestSetupExit = 3
 
   /**
-   * `--no-cache`: new agent releases arrive through RUN steps whose inputs
-   * look unchanged to the cache. Base images and the proxy are --build's.
+   * `--no-cache`, because new agent releases arrive through RUN steps whose inputs look unchanged to
+   * the cache. Base images and the proxy belong to --build.
    */
   def updateCommands(podman: String, version: String, sandboxBundleId: String): Vector[Vector[String]] =
     Vector(
@@ -347,14 +353,14 @@ object ImageBuilds:
     )
 
   /**
-   * Each command echoed before it runs, so what follows is what podman prints for exactly that
-   * line. A build's output says where its cache hit; a --quiet pull prints only the image id, so
-   * the launcher reads the id before and after and says whether the image changed, as its own
-   * `pull:` line.
-   */
-  /**
-   * Runs the builds, each failure ending the launcher, then the optional ones, the first failure of
-   * which is returned instead. The context is removed either way.
+   * Runs the builds, each failure ending the launcher, then the optional builds, whose first failure is
+   * returned instead. Once the required builds pass, the context is removed whether or not an optional
+   * build fails.
+   *
+   * Each command is echoed before it runs, so what follows is what podman prints for exactly that
+   * line. A build's output says where its cache hit. A --quiet pull prints only the image id, so the
+   * launcher reads the id before and after and says whether the image changed, as its own `pull:`
+   * line.
    */
   def runBuilds(
     context: Path,
@@ -411,38 +417,39 @@ object ImageBuilds:
         case Seq("-t", image) => image
 
   /**
-   * Image tags are workstation-wide, so every image-producing action shares one lock and journal.
-   * The journal is written before the first build: if the process dies after a tag moves, the next
-   * invocation still knows the exact old id. A global lock keeps two launcher versions from
-   * retagging `latest` around each other's snapshots.
+   * Image tags are workstation-wide, so every image-producing action shares one lock and one journal.
+   * - The journal is written before the first build: if the process dies after a tag moves, the next
+   *   invocation still knows the exact old id.
+   * - A global lock keeps two launcher versions from retagging `latest` around each other's snapshots.
    */
   def withImageBuildLock[A](os: Os)(body: Path => A): A =
     requireStateRootOutside(os, workingDirectory())
     withFileLock(imageBuildLockFile(os)):
       body(imageCleanupJournal(os))
 
-  /** The lock every image-producing action holds, and a mount of the filter too, since the action
-    * replaces the filter binary the mount executes (KoAgentFs.mountKoAgentFs). */
+  /** The lock that every image-producing action holds, and that a mount of the filter holds too, since
+    * the action replaces the filter binary the mount executes (KoAgentFs.mountKoAgentFs). */
   def imageBuildLockFile(os: Os): Path = stateRoot(os).resolve("image-build").resolve("lock")
 
   def imageCleanupJournal(os: Os): Path = stateRoot(os).resolve("image-build").resolve("cleanup.ids")
 
   /**
-   * `--self-test`: build the self-test images, then run the workspace's suites in a container with no
+   * `--self-test`: builds the self-test images, then runs the workspace's suites in a container with no
    * host bind mounts (`ko-agent-fs/doc/testing.md`). Unchanged inputs reuse the build cache.
-   * No pull: its only remote source is the Rust image --build pulls to compile the filter that
-   * ships (the test "self-test builds refresh no remote source of their own" holds that), and
-   * verifying against that same image is the point. A successful run without a case filter also
-   * measures the host share through SelfTestShare, which owns its scratch directory and cleanup.
+   * - The action pulls nothing. The action's only remote source is the Rust image that --build pulls to compile
+   *   the filter that ships, and verifying against that same image is the point. The test "self-test
+   *   builds refresh no remote source of their own" holds that.
+   * - A successful run without a case filter also measures the host share through SelfTestShare,
+   *   which owns its scratch directory and cleanup.
+   * - The sandbox image is a precondition rather than an artifact to build here: verifying is not the
+   *   command that decides which agent image a user runs.
    *
-   * The sandbox image is a precondition rather than an artifact to build here: verifying is not the
-   * command that decides which agent image a user runs.
-   *
-   * An unprivileged uid mounting through the setuid `fusermount3` is the route a session takes,
-   * and the image runs as its `nonroot` user for exactly that reason. A machine where that cannot
-   * work is retried once as root, so the run reports which of the two served rather than guessing.
-   * What failed in the setup is the filter's to report and this launcher's to pass on
-   * unchanged; only a setup failure reaches here, because a failed check exits with its own status.
+   * An unprivileged uid mounting through the setuid `fusermount3` is the route a session takes, and
+   * the image runs as its `nonroot` user for exactly that reason.
+   * - A machine where that route cannot work is retried once as root, so the run reports which of the
+   *   two served rather than guessing.
+   * - The filter reports what failed in the setup, and this launcher passes the report on unchanged.
+   *   Only a setup failure reaches the retry, because a failed check exits with its own status.
    */
   def selfTest(os: Os, operands: List[String]): Nothing =
     if operands.sizeIs > 1 then
@@ -500,9 +507,8 @@ object ImageBuilds:
       writeImageCleanupJournal(journal, remaining)
 
     System.err.println(s"machine: ${os.toString.toLowerCase(java.util.Locale.ROOT)}, ${podmanVersion()}")
-    // After the container suites, the share rows — what those suites cannot reach
-    // (SelfTestShare). Skipped under a filter: it selects crate cases, and the one-case loop
-    // stays fast.
+    // After the container suites come the share rows, which those suites cannot reach (SelfTestShare).
+    // A filter skips the share rows: the filter selects crate cases, and the one-case loop stays fast.
     def finish(suiteExit: Int): Nothing =
       if suiteExit != 0 || filter.isDefined then sys.exit(suiteExit)
       sys.exit(SelfTestShare.shareRows(podman, os, resolveWorkspaceRoot(os)))

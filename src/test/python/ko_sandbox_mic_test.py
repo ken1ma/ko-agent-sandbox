@@ -1,8 +1,9 @@
-"""ko-sandbox-mic's controller and writer against a pactl stand-in: the demand they read from the
-daemon's listings, the `start` the controller writes to the relay's FIFO, the writer it signals,
-and the writer's contract with the relay (`ready` only once the FIFO is open, unbuffered). Then
-the image's daemon, where it is installed: what it touches, the boundary between recordings, and
-audio through the writer sample for sample."""
+"""Tests ko-sandbox-mic's controller and writer against a pactl stand-in:
+- the demand they read from the daemon's listings;
+- the `start` that the controller writes to the relay's FIFO, and the writer that the controller signals;
+- the writer's contract with the relay: `ready` only once the FIFO is open, unbuffered.
+Then, where the image's daemon is installed, the tests cover what the daemon touches, the boundary between
+recordings, and audio through the writer sample for sample."""
 
 import fcntl
 import importlib.machinery
@@ -26,7 +27,7 @@ import unittest
 
 PROJECT = Path(__file__).resolve().parents[3]
 PROGRAM = PROJECT / "container/ko-agent-sandbox/microphone/ko-sandbox-mic"
-# Loaded as a module without its bytecode cache, which would land in the image's build context.
+# The tests load the program as a module without its bytecode cache, which would land in the image's build context.
 sys.dont_write_bytecode = True
 _loader = importlib.machinery.SourceFileLoader("ko_sandbox_mic", str(PROGRAM))
 _spec = importlib.util.spec_from_loader("ko_sandbox_mic", _loader)
@@ -69,10 +70,10 @@ class MicTest(ReapingTest):
         self.bin.mkdir()
         self.directory = self.root / "microphone"
         self.directory.mkdir()
-        # The stand-in answers each listing from the file `sources` or `outputs`, and appends a
-        # client event to `clients`, as the daemon reports a listing's client. `subscribe` waits
-        # `subscribe-delay` seconds to register, then prints the new lines of `clients` and the lines
-        # of the FIFO `events`, until the FIFO's writer closes it.
+        # The stand-in answers each listing from the file `sources` or `outputs`, and appends a client event to
+        # `clients`, as the daemon reports a listing's client. `subscribe` waits `subscribe-delay` seconds to register.
+        # `subscribe` then prints the new lines of `clients` and the lines of the FIFO `events`, until the FIFO's writer
+        # closes the FIFO.
         (self.root / "sources").write_text(SOURCES)
         (self.root / "clients").write_text("")
         self.outputs(LOOPBACK)
@@ -100,7 +101,7 @@ class MicTest(ReapingTest):
         (self.root / "outputs").write_text(text)
 
     def request_reader(self):
-        """The relay's side of `req`: a FIFO held open for reading, as its exec holds it."""
+        """Returns the relay's side of `req`: a FIFO held open for reading, as the relay's exec holds it."""
         os.mkfifo(self.directory / "req")
         fd = os.open(self.directory / "req", os.O_RDONLY | os.O_NONBLOCK)
         self.addCleanup(os.close, fd)
@@ -113,13 +114,13 @@ class MicTest(ReapingTest):
             return ""
 
     def controller_process(self):
-        """A process standing in for the controller, with its pid file as the controller writes it."""
+        """Starts a process standing in for the controller, with its pid file as the controller writes it."""
         process = self.reaped(subprocess.Popen(["sleep", "60"]))
         (self.directory / mic.CONTROLLER_PID_FILE).write_text(f"{process.pid} {mic.start_time(process.pid)}\n")
         return process
 
     def daemon_fifo(self):
-        """The daemon's FIFO, held open read-write as the daemon holds it, by a reader that never blocks."""
+        """Returns the daemon's FIFO, held open read-write as the daemon holds it, by a reader that never blocks."""
         fifo = self.directory / "mic"
         os.mkfifo(fifo)
         reader = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
@@ -133,7 +134,7 @@ class MicTest(ReapingTest):
             return b""
 
     def writer_process(self):
-        """A process standing in for a live writer, with its pid file as the writer writes it."""
+        """Starts a process standing in for a live writer, with its pid file as the writer writes it."""
         process = self.reaped(subprocess.Popen(["sleep", "60"]))
         (self.directory / mic.WRITER_PID_FILE).write_text(f"{process.pid} {mic.start_time(process.pid)}\n")
         return process
@@ -159,7 +160,7 @@ class MicTest(ReapingTest):
         controller.reconcile()
         self.assertEqual(self.requests(fd), "")
         self.assertAlmostEqual(controller.deadline(), 0.1, places=5)
-        # The wait passed with no writer: the exec was slow or failed, so another start.
+        # The wait passed with no writer: the exec was slow or failed, so the controller sends another start.
         clock.now += 0.1
         controller.reconcile()
         self.assertEqual(self.requests(fd), "start\n")
@@ -186,7 +187,7 @@ class MicTest(ReapingTest):
         controller.reconcile()
         writer.kill()
         writer.wait()
-        # A client event every second, as another program's listings make them.
+        # The stand-in reports a client event every second, as another program's listings would.
         sent = ""
         for _ in range(int(mic.TICK_SECONDS) + 1):
             clock.now += 1
@@ -205,7 +206,7 @@ class MicTest(ReapingTest):
         fd = self.request_reader()
         self.outputs(LOOPBACK + CLIENT)
         other = self.reaped(subprocess.Popen(["sleep", "60"]))
-        # The pid is alive, but its start time is not the recorded one: a reused pid.
+        # The pid is alive, but its start time is not the recorded one: the pid was reused.
         (self.directory / mic.WRITER_PID_FILE).write_text(f"{other.pid} 1\n")
         controller = mic.Controller(str(self.directory), "0", Clock())
         controller.reconcile()
@@ -238,7 +239,7 @@ class MicTest(ReapingTest):
         events = open(self.root / "events", "w")
         time.sleep(0.5)
         self.outputs(LOOPBACK + CLIENT)
-        # A client event is not a stream event, and is no reason to list.
+        # A client event is not a stream event, and gives the controller no reason to list.
         events.write("Event 'new' on client #14\n")
         events.flush()
         time.sleep(0.5)
@@ -257,17 +258,17 @@ class MicTest(ReapingTest):
     def test_a_stream_opened_before_the_subscription_registers_gets_a_start(self):
         fd = self.request_reader()
         (self.root / "subscribe-delay").write_text("1")
-        # Read-write, so the open does not wait for the subscription's reader.
+        # The open is read-write, so it does not wait for the subscription's reader.
         events = os.open(self.root / "events", os.O_RDWR)
         self.addCleanup(os.close, events)
-        # A controller, then the one the entrypoint starts again after it.
+        # The loop runs a controller, then the controller that the entrypoint starts again after it.
         for run in ("first", "restarted"):
             self.outputs(LOOPBACK)
             controller = self.reaped(subprocess.Popen(
                 [sys.executable, "-I", str(PROGRAM), "control", str(self.directory)], env=dict(os.environ),
             ))
-            # After a listing at the start would have run, before the subscription registers; the
-            # stand-in reports no event for it, so only a listing finds it before the timer.
+            # The stream opens after a listing at the start would have run, and before the subscription registers.
+            # The stand-in reports no event for the stream, so only a listing finds it before the timer.
             time.sleep(0.5)
             self.outputs(LOOPBACK + CLIENT)
             deadline = time.monotonic() + 3
@@ -294,7 +295,7 @@ class MicTest(ReapingTest):
         fifo, _ = self.daemon_fifo()
         writer = self.write(fifo)
         self.assertEqual(writer.stdout.readline(), b"ready\n")
-        # The writer's pid file came before its `ready`: from its demand check on, it is supply.
+        # The writer's pid file came before its `ready`: from its demand check on, the writer counts as supply.
         self.outputs(LOOPBACK)
         os.write(events, b"Event 'remove' on source-output #7\n")
         self.assertEqual(writer.wait(timeout=2), 0, "the controller left the writer forwarding")
@@ -319,7 +320,7 @@ class MicTest(ReapingTest):
         self.controller_process()
         fifo, reader = self.daemon_fifo()
         writer = self.write(fifo)
-        # `ready` arrives while the writer waits on stdin: written unbuffered.
+        # `ready` arrives while the writer waits on stdin, so the writer wrote it unbuffered.
         self.assertEqual(writer.stdout.readline(), b"ready\n")
         pid, _ = (self.directory / mic.WRITER_PID_FILE).read_text().split()
         self.assertEqual(int(pid), writer.pid)
@@ -348,7 +349,7 @@ class MicTest(ReapingTest):
         out, _ = writer.communicate(timeout=5)
         self.assertEqual((writer.returncode, out), (1, b""))
         target.unlink()
-        # A FIFO nobody reads: the daemon is gone.
+        # A FIFO that nobody reads means that the daemon is gone.
         os.mkfifo(target)
         writer = self.write(target)
         out, _ = writer.communicate(timeout=5)
@@ -363,7 +364,7 @@ class MicTest(ReapingTest):
         writer = self.write(fifo)
         out, _ = writer.communicate(timeout=5)
         self.assertEqual((writer.returncode, out), (1, b""), "no controller pid file")
-        # A live process whose start time is not the recorded one: the controller's pid, reused.
+        # A live process whose start time is not the recorded one stands for the controller's pid, reused.
         other = self.reaped(subprocess.Popen(["sleep", "60"]))
         (self.directory / mic.CONTROLLER_PID_FILE).write_text(f"{other.pid} 1\n")
         writer = self.write(fifo)
@@ -392,7 +393,7 @@ class MicTest(ReapingTest):
             offset += length
             time.sleep(0.1)
             got = self.drain(reader)
-            # Everything the FIFO holds after a pause is whole frames: no write split one.
+            # Everything the FIFO holds after a pause is whole frames: no write split a frame.
             self.assertEqual(len(got) % 2, 0, f"after {offset} bytes")
             received += got
         self.assertEqual(offset, len(sent))
@@ -414,7 +415,7 @@ class MicTest(ReapingTest):
     def test_the_controllers_death_ends_a_writer_held_by_a_full_fifo(self):
         self.outputs(LOOPBACK + CLIENT)
         controller = self.controller_process()
-        # The daemon stopped reading: nothing drains the FIFO.
+        # The daemon stopped reading, so nothing drains the FIFO.
         fifo, _ = self.daemon_fifo()
         writer = self.write(fifo)
         self.assertEqual(writer.stdout.readline(), b"ready\n")
@@ -436,8 +437,8 @@ class MicTest(ReapingTest):
 
 ENTRYPOINT = PROJECT / "container/ko-agent-sandbox/ko-sandbox-entrypoint"
 CONFIG = PROJECT / "container/ko-agent-sandbox/microphone/microphone.pa"
-# Values the daemon passes through unchanged, so a capture counts each sequence's samples: the
-# earlier, which no stream may receive, and the later, which the stream must.
+# The daemon passes these values through unchanged, so a capture counts each sequence's samples: EARLIER, which no
+# stream may receive, and LATER, which the stream must receive.
 EARLIER, LATER = 1111, 2222
 
 
@@ -451,8 +452,8 @@ def pcm_values(raw):
 
 @unittest.skipUnless(shutil.which("pulseaudio") and shutil.which("parecord"), "needs the image's PulseAudio")
 class DaemonTest(ReapingTest):
-    """The daemon as the entrypoint starts it, from the repository's script, under a temporary
-    directory in place of the session's: its own socket and FIFO, beside any session daemon."""
+    """The daemon as the entrypoint starts it, from the repository's script. The daemon runs under a temporary
+    directory in place of the session's, with its own socket and FIFO, beside any session daemon."""
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="ko-sandbox-mic-daemon-")
@@ -474,7 +475,7 @@ class DaemonTest(ReapingTest):
             (self.root / name).mkdir(mode=0o700)
         script = self.root / "microphone.pa"
         script.write_text(CONFIG.read_text().replace("/tmp/ko-agent-sandbox/microphone/mic", str(self.fifo)))
-        # The entrypoint's command line, its script swapped for the copy above.
+        # The entrypoint's command line, with its script swapped for the copy above.
         line = re.search(r"^\s*(pulseaudio -n .*?)>>", ENTRYPOINT.read_text().replace("\\\n", " "), re.M)
         command = [
             f"--file={script}" if word.startswith("--file=") else word for word in shlex.split(line.group(1))
@@ -496,9 +497,9 @@ class DaemonTest(ReapingTest):
         return subprocess.run(["pactl", *arguments], env=self.env, capture_output=True)
 
     def stream(self):
-        """A client recording the microphone, as agy's `parec` does. Into a file, which nothing has to
-        read while it records: a pipe read only at the stop fills, and then the stream stops taking
-        samples (doc/limitations.md, "Pipes as small as 8 KiB")."""
+        """Starts a client recording the microphone, as agy's `parec` does. The client records into a file, which
+        nothing has to read while it records. A pipe read only at the stop fills up, and the stream then stops
+        taking samples (doc/limitations.md, "Pipes as small as 8 KiB")."""
         with tempfile.NamedTemporaryFile(dir=self.root, suffix=".pcm", delete=False) as recording:
             stream = self.reaped(subprocess.Popen(
                 ["parecord", "--raw", "--format=s16le", "--rate=16000", "--channels=1", "--latency-msec=20",
@@ -514,8 +515,8 @@ class DaemonTest(ReapingTest):
         return pcm_values(stream.recording.read_bytes())
 
     def burst(self, value, samples):
-        """Up to `samples` samples of `value` at once, as many as the FIFO takes without blocking: a
-        paused daemon reads none, and pipe(7) lets a FIFO hold as little as one page."""
+        """Writes up to `samples` samples of `value` at once, as many as the FIFO takes without blocking. A paused
+        daemon reads none, and pipe(7) lets a FIFO hold as little as one page."""
         try:
             written = os.write(self.fifo_burst, pcm([value] * samples))
         except BlockingIOError:
@@ -556,7 +557,7 @@ class DaemonTest(ReapingTest):
         self.assertEqual(received, b"start\n")
 
     def idle_then_stream(self, delayed):
-        """EARLIER written while no stream is open, then a stream opens and LATER is written."""
+        """Writes EARLIER while no stream is open, then opens a stream and writes LATER."""
         if delayed:
             self.daemon.send_signal(signal.SIGSTOP)
         self.burst(EARLIER, 8000)
@@ -569,8 +570,8 @@ class DaemonTest(ReapingTest):
         return self.stopped(stream)
 
     def stream_then_stream(self, delayed):
-        """The first stream closes and the second opens in quick succession, the tail of EARLIER written
-        across the switch, then LATER."""
+        """Closes the first stream and opens the second in quick succession, with the tail of EARLIER written across
+        the switch, then writes LATER."""
         first = self.stream()
         time.sleep(0.3)
         self.paced(EARLIER, 0.5)
@@ -593,8 +594,8 @@ class DaemonTest(ReapingTest):
             values = case(delayed)
         finally:
             self.daemon.send_signal(signal.SIGCONT)
-        # Above zero would be the design's limit to record, not a timing to tune
-        # (doc/microphone.md, "The daemon").
+        # A count above zero would be the design's limit to record, not a timing to tune (doc/microphone.md,
+        # "The daemon").
         self.assertEqual(values.count(EARLIER), 0, f"{case.__name__}, daemon delayed: {delayed}")
         self.assertGreater(values.count(LATER), 15000, f"{case.__name__}, daemon delayed: {delayed}")
 
@@ -632,7 +633,7 @@ class DaemonTest(ReapingTest):
             env=self.env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         ))
         self.assertEqual(writer.stdout.readline(), b"ready\n")
-        # A ramp with no zero, which the daemon's silence between writes cannot be taken for.
+        # A ramp with no zero, so the daemon's silence between writes cannot be mistaken for the ramp.
         sent = list(range(1, 16001))
         raw = pcm(sent)
         sizes = itertools.cycle((1, 639, 3, 1281, 7, 4095))
@@ -655,9 +656,9 @@ CLAUDE = Path("/usr/bin/claude")
 
 @unittest.skipUnless(CLAUDE.exists() and Path("/etc/ko-agent-sandbox/microphone.pa").exists(), "needs the image")
 class ClaudeCodeRecorderContractTest(unittest.TestCase):
-    """What the daemon serves of Claude Code's `/voice` on Linux, read from the image's CLI
-    (doc/microphone.md, "Claude Code"): a release that changes it fails here. Its minified names
-    change with every build, so the patterns name none of them."""
+    """What the daemon serves of Claude Code's `/voice` on Linux, read from the image's CLI (doc/microphone.md,
+    "Claude Code"). A release that changes that behavior fails here. The CLI's minified names change with every
+    build, so the patterns name none of them."""
 
     @classmethod
     def setUpClass(cls):

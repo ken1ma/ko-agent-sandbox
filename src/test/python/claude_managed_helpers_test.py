@@ -112,13 +112,14 @@ class ManagedHelpersTest(unittest.TestCase):
                 self.assertEqual(result.stdout.rstrip("\n"), template)
                 self.assertFalse((self.workspace / "executed").exists())
 
-    def test_project_format_handles_initial_and_reported_context_usage(self):
-        settings = json.loads((PROJECT / ".claude/settings.json").read_text())
+    def test_documented_format_handles_initial_and_reported_context_usage(self):
+        # The format that doc/agent-settings.md's launch line passes with --env.
+        template = "${model.display_name} ${effort.level} · context ${context_window.used_percentage.getOrElse(0)}%"
         data = {"model": {"display_name": "Fable 5.1"}, "effort": {"level": "high"}}
         for value, expected in [(None, "0"), (0, "0"), (4, "4")]:
             with self.subTest(value=value):
                 data["context_window"] = {"used_percentage": value}
-                result = self.run_script("command/statusLine.py", data, settings["env"])
+                result = self.run_script("command/statusLine.py", data, {"KO_CLAUDE_STATUSLINE_FORMAT": template})
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, f"Fable 5.1 high · context {expected}%\n")
 

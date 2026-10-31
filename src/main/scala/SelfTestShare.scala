@@ -1,12 +1,16 @@
-// --self-test's share rows: the host-writer/session-reader direction the ko-agent-fs suites cannot reach,
-// because their backing tree is the container's own storage (ko-agent-fs/doc/testing.md). A
-// scratch lower created inside the current directory puts the real share in the path — host
-// filesystem -> share -> ko-agent-fs -> container — with the launcher performing the host-side steps.
-// doc/TODO.md, "--self-test's remaining share rows", sets the standard: driven by the launcher,
-// machine recorded, the scratch gone on success and kept on failure, and nothing a killed
-// run leaves that the reset sweep does not match — the mount is under the same mounts/ root the
-// unmount-all sweep clears, the container's name pattern is in --reset-all's container sweep, and
-// the scratch's name says what left it behind.
+// --self-test's share rows: the host-writer/session-reader direction that the ko-agent-fs suites cannot
+// reach, because their backing tree is the container's own storage (ko-agent-fs/doc/testing.md).
+//
+// A scratch lower created inside the current directory puts the real share in the path: host filesystem
+// -> share -> ko-agent-fs -> container. The launcher performs the host-side steps.
+//
+// The rows meet the standard of doc/TODO.md, "Deferred — `--self-test`'s remaining share rows":
+// - the launcher drives the rows, and the run records the machine;
+// - the scratch is gone on success and kept on failure;
+// - a killed run leaves nothing that the reset sweep does not match:
+//   - the mount lies under the same mounts/ root that the unmount-all sweep clears;
+//   - the container's name pattern is in --reset-all's container sweep;
+//   - the scratch's name says what left it behind.
 
 package agentsandbox.launcher
 
@@ -21,39 +25,41 @@ import KoAgentFs.*
 
 object SelfTestShare:
 
-  /** Under the filter's mounts/ root, so `--reset-all` and the unmount-all sweep cover a killed
-    * run's mount exactly as they cover a session's. */
+  /** The mount id lies under the filter's mounts/ root, so `--reset-all` and the unmount-all sweep cover
+    * a killed run's mount exactly as they cover a session's mount. */
   def shareMountId(suffix: String): String = s"self-test-share-$suffix"
 
   def probeContainerName(suffix: String): String = s"ko-agent-self-test-share-$suffix"
 
-  /** `--reset-all`'s sweep for the probe container a killed launcher leaves. `--rm` and the
-    * removal in [[shareRows]]' finally are the primary cleanup; this is the fallback
-    * match, anchored on the eight-hex run suffix like the launcher's own reserved patterns. */
+  /** `--reset-all`'s sweep for the probe container a killed launcher leaves. `--rm` and the removal in
+    * [[shareRows]]' finally are the primary cleanup. This method is the fallback match, anchored on the
+    * eight-hex run suffix like the launcher's own reserved patterns. */
   def probeContainers(names: Seq[String]): Seq[String] =
     names.filter(_.matches(probeContainerName(AgentSandboxLauncher.RunSuffixPattern)))
 
   val SeedName = "share-probe-data"
   val OldBytes = "AAAA"
-  val NewBytes = "BBBB" // same length: the mapped page is compared in place, no size change
+  val NewBytes = "BBBB" // Same length as OldBytes: the probe compares the mapped page in place, with no size change.
 
-  // The line protocol between the container half and the orchestrator. Interpolated into the
-  // probe programs below, so the two sides cannot drift.
+  // The line protocol between the container half and the orchestrator. The probe programs below
+  // interpolate these values, so the two sides cannot drift.
   private val StackPrefix = "stack "
   private val Ready = "READY"
   private val ReadVisible = "read-visible"
   private val MmapVisible = "mmap-visible"
   private val Abort = "abort: "
 
-  /** Where the probe container has the scratch workspace. A fixed path of the probe's own, not the
-    * scratch's host path a session would use: the probe is not a session, and no agent sees it. */
+  /** Where the probe container has the scratch workspace. The path is fixed and the probe's own, not the
+    * scratch's host path that a session would use: the probe is not a session, and no agent sees it. */
   val ProbeMount = "/mnt/share-probe"
 
   /**
-   * The probe container, run as a session's would be where it matters: keep-id maps the image uid
-   * onto the daemon user, which is what makes the allow_other mount writable through the bind,
-   * and the volume is mounted unlabelled like every FUSE mountpoint. `--entrypoint=` because the probe
-   * is the stdin program, not an agent session; `--network=none` because the rows need no egress.
+   * The probe container, run as a session's container would be where it matters:
+   * - keep-id maps the image uid onto the daemon user, which makes the allow_other mount writable
+   *   through the bind;
+   * - the volume is mounted unlabelled, like every FUSE mountpoint;
+   * - `--entrypoint=` is empty because the probe is the stdin program, not an agent session;
+   * - `--network=none` because the rows need no egress.
    */
   def probeRunCommand(podman: String, mountpoint: String, container: String): Vector[String] =
     Vector(
@@ -64,9 +70,9 @@ object SelfTestShare:
       LauncherImages.SandboxImage, "python3", "-",
     )
 
-  /** The stack check the program opens with — `.git` refused at *any* depth is a property a bind
-    * mount does not have, and probing in a fresh subdirectory is what makes it answer in a tree
-    * that already has a `.git`. */
+  /** The stack check the program opens with. `.git` refused at *any* depth is a property a bind mount
+    * does not have, and probing in a fresh subdirectory makes the check answer in a tree that already
+    * has a `.git`. */
   private val ProbePrelude: String =
     s"""import mmap, os, shutil, sys, tempfile, time
        |os.chdir("$ProbeMount")
@@ -81,11 +87,12 @@ object SelfTestShare:
        |""".stripMargin
 
   /**
-   * The container half, fed on stdin. After the prelude, the coherency measurements the hand-run
-   * probe made: a host write visible through read(), and through an already-established mmap —
-   * the AUTO_INVAL_DATA path nothing else exercises. Both waits are bounded, so a broken share is
-   * a failed row rather than a hung action; the mmap wait starts at the moment read() saw the
-   * write, which makes its figure the lag between the two views.
+   * The container half, fed on stdin. After the prelude, the program makes the coherency measurements
+   * the hand-run probe made: a host write visible through read(), and through an already-established
+   * mmap. The mmap measurement takes the AUTO_INVAL_DATA path, which nothing else exercises.
+   * - Both waits are bounded, so a broken share is a failed row rather than a hung action.
+   * - The mmap wait starts at the moment read() saw the write, so its figure is the lag between the
+   *   two views.
    */
   val SessionProbe: String = ProbePrelude +
     s"""with open("$SeedName", "rb") as handle:
@@ -115,8 +122,8 @@ object SelfTestShare:
        |    sys.exit(1)
        |""".stripMargin
 
-  /** What one probe line means to the orchestrator; Noise is any unrecognized line, printed so
-    * a failed run's transcript is whole. */
+  /** What one probe line means to the orchestrator. Noise is any unrecognized line, printed so that a
+    * failed run's transcript is whole. */
   enum ProbeEvent:
     case Stack(filtered: Boolean)
     case ReadySeen
@@ -137,9 +144,9 @@ object SelfTestShare:
     else if line.startsWith(Abort) then ProbeEvent.Aborted(line.stripPrefix(Abort))
     else ProbeEvent.Noise(line)
 
-  /** The machine's own view, for the machine record: its kernel, and what filesystem serves the
-    * backing path there — virtiofs is the answer that says the real share is in the path. findmnt,
-    * because virtiofs registers under FUSE's own statfs magic: `stat -f` answers "fuse" for it,
+  /** The machine's own view, for the machine record: its kernel, and what filesystem serves the backing
+    * path there. virtiofs is the answer that says the real share is in the path. The script uses findmnt
+    * because virtiofs registers under FUSE's own statfs magic: `stat -f` answers "fuse" for virtiofs,
     * indistinguishable from the filter's mounts. */
   def machineViewScript(backing: String): String =
     withScriptPath(
@@ -152,9 +159,9 @@ object SelfTestShare:
     withScriptPath(s"""cat "$$HOME/${koAgentFsMountDir(mountId)}/daemon.log" 2>/dev/null""")
 
   /**
-   * Run the rows; 0 when every row passed. On failure the scratch stays — its files are how a row
-   * that measured a refusal is told apart from a row where the probe broke — and the daemon log is
-   * printed before the mount directory goes.
+   * Runs the rows and returns 0 when every row passed. On failure, the scratch stays: its files tell a
+   * row that measured a refusal apart from a row where the probe broke. The daemon log is printed
+   * before the mount directory goes.
    */
   def shareRows(podman: String, os: Os, baseDir: Path): Int =
     var failed = false
@@ -170,7 +177,7 @@ object SelfTestShare:
     try
       Files.write(scratch.resolve(SeedName), OldBytes.getBytes(UTF_8))
 
-      // The machine, before any row: a run with no machine recorded is not evidence.
+      // The run records the machine before any row, because a run with no machine recorded is not evidence.
       val lowerType =
         try Files.getFileStore(scratch).`type`()
         catch case _: java.io.IOException => "unknown"
@@ -191,9 +198,9 @@ object SelfTestShare:
         val command = probeRunCommand(podman, mountpoint, container)
         echoCommand(command)
         val process = ProcessBuilder(command*).redirectErrorStream(true).start()
-        // The hard bound over both 120 s probe waits plus container start. The kill ends an unresponsive
-        // probe; the rows already printed remain, and the non-zero exit below adds a failure row only
-        // when none of them failed.
+        // The hard bound over both 120 s probe waits plus the container's start. The kill ends an
+        // unresponsive probe. The rows already printed remain, and the non-zero exit below adds a failure
+        // row only when none of them failed.
         val watchdog = Thread(() =>
           if !process.waitFor(300, TimeUnit.SECONDS) then { process.destroyForcibly(); () },
         )
@@ -212,10 +219,11 @@ object SelfTestShare:
                 if filtered then "" else "mkdir .git succeeded")
             case ProbeEvent.ReadySeen =>
               writeAt = System.nanoTime()
-              // A refused write is retried within a bound: on Windows the machine's 9p server
-              // opens the seed under Windows sharing rules, which refuse some writers while it is
-              // held (verification-log.md, "coherency on Windows"), and a refusal that outlasts
-              // the bound fails the row. The kill turns the container's own wait into an exit.
+              // A refused write is retried within a bound. On Windows, the machine's 9p server opens the
+              // seed under Windows sharing rules, which refuse some writers while the server holds the seed
+              // (ko-agent-fs/fuse/doc/verification-log.md, "Measured: coherency on Windows — fresh when
+              // unheld; a hold refuses some writers (Server 24H2)"). A refusal that outlasts the bound
+              // fails the row. The kill turns the container's own wait into an exit.
               var refusal: Option[String] = None
               var written = false
               while !written && System.nanoTime() - writeAt < 10L * 1000 * 1000 * 1000 do
@@ -246,10 +254,10 @@ object SelfTestShare:
         val exit = process.waitFor()
         if exit != 0 && !failed then row(false, "share probe", s"exit $exit with no failing row")
       finally
-        // The watchdog kills only the attached client; the container, its process blocked on the share,
-        // outlives it, because --rm removes a container only when the container exits. Removed here
-        // explicitly. If the launcher is killed before this finally runs, --reset-all removes the
-        // container by name pattern.
+        // The watchdog kills only the attached client. The container, its process blocked on the share,
+        // outlives the client, because --rm removes a container only when the container exits. This
+        // finally therefore removes the container explicitly. If the launcher is killed before this
+        // finally runs, --reset-all removes the container by name pattern.
         run(podman, "rm", "--force", "--ignore", container)
         if failed then
           val log = run(koAgentFsScriptCommand(podman, os, daemonLogScript(mountId))*)

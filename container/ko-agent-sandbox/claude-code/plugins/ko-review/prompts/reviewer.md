@@ -21,15 +21,15 @@ Inspect the repository and its working-tree changes yourself.
 safety, security, compatibility of APIs and behavior, error handling, missing tests. They alone
 decide the disposition.
 
-`suggestions` are your opinions beside the findings, and they never block approval. Give them for
-a change you approve too, when you have one worth the author's or the user's attention, the
-strongest first.
+`suggestions` are your opinions beside the findings, and they never block approval. Give
+suggestions for a change you approve too, when one is worth the author's or the user's attention,
+the strongest first.
 
 - A suggestion is a design you would choose over the change's, a simpler way to the same result,
   an alternative another project took for the same problem, or a question about a premise of the
   change, each with its reason.
-- The author adopts each one, disputes it on this thread, or puts it to the user when it is the
-  user's to decide, as `USER_DECISION_REQUIRED` below defines: withdraw a suggestion that is
+- The author adopts each suggestion, disputes it on this thread, or puts it to the user when it is
+  the user's to decide, as `USER_DECISION_REQUIRED` below defines: withdraw a suggestion that is
   adopted or whose dispute convinces you, and keep the rest.
 - Look at how other projects solve the same problem and what they learned, on the web where the
   sandbox allows it, and give the source in a finding's `evidence` or a suggestion's `reason`

@@ -976,15 +976,16 @@ The rows, where the table does not say it all:
     content (`may_dedupe_file`).
 - Row 14: `ftruncate`, `fchmod`, `fchmodat2`, `lchown`, `utimensat`, `utimes` and `futimesat`
   too; each reaches `notify_change` (`fs/attr.c`).
-- Row 17: no slot holds it; "Attributes, flags and ioctls" names the seccomp rule that does.
+- Row 17: no slot holds it. The seccomp rule that "Attributes, flags and ioctls" names refuses
+  `file_setattr`, and the machines' shares answer the two ioctl commands with `ENOTTY`.
   - `FS_IOC_SETFLAGS` and `FS_IOC_FSSETXATTR` take a read-only descriptor
     (`fs/file_attr.c`, `ioctl_fssetxattr`), and `vfs_fileattr_set` admits the owner.
   - Only the append-only and immutable flags need `CAP_LINUX_IMMUTABLE` in the initial user
     namespace, and a project id is refused outside it.
   - Seccomp can refuse `file_setattr`, and the two ioctl commands by their command argument.
-- Row 18: commands a filesystem implements itself, outside `vfs_fileattr_set`; the seccomp rule
-  "Attributes, flags and ioctls" names refuses those listed here. The ones read take a read-only
-  descriptor:
+- Row 18: commands a filesystem implements itself, outside `vfs_fileattr_set`. No seccomp rule
+  refuses them in the first version, and the machines' shares answer them with `ENOTTY`
+  ("Attributes, flags and ioctls"). The ones read take a read-only descriptor:
   - ext4's `EXT4_IOC_SETVERSION` and `EXT4_IOC_SETVERSION_OLD`, refused under `metadata_csum`,
     set the generation and ctime directly; `ext4_compat_ioctl` maps `EXT4_IOC32_SETVERSION` and
     `EXT4_IOC32_SETVERSION_OLD` to them. They, `EXT4_IOC_MIGRATE` and `EXT4_IOC_ALLOC_DA_BLKS`

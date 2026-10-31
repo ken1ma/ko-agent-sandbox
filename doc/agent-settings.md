@@ -6,12 +6,13 @@ Put a project's working conventions in `AGENTS.md` at the project root: `codex`,
 `kiro-cli`, `copilot` and `opencode` read it.
 
 For `claude`, add a `.claude/CLAUDE.md` whose content is `@../AGENTS.md`, as this repository's
-[.claude/CLAUDE.md](../.claude/CLAUDE.md) is. The import loads that one file: `claude` skips a
-subdirectory's `AGENTS.md` unless that subdirectory has its own `.claude/CLAUDE.md` importing it.
+[.claude/CLAUDE.md](../.claude/CLAUDE.md) does.
 
-Claude Code 2.1.277 and later read `AGENTS.md` themselves, subdirectories included, but not under
-the image's `allowManagedHooksOnly`:
-https://code.claude.com/docs/en/memory#when-agents-md-support-is-unavailable
+- The import loads that one file. `claude` skips a subdirectory's `AGENTS.md` unless that
+  subdirectory has its own `.claude/CLAUDE.md` that imports it.
+- Claude Code reads `AGENTS.md` itself, subdirectories included, but not under the image's
+  `allowManagedHooksOnly`:
+  https://code.claude.com/docs/en/memory#when-agents-md-support-is-unavailable
 
 The sandbox's own instructions describe the container and the session's permissions, not how to
 work ([design.md](design.md#the-image-carries-no-working-conventions)).
@@ -49,10 +50,13 @@ java -jar ko-agent-sandbox.jar \
 --env="KO_CLAUDE_STATUSLINE_FORMAT=\${model.display_name} \${effort.level} · context \${context_window.used_percentage.getOrElse(0)}%"
 ```
 
-A repository's `.claude/settings.json` cannot set it: Claude Code starts a managed hook, which the
-status line is, without the `env` of the repository's settings (its debug log under 2.1.310:
-`statusLine is the organization's and starts without the repository settings' env of
-KO_CLAUDE_STATUSLINE_FORMAT`). A launch's variable is the process's own and reaches the command.
+A repository's `.claude/settings.json` cannot set the variable:
+
+- Claude Code starts a managed hook, such as the status line, without the `env` of the
+  repository's settings. Claude Code 2.1.310 logs this in its debug log: `statusLine is the
+  organization's and starts without the repository settings' env of KO_CLAUDE_STATUSLINE_FORMAT`.
+- A variable that the launch sets belongs to the Claude Code process itself, so it reaches the
+  command.
 
 Use `${jsonField}` to insert a value from
 [Available data](https://code.claude.com/docs/en/statusline#available-data),
@@ -79,15 +83,15 @@ stay as-is.
    environment lookups are unsupported.
 3. Invalid placeholders stay literal, and inserted values are never evaluated.
 4. Templates and output are limited to 4096 characters.
-5. Output strips non-printable characters and outer whitespace,
-   so it cannot contain terminal control sequences (including OSC 8 hyperlinks) or multiple lines.
+5. The command strips non-printable characters and outer whitespace from the output. So the output
+   cannot contain terminal control sequences (including OSC 8 hyperlinks) or multiple lines.
 
 ### Mechanism
 
 1. The image registers `/etc/claude-code/command/statusLine.py` through
    `/etc/claude-code/managed-settings.d/statusLine.json`.
-2. An organization's remote policy can supersede
-   these settings; `/status` identifies the active source.
+2. An organization's remote policy can supersede these settings. `/status` identifies the active
+   source.
 3. Claude Code runs the command with `/usr/local/bin/python3 -I` on status refreshes,
    even when the format is empty or displayed values have not changed.
 4. The command accepts at most 2 MiB of status JSON, runs no external tools or network requests,
@@ -97,8 +101,9 @@ stay as-is.
 
 The image's `allowManagedHooksOnly` runs the hooks and the mod of a plugin only when managed
 settings force-enable it from a marketplace directory. A plugin installed in a session, or loaded
-through `--plugin-dir` or `CLAUDE_CODE_PLUGIN_DIRS`, loads with its hooks and mod inert. To run
-one, name its directory on the launch command line, once per plugin, in the order the mods run:
+through `--plugin-dir` or `CLAUDE_CODE_PLUGIN_DIRS`, loads with its hooks and mod inert. To run a
+plugin's hooks and mod, name its directory on the launch command line, once per plugin, in the
+order the mods run:
 
 ```sh
 java -jar ko-agent-sandbox.jar --claude-plugin-dir=$HOME/src/dotclaude/mods/questions \
@@ -112,48 +117,59 @@ What to expect:
 2. `/plugin` lists them under the marketplace `host`, and `claude --debug` logs each one's
    `hooks module` line with `tier prepend`.
 3. The directory is mounted read-only. Edit it on the host and run `/reload-plugins`.
-4. A plugin that draws a status band duplicates the image's status line; hide that line by setting
+4. A plugin that draws a status band duplicates the image's status line. Hide that line by setting
    `KO_CLAUDE_STATUSLINE_FORMAT` to `""` ([above](#claude-code-status-line)).
-5. The launch refuses a directory that holds or is inside the workspace or a directory
-   `--run-on-host` commands write (the launcher's cache directory, a cache a symlink redirects
-   out of it, `/private/tmp/ko-agent-<uid>`),
-   one with a symlink, a hard-linked file, a junction or a pipe under it, one named like an image
-   plugin (`ko-review`) by its directory or its manifest, two plugins whose manifests share a
-   name, and, on an SELinux-enforcing host, one the container cannot read.
-6. An organization's remote managed settings, where the session's sign-in receives them, replace
-   the image's managed files, the drop-in included, under the default `managedSourcesBehavior`,
-   first-wins, so the plugins do not load. `/status` names the sources in use.
-   - Under `merge` the organization has opted the image's files in, and each key combines by its
-     kind (https://code.claude.com/docs/en/settings-reference#managedsourcesbehavior, whose table
-     names none of these three keys; read 2026-10-18): `prependPlugins` is a list, whose entries
-     from every source combine; `enabledPlugins` and `extraKnownMarketplaces` fall under its
-     "every other key" row, taken from the highest-ranked source that sets them, so an
-     organization that sets either key hides the drop-in's value.
+5. The launch refuses these directories:
+   - a directory that holds or is inside the workspace;
+   - a directory that holds or is inside a directory `--run-on-host` commands write: the
+     launcher's cache directory, a cache a symlink redirects out of it, or
+     `/private/tmp/ko-agent-<uid>`;
+   - a directory with a symlink, a hard-linked file, a junction or a pipe under it;
+   - a directory whose name or manifest name is an image plugin's name (`ko-review`);
+   - two plugins whose manifests have the same name;
+   - on an SELinux-enforcing host, a directory the container cannot read.
+6. An organization's remote managed settings replace the image's managed files, the drop-in
+   included, when the session's sign-in receives them. The replacement holds under the default
+   `managedSourcesBehavior`, first-wins, and the plugins then do not load. `/status` names the
+   sources in use.
+   - Under `merge`, the organization has opted the image's files in, and each key combines by its
+     kind. The documentation's table names none of these three keys
+     (https://code.claude.com/docs/en/settings-reference#managedsourcesbehavior, read 2026-10-18).
+   - `prependPlugins` is a list, so its entries from every source combine.
+   - `enabledPlugins` and `extraKnownMarketplaces` fall under the table's "every other key" row:
+     Claude Code takes each from the highest-ranked source that sets it. So an organization that
+     sets either key hides the drop-in's value.
 
 To check the mechanism before naming a mod of your own, launch with a copy of this repository's
 [`src/test/claude-plugins/managed-probe`](../src/test/claude-plugins/managed-probe/README.md):
 its one hook draws a band above the prompt, and draws nothing where the hooks are inert.
 
-The plugin runs inside Claude Code with the session's reach and no permission prompt: review it
-with `claude plugin validate <dir>` before naming it, reading its `hooks:` and `calls:` lines
-(https://code.claude.com/docs/en/plugins/mods/admin#review-what-a-mod-can-do). Why a session can
-neither add nor change one is in [SECURITY.md](../SECURITY.md#defended), under hooks.
+The plugin runs inside Claude Code with the session's reach and no permission prompt. Before you
+name it, review it with `claude plugin validate <dir>` and read its `hooks:` and `calls:` lines
+(https://code.claude.com/docs/en/plugins/mods/admin#review-what-a-mod-can-do). A session can neither
+add nor change a plugin; [SECURITY.md](../SECURITY.md#defended), under hooks, says why.
 
-Mechanism: the launcher generates a marketplace root with a `marketplace.json` listing each plugin
-by a relative path, binds each directory under it at `/etc/claude-code/host-plugins/<name>`, and
-mounts a drop-in at `/etc/claude-code/managed-settings.d/50-host-plugins.json` naming the
-marketplace under `extraKnownMarketplaces`, each plugin under `enabledPlugins` and the order under
-`prependPlugins`, `sec-default@builtin` last. Those are the conditions under which Claude Code
-counts a mod as the organization's
+Mechanism:
+
+1. The launcher generates a marketplace root with a `marketplace.json` that lists each plugin by a
+   relative path.
+2. The launcher binds each directory under that root at `/etc/claude-code/host-plugins/<name>`.
+3. The launcher mounts a drop-in at `/etc/claude-code/managed-settings.d/50-host-plugins.json`. The
+   drop-in names the marketplace under `extraKnownMarketplaces`, each plugin under
+   `enabledPlugins`, and the order under `prependPlugins`, with `sec-default@builtin` last.
+
+Those are the conditions under which Claude Code counts a mod as the organization's
 (https://code.claude.com/docs/en/plugins/mods/admin#install-your-organizations-mods).
 
 ### LSP plugin recommendations
 
 The recommendation dialog is off in a session: the entrypoint sets `lspRecommendationDisabled`
-in `~/.claude/.claude.json` at launch, where the key is absent. Left on, the dialog returns in
-every session, not once per project: Claude Code shows the dialog on the first file edited in a
-language it has a plugin for, until "Never for this plugin" or "Disable all LSP recommendations".
-To get the dialog, set the key to `false` there; a launch leaves a key that exists as it is.
+in `~/.claude/.claude.json` at launch when the key is absent.
+
+- To get the dialog, set the key to `false` there. A launch leaves an existing key as it is.
+- Left on, the dialog returns in every session, not once per project. Claude Code shows the dialog
+  on the first file edited in a language it has a plugin for, until the user chooses "Never for
+  this plugin" or "Disable all LSP recommendations".
 
 ## Holding agents to a line width
 
@@ -161,9 +177,10 @@ Without a program that measures, an agent checking a width limit spends tokens t
 
 1. It counts a line it has written and can still misjudge its width. Claude Fable 5.1 miscounted.
 2. The commands it improvises disagree wherever a line is not ASCII, so one check leads to
-   another. On this repository's Markdown files at a limit of 100 (2026-10-07),
-   `awk 'length($0) > 100'` reports 125 lines, because the image's `awk` counts bytes; Python's
-   `len()` reports 45, because it counts code points; 65 lines are wider than 100 columns.
+   another. On this repository's Markdown files at a limit of 100 (2026-10-07):
+   - `awk 'length($0) > 100'` reports 125 lines, because the image's `awk` counts bytes;
+   - Python's `len()` reports 45, because it counts code points;
+   - 65 lines are wider than 100 columns.
 3. It rewraps lines a wrong count reported, and counts again.
 
 The image has `ko-sandbox-text-width`, which the sandbox's own instructions tell every agent to
@@ -191,8 +208,8 @@ project-permitted exceptions, such as a URL, without opening the file.
 ## Finding the links a rename broke
 
 Renaming a heading or moving a file breaks links in files the change did not touch, and nothing
-shows it. An agent looking for them greps for the old name, which misses a link spelled another
-way, and opens each target to compare headings.
+shows the broken links. An agent looking for them greps for the old name, which misses a link
+spelled another way, and opens each target to compare headings.
 
 The image has `ko-sandbox-markdown-link-check`, which the sandbox's own instructions tell every
 agent to run after such a change:
@@ -209,11 +226,12 @@ doc/setup.md:57: unchecked-fragment: src/Main.scala#L10
 summary: files 8; local references 40: valid 37, broken 2, unchecked 1; external excluded 12
 ```
 
-1. [lychee](https://lychee.cli.rs) finds and checks the links; the program chooses its options
-   and shortens its report. The repository's own `lychee.toml` and `.lycheeignore` are not read:
-   either can exclude a broken link, and the summary would count it as external.
-2. Anchors follow lychee's rules; the program's `--help` says how far they are GitHub's. Another
-   renderer can build anchors differently.
+1. [lychee](https://lychee.cli.rs) finds and checks the links. The program chooses lychee's
+   options and shortens lychee's report. The program does not read the repository's own
+   `lychee.toml` and `.lycheeignore`: either file can exclude a broken link, and the summary would
+   count that link as external.
+2. Anchors follow lychee's rules, and the program's `--help` says how far they match GitHub's.
+   Another renderer can build anchors differently.
 3. The working tree is checked, not the commit: a link to an untracked or ignored file is valid.
 4. lychee looks for a fragment only in Markdown and HTML files. A fragment on any other file,
    such as `#L10` on a source file, is reported as `unchecked-fragment` and does not fail the run.

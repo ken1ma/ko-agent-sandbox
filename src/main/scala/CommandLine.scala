@@ -1,8 +1,10 @@
-// The launcher's command line: the session options, a management action with its operands, or the
-// command forwarded verbatim (parseArguments); the merge of the options file's options under the
-// command line's (merge); and the --env forwards resolved against the host. The file's location and
-// syntax are OptionsFile.scala, --env-aws-cred's resolution AwsCredential.scala, --claude-plugin-dir's
-// ClaudePlugins.scala.
+// The launcher's command line:
+// - the session options, then a management action with its operands or the command forwarded verbatim
+//   (parseArguments);
+// - the merge that puts the command line's options over the options file's (merge);
+// - the --env forwards, resolved against the host.
+// OptionsFile.scala holds the options file's location and syntax. AwsCredential.scala resolves --env-aws-cred, and
+// ClaudePlugins.scala resolves --claude-plugin-dir.
 
 package agentsandbox.launcher
 
@@ -13,22 +15,24 @@ import AgentSandboxLauncher.*
 object CommandLine:
 
   /**
-   * The independent session options, selected on every launch and never persisted by a
-   * stage or an agent resume. The writable default is `live` (doc/plan-staged.md has the staged
-   * mode and the default flip that follow it); no distributable build may make launches with no
-   * `--workspace` option read-only before the staged workflow is usable.
+   * The independent session options. Every launch selects them, and neither a stage nor an agent resume persists
+   * them.
+   * - The writable default is `live`. doc/plan-staged.md has the staged mode and the default flip that follow `live`.
+   * - No distributable build may make a launch without a `--workspace` option read-only before the staged workflow is
+   *   usable.
    */
   val WorkspaceModes = Vector("read-only", "live")
   val DefaultWorkspaceMode = "live"
 
   /**
-   * `--workspace`'s other values, beside the mode, in any order, each at most once: the backend that
-   * holds the workspace's protections, `fuse`, the ko-agent-fs filter, the default of both modes
-   * until the release decision, or `bpf`, the cgroup-LSM policy of doc/bpf-lsm-cgroup.md
-   * ("Launches"); and `unix-socket`, which allows Unix sockets in the workspace and beneath the
-   * persistent volume at the cost of the policy's ninth hook, and so needs `bpf`: the filter cannot
-   * honor it. On Windows the share refuses every socket bind itself (`ENOTSUP`), so there the value
-   * reaches the volume alone (doc/bpf-lsm-cgroup.md, "What is gained and what is lost").
+   * `--workspace` takes these values beside the mode, in any order, each at most once:
+   * - the backend that holds the workspace's protections:
+   *   - `fuse`, the ko-agent-fs filter, which is the default of both modes until the release decision;
+   *   - `bpf`, the cgroup-LSM policy of doc/bpf-lsm-cgroup.md ("Launches");
+   * - `unix-socket`, which allows Unix sockets in the workspace and beneath the persistent volume at the cost of the
+   *   policy's ninth hook. `unix-socket` needs `bpf`, because the filter cannot honor the value.
+   *   - On Windows the share itself refuses every socket bind (`ENOTSUP`), so the value reaches only the volume there
+   *     (doc/bpf-lsm-cgroup.md, "What is gained and what is lost").
    */
   val WorkspaceBackends = Vector("fuse", "bpf")
   val DefaultWorkspaceBackend = "fuse"
@@ -39,13 +43,12 @@ object CommandLine:
     def bpf: Boolean = backend == "bpf"
     def live: Boolean = mode == "live"
     def readOnly: Boolean = mode == "read-only"
-    /** The filter mounts the workspace: a live session under the `fuse` backend. */
+    /** Whether the filter mounts the workspace, which happens in a live session under the `fuse` backend. */
     def filtered: Boolean = live && !bpf
 
-    /** The launch line uses commas without spaces to match the `--workspace` command-line value
-      * and the container label (KoAgentBpf.SettingsLabel): the mode, the backend, then `unix-socket`
-      * when set. The backend is always spelled, so a launch line reads the same once another backend
-      * is the default. */
+    /** The mode, the backend, then `unix-socket` when set. The launch line uses commas without spaces to match the
+      * `--workspace` command-line value and the container label (KoAgentBpf.SettingsLabel). The launch line always
+      * spells the backend, so the line reads the same once another backend is the default. */
     def spelled: String = s"$mode,$backend" + (if unixSocket then s",$UnixSocketValue" else "")
 
   object WorkspaceSettings:
@@ -53,9 +56,9 @@ object CommandLine:
       WorkspaceSettings(DefaultWorkspaceMode, DefaultWorkspaceBackend, unixSocket = false)
 
   /**
-   * `--workspace=<mode>[,<backend>][,unix-socket]`, the values in any order and each once; an
-   * unclear value refuses the launch rather than being read as either side of a choice (design.md,
-   * "Security configuration must fail closed").
+   * `--workspace=<mode>[,<backend>][,unix-socket]`, with the values in any order and each value once. An unclear value
+   * refuses the launch rather than being read as either side of a choice (design.md, "Security configuration must fail
+   * closed").
    */
   def parseWorkspace(value: String): Either[String, WorkspaceSettings] =
     val values = value.split(",", -1).toVector
@@ -83,20 +86,19 @@ object CommandLine:
   val DefaultEgressProfile = "deny-unless-allowed"
 
   /**
-   * Each grant of a host resource comes from a launcher option, on the command line or in the
-   * options file, never from a variable a shell profile exports to every process; every launch
-   * prints each grant. The clipboard: off by default, and `paste` before `bidirectional`, because
-   * each step hands the agent more of the host: reading what the user last copied, then writing
-   * what the user will next paste (ClipboardRelay). `--audio=mic` grants the host microphone for
-   * the session (MicrophoneRelay).
+   * Each grant of a host resource comes from a launcher option, on the command line or in the options file. A grant
+   * never comes from a variable that a shell profile exports to every process. Every launch prints each grant.
+   * - The clipboard is off by default, and `paste` comes before `bidirectional`, because each step hands the agent
+   *   more of the host. `paste` reads what the user last copied, and `bidirectional` also writes what the user will
+   *   next paste (ClipboardRelay).
+   * - `--audio=mic` grants the host microphone for the session (MicrophoneRelay).
    */
   val ClipboardModes = Vector("off", "paste", "bidirectional")
   val DefaultClipboardMode = "off"
 
   /**
-   * The devices `--audio` grants, each alone: doc/microphone.md records that the microphone and a
-   * speaker together close a loop from the host's speaker back into the sandbox, and leaves the
-   * speaker out ("No playback to the host").
+   * The devices that `--audio` grants, each alone. The microphone and a speaker together would close a loop from the
+   * host's speaker back into the sandbox, so doc/microphone.md leaves the speaker out ("No playback to the host").
    */
   final val AudioOption = "--audio"
   val AudioDevices = Vector("mic")
@@ -112,31 +114,30 @@ object CommandLine:
         case None if devices.distinct != devices => Left(s"error: $AudioOption=$value names a device twice")
         case None                                => Right(devices)
 
-  /** `--nesting` (AgentSandboxLauncher.NestingVariable has what each value allows) and
-    * `--session-start` (SessionStartVariable has why the launch pauses). */
+  /** `--nesting` (AgentSandboxLauncher.NestingVariable says what each value allows) and
+    * `--session-start` (SessionStartVariable says why the launch pauses). */
   val NestingModes = Vector("none", "user-namespace", "same-uid")
   val DefaultNestingMode = "none"
   val SessionStartModes = Vector("pause", "immediate")
   val DefaultSessionStartMode = "pause"
 
   /**
-   * `--model-provider=<names>` adds model providers to the one the command's name selects for the
-   * session's egress (EgressRules.selectedProvider). It is repeatable, so the command line adds to
-   * the options file's names rather than replacing them. The names go to the proxy as written: the
-   * proxy image defines the provider names, and its refusal of a name it does not define fails the
-   * launch (EgressRules.rulesetRefusal). The launcher keeps no list of providers.
+   * `--model-provider=<names>` adds model providers to the provider that the command's name selects for the session's
+   * egress (EgressRules.selectedProvider).
+   * - The option is repeatable, so the command line adds to the options file's names rather than replacing them.
+   * - The names go to the proxy as written. The proxy image defines the provider names, and the proxy's refusal of a
+   *   name it does not define fails the launch (EgressRules.rulesetRefusal). The launcher keeps no list of providers.
    */
   final val ModelProviderOption = "--model-provider"
 
   final val PersistentVolumeOption = "--persistent-volume"
   final val ProxyImageOption = "--proxy-image"
 
-  /** Skips the options file for one launch or action; on the command line alone (OptionsFile). */
+  /** Skips the options file for one launch or action. Only the command line takes this option (OptionsFile). */
   final val NoOptionsFileOption = "--no-options-file"
 
-  /** The programs `--run-on-host` can name. Available on macOS only, which
-    * AgentSandboxLauncher.launchSettings enforces: the parser stays pure over
-    * the arguments. */
+  /** The programs that `--run-on-host` can name. The option is available on macOS only.
+    * AgentSandboxLauncher.launchSettings enforces that limit, so the parser stays pure over the arguments. */
   val RunOnHostPrograms = RunOnHostPrereqs.Program.values.toVector.map(_.name)
 
   def parseRunOnHost(value: String): Either[String, Vector[String]] =
@@ -147,30 +148,33 @@ object CommandLine:
       case None if names.distinct != names => Left(s"error: --run-on-host=$value names a program twice")
       case None                            => Right(names)
 
-  /** `--env=NAME` (value: the host's, read at launch) or `--env=NAME=VALUE`. */
+  /** `--env=NAME`, whose value is the host's, read at launch, or `--env=NAME=VALUE`. */
   case class EnvForward(name: String, value: Option[String])
 
   /**
-   * The only names `--env` refuses: the launcher's own KO_AGENT_SANDBOX_* variables, which are how
-   * it tells the sandbox what is in force — the egress ruleset, the nesting, clipboard and
-   * session-start modes, the microphone. Forwarded, one would make what the agent is told differ from what is
-   * enforced, the drift the launcher exists to rule out. Every other variable the launcher or the
-   * image sets (the proxy and CA-bundle variables, TZ, PAGER) is forwardable: the network has no
-   * route but the proxy whatever the environment says, so an override can only fail, visibly,
-   * under a name the launch printed — and overriding a default is what a forward is for.
+   * The only names that `--env` refuses: the launcher's own KO_AGENT_SANDBOX_* variables.
+   * - The launcher tells the sandbox what is in force through these variables: the egress ruleset, the nesting,
+   *   clipboard and session-start modes, and the microphone.
+   * - A forwarded KO_AGENT_SANDBOX_* variable would make what the agent is told differ from what is enforced. The
+   *   launcher exists to rule out that drift.
+   * - Every other variable that the launcher or the image sets is forwardable: the proxy and CA-bundle variables, TZ
+   *   and PAGER. The network has no route but the proxy, whatever the environment says. An override can therefore only
+   *   fail, visibly, under a name that the launch printed, and overriding a default is what a forward is for.
    */
   val RefusedForwardPrefix = LauncherVariablePrefix
 
   /**
-   * The `--env` arguments for the forwards, or why one cannot be made. A name unset on the host
-   * is an error, not an empty variable: a forward that configures nothing would fail silently. A
-   * forward is how a secret gets in (SECURITY.md, "Credential theft"), so a value the host holds
-   * travels as `--env=NAME`, which podman fills from this process's environment: the value is in
-   * no podman argument and not in the create command podman records for the container. An
-   * explicit value is on the launch command line or in the options file already, so its argument
-   * carries `NAME=VALUE`. An empty host value uses `--env=NAME=` because it contains no secret and
-   * avoids relying on podman's handling of empty host variables. The launcher's own output
-   * carries names alone.
+   * The `--env` arguments for the forwards, or the reason a forward cannot be made.
+   * - A name unset on the host is an error, not an empty variable, because a forward that configures nothing would
+   *   fail silently.
+   * - A forward is how a secret gets in (SECURITY.md, "Credential theft"). A value that the host holds therefore
+   *   travels as `--env=NAME`, which podman fills from this process's environment. The value is in no podman argument
+   *   and not in the create command that podman records for the container.
+   * - An explicit value is already on the launch command line or in the options file, so the value's argument carries
+   *   `NAME=VALUE`.
+   * - An empty host value uses `--env=NAME=`, because the empty value contains no secret, and the argument avoids
+   *   relying on podman's handling of empty host variables.
+   * - The launcher's own output carries names alone.
    */
   def forwardedEnvironment(
     forwards: Vector[EnvForward],
@@ -194,12 +198,12 @@ object CommandLine:
       case None => Right(resolved.collect { case Right(arg) => arg })
 
   /**
-   * Parsed launcher invocation: the session options as given (None when defaulted), then either
-   * one management action with its operands, or the command forwarded verbatim. As one source
-   * gives them (parseArguments), an option other than a closed choice holds its empty value, and
-   * `dropped` names the repeatable options whose empty value dropped the entries before it; the
-   * merge (merge, parseCommandLine) reads both and returns each option's value in force, where an
-   * empty value has become the default.
+   * The parsed launcher invocation: the session options as given (None when defaulted), then either one management
+   * action with its operands, or the command forwarded verbatim.
+   * - As one source gives the options (parseArguments), an option other than a closed choice holds its empty value.
+   *   `dropped` names the repeatable options whose empty value dropped the entries before that value.
+   * - The merge (merge, parseCommandLine) reads the empty values and `dropped`, and returns each option's value in
+   *   force, where the default replaces an empty value.
    */
   case class ParsedCommandLine(
     workspace: Option[String],
@@ -225,7 +229,7 @@ object CommandLine:
     noOptionsFile: Boolean = false,
     dropped: Set[String] = Set.empty,
   ):
-    /** The settings of `workspace`, which parseArguments stored in its one spelling (parseWorkspace). */
+    /** The settings of `workspace`, which parseArguments stored in the one spelling that parseWorkspace gives. */
     def workspaceSettings: WorkspaceSettings =
       workspace.fold(WorkspaceSettings.Default)(spelled =>
         parseWorkspace(spelled).fold(reason => throw IllegalStateException(reason), identity),
@@ -237,12 +241,12 @@ object CommandLine:
     def sessionStartMode: String = sessionStart.getOrElse(DefaultSessionStartMode)
     def microphone: Boolean = audio.exists(_.contains("mic"))
 
-  /** An option the options file supplied to a launch or an action, as the startup line spells it. */
+  /** An option that the options file supplied to a launch or an action, as the startup line spells the option. */
   case class FileSupplied(option: String, spelled: String)
 
   /**
-   * A single-valued option: one value per source, the command line's replacing the file's. `empty`
-   * is the value that, in force after the merge, means the default; a closed choice has none.
+   * A single-valued option: one value per source, and the command line's value replaces the file's. `empty` is the
+   * value that means the default when the value is in force after the merge. A closed choice has no `empty`.
    */
   private case class Single[A](
     name: String,
@@ -258,8 +262,8 @@ object CommandLine:
     def supplied(file: ParsedCommandLine, commandLine: ParsedCommandLine): Vector[FileSupplied] =
       if isGiven(commandLine) then Vector.empty else get(file).map(value => FileSupplied(name, spelled(value))).toVector
 
-  /** A repeatable option, merged by `key`: the command line's entry replaces the file's of the same key,
-    * and the command line's empty value drops the file's entries. */
+  /** A repeatable option, merged by `key`. The command line's entry replaces the file's entry of the same key, and the
+    * command line's empty value drops the file's entries. */
   private case class Repeated[A](
     name: String,
     get: ParsedCommandLine => Vector[A],
@@ -307,7 +311,7 @@ object CommandLine:
   )
 
   private val Repeateds: Vector[Repeated[?]] = Vector(
-    // The name alone: a value may be a secret (forwardedEnvironment).
+    // The startup line spells the name alone, because a value may be a secret (forwardedEnvironment).
     Repeated[EnvForward]("--env", _.env, (p, v) => p.copy(env = v), _.name, forward => s"--env=${forward.name}"),
     Repeated[CredentialBinding](
       "--egress-cred", _.credentialBindings, (p, v) => p.copy(credentialBindings = v), _.name,
@@ -326,22 +330,22 @@ object CommandLine:
   /** Every option the options file can hold, by name. */
   val FileOptionNames: Vector[String] = Singles.map(_.name) ++ Repeateds.map(_.name)
 
-  /** The options among FileOptionNames that `parsed` gives, as the action refusals read one source. */
+  /** The options among FileOptionNames that `parsed` gives. The action refusals read one source with this method. */
   def givenOptions(parsed: ParsedCommandLine): Vector[String] =
     Singles.filter(_.isGiven(parsed)).map(_.name) ++ Repeateds.filter(_.isGiven(parsed)).map(_.name)
 
-  /** `parsed` with only the options named in `used`: what an action reads of the options file. */
+  /** `parsed` with only the options named in `used`, which is what an action reads of the options file. */
   def restrictedTo(parsed: ParsedCommandLine, used: Set[String]): ParsedCommandLine =
     val singles = Singles.filterNot(option => used(option.name)).foldLeft(parsed)((p, option) => option.cleared(p))
     Repeateds.filterNot(option => used(option.name)).foldLeft(singles)((p, option) => option.cleared(p))
       .copy(dropped = parsed.dropped.filter(used))
 
   /**
-   * The options in force for a launch or an action: the command line's over the file's, as
-   * Single and Repeated merge them, with the action, the command and `--no-options-file` the
-   * command line's. Then the checks across options run on the merged set, so an `--env` and an
-   * `--egress-cred` of one name fail whichever source each comes from. Also gives the options the
-   * file supplied, for the startup lines.
+   * The options in force for a launch or an action, and the options that the file supplied, for the startup lines.
+   * - The command line's options go over the file's options, as Single and Repeated merge them. The action, the
+   *   command and `--no-options-file` come from the command line.
+   * - The checks across options then run on the merged set, so an `--env` and an `--egress-cred` of one name fail
+   *   whichever source each option comes from.
    */
   def merge(
     file: ParsedCommandLine,
@@ -382,7 +386,7 @@ object CommandLine:
       "--egress-log", "--egress-effective", "--self-test",
     )
 
-  /** The options that take a value, with what the value is; each is refused spelled without its `=`. */
+  /** The options that take a value, with what the value is. Each option is refused when spelled without its `=`. */
   val ValuedOptions: Map[String, String] = Map(
     "--workspace" -> "<mode>[,<backend>][,unix-socket]", "--egress" -> "<profile>", ModelProviderOption -> "<names>",
     "--clipboard" -> "<mode>", AudioOption -> "off|<devices>", "--nesting" -> "none|user-namespace|same-uid",
@@ -400,18 +404,19 @@ object CommandLine:
       s"${ClaudePlugins.OptionName}=<dir>"
 
   /**
-   * One source's arguments, as given. Outside a management action's documented operands, the first
-   * non-option is the command and ends launcher parsing; everything after it is passed verbatim.
-   * `--` is an optional escape for a command that could look like a launcher option; no launcher
-   * option is parsed after the command. An option this launcher does not parse refuses the launch
-   * rather than passing through — authority is never configured by a spelling that is not read.
-   * Within one source, a single-valued option is given once and an entry of a repeatable option
-   * once; an empty value of a repeatable option drops its entries before it.
+   * One source's arguments, as given.
+   * - Outside a management action's documented operands, the first non-option is the command and ends launcher
+   *   parsing. Everything after the command is passed verbatim, and no launcher option is parsed there.
+   * - `--` is an optional escape for a command that could look like a launcher option.
+   * - An option that this launcher does not parse refuses the launch rather than passing through, so a spelling that
+   *   is not read never configures authority.
+   * - Within one source, a single-valued option is given once, and each entry of a repeatable option is given once.
+   *   An empty value of a repeatable option drops the option's entries before that value.
    */
   def parseArguments(args: List[String]): Either[String, ParsedCommandLine] =
-    // A closed choice takes exactly one of its values, case-sensitive, and an empty value is none of
-    // them: an unclear value refuses the launch rather than being read as either side of the choice
-    // (design.md, "Security configuration must fail closed"). Its default weakens nothing.
+    // A closed choice takes exactly one of its values, case-sensitive, and an empty value is none of them. An unclear
+    // value refuses the launch rather than being read as either side of the choice (design.md, "Security configuration
+    // must fail closed"). A closed choice's default weakens nothing.
     def choose(option: String, value: String, choices: Vector[String]): Either[String, String] =
       if choices.contains(value) then Right(value)
       else Left(s"error: $option=$value; the values are ${choices.mkString(", ")}, exactly")
@@ -429,7 +434,7 @@ object CommandLine:
       parsed = next
       Right(())
 
-    /** A repeatable option's empty value: the entries before it are dropped. */
+    /** A repeatable option's empty value, which drops the entries before that value. */
     def drop(option: String)(set: ParsedCommandLine => ParsedCommandLine): Either[String, Unit] =
       update(set(parsed).copy(dropped = parsed.dropped + option))
 
@@ -480,7 +485,7 @@ object CommandLine:
                   Left(s"error: --egress-cred=${binding.spelled}; ${binding.name} is bound twice; one name, one host")
                 else update(parsed.copy(credentialBindings = parsed.credentialBindings :+ binding))
           },
-        // Spelled paths only here; ClaudePlugins.resolve reads them against the host at launch.
+        // The parser keeps the paths as spelled. ClaudePlugins.resolve reads the paths against the host at launch.
         () =>
           valueOf(ClaudePlugins.OptionName).map {
             case ""        => drop(ClaudePlugins.OptionName)(_.copy(claudePlugins = Vector.empty))

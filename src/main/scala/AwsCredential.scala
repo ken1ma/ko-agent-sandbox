@@ -1,5 +1,8 @@
-// --env-aws-cred: the AWS CLI's temporary credentials for one profile, resolved on the host at
-// launch and forwarded by name, as --env=NAME is, with the profile's region when it has one.
+// --env-aws-cred forwards the AWS CLI's temporary credentials for one profile.
+//
+// - The launcher resolves the credentials on the host at launch, and forwards them by name as
+//   --env=NAME forwards a variable.
+// - The launcher also forwards the profile's region when the profile has one.
 
 package agentsandbox.launcher
 
@@ -24,8 +27,9 @@ object AwsCredential:
     def spelled: String = profile.fold(OptionName)(name => s"$OptionName=$name")
 
   /**
-   * The three values for the profile, each under the name the SDKs read, when they expire, and
-   * the profile's region, forwarded as `AWS_REGION` since the sandbox has no `~/.aws/config`.
+   * The profile's three values, each under the name the SDKs read; when the values expire; and the
+   * profile's region. The launcher forwards the region as `AWS_REGION`, because the sandbox has no
+   * `~/.aws/config`.
    */
   case class Resolved(profile: String, values: Vector[(String, String)], expiration: String, region: Option[String]):
     def environment: Map[String, String] = values.toMap ++ region.map(RegionName -> _)
@@ -34,11 +38,12 @@ object AwsCredential:
       environment.toVector.map((name, value) => CommandLine.EnvForward(name, Some(value)))
 
   /**
-   * `--profile` on the command line even when the name came from `AWS_PROFILE`: botocore leaves the
-   * launching shell's `AWS_ACCESS_KEY_ID` out of its chain only for a profile given as an argument
-   * (`create_credential_resolver`, `disable_env_vars`), so a stale export cannot be what is resolved.
-   * `env-no-export` prints one `NAME=VALUE` line per value and the expiration line for temporary
-   * credentials alone (`awscli/customizations/configure/exportcreds.py`, `BasePerLineFormatter`).
+   * - The command passes `--profile` even when the name came from `AWS_PROFILE`. botocore leaves the
+   *   launching shell's `AWS_ACCESS_KEY_ID` out of its chain only for a profile given as an argument,
+   *   so the command cannot resolve a stale export (`create_credential_resolver`, `disable_env_vars`).
+   * - `env-no-export` prints one `NAME=VALUE` line per value. The format prints the expiration line
+   *   only for temporary credentials (`awscli/customizations/configure/exportcreds.py`,
+   *   `BasePerLineFormatter`).
    */
   def command(aws: Path, profile: String): Vector[String] =
     Vector(aws.toString, "configure", "export-credentials", "--profile", profile, "--format", "env-no-export")
@@ -52,7 +57,7 @@ object AwsCredential:
    * Refusals name the profile and the command, never a value.
    *
    * @param locate        the executable on the host's PATH
-   * @param run           the command, with its exit, output and error text
+   * @param run           runs the command and returns its exit, output and error text
    * @param forwardRegion false when `--env=AWS_REGION` is given, which then names the region itself
    */
   def resolve(
@@ -85,7 +90,8 @@ object AwsCredential:
       val region = Option.when(forwardRegion)(run(regionCommand(aws, profile))).filter(_.ok).map(_.text.trim)
       resolved.copy(region = region.filter(_.nonEmpty))
 
-  /** `env-no-export` output to the values, refusing a set that is not a login's: no expiration, or one passed. */
+  /** Parses `env-no-export` output into the values. The method refuses a set that is not a login's: a set
+    * with no expiration, or a set whose expiration has passed. */
   def parse(request: Request, profile: String, output: String, now: Instant): Either[String, Resolved] =
     val lines = output.linesIterator.map(_.span(_ != '=')).collect {
       case (name, value) if value.startsWith("=") => name -> value.drop(1)
@@ -109,21 +115,21 @@ object AwsCredential:
       s"log in on the host (aws sso login --profile $profile, or aws login --profile $profile), then relaunch."
 
   /**
-   * The refusal for a set that expired after its resolution: the start prompt waits without bound,
-   * and `aws login` resolves a set that lasts fifteen minutes.
+   * The refusal for a set that expired after the launcher resolved it. The start prompt waits without
+   * bound, and `aws login` resolves a set that lasts fifteen minutes.
    */
   def expiredSince(resolved: Resolved, now: Instant): Option[String] =
     expiry(resolved.expiration).filter(!_.isAfter(now)).map(expiredMessage(OptionName, resolved.profile, _))
 
-  /** The expiration as an instant, when the CLI printed one `OffsetDateTime` reads. */
+  /** The expiration as an instant, when the CLI printed a value that `OffsetDateTime` parses. */
   def expiry(expiration: String): Option[Instant] =
     try Some(OffsetDateTime.parse(expiration).toInstant)
     catch case _: DateTimeParseException => None
 
   /**
-   * The launch's line for the forward: the credential names, since the values are secrets, how long
-   * they serve, and the region, which is no secret. The profile is what the user chose
-   * (HostCommands.chosen).
+   * The launch's line for the forward. The line names the credentials but not their values, which are
+   * secrets. The line also says how long the values serve, and gives the region, which is no secret.
+   * The line tints the profile as what the user chose (HostCommands.chosen).
    */
   def bannerLine(resolved: Resolved, now: Instant, color: Boolean = colorStderr): String =
     val expires = expiry(resolved.expiration).map(instant => Duration.between(now, instant)).fold(

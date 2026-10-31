@@ -1,4 +1,4 @@
-// The BPF backend as the launcher drives it: the scripts' fixed text and transport, the probe's
+// Tests the BPF backend as the launcher drives it: the scripts' fixed text and transport, the probe's
 // verdicts, the labels and the comparison with the live sessions, and the launch script's parse.
 
 package agentsandbox.launcher
@@ -36,7 +36,7 @@ class KoAgentBpfTest extends munit.FunSuite:
       "podman create --replace", "podman cp ko-agent-bpf-extract:/out/.", "podman rm", "expected abc",
       "readback\" tags policy.bpf.o", "preload /sys/fs/bpf/ko-agent-bpf/preloaded", "mount -t bpf",
     ).foreach(step => assert(script.contains(step), s"missing '$step':\n$script"))
-    // Root only through the machine's sudo, for the controller and the read-back.
+    // The script gets root only through the machine's sudo, for the controller and the read-back.
     assert(script.linesIterator.filter(_.contains("sudo")).forall(line => line.contains("sudo -n")), script)
     val installed =
       "tags object=policy.bpf.o programs=9 kernel=x out=y ms=500.1\npreloaded pindir=p programs=9 load_ms=410"
@@ -45,8 +45,8 @@ class KoAgentBpfTest extends munit.FunSuite:
       "ko-agent-bpf installed: 9 programs verified; a program set for the next launch loaded in 410 ms",
     )
 
-  /** The retired unit's text as a839d14 and ee8793c wrote it, the home as `@HOME@`: what RetiredUnitSha256
-    * stands for. */
+  /** The retired unit's text as a839d14 and ee8793c wrote it, with the home as `@HOME@`. RetiredUnitSha256
+    * stands for this text. */
   private val retiredUnitText = Vector(
     "[Unit]",
     "Description=ko-agent-sandbox: load and verify the workspace policy's BPF programs ahead of the first launch",
@@ -103,7 +103,7 @@ class KoAgentBpfTest extends munit.FunSuite:
 
   test("a build skips the backend on a machine without its kernel prerequisites, and builds it otherwise"):
     val capable = parseFacts("sudo=1\nlsm=lockdown,capability,bpf\ncgroup2=cgroup2fs\nmounted=1\nbtf=1")
-    // What a launch needs beyond the kernel, the install among it, is not the build's to require.
+    // The build does not require what a launch needs beyond the kernel, the install included.
     assertEquals(buildFailures(capable, Os.Mac), Vector.empty)
     val noLsm = parseFacts("sudo=1\nlsm=lockdown,capability\ncgroup2=cgroup2fs\nmounted=1\nbtf=1")
     assert(buildFailures(noLsm, Os.Windows).exists(_.contains("wsl --update")), buildFailures(noLsm, Os.Windows))
@@ -111,8 +111,8 @@ class KoAgentBpfTest extends munit.FunSuite:
     assert(buildFailures(noBtf, Os.Mac).exists(_.contains("/sys/kernel/btf/vmlinux")), buildFailures(noBtf, Os.Mac))
     assert(buildSkippedNote(buildFailures(noBtf, Os.Mac)).contains("refused until"), "the note says what follows")
     assert(checksScript("/").contains("btf="), "the probe reports the kernel's BTF")
-    // A kernel that passes these checks and still lacks a feature the program uses fails the backend's
-    // own build or install; the build warns, names the upgrade, and completes the rest.
+    // A kernel that passes these checks and still lacks a feature that the program uses fails the
+    // backend's own build or install. The build then warns, names the upgrade, and completes the rest.
     val failed = buildFailedNote("build failed: podman build -f ko-agent-fs/bpf/Containerfile ko-agent-fs", Os.Windows)
     assert(failed.contains("rest of the build is complete") && failed.contains("wsl --update"), failed)
     assert(
@@ -156,7 +156,7 @@ class KoAgentBpfTest extends munit.FunSuite:
     assert(failing("tags_kernel", "7.1.8-300.fc44.aarch64").exists(_.contains("recorded under kernel 7.1.8")))
     assert(failing("fs_version", "ko-agent-fs 0.1.0 source other").exists(_.contains("ko-agent-fs")))
     assertEquals(requirementFailures(parseFacts(""), Os.Mac, "bpf-id", "fs-id").size, 9)
-    // The probe reads the share's type of the backing path, which travels encoded.
+    // The probe reads the share's type for the backing path, which travels encoded.
     val script = checksScript("/Users/me/My Project")
     assert(!script.contains("My Project") && script.contains("base64 -d"), script)
     assert(script.contains("findmnt -n -o FSTYPE -T"), script)
@@ -236,7 +236,7 @@ class KoAgentBpfTest extends munit.FunSuite:
     assertEquals(
       steps, Vector("checks", "records", "fixture", "cgroup", "attach", "verify", "proof", "placement", "done"),
     )
-    // The watcher waits for this session's container, started once the proof passed.
+    // The watcher waits for this session's container, which starts once the proof passed.
     assert(
       script.contains("(nohup sh \"$sess/watch-placement\" \"$placement\" s1 >/dev/null 2>&1 &)"), script,
     )
@@ -271,7 +271,7 @@ class KoAgentBpfTest extends munit.FunSuite:
     )
     assert(script.contains("--no-root"), script)
     assert(!script.contains("--bpf-records"), "a no-root policy needs no records")
-    // On Windows the share is NTFS: the short-name form is refused, in the attach and the read-back.
+    // On Windows the share is NTFS, so both the attach and the read-back refuse the short-name form.
     assertEquals(script.linesIterator.count(_.contains("--flags short-names,unix-socket")), 2, script)
     assert(script.contains("run \"$fixture\" \"$sess/proof-rules\" --unix-socket --no-root"), script)
     assertEquals(policyFlags(settings("live,bpf"), Os.Mac), "")
@@ -333,16 +333,16 @@ class KoAgentBpfTest extends munit.FunSuite:
     val directory = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/ko-agent-bpf-s1"
     val cgroupfsLine = "/user.slice/user-1000.slice/user@1000.service/app.slice/ko-agent-bpf-s1/libpod-dcb70e4a"
     assert(placementVerdict(directory, s"status=initialized pid=1196 cgroup=$cgroupfsLine waited_ms=0").isRight)
-    // A sibling whose name extends the attach cgroup's, the attach cgroup itself, and the user's slice are
-    // not below it.
+    // A sibling whose name extends the attach cgroup's name, the attach cgroup itself, and the user's slice
+    // are not below the attach cgroup.
     val sibling = "/user.slice/user-1000.slice/user@1000.service/app.slice/ko-agent-bpf-s10/libpod-dcb70e4a"
     Vector(sibling, directory.stripPrefix("/sys/fs/cgroup"), "/user.slice/user-1000.slice").foreach: line =>
       assert(placementVerdict(directory, s"status=initialized pid=1 cgroup=$line").isLeft, line)
     assert(placementVerdict(directory, "status=initialized pid=0 cgroup= waited_ms=0").isLeft)
     assert(placementVerdict(directory, "status=timeout waited_ms=60000").isLeft)
     assert(placementVerdict(directory, "").isLeft)
-    // The launcher's own init decides first: a failed one ends the launch, whatever a report says,
-    // and the report is not awaited.
+    // The launcher's own init decides first: a failed init ends the launch whatever a report says,
+    // and the launcher does not await the report.
     val good = s"status=initialized pid=1196 cgroup=$cgroupfsLine waited_ms=0"
     val failedInit = HostCommands.Run(125, Array.emptyByteArray, "Error: no such container")
     assertEquals(
@@ -358,7 +358,8 @@ class KoAgentBpfTest extends munit.FunSuite:
     val dir = Files.createTempDirectory("placement").toRealPath()
     try
       Files.createDirectory(dir.resolve("bin"))
-      // podman answers the container initialized, as the shell this fake runs in.
+      // The fake podman reports the container as initialized, with the fake's own shell as the
+      // container's process.
       Files.writeString(dir.resolve("bin/podman"), "#!/bin/sh\necho \"initialized $$\"\n")
       dir.resolve("bin/podman").toFile.setExecutable(true)
       Files.writeString(dir.resolve("watch"), PlacementWatcher)
@@ -406,16 +407,17 @@ class KoAgentBpfTest extends munit.FunSuite:
       Map("/Users/me/app" -> "36:1", "/Users/me/main/.git" -> "36:2", "/Users/me/main" -> "36:9").get
     def refusal(mine: String, volume: String, mounts: Vector[RawMount], live: LiveSession*) =
       refusalBeside(settings(mine), volume, mounts, live.toVector, reread)
-    // The same settings: nothing to refuse, whichever launched first.
+    // With the same settings, the launch refuses nothing, whichever session launched first.
     assertEquals(refusal("live,bpf", "vol-app", Vector(tree), bpfLive), None)
     assertEquals(refusal("live", "vol-app", Vector(tree), fuseLive), None)
-    // The other backend sharing the volume, the tree by identity, or the tree by ancestry.
+    // The launch is refused when the other backend shares the volume, the tree by identity, or the tree
+    // by ancestry.
     assert(refusal("live,bpf", "vol-app", Vector(tree), fuseLive).exists(_.contains("s-fuse")))
     assert(refusal("live", "vol-app", Vector(tree), bpfLive).exists(_.contains("--workspace=live,bpf")))
     assert(refusal("live,bpf", "vol-other", Vector(RawMount("/Users/me/app-renamed", "36:1")), fuseLive).isDefined)
     assert(refusal("live,bpf", "vol-other", Vector(RawMount("/Users/me/app/sub", "36:7")), fuseLive).isDefined)
     assert(refusal("live,bpf", "vol-other", Vector(RawMount("/Users/me", "36:8")), fuseLive).isDefined)
-    // The socket setting alone differs: refused too.
+    // The launch is refused too when the socket setting alone differs.
     assert(refusal("live,bpf", "vol-app", Vector(tree), socketLive).isDefined)
     assert(refusal("read-only,bpf,unix-socket", "vol-app", Vector(tree), bpfLive).isDefined)
     // A linked worktree's main gitdir is a raw mount under the main checkout's root.
@@ -423,15 +425,16 @@ class KoAgentBpfTest extends munit.FunSuite:
     val mainLive =
       LiveSession("s-main", Some(settings("live")), "vol-main", Vector(RawMount("/Users/me/main", "36:9")), None)
     assert(refusal("live,bpf", "vol-wt", worktree, mainLive).exists(_.contains("s-main")))
-    // Nothing shared: another workspace under the other backend is no concern.
+    // With nothing shared, another workspace under the other backend is no concern.
     assertEquals(refusal("live,bpf", "vol-other", Vector(RawMount("/Users/me/elsewhere", "36:3")), fuseLive), None)
-    // A session before the labels ran the filter with no socket setting, and what it shares is
-    // unknown: refused beside any other backend or setting, no concern to a filter launch.
+    // A session that a launcher started before the labels existed ran the filter with no socket
+    // setting, and what that session shares is unknown. A launch beside such a session is refused under
+    // any other backend or setting; a filter launch beside the session is no concern.
     assert(refusal("live,bpf", "vol-app", Vector(tree), unlabelled).exists(_.contains("earlier launcher")))
     assert(refusal("read-only,bpf,unix-socket", "vol-other", Vector.empty, unlabelled).isDefined)
     assertEquals(refusal("live", "vol-app", Vector(tree), unlabelled), None)
     assertEquals(refusal("read-only", "vol-app", Vector(tree), unlabelled), None)
-    // A recorded path that no longer names its identity: a host rename in between.
+    // A recorded path that no longer names its identity, because of a host rename in between.
     val renamed: String => Option[String] = path => if path == "/Users/me/app" then Some("36:77") else reread(path)
     val elsewhere = Vector(RawMount("/Users/me/x", "36:4"))
     assert(refusalBeside(settings("live,bpf"), "vol-other", elsewhere, Vector(fuseLive), renamed)
@@ -445,7 +448,8 @@ class KoAgentBpfTest extends munit.FunSuite:
     assert(nestingRefusal(settings("read-only,bpf"), "same-uid").exists(_.contains("needs --nesting=none")))
 
   test("the teardown unpins, ends the cgroup under each manager and removes the session's record, step by step"):
-    // A workspace directory's dot reaches the container name; bpffs refuses it in a pin path.
+    // A dot in a workspace directory's name reaches the container name, and bpffs refuses a dot in a
+    // pin path.
     val dotted = teardownScript("ko-agent-sandbox-my.app-0123456789ab-01234567", "systemd")
     assert(dotted.contains("unpin /sys/fs/bpf/ko-agent-bpf/ko-agent-sandbox-my_app-0123456789ab-01234567"), dotted)
     assert(dotted.contains("container exists ko-agent-sandbox-my.app-0123456789ab-01234567"), dotted)
@@ -458,8 +462,8 @@ class KoAgentBpfTest extends munit.FunSuite:
     val cgroupfs = teardownScript("s1", "cgroupfs")
     assert(cgroupfs.contains("rmdir \"$cg\"") && !cgroupfs.contains("systemctl"), cgroupfs)
     assert(!systemd.contains("set -e"), "a failed step must not cost the later ones")
-    // Only podman's own "no such container" answer, exit 1, lets the policy go: a container still
-    // there, or a podman that cannot answer, keeps the pins, the cgroup and the record.
+    // Only podman's own "no such container" answer, exit 1, lets the policy go. A container that is
+    // still there, or a podman that cannot answer, keeps the pins, the cgroup and the record.
     Vector(systemd, cgroupfs).foreach: script =>
       val check = script.indexOf("podman container exists s1")
       val unpin = script.indexOf("unpin")
@@ -482,7 +486,8 @@ class KoAgentBpfTest extends munit.FunSuite:
       stub(bin.resolve("sudo"), "[ \"$1\" = -n ] && shift\nexec \"$@\"")
       stub(bin.resolve("podman"), "true")
       stub(bin.resolve("systemctl"), "true")
-      // The live session's cgroup exists; the gone one's does not, nor does any pin on this host.
+      // The live session's cgroup exists. The gone session's cgroup does not, and no pin exists on this
+      // host.
       val liveCgroup = Files.createDirectories(dir.resolve("cgroup-live"))
       def record(name: String, cgroup: String): java.nio.file.Path =
         val session = Files.createDirectories(install.resolve("sessions").resolve(name))
@@ -514,8 +519,8 @@ class KoAgentBpfTest extends munit.FunSuite:
       "controller\" preload ",
     ).foreach(part => assert(script.contains(part), s"missing '$part':\n$script"))
     assert(script.contains("systemctl --user stop ko-agent-bpf-hold-$name"), "a sessionless hold is released first")
-    // The controller makes the pin root 0700, so every test of it runs as root, and a preparer's
-    // staging directory is unpinned once that process is gone.
+    // The controller makes the pin root 0700, so the script runs every check on the pin root as root.
+    // A preparer's staging directory is unpinned once that process is gone.
     assert(
       script.linesIterator.filter(_.contains(PreloadedPinDir)).forall(line => line.contains("sudo -n")),
       s"a test of the pin root as the machine user:\n$script",
@@ -569,7 +574,8 @@ class KoAgentBpfTest extends munit.FunSuite:
           Files.createDirectories(target.getParent)
           Files.write(target, LauncherImages.bundleResource(entry))
       assertEquals(sourceId(context), id)
-      // The host build under test/host/ is the self-test's input, not the backend's: a change there leaves the id.
+      // The host build under test/host/ is the self-test's input, not the backend's, so a change there leaves
+      // the id unchanged.
       Files.write(context.resolve("ko-agent-fs/bpf/test/host/policy_host.c"), "// changed\n".getBytes)
       assertEquals(sourceId(context), id)
       Files.write(context.resolve("ko-agent-fs/bpf/backend.h"), "// changed\n".getBytes)

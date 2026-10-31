@@ -1,11 +1,13 @@
-// Everything the launcher does about ko-agent-fs, the workspace policy, and ko-agent-fs-fuse, the FUSE
-// filter that serves it: digesting the source it bundles, building and installing the binaries, proving
-// the installed ones are that source's build, and the per-workspace mount lifecycle every session that
-// mounts the filter runs through.
+// What the launcher does about ko-agent-fs, the workspace policy, and ko-agent-fs-fuse, the FUSE filter
+// that serves the policy:
+// - digesting the source the launcher bundles;
+// - building and installing the binaries;
+// - proving the installed binaries are that source's build;
+// - the per-workspace mount lifecycle that every session mounting the filter runs through.
 //
-// They are separate programs with their own source tree, docs, tests and version check
+// The two are separate programs with their own source tree, docs, tests and version check
 // (ko-agent-fs/policy/, ko-agent-fs/fuse/), and they reach the launch through prepareKoAgentFs and
-// mountKoAgentFs. That is why it is a file rather than a section.
+// mountKoAgentFs. That is why this code is a file rather than a section.
 
 package agentsandbox.launcher
 
@@ -19,30 +21,32 @@ import LauncherImages.{bundledSourceId, contextSourceId}
 object KoAgentFs:
 
   /**
-   * The bundled source's identity, passed to the image build as KO_AGENT_FS_SOURCE_ID and
-   * reported back by both installed binaries' `--version`, so a binary that is not the one this
-   * launcher would build is detected rather than trusted (ko-agent-fs/fuse/doc/architecture.md,
+   * The bundled source's identity. The image build receives it as KO_AGENT_FS_SOURCE_ID, and both
+   * installed binaries report it back in `--version`. A binary that is not the one this launcher
+   * would build is therefore detected rather than trusted (ko-agent-fs/fuse/doc/architecture.md,
    * "Build and install").
    *
-   * Every bundled file the image copies counts, tests included: the digest names the source a
-   * binary was built from, which is also the source its suites covered (the developer's run and
-   * `--self-test`), and picking out which of the copied files "really" affect it is a judgement
-   * that can rot. The exclusions are drawn where they cannot rot into a second opinion: the doc/
-   * and probe/ directories are not bundled at all (build.sbt), so they are neither distributed
-   * nor digested, and editing a design document or a platform probe does not invalidate every
-   * installed binary; bpf/ is the BPF backend's, which the image does not copy (KoAgentBpf.sourceId).
+   * Every bundled file the image copies counts, tests included:
+   * - the digest names the source a binary was built from, which is also the source its suites
+   *   covered (the developer's run and `--self-test`);
+   * - picking out which of the copied files "really" affect the binary is a judgement that can rot.
+   *
+   * The exclusions are drawn where they cannot rot into a second opinion:
+   * - the doc/ and probe/ directories are not bundled at all (build.sbt), so they are neither
+   *   distributed nor digested. Editing a design document or a platform probe therefore does not
+   *   invalidate every installed binary;
+   * - bpf/ belongs to the BPF backend, which the image does not copy (KoAgentBpf.sourceId).
    */
   def koAgentFsSourceId(context: Path): String = contextSourceId(context, "ko-agent-fs", rustImageInput)
 
-  /** The bundled ko-agent-fs/ files the Rust image builds from: its Containerfile and what that copies, not bpf/. */
+  /** The bundled ko-agent-fs/ files the Rust image builds from: its Containerfile and what it copies, not bpf/. */
   private def rustImageInput(path: String): Boolean = !path.startsWith("bpf/")
 
   /**
-   * Where the binaries are installed, relative to the home of the user the
-   * daemon runs as — the VM user's home on podman machine, the host user's
-   * on native Linux. Relative on purpose: `podman machine ssh` starts in the
-   * VM user's home whoever that is (core on macOS, the WSL user on
-   * Windows), so no per-platform absolute path needs to be known here.
+   * Where the binaries are installed, relative to the home of the user the daemon runs as: the VM
+   * user's home on a podman machine, the host user's home on native Linux. The path is relative on
+   * purpose. `podman machine ssh` starts in the VM user's home, whoever that user is (core on macOS,
+   * the WSL user on Windows), so this code needs no per-platform absolute path.
    */
   val KoAgentFsInstallDir = ".local/share/ko-agent-sandbox"
   val KoAgentFsBinary = s"$KoAgentFsInstallDir/ko-agent-fs"
@@ -50,14 +54,13 @@ object KoAgentFs:
   val KoAgentFsBinaries: Vector[String] = Vector(KoAgentFsBinary, KoAgentFsFuseBinary)
 
   /**
-   * Steps 3–4 of the filter pipeline (ko-agent-fs/fuse/doc/architecture.md,
-   * "Build and install"): take both binaries out of the image's scratch stage
-   * and put them where the daemon must run. On podman machine both the image
-   * storage and the daemon are inside the VM, so the whole extraction runs
-   * there through `machine ssh` — a host-side `podman cp` would put the
-   * binary on the wrong side of the boundary. The ssh script is fixed text;
-   * nothing user-controlled is interpolated into it. `--replace` clears a
-   * leftover extract container from a crashed earlier run.
+   * Steps 3–4 of the filter pipeline: take both binaries out of the image's scratch stage and put
+   * them where the daemon must run (ko-agent-fs/fuse/doc/architecture.md, "Build and install").
+   * - On a podman machine, both the image storage and the daemon are inside the VM. The whole
+   *   extraction therefore runs there through `machine ssh`; a host-side `podman cp` would put the
+   *   binary on the wrong side of the boundary.
+   * - The ssh script is fixed text; nothing user-controlled is interpolated into it.
+   * - `--replace` clears a leftover extract container from a crashed earlier run.
    */
   def koAgentFsInstallCommands(podman: String, os: Os, home: String): Vector[Vector[String]] =
     os match
@@ -79,22 +82,23 @@ object KoAgentFs:
         Vector(Vector(podman, "machine", "ssh", script))
 
   /**
-   * The filter mounts with `allow_other`, which fusermount3 refuses for an
-   * unprivileged user until `user_allow_other` is set in the machine's
-   * /etc/fuse.conf. That file is the user's configuration, VM or not, so it
-   * is never changed silently: `--build` detects the missing line, shows
-   * the change *as a diff of the actual file* plus the exact script, and
-   * asks; only a "y" runs it, and every other path — declined, or no
-   * console to ask on — fails with the same script for the user to run
-   * themselves. One-time until the machine is recreated. A native Linux
-   * *host* is never even offered: there the self-test's message is the
-   * user's remedy.
+   * The filter mounts with `allow_other`, which fusermount3 refuses for an unprivileged user until
+   * `user_allow_other` is set in the machine's /etc/fuse.conf. That file is the user's
+   * configuration, VM or not, so the launcher never changes it silently:
+   * - `--build` detects the missing line, shows the change *as a diff of the actual file* plus the
+   *   exact script, and asks;
+   * - only a "y" runs the script. Every other path, declined or with no console to ask on, fails
+   *   with the same script for the user to run;
+   * - the change lasts until the machine is recreated, so the question comes once per machine;
+   * - a native Linux *host* is never offered the change: there, the self-test's message is the
+   *   user's remedy.
    *
-   * The script saves the original beside the file first. The backup name
-   * is the program's name, not `.dist`: `.dist` would claim
-   * as-distributed pristineness nobody verified, while this says who saved
-   * it and when it is safe to delete. Saved only if no backup exists yet,
-   * so a rerun cannot overwrite the true original with a modified copy.
+   * The script first saves the original beside the file.
+   * - The backup carries the program's name, not `.dist`. `.dist` would claim an as-distributed
+   *   pristine state that nobody verified, while the program's name says who saved the file and
+   *   when it is safe to delete.
+   * - The script saves only if no backup exists yet, so a rerun cannot overwrite the true original
+   *   with a modified copy.
    */
   val KoAgentFsFuseConfBackup = "/etc/fuse.conf.ko-agent-sandbox.orig"
 
@@ -110,9 +114,8 @@ object KoAgentFs:
     Vector(podman, "machine", "ssh", KoAgentFsFuseConfEnable)
 
   /**
-   * The change as a diff over the file's actual content: every current line
-   * as context, the one addition marked `+`. Consent is then over exact
-   * bytes, not a description of them.
+   * The change as a diff over the file's actual content: every current line as context, and the
+   * one addition marked `+`. The user then consents to exact bytes, not to a description of them.
    */
   def fuseConfDiff(current: String): String =
     val context =
@@ -175,11 +178,10 @@ object KoAgentFs:
       case _ => None
 
   /**
-   * Step 5: install the freshly built binaries and prove each installed one
-   * is the one this launcher's bundled source builds — its --version must
-   * echo the digest that was passed to the image build. A mismatch after a
-   * fresh install means the image tagged ko-agent-fs:latest is not the one
-   * --build just produced, and the launch pipeline must not trust it.
+   * Step 5: install the freshly built binaries and prove that each installed binary is the one this
+   * launcher's bundled source builds. Each binary's --version must echo the digest passed to the
+   * image build. A mismatch after a fresh install means the image tagged ko-agent-fs:latest is not
+   * the one --build just produced, and the launch pipeline must not trust that image.
    */
   def installKoAgentFs(podman: String, os: Os, expectedId: String): Unit =
     val home = sys.props("user.home")
@@ -206,29 +208,32 @@ object KoAgentFs:
           )
         case None =>
           fail(s"error: unrecognized $program --version output: ${version.text}")
-    // The whole stack, proven where it will run: an unprivileged mount over a scratch tree, with
-    // the policy shown to refuse. Its failure text names the environment fix.
+    // The self-test proves the whole stack where it will run: an unprivileged mount over a scratch
+    // tree, with the policy shown to refuse. The self-test's failure text names the environment fix.
     val selfTest = run(koAgentFsSelfTestCommand(podman, os, home)*)
     if !selfTest.ok then
       fail(s"error: ko-agent-fs-fuse self-test failed after install:\n${selfTest.err}", selfTest.exit)
     System.err.println(selfTest.text)
 
   // ---------------------------------------------------------------------------
-  // The workspace FUSE filter's mount lifecycle (every live session's)
+  // The workspace FUSE filter's mount lifecycle, which every live session runs through
   //
-  // One daemon per workspace, alive while the workspace has sessions: started on
-  // demand, reused by concurrent sessions, restarted when the
-  // mountpoint is stale or the installed binary is not the one this launcher's
-  // source builds, and unmounted when the workspace's last session ends. The
-  // reference count is the session markers under <mountdir>/sessions/, written
-  // by the mount script *before* it touches the mount, once the session's
-  // container exists, and collected by the reaper (or the resident path) after
-  // `podman wait`. The two orderings and the workspace lock shared by the scripts
-  // keep a concurrent reap off a live session; koAgentFsReapScript has what each
-  // covers. The resets remain the sweep for whatever a crashed launcher leaves.
-  // A daemon dying mid-session leaves
-  // the container's bind on a dead FUSE superblock — every access fails
-  // ENOTCONN, never a fallthrough to the unfiltered tree.
+  // Each workspace has one daemon, alive while the workspace has sessions:
+  // - a session starts the daemon on demand, and concurrent sessions reuse it;
+  // - a launch restarts the daemon when the mountpoint is stale or the installed binary is not the
+  //   one this launcher's source builds;
+  // - the mount is unmounted when the workspace's last session ends.
+  //
+  // The session markers under <mountdir>/sessions/ are the reference count.
+  // - The mount script writes a session's marker once the session's container exists, and *before*
+  //   it touches the mount.
+  // - The reaper, or the resident path, collects the marker after `podman wait`.
+  // - The two orderings and the workspace lock that the scripts share keep a concurrent reap off a
+  //   live session; koAgentFsReapScript has what each covers.
+  // - The resets remain the sweep for whatever a crashed launcher leaves.
+  //
+  // A daemon that dies mid-session leaves the container's bind on a dead FUSE superblock. Every
+  // access then fails with ENOTCONN, and no access falls through to the unfiltered tree.
   // ---------------------------------------------------------------------------
 
   def bundledKoAgentFsSourceId(): String = bundledSourceId("ko-agent-fs", rustImageInput)
@@ -242,8 +247,9 @@ object KoAgentFs:
     lines.foreach(System.err.println)
     result.exists(_.text.nonEmpty)
 
-  /** The lines reporting an unmount script's run, None when it could not start: every action it
-    * printed, even when a later one failed, then a note if the run failed. */
+  /** The lines that report an unmount script's run, given None when the script could not start:
+    * every action the script printed, even when a later action failed, then a note if the run
+    * failed. */
   def unmountReport(label: String, result: Option[Run]): Vector[String] =
     val done = result.toVector.flatMap(_.text.linesIterator).map(line => s"$label: $line")
     if result.exists(_.ok) then done
@@ -253,21 +259,26 @@ object KoAgentFs:
   def koAgentFsMountDir(workspaceId: String): String = s"$KoAgentFsInstallDir/mounts/$workspaceId"
 
   /**
-   * Start (or reuse) the workspace's filter daemon and leave the mountpoint
-   * serving. Fixed text except five values: the workspace id and the sandbox container's name
-   * (podman-safe by construction), the source id (hex), and the backing path and file rules —
-   * user-controlled, and therefore travelling base64-encoded, never spliced into shell text.
+   * Starts or reuses the workspace's filter daemon and leaves the mountpoint serving.
    *
-   * Each step fails closed. The workspace lock is `lock` in koAgentFsReapScript. A non-empty
-   * mountpoint is refused because a vanished mount must expose nothing. The `fuse*` match on
-   * statfs is because fuse/fuseblk naming varies by stat version.
+   * The script is fixed text except for five values:
+   * - the workspace id and the sandbox container's name, podman-safe by construction;
+   * - the source id, in hex;
+   * - the backing path and the file rules, which are user-controlled and therefore travel
+   *   base64-encoded, never spliced into shell text.
    *
-   * The file rules (FileRules.daemonText) are the mount's, as its source id is: a launch joins a
-   * live mount only under the same rules, since every session on one mount runs under the set its
-   * first launch resolved. A launch after an edit passes the running mount's rules it was shown
-   * (joinUnderOtherRules), so a refusal here, naming the sessions holding the mount, means the
-   * running mount's rules changed after the start prompt. Either way the script ends with the resolved set after
-   * FileRules.ResolvedMarker.
+   * Each step fails closed.
+   * - The workspace lock is `lock` in koAgentFsReapScript.
+   * - A non-empty mountpoint is refused, because a vanished mount must expose nothing.
+   * - The statfs check matches `fuse*`, because stat versions differ in naming fuse and fuseblk.
+   *
+   * The file rules (FileRules.daemonText) belong to the mount, as its source id does. A launch joins
+   * a live mount only under the same rules, since every session on one mount runs under the set its
+   * first launch resolved.
+   * - A launch after an edit passes the running mount's rules that the start prompt showed
+   *   (joinUnderOtherRules). A refusal here, naming the sessions holding the mount, therefore means
+   *   that the running mount's rules changed after the start prompt.
+   * - Either way, the script ends with the resolved set after FileRules.ResolvedMarker.
    */
   def koAgentFsMountScript(
     backing: String,
@@ -346,31 +357,29 @@ object KoAgentFs:
     )
 
   /**
-   * The last-session teardown, run where the daemon runs after a sandbox
-   * container exits. The session markers are the reference count: remove
-   * this run's, prune the dead ones (a crashed launcher leaves its marker
-   * behind), and unmount only when none remain.
+   * The last-session teardown, run where the daemon runs after a sandbox container exits. The
+   * session markers are the reference count. The script removes this run's marker, prunes the dead
+   * markers (a crashed launcher leaves its marker behind), and unmounts only when none remain.
    *
-   * Dead is container-gone, and nothing more: a session creates its container
-   * before it mounts, so its marker is never there without a container podman
-   * can name. A launcher that died between its `create` and `start` left the
-   * container, which keeps the marker until the reaper's bounded wait removes
-   * the stray (SandboxLifecycle.ReaperScript) or a reset does.
+   * A marker is dead when its container is gone, and for no other reason. A session creates its
+   * container before it mounts, so its marker never exists without a container podman can name. A
+   * launcher that died between its `create` and `start` left the container behind. That container
+   * keeps the marker until the reaper's bounded wait removes the stray
+   * (SandboxLifecycle.ReaperScript) or a reset does.
    *
-   * The safeguards below keep a reap off a live session, and none is sufficient
-   * alone. The container before the marker covers a launch still on its way to
-   * starting. The marker is written before the mount, so a reap that starts
-   * later must see it. And `lock` — held here across counting the markers and
-   * unmounting, and by the mount script across its reuse decision — covers
-   * what the ordering alone does not: a reap that counted zero markers, then
-   * a launch that writes its marker and reuses the still-live mount, then the
-   * unmount running under it. Serialized, that launch either takes the lock
-   * first and is counted, or finds the mount gone and starts a fresh daemon.
-   * A machine without flock degrades to the orderings, which is why the marker
-   * is written outside the lock and first.
+   * Three safeguards keep a reap off a live session, and none is sufficient alone:
+   * - The container exists before the marker, which covers a launch still on its way to starting.
+   * - The marker is written before the mount, so a reap that starts later must see it.
+   * - `lock` is held here across counting the markers and unmounting, and by the mount script across
+   *   its reuse decision. The lock covers a sequence the orderings alone do not: a reap counts zero
+   *   markers, then a launch writes its marker and reuses the still-live mount, then the unmount
+   *   runs under that launch. Serialized, that launch either takes the lock first and is counted, or
+   *   finds the mount gone and starts a fresh daemon.
    *
-   * Which podman the script calls is the caller's to decide:
-   * koAgentFsReapPodman.
+   * A machine without flock degrades to the orderings, which is why the marker is written first and
+   * outside the lock.
+   *
+   * The caller decides which podman the script calls: koAgentFsReapPodman.
    */
   def koAgentFsReapScript(podman: String, workspaceId: String, sandboxContainer: String): String =
     withScriptPath(
@@ -400,17 +409,15 @@ object KoAgentFs:
     )
 
   /**
-   * The podman the reap script calls. Inside the VM the bare name is the only
-   * right answer — it is the machine's own podman, the owner of those
-   * containers, and its path is not the host's to know; ScriptPath is what
-   * puts it in reach.
-   *
-   * On native Linux the script runs on this host, and a host's podman need not
-   * be in ScriptPath's system directories at all (/opt/podman/bin is a real
-   * layout). The path findOnPath resolved is the one this run created those
-   * containers with, so it is the one that can answer for them; the reap
-   * prunes a marker only on podman's not-exists answer, so a podman that
-   * fails rather than answers prunes nothing.
+   * The podman the reap script calls.
+   * - Inside the VM, the bare name is the only right answer. The name resolves to the machine's own
+   *   podman, which owns those containers, and the host cannot know that podman's path. ScriptPath
+   *   puts the machine's podman in reach.
+   * - On native Linux, the script runs on this host, and a host's podman need not be in ScriptPath's
+   *   system directories at all (/opt/podman/bin is a real layout). The path findOnPath resolved is
+   *   the one this run created those containers with, so that podman can answer for them.
+   * - The reap prunes a marker only on podman's not-exists answer, so a podman that fails rather
+   *   than answers prunes nothing.
    */
   def koAgentFsReapPodman(podman: String, os: Os): String =
     os match
@@ -418,8 +425,9 @@ object KoAgentFs:
       case Os.Mac | Os.Windows => "podman"
 
   /**
-   * How launcher output names the filter: its binary name, which is also what `findmnt` shows,
-   * with what it is and where its daemon runs — which is not the host on macOS and Windows.
+   * How launcher output names the filter: its binary name, which is also what `findmnt` shows, with
+   * what the filter is and where its daemon runs. On macOS and Windows, the daemon does not run on
+   * the host.
    */
   def koAgentFsLabel(os: Os): String =
     val where = os match
@@ -432,10 +440,10 @@ object KoAgentFs:
       case Os.Linux => "local"
       case Os.Mac | Os.Windows => "machine"
 
-  /** Unmount and remove one workspace's filter state; `-z` because a bind may still hold it. Prints a
-    * line for each unmount and removal it made, and nothing where there is no state. An unmount is
-    * reported only when fusermount3 made one: a resolve (koAgentFsResolveScript) leaves the state
-    * directory without a mount. */
+  /** Unmounts and removes one workspace's filter state, with `-z` because a bind may still hold the
+    * mount. The script prints a line for each unmount and removal it made, and nothing where there is
+    * no state. An unmount is reported only when fusermount3 made one, because a resolve
+    * (koAgentFsResolveScript) leaves the state directory without a mount. */
   def koAgentFsUnmountScript(workspaceId: String): String =
     withScriptPath(
       s"""dir="$$HOME/${koAgentFsMountDir(workspaceId)}"
@@ -457,25 +465,30 @@ object KoAgentFs:
 
   def koAgentFsScriptCommand(podman: String, os: Os, script: String): Vector[String] =
     os match
-      // /bin/sh, not a PATH-resolved `sh`, for the reason findOnPath states; ReaperScript spells it
-      // the same way.
+      // /bin/sh, not a PATH-resolved `sh`, for the reason findOnPath states. ReaperScript spells the
+      // shell the same way.
       case Os.Linux => Vector("/bin/sh", "-c", script)
-      // The script crosses base64-encoded. Windows needs it: the script is full of double quotes,
-      // which Windows argument encoding passes through unescaped, handing the VM a mangled
-      // command line (LauncherImages.BundleLabelTemplate has the same problem). macOS does not need it
-      // but uses the same encoding, so daily macOS runs detect a broken wrapper before it is used on
-      // Windows.
+      // The script crosses base64-encoded.
+      // - Windows needs the encoding. The script is full of double quotes, which Windows argument
+      //   encoding passes through unescaped, so the VM receives a mangled command line
+      //   (LauncherImages.BundleLabelTemplate has the same problem).
+      // - macOS does not need the encoding but uses it too, so daily macOS runs detect a broken
+      //   wrapper before it is used on Windows.
       case Os.Mac | Os.Windows =>
         Vector(podman, "machine", "ssh", s"${printingCommand(script)} | sh")
 
   /**
-   * The mountpoint made ready for a `podman create` that binds it: a directory, so podman's
-   * statfs of every bind source at create finds one, and not a dead mount — a daemon gone
-   * mid-session leaves a mountpoint every access of which fails ENOTCONN, statfs included, which
-   * the mount script would repair too late, after the create. Under the workspace lock like every
-   * decision about the mount; a live mount answers `ls` and is left alone. A live mount the
-   * mount script would join, one the build `sourceId` names serves, is described after
-   * RunningMountMarker: its sessions and its file rules (runningMountOf).
+   * Makes the mountpoint ready for a `podman create` that binds it.
+   * - The mountpoint must be a directory, because podman's statfs of every bind source at create
+   *   must find one.
+   * - The mountpoint must not be a dead mount. A daemon gone mid-session leaves a mountpoint where
+   *   every access fails with ENOTCONN, statfs included, and the mount script would repair the
+   *   mountpoint too late, after the create.
+   * - The script runs under the workspace lock, like every decision about the mount. A live mount
+   *   answers `ls` and is left alone.
+   * - The script describes a live mount that the mount script would join, one that the build
+   *   `sourceId` names serves, after RunningMountMarker: its sessions and its file rules
+   *   (runningMountOf).
    */
   def koAgentFsPrepareScript(workspaceId: String, sourceId: String): String =
     withScriptPath(
@@ -516,9 +529,9 @@ object KoAgentFs:
     )
 
   /**
-   * The mount a launch whose file rules are `wanted` joins under rules other than its own, with
-   * the start prompt as the consent (doc/file-rules.md, "One mount per workspace"), or the refusal
-   * when no prompt will ask: the running rules may be weaker than the edit.
+   * The mount that a launch whose file rules are `wanted` joins under rules other than its own, with
+   * the start prompt as the consent (doc/file-rules.md, "One mount per workspace"). When no prompt
+   * will ask, the result is the refusal, because the running rules may be weaker than the edit.
    */
   def joinUnderOtherRules(
     running: Option[RunningMount],
@@ -540,16 +553,17 @@ object KoAgentFs:
       s"(${running.sessions.mkString(", ")}); this session runs under the file rules they started with"
 
   /**
-   * prepareKoAgentFs's read-only checks as one script: one `podman machine ssh` where the filter
-   * runs in the machine, and a step the launch can start before its own checks finish. It prints:
+   * prepareKoAgentFs's read-only checks as one script. Where the filter runs in the machine, the
+   * checks cost one `podman machine ssh`, and the launch can start the script before its own checks
+   * finish. The script prints:
    *
    *   - the daemon user's home: the base every relative lifecycle path resolves against, and the
-   *     prefix that turns the mountpoint into an absolute `--volume` source. On native Linux it is
-   *     `home`, the JVM's `user.home` as installKoAgentFs uses it; the working directory there is
-   *     the workspace root;
+   *     prefix that turns the mountpoint into an absolute `--volume` source. On native Linux, the
+   *     home is `home`, the JVM's `user.home` as installKoAgentFs uses it; the working directory
+   *     there is the workspace root;
    *   - the installed filter's `--version`;
-   *   - only when that names `sourceId`, ChecksSelfTestMarker and then the self-test, whose status
-   *     is the script's.
+   *   - only when that version names `sourceId`, ChecksSelfTestMarker and then the self-test, whose
+   *     status is the script's.
    */
   def koAgentFsChecksScript(home: Option[String], sourceId: String): String =
     val homeLine = home match
@@ -580,15 +594,16 @@ object KoAgentFs:
 
   /**
    * The checks before each session, before anything of the run exists. Every failure aborts the
-   * launch — there is no fallback to an unfiltered bind mount.
+   * launch; there is no fallback to an unfiltered bind mount.
    *
-   *   - `checks`, koAgentFsChecks's answer, which the caller runs: the installed filter is this
-   *     launcher's build, and it can mount and the policy refuses (self-test).
+   *   - `checks` is koAgentFsChecks's answer, which the caller runs. The answer shows that the
+   *     installed filter is this launcher's build, that the filter can mount, and that the policy
+   *     refuses (self-test).
    *   - koAgentFsPrepareScript makes the mountpoint one a `podman create` can bind.
    *
-   * The mount itself is mountKoAgentFs, once the sandbox container exists; its script repeats the
-   * build check beside the daemon start, so this early one is the friendly refusal, not the binding
-   * one.
+   * mountKoAgentFs makes the mount itself once the sandbox container exists. That method's script
+   * repeats the build check beside the daemon start, so this early check is the friendly refusal,
+   * not the binding one.
    */
   def prepareKoAgentFs(
     podman: String,
@@ -629,13 +644,15 @@ object KoAgentFs:
   final case class KoAgentFsPrepared(sourceId: String, mountpoint: String, running: Option[RunningMount])
 
   /**
-   * Mount the workspace, or join its mount: whether this session reused a mount another session
-   * holds, and the resolved file rules the script printed. `backing` is the workspace root as the
-   * daemon's filesystem spells it (SandboxWorkspace.mountPathOf). Run once `sandboxContainer`
-   * exists, so the marker the script writes first is never found without its container
-   * (koAgentFsReapScript). Under the image-build lock, which installKoAgentFs holds while it
-   * replaces the binary: the script's build check and its daemon start are then one step against
-   * a concurrent --build, and a build in progress makes the mount wait for it.
+   * Mounts the workspace, or joins its mount. The result says whether this session reused a mount
+   * another session holds, and carries the resolved file rules the script printed.
+   * - `backing` is the workspace root as the daemon's filesystem spells it
+   *   (SandboxWorkspace.mountPathOf).
+   * - The caller runs this method once `sandboxContainer` exists, so the marker the script writes
+   *   first is never found without its container (koAgentFsReapScript).
+   * - The script runs under the image-build lock, which installKoAgentFs holds while it replaces the
+   *   binary. The script's build check and its daemon start are then one step against a concurrent
+   *   --build, and a build in progress makes the mount wait for the build.
    */
   def mountKoAgentFs(
     podman: String,
@@ -665,10 +682,10 @@ object KoAgentFs:
       case at => FileRules.parseResolved(lines.drop(at + 1).mkString("\n")).fold(fail(_), identity)
 
   /**
-   * The resolved file rules without a mount, for `--workspace=read-only` with `--run-on-host`, where host
-   * commands write the workspace while no daemon runs: `ko-agent-fs --resolve` over the workspace root as
-   * the daemon's filesystem spells it, through the channel the mount uses, under the same build
-   * check.
+   * The resolved file rules without a mount, for `--workspace=read-only` with `--run-on-host`, where
+   * host commands write the workspace while no daemon runs. The script runs `ko-agent-fs --resolve`
+   * over the workspace root as the daemon's filesystem spells it, through the channel the mount
+   * uses, under the same build check.
    */
   def koAgentFsResolveScript(backing: String, workspaceId: String, sourceId: String, fileRules: String): String =
     withScriptPath(
@@ -703,8 +720,8 @@ object KoAgentFs:
       fail(s"error: resolving the file rules with the ${koAgentFsLabel(os)} failed:\n${resolved.err}", resolved.exit)
     resolvedAfterMarker(resolved.text)
 
-  /** Both steps at once, for a mount no session's reap counts: the share self-test's scratch
-    * workspace (SelfTestShare). The mountpoint to bind. */
+  /** Both steps at once, for a mount that no session's reap counts: the share self-test's scratch
+    * workspace (SelfTestShare). Returns the mountpoint to bind. */
   def ensureKoAgentFsMounted(
     podman: String,
     os: Os,

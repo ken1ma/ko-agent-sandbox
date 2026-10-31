@@ -1,17 +1,16 @@
 #!/bin/sh
-# Discover the profile's system paths (run-on-host.md "The Seatbelt profile") the only way
-# it allows — by running a real build and reading what it actually needs, never by listing what
-# the host happens to have. Run it when a command stops under the profile and nothing names the
-# missing grant.
+# Discovers the profile's system paths (run-on-host.md, "The Seatbelt profile") the only way that the profile
+# allows: by running a real build and reading what the build needs, never by listing what the host happens to have.
+# Run the script when a command stops under the profile and nothing names the missing grant.
 #
-# `(debug deny)` makes denials visible, which is what Bazel's darwin-sandbox puts at the top of
-# every generated profile. `(trace)` — the other obvious instrument — is restricted on macOS 26 and
-# writes nothing, and unified-log denials have their paths redacted unless private-data logging is
-# enabled system-wide.
+# `(debug deny)` makes denials visible; Bazel's darwin-sandbox puts it at the top of every generated profile. The
+# other instruments fail:
+# - `(trace)` is restricted on macOS 26 and writes nothing;
+# - unified-log denials have their paths redacted unless private-data logging is enabled system-wide.
 #
-# The searches below do not rely on any of that: what is always reliable is whether the command
-# works, so they start from a set that runs and remove cumulatively, keeping only grants whose
-# absence breaks it.
+# The searches below rely on none of these instruments. Whether the command works is always reliable, so the
+# searches start from a set that runs and remove grants cumulatively, keeping only grants whose absence breaks the
+# command.
 #
 #   sh src/probe/run-on-host-profile-iterate.sh checks         # which check fails? run this first
 #   sh src/probe/run-on-host-profile-iterate.sh ops "<command>"    # which operations does it need?
@@ -23,12 +22,12 @@
 #   sh src/probe/run-on-host-profile-iterate.sh mach-proxy [native-image]   # ... and the host proxy, in either form?
 #   sh src/probe/run-on-host-profile-iterate.sh procargs   # can a command read another process's environment?
 #
-# Whether the current grant set builds is src/probe/run-on-host-acceptance-test.sh's question, not this one's.
+# Whether the current grant set builds is the question of src/probe/run-on-host-acceptance-test.sh, not of this
+# script.
 #
-# System paths accumulate in src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt,
-# which you edit by hand: a line added because a command failed once is a grant that outlives every
-# later command, so each belongs there only if it is a stable runtime read and not a path into user
-# data.
+# System paths accumulate in src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt, which you edit by
+# hand. A line added because a command failed once is a grant that outlives every later command, so a path belongs
+# there only if it is a stable runtime read and not a path into user data.
 set -u
 if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
 . "$(dirname "$0")/run-on-host-acceptance-setup.sh"
@@ -49,18 +48,21 @@ emit() {
     mv "$work/command.sb.env" "$work/command.env"
 }
 
-# -java-home because the sbt script declares `java_cmd=java` and would otherwise resolve
-# /usr/bin/java from PATH, which the profile does not grant.
+# Passes -java-home because the sbt script declares `java_cmd=java` and would otherwise resolve /usr/bin/java from
+# PATH, which the profile does not grant.
 #
-# No -Dsbt.server.autostart=false, which sbt 2 cannot honour: its own --no-server
-# is "run sbtn, and fail if it cannot connect to a server", and sets that same flag. sbt 2 is
-# client/server by construction, so the server starts inside the sandbox and its state goes to the
-# command's temporary directory with everything else.
-# The command's environment is the supervisor's closed set (RunOnHostSandbox): COURSIER_CACHE routes to the
-# run-on-host cache, _JAVA_OPTIONS reaches the server the client forks where -D flags do not, and
-# the two socket directories keep sbt inside the command's temporary directory.
-# `run_bound` seconds, 0 for none: `mach` sets it, because an sbt client waits without end for a
-# server that a denied lookup ended. The alarm is kept across each exec down to the client.
+# Passes no -Dsbt.server.autostart=false, which sbt 2 cannot honour: sbt 2's own --no-server means "run sbtn, and
+# fail if it cannot connect to a server", and sets that same flag. sbt 2 is client/server by construction, so the
+# server starts inside the sandbox, and the server's state goes to the command's temporary directory with everything
+# else.
+#
+# The command's environment is the supervisor's closed set (RunOnHostSandbox):
+# - COURSIER_CACHE routes to the run-on-host cache;
+# - _JAVA_OPTIONS reaches the server that the client forks, where -D flags do not;
+# - the two socket directories keep sbt inside the command's temporary directory.
+#
+# `run_bound` holds seconds, 0 for none. `mach` sets it, because an sbt client waits without end for a server that a
+# denied lookup ended. The alarm stays set across each exec down to the client.
 run_command() { # log [profile] [sbt-command]
     . "$work/command.env"
     tool_options="-Djava.io.tmpdir=$SESSION_TMP -Djava.util.prefs.userRoot=$SESSION_TMP"
@@ -74,15 +76,15 @@ run_command() { # log [profile] [sbt-command]
         --jvm-client -batch -java-home "$JAVA_HOME" "${3:-$command}" >"$1" 2>&1
 }
 
-# A profile sandbox-exec cannot compile fails exactly as a missing grant does: the child dies
-# either way. The difference is on sandbox-exec's own stderr, so it is captured rather than
-# discarded, and a profile that will not compile is reported as that rather than as a denial.
 dump_profile() {
     echo "--- profile ---"
     sed 's/^/   /' "$1"
     echo "---------------"
 }
 
+# A profile that sandbox-exec cannot compile fails exactly as a missing grant does: the child dies either way. The
+# difference shows on sandbox-exec's own stderr, so the script captures that stderr rather than discarding it, and
+# reports a profile that will not compile as such rather than as a denial.
 attempt_profile() {
     if /usr/bin/sandbox-exec -f "$1" /bin/sh -c "$2" >/dev/null 2>"$work/sbx.err"; then
         return 0
@@ -97,8 +99,8 @@ attempt_profile() {
     return 1
 }
 
-# Only these SBPL families take a path filter. Putting an unfiltered one — sysctl-read, say —
-# inside an (allow ... (subpath ...)) makes the whole profile invalid.
+# Only these SBPL families take a path filter. An unfiltered family, such as sysctl-read, inside an
+# (allow ... (subpath ...)) makes the whole profile invalid.
 path_family() {
     case "$1" in
         file-read*|file-write*|file-map-executable|process-exec*|file-ioctl) return 0 ;;
@@ -107,10 +109,10 @@ path_family() {
 }
 
 # --- mach-lookup -----------------------------------------------------------------------------------
-# A rendered profile with its mach-lookup rule (SeatbeltProfile.MachServices) replaced, in place so
-# the guard denies stay last: by one global-name rule per line of a names file, or, with no names
-# file, by the unfiltered grant — the baseline, since a JDK or a build may need a service the
-# rendered rule does not name, and that is what the search is for.
+# Writes a rendered profile with its mach-lookup rule (SeatbeltProfile.MachServices) replaced in place, so that the
+# guard denies stay last. The replacement is one global-name rule per line of a names file. With no names file, the
+# replacement is the unfiltered grant: the baseline, because a JDK or a build may need a service that the rendered
+# rule does not name, and finding such services is what the search is for.
 mach_profile() { # rendered-profile names-file|"" out
     if [ -n "$2" ]
     then sed 's/.*/(allow mach-lookup (global-name "&"))/' "$2" > "$work/mach-rules.sb"
@@ -129,11 +131,12 @@ mach_profile() { # rendered-profile names-file|"" out
     }
 }
 
-# The names a launchd job definition registers: the MachServices keys of the launchd plists under
-# /System/Library, /Library and ~/Library. A key of a nested dictionary (ResetAtClose,
-# HideUntilCheckIn) comes along as a name no service has, which the search drops like any other.
-# Names a process registers at run time are not here; `mach_search` says so when the full list
-# does not run the command, and mach-extra.txt takes them.
+# Lists the names that a launchd job definition registers: the MachServices keys of the launchd plists under
+# /System/Library, /Library and ~/Library.
+# - A key of a nested dictionary (ResetAtClose, HideUntilCheckIn) comes along as a name that no service has; the
+#   search drops that name like any other.
+# - Names that a process registers at run time are not in this list. `mach_search` says so when the full list does
+#   not run the command, and mach-extra.txt takes those names.
 mach_candidates() { # out
     for directory in /System/Library/LaunchDaemons /System/Library/LaunchAgents \
         /Library/LaunchDaemons /Library/LaunchAgents "$HOME/Library/LaunchAgents"; do
@@ -146,10 +149,10 @@ mach_candidates() { # out
     cat "$work/mach-found.txt" "$work/mach-extra.txt" | grep -v -e '["\\&]' -e '^$' | sort -u > "$1"
 }
 
-# Drop `chunk` from `keep` if `passes` still succeeds without it, else halve it, down to single
-# names: cumulative removal as `paths` does it, by halves because the candidates are thousands
-# and the needed names few. Greedy like `ops`: of two interchangeable names it keeps the one it
-# tested last.
+# Drops `chunk` from `keep` if `passes` still succeeds without it, and otherwise halves the chunk, down to single
+# names. This is cumulative removal as `paths` does it, by halves because the candidates are thousands and the
+# needed names few. Like `ops`, the removal is greedy: of two interchangeable names, it keeps the one that it tested
+# last.
 mach_reduce() { # passes keep chunk
     reduce_passes=$1; reduce_keep=$2
     cp "$3" "$work/mach-chunk-0"
@@ -178,9 +181,9 @@ mach_reduce() { # passes keep chunk
     done
 }
 
-# The names the quick command needs first — `java -version`, since a JVM start is seconds and
-# `slow` is a build or a served fetch: the slow command is then tried with those names alone, and
-# halves the rest only if that fails. `quick_label` names the quick command in the output.
+# Finds the names that the quick command needs first. The quick command is `java -version`, because a JVM start
+# takes seconds, and `slow` is a build or a served fetch. The search then tries the slow command with those names
+# alone, and halves the rest only if that attempt fails. `quick_label` names the quick command in the output.
 mach_search() { # quick-passes slow-passes baseline-passes attempt-log
     all=$work/mach-all.txt; needed=$work/mach-needed.txt
     if ! "$3"; then
@@ -234,21 +237,21 @@ EOF
 
 case "$mode" in
 ops)
-    # Which SBPL operation families a command needs, by the same cumulative removal `paths` uses —
-    # paths held wide open at (subpath "/") so only the operation varies. Run this first when
-    # `paths` reports that granting every root entry still fails: that is what "not only a path"
-    # looks like, and holding operations fixed cannot see it.
+    # Finds which SBPL operation families a command needs, by the same cumulative removal that `paths` uses. Paths
+    # stay wide open at (subpath "/"), so that only the operation varies. Run this mode first when `paths` reports
+    # that granting every root entry still fails: that is what "not only a path" looks like, and a search that holds
+    # operations fixed cannot see it.
     probe_command=${2:-"/bin/sh -c 'echo ok'"}
     families="file-read* file-write* file-map-executable process-exec* process-fork process-info*
               sysctl-read sysctl-write mach-lookup mach-register ipc-posix-shm ipc-posix-sem
               signal network* system-socket iokit-open pseudo-tty file-ioctl"
     keep=$(printf '%s' "$families" | tr -s ' \n' ' ')
 
-    # A family under test must be genuinely absent when dropped: an unconditional
-    # (allow file-read* file-map-executable process-exec* (subpath "/")) would re-grant three of
-    # the families being measured and make their removal untestable.
-    # Path-filtered families take (subpath "/"); the rest take no filter, which is a syntax error
-    # for them.
+    # A family under test must be truly absent when dropped. An unconditional
+    # (allow file-read* file-map-executable process-exec* (subpath "/")) would re-grant three of the families being
+    # measured and make their removal untestable.
+    # Path-filtered families take (subpath "/"). The other families take no filter, because a filter is a syntax
+    # error for them.
     try_ops() {
         printf '(version 1)\n(debug deny)\n(deny default)\n' > "$work/ops.sb"
         for family in $1; do
@@ -276,9 +279,9 @@ ops)
             printf '  KEEP    %s\n' "$f"
         fi
     done
-    # Greedy removal finds *a* minimal set, not *the* minimal one: where two families are
-    # interchangeable it keeps whichever it happened to test last, which is how sysctl-write can
-    # survive while sysctl-read drops. Try the weaker spelling of each before believing the result.
+    # Greedy removal finds *a* minimal set, not *the* minimal one. Where two families are interchangeable, the
+    # removal keeps whichever it happened to test last, which is how sysctl-write can survive while sysctl-read
+    # drops. Try the weaker spelling of each family before believing the result.
     echo
     echo "downgrades — is a weaker family enough?"
     for pair in "sysctl-write sysctl-read" "file-write* file-read*" "mach-register mach-lookup"; do
@@ -300,23 +303,23 @@ ops)
     echo "written to src/probe/seatbelt-runtime-operations.txt, which 'paths' uses as its base"
     ;;
 paths)
-    # The minimal set of trees /bin/sh needs, by cumulative removal.
+    # Finds the minimal set of trees that /bin/sh needs, by cumulative removal.
     #
-    # Testing each denial independently cannot work here: what a loader needs is reachable by more
-    # than one route, so every single removal is survivable and the "individually required" set
-    # comes out empty while the union of it fails. Removing cumulatively — drop a tree only if the
-    # set that remains still works — is the same algorithm `narrow` uses, and it converges.
+    # Testing each denial independently cannot work here. A loader can reach what it needs by more than one route,
+    # so the command survives every single removal, and the "individually required" set comes out empty while the
+    # union of those removals fails. Cumulative removal drops a tree only if the remaining set still works. `narrow`
+    # uses the same algorithm, and the algorithm converges.
     base='(deny default)'
-    # The families `ops` measured, so a path search is not defeated by a missing operation. Without
-    # this the JDK reports "not a path" when the truth is "not only a path".
+    # Grant the families that `ops` measured, so that a missing operation does not defeat the path search. Without
+    # these families, the JDK reports "not a path" when the truth is "not only a path".
     if [ -f src/probe/seatbelt-runtime-operations.txt ]; then
         ops=$(cat src/probe/seatbelt-runtime-operations.txt)
     else
         ops='file-read* process-exec*'
     fi
-    # The JDK is measured, not assumed. Seeding the *bundle* rather than JAVA_HOME only widens the
-    # starting point; the descent pass then reports whether Contents/Home would have sufficed, so
-    # "a macOS JDK needs libjli.dylib from Contents/MacOS" is a result rather than a premise.
+    # The search measures the JDK rather than assuming its paths. Seeding the *bundle* rather than JAVA_HOME only
+    # widens the starting point. The descent pass then reports whether Contents/Home would have sufficed, so "a
+    # macOS JDK needs libjli.dylib from Contents/MacOS" is a result rather than a premise.
     jdk_seed=""
     if [ -n "${JAVA_HOME:-}" ]; then
         jdk_seed=$JAVA_HOME
@@ -349,12 +352,11 @@ paths)
         attempt_profile "$work/paths.sb" "$probe_command"
     }
 
-    # (subpath "/") passes while the union of every (subpath "/child") fails, so what is missing is
-    # the root component itself: resolving /bin/sh authorizes "/" before "/bin". Which grant on "/"
-    # suffices decides how much this costs — a literal names the directory entry alone and reveals
-    # nothing about its contents.
-    # What is already granted, so the measurement answers "what *else*" rather than rediscovering
-    # the prerequisites' paths. The command under test defaults to a shell.
+    # (subpath "/") passes while the union of every (subpath "/child") fails, so the missing grant is the root
+    # component itself: resolving /bin/sh authorizes "/" before "/bin". The cost depends on which grant on "/"
+    # suffices: a literal names the directory entry alone and reveals nothing about the directory's contents.
+    # `granted` holds what is already granted, so that the measurement answers "what *else*" rather than
+    # rediscovering the prerequisites' paths. The command under test defaults to a shell.
     probe_command=${2:-"/bin/sh -c 'echo ok'"}
     granted=""
     while IFS= read -r line; do
@@ -395,9 +397,9 @@ paths)
         fi
     done < "$work/snapshot.txt"
     echo
-    # A kept root entry is rarely the answer: /System is required, but a command has no business
-    # reading all of it. Try replacing each with its children, keeping the descent only while the
-    # command still works, so the result is as deep as the evidence allows.
+    # A kept root entry is rarely the answer: /System is required, but a command has no business reading all of it.
+    # The pass tries to replace each entry with its children and keeps the descent only while the command still
+    # works, so the result is as deep as the evidence allows.
     echo
     echo "descending into each kept tree:"
     changed=1
@@ -408,9 +410,9 @@ paths)
             [ -n "$children" ] || continue
             case "$tree" in "L "*) continue ;; esac
             grep -vxF "$tree" "$keep" > "$work/descend.txt"
-            # The entry itself stays as a literal: resolving a child authorizes its parent as a
-            # path component, and a grant on the children does not cover it. Without this a tree
-            # can never be descended, and the result reads as "the whole tree is required".
+            # The entry itself stays as a literal: resolving a child authorizes the child's parent as a path
+            # component, and a grant on the children does not cover the parent. Without the literal, a tree can
+            # never be descended, and the result reads as "the whole tree is required".
             printf 'L %s\n' "$tree" >> "$work/descend.txt"
             printf '%s\n' "$children" >> "$work/descend.txt"
             if passes "$work/descend.txt"; then
@@ -432,16 +434,16 @@ paths)
     echo
     echo "the minimal set it needs:"
     sed 's/^/  /' "$keep"
-    # Regenerate: the last profile written was a failed attempt, not the answer.
+    # Regenerate the profile, because the last profile written was a failed attempt, not the answer.
     profile_from "$keep"
     dump_profile "$work/paths.sb"
     echo
     ;;
 checks)
-    # A process that dies before writing anything says nothing about which grant is missing. This
-    # runs checks in order, from the smallest possible program to a real build, and stops at the
-    # first that fails, so the missing grant is one that check already needs. Output is not redirected:
-    # the reason usually goes to the terminal, and redirecting is how it was lost.
+    # A process that dies before writing anything says nothing about which grant is missing. This mode runs checks
+    # in order, from the smallest possible program to a real build, and stops at the first check that fails, so the
+    # missing grant is one that this check already needs. The output is not redirected: the reason usually goes to
+    # the terminal, and a redirect would lose it.
     emit "$system_paths" || exit 1
     . "$work/command.env"
     check() {
@@ -453,7 +455,7 @@ checks)
             exit 1
         fi
     }
-    # Only binaries the profile grants: a check that fails because it reached for an ungranted
+    # The checks run only binaries that the profile grants: a check that fails because it reached for an ungranted
     # binary says nothing about the program it claims to test.
     check "the loader, through a granted shell"           /bin/sh -c 'echo hello'
     check "the sbt script's interpreter: /usr/bin/env sh"   /usr/bin/env sh -c 'echo hello'
@@ -486,9 +488,9 @@ narrow)
     echo "review it, then replace the body of $system_paths with it."
     ;;
 mach-route)
-    # Whether a command, /usr/bin being executable, starts a program outside the profile through
-    # LaunchServices. Each confined row has a control, the same `open` unconfined: a control that
-    # starts nothing — an approval prompt, a changed default application — leaves its row undecided.
+    # Measures whether a command, with /usr/bin executable, starts a program outside the profile through
+    # LaunchServices. Each confined row has a control, the same `open` unconfined. A control that starts nothing,
+    # because of an approval prompt or a changed default application, leaves its row undecided.
     emit "$system_paths" || exit 1
     . "$work/command.env"
     workspace=$(pwd -P)
@@ -505,7 +507,7 @@ mach-route)
     }
     row() { printf '%-64s %s\n' "$1" "$2"; }
 
-    # R1: an application of the system's.
+    # R1: an application that the system ships.
     calculator_runs() { pgrep -x Calculator >/dev/null; }
     if calculator_runs; then echo "Quit Calculator first: R1 tells a start by whether it runs." >&2; exit 2; fi
     echo "R1 open -a Calculator"
@@ -522,8 +524,8 @@ mach-route)
         pkill -x Calculator
     fi
 
-    # R2: a program the command wrote, run by Terminal, which no profile confines. The marker is
-    # where the profile denies a write, so its existence is the program having run outside it.
+    # R2: a program that the command wrote, run by Terminal, which no profile confines. The marker lies where the
+    # profile denies a write, so the marker's existence shows that the program ran outside the profile.
     echo "R2 open WORKSPACE/target/mach-route/<script>.command (it opens Terminal windows; close them after)"
     script_text() { printf '#!/bin/sh\n: > "%s"\n' "$1"; }
     for kind in control confined; do
@@ -555,12 +557,12 @@ mach-route)
 mach)
     emit "$system_paths" || exit 1
     . "$work/command.env"
-    # emit's own sbt server holds this project's portfile (the acceptance test ends it for the same reason).
+    # End emit's own sbt server, which holds this project's portfile; the acceptance test ends it for the same reason.
     sbt --jvm-client -batch shutdown >/dev/null 2>&1
     run_bound=${MACH_BOUND:-600}
-    # A build of its own inside the workspace the profile grants: this checkout's target/ links into
-    # the store of the unconfined sbt that emit ran, which the profile denies (run-on-host.md,
-    # the sbt server's state), and the runner's sweep of those links is not this probe's to run.
+    # The probe builds a project of its own inside the workspace that the profile grants. This checkout's target/
+    # links into the store of the unconfined sbt that emit ran, and the profile denies that store (run-on-host.md,
+    # "sbt", the paragraph on the server's state). Sweeping those links is the runner's job, not this probe's.
     fixture=$(pwd -P)/target/mach-fixture
     rm -rf "$fixture"; mkdir -p "$fixture/project"
     cp project/build.properties "$fixture/project/"
@@ -575,8 +577,8 @@ mach)
         mach_profile "$work/command.sb" "$1" "$work/mach.sb"
         attempt_profile "$work/mach.sb" "'$JAVA_HOME/bin/java' -version"
     }
-    # The server a passing attempt leaves would serve the next attempt's client from under the
-    # earlier attempt's names, so it is ended under the unfiltered profile, which the baseline proved.
+    # The server that a passing attempt leaves would serve the next attempt's client under the earlier attempt's
+    # names. So the script ends the server under the unfiltered profile, which the baseline proved to work.
     build_passes() {
         mach_profile "$work/command.sb" "$1" "$work/mach.sb"
         fixture_command "$work/mach-try.log" "$work/mach.sb"; result=$?
@@ -602,7 +604,7 @@ mach-proxy)
     image=${2:-}
     if [ -n "$image" ]; then
         [ -f "$image" ] && [ -x "$image" ] || { echo "$image is not an executable file" >&2; exit 2; }
-        # Absolute, since the proxy is started from /.
+        # Make the path absolute, because the proxy starts from /.
         image=$(cd "$(dirname "$image")" && pwd -P)/$(basename "$image")
         sbt -batch "Test/runMain agentsandbox.launcher.EmitRunOnHostProfile \"$work/proxy.sb\" \
                 $system_paths proxy-image \"$image\"" >"$work/emit-proxy.log" 2>&1 ||
@@ -616,18 +618,18 @@ mach-proxy)
             { echo "emit failed for the proxy:"; tail -20 "$work/emit-proxy.log"; exit 1; }
     fi
     sbt --jvm-client -batch shutdown >/dev/null 2>&1
-    # java itself, from /: the proxy's profile grants no shell and no other working directory. A
-    # native image has no quicker start than serving, so serving is its quick check too.
+    # The quick check runs java itself from /, because the proxy's profile grants no shell and no other working
+    # directory. A native image has no quicker start than serving, so serving is its quick check too.
     quick_passes() {
         if [ -n "$image" ]; then serve_passes "$1"; return; fi
         mach_profile "$work/proxy.sb" "$1" "$work/mach.sb"
         (cd / && /usr/bin/sandbox-exec -f "$work/mach.sb" "$JAVA_HOME/bin/java" -version) >/dev/null 2>&1
     }
-    # Started as RunOnHostProxy.startProxy starts it, then one fetch through it, which makes it
-    # resolve a name and connect.
+    # serve_under starts the proxy as RunOnHostProxy.startProxy starts it, then sends one fetch through the proxy,
+    # which makes the proxy resolve a name and connect.
     proxy_ready() { grep -q 'ko-agent-egress-proxy listening on :[0-9]' "$work/mach-proxy.log"; }
-    # Not exec'd: the subshell then reports a JVM that a denied lookup ends with a segmentation
-    # fault into the log, where this shell would report it on the terminal at every attempt.
+    # The subshell does not exec sandbox-exec, so the subshell reports a JVM that a denied lookup ends with a
+    # segmentation fault into the log. With exec, this shell would report the fault on the terminal at every attempt.
     serve_under() { # profile
         served_profile=$1
         if [ -n "$image" ]
@@ -670,35 +672,36 @@ allow https://repo1.maven.org/ read' EGRESS_BIND=127.0.0.1:0 \
     mach_search quick_passes serve_passes serve_baseline "$work/mach-proxy.log"
     ;;
 procargs)
-    # Whether a confined command reads another same-user process's environment through
-    # sysctl(KERN_PROCARGS2), the call behind `ps -E`, and whether the rule that denies it leaves the
-    # JDK running (run-on-host.md "The Seatbelt profile" records the answers). ProcArgs.java makes
-    # the call: `ps` is setuid, which no profile lets a command execute, and a build can make the
-    # call itself.
+    # Measures whether a confined command reads the environment of another process of the same user through
+    # sysctl(KERN_PROCARGS2), the call behind `ps -E`. Also measures whether the rule that denies the call leaves the
+    # JDK running (run-on-host.md, "The Seatbelt profile", records the answers). ProcArgs.java makes the call: `ps`
+    # is setuid, which no profile lets a command execute, and a build can make the call itself.
     #
-    # Two targets outside the sandbox, because the kernel omits the environment of a cs_restricted
-    # process, which Apple's own binaries are, unless the caller is the target (xnu
-    # bsd/kern/kern_sysctl.c, sysctl_procargsx): a JDK started here with a marker variable, as the
-    # runner and a supervisor are JDKs holding the launch's environment, and this shell, which is
-    # Apple's.
+    # Two targets lie outside the sandbox, because the kernel omits the environment of a cs_restricted process
+    # unless the caller is the target (xnu bsd/kern/kern_sysctl.c, sysctl_procargsx). Apple's own binaries are
+    # cs_restricted.
+    # - A JDK started here with a marker variable stands in for the runner and a supervisor, which are JDKs that
+    #   hold the launch's environment.
+    # - This shell is Apple's.
     #
-    # Two more for what `same-sandbox` spans: a child the reader starts, which inherits its
-    # sandbox, and a JDK under a sandbox-exec of its own with the same profile, as the runner
-    # starts an sbt server and a Mill daemon apart from their clients. Each line ends with whether
-    # `ProcessHandle.of` finds the target and whether `info()` reads it, which Mill's client asks of
-    # its daemon (PidLock.isLockValid).
+    # Two more targets cover what `same-sandbox` spans:
+    # - a child that the reader starts, which inherits the reader's sandbox;
+    # - a JDK under a sandbox-exec of its own with the same profile, as the runner starts an sbt server and a Mill
+    #   daemon apart from their clients.
+    # Each line ends with whether `ProcessHandle.of` finds the target and whether `info()` reads it. Mill's client
+    # asks the same of its daemon (PidLock.isLockValid).
     #
-    # The call succeeds while either sysctl-read of its name, kern.procargs2.<pid>, or
-    # process-info-pidinfo is allowed, and `(deny default)` does not cover process-info*, so the
-    # rule denies both and allows pidinfo again inside the sandbox, where a build inspects its own
-    # children (https://github.com/eugene1g/agent-safehouse profiles/10-system-runtime.sb). The two
-    # rows before it deny one family each.
+    # The call succeeds while either sysctl-read of its name, kern.procargs2.<pid>, or process-info-pidinfo is
+    # allowed, and `(deny default)` does not cover process-info*. So the rule denies both and allows pidinfo again
+    # inside the sandbox, where a build inspects its own children
+    # (https://github.com/eugene1g/agent-safehouse profiles/10-system-runtime.sb). The two rows before the row
+    # "both" deny one family each.
     #
-    # Each profile is `(allow default)` plus the rule, as seatbelt-semantics.sh isolates them, then
-    # the rendered command profile without the rule, with it, and with it and a mill client's one-name
-    # exception. No build runs here: the JDK starting
-    # under the rendered profile is the row itself, and every program starting under it is the
-    # acceptance test's question. Run it on each new macOS release.
+    # The first four profiles are `(allow default)` plus the rule under test, isolated as seatbelt-semantics.sh
+    # isolates its rules. Then come the rendered command profile without the rule, with it, and with it and a mill
+    # client's one-name exception. No build runs here: the JDK starting under the rendered profile is the row itself,
+    # and whether every program starts under that profile is the acceptance test's question. Run this mode on each new
+    # macOS release.
     : "${JAVA_HOME:?set JAVA_HOME to the JDK the profile grants}"
     probe_source=$(pwd -P)/src/probe/ProcArgs.java
     KO_AGENT_PROCARGS_PROBE=1 "$JAVA_HOME/bin/java" "$probe_source" --hold >/dev/null 2>&1 &
@@ -739,7 +742,7 @@ procargs)
 
     emit "$system_paths" || exit 1
     . "$work/command.env"
-    # SeatbeltProfile.ProcessReadRule's lines, taken out for the contrast.
+    # Take SeatbeltProfile.ProcessReadRule's lines out of the rendered profile for the contrast.
     awk '
         /^\(deny sysctl-read \(sysctl-name-regex #"procargs"\)\)$/ || /process-info-pidinfo/ { found++; next }
         { print }
@@ -748,9 +751,9 @@ procargs)
     }
     read_under "the rendered command profile without the rule" "$work/command-norule.sb" "$SESSION_TMP"
     read_under "the rendered command profile" "$work/command.sb" "$SESSION_TMP"
-    # The exception a mill client's profile takes for its daemon (SeatbeltProfile.Network.MillClient):
-    # the sysctl name of the held JDK's arguments alone, allowed after the rule. Expected: the held
-    # JDK read, with info read; every other target denied, with info throwing.
+    # The exception that a mill client's profile takes for its daemon (SeatbeltProfile.Network.MillClient): the
+    # sysctl name of the held JDK's arguments alone, allowed after the rule. Expected: the held JDK is read, with info
+    # read; every other target is denied, with info throwing.
     one_name="(allow sysctl-read (sysctl-name \"kern.procargs2.$held\"))"
     one_name="$one_name" awk '
         { print }

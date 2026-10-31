@@ -115,7 +115,8 @@ class EgressCredentialsTest extends munit.FunSuite:
       assertEquals(made.drop(prefix.length).map(classOf), value.drop(prefix.length).map(classOf), made)
       assertNotEquals(made, value)
       assertNotEquals(placeholder(value), made)
-    // Other punctuation in a kept format becomes a letter or a digit: it would split or re-parse a query.
+    // Other punctuation in a kept format becomes a letter or a digit, because the punctuation would split or
+    // re-parse a query.
     val punctuated = placeholder(ghValue + "&=#%")
     assertEquals(punctuated.length, ghValue.length + 4)
     assert(punctuated.takeRight(4).forall(_.isLetterOrDigit), punctuated)
@@ -129,13 +130,14 @@ class EgressCredentialsTest extends munit.FunSuite:
     import EgressCredentials.{UnformattedPlaceholderBits, UnformattedPlaceholderLength, formatBits, keepsFormat}
     val random = SecureRandom()
     def placeholder(value: String) = EgressCredentials.placeholderFor(value, Set(value), random)
-    // The fewest of 62 letters and digits, 5.95 bits each, that hold them.
+    // An unformatted placeholder uses the fewest letters and digits that hold 128 bits, at 5.95 bits for
+    // each of the 62 characters.
     assertEquals(UnformattedPlaceholderBits, 128)
     assertEquals(UnformattedPlaceholderLength, 22)
     val unformatted = Vector(
       "a", "short-secret", "hunter2", "1234567890123456789", "a.b.c.d.e.f.g.h.i.j.k.l.m", "sv=2024&sig=abc%2F#x",
       "eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiIxMjM0NSJ9.c2lnbmF0dXJl", "v" * CredentialGrammar.MaxValueBytes,
-      // A recognized prefix alone, and one whose format leaves fewer than 64 bits.
+      // A recognized prefix alone, and a prefix whose format leaves fewer than 64 bits.
       "ghp_", "ghp_abc", "ghp_" + "a" * 13, "glpat-" + "1" * 19, "ghp_" + "-._~" * 10,
     )
     for value <- unformatted do
@@ -144,8 +146,8 @@ class EgressCredentialsTest extends munit.FunSuite:
       assertEquals(made.length, UnformattedPlaceholderLength, value.take(16))
       assert(made.forall(char => char < 0x80 && char.isLetterOrDigit), made)
       assertNotEquals(placeholder(value), made)
-    // In a format, bits are counted for the characters replaced: 4.7 a letter, 3.3 a digit; the prefix
-    // and the kept separators add none.
+    // In a format, only the replaced characters count: 4.7 bits for a letter and 3.3 bits for a digit.
+    // The prefix and the kept separators add none.
     assert(formatBits("ghp_" + "a" * 13) < 64 && formatBits("ghp_" + "a" * 14) >= 64)
     assert(formatBits("glpat-" + "1" * 19) < 64 && formatBits("glpat-" + "1" * 20) >= 64)
     assertEquals(formatBits("ghp_" + "-._~" * 10), 0.0)
@@ -212,7 +214,7 @@ class EgressCredentialsTest extends munit.FunSuite:
       val programs = Map("sbt" -> RunOnHostSandbox.credentialHosts(Sbt, Vector(fileHost)))
       val checked = EgressCredentials.checkHosts(bound.map(_.binding), Set.empty, Set.empty, programs)
       assertEquals(checked, Right(()), fileHost)
-    // The proxy refuses rules naming an IP literal, so it substitutes for no host.
+    // The proxy refuses rules that name an IP literal, so the proxy substitutes credentials for no such host.
     assertEquals(RunOnHostSandbox.credentialHosts(Sbt, Vector("192.0.2.1", "maven.pkg.github.com")), Set.empty)
 
   test("no value in anything the launcher writes: proxy arguments, sandbox arguments, the banner, the instructions"):
@@ -233,7 +235,8 @@ class EgressCredentialsTest extends munit.FunSuite:
       EgressCredentials.bannerLines(credentials, _ => " (from F)", color = false),
       Vector(s"brokered credential: GH_TOKEN -> api.github.com (Authorization), placeholder ghp_${"P" * 36} (from F)"),
     )
-    // The variable and where it goes are what the user chose; the source is not.
+    // The banner tints the variable and its destination as values the user chose, and leaves the source
+    // untinted.
     val (on, off) = ("\u001b[38;5;207m", "\u001b[0m")
     assertEquals(
       EgressCredentials.bannerLines(credentials, _ => " (from F)", color = true),
@@ -242,7 +245,8 @@ class EgressCredentialsTest extends munit.FunSuite:
           s"placeholder ghp_${"P" * 36} (from F)",
       ),
     )
-    // The placeholder changes each launch; the instructions, cached by their stamp, name the binding alone.
+    // The placeholder changes at each launch. The instructions are cached by their stamp, so they name the
+    // binding alone.
     val other = credentials.map(_.copy(placeholder = "ghp_" + "Q" * 36))
     assertEquals(
       agentDocumentStamp("image", "live", "ruleset", brokered = other.map(_.binding)),
@@ -275,7 +279,7 @@ class EgressCredentialsTest extends munit.FunSuite:
         )
         val set: Int = setenv.invokeExact(arena.allocateFrom(name), arena.allocateFrom("held"), 1)
         assertEquals(set, 0)
-    // Each prints its environment as NAME=value lines.
+    // Each platform's command prints its environment as NAME=value lines.
     val printEnvironment = if windows then Seq("cmd.exe", "/c", "set") else Seq("/usr/bin/env")
     def inherited(): String =
       String(ProcessBuilder(printEnvironment*).start().getInputStream.readAllBytes(), UTF_8)
@@ -297,9 +301,9 @@ class EgressCredentialsTest extends munit.FunSuite:
       RunOnHostProxy.workspaceAuditLog(channelLog, Path.of("/tmp/ko-agent-501/s42/proxy.log")),
       Some(Path.of("/s/log/p/run-20261004T120000Z-abcd1234/proxy-s42.log")),
     )
-    // No session directory to name it after.
+    // A path with no session directory gives the audit log nothing to be named after.
     assertEquals(RunOnHostProxy.workspaceAuditLog(channelLog, Path.of("/proxy.log")), None)
-    // The proxy started again for the same runtime in the launch.
+    // A proxy started again for the same runtime in the launch gets a numbered name.
     assertEquals(
       RunOnHostProxy.workspaceAuditLog(channelLog, Path.of("/tmp/ko-agent-501/rXYZ/proxy-sbt-0123456789ab.log"), 2),
       Some(Path.of("/s/log/p/run-20261004T120000Z-abcd1234/proxy-sbt-0123456789ab-rXYZ-2.log")),

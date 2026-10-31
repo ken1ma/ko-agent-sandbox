@@ -1,12 +1,12 @@
-# avoid the warning
+# Allows sun.misc.Unsafe memory access, which silences this warning:
 #     WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
 #     WARNING: sun.misc.Unsafe::objectFieldOffset has been called by scala.runtime.LazyVals$ (.../sbt-launch.jar)
 #     WARNING: Please consider reporting this to the maintainers of class scala.runtime.LazyVals$
 #     WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
 --sun-misc-unsafe-memory-access=allow
 
-# X509Helper (the proxy sources compiled into the launcher) uses the JDK's internal certificate
-# builder, which the JVM keeps behind the module boundary; the tests run in this JVM (build.sbt has
-# why they are not forked).
+# X509Helper uses the JDK's internal certificate builder, which the JVM keeps behind the module boundary. X509Helper
+# belongs to the proxy sources compiled into the launcher, and the tests run in this JVM. build.sbt records why the
+# tests do not fork.
 --add-exports=java.base/sun.security.x509=ALL-UNNAMED
 --add-exports=java.base/sun.security.util=ALL-UNNAMED

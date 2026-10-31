@@ -94,7 +94,7 @@ pub const OPERATIONAL: &[&str] = &[
     ".git/MERGE_HEAD",
     ".git/index",
     ".git/packed-refs",
-    // A lock inherits its target's class; `policy::classify_within_gitdir` has why that is a
+    // A lock inherits its target's class; `policy::classify_within_gitdir` explains why that is a
     // rule rather than an enumeration.
     ".git/index.lock",
     ".git/HEAD.lock",

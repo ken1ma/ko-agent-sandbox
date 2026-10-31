@@ -1,8 +1,9 @@
-// What of a source file a digest covers: its code, comments aside, so that a comment edit changes no
-// digest and any change to code does. The launcher's source ids (LauncherImages.bundleSourceId), which
-// decide when --build must rebuild, and the source digests the BPF backend's evidence names
-// (ko-agent-fs/bpf/doc/evidence.md, "Suites") both take it. Self-contained, with no dependency on the
-// launcher, so that it can leave the project as it is.
+// What of a source file a digest covers: the file's code, with comments set aside, so that a comment edit
+// changes no digest and any change to code does. Two kinds of digest use this file:
+// - the launcher's source ids (LauncherImages.bundleSourceId), which decide when --build must rebuild;
+// - the source digests that the BPF backend's evidence names (ko-agent-fs/bpf/doc/evidence.md, "Suites").
+// The file is self-contained, with no dependency on the launcher, so that it can leave the project
+// unchanged.
 //
 // What counts as a comment, by file name:
 //   - `.c`, `.h`: `//` to the line's end and `/* */`, outside string and character literals, read after
@@ -15,10 +16,11 @@
 //   - `Containerfile`, `Dockerfile`: a line whose first non-blank character is `#`, except the parser
 //     directives at the top and the lines of every heredoc;
 //   - any other file, or one of those that is not valid UTF-8: nothing, its bytes count as they are.
-// Where the scanner cannot tell, it keeps the text: a misread can only make a digest stricter. A block
-// comment stands as one space, as in C, so `a/**/b` stays two tokens; a line left blank by removing
-// comments is dropped, with the blanks before a comment that ends its line. Line endings count as `\n`,
-// so a checkout with CRLF digests as one with LF.
+// Where the scanner cannot tell, it keeps the text: a misread can only make a digest stricter.
+// - A block comment stands as one space, as in C, so `a/**/b` stays two tokens.
+// - A line left blank by removing comments is dropped, and so are the blanks before a comment that ends
+//   its line.
+// - Line endings count as `\n`, so a checkout with CRLF digests as one with LF.
 
 package agentsandbox.launcher
 
@@ -30,7 +32,7 @@ import java.security.MessageDigest
 
 object SourceDigest:
 
-  /** The digest of `files`, each a name, which selects its comment syntax, and its bytes, in order. */
+  /** The digest of `files`, in order. Each file is a name, which selects its comment syntax, and its bytes. */
   def digest(files: Seq[(String, Array[Byte])]): String =
     val sha = MessageDigest.getInstance("SHA-256")
     files.foreach: (name, bytes) =>
@@ -44,7 +46,7 @@ object SourceDigest:
     val names = Files.readString(list).linesIterator.filter(_.nonEmpty).toSeq
     digest(names.map(name => name -> Files.readAllBytes(list.resolveSibling(name))))
 
-  /** What of a file's bytes a digest covers: its code for a syntax this knows, its bytes otherwise. */
+  /** What of a file's bytes a digest covers: its code for a syntax this file knows, its bytes otherwise. */
   def content(name: String, bytes: Array[Byte]): Array[Byte] =
     syntax(name) match
       case None => bytes
@@ -96,7 +98,7 @@ object SourceDigest:
     val out = StringBuilder()
     var modes: List[Mode] = List(Code(nested = false, braces = 0))
     // A Rust doc comment's open fenced block: its fence's character and length, and whether rustdoc may
-    // compile it, which it may unless the block is marked `text`.
+    // compile the block. rustdoc may compile it unless the block is marked `text`.
     var fence: Option[(Char, Int, Boolean)] = None
     var i = 0
     def at(literal: String): Boolean = text.startsWith(literal, i)
@@ -133,7 +135,7 @@ object SourceDigest:
                 compiled
               case _ =>
                 if !docLine then fence = None
-                // An indented code block, which rustdoc compiles too; a list's indented paragraph is kept with it.
+                // An indented code block, which rustdoc compiles too. A list's indented paragraph is kept with it.
                 docLine && (raw.startsWith("    ") || raw.startsWith("\t") || raw.startsWith(" \t"))
             if kept then copy(lineEnd - i)
             else
@@ -197,8 +199,9 @@ object SourceDigest:
           else copy(1)
     resolvePlaceholders(out.toString)
 
-  /** The length of the character literal starting at `start`. Where `'` starts none, as before a Scala
-    * quoted expression or a Rust lifetime, it is 1, or with `alwaysLiteral`, as in C, the rest of the line. */
+  /** The length of the character literal starting at `start`. Where `'` starts no literal, as before a
+    * Scala quoted expression or a Rust lifetime, the length is 1; with `alwaysLiteral`, as in C, the length
+    * is the rest of the line. */
   private def characterLiteral(text: String, start: Int, alwaysLiteral: Boolean): Int =
     val closing =
       if start + 1 < text.length && text(start + 1) == '\\' then
@@ -211,7 +214,8 @@ object SourceDigest:
           case -1 => text.length - start
           case end => end - start
 
-  /** A line holding only removed comments goes; one with code keeps it, a block comment as a space. */
+  /** A line holding only removed comments is dropped. A line with code keeps that code, and each block
+    * comment in it stands as a space. */
   private def resolvePlaceholders(text: String): String =
     val trailing = raw"[ \t]*[\u0000\u0001][ \t]*$$".r
     text.split("\n", -1).toSeq.flatMap: line =>

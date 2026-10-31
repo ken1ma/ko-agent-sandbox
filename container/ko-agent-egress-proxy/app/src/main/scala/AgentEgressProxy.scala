@@ -1,11 +1,19 @@
-// The egress proxy: the listening loop, the steps from CONNECT to tunnel, and the one-request
-// inspected connection. The ruleset and its decisions are in RulesetHelper.scala, the audit log's form
-// in LogHelper.scala, the refusal types, advice and response wording in Refusals.scala, HTTP handling in
-// HTTPHelper.scala, TLS handling in TLSHelper.scala, git protocol knowledge in GitHelper.scala,
-// brokered credentials in CredentialGrammar.scala and their rewrite in CredentialRewrite.scala,
-// hostname/address vetting in IPAddrHelper.scala, and how a vetted address is reached — directly or
-// through the upstream proxy HTTPS_PROXY names — in TransportHelper.scala. The proxy issues no
-// certificate: the launcher compiles X509Helper.scala in to issue the leaf, and the file sits in
+// The egress proxy: the listening loop, the steps from CONNECT to tunnel, and the one-request inspected connection.
+//
+// The other files hold the rest:
+//
+// - RulesetHelper.scala: the ruleset and its decisions;
+// - LogHelper.scala: the audit log's form;
+// - Refusals.scala: the refusal types, advice and response wording;
+// - HTTPHelper.scala: HTTP handling;
+// - TLSHelper.scala: TLS handling;
+// - GitHelper.scala: git protocol knowledge;
+// - CredentialGrammar.scala: brokered credentials; CredentialRewrite.scala: their rewrite;
+// - IPAddrHelper.scala: hostname and address vetting;
+// - TransportHelper.scala: how a vetted address is reached, directly or through the upstream proxy that
+//   HTTPS_PROXY names.
+//
+// The proxy issues no certificate. The launcher compiles X509Helper.scala in to issue the leaf, and the file sits in
 // the proxy's sources because the proxy's tests issue their leaves with it.
 
 package agentsandbox.egress
@@ -32,13 +40,15 @@ object AgentEgressProxy:
 
   val ListenPort = 3128
 
-  /** Printed after `bind` and before any ruleset line, so a reader that saw it has a proxy
-    * accepting connections; every refusal made before then ends the process instead, and after it
-    * only an audit log that stopped taking the startup lines ends it (serve). The
-    * launcher starts the sandbox only after this spelling, after the stamp every line here starts with
-    * (AgentSandboxLauncher.isProxyReadyLine); ProxyContainerTest holds the two together.
-    * The port printed is the bound one, so a caller that set EGRESS_BIND with port 0 reads
-    * its ephemeral port from this line. */
+  /** Printed after `bind` and before any ruleset line, so a reader that saw this line has a proxy accepting
+    * connections.
+    *
+    * - Every refusal made before this line ends the process instead. After this line, only an audit log that
+    *   stopped taking the startup lines ends the process (serve).
+    * - The launcher starts the sandbox only after this spelling, which follows the stamp that every line here
+    *   starts with (AgentSandboxLauncher.isProxyReadyLine). ProxyContainerTest holds the two together.
+    * - The line prints the bound port, so a caller that set EGRESS_BIND with port 0 reads its ephemeral port from
+    *   this line. */
   def readyLine(port: Int) = s"$ReadyText$port"
   private val ReadyText = "ko-agent-egress-proxy listening on :"
   val ReadyLine = readyLine(ListenPort)
@@ -53,20 +63,19 @@ object AgentEgressProxy:
   val MaxConcurrentConnections = 256
 
   /*
-   * An inspected connection is one HTTP request and its response, so this bounds
-   * inactivity rather than total duration: a `git clone` of a large repository
-   * transfers continuously and never approaches it, while GitHub counting
-   * objects before the first byte can legitimately take minutes.
+   * An inspected connection is one HTTP request and its response, so this timeout bounds inactivity rather than
+   * total duration. A `git clone` of a large repository transfers continuously and never approaches the timeout,
+   * while GitHub can legitimately take minutes counting objects before the first byte.
    */
   val InspectedIdleTimeoutMillis = 300_000
 
-  /** Interim responses read past before a final one: a CONNECT's (TransportHelper) or an inspected
-    * request's (relayInspected). A count, because the timeouts bound each read and not the exchange. */
+  /** Interim responses read past before a final one: a CONNECT's (TransportHelper) or an inspected request's
+    * (relayInspected). The bound is a count, because the timeouts bound each read and not the exchange. */
   val MaxInterimResponses = 8
 
-  /** The pause after a failed accept, before the next. A failure that persists — the process at its
-    * descriptor limit — is then a line per pause in the audit log and no CPU, while connections wait
-    * in the listen backlog; one that passes delays the next accept by this much. */
+  /** The pause after a failed accept, before the next accept. A failure that persists, such as the process at its
+    * descriptor limit, then costs a line per pause in the audit log and no CPU, while connections wait in the listen
+    * backlog. A failure that passes delays the next accept by this much. */
   val AcceptFailurePauseMillis = 100
 
   val CertificateVariable = "EGRESS_TLS_CERTIFICATE"
@@ -92,15 +101,15 @@ object AgentEgressProxy:
         sys.exit(2)
 
   /*
-   * The dry run behind --egress-effective and every launch: no port, no log, a
-   * pure computation the launcher runs --network=none to read back what would
-   * be enforced. The ruleset lines are also where the launcher reads the leaf
-   * certificate's names from. Warnings (RulesetHelper, `resolveRuleset`) go to
-   * stderr, so the data lines pipe cleanly.
+   * The dry run behind --egress-effective and every launch: no port, no log. The launcher runs this pure
+   * computation with --network=none to read back what would be enforced.
    *
-   * The dry run receives no inspection material, so these counts describe the configured
-   * treatments. serve() reports actual inspection separately: a host-command proxy or standalone
-   * image without material forwards even the configured inspected hosts without inspection.
+   * - The launcher also reads the leaf certificate's names from the ruleset lines.
+   * - Warnings (RulesetHelper, `resolveRuleset`) go to stderr, so the data lines pipe cleanly.
+   *
+   * The dry run receives no inspection material, so these counts describe the configured treatments. serve()
+   * reports actual inspection separately: a host-command proxy or a standalone image without material forwards even
+   * the configured inspected hosts without inspection.
    */
   def printRuleset(provenance: Boolean): Unit =
     try
@@ -115,12 +124,11 @@ object AgentEgressProxy:
         sys.exit(2)
 
   /*
-   * One host's decision under the resolved ruleset, plus the current DNS resolution
-   * evidence — separately, because the ruleset's decision is fixed per run
-   * while a connection resolves and validates the destination again when it
-   * is made. Run by the launcher's --egress-check through a one-shot
-   * container on a network built as the session's egress network is, so the
-   * resolver path is enforcement's, never the launcher host's.
+   * One host's decision under the resolved ruleset, plus the current DNS resolution as evidence. The two are
+   * separate, because the ruleset's decision is fixed per run, while a connection resolves and validates the
+   * destination again when it is made.
+   * The launcher's --egress-check runs this through a one-shot container on a network built as the session's egress
+   * network is. So the resolver path is enforcement's, never the launcher host's.
    */
   def checkHost(rawHost: String): Unit =
     val resolved =
@@ -137,11 +145,10 @@ object AgentEgressProxy:
           System.err.println(s"'$rawHost' is not a hostname: ${ex.getMessage}")
           sys.exit(2)
 
-    // The decision is authorizeRequest's own — the very function a CONNECT meets — so this
-    // diagnostic cannot disagree with enforcement: an IP-literal target, a denied host and a
-    // non-allowed host all answer here exactly as they would on the wire, in enforcement's
-    // words. Only an accepted host's treatment is looked up on top, its resolved lines, one
-    // per scope.
+    // The decision is authorizeRequest's own, the very function that a CONNECT meets, so this diagnostic cannot
+    // disagree with enforcement. An IP-literal target, a denied host and a non-allowed host all answer here exactly
+    // as they would on the wire, in enforcement's words. Only an accepted host's treatment is looked up on top: its
+    // resolved lines, one per scope.
     val decisions =
       try
         val authorized = authorizeRequest(ConnectRequest(host, 443), resolved)
@@ -162,9 +169,9 @@ object AgentEgressProxy:
           println(s"resolves: failed: ${ex.getMessage}")
           Vector.empty
 
-    // The transport a launch would use, through the same parser, resolution and CONNECT: one
-    // tunnel to the first vetted address, closed before any TLS — enough to say whether the
-    // upstream proxy allows a numeric CONNECT to this host, without asking the origin anything.
+    // The check uses the transport that a launch would use, through the same parser, resolution and CONNECT. The check
+    // opens one tunnel to the first vetted address and closes the tunnel before any TLS. One tunnel is enough to say
+    // whether the upstream proxy allows a numeric CONNECT to this host, without asking the origin anything.
     UpstreamEndpoint.configured(variable => Option(System.getenv(variable))).foreach: endpoint =>
       val transport =
         try UpstreamProxy(endpoint, endpoint.resolve())
@@ -183,10 +190,12 @@ object AgentEgressProxy:
     resolveRuleset(read(ProfileVariable), read(ModelProviderVariable), read(RuleVariable))
 
   /**
-   * EGRESS_BIND is the listen address: `<ip-literal>:<port>`, IPv6 in brackets, port 0 for an
-   * ephemeral one read back from the ready line. Unset is the wildcard on ListenPort, which the
-   * container's own network namespace makes safe. A hostname is refused: this is a bind address,
-   * and a name would make where the proxy listens depend on the environment's resolver.
+   * EGRESS_BIND is the listen address: `<ip-literal>:<port>`, IPv6 in brackets, port 0 for an ephemeral port read
+   * back from the ready line.
+   *
+   * - Unset means the wildcard on ListenPort, which the container's own network namespace makes safe.
+   * - A hostname is refused: this is a bind address, and a name would make where the proxy listens depend on the
+   *   environment's resolver.
    */
   def parseBind(value: Option[String]): InetSocketAddress =
     value.filter(_.nonEmpty) match
@@ -213,15 +222,16 @@ object AgentEgressProxy:
 
   def serve(): Unit =
     /*
-     * Everything reported goes to stderr and, with EGRESS_LOG_FILE set, to
-     * that host file too. Set up first so the startup lines are written to it, and
-     * failing loudly: an enforcement point whose audit trail cannot be
-     * written should not start, and one whose log stops being written serves
-     * nothing more (Run.requireAuditLog). The log is the file where one is set;
-     * stderr is then a copy podman removes with the container, and its failed writes
-     * are not kept. Without a file stderr is the log: the run-on-host supervisor
-     * redirects it into a file. The descriptor, not System.err: that PrintStream
-     * catches the failure before keepingFirstFailure could keep it.
+     * Everything reported goes to stderr and, with EGRESS_LOG_FILE set, to that host file too.
+     *
+     * - This setup comes first, so the startup lines reach the log, and the setup fails loudly. An enforcement point
+     *   whose audit trail cannot be written should not start, and an enforcement point whose log stops being
+     *   written serves nothing more (Run.requireAuditLog).
+     * - Where a file is set, the file is the log. stderr is then a copy that podman removes with the container, and
+     *   stderr's failed writes are not kept.
+     * - Without a file, stderr is the log: the run-on-host supervisor redirects stderr into a file.
+     * - The sink is the descriptor, not System.err: that PrintStream catches the failure before keepingFirstFailure
+     *   could keep it.
      */
     val processStderr = FileOutputStream(java.io.FileDescriptor.err)
     val firstLogFailure = java.util.concurrent.atomic.AtomicReference[IOException]()
@@ -236,19 +246,18 @@ object AgentEgressProxy:
     System.setErr(PrintStream(stampLines(sinks, () => Instant.now()), true))
 
     /*
-     * Resolved before binding the port: a malformed ruleset or bind address is
-     * a container that fails to start, with the one-line reason — a stack
-     * trace would read as a proxy bug. Launches never get here (the launcher
-     * dry-runs the same variables first); this is the standalone-image path,
-     * or inspection material that cannot be read or names a set other than
-     * the one this ruleset inspects.
+     * The ruleset resolves before the port is bound. A malformed ruleset or bind address is then a container that
+     * fails to start with the one-line reason; a stack trace would read as a proxy bug.
+     * Launches never get here, since the launcher dry-runs the same variables first. The branch is the standalone
+     * image's path, or the path of inspection material that cannot be read or names a set other than the one this
+     * ruleset inspects.
      */
     val (run, bind) =
       try
         val resolved = configuredRuleset()
         val inspection = loadInspection(resolved)
         val credentials = readCredentials(resolved, inspection.isDefined, FileInputStream(java.io.FileDescriptor.in))
-        // Last, so a variable refusal is reported before an endpoint the proxy cannot resolve is.
+        // Last, so a variable's refusal is reported before an endpoint that the proxy cannot resolve.
         val transport =
           try originTransport(variable => Option(System.getenv(variable)))
           catch
@@ -268,7 +277,7 @@ object AgentEgressProxy:
           System.err.println(inspectionLoadFailure(ex))
           sys.exit(2)
 
-    // Before the ready line: the launcher reads the log once that line is written, and relays this one.
+    // Before the ready line: the launcher reads the log once the ready line is written, and relays this line.
     System.err.println(run.transport.summary)
 
     val server = ServerSocket()
@@ -277,8 +286,8 @@ object AgentEgressProxy:
 
     val lines = rulesetLines(run.resolved)
     lines.foreach(System.err.println)
-    // The digest gives the audit log one stable, grep-able line naming which ruleset this run
-    // enforced, comparable across runs without diffing the lines above.
+    // The digest gives the audit log one stable, grep-able line that names the ruleset this run enforced. The line
+    // compares across runs without diffing the lines above.
     System.err.println(s"ruleset digest: ${sha256Hex(lines.mkString("\n"))}")
     metadataLines(run.resolved).foreach(System.err.println)
     run.resolved.warnings.foreach(warning => System.err.println(s"warning: $warning"))
@@ -290,19 +299,20 @@ object AgentEgressProxy:
       System.err.println(s"${auditLogFailure(ex)}; not starting")
       sys.exit(2)
 
-    // Last: the launcher (AgentSandboxLauncher.awaitProxyReady) and the host runner
-    // (RunOnHostProxy.awaitProxyPort) act on this line as soon as it is written, so it comes after
-    // every line whose failed write exits above.
+    // Last: the launcher (AgentSandboxLauncher.awaitProxyReady) and the host runner (RunOnHostProxy.awaitProxyPort)
+    // act on the ready line as soon as it is written. So the ready line comes after every line whose failed write
+    // exits above.
     System.err.println(readyLine(server.getLocalPort))
 
     acceptForever(server, run)
 
   /*
-   * The leaf and its key are present exactly when the ruleset inspects a host: both absent is the
-   * image running on its own, inspection off and said so; material for a ruleset that inspects
-   * nothing is an error, not a narrower ruleset, since the launcher never issues a leaf for such a
-   * ruleset and a supplied one means the two disagree about what this ruleset is (SECURITY.md,
-   * "Who holds the CA key").
+   * The leaf and its key are present exactly when the ruleset inspects a host.
+   *
+   * - Both absent means that the image runs on its own, with inspection off, and says so.
+   * - Material for a ruleset that inspects nothing is an error, not a narrower ruleset. The launcher never issues a
+   *   leaf for such a ruleset, so supplied material means that the two disagree about what this ruleset is
+   *   (SECURITY.md, "Who holds the CA key").
    */
   def loadInspection(
     resolved: ResolvedEgress,
@@ -320,10 +330,10 @@ object AgentEgressProxy:
       case _ => throw IllegalArgumentException(s"$CertificateVariable and $PrivateKeyVariable must be set together")
 
   /**
-   * The brokered credentials, read from `in` only with EGRESS_CREDS=stdin (CredentialGrammar.readBindings), and
-   * only before the ready line. A binding whose host this proxy does not inspect is refused, as is one
-   * without the material to inspect it: either would show as a 401 inside the sandbox, with nothing in
-   * the log to explain it.
+   * The brokered credentials, read from `in` only with EGRESS_CREDS=stdin (CredentialGrammar.readBindings), and only
+   * before the ready line. A binding whose host this proxy does not inspect is refused, and so is a binding without the
+   * material to inspect its host. Either binding would show as a 401 inside the sandbox, with nothing in the log to
+   * explain it.
    */
   def readCredentials(
     resolved: ResolvedEgress,
@@ -354,10 +364,10 @@ object AgentEgressProxy:
         )
 
   /**
-   * What loadInspection throws for material that cannot be read or parsed. A missing file and a
-   * denied one get their reason spelled out: the JDK's message for both is the path alone. A
-   * denied file is the case whose path misleads: podman mounts a file the container cannot read
-   * without complaint, so the path exists on the host and in the container.
+   * What loadInspection throws for material that cannot be read or parsed. A missing file and a denied one get
+   * their reason spelled out, since the JDK's message for both is the path alone.
+   * A denied file is the case whose path misleads: podman mounts a file that the container cannot read without
+   * complaint, so the path exists on the host and in the container.
    */
   def inspectionLoadFailure(ex: IOException | GeneralSecurityException): String =
     val reason = ex match
@@ -372,17 +382,18 @@ object AgentEgressProxy:
     resolved: ResolvedEgress,
     inspection: Option[TlsInspection],
     transport: OriginTransport,
-    // serve()'s: the first write to the log that failed — the file where one is set, else stderr.
+    // Set by serve(): the first write to the log that failed. The log is the file where one is set, else stderr.
     auditLogFailure: () => Option[IOException] = () => None,
     credentials: Vector[BrokeredCredential] = Vector.empty,
   ):
     /**
-     * Refuses once a line failed to be written to the log, for the rest of the run: a log that
-     * resumed would lack the lines between, and nothing in it would say so. Called before a
-     * connection is authorized, and again after its `allow` line and before its first relayed
-     * byte, so no connection is served whose line was not written. A connection already past
-     * that point writes at most an `error` line at its end, and continues (SECURITY.md,
-     * "Egress proxy").
+     * Refuses for the rest of the run once a line failed to be written to the log: a log that resumed would lack
+     * the lines between, and nothing in the log would say so.
+     *
+     * - The proxy calls this before it authorizes a connection, and again after the connection's `allow` line and
+     *   before its first relayed byte. So no connection is served whose line was not written.
+     * - A connection already past that point writes at most an `error` line at its end, and continues
+     *   (SECURITY.md, "Egress proxy").
      */
     def requireAuditLog(): Unit =
       auditLogFailure().foreach: ex =>
@@ -398,9 +409,8 @@ object AgentEgressProxy:
   @tailrec
   def acceptForever(server: ServerSocket, run: Run): Unit =
     /*
-     * A failed accept must not take the proxy down: every agent behind it
-     * would lose network access until someone noticed. A closed listening
-     * socket is the one unrecoverable case, and ends the loop rather than
+     * A failed accept must not take the proxy down: every agent behind the proxy would lose network access until
+     * someone noticed. A closed listening socket is the one unrecoverable case, and it ends the loop rather than
      * spinning on it.
      */
     val accepted =
@@ -433,14 +443,14 @@ object AgentEgressProxy:
           System.err.println(s"could not start connection handler: ${ex.getMessage}")
 
   def handle(client: Socket, run: Run): Unit =
-    // The audit context, filled in as parsing learns it: a `-` in the line marks a field the
-    // connection ended before revealing. The host is the target as the sandbox requested it —
-    // what was asked for, not necessarily a hostname allowed by the ruleset. auditLine has the grammar.
+    // The audit context, filled in as parsing learns it: a `-` in the line marks a field that the connection ended
+    // before revealing. The host is the target as the sandbox requested it: what was asked for, not necessarily a
+    // hostname that the ruleset allows. auditLine has the grammar.
     var host = "-"
     var addresses = Vector.empty[InetAddress]
     try
-      // An IO failure while reading the request is the client's, not the origin's; rethrown as a
-      // BadRequest so the log does not record a 502 against an origin the proxy never dialled.
+      // An IO failure while reading the request is the client's, not the origin's. The failure is rethrown as a
+      // BadRequest, so the log does not record a 502 against an origin that the proxy never dialled.
       val request =
         try
           client.setSoTimeout(HandshakeTimeoutMillis)
@@ -453,7 +463,7 @@ object AgentEgressProxy:
             throw BadRequest(s"unreadable CONNECT request: ${ex.getMessage}")
 
       host = request.host
-      // Before the ruleset: the reason every host is refused, whatever this one's rules are.
+      // Before the ruleset: a failed log is a reason to refuse every host, whatever this host's rules are.
       run.requireAuditLog()
       host = authorizeRequest(request, run.resolved)
       addresses = resolvePublic(host)
@@ -467,12 +477,12 @@ object AgentEgressProxy:
         System.err.println(auditLine("error", host, "-", "", "client closed before sending a request"))
 
       case ex: BadRequest =>
-        // Parse failures keep `-` in the method field: it never holds a token the proxy did not
-        // allow, so a refused method is named in the text, not promoted to the vocabulary.
+        // Parse failures keep `-` in the method field: the field never holds a token that the proxy did not allow, so
+        // a refused method is named in the text, not promoted to the vocabulary.
         System.err.println(auditLine("deny", host, "-", "", ex.getMessage))
-        // After a failed log write every request is answered with that reason, this one included:
-        // the run-on-host supervisor asks with a request that is no CONNECT, so that a proxy still
-        // logging records no refused host for it (RunOnHostProxy.unwritableProxyLog).
+        // After a failed log write, every request is answered with that reason, this one included. The run-on-host
+        // supervisor asks with a request that is no CONNECT, so a proxy that is still logging records no refused host
+        // for the request (RunOnHostProxy.unwritableProxyLog).
         try
           run.requireAuditLog()
           respondQuietly(client, 400, "Bad Request", "http_request_error", Some(ex.getMessage), bodyless = true)
@@ -484,9 +494,9 @@ object AgentEgressProxy:
 
       case ex: Refusal =>
         System.err.println(auditLine("deny", host, "CONNECT", "", ex.getMessage))
-        // A failed CONNECT may carry a body (RFC 9110 §9.3.6 forbids one on a 2xx only). Clients
-        // discard it; the image's ko-sandbox-egress-check reads it, and is the way this refusal's
-        // reason reaches the sandbox.
+        // A failed CONNECT may carry a body (RFC 9110 §9.3.6 forbids one on a 2xx only). Clients discard the body.
+        // The image's ko-sandbox-egress-check reads the body, and is the way this refusal's reason reaches the
+        // sandbox.
         respondQuietly(client, 403, "Forbidden", ex.proxyError, Some(ex.getMessage), Some(ex.advice))
 
       case ex: IOException =>
@@ -495,8 +505,8 @@ object AgentEgressProxy:
           case _ if addresses.isEmpty    => "resolution:"
           case _                         => s"resolved ${addresses.map(_.getHostAddress).mkString(" ")}:"
         System.err.println(auditLine("error", host, "CONNECT", "", s"$stage ${ex.getMessage}"))
-        // The stage in the body, as a refusal's reason is: the ruleset allowed this host, so the
-        // agent's next step is to report what failed, and only ko-sandbox-egress-check shows it.
+        // The body carries the stage, as a refusal's body carries its reason. The ruleset allowed this host, so the
+        // agent's next step is to report what failed, and only ko-sandbox-egress-check shows the body.
         val proxyError = if stage == "resolution:" then "dns_error" else "destination_unavailable"
         respondQuietly(client, 502, "Bad Gateway", proxyError, Some(s"$stage ${ex.getMessage}"))
 
@@ -504,8 +514,8 @@ object AgentEgressProxy:
         System.err.println(
           auditLine("error", host, "CONNECT", "", s"internal: ${ex.getClass.getSimpleName}: ${ex.getMessage}"),
         )
-        // The class alone: the message of an exception nobody planned for may hold what the
-        // sandbox should not read, and the log has it.
+        // The class alone: the message of an exception that nobody planned for may hold what the sandbox should not
+        // read, and the log has the message.
         respondQuietly(
           client, 500, "Internal Server Error", "proxy_internal_error",
           Some(s"internal: ${ex.getClass.getSimpleName}"), bodyless = true,
@@ -531,8 +541,8 @@ object AgentEgressProxy:
 
       validateTlsIdentity(connectHost, hello)
 
-      // A tunnel host is opaque; every other allowed host is inspected, with its lines' scopes
-      // (Ruleset.scopesOf) — unless this run has no material at all.
+      // A tunnel host is opaque. Every other allowed host is inspected with its lines' scopes (Ruleset.scopesOf),
+      // unless this run has no material at all.
       run.inspection.filter(_ => !run.resolved.tunnelHosts.contains(connectHost)) match
         case Some(inspection) =>
           runInspectedConnection(
@@ -550,9 +560,8 @@ object AgentEgressProxy:
           run.requireAuditLog()
 
           /*
-           * TlsClientHello.read consumed the records needed to inspect the
-           * ClientHello. Forward those exact bytes unchanged before switching
-           * to an opaque bidirectional tunnel.
+           * TlsClientHello.read consumed the records needed to inspect the ClientHello. Those exact bytes go out
+           * unchanged before the switch to an opaque bidirectional tunnel.
            */
           origin.socket.getOutputStream.write(hello.wireBytes)
           origin.socket.getOutputStream.flush()
@@ -564,8 +573,8 @@ object AgentEgressProxy:
 
     catch
       /*
-       * HTTP 200 has already been sent, so an HTTP error response would be
-       * protocol garbage at this point. Fail closed by dropping the tunnel.
+       * HTTP 200 has already been sent, so an HTTP error response would be protocol garbage at this point. The proxy
+       * fails closed by dropping the tunnel.
        */
       case ex: BadTls =>
         System.err.println(auditLine("deny", connectHost, "CONNECT", "", ex.getMessage))
@@ -588,13 +597,16 @@ object AgentEgressProxy:
         )
 
   /*
-   * One request and its response, then the connection ends — and both peers are told: the
-   * request goes to the origin with `Connection: close` (end-of-stream then frames the response),
-   * and the response reaches the client with this proxy's own `Connection: close`, whatever the
-   * origin's hop said (toClientBytes). Keeping the connection alive would mean agreeing with
-   * the origin about where each message ends — the exact disagreement request smuggling
-   * exploits. After the response the client is only drained (drainClient), never answered
-   * again. Cost: a handshake per request — `git fetch` is two.
+   * One request and its response, then the connection ends, and both peers are told.
+   *
+   * - The request goes to the origin with `Connection: close`, so end-of-stream frames the response.
+   * - The response reaches the client with this proxy's own `Connection: close`, whatever the origin's hop said
+   *   (toClientBytes).
+   * - Keeping the connection alive would mean agreeing with the origin about where each message ends: the exact
+   *   disagreement that request smuggling exploits.
+   * - After the response, the proxy only drains the client (drainClient) and never answers the client again.
+   *
+   * The cost is a handshake per request; a `git fetch` costs two.
    */
   def runInspectedConnection(
     client: Socket,
@@ -609,18 +621,19 @@ object AgentEgressProxy:
   ): Unit =
     val clientTls = inspection.accept(client, hello.wireBytes)
 
-    // The in-tunnel audit context, like handle()'s: `-` until the request head parses. The allow
-    // line prints only after the origin leg connects, so a failing request's method and target
-    // must go on the deny/error line or they would never be recorded.
+    // The in-tunnel audit context, like handle()'s: `-` until the request head parses. The allow line prints only
+    // after the origin leg connects, so a failing request's method and target must go on the deny or error line, or
+    // they would never be recorded.
     var method = "-"
     var target = ""
 
     try
       try
-        // Substituted before authorization and framing, so the decision and the origin see the same head:
-        // a bound `service` parameter is read as what it becomes (GitHelper). Keep it first: a check reading
-        // the head before it would judge a request the origin never receives.
-        // Rethrown as handle() rethrows an unreadable CONNECT: the failure is the client's, not an origin's.
+        // The credentials are substituted before authorization and framing, so the decision and the origin see the
+        // same head: a bound `service` parameter is read as what it becomes (GitHelper). Keep the substitution first:
+        // a check that read the head before the substitution would judge a request that the origin never receives.
+        // A read failure is rethrown as handle() rethrows an unreadable CONNECT: the failure is the client's, not an
+        // origin's.
         val raw =
           try readHttpHeader(clientTls.getInputStream, MaxHttpHeaderBytes)
           catch case ex: IOException => throw BadRequest(s"unreadable request head: ${ex.getMessage}")
@@ -645,8 +658,8 @@ object AgentEgressProxy:
 
       catch
         case _: ClosedWithoutRequest =>
-          // Logged even so: a TLS-handshaked connection must not vanish without a line. No
-          // response; peer gone.
+          // Logged even so: a connection that completed the TLS handshake must not vanish without a line. No
+          // response goes out, since the peer is gone.
           System.err.println(
             auditLine("error", host, method, target, "client closed before sending a request"),
           )
@@ -670,16 +683,16 @@ object AgentEgressProxy:
     finally closeTlsOutput(clientTls, client)
 
   /*
-   * Parse the final response's framing before forwarding its head, while an invalid head can
-   * still be reported as a 502. Body relay failures require TruncatedResponse's abortive close.
+   * Parses the final response's framing before forwarding its head, while an invalid head can still be reported as
+   * a 502. Body relay failures require TruncatedResponse's abortive close.
    *
-   * `originTransport` is the TCP connection under every TLS layer of the origin leg
-   * (OriginSocket.transport). Closing it is what ends I/O blocked in a layer: the layer's own
-   * close cannot (closeTlsOutput), and over a socket it does not own (TlsInspection) it does
-   * not close the transport either.
+   * `originTransport` is the TCP connection under every TLS layer of the origin leg (OriginSocket.transport).
+   * Closing the transport is what ends I/O blocked in a layer. The layer's own close cannot end that I/O
+   * (closeTlsOutput), and over a socket that the layer does not own (TlsInspection), the layer's close does not
+   * close the transport either.
    */
-  // Socket rather than SSLSocket: nothing here is TLS-specific — the sockets arrive already
-  // inside the tunnel — and plain sockets are what lets the relay be tested on loopback pairs.
+  // Socket rather than SSLSocket: nothing here is TLS-specific, since the sockets arrive already inside the tunnel.
+  // Plain sockets also let the tests run the relay on loopback pairs.
   def relayInspected(
     clientTls: Socket,
     originTls: Socket,
@@ -700,8 +713,8 @@ object AgentEgressProxy:
     val upload =
       Option.when(framing != BodyFraming.Empty)(Upload(clientTls.getInputStream, toOrigin, originTransport, framing))
 
-    /** The upload's failure in the origin's place when it came first: the client's malformed
-      * chunking is its 400, not the origin's 502, and its broken connection is named. */
+    /** The upload's failure, in the origin's place, when the upload failed first. The client's malformed chunking
+      * is the client's 400, not the origin's 502, and the client's broken connection is named. */
     def failed(ex: IOException): Exception =
       upload.flatMap(_.failureBeforeAnswer) match
         case Some(bad: BadRequest) => bad
@@ -717,12 +730,13 @@ object AgentEgressProxy:
           case ex: IOException         => throw failed(ex)
       HttpResponseHead.parse(bytes)
 
-    /** Every interim head reaches the client, the origin's 100 among them, and none is this
-      * proxy's: the Expect went to the origin whole (toOriginBytes drops only this hop's
-      * headers), so a client holding its body back for a 100 the origin never sends is where it
-      * would be against that origin directly — sending on its own timer, curl's being 1 s. A 101
-      * is refused before it is forwarded: the origin never received an Upgrade, and what follows
-      * one is no longer HTTP. */
+    /** Every interim head reaches the client, the origin's 100 among them, and none is this proxy's own.
+      *
+      * - The Expect went to the origin whole (toOriginBytes drops only this hop's headers). So a client that holds
+      *   its body back for a 100 that the origin never sends is where it would be against that origin directly: the
+      *   client sends on its own timer, which is 1 s for curl.
+      * - A 101 is refused before it is forwarded: the origin never received an Upgrade, and what follows a 101 is no
+      *   longer HTTP. */
     @tailrec
     def finalResponseHead(interimRead: Int = 0): HttpResponseHead =
       val response = responseHead()
@@ -747,25 +761,26 @@ object AgentEgressProxy:
         forwardResponseBody(fromOrigin, toClient, responseFraming)
         toClient.flush()
       catch case ex: IOException => throw TruncatedResponse(ex.getMessage)
-      // The client's input is the upload's until it ends. One still running is a client uploading
-      // past the final head or holding a body back after it, and gets the close as it is.
+      // The client's input belongs to the upload until the upload ends. An upload still running means that the
+      // client uploads past the final head or holds a body back after it, and that client gets the close as it is.
       if upload.forall(_.ended(DrainTimeoutMillis)) then drainClient(clientTls)
     finally
-      // Whatever ends this, an upload still blocked writing to an origin that stopped reading
-      // would hold the TLS layer's close for its whole deadline (closeTlsOutput), so the
-      // transport goes first.
+      // Whatever ends this, an upload still blocked on writing to an origin that stopped reading would hold the TLS
+      // layer's close for its whole deadline (closeTlsOutput). So the transport is closed first.
       if !upload.forall(_.ended(0)) then closeQuietly(originTransport)
 
   /**
-   * The request body, sent to the origin as the client sends it, on its own thread, so the
-   * origin's answer is read meanwhile: an origin refusing before or during the upload (RFC 9112
-   * §9.5) reaches the client at once, which then stops. After the final head nothing more goes to
-   * the origin — a write to an origin that answered and closed resets the connection, and a
-   * reset destroys what of the answer is still unread — but the client is read on, so its
-   * close does not meet unread bytes. A write the origin refuses is left for its answer, or
-   * its absence, to report. A failure before the answer closes the origin's transport, so the
-   * head read reports it (failureBeforeAnswer) instead of waiting out the origin's own timeout
-   * for a body that stopped coming.
+   * The request body, sent to the origin as the client sends it, on its own thread, so that the origin's answer is
+   * read meanwhile.
+   *
+   * - An origin that refuses before or during the upload (RFC 9112 §9.5) reaches the client at once, and the
+   *   client then stops.
+   * - After the final head, nothing more goes to the origin. A write to an origin that answered and closed resets
+   *   the connection, and a reset destroys what of the answer is still unread. The client is still read on, so the
+   *   client's close does not meet unread bytes.
+   * - A write that the origin refuses is left for the origin's answer, or its absence, to report.
+   * - A failure before the answer closes the origin's transport. So the head read reports the failure
+   *   (failureBeforeAnswer) instead of waiting out the origin's own timeout for a body that stopped coming.
    */
   private final class Upload(
     fromClient: InputStream,
@@ -810,11 +825,12 @@ object AgentEgressProxy:
   val DrainTimeoutMillis = 2_000
 
   /**
-   * Consume whatever the client still sends, until its EOF, bounded: closing with unread bytes
-   * in the receive buffer turns the close into an RST, and an RST destroys the just-written
-   * response's unread tail in the client's stack. A request pipelined past `Connection: close`
-   * arrives here and is discarded unanswered; a client still flooding at the cap gets the RST it
-   * asked for.
+   * Consumes whatever the client still sends, until its EOF, bounded. Closing with unread bytes in the receive
+   * buffer turns the close into an RST, and an RST destroys the just-written response's unread tail in the client's
+   * stack.
+   *
+   * - A request pipelined past `Connection: close` arrives here and is discarded unanswered.
+   * - A client still flooding at the cap gets the RST it asked for.
    */
   def drainClient(clientTls: Socket): Unit =
     try

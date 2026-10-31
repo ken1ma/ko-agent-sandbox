@@ -1,14 +1,16 @@
-// What a host command is allowed to touch, decided before any of it runs: where this workspace's
-// disposable run-on-host caches are stored, which JDK and sbt are the Coursier-managed ones, and which
-// directory a request from inside the sandbox may name as a working directory. run-on-host.md is
-// the reference; this file is the contract's prerequisite half, and holds no backend.
+// What a host command is allowed to touch, decided before any of it runs:
 //
-// Everything here except readProgramRules, which reads the workspace's run-on-host/ tree, is pure
-// over (Os, environment, filesystem layout), so the macOS answers are
-// testable from any host — the technique LauncherState.stateRootOf already uses. A refusal
-// is a value rather than an exit, because the same classification serves the launch's provisioning
-// (RunOnHostProvisioning), a channel request, and the tests that prove unsupported layouts stay
-// unsupported.
+// - where this workspace's disposable run-on-host caches are stored;
+// - which JDK and sbt are the Coursier-managed ones;
+// - which directory a request from inside the sandbox may name as a working directory.
+//
+// run-on-host.md is the reference. This file is the contract's prerequisite half, and holds no backend.
+//
+// - Everything here except readProgramRules, which reads the workspace's run-on-host/ tree, is pure over (Os,
+//   environment, filesystem layout). The macOS answers are therefore testable from any host, the technique that
+//   LauncherState.stateRootOf already uses.
+// - A refusal is a value rather than an exit, because the same classification serves the launch's provisioning
+//   (RunOnHostProvisioning), a channel request, and the tests that prove unsupported layouts stay unsupported.
 
 package agentsandbox.launcher
 
@@ -27,15 +29,15 @@ object RunOnHostPrereqs:
   enum Program:
     case Sbt, Mill, Gradle, Mvn
 
-    /** What a launch, a request, the rule file and the shim call it: the executable's name. */
+    /** The name that a launch, a request, the rule file and the shim use for the program: the executable's name. */
     def name: String = toString.toLowerCase(Locale.ROOT)
 
   object Program:
     def named(name: String): Option[Program] = values.find(_.name == name)
 
   /**
-   * Why a command cannot run, one case per category (run-on-host.md "Refusals"). A value, not a
-   * message: the supervisor prints one wording, the channel another.
+   * Why a command cannot run, one case per category (run-on-host.md, "Refusals"). The refusal is a value, not a
+   * message, because the supervisor prints one wording and the channel another.
    */
   enum Refusal:
     case PrereqJvmNotCoursier(found: String)
@@ -59,8 +61,8 @@ object RunOnHostPrereqs:
     case PrereqMvnDistributionMissing(distributionUrl: String, home: Path)
     case PrerequisiteFileUnreadable(path: Path, reason: String)
     case CacheRootUnusable(reason: String)
-    /** Apart from [[CacheRootUnusable]] because it alone proves the workspace's commands never wrote
-      * under this root: they refuse it by this same check. */
+    /** Kept apart from [[CacheRootUnusable]] because this case alone proves that the workspace's commands never wrote
+      * under this root: the commands refuse the root by this same check. */
     case CacheRootInsideWorkspace(root: Path, workspaceRoot: Path)
     case CachePathOverlapsStateRoot(path: Path, stateRoot: Path)
     case WorkingDirectoryOutsideWorkspace(requested: String)
@@ -69,10 +71,11 @@ object RunOnHostPrereqs:
 
   /**
    * The refusal as the blocked reader sees it: what stopped the command, and what to do next.
-   * Every case is worded here, so a case the supervisor prints through its enum spelling is a
-   * compile error, not a message with a class name in it. `shown` spells each host path: the
-   * launcher's terminal takes HostCommands.displayPath, while the agent, whose `~` is the
-   * container's home, takes the absolute path.
+   *
+   *   - Every case is worded here. A case that the supervisor would print through its enum spelling is therefore a
+   *     compile error, not a message with a class name in it.
+   *   - `shown` spells each host path. The launcher's terminal takes HostCommands.displayPath. The agent, whose `~` is
+   *     the container's home, takes the absolute path.
    */
   def wording(refusal: Refusal, shown: Path => String = _.toString): String = refusal match
     case Refusal.PrereqJvmNotCoursier(found) =>
@@ -137,7 +140,7 @@ object RunOnHostPrereqs:
     case Refusal.RuleOutsideProgramGrammar(line) =>
       s"'$line' is outside the program's rule grammar: one `$ProgramRuleForm` per line"
 
-  /** Everything settled before a command is asked for; every path canonical. */
+  /** Everything settled before a command is asked for. Every path is canonical. */
   case class CommandPrereqs(
     workspaceRoot: Path,
     jdkHome: Path,
@@ -151,10 +154,12 @@ object RunOnHostPrereqs:
   // ---------------------------------------------------------------------------
 
   /**
-   * The run-on-host cache root, discovered exactly as [[LauncherState.stateRootOf]] discovers the
-   * state root so the two answer alike on one machine: XDG_CACHE_HOME when set and absolute,
-   * otherwise $HOME/.cache. Unset is the ordinary case on macOS rather than the exception — mill's
-   * own bootstrap takes the same fallback there — so the fallback is the path most runs use.
+   * The run-on-host cache root: XDG_CACHE_HOME when set and absolute, otherwise $HOME/.cache.
+   *
+   *   - The root is discovered exactly as [[LauncherState.stateRootOf]] discovers the state root, so that the two
+   *     answer alike on one machine.
+   *   - On macOS, an unset XDG_CACHE_HOME is the ordinary case rather than the exception, and mill's own bootstrap
+   *     takes the same fallback there. The fallback is therefore the path most runs use.
    */
   def cacheRootOf(os: Os, env: String => Option[String]): Either[Refusal, Path] =
     val (variable, configured) = os match
@@ -169,45 +174,47 @@ object RunOnHostPrereqs:
         parsePath(value) match
           case None => Left(Refusal.CacheRootUnusable(s"$variable is not a valid path: '$value'"))
           case Some(path) if !path.isAbsolute =>
-            // The same refusal stateRootOf makes, for the same reason: a relative value resolves
-            // against the current directory, which is the repository being sandboxed.
+            // The same refusal that stateRootOf makes, for the same reason: a relative value resolves against the
+            // current directory, which is the repository being sandboxed.
             Left(Refusal.CacheRootUnusable(
               s"$variable is '$value', which is not an absolute path",
             ))
           case Some(path) => Right(path.resolve("ko-agent-sandbox").normalize())
 
   /**
-   * This workspace's run-on-host caches, under one directory so `--reset-run-on-host` for a workspace is a
-   * single removal and a further cache kind can join without moving anything.
+   * This workspace's run-on-host caches, under one directory. `--reset-run-on-host` for a workspace is thus a single
+   * removal, and a further cache kind can join without moving anything.
    *
-   * Coursier's, sbt's global base and Ivy home, Gradle's user home and Maven's local repository.
-   * mill's executable is provisioned by the user rather than fetched here, so it has no writable
-   * home (RunOnHostPrereqs.millExecutable).
+   * The caches are Coursier's, sbt's global base and Ivy home, Gradle's user home and Maven's local repository.
+   * mill's executable is provisioned by the user rather than fetched here, so it has no writable home
+   * (RunOnHostPrereqs.millExecutable).
    */
   def runOnHostCacheDir(cacheRoot: Path, workspaceId: String): Path =
     runOnHostCachesOf(cacheRoot).resolve(workspaceId)
 
   /**
-   * Every workspace's run-on-host caches, the one tree under the cache root the launcher owns:
-   * `--reset-all` removes it whole. The cache root itself is shared — on Windows it is the state
-   * root, `%LOCALAPPDATA%\ko-agent-sandbox`, and on POSIX `XDG_CACHE_HOME` and `XDG_STATE_HOME`
-   * can name one directory — so the built images' journal and the workspace records beside this
-   * tree are never this tree's. Where the tree may lie is [[cachePathClearOfStateRoot]].
+   * Every workspace's run-on-host caches: the one tree under the cache root that the launcher owns.
+   *
+   *   - `--reset-all` removes the tree whole.
+   *   - The cache root itself is shared. On Windows it is the state root, `%LOCALAPPDATA%\ko-agent-sandbox`. On
+   *     POSIX, `XDG_CACHE_HOME` and `XDG_STATE_HOME` can name one directory. The built images' journal and the
+   *     workspace records beside this tree therefore never belong to this tree.
+   *   - [[cachePathClearOfStateRoot]] says where the tree may lie.
    */
   def runOnHostCachesOf(cacheRoot: Path): Path = cacheRoot.resolve("run-on-host")
 
   /**
-   * A path under the run-on-host tree that host commands write or a reset removes, refused unless
-   * it is disjoint from the launcher's state root or under the state root's own run-on-host tree,
-   * the shared-root layout. A path holding the state root, which `XDG_STATE_HOME` can place there,
-   * hands the CA signing key, the built images' journal and the workspace records to the commands and
-   * to `--reset-all`. A path under a state subtree goes with that subtree's reset:
-   * `XDG_CACHE_HOME=<state root>/tls/A` puts every workspace's caches under workspace A's TLS
-   * directory, which `--reset A` removes.
+   * Checks a path under the run-on-host tree that host commands write or a reset removes.
    *
-   * `path` must be canonical — a symlinked `run-on-host` or per-workspace directory places it wherever
-   * the link points, which the spelling never shows — and is compared in each of its spellings
-   * (SandboxWorkspace.dataVolumeSpellings).
+   *   - The path is refused unless it is disjoint from the launcher's state root, or lies under the state root's own
+   *     run-on-host tree, which is the shared-root layout.
+   *   - A path that holds the state root, which `XDG_STATE_HOME` can place there, would hand the CA signing key, the
+   *     built images' journal and the workspace records to the commands and to `--reset-all`.
+   *   - A path under a state subtree would go with that subtree's reset. `XDG_CACHE_HOME=<state root>/tls/A` puts
+   *     every workspace's caches under workspace A's TLS directory, which `--reset A` removes.
+   *   - `path` must be canonical. A symlinked `run-on-host` or per-workspace directory places the path wherever the
+   *     link points, which the spelling never shows.
+   *   - `path` is compared in each of its spellings (SandboxWorkspace.dataVolumeSpellings).
    */
   def cachePathClearOfStateRoot(path: Path, stateRoot: Path, os: Os): Either[Refusal, Path] =
     val clear = SandboxWorkspace.dataVolumeSpellings(os, Seq(path)).forall: candidate =>
@@ -220,37 +227,43 @@ object RunOnHostPrereqs:
     runOnHostCacheDir(cacheRoot, workspaceId).resolve("coursier").resolve("v1")
 
   /**
-   * The confined command's `sbt.global.base`. Persistent and workspace-scoped on purpose, not in the
-   * command's temporary directory: sbt 2 writes a content-addressed store under its global base
-   * (`cache/v2/{cas,ac}`) and leaves `target/` outputs as symlinks into it — measured on this
-   * host, where a build against a temporary base would have its own outputs dangle the
-   * moment the command's directory is removed. Beside the Coursier cache, it shares that cache's poison
-   * scope (later commands of the same workspace, themselves sandboxed) and `--reset-run-on-host`'s removal.
+   * The confined command's `sbt.global.base`.
+   *
+   *   - The base is persistent and workspace-scoped on purpose, not in the command's temporary directory. sbt 2 writes
+   *     a content-addressed store under its global base (`cache/v2/{cas,ac}`), and leaves `target/` outputs as
+   *     symlinks into it (measured on this host). A build against a temporary base would have its own outputs dangle
+   *     the moment the command's directory is removed.
+   *   - The base lies beside the Coursier cache, and shares that cache's poison scope, which is later commands of the
+   *     same workspace, themselves sandboxed. The base also shares `--reset-run-on-host`'s removal.
    */
   def sbtGlobalOf(cacheRoot: Path, workspaceId: String): Path =
     runOnHostCacheDir(cacheRoot, workspaceId).resolve("sbt-global")
 
   /**
-   * The confined command's `sbt.ivy.home`, which the launcher otherwise derives as `~/.ivy2`, a path
-   * the profile denies. What sbt writes there, and when the redirect may be retired, is
-   * run-on-host.md "sbt". Beside the global base for the same reasons it is there.
+   * The confined command's `sbt.ivy.home`, which the launcher otherwise derives as `~/.ivy2`, a path the profile
+   * denies.
+   *
+   *   - run-on-host.md, "sbt", has what sbt writes there, and when the redirect may be retired.
+   *   - The Ivy home lies beside the global base, for the same reasons the global base lies where it does.
    */
   def ivyHomeOf(cacheRoot: Path, workspaceId: String): Path =
     runOnHostCacheDir(cacheRoot, workspaceId).resolve("ivy-home")
 
   /** The confined command's `GRADLE_USER_HOME`, otherwise `~/.gradle`, a path the profile denies.
-    * Gradle keeps its caches here; the daemon registry is the launch's own
-    * (RunOnHostSandbox.gradleCommand), and the wrapper's distribution store is the user's own
-    * (gradleUserHome), granted one distribution read-only. */
+    *
+    *   - Gradle keeps its caches here.
+    *   - The daemon registry is the launch's own (RunOnHostSandbox.gradleCommand).
+    *   - The wrapper's distribution store is the user's own (gradleUserHome). The command is granted one distribution
+    *     there, read-only. */
   def gradleUserHomeOf(cacheRoot: Path, workspaceId: String): Path =
     runOnHostCacheDir(cacheRoot, workspaceId).resolve("gradle-user-home")
 
-  /** The confined command's `maven.repo.local`, otherwise `~/.m2/repository`, a path the profile
-    * denies. Maven stores every artifact and plugin it resolves here. */
+  /** The confined command's `maven.repo.local`, otherwise `~/.m2/repository`, a path the profile denies. Maven stores
+    * every artifact and plugin it resolves here. */
   def m2RepositoryOf(cacheRoot: Path, workspaceId: String): Path =
     runOnHostCacheDir(cacheRoot, workspaceId).resolve("m2").resolve("repository")
 
-  /** The workspace's caches host commands write, as laid out; where each lies is [[writtenCacheDirectories]]. */
+  /** The workspace's caches that host commands write, as laid out. [[writtenCacheDirectories]] says where each lies. */
   def cacheDirectoriesOf(cacheRoot: Path, workspaceId: String): Vector[Path] =
     Vector(
       coursierV1Of(cacheRoot, workspaceId), sbtGlobalOf(cacheRoot, workspaceId), ivyHomeOf(cacheRoot, workspaceId),
@@ -258,13 +271,16 @@ object RunOnHostPrereqs:
     )
 
   /**
-   * Where every workspace's caches under the cache root lie, each canonicalized as the runner grants
-   * it (RunOnHostSandbox.assemble): a symlink at the cache, at the workspace's directory or at
-   * `run-on-host` places a cache wherever the link points, outside the cache root. For a launch's
-   * refusal of a plugin host commands could write; every workspace's, as another workspace's session
-   * writes its own. A tree not yet created has no caches; one that cannot be listed, or a cache
-   * that cannot be canonicalized, is the Left: the runner grants a cache without listing the tree,
-   * so an unreadable tree says nothing about where the caches lie.
+   * Where every workspace's caches under the cache root lie, each canonicalized as the runner grants it
+   * (RunOnHostSandbox.assemble).
+   *
+   *   - A symlink at the cache, at the workspace's directory or at `run-on-host` places a cache wherever the link
+   *     points, outside the cache root.
+   *   - A launch uses the result to refuse a plugin that host commands could write. The result covers every
+   *     workspace's caches, because another workspace's session writes its own.
+   *   - A tree not yet created has no caches.
+   *   - A tree that cannot be listed, or a cache that cannot be canonicalized, gives Left. The runner grants a cache
+   *     without listing the tree, so an unreadable tree says nothing about where the caches lie.
    */
   def writtenCacheDirectories(cacheRoot: Path): Either[String, Vector[Path]] =
     val tree = runOnHostCachesOf(cacheRoot)
@@ -280,9 +296,8 @@ object RunOnHostPrereqs:
         .map(_.distinct)
 
   /**
-   * Refused when the cache root would be inside the workspace, the check
-   * [[LauncherState.requireStateRootOutside]] makes for the state root: a cache the
-   * workspace can reach is a cache the sandbox can rewrite between commands.
+   * Refuses a cache root inside the workspace, the check that [[LauncherState.requireStateRootOutside]] makes for the
+   * state root. A cache that the workspace can reach is a cache that the sandbox can rewrite between commands.
    */
   def cacheRootOutsideWorkspace(
     cacheRoot: Path,
@@ -290,10 +305,9 @@ object RunOnHostPrereqs:
     os: Os,
     canonicalize: Path => Either[String, Path],
   ): Either[Refusal, Path] =
-    // Canonical before the overlap check: XDG_CACHE_HOME can be a symlink whose text is outside the
-    // workspace and whose target is inside it, and the lexical answer would pass it. The canonical
-    // root is the answer, and every path derived from it must come from that answer, not from
-    // cacheRoot as given.
+    // Canonicalized before the overlap check. XDG_CACHE_HOME can be a symlink whose text is outside the workspace and
+    // whose target is inside it, and the lexical answer would pass it. The canonical root is the answer, and every
+    // path derived from the root must come from that answer, not from cacheRoot as given.
     canonicalize(cacheRoot) match
       case Left(reason) => Left(Refusal.CacheRootUnusable(reason))
       case Right(root) =>
@@ -301,8 +315,8 @@ object RunOnHostPrereqs:
           Left(Refusal.CacheRootInsideWorkspace(root, workspaceRoot))
         else Right(root)
 
-  /** The user's Coursier cache root — read for the JDK, never granted whole
-    * (run-on-host.md "The JVM", "The run-on-host cache"). */
+  /** The user's Coursier cache root, read for the JDK and never granted whole (run-on-host.md, "The JVM",
+    * "The run-on-host cache"). */
   def coursierCacheRoot(os: Os, env: String => Option[String]): Option[Path] =
     env("COURSIER_CACHE").filter(_.nonEmpty).flatMap(parsePath).map(_.normalize()).orElse:
       env("HOME").filter(_.nonEmpty).flatMap(parsePath).map: home =>
@@ -325,21 +339,19 @@ object RunOnHostPrereqs:
   /**
    * The JDK the command runs on, from JAVA_HOME alone.
    *
-   * `java` on PATH is not a second source. On macOS it is `/usr/bin/java`, a stub that resolves
-   * through JAVA_HOME or java_home and so reports the right JVM at the wrong path: validating the
-   * binary establishes nothing about what it redirects to.
-   *
-   * The answer is one canonical home, never a root holding JDKs. A current Coursier unpacks a JDK
-   * into its archive cache under a URL-derived path, so the enclosing directory is the general
-   * `arc` tree — granting that would hand the command every archive Coursier ever extracted.
-   *
-   * `canonicalize` resolves symlinks; None means the path does not exist, which is itself a
-   * refusal rather than a reason to fall back. Both sides canonical, the comparison is exact:
-   * canonicalization returns the on-disk spelling on a folding volume, and on a case-sensitive
-   * one `coursier` and `Coursier` are different directories that folding would conflate.
-   *
-   * Inside the cache is necessary, not sufficient: the cache root, `arc` and `v1` are inside it
-   * too, and each would be granted read/execute whole. A JDK home is what holds `bin/java`.
+   *   - `java` on PATH is not a second source. On macOS it is `/usr/bin/java`, a stub that resolves through JAVA_HOME
+   *     or java_home, and so reports the right JVM at the wrong path. Validating the binary establishes nothing about
+   *     what it redirects to.
+   *   - The answer is one canonical home, never a root holding JDKs. A current Coursier unpacks a JDK into its archive
+   *     cache under a URL-derived path, so the enclosing directory is the general `arc` tree. Granting `arc` would
+   *     hand the command every archive Coursier ever extracted.
+   *   - `canonicalize` resolves symlinks. None means that the path does not exist, which is itself a refusal rather
+   *     than a reason to fall back.
+   *   - With both sides canonical, the comparison is exact. Canonicalization returns the on-disk spelling on a folding
+   *     volume. On a case-sensitive volume, `coursier` and `Coursier` are different directories that folding would
+   *     conflate.
+   *   - Lying inside the cache is necessary, not sufficient. The cache root, `arc` and `v1` lie inside it too, and
+   *     each would be granted read/execute whole. A JDK home is what holds `bin/java`.
    */
   def resolveJdkHome(
     env: String => Option[String],
@@ -360,7 +372,7 @@ object RunOnHostPrereqs:
     isExecutableFile: Path => Boolean,
   ): Option[Path] =
     parsePath(value).flatMap(canonicalize).filter: home =>
-      // bin/java canonical and still under the home: a symlink out of it would run a JVM the
+      // bin/java must be canonical and still under the home. A symlink out of the home would run a JVM that the
       // profile never granted.
       val java = canonicalize(home.resolve("bin").resolve("java"))
       canonicalize(cacheRoot).exists: root =>
@@ -370,9 +382,9 @@ object RunOnHostPrereqs:
           && java.exists(binary => binary.startsWith(home) && isExecutableFile(binary))
 
   /**
-   * The `sbt` the command runs, which must be the one `cs install sbt` produced. An `sbt` found on
-   * PATH is accepted only when it canonicalizes into the Coursier install directory, so a symlink
-   * from PATH into that directory works and one pointing anywhere else does not.
+   * The `sbt` that the command runs, which must be the one `cs install sbt` produced. An `sbt` found on PATH is
+   * accepted only when it canonicalizes into the Coursier install directory. A symlink from PATH into that directory
+   * therefore works, and a symlink pointing anywhere else does not.
    */
   def validateSbtExecutable(
     candidate: Path,
@@ -387,13 +399,16 @@ object RunOnHostPrereqs:
       case _                   => Left(Refusal.PrereqSbtNotCoursier(candidate))
 
   /**
-   * The second half of the cs-installed `sbt`: the script execs an unpacked distribution inside the
-   * Coursier archive cache. Its path encodes the download URL of whichever sbt Coursier installed,
-   * so it is read out of the script rather than derived — and read rather than obtained by running
-   * it: running the script is executing on the host, unconfined.
+   * The second half of the cs-installed `sbt`: the script execs an unpacked distribution inside the Coursier archive
+   * cache.
    *
-   * The longest cache path the script names, because a shorter one is a prefix of the real answer
-   * and a grant on a prefix is wider than it should be. Refused if it escapes the cache root.
+   *   - The distribution's path encodes the download URL of whichever sbt Coursier installed. The path is therefore
+   *     read out of the script rather than derived.
+   *   - The path is read rather than obtained by running the script, because running the script is executing on the
+   *     host, unconfined.
+   *   - The answer is the longest cache path the script names. A shorter path is a prefix of the real answer, and a
+   *     grant on a prefix is wider than it should be.
+   *   - A path that escapes the cache root is refused.
    */
   def sbtDistribution(scriptText: String, coursierCacheRoot: Path): Option[Path] =
     val prefix = coursierCacheRoot.toString
@@ -418,12 +433,15 @@ object RunOnHostPrereqs:
       .toSeq
 
   /**
-   * The sbt distribution home to grant, from the distribution's `sbt` the cs-installed script execs
-   * (sbtDistribution names it). It is checked as the script itself is —
-   * canonical, an executable file, still inside the cache once symlinks are followed — and its
-   * layout is checked too: `<home>/bin/sbt` with the home strictly inside `arc`, where Coursier
-   * unpacks archives. A grant is the home, so `arc/bin/sbt` or `v1/x/bin/sbt` would grant `arc`
-   * or a `v1` entry: the layout is what keeps a grant a distribution.
+   * The sbt distribution home to grant, from the distribution's `sbt` that the cs-installed script execs
+   * (sbtDistribution names it).
+   *
+   *   - The distribution's `sbt` is checked as the script itself is: canonical, an executable file, and still inside
+   *     the cache once symlinks are followed.
+   *   - The distribution's layout is checked too: `<home>/bin/sbt`, with the home strictly inside `arc`, where Coursier
+   *     unpacks archives.
+   *   - A grant is the home, so `arc/bin/sbt` or `v1/x/bin/sbt` would grant `arc` or a `v1` entry. The layout is what
+   *     keeps a grant a distribution.
    */
   def validateSbtDistribution(
     inner: Path,
@@ -442,9 +460,8 @@ object RunOnHostPrereqs:
       case _                     => Left(Refusal.PrereqSbtNotCoursier(inner))
 
   /**
-   * mill's bootstrap, which is the workspace's own file rather than an installed command: a global
-   * mill is not supported, so its absence is a prerequisite failure and not a reason to look
-   * elsewhere.
+   * mill's bootstrap, which is the workspace's own file rather than an installed command. A global mill is not
+   * supported, so the bootstrap's absence is a prerequisite failure, not a reason to look elsewhere.
    */
   def validateMillBootstrap(
     buildDirectory: Path,
@@ -455,11 +472,12 @@ object RunOnHostPrereqs:
     else Left(Refusal.PrereqMillBootstrapMissing)
 
   /**
-   * The directory containing a provisioned mill executable, as the bootstrap computes it: `MILL_FINAL_DOWNLOAD_FOLDER`
-   * if set, else `${XDG_CACHE_HOME:-$HOME/.cache}/mill/download`. `MILL_USER_CACHE_DIR` is not an
-   * input — the script assigns it and never reads it. No platform branch: the fallback is spelled
-   * the same everywhere, which is why a macOS host keeps mill's cache under ~/.cache while
-   * Coursier's is under ~/Library.
+   * The directory containing a provisioned mill executable, as the bootstrap computes it:
+   * `MILL_FINAL_DOWNLOAD_FOLDER` if set, else `${XDG_CACHE_HOME:-$HOME/.cache}/mill/download`.
+   *
+   *   - `MILL_USER_CACHE_DIR` is not an input. The script assigns it and never reads it.
+   *   - There is no platform branch. The bootstrap spells the fallback the same everywhere, which is why a macOS host
+   *     keeps mill's cache under ~/.cache while Coursier's cache is under ~/Library.
    */
   def millDownloadDir(env: String => Option[String]): Option[Path] =
     def fromEnv(name: String) = env(name).filter(_.nonEmpty).flatMap(parsePath).map(_.normalize())
@@ -469,25 +487,28 @@ object RunOnHostPrereqs:
       base.map(_.resolve("mill").resolve("download"))
 
   /**
-   * The mill version, read the way the bootstrap reads it — and only *read*. The script's own
-   * dry-run mode would report the executable's path exactly, but running the workspace's script is
-   * executing agent-authored shell on the host, which is what the sandbox exists to prevent.
+   * The mill version, read the way the bootstrap reads it, and only *read*.
    *
-   * The fallback is the assignment at the top of the script, which mill documents as the
-   * recommended way to manage the version (`./mill updateMillScripts`). The script also honours
-   * `MILL_VERSION` and `DEFAULT_MILL_VERSION` from its environment, and this deliberately does
-   * not: the command's environment is a closed set (RunOnHostSandbox.commandEnvironment) that carries
-   * neither, so the script resolves from the build directory alone, and reading them here would grant an
-   * executable the script then does not run.
+   *   - The script's own dry-run mode would report the executable's path exactly. Running the workspace's script,
+   *     however, is executing agent-authored shell on the host, which is what the sandbox exists to prevent.
+   *   - The fallback is the assignment at the top of the script, which mill documents as the recommended way to manage
+   *     the version (`./mill updateMillScripts`).
+   *   - The script also honours `MILL_VERSION` and `DEFAULT_MILL_VERSION` from its environment, and this method
+   *     deliberately does not. The command's environment is a closed set (RunOnHostSandbox.commandEnvironment) that
+   *     carries neither variable, so the script resolves the version from the build directory alone. Reading the
+   *     variables here would grant an executable that the script then does not run.
    */
   def millVersion(
     buildDirectory: Path,
     readLines: Path => Option[Seq[String]],
   ): Either[Refusal, String] =
-    // The script's `elif` chain: the first file that *exists* decides, and what it yields is the
-    // answer even when empty — there is no fall-through to the next file. A version file gives
-    // its first line as is; a marker file gives every matching line, trimmed, so two markers give
-    // a value with a newline in it, which is no version.
+    // The script's `elif` chain:
+    //
+    // - The first file that *exists* decides, and what it yields is the answer even when empty. There is no
+    //   fall-through to the next file.
+    // - A version file gives its first line as is.
+    // - A marker file gives every matching line, trimmed. Two markers therefore give a value with a newline in it,
+    //   which is no version.
     def lines(name: String): Option[Seq[String]] = readLines(buildDirectory.resolve(name))
     def versionFile(name: String): Option[Option[String]] = lines(name).map(_.headOption)
     def markerFile(name: String, marker: String => Boolean): Option[Option[String]] =
@@ -510,14 +531,15 @@ object RunOnHostPrereqs:
       case None          => Left(Refusal.PrereqMillVersionUnpinned)
 
   /**
-   * The launcher the supervisor runs for a pinned version: the JVM launcher, `<v>-jvm` as the
-   * bootstrap spells it, for a `<v>` with no suffix and a `<v>-jvm` pin alike. The bootstrap would run the
-   * native image for `<v>`, and that image cannot be the launch's client: it takes no
-   * `_JAVA_OPTIONS`, so the environment's `preferIPv4Stack` never reaches it, its connect
-   * is the dual-stack one the "localhost" class denies (run-on-host.md "Network"), and
-   * `-Djava.net.preferIPv4Stack=true` on its command line changes nothing (measured,
-   * src/probe/run-on-host-runner-session.sh M2). A `<v>-native` pin asks for that one
-   * launcher by name and is refused.
+   * The launcher that the supervisor runs for a pinned version: the JVM launcher, `<v>-jvm` as the bootstrap spells
+   * it. A `<v>` pin with no suffix and a `<v>-jvm` pin give the same launcher.
+   *
+   *   - The bootstrap would run the native image for `<v>`, and that image cannot be the launch's client.
+   *   - The native image takes no `_JAVA_OPTIONS`, so the environment's `preferIPv4Stack` never reaches it. The image's
+   *     connect is the dual-stack one that the "localhost" class denies (run-on-host.md, "Network").
+   *   - `-Djava.net.preferIPv4Stack=true` on the native image's command line changes nothing (measured,
+   *     src/probe/run-on-host-runner-session.sh M2).
+   *   - A `<v>-native` pin asks for that one launcher by name, and is refused.
    */
   def millLauncherVersion(pinned: String): Either[Refusal, String] =
     if pinned.endsWith("-native") then Left(Refusal.PrereqMillNativeLauncher(pinned))
@@ -526,60 +548,67 @@ object RunOnHostPrereqs:
 
   /** The JVM a build directory's `mill-jvm-version` selects. */
   enum MillJvm:
-    /** `system`: `java` from the PATH the supervisor sets, the JDK `JAVA_HOME` names. */
+    /** `system`: `java` from the PATH that the supervisor sets, which is the JDK that `JAVA_HOME` names. */
     case System
-    /** A Coursier JVM id, such as `temurin:25`: the JDK a host run provisioned (millRecordedJdk). */
+    /** A Coursier JVM id, such as `temurin:25`: the JDK that a host run provisioned (millRecordedJdk). */
     case Pinned(id: String)
-    /** Unset: the id built into mill's launcher, which the supervisor does not read; the JDK a
-      * host run provisioned for it (millRecordedJdk), under the launchers millUnsetJvmAccepted
-      * admits. */
+    /** Unset: the id built into mill's launcher, which the supervisor does not read. The JDK is the one a host run
+      * provisioned for that id (millRecordedJdk), under the launchers that millUnsetJvmAccepted admits. */
     case Unset
 
   /**
-   * `mill-jvm-version` must be `system`, one JVM id, or unset: mill resolves an id through
-   * Coursier's index into a JDK it downloads, which a command may not do, so the JDK is the one a
-   * host run provisioned (millRecordedJdk).
+   * `mill-jvm-version` must be `system`, one JVM id, or unset. mill resolves an id through Coursier's index into a JDK
+   * it downloads, which a command may not do. The JDK is therefore the one a host run provisioned (millRecordedJdk).
    *
-   * Read as mill reads it (`MillProcessLauncher.loadMillConfig`, `mill.constants.Util.
-   * readBuildHeader`): `.mill-jvm-version`, else `.config/mill-jvm-version` — the first line that is
-   * not blank or a `#` comment, compared as written, so `" system "` is not `system` — else the
-   * header of the first root build file that exists, `build.mill.yaml` (the whole file is YAML)
-   * then `build.mill` (the initial run of `//| ` lines only), where the key is a top-level YAML
-   * key. The first source that exists is authoritative; when it holds no value, or no source
-   * exists, the version is unset. A value that is neither `system` nor an id is a refusal.
+   * The value is read as mill reads it (`MillProcessLauncher.loadMillConfig`, `mill.constants.Util.
+   * readBuildHeader`):
    *
-   * A key in a spelling this does not recognize, such as `"mill-jvm-version": system`, reads as
-   * unset here while mill reads its value. Nothing more is granted for it than for a pin, since
-   * the grant under either is the JDK the java-home file records: a `system` so spelled is refused
-   * for the JDK no host run records, and an id so spelled runs as a pin whose id is not compared.
+   *   - `.mill-jvm-version`, else `.config/mill-jvm-version`. The value is the first line that is not blank or a `#`
+   *     comment, compared as written, so `" system "` is not `system`.
+   *   - Otherwise, the header of the first root build file that exists: `build.mill.yaml`, where the whole file is
+   *     YAML, then `build.mill`, where only the initial run of `//| ` lines counts. The key there is a top-level YAML
+   *     key.
+   *   - The first source that exists is authoritative. When it holds no value, or no source exists, the version is
+   *     unset.
+   *   - A value that is neither `system` nor an id is a refusal.
+   *
+   * A key in a spelling that this method does not recognize, such as `"mill-jvm-version": system`, reads as unset
+   * here while mill reads its value.
+   *
+   *   - Nothing more is granted for such a key than for a pin, since the grant under either is the JDK that the
+   *     java-home file records.
+   *   - A `system` so spelled is refused, because no host run records a JDK for it.
+   *   - An id so spelled runs as a pin whose id is not compared.
    */
   def millJvm(
     buildDirectory: Path,
     readLines: Path => Option[Seq[String]],
   ): Either[Refusal, MillJvm] =
     def lines(name: String): Option[Seq[String]] = readLines(buildDirectory.resolve(name))
-    // No environment interpolation, though mill's reader does it: a value that needs the
-    // environment to become `system` is not literally `system`, and refusing it fails closed.
+    // No environment interpolation, though mill's reader does it. A value that needs the environment to become
+    // `system` is not literally `system`, and refusing it fails closed.
     def optsFile(name: String): Option[Option[String]] =
       lines(name).map(_.find(line => line.trim.nonEmpty && !line.trim.startsWith("#")))
-    // A recognizer, not a YAML parser: the only question is "is this exactly `system` or one
-    // id?", so the accepted spellings are enumerated — plain or quoted, an optional comment after
-    // whitespace, as YAML requires — and every other value, `system#x` and an unmatched quote
-    // included, is returned as found and refused below. Conservative false rejects fail closed; a
-    // parser that guessed would fail open.
+    // A recognizer, not a YAML parser. The only question is "is this exactly `system` or one id?", so the accepted
+    // spellings are enumerated: plain or quoted, with an optional comment after whitespace, as YAML requires. Every
+    // other value, `system#x` and an unmatched quote included, is returned as found and refused below. Conservative
+    // false rejects fail closed, and a parser that guessed would fail open.
     def topLevel(all: Seq[String]): Option[String] =
-      // mill parses one YAML document; a `---` or `...` marker starts territory it never reads,
-      // and a key there would be recognized here and ignored there. Refused, and the refusal is the value.
+      // mill parses one YAML document. A `---` or `...` marker starts territory that mill never reads, and a key there
+      // would be recognized here and ignored there. Such a file is refused, and the refusal is the value.
       if all.exists(line => DocumentMarker.matches(line)) then Some("multi-document YAML")
       else all.collect { case TopLevelJvmKey(value) => value } match
         case Seq()      => None
         case Seq(ScalarSpelling(plain, double, single)) => Option(plain).orElse(Option(double)).orElse(Option(single))
         case Seq(value) => Some(value.trim)
-        // Which one mill's parsed map keeps is its parser's business; two keys are never `system`.
+        // Which key mill's parsed map keeps is its parser's business. Two keys are never `system`.
         case _ => Some("duplicate mill-jvm-version keys")
-    // The //| lines as readBuildHeader takes them: `//|` alone is an empty line, `//| ...` is
-    // data, anything else starting `//|` is an error, and so is a `//|` line after the initial
-    // run — it scans the whole file. An error there is a refusal here, returned as the value.
+    // The //| lines as readBuildHeader takes them:
+    //
+    // - `//|` alone is an empty line, and `//| ...` is data.
+    // - Anything else starting with `//|` is an error.
+    // - A `//|` line after the initial run is an error too, because readBuildHeader scans the whole file.
+    // - An error there is a refusal here, returned as the value.
     def header(name: String): Option[Option[String]] =
       lines(name).map: all =>
         val run = if name.endsWith(".yaml") then Right(all)
@@ -601,17 +630,16 @@ object RunOnHostPrereqs:
       case Some(id) if JvmId.matches(id) => Right(MillJvm.Pinned(id))
       case Some(other)                    => Left(Refusal.PrereqMillJvmUnreadable(other))
 
-  /** The major and minor version of the first mill whose launcher resolves an unset
-    * `mill-jvm-version` as it resolves a pin (millUnsetJvmAccepted). */
+  /** The major and minor version of the first mill whose launcher resolves an unset `mill-jvm-version` as it resolves
+    * a pin (millUnsetJvmAccepted). */
   private val MillResolvesUnsetJvmSince = (1, 1)
 
   private val MajorMinor = raw"""(\d+)\.(\d+)(?:\D.*)?""".r
 
   /**
-   * An unset `mill-jvm-version` is accepted under a launcher that resolves it as it resolves a
-   * pin, to the id built into the launcher, so that the grant is millRecordedJdk's. An earlier
-   * launcher, and one whose version does not start with two numbers, is refused (run-on-host.md
-   * "An unset `mill-jvm-version`" has what each launcher does).
+   * Accepts an unset `mill-jvm-version` under a launcher that resolves it as it resolves a pin, to the id built into
+   * the launcher. The grant is then millRecordedJdk's. An earlier launcher, and a launcher whose version does not
+   * start with two numbers, is refused. run-on-host.md, "An unset `mill-jvm-version`", has what each launcher does.
    */
   def millUnsetJvmAccepted(jvm: MillJvm, launcherVersion: String): Either[Refusal, Unit] =
     def resolvesUnsetAsAPin = launcherVersion match
@@ -622,67 +650,73 @@ object RunOnHostPrereqs:
     else Right(())
 
   /** The major and minor version of the first mill whose daemon reads each launcher's start time
-    * (millRunsWithoutDaemon): `LauncherOutFilesRecordStore`, from 1.2.0-RC1, absent from 1.1.10. */
+    * (millRunsWithoutDaemon). The reader is `LauncherOutFilesRecordStore`, present from 1.2.0-RC1 and absent from
+    * 1.1.10. */
   val MillDaemonReadsLauncherSince = (1, 2)
 
   /**
-   * Whether a mill command runs its build without the runner's daemon, `--no-daemon`: under a
-   * launcher whose daemon reads each launcher's start time with `ProcessHandle.info()`, which
-   * throws on macOS when the profile refuses `kern.procargs2.<pid>` (doc/upstream-issues.md,
-   * openjdk/jdk), and the daemon's profile cannot name a launcher's pid, unknown when the daemon
-   * starts. Without a daemon, the build runs as the launcher's child, inside the launcher's own
-   * sandbox, where the read is allowed. A version that does not start with two numbers keeps the
-   * daemon.
+   * Whether a mill command runs its build without the runner's daemon, with `--no-daemon`.
+   *
+   *   - The build runs without a daemon under a launcher whose daemon reads each launcher's start time with
+   *     `ProcessHandle.info()`.
+   *   - That call throws on macOS when the profile refuses `kern.procargs2.<pid>` (doc/upstream-issues.md,
+   *     openjdk/jdk). The daemon's profile cannot name a launcher's pid, which is unknown when the daemon starts.
+   *   - Without a daemon, the build runs as the launcher's child, inside the launcher's own sandbox, where the read is
+   *     allowed.
+   *   - A version that does not start with two numbers keeps the daemon.
    */
   def millRunsWithoutDaemon(launcherVersion: String): Boolean = launcherVersion match
     case MajorMinor(major, minor) =>
       major.toIntOption.zip(minor.toIntOption).exists(Ordering[(Int, Int)].gteq(_, MillDaemonReadsLauncherSince))
     case _ => false
 
-  /** `---` or `...` at line start, bare or followed by whitespace and anything: both start
-    * territory mill's single-document parse never reads. */
+  /** `---` or `...` at line start, bare or followed by whitespace and anything. Both markers start territory that
+    * mill's single-document parse never reads. */
   private val DocumentMarker = raw"""(?:---|\.\.\.)(?:\s.*)?""".r
 
-  /** The colon must be followed by whitespace or end the line: YAML's `key:value` is one scalar,
-    * not a mapping, and mill would not see the key. */
+  /** The colon must be followed by whitespace or end the line. YAML's `key:value` is one scalar, not a mapping, and
+    * mill would not see the key. */
   private val TopLevelJvmKey = raw"""mill-jvm-version:((?:\s.*)?)""".r
   /** One scalar of the id's characters, plain or in either quote, then an optional comment. */
   private val ScalarSpelling =
     raw"""\s*(?:([A-Za-z0-9.:+_-]+)|"([A-Za-z0-9.:+_-]+)"|'([A-Za-z0-9.:+_-]+)')(?:\s+#.*)?\s*""".r
 
-  /** A Coursier JVM id as `mill-jvm-version` takes one: a version, or a name, a colon and a
-    * version. Starting with a letter, since a plain scalar of digits and dots is a number to
-    * YAML, and what mill makes of one is its parser's business. */
+  /** A Coursier JVM id as `mill-jvm-version` takes one: a version, or a name, a colon and a version. The id must start
+    * with a letter, since a plain scalar of digits and dots is a number to YAML, and what mill makes of a number is
+    * its parser's business. */
   private val JvmId = raw"""[A-Za-z][A-Za-z0-9.+_-]*(?::[A-Za-z0-9.+_-]+)?""".r
 
-  /** Where mill's launcher writes the JDK home it resolved for a `mill-jvm-version` other than
-    * `system`, under the build directory (`CoursierClient.resolveJavaHome`, 1.1.10). */
+  /** Where mill's launcher writes the JDK home that it resolved for a `mill-jvm-version` other than `system`, under
+    * the build directory (`CoursierClient.resolveJavaHome`, 1.1.10). */
   val MillJavaHomeFile = "out/mill-daemon/cache/java-home"
 
-  /** The lock each Mill command takes on the build directory's `out/` for its build, a file lock
-    * whoever runs it, daemon or not (`SharedOutLockManager`, `MillNoDaemonMain`, 1.3.0). */
+  /** The lock that each Mill command takes on the build directory's `out/` for its build. The lock is a file lock,
+    * whoever runs the build, daemon or not (`SharedOutLockManager`, `MillNoDaemonMain`, 1.3.0). */
   val MillOutLockFile = "out/mill-out-lock"
 
-  /** The file's whole text: a JSON pair of strings, the key then the home, neither holding an
-    * escape — mill writes none for the paths this accepts, and one refused fails closed. */
+  /** The file's whole text: a JSON pair of strings, the key then the home, neither holding an escape. mill writes no
+    * escape for the paths this pattern accepts, and a refused escape fails closed. */
   private val RecordedJavaHome = raw"""\["([^"\\]*)","([^"\\]*)"\]""".r
 
   /**
-   * The JDK a pinned or unset `mill-jvm-version` runs on: the home mill's launcher recorded in
-   * `MillJavaHomeFile` when a host run resolved the id, accepted when it passes the checks
-   * `JAVA_HOME` passes (resolveJdkHome). `id` is the pin, None when unset; `recorded` is that
-   * file's text, None when absent.
+   * The JDK that a pinned or unset `mill-jvm-version` runs on: the home that mill's launcher recorded in
+   * `MillJavaHomeFile` when a host run resolved the id. The home is accepted when it passes the checks that
+   * `JAVA_HOME` passes (resolveJdkHome).
    *
-   * Mill uses the recorded home while the file's key equals `<id>:<index version>:<repositories>`
-   * and the home is a directory, and otherwise resolves the id again, fetching the index and the
-   * JDK — measured, src/probe/mill-pinned-jvm.sh. So a file recording another id than the pin is
-   * refused here as not provisioned. The index version is mill's own default unless the build
-   * sets one, the repositories are a YAML list, and the id of an unset version is built into the
-   * launcher, so none of the three is compared: a file mill itself rejects on those fails the
-   * command at mill's fetch.
+   *   - `id` is the pin, or None when unset.
+   *   - `recorded` is that file's text, or None when absent.
    *
-   * Mill runs whatever directory the file names (the same probe), and a command can write the
-   * file, so the checks here are what keep the grant a JDK the user provisioned.
+   * Mill uses the recorded home while the file's key equals `<id>:<index version>:<repositories>` and the home is a
+   * directory. Otherwise mill resolves the id again, fetching the index and the JDK (measured,
+   * src/probe/mill-pinned-jvm.sh).
+   *
+   *   - A file recording another id than the pin is therefore refused here as not provisioned.
+   *   - None of the other three parts is compared. The index version is mill's own default unless the build sets one,
+   *     the repositories are a YAML list, and the id of an unset version is built into the launcher. A file that mill
+   *     itself rejects on those parts fails the command at mill's fetch.
+   *
+   * Mill runs whatever directory the file names (the same probe), and a command can write the file. The checks here
+   * are therefore what keep the grant a JDK the user provisioned.
    */
   def millRecordedJdk(
     id: Option[String],
@@ -698,10 +732,11 @@ object RunOnHostPrereqs:
           .toRight(Refusal.PrereqMillJdkNotCoursier(id, launcherVersion, cacheRoot))
       case _ => Left(Refusal.PrereqMillJdkMissing(id, launcherVersion))
 
-  /** The JVM launcher's file, provisioned: `<download folder>/<v>` for the launcher version
-    * `<v>-jvm`, as the bootstrap derives it (its `case "$MILL_VERSION"` block strips the suffix and
-    * applies no platform suffix), present and executable; or a refusal naming the host command
-    * that provisions it. */
+  /** The JVM launcher's file, provisioned, present and executable, or a refusal naming the host command that
+    * provisions it.
+    *
+    *   - The file is `<download folder>/<v>` for the launcher version `<v>-jvm`, as the bootstrap derives it.
+    *   - The bootstrap's `case "$MILL_VERSION"` block strips the suffix and applies no platform suffix. */
   def millExecutable(
     downloadDir: Path,
     launcherVersion: String,
@@ -712,25 +747,29 @@ object RunOnHostPrereqs:
     else Left(Refusal.PrereqMillExecutableMissing(launcherVersion, downloadDir))
 
   /**
-   * What Mill's launcher restarts the daemon on (`ServerLauncher.DaemonConfig`, 1.1.10): the
-   * launcher's version, the resolved JVM, `mill-jvm-opts` and `mill-repositories` — the last
-   * three each from the source `MillProcessLauncher.loadMillConfig` selects, `.<key>`, else
-   * `.config/<key>`, else the header of the first root build file, `build.mill.yaml` (the whole
-   * file) then `build.mill` (its `//|` lines). Its other inputs, `JAVA_OPTS` and
-   * `JDK_JAVA_OPTIONS`, require explicit forwarding and stay fixed for the launch. The runner compares this before
-   * each command and replaces the daemon when it differs, so that the client never meets the
-   * mismatch itself: Mill's launcher would end the daemon and start a replacement from the
-   * client's own profile, which cannot bind, and the command would fail.
+   * What Mill's launcher restarts the daemon on (`ServerLauncher.DaemonConfig`, 1.1.10).
    *
-   * The sources' text, not their parsed values, and the header whole: Mill parses it as YAML,
-   * where a key has spellings no recognizer enumerates, so any header edit restarts the daemon
-   * rather than any key edit slipping past — the cheaper error, since an edit to
-   * `build.mill.yaml` changes the build anyway. Each source is named with its text, so an empty
-   * file, which Mill selects like any other, differs from an absent one, and one file's lines
-   * never read as another's. The version is read as the bootstrap reads it (millVersion); the
-   * JVM version as Mill reads it. `javaHome` is the text of `MillJavaHomeFile`, taken under a
-   * pinned or unset `mill-jvm-version` and not under `system`: it names the JDK the daemon runs
-   * on and its profile grants, so a daemon started from another text is replaced.
+   *   - The inputs are the launcher's version, the resolved JVM, `mill-jvm-opts` and `mill-repositories`.
+   *   - Each of the last three comes from the source that `MillProcessLauncher.loadMillConfig` selects: `.<key>`, else
+   *     `.config/<key>`, else the header of the first root build file. That file is `build.mill.yaml`, whose whole
+   *     text counts, then `build.mill`, whose `//|` lines count.
+   *   - The launcher's other inputs, `JAVA_OPTS` and `JDK_JAVA_OPTIONS`, require explicit forwarding and stay fixed
+   *     for the launch.
+   *   - The runner compares this value before each command, and replaces the daemon when it differs, so that the
+   *     client never meets the mismatch itself. Mill's launcher would end the daemon and start a replacement from the
+   *     client's own profile, which cannot bind, and the command would fail.
+   *
+   * The value holds the sources' text, not their parsed values, and the whole header.
+   *
+   *   - Mill parses the header as YAML, where a key has spellings no recognizer enumerates. Any header edit therefore
+   *     restarts the daemon, rather than letting any key edit slip past. That is the cheaper error, since an edit to
+   *     `build.mill.yaml` changes the build anyway.
+   *   - Each source is named with its text. An empty file, which Mill selects like any other, then differs from an
+   *     absent one, and one file's lines never read as another's.
+   *   - The version is read as the bootstrap reads it (millVersion), and the JVM version as Mill reads it.
+   *   - `javaHome` is the text of `MillJavaHomeFile`, taken under a pinned or unset `mill-jvm-version` and not under
+   *     `system`. The text names the JDK that the daemon runs on and that its profile grants, so a daemon started
+   *     from another text is replaced.
    */
   def millDaemonConfig(
     buildDirectory: Path, readLines: Path => Option[Seq[String]], javaHome: Option[String] = None,
@@ -757,28 +796,31 @@ object RunOnHostPrereqs:
   /** The bootstrap's `grep -E "//\\|.*mill-version"`: the marker, then the key, in that order. */
   private val ScriptMarker = raw".*//\|.*mill-version.*".r
 
-  /** The bootstrap's own trim: everything past the last colon, comments and quotes removed. */
+  /** The bootstrap's own trim: everything past the last colon, with comments and quotes removed. */
   private def trimValue(line: String): String =
     val afterColon = line.lastIndexOf(':') match
       case -1    => line
       case index => line.substring(index + 1)
     afterColon.takeWhile(_ != '#').filter(ch => ch != '\'' && ch != '"').trim
 
-  /** A version names a directory entry, so anything with a separator or space is not one. */
+  /** A version names a directory entry, so anything with a separator or space is not a version. */
   private def plausibleVersion(value: String): Boolean =
     value.nonEmpty && !value.exists(ch => ch == '/' || ch == '\\' || ch.isWhitespace)
 
   /**
    * The wrapper's distribution as Gradle's wrapper takes it (9.8.0: `WrapperExecutor`,
-   * `WrapperDistributionUrlConverter`, `GradleWrapperMain`). The properties are loaded as
-   * `java.util.Properties` loads them, so `https\://` and `https://` are one URL; `distributionUrl`
-   * is required; a URL without a scheme is a file relative to the properties file's directory.
-   * `distributionBase` and `distributionPath` must be the wrapper's defaults, `GRADLE_USER_HOME`
-   * and `wrapper/dists`: `PROJECT` as the base puts the distribution in the workspace, where the
-   * command writes, and the executable the profile grants is the user's to provision
-   * (run-on-host.md "Program prerequisites"). `systemProp.gradle.user.home` in the build directory's
-   * `gradle.properties` moves the wrapper's home the same way and is refused too. A value is
-   * quoted in a refusal only once it is printable ASCII: never a control character.
+   * `WrapperDistributionUrlConverter`, `GradleWrapperMain`).
+   *
+   *   - The properties are loaded as `java.util.Properties` loads them, so `https\://` and `https://` are one URL.
+   *   - `distributionUrl` is required.
+   *   - A URL without a scheme is a file relative to the properties file's directory.
+   *   - `distributionBase` and `distributionPath` must be the wrapper's defaults, `GRADLE_USER_HOME` and
+   *     `wrapper/dists`. `PROJECT` as the base puts the distribution in the workspace, where the command writes, and
+   *     the user provisions the executable that the profile grants (run-on-host.md, "Program prerequisites").
+   *   - `systemProp.gradle.user.home` in the build directory's `gradle.properties` moves the wrapper's home the same
+   *     way, and is refused too.
+   *   - A refusal quotes a value only once the value is printable ASCII, so a refusal never quotes a control
+   *     character.
    */
   def gradleDistributionUrl(
     propertiesText: String,
@@ -826,17 +868,17 @@ object RunOnHostPrereqs:
         else Right(())
     yield uri
 
-  /** The wrapper's home as `GradleUserHomeLookup` takes it: `GRADLE_USER_HOME`, else `~/.gradle`.
-    * A `-Dgradle.user.home` in the launching shell's `GRADLE_OPTS` or `JAVA_OPTS` is not read, as
-    * `MAVEN_USER_HOME` alone is for Maven; the refusal then names the directory derived here. */
+  /** The wrapper's home as `GradleUserHomeLookup` takes it: `GRADLE_USER_HOME`, else `~/.gradle`. A
+    * `-Dgradle.user.home` in the launching shell's `GRADLE_OPTS` or `JAVA_OPTS` is not read, just as only
+    * `MAVEN_USER_HOME` is read for Maven. The refusal then names the directory derived here. */
   def gradleUserHome(env: String => Option[String]): Option[Path] =
     def fromEnv(name: String) = env(name).filter(_.nonEmpty).flatMap(parsePath).map(_.normalize())
     fromEnv("GRADLE_USER_HOME").orElse(fromEnv("HOME").map(_.resolve(".gradle")))
 
   /**
-   * The distribution's directory as `PathAssembler` computes it under `<user home>/wrapper/dists`:
-   * the URL's file name without its extension, then the MD5 of the URL — stripped of its user
-   * information, `Download.safeUri` — as a base-36 number. Gradle's home is the one directory inside.
+   * The distribution's directory as `PathAssembler` computes it under `<user home>/wrapper/dists`: the URL's file
+   * name without its extension, then the MD5 of the URL as a base-36 number. The URL is stripped of its user
+   * information first (`Download.safeUri`). Gradle's home is the one directory inside.
    */
   def gradleDistributionDir(userHome: Path, distribution: URI): Path =
     val path = distribution.getPath
@@ -851,9 +893,8 @@ object RunOnHostPrereqs:
     val digest = MessageDigest.getInstance("MD5").digest(safe.toASCIIString.getBytes(UTF_8))
     userHome.resolve("wrapper").resolve("dists").resolve(name).resolve(BigInteger(1, digest).toString(36))
 
-  /** Gradle's home inside that directory, provisioned: the one directory there, as
-    * `Install.verifyDistributionRoot` requires, with `bin/gradle` present and executable; or a
-    * refusal naming what `./gradlew` would fix. */
+  /** Gradle's home inside that directory, provisioned, or a refusal naming what `./gradlew` would fix. The home is the
+    * one directory there, as `Install.verifyDistributionRoot` requires, with `bin/gradle` present and executable. */
   def gradleDistributionHome(
     distributionDir: Path,
     distribution: URI,
@@ -864,36 +905,41 @@ object RunOnHostPrereqs:
       case Seq(home) if isExecutableFile(home.resolve("bin").resolve("gradle")) => Right(home)
       case _ => Left(Refusal.PrereqGradleDistributionMissing(distribution.toString, distributionDir))
 
-  /** Maven's wrapper, the workspace's own `mvnw`, under the rule mill's bootstrap follows
-    * (run-on-host.md "Maven"); a `mvn` from PATH is not a fallback. */
+  /** Maven's wrapper, the workspace's own `mvnw`, under the rule that mill's bootstrap follows (run-on-host.md,
+    * "Maven"). A `mvn` from PATH is not a fallback. */
   def validateMvnWrapper(workspaceRoot: Path, isExecutableFile: Path => Boolean): Either[Refusal, Path] =
     val wrapper = workspaceRoot.resolve("mvnw")
     if isExecutableFile(wrapper) then Right(wrapper) else Left(Refusal.PrereqMvnWrapperMissing)
 
   /**
-   * Only the `only-script` wrapper type, recognized by the `hash_string` function that computes
-   * the distribution directory in shell. Every other type runs `maven-wrapper.jar`, which
-   * computes it from more inputs — `distributionBase`, `distributionPath`, a relative URL, the
-   * JVM's `user.home` — that this launcher deliberately does not reproduce: a derivation that
-   * reproduced some of them would grant a stale copy where the script selects another. The
-   * script that runs decides, not the `distributionType` the wrapper plugin recorded beside it.
+   * Accepts only the `only-script` wrapper type, recognized by the `hash_string` function that computes the
+   * distribution directory in shell.
+   *
+   *   - Every other type runs `maven-wrapper.jar`, which computes the directory from more inputs: `distributionBase`,
+   *     `distributionPath`, a relative URL and the JVM's `user.home`.
+   *   - This launcher deliberately does not reproduce those inputs. A derivation that reproduced some of them would
+   *     grant a stale copy where the script selects another.
+   *   - The script that runs decides, not the `distributionType` that the wrapper plugin recorded beside it.
    */
   def validateMvnWrapperScript(scriptLines: Seq[String]): Either[Refusal, Unit] =
     if scriptLines.exists(_.startsWith("hash_string()")) then Right(())
     else Left(Refusal.PrereqMvnWrapperNotOnlyScript)
 
   /**
-   * The distribution URL as the script takes it. `distributionUrl` from
-   * `.mvn/wrapper/maven-wrapper.properties`, read as `while IFS="=" read -r key value` reads it:
-   * a line is what a newline terminates, so a last line without one ends the loop unread; the key
-   * is everything before the line's first `=`, matched exactly, the value everything after; the
-   * last matching line wins, and `tr -d '[:space:]'` removes the six ASCII whitespace characters
-   * from the value, inside it included. Then `MVNW_REPOURL`, when set, replaces everything up to
-   * and including the first `/org/apache/maven/` — the documented mirror override, applied
-   * before hashing. A `maven-mvnd-*` distribution is refused: mvnd is a daemon. The value and the
-   * effective URL must be printable ASCII, since the shell hashes bytes and Java hashes chars,
-   * and only ASCII keeps the two the same; a non-ASCII value is refused before `tr`'s removal,
-   * whose character class the locale may widen.
+   * The distribution URL as the script takes it.
+   *
+   *   - The URL is `distributionUrl` from `.mvn/wrapper/maven-wrapper.properties`, read as
+   *     `while IFS="=" read -r key value` reads it:
+   *     - A line is what a newline terminates, so a last line without a newline ends the loop unread.
+   *     - The key is everything before the line's first `=`, matched exactly, and the value is everything after.
+   *     - The last matching line wins.
+   *     - `tr -d '[:space:]'` removes the six ASCII whitespace characters from the value, inside it included.
+   *   - Then `MVNW_REPOURL`, when set, replaces everything up to and including the first `/org/apache/maven/`. That
+   *     replacement is the documented mirror override, applied before hashing.
+   *   - A `maven-mvnd-*` distribution is refused, because mvnd is a daemon.
+   *   - The value and the effective URL must be printable ASCII. The shell hashes bytes and Java hashes chars, and
+   *     only ASCII keeps the two the same.
+   *   - A non-ASCII value is refused before `tr`'s removal, whose character class the locale may widen.
    */
   def mvnDistributionUrl(propertiesText: String, repoUrl: Option[String]): Either[Refusal, String] =
     val found = propertiesText.split("\n", -1).dropRight(1).toSeq.collect:
@@ -902,7 +948,7 @@ object RunOnHostPrereqs:
     val pattern = "/org/apache/maven/"
     val cSpace = Set(' ', '\t', '\n', '\u000b', '\f', '\r')
     def noUrl = Left(Refusal.PrereqMvnWrapperUnreadable("no distributionUrl in .mvn/wrapper/maven-wrapper.properties"))
-    // A URL is quoted in a refusal only once it is printable ASCII: never a control character.
+    // A refusal quotes a URL only once the URL is printable ASCII, so a refusal never quotes a control character.
     found.lastOption match
       case None => noUrl
       case Some(raw) if !isPrintableAscii(raw.filterNot(cSpace)) =>
@@ -930,18 +976,17 @@ object RunOnHostPrereqs:
     fromEnv("MAVEN_USER_HOME").orElse(fromEnv("HOME").map(_.resolve(".m2")))
 
   /**
-   * The distribution's directory as the script computes it under `<user home>/wrapper/dists`: the
-   * URL's file name without its extension and without the trailing `-bin`, then the URL's
-   * `String.hashCode` in hex — the script's `hash_string` is that function over bytes. Maven's
-   * `bin/` is directly inside.
+   * The distribution's directory as the script computes it under `<user home>/wrapper/dists`: the URL's file name
+   * without its extension and without the trailing `-bin`, then the URL's `String.hashCode` in hex. The script's
+   * `hash_string` is that function over bytes. Maven's `bin/` is directly inside.
    */
   def mvnDistributionDir(userHome: Path, distributionUrl: String): Path =
     val fileName = distributionUrl.drop(distributionUrl.lastIndexOf('/') + 1)
     val name = fileName.take(fileName.lastIndexOf('.')).stripSuffix("-bin")
     userHome.resolve("wrapper").resolve("dists").resolve(name).resolve(Integer.toHexString(distributionUrl.hashCode))
 
-  /** That directory, provisioned: `bin/mvn` present and executable, or a refusal naming what `./mvnw`
-    * would fix. */
+  /** That directory, provisioned with `bin/mvn` present and executable, or a refusal naming what `./mvnw` would
+    * fix. */
   def mvnDistributionHome(
     derived: Path,
     distributionUrl: String,
@@ -955,15 +1000,16 @@ object RunOnHostPrereqs:
   // ---------------------------------------------------------------------------
 
   /**
-   * How long SESSION_TMP may be. sbt's boot socket is at
-   * `<XDG_RUNTIME_DIR or java.io.tmpdir>/.sbt/sbt-socket<farmHash>/sbt-load.sock` (sbt's
-   * BootServerSocket.java), 50 characters past the directory once the hash is a signed 64-bit
-   * value, against the 104-byte `sun_path` a macOS UNIX-domain socket allows, NUL included. The
-   * server side refuses a longer path with a message; the client's JNI connect has no such check and
-   * dies in memcpy with `Trace/BPT trap: 5`. Measured: 52 runs, 56 traps.
+   * How long SESSION_TMP may be.
    *
-   * The supervisor points `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` and `java.io.tmpdir` at this one
-   * directory, so this is the budget for all three.
+   *   - sbt's boot socket is at `<XDG_RUNTIME_DIR or java.io.tmpdir>/.sbt/sbt-socket<farmHash>/sbt-load.sock` (sbt's
+   *     BootServerSocket.java). The socket name takes 50 characters past the directory once the hash is a signed 64-bit
+   *     value.
+   *   - A macOS UNIX-domain socket allows a 104-byte `sun_path`, NUL included.
+   *   - The server side refuses a longer path with a message. The client's JNI connect has no such check, and dies in
+   *     memcpy with `Trace/BPT trap: 5`. Measured: 52 runs, 56 traps.
+   *   - The supervisor points `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` and `java.io.tmpdir` at this one directory,
+   *     so this is the budget for all three.
    */
   val SessionTmpMaxLength: Int = 104 - 1 - "/.sbt/sbt-socket".length - "-9223372036854775808".length -
     "/sbt-load.sock".length
@@ -977,9 +1023,9 @@ object RunOnHostPrereqs:
   // ---------------------------------------------------------------------------
 
   /**
-   * The program's default artifact repository, the one host every command's proxy allows on its own.
-   * All are Maven Central: Coursier, which sbt and mill resolve through, names `repo1.maven.org`;
-   * Gradle's `mavenCentral()` and Maven's super POM name `repo.maven.apache.org`.
+   * The program's default artifact repository, the one host that every command's proxy allows on its own. All of
+   * them are Maven Central. Coursier, which sbt and mill resolve through, names `repo1.maven.org`. Gradle's
+   * `mavenCentral()` and Maven's super POM name `repo.maven.apache.org`.
    */
   def centralHost(program: Program): String = program match
     case Program.Sbt | Program.Mill   => "repo1.maven.org"
@@ -990,12 +1036,14 @@ object RunOnHostPrereqs:
       .resolve("run-on-host").resolve(program.name).resolve("egress").resolve("rule")
 
   /**
-   * The program's rule file's hosts, validated to the program's rule grammar (run-on-host.md
-   * "Configuration"). The whole run-on-host/ tree is checked first, every program's egress/ as
-   * egress/ and file/ are (SandboxWorkspace.readBoundaryRuleFiles), and only the selected program's
-   * rule file is read: an absent file contributes nothing. A host the proxy refuses — an IP literal,
-   * a name that is no hostname — is refused here with the proxy's reason: the resolution the proxy's
-   * start runs (RunOnHostInspection.leafNames) runs here first, so the launch reports the host.
+   * The hosts of the program's rule file, validated to the program's rule grammar (run-on-host.md, "Configuration").
+   *
+   *   - The whole run-on-host/ tree is checked first. Every program's egress/ is checked as egress/ and file/ are
+   *     (SandboxWorkspace.readBoundaryRuleFiles).
+   *   - Only the selected program's rule file is read. An absent file contributes nothing.
+   *   - A host that the proxy refuses, such as an IP literal or a name that is no hostname, is refused here with the
+   *     proxy's reason. The resolution that the proxy's start runs (RunOnHostInspection.leafNames) runs here first,
+   *     so the launch reports the host.
    */
   def readProgramRules(workspaceRoot: Path, program: Program): Either[String, Vector[String]] =
     def egressDir(each: Program) = programRulePath(workspaceRoot, each).getParent
@@ -1014,11 +1062,12 @@ object RunOnHostPrereqs:
     yield hosts
 
   /**
-   * run-on-host/ accepts only recognized configuration entries, as does its parent directory
-   * (SandboxWorkspace.boundaryDirRefusal): a directory per Program, and egress/ inside each. A stray
-   * name, a symlinked component, or a file where a directory belongs refuses the command rather
-   * than staying as ignored config; a file where a directory belongs would read as absent
-   * configuration.
+   * run-on-host/ accepts only recognized configuration entries, as its parent directory does
+   * (SandboxWorkspace.boundaryDirRefusal): a directory per Program, and egress/ inside each.
+   *
+   *   - A stray name, a symlinked component, or a file where a directory belongs refuses the command, rather than
+   *     staying as ignored configuration.
+   *   - A file where a directory belongs would otherwise read as absent configuration.
    */
   private def programDirectoryRefusal(workspaceRoot: Path): Option[String] =
     val dir = SandboxWorkspace.boundaryDirOf(workspaceRoot).resolve("run-on-host")
@@ -1052,14 +1101,15 @@ object RunOnHostPrereqs:
   val ProgramRuleForm = programRuleLine("<host>")
 
   /**
-   * The program's rule file grammar: `allow https://<host>/ read` lines and `#` comments, nothing
-   * else — no other grant, no path, no provider, no deny. The proxy's full grammar would let one
-   * `allow model-provider` line expand into endpoints that are no artifact repository, and a
-   * `tunnel` or `method=` word would let a host command write to a host; anything outside the subset
-   * is refused here, never passed through for the proxy to interpret. The words are the proxy's
-   * own (RulesetHelper.ruleTokens) and a `#` inside a word is refused, so a line read here is the
-   * line the proxy would read, and `read#typo` is not `read`; the host is what the proxy's own
-   * parser will normalize and vet.
+   * The program's rule file grammar: `allow https://<host>/ read` lines and `#` comments, and nothing else. The
+   * grammar has no other grant, no path, no provider and no deny.
+   *
+   *   - The proxy's full grammar would let one `allow model-provider` line expand into endpoints that are no artifact
+   *     repository. A `tunnel` or `method=` word would let a host command write to a host.
+   *   - Anything outside the subset is refused here, never passed through for the proxy to interpret.
+   *   - The words are the proxy's own (RulesetHelper.ruleTokens), and a `#` inside a word is refused. A line read here
+   *     is therefore the line the proxy would read, and `read#typo` is not `read`.
+   *   - The proxy's own parser normalizes and vets the host.
    */
   def programRuleHosts(text: String): Either[Refusal, Vector[String]] =
     val lines = text.linesIterator
@@ -1076,16 +1126,19 @@ object RunOnHostPrereqs:
       case None          => Right(lines.flatMap(hostOf).distinct)
 
   /**
-   * The proxy's rule input for a command: `deny defaults`, then the program's Maven Central host, then
-   * the file's lines — the whole ruleset stated, so the container's catalog contributes nothing.
-   * Deduplicated, so a host the file restates is not warned as a redundant grant at every command.
+   * The proxy's rule input for a command: `deny defaults`, then the program's Maven Central host, then the file's
+   * lines.
+   *
+   *   - The input states the whole ruleset, so the container's catalog contributes nothing.
+   *   - The hosts are deduplicated, so a host that the file restates is not warned as a redundant grant at every
+   *     command.
    */
   def egressRuleText(program: Program, fileHosts: Vector[String]): String =
     ("deny defaults" +: programHosts(program, fileHosts).map(programRuleLine)).mkString("\n")
 
-  /** The hosts a program's proxy allows, every one of them inspected (egressRuleText): its Maven
-    * Central host, then the rule file's as the file spells them. A brokered credential's host is
-    * compared with the proxy's resolution of them (RunOnHostSandbox.credentialHosts). */
+  /** The hosts that a program's proxy allows, every one of them inspected (egressRuleText): its Maven Central host,
+    * then the rule file's hosts as the file spells them. A brokered credential's host is compared with the proxy's
+    * resolution of these hosts (RunOnHostSandbox.credentialHosts). */
   def programHosts(program: Program, fileHosts: Vector[String]): Vector[String] =
     (centralHost(program) +: fileHosts).distinct
 
@@ -1094,19 +1147,22 @@ object RunOnHostPrereqs:
   // ---------------------------------------------------------------------------
 
   /**
-   * Translate a working directory the sandbox supplied into a host path.
+   * Translates a working directory that the sandbox supplied into a host path.
    *
-   * This is the one value in the design that arrives from inside the container, so it is validated
-   * rather than trusted. It never becomes the workspace the profile grants — that is always the
-   * launcher's canonical workspace root — and reaches the backend only as the child's cwd. Validating it
-   * anyway is what turns a request naming somewhere else into one answer instead of a wall of
-   * denials.
+   *   - The working directory is the one value in the design that arrives from inside the container, so it is validated
+   *     rather than trusted.
+   *   - The value never becomes the workspace that the profile grants, which is always the launcher's canonical
+   *     workspace root. The value reaches the backend only as the child's cwd.
+   *   - Validating the value anyway turns a request that names somewhere else into one answer instead of a wall of
+   *     denials.
    *
-   * `mount` is what the workspace root is mounted at inside the container: its own path
-   * (SandboxWorkspace.mountPathOf), so the requested directory and the host directory are one
-   * string, and the validation stays because the value still arrives from inside. A request that
-   * is not under it, that climbs out with `..`, or whose canonical form leaves the workspace, is
-   * refused; nothing is clamped back to the root.
+   * `mount` is the path at which the workspace root is mounted inside the container, which is the root's own path
+   * (SandboxWorkspace.mountPathOf).
+   *
+   *   - The requested directory and the host directory are therefore one string. The validation stays, because the
+   *     value still arrives from inside.
+   *   - A request that is not under `mount`, that climbs out with `..`, or whose canonical form leaves the workspace,
+   *     is refused. Nothing is clamped back to the root.
    */
   def workingDirectory(
     requested: String,
@@ -1124,18 +1180,17 @@ object RunOnHostPrereqs:
       case None => refuse
       case Some(suffix) =>
         parsePath(suffix) match
-          // An absolute suffix would resolve away from the workspace entirely; `..` is normalized
-          // first so a textual prefix test cannot be fooled, and the canonical form is then
-          // re-checked because a symlink inside the workspace can still leave it.
+          // An absolute suffix would resolve away from the workspace entirely. `..` is normalized first, so that a
+          // textual prefix test cannot be fooled. The canonical form is then checked again, because a symlink inside
+          // the workspace can still leave it.
           case Some(part) if part.isAbsolute => refuse
           case Some(part) =>
             val joined = workspaceRoot.resolve(part).normalize()
             if !startsWith(joined, workspaceRoot, os) then refuse
             else
               canonicalize(joined) match
-                // Exact: `real` and `workspaceRoot` are both canonical, so their spellings are the
-                // volume's own, and folding would allow a case-different sibling on a
-                // case-sensitive volume.
+                // Exact: `real` and `workspaceRoot` are both canonical, so their spellings are the volume's own.
+                // Folding would allow a case-different sibling on a case-sensitive volume.
                 case Some(real) if real.startsWith(workspaceRoot) => Right(real)
                 case _                                                 => refuse
           case None => refuse
@@ -1145,16 +1200,16 @@ object RunOnHostPrereqs:
   // ---------------------------------------------------------------------------
 
   /**
-   * Containment, folding case where the platform's filesystem does. APFS is case-insensitive by
-   * default, so a comparison that does not fold accepts a path the filesystem treats as the same
-   * one — the disagreement `policy.rs`'s `folds_to` exists to prevent on the filter's side.
+   * Containment, folding case where the platform's filesystem does. APFS is case-insensitive by default, so a
+   * comparison that does not fold accepts a path that the filesystem treats as the same path. `policy.rs`'s
+   * `folds_to` exists to prevent the same disagreement on the filter's side.
    */
   def startsWith(path: Path, ancestor: Path, os: Os): Boolean =
     val (child, parent) = (path.normalize(), ancestor.normalize())
     if !foldsCase(os) then child.startsWith(parent)
     else
-      // Locale.ROOT, or a Turkish default locale folds 'I' to a dotless 'ı' and two paths the
-      // filesystem calls the same stop comparing equal.
+      // Locale.ROOT, because a Turkish default locale folds 'I' to a dotless 'ı', and two paths that the filesystem
+      // calls the same would stop comparing equal.
       def parts(path: Path): IndexedSeq[String] =
         (0 until path.getNameCount).map(i => path.getName(i).toString.toLowerCase(Locale.ROOT))
       val childParts = parts(child)

@@ -1,15 +1,16 @@
-// What a confined host command learns of another process of the same user through
-// sysctl(KERN_PROCARGS2), the call behind `ps -E`: run-on-host-profile-iterate.sh's `procargs` mode
-// runs this under the command profile, with and without a deny of that name. `ps` is no granted
-// binary, and a build can make the kernel call itself, so the measurement does too. Counts and
-// variable names only, never a value: the targets are the user's own processes.
+// Measures what a confined host command learns of another process of the same user through sysctl(KERN_PROCARGS2),
+// the call behind `ps -E`. The `procargs` mode of run-on-host-profile-iterate.sh runs this program under the command
+// profile, with and without a deny of that sysctl name.
+// - `ps` is not a granted binary, and a build can make the kernel call itself, so the measurement makes the call too.
+// - The program prints counts and variable names only, never a value, because the targets are the user's own
+//   processes.
 //
 //   java ProcArgs.java --hold               sleep until killed, as a target that is not Apple's binary
 //   java ProcArgs.java <label>=<pid>...     read each target and report what came back
 //   java ProcArgs.java --child=<this file>  start a held child, read it as a target, and end it
 //
-// Each target's line ends with whether `ProcessHandle.of` finds it, which the JDK answers through
-// sysctl(KERN_PROC_PID), and whether `info()` reads its start time.
+// Each target's line ends with whether `ProcessHandle.of` finds the target, which the JDK answers through
+// sysctl(KERN_PROC_PID), and whether `info()` reads the target's start time.
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
@@ -27,7 +28,7 @@ public final class ProcArgs {
     private static final int CTL_KERN = 1;
     private static final int KERN_PROCARGS2 = 49;
     private static final long BUFFER_BYTES = 1L << 20;
-    /** Variables printed by name when present: proof that an environment came back, nothing more. */
+    /** Variables printed by name when present. The variables prove that an environment came back, nothing more. */
     private static final List<String> NAMED = List.of("HOME", "PATH", "USER", "SHELL", "HTTPS_PROXY");
 
     public static void main(String[] args) throws Throwable {
@@ -61,8 +62,8 @@ public final class ProcArgs {
                 report(label, Long.parseLong(arg.substring(separator + 1)), sysctl, state, errnoOffset);
             }
         }
-        // What a rule costs a build that inspects processes: the JDK lists them through
-        // sysctl(kern.proc.all), which throws when the profile denies it.
+        // This line shows what a rule costs a build that inspects processes. The JDK lists processes through
+        // sysctl(kern.proc.all), and the listing throws when the profile denies that call.
         String listed;
         try {
             listed = Long.toString(ProcessHandle.allProcesses().count());
@@ -75,8 +76,8 @@ public final class ProcArgs {
     private static void report(String label, long pid, MethodHandle sysctl, StructLayout state, long errnoOffset)
         throws Throwable {
         String found = ProcessHandle.of(pid).isPresent() ? "present" : "absent";
-        // What Mill's client asks of its daemon (PidLock.isLockValid): on macOS the JDK reads the
-        // target's arguments for info(), and throws when that read is refused.
+        // Mill's client makes this check on its daemon (PidLock.isLockValid). On macOS the JDK reads the target's
+        // arguments for info(), and info() throws when that read is refused.
         String info;
         try {
             info = ProcessHandle.of(pid).flatMap(handle -> handle.info().startInstant()).isPresent()
@@ -88,7 +89,7 @@ public final class ProcArgs {
             + "; ProcessHandle.of " + found + "; info " + info);
     }
 
-    /** A held JDK this process starts, so it inherits this process's sandbox, with the marker variable. */
+    /** Starts a held JDK with the marker variable. This process starts the child, so the child inherits its sandbox. */
     private static Process holdChild(String source) throws Exception {
         ProcessBuilder builder = new ProcessBuilder(
             Path.of(System.getProperty("java.home"), "bin", "java").toString(),
@@ -115,9 +116,8 @@ public final class ProcArgs {
                 int errno = captured.get(ValueLayout.JAVA_INT, errnoOffset);
                 return "DENIED errno=" + errno + " (" + errnoName(errno) + ")";
             }
-            // The buffer is argc, the executable path, NUL padding, argc arguments, then the
-            // environment, every string NUL-terminated. Counting by argc keeps an argument holding
-            // '=' from reading as a variable.
+            // The buffer holds argc, the executable path, NUL padding, argc arguments and then the environment;
+            // every string ends in NUL. Counting by argc keeps an argument that holds '=' from reading as a variable.
             int argc = buffer.get(ValueLayout.JAVA_INT, 0);
             byte[] bytes = buffer.asSlice(4, length.get(ValueLayout.JAVA_LONG, 0) - 4).toArray(ValueLayout.JAVA_BYTE);
             int position = endOfString(bytes, 0);

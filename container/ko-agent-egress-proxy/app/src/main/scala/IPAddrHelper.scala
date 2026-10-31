@@ -25,24 +25,25 @@ object IPAddrHelper:
         throw BadRequest(s"invalid hostname: ${ex.getMessage}")
 
   /**
-   * Expects a normalized host, or the unbracketed host text the upstream-endpoint parser
-   * (TransportHelper) split off at the only colon. Dotted-quad is not the only spelling a
-   * resolver accepts: InetAddress reads `2130706433` and `127.1` as
-   * 127.0.0.1, and glibc's getaddrinfo also reads `0x7f.1` as that
-   * address, which InetAddress on JDK 25 does not resolve. What they
-   * share is a final label that is a number — all digits, or `0x` and
-   * hex digits, the "ends in a number" test of the WHATWG URL standard —
-   * which RFC 1123 forbids in a real TLD, so there is no enumeration of
-   * a resolver's numeric forms to keep in step with. ASCII digits only:
-   * Char.isDigit would accept non-ASCII digits.
+   * Expects a normalized host, or the unbracketed host text that the upstream-endpoint parser (TransportHelper)
+   * split off at the only colon.
    *
-   * The colon test below is unreachable through every caller here: the
-   * upstream-endpoint parser passes no colon, and normalizeHost runs
-   * IDN.toASCII with USE_STD3_ASCII_RULES, which refuses a `:` outright, so
-   * an IPv6 literal is already a BadRequest ("invalid hostname", a 400)
-   * before authorizeRequest can refuse it as an IP-literal target. Keeping
-   * the test costs nothing and holds if this is ever called on a host
-   * neither vetted.
+   * - Dotted-quad is not the only spelling a resolver accepts. InetAddress reads `2130706433` and `127.1` as
+   *   127.0.0.1. glibc's getaddrinfo also reads `0x7f.1` as that address, which InetAddress on JDK 25 does not
+   *   resolve.
+   * - These spellings share a final label that is a number: all digits, or `0x` and hex digits. The check for such a
+   *   label is the "ends in a number" test of the WHATWG URL standard. RFC 1123 forbids such a label in a real TLD, so
+   *   this test keeps no list of a resolver's numeric forms in step.
+   * - The test counts ASCII digits only: Char.isDigit would accept non-ASCII digits.
+   *
+   * No caller here reaches the colon test below:
+   *
+   * - the upstream-endpoint parser passes no colon;
+   * - normalizeHost runs IDN.toASCII with USE_STD3_ASCII_RULES, which refuses a `:` outright. So an IPv6 literal is
+   *   already a BadRequest ("invalid hostname", a 400) before authorizeRequest can refuse it as an IP-literal
+   *   target.
+   *
+   * Keeping the colon test costs nothing, and the test still holds for a host that neither caller vetted.
    */
   def isIpLiteral(host: String): Boolean =
     if host.contains(':') then true
@@ -55,13 +56,11 @@ object IPAddrHelper:
       (lastLabel.nonEmpty && lastLabel.forall(isDigit)) || isHexNumber
 
   /**
-   * The single DNS lookup for a connection. Its result is what the dial loop
-   * uses, so there is no window in which a second lookup could return a
-   * different answer than the one that was vetted here.
+   * The single DNS lookup for a connection. The dial loop uses this lookup's result, so no second lookup can return
+   * an answer that differs from the one vetted here.
    *
-   * Every returned address has to pass, not merely the one that ends up being
-   * used: a name that answers with one public and one loopback address is a
-   * name being used to smuggle a destination, not a name with a stale record.
+   * Every returned address must pass, not only the one the dial uses. A name that answers with one public and one
+   * loopback address smuggles a destination; it is not a name with a stale record.
    */
   def resolvePublic(host: String): Vector[InetAddress] =
     requirePublic(InetAddress.getAllByName(host).toVector)
@@ -81,13 +80,16 @@ object IPAddrHelper:
         )
 
   /**
-   * Ordinary unicast destinations. The listed blocks come from the IANA special-purpose
-   * registries, with IPv4 multicast added, and each is refused whole, including the more
-   * specific entries IANA marks globally reachable inside one (192.0.0.9, 2001:3::/32 AMT,
-   * 2001:20::/28 ORCHIDv2) — protocol anycast and overlay addresses, which no package registry
-   * or clone host is served from. A globally reachable entry outside the listed blocks
-   * (192.31.196.0/24, 2620:4f:8000::/48) is accepted. IPv6 must also be within 2000::/3, which
-   * leaves out 64:ff9b::/96 and the listed 5f00::/16. Review when IANA updates the registries.
+   * Ordinary unicast destinations.
+   *
+   * - The listed blocks come from the IANA special-purpose registries, with IPv4 multicast added.
+   * - Each listed block is refused whole, including the more specific entries inside it that IANA marks globally
+   *   reachable (192.0.0.9, 2001:3::/32 AMT, 2001:20::/28 ORCHIDv2). Those entries are protocol anycast and
+   *   overlay addresses, and no package registry or clone host is served from them.
+   * - A globally reachable entry outside the listed blocks is accepted (192.31.196.0/24, 2620:4f:8000::/48).
+   * - IPv6 must also be within 2000::/3, which leaves out 64:ff9b::/96 and the listed 5f00::/16.
+   *
+   * Review the blocks when IANA updates the registries.
    */
   def isPublicDestination(address: InetAddress): Boolean =
     address match

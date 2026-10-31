@@ -1,21 +1,25 @@
-// The workspace filter's mount lifecycle and its reference count, against real sessions.
+// Tests the workspace filter's mount lifecycle and its reference count, against real sessions.
 //
-// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the condition):
+// The suite runs only under testWithPodman, like the other container-launching suites (WithPodman has the
+// condition):
 //
 //     sbt "testWithPodman *MountLifecycleTest"
 //
-// Sessions are driven with `sleep` rather than an agent — a session runs whatever command it is
-// given, which is what makes the sequence scriptable with no terminal — and the marker set is
-// asserted at every step. Asserting the markers rather than just that the workspace still reads is the
-// point: the two ways the count can be wrong are opposite, and a leaked marker (a mount nobody
-// uses) is invisible to the user who would notice the other one.
+// The suite drives sessions with `sleep` rather than an agent. A session runs whatever command it is
+// given, so the sequence is scriptable with no terminal. The suite asserts the marker set at every step.
+// Asserting the markers, rather than only that the workspace still reads, is the point: the two ways the
+// count can be wrong are opposite, and a leaked marker (a mount that nobody uses) is invisible to the user
+// who would notice the other way.
 //
-// Beyond that sequence it covers the two rules that exist for a *concurrent* reap
-// (`KoAgentFs`, "The workspace FUSE filter's mount lifecycle"). Neither needs a launch that can be
-// paused: the state a launch-in-flight presents to a reap is a marker whose container exists and
-// is not running, which can be created directly; that a real launch passes through that state and
-// no other is the marker's mtime against its container's creation; and that the workspace lock
-// serializes a reap against a launch is a blocked FLOCK request in /proc/locks, not a stopwatch.
+// Beyond that sequence, the suite covers the two rules that exist for a *concurrent* reap (`KoAgentFs`,
+// "The workspace FUSE filter's mount lifecycle"). Neither rule needs a launch that can be paused:
+//
+// - The state that a launch in flight presents to a reap is a marker whose container exists and is not
+//   running. The suite creates that state directly.
+// - The marker's mtime against its container's creation shows that a real launch passes through that
+//   state and no other.
+// - A blocked FLOCK request in /proc/locks, not a stopwatch, shows that the workspace lock serializes a
+//   reap against a launch.
 
 package agentsandbox.launcher
 
@@ -31,7 +35,8 @@ class MountLifecycleTest extends munit.FunSuite:
 
   private val Mounts = ".local/share/ko-agent-sandbox/mounts"
 
-  /** Where the daemon runs, through the launcher's own helper rather than a second opinion. */
+  /** Runs a script where the daemon runs, through the launcher's own helper rather than a second copy of
+    * that logic. */
   private def vm(script: String): String =
     run(koAgentFsScriptCommand(podman, currentOs, script)*).text
 
@@ -56,7 +61,7 @@ class MountLifecycleTest extends munit.FunSuite:
 
     def daemonPids(): Vector[String] =
       // `pgrep -a NAME`, never `pgrep -f PATTERN`: matching full command lines would match the
-      // shell running this very check, whose own arguments name the mountpoint.
+      // shell that runs this very check, because the shell's own arguments name the mountpoint.
       vm(s"pgrep -a ko-agent-fs 2>/dev/null | grep -F -- 'mounts/$id/workspace' | cut -d' ' -f1")
         .linesIterator.filter(_.nonEmpty).toVector
 
@@ -64,8 +69,8 @@ class MountLifecycleTest extends munit.FunSuite:
       vm(s"mount 2>/dev/null | grep -c -F -- 'mounts/$id/workspace' || true").trim.toIntOption
         .getOrElse(0)
 
-    /** Blocked flock requests appear in /proc/locks with a `->` marker, so a reap waiting on the
-      * workspace lock is observed rather than inferred from how long a teardown took. */
+    /** Blocked flock requests appear in /proc/locks with a `->` marker, so the test observes a reap
+      * that waits on the workspace lock rather than inferring the wait from how long a teardown took. */
     def lockWaiters(): Int =
       vm(s"""ino=$$(stat -c %i "$$HOME/$Mounts/$id/lock" 2>/dev/null || echo 0)
             |grep -E '^[0-9]+: -> FLOCK' /proc/locks 2>/dev/null | grep -c ":$$ino " || true
@@ -92,13 +97,13 @@ class MountLifecycleTest extends munit.FunSuite:
       val both = Vector(a, b).sorted.mkString(" ")
       polling.withMaxRetries(30).eventually(assertEquals(markers(), both, "markers with both up"))
       assertEquals(daemonPids().size, 1, "B started a second daemon")
-      // A daemon holding the workspace lock would block every later reap for the session's whole
-      // life; the mount script closes fd 9 across the fork to prevent exactly that.
+      // A daemon that holds the workspace lock would block every later reap for the session's whole
+      // life. The mount script closes fd 9 across the fork to prevent exactly that.
       daemonPids().foreach: pid =>
         assertEquals(vm(s"[ -e /proc/$pid/fd/9 ] && echo held || echo free").trim, "free")
 
-      // The ordering the whole reference count rests on, measured rather than assumed: the
-      // container is created first, the marker written at the mount after it.
+      // The whole reference count rests on this ordering, which the test measures rather than
+      // assumes: the container is created first, and the mount writes the marker after it.
       val written = vm(s"""stat -c %.9Y "$$HOME/$Mounts/$id/sessions/$b" 2>/dev/null""")
         .trim.filter(_.isDigit)
       val created = run(podman, "inspect", "--format", "{{.Created.UnixNano}}", b).text.trim
@@ -118,10 +123,10 @@ class MountLifecycleTest extends munit.FunSuite:
       assert(run(podman, "exec", b, "sh", "-c", s"ls '$mount' > /dev/null").ok,
              "B's workspace mount stopped serving when A exited")
 
-      // Exactly the state a launch in flight presents to a reap, planted rather than raced for: a
-      // marker whose container exists and is not running. Pruning on anything short of the
-      // container's absence would take it, find none left, and unmount under a launch still on its
-      // way to starting.
+      // The test plants exactly the state that a launch in flight presents to a reap, rather than
+      // racing for it: a marker whose container exists and is not running. A reap that pruned on
+      // anything short of the container's absence would take the marker, find no marker left, and
+      // unmount under a launch still on its way to starting.
       planted = s"ko-agent-sandbox-run-$id-0000dead"
       assert(
         run(podman, "create", "--name", planted, "--pull=never", "ko-agent-sandbox:latest", "true").ok,
@@ -135,8 +140,8 @@ class MountLifecycleTest extends munit.FunSuite:
       assertEquals(mounted(), 1, "the mount was pulled out from under a launch in flight")
       assertEquals(daemonPids().size, 1, "the daemon exited under a launch in flight")
 
-      // Its container gone — as the reaper's bounded wait or a reset leaves it — the marker is the
-      // next reap's to collect.
+      // Once the marker's container is gone, as the reaper's bounded wait or a reset leaves it, the
+      // next reap collects the marker.
       assert(run(podman, "rm", planted).ok, "could not remove the planted container")
       val c = launch(workspace.resolve("c.log"))
       assert(
@@ -146,10 +151,10 @@ class MountLifecycleTest extends munit.FunSuite:
         "the surviving mount was not reusable",
       )
 
-      // And while C's reap runs, the lock is held from outside: the reap must wait for it rather
-      // than counting markers and unmounting under whoever holds it. `-o` so the child does not
-      // inherit the locked descriptor — an flock is held on the open file description, so a child
-      // holding a copy keeps the lock after the holder is killed.
+      // While C's reap runs, a process outside holds the lock. The reap must wait for the lock rather
+      // than count markers and unmount under the lock's holder. `-o` keeps the child from inheriting
+      // the locked descriptor: an flock is held on the open file description, so a child that holds a
+      // copy keeps the lock after the holder is killed.
       lockHolder = vm(
         s"""nohup flock -o "$$HOME/$Mounts/$id/lock" -c 'sleep 300' >/dev/null 2>&1 </dev/null &
            |printf '%s\\n' "$$!"

@@ -1,10 +1,11 @@
 #!/usr/bin/env -S python3 -I
 """Runs one stateful review cycle for the author of a change, the agent that made it.
 
-A cycle is one reviewer thread, Codex's or Claude Code's: `start` opens it with a fresh review,
-`continue` sends the author's fixes or reasons for disagreeing to the same thread, and `verify`
-confirms the approval covers the current working tree. State lives in the workspace's persistent
-volume; doc/ko-review.md describes the design and command output.
+A cycle is one reviewer thread, Codex's or Claude Code's:
+- `start` opens the thread with a fresh review.
+- `continue` sends the author's fixes, or the author's reasons for disagreeing, to the same thread.
+- `verify` confirms that the approval covers the current working tree.
+The state lives in the workspace's persistent volume. doc/ko-review.md describes the design and the command output.
 """
 
 import argparse
@@ -39,8 +40,8 @@ TERMINAL = {"USER_DECISION_REQUIRED", "LOOP_LIMIT_REACHED"}
 DEFAULT_MAX_ROUNDS = 12
 DEFAULT_TIMEOUT_SECONDS = 3600
 RETENTION_DAYS = 56  # four times the two weeks Git keeps dangling commits by default (gc.pruneExpire)
-# Python turns only SIGINT into an exception; these are raised as one below so that a terminated
-# helper still kills the reviewer and reverts the review's state.
+# Python turns only SIGINT into an exception. The handler below raises these signals as an exception too, so a
+# terminated helper still kills the reviewer and reverts the review's state.
 TERMINATING_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
 PR_SET_CHILD_SUBREAPER = 36  # prctl(2)
 
@@ -57,14 +58,14 @@ class ReviewError(Exception):
 
 
 class GitFailure(ReviewError):
-    """A Git command failed: recoverable where a snapshot is optional, unlike an interruption."""
+    """A Git command failed. Unlike an interruption, the failure is recoverable where a snapshot is optional."""
 
     def __init__(self, message, **detail):
         super().__init__("GIT_FAILED", message, **detail)
 
 
 class ReviewerError(ReviewError):
-    """The reviewer, not the helper, failed: the error names it so that the skill's advice fits."""
+    """The reviewer failed, not the helper. The error names the reviewer, so the skill's advice fits."""
 
     def __init__(self, reviewer, code, message, **detail):
         super().__init__(code, message, reviewer=reviewer.name, **detail)
@@ -74,8 +75,8 @@ CURRENT_REVIEW = None  # the review a command has created or opened, named in it
 
 
 def now():
-    """Milliseconds, so that `list`, sorting by createdAt, keeps two reviews started in the same second in
-    creation order; the id carries only the minute."""
+    """Returns the time in milliseconds, so `list`, which sorts by createdAt, keeps two reviews started in the same
+    second in creation order. The id carries only the minute."""
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds")
 
 
@@ -122,8 +123,8 @@ def worktree_entry(root, path):
         return b"link\0" + os.readlink(absolute).encode("utf-8", "surrogateescape")
     if stat.S_ISDIR(status.st_mode):
         if (absolute / ".git").exists():
-            # A submodule's status record carries dirty flags, not what changed; a nested
-            # repository is one untracked directory. Each is digested as a tree of its own.
+            # A submodule's status record carries dirty flags, not what changed, and a nested repository is one
+            # untracked directory. The helper digests each of them as a tree of its own.
             return b"repository\0" + observe(absolute)["digest"].encode()
         return b"dir"
     if stat.S_ISREG(status.st_mode):
@@ -134,11 +135,10 @@ def worktree_entry(root, path):
 
 
 def status_records(root):
-    """Every path whose working tree or index differs from HEAD, as `git status` reports it.
+    """Returns every path whose working tree or index differs from HEAD, as `git status` reports it.
 
-    Renames are off so a moved file appears as its deletion and addition. Each record carries
-    the index and HEAD object ids and the modes, so staged content is part of the digest without
-    reading the index."""
+    Renames are off, so a moved file appears as its deletion and its addition. Each record carries the index and
+    HEAD object ids and the modes, so staged content is part of the digest without reading the index."""
     output = git(
         root, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames",
         "--ignore-submodules=none",
@@ -167,15 +167,16 @@ def status_records(root):
 
 
 def observe(root):
-    """One scan of the checkout: HEAD, the status records, and every reviewable file's raw entry.
+    """Scans the checkout once: HEAD, the status records, and every reviewable file's raw entry.
 
-    The status records carry the index's and HEAD's object ids and modes per changed path. The
-    manifest maps every file Git would review, tracked or untracked and not ignored, nested
-    repositories recursively, to a hash of its raw working-tree content with its executable bit,
-    or of its symlink target; an absent path is left out, so staging a deletion or a rename changes
-    nothing there. Raw content, because `git status` calls a file clean when its content after the
-    clean filter matches the index, so the records alone would miss a change a filter strips. The
-    content digest is the manifest's; the digest is HEAD, the records and the content together."""
+    - The status records carry the index's and HEAD's object ids and modes per changed path.
+    - The manifest maps every file that Git would review to a hash of its raw working-tree content with its
+      executable bit, or of its symlink target. Those files are tracked, or untracked and not ignored, and nested
+      repositories count recursively. The manifest leaves an absent path out, so staging a deletion or a rename
+      changes nothing there.
+    - The manifest hashes raw content because `git status` calls a file clean when its content after the clean
+      filter matches the index. The records alone would therefore miss a change that a filter strips.
+    The content digest is the manifest's. The digest covers HEAD, the records and the content together."""
     head = git(root, "rev-parse", "--verify", "--quiet", "HEAD", check=False)
     head_id = head.stdout.decode().strip() if head.returncode == 0 else "unborn"
     listed = git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard").stdout
@@ -204,19 +205,18 @@ def observe(root):
 
 
 def manifest_changes(before, after):
-    """The paths whose entry differs between two manifests, sorted."""
+    """Returns the paths whose entry differs between two manifests, sorted."""
     return sorted(
         path for path in set(before) | set(after) if before.get(path) != after.get(path)
     )
 
 
 def tree_of_worktree(root, index):
-    """The working tree written as a Git tree object through the scratch index `index`.
+    """Writes the working tree as a Git tree object through the scratch index `index`.
 
-    The scratch index starts as a copy of the user's index entries, so the tracked paths are the
-    checkout's, staged additions and removals included, whatever the ignore rules say of them;
-    `git add -A` then applies the ignore rules to untracked files only. The user's index, HEAD
-    and files are untouched."""
+    The scratch index starts as a copy of the user's index entries. The tracked paths are therefore the checkout's,
+    staged additions and removals included, whatever the ignore rules say of them. `git add -A` then applies the
+    ignore rules to untracked files only. The user's index, HEAD and files stay untouched."""
     env = {**os.environ, "GIT_INDEX_FILE": str(index)}
     index.unlink(missing_ok=True)  # git refuses an empty index file; it accepts an absent one
     try:
@@ -238,7 +238,7 @@ def tree_of_worktree(root, index):
 
 
 def tree_of_index(root, index):
-    """The user's index written as a Git tree object through a scratch copy, the index untouched."""
+    """Writes the user's index as a Git tree object through a scratch copy, and leaves the index untouched."""
     env = {**os.environ, "GIT_INDEX_FILE": str(index)}
     index.unlink(missing_ok=True)
     try:
@@ -256,11 +256,11 @@ def tree_of_index(root, index):
 
 
 def snapshot(review, round_number, observation):
-    """The working tree as a Git tree object, held by refs/ko-review/<review>/round-NNN.
+    """Writes the working tree as a Git tree object, held by refs/ko-review/<review>/round-NNN.
 
-    A read-only Git directory, a linked worktree's, refuses the writes; the round then has no
-    snapshot and the digest alone binds it. `excludes` names the nested repositories, found by the
-    observation, whose contents a tree cannot hold; the digest covers them."""
+    A read-only Git directory, a linked worktree's, refuses the writes. The round then has no snapshot, and the
+    digest alone binds the round. `excludes` names the nested repositories that the observation found, whose
+    contents a tree cannot hold; the digest covers them."""
     ref = f"refs/ko-review/{review.id}/round-{round_number:03d}"
     taken = {"round": round_number, "ref": None, "tree": None, "excludes": observation["repositories"]}
     try:
@@ -272,11 +272,14 @@ def snapshot(review, round_number, observation):
 
 
 def attach_transcript(review, taken, text):
-    """The round's transcript as a tag object on the round's ref, which then peels to the tree:
-    the ref's `%(contents)` is the transcript, `git diff` between refs still compares trees, and
-    `git tag` lists none of it. The tagger is the helper, since neither the user nor the reviewer wrote the
-    whole message. Without a snapshot there is no ref to carry it. A failure leaves the ref on the
-    tree and its diagnostic in the snapshot's `transcriptError`, which the JSON output carries."""
+    """Attaches the round's transcript as a tag object on the round's ref, which then peels to the tree.
+
+    - The ref's `%(contents)` is the transcript, `git diff` between refs still compares trees, and `git tag` lists
+      none of the tags.
+    - The tagger is the helper, since neither the user nor the reviewer wrote the whole message.
+    - Without a snapshot, no ref exists to carry the tag.
+    - A failure leaves the ref on the tree and the failure's diagnostic in the snapshot's `transcriptError`, which
+      the JSON output carries."""
     if not taken.get("ref"):
         return None
     tagged = datetime.datetime.now().astimezone()
@@ -312,7 +315,7 @@ def resolve_base(root, ref):
 
 
 def state_root():
-    """Inside ko-agent-sandbox the workspace's persistent volume; elsewhere the user's state directory."""
+    """Returns the workspace's persistent volume inside ko-agent-sandbox, and the user's state directory elsewhere."""
     override = os.environ.get("KO_REVIEW_STATE")
     if override:
         return Path(override)
@@ -359,7 +362,7 @@ class Review:
 
     @staticmethod
     def open(root, review_id, check_readable=True):
-        """The review locked, then loaded: what it says is what the command acts on."""
+        """Locks the review, then loads it: the command acts on what the loaded state says."""
         review = Review(root, review_id)
         if not review.state_path.exists():
             raise ReviewError("UNKNOWN_REVIEW", f"no review {review_id} for {root}")
@@ -372,8 +375,8 @@ class Review:
 
     @staticmethod
     def create(root, max_rounds, reviewer):
-        """A review named by its local start time, so refs and directories list in order, plus a
-        random suffix; a name already taken, within one minute, is drawn again."""
+        """Creates a review named by its local start time plus a random suffix, so refs and directories list in
+        order. A name already taken within one minute is drawn again."""
         global CURRENT_REVIEW
         while True:
             started = datetime.datetime.now().astimezone().strftime("%Y-%m-%d-%H%M")
@@ -412,8 +415,8 @@ class Review:
         return review
 
     def load(self, check_readable=True):
-        """With `check_readable` off, for `list` and `delete`: whatever the state holds, `{}` when it
-        cannot be read as a JSON object."""
+        """Loads the state. With `check_readable` off, for `list` and `delete`, the method takes whatever the
+        state holds, or `{}` when the state cannot be read as a JSON object."""
         global CURRENT_REVIEW
         if not self.state_path.exists():
             raise ReviewError("UNKNOWN_REVIEW", f"no review {self.id} for {self.root}")
@@ -470,7 +473,7 @@ class Review:
         return [json.loads(line) for line in self.journal_path.read_text().splitlines() if line.strip()]
 
     def round_transcript(self, round_number):
-        """The round's journal entries as Markdown, headed by the review and the round."""
+        """Renders the round's journal entries as Markdown, headed by the review and the round."""
         entries = [entry for entry in self.journal_entries() if entry.get("round") == round_number]
         rendered = render_entries(self.reviewer, entries, False)
         return "\n".join([f"# Review {self.id}, round {round_number}", "", *rendered])
@@ -489,16 +492,16 @@ class Review:
         return json.loads(path.read_text()) if path.exists() else None
 
     def freshness(self, observation=None):
-        """Whether the approval covers the current tree, and if not, why not.
+        """Returns whether the approval covers the current tree, and if not, why not.
 
-        By digest first. When the digest moved with HEAD or the index, as after the user stages or
-        commits the reviewed changes, the approval holds if the files' raw content is still the
-        approved one and the index, written as a tree, equals the approved snapshot's tree, so that
-        nothing unreviewed is staged. A changed HEAD alone is therefore never a reason when the
-        round has a snapshot.
+        The check compares digests first. The digest moves with HEAD or the index, as after the user stages or
+        commits the reviewed changes. The approval then still holds when both of these hold:
+        - the files' raw content is still the approved content;
+        - the index, written as a tree, equals the approved snapshot's tree, so nothing unreviewed is staged.
+        A changed HEAD alone is therefore never a reason when the round has a snapshot.
 
-        Without a snapshot there is no approved tree to compare the index with, and a changed HEAD
-        or index is itself a reason."""
+        Without a snapshot, no approved tree exists to compare the index with, and a changed HEAD or index is itself
+        a reason."""
         observation = observation or observe(self.root)
         approved = self.state.get("approved")
         fresh = approved is not None and approved["worktreeDigest"] == observation["digest"]
@@ -534,8 +537,8 @@ class Review:
         return observation, fresh, status, reasons
 
     def activity(self):
-        """What a round in progress shows: where its events land, and when the last one was
-        received, which is not proof that the reviewer is still working."""
+        """Returns what a round in progress shows: where its events land, and when the helper received the last
+        event. A recent event does not prove that the reviewer is still working."""
         if self.state["status"] != "REVIEWING":
             return None
         events = self.round_path(self.state["round"], self.reviewer.name + ".jsonl")
@@ -561,7 +564,7 @@ class Review:
         }
 
     def inspect_lines(self):
-        """Command lines for the user to see how the review went; the skill relays them at the end."""
+        """Returns command lines that show the user how the review went. The skill relays them at the end."""
         lines = [f"ko-review export {self.id}  # the transcript, one section per round"]
         snapshots = [entry for entry in self.state.get("snapshots", []) if entry.get("ref")]
         if snapshots and snapshots[-1].get("tag"):
@@ -623,7 +626,7 @@ class Codex:
     name = "codex"
     display = "Codex"
     thread_event = "thread.started"
-    # Both hosts: a ChatGPT login talks to chatgpt.com, an API key to api.openai.com.
+    # Codex needs both hosts: a ChatGPT login talks to chatgpt.com, and an API key talks to api.openai.com.
     hosts = ("api.openai.com", "chatgpt.com")
     lost_thread = "no rollout found"
     sign_in_advice = "run `codex` in this workspace's sandbox, sign in, and retry"
@@ -632,7 +635,7 @@ class Codex:
         return program_version("codex")
 
     def signed_in(self):
-        """Codex knows its credential stores (auth.json or the OS keyring); the helper does not."""
+        """Asks Codex, which knows its credential stores (auth.json or the OS keyring); the helper does not."""
         status = subprocess.run(["codex", "login", "status"], capture_output=True, text=True, check=False, timeout=60)
         return status.returncode == 0, (status.stdout + status.stderr).strip()[-500:]
 
@@ -668,7 +671,7 @@ class Codex:
         return text if isinstance(text, str) else json.dumps(error)
 
     def final_result(self, events, result_path):
-        """The final message `--output-last-message` wrote, or None."""
+        """Returns the final message that `--output-last-message` wrote, or None."""
         return result_path.read_text() if result_path.exists() else None
 
     def defaults(self, root):
@@ -678,17 +681,17 @@ class Codex:
 class Claude:
     """Claude Code as the reviewer: `claude -p` and `claude -p --resume`, in the stream-json events.
 
-    Not `--bare`, which accepts only an API key: the print-mode session runs under the managed
-    settings and the project's CLAUDE.md, with the user's, project's and local settings files, the
-    slash commands and every MCP server left out. `--permission-prompts none` denies every tool a
-    permission prompt would gate, so outside a bypass-permissions policy the reviewer can only read
-    files and run the git commands listed; inside one, the digest check is what enforces reading
-    only, as for Codex."""
+    The helper does not pass `--bare`, which accepts only an API key. The print-mode session runs under the managed
+    settings and the project's CLAUDE.md. The session leaves out the user's, project's and local settings files, the
+    slash commands and every MCP server.
+    `--permission-prompts none` denies every tool that a permission prompt would gate. Outside a bypass-permissions
+    policy, the reviewer can therefore only read files and run the git commands listed. Inside such a policy, the
+    digest check enforces reading only, as for Codex."""
 
     name = "claude"
     display = "Claude"
     thread_event = "system init"
-    # Model traffic, and the OAuth token refresh a claude.ai login makes.
+    # The hosts carry model traffic, and the OAuth token refresh that a claude.ai login makes.
     hosts = ("api.anthropic.com", "platform.claude.com")
     lost_thread = "no conversation found with session id"
     sign_in_advice = "run `claude` in this workspace's sandbox, sign in with /login, and retry"
@@ -727,15 +730,15 @@ class Claude:
         ]
 
     def environment(self, state):
-        """`CLAUDE_CODE_EFFORT_LEVEL` overrides `--effort` (code.claude.com/docs/en/env-vars), so an
-        inherited one would run every round at its level while the review records the chosen one."""
+        """`CLAUDE_CODE_EFFORT_LEVEL` overrides `--effort` (code.claude.com/docs/en/env-vars). An inherited variable
+        would run every round at its level while the review records the chosen level."""
         if not state.get("effort"):
             return None
         return {**os.environ, "CLAUDE_CODE_EFFORT_LEVEL": state["effort"]}
 
     def check_choice(self, state):
-        """A managed `env` block replaces the variable `environment` sets, so the effort such a block
-        sets is the only one the review can record truthfully."""
+        """A managed `env` block replaces the variable that `environment` sets. The effort such a block sets is
+        therefore the only effort that the review can record truthfully."""
         managed_effort, source = claude_managed_variable("CLAUDE_CODE_EFFORT_LEVEL")
         if managed_effort and state.get("effort") and managed_effort != state["effort"]:
             raise ReviewerError(
@@ -752,7 +755,7 @@ class Claude:
 
     def failed(self, event):
         # An API error can end a print-mode run with exit status 0 and the error in the result
-        # (anthropics/claude-code#79500), so the result object, not the status, says whether it failed.
+        # (anthropics/claude-code#79500). The result object, not the status, therefore says whether the run failed.
         return event.get("type") == "result" and (event.get("is_error") or event.get("subtype") != "success")
 
     def failure_text(self, event):
@@ -762,7 +765,7 @@ class Claude:
         return event.get("result") if isinstance(event.get("result"), str) else event.get("subtype")
 
     def final_result(self, events, result_path):
-        """The `structured_output` of the result event, kept in the round's result file, or None."""
+        """Returns the `structured_output` of the result event, kept in the round's result file, or None."""
         for event in reversed(events):
             if event.get("type") == "result" and event.get("structured_output") is not None:
                 text = json.dumps(event["structured_output"])
@@ -782,7 +785,7 @@ def check_signed_in(reviewer):
         raise ReviewerError(reviewer, "REVIEWER_FAILED", f"{reviewer.name} is not on PATH")
     try:
         signed_in, status = reviewer.signed_in()
-    except subprocess.TimeoutExpired as ex:  # outside review_turn's handler: uncaught, main() ends in a traceback
+    except subprocess.TimeoutExpired as ex:  # outside review_turn's handler; uncaught, it ends main() in a traceback
         raise ReviewerError(
             reviewer, "REVIEWER_FAILED", f"{reviewer.name}'s sign-in status did not answer within {ex.timeout}s",
         )
@@ -794,8 +797,8 @@ def check_signed_in(reviewer):
 
 
 def hosts_allowed(reviewer):
-    """None outside the sandbox; otherwise whether the ruleset the launcher exports allows one of the
-    reviewer's hosts."""
+    """Returns None outside the sandbox. Inside it, returns whether the ruleset that the launcher exports allows one
+    of the reviewer's hosts."""
     ruleset = os.environ.get("KO_AGENT_SANDBOX_EGRESS_RULESET")
     if not ruleset:
         return None
@@ -830,8 +833,8 @@ USER_DECISION_KEYS = {"issue", "reviewerPosition", "whyTechnicalEvidenceCannotDe
 
 
 def validate_result(result):
-    """The checks the schema states, applied to what the reviewer returned: the schema option asks
-    the model for the shape but the helper decides."""
+    """Applies the checks the schema states to what the reviewer returned: the schema option asks the model for the
+    shape, but the helper decides."""
     if not isinstance(result, dict):
         return "result is not an object"
     if set(result) != RESULT_KEYS:
@@ -881,8 +884,8 @@ def validate_result(result):
 
 
 def reviewer_said(reviewer, stderr, events):
-    """The reviewer's own words on its failure, such as a usage limit and when it resets: its last
-    failure event's message, else the last line of its stderr."""
+    """Returns the reviewer's own words on its failure, such as a usage limit and when it resets: the message of its
+    last failure event, else the last line of its stderr."""
     for event in reversed(events):
         if reviewer.failed(event):
             text = reviewer.failure_text(event)
@@ -924,9 +927,9 @@ def classify_failure(reviewer, returncode, stderr, events):
 
 
 def adopt_orphans(adopt):
-    """Linux: while set, a descendant whose parent exits becomes this process's child instead of
-    init's, whatever session or group it moved to, where `kill_children` finds it. A no-op elsewhere,
-    where the reviewer's process group is all a turn's end reaches."""
+    """On Linux, while `adopt` is set, a descendant whose parent exits becomes this process's child instead of
+    init's, whatever session or group the descendant moved to. `kill_children` finds the descendant there.
+    Elsewhere the function does nothing, and a turn's end reaches only the reviewer's process group."""
     if sys.platform != "linux":
         return
     libc = ctypes.CDLL(None, use_errno=True)
@@ -951,8 +954,8 @@ def children_of(pid):
 
 
 def kill_children():
-    """Linux: kills and reaps every child of this process, in passes until none is left; the children
-    a killed one leaves are adopted and found by the next pass. A no-op elsewhere."""
+    """On Linux, kills and reaps every child of this process, in passes until none is left. The children that a
+    killed child leaves are adopted, and the next pass finds them. Elsewhere the function does nothing."""
     if sys.platform != "linux":
         return
     while children := children_of(os.getpid()):
@@ -963,22 +966,24 @@ def kill_children():
 
 
 def stream_events(review, process, leader, prompt, resume_id, timeout, events_path):
-    """Feeds the prompt, copies the reviewer's JSONL to the round's file and parses it as it arrives.
+    """Feeds the prompt, copies the reviewer's JSONL to the round's file, and parses the JSONL as it arrives.
 
-    The thread id is persisted the moment the reviewer's event names it: whatever ends the turn
-    after that, a timeout, an interrupt or unparsable later output, the thread holds the request
-    and a retry resumes it.
+    The function persists the thread id the moment the reviewer's event names it. Whatever ends the turn after that,
+    a timeout, an interrupt or unparsable later output, the thread holds the request, and a retry resumes it.
 
-    A thread reads the output, and the turn ends with the reviewer's exit, not with the output's
-    end, which a process the reviewer left holding its stdout decides; a failure in that thread
-    ends the turn too, and is raised here once the cleanup is through. The reviewer's process
-    group, which `leader` leads, is killed once the turn ends, or at once on any exception, both
-    are reaped, and the orphans the helper adopted are killed and reaped, before this returns or
-    the exception propagates, so no process of that group, nor on Linux any descendant of the
-    reviewer, outlives the lock that serialized the turn.
+    A thread reads the output.
+    - The turn ends with the reviewer's exit, not with the output's end: a process that the reviewer left holding
+      its stdout decides when the output ends.
+    - A failure in the reading thread ends the turn too, and the function raises the failure once the cleanup is
+      through.
+    - Once the turn ends, or at once on any exception, the function kills the reviewer's process group, which
+      `leader` leads, and reaps the reviewer and the leader. The function then kills and reaps the orphans that the
+      helper adopted.
+    - All of this happens before the function returns or the exception propagates. No process of that group, nor
+      on Linux any descendant of the reviewer, therefore outlives the lock that serialized the turn.
 
-    Returns the events, the first thread id or None, the first line that is not JSON or None, and
-    whether the timeout killed the reviewer."""
+    Returns the events, the first thread id or None, the first line that is not JSON or None, and whether the
+    timeout killed the reviewer."""
     def feed():
         try:
             process.stdin.write(prompt.encode())
@@ -998,10 +1003,11 @@ def stream_events(review, process, leader, prompt, resume_id, timeout, events_pa
         signalled.append(True)
 
     def end_group():
-        # Repeatable, since a signal can interrupt it at any point and the handler below runs it
-        # again. A timer callback that started before cancel() runs to its end, and must find the
-        # leader unreaped. A group signalled once is not signalled again: after the leader is reaped
-        # its pid is free for another group, and macOS answers EPERM for a group of zombies.
+        # The function is repeatable, since a signal can interrupt it at any point and the handler below runs it
+        # again.
+        # - A timer callback that started before cancel() runs to its end, and must find the leader unreaped.
+        # - A group signalled once is not signalled again: after the leader is reaped, its pid is free for another
+        #   group, and macOS answers EPERM for a group of zombies.
         if timer is not None:
             timer.cancel()
             timer.join()
@@ -1088,20 +1094,20 @@ def run_reviewer(review, round_number, prompt, resume_id, timeout):
     stderr_path = review.round_path(round_number, reviewer.name + ".stderr")
     result_path = review.round_path(round_number, "result.json")
     command = reviewer.command(review.state, resume_id, result_path)
-    # For the reviewer's run only, so that the orphans adopted and killed are the reviewer's, not those
-    # of the helper's own commands before and after the turn.
+    # Adoption covers the reviewer's run only, so the orphans adopted and killed are the reviewer's, not those of the
+    # helper's own commands before and after the turn.
     adopt_orphans(True)
     try:
         with open(stderr_path, "wb") as stderr_stream:
-            # A process of the helper's own leads the reviewer's group and lives until the group has
-            # been killed, so the group's id stays taken until then; a reviewer leading its own group
-            # frees it the moment it is reaped, for an unrelated process to take before the kill. The
-            # leader reads the helper's pipe, so it exits with the helper at the latest. Joining its
-            # group puts the reviewer in the helper's session, with the helper's controlling terminal
-            # when it has one.
+            # A process of the helper's own leads the reviewer's group and lives until the group has been killed,
+            # so the group's id stays taken until then. A reviewer leading its own group would free the id the
+            # moment it is reaped, and an unrelated process could take the id before the kill.
+            # - The leader reads the helper's pipe, so the leader exits with the helper at the latest.
+            # - Joining the leader's group puts the reviewer in the helper's session, with the helper's controlling
+            #   terminal when the helper has one.
             leader = subprocess.Popen(["cat"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, process_group=0)
-            # cwd, not an option: `codex exec resume` has no `-C`, and both `codex exec` forms refuse a
-            # cwd outside a trusted directory.
+            # The helper sets cwd, not an option: `codex exec resume` has no `-C`, and both `codex exec` forms
+            # refuse a cwd outside a trusted directory.
             process = subprocess.Popen(
                 command, cwd=review.root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr_stream,
                 process_group=leader.pid, env=reviewer.environment(review.state),
@@ -1149,10 +1155,10 @@ def run_reviewer(review, round_number, prompt, resume_id, timeout):
 
 
 def review_turn(review, message):
-    """One reviewer turn under the review's lock: the state machine's REVIEWING edge and its exits.
+    """Runs one reviewer turn under the review's lock: the state machine's REVIEWING edge and its exits.
 
-    Until a round has completed, the turn is the review request, on the thread an earlier failed
-    attempt opened if there is one."""
+    Until a round has completed, the turn is the review request, on the thread that an earlier failed attempt
+    opened, if there is one."""
     state = review.state
     first = state["lastReviewed"] is None
     if state["status"] in TERMINAL:
@@ -1172,7 +1178,7 @@ def review_turn(review, message):
     heading = "# Review request from the author" if first else f"# The author's response, round {round_number}"
     prompt = (PLUGIN_ROOT / "prompts" / prompt_file).read_text()
     if state.get("instructions"):
-        # Every round, so that they stay in force however long the thread grows.
+        # The instructions go into every round, so they stay in force however long the thread grows.
         prompt += (
             "\n---\n\n# Instructions from the user\n\nThese take precedence over the reviewer instructions"
             " above.\n\n" + state["instructions"].rstrip("\n") + "\n"
@@ -1211,14 +1217,14 @@ def review_turn(review, message):
             if changed or entered:
                 sentences.append("Every other path is as you read it then.")
             prompt += "\n---\n\n# Changes since your last turn\n\n" + " ".join(sentences) + "\n"
-    # A failed turn may or may not have left the author's message in the reviewer's thread, and the author
-    # writes the next message as a sequel, so the next turn sends the unanswered ones again.
+    # A failed turn may or may not have left the author's message in the reviewer's thread. The author writes the
+    # next message as a sequel, so the next turn sends the unanswered messages again.
     unanswered = [
         entry for entry in entries
         if entry["actor"] == "author" and entry["kind"] in ("review-request", "review-response")
         and entry["round"] > max(answered, default=0)
     ]
-    for entry in unanswered:  # as written, like the latest message: the reviewer reads code in them
+    for entry in unanswered:  # sent as written, like the latest message, because the reviewer reads code in them
         prompt += (
             f"\n---\n\n# The author's message of round {entry['round']}, which you did not answer\n\n"
             "Your turn on it ended in an error before you answered. The author's latest message follows the"
@@ -1290,13 +1296,13 @@ def review_turn(review, message):
 
 
 def check_scope(root, base):
-    """Refuse a review of nothing: a reviewer turn on an empty scope yields an approval that looks like
-    one of the session's committed work, which only `--base` brings into scope.
+    """Refuses a review of nothing. A reviewer turn on an empty scope yields an approval that looks like an approval
+    of the session's committed work, which only `--base` brings into scope.
 
-    The scope is what the reviewer is told to look at, the working tree against the base commit, HEAD
-    without `--base`, plus untracked files; a dirty checkout whose edits restore the base's
-    content is empty too. External diff drivers and submodule settings could hide a change, so
-    the comparison runs without them."""
+    The scope is what the reviewer is told to look at: the working tree against the base commit, or against HEAD
+    without `--base`, plus untracked files. A dirty checkout whose edits restore the base's content has an empty
+    scope too. External diff drivers and submodule settings could hide a change, so the comparison runs without
+    them."""
     if any(record[:1] == b"?" for path, record in status_records(root)):
         return
     if base is None and git(root, "rev-parse", "--verify", "--quiet", "HEAD", check=False).returncode != 0:
@@ -1322,8 +1328,8 @@ def check_scope(root, base):
 
 
 def scope_paths(root, base):
-    """The paths the reviewer is told to look at: those differing from the base commit, HEAD without
-    `--base`, plus the untracked ones; every listed file when HEAD is unborn."""
+    """Returns the paths that the reviewer is told to look at: those that differ from the base commit, or from HEAD
+    without `--base`, plus the untracked ones. When HEAD is unborn, returns every listed file."""
     untracked = {
         path.decode("utf-8", "surrogateescape") for path, record in status_records(root) if record[:1] == b"?"
     }
@@ -1338,9 +1344,9 @@ def scope_paths(root, base):
 
 
 def reviewed_paths(root, base, reviewed):
-    """The paths the reviewer of the round `reviewed` records was told to look at: the round's tree
-    against the review's base commit, or against HEAD as it was then; every path of the tree when
-    HEAD was unborn."""
+    """Returns the paths that the reviewer of the round recorded in `reviewed` was told to look at: the round's tree
+    against the review's base commit, or against HEAD as it was then. When HEAD was unborn, returns every path of
+    the tree."""
     against = base["commit"] if base else reviewed["head"]
     if against == "unborn":
         listed = git(root, "ls-tree", "-r", "-z", "--name-only", reviewed["tree"]).stdout
@@ -1350,13 +1356,13 @@ def reviewed_paths(root, base, reviewed):
 
 
 def command_coverage(args):
-    """The approved reviews of this checkout whose approval covers part of the current scope, so that
-    the author can continue one on its thread, where the reviewer reads the new paths with the earlier
+    """Returns the approved reviews of this checkout whose approval covers part of the current scope. The author
+    can then continue such a review on its thread, where the reviewer reads the new paths with the earlier
     discussion in context, instead of starting anew.
 
-    A path is covered when the approved round's reviewer was told to look at it and its content is
-    the approved one; staging or committing it changes neither. A candidate has the same base as
-    the review the author would start, and a snapshot tree, which names the reviewed paths."""
+    A path is covered when the approved round's reviewer was told to look at it and its content is the approved
+    content; staging or committing the path changes neither. A candidate review has the same base as the review the
+    author would start, and a snapshot tree, which names the reviewed paths."""
     root = repository_root(args.repository)
     base = resolve_base(root, args.base) if args.base else None
     observation = observe(root)
@@ -1495,8 +1501,8 @@ def command_list(args):
                 try:
                     summary = Review(root, entry.name).load().summary(observation)
                 except ReviewError as ex:
-                    # A review this helper cannot read is still listed, by what every version's
-                    # state holds, so that its id can be given to `delete`.
+                    # A review that this helper cannot read is still listed, by what every version's state holds,
+                    # so its id can be given to `delete`.
                     state = Review(root, entry.name).load(check_readable=False).state
                     summary = {
                         "reviewId": entry.name, "reviewer": state.get("reviewer"), "effectiveStatus": ex.code,
@@ -1515,14 +1521,13 @@ ATX_HEADING = re.compile(r"( {0,3})(#{1,6})(?=[ \t]|$)")
 
 
 def shifted(markdown):
-    """The message's ATX headings two levels down, at most to level 6, under the `###` heading that
-    names who wrote it, for the export and the transcript on a round's ref.
+    """Shifts the message's ATX headings two levels down, at most to level 6, under the `###` heading that names who
+    wrote the message. The export and the transcript on a round's ref use the result.
 
-    Where a line may be code, it stays as written, so a misreading can leave a heading unshifted
-    but never change code: any line that could open a fence opens one, and only a line that
-    certainly closes it does. That line repeats the opening line's containers, its list markers
-    as spaces, then has at most three spaces, a run of the fence's character at least as long, and
-    nothing else."""
+    A line that may be code stays as written, so a misreading can leave a heading unshifted but never change code.
+    Any line that could open a fence opens one, and only a line that certainly closes the fence closes it. Such a
+    closing line repeats the opening line's containers, with their list markers as spaces. After the containers, the
+    closing line has at most three spaces, a run of the fence's character at least as long, and nothing else."""
     lines = []
     fence = None  # (containers a closing line repeats, character, length) of the open fence
     for line in markdown.rstrip("\n").splitlines():
@@ -1551,7 +1556,7 @@ def shifted(markdown):
 
 
 def render_entries(reviewer, entries, with_round_headings=True):
-    """The journal entries as Markdown: the export's body, and a round's transcript on its ref."""
+    """Renders the journal entries as Markdown: the export's body, and a round's transcript on its ref."""
     lines = []
     current_round = None
     for entry in entries:
@@ -1621,8 +1626,8 @@ def command_export(args):
 
 
 def command_diff(args):
-    """The working tree against a round's snapshot, untracked files included: `git diff <tree>`
-    alone reads the user's index and reports an untracked file as deleted."""
+    """Diffs the working tree against a round's snapshot, untracked files included. `git diff <tree>` alone reads
+    the user's index and reports an untracked file as deleted."""
     root = repository_root(args.repository)
     review = Review(root, args.review_id).load()
     snapshots = [entry for entry in review.state.get("snapshots", []) if entry.get("ref")]
@@ -1658,8 +1663,8 @@ def delete_review(review):
 
 
 def last_activity(review):
-    """When the review last changed: `updatedAt`, else `createdAt`, else the start minute its id
-    carries, for a state this helper cannot read."""
+    """Returns when the review last changed: `updatedAt`, else `createdAt`, else the start minute that its id
+    carries, for a state that this helper cannot read."""
     for key in ("updatedAt", "createdAt"):
         try:
             moment = datetime.datetime.fromisoformat(review.state[key])
@@ -1673,10 +1678,11 @@ def last_activity(review):
 
 
 def expire_reviews(root):
-    """Deletes the checkout's reviews whose last activity is RETENTION_DAYS or more ago, as `delete`
-    would: the deleted ids, and for each review it could not delete, its id and the error, so that
-    the new review starts whatever the old ones' state. A review another command holds, one gone
-    meanwhile, or one whose age cannot be told, stays silently."""
+    """Deletes the checkout's reviews whose last activity is RETENTION_DAYS or more ago, as `delete` would.
+
+    Returns the deleted ids, and for each review that it could not delete, the review's id and the error, so the new
+    review starts whatever the old reviews' state. The function skips three cases without a word: a review that
+    another command holds, a review gone meanwhile, and a review whose age cannot be told."""
     reviews_dir = repository_dir(root) / "reviews"
     if not reviews_dir.exists():
         return [], []
@@ -1705,8 +1711,8 @@ GIT_METADATA_LIMIT = 64 * 1024  # Codex's MAX_GIT_METADATA_FILE_BYTES
 
 
 def git_metadata(path):
-    """The stripped content of a Git metadata file as Codex reads one: a regular file, not a symlink, of at
-    most GIT_METADATA_LIMIT bytes; None otherwise."""
+    """Returns the stripped content of a Git metadata file as Codex reads one: a regular file, not a symlink, of at
+    most GIT_METADATA_LIMIT bytes. Returns None otherwise."""
     try:
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_size > GIT_METADATA_LIMIT:
@@ -1717,7 +1723,7 @@ def git_metadata(path):
 
 
 def gitdir_pointer(dot_git):
-    """The directory a `.git` file's `gitdir:` line names, as Codex reads it; None otherwise."""
+    """Returns the directory that a `.git` file's `gitdir:` line names, as Codex reads it. Returns None otherwise."""
     content = git_metadata(dot_git)
     if content is None or not content.startswith(b"gitdir:"):
         return None
@@ -1726,11 +1732,12 @@ def gitdir_pointer(dot_git):
 
 
 def main_checkout(root):
-    """The main checkout of the linked worktree `root`, whose trust entry Codex applies to the worktree when
-    the worktree has none of its own; None otherwise. The checks are Codex's own, in
-    `resolve_root_git_project_for_trust` (codex-rs/git-utils/src/trust.rs): Git follows symlinks and
-    registrations Codex refuses, and a trust Git's view granted here would offer project settings Codex
-    skips."""
+    """Returns the main checkout of the linked worktree `root`, or None otherwise. Codex applies the main checkout's
+    trust entry to the worktree when the worktree has none of its own.
+
+    The checks are Codex's own, in `resolve_root_git_project_for_trust` (codex-rs/git-utils/src/trust.rs). Git
+    follows symlinks and registrations that Codex refuses, and a trust that Git's view granted here would offer
+    project settings that Codex skips."""
     git_dir = gitdir_pointer(root / ".git")
     if git_dir is None or git_dir.is_symlink() or not git_dir.is_dir():
         return None
@@ -1753,9 +1760,11 @@ def main_checkout(root):
 
 
 def codex_config_layers(root):
-    """The local configuration files Codex reads for this repository, highest precedence first:
-    the project's `.codex/config.toml` when the user configuration trusts the project or its main checkout,
-    the user configuration, the image's system layer. Codex's cloud-managed layer is not on disk."""
+    """Returns the local configuration files that Codex reads for this repository, highest precedence first:
+    - the project's `.codex/config.toml`, when the user configuration trusts the project or its main checkout;
+    - the user configuration;
+    - the image's system layer.
+    Codex's cloud-managed layer is not on disk."""
     user = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml"
     layers = [user, Path("/etc/codex/config.toml")]
     project = root / ".codex/config.toml"
@@ -1777,9 +1786,9 @@ def codex_config_layers(root):
 
 
 def codex_catalog():
-    """Codex's model catalog sorted by `priority`, as Codex sorts the list its `/model` picker shows and takes its
-    default model from, with each model's efforts lowest first; None when Codex cannot render it. `hidden`
-    marks the models the picker leaves out."""
+    """Returns Codex's model catalog sorted by `priority`, with each model's efforts lowest first, or None when Codex
+    cannot render the catalog. Codex sorts the list that its `/model` picker shows the same way, and takes its
+    default model from that list. `hidden` marks the models that the picker leaves out."""
     try:
         rendered = subprocess.run(["codex", "debug", "models"], capture_output=True, text=True, check=True, timeout=60)
         models = json.loads(rendered.stdout)["models"]
@@ -1802,14 +1811,17 @@ def codex_catalog():
 
 
 def codex_defaults(root):
-    """The model and reasoning effort Codex's local configuration selects for this repository, for the
-    skill to offer first. `partial` says that a cloud-managed layer, which Codex ranks above the
-    user's file, could still name others; an explicit `--model` or `--effort` removes the doubt.
-    `recommended` is the pair Codex would use: the configured model, else Codex's default, the first model
-    its picker lists, and the configured effort, else the catalog's default for that model. A value the
-    catalog cannot fill stays null: Codex's built-in default, which the skill leaves to Codex by passing no
-    option. `catalog` lists the models Codex's `/model` picker offers; a configured hidden model still gets
-    its efforts in `recommended`, and a retiring one the model Codex recommends upgrading to."""
+    """Returns the model and reasoning effort that Codex's local configuration selects for this repository, for the
+    skill to offer first.
+
+    - `partial` says that a cloud-managed layer, which Codex ranks above the user's file, could still name others.
+      An explicit `--model` or `--effort` removes the doubt.
+    - `recommended` is the pair Codex would use: the configured model, else Codex's default, which is the first
+      model its picker lists; and the configured effort, else the catalog's default for that model.
+    - A value that the catalog cannot fill stays null. Null stands for Codex's built-in default, which the skill
+      leaves to Codex by passing no option.
+    - `catalog` lists the models that Codex's `/model` picker offers. A configured hidden model still gets its
+      efforts in `recommended`, and a retiring model gets the model that Codex recommends upgrading to."""
     found = {"model": None, "effort": None, "source": {"model": None, "effort": None}, "partial": True}
     for layer in codex_config_layers(root):
         if not layer.is_file():
@@ -1841,8 +1853,8 @@ def codex_defaults(root):
     return found
 
 
-# The aliases Claude Code documents, with its wording, and the efforts its table gives the models
-# they name on the Anthropic API (code.claude.com/docs/en/model-config). Haiku takes no effort.
+# The aliases that Claude Code documents, in its wording, and the efforts that its table gives the models the aliases
+# name on the Anthropic API (code.claude.com/docs/en/model-config). Haiku takes no effort.
 CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 CLAUDE_MODELS = (
     ("fable", "the Fable model for your provider, for the hardest and longest-running tasks", CLAUDE_EFFORTS),
@@ -1853,7 +1865,7 @@ CLAUDE_MODELS = (
 
 
 def claude_managed_directory():
-    """Where Claude Code reads file-based managed settings (code.claude.com/docs/en/managed-settings);
+    """Returns where Claude Code reads file-based managed settings (code.claude.com/docs/en/managed-settings).
     `KO_REVIEW_CLAUDE_MANAGED_SETTINGS` names another directory, for the tests."""
     override = os.environ.get("KO_REVIEW_CLAUDE_MANAGED_SETTINGS")
     if override:
@@ -1864,9 +1876,8 @@ def claude_managed_directory():
 
 
 def claude_managed_settings():
-    """The managed settings files as (path, settings), the one Claude Code merges last first:
-    `managed-settings.d/*.json` in reverse alphabetical order, hidden files left out, then
-    `managed-settings.json`."""
+    """Returns the managed settings files as (path, settings), the file that Claude Code merges last first:
+    `managed-settings.d/*.json` in reverse alphabetical order, hidden files left out, then `managed-settings.json`."""
     directory = claude_managed_directory()
     drop_ins = directory / "managed-settings.d"
     files = sorted(
@@ -1886,9 +1897,9 @@ def claude_managed_settings():
 
 
 def claude_managed_variable(name):
-    """The value the highest-ranking managed `env` block naming the variable gives it and the file
-    that does, else (None, None). Claude Code writes such a value over the one its process
-    inherited, an empty one included, which leaves the variable unset for it: the value is then ""."""
+    """Returns the value that the highest-ranking managed `env` block naming the variable gives it, and the file
+    that holds the block, else (None, None). Claude Code writes such a value over the value its process inherited.
+    An empty value counts too and leaves the variable unset for Claude Code; the returned value is then ""."""
     for path, settings in claude_managed_settings():
         block = settings.get("env")
         if isinstance(block, dict) and isinstance(block.get(name), str):
@@ -1897,18 +1908,20 @@ def claude_managed_variable(name):
 
 
 def claude_defaults(root):
-    """The model and effort the reviewer's session would use, for the skill to offer first. That
-    session loads no user, project or local settings file (`--setting-sources ""`), so what selects
-    them is the environment and the managed settings: `ANTHROPIC_MODEL`, else the managed `model`,
-    else `ANTHROPIC_DEFAULT_MODEL`; `CLAUDE_CODE_EFFORT_LEVEL`, else the managed top-level
-    `effortLevel`. A managed `env` block overrides the inherited variable. A value nothing sets stays
-    null: Claude Code's own default, which the skill leaves to it by passing no option.
+    """Returns the model and effort that the reviewer's session would use, for the skill to offer first.
 
-    Managed `modelSettings`, which set an effort per model under Claude Code's canonical model names,
-    are not resolved: where a managed file holds them the effort stays null. `partial` is true
-    because server-managed settings and a role's effort cap are not on disk. The catalog's efforts
-    are those of the models the aliases name on the Anthropic API; for any other model `efforts` is
-    null, and Claude Code lowers a level the model does not support."""
+    That session loads no user, project or local settings file (`--setting-sources ""`), so the environment and the
+    managed settings select both values:
+    - the model: `ANTHROPIC_MODEL`, else the managed `model`, else `ANTHROPIC_DEFAULT_MODEL`;
+    - the effort: `CLAUDE_CODE_EFFORT_LEVEL`, else the managed top-level `effortLevel`.
+    A managed `env` block overrides the inherited variable. A value that nothing sets stays null. Null stands for
+    Claude Code's own default, which the skill leaves to Claude Code by passing no option.
+
+    The function does not resolve managed `modelSettings`, which set an effort per model under Claude Code's
+    canonical model names. Where a managed file holds them, the effort stays null.
+    - `partial` is true because server-managed settings and a role's effort cap are not on disk.
+    - The catalog's efforts are those of the models that the aliases name on the Anthropic API. For any other model,
+      `efforts` is null, and Claude Code lowers a level that the model does not support."""
     found = {"model": None, "effort": None, "source": {"model": None, "effort": None}, "partial": True}
 
     def variable(name):

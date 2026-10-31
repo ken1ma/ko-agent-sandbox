@@ -1,13 +1,18 @@
-// The --stats record across the resets that can leave a generated volume behind: a --reset under
-// a configured shared volume keeps this workspace's generated volume and, with it, the record; a
-// --reset-run-on-host after it asks podman for that volume rather than inferring its absence from the
-// state directories the reset removed; the plain --reset then takes both. discard covers the
-// common case, a reset with nothing kept, in every suite's teardown. The last test is the workspace
-// whose root went before any reset: --stats can only name it by id, and --reset takes that.
-// --reset-all also takes the records launchers that called the workspace a project kept.
-// A --reset-run-on-host or --reset that finds nothing left echoes no removal.
+// Tests the --stats record across the resets that can leave a generated volume behind:
 //
-// Runs only under testWithPodman, like the other container-launching suites (WithPodman has the condition):
+// - a --reset under a configured shared volume keeps this workspace's generated volume and, with the
+//   volume, the record;
+// - a --reset-run-on-host after that reset asks podman for the volume, rather than inferring the volume's
+//   absence from the state directories that the reset removed;
+// - the plain --reset then takes both.
+//
+// discard covers the common case, a reset that keeps nothing, in every suite's teardown. The last test
+// covers a workspace whose root went away before any reset: --stats can only name that workspace by id,
+// and --reset takes the id. --reset-all also takes the records that launchers kept when they called the
+// workspace a project. A --reset-run-on-host or --reset that finds nothing left echoes no removal.
+//
+// The suite runs only under testWithPodman, like the other container-launching suites (WithPodman has the
+// condition):
 //
 //     sbt "testWithPodman *ResetRecordTest"
 
@@ -56,16 +61,17 @@ class ResetRecordTest extends munit.FunSuite:
 
   test("--reset-all refuses a state root under the run-on-host tree before removing anything"):
     requireTestWithPodman()
-    // The roots come from XDG variables, which a Windows launcher does not read: there the reset
-    // would run against the workstation's own state.
+    // The roots come from XDG variables, which a Windows launcher does not read, so on Windows the
+    // reset would run against the workstation's own state.
     assume(!scala.util.Properties.isWin, "the nested layout is an XDG one")
 
-    // XDG_STATE_HOME can name a directory under the tree --reset-all removes whole; the reset must
-    // refuse rather than take the images' cleanup journal and the workspace records with it. The
-    // podman it finds passes the check every podman action runs first and fails every other
-    // command, and its home is a temporary one: a reset that did not refuse would otherwise sweep
-    // the workstation's containers, volumes and networks, and on Linux unmount every workspace's
-    // filter under the real home through /bin/sh, which no temporary root confines.
+    // XDG_STATE_HOME can name a directory under the tree that --reset-all removes whole. The reset
+    // must refuse rather than take the images' cleanup journal and the workspace records with that
+    // tree. The stub podman passes the check that every podman action runs first and fails every
+    // other command, and the test gives the reset a temporary home. Otherwise a reset that did not
+    // refuse would sweep the workstation's containers, volumes and networks. On Linux, the reset
+    // would also unmount every workspace's filter under the real home through /bin/sh, which no
+    // temporary root confines.
     val roots = Files.createTempDirectory("reset-all-nested").toRealPath()
     val bin = Files.createDirectories(roots.resolve("bin"))
     Files.writeString(
@@ -105,8 +111,8 @@ class ResetRecordTest extends munit.FunSuite:
     requireTestWithPodman()
     assume(!scala.util.Properties.isWin, "the roots are XDG ones")
 
-    // A podman that lists nothing, so the reset succeeds without touching the workstation's
-    // resources, under a temporary home for the same reason as the test above.
+    // A stub podman that lists nothing lets the reset succeed without touching the workstation's
+    // resources. The reset runs under a temporary home for the same reason as in the test above.
     val roots = Files.createTempDirectory("reset-all-former").toRealPath()
     val bin = Files.createDirectories(roots.resolve("bin"))
     Files.writeString(
@@ -153,22 +159,22 @@ class ResetRecordTest extends munit.FunSuite:
         "the launch recorded the workspace root",
       )
 
-      // A cache as a host command would leave, since --reset takes it with the rest.
+      // The test leaves a cache as a host command would, because --reset takes the cache with the rest.
       val cache = RunOnHostPrereqs.runOnHostCacheDir(
         RunOnHostPrereqs.cacheRootOf(currentOs, env).fold(refusal => fail(refusal.toString), identity), session.id,
       )
       Files.createDirectories(cache)
       Files.writeString(cache.resolve("planted"), "")
 
-      // The reported case: the directory removed before any reset, so the row can only name the id.
+      // The reported case: the directory is removed before any reset, so the row can only name the id.
       deleteRecursively(workspaceRoot)
       assertEquals(
         SandboxStats.workspaceDirectories(record.getParent).get(session.id), None, "the gone directory still named",
       )
       assert(Files.exists(record), "the record itself stays until a reset")
 
-      // Several ids at once, each reset before any is reported: the unknown one fails the
-      // invocation, and the known one is gone all the same.
+      // Several ids at once, each reset before any is reported: the unknown id fails the invocation,
+      // and the known id is gone all the same.
       val (ok, output) = resetIds(elsewhere, session.id, "never-000000000000")
       assert(!ok && output.contains("no workspace never-000000000000"), output)
       assert(!runOk(podman, "volume", "exists", volume), "the reset left the generated volume")
@@ -183,7 +189,8 @@ class ResetRecordTest extends munit.FunSuite:
       assert(!againOk && again.contains(s"no workspace ${session.id}"), again)
       assert(!again.contains("+ ") && !again.contains("filter"), s"a removal of nothing was reported:\n$again")
     finally
-      // The same path is the same id, so a failure above is reset from the recreated directory.
+      // The same path gives the same id, so after a failure above, the teardown resets the workspace
+      // from the recreated directory.
       Files.createDirectories(workspaceRoot)
       discard(workspaceRoot)
       deleteRecursively(elsewhere)

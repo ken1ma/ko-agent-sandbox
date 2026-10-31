@@ -1,10 +1,13 @@
-// The workspace root — the directory the container mounts at its own path — and everything the
-// launcher decides about it before any resource exists: the real path it resolves to, the
-// directories refused as workspace roots outright, the identity its path hashes to (which names
-// every per-workspace resource), the path it is mounted at, and the mount guards that protect or
-// refuse its .git and .ko-agent-sandbox layouts.
-// The session's configuration variables are deliberately not here — they describe a launch, not the
-// workspace, and are beside the --help text they must stay in step with.
+// The workspace root, the directory the container mounts at its own path, and what the launcher
+// decides about the root before it creates any resource:
+// - the real path the root resolves to;
+// - the directories refused as workspace roots outright;
+// - the identity the root's path hashes to, which names every per-workspace resource;
+// - the path the container mounts the root at;
+// - the mount guards that protect or refuse the root's .git and .ko-agent-sandbox layouts.
+//
+// The session's configuration variables are deliberately not here: they describe a launch, not the
+// workspace, and they sit beside the --help text they must stay in step with.
 
 package agentsandbox.launcher
 
@@ -22,10 +25,13 @@ import FileHelper.*
 object SandboxWorkspace:
 
   /**
-   * The current directory, symlinks resolved (like `pwd -P`) — what the container mounts, and the
-   * path every per-workspace resource is named after. A directory that cannot be canonicalized
-   * fails the command: falling back to the symbolic spelling would hash to a different workspace id
-   * than the launches that resolved it, and the symlink guards assume a real path.
+   * The current directory with symlinks resolved, like `pwd -P`. The container mounts this path,
+   * and every per-workspace resource is named after it.
+   *
+   * A directory that cannot be canonicalized fails the command, for two reasons:
+   * - the symbolic spelling would hash to a different workspace id than the launches that resolved
+   *   the directory;
+   * - the symlink guards assume a real path.
    */
   def resolveWorkspaceRoot(os: Os): Path =
     try canonicalWorkspaceRoot(Paths.get("").toAbsolutePath.toRealPath(), os)
@@ -34,11 +40,15 @@ object SandboxWorkspace:
         fail(s"error: cannot resolve the current directory to a real path\n$ex")
 
   /**
-   * One spelling per directory. macOS exposes the data volume at / and at /System/Volumes/Data,
-   * and toRealPath keeps whichever the user typed (withMacDataVolumeAliases has why), so a launch
-   * from the alias would hash to a second workspace id, back the filter and the raw bind by a path
-   * the podman machine does not share — its default share is the home at its own spelling — and
-   * mount the workspace root at a path the host does not name. The alias is stripped once, here.
+   * Gives each directory one spelling. macOS exposes the data volume at / and at
+   * /System/Volumes/Data, and toRealPath keeps whichever spelling the user typed
+   * (withMacDataVolumeAliases explains why). A launch from the alias would therefore:
+   * - hash to a second workspace id;
+   * - back the filter and the raw bind by a path the podman machine does not share, since the
+   *   machine's default share is the home at the home's own spelling;
+   * - mount the workspace root at a path the host does not name.
+   *
+   * This method alone strips the alias.
    */
   def canonicalWorkspaceRoot(realPath: Path, os: Os): Path =
     val text = realPath.toString
@@ -46,27 +56,33 @@ object SandboxWorkspace:
     else realPath
 
   /**
-   * The path the container mounts the workspace root at, which is the path the host — or on Windows the
-   * podman machine — has it at, so a path an agent prints or an IDE passes in needs no translation
-   * (design.md, prior art, has what the sandboxes doing the same ran into). It is also the one
-   * host path that reaches the workspace filter's daemon bypassing podman: every `--volume` source
-   * is translated by podman's own client, but the backing travels to the daemon in the mount
-   * script (KoAgentFs). On Linux the daemon is on this host, and the macOS machine mounts the
-   * host shares at their host paths — the Windows machine is a WSL distro, which serves host
-   * drives at `/mnt/<drive>`, the same translation podman's client applies to volume sources.
-   * Docker Sandboxes and Gemini CLI spell a drive `/c/...`, Git Bash's form; this follows the
-   * machine, whose spelling a launch from inside WSL shares.
+   * The path the container mounts the workspace root at: the path the host has the root at, or on
+   * Windows the path the podman machine has it at. A path that an agent prints or an IDE passes in
+   * then needs no translation. design.md records what the sandboxes doing the same ran into
+   * ("Prior-art references worth retaining").
    *
-   * A path with no drive letter (UNC) refuses the launch, in every workspace mode. That is scope, not
-   * a limit of the machine: a share reaches the WSL distro only through an explicit DrvFs mount
-   * there (`mount -t drvfs //server/share /mnt/share`), which the launcher neither arranges nor
-   * checks, and a drive letter assigned to the share does not help, since WSL automounts fixed
-   * drives only. Supporting shares would need a UNC-to-machine-path mapping, that mount arranged
-   * or checked, and the filter tested on it.
+   * This path is also the one host path that reaches the workspace filter's daemon without podman:
+   * - podman's own client translates every `--volume` source, but the backing path travels to the
+   *   daemon in the mount script (KoAgentFs);
+   * - on Linux, the daemon runs on this host;
+   * - the macOS machine mounts the host shares at their host paths;
+   * - the Windows machine is a WSL distro, which serves host drives at `/mnt/<drive>`, the same
+   *   translation podman's client applies to volume sources.
    *
-   * A POSIX path with a `:` refuses the launch too: podman reads `:` in a `--volume` value as the
-   * field separator, and the workspace root and its Git directory are bound with that option. A Windows
-   * path has only the drive's `:`, which podman's own client translates.
+   * Docker Sandboxes and Gemini CLI spell a drive `/c/...`, Git Bash's form. This method follows the
+   * machine's spelling, which a launch from inside WSL shares.
+   *
+   * A path with no drive letter (UNC) refuses the launch in every workspace mode. The refusal limits
+   * scope; the machine itself does not prevent shares:
+   * - a share reaches the WSL distro only through an explicit DrvFs mount there
+   *   (`mount -t drvfs //server/share /mnt/share`), which the launcher neither arranges nor checks;
+   * - a drive letter assigned to the share does not help, since WSL automounts fixed drives only;
+   * - supporting shares would need a UNC-to-machine-path mapping, that mount arranged or checked,
+   *   and the filter tested on it.
+   *
+   * A POSIX path with a `:` refuses the launch too. podman reads `:` in a `--volume` value as the
+   * field separator, and the launcher binds the workspace root and its Git directory with that
+   * option. A Windows path has only the drive's `:`, which podman's own client translates.
    */
   def mountPathOf(os: Os, workspaceRoot: Path): Either[String, String] =
     val text = workspaceRoot.toString
@@ -90,8 +106,9 @@ object SandboxWorkspace:
               "which only drive-letter paths (C:\\...) have. Work from a checkout on a fixed drive.",
           )
 
-  /** The container user's home: the anonymous home volume, the persistent volume and the agents'
-    * state are mounted there (AgentSandboxLauncher's create command), so no workspace root may be. */
+  /** The container user's home. The anonymous home volume, the persistent volume and the agents'
+    * state are mounted there (AgentSandboxLauncher's create command), so no workspace root may lie
+    * there. */
   val ContainerHome = "/home/nonroot"
 
   private def normalizedAndCanonical(path: Path): Seq[Path] =
@@ -100,23 +117,26 @@ object SandboxWorkspace:
     catch case _: IOException => Seq(normalized)
 
   /**
-   * The outcome of home discovery: the directories refused as workspace roots,
-   * which of them are *containers* of homes rather than homes — their direct
-   * children are refused too, because a child of /home is somebody's home and
-   * exposes that account's credentials exactly as this one's would — and
-   * anything the user should hear about how the set was derived: a home
-   * variable that was dropped, could not be canonicalized, or was never set.
-   * Warnings rather than errors: this guard catches accidents, and a degraded
-   * guard that says so beats a refused launch in a HOME-less environment.
+   * The outcome of home discovery:
+   * - `paths` are the directories refused as workspace roots;
+   * - `containers` are those of them that hold homes rather than being homes. The containers'
+   *   direct children are refused too, because a child of /home is somebody's home and exposes that
+   *   account's credentials as this account's home would;
+   * - `warnings` say what the user should hear about how the set was derived, such as a home
+   *   variable that was dropped, could not be canonicalized or was never set.
+   *
+   * Problems become warnings rather than errors. This guard catches accidents, and a degraded guard
+   * that says so beats a refused launch in an environment without HOME.
    */
   final case class HomeProtection(paths: Seq[Path], containers: Seq[Path], warnings: Seq[String])
 
   /**
-   * One home variable: Left when the value cannot name a directory at all,
-   * Right with the normalized and (best-effort) canonical spellings. A value
-   * that fails toRealPath is still protected by its exact spelling, but with
-   * a warning — silently keeping only the symbolic form while the candidate
-   * workspace root is always canonical would disable the comparison unnoticed.
+   * Reads one home variable: Left when the value cannot name a directory at all, Right with the
+   * normalized and, best-effort, canonical spellings.
+   *
+   * A value that fails toRealPath is still protected by its exact spelling, with a warning. The
+   * candidate workspace root is always canonical, so silently keeping only the symbolic form would
+   * disable the comparison.
    */
   private def parseHomeVariable(name: String, value: String): Either[String, (Seq[Path], Seq[String])] =
     try
@@ -139,17 +159,18 @@ object SandboxWorkspace:
     catch case _: InvalidPathException => Left(s"$name is not a valid path")
 
   /**
-   * Refused whether or not a configured home is located beneath them: the
-   * directories operating systems keep user homes in, so a relocated or
-   * unset HOME never leaves /home or /Users mountable. Returned as
-   * (containers, homes) — `/home` and `/Users` hold homes, `/root` and
-   * `/var/root` are homes — because only a container's direct children are
-   * refused. The Windows profiles root is derived from SystemDrive rather
-   * than from USERPROFILE's parent, so it stays protected when the current
-   * profile is on another drive, and falls back to `C:` so an environment
-   * without even SystemDrive keeps the boundary SECURITY.md states.
-   * Best-effort canonicalized; a root absent on this machine is kept as
-   * spelled and protects nothing that exists.
+   * The directories operating systems keep user homes in. These directories are refused whether or
+   * not a configured home lies beneath them, so a relocated or unset HOME never leaves /home or
+   * /Users mountable.
+   * - The result is (containers, homes): `/home` and `/Users` hold homes, while `/root` and
+   *   `/var/root` are homes. The split matters because only a container's direct children are
+   *   refused.
+   * - The Windows profiles root comes from SystemDrive rather than from USERPROFILE's parent, so the
+   *   root stays protected when the current profile is on another drive.
+   * - Without SystemDrive, the profiles root falls back to `C:`, which keeps the boundary
+   *   SECURITY.md states.
+   * - The roots are canonicalized best-effort. A root absent on this machine is kept as spelled and
+   *   protects nothing that exists.
    */
   private def wellKnownHomeRoots(os: Os, env: String => Option[String]): (Seq[Path], Seq[Path]) =
     os match
@@ -166,15 +187,14 @@ object SandboxWorkspace:
         (profiles, Seq.empty)
 
   /**
-   * macOS exposes the writable data volume both at / and at
-   * /System/Volumes/Data — a firmlink, which toRealPath does not collapse
-   * (it is not a symlink). Every protected path therefore also gets its
-   * other spelling, so `cd /System/Volumes/Data/Users/me` cannot mount the
-   * home the guard refuses as /Users/me.
+   * macOS exposes the writable data volume both at / and at /System/Volumes/Data. The second path is
+   * a firmlink, which toRealPath does not collapse because a firmlink is not a symlink. Every
+   * protected path therefore also gets its other spelling, so `cd /System/Volumes/Data/Users/me`
+   * cannot mount the home the guard refuses as /Users/me.
    */
   val MacDataVolumePrefix = "/System/Volumes/Data"
-  /** Not private: RunOnHostSbtServer.reachableThroughCommandWritable, which runs on macOS alone,
-    * compares the same spellings. */
+  /** Not private, because RunOnHostSbtServer.reachableThroughCommandWritable, which runs on macOS
+    * alone, compares the same spellings. */
   def withMacDataVolumeAliases(paths: Seq[Path]): Seq[Path] =
     paths.flatMap: path =>
       val text = path.toString
@@ -188,23 +208,23 @@ object SandboxWorkspace:
   def dataVolumeSpellings(os: Os, paths: Seq[Path]): Seq[Path] =
     if os == Os.Mac then withMacDataVolumeAliases(paths) else paths
 
-  /** Whether either path holds the other in any of their spellings (dataVolumeSpellings). Exact,
-    * not case-folded, so both must be canonical: folding would also match a case-different
-    * sibling that a case-sensitive volume keeps distinct. */
+  /** Whether either path holds the other in any of their spellings (dataVolumeSpellings). The
+    * comparison is exact, not case-folded, so both paths must be canonical: folding would also match
+    * a case-different sibling that a case-sensitive volume keeps distinct. */
   def overlapsInAnySpelling(os: Os, left: Path, right: Path): Boolean =
     dataVolumeSpellings(os, Seq(left)).exists: one =>
       dataVolumeSpellings(os, Seq(right)).exists(other => one.startsWith(other) || other.startsWith(one))
 
   /**
-   * The directories whose contents must never become a workspace mount, and
-   * the warnings describing any degradation in deriving them. PUBLIC is the
-   * shared Windows profile. A home variable that is set but invalid refuses
-   * the launch on POSIX; on Windows it is dropped with a warning as long as
-   * another home variable resolved, because Git Bash and MSYS2 export a
-   * POSIX-style HOME (/c/Users/me) beside a perfectly good USERPROFILE. No
-   * home variable at all degrades to the
-   * well-known roots, with a warning — HOME-less environments (cron, CI,
-   * env -i) stay launchable under the static guard.
+   * The directories whose contents must never become a workspace mount, and the warnings that
+   * describe any degradation in deriving them.
+   * - PUBLIC is the shared Windows profile.
+   * - A home variable that is set but invalid refuses the launch on POSIX.
+   * - On Windows, an invalid home variable is dropped with a warning as long as another home
+   *   variable resolved. Git Bash and MSYS2 export a POSIX-style HOME (/c/Users/me) beside a valid
+   *   USERPROFILE.
+   * - With no home variable at all, the guard degrades to the well-known roots with a warning, so
+   *   environments without HOME (cron, CI, env -i) stay launchable under the static guard.
    */
   def protectedHomeDirectories(
     os: Os,
@@ -258,14 +278,14 @@ object SandboxWorkspace:
       )
 
   /**
-   * Why dir must not be mounted as the workspace root, or None if it may. The reason is
-   * user-facing and names the rule that fired: telling someone inside
-   * ~/.config to "change into a directory to use as the workspace" would send them deeper
-   * into a tree the dot rule refuses everywhere. A workspace root at <home>/project
-   * remains valid (HomeProtection has what is refused). The container's own home is refused at
-   * any depth: mounted at its own path, a workspace there would sit among the session's home, the
-   * persistent volume and the agents' state. Only a POSIX host can spell it; a Windows path never
-   * starts with it.
+   * Why dir must not be mounted as the workspace root, or None if it may.
+   * - The reason is user-facing and names the rule that fired. Telling someone inside ~/.config to
+   *   "change into a directory to use as the workspace" would send them deeper into a tree the dot
+   *   rule refuses everywhere.
+   * - A workspace root at <home>/project remains valid (HomeProtection has what is refused).
+   * - The container's own home is refused at any depth. Mounted at its own path, a workspace there
+   *   would sit among the session's home, the persistent volume and the agents' state.
+   * - Only a POSIX host can spell the container's home; a Windows path never starts with it.
    */
   def forbiddenWorkspaceRootReason(dir: Path, homes: HomeProtection): Option[String] =
     val candidate = dir.normalize()
@@ -303,7 +323,8 @@ object SandboxWorkspace:
           else None
 
   /**
-   * podman accepts [a-zA-Z0-9][a-zA-Z0-9_.-]* only, so fold anything else out.
+   * podman accepts only names of the form [a-zA-Z0-9][a-zA-Z0-9_.-]*, so the slug folds every
+   * other character to `-`.
    */
   def slugOf(directoryName: String): String =
     val folded = directoryName.map: c =>
@@ -314,12 +335,13 @@ object SandboxWorkspace:
     folded.take(32)
 
   /**
-   * Lowercased before hashing on Windows, because its paths are
-   * case-insensitive: C:\Src\App and C:\src\app are one workspace and must
-   * produce one set of resources. POSIX paths are hashed as spelled.
-   * Locale.ROOT, because the machine's locale must not decide identity: the
-   * Turkish fold of I to dotless ı would hash the same path differently, and
-   * a locale change would orphan every workspace's volume and sign it out.
+   * Windows paths are lowercased before hashing, because Windows paths are case-insensitive:
+   * C:\Src\App and C:\src\app are one workspace and must produce one set of resources. POSIX paths
+   * are hashed as spelled.
+   *
+   * The fold uses Locale.ROOT, because the machine's locale must not decide identity. The Turkish
+   * fold of I to dotless ı would hash the same path differently, and a locale change would orphan
+   * every workspace's volume and the sign-ins it holds.
    */
   def workspaceHash(absolutePath: String, os: Os): String =
     val canonical =
@@ -329,47 +351,59 @@ object SandboxWorkspace:
   def workspaceIdOf(dir: Path, os: Os): String =
     s"${slugOf(dir.getFileName.toString)}-${workspaceHash(dir.toString, os)}"
 
-  /** What [[workspaceIdOf]] generates, and the one definition of a workspace id's pattern: `--stats` lists a
-    * name under a state or cache root only when it matches, and `--reset <id>` accepts only what
-    * matches, so every id `--stats` prints is one `--reset` takes. */
+  /** What [[workspaceIdOf]] generates, and the one definition of a workspace id's pattern. `--stats`
+    * lists a name under a state or cache root only when the name matches, and `--reset <id>` accepts
+    * only what matches, so every id `--stats` prints is one `--reset` takes. */
   val WorkspaceIdPattern = "[A-Za-z0-9._-]{1,32}-[0-9a-f]{12}"
 
   def isWorkspaceId(name: String): Boolean = name.matches(WorkspaceIdPattern)
 
-  /** A workspace's persistent volume; with WorkspaceIdPattern for the id, the pattern `--reset-all`
-    * removes (LauncherState.persistentVolumes). */
+  /** A workspace's persistent volume. The prefix, followed by WorkspaceIdPattern for the id, forms
+    * the pattern `--reset-all` removes (LauncherState.persistentVolumes). */
   def persistentVolumeName(workspaceId: String): String = s"$PersistentVolumePrefix$workspaceId"
   val PersistentVolumePrefix = "ko-agent-sandbox-persistent-"
 
   /**
    * Why git does not work in a session on this workspace, while the host directory the user
-   * launched from is part of a repository. The container has the workspace and nothing above or
-   * beside it, so git works there only when the repository's Git directory is inside the
-   * workspace: a `.git` directory, or a pointer file whose relative target stays within it. Every
-   * other form leaves the workspace root's `.git` naming a path the container does not have — a
-   * submodule checkout (`gitdir: ../.git/modules/<name>`), a linked worktree, a
-   * `--separate-git-dir` repository, an absolute pointer or symlink wherever it leads, a launch
-   * from a subdirectory of the repository — and every git command fails with `not a git
-   * repository`, which an agent reads as breakage. A linked worktree is the one form the launch
-   * can serve, read-only, by binding its main worktree's Git directory beside the workspace
-   * (linkedGitdirBind). Lack of Git access alone does not require refusal; the mount-time guard
-   * still checks whether the host's configuration or hooks are exposed.
+   * launched from is part of a repository.
    *
-   * Said at launch and in the agent's instructions — a warning, never a refusal: the host's git is
-   * untouched, and a session that only edits files is a legitimate one.
+   * The container has the workspace and nothing above or beside it. Git works there only when the
+   * repository's Git directory is inside the workspace: a `.git` directory, or a pointer file whose
+   * relative target stays within the workspace. Every other form leaves the workspace root's `.git`
+   * naming a path the container does not have. Every git command then fails with `not a git
+   * repository`, which an agent reads as breakage. Those forms are:
+   * - a submodule checkout (`gitdir: ../.git/modules/<name>`);
+   * - a linked worktree;
+   * - a `--separate-git-dir` repository;
+   * - an absolute pointer, or a symlink wherever it leads;
+   * - a launch from a subdirectory of the repository.
    *
-   * Two questions of one resolution (repositoryAt): whether the host has a repository rooted at a
-   * directory — a nested worktree or submodule is one, its Git directory elsewhere — and
-   * whether the container can follow `.git` to that Git directory from a given base. A
-   * `launchFrom` is the nearest directory holding the workspace from which the repository git uses
-   * there is reachable, so `that whole tree is then the workspace` is true of it: the superproject
-   * over a submodule, the repository root over a subdirectory. A separate gitdir has none — nor
-   * has any parent of one, under which the pointer stays as absolute — and neither has a linked
-   * worktree, whose main worktree is a different checkout, not this one's tree.
+   * A linked worktree is the one form the launch can serve. The launch binds the main worktree's Git
+   * directory read-only beside the workspace (linkedGitdirBind). Lack of Git access alone does not
+   * require refusal; the mount-time guard still checks whether the host's configuration or hooks
+   * are exposed.
    *
-   * Nothing is said where host git fails too: a `.git` naming a gitdir git rejects ends its search
-   * where it ends this one, and a `.git` that cannot be read or parsed is another check's to refuse
-   * (the filter's own guard, `guard.rs`). This one never fails a launch.
+   * The launcher says this at launch and in the agent's instructions, as a warning and never a
+   * refusal: the host's git is untouched, and a session that only edits files is legitimate.
+   *
+   * One resolution (repositoryAt) answers two questions:
+   * - whether the host has a repository rooted at a directory. A nested worktree or submodule is
+   *   one, with its Git directory elsewhere;
+   * - whether the container can follow `.git` to that Git directory from a given base.
+   *
+   * A `launchFrom` is the nearest directory holding the workspace from which the repository git
+   * uses there is reachable. The warning's "that whole tree is then the workspace" is therefore
+   * true of the `launchFrom`: the superproject over a submodule, or the repository root over a
+   * subdirectory. These forms have no `launchFrom`:
+   * - a separate gitdir, and any parent of one, under which the pointer stays absolute;
+   * - a linked worktree, whose main worktree is a different checkout, not this worktree's tree.
+   *
+   * Nothing is said where host git fails too:
+   * - a `.git` naming a gitdir that git rejects ends git's search where it ends this one;
+   * - a `.git` that cannot be read or parsed is another check's to refuse (the filter's own guard,
+   *   `guard.rs`).
+   *
+   * This check never fails a launch.
    */
   enum NoGit:
     case Gitdir(named: String, resolved: Path, launchFrom: Option[Path])
@@ -379,9 +413,9 @@ object SandboxWorkspace:
     repositoryAt(workspaceRoot, os) match
       case Some(gitdir) if gitdir.reachable => None
       case Some(gitdir) => Some(NoGit.Gitdir(gitdir.named, gitdir.resolved, launchWithGit(workspaceRoot, homes, os)))
-      // A `.git` directory git rejects, or none at all, leaves it searching above, where the
-      // container cannot follow. A pointer file it rejects ends the search instead — here as at
-      // any ancestor the search would otherwise pass (searched).
+      // git keeps searching above a `.git` directory it rejects, or above no `.git` at all, and the
+      // container cannot follow git there. A pointer file git rejects ends the search instead, here
+      // as at any ancestor the search would otherwise pass (searched).
       case None if Files.isRegularFile(workspaceRoot.resolve(".git")) => None
       case None =>
         searched(workspaceRoot, os)
@@ -392,37 +426,40 @@ object SandboxWorkspace:
    * The repository rooted at a directory, as the host has it, and whether the container would
    * reach its Git directory with `base` as the workspace root it mounts.
    *
-   * A test of form, and deliberately not git's own discovery (`is_git_directory` in setup.c reads
-   * `HEAD`, `objects` and `refs`, the last two through a linked worktree's `commondir`): the
-   * gitdir must exist and hold a `HEAD`, the one entry every gitdir form has. Reproducing the
-   * rest would add exactness this does not need — what it decides is a warning and a suggested
-   * launch, never a refusal, and host git states the authoritative failure in its own words. The
-   * cost, in full: a `.git` git would reject and search past counts here, so a session under one
-   * hears nothing, and such a directory can be the launch named.
+   * The test checks form and deliberately differs from git's own discovery: the gitdir must exist
+   * and hold a `HEAD`, the one entry every gitdir form has. git's `is_git_directory` reads `HEAD`,
+   * `objects` and `refs`, the last two through a linked worktree's `commondir` (setup.c).
+   * - Reproducing the rest would add exactness this test does not need. The test decides a warning
+   *   and a suggested launch, never a refusal, and host git states the authoritative failure in its
+   *   own words.
+   * - The full cost: a `.git` that git would reject and search past counts here. A session under
+   *   such a `.git` hears nothing, and the directory holding it can be the launch the warning names.
    */
   private def repositoryAt(dir: Path, os: Os): Option[Gitdir] = repositoryAt(dir, base = dir, os)
 
   private def repositoryAt(dir: Path, base: Path, os: Os): Option[Gitdir] =
     gitdirOf(dir, base, os).filter(gitdir => Files.exists(gitdir.resolved.resolve("HEAD")))
 
-  /** `named` is what `.git` names, as it is written, which is what the warning shows; `reachable`
-    * says the container can take every step there, which is what decides whether it has git. */
+  /** `named` is what `.git` names, as written, and the warning shows it. `reachable` says whether
+    * the container can take every step there, and it decides whether the session has git. */
   private case class Gitdir(named: String, resolved: Path, reachable: Boolean)
 
   /**
-   * Where `.git` leads: the OS follows a symlink when git opens the path, but a pointer file's
-   * relative `gitdir:` resolves against the directory holding the `.git` pathname — never the
-   * symlink's own — and what it names is a gitdir, never a second pointer file
-   * (`read_gitfile_gently`). So there are two steps at most, and one base for both.
+   * Where `.git` leads, in at most two steps from one base (`read_gitfile_gently`):
+   * - the OS follows a symlink when git opens the path;
+   * - a pointer file's relative `gitdir:` resolves against the directory holding the `.git`
+   *   pathname, never against the symlink's own directory;
+   * - a pointer file names a gitdir, never a second pointer file.
    *
-   * `reachable` is the container's side of those steps, and deliberately approximate: each must
-   * never climb above `base` — the directory that would be the workspace root — and must resolve
-   * inside it. The container has the workspace at its own path and nothing above or beside it, so a step
-   * that leaves the base and re-enters the host's path by name (`../foo/x` under `/root/foo`)
-   * leads nowhere there, and an absolute step is taken only where the container spells the base as
-   * the host does (mountPathOf) — never on Windows, whose `C:\...` the container has at
-   * `/mnt/c/...`; one through a symlinked component is judged where the host's link really
-   * resolves.
+   * `reachable` is the container's side of those steps, and it is deliberately approximate. Each
+   * step must never climb above `base`, the directory that would be the workspace root, and must
+   * resolve inside it.
+   * - The container has the workspace at its own path and nothing above or beside it. A step that
+   *   leaves the base and re-enters the host's path by name (`../foo/x` under `/root/foo`) leads
+   *   nowhere there.
+   * - An absolute step counts only where the container spells the base as the host does
+   *   (mountPathOf). Windows never qualifies, since the container has `C:\...` at `/mnt/c/...`.
+   * - A step through a symlinked component is judged where the host's link really resolves.
    */
   private def gitdirOf(dir: Path, base: Path, os: Os): Option[Gitdir] =
     val dotGit = dir.resolve(".git")
@@ -452,9 +489,11 @@ object SandboxWorkspace:
       Some(Gitdir(target, resolved, stays))
     catch case _: InvalidPathException => None
 
-  /** git's `read_gitfile_gently` (setup.c): a file of at most 1 MiB that begins `gitdir: ` — that
-    * spelling, at its start — and the rest of it, less trailing CR and LF, is the path. A file of
-    * another form is no pointer to git, and a later line naming a gitdir is not one either. */
+  /** A pointer file's path, read as git's `read_gitfile_gently` reads it (setup.c):
+    * - the file holds at most 1 MiB and begins with `gitdir: `, in that spelling;
+    * - the path is the rest of the file, less trailing CR and LF.
+    * A file of another form is no pointer to git, and a later line naming a gitdir is no pointer
+    * either. */
   private def gitfileTarget(gitfile: Path): Option[String] =
     boundedText(gitfile).flatMap: text =>
       Option
@@ -463,9 +502,9 @@ object SandboxWorkspace:
           body.substring(0, body.lastIndexWhere(char => char != '\n' && char != '\r') + 1)
         .filter(_.nonEmpty)
 
-  /** A metadata file of at most 1 MiB, or None for a larger or unreadable one. The bound is the
-    * read itself, one byte past it and no more, so a file of any size — or one growing while it is
-    * read — costs the launcher nothing. */
+  /** A metadata file of at most 1 MiB, or None for a larger or unreadable one. The bound applies to
+    * the read itself, which takes one byte past the bound and no more. A file of any size, or a file
+    * growing while it is read, therefore costs the launcher nothing. */
   private def boundedText(file: Path): Option[String] =
     val bound = 1 << 20
     try
@@ -475,31 +514,32 @@ object SandboxWorkspace:
 
   /**
    * The main worktree whose agent-state volume a launch from this linked worktree may share, or
-   * None. Read from the worktree's own Git metadata, never from a remote URL, as git's
-   * `get_main_worktree` (worktree.c) names it. Four conditions, each of which the metadata of a
-   * linked worktree of a main checkout meets:
+   * None. The answer comes from the worktree's own Git metadata, never from a remote URL, as git's
+   * `get_main_worktree` names the main worktree (worktree.c). The metadata of a linked worktree of a
+   * main checkout meets four conditions:
    *
-   *   - the gitdir its `.git` names holds a `commondir`, whose content, trimmed, resolves against
-   *     the gitdir (`git worktree add` writes `../..`; the filter's guard, `common_of` in guard.rs,
-   *     reads it the same way);
-   *   - what it names is a directory called `.git`, and the gitdir is one component under that
-   *     directory's `worktrees` (ko-agent-fs/policy/doc/git-metadata.md, P1);
-   *   - that directory's `config` is readable, and neither it nor the gitdir's `config.worktree`
-   *     sets `bare` true or leaves the question open (scanBare):
-   *       - git in a linked worktree reads `core.bare` from these two files and not from the main
+   *   - The gitdir that the worktree's `.git` names holds a `commondir`, whose trimmed content
+   *     resolves against the gitdir. `git worktree add` writes `../..`, and the filter's guard reads
+   *     the file the same way (`common_of` in guard.rs).
+   *   - The `commondir` names a directory called `.git`, and the gitdir is one component under that
+   *     directory's `worktrees` (ko-agent-fs/policy/doc/git-metadata.md, P1).
+   *   - That directory's `config` is readable, and neither that file nor the gitdir's
+   *     `config.worktree` sets `bare` true or leaves the question open (scanBare):
+   *       - git in a linked worktree reads `core.bare` from these two files, not from the main
    *         worktree's `config.worktree` (`do_git_config_sequence`, config.c);
    *       - the gitdir's file counts even without `extensions.worktreeConfig`, which git needs to
-   *         read it: git writes the file only while the extension is set and keeps it once unset;
-   *   - the directory holding that `.git`, resolved as a launch from it resolves it, is one the
-   *     launcher accepts as a workspace root.
+   *         read the file: git writes the file only while the extension is set, and keeps the file
+   *         once the extension is unset.
+   *   - The directory holding that `.git`, resolved as a launch from that directory resolves it, is
+   *     one the launcher accepts as a workspace root.
    *
    * A bare common gitdir, a main worktree with `--separate-git-dir`, and a missing, unreadable or
    * malformed `commondir` name no main worktree: the linked worktree's metadata does not say
    * where the main checkout is.
    *
-   * Spelled as resolveWorkspaceRoot spells a launch from it, so that workspaceIdOf names the volume
-   * that launch uses: any other spelling hashes to a different id and silently creates an empty
-   * volume under the main worktree's slug.
+   * The result is spelled as resolveWorkspaceRoot spells a launch from it, so that workspaceIdOf
+   * names the volume that launch uses. Any other spelling hashes to a different id and silently
+   * creates an empty volume under the main worktree's slug.
    */
   def mainWorktreeOf(workspaceRoot: Path, homes: HomeProtection, os: Os): Option[Path] =
     for
@@ -522,26 +562,35 @@ object SandboxWorkspace:
       if forbiddenWorkspaceRootReason(canonical, homes).isEmpty
     yield canonical
 
-  /** A metadata file that may be absent: Some(None) when it is, Some(text) when read, and None
-    * when it exists but cannot be read within boundedText's limit — a file whose content is
-    * unknown, which is not one that says nothing. */
+  /** A metadata file that may be absent: Some(None) when it is absent, Some(Some(text)) when read,
+    * and None when it exists but cannot be read within boundedText's limit. A file whose content is
+    * unknown differs from a file that says nothing. */
   private def optionalText(file: Path): Option[Option[String]] =
     if !Files.exists(file) then Some(None) else boundedText(file).map(Some(_))
 
   /**
-   * Whether a config file sets `bare` true — Some(true) — or does not — Some(false) — or leaves
-   * the question open — None. A scanner in the manner of the guard's `scan_hooks_path`, not a git
-   * config parser, and conservative in the same direction: every doubt resolves to None, and the
-   * caller then names no main worktree. It reads git's syntax as git's `git_parse_source` does
-   * where the forms occur in a repository's own config: a leading BOM is skipped; `#` and `;`
-   * begin a comment outside double quotes; a backslash escapes the character after it; a
-   * variable may follow one or more section headers on its line (`[core] bare = true`), whose
-   * quoted subsection may hold `]`; a quoted value is read without its quotes; a key without `=`
-   * is true, and one with an empty value is false (`git_parse_maybe_bool_text`, parse.c).
-   * Sections are otherwise not tracked, so any section's `bare` counts. A `path` key — which
-   * under `include` or `includeIf` names a file this scanner does not follow — is a doubt, as an
-   * unclosed quote, an unclosed section header, a key that is no git variable name and a `bare`
-   * value git would not read as a boolean are.
+   * Whether a config file sets `bare` true (Some(true)), does not (Some(false)), or leaves the
+   * question open (None).
+   *
+   * This method is a scanner in the manner of the guard's `scan_hooks_path`, not a git config
+   * parser. The scanner is conservative in the same direction: every doubt resolves to None, and
+   * the caller then names no main worktree. The scanner reads the forms that occur in a
+   * repository's own config as git's `git_parse_source` reads them:
+   * - a leading BOM is skipped;
+   * - `#` and `;` begin a comment outside double quotes;
+   * - a backslash escapes the character after it;
+   * - a variable may follow one or more section headers on its line (`[core] bare = true`), and a
+   *   header's quoted subsection may hold `]`;
+   * - a quoted value is read without its quotes;
+   * - a key without `=` is true, and a key with an empty value is false
+   *   (`git_parse_maybe_bool_text`, parse.c).
+   *
+   * Sections are otherwise not tracked, so any section's `bare` counts. These forms are doubts:
+   * - a `path` key, which under `include` or `includeIf` names a file this scanner does not follow;
+   * - an unclosed quote;
+   * - an unclosed section header;
+   * - a key that is no git variable name;
+   * - a `bare` value that git would not read as a boolean.
    */
   def scanBare(config: String): Option[Boolean] =
     scanSettings(config).flatMap: settings =>
@@ -571,12 +620,13 @@ object SandboxWorkspace:
         if parsed.contains(None) then None else Some(parsed.flatten)
 
   /**
-   * Whether the common gitdir's config names `relativeWorktrees` — the extension `git worktree
-   * add --relative-paths` sets (git 2.48 or later) — or cannot be read. The image's git does not
-   * know the extension and refuses the whole repository over it, so a bind would promise git the
-   * session does not have. Read as scanBare reads `bare`, in any section, and a doubt counts as
-   * set. Goes with the image's git upgrade (doc/TODO.md, "a linked worktree's absolute pointer
-   * on Windows").
+   * Whether the common gitdir's config names `relativeWorktrees`, or cannot be read.
+   * `git worktree add --relative-paths` sets that extension (git 2.48 or later).
+   * - The image's git does not know the extension and refuses the whole repository over it, so a
+   *   bind would promise git that the session does not have.
+   * - The config is read as scanBare reads `bare`, in any section, and a doubt counts as set.
+   * - This check goes with the image's git upgrade (doc/TODO.md, "Deferred — a linked worktree's
+   *   absolute pointer on Windows").
    */
   def setsRelativeWorktrees(commonGitdir: Path): Boolean =
     boundedText(commonGitdir.resolve("config")).flatMap(scanSettings).forall(_.exists(_._1 == "relativeworktrees"))
@@ -625,21 +675,23 @@ object SandboxWorkspace:
   private val BareFalse = Set("false", "no", "off", "0", "")
 
   /** The nearest directory holding the workspace from which the repository git uses there is
-    * reachable — judged on that repository's own `.git` chain, never on the candidate's: a parent
-    * whose own `.git` is fine holds a nested absolute pointer exactly as absolute as before, and a
-    * parent with no repository of its own still serves a pointer into a sibling. A directory the
-    * launcher would refuse as the workspace root (forbiddenWorkspaceRootReason) is passed over, not stopped
-    * at: it is no launch at all, and what lies above it may still be one. */
+    * reachable.
+    * - The method judges that repository's own `.git` chain, never the candidate's. A parent whose
+    *   own `.git` is fine leaves a nested absolute pointer as absolute as before, and a parent with
+    *   no repository of its own still serves a pointer into a sibling.
+    * - A directory the launcher would refuse as the workspace root (forbiddenWorkspaceRootReason) is
+    *   passed over, not stopped at: it is no launch at all, and a directory above it may still be
+    *   one. */
   private def launchWithGit(repository: Path, homes: HomeProtection, os: Os): Option[Path] =
     (Iterator(repository.toAbsolutePath.normalize) ++ ancestors(repository))
       .filter(base => forbiddenWorkspaceRootReason(base, homes).isEmpty)
       .find(base => repositoryAt(repository, base, os).exists(_.reachable))
 
-  /** The ancestors host git's search from this directory reaches: a `.git` file it rejects is a
-    * failure there, not a step passed over, so the search — and every answer drawn from it — ends
-    * at that directory (`setup_git_directory_gently_1`). A repository whose Git directory the
-    * container cannot reach is not such a stop: git works there, and a launch above it still
-    * holds the workspace. */
+  /** The ancestors that host git's search from this directory reaches. A `.git` file that git
+    * rejects is a failure there, not a step passed over, so the search and every answer drawn from it
+    * end at that directory (`setup_git_directory_gently_1`). A repository whose Git directory the
+    * container cannot reach does not stop the search: git works there, and a launch above that
+    * repository still holds the workspace. */
   private def searched(workspaceRoot: Path, os: Os): Iterator[Path] =
     ancestors(workspaceRoot).takeWhile: dir =>
       repositoryAt(dir, os).isDefined || !Files.isRegularFile(dir.resolve(".git"))
@@ -651,7 +703,7 @@ object SandboxWorkspace:
   def noGitWarning(noGit: NoGit, os: Os = currentOs): String =
     val (cause, launchFrom) = noGit match
       case NoGit.Gitdir(named, resolved, launchFrom) =>
-        // A relative pointer or a symlink is quoted as written, with where it leads; an absolute
+        // A relative pointer or a symlink is quoted as written, with where it leads. An absolute
         // pointer is the path itself, shown as every other host path is.
         val isThePath =
           try Paths.get(named).isAbsolute && Paths.get(named).normalize == resolved
@@ -678,23 +730,27 @@ object SandboxWorkspace:
        |the work as uncommitted changes and tell the user, whose git runs on the host.""".stripMargin
 
   /**
-   * The main worktree's Git directory a launch from a linked worktree binds read-only into the
-   * container, at the path the container resolves the worktree's `.git` pointer to, so that git
-   * there reads the repository: `status`, `log` and `diff` work, and every write to the directory
-   * fails on the lock file it cannot create. None where the container could not follow the two
-   * steps git takes, the pointer and then the gitdir's `commondir`, to the target: a `.git`
-   * symlink, a form the filter's guard refuses at mount (guard.rs) and this bind does not serve;
-   * a pointer whose common gitdir is not `main`'s `.git`, checked rather than taken from the
-   * caller, since source and target must be one directory; an absolute step on Windows, where
-   * the container spells drives under /mnt; a relative step climbing past the drive root, which
-   * the two spellings resolve differently; an absolute `commondir` in another spelling than the
-   * pointer's, which the container has nothing at (git uses it as written, `get_common_dir_noenv`
-   * in setup.c); a target inside the workspace mount, or holding it, which the bind would cover; and
-   * a source or target with a `:`, which a `--volume` value cannot carry (mountPathOf).
+   * The main worktree's Git directory, which a launch from a linked worktree binds read-only into
+   * the container at the path the container resolves the worktree's `.git` pointer to. git there
+   * reads the repository: `status`, `log` and `diff` work, and every write to the directory fails on
+   * the lock file git cannot create.
    *
-   * The target is the pointer's own spelling of the common gitdir — through a symlink alias of the
-   * main worktree, the alias's — and the source the real directory, so the bind is where git
-   * looks and holds what it looks for.
+   * linkedGitdirBind returns None where the container could not follow git's two steps to the
+   * target, the pointer and then the gitdir's `commondir`:
+   * - a `.git` symlink, a form the filter's guard refuses at mount (guard.rs) and this bind does not
+   *   serve;
+   * - a pointer whose common gitdir is not `main`'s `.git`. The method checks this rather than
+   *   taking it from the caller, since source and target must be one directory;
+   * - an absolute step on Windows, where the container spells drives under /mnt;
+   * - a relative step that climbs past the drive root, which the two spellings resolve differently;
+   * - an absolute `commondir` in another spelling than the pointer's, at which the container has
+   *   nothing. git uses the value as written (`get_common_dir_noenv` in setup.c);
+   * - a target inside the workspace mount, or holding it, which the bind would cover;
+   * - a source or target with a `:`, which a `--volume` value cannot carry (mountPathOf).
+   *
+   * The target is the pointer's own spelling of the common gitdir; through a symlink alias of the
+   * main worktree, the target is the alias's spelling. The source is the real directory. The bind
+   * therefore sits where git looks and holds what git looks for.
    */
   final case class GitdirBind(source: Path, target: String)
 
@@ -718,9 +774,10 @@ object SandboxWorkspace:
     yield GitdirBind(source, target)
 
   /** Whether the container, resolving `step` from its own spelling of `from`, lands where the host
-    * does: an absolute step only where the container spells host paths as the host does, a relative
-    * one only while its `..` steps stay under the root, since a drive's root and `/mnt/<drive>` part
-    * above it. */
+    * does.
+    * - An absolute step lands there only where the container spells host paths as the host does.
+    * - A relative step lands there only while its `..` steps stay under the root, since a drive's
+    *   root and `/mnt/<drive>` diverge above it. */
   private def followable(step: Path, from: Path, os: Os): Boolean =
     if step.isAbsolute then mountPathOf(os, from).contains(from.toString)
     else step.getRoot == null && step.normalize.iterator.asScala.takeWhile(_.toString == "..").size <= from.getNameCount
@@ -740,16 +797,20 @@ object SandboxWorkspace:
        |user, whose git runs on the host.""".stripMargin
 
   /**
-   * Why .ko-agent-sandbox cannot serve as this workspace's boundary directory, or None. Checked in
-   * every workspace mode before the rules are read — the read is a host-side read either way. Refused
-   * forms: a symlink of the directory or of an entry (the host read would follow a link the
-   * repository controls to rules outside the workspace); anything that is not
-   * a directory; or an entry that is no configuration of this launcher's — only recognized
-   * configuration entries are accepted, so a typo'd `egres/` is a refused launch and not ignored
-   * config, the same rule each entry applies inside itself. The files inside egress/ and file/ are
-   * vetted where they are read (readBoundaryRuleFiles), and run-on-host/ where the launch and the
-   * host command supervisor read it (RunOnHostPrereqs.readProgramRules). An absent directory is empty
-   * configuration, never a directory to create.
+   * Why .ko-agent-sandbox cannot serve as this workspace's boundary directory, or None. The launcher
+   * checks the directory in every workspace mode before it reads the rules, because the read is a
+   * host-side read either way. Refused forms:
+   * - a symlink at the directory or at an entry, because the host read would follow a link the
+   *   repository controls to rules outside the workspace;
+   * - anything that is not a directory;
+   * - an entry that is no configuration of this launcher's. Only recognized configuration entries
+   *   are accepted, so a typo'd `egres/` refuses the launch instead of becoming ignored config. Each
+   *   entry applies the same rule inside itself.
+   *
+   * The files inside egress/ and file/ are vetted where they are read (readBoundaryRuleFiles).
+   * run-on-host/ is vetted where the launch and the host command supervisor read it
+   * (RunOnHostPrereqs.readProgramRules). An absent directory is empty configuration, never a
+   * directory to create.
    */
   def boundaryDirRefusal(boundaryDir: Path): Option[String] =
     def symlinkRefusal(path: Path): String =

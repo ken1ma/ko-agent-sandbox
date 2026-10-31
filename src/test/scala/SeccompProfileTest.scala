@@ -1,4 +1,4 @@
-// The seccomp profile of a --nesting=none session: what it takes from podman's default, what it
+// Tests the seccomp profile of a --nesting=none session: what it takes from podman's default, what it
 // adds, and how the build reads the default out of the podman host.
 
 package agentsandbox.launcher
@@ -78,7 +78,7 @@ class SeccompProfileTest extends munit.FunSuite:
       case ("syscalls", _) => "syscalls" -> Arr(expectedRules)
       case other           => other
     }))
-    // Rendered and read back, it is the same profile.
+    // Rendered and read back, the derived profile stays the same.
     assertEquals(JsonText.parse(JsonText.render(derived)), Right(derived))
 
   test("every refused syscall is decided by the launcher's rules alone, and no other syscall by them"):
@@ -126,7 +126,7 @@ class SeccompProfileTest extends munit.FunSuite:
     assertEquals(staleReason(Some(derived)), None)
     assertEquals(staleReason(None), Some("is not a JSON profile"))
     assert(staleReason(Some(Default)).exists(_.contains("lacks the rules")))
-    // An earlier build's profile: the namespace and mount rules without the attribute rule.
+    // An earlier build's profile has the namespace and mount rules without the attribute rule.
     val earlier = Obj(derived.asInstanceOf[Obj].fields.map {
       case ("syscalls", Arr(rules)) => "syscalls" -> Arr(rules.filterNot(_ == AddedRules(4)))
       case other                    => other

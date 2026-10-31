@@ -1,10 +1,14 @@
-// The BPF cgroup-LSM backend of ko-agent-fs/bpf/doc/architecture.md as the launcher drives it, on the podman
-// machines: the build and install of its binaries (ko-agent-fs/bpf/), the capability probe, the
-// launch's steps 1 to 3 ("Lifecycle": the attach cgroup, the controller, the read-back and the proof),
-// the teardown, the reconcile at every launcher start, and the labels and the launch lock by which
-// a launch is refused beside a live session of the other backend or socket setting ("The hooks",
-// `file_receive`). The filter's module, KoAgentFs.scala, is the model: the same install directory,
-// the same `podman machine ssh` channel, the same base64 transport for user-controlled values.
+// The BPF cgroup-LSM backend of ko-agent-fs/bpf/doc/architecture.md, as the launcher drives it on the podman
+// machines:
+// - the build and install of the backend's binaries (ko-agent-fs/bpf/);
+// - the capability probe;
+// - the launch's steps 1 to 3: the attach cgroup, the controller, the read-back and the proof ("Lifecycle");
+// - the teardown, and the reconcile at every launcher start;
+// - the labels and the launch lock, by which the launcher refuses a launch beside a live session of the
+//   other backend or socket setting ("The hooks", `file_receive`).
+//
+// The filter's module, KoAgentFs.scala, is the model: this file uses the same install directory, the same
+// `podman machine ssh` channel and the same base64 transport for user-controlled values.
 
 package agentsandbox.launcher
 
@@ -24,13 +28,13 @@ object KoAgentBpf:
   /** Where the backend is installed, relative to the machine user's home, beside the filter. */
   val InstallDir = s"$KoAgentFsInstallDir/bpf"
 
-  /** Where the sessions' links and programs are pinned, and the preloaded set ("Lifecycle"). */
+  /** Where the sessions' links and programs are pinned, and where the preloaded set is pinned ("Lifecycle"). */
   val PinRoot = "/sys/fs/bpf/ko-agent-bpf"
   val PreloadedPinDir = s"$PinRoot/preloaded"
 
-  /** A session's pin directory: bpffs refuses a name holding a `.` (`EPERM` at the lookup), and a
-    * container name carries the workspace directory's, so the dot becomes `_` here and in the
-    * controller's reconcile (`pin_name`); the session's record, cgroup and unit keep the name. */
+  /** A session's pin directory. bpffs refuses a name holding a `.` (`EPERM` at the lookup), and a
+    * container name carries the workspace directory's name. The dot therefore becomes `_` here and in
+    * the controller's reconcile (`pin_name`); the session's record, cgroup and unit keep the name. */
   def pinDir(session: String): String = s"$PinRoot/${session.replace('.', '_')}"
 
   /** The eight hooks of every session, and the ninth under `unix-socket` ("The hooks"). */
@@ -41,10 +45,10 @@ object KoAgentBpf:
   val ReceiveHook = "file_receive"
   def hooks(unixSocket: Boolean): Vector[String] = if unixSocket then Hooks :+ ReceiveHook else Hooks
 
-  /** Why a launch under the backend is refused for its nesting mode, or None: the first version runs
-    * under `--nesting=none` alone, since the other modes keep podman's default profile, under which
-    * a session mounts and creates user namespaces, routes the hooks do not judge yet ("Mounts",
-    * "Later versions"). */
+  /** Why a launch under the backend is refused for its nesting mode, or None. The first version runs
+    * under `--nesting=none` alone. The other modes keep podman's default profile, under which a
+    * session mounts and creates user namespaces, routes the hooks do not judge yet ("Mounts";
+    * doc/TODO.md, "The BPF backend's later versions"). */
   def nestingRefusal(settings: WorkspaceSettings, nesting: String): Option[String] =
     Option.when(settings.bpf && nesting != CommandLine.DefaultNestingMode)(
       s"error: --workspace=${settings.spelled} needs --nesting=none; under --nesting=$nesting the session can mount " +
@@ -52,7 +56,7 @@ object KoAgentBpf:
         "workspace's protections there (SECURITY.md, \"The BPF backend\")",
     )
 
-  /** The share types the suites measured; another refuses the launch ("The launcher's side"). */
+  /** The share types the suites measured. Any other share type refuses the launch ("The launcher's side"). */
   val MeasuredShareTypes: Set[String] = Set("virtiofs", "9p")
 
   // ---------------------------------------------------------------------------
@@ -63,10 +67,10 @@ object KoAgentBpf:
   val SettingsLabel = "ko-agent-sandbox.workspace"
   /** The persistent volume the container mounts. */
   val VolumeLabel = "ko-agent-sandbox.volume"
-  /** The raw mounts: the workspace tree and a linked worktree's main gitdir, each as `identity:base64(path)`,
-    * separated by spaces; the identity is `stat -c %d:%i` in the machine (identScript). */
+  /** The raw mounts: the workspace tree and a linked worktree's main gitdir, each as `identity:base64(path)`
+    * and separated by spaces. The identity is `stat -c %d:%i` in the machine (identScript). */
   val MountsLabel = "ko-agent-sandbox.raw-mounts"
-  /** The attach cgroup's path in the machine, for the reconcile; absent on a filter-backed session. */
+  /** The attach cgroup's path in the machine, for the reconcile. A filter-backed session has no such label. */
   val CgroupLabel = "ko-agent-sandbox.bpf-cgroup"
 
   final case class RawMount(path: String, identity: String):
@@ -92,8 +96,8 @@ object KoAgentBpf:
       s"--label=$MountsLabel=${mounts.map(_.encoded).mkString(" ")}",
     ) ++ cgroup.map(path => s"--label=$CgroupLabel=$path")
 
-  /** What a listed sandbox container says of itself; `settings` is None for a container of a launcher
-    * before the labels, which the comparison refuses beside. */
+  /** What a listed sandbox container says of itself. `settings` is None for a container of a launcher
+    * that predates the labels; refusalBeside says when a launch is refused beside such a container. */
   final case class LiveSession(
     name: String,
     settings: Option[WorkspaceSettings],
@@ -103,8 +107,8 @@ object KoAgentBpf:
   )
 
   /**
-   * The inspect format reading the four labels, one per line; a host argument, so free of double
-   * quotes (LauncherImages.labelTemplate).
+   * The inspect format that reads the four labels, one per line. The format is a host argument, so it
+   * is free of double quotes (LauncherImages.labelTemplate).
    */
   val LabelsFormat: String =
     Vector(SettingsLabel, VolumeLabel, MountsLabel, CgroupLabel)
@@ -123,14 +127,16 @@ object KoAgentBpf:
 
   /**
    * Why this launch is refused beside the live sessions, or None ("The hooks", `file_receive`).
-   * `reread` is each recorded path's identity in the machine now, None where the path is gone.
-   * Two sessions share when their volumes are equal, when a raw mount of each has the same
-   * identity, or when a path of one is the other's or lies below it; a session whose recorded path
-   * no longer names its recorded identity is refused beside, since a host rename happened in
-   * between and the paths cannot be compared. A container without the labels is an earlier
-   * launcher's, which ran the filter and no socket setting, and whose volume and mounts are
-   * unknown: refused beside a launch under any other backend or setting, and no concern to a
-   * filter launch, which it equals.
+   * `reread` gives each recorded path's identity in the machine now, or None where the path is gone.
+   * - A live session under another backend or socket setting refuses the launch when the two sessions
+   *   share. Two sessions share when their volumes are equal, when a raw mount of each has the same
+   *   identity, or when a path of one is the other's path or lies below it.
+   * - Such a session also refuses the launch when its recorded path no longer names its recorded
+   *   identity. A host rename happened in between, and the paths cannot be compared.
+   * - A container without the labels belongs to an earlier launcher, which ran the filter and no
+   *   socket setting, and whose volume and mounts are unknown. A launch under any other backend or
+   *   setting is refused beside such a container. A filter launch equals the container's settings
+   *   and need not consider it.
    */
   def refusalBeside(
     mine: WorkspaceSettings,
@@ -181,7 +187,7 @@ object KoAgentBpf:
   val SourcePaths: Vector[String] = Vector("ko-agent-fs/bpf/policy.bpf.c", "ko-agent-fs/policy/include/records.h")
   val SourceDir = "ko-agent-fs/bpf"
 
-  /** The source id of the backend out of an unpacked context, over exactly what the Containerfile copies. */
+  /** The backend's source id out of an unpacked context, over exactly what the Containerfile copies. */
   def sourceId(context: Path): String =
     val dir = context.resolve(SourceDir)
     val own = Using.resource(Files.list(dir))(_.iterator().asScala.toVector)
@@ -190,16 +196,18 @@ object KoAgentBpf:
     val shared = SourcePaths.map(path => path -> Files.readAllBytes(context.resolve(path)))
     bundleSourceId(own ++ shared)
 
-  /** The same id out of the jar, for a launch's check of the installation: the directory's own files, not
-    * `test/host/`, the classifier's host build the self-test image compiles (its id is the self-test's). */
+  /** The same id out of the jar, for a launch's check of the installation. The id covers the directory's own
+    * files, not `test/host/`, the classifier's host build that the self-test image compiles; the self-test's
+    * id covers that build. */
   def bundledSourceId(): String =
     val own = bundleIndex()
       .filter(entry => entry.startsWith(s"$SourceDir/") && !entry.drop(SourceDir.length + 1).contains('/'))
       .map(entry => entry -> bundleResource(entry))
     bundleSourceId(own ++ SourcePaths.map(path => path -> bundleResource(path)))
 
-  /** The build, from the unpacked bundle's ko-agent-fs/ (ko-agent-fs/bpf/Containerfile has why): the compile
-    * stage under its cache tag, then the image the install extracts. `kernel` is the machine's. */
+  /** The build from the unpacked bundle's ko-agent-fs/ (ko-agent-fs/bpf/Containerfile explains why): the compile
+    * stage under its cache tag, then the image that the install extracts. `kernel` is the machine's kernel
+    * release. */
   def buildCommands(podman: String, kernel: String, sourceId: String): Vector[Vector[String]] =
     Vector(
       Vector(
@@ -214,23 +222,25 @@ object KoAgentBpf:
       ),
     )
 
-  /** `podman info`'s kernel: the machine's, since the server answers. */
+  /** `podman info`'s kernel, which is the machine's kernel, since the server answers. */
   def machineKernel(podman: String): String =
     val answered = run(podman, "info", "--format", "{{.Host.Kernel}}")
     if !answered.ok || answered.text.trim.isEmpty then
       fail(s"error: podman info did not answer the machine's kernel release\n${answered.err}")
     answered.text.trim
 
-  /** The pseudo filesystems the controller and the read-back need, mounted where the machine does
-    * not (the WSL machine mounts neither, "Environment evidence"). */
+  /** The pseudo filesystems that the controller and the read-back need, mounted where the machine does not
+    * mount them. The WSL machine mounts neither ("Environment evidence"). */
   val MountPseudoFilesystems: String =
     """sudo -n sh -c 'findmnt -n /sys/kernel/security >/dev/null || mount -t securityfs securityfs /sys/kernel/security
       |  findmnt -n /sys/fs/bpf >/dev/null || mount -t bpf bpf /sys/fs/bpf'""".stripMargin
 
   /**
-   * The install, in the machine: the image's /out into the install directory, the source id checked,
-   * the installed object's tags recorded under the running kernel ("Lifecycle", 3), and the preloaded
-   * set prepared afresh, since the one of an earlier build fails the tag check.
+   * The install, in the machine:
+   * - the image's /out goes into the install directory, and the script checks the source id;
+   * - the script records the installed object's tags under the running kernel ("Lifecycle", 3);
+   * - the script prepares the preloaded set afresh, since the set of an earlier build fails the tag
+   *   check.
    */
   def installScript(sourceId: String): String =
     withScriptPath(
@@ -259,8 +269,9 @@ object KoAgentBpf:
       lines.find(_.startsWith("preloaded ")).map(line => field("load_ms", line).getOrElse("?")).getOrElse("?")
     s"ko-agent-bpf installed: $tags programs verified; a program set for the next launch loaded in $preloaded ms"
 
-  /** Install the freshly built backend into the machine and preload a program set. Linux has no
-    * machine and keeps the filter ("Later versions"), so the caller does not come here. */
+  /** Installs the freshly built backend into the machine and preloads a program set. Linux has no machine
+    * and keeps the filter (doc/TODO.md, "The BPF backend's later versions"), so no caller calls this method
+    * on Linux. */
   def installKoAgentBpf(podman: String, os: Os, sourceId: String): Either[String, Unit] =
     val command = koAgentFsScriptCommand(podman, os, installScript(sourceId))
     echoCommand(command)
@@ -273,19 +284,22 @@ object KoAgentBpf:
       Right(())
 
   // ---------------------------------------------------------------------------
-  // The boot unit of the builds a839d14 and ee8793c (doc/TODO.md has when this code goes)
+  // The boot unit of the builds a839d14 and ee8793c
+  //
+  // doc/TODO.md says when this code goes ("The retired boot unit's removal").
   // ---------------------------------------------------------------------------
 
-  /** The unit those builds installed with the user's consent. It runs `controller prepare-spare`,
-    * which the controller no longer has, so it fails at every machine boot. */
+  /** The unit those builds installed with the user's consent. The unit runs `controller prepare-spare`,
+    * a command the controller lacks, so the unit fails at every machine boot. */
   val RetiredUnit = "ko-agent-bpf-spare.service"
   val RetiredUnitPath = s"/etc/systemd/system/$RetiredUnit"
   /** The SHA-256 of the unit's text as those builds wrote it, the machine user's home as `@HOME@`. */
   val RetiredUnitSha256 = "3eed605caf1ee3b8789331c809b715be3d350415194f09487830cba730b8df88"
 
-  /** Disables and deletes the unit while its text is the one those builds wrote, the launcher's own
-    * file; a changed text is no longer the launcher's to remove (SECURITY.md, "Silent changes to what
-    * you own"). Prints `removed`, `failed` or `changed`, and nothing where there is no unit. */
+  /** Disables and deletes the unit while its text is the one those builds wrote, which makes the unit the
+    * launcher's own file. A unit with changed text is not the launcher's to remove (SECURITY.md, "Silent
+    * changes to what you own"). The script prints `removed`, `failed` or `changed`, and nothing where
+    * there is no unit. */
   def retiredUnitScript(path: String = RetiredUnitPath): String =
     s"""set -u
        |[ -e $path ] || exit 0
@@ -359,7 +373,7 @@ object KoAgentBpf:
     }.toMap)
 
   /** The upgrade that brings the machine's kernel and podman forward, per provider (doc/TODO.md,
-    * "A stale podman machine OS"); the Windows machine's kernel is WSL's. */
+    * "A stale podman machine OS"). The Windows machine's kernel is WSL's. */
   def upgradeRemedy(os: Os): String =
     os match
       case Os.Windows => "update WSL, whose kernel the podman machine runs: `wsl --update`, then `wsl --shutdown`"
@@ -367,8 +381,8 @@ object KoAgentBpf:
 
   /**
    * What the machine lacks for the backend, each with what to do, or nothing. `bpfSourceId` and
-   * `fsSourceId` are this launcher's bundled builds: the installed backend and the guard must be
-   * them.
+   * `fsSourceId` name this launcher's bundled builds, which the installed backend and the guard must
+   * match.
    */
   def requirementFailures(facts: Facts, os: Os, bpfSourceId: String, fsSourceId: String): Vector[String] =
     val checks: Vector[(Boolean, String)] = kernelChecks(facts, os) ++ Vector(
@@ -416,8 +430,11 @@ object KoAgentBpf:
 
   /**
    * What keeps `--build` from building the backend on this machine: the kernel prerequisites and the
-   * kernel's BTF, which the compile reads. On any, the build skips the backend and the filter's build
-   * goes on, `fuse` being the default; on none, a failure of the backend's build fails the build.
+   * kernel's BTF, which the compile reads.
+   * - On any failure, the build skips the backend and the filter's build goes on, since `fuse` is the
+   *   default.
+   * - On none, the build tries the backend. A failure of the backend's build or install warns
+   *   (buildFailedNote) and does not fail the rest of the build.
    */
   def buildFailures(facts: Facts, os: Os): Vector[String] =
     (kernelChecks(facts, os) :+ (facts("btf") == "1", s"the machine's kernel has no BTF (/sys/kernel/btf/vmlinux), " +
@@ -450,7 +467,8 @@ object KoAgentBpf:
     if facts.manager == "systemd" then slice(session) else cgroupfsParent(facts.uid, session)
 
   /** The policy's flags: `short-names` on Windows, where the share is NTFS and a generated short name
-    * such as `VSCODE~1` is a second name of a guarded entry ("The policy"); `unix-socket` when set. */
+    * such as `VSCODE~1` is a second name of a guarded entry ("The policy"); `unix-socket` when that
+    * setting is on. */
   def policyFlags(settings: WorkspaceSettings, os: Os): String =
     val names = Vector(Option.when(os == Os.Windows)("short-names"), Option.when(settings.unixSocket)("unix-socket"))
       .flatten
@@ -460,18 +478,21 @@ object KoAgentBpf:
   val IdentMarker = "ident "
 
   /**
-   * Steps 1 to 3 of "Lifecycle" for one session, and the readings the labels need. Fixed text
-   * except the names (podman-safe by construction), with the backing path, the fixture root, the
-   * rule text and the other sessions' paths travelling base64-encoded. Each step prints a
-   * `step=<name>` line before it runs, so a failure names the step reached; the proof's mismatches
-   * end the script with status 4 after `rm` of the fixture's stamp, so the next launch lays the
-   * fixture out again ("Lifecycle", 3). The caller holds the launch lock across this script and its
-   * `podman create`: the reconcile of another launcher, under the same lock, would otherwise take
-   * the session's record without its container for an orphan's ("Lifecycle", 7). The file rules the
-   * guard resolved follow FileRules.ResolvedMarker; the identities of `backing`, the gitdir bind and
-   * the other sessions' recorded paths follow IdentMarker, `stat -c %d:%i` or `gone`. Once the proof
-   * passed, PlacementWatcher waits in the background for the session's container, whose name is
-   * `session`, and reports at `placement` (placementVerdict).
+   * Steps 1 to 3 of "Lifecycle" for one session, and the readings the labels need.
+   * - The script is fixed text except for the names, which are podman-safe by construction. The
+   *   backing path, the fixture root, the rule text and the other sessions' paths travel
+   *   base64-encoded.
+   * - Each step prints a `step=<name>` line before it runs, so a failure names the step reached.
+   * - A mismatch in the proof ends the script with status 4 after `rm` of the fixture's stamp, so the
+   *   next launch lays the fixture out again ("Lifecycle", 3).
+   * - The caller holds the launch lock across this script and its `podman create`. Otherwise the
+   *   reconcile of another launcher, under the same lock, would take the session's record without its
+   *   container for an orphan's ("Lifecycle", 7).
+   * - The file rules the guard resolved follow FileRules.ResolvedMarker.
+   * - The identities of `backing`, the gitdir bind and the other sessions' recorded paths follow
+   *   IdentMarker, each as `stat -c %d:%i` or `gone`.
+   * - Once the proof passed, PlacementWatcher waits in the background for the session's container,
+   *   whose name is `session`, and reports at `placement` (placementVerdict).
    */
   def launchScript(
     session: String,
@@ -495,7 +516,7 @@ object KoAgentBpf:
     val proofFlags = Vector(Option.when(settings.unixSocket)("--unix-socket"), Option.when(noRoot)("--no-root"))
       .flatten.mkString(" ")
     val recordsOption = if noRoot then "" else "--records \"$sess/records.bin\""
-    // A read-only session's proof expects every write refused, whatever the rules: an empty rule
+    // A read-only session's proof expects every write refused, whatever the rules, so an empty rule
     // file lays out the fixture's fixed entries alone.
     val proofRules = if noRoot then "\"$sess/proof-rules\"" else "\"$sess/records.bin\""
     val parent = cgroupParent(facts, session)
@@ -588,12 +609,14 @@ object KoAgentBpf:
   val PlacementPolls = 300
 
   /**
-   * Step 4's check of "Lifecycle": once the launcher's `podman init` has made the container, the
-   * cgroup of the process `State.Pid` names, `crun` waiting to start the command, as `/proc` gives
-   * it. `podman inspect`'s `State.CgroupPath` stays empty until the container runs (podman's
-   * `cGroupPath`), and `HostConfig.CgroupParent` is the request, not the placement. Reported, not
-   * judged: placementVerdict decides on the host. Written aside, then renamed, so the launcher never
-   * reads half a report. Arguments: the report's path and the container's name.
+   * Step 4's check of "Lifecycle". Once the launcher's `podman init` has made the container, the
+   * watcher reads the cgroup of the process that `State.Pid` names, `crun` waiting to start the
+   * command, as `/proc` gives it.
+   * - `podman inspect`'s `State.CgroupPath` stays empty until the container runs (podman's
+   *   `cGroupPath`), and `HostConfig.CgroupParent` is the request, not the placement.
+   * - The watcher reports and does not judge: placementVerdict decides on the host.
+   * - The watcher writes the report aside, then renames it, so the launcher never reads half a report.
+   * - Arguments: the report's path and the container's name.
    */
   val PlacementWatcher: String =
     s"""out=$$1 name=$$2 i=0 state=
@@ -645,9 +668,9 @@ object KoAgentBpf:
       case _ => Left(s"the machine's placement report is unreadable: ${report.trim}")
 
   /**
-   * Step 4's decision of "Lifecycle": the launcher's own `podman init` succeeded, then the watcher's
-   * report places the container below the attach cgroup. The report is not awaited after a failed
-   * init.
+   * Step 4's decision of "Lifecycle": the launcher's own `podman init` succeeded, and then the
+   * watcher's report places the container below the attach cgroup. After a failed init, the method
+   * does not await the report.
    */
   def confirmPlacement(initialized: Run, report: => Option[String], attachCgroup: String): Either[String, String] =
     if !initialized.ok then Left(s"could not initialize the sandbox container: ${initialized.err.trim}")
@@ -717,7 +740,7 @@ object KoAgentBpf:
     val how = if launched.preloaded then "the program set verified ahead" else "programs verified now"
     s"attached $hooksAttached hooks in $load ms from $how; read back in $verify ms; tested in $proof ms"
 
-  /** The run's log of the backend's steps, which `log dir` names; a failed write costs the line alone. */
+  /** The run's log of the backend's steps, which `log dir` names. A failed write loses only the line. */
   def appendLog(file: Path, line: String): Unit =
     try
       Files.writeString(
@@ -731,12 +754,13 @@ object KoAgentBpf:
   // ---------------------------------------------------------------------------
 
   /**
-   * Step 6 of "Lifecycle" for one session: the pins, the cgroup and the session's record, once
-   * podman's own answer says the container is gone (exit 1 of `container exists`, as the filter's
-   * reap prunes a marker). A container still there, or a podman that cannot answer, keeps all three:
-   * unpinning would detach the policy from a live session, and stopping the slice would end it;
-   * the reconcile at the next launch removes an orphan ("Lifecycle", 7). Each step after the
-   * check on its own, so one that fails costs none of the others.
+   * Step 6 of "Lifecycle" for one session: the script removes the pins, the cgroup and the session's
+   * record once podman's own answer says the container is gone. That answer is exit 1 of `container
+   * exists`, the answer on which the filter's reap prunes a marker.
+   * - A container still there, or a podman that cannot answer, keeps all three. Unpinning would
+   *   detach the policy from a live session, and stopping the slice would end the session. The
+   *   reconcile at the next launch removes an orphan ("Lifecycle", 7).
+   * - Each step after the check runs on its own, so a step that fails costs none of the others.
    */
   def teardownScript(session: String, manager: String): String =
     val cgroup =
@@ -759,16 +783,20 @@ object KoAgentBpf:
     )
 
   /**
-   * Step 7 of "Lifecycle": the recorded sessions beside podman's containers, then the controller
-   * decides, under the launch lock the caller holds. A session's record names its cgroup and the
-   * cgroup's identity; a container's label names the cgroup it was created under. A listing or a
-   * label that cannot be read tells the controller so, which then removes nothing. Under systemd a
-   * session without a container has its hold unit stopped first, so that the hold does not count
-   * as populated, and the slices the controller names are stopped after it. The preloaded set is
-   * kept while its tags are the installed object's, unpinned otherwise, and prepared in the
-   * background where there is none; a preparer's staging directory, `preloaded-<pid>`, is unpinned
-   * once that process is gone, as after a failed pin or a killed preparation. Every test of the pin
-   * root runs as root: the controller makes it 0700.
+   * Step 7 of "Lifecycle": the script sets the recorded sessions beside podman's containers, and the
+   * controller decides, under the launch lock the caller holds.
+   * - A session's record names its cgroup and the cgroup's identity. A container's label names the
+   *   cgroup the container was created under.
+   * - A listing or a label that cannot be read is reported to the controller, which then removes
+   *   nothing.
+   * - Under systemd, a session without a container has its hold unit stopped first, so that the hold
+   *   does not count as populated. The slices the controller names are stopped after the controller
+   *   runs.
+   * - The preloaded set is kept while its tags are the installed object's, and unpinned otherwise.
+   *   Where there is no preloaded set, the script prepares one in the background.
+   * - A preparer's staging directory, `preloaded-<pid>`, is unpinned once that process is gone, as
+   *   after a failed pin or a killed preparation.
+   * - Every test of the pin root runs as root, because the controller makes the pin root 0700.
    */
   def reconcileScript(manager: String): String =
     val release =

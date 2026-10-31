@@ -1,7 +1,8 @@
-# The curated catalog: what deny-unless-allowed allows on its own, the defaults beside the
-# model-provider rules in model-provider/. Every line is TLS-inspected and grants `read`, GET and
-# HEAD, plus the words written beside it; SECURITY.md, "Reading without being able to write", has
-# what each grant opens and what the inspection costs and buys.
+# The curated catalog: the hosts deny-unless-allowed allows on its own. These defaults sit beside the
+# model-provider rules in model-provider/.
+# Every host here is TLS-inspected. Each line grants `read`, which is GET and HEAD, plus the words written beside it.
+# SECURITY.md, "Reading without being able to write", has what each grant opens and what the inspection costs and
+# buys.
 #
 # Before adding a host, answer all five:
 # - why does an arbitrary workspace need it by default;
@@ -9,9 +10,9 @@
 # - does it expose an unauthenticated write endpoint;
 # - which grants do its operations call for;
 # - could it be workspace-specific (.ko-agent-sandbox/egress/rule) instead?
-# This list stays a small set of intentional data recipients; entries are added only for them.
+# This list stays a small set of intentional data recipients: add an entry only for such a recipient.
 
-# git repositories: clone and pull are fetch, a POST to .../git-upload-pack, hence git-fetch
+# git repositories: clone and pull fetch with a POST to .../git-upload-pack, which needs git-fetch
 allow https://github.com/   read git-fetch
 allow https://codeberg.org/ read git-fetch
 allow https://gitlab.com/   read git-fetch
@@ -23,7 +24,7 @@ allow https://codeload.github.com/                  read  # archive downloads (t
 allow https://api.github.com/                       read  # REST reads: issues, PRs, releases
 allow https://release-assets.githubusercontent.com/ read  # release downloads
 allow https://media.githubusercontent.com/          read  # direct LFS media URLs
-allow https://ghcr.io/                              read  # container registry; issues token too
+allow https://ghcr.io/                              read  # container registry; also issues the token
 allow https://pkg-containers.githubusercontent.com/ read  # ghcr.io's blob CDN
 
 # agent docs
@@ -35,17 +36,18 @@ allow https://www.antigravity.google/ read  # agy: 2026-08: agy docs alias
 allow https://kiro.dev/               read  # kiro-cli
 allow https://docs.github.com/        read  # copilot
 
-# opencode: the docs, and the model catalog it refreshes hourly, from a copy built into the binary.
-# opencode.ai also serves the Zen model API and the console sign-in, both writes, which `read`
-# refuses; default rules tunneling Zen's host would require removing this inspected grant.
+# opencode: the docs, and the model catalog. opencode starts from a copy of the catalog built into its binary and
+# refreshes the catalog hourly.
+# opencode.ai also serves the Zen model API and the console sign-in. Both are writes, which `read` refuses. Default
+# rules that tunnel Zen's host would have to remove this inspected grant.
 allow https://opencode.ai/            read
 allow https://models.opencode.ai/     read
 
 allow https://pi.dev/                 read  # pi
 
-# VS Code: the image's `code` CLI fetches the server release for `code agent host`, at first start
-# and on updates: a GET of the update service's /commit:<commit>/server-linux-<arch>/stable,
-# redirected to the CDN. Two more `read` recipients.
+# VS Code: the image's `code` CLI fetches the server release for `code agent host` at first start and on updates.
+# The CLI sends a GET for /commit:<commit>/server-linux-<arch>/stable to the update service, which redirects to the
+# CDN. Both hosts are `read` recipients.
 allow https://update.code.visualstudio.com/       read  # update service
 allow https://vscode.download.prss.microsoft.com/ read  # CDN
 
@@ -56,7 +58,7 @@ allow https://www.iana.org/         read  # protocol registries referenced by sp
 
 allow https://developer.mozilla.org/    read  # HTTP / HTML / CSS / JavaScript / Web APIs
 allow https://www.w3.org/               read  # W3C standards and drafts
-# WHATWG specs are per-spec subdomains
+# WHATWG serves each spec from its own subdomain
 #allow https://html.spec.whatwg.org/    read  # HTML
 #allow https://dom.spec.whatwg.org/     read  # DOM
 #allow https://fetch.spec.whatwg.org/   read  # Fetch
@@ -65,8 +67,8 @@ allow https://www.w3.org/               read  # W3C standards and drafts
 #allow https://drafts.csswg.org/        read  # CSS drafts
 
 # specs
-# www.unicode.org holds the UAX reports, charts and Public/ data; its root page redirects to
-# home.unicode.org, the non-technical site, which is not allowed
+# www.unicode.org holds the UAX reports, charts and Public/ data. Its root page redirects to home.unicode.org, the
+# non-technical site, which this catalog does not allow.
 allow https://www.unicode.org/     read
 allow https://semver.org/          read  # Semantic Versioning
 allow https://spec.commonmark.org/ read  # CommonMark / Markdown
@@ -100,7 +102,7 @@ allow https://docs.gradle.org/              read
 allow https://services.gradle.org/          read  # gradle/wrapper distributions
 allow https://plugins.gradle.org/           read  # redirects to plugins-artifacts
 allow https://plugins-artifacts.gradle.org/ read  # https://plugins.gradle.org/docs/mirroring
-# api.adoptium.net (`cs java` fetching an extra JDK) is not needed: the image bakes its Temurin in
+# api.adoptium.net, which `cs java` reads to fetch an extra JDK, is not needed: the image bakes in its Temurin
 
 # Java docs / artifact
 allow https://openjdk.org/      read  # JEPs
@@ -128,7 +130,7 @@ allow https://hibernate.org/       read
 allow https://projectreactor.io/   read  # used by Spring WebFlux and Reactor Netty
 allow https://docs.micrometer.io/  read
 allow https://docs.junit.org/      read
-#allow https://fasterxml.com/      read  # jackson: github is authoritative now
+#allow https://fasterxml.com/      read  # jackson: github is authoritative
 
 # mobile
 allow https://developer.android.com/ read
@@ -137,13 +139,13 @@ allow https://developer.apple.com/   read
 allow https://swift.org/             read  # redirects to www
 allow https://www.swift.org/         read
 allow https://docs.swift.org/        read  # swift lang, libs, programs, and platform docs
-# mobile references only; builds stay outside — no Android SDK in the image (dl.google.com absent),
-# and Xcode needs macOS
+# mobile references only. Mobile builds stay outside the sandbox: the image has no Android SDK, the catalog has no
+# dl.google.com, and Xcode needs macOS.
 
 # JavaScript
 allow https://nodejs.org/             read  # the runtime's dist/ downloads
 allow https://www.typescriptlang.org/ read
-# package registry; the audit POST is doc/egress-rule-example/npm-audit/rule
+# package registry; doc/egress-rule-example/npm-audit/rule adds the audit POST
 allow https://registry.npmjs.org/     read  # package metadata and tarballs
 allow https://docs.npmjs.com/         read
 
@@ -163,9 +165,9 @@ allow https://index.crates.io/   read  # cargo's sparse registry index
 allow https://static.crates.io/  read  # crate downloads
 
 # Go
-allow https://go.dev/     read  # the toolchain download redirects to dl.google.com, absent
+allow https://go.dev/     read  # the toolchain download redirects to dl.google.com, which is absent
 allow https://pkg.go.dev/ read  # every module's API
-# the Go toolchain waits on an image block plus proxy.golang.org
+# No Go toolchain yet: one needs a Go block in the sandbox Containerfile and an allow line for proxy.golang.org.
 
 # DB
 allow https://www.postgresql.org/ read
@@ -189,20 +191,20 @@ allow https://learn.microsoft.com/   read  # Azure
 # infrastructure as code: the docs
 # doc/egress-rule-example/pulumi-*/rule show what `pulumi up` needs on each backend and region.
 allow https://www.pulumi.com/          read
-# the CLI's update check, sent before every command whatever the backend;
+# the CLI sends its update check before every command, whatever the backend;
 # --env=PULUMI_SKIP_UPDATE_CHECK=true stops the request instead
 allow https://api.pulumi.com/api/cli/version read
 # provider docs / registry metadata; provider downloads are not in the defaults
 allow https://registry.terraform.io/   read
 allow https://developer.hashicorp.com/ read
 
-# container-image pulls, for nested sessions (--nesting=same-uid). The CDN hosts are
-# convention, not contract: when a provider moves one, pulls stall and the log names the successor.
+# container-image pulls, for nested sessions (--nesting=same-uid). The CDN hosts are convention, not contract: when a
+# provider moves a CDN host, pulls stall and the log names the successor.
 allow https://registry-1.docker.io/             read  # Docker Hub API
 allow https://auth.docker.io/                   read  # token issuer; anonymous pulls need it too
 # blob CDN, https://docs.docker.com/docker-hub/release-notes/#2026-05-20
 allow https://production.cloudfront.docker.com/ read  # blob CDN
-allow https://production.cloudflare.docker.com/ read  # no longer listed in https://docs.docker.com/desktop/setup/allow-list/
+allow https://production.cloudflare.docker.com/ read  # absent from https://docs.docker.com/desktop/setup/allow-list/
 # gcr.io (Artifact Registry) serves the blobs itself, so no storage.googleapis.com
 allow https://gcr.io/                           read  # distroless
 allow https://public.ecr.aws/                   read  # Amazon ECR Public Gallery: Amazon Linux

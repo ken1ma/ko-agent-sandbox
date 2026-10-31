@@ -70,7 +70,7 @@ class RunOnHostRuntimeDescriptorTest extends munit.FunSuite:
     )
     differing.foreach((what, other) => assertNotEquals(other, base, what))
     assertEquals(differing.values.toSet.size, differing.size, "each difference its own fingerprint")
-    // Framing: a field boundary moved leaves a different rendering.
+    // Framing: moving a boundary between two fields changes the rendering.
     assertNotEquals(
       fingerprint(inputs(forwards = Vector("AB" -> "C"))),
       fingerprint(inputs(forwards = Vector("A" -> "BC"))),

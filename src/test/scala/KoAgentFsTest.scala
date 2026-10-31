@@ -1,4 +1,4 @@
-// The workspace FUSE filter as the launcher drives it: source identity, install and consent
+// Tests the workspace FUSE filter as the launcher drives it: source identity, install and consent
 // commands, and the mount, unmount and reap scripts.
 
 package agentsandbox.launcher
@@ -24,8 +24,8 @@ class KoAgentFsTest extends munit.FunSuite:
     assert(script.startsWith("set -eu"), script)
     Vector("mkdir -p", "podman create --replace", "podman cp", "podman rm").foreach: step =>
       assert(script.contains(step), s"script missing '$step':\n$script")
-    // /etc/fuse.conf is the user's configuration: the install script itself must not touch it —
-    // that change goes through the consent prompt (ensureUserAllowOther), never silently.
+    // /etc/fuse.conf is the user's configuration, so the install script itself must not touch it.
+    // That change goes through the consent prompt (ensureUserAllowOther), never silently.
     assert(!script.contains("sudo"), script)
     // The host home must not leak into a script that runs in the VM user's home.
     assert(!script.contains("/Users/me"), script)
@@ -76,7 +76,8 @@ class KoAgentFsTest extends munit.FunSuite:
              |""".stripMargin,
         )
         binary.toFile.setExecutable(true)
-      // The machine's form finds the home as its working directory; native Linux is given it.
+      // The machine's form of the script finds the home as its working directory; native Linux gets the
+      // home passed in.
       def checks(knownHome: Option[String]): HostCommands.Run =
         val script = koAgentFsChecksScript(knownHome, "abc")
         val process = ProcessBuilder(koAgentFsScriptCommand("podman", Os.Linux, script)*)
@@ -117,7 +118,7 @@ class KoAgentFsTest extends munit.FunSuite:
       koAgentFsFuseConfCheckCommand("podman"),
       Vector("podman", "machine", "ssh", "grep -qx user_allow_other /etc/fuse.conf"),
     )
-    // The script run on consent is the same text shown to the user — no surprise delta.
+    // The script run on consent is the same text shown to the user, so the user meets no surprise.
     assertEquals(
       koAgentFsFuseConfEnableCommand("podman"),
       Vector("podman", "machine", "ssh", KoAgentFsFuseConfEnable),
@@ -131,8 +132,8 @@ class KoAgentFsTest extends munit.FunSuite:
   test("the mount script has the backing path only base64-encoded, and every lifecycle step"):
     val backing = "/Users/some one's ~dir/proj; rm -rf $HOME"
     val script = koAgentFsMountScript(backing, "app-abc123def456", "d" * 64, "run-container-1", "host-view /\n")
-    // The build check runs under the workspace lock and right before the daemon start; the
-    // image-build lock mountKoAgentFs holds around the whole script is what keeps a --build out.
+    // The build check runs under the workspace lock and right before the daemon start. The
+    // image-build lock that mountKoAgentFs holds around the whole script keeps a --build out.
     val check = script.indexOf(s"""*" source ${"d" * 64}") ;;""")
     assert(check > script.indexOf("flock 9"), script)
     assert(check < script.indexOf("nohup"), script)
@@ -153,7 +154,8 @@ class KoAgentFsTest extends munit.FunSuite:
       "d" * 64,
       // The user must not have to infer "reused" from silence.
       "echo \"reusing the existing mount\"",
-      // The previous daemon's log is the post-mortem after a crash: rotated, never deleted.
+      // The previous daemon's log is the post-mortem after a crash, so the script rotates the log and
+      // never deletes it.
       "mv -f \"$dir/daemon.log\" \"$dir/daemon.log.1\"",
     ).foreach(step => assert(script.contains(step), s"script missing '$step':\n$script"))
     val marker = script.indexOf(": > \"$dir/sessions/run-container-1\"")
@@ -163,17 +165,18 @@ class KoAgentFsTest extends munit.FunSuite:
     assert(script.contains("exec 9>\"$dir/lock\""), script)
     assert(marker < lock && lock < script.indexOf("if mountpoint -q"), script)
     assert(script.contains("9>&- >>\"$dir/daemon.log\""), script)
-    // PATH first (see below), then fail-fast before anything that can fail.
+    // PATH comes first (see below), then fail-fast before anything that can fail.
     assertEquals(script.linesIterator.drop(1).next(), "set -eu")
 
   test("the mount script joins a live mount only under the same file rules, and prints the resolved set"):
     val rules = "host-view /Users /private /var/folders\nread-only .vscode\n"
     val script = koAgentFsMountScript("/Users/u/proj", "app-abc123def456", "d" * 64, "run-container-1", rules)
     val encoded = java.util.Base64.getEncoder.encodeToString(rules.getBytes("UTF-8"))
-    // User-controlled, like the backing path: base64 only.
+    // The rules are user-controlled, like the backing path, so they travel only as base64.
     assert(!script.contains("read-only .vscode"), script)
     assert(script.contains(s"printf %s $encoded | base64 -d > \"$$dir/file-rules.new\""), script)
-    // Compared under the workspace lock, inside the reuse branch, before the launch joins.
+    // The script compares the rules under the workspace lock, inside the reuse branch, before the
+    // launch joins.
     val compare = script.indexOf("\"$(cat \"$dir/file-rules.new\")\" != \"$(cat \"$dir/file-rules\"")
     assert(compare > script.indexOf("flock 9"), script)
     assert(compare < script.indexOf("echo \"reusing the existing mount\""), script)
@@ -244,7 +247,7 @@ class KoAgentFsTest extends munit.FunSuite:
     val encoded = vm(3).stripPrefix("printf %s ").stripSuffix(" | base64 -d | sh")
     assertEquals(String(java.util.Base64.getDecoder.decode(encoded), "UTF-8"), script)
     assertEquals(koAgentFsScriptCommand("podman", Os.Windows, script), vm)
-    // /bin/sh, never a PATH-resolved `sh` (findOnPath).
+    // The command runs /bin/sh, never a PATH-resolved `sh` (findOnPath).
     assertEquals(
       koAgentFsScriptCommand("podman", Os.Linux, "script"),
       Vector("/bin/sh", "-c", "script"),
@@ -263,10 +266,10 @@ class KoAgentFsTest extends munit.FunSuite:
     assert(lock >= 0 && lock < script.indexOf(emptiness), script)
 
   /**
-   * Runs the reap script the way the reaper does — /bin/sh, `HOME` pointing at a scratch tree —
-   * and answers which markers survived. Nothing here needs podman, a container or a mount: the
-   * script takes its podman as an argument, so a stub exiting with `podmanExit` decides what
-   * `container exists` reports for every marker. Markers arrive as (name, age in seconds).
+   * Runs the reap script the way the reaper does, with /bin/sh and `HOME` pointing at a scratch
+   * tree, and answers which markers survived. Nothing here needs podman, a container or a mount.
+   * The script takes its podman as an argument, so a stub that exits with `podmanExit` decides
+   * what `container exists` reports for every marker. Markers arrive as (name, age in seconds).
    */
   private def survivingMarkers(podmanExit: Int, markers: Seq[(String, Long)]): Set[String] =
     val home = Files.createTempDirectory("ko-agent-fs-reap")
@@ -289,16 +292,16 @@ class KoAgentFsTest extends munit.FunSuite:
     finally deleteRecursively(home)
 
   test("a reap prunes every marker whose container does not exist, whatever its age"):
-    // A session creates its container before its marker is written, so a marker without one is a
-    // session that is gone — a launch in flight has a created container for `container exists` to
-    // answer for. Deterministic because the stub podman answers "no such container" for every
-    // marker.
+    // A session creates its container before its marker is written, so a marker without a container
+    // belongs to a session that is gone. A launch in flight has a created container for `container
+    // exists` to answer for. The test is deterministic because the stub podman answers "no such
+    // container" for every marker.
     assume(!isWindows, "the stub podman is a /bin/sh script")
     assertEquals(
       survivingMarkers(podmanExit = 1, Seq("fresh" -> 5L, "crashed" -> 3600L)),
       Set(),
     )
-    // Its own marker goes by name, and one whose container exists is never touched.
+    // The reap's own marker goes by name, and a marker whose container exists is never touched.
     assertEquals(
       survivingMarkers(podmanExit = 0, Seq("run-1" -> 5L, "live" -> 3600L)),
       Set("live"),
@@ -327,10 +330,10 @@ class KoAgentFsTest extends munit.FunSuite:
       Set("crashed"),
     )
 
-  /** Whether the reap asked to unmount: the script's fusermount3 is a stub that leaves a file
-    * behind, put first on the PATH the script exports for itself — the one edit made to the script
-    * text. `readable` false makes the sessions directory unlistable, the unknown-liveness edge,
-    * restored before the scratch tree is deleted. */
+  /** Whether the reap asked to unmount. The script's fusermount3 is a stub that leaves a file behind,
+    * put first on the PATH that the script exports for itself; this is the one edit made to the script
+    * text. `readable` false makes the sessions directory unlistable, which is the unknown-liveness
+    * edge; the test restores the directory before deleting the scratch tree. */
   private def unmountRequested(readable: Boolean, markers: Seq[String]): Boolean =
     val home = Files.createTempDirectory("ko-agent-fs-reap-unmount")
     val sessions = home.resolve(koAgentFsMountDir("app-abc123def456")).resolve("sessions")
@@ -374,7 +377,7 @@ class KoAgentFsTest extends munit.FunSuite:
     val onHost = koAgentFsReapScript(
       koAgentFsReapPodman("/usr/bin/podman", Os.Linux), "app-abc123def456", "run-container-1",
     )
-    // With the resolved path struck out, no executable line may mention podman; comments may.
+    // With the resolved path struck out, no executable line may mention podman, but comments may.
     assert(
       onHost.replace("/usr/bin/podman", "").linesIterator.forall: line =>
         line.trim.startsWith("#") || !line.contains("podman")
@@ -389,7 +392,7 @@ class KoAgentFsTest extends munit.FunSuite:
 
   test("the unmount scripts remove only their own state, print what they removed, and nothing else"):
     // A reset relays these lines. Nothing is mounted here, so fusermount3 fails for every directory
-    // and no "unmounted" line may appear: the state directory a resolve leaves is not a mount.
+    // and no "unmounted" line may appear: the state directory that a resolve leaves is not a mount.
     assume(!isWindows, "the scripts run under /bin/sh")
     val home = Files.createTempDirectory("ko-agent-fs-unmount")
     def unmount(script: String): (Int, String) =
@@ -411,7 +414,7 @@ class KoAgentFsTest extends munit.FunSuite:
       assert(!Files.exists(state.getParent) && Files.exists(kept))
       assertEquals(unmount(one), (0, ""))
 
-      // A dangling link is state too, and goes as a link.
+      // A dangling link is state too, and the script removes it as a link.
       val link = Files.createSymbolicLink(state.getParent, home.resolve("gone"))
       assertEquals(unmount(one), (0, s"removed $link"))
       assert(!Files.exists(link, java.nio.file.LinkOption.NOFOLLOW_LINKS))
@@ -421,15 +424,15 @@ class KoAgentFsTest extends munit.FunSuite:
     finally deleteRecursively(home)
 
   test("the bundled ko-agent-fs source id is computable from this classpath and well-formed"):
-    // The per-session check compares the installed binary's --version against this digest; it must
-    // agree with what --build stamps, which hashes the same entries under the same relative paths.
+    // The per-session check compares the installed binary's --version against this digest. The digest
+    // must agree with what --build stamps, which hashes the same entries under the same relative paths.
     val id = bundledKoAgentFsSourceId()
     assertEquals(id.length, 64)
     assert(id.forall(c => c.isDigit || ('a' to 'f').contains(c)))
     assertEquals(bundledKoAgentFsSourceId(), id)
 
-    // The decisive property: the jar-side digest equals the unpacked-context digest --build stamps.
-    // A skew here would fail every launch with "Run --build first" no matter how often it is run.
+    // The decisive property: the jar-side digest equals the unpacked-context digest that --build stamps.
+    // A skew here would fail every launch with "Run --build first", however often the user ran --build.
     val context = Files.createTempDirectory("bundled-id-check")
     try
       BundledBuildContext.resource("INDEX").linesIterator
@@ -450,7 +453,7 @@ class KoAgentFsTest extends munit.FunSuite:
         |  #user_allow_other
         |+ user_allow_other""".stripMargin
     )
-    // The commented-out line above is context, never a match: the check greps whole lines.
+    // The commented-out line above is context, never a match, because the check greps whole lines.
     assertEquals(
       fuseConfDiff(""),
       """  (/etc/fuse.conf does not exist yet; it will be created)
@@ -462,7 +465,7 @@ class KoAgentFsTest extends munit.FunSuite:
     val label = "ko-agent-fs filter on the host"
     assertEquals(unmountReport(label, ran(0, "")), Vector.empty)
     assertEquals(unmountReport(label, ran(0, "removed /m/a\n")), Vector(s"$label: removed /m/a"))
-    // The unmount went through; only what followed it failed, and the note must not deny it.
+    // The unmount went through and only what followed it failed, so the note must not deny the unmount.
     assertEquals(
       unmountReport(label, ran(1, "unmounted /m/a/workspace\n")),
       Vector(s"$label: unmounted /m/a/workspace", "note: the filter unmount script failed after the actions above"),
@@ -498,30 +501,31 @@ class KoAgentFsTest extends munit.FunSuite:
     assertEquals(id.length, 64)
     assert(id.forall(c => c.isDigit || ('a' to 'f').contains(c)))
 
-    // Bundling order is not identity, and neither is a comment in a syntax SourceDigest knows.
+    // Neither the bundling order nor a comment in a syntax that SourceDigest knows changes the identity.
     assertEquals(bundleSourceId(base.reverse), id)
     assertEquals(bundleSourceId(Seq("src/lib.rs" -> bytes("// The policy.\npub mod policy;"), base(1))), id)
     assertNotEquals(bundleSourceId(Seq("src/lib.rs" -> bytes("pub mod rules;"), base(1))), id)
-    // Content, a rename, and an added file each are.
+    // Content, a rename, and an added file each change the identity.
     assertNotEquals(bundleSourceId(Seq(base(0), "Cargo.toml" -> bytes("[patch]"))), id)
     assertNotEquals(bundleSourceId(Seq(base(0), "Cargo.lock" -> bytes("[package]"))), id)
     assertNotEquals(bundleSourceId(base :+ ("deny.toml" -> bytes(""))), id)
-    // File boundaries cannot shift: a name eating into its content is a different identity.
+    // File boundaries cannot shift: a name that eats into its content gives a different identity.
     assertNotEquals(
       bundleSourceId(Seq("ab" -> bytes("c"))),
       bundleSourceId(Seq("a" -> bytes("bc"))),
     )
 
   test("the ko-agent-fs source id of a build context digests exactly its files"):
-    // The Path overload must agree with the pure function, because the pure one is what the tests
-    // above check and the Path one is what --build actually runs.
+    // The Path overload must agree with the pure function, because the tests above check the pure
+    // function and --build runs the Path overload.
     val context = Files.createTempDirectory("ko-agent-fs-id-test")
     try
       val root = context.resolve("ko-agent-fs")
       Files.createDirectories(root.resolve("policy/src"))
       Files.write(root.resolve("policy/src/lib.rs"), "pub mod policy;".getBytes("UTF-8"))
       Files.write(root.resolve("Cargo.toml"), "[workspace]".getBytes("UTF-8"))
-      // A sibling image's files are not part of this identity, nor the BPF backend's beside the packages.
+      // A sibling image's files are not part of this identity, and neither are the BPF backend's files
+      // beside the packages.
       Files.createDirectories(context.resolve("ko-agent-sandbox"))
       Files.write(context.resolve("ko-agent-sandbox/Containerfile"), "FROM scratch".getBytes("UTF-8"))
       Files.createDirectories(root.resolve("bpf"))
@@ -546,9 +550,9 @@ class KoAgentFsTest extends munit.FunSuite:
     assertEquals(declared, ImageBuilds.SelfTestSetupExit)
 
   test("the rig's container script parses under the bash that runs it"):
-    // The script is inside rig.sh as a quoted heredoc and is executed only in the privileged
-    // container, so nothing else parses it. `sh -n` over rig.sh itself is no check — the heredoc
-    // makes the outer file parse whatever the inner text says.
+    // The script sits inside rig.sh as a quoted heredoc and runs only in the privileged container,
+    // so nothing else parses it. `sh -n` over rig.sh itself is no check, because the heredoc makes
+    // the outer file parse whatever the inner text says.
     assume(!isWindows, "no /bin/bash to parse with")
     val rig = Files.readString(Paths.get("ko-agent-fs/fuse/probe/rig.sh"))
     val body = """(?s)<<'INNER'\n(.*?)\nINNER\n""".r
@@ -576,23 +580,23 @@ class KoAgentFsTest extends munit.FunSuite:
     val cache = Files.createTempDirectory("ko-agent-fs-build-cache")
     val marker = cache.resolve(".ko-agent-cache-created")
     try
-      // No marker, as in a cache this script never ran on or one it was interrupted while emptying.
-      // The entries are what a cleanup left of a crate cargo never compiles: the two files cargo
-      // reads at every build.
+      // No marker, as in a cache that this script never ran on or was interrupted while emptying.
+      // The entries are what a cleanup left of a crate that cargo never compiles: the two files that
+      // cargo reads at every build.
       val crate = Files.createDirectories(cache.resolve("src/winapi-0.3.9/src")).getParent
       Files.writeString(crate.resolve("Cargo.toml"), "[package]")
       Files.writeString(crate.resolve(".cargo-ok"), "ok")
       expire(cache)
       assertEquals(entries(cache), Set(".ko-agent-cache-created"))
 
-      // A marker younger than systemd's ages: no cleanup has deleted from the cache.
+      // A marker younger than systemd's ages means that no cleanup has deleted from the cache.
       Files.writeString(cache.resolve("kept.rlib"), "")
       Files.setLastModifiedTime(marker, daysAgo(6))
       expire(cache)
       assertEquals(entries(cache), Set(".ko-agent-cache-created", "kept.rlib"))
       assert(Files.getLastModifiedTime(marker).compareTo(daysAgo(5)) < 0, "a kept cache's marker was rewritten")
 
-      // A marker a cleanup could have deleted, with whatever the cleanup left beside it.
+      // A marker that a cleanup could have deleted, with whatever the cleanup left beside it.
       Files.setLastModifiedTime(marker, daysAgo(8))
       expire(cache)
       assertEquals(entries(cache), Set(".ko-agent-cache-created"))
@@ -600,9 +604,10 @@ class KoAgentFsTest extends munit.FunSuite:
     finally deleteRecursively(cache)
 
   test("everything that compiles the filter derives its toolchain instead of repeating it"):
-    // probe/rig.sh reads the pin out of the Containerfile and the self-test image takes it as an
-    // ARG with no default (pinnedRustVersion has why). rig.sh is read from the checkout, since it
-    // is not bundled into the jar (as the SECURITY.md test does, and for the same reason).
+    // probe/rig.sh reads the pin out of the Containerfile, and the self-test image takes the pin as
+    // an ARG with no default (pinnedRustVersion gives the reason). The test reads rig.sh from the
+    // checkout, because rig.sh is not bundled into the jar; the SECURITY.md test does the same, for
+    // the same reason.
     val pinned = """(?m)^ARG RUST_VERSION=(\S+)$""".r
       .findFirstMatchIn(Files.readString(Paths.get("ko-agent-fs/Containerfile")))
       .map(_.group(1))

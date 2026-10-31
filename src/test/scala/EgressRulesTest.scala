@@ -1,4 +1,4 @@
-// The launcher's side of the egress proxy: rule normalization (what the proxy is handed), the
+// Tests the launcher's side of the egress proxy: rule normalization (what the proxy is handed), the
 // launch banner's format, command classification, and audit-log retention.
 
 package agentsandbox.launcher
@@ -56,7 +56,7 @@ class EgressRulesTest extends munit.FunSuite:
   private def summary(inspected: Int, tunnel: Int, widening: Int = 0): String =
     s"ruleset summary: $inspected inspected hosts; $tunnel tunnel hosts; $widening widening lines"
 
-  // The profile reads as the ruleset spells it; case is not emphasis (HostCommands, "Emphasis").
+  // The banner shows the profile as the ruleset spells it, because case is not emphasis (HostCommands, "Emphasis").
   test("the launch banner names the profile off the profile line and the counts off the summary line, never a host"):
     assertEquals(
       egressBanner(
@@ -92,7 +92,7 @@ class EgressRulesTest extends munit.FunSuite:
       egressBanner("egress profile: deny-all\n" + summary(0, 0), color = false),
       Right("egress: deny-all; 0 inspected, 0 tunnel"),
     )
-    // The options file's options name it after the part each states.
+    // Each source from the options file follows the part of the banner that its option states.
     assertEquals(
       egressBanner(
         "egress profile: deny-unless-allowed; model provider: anthropic,openai\n" + summary(9, 2),
@@ -100,7 +100,7 @@ class EgressRulesTest extends munit.FunSuite:
       ),
       Right("egress: deny-unless-allowed (from F); model providers anthropic, openai (from G); 9 inspected, 2 tunnel"),
     )
-    // Keep the banner concise by showing counts rather than the resolved host list.
+    // The banner stays concise by showing counts rather than the resolved host list.
     assert(
       !egressBanner(
         "egress profile: deny-all\nallow https://secret.example/ read\n" + summary(1, 0, 0),
@@ -151,7 +151,7 @@ class EgressRulesTest extends munit.FunSuite:
       ),
       Right(s"egress: ${on}deny-unless-allowed$off; ${on}no provider$off selected; 1 inspected, 0 tunnel"),
     )
-    // The counts are what the profile resolved to, not a mode of their own.
+    // The banner does not tint the counts: they are what the profile resolved to, not a mode of their own.
     assertEquals(
       egressBanner(
         "egress profile: deny-unless-model; model provider: anthropic\nallow https://a/ tunnel\n" + summary(0, 1),
@@ -159,7 +159,7 @@ class EgressRulesTest extends munit.FunSuite:
       ),
       Right(s"egress: ${on}deny-unless-model$off; model provider ${on}anthropic$off; 0 inspected, 1 tunnel"),
     )
-    // Where an option came from is not what was chosen.
+    // The banner does not tint where an option came from, because the source is not what the user chose.
     assertEquals(
       egressBanner(
         "egress profile: deny-unless-allowed; model provider: anthropic,openai\n" + summary(9, 2),
@@ -187,7 +187,7 @@ class EgressRulesTest extends munit.FunSuite:
     profiles.foreach: profile =>
       assertEquals(selectedProvider(Vector.empty, Some("claude"), profile), Right(Some("anthropic")))
       assertEquals(selectedProvider(Vector("aws"), Some("claude"), profile), Right(Some("anthropic,aws")))
-      // An options file's selection for another agent keeps agy's own provider, named once.
+      // An options file's selection for another agent keeps agy's own provider, and names that provider once.
       assertEquals(
         selectedProvider(Vector("anthropic", "openai"), Some("agy"), profile),
         Right(Some("google,anthropic,openai")),
@@ -205,7 +205,7 @@ class EgressRulesTest extends munit.FunSuite:
       val refused = selectedProvider(Vector.empty, Some("/opt/bin/opencode"), profile)
       assert(refused.swap.exists(_.startsWith("error: opencode has no fixed model provider")), refused.toString)
       assert(refused.swap.exists(_.contains("--model-provider=<names>")), refused.toString)
-    // deny-all admits nothing, so the option is refused there and opencode needs none.
+    // deny-all admits nothing, so the option is refused under deny-all and opencode needs no provider.
     assertEquals(selectedProvider(Vector.empty, Some("opencode"), "deny-all"), Right(None))
     assertEquals(selectedProvider(Vector.empty, Some("claude"), "deny-all"), Right(Some("anthropic")))
     assert(selectedProvider(Vector("aws"), Some("claude"), "deny-all").swap.exists(_.contains("deny-all")))
@@ -248,7 +248,7 @@ class EgressRulesTest extends munit.FunSuite:
     assert(readRuleFiles(dir).swap.exists(_.contains("not a rule file")))
     Files.delete(dir.resolve("rules"))
 
-    // The repository chose the stray's name, so what a terminal acts on is spelled out.
+    // The repository chose the stray's name, so the refusal escapes the characters that a terminal acts on.
     Files.writeString(dir.resolve("rule\u202e"), "allow https://ghcr.io/ read\n")
     val bidi = readRuleFiles(dir)
     assert(bidi.swap.exists(reason => reason.contains("rule\\u202e") && !reason.contains("\u202e")), bidi.toString)
@@ -262,11 +262,11 @@ class EgressRulesTest extends munit.FunSuite:
     assert(readRuleFiles(dir).swap.exists(_.contains("symlink")))
     Files.delete(dir.resolve("rule"))
 
-    // Bytes that are not UTF-8 are refused by name, not thrown.
+    // The reader refuses bytes that are not UTF-8 with the file's name, instead of throwing.
     Files.write(dir.resolve("rule"), Array[Byte](0xff.toByte))
     assert(readRuleFiles(dir).swap.exists(reason => reason.contains("rule") && reason.contains("not UTF-8")))
 
-    // A file with no rule line reads as absent: no EGRESS_RULE, no rule line printed.
+    // A file with no rule line reads as absent: the launcher sets no EGRESS_RULE and prints no rule line.
     Files.writeString(dir.resolve("rule"), "# only a comment\n")
     assertEquals(readRuleFiles(dir), Right(Vector.empty))
     Files.writeString(dir.resolve("rule"), "")
@@ -311,8 +311,8 @@ class EgressRulesTest extends munit.FunSuite:
     assert(inspectedHostsOf("allow https://pypi.org/ read").isLeft)
 
   test("the widening lines are the proxy's own line, and an image printing none reports none"):
-    // Which lines widen is the proxy's classification against the defaults it ships
-    // (AgentEgressProxyTest has the classes); the launcher only reads the line back.
+    // The proxy decides which lines widen, by classifying them against the defaults it ships
+    // (AgentEgressProxyTest has the classes). The launcher only reads the line back.
     assertEquals(
       wideningLines(
         "egress profile: deny-unless-allowed\nallow https://a/ read\n" + summary(1, 0, 2) + "\n" +
@@ -324,8 +324,8 @@ class EgressRulesTest extends munit.FunSuite:
       wideningLines("egress profile: deny-unless-allowed\nallow https://a/ read\n" + summary(1, 0, 0)),
       Vector.empty,
     )
-    // The consumers holding the ruleset alone get the text up to the first metadata line, whatever
-    // follows it, and unchanged when nothing does.
+    // Consumers that hold the ruleset alone get the text up to the first metadata line, whatever follows
+    // that line, and get the text unchanged when no metadata line follows.
     val ruleset = "egress profile: deny-unless-allowed\nallow https://a/ read"
     assertEquals(
       rulesetLinesOf(ruleset + "\n" + summary(1, 0, 1) + "\nwidening lines (1): allow https://a/ tunnel"),
@@ -354,7 +354,7 @@ class EgressRulesTest extends munit.FunSuite:
         "allow https://f.example/ read method=POST",
       ),
     )
-    // A host alone with its words, even when its line repeats, stays a rule line.
+    // A host alone with its words stays a rule line, even when the host's line repeats.
     assertEquals(
       groupedByHost(Vector("allow https://a.example/ read", "allow https://a.example/ read")),
       Vector("allow https://a.example/ read"),
@@ -401,7 +401,7 @@ class EgressRulesTest extends munit.FunSuite:
     )
 
   test("a host under several scopes names itself once for the leaf; the banner counts hosts, as the summary does"):
-    // The proxy prints one line per scope; the leaf names the host, and a host under two scopes
+    // The proxy prints one line per scope. The leaf names the host, and a host under two scopes
     // is one name.
     val resolution =
       "egress profile: deny-unless-allowed; model provider: anthropic\n" +
@@ -420,12 +420,12 @@ class EgressRulesTest extends munit.FunSuite:
       "run-20260812T110000Z-cccccccc",
       "run-20260811T100000Z-bbbbbbbb",
     )
-    // retain 2: the new directory plus the newest existing one survive.
+    // With retain 2, the new directory and the newest existing one survive.
     assertEquals(
       runLogDirsToPrune(names, 2, Set.empty),
       Seq("run-20260810T090000Z-aaaaaaaa", "run-20260811T100000Z-bbbbbbbb"),
     )
-    // Enough room already: nothing is pruned.
+    // With enough room already, nothing is pruned.
     assertEquals(runLogDirsToPrune(names, 4, Set.empty), Seq())
     assertEquals(runLogDirsToPrune(Vector(), 20, Set.empty), Seq())
 
@@ -435,17 +435,18 @@ class EgressRulesTest extends munit.FunSuite:
     )
     assertEquals(runLogDirsToPrune(names, 1, Set("aaaaaaaa", "bbbbbbbb", "cccccccc")), Seq())
 
-    // The suffix has to be the whole one: a run whose name is another's tail keeps nothing alive.
+    // The suffix must match whole: a run whose name is the tail of another run's name keeps nothing alive.
     assertEquals(
       runLogDirsToPrune(names, 2, Set("aaaaaaa")),
       Seq("run-20260810T090000Z-aaaaaaaa", "run-20260811T100000Z-bbbbbbbb"),
     )
 
-    // A name outside the run directories' pattern is not a run's, however old it sorts.
+    // A name outside the run directories' pattern belongs to no run, however old it sorts.
     val strays = Vector("run-20260810-090000-aaaaaaaa", "run-20260810T090000Z-AAAAAAAA", "notes.txt", "proxy.log")
     assertEquals(runLogDirsToPrune(strays ++ names, 2, Set.empty), runLogDirsToPrune(names, 2, Set.empty))
 
-    // The flat files of the layout before run directories go whatever the count, unless their run is live.
+    // Flat files in the layout that predates run directories are pruned whatever the count, unless their run
+    // is live.
     val flat = Vector(
       "proxy-20260812-110000-dddddddd.log",
       "proxy-20260812-110000-r123-proxy-sbt-0a-dddddddd.log",
@@ -463,7 +464,7 @@ class EgressRulesTest extends munit.FunSuite:
         files.foreach(file => Files.writeString(directory.resolve(file), file))
       run("run-20261005T080000Z-bbbbbbbb", "proxy.log", "proxy-r2.log", "run-on-host.log", "microphone.log")
       run("run-20261004T120000Z-aaaaaaaa", "proxy-sbt-0a-r1.log", "proxy.log", "proxy-r1-2.log", "proxy-r1.log")
-      // Not a run's: an old layout's flat file and a directory outside the pattern.
+      // These belong to no run: an old layout's flat file and a directory outside the pattern.
       Files.writeString(logDir.resolve("proxy-20261003-120000-cccccccc.log"), "old")
       run("run-elsewhere", "proxy.log")
       assertEquals(

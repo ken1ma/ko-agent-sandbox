@@ -1,6 +1,6 @@
 // The launcher's own text is ASCII (design.md, "The launcher's text is ASCII"). The check reads the
-// compiled classes rather than the sources: a comment never reaches them, and every literal does,
-// the scripts the launcher embeds and the egress proxy's text included.
+// compiled classes rather than the sources. The classes hold every literal and no comment, and the
+// literals include the scripts that the launcher embeds and the egress proxy's text.
 
 package agentsandbox.launcher
 
@@ -14,8 +14,8 @@ import java.util.jar.JarFile
 
 class AsciiTextTest extends munit.FunSuite:
 
-  /** Each class file compiled from the launcher's sources, by name; sbt may expose that output as
-    * a directory or a jar. */
+  /** Each class file compiled from the launcher's sources, by name. sbt exposes that output either as
+    * a directory or as a jar. */
   private def compiledClasses(): Vector[(String, Array[Byte])] =
     val built = Paths.get(AgentSandboxLauncher.getClass.getProtectionDomain.getCodeSource.getLocation.toURI)
     if Files.isDirectory(built) then
@@ -29,10 +29,10 @@ class AsciiTextTest extends munit.FunSuite:
           entry.getName -> Using.resource(jar.getInputStream(entry))(_.readAllBytes())
         .toVector
 
-  /** The non-ASCII sequences a class matches or writes into a script, which it never prints as
-    * text; a constant is checked with them removed, the longer first. */
+  /** The non-ASCII sequences that a class matches or writes into a script but never prints as text.
+    * The check removes them from each constant of that class, the longer sequences first. */
   private val Recognized: Map[String, Vector[String]] = Map(
-    // PowerShell takes these for its quotes, so a path holding one is quoted and escaped.
+    // PowerShell takes these characters for quotes, so the launcher quotes and escapes a path that holds one.
     "agentsandbox/launcher/HostCommands$.class" -> Vector("\u201c\u201d\u201e", "\u2018\u2019\u201a\u201b"),
     // The byte-order mark a config file may begin with.
     "agentsandbox/launcher/SandboxWorkspace$.class" -> Vector("\uFEFF"),

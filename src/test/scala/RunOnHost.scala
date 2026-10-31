@@ -1,18 +1,22 @@
-// The acceptance test's supervisor driver, EmitRunOnHostProfile's sibling: the RunOnHostSandbox supervisor with the
-// system-paths file as an argument, where the durable front-end — the launcher's --run-command-on-host action, behind
-// the channel — reads the bundled copy. src/probe/run-on-host-acceptance-test.sh is its caller.
+// The acceptance test's supervisor driver, a sibling of EmitRunOnHostProfile. The driver runs the RunOnHostSandbox
+// supervisor and takes the system-paths file as an argument. The durable front end, the launcher's
+// --run-command-on-host action behind the channel, reads the bundled copy of that file instead.
+// src/probe/run-on-host-acceptance-test.sh calls this driver.
 //
 //   java -cp <the classpath EmitRunOnHostProfile prints> \
 //     agentsandbox.launcher.RunOnHost <program> <workspace> [system-paths-file] -- <args...>
 //
-// The acceptance test runs that under the build lock the runner's lock holder takes (RunOnHostSession.lockedSpawn),
-// through perl's exec, so the pid its kill rows signal is the supervisor's: `--lock-script` prints
-// the perl script and `--build-lock <program> <workspace>` the lock file, for the acceptance test to compose.
+// The acceptance test runs that command through perl's exec, under the build lock that the runner's lock holder takes
+// (RunOnHostSession.lockedSpawn). The pid that the kill rows signal is therefore the supervisor's.
+// The acceptance test composes that command from two outputs of this driver:
+// - `--lock-script` prints the perl script.
+// - `--build-lock <program> <workspace>` prints the lock file.
 //
-// Plain java, never `sbt Test/runMain`: runMain would host this in the build's own JVM, whose
-// server holds the target workspace's portfile — the supervisor would end it (one server per build
-// directory) — and whose exit is sys.exit's.
-// Exits with the command's code; a refusal is 2, on stderr.
+// The acceptance test runs plain java, never `sbt Test/runMain`, for two reasons:
+// - runMain would host the supervisor in the build's own JVM. That JVM's server holds the target workspace's portfile,
+//   and the supervisor would end that server, since a build directory has one server.
+// - The driver's sys.exit would exit the build's JVM.
+// The driver exits with the command's exit code. A refusal exits with 2 and prints its reason on stderr.
 
 package agentsandbox.launcher
 

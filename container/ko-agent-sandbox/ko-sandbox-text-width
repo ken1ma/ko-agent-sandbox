@@ -43,8 +43,8 @@ import argparse
 import sys
 import unicodedata
 
-# The image keeps wcwidth outside site-packages so session installs cannot replace it; prefer
-# that copy over project dependencies. Outside the image, use the caller's installation.
+# The image keeps wcwidth outside site-packages, so session installs cannot replace it, and this script prefers that
+# copy over project dependencies. Outside the image, the script uses the caller's installation.
 sys.path.insert(0, "/opt/ko-sandbox/python")
 
 import wcwidth  # noqa: E402

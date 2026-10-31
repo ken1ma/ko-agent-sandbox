@@ -1,6 +1,9 @@
-// The runner's sbt server (run-on-host.md "sbt"): its command line from a client request, its start
-// under the server profile, and the user's own server holding the build directory's portfile, found
-// and shut down before the runner starts one. The shutdown's protocol is RunOnHostSbtServerShutdown.scala.
+// The runner's sbt server (run-on-host.md, "sbt"):
+//
+// - the server's command line, built from a client request;
+// - the server's start under the server profile;
+// - the user's own server that holds the build directory's portfile. The runner finds that server and shuts it down
+//   before the runner starts its own. RunOnHostSbtServerShutdown.scala speaks the shutdown's protocol.
 
 package agentsandbox.launcher
 
@@ -17,14 +20,16 @@ import FileHelper.realPath
 object RunOnHostSbtServer:
 
   /**
-   * The live server a build directory's portfile names, if any: SECURITY.md "Run on host"
-   * records the one-server rule it serves. A thin client attaches to whatever server the
-   * portfile names and then runs with that server's environment and confinement, so before the
-   * runner starts its own server, a live one here is ended (RunnerRuntimes.noForeignServer), and
-   * while the runner's runs, a live socket inside the runner's `tmp/` is that server. Live means
-   * connectable; a stale portfile is left for sbt, which replaces it. The socket here is wherever
-   * the portfile points, uncontained on purpose — the user's own server runs outside any
-   * sandbox — and the probe only connects and closes, writing nothing to what it reaches.
+   * The live server that a build directory's portfile names, if any. This method serves the one-server rule that
+   * SECURITY.md, "Run on host", records.
+   *
+   *   - A thin client attaches to whatever server the portfile names, and then runs with that server's environment
+   *     and confinement.
+   *   - Before the runner starts its own server, a live server found here is ended (RunnerRuntimes.noForeignServer).
+   *     While the runner's server runs, a live socket inside the runner's `tmp/` is that server.
+   *   - Live means connectable. A stale portfile is left for sbt, which replaces it.
+   *   - The socket is wherever the portfile points, uncontained on purpose: the user's own server runs outside any
+   *     sandbox. The probe only connects and closes, and writes nothing to what it reaches.
    */
   def livePortfileServer(buildDirectory: Path): Option[Path] =
     val portfile = buildDirectory.resolve("project").resolve("target").resolve("active.json")
@@ -50,20 +55,22 @@ object RunOnHostSbtServer:
 
   /**
    * Where the user's own sbt 2 keeps this build's server socket:
-   * `<serverDir>/<half SHA-1 hex of the portfile path's Path.toUri spelling>/sock`, with
-   * serverDir `$SBT_GLOBAL_SERVER_DIR`, else the global base versioned `/2`, then `/server`.
-   * Each input is taken as sbt takes it, because a divergence here is a divergence in what gets
-   * shut down: `SBT_GLOBAL_SERVER_DIR` verbatim, present-but-empty included
-   * (`CommandExchange.scala`), while the global base's own sources are trimmed and empty-filtered
-   * — `SBT_CONFIG_HOME`, else `XDG_CONFIG_HOME/sbt`, else `user.home/.config/sbt`
-   * (`SysProp.defaultGlobalBaseDirectory`). `user.home`, not `$HOME`: sbt reads the property, and
-   * the two can differ. `-Dsbt.global.base`, first in sbt's order, is set in the user's JVM and is
-   * invisible from this process, so a server launched with it derives elsewhere and is never
-   * found at this socket — the refusal below, not a wrong shutdown.
+   * `<serverDir>/<half SHA-1 hex of the portfile path's Path.toUri spelling>/sock`. serverDir is
+   * `$SBT_GLOBAL_SERVER_DIR`, or else the global base versioned `/2`, then `/server`.
+   *
+   * This method takes each input as sbt takes it, because a divergence here is a divergence in what gets shut down:
+   *
+   *   - `SBT_GLOBAL_SERVER_DIR` is taken verbatim, even when present but empty (`CommandExchange.scala`).
+   *   - The global base's own sources are trimmed and empty-filtered: `SBT_CONFIG_HOME`, else `XDG_CONFIG_HOME/sbt`,
+   *     else `user.home/.config/sbt` (`SysProp.defaultGlobalBaseDirectory`).
+   *   - The base uses `user.home`, not `$HOME`: sbt reads the property, and the two can differ.
+   *   - `-Dsbt.global.base` comes first in sbt's order, but it is set in the user's JVM and invisible from this
+   *     process. A server launched with it derives its socket elsewhere and is never found at this socket. The
+   *     result is the refusal in shutdownForeignServer, not a wrong shutdown.
    */
   def sbtServerSocket(buildDirectory: Path, env: String => Option[String], userHome: Path): Path =
-    // java.io.File joins throughout, as sbt's `/` does: an empty parent resolves against the
-    // root, where Path.resolve would keep the result relative.
+    // java.io.File joins throughout, as sbt's `/` does. An empty parent then resolves against the root, where
+    // Path.resolve would keep the result relative.
     def file(value: String) = java.io.File(value)
     extension (parent: java.io.File) def /(child: String) = java.io.File(parent, child)
     def trimmed(name: String): Option[java.io.File] =
@@ -79,29 +86,36 @@ object RunOnHostSbtServer:
     val serverDir = env("SBT_GLOBAL_SERVER_DIR").map(file).getOrElse(globalBase / "2" / "server")
     (serverDir / hash / "sock").toPath
 
-  /** A chain longer than this is a cycle or an attempt at one; either way, unanswerable. */
+  /** A chain longer than this is a cycle or an attempt at one. Either way, the walk cannot answer. */
   private val MaxSymlinkHops = 40
 
   /**
-   * Whether a path the supervisor is about to send to could have been planted by a command. The
-   * question is not where the path ends but whether resolving it ever *enters* somewhere a command
-   * writes: from the first component inside, the command chooses what every later component means,
-   * and a link there can send the rest anywhere — including straight back out, which is why the
-   * fully resolved endpoint answers nothing. So the walk follows one hop at a time, checking
-   * where each link *is located* before reading where it points, and answers yes the moment a step
-   * resolves into a writable root — the leaf included, since the socket itself may be the planted
-   * link. It stops at the first component absent even as a link: nothing exists beneath it, and
-   * creating it would need a write to the last resolved prefix, outside every writable root by
-   * then.
+   * Whether a command could have planted a path that the supervisor is about to send to.
    *
-   * The roots are the profile's writable set (`SeatbeltProfile.render`): the workspace, and the
-   * per-workspace caches that persist across sessions, so a socket an *earlier* agent's command
-   * planted in a cache is caught as well. Each is compared in both of its macOS spellings, the
-   * firmlink aliasing every containment check here shares
-   * (`SandboxWorkspace.withMacDataVolumeAliases`). A cache that does not resolve holds nothing and
-   * is skipped; the workspace is mandatory, so its silence, a relative target, and any unanswerable
-   * walk all count as reachable. A target already lexically inside a root is reachable whatever
-   * the filesystem currently shows, so that is answered before the walk begins.
+   * The question is not where the path ends, but whether resolving the path ever *enters* a place a command writes.
+   *
+   *   - From the first component inside such a place, the command chooses what every later component means. A link
+   *     there can send the rest anywhere, even straight back out. The fully resolved endpoint therefore answers
+   *     nothing.
+   *   - The walk therefore follows one hop at a time. The walk checks where each link *is located* before reading where
+   *     the link points.
+   *   - The walk answers yes as soon as a step resolves into a writable root. The leaf counts too, since the socket
+   *     itself may be the planted link.
+   *   - The walk stops at the first component that is absent even as a link. Nothing exists beneath that component,
+   *     and creating it would need a write to the last resolved prefix, which by then lies outside every writable
+   *     root.
+   *
+   * The roots are the profile's writable set (`SeatbeltProfile.render`):
+   *
+   *   - The roots are the workspace and the per-workspace caches that persist across sessions. The walk thus also
+   *     catches a socket that an *earlier* agent's command planted in a cache.
+   *   - Each root is compared in both of its macOS spellings. Every containment check here shares this firmlink
+   *     aliasing (`SandboxWorkspace.withMacDataVolumeAliases`).
+   *   - A cache that does not resolve holds nothing and is skipped.
+   *   - The workspace is mandatory. An unresolvable workspace, a relative target and any walk that cannot answer
+   *     therefore all count as reachable.
+   *   - A target already lexically inside a root is reachable whatever the filesystem currently shows. This method
+   *     answers that case before the walk begins.
    */
   def reachableThroughCommandWritable(target: Path, workspaceRoot: Path, caches: Seq[Path]): Boolean =
     realPath(workspaceRoot) match
@@ -132,7 +146,7 @@ object RunOnHostSbtServer:
                   hops += 1
                   if hops > MaxSymlinkHops then reachable = true
                   else
-                    // One hop only: its target's own components are walked, and checked, next.
+                    // One hop only: the walk checks the link target's own components next.
                     val link = Files.readSymbolicLink(step)
                     if link.isAbsolute then resolved = link.getRoot
                     pending = link.iterator.asScala.map(_.toString).toList ++ pending
@@ -141,14 +155,17 @@ object RunOnHostSbtServer:
           catch case _: IOException => true
 
   /**
-   * The user's own server, ended before the runner starts its own: a protocol shutdown, which
-   * the server runs after the exec it is on, so a build in flight there completes first. The
-   * socket the shutdown is sent to is derived from the build directory the way sbt derives it,
-   * never read from the portfile, and the portfile's word is only compared against it: workspace
-   * content must not choose where an unconfined write-and-parse goes. The derivation is
-   * authorization, so it is checked as well as computed — a derived socket the workspace could
-   * have planted is refused, since the workspace chooses its own content and would then be
-   * choosing the target. Every doubt falls back to the refusal, naming what stopped the shutdown.
+   * Ends the user's own server before the runner starts its own.
+   *
+   *   - The shutdown goes through the protocol. The server runs it after its current exec, so a build in flight there
+   *     completes first.
+   *   - This method derives the socket from the build directory the way sbt derives it, and never reads the socket
+   *     from the portfile. The portfile's socket is only compared against the derived one. Workspace content must
+   *     not choose where an unconfined write-and-parse goes.
+   *   - The derivation is an authorization, so this method checks it as well as computing it. This method refuses a
+   *     derived socket that the workspace could have planted: the workspace chooses its own content, so it would
+   *     then choose the target.
+   *   - Every doubt falls back to the refusal, which names what stopped the shutdown.
    */
   def shutdownForeignServer(
     workspaceRoot: Path,
@@ -174,7 +191,8 @@ object RunOnHostSbtServer:
       log(s"shutting down the sbt server at $derived: it holds the portfile of $buildDirectory")
       RunOnHostSbtServerShutdown.shutdown(derived, shutdownDeadlineMillis) match
         case ServerAnswer.Unanswered(reason) => refused(s"the shutdown went unanswered: $reason")
-        // Unreachable is the server gone between the liveness probe and now — the outcome sought.
+        // Unreachable means that the server went away between the liveness probe and now, which is the outcome
+        // sought.
         case ServerAnswer.ShutDown | ServerAnswer.Unreachable(_) =>
           val deadline = System.nanoTime + releaseDeadlineMillis * 1_000_000
           while livePortfileServer(buildDirectory).isDefined && System.nanoTime < deadline do
@@ -185,10 +203,11 @@ object RunOnHostSbtServer:
   private def samePath(a: Path, b: Path): Boolean =
     a == b || (try a.toRealPath() == b.toRealPath() catch case _: IOException => false)
 
-  // The thin client's own classes of launcher flag (NetworkClient.parseArgs, v2.0.9): a value
-  // flag takes the next argument or an `=` value; a no-value flag and an `=`-prefixed one are
-  // the client's own and reach no server; the empty-build flags are launcher flags even after
-  // the first command.
+  // The thin client's own classes of launcher flag (NetworkClient.parseArgs, v2.0.9):
+  //
+  // - A value flag takes the next argument or an `=` value.
+  // - A no-value flag and an `=`-prefixed flag belong to the client and reach no server.
+  // - The empty-build flags are launcher flags even after the first command.
   private val LauncherValueFlags = Set(
     "-mem", "--mem", "-jvm-debug", "--jvm-debug", "-sbt-jar", "--sbt-jar", "-sbt-cache", "--sbt-cache",
     "-sbt-version", "--sbt-version", "-java-home", "--java-home", "-ivy", "--ivy", "-sbt-boot", "--sbt-boot",
@@ -205,21 +224,24 @@ object RunOnHostSbtServer:
     Seq("--supershell=", "-supershell=", "--color=", "-color=", "--autostart=", "-autostart=")
   private val EmptyBuildFlags = Set("-allow-empty", "--allow-empty", "-sbt-create", "--sbt-create")
 
-  /** Flags naming a program to run — the JVM, the launcher jar, the runner script — which the
-    * profile's grants decide and no request may: the JDK is the launcher's, the script the
-    * validated one, and `sbt.script` is what a server forks later. */
+  /** Flags that name a program to run: the JVM, the launcher jar or the runner script. The profile's grants decide
+    * those programs, and no request may. The JDK is the launcher's, the script is the validated one, and
+    * `sbt.script` names what a server forks later. */
   private val ProgramFlags = Set("-java-home", "--java-home", "-sbt-jar", "--sbt-jar")
 
   /**
-   * The server command line as sbt's thin client issues it when it starts a server
-   * (NetworkClient.serverCommand, v1.13.0 and v2.0.9): the request's launcher flags as the client
-   * classifies them — its `-D` properties, its value flags with their values, the empty-build
-   * flags wherever they stand, and any other flag the client does not keep for itself — before
-   * `--detach-stdio --server`. As the client, it drops `-J`, which the runner applies to the JVM
-   * it starts, the client's; the no-value and `=`-form flags of the client's own; and the
-   * commands, which the client sends over the socket. Beyond the client it drops the program
-   * flags (ProgramFlags). `.sbtopts` and `.jvmopts` the script reads from the build directory as
-   * it always does.
+   * The server command line as sbt's thin client issues it when it starts a server (NetworkClient.serverCommand,
+   * v1.13.0 and v2.0.9).
+   *
+   *   - The request's launcher flags come before `--detach-stdio --server`, as the client classifies them: the `-D`
+   *     properties, the value flags with their values, the empty-build flags wherever they stand, and any other flag
+   *     the client does not keep for itself.
+   *   - Like the client, this method drops three kinds of argument:
+   *     - `-J`, which the runner applies to the JVM it starts, the client's JVM;
+   *     - the client's own no-value and `=`-form flags;
+   *     - the commands, which the client sends over the socket.
+   *   - Beyond the client, this method drops the program flags (ProgramFlags).
+   *   - The script reads `.sbtopts` and `.jvmopts` from the build directory as it always does.
    */
   def serverCommand(executable: Path, sbtGlobal: Path, arguments: Seq[String]): Seq[String] =
     val forwarded = Vector.newBuilder[String]
@@ -247,25 +269,28 @@ object RunOnHostSbtServer:
     sbtCommand(executable, sbtGlobal) ++ Seq(s"-Dsbt.script=$executable") ++
       forwarded.result() ++ Seq("--detach-stdio", "--server")
 
-  /** The socket sbt derives for a build directory's server under this session's `tmp/`: the
-    * server runs with `SBT_GLOBAL_SERVER_DIR` set to `tmp/`, so its portfile names
-    * `<tmp>/<SHA-1 of the portfile URI>/sock` (sbtServerSocket). The reuse and startup checks
-    * compare the portfile against this exact path, not merely "a socket under tmp/", so a
-    * portfile copied from another build directory never authorizes reuse or "up". */
+  /** The socket sbt derives for a build directory's server under this session's `tmp/`.
+    *
+    *   - The server runs with `SBT_GLOBAL_SERVER_DIR` set to `tmp/`, so its portfile names
+    *     `<tmp>/<SHA-1 of the portfile URI>/sock` (sbtServerSocket).
+    *   - The reuse and startup checks compare the portfile against this exact path, not merely against "a socket
+    *     under tmp/". A portfile copied from another build directory therefore never authorizes reuse or "up". */
   def expectedServerSocket(sessionTmp: Path, buildDirectory: Path): Path =
     val serverDir: String => Option[String] =
       name => Option.when(name == "SBT_GLOBAL_SERVER_DIR")(sessionTmp.toString)
     sbtServerSocket(buildDirectory, serverDir, Path.of("/"))
 
-  /** Where a server's output goes, stdout and stderr: in the session directory, which the profile
-    * grants no process, rather than under `tmp/`, where the server could replace the file with a
-    * link or a FIFO before the runner opens it for the next server; RunOnHostSandbox.appendSessionLogs keeps it
-    * there with the session's other logs. Appended to across the servers of one build directory. */
+  /** Where a server's stdout and stderr go.
+    *
+    *   - The file lies in the session directory, which the profile grants no process. Under `tmp/`, the server could
+    *     replace the file with a link or a FIFO before the runner opens it for the next server.
+    *   - RunOnHostSandbox.appendSessionLogs keeps the file there with the session's other logs.
+    *   - The servers of one build directory append to the same file. */
   def serverLog(session: Session, hash: String): Path = session.directory.resolve(s"${serverRecordName(hash)}.log")
 
-  /** The server (run-on-host.md "sbt") under the server profile, its output to serverLog and the
-    * runner's `tmp/` its temporary and socket directory. Up when the build directory's portfile
-    * names a connectable socket under that `tmp/`. */
+  /** Starts the server (run-on-host.md, "sbt") under the server profile. The server's output goes to serverLog, and
+    * the runner's `tmp/` is its temporary and socket directory. The server is up when the build directory's
+    * portfile names a connectable socket under that `tmp/`. */
   private[launcher] def startSbtServer(session: Session, start: RuntimeStart): Either[String, Unit] =
     val assembled = start.assembled
     val output = serverLog(session, start.hash)
@@ -288,7 +313,7 @@ object RunOnHostSbtServer:
     val watch = StartWatch(output, start.runtime.proxyLog)
     var result: Option[Either[String, Unit]] = None
     while result.isEmpty do
-      val leaderEnded = !leader.isAlive // read before the file: a leader dying after its rename still answers
+      val leaderEnded = !leader.isAlive // read before the file, so a leader that dies after its rename still answers
       if Files.exists(exit) then
         val status = try Files.readString(exit, UTF_8).trim catch case _: IOException => "?"
         result = Some(Left(s"the sbt server exited ($status) before publishing its portfile; $said"))

@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The Maven project the security acceptance test runs its mvn rows in: one module, one test, nothing to
-     build but the contract. Its wrapper is the only-script type, and the build's mvn is the Maven
-     that wrapper downloaded (RunOnHostPrereqs.mvnDistributionDir). -->
+<!-- The security acceptance test runs its mvn rows in this Maven project. The project has one module and one test.
+     Keep it limited to what the acceptance test's rows exercise.
+     - The wrapper is of the only-script type.
+     - The build's mvn is the Maven that the wrapper downloaded (RunOnHostPrereqs.mvnDistributionDir). -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">

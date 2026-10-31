@@ -192,7 +192,7 @@ pub fn fold(name: &[u8]) -> Vec<u8> {
 }
 
 /// The context of a directory the FUSE layer has identified as a gitdir root in its own right. The
-/// one position this core cannot derive from names ([`GitContext::ModuleNamespace`] has why), and
+/// one position this core cannot derive from names ([`GitContext::ModuleNamespace`] explains why), and
 /// so the one it is told.
 pub fn gitdir_root() -> GitContext {
     GitContext::InGit(Vec::new())

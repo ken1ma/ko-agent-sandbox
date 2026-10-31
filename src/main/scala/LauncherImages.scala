@@ -1,6 +1,8 @@
-// The images this launcher owns and the build context the jar bundles for them: what they are named,
-// how a built one is identified, which of them are still present, and which a newer build has
-// superseded.
+// The images this launcher owns, and the build context the jar bundles for them:
+// - what the images are named;
+// - how a built image is identified;
+// - which images are still present;
+// - which images a newer build has superseded.
 
 package agentsandbox.launcher
 
@@ -16,12 +18,12 @@ import FileHelper.{readIfPresent, writePrivate}
 object LauncherImages:
 
   /**
-   * The tag of the launcher-owned base images, passed to the images built on them as IMG_TAG_VER;
-   * leaf images stay on `latest` (buildCommands). It names the Debian and Temurin major versions
-   * alone, so it changes when one of them does, and the next build removes the bases under the
-   * previous tag (staleVersionedBaseImageTags). The full versions are in debian-temurin's
-   * Containerfile alone, which sets them as image labels; the "ImgTagVersion names" test fails when
-   * a major version there differs from the tag's.
+   * The tag of the launcher-owned base images, passed to the images built on them as IMG_TAG_VER.
+   * Leaf images stay on `latest` (buildCommands).
+   * - The tag names the Debian and Temurin major versions alone, so it changes when one of them does,
+   *   and the next build removes the bases under the previous tag (staleVersionedBaseImageTags).
+   * - The full versions are only in debian-temurin's Containerfile, which sets them as image labels.
+   *   The "ImgTagVersion names" test fails when a major version there differs from the tag's.
    */
   val ImgTagVersion = "latest-13-25"
   def temurinImage(version: String): String = s"debian-temurin:$version"
@@ -57,7 +59,7 @@ object LauncherImages:
   def managedImageTags(version: String): Vector[String] =
     buildImageTags(version) ++ KoAgentBpfImageTags ++ SelfTestImageTags
 
-  /** `bpfSourceId` is the bundled `ko-agent-fs/bpf`, whose classifier the image compiles for the suite. */
+  /** `bpfSourceId` is the bundled `ko-agent-fs/bpf`'s source id; the image compiles its classifier for the suite. */
   def selfTestBundleId(
     fsSourceId: String,
     selfTestSourceId: String,
@@ -74,11 +76,15 @@ object LauncherImages:
   /**
    * The one source-identity digest, for the ko-agent-fs binaries and the image bundle labels alike:
    * SHA-256 over (path, content) pairs in path order, each entry framed by its path, a NUL and its
-   * big-endian length — the sort makes bundling order irrelevant, the length keeps file boundaries
-   * unambiguous, and the path makes a rename a new identity. The content is a file's code, comments
-   * aside, where SourceDigest knows its syntax, so that a comment edit asks for no rebuild. The
-   * algorithm is only here, deliberately: a build is told the answer and repeats it, so there is no
-   * second implementation to drift from this one.
+   * big-endian length.
+   * - The sort makes bundling order irrelevant.
+   * - The length keeps file boundaries unambiguous.
+   * - The path makes a rename a new identity.
+   * - The content is a file's code, comments aside, where SourceDigest knows the file's syntax, so
+   *   that a comment edit asks for no rebuild.
+   *
+   * The algorithm exists only here, deliberately: a build is told the answer and repeats it, so no
+   * second implementation can drift from this one.
    */
   def bundleSourceId(entries: Seq[(String, Array[Byte])]): String =
     val digest = MessageDigest.getInstance("SHA-256")
@@ -91,9 +97,9 @@ object LauncherImages:
     java.util.HexFormat.of().formatHex(digest.digest())
 
   /**
-   * Digest one directory of the unpacked context — the literal build input,
-   * so the id describes exactly what podman build is about to see — or the
-   * paths under it that `copied` accepts, where the build copies only those.
+   * Digests one directory of the unpacked context, or the paths under it that `copied` accepts where
+   * the build copies only those. The context is the literal build input, so the id describes exactly
+   * what podman build is about to see.
    */
   def contextSourceId(context: Path, dir: String, copied: String => Boolean = _ => true): String =
     val root = context.resolve(dir)
@@ -107,11 +113,10 @@ object LauncherImages:
     bundleSourceId(entries)
 
   /**
-   * The digest of one bundle directory as this jar bundles it — the same
-   * bytes ImageBuilds.unpackBuildContext writes and contextSourceId hashes, read
-   * straight from the jar so no unpack is needed. What the filter binary's
-   * `--version` must report, and what --build stamps into the sandbox and
-   * proxy images as their bundle label (bundleMismatch).
+   * The digest of one bundle directory as this jar bundles it. The digest covers the same bytes that
+   * ImageBuilds.unpackBuildContext writes and contextSourceId hashes, read straight from the jar so
+   * that no unpack is needed. The filter binary's `--version` must report this digest, and --build
+   * stamps it into the sandbox and proxy images as their bundle label (bundleMismatch).
    */
   def bundledSourceId(dir: String, copied: String => Boolean = _ => true): String =
     val entries = bundleIndex()
@@ -140,9 +145,9 @@ object LauncherImages:
   val BundleLabel = "ko-agent-sandbox.bundle"
 
   /**
-   * On debian-coursier: one identity for both base directories (baseBundleId), because --update
-   * builds on that image without rebuilding either base, and ImgTagVersion stays the same across
-   * an update of a base's sources. The sandbox image inherits the label.
+   * The label on debian-coursier: one identity for both base directories (baseBundleId). --update
+   * builds on that image without rebuilding either base, and ImgTagVersion stays the same across an
+   * update of a base's sources. The sandbox image inherits the label.
    */
   val BaseBundleLabel = "ko-agent-sandbox.base-bundle"
 
@@ -154,11 +159,10 @@ object LauncherImages:
 
   /**
    * The label read back through Go's raw-string (backtick) quoting, because the argument must not
-   * contain a double quote: on Windows, Java's argument encoding passes an embedded quote through
-   * unescaped, and podman then parses a mangled template ("bad character U+002D"). Literal
-   * newlines are avoided in the multi-line templates (AgentSandboxLauncher.PodmanInfoFormat and
-   * the image inspections) for the same reason — `{{println}}` emits them on the output side
-   * instead.
+   * contain a double quote. On Windows, Java's argument encoding passes an embedded quote through
+   * unescaped, and podman then parses a mangled template ("bad character U+002D"). The multi-line
+   * templates (AgentSandboxLauncher.PodmanInfoFormat and the image inspections) avoid literal
+   * newlines for the same reason; `{{println}}` emits the newlines on the output side instead.
    */
   def labelTemplate(label: String): String = s"{{with .Config.Labels}}{{index . `$label`}}{{end}}"
   val BundleLabelTemplate = labelTemplate(BundleLabel)
@@ -167,21 +171,20 @@ object LauncherImages:
     run(podman, "image", "inspect", "--format", labelTemplate(labelName), image)
 
   /**
-   * The version-lock verdict for one built image: None when its label
-   * holds the jar's own digest of that image's bundled sources. The only
-   * way a default-named image exists is --build, so a mismatch means a jar
-   * other than this one built it — launch refuses it. An explicitly overridden
-   * --image or --proxy-image only warns: a custom image is a supported
-   * case, and its interface drift still fails closed at runtime (the
-   * --print-ruleset parse, the leaf's exact names).
+   * The version-lock verdict for one built image: None when the image's label holds the jar's own
+   * digest of that image's bundled sources.
+   * - Only --build creates a default-named image, so a mismatch means that a jar other than this one
+   *   built it, and the launch refuses the image.
+   * - An explicitly overridden --image or --proxy-image only warns. A custom image is a supported
+   *   case, and its interface drift still fails closed at runtime (the --print-ruleset parse, the
+   *   leaf's exact names).
    *
-   * "container image", spelled out: the reader of this message is upgrading
-   * the launcher, not thinking about images at all, and the bare name reads
-   * as noise until the words say it is a container image.
+   * The message spells out "container image". The message's reader is upgrading the launcher, not
+   * thinking about images at all, and the bare name reads as noise until the words say it is a
+   * container image.
    *
-   * Both digests are printed because the mismatch alone cannot say which
-   * side is stale — an old image, or a launch through a different jar than
-   * the one that ran --build.
+   * Both digests are printed because the mismatch alone cannot say which side is stale: an old image,
+   * or a launch through a different jar than the one that ran --build.
    */
   def bundleMismatch(image: String, expected: String, label: String): Option[String] =
     Option.when(label.trim != expected)(
@@ -209,11 +212,11 @@ object LauncherImages:
       fail(s"error: $mismatch")
 
   /**
-   * A build's check of what it just stamped, immediately after committing the images: the
-   * layer-cache staleness ImageBuilds.buildCommands describes is exactly the kind of
-   * silent drift the version lock exists for, so the freshly committed labels are read back
-   * rather than assumed. A failure here is podman misbehaving, not a wrong
-   * jar — the remediation is clearing the build cache, not --build again.
+   * A build's check of what it just stamped, immediately after committing the images. The layer-cache
+   * staleness that ImageBuilds.buildCommands describes is exactly the kind of silent drift the version
+   * lock exists for, so the build reads the freshly committed labels back rather than assuming them.
+   * A failure here means that podman misbehaved, not that the jar is wrong: the remedy is clearing the
+   * build cache, not --build again.
    */
   def verifyBuiltBundleLabels(expected: Seq[(String, String)], labelName: String = BundleLabel): Unit =
     expected.foreach: (image, id) =>
@@ -262,10 +265,12 @@ object LauncherImages:
       fail(s"error: $failure; could not find the image id for $image")
 
   /**
-   * Only the launcher-owned base repositories have versioned tags. Fixed leaf and cache tags are
-   * deliberately excluded: a supported custom sandbox or proxy image may use another tag in the
-   * same repository. Leaves precede bases. `localhost/` is podman's display form for the unqualified
-   * names the launcher passes to `build -t`.
+   * Only the launcher-owned base repositories have versioned tags.
+   * - Fixed leaf and cache tags are deliberately excluded: a supported custom sandbox or proxy image
+   *   may use another tag in the same repository.
+   * - Leaves precede bases.
+   * - `localhost/` is podman's display form for the unqualified names the launcher passes to
+   *   `build -t`.
    */
   def staleVersionedBaseImageTags(
     existing: Vector[TaggedImage],
@@ -281,9 +286,9 @@ object LauncherImages:
       .sortBy(image => -repositoryOrder(imageRepository(image.tag)))
 
   /**
-   * The self-test images a listing holds, in removal order: SelfTestImageTags reversed, leaves
-   * before bases like every other cleanup list. podman's listing order is not a dependency order,
-   * so it is never inherited.
+   * The self-test images a listing holds, in removal order: SelfTestImageTags reversed, leaves before
+   * bases like every other cleanup list. podman's listing order is not a dependency order, so the
+   * result never inherits it.
    */
   def selfTestCleanupOrder(existing: Vector[TaggedImage]): Vector[TaggedImage] =
     val removalOrder = SelfTestImageTags.reverse.zipWithIndex.toMap
@@ -304,8 +309,8 @@ object LauncherImages:
 
   private val FullImageId = "(?:sha256:)?[0-9a-f]{64}".r
 
-  /** An image or container id at podman's own listing width; `image ls` and `inspect` may
-    * prefix it with `sha256:`, which the listing does not show. */
+  /** An image or container id at podman's own listing width. `image ls` and `inspect` may prefix the
+    * id with `sha256:`, which the listing does not show. */
   def shortId(id: String): String = id.stripPrefix("sha256:").take(12)
 
   private def imageCleanupJournalEntries(path: Path): Vector[String] =
@@ -328,7 +333,7 @@ object LauncherImages:
     if validated.isEmpty then Files.deleteIfExists(path)
     else writePrivate(path, validated.mkString("", "\n", "\n"))
 
-  /** Drop only malformed entries; valid ids remain the ownership record for the next build. */
+  /** Drops only malformed entries; valid ids remain the ownership record for the next build. */
   def repairImageCleanupJournal(path: Path): Vector[String] =
     val entries = imageCleanupJournalEntries(path)
     val (valid, invalid) = entries.partition(FullImageId.matches)
@@ -338,11 +343,11 @@ object LauncherImages:
     invalid
 
   /**
-   * The cleanup order recorded before a build mutates any tag: an interrupted run's unfinished
-   * ids first, then this run's leaves before bases and stale named bases.
+   * The cleanup order recorded before a build mutates any tag: an interrupted run's unfinished ids
+   * first, then this run's leaves before bases, then the stale named bases.
    *
-   * Pulled images are deliberately absent: their names and lifecycle belong to their publishers,
-   * and another local workload may use an older revision after the launcher refreshes the tag.
+   * Pulled images are deliberately absent. Their names and lifecycle belong to their publishers, and
+   * another local workload may use an older revision after the launcher refreshes the tag.
    */
   def imageCleanupCandidates(
     pending: Vector[String],
@@ -368,8 +373,8 @@ object LauncherImages:
     candidates
 
   /**
-   * Classify self-test tags only after a build has committed the sandbox tag they should inherit.
-   * Extend the journal before returning them to the caller for untagging or removal.
+   * Classifies self-test tags only after a build has committed the sandbox tag they should inherit,
+   * and extends the journal before returning the tags to the caller for untagging or removal.
    */
   def includeStaleSelfTestCleanup(
     podman: String,
@@ -412,9 +417,9 @@ object LauncherImages:
     "(?i)image used by ([0-9a-f]{12,64}): image is in use by a container".r
 
   /**
-   * The continuation line is indented under the note, as every launcher line starts with a label and
-   * an unindented bare line reads as a subprocess's. The second form's continuation is podman's
-   * error text, so it stays as podman wrote it.
+   * The continuation line is indented under the note, because every launcher line starts with a label
+   * and an unindented bare line reads as a subprocess's line. The second form's continuation is
+   * podman's error text, so it stays as podman wrote it.
    */
   def supersededImageRetentionNote(imageId: String, error: String): String =
     ImageUsingContainer.findFirstMatchIn(error) match

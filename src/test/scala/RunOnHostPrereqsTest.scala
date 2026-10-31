@@ -1,8 +1,9 @@
-// The prerequisite validator's exit criterion: supported and unsupported layouts are classified
-// correctly. The fixtures are a real macOS host's, not invented ones — the Coursier JDK home
-// contains a percent-encoded '+', a literal '+' and a directory named like an archive, and the
-// install directory contains a space, which is exactly the input a quoting or regex bug mishandles.
-// The run-on-host rule files are read from temporary workspaces.
+// The prerequisite validator's exit criterion: the validator classifies supported and unsupported layouts correctly.
+// The fixtures come from a real macOS host, not invented ones. The fixtures hold exactly the input that a quoting or
+// regex bug mishandles:
+// - the Coursier JDK home contains a percent-encoded '+', a literal '+' and a directory named like an archive;
+// - the install directory contains a space.
+// The tests read the run-on-host rule files from temporary workspaces.
 
 package agentsandbox.launcher
 
@@ -29,8 +30,8 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val map = pairs.toMap
     name => map.get(name)
 
-  /** Canonicalization for paths that do not exist on the test host: identity for the ones the
-    * fixture declares real, None otherwise, so "does not exist" stays a distinct outcome. */
+  /** Canonicalization for paths that do not exist on the test host. The function returns the path itself for the
+    * paths that the fixture declares real and None for the others, so "does not exist" stays a distinct outcome. */
   private def exists(paths: Path*): Path => Option[Path] =
     val set = paths.map(_.normalize()).toSet
     path => Option.when(set.contains(path.normalize()))(path.normalize())
@@ -40,7 +41,8 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   // --------------------------------------------------------------------------
 
   test("cache root falls back to $HOME/.cache when XDG_CACHE_HOME is unset"):
-    // The ordinary case on macOS, not the exception; mill's own bootstrap takes the same fallback.
+    // An unset XDG_CACHE_HOME is the ordinary case on macOS, not the exception. Mill's own bootstrap takes the same
+    // fallback.
     assertEquals(
       cacheRootOf(Os.Mac, env("HOME" -> home)),
       Right(Paths.get(s"$home/.cache/ko-agent-sandbox")),
@@ -79,7 +81,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   test("the workspace's caches are stored under one removable directory"):
     val root = Paths.get(s"$home/.cache/ko-agent-sandbox")
     assertEquals(coursierV1Of(root, "abc123"), Paths.get(s"$root/run-on-host/abc123/coursier/v1"))
-    // One removal reaches all of them: what --reset-run-on-host relies on.
+    // One removal reaches all of the workspace's caches, and --reset-run-on-host relies on that.
     assert(coursierV1Of(root, "abc123").startsWith(runOnHostCacheDir(root, "abc123")))
 
   // --------------------------------------------------------------------------
@@ -89,7 +91,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   test("the macOS Coursier cache root and install directory are the Library spellings"):
     assertEquals(coursierCacheRoot(Os.Mac, env("HOME" -> home)), Some(coursierCache))
     assertEquals(coursierInstallDir(Os.Mac, env("HOME" -> home)), Some(installDir))
-    // The install directory contains a space; nothing downstream may split on one.
+    // The install directory contains a space, and nothing downstream may split on it.
     assert(clue(installDir.toString).contains(" "))
 
   test("the Linux spellings differ, and are testable from either host"):
@@ -125,16 +127,18 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val tree = runOnHostCachesOf(Paths.get(s"$home/.cache/ko-agent-sandbox"))
     assertEquals(cachePathClearOfStateRoot(tree, state, Os.Mac), Right(tree))
     assertEquals(cachePathClearOfStateRoot(tree.resolve("a-0123456789ab"), state, Os.Mac).isRight, true)
-    // Holding the state root: XDG_STATE_HOME under the tree, or a symlinked tree resolving above it.
+    // A cache path that holds the state root is refused. The case arises when XDG_STATE_HOME lies under the tree, or
+    // when a symlinked tree resolves above the state root.
     val holding = state.getParent.getParent
     assertEquals(
       cachePathClearOfStateRoot(holding, state, Os.Mac), Left(Refusal.CachePathOverlapsStateRoot(holding, state)),
     )
     assert(cachePathClearOfStateRoot(Paths.get("/System/Volumes/Data" + holding.toString), state, Os.Mac).isLeft)
-    // Under a state subtree: every workspace's caches would go with that workspace's --reset.
+    // A cache path under a state subtree is refused, because every workspace's caches would go with that workspace's
+    // --reset.
     assert(cachePathClearOfStateRoot(runOnHostCachesOf(state.resolve("tls/a-0123456789ab")), state, Os.Mac).isLeft)
     assert(cachePathClearOfStateRoot(state.resolve("image-build/x"), state, Os.Mac).isLeft)
-    // The shared-root layout, %LOCALAPPDATA%\ko-agent-sandbox for both: the tree beside the subtrees.
+    // The shared-root layout uses %LOCALAPPDATA%\ko-agent-sandbox for both roots and puts the tree beside the subtrees.
     assertEquals(cachePathClearOfStateRoot(runOnHostCachesOf(state), state, Os.Windows).isRight, true)
     val sharedWorkspace = runOnHostCachesOf(state).resolve("b-0123456789ab")
     assertEquals(cachePathClearOfStateRoot(sharedWorkspace, state, Os.Mac), Right(sharedWorkspace))
@@ -334,13 +338,13 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   test("an unset mill-jvm-version is accepted under the launchers that resolve it to an id"):
     for accepted <- Seq("1.1.0-jvm", "1.1.10-jvm", "1.1.10", "1.2.0-RC1-jvm", "1.10.0-jvm", "2.0.0-jvm") do
       assertEquals(millUnsetJvmAccepted(MillJvm.Unset, accepted), Right(()), accepted)
-    // 1.0 takes `java` from PATH or its built-in id, whichever its `which java` decides; a version
-    // that is not two leading numbers is not known to be 1.1.0 or later.
+    // Mill 1.0 takes `java` from PATH or from its built-in id, as its `which java` decides. A version that does not
+    // start with two numbers is not known to be 1.1.0 or later.
     for refused <- Seq("1.0.6-jvm", "1.0.0", "0.12.14-jvm", "0.13.0-M2-jvm", "main-jvm", "1-jvm", "1.x-jvm", "") do
       assertEquals(
         millUnsetJvmAccepted(MillJvm.Unset, refused), Left(Refusal.PrereqMillJvmUnset(refused)), refused,
       )
-      // A set version is mill's to read the same way under every launcher.
+      // Mill reads a set version the same way under every launcher.
       assertEquals(millUnsetJvmAccepted(MillJvm.System, refused), Right(()), refused)
       assertEquals(millUnsetJvmAccepted(MillJvm.Pinned("temurin:25"), refused), Right(()), refused)
     val worded = wording(Refusal.PrereqMillJvmUnset("1.0.6-jvm"))
@@ -349,12 +353,12 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   test("a mill launcher whose daemon reads each launcher's start time runs without a daemon; an earlier one with"):
     for without <- Seq("1.2.0-RC1-jvm", "1.3.0-jvm", "1.3.0-M0-jvm", "1.10.0-jvm", "2.0.0-M2-jvm", "1.3.0") do
       assert(millRunsWithoutDaemon(without), without)
-    // A version that is not two leading numbers is not known to be 1.2 or later.
+    // A version that does not start with two numbers is not known to be 1.2 or later.
     for daemon <- Seq("1.1.10-jvm", "1.1.0-jvm", "1.0.6-jvm", "0.12.14-jvm", "main-jvm", "1-jvm", "1.x-jvm", "") do
       assert(!millRunsWithoutDaemon(daemon), daemon)
 
   test("a mill-jvm-version that is neither system nor one id is refused as found"):
-    // Digits alone are a number to YAML; a `|` chain, a list and an interpolation are not one id.
+    // YAML reads digits alone as a number. A `|` chain, a list and an interpolation are not one id.
     for value <- Seq("25", "17.0.6", "system|temurin:25", "temurin:25:1", "[temurin:25]", "${JVM}", "temurin 25") do
       assertEquals(
         millJvm(workspace, files("build.mill.yaml" -> Seq(s"mill-jvm-version: $value"))),
@@ -365,16 +369,16 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
 
   test("the JVM source is mill's loadMillConfig order, the first existing file authoritative"):
     assertEquals(millJvm(workspace, files(".config/mill-jvm-version" -> Seq("system"))), Right(MillJvm.System))
-    // .mill-jvm-version beats .config, which beats the header; an empty first file is the answer,
-    // and mill reads no line of it as unset.
+    // .mill-jvm-version beats .config, which beats the header. An empty first file is the answer, and mill reads no
+    // line of it as unset.
     val dotBeatsConfig = files(".mill-jvm-version" -> Seq("temurin:25"), ".config/mill-jvm-version" -> Seq("system"))
     assertEquals(millJvm(workspace, dotBeatsConfig), Right(MillJvm.Pinned("temurin:25")))
     val emptyFirst = files(".mill-jvm-version" -> Seq(""), "build.mill.yaml" -> Seq("mill-jvm-version: system"))
     assertEquals(millJvm(workspace, emptyFirst), Right(MillJvm.Unset))
-    // Compared as written: mill keeps the opts-file line untrimmed and tests equality.
+    // The value is compared as written, because mill keeps the opts-file line untrimmed and tests equality.
     assertEquals(millJvm(workspace, files(".mill-jvm-version" -> Seq(" system "))),
       Left(Refusal.PrereqMillJvmUnreadable(" system ")))
-    // A key with no value is not unset; what mill makes of it is its parser's business.
+    // A key with no value is not unset. What mill makes of it is its parser's business.
     val noValue = millJvm(workspace, files("build.mill.yaml" -> Seq("mill-jvm-version:")))
     assertEquals(noValue, Left(Refusal.PrereqMillJvmUnreadable("")))
     assert(clue(wording(Refusal.PrereqMillJvmUnreadable(""))).endsWith("found an empty value"))
@@ -382,32 +386,34 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       millJvm(workspace, files(".mill-jvm-version" -> Seq("# comment", "", "system"))),
       Right(MillJvm.System),
     )
-    // A nested YAML key is not the key; a //| line after the header is not the header.
+    // A nested YAML key is not the key, and a //| line after the header is not the header.
     assertEquals(
       millJvm(workspace, files("build.mill.yaml" -> Seq("mill-build:", "  mill-jvm-version: system"))),
       Right(MillJvm.Unset),
     )
-    // Refused as a stray //| line: readBuildHeader scans the whole file and errors on it.
+    // A stray //| line is refused, because readBuildHeader scans the whole file and errors on it.
     assert(millJvm(workspace, files("build.mill" -> Seq("package build", "//| mill-jvm-version: system"))).isLeft)
     val quoted = files("build.mill.yaml" -> Seq("mill-jvm-version: \"system\" # x"))
     assertEquals(millJvm(workspace, quoted), Right(MillJvm.System))
-    // Not system, whatever a lax reader would strip: a YAML comment needs whitespace before its
-    // #, and an unmatched quote is not the plain scalar.
+    // These values are not system, whatever a lax reader would strip. A YAML comment needs whitespace before its #, and
+    // an unmatched quote does not make the plain scalar.
     for bad <- Seq("mill-jvm-version: system#other", "mill-jvm-version: \"system", "mill-jvm-version: system'") do
       assert(millJvm(workspace, files("build.mill.yaml" -> Seq(bad))).isLeft, clue(bad))
-    // YAML's `key:value` is one scalar, not a mapping: mill never sees the key.
+    // YAML reads `key:value` as one scalar, not as a mapping, so mill never sees the key.
     assertEquals(millJvm(workspace, files("build.mill.yaml" -> Seq("mill-jvm-version:system"))), Right(MillJvm.Unset))
-    // A malformed //| line is an error in mill's readBuildHeader, and a refusal here; so is a
-    // stray //| after the header, and so are two keys, whichever mill's map would keep.
+    // Mill's readBuildHeader errors on each of these, and the validator refuses each:
+    // - a malformed //| line;
+    // - a stray //| after the header;
+    // - two keys, whichever of them mill's map would keep.
     assert(millJvm(workspace, files("build.mill" -> Seq("//|mill-jvm-version: system"))).isLeft)
     val stray = files("build.mill" -> Seq("//| mill-jvm-version: system", "package build", "//| x"))
     assert(millJvm(workspace, stray).isLeft)
-    // A second YAML document is one mill never reads; a marker anywhere is a refusal.
+    // Mill never reads a second YAML document, so the validator refuses a document marker anywhere.
     val secondDoc = files("build.mill.yaml" -> Seq("extends: ScalaModule", "---", "mill-jvm-version: system"))
     assertEquals(millJvm(workspace, secondDoc), Left(Refusal.PrereqMillJvmUnreadable("multi-document YAML")))
     val headerDoc = files("build.mill" -> Seq("//| mill-jvm-version: system", "//| ..."))
     assert(millJvm(workspace, headerDoc).isLeft)
-    // A commented marker is still a marker; an indented or embedded one is not.
+    // A marker followed by a comment is still a marker. An indented or embedded marker is not.
     val commented = files("build.mill.yaml" -> Seq("--- # next", "mill-jvm-version: system"))
     assertEquals(millJvm(workspace, commented), Left(Refusal.PrereqMillJvmUnreadable("multi-document YAML")))
     val dashesInValue = files("build.mill.yaml" -> Seq("mill-jvm-version: system", "x: --- y"))
@@ -415,7 +421,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val doubled = files("build.mill.yaml" -> Seq("mill-jvm-version: system", "mill-jvm-version: temurin:25"))
     assertEquals(millJvm(workspace, doubled),
       Left(Refusal.PrereqMillJvmUnreadable("duplicate mill-jvm-version keys")))
-    // build.mill.yaml is consulted before build.mill, and one existing root file ends the search.
+    // The validator consults build.mill.yaml before build.mill, and one existing root file ends the search.
     val yamlFirst =
       files("build.mill.yaml" -> Seq("extends: ScalaModule"), "build.mill" -> Seq("//| mill-jvm-version: system"))
     assertEquals(millJvm(workspace, yamlFirst), Right(MillJvm.Unset))
@@ -434,7 +440,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
 
   test("with nothing else pinned, the version is the bootstrap's own DEFAULT_MILL_VERSION"):
     assertEquals(millVersion(workspace, files("mill" -> bootstrap)), Right("1.1.8"))
-    // A pin anywhere in the chain wins over the default, as in the script.
+    // A pin anywhere in the chain wins over the default, as it does in the script.
     val pinned = files("mill" -> bootstrap, ".mill-version" -> Seq("1.1.7"))
     assertEquals(millVersion(workspace, pinned), Right("1.1.7"))
     val noDefault = files("mill" -> Seq("#!/bin/sh"))
@@ -445,12 +451,12 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       millVersion(workspace, files(".mill-version" -> Seq(""), "build.mill.yaml" -> Seq("mill-version: 1.1.8"))),
       Left(Refusal.PrereqMillVersionUnpinned),
     )
-    // An empty chain result falls to the default, as the script's `if [ -z "$MILL_VERSION" ]` does.
+    // An empty chain result falls back to the default, as the script's `if [ -z "$MILL_VERSION" ]` does.
     assertEquals(
       millVersion(workspace, files(".mill-version" -> Seq(""), "mill" -> bootstrap)),
       Right("1.1.8"),
     )
-    // build.mill exists and has no marker: build.mill.scala is never consulted.
+    // build.mill exists and has no marker, so the validator never consults build.mill.scala.
     assertEquals(
       millVersion(
         workspace,
@@ -459,7 +465,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       Left(Refusal.PrereqMillVersionUnpinned),
     )
     assertEquals(millVersion(workspace, files("build.sc" -> Seq("//| mill-version: 0.11.5"))), Right("0.11.5"))
-    // grep's `//\|.*mill-version`: the marker before the key, never after it.
+    // The script's grep `//\|.*mill-version` takes the marker before the key, never after it.
     assertEquals(
       millVersion(workspace, files("build.mill" -> Seq("mill-version//|: 1.1.8"))),
       Left(Refusal.PrereqMillVersionUnpinned),
@@ -499,7 +505,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   test("a provisioned launcher is the bootstrap's file for a -jvm pin, present and executable"):
     val executable = millDownload.resolve("1.1.9")
     assertEquals(millExecutable(millDownload, "1.1.9-jvm", _ == executable), Right(executable))
-    // A similarly prefixed neighbour is not it.
+    // A neighbour with a similar prefix is not the executable.
     assertEquals(
       millExecutable(millDownload, "1.1.9-jvm", _ == millDownload.resolve("1.1.9-native-mac-aarch64")),
       Left(Refusal.PrereqMillExecutableMissing("1.1.9-jvm", millDownload)),
@@ -528,14 +534,14 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val key = "temurin:25:0.0.4-162-4be9be:"
     assertEquals(pinnedJdk(recorded(key, jdkHome)), Right(jdkHome))
     assertEquals(pinnedJdk(recorded("temurin:25:0.0.4-162-4be9be:https://r.example", jdkHome)), Right(jdkHome))
-    // Absent, recording another id, or not the pair mill writes: the host run provisions it.
+    // The host run provisions the JDK when the file is absent, records another id, or is not the pair mill writes.
     val missing = Left(Refusal.PrereqMillJdkMissing(Some("temurin:25"), "1.1.10-jvm"))
     val unsetMissing = Left(Refusal.PrereqMillJdkMissing(None, "1.1.10-jvm"))
     assertEquals(pinnedJdk(None), missing)
     assertEquals(unsetJdk(None), unsetMissing)
     assertEquals(pinnedJdk(recorded("temurin:21:0.0.4-162-4be9be:", jdkHome)), missing)
     assertEquals(pinnedJdk(recorded("temurin:251:0.0.4-162-4be9be:", jdkHome)), missing)
-    // The id of an unset version is the launcher's own, so the home is taken under any key.
+    // The id of an unset version is the launcher's own, so the validator takes the home under any key.
     for anyKey <- Seq("zulu:21:0.0.4-162-4be9be:", "zulu:21:0.0.4-125-77e06d", key) do
       assertEquals(unsetJdk(recorded(anyKey, jdkHome)), Right(jdkHome), anyKey)
     for malformed <- Seq("", "{}", s"""["$key"]""", s"""["$key","$jdkHome"]\n""", s"""["$key","$jdkHome","x"]""",
@@ -543,8 +549,11 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     do
       assertEquals(pinnedJdk(Some(malformed)), missing, malformed)
       assertEquals(unsetJdk(Some(malformed)), unsetMissing, malformed)
-    // A command can write the file: a home outside the Coursier cache, a relative one, the cache's
-    // own directories and a home whose bin/java leads out of it are not granted.
+    // A command can write the file, so the validator does not grant these homes:
+    // - a home outside the Coursier cache;
+    // - a relative home;
+    // - the cache's own directories;
+    // - a home whose bin/java leads out of the cache.
     val notCoursier = Left(Refusal.PrereqMillJdkNotCoursier(Some("temurin:25"), "1.1.10-jvm", coursierCache))
     val unsetNotCoursier = Left(Refusal.PrereqMillJdkNotCoursier(None, "1.1.10-jvm", coursierCache))
     val planted = workspace.resolve("jdk")
@@ -565,21 +574,22 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     def yamlAnd(extra: (String, Seq[String])*) = files(("build.mill.yaml" -> pinned) +: extra*)
     val baseConfig = millDaemonConfig(workspace, yaml("extends: ScalaModule"))
     assertEquals(baseConfig, millDaemonConfig(workspace, yaml("extends: ScalaModule")), "deterministic")
-    // The header is taken whole: an edit outside the keys restarts too, the cheaper error.
+    // The configuration takes the header whole. An edit outside the keys restarts the daemon too, which is the cheaper
+    // error.
     assertNotEquals(millDaemonConfig(workspace, yaml("extends: JavaModule")), baseConfig)
-    // Each key, from each of its sources.
+    // Each key changes the configuration from each of its sources.
     assertNotEquals(millDaemonConfig(workspace, yaml("mill-jvm-opts:", "  - -Xmx1g")), baseConfig)
     val dotOpts = millDaemonConfig(workspace, yamlAnd(".mill-jvm-opts" -> Seq("-Xmx1g")))
     val configOpts = millDaemonConfig(workspace, yamlAnd(".config/mill-jvm-opts" -> Seq("-Xmx1g")))
     assertNotEquals(dotOpts, baseConfig)
     assertNotEquals(configOpts, baseConfig)
-    // An empty file is a source Mill selects, over the header: creating one, in either place,
-    // changes the configuration, and so does removing it.
+    // Mill selects an empty file as a source, over the header. Creating an empty file in either place changes the
+    // configuration, and so does removing it.
     val headerOpts = yaml("mill-jvm-opts: [-Xmx1g]")
     for empty <- Seq(".mill-jvm-opts", ".config/mill-jvm-opts", ".mill-repositories", ".config/mill-repositories") do
       val withEmpty = files(("build.mill.yaml" -> (pinned :+ "mill-jvm-opts: [-Xmx1g]")) , empty -> Seq.empty)
       assertNotEquals(millDaemonConfig(workspace, withEmpty), millDaemonConfig(workspace, headerOpts), empty)
-    // One file's lines never read as another's.
+    // One file's lines never read as another file's lines.
     assertNotEquals(
       millDaemonConfig(workspace, yamlAnd(".mill-jvm-opts" -> Seq("-Xmx1g", "-Xss1m"))),
       millDaemonConfig(workspace, yamlAnd(".mill-jvm-opts" -> Seq("-Xmx1g"), ".mill-repositories" -> Seq("-Xss1m"))),
@@ -589,8 +599,8 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assertNotEquals(millDaemonConfig(workspace, version), baseConfig)
     val jvm = files("build.mill.yaml" -> Seq("mill-version: 1.1.9", "mill-jvm-version: temurin:25"))
     assertNotEquals(millDaemonConfig(workspace, jvm), baseConfig)
-    // Under a pinned or unset mill-jvm-version the java-home file's text is the JDK the daemon runs
-    // on; under system mill does not read the file.
+    // Under a pinned or unset mill-jvm-version, the java-home file's text names the JDK that the daemon runs on. Under
+    // system, mill does not read the file.
     val recordedHome = Some("""["temurin:25:0.0.4:","/jdk-25"]""")
     assertNotEquals(millDaemonConfig(workspace, jvm, recordedHome), millDaemonConfig(workspace, jvm))
     assertNotEquals(
@@ -604,12 +614,12 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       millDaemonConfig(workspace, unset, recordedHome),
       millDaemonConfig(workspace, unset, Some("""["zulu:21:0.0.4:","/jdk-21"]""")),
     )
-    // A key in a spelling only a YAML parser recognizes changes it all the same.
+    // A key in a spelling that only a YAML parser recognizes changes the configuration all the same.
     assertNotEquals(
       millDaemonConfig(workspace, yaml("\"mill-jvm-\\u006fpts\": [-Xmx1g]")),
       millDaemonConfig(workspace, yaml("\"mill-jvm-\\u006fpts\": [-Xmx2g]")),
     )
-    // The header of build.mill is its //| lines, and the body is not the header.
+    // The header of build.mill consists of its //| lines, and the body is not part of the header.
     def header(opt: String, body: String*) =
       val lines = Seq("//| mill-version: 1.1.9", "//| mill-jvm-opts:", s"//| - $opt", "package build")
       files("build.mill" -> (lines ++ body))
@@ -623,8 +633,8 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   // The channel's working directory
   // --------------------------------------------------------------------------
 
-  // The workspace root is mounted at its own path, so the mount is the root's spelling; the value
-  // still arrives from inside the container and is validated as such.
+  // The workspace root is mounted at its own path, so the mount spells the root. The value still arrives from inside
+  // the container, and the validator treats it as such.
   private def cwd(requested: String, canonical: Path => Option[Path] = path => Some(path.normalize())) =
     workingDirectory(requested, workspace.toString, workspace, canonical, Os.Mac)
 
@@ -643,19 +653,19 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       assert(cwd(requested).isLeft, clue(requested))
 
   test("a symlink inside the workspace that leaves it is refused"):
-    // The textual check passes and the canonical one does not: why both run.
+    // The textual check passes and the canonical check does not, which is why both checks run.
     val escaping = workspace.resolve("link")
     val canonical: Path => Option[Path] =
       path => if path == escaping then Some(Paths.get("/etc")) else Some(path.normalize())
     assert(cwd(s"$workspace/link", canonical).isLeft)
 
   test("a canonical case-different sibling is outside the workspace; a lexical one still folds"):
-    // Canonical spellings are the volume's own: on a case-sensitive volume `Ko-Agent-Sandbox` is
-    // another directory. The lexical check before canonicalization keeps folding, since a request
-    // on a folding volume may arrive in either case.
+    // Canonical spellings are the volume's own: on a case-sensitive volume, `Ko-Agent-Sandbox` is another directory.
+    // The lexical check before canonicalization keeps folding case, since a request on a folding volume may arrive in
+    // either case.
     val sibling = Paths.get(s"$home/Ko-Agent-Sandbox/sub")
     assert(cwd(s"$workspace/sub", _ => Some(sibling)).isLeft)
-    // Lexically a case-different spelling of the workspace root itself, which the real filesystem folds.
+    // Lexically, this is a case-different spelling of the workspace root itself, which the real filesystem folds.
     val folded = cwd(s"$workspace/../KO-AGENT-SANDBOX/sub", _ => Some(workspace.resolve("sub")))
     assertEquals(folded, Right(workspace.resolve("sub")))
 
@@ -679,8 +689,8 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val traps = Paths.get("/private/tmp/" + "y" * 43)
     assertEquals(sessionTmpFits(fits), Right(fits))
     assertEquals(sessionTmpFits(traps), Left(Refusal.SessionTmpTooLong(traps, 53)))
-    // The macOS per-user temporary directory is 49 characters before anything is added to it, so
-    // a command directory under it can never fit; the supervisor's root is elsewhere.
+    // The macOS per-user temporary directory is 49 characters long before anything is added to it, so a command
+    // directory under it can never fit. The supervisor's root is therefore elsewhere.
     assert(sessionTmpFits(Paths.get("/var/folders/w6/grf54s4d7bz6j0fypwdxvmq40000gn/T/ko-agent")).isLeft)
 
   // --------------------------------------------------------------------------
@@ -688,8 +698,8 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   // --------------------------------------------------------------------------
 
   test("containment folds case where the filesystem does"):
-    // The probe reports this host's workspace volume as case-insensitive, so a guard that compares
-    // exactly would accept a path the filesystem treats as the same one.
+    // The probe reports this host's workspace volume as case-insensitive. A guard that compares exactly would accept a
+    // path that the filesystem treats as the guarded one.
     assert(startsWith(Paths.get("/Users/K/P/.GIT/config"), Paths.get("/Users/k/p/.git"), Os.Mac))
     assert(!startsWith(Paths.get("/Users/K/P/.GIT/config"), Paths.get("/Users/k/p/.git"), Os.Linux))
 
@@ -750,7 +760,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       programRuleHosts("deny https://x/ # a removal\n"),
       Left(Refusal.RuleOutsideProgramGrammar("deny https://x/")),
     )
-    // A comment starts at a token, as in the proxy: a `#` inside one is the line, not a comment.
+    // A comment starts at a token, as in the proxy. A `#` inside a token belongs to the line, not to a comment.
     assertEquals(
       programRuleHosts("allow https://repo.example.org/ read#comment\n"),
       Left(Refusal.RuleOutsideProgramGrammar("allow https://repo.example.org/ read#comment")),
@@ -807,12 +817,12 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assertEquals(read(s"distributionUrl=$gradleUrl\n"), Right(URI(gradleUrl)))
     assertEquals(read("distributionBase=GRADLE_USER_HOME\ndistributionPath=wrapper/dists\n" +
       "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.7.1-bin.zip\n"), Right(URI(gradleUrl)))
-    // A `!` comment line, a key with spaces around `=`, a value continued over a line: Properties' grammar.
+    // Properties' grammar allows a `!` comment line, a key with spaces around `=` and a value continued over a line.
     assertEquals(
       read("! wrapper\ndistributionUrl = https://services.gradle.org/\\\n    distributions/gradle-9.7.1-bin.zip\n"),
       Right(URI(gradleUrl)),
     )
-    // No scheme: a file relative to the properties file's directory, spelled as File.toURI spells it.
+    // A URL without a scheme is a file relative to the properties file's directory, spelled as File.toURI spells it.
     assertEquals(
       read("distributionUrl=../../dist/gradle-9.7.1-bin.zip"),
       Right(java.io.File(wrapperDir.toFile, "../../dist/gradle-9.7.1-bin.zip").toURI),
@@ -827,7 +837,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assert(read("distributionUrl=mailto:x@example.org\n").swap.exists(wording(_).contains("names no file")))
     assert(read("distributionUrl=https://example.org/\n").swap.exists(wording(_).contains("names no file")))
     assert(read("distributionUrl=https://example.org/a b.zip\n").swap.exists(wording(_).contains("not a URI")))
-    // A control character never reaches the terminal through a refusal, whatever branch quotes the value.
+    // A control character never reaches the terminal through a refusal, whichever branch quotes the value.
     for
       text <- Seq(
         "distributionUrl=https://x.example/\u001b[31ma.zip\n",
@@ -850,8 +860,8 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     val dists = userHome.resolve("wrapper/dists")
     val bin = dists.resolve("gradle-9.7.1-bin/1w1c7tv4s851m17nbqdsro2tv")
     assertEquals(gradleDistributionDir(userHome, URI(gradleUrl)), bin)
-    // The hash is over the URL without its user information (Download.safeUri), so a credential
-    // in the URL changes nothing.
+    // The hash covers the URL without its user information (Download.safeUri), so a credential in the URL changes
+    // nothing.
     val withCredential = URI("https://user:pw@services.gradle.org/distributions/gradle-9.7.1-bin.zip")
     assertEquals(gradleDistributionDir(userHome, withCredential), bin)
     val all = URI("https://services.gradle.org/distributions/gradle-9.7.1-all.zip")
@@ -893,8 +903,10 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   test("the distribution URL is read as the script reads it, MVNW_REPOURL applied"):
     def read(lines: String*) = mvnDistributionUrl(lines.mkString("", "\n", "\n"), None)
     assertEquals(read("wrapperVersion=3.3.4", s"distributionUrl= $mvnUrl "), Right(mvnUrl))
-    // The key is matched exactly; the value loses every whitespace character, inside included;
-    // the last line wins; a last line without a newline is never read.
+    // - The reader matches the key exactly.
+    // - The value loses every whitespace character, including those inside it.
+    // - The last line wins.
+    // - The reader never reads a last line without a newline.
     assert(read(s" distributionUrl=$mvnUrl").isLeft)
     assertEquals(
       read("distributionUrl=https://x.example/apache -\tmaven-3.9.16-bin.zip"),
@@ -903,7 +915,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assertEquals(read("distributionUrl=https://first.example/a-bin.zip", s"distributionUrl=$mvnUrl"), Right(mvnUrl))
     assert(mvnDistributionUrl(s"distributionUrl=$mvnUrl", None).isLeft)
     assertEquals(mvnDistributionUrl(s"distributionUrl=$mvnUrl\r\n", None), Right(mvnUrl))
-    // The shell takes the line as is, escapes included, and hashes it as is.
+    // The shell takes the line as it is, escapes included, and hashes it as it is.
     val escaped = mvnUrl.replace(":", "\\:")
     assertEquals(read(s"distributionUrl=$escaped"), Right(escaped))
     assertEquals(
@@ -919,19 +931,19 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assert(read("wrapperVersion=3.3.4").isLeft)
     assert(read("distributionUrl=https://example.org/apache-maven-3.9.16.zip").isLeft)
     assert(read("distributionUrl=https://example.org/mavén-bin.zip").isLeft)
-    // tr's [:space:] is six ASCII characters: a control character stays, and Java's wider
-    // notion of whitespace must not remove what tr keeps.
+    // tr's [:space:] covers six ASCII characters, so a control character stays. Java's wider notion of whitespace must
+    // not remove what tr keeps.
     assert(read("distributionUrl=https://example.org/apache\u001c-maven-3.9.16-bin.zip").isLeft)
     assertEquals(
       read("distributionUrl=https://example.org/apache\u000b-maven-3.9.16-bin.zip"),
       Right("https://example.org/apache-maven-3.9.16-bin.zip"),
     )
-    // The effective URL is what is checked: a mirror that breaks the URL is refused.
+    // The reader checks the effective URL, so it refuses a mirror that breaks the URL.
     assert(mvnDistributionUrl(s"distributionUrl=$mvnUrl\n", Some("https://mirrör.example")).isLeft)
     val mvnd = "https://example.org/maven/mvnd/1.0.2/maven-mvnd-1.0.2-bin.zip"
     assertEquals(read(s"distributionUrl=$mvnd"), Left(Refusal.PrereqMvnDistributionIsMvnd(mvnd)))
-    // A refusal quotes a URL only once it is printable ASCII, so no control character reaches
-    // the terminal through it — through the mvnd branch, the -bin.zip branch, or MVNW_REPOURL.
+    // A refusal quotes a URL only when the URL is printable ASCII, so no control character reaches the terminal through
+    // the refusal. The rule holds for the mvnd branch, the -bin.zip branch and MVNW_REPOURL.
     for value <- Seq(s"https://x.example/\u001b[31mmaven-mvnd-1.0.2-bin.zip", "https://x.example/\u001b[31ma.zip") do
       val refused = read(s"distributionUrl=$value")
       assert(refused.left.exists(refusal => !wording(refusal).contains('\u001b')), refused.toString)
@@ -940,7 +952,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
 
   test("the distribution directory is the script's own derivation, hash function included"):
     val m2 = Paths.get("/Users/kenichi/.m2")
-    // The vector is String.hashCode computed with Java 25, which the script's hash_string reproduces.
+    // The expected value is String.hashCode computed with Java 25, which the script's hash_string reproduces.
     assertEquals(mvnDistributionDir(m2, mvnUrl), m2.resolve("wrapper/dists/apache-maven-3.9.16/56ba1f9f"))
 
   test("the home is that directory, provisioned; else a refusal naming what ./mvnw would fix"):
@@ -975,7 +987,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     )
     for refusal <- cases do
       assert(!clue(wording(refusal)).contains("Prereq") && !wording(refusal).contains("Refusal"), refusal.toString)
-    // The ones a host command fixes name that command.
+    // A refusal that a host command fixes names that command.
     assert(wording(Refusal.PrereqMillExecutableMissing("1.1.8-jvm", millDownload))
       .contains("MILL_VERSION=1.1.8-jvm ./mill version"))
     for fixedByMillRun <- Seq(
@@ -1056,7 +1068,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       assertEquals(
         readProgramRules(workspace, Program.Mill), Right(Vector.empty), "mill's proxy does not read this file",
       )
-    // A spelling the proxy resolves is read as the file spells it.
+    // The reader keeps a spelling that the proxy resolves as the file spells it.
     Files.writeString(rule, "allow https://Repo.Example.ORG./ read\n")
     assertEquals(readProgramRules(workspace, Program.Sbt), Right(Vector("Repo.Example.ORG.")))
 

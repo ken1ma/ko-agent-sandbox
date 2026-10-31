@@ -1,13 +1,13 @@
 #!/bin/sh
-# What the cs-installed sbt actually runs: the script's exec target, the distribution beside it,
-# and the interpreters the chain needs. SeatbeltProfile grants the distribution *home*, so this is
-# how that path is confirmed.
+# Shows what the sbt that cs installed runs: the script's exec target, the distribution beside that target, and the
+# interpreters the chain needs. SeatbeltProfile grants the distribution's home directory, and this script confirms
+# that path.
 #
-# Run it after upgrading sbt or reinstalling it with cs: the distribution path encodes the sbt
-# version Coursier fetched, so it moves.
+# Run the script after upgrading sbt or reinstalling sbt with cs: the distribution path contains the sbt version that
+# Coursier fetched, so the path moves.
 #
-# Writes to a file rather than the terminal: what Coursier installs carries an appended jar,
-# so `cat` on one dumps binary and fills the scrollback.
+# The script writes to a file rather than the terminal. A program that Coursier installs carries an appended jar, so
+# `cat` on the program dumps binary and fills the scrollback.
 set -u
 if [ "$(uname -s)" != "Darwin" ]; then echo "Run this on macOS." >&2; exit 2; fi
 
@@ -18,7 +18,7 @@ note() { printf '\n=== %s ===\n' "$1" >> "$out"; }
 script=$(python3 -c 'import os,shutil;print(os.path.realpath(shutil.which("sbt")))')
 
 note "script: $script"
-# Text lines only, so an appended jar cannot reach the file as raw bytes.
+# Keep text lines only, so that an appended jar cannot reach the file as raw bytes.
 LC_ALL=C sed -n '1,80p' "$script" | LC_ALL=C tr -d '\000' | LC_ALL=C grep -a . >> "$out"
 
 note "absolute paths the script names"

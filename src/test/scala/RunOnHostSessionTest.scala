@@ -11,19 +11,20 @@ import scala.collection.mutable.ListBuffer
 import RunOnHostSession.*
 
 object RunOnHostSessionTest:
-  /** The leader is the supervisor's own process and runs outside the profile by
-    * construction; under it, perl dies before registering. True exactly where the acceptance test runs the
-    * suites as a confined command, whose tests spawning one skip. */
+  /** True exactly where the acceptance test runs the suites as a confined command. The leader is the supervisor's own
+    * process and runs outside the profile by construction. Under the profile, perl dies before registering, so the
+    * tests that spawn a leader skip. */
   val underRunOnHostProfile: Boolean =
     sys.env.get("SBT_GLOBAL_SERVER_DIR").exists(_.startsWith("/private/tmp/ko-agent-"))
 
   /**
-   * A session root for a test that binds the sbt server's socket under a session's `tmp/`. That
-   * socket is up to 52 characters past the root, `/b<up to 20 digits>/tmp/<20 hex digits>/sock`,
-   * and macOS allows a socket path 103: a root under its `java.io.tmpdir`,
-   * `/var/folders/<2>/<30>/T`, is too long, and the supervisor's own root is
-   * `/private/tmp/ko-agent-<uid>` for the same reason (RunOnHostPrereqs.SessionTmpMaxLength). The
-   * test deletes the root it got.
+   * A session root for a test that binds the sbt server's socket under a session's `tmp/`. The test deletes the root
+   * it got.
+   *
+   * The socket path runs up to 52 characters past the root, `/b<up to 20 digits>/tmp/<20 hex digits>/sock`, and macOS
+   * allows a socket path of 103 characters. A root under macOS's `java.io.tmpdir`, `/var/folders/<2>/<30>/T`, is
+   * therefore too long. The supervisor's own root is `/private/tmp/ko-agent-<uid>` for the same reason
+   * (RunOnHostPrereqs.SessionTmpMaxLength).
    */
   def socketSessionRoot(prefix: String): Path =
     try Files.createTempDirectory(Path.of("/tmp").toRealPath(), prefix)
@@ -90,7 +91,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
   // --------------------------------------------------------------------------
 
   def freshRoot(): Path =
-    // Canonical, so the moved-socket pathnames the tests predict match what containedSocket resolves.
+    // The root is canonical, so the moved-socket pathnames that the tests predict match what containedSocket resolves.
     val root = Files.createTempDirectory("command-session").toRealPath().resolve("root")
     ensureRoot(root, uid).toOption.get
 
@@ -114,11 +115,12 @@ class RunOnHostSessionTest extends munit.FunSuite:
     remove(session)
 
   test("scavenge skips the caller's own session rather than probe its lock"):
-    // ownSession names the runner's own live session, which scavenge must not reach: lockIsFree
-    // would open and close a second descriptor to its lock file, and closing any descriptor
-    // releases the process's POSIX fcntl lock, so probing would unlock a live session. In one JVM
-    // the release is invisible (the lock reads as held either way), so this asserts only that the
-    // own session is left out of the scan and its results; the cross-process release is the acceptance test's.
+    // ownSession names the runner's own live session, which scavenge must not reach. lockIsFree would open and close a
+    // second descriptor to the session's lock file. Closing any descriptor releases the process's POSIX fcntl lock, so
+    // probing would unlock a live session.
+    // - In one JVM the release is invisible, because the lock reads as held either way. This test therefore asserts
+    //   only that scavenge leaves the own session out of the scan and its results.
+    // - The acceptance test covers the release across processes.
     val root = freshRoot()
     val own = publish(root, Path.of("/p"), Kind.Runner).toOption.get
     val other = die(publish(root, Path.of("/p")).toOption.get)
@@ -167,7 +169,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
   def processes(alive: (Long, String)*): FakeProcesses = FakeProcesses(alive.toMap)
 
   def die(session: Session): Path =
-    // A SIGKILLed supervisor: the lock is freed, the directory and records stay.
+    // A SIGKILLed supervisor frees the lock, and the directory and records stay.
     session.close()
     session.directory
 
@@ -179,21 +181,22 @@ class RunOnHostSessionTest extends munit.FunSuite:
     Files.writeString(owner.records.resolve(s"server-sbt-$hash"), renderRecord(Record(1, "S")), UTF_8)
     Files.writeString(owner.records.resolve(s"daemon-mill-$hash"), renderRecord(Record(2, "S")), UTF_8)
     val live = processes(1L -> "S", 2L -> "S")
-    // A live owner holding the record is found; a hash no one owns is not; each program's record is its own.
+    // runtimeOwner finds a live owner that holds the record and finds no owner for a hash that nobody owns. Each
+    // program's record is its own.
     assertEquals(runtimeOwner(root, mine.directory, s"server-sbt-$hash", live), Some(owner.directory))
     assertEquals(runtimeOwner(root, mine.directory, s"daemon-mill-$hash", live), Some(owner.directory))
     assertEquals(runtimeOwner(root, mine.directory, "server-sbt-0000000000000000", live), None)
     assertEquals(runtimeOwner(root, mine.directory, "daemon-mill-0000000000000000", live), None)
-    // A just-crashed owner — unlocked, still in the root, not yet condemned — still owns: its
-    // server group can be running, so admission is blocked until the next start collects it.
+    // An owner that just crashed still owns the record: it is unlocked, still in the root and not yet condemned. The
+    // owner's server group can be running, so admission stays blocked until the next start collects the owner.
     owner.close()
     assertEquals(
       runtimeOwner(root, mine.directory, s"server-sbt-$hash", live), Some(owner.directory),
       "a dead owner in the root still owns",
     )
-    // The owner renames into condemned/ in the instant between the root enumeration and its
-    // lookup: the lookup then misses it in the root, but the later condemned enumeration finds
-    // it, so admission stays blocked across the teardown rename.
+    // The owner renames itself into condemned/ in the instant between the root enumeration and its lookup. The lookup
+    // then misses the owner in the root, but the later enumeration of condemned/ finds it, so admission stays blocked
+    // across the teardown rename.
     val condemned = Files.createDirectories(root.resolve(CondemnedDir))
     val moved = condemned.resolve(owner.directory.getFileName)
     var scans = 0
@@ -209,21 +212,21 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val owner = publish(root, Path.of("/p"), Kind.Runner).toOption.get
     val record = "server-sbt-abcdef0123456789"
     Files.writeString(owner.records.resolve(record), renderRecord(Record(7, "START-A")), UTF_8)
-    // Leader gone and no member listed: the group ended — by another process's retirement, or
-    // on its own — and the owner has not yet deleted the record, which must not block admission.
+    // The leader is gone and no member is listed, so the group ended, through another process's retirement or on its
+    // own. The owner has not yet deleted the record, and that record must not block admission.
     assertEquals(runtimeOwner(root, mine.directory, record, processes()), None, "a dead group owns nothing")
-    // The leader's pid recycled: the group was empty at some instant, and what the number lists
-    // now is a stranger's, so the record owns nothing either.
+    // The leader's pid was recycled. The group was empty at some instant, and the process that the number lists now
+    // is a stranger's, so the record owns nothing either.
     assertEquals(runtimeOwner(root, mine.directory, record, processes(7L -> "RECYCLED")), None)
-    // Leader gone, a member still listed: the members may be the record's, so it owns as before.
+    // The leader is gone and a member is still listed. The members may be the record's, so the record owns as before.
     class Orphaned extends FakeProcesses(Map.empty):
       override def groupEmpty(pgid: Long): Boolean = false
     assertEquals(runtimeOwner(root, mine.directory, record, Orphaned()), Some(owner.directory))
-    // An observation ps could not make proves nothing: the record owns.
+    // An observation that ps could not make proves nothing, so the record owns.
     class Unobservable extends FakeProcesses(Map.empty):
       override def startOf(pid: Long): Option[String] = throw java.io.IOException("ps could not list")
     assertEquals(runtimeOwner(root, mine.directory, record, Unobservable()), Some(owner.directory))
-    // A record that does not parse owns: its existence is the claim, and nothing disproves it.
+    // A record that does not parse still owns: its existence is the claim, and nothing disproves the claim.
     Files.writeString(owner.records.resolve(record), "", UTF_8)
     assertEquals(runtimeOwner(root, mine.directory, record, processes()), Some(owner.directory))
     remove(mine); remove(owner)
@@ -247,7 +250,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val command = publish(root, Path.of("/p")).toOption.get
     val dead = publish(root, Path.of("/p"), Kind.Runner).toOption.get
     dead.close()
-    // A fixed root entry sharing the prefix's letter is no session, whatever its lock state.
+    // A fixed root entry that shares the prefix's letter is not a session, whatever its lock state.
     Files.createDirectories(root.resolve(RetireLockDir))
     assertEquals(liveRunnerSessions(root, mine.directory), Vector(other.directory))
     assertEquals(allRunnerSessions(root, mine.directory).toSet, Set(other.directory, dead.directory))
@@ -323,8 +326,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
     )
     assert(Files.exists(condemned.resolve(RecordsDir).resolve("client")), "the record is kept")
 
-    // Its leader still alive with the recorded start time, the next collection signals again; this
-    // time the group empties.
+    // The leader is still alive with the recorded start time, so the next collection signals again. This time the group
+    // empties.
     val fakes = processes(7L -> "START-A")
     val second = scavenge(root, fakes, _ => ServerAnswer.ShutDown)
     assertEquals(fakes.ended.toList, List(7L))
@@ -354,8 +357,9 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val dead = die(session)
     val condemned = root.resolve(CondemnedDir).resolve(dead.getFileName)
 
-    // The KILL took the leader and left a member: no start time is left to check the pgid against, so nothing is
-    // signalled, and the member may still be the record's, so nothing is deleted.
+    // The KILL took the leader and left a member.
+    // - No start time is left to check the pgid against, so scavenge signals nothing.
+    // - The member may still be the record's, so scavenge deletes nothing.
     class Orphaned extends FakeProcesses(Map.empty):
       override def groupEmpty(pgid: Long): Boolean = false
     val orphaned = Orphaned()
@@ -377,7 +381,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val start = "Mon Sep 14 10:00:00 2026"
     assertEquals(startFrom(Vector(s"41 $start", "40 Sun Sep 13 09:00:00 2026"), 40, 41), Some(start))
     assertEquals(startFrom(Vector("40 Sun Sep 13 09:00:00 2026"), 40, 41), None, "not listed: no such process")
-    // What Apple's ps prints when its process-table sysctl fails, and when nothing is selected.
+    // These lines are what Apple's ps prints when its process-table sysctl fails, and when it selects nothing.
     intercept[java.io.IOException](startFrom(Vector.empty, 40, 41))
     intercept[java.io.IOException](startFrom(Vector(s"41 $start"), 40, 41))
     assertEquals(groupEmptyFrom(Vector("40"), 40), true)
@@ -389,8 +393,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val root = freshRoot()
     val session = publish(root, Path.of("/p")).toOption.get
     Files.writeString(session.records.resolve("client"), renderRecord(Record(7, "START-A")), UTF_8)
-    // A file where the condemned directory would be: the rename fails, and the fallback ends the
-    // recorded groups in place.
+    // A file stands where the condemned directory would be. The rename fails, and the fallback ends the recorded groups
+    // in place.
     Files.writeString(root.resolve(CondemnedDir), "", UTF_8)
 
     class Survivors(alive: Map[Long, String]) extends FakeProcesses(alive):
@@ -400,7 +404,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(kept.collect { case Collected.GroupAlive(g, _) => g }, Vector(7L))
     assert(Files.exists(session.records.resolve("client")), "the record is kept where it was")
 
-    // The lock released, the next scavenge condemns the directory and retries.
+    // Once the lock is released, the next scavenge condemns the directory and retries.
     Files.delete(root.resolve(CondemnedDir))
     val fakes = processes(7L -> "START-A")
     val results = scavenge(root, fakes, _ => ServerAnswer.ShutDown)
@@ -554,8 +558,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val session = publish(root, workspace).toOption.get
     val dead = die(session)
     val socket = socketUnder(dead)
-    // The socket exists on disk like a real server's; containment canonicalizes it. Only inside
-    // the session — a foreign spelling stays a spelling.
+    // The socket exists on disk like a real server's, because containment canonicalizes it. The test creates it only
+    // inside the session: a foreign spelling stays a spelling.
     if socket.normalize.startsWith(dead) then
       Files.createDirectories(socket.getParent)
       Files.createFile(socket)
@@ -700,19 +704,20 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(retirementLockName(s"proxy-gradle-$hash"), Some(s"gradle-$hash"))
     assertEquals(retirementLockName(s"proxy-mvn-$hash"), Some(s"mvn-$hash"))
     assertEquals(retirementLockName(s"server-sbt-$hash.pending"), Some(s"sbt-$hash"), "a kill's leftover")
-    // The Gradle daemons and a command session's own records are ended under their session's
-    // lock alone, which no other process holds while it lives.
+    // The session ends the Gradle daemons and a command session's own records under its own lock alone, and no other
+    // process holds that lock while the session lives.
     assertEquals(retirementLockName(RunOnHostGradleDaemons.recordName(4242)), None)
     assertEquals(retirementLockName("client"), None)
     assertEquals(retirementLockName("proxy"), None)
 
-  /** The process table two enders share: an ended group leaves it, as a real kill's does. */
+  /** The process table that two enders share. An ended group leaves the table, as a group that a real kill ends
+    * does. */
   class Groups(initial: Map[Long, String]):
     @volatile var alive: Map[Long, String] = initial
     val ended = ListBuffer[Long]()
 
-  /** A view of the table; with `pause`, the end waits between the leader's start-time check and the signal
-    * — `reached` counted down, `proceed` awaited — so a second ender can be started in between. */
+  /** A view of the table. With `pause`, the end waits between the leader's start-time check and the signal, so that a
+    * second ender can start in between: the end counts `reached` down and then awaits `proceed`. */
   class SharedProcesses(
     groups: Groups,
     pause: Option[(java.util.concurrent.CountDownLatch, java.util.concurrent.CountDownLatch)] = None,
@@ -738,7 +743,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     thread.start()
     task
 
-  /** A runner session's collection also reports its servers; the group outcomes alone. */
+  /** The group outcomes alone, without the servers that a runner session's collection also reports. */
   def groupsOf(actions: Vector[Collected]): Vector[Collected] =
     actions.filterNot(_.isInstanceOf[Collected.ServerSkipped])
 
@@ -748,8 +753,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
       true
     catch case _: java.util.concurrent.TimeoutException => false
 
-  /** Whether this JVM holds the lock: a second channel's tryLock overlaps it. A probe, as
-    * lockIsFree is; the fcntl release its close causes is invisible within one process. */
+  /** Whether this JVM holds the lock, which a second channel's tryLock then overlaps. The check is a probe, as
+    * lockIsFree is. The fcntl release that the probe's close causes is invisible within one process. */
   def heldByThisJvm(lockFile: Path): Boolean =
     val channel = FileChannel.open(lockFile, java.nio.file.StandardOpenOption.WRITE)
     try
@@ -766,9 +771,9 @@ class RunOnHostSessionTest extends munit.FunSuite:
 
   def proxyRecordName = s"proxy-sbt-$Hash"
 
-  /** Another holder of the sbt retirement lock of Hash, paused between its start-time check and its signal
-    * on `record` — a `proxy-sbt-<Hash>` record, which shares the lock with the server's — until
-    * the returned latch is released; the pgid it ends. */
+  /** Another holder of the sbt retirement lock of Hash. The holder pauses between its start-time check and its signal
+    * on `record` until the caller releases the returned latch. `record` is a `proxy-sbt-<Hash>` record, which shares
+    * the lock with the server's record. The pgid is the group that the holder ends. */
   def holdingRetirementLock(
     root: Path, record: Path, groups: Groups,
   ): (java.util.concurrent.Future[Option[Collected]], java.util.concurrent.CountDownLatch) =
@@ -777,14 +782,15 @@ class RunOnHostSessionTest extends munit.FunSuite:
     reached.await()
     (holding, proceed)
 
-  /** What another launch's takeover does under the lock (RunnerRuntimes.takeOver):
-    * the owner's recorded group ended, the record read only once the lock is held. */
+  /** What another launch's takeover does under the lock (RunnerRuntimes.takeOver): it ends the owner's recorded group,
+    * and it reads the record only once it holds the lock. */
   def taker(root: Path, record: Path, groups: Groups): Option[Collected] =
     endRecordedGroup(root, record, SharedProcesses(groups))
 
-  /** What a waiter finds once the holder that ended the group released: the record deleted with
-    * its session, or — the lock is released before the deletion — the record of a group observed
-    * gone, skipped. Never a signal: that is the holder's, counted by the caller. */
+  /** What a waiter finds once the holder that ended the group released the lock:
+    * - the record deleted with its session;
+    * - or, since the holder releases the lock before the deletion, the record of a group observed gone, skipped.
+    * The waiter never finds a signal: the signal is the holder's, and the caller counts it. */
   def foundEnded(outcome: Option[Collected], pgid: Long): Unit =
     outcome match
       case None | Some(Collected.GroupSkipped(`pgid`, _)) => ()
@@ -799,8 +805,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val teardown =
       started(endSession(root, owner, SharedProcesses(groups, Some((reached, proceed))), _ => ServerAnswer.ShutDown))
     reached.await()
-    // The teardown has checked the leader's start time and holds the lock: the taker, on the
-    // condemned record, waits rather than check and signal the same group.
+    // The teardown has checked the leader's start time and holds the lock. The taker, on the condemned record, waits
+    // rather than checking and signalling the same group.
     val condemned = root.resolve(CondemnedDir).resolve(owner.directory.getFileName)
     val taking = started(taker(root, condemned.resolve(RecordsDir).resolve(serverRecordName), groups))
     assert(!doneWithin(taking, 300), "the taker waits on the lock")
@@ -811,7 +817,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assert(!Files.exists(condemned) && !Files.exists(owner.directory))
 
   test("scavenge against a taker, either first: the group is signalled once, one consistent outcome"):
-    // The scavenger first: the taker waits, then finds the record gone with the session.
+    // The scavenger goes first. The taker waits, then finds the record gone with the session.
     val root = freshRoot()
     val dead = die(publish(root, Path.of("/p"), Kind.Runner).toOption.get)
     Files.writeString(dead.resolve(RecordsDir).resolve(serverRecordName), renderRecord(Record(7, "START-A")), UTF_8)
@@ -829,8 +835,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(groups.ended.toList, List(7L))
     assert(!Files.exists(condemned))
 
-    // The taker first: the scavenger waits, then finds the leader gone and the group empty —
-    // skipped, never signalled twice — and deletes the session.
+    // The taker goes first. The scavenger waits, then finds the leader gone and the group empty. The scavenger skips
+    // the group, never signalling it twice, and deletes the session.
     val second = die(publish(root, Path.of("/p"), Kind.Runner).toOption.get)
     val record = second.resolve(RecordsDir).resolve(serverRecordName)
     Files.writeString(record, renderRecord(Record(8, "START-B")), UTF_8)
@@ -850,8 +856,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assert(!Files.exists(root.resolve(CondemnedDir).resolve(second.getFileName)))
 
   test("a retirement interrupted before its TERM is resumed by a successor that ends the group"):
-    // The holder died holding the lock and having signalled nothing: the lock is released with
-    // it, the group is not, and the successor checks the leader's start time as any holder does.
+    // The holder died while it held the lock and before it signalled anything. The lock is released with the holder,
+    // but the group is not, and the successor checks the leader's start time as any holder does.
     val root = freshRoot()
     val dead = die(publish(root, Path.of("/p"), Kind.Runner).toOption.get)
     val record = dead.resolve(RecordsDir).resolve(serverRecordName)
@@ -871,13 +877,14 @@ class RunOnHostSessionTest extends munit.FunSuite:
   test("interrupted between TERM and KILL, the successor retains a blocked group or deletes an ended one"):
     val root = freshRoot()
     val mine = publish(root, Path.of("/p"), Kind.Runner).toOption.get
-    // The TERM took the leader and left a member: the successor signals nothing — no start time
-    // is left to check the number against — keeps the record, and the record still blocks admission. Whether the
-    // member ends is the member's; the test requires no termination.
+    // The TERM took the leader and left a member.
+    // - The successor signals nothing, because no start time is left to check the number against.
+    // - The successor keeps the record, and the record still blocks admission.
+    // - Whether the member ends is up to the member, and the test requires no termination.
     val blocked = die(publish(root, Path.of("/p"), Kind.Runner).toOption.get)
     val blockedRecord = blocked.resolve(RecordsDir).resolve(serverRecordName)
     Files.writeString(blockedRecord, renderRecord(Record(7, "START-A")), UTF_8)
-    // Group 7 keeps a member; every other number lists none.
+    // Group 7 keeps a member, and every other number lists none.
     class Orphaned extends FakeProcesses(Map.empty):
       override def groupEmpty(pgid: Long): Boolean = pgid != 7
     val orphaned = Orphaned()
@@ -890,8 +897,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val condemned = root.resolve(CondemnedDir).resolve(blocked.getFileName)
     assert(Files.exists(condemned.resolve(RecordsDir).resolve(serverRecordName)), "the record is kept")
     assertEquals(runtimeOwner(root, mine.directory, serverRecordName, orphaned), Some(condemned), "admission blocked")
-    // The TERM ended the whole group: the successor finds it empty, deletes the record with the
-    // session, and the record blocks nothing.
+    // The TERM ended the whole group. The successor finds the group empty and deletes the record with the session, and
+    // the record blocks nothing.
     val ended = die(publish(root, Path.of("/p"), Kind.Runner).toOption.get)
     Files.writeString(ended.resolve(RecordsDir).resolve(serverRecordName), renderRecord(Record(8, "START-B")), UTF_8)
     assertEquals(runtimeOwner(root, mine.directory, serverRecordName, orphaned), Some(condemned), "the blocked owns")
@@ -905,8 +912,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
     remove(mine)
 
   test("a retirement lock held past the bound keeps the session, its records and its directory"):
-    // A crashed owner's proxy and server records share one lock; a taker holds it on the proxy's
-    // while the scavenger, bounded, gives up on both.
+    // A crashed owner's proxy and server records share one lock. A taker holds the lock on the proxy's record, while
+    // the scavenger, which waits a bounded time, gives up on both records.
     val root = freshRoot()
     val dead = die(publish(root, Path.of("/p"), Kind.Runner).toOption.get)
     Files.writeString(dead.resolve(RecordsDir).resolve(serverRecordName), renderRecord(Record(7, "START-A")), UTF_8)
@@ -934,8 +941,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(groups.ended.toList, List(9L, 7L))
     assert(!Files.exists(condemned))
 
-  /** What another process finds at the lock file — `held` or `taken` (RunOnHostLockProbe): the one
-    * observation of this JVM's fcntl lock, which its own FileChannel cannot make. */
+  /** What another process finds at the lock file, `held` or `taken` (RunOnHostLockProbe). Only another process can
+    * observe this JVM's fcntl lock; this JVM's own FileChannel cannot. */
   def probedByAnotherProcess(lockFile: Path): String =
     val launcher = Path.of(System.getProperty("java.home")).resolve("bin").resolve("java").toString
     val process = java.lang.ProcessBuilder(
@@ -947,9 +954,9 @@ class RunOnHostSessionTest extends munit.FunSuite:
     said
 
   test("two threads of one process: the waiter's timeout leaves the holder's lock and signal intact"):
-    // The acceptance test's entry prepares on its main thread and tears down from the shutdown hook, in one
-    // JVM; the waiter must open no second descriptor to the lock file, whose close would drop the
-    // holder's fcntl lock for the whole process — which only another process can observe.
+    // The acceptance test's entry prepares on its main thread and tears down from the shutdown hook, in one JVM. The
+    // waiter must open no second descriptor to the lock file, because closing that descriptor would drop the holder's
+    // fcntl lock for the whole process. Only another process can observe that drop.
     val root = freshRoot()
     val dead = die(publish(root, Path.of("/p"), Kind.Runner).toOption.get)
     val record = dead.resolve(RecordsDir).resolve(serverRecordName)
@@ -976,9 +983,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
 
   test("the retirement lock is taken last: after the condemned entry's lock, and after the session's own"):
     val root = freshRoot()
-    // Scavenging: the entry is condemned and its lock held before the retirement lock is waited
-    // for, so no other collector can take the entry meanwhile. The holder is a taker on the dead
-    // session's proxy record, which shares the lock.
+    // Scavenging condemns the entry and holds its lock before it waits for the retirement lock, so no other collector
+    // can take the entry meanwhile. The holder is a taker on the dead session's proxy record, which shares the lock.
     val dead = die(publish(root, Path.of("/p"), Kind.Runner).toOption.get)
     Files.writeString(dead.resolve(RecordsDir).resolve(serverRecordName), renderRecord(Record(7, "START-A")), UTF_8)
     Files.writeString(dead.resolve(RecordsDir).resolve(proxyRecordName), renderRecord(Record(9, "START-Z")), UTF_8)
@@ -991,8 +997,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
     while !Files.exists(condemned.resolve(LockFile)) && waited < 200 do { Thread.sleep(20); waited += 1 }
     assert(!doneWithin(scavenging, 300), "the scavenger waits on the retirement lock")
     assert(heldByThisJvm(condemned.resolve(LockFile)), "holding the condemned entry's lock")
-    // Teardown: the session is condemned and its own lock still held while the retirement lock
-    // is waited for; the lock is released only after the collection.
+    // Teardown condemns the session and still holds the session's own lock while it waits for the retirement lock.
+    // Teardown releases the session's lock only after the collection.
     val owner = publish(root, Path.of("/p"), Kind.Runner).toOption.get
     Files.writeString(owner.records.resolve(serverRecordName), renderRecord(Record(8, "START-B")), UTF_8)
     val teardown = started(endSession(root, owner, fakes, _ => ServerAnswer.ShutDown))
@@ -1094,10 +1100,10 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(process.waitFor(), 71)
 
   test("the build lock admits one command at a time: the second reports it only once the first released"):
-    // The runner's work on the runtime before a command — observed, retired or created — runs
-    // under the command's build lock (lockedSpawn), so two launches' commands on one build
-    // directory never overlap. Two under-runner holders of one lock: the second reports the lock
-    // only once the first has released.
+    // The runner's work on the runtime before a command runs under the command's build lock (lockedSpawn), whether the
+    // runner observes, retires or creates the runtime. Two launches' commands on one build directory therefore never
+    // overlap. This test runs two under-runner holders of one lock: the second reports the lock only once the first has
+    // released it.
     notUnderRunOnHostProfile()
     val lockFile = Files.createTempDirectory("build-lock").resolve("sbt-x")
     def helper(): (Process, java.io.BufferedReader) =
@@ -1128,9 +1134,9 @@ class RunOnHostSessionTest extends munit.FunSuite:
     val holder =
       java.lang.ProcessBuilder(lockedSpawn(lockFile, Seq("/bin/sleep", "30"), underRunner = false)*).start()
     try
-      // The holder takes the lock at its own pace: a taker started too early runs at once, so
-      // takers are started until one reports the wait — and then is still alive, blocked. One
-      // line, not the stream: a blocked taker holds its stderr open until it exits.
+      // The holder takes the lock at its own pace, and a taker started too early runs at once. The test therefore
+      // starts takers until one reports the wait and is then still alive, blocked. The test reads one line, not the
+      // stream, because a blocked taker holds its stderr open until it exits.
       def taker() = java.lang.ProcessBuilder(
         lockedSpawn(lockFile, Seq("/bin/sh", "-c", "exit 7"), underRunner = false)*).start()
       var waiting: Option[Process] = None
@@ -1144,7 +1150,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
           Thread.sleep(50)
       val blocked = waiting.getOrElse(fail("no taker ever found the lock held"))
       assert(blocked.isAlive, "the taker blocks while the holder lives")
-      // A taker dispatched by a runner: its stdin's EOF is the runner gone, and it ends itself.
+      // A taker that a runner dispatched reads EOF on its stdin when the runner is gone, and it then ends itself.
       val orphan = java.lang.ProcessBuilder(
         lockedSpawn(lockFile, Seq("/bin/sh", "-c", "exit 7"), underRunner = true)*).start()
       java.io.BufferedReader(java.io.InputStreamReader(orphan.getErrorStream, UTF_8)).readLine()
@@ -1158,8 +1164,8 @@ class RunOnHostSessionTest extends munit.FunSuite:
     finally holder.destroyForcibly().waitFor()
 
   test("bytes the runner writes after the word reach the exec'd command's stdin whole, and none reach its arguments"):
-    // The brokered credentials' frame (RunOnHostSandbox.CredentialsOption): the holder reads its word a
-    // byte at a time, so a buffered read cannot take the frame and lose it at the exec.
+    // The holder reads its word a byte at a time, so a buffered read cannot take the frame of the brokered credentials
+    // (RunOnHostSandbox.CredentialsOption) and lose it at the exec.
     notUnderRunOnHostProfile()
     val lockFile = Files.createTempDirectory("lock").resolve("sbt-x")
     val command = Seq("/bin/sh", "-c", "printf '%s\\n' \"$@\"; echo ==; cat", "sh", "--")
@@ -1184,7 +1190,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     def answer(process: Process, word: String): Unit =
       process.getOutputStream.write(word.getBytes(UTF_8))
       process.getOutputStream.flush()
-    // The word's arguments go before the command's `--`, whatever follows it.
+    // The word's arguments go before the command's `--`, whatever follows the `--`.
     val (run, out) = holder("/bin/sh", "-c", "printf '%s\\n' \"$@\"", "sh", "--", "-x")
     answer(run, runWord(Seq("--proxy-port=1", "--proxy-log=/l")))
     assertEquals(out.readLine(), "--proxy-port=1")
@@ -1192,12 +1198,12 @@ class RunOnHostSessionTest extends munit.FunSuite:
     assertEquals(out.readLine(), "--")
     assertEquals(out.readLine(), "-x")
     assertEquals(run.waitFor(), 0)
-    // An argument holding a newline, the escape byte or a NUL arrives whole: the word is one line.
+    // An argument that holds a newline, the escape byte or a NUL arrives whole, because the word is one line.
     val (odd, oddOut) = holder("/bin/sh", "-c", "printf '%s|' \"$@\" | od -An -c | tr -s ' \\n' ' '", "sh")
     answer(odd, runWord(Seq("a\nb", "\u0001x", "c")))
     assertEquals(oddOut.readLine().trim, "a \\n b | 001 x | c |")
     assertEquals(odd.waitFor(), 0)
-    // The pipe stays the exec'd command's stdin, its EOF still the runner gone.
+    // The pipe stays the exec'd command's stdin, and its EOF still means that the runner is gone.
     val (held, _) = holder("/bin/sh", "-c", "cat")
     answer(held, runWord(Seq.empty))
     assert(
@@ -1206,7 +1212,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     )
     held.getOutputStream.close()
     assertEquals(held.waitFor(), 0)
-    // A refusal of several lines — a server's output quoted — reaches stderr whole.
+    // A refusal of several lines, such as one that quotes a server's output, reaches stderr whole.
     val (refused, _) = holder("/bin/sh", "-c", "exit 0")
     answer(refused, refusedWord("refused: no runtime; its output:\n[error] line one\n[error] line two\n"))
     assertEquals(
@@ -1286,7 +1292,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
   private def frame(json: String): Array[Byte] = RunOnHostSbtServerShutdown.frame(json)
 
   private def shortSocketPath(): Path =
-    // sun_path is short on Linux too; keep the whole path well under it.
+    // sun_path is short on Linux too, so the whole path stays well under its limit.
     Files.createTempDirectory("sk").resolve("s")
 
   private def listNames(path: Path): Vector[String] =
