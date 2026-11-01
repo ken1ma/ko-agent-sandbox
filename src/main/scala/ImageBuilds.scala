@@ -202,6 +202,8 @@ object ImageBuilds:
    * Each multi-stage compile stage is built first under a stable cache tag. The final build reuses its
    * ordinary local layer cache. Naming the stage keeps one current cache image, and it lets the
    * successful build remove the previous cache image by the same exact-id rule as every final image.
+   * The sandbox image's download stages get their tags after the build instead, so that the build runs
+   * them at once (sandboxStageTagCommands).
    *
    * The bundle id travels twice, and the duplication is deliberate:
    * - as BUNDLE_ID for the Containerfile's LABEL, which a hand-run `podman build` from a checkout uses;
@@ -230,11 +232,12 @@ object ImageBuilds:
         "-t", coursierImage(version), "debian-coursier",
       ),
       Vector(
-        podman, "build", NoRegistryLookup, "--build-arg", s"IMG_TAG_VER=$version",
+        podman, "build", NoRegistryLookup, "--jobs", SandboxBuildJobs, "--build-arg", s"IMG_TAG_VER=$version",
         "--build-arg", s"BUNDLE_ID=$sandboxBundleId",
         "--label", s"$BundleLabel=$sandboxBundleId",
         "-t", SandboxImage, "ko-agent-sandbox",
       ),
+    ) ++ sandboxStageTagCommands(podman, version) ++ Vector(
       Vector(
         podman, "build", NoRegistryLookup, "--target", "build", "--build-arg", s"IMG_TAG_VER=$version",
         "-t", ProxyBuildImage, "ko-agent-egress-proxy",
@@ -255,6 +258,31 @@ object ImageBuilds:
         "-t", KoAgentFsImage, "ko-agent-fs",
       ),
     )
+
+  /**
+   * How many of the sandbox image's stages one build runs at once. The cap keeps the build's memory from
+   * growing with each agent that gains a stage. The value is a starting point, not a measurement.
+   */
+  val SandboxBuildJobs = "5"
+
+  /**
+   * One `--target` build per download stage of the sandbox image, each tagging that stage's image.
+   * - Without the tag, a superseded stage image would stay in storage. `podman image rm` of the old
+   *   sandbox image removes only its untagged parents, and a stage that the final stage copies from is
+   *   not a parent.
+   * - Each build is a cache hit on the stage image that the sandbox build just committed, because
+   *   buildah takes the newest matching cache image. The builds therefore pass no --no-cache.
+   * - The builds pass no --label either: buildah appends a --label to the target stage as an
+   *   instruction, which would commit a new image instead of tagging the cached one.
+   *
+   * StageCacheTagTest checks the cache hits and the cleanup on a fixture.
+   */
+  def sandboxStageTagCommands(podman: String, version: String): Vector[Vector[String]] =
+    SandboxDownloadStages.map: stage =>
+      Vector(
+        podman, "build", NoRegistryLookup, "--target", stage, "--build-arg", s"IMG_TAG_VER=$version",
+        "-t", sandboxStageImage(stage), "ko-agent-sandbox",
+      )
 
   /**
    * The toolchain the filter ships, read from the image build that pins it rather than repeated here.
@@ -340,17 +368,19 @@ object ImageBuilds:
 
   /**
    * `--no-cache`, because new agent releases arrive through RUN steps whose inputs look unchanged to
-   * the cache. Base images and the proxy belong to --build.
+   * the cache. Base images and the proxy belong to --build. The stage tag builds take the cache that
+   * this build writes (sandboxStageTagCommands).
    */
   def updateCommands(podman: String, version: String, sandboxBundleId: String): Vector[Vector[String]] =
     Vector(
       Vector(
-        podman, "build", NoRegistryLookup, "--no-cache", "--build-arg", s"IMG_TAG_VER=$version",
+        podman, "build", NoRegistryLookup, "--no-cache", "--jobs", SandboxBuildJobs,
+        "--build-arg", s"IMG_TAG_VER=$version",
         "--build-arg", s"BUNDLE_ID=$sandboxBundleId",
         "--label", s"$BundleLabel=$sandboxBundleId",
         "-t", SandboxImage, "ko-agent-sandbox",
       ),
-    )
+    ) ++ sandboxStageTagCommands(podman, version)
 
   /**
    * Runs the builds, each failure ending the launcher, then the optional builds, whose first failure is

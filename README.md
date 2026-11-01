@@ -447,9 +447,9 @@ restore permission prompts and set the Claude Code status line.
     session or Claude Code option per line, spelled as above; # starts a comment, "..." quotes a
     value, ${NAME} expands a variable of the launcher's environment. Every launch prints each
     option it supplies. A command-line option replaces the file's; --env and --egress-cred replace
-    the file's entry of the same name, and --model-provider adds its names to the file's.
-    --reset reads its --persistent-volume, --egress-effective and --egress-check its egress
-    options and --proxy-image; the other actions read none. See README.md "Options file"
+    the file's entry of the same name, and --model-provider adds its names to the file's. Three
+    actions also read some of the file's options, to match what a launch would do. See README.md
+    "Options file"
       --no-options-file  before the command: skip the options file for this launch or action
 
     Management actions, each recognized before the command; whatever follows
@@ -575,12 +575,14 @@ command line:
        drops the file's entries of that option; those after it on the command line still add.
 
 1. `--no-options-file`, before the command, skips the file for one launch or action.
-1. Three actions read some of the file's options; the other actions read none.
+1. Three actions also read the file, to match what a launch would do; the other actions read
+   none.
 
-    1. `--reset` reads `--persistent-volume`.
+    1. `--reset` reads `--persistent-volume` and leaves that shared volume in place.
     1. `--egress-effective` reads `--egress`, `--model-provider`, `--egress-cred` and
-       `--proxy-image`.
-    1. `--egress-check` reads the same options except `--egress-cred`.
+       `--proxy-image`, and prints the ruleset a launch would enforce.
+    1. `--egress-check` reads the same options except `--egress-cred`, because it sends no
+       credential.
 1. Forward a secret as `--env=NAME`, with the value in the launcher's environment. A value in the
    file, as `--env=NAME=VALUE` or `--env=NAME=${SECRET}`, ends up in podman's arguments and in the
    create command that podman records for the container.

@@ -688,42 +688,51 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("build commands run in dependency order with the pinned base tag"):
     val commands = buildCommands("podman", "1.2-3", "baseid", "sourceid", "sandboxid", "proxyid")
+    val stageTags = sandboxStageTagCommands("podman", "1.2-3")
     assertEquals(commands.map(_.last), Vector(
       "debian-temurin",
       "debian-coursier",
       "ko-agent-sandbox",
+    ) ++ stageTags.map(_.last) ++ Vector(
       "ko-agent-egress-proxy",
       "ko-agent-egress-proxy",
       "ko-agent-fs",
       "ko-agent-fs",
     ))
-    assert(commands(0).contains("debian-temurin:1.2-3"))
-    assert(!commands(0).contains("--build-arg"))
-    assert(commands(1).contains("debian-coursier:1.2-3"))
-    assert(commands(2).contains("ko-agent-sandbox:latest"))
-    assert(commands(3).contains(ProxyBuildImage))
-    assert(commands(3).containsSlice(Seq("--target", "build")))
-    assert(commands(4).contains("ko-agent-egress-proxy:latest"))
+    def building(image: String): Vector[String] =
+      commands.find(command => buildOutputImages(Vector(command)) == Vector(image)).get
+    val temurin = building("debian-temurin:1.2-3")
+    val coursier = building("debian-coursier:1.2-3")
+    val sandbox = building(SandboxImage)
+    val proxyBuild = building(ProxyBuildImage)
+    val proxy = building(ProxyImage)
+    val fsBuild = building(KoAgentFsBuildImage)
+    val fs = building(KoAgentFsImage)
+    assertEquals(commands.slice(3, 3 + stageTags.size), stageTags)
+    assert(!temurin.contains("--build-arg"))
+    assert(proxyBuild.containsSlice(Seq("--target", "build")))
     commands.foreach(command => assert(!command.contains("--save-stages")))
-    commands.slice(1, 5).foreach: command =>
+    (Vector(coursier, sandbox, proxyBuild, proxy) ++ stageTags).foreach: command =>
       assert(command.containsSlice(Seq("--build-arg", "IMG_TAG_VER=1.2-3")))
-    assert(commands(5).contains(KoAgentFsBuildImage))
-    assert(commands(5).containsSlice(Seq("--target", "build")))
-    assert(commands(6).contains("ko-agent-fs:latest"))
-    commands.slice(5, 7).foreach: command =>
+    assert(fsBuild.containsSlice(Seq("--target", "build")))
+    Vector(fsBuild, fs).foreach: command =>
       assert(command.containsSlice(Seq("--build-arg", "KO_AGENT_FS_SOURCE_ID=sourceid")))
       assert(!command.exists(_.startsWith("IMG_TAG_VER=")))
+    // Only the sandbox image has stages that can run at once.
+    assertEquals(commands.filter(_.contains("--jobs")), Vector(sandbox))
+    assert(sandbox.containsSlice(Seq("--jobs", SandboxBuildJobs)))
     // The digest travels both as a build arg and as a --label (buildCommands gives the reason).
-    assert(commands(2).containsSlice(Seq("--build-arg", "BUNDLE_ID=sandboxid")))
-    assert(commands(4).containsSlice(Seq("--build-arg", "BUNDLE_ID=proxyid")))
-    assert(commands(2).containsSlice(Seq("--label", s"$BundleLabel=sandboxid")))
-    assert(commands(4).containsSlice(Seq("--label", s"$BundleLabel=proxyid")))
-    (commands.take(2) ++ Vector(commands(3), commands(5), commands(6))).foreach: command =>
+    assert(sandbox.containsSlice(Seq("--build-arg", "BUNDLE_ID=sandboxid")))
+    assert(proxy.containsSlice(Seq("--build-arg", "BUNDLE_ID=proxyid")))
+    assert(sandbox.containsSlice(Seq("--label", s"$BundleLabel=sandboxid")))
+    assert(proxy.containsSlice(Seq("--label", s"$BundleLabel=proxyid")))
+    (Vector(temurin, coursier, proxyBuild, fsBuild, fs) ++ stageTags).foreach: command =>
       assert(!command.exists(_.startsWith("BUNDLE_ID=")))
       assert(!command.exists(_.startsWith(s"$BundleLabel=")))
     // debian-coursier carries the bases' identity, which --update checks; the image has no Containerfile LABEL.
-    assert(commands(1).containsSlice(Seq("--label", s"$BaseBundleLabel=baseid")))
-    (Vector(commands(0), commands(3), commands(5), commands(6))).foreach: command =>
+    assert(coursier.containsSlice(Seq("--label", s"$BaseBundleLabel=baseid")))
+    // A stage tag build with a --label would commit a new image (sandboxStageTagCommands).
+    (Vector(temurin, proxyBuild, fsBuild, fs) ++ stageTags).foreach: command =>
       assert(!command.contains("--label"))
 
   test("--build and --update refresh exactly the remote sources their Containerfiles use"):
@@ -738,7 +747,6 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       buildImages.map(repository),
       Vector(
         "docker.io/library/debian",
-        "ghcr.io/astral-sh/uv",
         "gcr.io/distroless/base-debian13",
         "docker.io/library/rust",
       ),
@@ -747,7 +755,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       remoteImagesForBuildCommands(
         updateCommands("podman", "1.2-3", "sandboxid"), readContainerfile, localImages,
       ),
-      buildImages.filter(_.startsWith("ghcr.io/astral-sh/uv:")),
+      Vector.empty,
     )
     assertEquals(
       remoteImagePullCommands("podman", buildImages),
@@ -1090,16 +1098,21 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         |FROM example.invalid/one:2 AS one
         |FROM example.invalid/two:3
         |""".stripMargin
-    Vector("one", "2", "absent").foreach: stop =>
-      val refused =
-        remoteImagesInContainerfile("Containerfile", threeStages, Map.empty, Set.empty, Some(stop))
-      assert(refused.swap.exists(_.contains(s"unsupported build target $stop")), refused.toString)
-    Vector("zero", "0").foreach: stop =>
-      assertEquals(
-        remoteImagesInContainerfile("Containerfile", threeStages, Map.empty, Set.empty, Some(stop)),
-        Right(Vector("example.invalid/zero:1")),
-        stop,
-      )
+    val refused =
+      remoteImagesInContainerfile("Containerfile", threeStages, Map.empty, Set.empty, Some("absent"))
+    assert(refused.swap.exists(_.contains("no build target stage absent")), refused.toString)
+    // A later target reads every stage before it too, as an untargeted build reads every stage.
+    Vector(
+      Vector("zero", "0") -> Vector("example.invalid/zero:1"),
+      Vector("one", "1") -> Vector("example.invalid/zero:1", "example.invalid/one:2"),
+      Vector("2") -> Vector("example.invalid/zero:1", "example.invalid/one:2", "example.invalid/two:3"),
+    ).foreach: (stops, expected) =>
+      stops.foreach: stop =>
+        assertEquals(
+          remoteImagesInContainerfile("Containerfile", threeStages, Map.empty, Set.empty, Some(stop)),
+          Right(expected),
+          stop,
+        )
     assertEquals(
       remoteImagesInContainerfile(
         "Containerfile",
@@ -1194,14 +1207,15 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       Right(Vector("example.invalid/base:override")),
     )
 
-  test("update rebuilds only the sandbox image, without cache"):
+  test("update rebuilds only the sandbox image, without cache, then tags its stages from that build"):
     val commands = updateCommands("podman", "1.2-3", "sandboxid")
-    assertEquals(commands.map(_.last), Vector("ko-agent-sandbox"))
-    assertEquals(buildOutputImages(commands), Vector("ko-agent-sandbox:latest"))
+    assert(commands.forall(_.last == "ko-agent-sandbox"), commands.toString)
+    assertEquals(buildOutputImages(commands), SandboxImage +: SandboxDownloadStages.map(sandboxStageImage))
     assert(commands.head.contains("--no-cache"))
-    assert(commands.head.contains("ko-agent-sandbox:latest"))
+    assert(commands.head.containsSlice(Seq("--jobs", SandboxBuildJobs)))
     assert(commands.head.containsSlice(Seq("--build-arg", "BUNDLE_ID=sandboxid")))
     assert(commands.head.containsSlice(Seq("--label", s"$BundleLabel=sandboxid")))
+    assertEquals(commands.tail, sandboxStageTagCommands("podman", "1.2-3"))
 
   test("build cleanup removes replaced ids and launcher tags from older versions"):
     val builds = buildCommands("podman", "1.2-3", "baseid", "sourceid", "sandboxid", "proxyid")
@@ -1400,18 +1414,26 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(unexpected.contains("podman did not remove it"), unexpected)
     assert(unexpected.contains("Error: storage is unavailable"), unexpected)
 
-  test("every internal multi-stage build has one named compile-cache target"):
+  test("every stage that a final stage copies from has a named cache target"):
+    // Without the tag, the stage's superseded image stays in storage (ImageBuilds.sandboxStageTagCommands).
     val containerRoot = Paths.get("container")
     val containerfiles = FileHelper.directoryEntries(containerRoot)
       .map(_.resolve("Containerfile")).filter(Files.isRegularFile(_))
     val allContainerfiles = containerfiles :+ Paths.get("ko-agent-fs/Containerfile")
-    val multiStage = allContainerfiles.filter: path =>
-      Files.readAllLines(path).asScala.count(_.startsWith("FROM ")) > 1
+    val NamedStage = """FROM\s+\S+\s+AS\s+(\S+)""".r
+    val StageCopy = """COPY\s.*--from=(\S+)\s.*""".r
+    val StageMount = """(?:RUN\s+)?--mount=\S*\bfrom=([^,\s]+).*""".r
+    val copiedStages = allContainerfiles.map: path =>
+      val lines = Files.readAllLines(path).asScala.toVector.map(_.trim)
+      val copied = lines.collect { case StageCopy(source) => source; case StageMount(source) => source }.toSet
+      path -> lines.collect { case NamedStage(stage) if copied.contains(stage) => stage }
+    .filter((_, stages) => stages.nonEmpty).toMap
 
     val commands =
       buildCommands("podman", "1.2-3", "baseid", "sourceid", "sandboxid", "proxyid") ++
         selfTestBuildCommands("podman", "1.2.3", "sourceid", "selftestid")
-    val tracked = commands.filter(_.containsSlice(Seq("--target", "build"))).map: command =>
+    val targetBuilds = commands.filter(_.contains("--target"))
+    def containerfileOf(command: Vector[String]): Path =
       val fileIndex = command.indexOf("-f")
       if fileIndex >= 0 then containerRoot.resolve(command(fileIndex + 1))
       else
@@ -1419,9 +1441,11 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         val containerPath = containerRoot.resolve(context).resolve("Containerfile")
         if Files.isRegularFile(containerPath) then containerPath
         else Paths.get(context).resolve("Containerfile")
-    assertEquals(tracked.toSet, multiStage.toSet)
-    commands.filter(_.containsSlice(Seq("--target", "build"))).foreach: command =>
-      assert(buildOutputImages(Vector(command)).head.endsWith(":cache"), command.mkString(" "))
+    def targetOf(command: Vector[String]): String = command(command.indexOf("--target") + 1)
+    assertEquals(targetBuilds.groupMap(containerfileOf)(targetOf), copiedStages)
+    assertEquals(copiedStages(containerRoot.resolve("ko-agent-sandbox/Containerfile")), SandboxDownloadStages)
+    targetBuilds.foreach: command =>
+      assert(buildOutputImages(Vector(command)).head.endsWith(s"-${targetOf(command)}:cache"), command.mkString(" "))
 
   test("every build step with a cache mount locks its caches and expires them before its commands"):
     // ko-agent-fs/Containerfile explains what a cache that a cleanup deletes file by file does to the step.

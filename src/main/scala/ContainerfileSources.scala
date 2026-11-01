@@ -162,13 +162,11 @@ object ContainerfileSources:
               if stageIndex >= 0 then
                 stages = stages.updated(stageIndex.toString, stage)
                 stageName.foreach(previous => stages = stages.updated(previous, stage))
-              // `--target` stops the build there, and Buildah builds only that stage and what it
-              // depends on. Modelling a later stage needs the stage graph, so only a first-stage
-              // target is read. Every target this launcher passes names the first stage, and any other
-              // target stops the action rather than reading what podman never evaluates.
-              if target.isDefined && stageIndex >= 0 then
-                if stageIndex == 0 && namesStage(target.get) then complete = true
-                else refuse(s"unsupported build target ${target.get}: only the first stage is read")
+              // `--target` stops the build there, so the read ends with the target stage. The read
+              // takes every earlier stage, as a build without a target reads every stage. Buildah skips
+              // a stage that the target does not use, so the read can name more sources than podman
+              // evaluates, never fewer.
+              if stageIndex >= 0 && target.exists(namesStage) then complete = true
               if !complete && refusal.isEmpty then
                 collect(reference, global, parent = true)
                 stageIndex += 1
@@ -192,10 +190,10 @@ object ContainerfileSources:
 
         continued = line.endsWith("\\")
 
-    // A one-stage Containerfile closes its only stage here rather than at a later FROM.
+    // The last stage closes here rather than at a later FROM.
     if refusal.isEmpty && !complete then
-      target.filterNot(stop => stageIndex == 0 && namesStage(stop)).foreach: stop =>
-        refusal = Some(s"error: unsupported build target $stop in $name: only the first stage is read")
+      target.filterNot(namesStage).foreach: stop =>
+        refusal = Some(s"error: no build target stage $stop in $name")
     refusal.toLeft(ImageSources(images.result().distinct, parents.result().distinct))
 
   /**
@@ -206,7 +204,7 @@ object ContainerfileSources:
    * checks this set against the commands the launcher produces.
    */
   val BuildCommandFlags =
-    Map("--build-arg" -> true, "--label" -> true, "--target" -> true, "-t" -> true, "-f" -> true,
+    Map("--build-arg" -> true, "--label" -> true, "--target" -> true, "-t" -> true, "-f" -> true, "--jobs" -> true,
       "--no-cache" -> false, "--pull=never" -> false)
 
   /**

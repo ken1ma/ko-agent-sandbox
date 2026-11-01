@@ -10,18 +10,26 @@ For every reported or discovered problem:
    affected code or data, every way to invoke the behavior, every variation in setup, use and
    cleanup, and related tests and documents across the workspace.
    Broaden step by step; stop at the largest set whose cases violate the same requirement and need
-   the same kind of fix. Group by those criteria, not wording or filename. If only the reported
-   case appears, broaden the search again.
+   the same kind of fix. Add a case to that set only when something you ran or read shows that it
+   violates the requirement; when you only expect it to, check first or ask the user. Group by
+   those criteria, not wording or filename. If only the reported case appears, broaden the search
+   again.
 3. Keep a working list of affected locations. Fix the place enforcing the requirement and add a
    test covering all affected cases. Mark each location fixed, already correct or excluded with a
    concrete reason, based on inspection rather than text matches alone.
 4. Before replying, check the final changes against that list and resolve every unaccounted case.
    Report the requirement and exclusions, not the full inventory.
 
-Preserve scope, ownership and how work is separated for review. Before crossing or changing a
-boundary, name it and its consequence, and ask a question; act only on its answer. Weigh options by
-everything they gain and cost, not only what the current task or plan needs, and report an
-improvement found beyond it.
+Preserve scope, ownership and how work is separated for review.
+
+- Before crossing or changing a boundary, such as a prompt file, a commit, the task's scope or
+  existing behavior that the request does not name, name it and its consequence, and ask a
+  question; act only on its answer.
+- A question the user asks in reply to yours is not its answer.
+- When a boundary blocks the consistent option, ask to cross it and name the cost; never settle for
+  an inconsistent placement or a stale reference.
+- Weigh options by everything they gain and cost, not only what the current task or plan needs, and
+  report an improvement found beyond it.
 
 Read the relevant official documentation, source, issues and workspace documents, including
 earlier decisions on the subject, before reasoning, designing, experimenting or editing. Reason and
@@ -106,10 +114,10 @@ Use trailing comma where possible.
 
 Do not use one-letter names, except for
 
-1. integer loop indices
-2. names whose whole lifecycle is visible in a block not expected to grow; caught exceptions are
-   always `ex`, never `e`, since handlers can grow
-3. names established in the literature
+- integer loop indices
+- names whose whole lifecycle is visible in a block not expected to grow; caught exceptions are
+  always `ex`, never `e`, since handlers can grow
+- names established in the literature
 
 
 # What helps other agents

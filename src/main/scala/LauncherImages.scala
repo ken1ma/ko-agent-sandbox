@@ -38,17 +38,16 @@ object LauncherImages:
   val KoAgentBpfBuildImage = "ko-agent-bpf-build:cache"
   val SelfTestBuildImage = "ko-agent-self-test-build:cache"
 
+  /** The sandbox Containerfile's stages that its final stage copies from, in the Containerfile's order. */
+  val SandboxDownloadStages = Vector("rust", "node", "codex", "vscode", "agy", "kiro", "copilot", "opencode", "lychee",
+    "uv")
+  def sandboxStageImage(stage: String): String = s"ko-agent-sandbox-$stage:cache"
+
   /** In dependency order. */
   def buildImageTags(version: String): Vector[String] =
-    Vector(
-      temurinImage(version),
-      coursierImage(version),
-      SandboxImage,
-      ProxyBuildImage,
-      ProxyImage,
-      KoAgentFsBuildImage,
-      KoAgentFsImage,
-    )
+    Vector(temurinImage(version), coursierImage(version), SandboxImage)
+      ++ SandboxDownloadStages.map(sandboxStageImage)
+      ++ Vector(ProxyBuildImage, ProxyImage, KoAgentFsBuildImage, KoAgentFsImage)
 
   /** The BPF backend's images, built on the podman machines alone (KoAgentBpf.buildCommands). */
   val KoAgentBpfImageTags = Vector(KoAgentBpfBuildImage, KoAgentBpfImage)
