@@ -223,6 +223,20 @@ image carried 7.2.5.
 - [ ] Print the machine's kernel version in the launch line, so that a report says which kernel a
   session ran on. `podman info` has the version as `host.kernel`.
 
+## The sandbox image's download stages on the host
+
+The sandbox image builds its download stages at once, then tags each stage with a `--target`
+build (`ImageBuilds.sandboxStageTagCommands`). On macOS, `--build` and two `--update` runs
+succeeded, and every tag build was a cache hit. Windows has not run it.
+
+- [ ] Start a session and check that every agent answers `--version`, and that the context RUN
+  gave `/usr/local/bin`, `/etc/claude-code`, `/etc/codex` and `/home/nonroot/.m2` their former
+  modes and owners.
+- [ ] Run `sbt "testWithPodman *StageCacheTagTest"` on macOS and Windows. The suite checks the
+  cache hits and the cleanup that the stage tags rely on, on a small fixture.
+- [ ] Run `--update` twice on macOS and Windows. Check that `podman images -a` then holds no stage
+  image from the first run.
+
 ## The run-on-host acceptance test's host prerequisites
 
 The test names one fixture's missing host run at a time, after `emit` fails on that fixture. A
