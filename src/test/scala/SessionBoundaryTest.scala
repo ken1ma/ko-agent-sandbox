@@ -53,12 +53,12 @@ class SessionBoundaryTest extends munit.FunSuite:
   private def status(args: String*): String =
     curl((Vector("-o", "/dev/null", "-w", "%{http_code}") ++ args)*).text.trim
 
-  /** Asserts `EPERM` specifically, which is the filter's policy denial, rather than any error. The mounted Rust suites
-    * draw the same distinction.
+  /** Asserts `EPERM` specifically, which is the workspace policy's denial, rather than any error. The mounted Rust
+    * suites draw the same distinction.
     * - Java reports `EPERM` as a bare `FileSystemException`.
     * - `AccessDeniedException` is `EACCES`, a different answer. That answer would mean that the tree is laid out
     *   differently than the test assumed. */
-  private def deniedByFilter(what: String)(thunk: => Any): Unit =
+  private def deniedByPolicy(what: String)(thunk: => Any): Unit =
     val refusal = intercept[java.nio.file.FileSystemException](thunk)
     assert(
       refusal.getMessage.contains("Operation not permitted"),
@@ -459,8 +459,8 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("a git host serves an anonymous clone"):
     inSession()
-    // The clone goes under /tmp, never into the workspace. The filter itself refuses a clone into the workspace, which
-    // would make this a test of the wrong boundary.
+    // The clone goes under /tmp, never into the workspace. The workspace policy itself refuses a clone into the
+    // workspace, which would make this a test of the wrong boundary.
     val into = Files.createTempDirectory("clone-probe")
     try
       val clone = run(
@@ -471,7 +471,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     finally deleteRecursively(into)
 
   /** The workspace mount's filesystem type and source, read from mountinfo.
-    * - The filter mounts as `fuse` from `ko-agent-fs` (ko-agent-fs/fuse/src/fs.rs, `MountOption::FSName`).
+    * - The FUSE backend mounts as `fuse` from `ko-agent-fs` (ko-agent-fs/fuse/src/fs.rs, `MountOption::FSName`).
     * - The BPF backend mounts the podman machine's share itself, and the share is `virtiofs` or `9p`.
     *
     * On macOS the share's magic number is FUSE's too, so `stat -f %T` cannot tell the two mounts apart. */
@@ -482,10 +482,10 @@ class SessionBoundaryTest extends munit.FunSuite:
         (after(0), unescapeMountinfo(after(1)))
     }
 
-  test("the workspace is writable, and its Git entries are not, under the filter or the policy"):
+  test("the workspace is writable, and its Git entries are not, under either backend"):
     inSession()
     val mount = workspaceMount.getOrElse(fail(s"$workspace is not a mount point in /proc/self/mountinfo"))
-    val filtered = mount == ("fuse", "ko-agent-fs")
+    val fuseMounted = mount == ("fuse", "ko-agent-fs")
 
     val work = Files.createTempDirectory(workspace, ".boundary-test-")
     try
@@ -494,43 +494,48 @@ class SessionBoundaryTest extends munit.FunSuite:
 
       // A writable workspace mounted from elsewhere is the BPF backend's share: --workspace=live,bpf, the live mode's
       // other backend (SECURITY.md, "The BPF backend").
-      // - The BPF policy lets a process make an empty `.git` directory at any depth and refuses the first entry under
+      // - The BPF backend lets a process make an empty `.git` directory at any depth and refuses the first entry under
       //   it.
-      // - The filter refuses the `.git` directory itself.
+      // - The FUSE backend refuses the `.git` directory itself.
       val deep = Files.createDirectories(work.resolve("deep/nested"))
       Vector(work, deep).foreach: at =>
-        if filtered then
-          deniedByFilter(s"creating .git under ${at.getFileName}"):
+        if fuseMounted then
+          deniedByPolicy(s"creating .git under ${at.getFileName}"):
             Files.createDirectory(at.resolve(".git"))
         else
           val dotGit = Files.createDirectory(at.resolve(".git"))
-          deniedByFilter(s"creating .git/HEAD under ${at.getFileName}"):
+          deniedByPolicy(s"creating .git/HEAD under ${at.getFileName}"):
             Files.writeString(dotGit.resolve("HEAD"), "ref: refs/heads/main\n")
           Files.delete(dotGit)
 
       val config = workspace.resolve(".git/config")
       if Files.exists(config) then
-        // The test appends nothing rather than truncating. The question is whether the filter permits a write, and
-        // asking the question must not write to the user's own repository.
-        deniedByFilter("opening this repository's .git/config for writing"):
+        // The test appends nothing rather than truncating. The question is whether the workspace policy permits a
+        // write, and asking the question must not write to the user's own repository.
+        deniedByPolicy("opening this repository's .git/config for writing"):
           Files.newOutputStream(config, StandardOpenOption.APPEND).close()
     finally deleteRecursively(work)
 
   test("the session cannot write the boundary directory governing the next launch"):
     inSession()
     // The session's workspace mode decides which mechanism refuses the write:
-    // - the filter's reserved-name rule answers EPERM for `.ko-agent-sandbox` at any depth, including creation of the
-    //   directory itself;
+    // - the FUSE backend's reserved-name rule answers EPERM for `.ko-agent-sandbox` at any depth, including creation
+    //   of the directory itself;
+    // - the BPF backend lets a process make the empty directory, and answers EPERM for any entry under it
+    //   (SECURITY.md, "The BPF backend");
     // - the read-only tree of --workspace=read-only answers EROFS.
     // Either way the write must fail. A session that could create or edit the directory would write the rules that
     // govern the *next* session (SECURITY.md).
     val boundaryDir = workspace.resolve(".ko-agent-sandbox")
-    val probe =
-      if Files.isDirectory(boundaryDir) then boundaryDir.resolve("probe")
-      else boundaryDir
-    val refused = intercept[java.nio.file.FileSystemException]:
-      if probe == boundaryDir then Files.createDirectory(boundaryDir): Unit
-      else Files.newOutputStream(probe).close()
+    val existed = Files.isDirectory(boundaryDir)
+    val fuseMounted = workspaceMount.contains(("fuse", "ko-agent-fs"))
+    val made = !existed && !fuseMounted && scala.util.Try(Files.createDirectory(boundaryDir)).isSuccess
+    val refused =
+      try
+        intercept[java.nio.file.FileSystemException]:
+          if existed || made then Files.newOutputStream(boundaryDir.resolve("probe")).close()
+          else Files.createDirectory(boundaryDir): Unit
+      finally if made then Files.delete(boundaryDir)
     assert(
       refused.getMessage.contains("Operation not permitted")
         || refused.getMessage.contains("Read-only file system"),

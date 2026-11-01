@@ -36,8 +36,8 @@ class SelfTestShareTest extends FunSuite:
     assert(probeContainers(Seq(probeContainerName(AgentSandboxLauncher.newRunSuffix()))).nonEmpty)
 
   test("the probe program speaks exactly the protocol the orchestrator reads"):
-    assertEquals(interpret("stack filtered"), ProbeEvent.Stack(true))
-    assertEquals(interpret("stack unfiltered"), ProbeEvent.Stack(false))
+    assertEquals(interpret("stack fuse"), ProbeEvent.Stack(true))
+    assertEquals(interpret("stack plain"), ProbeEvent.Stack(false))
     assertEquals(interpret("READY"), ProbeEvent.ReadySeen)
     assertEquals(interpret("read-visible"), ProbeEvent.ReadSeen(true))
     assertEquals(interpret("read-visible never"), ProbeEvent.ReadSeen(false))
@@ -57,5 +57,5 @@ class SelfTestShareTest extends FunSuite:
     assert(script.contains("base64 -d"))
     assert(script.contains("uname -r"))
     // The script uses findmnt, not stat: virtiofs registers under FUSE's statfs magic, and the machine
-    // line exists to tell the share from the filter's own mounts.
+    // line exists to tell the share from the FUSE backend's own mounts.
     assert(script.contains("findmnt"))

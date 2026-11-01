@@ -27,10 +27,10 @@ object CommandLine:
   /**
    * `--workspace` takes these values beside the mode, in any order, each at most once:
    * - the backend that holds the workspace's protections:
-   *   - `fuse`, the ko-agent-fs filter, which is the default of both modes until the release decision;
-   *   - `bpf`, the cgroup-LSM policy of doc/bpf-lsm-cgroup.md ("Launches");
+   *   - `fuse`, the FUSE backend, which is the default of both modes until the release decision;
+   *   - `bpf`, the BPF backend of doc/bpf-lsm-cgroup.md ("Launches");
    * - `unix-socket`, which allows Unix sockets in the workspace and beneath the persistent volume at the cost of the
-   *   policy's ninth hook. `unix-socket` needs `bpf`, because the filter cannot honor the value.
+   *   BPF backend's ninth hook. `unix-socket` needs `bpf`, because the FUSE backend cannot honor the value.
    *   - On Windows the share itself refuses every socket bind (`ENOTSUP`), so the value reaches only the volume there
    *     (doc/bpf-lsm-cgroup.md, "What is gained and what is lost").
    */
@@ -43,8 +43,8 @@ object CommandLine:
     def bpf: Boolean = backend == "bpf"
     def live: Boolean = mode == "live"
     def readOnly: Boolean = mode == "read-only"
-    /** Whether the filter mounts the workspace, which happens in a live session under the `fuse` backend. */
-    def filtered: Boolean = live && !bpf
+    /** Whether the FUSE backend mounts the workspace, which happens in a live session under the `fuse` backend. */
+    def fuseMounted: Boolean = live && !bpf
 
     /** The mode, the backend, then `unix-socket` when set. The launch line uses commas without spaces to match the
       * `--workspace` command-line value and the container label (KoAgentBpf.SettingsLabel). The launch line always
@@ -78,7 +78,7 @@ object CommandLine:
         WorkspaceSettings(modes.head, backends.headOption.getOrElse(DefaultWorkspaceBackend), sockets.nonEmpty)
       if settings.unixSocket && !settings.bpf then
         Left(
-          s"error: --workspace=$value; $UnixSocketValue needs the bpf backend: the fuse filter cannot allow Unix " +
+          s"error: --workspace=$value; $UnixSocketValue needs the BPF backend: the FUSE backend cannot allow Unix " +
             s"sockets in the workspace (--workspace=${settings.mode},bpf,$UnixSocketValue)",
         )
       else Right(settings)

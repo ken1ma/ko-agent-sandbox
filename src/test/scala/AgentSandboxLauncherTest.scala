@@ -768,7 +768,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("self-test builds refresh no remote source of their own"):
     // --self-test pulls nothing (selfTest). Pulling nothing is sound only while every remote source of its
-    // Containerfile is one that --build pulls. The Rust version read from the filter's Containerfile
+    // Containerfile is one that --build pulls. The Rust version read from ko-agent-fs's Containerfile
     // makes the two references the same, and a base of its own here would never be refreshed.
     val readContainerfile: String => String = BundledBuildContext.resource
     val localImages = managedImageTags("1.2-3").toSet
@@ -1449,9 +1449,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("every build step with a cache mount locks its caches and expires them before its commands"):
     // ko-agent-fs/Containerfile explains what a cache that a cleanup deletes file by file does to the step.
-    val filterContainerfile = Paths.get("ko-agent-fs/Containerfile")
+    val koAgentFsContainerfile = Paths.get("ko-agent-fs/Containerfile")
     val containerfiles = FileHelper.directoryEntries(Paths.get("container"))
-      .map(_.resolve("Containerfile")).filter(Files.isRegularFile(_)) :+ filterContainerfile
+      .map(_.resolve("Containerfile")).filter(Files.isRegularFile(_)) :+ koAgentFsContainerfile
     val cachedSteps = containerfiles.flatMap: path =>
       // One line per instruction: a comment line between continued lines is not part of the instruction.
       Files.readString(path).linesIterator.filterNot(_.trim.startsWith("#")).mkString("\n")
@@ -1459,7 +1459,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         .linesIterator.filter(_.contains("--mount=type=cache")).map(path -> _)
     assertEquals(
       cachedSteps.map((path, _) => path).toSet,
-      Set(filterContainerfile, Paths.get("container/ko-agent-self-test/Containerfile")),
+      Set(koAgentFsContainerfile, Paths.get("container/ko-agent-self-test/Containerfile")),
     )
     cachedSteps.foreach: (path, step) =>
       val targets = """--mount=type=cache,target=(\S+)""".r.findAllMatchIn(step).map(_.group(1)).toVector
@@ -1472,7 +1472,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         s"$path: $step",
       )
 
-  test("the self-test identity covers its source, filter, BPF probe, and actual inherited sandbox image"):
+  test("the self-test identity covers its source, ko-agent-fs, BPF probe, and actual inherited sandbox image"):
     val original = selfTestBundleId("fs-source-1", "self-test-source-1", "bpf-source-1", "sandbox-image-1")
     assert(selfTestBundleId("fs-source-2", "self-test-source-1", "bpf-source-1", "sandbox-image-1") != original)
     assert(selfTestBundleId("fs-source-1", "self-test-source-2", "bpf-source-1", "sandbox-image-1") != original)
@@ -1795,12 +1795,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assert(section.contains("temporary work"), section)
       assert(section.contains("return results in the conversation"), section)
       assert(section.contains("--workspace=live"), section)
-    val filtered = appendedSection(Mount, "live", resolution)
-    assert(filtered.contains("ko-agent-fs"), filtered)
-    assert(filtered.contains("at any depth"), filtered)
-    assert(filtered.contains("Symlink targets"), filtered)
+    val liveFuse = appendedSection(Mount, "live", resolution)
+    assert(liveFuse.contains("FUSE backend"), liveFuse)
+    assert(liveFuse.contains("at any depth"), liveFuse)
+    assert(liveFuse.contains("Symlink targets"), liveFuse)
     // Both name the relaunch path for a host the ruleset does not allow.
-    Vector(readOnly, filtered).foreach: section =>
+    Vector(readOnly, liveFuse).foreach: section =>
       assert(section.contains(".ko-agent-sandbox/egress/rule"), section)
       assert(section.contains("deny-unless-allowed"), section)
     // --run-on-host adds the run-on-host instruction. The instruction names each served program's
@@ -1838,7 +1838,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assert(runOnHostSection.contains("never rerun in the container"), runOnHostSection)
     assert(runOnHostSection.contains(RunOnHostChannel.RunOnHostVariable), runOnHostSection)
-    assert(!filtered.contains("ko-sandbox-run-on-host"), filtered)
+    assert(!liveFuse.contains("ko-sandbox-run-on-host"), liveFuse)
     val discoverable =
       appendedSection(Mount, "live", resolution, Vector.empty, hostCommandsAvailable = true)
     assert(discoverable.contains("absent from this session"), discoverable)
@@ -1851,14 +1851,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(readOnlyWithHostCommands.contains("session's own writes"), readOnlyWithHostCommands)
     assert(readOnlyWithHostCommands.contains("ko-sandbox-run-on-host"), readOnlyWithHostCommands)
     assert(readOnlyWithHostCommands.contains("--workspace=live"), readOnlyWithHostCommands)
-    assert(filtered.contains("Anything not allowed by the ruleset is refused"), filtered)
-    assert(filtered.contains("adds `allow https://<host>/ read`"), filtered)
+    assert(liveFuse.contains("Anything not allowed by the ruleset is refused"), liveFuse)
+    assert(liveFuse.contains("adds `allow https://<host>/ read`"), liveFuse)
     // A session without git, or with read-only git: the agent learns this before its first command,
     // in the paragraph that SandboxWorkspace composes (noGitInstruction, readOnlyGitInstruction).
     val paragraph = "Git does not work in this session: `.git` names a gitdir the sandbox does not have."
     val noGit = appendedSection(Mount, "live", resolution, git = Some(paragraph))
     assert(noGit.contains(s"\n\n$paragraph\n"), noGit)
-    assert(!filtered.contains("Git does not work"), filtered)
+    assert(!liveFuse.contains("Git does not work"), liveFuse)
 
   test("a bpf session is told where a Unix socket can be bound, per socket setting and share"):
     val resolution = "egress profile: deny-all"
@@ -1872,7 +1872,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val windows = appendedSection(Mount, "live", resolution, backend = "bpf", unixSocket = true, windowsShare = true)
     assert(windows.contains("the share refuses a bind in the workspace with `ENOTSUP`"), windows)
     assert(!windows.contains("wherever a file can be made"), windows)
-    // The filter has no socket setting, so its text says nothing of sockets.
+    // The FUSE backend has no socket setting, so its text says nothing of sockets.
     val fuse = appendedSection(Mount, "live", resolution)
     assert(!fuse.contains("Unix socket"), fuse)
 
@@ -2082,9 +2082,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // The backend is always spelled, the default included.
     assertEquals(settings("live,fuse").map(_.spelled), Right("live,fuse"))
     assertEquals(settings("live").map(_.spelled), Right("live,fuse"))
-    // The filter cannot honor the socket setting, so the setting is a fatal error, not a silent downgrade.
-    assert(settings("live,unix-socket").swap.exists(_.contains("needs the bpf backend")))
-    assert(settings("live,fuse,unix-socket").swap.exists(_.contains("needs the bpf backend")))
+    // The FUSE backend cannot honor the socket setting, so the setting is a fatal error, not a silent downgrade.
+    assert(settings("live,unix-socket").swap.exists(_.contains("needs the BPF backend")))
+    assert(settings("live,fuse,unix-socket").swap.exists(_.contains("needs the BPF backend")))
     // Each value appears once, with one mode, nothing unknown and nothing empty.
     assert(settings("live,live").isLeft)
     assert(settings("live,read-only").isLeft)

@@ -408,7 +408,7 @@ static bool glob_matches(const char *pattern, const char *name)
 // policy.rs, `child_rule_context`, in user space, over the lines a context is computed against.
 // It computes the alias context of a symlink's position, which the guard computes in production.
 // The lines are the rules map's, by their indices. The guard's own anchored lines never match here,
-// since the filter computes a symlink's context without them.
+// since the FUSE backend computes a symlink's context without them.
 static void child_rule_context(const struct rule_line *lines, __u32 count, struct alias_context *ctx,
 			       bool parent_is_root, const char *folded)
 {

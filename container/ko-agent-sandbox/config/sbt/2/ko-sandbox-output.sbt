@@ -1,5 +1,5 @@
 // sbt writes the build output outside the workspace, for two reasons:
-// - This repository's compile takes 604 s writing `target/out` through the ko-agent-fs filter, and 28 s writing
+// - This repository's compile takes 604 s writing `target/out` through the FUSE backend, and 28 s writing
 //   here (ko-agent-fs/fuse/doc/verification-log.md, "an sbt build").
 // - Host and container builds stop sharing `target/out`. After a build-cache hit, host sbt 2 leaves its outputs
 //   there as symlinks into the host's cache, class files included, and a compile here fails writing through them

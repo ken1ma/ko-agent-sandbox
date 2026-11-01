@@ -6,8 +6,8 @@
 #   allowed license nothing uses, so a speculative entry adds noise to every build. Extend the list
 #   when a dependency actually arrives under a new (still permissive) license.
 # - Copyleft is left out deliberately, weak copyleft such as MPL-2.0 included: these binaries ship
-#   inside a user's environment, and `SECURITY.md` ("The workspace filter") says this check allows
-#   only permissive licenses.
+#   inside a user's environment, and `SECURITY.md` ("The FUSE backend, on the platforms where it is
+#   unverified") says this check allows only permissive licenses.
 
 [licenses]
 allow = [
@@ -33,8 +33,8 @@ deny = ["cc", "bindgen"]
 # - Cargo.lock decides those three checks, so they give the same answer today and next year. The
 #   advisory database is an external input that keeps changing.
 # - Failing the build on it would make a build that passed yesterday fail today with no source
-#   change. This build is how a user installs the filter, so it would also block the `--build` that
-#   ships the fix.
+#   change. This build is how a user installs `ko-agent-fs` and `ko-agent-fs-fuse`, so it would also
+#   block the `--build` that ships the fix.
 # - Advisories belong in a scheduled run instead: the CI row in `doc/TODO.md` at the repository
 #   root. Nothing runs them today.
 yanked = "warn"

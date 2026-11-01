@@ -134,6 +134,18 @@ Compile / resourceGenerators += Def.task {
   Seq(target)
 }.taskValue
 
+// The BPF backend's launcher suite (ko-agent-fs/bpf/test/podman/launcher/Launcher.scala) refuses a jar whose code
+// differs from the checkout's. A compiled source leaves only classes in the jar, so the jar carries a copy of each one
+// that the suite's sources.txt lists. The copies sit outside sandbox-build/, so they leave the bundle's source id as
+// it is.
+Compile / resourceGenerators += Def.task {
+  val launcherSources = Seq("src/main/scala/KoAgentBpf.scala")
+  launcherSources.map: path =>
+    val target = (Compile / resourceManaged).value / "launcher-sources" / path
+    IO.copyFile(baseDirectory.value / path, target)
+    target
+}.taskValue
+
 // Bundle the build contexts into the jar, so --build works with no checkout present (ImageBuilds.unpackBuildContext).
 // INDEX lists every bundled path, because a jar's resource tree cannot be enumerated at runtime.
 // Native-image's resource discovery misses required files. The native-image command in doc/TODO.md must therefore
@@ -154,9 +166,9 @@ Compile / resourceGenerators += Def.task {
         "ko-agent-sandbox", "ko-agent-egress-proxy",  // runtime images
         "ko-agent-self-test",                         // test image
       ),
-    // ko-agent-fs holds the policy and the FUSE filter, which --build compiles (ko-agent-fs/Containerfile), and the BPF
-    // backend (ko-agent-fs/bpf/Containerfile). The self-test image compiles the suites and the BPF classifier's host
-    // build for policy/tests/bpf_equivalence.rs (ko-agent-self-test/Containerfile).
+    // ko-agent-fs holds the workspace policy and the FUSE backend, which --build compiles (ko-agent-fs/Containerfile),
+    // and the BPF backend (ko-agent-fs/bpf/Containerfile). The self-test image compiles the suites and the BPF
+    // classifier's host build for policy/tests/bpf_equivalence.rs (ko-agent-self-test/Containerfile).
     baseDirectory.value -> Seq("ko-agent-fs"),
   )
 

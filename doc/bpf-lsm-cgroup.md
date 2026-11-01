@@ -1,6 +1,6 @@
 # The BPF cgroup-LSM backend
 
-The workspace filter makes metadata operations 6–18× slower than an unfiltered bind mount on macOS
+The FUSE backend makes metadata operations 6–18× slower than a plain bind mount on macOS
 and 5–30× slower on Windows (`../ko-agent-fs/fuse/doc/verification-log.md`, "The cost of a path
 walk"). Sessions through it have also frozen the podman machine.
 
@@ -9,7 +9,7 @@ runs the containers enforces the policy:
 
 - The policy is a set of BPF programs of type `BPF_LSM_CGROUP`, attached to the sandbox's own
   cgroup.
-- The host and every other container keep unfiltered access to the same files.
+- The host and every other container keep unrestricted access to the same files.
 
 This document states what the backend promises. `../ko-agent-fs/bpf/doc/architecture.md` says how
 it keeps each promise, and `../ko-agent-fs/bpf/doc/evidence.md` what the suites measured on both
@@ -23,8 +23,8 @@ What the first version covers:
 - A `--workspace=read-only` session there gets a policy that records no root ("The hooks",
   `file_receive`, explains why).
 - `NESTING=same-uid` and `NESTING=user-namespace` sessions (`../SECURITY.md`, "No containers inside
-  the sandbox by default") and native Linux hosts keep the filter (`TODO.md`, "The BPF backend's
-  later versions").
+  the sandbox by default") and native Linux hosts keep the FUSE backend (`TODO.md`, "The BPF
+  backend's later versions").
 - `fuse` stays the default of both modes until the release decision (`TODO.md`, "The BPF backend as
   the default").
 - No launch binds the workspace writable unless the policy is attached and verified.
@@ -45,7 +45,7 @@ What the first version covers:
   the launcher resolves for relocated hooks and symlink aliases (`file-rules.md`).
 - The policy applies to the sandbox's cgroup before any program of the image runs in the
   container: the entrypoint, `podman exec` processes, and OCI hooks that run in the container's
-  namespaces. The container runtime's own processes are trusted, as the filter daemon is.
+  namespaces. The container runtime's own processes are trusted, as the FUSE backend's daemon is.
 - The threat is a process inside the sandbox. A VM administrator, a compromised podman or runtime,
   and whoever runs the controller are trusted; pinned links do not resist them.
 - On Windows, the policy is what the WSL kernel enforces on container processes. It changes nothing
@@ -81,7 +81,7 @@ Under `--workspace=live,bpf` on a podman machine:
     a second name it gives a nested repository's `.git` pointer file that belongs to no submodule
     ("The policy", the second-name rule).
 - The file rules hold at any depth, with the resolved `read-only-path` lines. Git's everyday
-  commands work, and the commands the filter blocks stay blocked and listed.
+  commands work, and the commands the FUSE backend blocks stay blocked and listed.
 - Under `NESTING=none` with the launcher's profile ("Attributes, flags and ioctls", "Mounts"):
   - the session creates no user namespace, and no mount syscall succeeds;
   - no xattr or ACL is set, and no `file_setattr` call succeeds, anywhere in the container, `~`
@@ -175,8 +175,8 @@ What else a session can do with directories, and why each is safe:
     (`child_rule_context`).
 
   Only `mkdir` can bring the name back, and it starts the directory empty, which returns it to the
-  cases above. A removed gitdir's `HEAD` stays refused. `objects` and `objects/info` are pinned,
-  not protected: the filter lets the session remove them too, since only `mkdir` can create them
+  cases above. A removed gitdir's `HEAD` stays refused. `objects` and `objects/info` are pinned, not
+  protected: the FUSE backend lets the session remove them too, since only `mkdir` can create them
   again (`is_pinned_within_gitdir`).
 
 
@@ -185,11 +185,11 @@ What else a session can do with directories, and why each is safe:
 Besides the mode, `--workspace` takes comma-separated values for the backend and for sockets (the
 user's decisions of 2026-10-26):
 
-- The backend is `bpf`, or `fuse` for the filter. `fuse` is the default of both modes until the
-  release decision.
+- The backend is `bpf`, or `fuse` for the FUSE backend. `fuse` is the default of both modes until
+  the release decision.
 - `unix-socket` allows Unix sockets in the workspace and beneath the persistent volume, at the cost
   of the ninth hook ("The hooks", `file_receive`). With `fuse` it is a fatal error, since the
-  filter cannot honor it.
+  FUSE backend cannot honor it.
 - The values are accepted in any order. The container label holds one canonical spelling, so the
   refusal beside a live session compares settings, not spellings.
 
@@ -223,18 +223,18 @@ What a launch under `bpf` does and refuses:
     a raw mount, a linked worktree's main gitdir included;
   - a live container of an earlier launcher, without the labels, runs beside it;
   - a live container beside it has a recorded root path that no longer names its recorded identity.
-- The sessions the first version does not serve keep the filter.
+- The sessions the first version does not serve keep the FUSE backend.
 
 
 ## What is gained and what is lost
 
 Neither list includes the git property, the file rules or the blocked git commands: the hooks hold
-them as the filter does. The hooks hold the name rule too, except for directories, which "Lost"
-lists. The lists show what else changes.
+them as the FUSE backend does. The hooks hold the name rule too, except for directories, which
+"Lost" lists. The lists show what else changes.
 
 Gained:
 
-- **The filter's whole cost.** The most the backend can save is measured
+- **The FUSE backend's whole cost.** The most the backend can save is measured
   (`../ko-agent-fs/fuse/doc/verification-log.md`, "The cost of a path walk"):
 
   | operation                            | direct bind | bpf     | fuse    |
@@ -246,18 +246,19 @@ Gained:
   - The `sbt` row's direct-bind and bpf figures keep the build output in the workspace, as the
     fuse figure does. The 43 s of "an sbt build, by where its output goes" had it outside.
   - "Benchmark on macOS" and "Benchmark on WSL" measure the policy's own cost over the direct bind:
-    - `entry-cost.py`'s rounds overlap the bind's in every row on both machines;
-    - the single runs of the walk and the build lie within 6 % of the bind's on the per-file rows,
+    - `entry-cost.py`'s rounds overlap the bind's in every row on both machines but one: `rm -rf`
+      on macOS runs 1.19 times the bind's and `cp -r` on WSL 1.06 times, above it in each round;
+    - the single runs of the walk and the build lie within 7 % of the bind's on the per-file rows,
       `find`, `git status` and the build;
     - on the depth rows, 200 `lstat` calls of 0.1 to 1 ms each, they scatter up to 1.2 times either
       way;
-    - the program itself takes 13 to 16 µs per judged call on either kernel, and 40 to 65 µs at
+    - the program itself takes 13 to 16 µs per judged call on either kernel, and 38 to 78 µs at
       the build's depth of 20.
   - The program runs on mutations and opens, never on `lookup` or `getattr`, the operations that
     dominate those columns.
 - **The daemon's share of the machine's hangs.** `git status` in a worktree of hundreds of files
   has frozen the podman machine for over an hour, while memory was not short and
-  `podman machine ssh` failed throughout. The daemon and its requests go away with the filter.
+  `podman machine ssh` failed throughout. The daemon and its requests go away with the FUSE backend.
   - What the bind keeps is the share server's one worker thread per share: one blocked request
     stalls every later one (`upstream-issues.md`, "Setting a FIFO's times blocks the macOS
     virtio-fs server").
@@ -266,11 +267,11 @@ Gained:
     under `unix-socket`, its descriptor in `file_receive`. The program holds the rules, and the
     measured sections of the policy to benchmark suites measure them.
 - **No window between resolving and acting.** The decision is taken inside the syscall, on the
-  dentry the kernel acts on; the filter's resolver and its `ESTALE` rules only approximate this. A
-  held directory handle follows a directory the host moved, and is judged by its current position.
-  The walk reads `d_parent` and `d_name` without `rename_lock`, so it can see a concurrent `d_move`
-  of an ancestor half done, half old and half new (`fs/dcache.c`, `__d_move`). Three things keep
-  that harmless:
+  dentry the kernel acts on; the FUSE backend's resolver and its `ESTALE` rules only approximate
+  this. A held directory handle follows a directory the host moved, and is judged by its current
+  position. The walk reads `d_parent` and `d_name` without `rename_lock`, so it can see a concurrent
+  `d_move` of an ancestor half done, half old and half new (`fs/dcache.c`, `__d_move`). Three things
+  keep that harmless:
   - A walk that overlaps a rename is discarded, and no property of the classifier could replace
     that:
     - `d_move`, `d_exchange` and `__d_unalias` hold `rename_lock` across the parent change and the
@@ -315,18 +316,18 @@ Gained:
     `__d_unalias`, which FUSE, virtiofs, overlayfs, ext4, xfs and 9p reach; 9p without metadata
     caching makes a new inode instead). On native Linux, `rename(2)` itself moves it.
     - A write the walk judges at the old position is one the session could make until the guest
-      noticed the host's rename: the race `git-metadata.md`, "Races", lists for the filter.
+      noticed the host's rename: the race `git-metadata.md`, "Races", lists for the FUSE backend.
     - The host is trusted.
-- **Data coherency is the share's own.** The filter's two remaining cache cases
+- **Data coherency is the share's own.** The FUSE backend's two remaining cache cases
   (`../ko-agent-fs/fuse/doc/architecture.md`, "Coherency") have no layer to occur in.
 - **No daemon.** No `ENOTCONN` failure that all of a workspace's sessions share, no serialized
   round trips, no inode table.
 
-Lost, stated as what becomes possible that the filter does not allow:
+Lost, stated as what becomes possible that the FUSE backend does not allow:
 
 - **A privileged controller in the path.** The enforcement is the verified program in the kernel.
-  The controller that installs it runs with the `bpf` syscall's privileges, as root for the
-  launch, in the machine or on a native Linux host ("Native Linux"). The filter daemon runs as an
+  The controller that installs it runs with the `bpf` syscall's privileges, as root for the launch,
+  in the machine or on a native Linux host ("Native Linux"). The FUSE backend's daemon runs as an
   ordinary user throughout.
   - The controller parses no text from the workspace: the unprivileged guard folds and compiles
     the rules into fixed-size records ("The policy"), and the controller installs them and
@@ -368,7 +369,7 @@ Lost, stated as what becomes possible that the filter does not allow:
     - Not built. The case to revisit is two sessions launched with different volumes.
 - **No write by a `--workspace=read-only` session through a descriptor a live session passes; and
   the controller runs for a read-only launch.**
-  - The filter admits the write, since the live session's mount judged the open.
+  - The FUSE backend admits the write, since the live session's mount judged the open.
   - Here nothing arrives by default. Under the option, `file_receive` refuses what another
     container passes, except a share file the session could open itself, a file of its own volume,
     or a file of another type, which reaches no share ("The hooks").
@@ -376,16 +377,16 @@ Lost, stated as what becomes possible that the filter does not allow:
     hooks", `file_receive`).
   - No protection is weakened.
 - **No socket inode inside a gitdir under `unix-socket`, by creation, rename or link.** Git binds
-  its one socket there at the root, under a name the filter already refuses. No protection is
+  its one socket there at the root, under a name the FUSE backend already refuses. No protection is
   weakened.
 - **A directory at any name, `.git` and `.ko-agent-sandbox` included.** The session can create and
-  remove empty directories at a guarded name or position, which the filter refuses. "Directories"
-  has the rules that keep this from weakening any protection.
-- **Under `NESTING=none`, nothing in the container sets xattrs (`setfattr`) or ACLs (`setfacl`),
-  or calls `file_setattr`.** The seccomp rule ("Attributes, flags and ioctls") refuses them under
-  `~` too, where the filter refuses them only in the workspace, and `cp -a` drops xattrs and ACLs
-  there. On the machines the share answers `chattr` and the filesystems' own ioctl commands, such
-  as `FS_IOC_SET_ENCRYPTION_POLICY` and `FS_IOC_ENABLE_VERITY` ("Inventory"). No protection is
+  remove empty directories at a guarded name or position, which the FUSE backend refuses.
+  "Directories" has the rules that keep this from weakening any protection.
+- **Under `NESTING=none`, nothing in the container sets xattrs (`setfattr`) or ACLs (`setfacl`), or
+  calls `file_setattr`.** The seccomp rule ("Attributes, flags and ioctls") refuses them under `~`
+  too, where the FUSE backend refuses them only in the workspace, and `cp -a` drops xattrs and ACLs
+  there. On the machines the share answers `chattr` and the filesystems' own ioctl commands, such as
+  `FS_IOC_SET_ENCRYPTION_POLICY` and `FS_IOC_ENABLE_VERITY` ("Inventory"). No protection is
   weakened.
 
 
@@ -400,13 +401,13 @@ reason, and its answer here:
   host unfiltered needs cgroup scoping written by hand. `BPF_LSM_CGROUP` is that scoping, in the
   kernel: a program attached to a cgroup runs only for tasks in that cgroup and its descendants
   ("The mechanism").
-- The filter runs on any VM, while BPF-LSM depends on how the VM's kernel is built and booted.
+- The FUSE backend runs on any VM, while BPF-LSM depends on how the VM's kernel is built and booted.
   The backend is a capability the launcher probes, and a failed probe binds nothing writable.
   - Both podman machines show the LSM active and the BTF readable as shipped ("Environment
     evidence").
   - A native Linux host passes the probe within a stated supported set, after host changes the user
     consents to ("Native Linux").
-- A BPF policy program is less auditable than Rust. The answer:
+- A BPF program is less auditable than Rust. The answer:
   - The classifier is the C program the suites measured. It is compiled a second time into a host
     test binary, against headers that stand in for the kernel's types and helpers
     (`../ko-agent-fs/bpf/test/host/`).
@@ -437,7 +438,7 @@ reason, and its answer here:
       wrong one of two same-named types, Aya issue 1727).
     - The loader's correctness and the classifier's are checked separately: the loader by the
       relocation suite that the Rust port's item in `TODO.md` names, the classifier by the corpus.
-  - The verifier does not catch a wrong decision: an allow where the filter denies, or a name
+  - The verifier does not catch a wrong decision: an allow where the FUSE backend denies, or a name
     folded differently. The corpus checks that through both classifiers, in either language.
   - Where C does cost is the controller: an ordinary process running as root, parsing the guard's
     records and calling libbpf. A memory bug there is a privileged one, which only the launcher

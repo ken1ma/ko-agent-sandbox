@@ -193,7 +193,7 @@ pub const OPERATIONAL_UNOBSERVED: &[&str] = &[
 
 /// The entries that stay frozen.
 pub const PROTECTED: &[&str] = &[
-    // The command-defining config files and the hook tree: what the filter exists to freeze.
+    // The command-defining config files and the hook tree: what the workspace policy exists to freeze.
     ".git/config",
     ".git/config.worktree",
     ".git/hooks/pre-commit",

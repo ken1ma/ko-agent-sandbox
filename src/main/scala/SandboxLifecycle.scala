@@ -167,7 +167,7 @@ object SandboxLifecycle:
    * - $1, this run's sandbox, and $2, its proxy;
    * - $3, the resolved podman path (findOnPath has the reason);
    * - $4 and $5, the run's networks;
-   * - $6 and $7, the workspace filter's teardown mode and script, documented at the step that reads them;
+   * - $6 and $7, the FUSE backend's teardown mode and script, documented at the step that reads them;
    * - $8, the clipboard mode, and $9 to ${11}, the clipboard's host programs;
    * - ${12}, the ps with which the cleanup walks the tree;
    * - ${13}, the microphone probe's status file, empty without --audio=mic, and ${14}, the microphone log;
@@ -254,6 +254,12 @@ object SandboxLifecycle:
       |  rm -rf "$microphone_dir"
       |fi
       |
+      |# A `podman restart` starts the sandbox again right after the stop that
+      |# ended the wait, and --rm then fails on the running container, which
+      |# would run on without its proxy. This removal ends the session either
+      |# way; after an ordinary exit the container is gone and it does nothing.
+      |"$3" rm --force --time 2 "$1" >/dev/null 2>&1
+      |
       |# Unconditional: the proxy is this run's own. --time 2, because it
       |# holds no state worth draining; its audit log is a host file.
       |"$3" rm --force --time 2 "$2"
@@ -272,9 +278,9 @@ object SandboxLifecycle:
       |  done
       |done
       |
-      |# The workspace filter's last-session teardown: $6 is where to run it
+      |# The FUSE backend's last-session teardown: $6 is where to run it
       |# ("machine" through the resolved podman in $3, "local" on this host,
-      |# "none" for an unfiltered run), $7 the script. Deliberately last, so
+      |# "none" where no FUSE backend runs), $7 the script. Deliberately last, so
       |# a fault in it can never cost the removals above.
       |case "$6" in
       |  machine) "$3" machine ssh "$7" >/dev/null 2>&1 ;;
@@ -351,6 +357,7 @@ object SandboxLifecycle:
    * - The sandbox's own removal serves a launch that ends between the container's create and its start, through a
    *   refusal or a Ctrl-C. There --rm never fires, and the container would hold its network.
    * - After a run, the sandbox container is already gone, and the rm is a no-op.
+   * - After a `podman restart`, the rm ends the session, for the reason the reaper gives.
    */
   def removeRunResources(
     podman: String, sandboxContainer: String, proxyContainer: String, networks: Seq[String],

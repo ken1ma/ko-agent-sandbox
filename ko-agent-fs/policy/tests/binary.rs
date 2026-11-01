@@ -70,7 +70,7 @@ fn resolve(source: &Path, file_rules: Option<&Path>) -> Output {
 fn a_workspace_whose_config_is_aliased_into_it_is_refused() {
     // The startup guard, end to end through the binary: Git configuration reachable through an
     // ordinary worktree path would be writable by the sandbox and read by the host's git, and no
-    // per-operation filtering protects it there (`doc/git-metadata.md`, "The binding rule").
+    // per-operation check protects it there (`doc/git-metadata.md`, "The binding rule").
     let source = scratch("aliased-source");
     fs::create_dir_all(source.join(".git")).unwrap();
     fs::write(source.join("cfg"), b"[core]\n").unwrap();

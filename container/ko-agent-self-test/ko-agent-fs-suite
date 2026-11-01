@@ -8,8 +8,8 @@ filter=${1:-}
 
 echo "machine: $(uname -srm), uid $(id -u)"
 
-# The filter's own setup check runs first. --self-test mounts with the product's options, allow_other among them, so
-# it is the only check here that exercises what user_allow_other permits.
+# The FUSE backend's own setup check runs first. --self-test mounts with the product's options, allow_other among them,
+# so it is the only check here that exercises what user_allow_other permits.
 # - The check grades its own failure by the stage it reached. The check exits 3 for anything before its behavioral
 #   checks begin, the scratch tree and the mount alike, and the launcher answers exit 3 by retrying with more privilege.
 #   The check exits 1 for anything past that stage, which no machine or privilege change repairs.

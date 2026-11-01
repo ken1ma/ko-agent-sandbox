@@ -3,7 +3,7 @@
 This file records the outside research the design rests on:
 
 - git's own CVE history, which lists the ways repository state has become host code execution;
-- the FUSE and `openat2` behavior the filter's correctness depends on.
+- the FUSE and `openat2` behavior the FUSE backend's correctness depends on.
 
 `git-metadata.md` ("Prior art") has the git *conclusions*. This file has the *process*: what was
 reviewed, when, what to watch for and how to redo it. It also has the FUSE and `openat2` findings.
@@ -21,7 +21,7 @@ dates.
    on is no longer a finding.
 
 
-## Watch-list — the classes that matter to this filter
+## Watch-list — the classes that matter to the workspace policy
 
 A new git CVE matters to `ko-agent-fs` if it touches one of these:
 
@@ -111,7 +111,7 @@ be. The rule rests on these findings:
 
 NTFS with 8.3 name generation on gives every long name a second name: `.git` becomes `GIT~1`, and
 `.ko-agent-sandbox` becomes `KO-AGE~1`. WSL's drive mount resolves these names. A session therefore
-reaches a guarded directory the host created under a name no spelling rule matches. The filter
+reaches a guarded directory the host created under a name no spelling rule matches. The FUSE backend
 guards such an entry by its identity (`../../fuse/doc/verification-log.md`, "Verified: NTFS 8.3
 short names", has the run). The check rests on these findings:
 
@@ -184,8 +184,8 @@ What the check does not cover:
 
 ## FUSE correctness & openat2 semantics (reviewed 2026-08-13)
 
-Beyond git's CVEs, prior art in two areas bears on the filter's own correctness. The code rests on
-these findings:
+Beyond git's CVEs, prior art in two areas bears on the FUSE backend's own correctness. The code
+rests on these findings:
 
 - **`openat2` implies `RESOLVE_NO_MAGICLINKS` only "for now."** openat2(2) documents that
   `RESOLVE_IN_ROOT` currently disables magic-link (procfs) resolution, and that this may change. We
@@ -195,12 +195,12 @@ these findings:
   therefore retries, a bounded number of times. Without the retry, an attacker renaming a parent
   could turn a legitimate operation into a spurious failure.
 - **Metadata TTL 0 does not make the data cache coherent.** The FUSE I/O model shows that cached or
-  mmap'd *pages* can lag a host write even at attribute TTL 0. This is why the filter negotiates
-  `AUTO_INVAL_DATA` at `init`.
+  mmap'd *pages* can lag a host write even at attribute TTL 0. This is why the FUSE backend
+  negotiates `AUTO_INVAL_DATA` at `init`.
 - **A readdir that re-reads the directory and pages by index skips or duplicates entries** when the
   directory changes during the scan. This is a known FUSE issue. libfuse's `passthrough_hp` avoids
-  it by keeping the directory stream in the handle. `fs.rs`, `opendir`, has what the filter does
-  instead.
+  it by keeping the directory stream in the handle. `fs.rs`, `opendir`, has what the FUSE backend
+  does instead.
 
 `../../fuse/doc/TODO.md`'s Non-TODOs record what these findings settled into: which alternatives
 were weighed and rejected, and why. Decisions are recorded there and findings here: a decision kept

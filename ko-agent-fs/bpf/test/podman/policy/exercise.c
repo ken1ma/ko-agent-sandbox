@@ -433,7 +433,7 @@ struct corpus_case {
 	enum expect expect;
 };
 
-// Each case names the filter test it copies, where one exists (`ko-agent-fs/fuse/tests`,
+// Each case names the FUSE backend test it copies, where one exists (`ko-agent-fs/fuse/tests`,
 // `ko-agent-fs/policy/doc/git-metadata.md`, "Test list"). The `fifo` group runs on the FIFO the host
 // made, HOST_FIFO, and is skipped where the share refused to make it. The `-ptr` group runs on
 // TREE-ptr.

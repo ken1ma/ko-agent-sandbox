@@ -1,9 +1,9 @@
-// What the launcher does about ko-agent-fs, the workspace policy, and ko-agent-fs-fuse, the FUSE filter
+// What the launcher does about ko-agent-fs, the workspace policy, and ko-agent-fs-fuse, the FUSE backend
 // that serves the policy:
 // - digesting the source the launcher bundles;
 // - building and installing the binaries;
 // - proving the installed binaries are that source's build;
-// - the per-workspace mount lifecycle that every session mounting the filter runs through.
+// - the per-workspace mount lifecycle that every session under the FUSE backend runs through.
 //
 // The two are separate programs with their own source tree, docs, tests and version check
 // (ko-agent-fs/policy/, ko-agent-fs/fuse/), and they reach the launch through prepareKoAgentFs and
@@ -54,7 +54,7 @@ object KoAgentFs:
   val KoAgentFsBinaries: Vector[String] = Vector(KoAgentFsBinary, KoAgentFsFuseBinary)
 
   /**
-   * Steps 3–4 of the filter pipeline: take both binaries out of the image's scratch stage and put
+   * Steps 3–4 of the FUSE backend's pipeline: take both binaries out of the image's scratch stage and put
    * them where the daemon must run (ko-agent-fs/fuse/doc/architecture.md, "Build and install").
    * - On a podman machine, both the image storage and the daemon are inside the VM. The whole
    *   extraction therefore runs there through `machine ssh`; a host-side `podman cp` would put the
@@ -82,7 +82,7 @@ object KoAgentFs:
         Vector(Vector(podman, "machine", "ssh", script))
 
   /**
-   * The filter mounts with `allow_other`, which fusermount3 refuses for an unprivileged user until
+   * The FUSE backend mounts with `allow_other`, which fusermount3 refuses for an unprivileged user until
    * `user_allow_other` is set in the machine's /etc/fuse.conf. That file is the user's
    * configuration, VM or not, so the launcher never changes it silently:
    * - `--build` detects the missing line, shows the change *as a diff of the actual file* plus the
@@ -127,7 +127,7 @@ object KoAgentFs:
     if run(koAgentFsFuseConfCheckCommand(podman)*).ok then return
     val current = run(podman, "machine", "ssh", "cat /etc/fuse.conf 2>/dev/null || true").text
     System.err.println(
-      s"""The workspace FUSE filter mounts with allow_other, which the container runtime needs to bind
+      s"""The FUSE backend mounts the workspace with allow_other, which the container runtime needs to bind
          |the mount into the sandbox, and fusermount3 refuses that until user_allow_other is set in the
          |podman machine's /etc/fuse.conf. Your machine's configuration is not changed without asking.
          |The change:
@@ -216,7 +216,7 @@ object KoAgentFs:
     System.err.println(selfTest.text)
 
   // ---------------------------------------------------------------------------
-  // The workspace FUSE filter's mount lifecycle, which every live session runs through
+  // The FUSE backend's mount lifecycle, which every live session under that backend runs through
   //
   // Each workspace has one daemon, alive while the workspace has sessions:
   // - a session starts the daemon on demand, and concurrent sessions reuse it;
@@ -233,12 +233,12 @@ object KoAgentFs:
   // - The resets remain the sweep for whatever a crashed launcher leaves.
   //
   // A daemon that dies mid-session leaves the container's bind on a dead FUSE superblock. Every
-  // access then fails with ENOTCONN, and no access falls through to the unfiltered tree.
+  // access then fails with ENOTCONN, and no access falls through to the tree beneath the mount.
   // ---------------------------------------------------------------------------
 
   def bundledKoAgentFsSourceId(): String = bundledSourceId("ko-agent-fs", rustImageInput)
 
-  /** Runs an unmount script and prints its [[unmountReport]]; true when the script acted on any filter state. */
+  /** Runs an unmount script and prints its [[unmountReport]]; true when the script acted on any FUSE backend state. */
   def unmountKoAgentFs(os: Os, script: String): Boolean =
     val result =
       try Some(run(koAgentFsScriptCommand(podman, os, script)*))
@@ -253,13 +253,14 @@ object KoAgentFs:
   def unmountReport(label: String, result: Option[Run]): Vector[String] =
     val done = result.toVector.flatMap(_.text.linesIterator).map(line => s"$label: $line")
     if result.exists(_.ok) then done
-    else if done.isEmpty then Vector("note: filter unmount skipped (no machine running, or the unmount script failed)")
-    else done :+ "note: the filter unmount script failed after the actions above"
+    else if done.isEmpty then
+      Vector("note: FUSE backend unmount skipped (no machine running, or the unmount script failed)")
+    else done :+ "note: the FUSE backend's unmount script failed after the actions above"
 
   def koAgentFsMountDir(workspaceId: String): String = s"$KoAgentFsInstallDir/mounts/$workspaceId"
 
   /**
-   * Starts or reuses the workspace's filter daemon and leaves the mountpoint serving.
+   * Starts or reuses the workspace's FUSE backend daemon and leaves the mountpoint serving.
    *
    * The script is fixed text except for five values:
    * - the workspace id and the sandbox container's name, podman-safe by construction;
@@ -351,7 +352,7 @@ object KoAgentFs:
        |  i=$$((i+1))
        |  sleep 0.1
        |done
-       |echo "the filter did not become a FUSE mount; daemon log:" >&2
+       |echo "the FUSE backend did not mount the workspace; daemon log:" >&2
        |cat "$$dir/daemon.log" >&2 || true
        |exit 1""".stripMargin,
     )
@@ -425,22 +426,22 @@ object KoAgentFs:
       case Os.Mac | Os.Windows => "podman"
 
   /**
-   * How launcher output names the filter: its binary name, which is also what `findmnt` shows, with
-   * what the filter is and where its daemon runs. On macOS and Windows, the daemon does not run on
-   * the host.
+   * How launcher output names the program: its binary name, which is also what `findmnt` shows, with
+   * where it runs. On macOS and Windows, it does not run on the host. The FUSE backend's mount and a
+   * read-only session's `--resolve` both run it, so the label names no backend.
    */
   def koAgentFsLabel(os: Os): String =
     val where = os match
       case Os.Linux => "on the host"
       case Os.Mac | Os.Windows => "in the podman machine"
-    s"ko-agent-fs filter $where"
+    s"ko-agent-fs $where"
 
   def koAgentFsTeardownMode(os: Os): String =
     os match
       case Os.Linux => "local"
       case Os.Mac | Os.Windows => "machine"
 
-  /** Unmounts and removes one workspace's filter state, with `-z` because a bind may still hold the
+  /** Unmounts and removes one workspace's FUSE backend state, with `-z` because a bind may still hold the
     * mount. The script prints a line for each unmount and removal it made, and nothing where there is
     * no state. An unmount is reported only when fusermount3 made one, because a resolve
     * (koAgentFsResolveScript) leaves the state directory without a mount. */
@@ -553,7 +554,7 @@ object KoAgentFs:
       s"(${running.sessions.mkString(", ")}); this session runs under the file rules they started with"
 
   /**
-   * prepareKoAgentFs's read-only checks as one script. Where the filter runs in the machine, the
+   * prepareKoAgentFs's read-only checks as one script. Where the daemon runs in the machine, the
    * checks cost one `podman machine ssh`, and the launch can start the script before its own checks
    * finish. The script prints:
    *
@@ -561,7 +562,7 @@ object KoAgentFs:
    *     prefix that turns the mountpoint into an absolute `--volume` source. On native Linux, the
    *     home is `home`, the JVM's `user.home` as installKoAgentFs uses it; the working directory
    *     there is the workspace root;
-   *   - the installed filter's `--version`;
+   *   - the installed daemon's `--version`;
    *   - only when that version names `sourceId`, ChecksSelfTestMarker and then the self-test, whose
    *     status is the script's.
    */
@@ -587,17 +588,17 @@ object KoAgentFs:
   /** The line koAgentFsChecksScript prints once the version matched, before the self-test runs. */
   val ChecksSelfTestMarker = "self-test:"
 
-  /** Runs koAgentFsChecksScript where the filter runs; on native Linux, with the JVM's home. */
+  /** Runs koAgentFsChecksScript where the daemon runs; on native Linux, with the JVM's home. */
   def koAgentFsChecks(podman: String, os: Os, sourceId: String): HostCommands.Run =
     val home = Option.when(os == Os.Linux)(sys.props("user.home"))
     run(koAgentFsScriptCommand(podman, os, koAgentFsChecksScript(home, sourceId))*)
 
   /**
    * The checks before each session, before anything of the run exists. Every failure aborts the
-   * launch; there is no fallback to an unfiltered bind mount.
+   * launch; there is no fallback to a plain bind mount.
    *
    *   - `checks` is koAgentFsChecks's answer, which the caller runs. The answer shows that the
-   *     installed filter is this launcher's build, that the filter can mount, and that the policy
+   *     installed daemon is this launcher's build, that the daemon can mount, and that the policy
    *     refuses (self-test).
    *   - koAgentFsPrepareScript makes the mountpoint one a `podman create` can bind.
    *
@@ -615,7 +616,10 @@ object KoAgentFs:
     val home = checkedKoAgentFsHome(checks, expected).fold(fail(_, _), identity)
     val prepared = run(koAgentFsScriptCommand(podman, os, koAgentFsPrepareScript(workspaceId, expected))*)
     if !prepared.ok then
-      fail(s"error: preparing the ${koAgentFsLabel(os)} mountpoint failed:\n${prepared.err}", prepared.exit)
+      fail(
+        s"error: preparing the FUSE backend's mountpoint with ${koAgentFsLabel(os)} failed:\n${prepared.err}",
+        prepared.exit,
+      )
     KoAgentFsPrepared(expected, s"$home/${koAgentFsMountDir(workspaceId)}/workspace", runningMountOf(prepared.text))
 
   /** The home a koAgentFsChecks answer reports, or the refusal and exit status the answer calls for. */
@@ -624,7 +628,7 @@ object KoAgentFs:
     val home = lines.headOption.getOrElse("")
     val marker = lines.indexOf(ChecksSelfTestMarker)
     val version = lines.slice(1, if marker < 0 then lines.length else marker).mkString("\n")
-    if home.isEmpty then Left(("error: cannot determine the filter daemon's home directory", 1))
+    if home.isEmpty then Left(("error: cannot determine the FUSE backend daemon's home directory", 1))
     else if marker < 0 || !koAgentFsReportedSourceId(version).contains(expected) then
       Left(
         (
@@ -667,7 +671,7 @@ object KoAgentFs:
     val mount = withFileLock(ImageBuilds.imageBuildLockFile(os)):
       run(koAgentFsScriptCommand(podman, os, script)*)
     if !mount.ok then
-      fail(s"error: mounting the ${koAgentFsLabel(os)} failed:\n${mount.err}", mount.exit)
+      fail(s"error: the FUSE backend's mount with ${koAgentFsLabel(os)} failed:\n${mount.err}", mount.exit)
     (mount.text.linesIterator.contains("reusing the existing mount"), resolvedAfterMarker(mount.text))
 
   /** The resolved file rules a script printed after FileRules.ResolvedMarker. */
@@ -676,7 +680,7 @@ object KoAgentFs:
     lines.indexOf(FileRules.ResolvedMarker) match
       case -1 =>
         fail(
-          "error: the filter printed no resolved file rules; the installed ko-agent-fs is not this " +
+          "error: ko-agent-fs printed no resolved file rules, so the installed one is not this " +
             "launcher's. Run --build.",
         )
       case at => FileRules.parseResolved(lines.drop(at + 1).mkString("\n")).fold(fail(_), identity)
@@ -717,7 +721,7 @@ object KoAgentFs:
     val resolved = withFileLock(ImageBuilds.imageBuildLockFile(os)):
       run(koAgentFsScriptCommand(podman, os, script)*)
     if !resolved.ok then
-      fail(s"error: resolving the file rules with the ${koAgentFsLabel(os)} failed:\n${resolved.err}", resolved.exit)
+      fail(s"error: resolving the file rules with ${koAgentFsLabel(os)} failed:\n${resolved.err}", resolved.exit)
     resolvedAfterMarker(resolved.text)
 
   /** Both steps at once, for a mount that no session's reap counts: the share self-test's scratch

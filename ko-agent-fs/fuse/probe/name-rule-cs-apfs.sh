@@ -4,7 +4,7 @@
 #
 # - The backing is a sparse image mounted case-sensitive under $HOME. That needs no repartitioning,
 #   and the podman machine's /Users share reaches it.
-# - A filtered session runs apfs-name-rule-probe.py against it.
+# - A FUSE backend session runs apfs-name-rule-probe.py against it.
 # - The host-side checks, which test the property itself, run here afterwards.
 #
 # Run ON THE macOS HOST, from the repository root, with the jar assembled and images built:
@@ -50,7 +50,8 @@ workspace="$mountpoint/scratch"
 mkdir "$workspace"
 cp "$here/apfs-name-rule-probe.py" "$workspace/"
 
-# The probe runs inside the filtered session; its own canary aborts the run if the filter is off.
+# The probe runs inside the FUSE backend session; its own canary aborts the run if the FUSE backend
+# is off.
 # If a launch cannot serve the scratch tree, the machine's share usually did not reach into the
 # mounted volume. `podman machine ssh ls "$workspace"` shows what the VM sees.
 (

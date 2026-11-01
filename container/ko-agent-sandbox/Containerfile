@@ -32,7 +32,7 @@ RUN set -euxo pipefail; \
         jq; \
     rm -rf /var/lib/apt/lists/*; \
     # `git lfs install` here installs the LFS filter driver in the system config only:
-    # - --skip-repo installs no repository hooks, which the workspace filter refuses anyway.
+    # - --skip-repo installs no repository hooks, which the workspace policy refuses anyway.
     # - --skip-smudge fetches nothing at checkout. A clone or checkout writes pointer files and needs no egress,
     #   and `git lfs pull` fetches the content.
     git lfs install --system --skip-repo --skip-smudge
@@ -395,8 +395,8 @@ RUN --mount=type=bind,from=uv,source=/out,target=/mnt/uv \
     uv python install "${PYTHON_VERSION}" --default; \
     # The comment at ko-sandbox-text-width's import of wcwidth says why wcwidth lives outside site-packages.
     uv pip install --no-cache --target /opt/ko-sandbox/python "wcwidth==${WCWIDTH_VERSION}"; \
-    # The filter lets a session run git filter-repo (ko-agent-fs/policy/doc/git-metadata.md, "Consequences: git
-    # operations blocked inside the workspace"). git filter-repo is a Python script, so it installs with the
+    # The workspace policy lets a session run git filter-repo (ko-agent-fs/policy/doc/git-metadata.md, "Consequences:
+    # git operations blocked inside the workspace"). git filter-repo is a Python script, so it installs with the
     # image's Python. Debian's package would pull in Debian's python3 beside the image's.
     UV_TOOL_DIR=/opt/uv/tools UV_TOOL_BIN_DIR=/usr/local/bin \
     uv tool install --no-cache "git-filter-repo==${GIT_FILTER_REPO_VERSION}"; \

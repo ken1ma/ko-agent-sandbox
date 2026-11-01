@@ -144,8 +144,8 @@ object SeatbeltProfile:
     trust: Path,
     systemPaths: SystemPaths,
     network: Network,
-    // The file rules and the filter guard's paths (FileRules.Resolved): the workspace files that a host program
-    // executes on an event, which the command must not write either.
+    // The file rules and the workspace policy's guard paths (FileRules.Resolved): the workspace files that a host
+    // program executes on an event, which the command must not write either.
     fileRules: FileRules.Resolved,
   )
 
@@ -315,8 +315,8 @@ object SeatbeltProfile:
           case Network.ProxyOnly | Network.SbtClient(_) => ()
         lines += ""
         lines += ";; Workspace files a host program executes on an event, and the components their names"
-        lines += ";; pass through: the file rules in order, then the filter guard's paths and the rules' rests"
-        lines += ";; below where symlinks lead. Reads stay allowed."
+        lines += ";; pass through: the file rules in order, then the workspace policy's guard paths and the"
+        lines += ";; rules' rests below where symlinks lead. Reads stay allowed."
         for (protection, filter) <- fileRuleFilters.getOrElse(Vector.empty) do
           protection match
             case Protection.Writable => lines += s"(allow file-write* $filter)"
@@ -436,23 +436,23 @@ object SeatbeltProfile:
 
   /**
    * The file rules as SBPL filters in the order they render, each with what it does, or the reason they cannot be
-   * written. SBPL's last matching filter decides, as the filter's last matching line does.
+   * written. SBPL's last matching filter decides, as the workspace policy's last matching line does.
    *
    *   - Each line becomes a regex anchored after the workspace root's own path, with `*` as any run within one
    *     component. A `read-only` line becomes a deny, and a `writable` line an allow. The anchor keeps a directory
    *     above the workspace root that bears a listed name, such as a checkout named `mise`, from matching.
    *   - Before the line, each interior component of the line becomes a deny on the entry alone. A later line that
-   *     matches the entry or an ancestor overrides that deny, as the filter's pruning does.
+   *     matches the entry or an ancestor overrides that deny, as the workspace policy's pruning does.
    *     - The deny covers `file-write-create`, `file-write-unlink` and `file-link`. Seatbelt checks a rename's two
    *       sides, and both sides of a `RENAME_SWAP` exchange, as `file-write-create` and `file-write-unlink`
    *       (`src/probe/seatbelt-semantics.sh` E13, E14, E17).
-   *     - The deny therefore also covers the component's `mkdir` and `rmdir`, which the filter allows.
+   *     - The deny therefore also covers the component's `mkdir` and `rmdir`, which the workspace policy allows.
    *     - The deny leaves the entry's contents, mode and attributes to the other rules.
    *   - After every line come the guard's `read-only-path` entries by `subpath`, and its `pinned-path` entries and the
    *     interior components of both by `literal`.
    *   - Last comes each `read-only-under` rest, as a regex anchored at its directory, with its interior components
    *     pinned. A `writable` line that lifts part of a rest under the symlink's name stays unlifted here, although
-   *     the filter lifts it (doc/run-on-host.md).
+   *     the workspace policy lifts it (doc/run-on-host.md).
    *
    * An allow grants `file-write*` alone, the workspace's own grant, so it never widens the profile. A hard link to a
    * file that a `writable` line lifts inside a read-only directory stays denied.
@@ -467,12 +467,12 @@ object SeatbeltProfile:
         val interiors = (1 until components.size).map: count =>
           Protection.Pinned -> s"""(regex #"$prefix${components.take(count).mkString("/")}$$")"""
         // After its interiors, so that the line decides an entry that it names whole at one alignment and as an
-        // interior at another, such as `ax/ab` under `a*/a*`, as in the filter.
+        // interior at another, such as `ax/ab` under `a*/a*`, as in the workspace policy.
         val protection = line.word match
           case FileRules.Word.ReadOnly => Protection.ReadOnly
           case FileRules.Word.Writable => Protection.Writable
         interiors :+ (protection -> s"""(regex #"$prefix${components.mkString("/")}(/|$$)")""")
-      // An anchored path's interior components are pinned, as the filter pins an anchored line's components.
+      // An anchored path's interior components are pinned, as the workspace policy pins an anchored line's components.
       val interiors = (resolved.readOnlyPaths ++ resolved.pinnedPaths).flatMap: path =>
         val components = path.split("/").toVector
         (1 until components.size).map(count => components.take(count).mkString("/"))
@@ -485,13 +485,14 @@ object SeatbeltProfile:
         .find((relative, path) =>
           relative.isEmpty || !isAbsoluteNormalized(path) || !path.startsWith(workspaceRoot),
         ) match
-        case Some((relative, _)) => Left(s"the filter's guard named '$relative', which is no path below $workspaceRoot")
+        case Some((relative, _)) =>
+          Left(s"the workspace policy's guard named '$relative', which is no path below $workspaceRoot")
         case None =>
           underDirectories.find(_.contains('"')) match
             case Some(relative) =>
               Left(
-                s"the filter's guard named '$relative', whose double quote no SBPL regex can spell; rename it " +
-                  "on the host, then relaunch",
+                s"the workspace policy's guard named '$relative', whose double quote no SBPL regex can spell; " +
+                  "rename it on the host, then relaunch",
               )
             case None =>
               val pathFilters = paths.map: (protection, relative) =>

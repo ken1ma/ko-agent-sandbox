@@ -19,7 +19,7 @@
 //   AwsCredential.scala         --env-aws-cred: the AWS CLI's temporary credentials, resolved on the host
 //   ClaudePlugins.scala         --claude-plugin-dir: host plugin directories run as Claude Code's managed plugins
 //   LaunchMessages.scala        the weakened-boundary lines and the agent instructions' appended section
-//   KoAgentFs.scala             the workspace FUSE filter: build, install, identity, mount lifecycle
+//   KoAgentFs.scala             the FUSE backend: build, install, identity, mount lifecycle
 //   KoAgentBpf.scala            the BPF cgroup-LSM backend of --workspace=...,bpf: build, install, the
 //                               probe, the launch's attach and proof, the teardown and the reconcile
 //   SandboxWorkspace.scala      the workspace root: real path, refusals, identity, mount guards
@@ -474,8 +474,8 @@ object AgentSandboxLauncher:
   /**
    * The sandbox's default memory limit.
    * - The limit is 1 GiB under the total of the machine that podman runs on: the podman machine VM, or the host on
-   *   native Linux. Podman, the workspace filter and the kernel need that 1 GiB to keep answering while the sandbox is
-   *   at its limit.
+   *   native Linux. Podman, the FUSE backend's daemon and the kernel need that 1 GiB to keep answering while the
+   *   sandbox is at its limit.
    * - The limit is no more than the machine had available at launch, where that figure is known
    *   (hostMemoryAvailable). A native host is already running everything else, and a VM that is short is short.
    * - One limit cannot bound the sum: two sessions on one machine, or a host workload that increases after the
@@ -1211,13 +1211,13 @@ object AgentSandboxLauncher:
    * - Under `--workspace=read-only`, launchWorkspace's SELinux check established that the tree is already
    *   container-readable, and relabeling is the host write that this mode withholds.
    */
-  def workspaceBind(filteredMountpoint: Option[String], workspaceRoot: Path, mountPath: String): String =
-    filteredMountpoint match
+  def workspaceBind(fuseMountpoint: Option[String], workspaceRoot: Path, mountPath: String): String =
+    fuseMountpoint match
       case Some(mountpoint) => s"$mountpoint:$mountPath:rw"
       case None             => s"$workspaceRoot:$mountPath:ro"
 
   /**
-   * Whether the directory's own SELinux context already allows container reads, so an unfiltered bind mount needs no
+   * Whether the directory's own SELinux context already allows container reads, so a plain bind mount needs no
    * relabel. Such a context has a container type with no MCS categories.
    * - A context with categories, as a previous run's `:Z` leaves, is private to the container it was assigned to and
    *   unreadable to a new container, so the context does not count.
@@ -1324,10 +1324,10 @@ object AgentSandboxLauncher:
     egressNetwork: String,
   )
 
-  /** The filter's mountpoint for a live session, the probe's answer where the BPF backend serves this run
+  /** The FUSE backend's mountpoint for a live session, the probe's answer where the BPF backend serves this run
     * (KoAgentBpf), and the file rules that the session runs under. */
   private case class LaunchMount(
-    filteredWorkspace: Option[KoAgentFsPrepared],
+    fuseWorkspace: Option[KoAgentFsPrepared],
     bpf: Option[KoAgentBpf.Facts],
     /** The settings that this run runs under. They differ from the asked settings where the probe left a read-only
       * session without a policy. */
@@ -1371,9 +1371,9 @@ object AgentSandboxLauncher:
     // refused launch's empty directory count toward the RetainedRuns that pruning keeps.
     System.err.println(pathLine("log dir", runLogs, os, tint = lookedUp(_)))
 
-    // The filter's read-only checks run beside the image and rule checks below. prepareKoAgentFs reads the checks'
-    // answer once this run's cleanup is armed.
-    val startedKoAgentFsChecks = Option.when(workspaceSettings.filtered):
+    // The FUSE backend's read-only checks run beside the image and rule checks below. prepareKoAgentFs reads the
+    // checks' answer once this run's cleanup is armed.
+    val startedKoAgentFsChecks = Option.when(workspaceSettings.fuseMounted):
       val sourceId = bundledKoAgentFsSourceId()
       (sourceId, inBackground("ko-agent-fs checks")(koAgentFsChecks(podman, os, sourceId)))
     // The BPF backend's capability probe runs the same way (KoAgentBpf.checksScript). The launch reads the probe's
@@ -1423,28 +1423,28 @@ object AgentSandboxLauncher:
         fail((heading +: missing.map(line => s"  - $line")).mkString("\n"))
       else
         System.err.println(
-          ("note: the read-only session runs under podman's `ro` bind alone; the BPF policy needs:" +:
+          ("note: the read-only session runs under podman's `ro` bind alone; the BPF backend needs:" +:
             missing.map(line => s"  - $line")).mkString("\n"),
         )
         None
     // What this run is, for its labels and for the comparison with the live sessions. A read-only session that the
-    // probe left without a policy is a filter session with no socket setting, whatever was asked. A live `bpf` session
-    // beside it is therefore refused, as it would be beside any other filter session.
+    // probe left without a policy is a FUSE backend session with no socket setting, whatever was asked. A live `bpf`
+    // session beside it is therefore refused, as it would be beside any other FUSE backend session.
     val effectiveSettings =
       if workspaceSettings.bpf && bpfFacts.isEmpty then
         workspaceSettings.copy(backend = CommandLine.DefaultWorkspaceBackend, unixSocket = false)
       else workspaceSettings
 
-    // The launch checks the workspace FUSE filter before any volume is assembled, and mounts the filter once the
+    // The launch checks the FUSE backend before any volume is assembled, and mounts the FUSE backend once the
     // sandbox container exists (the lifecycle banner above koAgentFsMountScript has the layout).
-    // - The filter enforces every live session under the fuse backend, on every platform.
+    // - The FUSE backend enforces every live session that selects `fuse`, on every platform.
     // - Under the bpf backend, the policy's teardown takes the reap's place (KoAgentBpf.teardownScript).
     //
     // The reap is derived from the mode rather than from the mount, so the reap exists before the mount does. The
     // mount script writes this session's marker as its first act (KoAgentFs, koAgentFsMountScript), and a failure after
     // that would otherwise leave the marker to a later reap. Only live sessions have a mount to reap.
-    val filterReap =
-      if workspaceSettings.filtered then
+    val fuseReap =
+      if workspaceSettings.fuseMounted then
         Some(koAgentFsReapScript(koAgentFsReapPodman(podman, os), workspaceId, sandboxContainer))
       else bpfFacts.map(facts => KoAgentBpf.teardownScript(sandboxContainer, facts.manager))
 
@@ -1480,7 +1480,7 @@ object AgentSandboxLauncher:
       catch case _: Exception => ()
       // Best effort, as on the reaper's path. This run's session marker goes now rather than with the reap that finds
       // the run's container gone, and the mount follows if no other session holds the mount.
-      filterReap.foreach(script => runOk(koAgentFsScriptCommand(podman, os, script)*))
+      fuseReap.foreach(script => runOk(koAgentFsScriptCommand(podman, os, script)*))
 
     // The launch arms the cleanup before the first resource that this run owns: the run's networks, then its files
     // under the workspace lock below.
@@ -1489,9 +1489,9 @@ object AgentSandboxLauncher:
     //   rather than raising (SandboxLifecycle, armRunCleanup).
     val cleanup = armRunCleanup(removeWhatThisRunCreated)
 
-    // The launch reads the filter's checks, started above, and prepares the filter's mountpoint now. The mount itself
+    // The launch reads the FUSE backend's checks, started above, and prepares its mountpoint now. The mount itself
     // happens once the sandbox container exists (mountKoAgentFs has the reason), which is after the proxy and the hold.
-    val filteredWorkspace = startedKoAgentFsChecks.map: (sourceId, awaitChecks) =>
+    val fuseWorkspace = startedKoAgentFsChecks.map: (sourceId, awaitChecks) =>
       prepareKoAgentFs(podman, os, workspaceId, sourceId, awaitChecks())
     // The backend's reconcile runs at this launcher's start (ko-agent-fs/bpf/doc/architecture.md, "Lifecycle", step
     // 7), under the launch lock, so the reconcile does not take a launch in flight's pins for an orphan's.
@@ -1508,7 +1508,7 @@ object AgentSandboxLauncher:
     // After an edit of file/rule, the launch joins a live mount under other file rules under the mount's rules, which
     // an earlier session of the workspace accepted. The start prompt below is the consent.
     val joinedRules = joinUnderOtherRules(
-      filteredWorkspace.flatMap(_.running),
+      fuseWorkspace.flatMap(_.running),
       fileRulesText,
       prompted = startPrompt(sessionStartMode, terminalReader).nonEmpty,
     ).fold(fail(_), identity)
@@ -1553,7 +1553,7 @@ object AgentSandboxLauncher:
       .getOrElse(fail(s"error: could not determine the egress proxy's address on $sandboxNetwork"))
 
     val mount =
-      LaunchMount(filteredWorkspace, bpfFacts, effectiveSettings, joinedRules, sessionRuleLines, sessionRulesText)
+      LaunchMount(fuseWorkspace, bpfFacts, effectiveSettings, joinedRules, sessionRuleLines, sessionRulesText)
     printLaunchLines(parsed, settings, workspace, rules, mount, git, hostLogFile, os)
     val createCommand = sandboxCreateCommand(
       parsed, settings, workspace, images, rules, names, mount, git, proxyIp, sandboxFiles, machineMemory, os,
@@ -1579,8 +1579,8 @@ object AgentSandboxLauncher:
     //   - Where no reaper runs, on Windows or after a failed POSIX spawn, the launcher stays resident. A resident
     //     launcher killed outright leaves the created container, and with it the marker and the mount, to a reset, as
     //     it leaves the proxy.
-    // - The mount comes after both, because the container names this session to the filter's reap, which asks podman
-    //   for the container by name (KoAgentFs, koAgentFsReapScript).
+    // - The mount comes after both, because the container names this session to the FUSE backend's reap, which asks
+    //   podman for the container by name (KoAgentFs, koAgentFsReapScript).
     //   - Written after the create, the session marker is never on disk without the container.
     //   - A launcher that dies during the mount leaves the marker to the reap that follows the reaper's removal of the
     //     container.
@@ -1591,7 +1591,7 @@ object AgentSandboxLauncher:
       sys.exit(0)
 
     startSandbox(
-      parsed, settings, workspace, rules, names, mount, git, createCommand, filterReap, runFiles, channelLogFile,
+      parsed, settings, workspace, rules, names, mount, git, createCommand, fuseReap, runFiles, channelLogFile,
       microphoneLogFile, backendLogFile, cleanup, os,
     )
 
@@ -1662,13 +1662,13 @@ object AgentSandboxLauncher:
       ).fold(fail(_), identity)
 
     // The first version of the BPF backend serves only the podman machines under --nesting=none. Native Linux and the
-    // nesting modes keep the filter (doc/TODO.md, "The BPF backend's later versions"). Under podman's default profile,
-    // a session mounts and creates user namespaces, and the hooks do not judge those routes yet
+    // nesting modes keep the FUSE backend (doc/TODO.md, "The BPF backend's later versions"). Under podman's default
+    // profile, a session mounts and creates user namespaces, and the hooks do not judge those routes yet
     // (ko-agent-fs/bpf/doc/architecture.md, "Mounts").
     if parsed.workspaceSettings.bpf && os == Os.Linux then
       fail(
         s"error: --workspace=${parsed.workspaceSettings.spelled} runs on the podman machines of macOS and Windows; " +
-          "on native Linux the ko-agent-fs filter holds the workspace's protections (SECURITY.md, \"The BPF " +
+          "on native Linux the FUSE backend holds the workspace's protections (SECURITY.md, \"The BPF " +
           "backend\")",
       )
     KoAgentBpf.nestingRefusal(parsed.workspaceSettings, parsed.nestingMode).foreach(fail(_))
@@ -1765,16 +1765,16 @@ object AgentSandboxLauncher:
       findOnPath("getenforce", os)
         .exists(path => run(path.toString).text.trim == "Enforcing")
 
-    // An unfiltered bind mount on an SELinux-enforcing host is readable to the container only after :Z relabels the
+    // A plain bind mount on an SELinux-enforcing host is readable to the container only after :Z relabels the
     // workspace. The relabel is a recursive host-metadata write, which is exactly the authority that the read-only mode
     // withholds. The launch refuses rather than relabels, unless the tree already has a shared container-accessible
     // context, where a plain read-only bind needs no host write.
     if workspaceMode == "read-only" && selinuxEnforcing && !selinuxContainerReadable(workspaceRoot) then
       fail(
         s"""error: --workspace=read-only cannot mount $workspaceRoot on this SELinux-enforcing host
-           |Reading an unfiltered bind mount here requires relabeling the workspace (:Z), a recursive
-           |host-metadata write that --workspace=read-only never makes. Use --workspace=live, whose filter
-           |mountpoint needs no relabel, or relabel the workspace yourself
+           |Reading a plain bind mount here requires relabeling the workspace (:Z), a recursive
+           |host-metadata write that --workspace=read-only never makes. Use --workspace=live, whose FUSE
+           |mount needs no relabel, or relabel the workspace yourself
            |(chcon -R -t container_file_t -l s0 <dir>; the level clears any categories a
            |previous :Z assigned to one container) and relaunch.""".stripMargin,
       )
@@ -1872,8 +1872,8 @@ object AgentSandboxLauncher:
     val imageEnv = imageInspect.linesIterator.drop(2).mkString("\n")
 
     // The launch refuses a mount path at which the image has an entry, or which the sandbox user cannot reach, before
-    // the filter's preparation, the networks and the TLS state, so a refusal writes nothing (mountPathRefusal has the
-    // cases).
+    // the FUSE backend's preparation, the networks and the TLS state, so a refusal writes nothing (mountPathRefusal has
+    // the cases).
     //   - The probe is a run of the image, 0.2 s on a macOS podman machine (2026-09-18). The probe's `absent` is
     //     therefore cached per image Id, and written once the workspace's cache directory exists below.
     //   - On a cache miss, the probe runs beside the sandbox image's version lock and the proxy image's inspect. The
@@ -1933,9 +1933,9 @@ object AgentSandboxLauncher:
     val ruleFiles = readRuleFiles(boundaryDir.resolve("egress")).fold(fail(_), identity)
 
     // The workspace files that a host program executes on an event (FileRules). The launch reads them as it reads the
-    // egress rules, and resolves them to what the filter and the Seatbelt profile enforce. The filter's guard adds to
-    // the rules at the mount. Under --workspace=read-only with --run-on-host, where no daemon runs,
-    // `ko-agent-fs --resolve` adds to them.
+    // egress rules, and resolves them to what the workspace policy and the Seatbelt profile enforce. The workspace
+    // policy's guard adds to the rules at the mount. Under --workspace=read-only with --run-on-host, where no daemon
+    // runs, `ko-agent-fs --resolve` adds to them.
     val workspaceFileRules = FileRules.readRuleFile(boundaryDir.resolve("file")).fold(fail(_), identity)
     val fileRuleLines = FileRules.resolve(workspaceFileRules.fold(Vector.empty[FileRules.Line])(_(1)))
     val fileRulesInForce = workspaceMode == "live" || runOnHost.nonEmpty
@@ -2361,8 +2361,8 @@ object AgentSandboxLauncher:
 
   /**
    * The warning for a host git older than 2.34, whose `git bisect` is a shell script that runs `eval` over
-   * `.git/BISECT_NAMES`. The filter lets a session write that file, since git 2.34 and later read the file as data
-   * (`ko-agent-fs/policy/src/policy.rs`, `classify_within_gitdir`).
+   * `.git/BISECT_NAMES`. The workspace policy lets a session write that file, since git 2.34 and later read the file
+   * as data (`ko-agent-fs/policy/src/policy.rs`, `classify_within_gitdir`).
    * - The warning applies to every live workspace. A session writes the gitdir of any repository below the root,
    *   whether or not the root's own git works, and whether or not the root's main gitdir is mounted read-only.
    * - `versionLine` is read only for a live workspace.
@@ -2488,7 +2488,7 @@ object AgentSandboxLauncher:
     import images.imageId
     import rules.{fileRulesInForce, rulesetText}
     import names.{sandboxContainer, sandboxNetwork}
-    import mount.{bpf, filteredWorkspace, sessionRuleLines}
+    import mount.{bpf, fuseWorkspace, sessionRuleLines}
     import git.mountedGitdir
     // -----------------------------------------------------------------------
     // How the sandbox reaches it
@@ -2521,8 +2521,8 @@ object AgentSandboxLauncher:
       s"--env=$SessionStartVariable=$sessionStartMode",
     ) ++ sandboxFiles
 
-    // The rule lines that the session's writes are held to, for the agent to consult on a refusal. What the filter's
-    // guard adds at the mount comes after the container exists, and is not among these lines.
+    // The rule lines that the session's writes are held to, for the agent to consult on a refusal. What the workspace
+    // policy's guard adds at the mount comes after the container exists, and is not among these lines.
     val fileRuleArgs = Option.when(fileRulesInForce)(
       s"--env=KO_AGENT_SANDBOX_FILE_RULES=${sessionRuleLines.map(_.text).mkString("\n")}",
     ).toVector
@@ -2564,11 +2564,11 @@ object AgentSandboxLauncher:
     // -----------------------------------------------------------------------
     //
     // Under the bpf backend, a live session binds the raw tree writable. The policy attached to the container's cgroup
-    // holds the protections that the filter holds elsewhere (KoAgentBpf). No launch binds the tree so without the
+    // holds the protections that the FUSE backend holds elsewhere (KoAgentBpf). No launch binds the tree so without the
     // policy attached and verified (startSandbox's order).
     val workspaceVolume =
       if bpf.isDefined && workspaceMode == "live" then s"$workspaceRoot:$mountPath:rw"
-      else workspaceBind(filteredWorkspace.map(_.mountpoint), workspaceRoot, mountPath)
+      else workspaceBind(fuseWorkspace.map(_.mountpoint), workspaceRoot, mountPath)
 
     // -----------------------------------------------------------------------
     // Memory limit
@@ -2657,7 +2657,7 @@ object AgentSandboxLauncher:
    *   launcher's reconcile takes a session with pins and no container for an orphan
    *   (ko-agent-fs/bpf/doc/architecture.md, "Lifecycle", step 7).
    * - `identities` gives each path's identity in the machine, as the labels record it.
-   * - On native Linux no backend but the filter runs, so no identity is read, and no live session is compared.
+   * - On native Linux no backend but the FUSE backend runs, so no identity is read, and no live session is compared.
    */
   private def createUnderLaunchLock(
     createCommand: CreateCommand,
@@ -2695,8 +2695,8 @@ object AgentSandboxLauncher:
       val labels = KoAgentBpf.labelArguments(settings, persistentVolume, mine, None)
       (launched, runWithEnvironment(environment, createCommand.withOptions(labels ++ bpfOptions(launched))*))
 
-  /** What follows the hold: the create, the reaper, the filter's mount and the command runner, then the handover to
-    * the sandbox. */
+  /** What follows the hold: the create, the reaper, the FUSE backend's mount and the command runner, then the handover
+    * to the sandbox. */
   private def startSandbox(
     parsed: ParsedCommandLine,
     settings: LaunchSettings,
@@ -2706,7 +2706,7 @@ object AgentSandboxLauncher:
     mount: LaunchMount,
     git: GitAccess,
     createCommand: CreateCommand,
-    filterReap: Option[String],
+    fuseReap: Option[String],
     runFiles: Path,
     channelLogFile: Path,
     microphoneLogFile: Path,
@@ -2718,7 +2718,7 @@ object AgentSandboxLauncher:
     import workspace.{mountPath, persistentVolume, workspaceId}
     import rules.readOnlyFileRules
     import names.{egressNetwork, proxyContainer, sandboxContainer, sandboxNetwork}
-    import mount.{bpf, filteredWorkspace, sessionRulesText}
+    import mount.{bpf, fuseWorkspace, sessionRulesText}
     val workspaceSettings = mount.settings
     // The AWS values go into the create's own environment, where the create's value-less `--env=NAME` reads them. The
     // launch checks the values again here, since the hold above may have outlasted them.
@@ -2728,7 +2728,7 @@ object AgentSandboxLauncher:
     // the attach cgroup, the policy attached from the preloaded set or loaded, the read-back and the proof.
     // - The steps run in one script in the machine. A failure names the step, and the launch ends with nothing bound
     //   writable.
-    // - The script runs under the image-build lock, as the filter's mount does, so a --build that replaces the
+    // - The script runs under the image-build lock, as the FUSE backend's mount does, so a --build that replaces the
     //   binaries waits.
     // The gitdir bind's source is spelled as the machine spells it, as the workspace root is (mountPathOf).
     val gitdirSource = git.mountedGitdir.map(bind => mountPathOf(os, bind.source).fold(fail(_), identity))
@@ -2790,8 +2790,8 @@ object AgentSandboxLauncher:
       os != Os.Windows &&
         spawnReaper(
           podman, sandboxContainer, proxyContainer, sandboxNetwork, egressNetwork,
-          filterReap.map(_ => koAgentFsTeardownMode(os)).getOrElse("none"),
-          filterReap.getOrElse(""),
+          fuseReap.map(_ => koAgentFsTeardownMode(os)).getOrElse("none"),
+          fuseReap.getOrElse(""),
           clipboard,
           clipboardHost,
           microphoneJob,
@@ -2834,12 +2834,12 @@ object AgentSandboxLauncher:
 
     // The launch prints the mount's branch here, not on the workspace line above. The user should not have to infer
     // "joined" from silence, and which branch the mount took is known only now.
-    val mountedFileRules = filteredWorkspace.map: prepared =>
+    val mountedFileRules = fuseWorkspace.map: prepared =>
       val (joined, resolved) =
         mountKoAgentFs(podman, os, prepared, workspaceId, mountPath, sandboxContainer, sessionRulesText)
       System.err.println(
-        if joined then "ko-agent-fs filter: joined the existing mount for this workspace"
-        else "ko-agent-fs filter: mounted",
+        if joined then "FUSE backend: joined the existing mount for this workspace"
+        else "FUSE backend: mounted",
       )
       resolved
     val resolvedFileRules = mountedFileRules.orElse(launched.filter(_ => workspaceSettings.live).map(_.resolved))

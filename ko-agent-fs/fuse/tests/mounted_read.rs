@@ -132,7 +132,7 @@ fn symlinks_read_back_as_links() {
         fs::read_link(mount.at("link.txt")).unwrap(),
         std::path::Path::new("greeting.txt")
     );
-    // The filter reports the link itself, and following it still reaches the target.
+    // The FUSE backend reports the link itself, and following it still reaches the target.
     assert!(
         fs::symlink_metadata(mount.at("link.txt"))
             .unwrap()
@@ -148,7 +148,7 @@ fn symlinks_read_back_as_links() {
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn an_existing_repository_is_readable() {
-    // The filter hides nothing: a host repository reads normally, it is only writes that are
+    // The FUSE backend hides nothing: a host repository reads normally, it is only writes that are
     // checked.
     let mount = TestMount::new(tree);
     assert!(mount.at(".git").exists());
@@ -242,7 +242,8 @@ fn an_appending_handle_appends_to_the_end_the_file_actually_has() {
         .open(mount.at("greeting.txt"))
         .expect("open for append through the mount");
 
-    // The host grows the file after that handle exists, bypassing the filter as it always does.
+    // The host grows the file after that handle exists, bypassing the FUSE backend as it always
+    // does.
     let mut direct = OpenOptions::new()
         .append(true)
         .open(mount.backing_at("greeting.txt"))
@@ -263,10 +264,10 @@ fn an_appending_handle_appends_to_the_end_the_file_actually_has() {
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn appending_follows_fcntl_rather_than_how_the_handle_was_opened() {
-    // A filter that decided at open time gets both directions wrong — a description switched *to*
-    // appending would write at a stale offset, and one switched *away* would keep appending, because
-    // the backing descriptor still carried the flag and `pwrite` on such a descriptor ignores its
-    // offset (`fs.rs`, `Handle`).
+    // A FUSE backend that decided at open time gets both directions wrong — a description switched
+    // *to* appending would write at a stale offset, and one switched *away* would keep appending,
+    // because the backing descriptor still carried the flag and `pwrite` on such a descriptor
+    // ignores its offset (`fs.rs`, `Handle`).
     use std::fs::OpenOptions;
     use std::io::Write;
     use std::os::unix::fs::FileExt;

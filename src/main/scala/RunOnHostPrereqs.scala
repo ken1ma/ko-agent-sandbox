@@ -1202,7 +1202,7 @@ object RunOnHostPrereqs:
   /**
    * Containment, folding case where the platform's filesystem does. APFS is case-insensitive by default, so a
    * comparison that does not fold accepts a path that the filesystem treats as the same path. `policy.rs`'s
-   * `folds_to` exists to prevent the same disagreement on the filter's side.
+   * `folds_to` exists to prevent the same disagreement on the workspace policy's side.
    */
   def startsWith(path: Path, ancestor: Path, os: Os): Boolean =
     val (child, parent) = (path.normalize(), ancestor.normalize())

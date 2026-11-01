@@ -130,11 +130,11 @@ The sections below describe the limits and costs of each.
 - The session's workspace mode keeps a session from writing the configuration that governs the next
   launch:
   - Under `--workspace=read-only` the whole tree is read-only.
-  - Under the filter, `.ko-agent-sandbox` is protected. The name cannot be created at any depth,
-    under the same name-matching rules as `.git`, and nothing under an existing
-    `.ko-agent-sandbox` can be written. "The host's git executing what the sandbox wrote" states
-    the exception for a concurrent host change.
-  - Under `--workspace=live,bpf` the BPF policy holds the same rules, with one difference: an empty
+  - Under the FUSE backend, `.ko-agent-sandbox` is protected. The name cannot be created at any
+    depth, under the same name-matching rules as `.git`, and nothing under an existing
+    `.ko-agent-sandbox` can be written. "The host's git executing what the sandbox wrote" states the
+    exception for a concurrent host change.
+  - Under `--workspace=live,bpf` the BPF backend holds the same rules, with one difference: an empty
     directory of the name can be made and removed, and no file enters that directory at any depth
     (`doc/bpf-lsm-cgroup.md`, "Directories").
 
@@ -142,21 +142,21 @@ The sections below describe the limits and costs of each.
 and the commands that `.git/config` names, such as `core.hooksPath`, `core.fsmonitor`, filters and
 the pager.
 
-- By default the workspace FUSE filter prevents a session from injecting commands into the user's
+- By default the FUSE backend prevents a session from injecting commands into the user's
   next host `git` run.
-- Under `--workspace=live,bpf` the BPF policy of `doc/bpf-lsm-cgroup.md` holds the same rules on the
-  workspace directory itself. One exception: an empty directory may be made at a `.git` name, and
-  that directory gains no `HEAD` (`doc/bpf-lsm-cgroup.md`, "Directories").
-- "The BPF backend", below, has what an auditor trusts for the BPF policy.
+- Under `--workspace=live,bpf` the BPF backend of `doc/bpf-lsm-cgroup.md` holds the same rules on
+  the workspace directory itself. One exception: an empty directory may be made at a `.git` name,
+  and that directory gains no `HEAD` (`doc/bpf-lsm-cgroup.md`, "Directories").
+- An auditor finds what to trust for the BPF backend under "The BPF backend", below.
 
-What the filter does:
+What the FUSE backend does:
 
-- The filter refuses a new entry named `.git` at any depth, under any spelling that a
-  case-insensitive host filesystem treats as that name. The BPF policy refuses such an entry that is
-  not a directory, and a directory that the policy allows there gains no `HEAD`.
-- The filter prevents changes to the protected Git entries of every repository rooted at a `.git`
-  entry. Operational state stays writable, so the agent's own git keeps working. The protected
-  entries:
+- The FUSE backend refuses a new entry named `.git` at any depth, under any spelling that a
+  case-insensitive host filesystem treats as that name. The BPF backend refuses such an entry that
+  is not a directory, and a directory that the backend allows there gains no `HEAD`.
+- The FUSE backend prevents changes to the protected Git entries of every repository rooted at a
+  `.git` entry. Operational state stays writable, so the agent's own git keeps working. The
+  protected entries:
   - `config` and `hooks/`;
   - files that redirect Git to another directory;
   - rebase instructions;
@@ -165,21 +165,22 @@ What the filter does:
 
   The bisect state is operational. A host git older than 2.34 evaluates `BISECT_NAMES` as shell
   code, and the launcher warns when the host's git is that old.
-- The filter serves the tree live. A repository created on the host mid-session appears at once,
-  with the same Git entries protected against modification.
-- The filter treats a second name of a host-created `.git` or `.ko-agent-sandbox` as that entry.
+- The FUSE backend serves the tree live. A repository created on the host mid-session appears at
+  once, with the same Git entries protected against modification.
+- The FUSE backend treats a second name of a host-created `.git` or `.ko-agent-sandbox` as that
+  entry.
   - An NTFS 8.3 short name (`GIT~1`, `KO-AGE~1`) or a hard link is the same object on the host
-    filesystem. The filter compares objects where spellings cannot be listed.
+    filesystem. The FUSE backend compares objects where spellings cannot be listed.
   - Some cases stay uncovered (`ko-agent-fs/policy/doc/security-research.md`, "Windows 8.3 short
     names").
 
 One open exception affects these claims: the host changes the workspace while a session mutates
 it.
 
-- Linux offers `rename`, `unlink` and `rmdir` by name only. So the filter decides about a name and
-  then performs the operation on that name. A second name of a guarded entry can take an ordinary
-  name's place between the two steps; the operation then moves, replaces or removes the guarded
-  entry as it would have the ordinary one.
+- Linux offers `rename`, `unlink` and `rmdir` by name only. So the FUSE backend decides about a name
+  and then performs the operation on that name. A second name of a guarded entry can take an
+  ordinary name's place between the two steps; the operation then moves, replaces or removes the
+  guarded entry as it would have the ordinary one.
 - A guarded entry moved to an ordinary name is an ordinary entry there. The entry's Git
   configuration and hooks, or its egress rules, are writable under the new name.
 - On Windows, the test that a `create` never reopens a guarded entry arriving under a second name
@@ -193,8 +194,8 @@ Every path through which host git reaches these entries must also be protected. 
 checks the repository that host git discovers from the workspace root. The guard refuses:
 
 - a repository at the workspace root that keeps its Git directory, or part of it such as `config`,
-  at an ordinary path in the workspace, as `git init --separate-git-dir` can. The filter protects
-  Git entries under a `.git` name, so the session could write that path;
+  at an ordinary path in the workspace, as `git init --separate-git-dir` can. The FUSE backend
+  protects Git entries under a `.git` name, so the session could write that path;
 - a bare layout at the workspace root;
 - in a Git directory inside the workspace, a symlink at `objects`, `objects/info` or either
   alternates file below it that leads back into the workspace. Through that link the session would
@@ -202,7 +203,7 @@ checks the repository that host git discovers from the workspace root. The guard
 - a `core.hooksPath` that names the workspace root itself. No read-only directory short of the
   whole tree could hold its hooks, such as `<workspace>/pre-commit`;
 - through a podman machine, a chain to any of these, hooks included, that leaves the directories the
-  machine shares. The filter cannot see what the host follows outside them:
+  machine shares. The FUSE backend cannot see what the host follows outside them:
   - on macOS the machine shares `/Users`, `/private` and `/var/folders`;
   - on Windows the machine shares the workspace's own drive, so a link to another drive is refused.
 
@@ -259,10 +260,10 @@ A launch from a linked worktree is the exception:
 
 These are the default protections. "Not defended" qualifies them:
 
-- On some platforms the filter has no measured evidence ("The workspace filter, on the platforms
+- On some platforms the FUSE backend has no measured evidence ("The FUSE backend, on the platforms
   where it is unverified").
 - Under `--run-on-host`, host commands write directly to the host tree without passing through the
-  workspace filter. The Seatbelt profile's deny rules protect those Git entries on that path ("Run
+  FUSE backend. The Seatbelt profile's deny rules protect those Git entries on that path ("Run
   on host", below).
 
 **A host program executing a workspace file on an event, not when you build or run it.**
@@ -276,20 +277,20 @@ Some host programs run commands that the workspace's files name, on an event:
 
 A session cannot change those files. `doc/file-rules.md` has the list and the rule file.
 
-- The filter keeps the entries that the defaults and `.ko-agent-sandbox/file/rule` name read-only
-  at any depth, under the name rule that `.git` has. The filter refuses to create such an entry by
-  any means.
+- The FUSE backend keeps the entries that the defaults and `.ko-agent-sandbox/file/rule` name
+  read-only at any depth, under the name rule that `.git` has. The FUSE backend refuses to create
+  such an entry by any means.
 - A directory that such a name passes through cannot be renamed, replaced or removed while the
   directory holds anything. So the name cannot be staged elsewhere and moved into place.
 - Below a directory that a `writable` line names, such as `node_modules` in the defaults, a session
-  can write names that the other lines protect. So the filter refuses:
+  can write names that the other lines protect. So the FUSE backend refuses:
   - moving a directory or symlink out of the writable directory, including renaming the writable
     directory itself;
   - a hard link of a symlink out of the writable directory;
   - a symlink into the writable directory from outside.
-- The filter refuses the same moves out of a Git directory's operational state, where no line
-  applies. The filter also refuses any new symlink whose target names a `.git` entry or spells an
-  NTFS 8.3 short name such as `GIT~1`, whatever that name holds when the link is made.
+- The FUSE backend refuses the same moves out of a Git directory's operational state, where no line
+  applies. The FUSE backend also refuses any new symlink whose target names a `.git` entry or spells
+  an NTFS 8.3 short name such as `GIT~1`, whatever that name holds when the link is made.
   - The check reads the target's names when the link is made. So a symlink that the session did not
     make, into a Git directory or through a short name, still lets a later link reach that
     directory. Such a symlink is the host's, or predates the check.
@@ -338,16 +339,16 @@ understanding of what the sandbox can access. These cases need a host change or 
 - a native Linux **host** is never even prompted for sudo. The launcher only hands you the command.
 - the **machine** is started when stopped, but never created or resized: sizing is yours.
 - during **session setup**, the workspace tree stays unchanged:
-  - The filter denies creating `.git` and `.ko-agent-sandbox` by name, and the BPF policy judges
-    what enters them. So neither name needs a mount target in the workspace.
+  - The FUSE backend denies creating `.git` and `.ko-agent-sandbox` by name, and the BPF backend
+    judges what enters them. So neither name needs a mount target in the workspace.
   - The policy's proof fixture lies under the launcher's state root.
   - `--workspace=read-only` makes the entire tree read-only.
 - **`--self-test` without a case filter** writes to its own scratch directory in the workspace
   ([testing.md](ko-agent-fs/doc/testing.md)).
 - the **workspace's SELinux labels** are never changed. On an enforcing host a container reads an
-  unfiltered bind mount only under `:Z`, which relabels the directory recursively. No launch passes
+  plain bind mount only under `:Z`, which relabels the directory recursively. No launch passes
   `:Z`:
-  - The filter's mountpoint needs no relabel.
+  - The FUSE backend's mountpoint needs no relabel.
   - A permissive or disabled host reads the workspace unrelabeled.
   - On an enforcing host, `--workspace=read-only` refuses rather than relabels, unless the tree
     already has a shared container-accessible context. Such a context is a container type with no
@@ -542,7 +543,7 @@ encode information. The proxy does not detect or bound these covert channels.
   - git-lfs reads eight keys from `.lfsconfig`, among them `lfs.url`, `lfs.pushurl` and the fetch
     filters. git-lfs ignores every key that names a command (git-lfs 3.7.0,
     `config/git_fetcher.go`, `safeKeys`). The commands that git-lfs runs come from your Git
-    configuration and the hooks, which the filter protects.
+    configuration and the hooks, which the FUSE backend protects.
   - The object store, `.git/lfs/`, is writable. A session can place bytes under an object's hash
     that do not have that hash. A host checkout or `git lfs checkout` then writes those bytes to the
     worktree without a download.
@@ -558,8 +559,8 @@ will do. Review the diff first, exactly as for a contribution from a stranger.
 
 That includes a repository the agent created deeper in the tree:
 
-- The filter refuses creating a `.git` entry, but cannot refuse a *bare layout* built from ordinary
-  names (`git init --bare`, `git clone --bare|--mirror`, or by hand).
+- The FUSE backend refuses creating a `.git` entry, but cannot refuse a *bare layout* built from
+  ordinary names (`git init --bare`, `git clone --bare|--mirror`, or by hand).
 - A bare layout's config and hooks are served as writable data anywhere in the writable workspace.
   Git's ascending discovery adopts the layout for a host command run at or beneath it.
 
@@ -576,7 +577,7 @@ resolves the symlink's target:
   dereference symlinks, an editor indexing the workspace, or a packaging step.
 - A diff shows only the target text, which can make this risk easy to overlook.
 
-The workspace filter reduces this risk. The filter refuses absolute targets and targets whose
+The FUSE backend reduces this risk. The FUSE backend refuses absolute targets and targets whose
 syntax climbs above the workspace root, including common links into external caches. Two gaps
 remain (`fs.rs`, `target_has_portable_syntax`):
 
@@ -597,15 +598,15 @@ The tree is also shared live with the host:
   lets go. The machine's 9p handle imposes Windows sharing rules: PowerShell's `Set-Content` meets
   "used by another process", while Notepad's save and .NET's `WriteAllText` succeed
   (`ko-agent-fs/fuse/doc/verification-log.md`).
-- Concurrent sandbox sessions of one workspace race each other the same way, under the workspace
-  filter too. The sessions share the one filter mount: the same files, the same live view, the same
+- Concurrent sandbox sessions of one workspace race each other the same way, under the FUSE
+  backend too. The sessions share the one FUSE mount: the same files, the same live view, the same
   races.
 
-**The workspace filter, on the platforms where it is unverified.**
+**The FUSE backend, on the platforms where it is unverified.**
 
 - The workspace reaches the sandbox through `ko-agent-fs-fuse` (`ko-agent-fs/fuse/`). That FUSE
   mount enforces the policy stated under "The host's git executing what the sandbox wrote".
-- The filter refuses new `.git` entries and protects the listed Git entries at any depth.
+- The FUSE backend refuses new `.git` entries and protects the listed Git entries at any depth.
   Read-only bind mounts cannot do so (`doc/design.md`, "Read-only mounts over the protected entries
   are not a backend").
 - The design uses FUSE to mediate the VM's filesystem view across host platforms, rather than one
@@ -641,13 +642,13 @@ What an auditor trusts, and how each link is checked:
   A mismatch fails `--build`.
   - This check detects a mismatched installation. A binary reports the value itself, so the check
     does not independently attest the binary's contents or the build toolchain.
-- **The filter daemon is unprivileged.** The daemon runs without root or capabilities, and uses the
-  existing setuid `fusermount3` helper to mount FUSE.
+- **The FUSE backend's daemon is unprivileged.** The daemon runs without root or capabilities, and
+  uses the existing setuid `fusermount3` helper to mount FUSE.
   - The daemon is installed in the podman machine user's home on macOS and Windows, or in the host
     user's home on native Linux (the README names the path).
-  - The filter's `allow_other` mount needs `user_allow_other` in the machine's `/etc/fuse.conf`
-    (`ko-agent-fs/fuse/doc/architecture.md`, "Who may reach the mount"). Enabling that setting
-    requires consent ("Silent changes to what you own", above).
+  - The FUSE backend's `allow_other` mount needs `user_allow_other` in the machine's
+    `/etc/fuse.conf` (`ko-agent-fs/fuse/doc/architecture.md`, "Who may reach the mount"). Enabling
+    that setting requires consent ("Silent changes to what you own", above).
 
 What is measured, each item through the whole production stack
 (`ko-agent-fs/fuse/doc/verification-log.md` has the runs):
@@ -657,25 +658,25 @@ What is measured, each item through the whole production stack
   share-lock cost that "The workspace" notes. The `mmap` row has not run on Windows.
 
 The rest is what the README's status line means. On Linux the guarantees are reasoned rather than
-measured. The filter still enforces every `--workspace=live` session, on every platform.
+measured. The FUSE backend still enforces every `--workspace=live` session, on every platform.
 
 A version mismatch, a failed self-test or a failed mount aborts the launch. None of them falls back
-to an unfiltered bind.
+to a plain bind mount.
 
 `ko-agent-fs/fuse/doc/`, `ko-agent-fs/policy/doc/` and `ko-agent-fs/doc/testing.md` hold the
 implementation, the policy derivation and the test evidence.
 
 **The BPF backend.** `--workspace=live,bpf` mounts the workspace directory itself, writable. BPF
-programs of type `BPF_LSM_CGROUP` hold the filter's rules. The programs attach to a cgroup of the
-session's own in the podman machine, so the host and every other container keep unfiltered access to
-the same files.
+programs of type `BPF_LSM_CGROUP` hold the workspace policy's rules. The programs attach to a cgroup
+of the session's own in the podman machine, so the host and every other container keep unrestricted
+access to the same files.
 
 - `doc/bpf-lsm-cgroup.md` states what the backend promises and what the backend changes ("What is
   gained and what is lost").
 - `ko-agent-fs/bpf/doc/architecture.md` says how the backend keeps those promises.
 - `ko-agent-fs/bpf/doc/evidence.md` says what the suites measured.
-- The backend serves the podman machines of macOS and Windows alone. Native Linux keeps the filter
-  (`doc/TODO.md`, "The BPF backend's later versions").
+- The backend serves the podman machines of macOS and Windows alone. Native Linux keeps the FUSE
+  backend (`doc/TODO.md`, "The BPF backend's later versions").
 
 What an auditor trusts, and how each link is checked:
 
@@ -683,8 +684,8 @@ What an auditor trusts, and how each link is checked:
   machine against the machine's own kernel.
   - At load, the kernel's verifier refuses any read or write outside the bounds that the verifier
     proves. So a memory fault of the C kind is a failed launch, never a running program.
-  - The classifier is compiled a second time for the host and run through the filter's own corpus
-    (`ko-agent-fs/policy/tests/bpf_equivalence.rs`), so the two classifiers decide alike.
+  - The classifier is compiled a second time for the host and run through the workspace policy's
+    corpus (`ko-agent-fs/policy/tests/bpf_equivalence.rs`), so the two classifiers decide alike.
 - **The controller is privileged and parses nothing of the workspace.** The controller runs once
   per launch under the machine's `sudo -n`. The session has no path to the controller. The
   controller:
@@ -717,10 +718,10 @@ What an auditor trusts, and how each link is checked:
   - when that session's recorded path no longer names its directory.
 
   Three further cases:
-  - A container of an earlier launcher carries no labels. Such a container ran the filter with no
-    socket setting. So a `bpf` or `unix-socket` launch is refused beside that container, and a
-    filter launch is not.
-  - A read-only launch that the probe leaves without a policy counts as a filter session too.
+  - A container of an earlier launcher carries no labels. Such a container ran the FUSE backend with
+    no socket setting. So a `bpf` or `unix-socket` launch is refused beside that container, and a
+    FUSE backend launch is not.
+  - A read-only launch that the probe leaves without a policy counts as a FUSE backend session too.
   - The later launch is the one that refuses. An earlier launcher started beside a `bpf` or
     `unix-socket` session refuses nothing.
 - **The installation and the program set verified ahead.** `--build` installs the binaries at
@@ -729,8 +730,8 @@ What an auditor trusts, and how each link is checked:
   - `--build` records the installed object's tags under the running kernel.
   - `--build` keeps one program set loaded and verified ahead of the next launch. That launch takes
     the program set by renaming the set's pin directory, after the read-back checked the set.
-  - A `bpf` launch refuses an installation whose source id is not its own bundle's, as the filter's
-    `--version` is checked.
+  - A `bpf` launch refuses an installation whose source id is not its own bundle's, as the FUSE
+    backend's `--version` is checked.
   - A `bpf` launch also refuses an installation whose tags were recorded under another kernel than
     the one the machine runs, as after `podman machine os upgrade` or `wsl --update`.
   - Either refusal names `--build`.
@@ -1594,7 +1595,7 @@ commands execute outside the container, so the profile provides their confinemen
     - those two names are denied at any depth after path resolution, link creation included, with
       the unmeasured spellings that `doc/run-on-host.md` records;
     - writes and links are also denied to what the launch's file rules make read-only, and to the
-      paths that the filter's guard added;
+      paths that the workspace policy's guard added;
   - the command's own per-workspace run-on-host caches;
   - one Coursier-managed JDK, read-only:
     - under `mill`, also the JDK that Mill's launcher resolved for a build directory's pinned or
@@ -1811,7 +1812,7 @@ commands execute outside the container, so the profile provides their confinemen
   `.git/hooks/post-checkout`, that hook would run on your next `git checkout`, outside every
   sandbox. Two enforcement points prevent that write, both named under "The host's git executing
   what the sandbox wrote", above:
-  - the workspace filter, for writes through the workspace mount;
+  - the session's backend, FUSE or BPF, for writes through the workspace mount;
   - this profile's deny rules, for writes by the command.
 - **Cache poisoning stops at the workspace.** The command writes its own per-workspace caches, never
   yours:
@@ -1939,9 +1940,9 @@ The profile:
     is writable through its descriptor before `move_mount` attaches it (measured 2026-10-17);
 - answers the `setxattr` and `removexattr` families, ACLs among them, and `file_setattr` with
   `ENOTSUP` (`SeccompProfile.AttributeSyscalls`):
-  - The filter refuses these routes by not implementing them, and the BPF policy holds no hook for
-    them (`ko-agent-fs/bpf/doc/architecture.md`, "Attributes, flags and ioctls"). The rule holds
-    them in every `--nesting=none` session, under `~` too.
+  - The FUSE backend refuses these routes by not implementing them, and the BPF backend holds no
+    hook for them (`ko-agent-fs/bpf/doc/architecture.md`, "Attributes, flags and ioctls"). The rule
+    holds them in every `--nesting=none` session, under `~` too.
   - No `ioctl` command is refused. libseccomp clears a syscall's argument rules when an
     unconditional rule for that syscall arrives (`src/db.c`, `_db_rule_add`). So refusing the
     commands that set a file's flags means spelling every allowed command as a masked prefix, some

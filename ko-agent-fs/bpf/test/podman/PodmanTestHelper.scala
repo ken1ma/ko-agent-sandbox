@@ -43,7 +43,7 @@ object PodmanTestHelper:
   val SuitesPath = "ko-agent-fs/bpf/test/podman"
 
   /** The hosts whose podman machine the suites measure, each with the name the output uses for it; that
-    * name also names its output directory. A native Linux host has no machine. Such a host keeps the filter
+    * name also names its output directory. A native Linux host has no machine. Such a host keeps the FUSE backend
     * until a later version of the backend runs on its own kernel (doc/TODO.md, "The BPF backend's later
     * versions"; architecture.md, "Native Linux"). The host joins this list when that version's suites
     * measure it, with the controller run under the host's `sudo -n` instead of the machine's. */
@@ -59,7 +59,7 @@ object PodmanTestHelper:
       else
         Left(
           s"the suites measure the podman machines of macOS and Windows; a ${Properties.osName} host keeps the " +
-            "filter until a later version admits it (doc/TODO.md, \"The BPF backend's later versions\")",
+            "FUSE backend until a later version admits it (doc/TODO.md, \"The BPF backend's later versions\")",
         )
 
     /** The value of `--platform`, which makes the driver act as that platform where the detection must be
@@ -240,6 +240,22 @@ object PodmanTestHelper:
       seconds: Int = PodmanSeconds): Output =
     host(transcript, "podman" +: arguments, record = record, timeoutSeconds = Some(seconds.max(1)))
 
+  /** Whether `condition` holds within `seconds`, tested every `intervalMillis`. A row whose state changes
+    * after the causing command returns waits with this for the state itself, never for a fixed time.
+    * A test that answers true only after the deadline counts as false: a slow command must not stretch the bound
+    * that the row reports. */
+  def within(seconds: Int, intervalMillis: Int = 250)(condition: => Boolean): Boolean =
+    val deadline = System.nanoTime() + seconds * 1_000_000_000L
+    @scala.annotation.tailrec def poll(): Boolean =
+      val held = condition
+      val remainingNanos = deadline - System.nanoTime()
+      if remainingNanos < 0 then false
+      else if held then true
+      else
+        Thread.sleep(math.min(intervalMillis.toLong, remainingNanos / 1_000_000L + 1))
+        poll()
+    poll()
+
   /** One shell command of several statements, for `Vm`. */
   def sh(statements: String*): String = statements.mkString("; ")
 
@@ -252,6 +268,9 @@ object PodmanTestHelper:
   class Vm(transcript: Transcript, timeoutSeconds: Option[Int] = None):
     def apply(command: String): Output =
       host(transcript, Seq("podman", "machine", "ssh", command), timeoutSeconds = timeoutSeconds)
+    /** The command without recording its output, for a poll that records only its last answer. */
+    def unrecorded(command: String): Output =
+      host(transcript, Seq("podman", "machine", "ssh", command), record = false, timeoutSeconds = timeoutSeconds)
     def line(command: String): String = apply(command).text.trim
     /** Whether root sees PATH. None when the inspection itself failed, for example by a refused sudo or a
       * lost ssh, so that a failure never reads as absence. bpffs has mode 0700 in the machine, so the
@@ -303,6 +322,32 @@ object PodmanTestHelper:
               !Files.isRegularFile(file) || !read(s"sandbox-build/$listed").exists(java.util.Arrays.equals(Files
                 .readAllBytes(file), _))
             .map("sandbox-build/" + _)
+
+  /** Where the jar holds a copy of the compiled source at REPO_PATH, relative to the repository root. build.sbt
+    * copies it there, because the jar holds only its classes otherwise. */
+  def compiledSourceCopy(repoPath: String): String = s"launcher-sources/$repoPath"
+
+  /** Compares the code of each source in `sources.txt` with the jar's copy, without comments
+    * (SourceDigest.content). A bundled source is read from `sandbox-build/`, a compiled one from its copy.
+    * Returns the first source whose copy differs or is missing, with the reason, or None. */
+  def staleSource(jar: Path, repoDir: Path, suiteDir: Path): Option[String] =
+    Using.resource(JarFile(jar.toFile)): opened =>
+      suiteSources(suiteDir).iterator.map: source =>
+        val repoPath = repoDir.relativize(suiteDir.resolve(source).normalize).toString.replace('\\', '/')
+        val entryName =
+          if repoPath.startsWith("ko-agent-fs/") then s"sandbox-build/$repoPath" else compiledSourceCopy(repoPath)
+        val name = Path.of(repoPath).getFileName.toString
+        Option(opened.getJarEntry(entryName)) match
+          case None =>
+            val unlisted = Option.when(!entryName.startsWith("sandbox-build/"))(
+              "; if `sbt dist` does not add it, build.sbt's launcherSources lacks it").getOrElse("")
+            Some(s"$repoPath: the jar has no $entryName$unlisted")
+          case Some(entry) =>
+            val copy = Using.resource(opened.getInputStream(entry))(_.readAllBytes())
+            val checkout = Files.readAllBytes(repoDir.resolve(repoPath))
+            Option.when(!java.util.Arrays.equals(SourceDigest.content(name, copy), SourceDigest.content(name,
+              checkout)))(s"$repoPath: its code differs from the jar's $entryName")
+      .collectFirst { case Some(reason) => reason }
 
   // --- The environment and the build -----------------------------------------------------------------------
 

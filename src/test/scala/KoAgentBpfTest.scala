@@ -42,7 +42,7 @@ class KoAgentBpfTest extends munit.FunSuite:
       "tags object=policy.bpf.o programs=9 kernel=x out=y ms=500.1\npreloaded pindir=p programs=9 load_ms=410"
     assertEquals(
       installedLine(installed),
-      "ko-agent-bpf installed: 9 programs verified; a program set for the next launch loaded in 410 ms",
+      "BPF backend installed: 9 programs verified; a program set for the next launch loaded in 410 ms",
     )
 
   /** The retired unit's text as a839d14 and ee8793c wrote it, with the home as `@HOME@`. RetiredUnitSha256
@@ -427,9 +427,9 @@ class KoAgentBpfTest extends munit.FunSuite:
     assert(refusal("live,bpf", "vol-wt", worktree, mainLive).exists(_.contains("s-main")))
     // With nothing shared, another workspace under the other backend is no concern.
     assertEquals(refusal("live,bpf", "vol-other", Vector(RawMount("/Users/me/elsewhere", "36:3")), fuseLive), None)
-    // A session that a launcher started before the labels existed ran the filter with no socket
+    // A session that a launcher started before the labels existed ran the FUSE backend with no socket
     // setting, and what that session shares is unknown. A launch beside such a session is refused under
-    // any other backend or setting; a filter launch beside the session is no concern.
+    // any other backend or setting; a FUSE backend launch beside the session is no concern.
     assert(refusal("live,bpf", "vol-app", Vector(tree), unlabelled).exists(_.contains("earlier launcher")))
     assert(refusal("read-only,bpf,unix-socket", "vol-other", Vector.empty, unlabelled).isDefined)
     assertEquals(refusal("live", "vol-app", Vector(tree), unlabelled), None)
@@ -441,7 +441,7 @@ class KoAgentBpfTest extends munit.FunSuite:
       .exists(_.contains("no longer names")))
     assertEquals(refusalBeside(settings("live"), "vol-other", elsewhere, Vector(fuseLive), renamed), None)
 
-  test("the backend needs --nesting=none; the other modes keep the filter"):
+  test("the BPF backend needs --nesting=none; the other modes keep the FUSE backend"):
     assertEquals(nestingRefusal(settings("live,bpf"), "none"), None)
     assertEquals(nestingRefusal(settings("live"), "same-uid"), None)
     assert(nestingRefusal(settings("live,bpf"), "user-namespace").exists(_.contains("--nesting=user-namespace")))
@@ -535,7 +535,7 @@ class KoAgentBpfTest extends munit.FunSuite:
     assertEquals(reconcileNote("reconcile sessions=3 removed=0 kept=3 refused=0"), None)
     assertEquals(
       reconcileNote("reconcile sessions=3 removed=2 kept=1 refused=0"),
-      Some("ko-agent-bpf reconcile: 2 orphaned session(s) removed, 0 refused"),
+      Some("BPF backend reconcile: 2 orphaned session(s) removed, 0 refused"),
     )
     assert(reconcileNote("reconcile sessions=3 removed=0 kept=2 refused=1").exists(_.contains("name each")))
 

@@ -1,8 +1,8 @@
 // The seccomp profile that a `--nesting=none` session runs under: podman's installed default profile,
 // with these syscalls refused:
 // - creating a user namespace, joining a namespace, and every mount syscall;
-// - the syscalls that change a file's extended attributes, ACLs or flags. The BPF policy holds no hook
-//   for them, and the filter refuses them by not implementing them (ko-agent-fs/bpf/doc/architecture.md,
+// - the syscalls that change a file's extended attributes, ACLs or flags. The BPF backend holds no hook
+//   for them, and the FUSE backend refuses them by not implementing them (ko-agent-fs/bpf/doc/architecture.md,
 //   "Attributes, flags and ioctls").
 //
 // --build and --update derive the profile from the default that the podman server applies, and keep the
@@ -58,7 +58,7 @@ object SeccompProfile:
     * - `setxattrat` and `removexattrat` (Linux 6.13) are included;
     * - `file_setattr` (Linux 6.17) sets a file's flags and `fsxattr` fields.
     *
-    * The profile answers those syscalls with `ENOTSUP`, the answer the filter's FUSE mount gives, so
+    * The profile answers those syscalls with `ENOTSUP`, the answer the FUSE mount gives, so
     * that `cp -a` drops the attributes silently as it does there (ko-agent-fs/bpf/doc/architecture.md,
     * "Attributes, flags and ioctls"). */
   val AttributeSyscalls: Vector[String] = Vector(

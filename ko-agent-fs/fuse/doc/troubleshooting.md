@@ -5,9 +5,9 @@ directly on the host, with the same paths under your own home.
 
 ## State and log locations
 
-The filter keeps all its state in the daemon user's home, per workspace:
+The FUSE backend keeps all its state in the daemon user's home, per workspace:
 
-    ~/.local/share/ko-agent-sandbox/ko-agent-fs-fuse        the installed filter
+    ~/.local/share/ko-agent-sandbox/ko-agent-fs-fuse        the installed FUSE backend
     ~/.local/share/ko-agent-sandbox/ko-agent-fs             the installed policy's --resolve
     ~/.local/share/ko-agent-sandbox/mounts/<workspace-id>/
         workspace                                           the mountpoint the container binds
@@ -44,7 +44,7 @@ Check the daemon, the mount and the latest log:
 Find the matching `DENY` line in `daemon.log`. It names the operation, the target and the rule:
 
 - `reason=protected-git-control` on a file a normally allowed Git command needs — report the
-  command and the DENY line. The filter may lack an operational path in its allowlist
+  command and the DENY line. The workspace policy may lack an operational path in its allowlist
   (`../../policy/doc/git-metadata.md`, P2).
 - `reason=pinned-git-component` — Git directories' `objects` and `objects/info` are only created by
   `mkdir`, never renamed or unlinked (`../../policy/doc/git-metadata.md`, "The immutable set"). If a
@@ -60,8 +60,8 @@ Find the matching `DENY` line in `daemon.log`. It names the operation, the targe
 - `reason=nonportable-target-syntax` on a `symlink` — use a relative target that stays inside the
   workspace, or put the program's cache inside the workspace.
 
-  - The filter refuses absolute targets and targets that climb above the workspace root (`fs.rs`,
-    `target_has_portable_syntax`).
+  - The FUSE backend refuses absolute targets and targets that climb above the workspace root
+    (`fs.rs`, `target_has_portable_syntax`).
   - After the first refusal, sbt 2 falls back to copying from its cache, where a build keeps its
     output in the workspace. "Everything works but slowly" says where the image puts that output.
   - For `python3 -m venv`, create the environment under `~`, or use `--copies` if it must be in
@@ -108,27 +108,28 @@ is inside it. Read the logs on the host, then quit the session and launch again:
 - `refusing to serve ...` — follow the message's remedy on the host (`guard.rs`).
   - If it names a path `inside the workspace`, or says a symlink `leads into the workspace`: a
     protected Git path resolves through writable workspace files.
-  - If it names a `bare repository`: the workspace root has a layout the filter cannot protect.
+  - If it names a `bare repository`: the workspace root has a layout the workspace policy cannot
+    protect.
 - `refusing to serve ...` naming a path `outside the directories the podman machine shares` — a Git
   setting or a symlink below a listed entry leads where the machine cannot see the host's files. On
   Windows, that is another drive than the workspace's. Replace the link or the setting with a real
   file or directory inside the workspace or under a shared directory.
 - `refusing to serve ...` saying something `resolves to the workspace root itself`, or to a
   directory that `holds the workspace` — a hook setting such as `core.hooksPath = .`, or a listed
-  entry's symlink such as `.vscode -> ..`, points at the workspace root or above it. The filter
-  cannot hold that read-only. Point it at a directory of its own.
+  entry's symlink such as `.vscode -> ..`, points at the workspace root or above it. The workspace
+  policy cannot hold that read-only. Point it at a directory of its own.
 - `this workspace's concurrent sessions (...) run under other file rules` — someone edited
   `.ko-agent-sandbox/file/rule` while the named sessions run, and no start prompt asked to join them
   under their rules. Launch from a terminal, where the prompt appears, or after they end.
 - `this workspace is mounted for sessions under other file rules` — the running mount's rules
   changed between the start prompt and the mount. Launch again.
 - `mountpoint ... is not empty; refusing` — something created an entry in the mountpoint directory
-  while no filter was mounted. Inspect it in the machine before you delete it: nothing legitimate
-  writes there.
+  while no FUSE backend was mounted. Inspect it in the machine before you delete it: nothing
+  legitimate writes there.
 
 ## The workspace mount is empty inside the container
 
-Quit and launch again. The container may have started after the filter mount disappeared, and so
+Quit and launch again. The container may have started after the FUSE mount disappeared, and so
 attached to the empty mountpoint. The workspace's files are still in the backing directory. The
 races between mount and cleanup are described beside `KoAgentFs.koAgentFsReapScript`.
 
@@ -136,8 +137,8 @@ races between mount and cleanup are described beside `KoAgentFs.koAgentFsReapScr
 
 Compare your timings with `verification-log.md`, "The cost of a path walk":
 
-- The measured metadata operations took about 6–18 times as long through the filter as through an
-  unfiltered bind mount on macOS, and 5–30 times as long on Windows.
+- The measured metadata operations took about 6–18 times as long through the FUSE backend as
+  through a plain bind mount on macOS, and 5–30 times as long on Windows.
 - If your slowdown is much greater, check the machine as the next section describes.
 
 `git status` is usually where it shows first:
@@ -155,7 +156,7 @@ What shortens it, set on the host, since a session cannot write `.git/config`:
 - Ignore whole directories (`target/`, `node_modules/`), not file patterns (`*.class`). git skips
   an ignored directory without entering it, but walks every entry of a directory it must enter.
 - Only fewer or shallower tracked files shorten the tracked-file pass itself. The rest is the
-  filter's cost per operation, which `TODO.md`, "Performance", works on.
+  FUSE backend's cost per operation, which `TODO.md`, "Performance", works on.
 
 A build in the session that writes its output into the workspace pays that cost for each file it
 writes, and a compiler writes deep:
@@ -216,8 +217,8 @@ hand with `--trace` at a mountpoint of your own, and run the program there:
 
     ko-agent-fs-fuse --source <backing-dir> --mount <mountpoint> --trace 2>trace.log
 
-The launcher never passes `--trace`, so a session's mount is not traced. Each request the filter
-implements writes two lines:
+The launcher never passes `--trace`, so a session's mount is not traced. Each request the FUSE
+backend implements writes two lines:
 
     TRACE begin_us=5123 op=lookup parent=1:"." name="src"
     TRACE took_us=412 op=lookup parent=1:"." name="src"
@@ -236,7 +237,7 @@ implements writes two lines:
   longer knows the node. Names are escaped as in a `DENY` line. File contents are never logged.
 - The lines do not hold the reply's error. A `DENY` line, written while the log is under its cap,
   falls between the two.
-- Requests the filter leaves unimplemented (`fs.rs`, "Mutation coverage") write no lines.
+- Requests the FUSE backend leaves unimplemented (`fs.rs`, "Mutation coverage") write no lines.
 - The trace has no cap: stop the daemon when the measurement is done.
 
 ## The whole machine degrades (every podman command slow or erroring)
@@ -258,7 +259,7 @@ If memory is short:
 - Keep large builds under `~` in the container: `/tmp` uses RAM.
 - The launch warns of low memory or disk space. Fix that shortage before another build.
 
-After a hard stop, launch again to replace the filter mount. If stray containers or networks
+After a hard stop, launch again to replace the FUSE mount. If stray containers or networks
 remain, use `--reset`. It also ends this workspace's sessions and removes its saved state.
 
 ## Stale state after crashes
@@ -268,7 +269,7 @@ markers whose containers are gone.
 
 If the launcher died before its container started, allow ten minutes for the reaper to remove the
 container. On Windows, or after the reaper failed to start, use `--reset` instead. Reset also
-removes the workspace's filter state, ends its sessions and removes saved agent state; see the
+removes the workspace's FUSE backend state, ends its sessions and removes saved agent state; see the
 [README.md](../../../README.md#reference).
 
 After repeated crashes, compare `pgrep -a ko-agent-fs-fuse` with the workspaces that have live

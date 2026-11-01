@@ -1,6 +1,6 @@
 [package]
 name = "ko-agent-fs-fuse"
-description = "FUSE filter that keeps a sandbox from planting host-executable Git metadata in a shared workspace"
+description = "FUSE backend that keeps a sandbox from planting host-executable Git metadata in a shared workspace"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

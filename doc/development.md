@@ -36,7 +36,7 @@ Run the commands in this section from the repository root.
     java -jar target/dist/ko-agent-sandbox.jar --self-test
 
 1. `--self-test` runs two suites on any machine with podman: the suite that needs no mount, and the
-   suite that mounts a real filter in a privileged container.
+   suite that mounts the real FUSE backend in a privileged container.
 1. [testing.md](../ko-agent-fs/doc/testing.md) documents how to run either suite directly.
 
 

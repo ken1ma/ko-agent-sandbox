@@ -1,6 +1,6 @@
 //! Shared harness for the mounted integration tests.
 //!
-//! These mount a real filter over a throwaway backing tree, so they need `/dev/fuse` and
+//! These mount the real FUSE backend over a throwaway backing tree, so they need `/dev/fuse` and
 //! `CAP_SYS_ADMIN` and are `#[ignore]`d. Mounted tests: `ko-agent-fs/doc/testing.md`, "Mounted".
 
 #![allow(dead_code)] // each test binary uses a subset of the harness
@@ -21,7 +21,7 @@ use nix::sys::statfs::{FUSE_SUPER_MAGIC, statfs};
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
-/// A filter mounted over a throwaway backing tree; unmounted and removed on drop.
+/// A FUSE backend mount over a throwaway backing tree; unmounted and removed on drop.
 pub struct TestMount {
     base: PathBuf,
     pub backing: PathBuf,
@@ -31,7 +31,8 @@ pub struct TestMount {
 
 impl TestMount {
     /// Lay out a backing tree with `setup` — the host's side, written directly, bypassing the
-    /// filter, exactly as the host does — then mount the filter over it and wait until it serves.
+    /// FUSE backend, exactly as the host does — then mount the FUSE backend over it and wait until
+    /// it serves.
     pub fn new(setup: impl FnOnce(&Path)) -> TestMount {
         Self::with_rules(setup, |_| FileRules::default())
     }
@@ -66,7 +67,7 @@ impl TestMount {
         // The product's own options (`fs::mount_config`), not a convenient subset: a suite that
         // mounted differently would be exercising a filesystem no session ever runs.
         let session = fuser::spawn_mount(KoAgentFs::new(root, rules), &mount, &mount_config())
-            .expect("mount the filter");
+            .expect("mount the FUSE backend");
 
         let harness = TestMount {
             base,
@@ -89,7 +90,7 @@ impl TestMount {
             }
             sleep(Duration::from_millis(20));
         }
-        panic!("the filter did not come up at {}", self.mount.display());
+        panic!("the FUSE mount did not come up at {}", self.mount.display());
     }
 
     pub fn at(&self, relative: &str) -> PathBuf {
@@ -120,8 +121,8 @@ impl Drop for TestMount {
     }
 }
 
-/// Assert the filter refused an operation — and refused it as *policy*, with `EPERM`, not merely
-/// with some error that might mean the tree was laid out differently than the test assumed.
+/// Assert the FUSE backend refused an operation — and refused it as *policy*, with `EPERM`, not
+/// merely with some error that might mean the tree was laid out differently than the test assumed.
 #[track_caller]
 pub fn denied<T>(what: &str, result: io::Result<T>) {
     match result {

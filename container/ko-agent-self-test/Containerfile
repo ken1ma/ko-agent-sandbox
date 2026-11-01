@@ -26,7 +26,7 @@ RUN set -eux; rustup target add "$(uname -m)-unknown-linux-musl"
 WORKDIR /build
 COPY ko-agent-fs .
 
-# The identity that the installed filter reports. The suites run against the same source that the launcher bundles,
+# The identity that the installed binaries report. The suites run against the same source that the launcher bundles,
 # so the digest travels here too rather than stay unstamped.
 ARG KO_AGENT_FS_SOURCE_ID=unstamped
 ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}

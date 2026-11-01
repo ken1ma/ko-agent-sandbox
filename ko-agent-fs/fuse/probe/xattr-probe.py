@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Does the filter's `ENOSYS` on extended attributes cost anything real (doc/TODO.md,
+"""Does the FUSE backend's `ENOSYS` on extended attributes cost anything real (doc/TODO.md,
 "Non-TODOs")? `setxattr`/`removexattr`/`getxattr` are unimplemented. That fails closed and opens no
-way to execute code. But the unfiltered bind mount underneath *does* support `user.*` xattrs, so
+way to execute code. But the plain bind mount underneath *does* support `user.*` xattrs, so
 the question is not whether ENOSYS is safe. It is whether programs notice ENOSYS as a cost.
 
-Answer it by measurement, not by reasoning: run this in a filtered session and again in an
-unfiltered one, and compare. The unfiltered run is the control, as the unfiltered bind mount column
-is in the performance table:
+Answer it by measurement, not by reasoning: run this in a FUSE backend session and again in a
+plain run, and compare. The plain run is the control, as the plain bind mount column is in the
+performance table:
 
     cp .../xattr-probe.py <scratch-workspace>/
     java -jar ko-agent-sandbox.jar python3 xattr-probe.py
-    .../bench/unfiltered.sh python3 xattr-probe.py      # the control
+    .../bench/plain-bind.sh python3 xattr-probe.py      # the control
 
 Rows that differ between the two runs show what implementing xattrs would enable. Rows that fail
-in both runs come from the environment, not the filter. Record the result in
+in both runs come from the environment, not the FUSE backend. Record the result in
 doc/verification-log.md with the OS and podman versions, as the name-rule probe does.
 
 It writes only under a temporary directory, which it removes, and leaves nothing in the workspace.
@@ -30,17 +30,26 @@ MARKER = "user.ko-agent-fs-probe"
 
 
 def stack() -> str:
-    """Filtered or not, decided by a property a bind mount does not have: `.git` is refused at
-    *any* depth. Probing inside a fresh subdirectory rather than at the root is what makes that
-    work in a workspace that already has a `.git`."""
+    """Which stack, decided by two properties a bind mount does not have: the FUSE backend refuses a
+    `.git` directory at *any* depth, and the BPF backend, which allows the directory
+    (doc/bpf-lsm-cgroup.md, "Directories"), refuses a hook file inside it. Probing inside a fresh
+    subdirectory rather than at the root is what makes that work in a workspace that already has a
+    `.git`."""
     probe = tempfile.mkdtemp(prefix=".ko-agent-fs-stack-", dir=".")
     try:
-        os.mkdir(os.path.join(probe, ".git"))
-    except PermissionError:
-        return "filtered"
+        try:
+            os.mkdir(os.path.join(probe, ".git"))
+        except PermissionError:
+            return "FUSE backend"
+        try:
+            os.mkdir(os.path.join(probe, ".git", "hooks"))
+            with open(os.path.join(probe, ".git", "hooks", "pre-commit"), "wb"):
+                pass
+        except PermissionError:
+            return "BPF backend"
     finally:
         shutil.rmtree(probe, ignore_errors=True)
-    return "unfiltered bind mount"
+    return "plain bind mount"
 
 
 def row(label: str, outcome: str) -> None:

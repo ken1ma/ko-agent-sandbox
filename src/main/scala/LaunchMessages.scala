@@ -122,7 +122,7 @@ object LaunchMessages:
     // placeholder.
     brokered: Vector[CredentialBinding] = Vector.empty,
     // Which backend holds a live session's protections (CommandLine.WorkspaceBackends). The text that the agent reads
-    // names the filter, and the bpf backend changes two facts in that text.
+    // names the backend, and the BPF backend changes two facts in that text.
     backend: String = CommandLine.DefaultWorkspaceBackend,
     // The `unix-socket` value of --workspace (CommandLine.WorkspaceSettings). Under bpf the text tells the agent where
     // a Unix socket can be bound, because the policy answers a bind with a bare EPERM.
@@ -157,20 +157,20 @@ object LaunchMessages:
           |for temporary work and return results in the conversation. Tell the user to relaunch
           |with `--workspace=live,$backend` when files there must be written.""".stripMargin
       case "live" if backend == "bpf" =>
-        s"""`$mountPath` is writable and shared live with the same directory on the host, under a BPF
-          |policy the kernel enforces on this container (`ko-agent-bpf`), which refuses what the
-          |`ko-agent-fs` filter refuses elsewhere. The Git state the filter lists (refs, objects, the index,
-          |HEAD and the like) is writable; every other `.git` entry is frozen at any depth, among them
-          |config, hooks, `.git` pointer files, `commondir`, `gitdir`, rebase and rerere state and
-          |alternates, as are `.ko-agent-sandbox` and what `$$KO_AGENT_SANDBOX_FILE_RULES` makes read-only;
-          |in those rules the last line naming an entry or an ancestor decides. Symlink targets must be
-          |relative and remain inside the workspace. Two differences from the filter: an empty directory
-          |can be made and removed at any name, `.git` included, and gains no file where the name is
-          |guarded; and no FIFO can be made, opened or retimed in the workspace.
+        s"""`$mountPath` is writable and shared live with the same directory on the host, under the BPF
+          |backend: a policy the kernel enforces on this container, which refuses what the FUSE backend
+          |refuses. The Git state the workspace policy lists (refs, objects, the index, HEAD and the like)
+          |is writable; every other `.git` entry is frozen at any depth, among them config, hooks, `.git`
+          |pointer files, `commondir`, `gitdir`, rebase and rerere state and alternates, as are
+          |`.ko-agent-sandbox` and what `$$KO_AGENT_SANDBOX_FILE_RULES` makes read-only; in those rules
+          |the last line naming an entry or an ancestor decides. Symlink targets must be relative and
+          |remain inside the workspace. Two differences from the FUSE backend: an empty directory can be
+          |made and removed at any name, `.git` included, and gains no file where the name is guarded;
+          |and no FIFO can be made, opened or retimed in the workspace.
           |$socketSentence""".stripMargin
       case "live" =>
         s"""`$mountPath` is writable and shared live with the same directory on the host through the
-          |`ko-agent-fs` filter. The Git state the filter lists (refs, objects, the index, HEAD and the
+          |FUSE backend. The Git state the workspace policy lists (refs, objects, the index, HEAD and the
           |like) is writable; every other `.git` entry is frozen at any depth, among them config, hooks, `.git`
           |pointer files, `commondir`, `gitdir`, rebase and rerere state and alternates, as are
           |`.ko-agent-sandbox` and what `$$KO_AGENT_SANDBOX_FILE_RULES` makes read-only; in those rules

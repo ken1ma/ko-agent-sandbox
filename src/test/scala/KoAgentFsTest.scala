@@ -1,4 +1,4 @@
-// Tests the workspace FUSE filter as the launcher drives it: source identity, install and consent
+// Tests the FUSE backend as the launcher drives it: source identity, install and consent
 // commands, and the mount, unmount and reap scripts.
 
 package agentsandbox.launcher
@@ -41,7 +41,7 @@ class KoAgentFsTest extends munit.FunSuite:
     assert(!linux.exists(_.contains("machine")), "native Linux has no VM to ssh into")
     assert(!linux.exists(_.exists(_.contains("sudo"))), "the launcher must never sudo on the host")
 
-  test("the installed binaries are asked for their versions, and the filter for its self-test, where they run"):
+  test("the installed binaries are asked for their versions, and the FUSE backend for its self-test, where they run"):
     assertEquals(
       koAgentFsVersionCommand("podman", Os.Linux, "/home/me", KoAgentFsBinary),
       Vector(s"/home/me/$KoAgentFsBinary", "--version"),
@@ -59,7 +59,7 @@ class KoAgentFsTest extends munit.FunSuite:
       Vector("podman", "machine", "ssh", s"./$KoAgentFsFuseBinary --self-test"),
     )
 
-  test("a launch's filter checks are one script: home, version, and the self-test only for this build"):
+  test("a launch's FUSE backend checks are one script: home, version, and the self-test only for this build"):
     assume(!isWindows, "the stub ko-agent-fs-fuse is a /bin/sh script")
     val home = Files.createTempDirectory("ko-agent-fs-checks").toRealPath()
     try
@@ -111,7 +111,7 @@ class KoAgentFsTest extends munit.FunSuite:
     finally deleteRecursively(home)
 
     val unanswered = checkedKoAgentFsHome(HostCommands.Run(255, Array.emptyByteArray, "ssh: connect refused"), "abc")
-    assertEquals(unanswered, Left(("error: cannot determine the filter daemon's home directory", 1)))
+    assertEquals(unanswered, Left(("error: cannot determine the FUSE backend daemon's home directory", 1)))
 
   test("the fuse.conf consent check is idempotent and enables exactly what it describes"):
     assertEquals(
@@ -213,7 +213,7 @@ class KoAgentFsTest extends munit.FunSuite:
     assert(!warning.contains("\n"), warning)
     assert(warning.indexOf("do not take effect") < warning.indexOf("until"), warning)
 
-  test("the resolved set is read after the marker, and a filter of another format is refused"):
+  test("the resolved set is read after the marker, and output of another format is refused"):
     val output =
       s"reusing the existing mount\n${FileRules.ResolvedMarker}\nread-only .vscode\nread-only-path .husky/_\n"
     assertEquals(
@@ -221,7 +221,7 @@ class KoAgentFsTest extends munit.FunSuite:
       FileRules.Resolved(Vector(FileRules.Line(FileRules.Word.ReadOnly, ".vscode")), Vector(".husky/_"), Vector.empty),
     )
     assert(FileRules.parseResolved("read-only .vscode\nignore x\n").isLeft)
-    // What the profile writes into its regexes stays in the grammar, whatever the filter answers.
+    // What the profile writes into its regexes stays in the grammar, whatever the workspace policy answers.
     for line <- Vector(
         "read-only ../x",
         "writable a//b",
@@ -232,7 +232,7 @@ class KoAgentFsTest extends munit.FunSuite:
       )
     do assert(FileRules.parseResolved(s"$line\n").isLeft, line)
 
-  test("--resolve runs the build check before the filter, and removes its rule file either way"):
+  test("--resolve runs the build check before ko-agent-fs, and removes its rule file either way"):
     val script = koAgentFsResolveScript("/Users/u/proj", "app-abc123def456", "d" * 64, "host-view /\n")
     val check = script.indexOf(s"""*" source ${"d" * 64}") ;;""")
     assert(check >= 0 && check < script.indexOf("--resolve"), script)
@@ -307,7 +307,7 @@ class KoAgentFsTest extends munit.FunSuite:
       Set("live"),
     )
 
-  test("a reap after a reset leaves the workspace's filter directory gone"):
+  test("a reap after a reset leaves the workspace's FUSE backend directory gone"):
     // The reaper of a session that has just ended can run after a --reset removed the directory.
     assume(!isWindows, "the reap script runs under /bin/sh")
     val home = Files.createTempDirectory("ko-agent-fs-reap-reset")
@@ -462,15 +462,18 @@ class KoAgentFsTest extends munit.FunSuite:
 
   test("a reset relays every unmount and removal the script made, a failure after them included"):
     def ran(exit: Int, out: String) = Some(HostCommands.Run(exit, out.getBytes, ""))
-    val label = "ko-agent-fs filter on the host"
+    val label = "ko-agent-fs on the host"
     assertEquals(unmountReport(label, ran(0, "")), Vector.empty)
     assertEquals(unmountReport(label, ran(0, "removed /m/a\n")), Vector(s"$label: removed /m/a"))
     // The unmount went through and only what followed it failed, so the note must not deny the unmount.
     assertEquals(
       unmountReport(label, ran(1, "unmounted /m/a/workspace\n")),
-      Vector(s"$label: unmounted /m/a/workspace", "note: the filter unmount script failed after the actions above"),
+      Vector(
+        s"$label: unmounted /m/a/workspace",
+        "note: the FUSE backend's unmount script failed after the actions above",
+      ),
     )
-    val skipped = Vector("note: filter unmount skipped (no machine running, or the unmount script failed)")
+    val skipped = Vector("note: FUSE backend unmount skipped (no machine running, or the unmount script failed)")
     assertEquals(unmountReport(label, ran(255, "")), skipped)
     assertEquals(unmountReport(label, None), skipped)
 
@@ -540,7 +543,7 @@ class KoAgentFsTest extends munit.FunSuite:
       )
     finally deleteRecursively(context)
 
-  test("the setup exit code matches in the filter and launcher"):
+  test("the setup exit code matches in the FUSE backend and launcher"):
     // Two spellings of one number: drift makes the launcher retry a defect as root, or report a
     // setup failure as a bug.
     val declared = """(?m)^const SELF_TEST_SETUP_EXIT: u8 = (\d+);$""".r
@@ -603,7 +606,7 @@ class KoAgentFsTest extends munit.FunSuite:
       assert(Files.getLastModifiedTime(marker).compareTo(daysAgo(1)) > 0, "an emptied cache kept its old marker")
     finally deleteRecursively(cache)
 
-  test("everything that compiles the filter derives its toolchain instead of repeating it"):
+  test("everything that compiles ko-agent-fs derives its toolchain instead of repeating it"):
     // probe/rig.sh reads the pin out of the Containerfile, and the self-test image takes the pin as
     // an ARG with no default (pinnedRustVersion gives the reason). The test reads rig.sh from the
     // checkout, because rig.sh is not bundled into the jar; the SECURITY.md test does the same, for

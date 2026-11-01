@@ -784,7 +784,7 @@ fn long_name_sibling(parentfd: &OwnedFd, name: &OsStr, st: &FileStat) -> Option<
     })
 }
 
-/// The `open`/`create` flags this filter passes on to the backing store, out of the flags the
+/// The `open`/`create` flags the FUSE backend passes on to the backing store, out of the flags the
 /// caller asked for. It is an allowlist, so a flag nobody reasoned about never reaches a backing
 /// fd:
 ///
@@ -919,9 +919,9 @@ fn to_errno(err: NixErrno) -> Errno {
 ///     is right where the host has the workspace root at another path (Windows, `/mnt/<drive>/...`
 ///     in here), and needlessly strict where the workspace root is mounted at its host path.
 ///
-/// A filter serving an unknown host layout can judge syntax. The second direction is the one that
-/// matters: a caching program plants the container's own store path, which may not exist in a host
-/// layout this side never sees.
+/// A FUSE backend serving an unknown host layout can judge syntax. The second direction is the one
+/// that matters: a caching program plants the container's own store path, which may not exist in a
+/// host layout this side never sees.
 ///
 /// So this is a portability rule, not a containment one. Containment is `RESOLVE_IN_ROOT` on every
 /// path the daemon itself resolves, and the daemon does not resolve this one.

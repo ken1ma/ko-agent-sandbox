@@ -7,7 +7,7 @@
 // - the labels and the launch lock, by which the launcher refuses a launch beside a live session of the
 //   other backend or socket setting ("The hooks", `file_receive`).
 //
-// The filter's module, KoAgentFs.scala, is the model: this file uses the same install directory, the same
+// The FUSE backend's module, KoAgentFs.scala, is the model: this file uses the same install directory, the same
 // `podman machine ssh` channel and the same base64 transport for user-controlled values.
 
 package agentsandbox.launcher
@@ -25,7 +25,7 @@ import LauncherImages.{bundleIndex, bundleResource, bundleSourceId, KoAgentBpfBu
 
 object KoAgentBpf:
 
-  /** Where the backend is installed, relative to the machine user's home, beside the filter. */
+  /** Where the backend is installed, relative to the machine user's home, beside the FUSE backend. */
   val InstallDir = s"$KoAgentFsInstallDir/bpf"
 
   /** Where the sessions' links and programs are pinned, and where the preloaded set is pinned ("Lifecycle"). */
@@ -52,7 +52,7 @@ object KoAgentBpf:
   def nestingRefusal(settings: WorkspaceSettings, nesting: String): Option[String] =
     Option.when(settings.bpf && nesting != CommandLine.DefaultNestingMode)(
       s"error: --workspace=${settings.spelled} needs --nesting=none; under --nesting=$nesting the session can mount " +
-        "and create user namespaces, which the BPF policy does not judge yet, so the ko-agent-fs filter holds the " +
+        "and create user namespaces, which the BPF backend does not judge yet, so the FUSE backend holds the " +
         "workspace's protections there (SECURITY.md, \"The BPF backend\")",
     )
 
@@ -70,7 +70,7 @@ object KoAgentBpf:
   /** The raw mounts: the workspace tree and a linked worktree's main gitdir, each as `identity:base64(path)`
     * and separated by spaces. The identity is `stat -c %d:%i` in the machine (identScript). */
   val MountsLabel = "ko-agent-sandbox.raw-mounts"
-  /** The attach cgroup's path in the machine, for the reconcile. A filter-backed session has no such label. */
+  /** The attach cgroup's path in the machine, for the reconcile. A FUSE backend session has no such label. */
   val CgroupLabel = "ko-agent-sandbox.bpf-cgroup"
 
   final case class RawMount(path: String, identity: String):
@@ -133,9 +133,9 @@ object KoAgentBpf:
    *   identity, or when a path of one is the other's path or lies below it.
    * - Such a session also refuses the launch when its recorded path no longer names its recorded
    *   identity. A host rename happened in between, and the paths cannot be compared.
-   * - A container without the labels belongs to an earlier launcher, which ran the filter and no
+   * - A container without the labels belongs to an earlier launcher, which ran the FUSE backend and no
    *   socket setting, and whose volume and mounts are unknown. A launch under any other backend or
-   *   setting is refused beside such a container. A filter launch equals the container's settings
+   *   setting is refused beside such a container. A FUSE backend launch equals the container's settings
    *   and need not consider it.
    */
   def refusalBeside(
@@ -157,7 +157,7 @@ object KoAgentBpf:
       other.settings match
         case None if mine.bpf || mine.unixSocket =>
           Some(
-            s"error: ${other.name} is a live session of an earlier launcher, which ran the ko-agent-fs filter, and " +
+            s"error: ${other.name} is a live session of an earlier launcher, which ran the FUSE backend, and " +
               "whether it shares this workspace's volume or tree cannot be told without its labels; end it first",
           )
         case None => None
@@ -267,10 +267,10 @@ object KoAgentBpf:
     val tags = lines.find(_.startsWith("tags ")).map(line => field("programs", line).getOrElse("?")).getOrElse("?")
     val preloaded =
       lines.find(_.startsWith("preloaded ")).map(line => field("load_ms", line).getOrElse("?")).getOrElse("?")
-    s"ko-agent-bpf installed: $tags programs verified; a program set for the next launch loaded in $preloaded ms"
+    s"BPF backend installed: $tags programs verified; a program set for the next launch loaded in $preloaded ms"
 
   /** Installs the freshly built backend into the machine and preloads a program set. Linux has no machine
-    * and keeps the filter (doc/TODO.md, "The BPF backend's later versions"), so no caller calls this method
+    * and keeps the FUSE backend (doc/TODO.md, "The BPF backend's later versions"), so no caller calls this method
     * on Linux. */
   def installKoAgentBpf(podman: String, os: Os, sourceId: String): Either[String, Unit] =
     val command = koAgentFsScriptCommand(podman, os, installScript(sourceId))
@@ -431,7 +431,7 @@ object KoAgentBpf:
   /**
    * What keeps `--build` from building the backend on this machine: the kernel prerequisites and the
    * kernel's BTF, which the compile reads.
-   * - On any failure, the build skips the backend and the filter's build goes on, since `fuse` is the
+   * - On any failure, the build skips the BPF backend and the FUSE backend's build goes on, since `fuse` is the
    *   default.
    * - On none, the build tries the backend. A failure of the backend's build or install warns
    *   (buildFailedNote) and does not fail the rest of the build.
@@ -729,7 +729,7 @@ object KoAgentBpf:
 
   /** The launch line. A check that fails ends the launch, so what each step cost goes to the run's
     * log (stepsLogLine) rather than the terminal. */
-  val LaunchLine = "ko-agent-bpf backend: the policy attached and tested"
+  val LaunchLine = "BPF backend: the policy attached and tested"
 
   /** What each of steps 1 to 3 cost, for the run's log. */
   def stepsLogLine(launched: Launched): String =
@@ -756,7 +756,7 @@ object KoAgentBpf:
   /**
    * Step 6 of "Lifecycle" for one session: the script removes the pins, the cgroup and the session's
    * record once podman's own answer says the container is gone. That answer is exit 1 of `container
-   * exists`, the answer on which the filter's reap prunes a marker.
+   * exists`, the answer on which the FUSE backend's reap prunes a marker.
    * - A container still there, or a podman that cannot answer, keeps all three. Unpinning would
    *   detach the policy from a live session, and stopping the slice would end the session. The
    *   reconcile at the next launch removes an orphan ("Lifecycle", 7).
@@ -864,11 +864,11 @@ object KoAgentBpf:
       val removed = field("removed", line).getOrElse("0")
       val refused = field("refused", line).getOrElse("0")
       Option.when(removed != "0" || refused != "0")(
-        s"ko-agent-bpf reconcile: $removed orphaned session(s) removed, $refused refused" +
+        s"BPF backend reconcile: $removed orphaned session(s) removed, $refused refused" +
           (if refused != "0" then "; the lines above name each" else ""),
       )
 
-  /** The identities of paths in the machine, for a filter-backed session's labels (identScript's
+  /** The identities of paths in the machine, for a FUSE backend session's labels (identScript's
     * output parses as the launch script's IdentMarker lines). */
   def identScript(paths: Vector[String]): String =
     withScriptPath(paths.map(identLine).mkString("set -u\n", "\n", ""))

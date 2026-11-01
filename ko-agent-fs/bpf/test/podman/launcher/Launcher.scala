@@ -16,7 +16,8 @@
 // - The driver refuses to run while a sandbox container, session pins or a session record exist that
 //   it did not make, since the refusal rows and the memory row would measure them too. It checks
 //   again before those rows and at the end.
-// - It refuses a jar whose bundled sources differ from the checkout's.
+// - It refuses a jar whose bundled build context differs from the checkout's, or whose copy of a source that
+//   sources.txt lists differs in code (staleSource).
 // - It prints every line and appends it to OUTDIR/transcript.log (default: out-macos/ or out-wsl/
 //   beside this script, ignored by git), with each launch's output beside it.
 //
@@ -27,7 +28,7 @@
 //   session's records unchanged across another launch's take, and the two sessions' programs
 //   disjoint; two launches racing; a set of an earlier build discarded; an orphan of a launch that
 //   died after the take, removed by the reconcile; and a launch that finds no set;
-// - `podman exec` and `podman restart` of a `unix-socket` session;
+// - `podman exec` of a `unix-socket` session, and its launcher ending it at a `podman restart`;
 // - a linked worktree's socket symlink under the main checkout's `.git/objects`;
 // - on macOS, a FIFO the host made;
 // - the refusals beside a live session of the other backend or socket setting, in each pairing and
@@ -103,6 +104,8 @@ object Launcher:
   /** The time for a launch's self-test, mount, certificates and proxy, which come before its container
     * runs. */
   val Patience = 240
+  /** The time for a launcher's cleanup after its container stops. */
+  val TeardownSeconds = 30
 
   // --- Programs the sessions run, copied into a container or laid in a workspace --------------------------
 
@@ -298,19 +301,15 @@ object Launcher:
         stale = staleEntry(jar, repoDir)
         _ <- transcript.refuse(stale.isEmpty,
           s"$jar bundles ${stale.getOrElse("")}, which differs from the checkout's; run `sbt dist`")
-        // The hashed launcher source is compiled into the jar, not bundled as a file that the check above
-        // compares. So a jar older than any listed source may not contain it.
-        sources = suiteSources(suiteDir)
-        built = Files.getLastModifiedTime(jar)
-        newer = sources.filter(source => Files.getLastModifiedTime(suiteDir.resolve(source)).compareTo(built) > 0)
-        _ <- transcript.refuse(newer.isEmpty,
-          s"${newer.mkString(", ")} changed after $jar was built; run `sbt dist` and the jar's --build")
+        staleCode = staleSource(jar, repoDir, suiteDir)
+        _ <- transcript.refuse(staleCode.isEmpty,
+          s"${staleCode.getOrElse("")}; run `sbt dist` and the jar's --build")
       yield
         procedureSha(transcript, Seq(suiteDir / "Launcher.scala", suiteDir.getParent / "PodmanTestHelper.scala"))
         // The backend and the launcher's side of it. The evidence document's sections name their digest,
         // and ../../SourceDigestCheck.scala recomputes it. The rest of the launcher is covered by the
         // jar.
-        info(s"sources digest=${sourcesDigest(suiteDir)} over ${sources.mkString(" ")}")
+        info(s"sources digest=${sourcesDigest(suiteDir)} over ${suiteSources(suiteDir).mkString(" ")}")
         info(s"jar $jar")
 
     def installed(facts: VmFacts): Either[Int, Unit] =
@@ -664,7 +663,7 @@ object Launcher:
           end(session)
 
       def unixSocketExecAndRestart(): Unit =
-        step("podman exec and podman restart of a unix-socket session")
+        step("podman exec of a unix-socket session, and its end at podman restart")
         val workspace = repository("unix-socket")
         val launched = launch(workspace, "live,bpf,unix-socket")
         check(s"the launch under unix-socket ran: ${launched.describe}", launched.started.nonEmpty)
@@ -676,26 +675,21 @@ object Launcher:
           def refused(answer: String) = answer.contains("not permitted") && !answer.contains("status=0")
           val before = protectedWrite()
           check(s"its protected write is refused: $before", refused(before))
+          // The launcher's `podman wait` returns at the restart's stop, and its cleanup removes the container,
+          // whether or not the restart started it again first (SandboxLifecycle.ReaperScript). So the restart's
+          // own status depends on that race, and only the session's end is judged. The lifecycle suite runs a
+          // restarted `unix-socket` session, which no launcher cleans up.
           val restarted = podman(transcript, Seq("restart", "-t", "2", session.container))
-          val state =
-            podman(transcript, Seq("inspect", "--format", "{{.State.Status}}", session.container)).text
-          check(s"podman restart ran and the container ran again under file_receive: status ${restarted.status}, " +
-            state.trim, restarted.ok && state.trim == "running")
-          // The launcher's `podman wait` returns when the restart stops the container, and its run's
-          // cleanup removes the container (SandboxLifecycle.ReaperScript). So a launcher session does not
-          // outlive a restart.
-          Thread.sleep(5000)
-          val remains = podman(transcript, Seq("container", "exists", session.container)).ok
-          if remains then
-            check("after the restart a podman exec process starts", exec(session, "true").ok)
-            val after = protectedWrite()
-            check(s"and its protected write is refused: $after", refused(after))
+          info(s"podman restart answered status ${restarted.status}")
+          // The launcher's own process ends at the stop; its reaper, a process of its own, removes the
+          // container and then the pins.
+          def containerGone(): Boolean =
+            !podman(transcript, Seq("container", "exists", session.container), record = false).ok
+          val ended = within(TeardownSeconds)(containerGone() && vm.rootSees(session.pinDir).contains(false))
+          val pins = vm.rootSees(session.pinDir).fold("unreadable")(present => if present then "present" else "gone")
+          check(s"within $TeardownSeconds s the launcher's cleanup removed the restarted session: container " +
+            s"${if containerGone() then "gone" else "remains"}, pins $pins", ended)
           end(session)
-          if !remains then
-            val pins = vm.rootSees(session.pinDir)
-            val state = pins.fold("unreadable")(present => if present then "present" else "gone")
-            check(s"the launcher ended the restarted session, and its pins went with it: $state",
-              pins.contains(false))
 
       def worktreeSocketSymlink(): Unit =
         step("a linked worktree's main gitdir: a symlink under .git/objects to a socket outside")
@@ -719,7 +713,7 @@ object Launcher:
             val bind = copyIn(mainSession, "bind.py", BindPy)
             val connect = copyIn(mainSession, "connect.py", ConnectPy)
             podman(transcript, Seq("exec", "-d", mainSession.container, "python3", bind, socket))
-            Thread.sleep(2000)
+            within(10)(podman(transcript, Seq("exec", mainSession.container, "test", "-S", socket), record = false).ok)
             val direct = exec(mainSession, "python3", connect, linkSeen).text.trim
             check(s"in the main session the socket answers through the symlink: $direct", direct == "connect result=ok")
             val linkedLaunch = launch(linked, "live,bpf,unix-socket")
@@ -838,7 +832,7 @@ object Launcher:
         check(s"a launch under bpf beside an unlabelled container of an earlier launcher is refused: ${bpf.describe}",
           bpf.started.isEmpty && bpf.describe.toLowerCase.contains("earlier launcher"))
         val fuse = launch(workspace, "live,fuse")
-        check(s"a filter launch beside it runs: ${fuse.describe}", fuse.started.nonEmpty)
+        check(s"a FUSE backend launch beside it runs: ${fuse.describe}", fuse.started.nonEmpty)
         fuse.started.foreach(end)
         podman(transcript, Seq("rm", "-f", "-v", "-t", "0", name))
 
@@ -893,8 +887,14 @@ object Launcher:
               loads.forall(_.ok) && programCount == (sets * Hooks9.size).toString)
             bytes
           vm(unpinEvery(controller, MemRoot))
-          // The memory of a program or a map is freed after an RCU grace period, not at the unpin.
-          Thread.sleep(5000)
+          // The memory of a program or a map is freed after an RCU grace period, not at the unpin. The reading
+          // counts once it is below the last and two readings a second apart agree.
+          var previous = -1L
+          within(30, intervalMillis = 1000):
+            val now = vm.unrecorded(s"cat ${cgroup.path}/memory.current").text.trim.toLongOption.getOrElse(-1L)
+            val settled = now >= 0 && now < readings.last && now == previous
+            previous = now
+            settled
           val removed = current()
           info(s"after their removal: memory.current $removed")
           val bytes = base +: readings

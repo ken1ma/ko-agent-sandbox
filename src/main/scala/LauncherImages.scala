@@ -114,8 +114,8 @@ object LauncherImages:
   /**
    * The digest of one bundle directory as this jar bundles it. The digest covers the same bytes that
    * ImageBuilds.unpackBuildContext writes and contextSourceId hashes, read straight from the jar so
-   * that no unpack is needed. The filter binary's `--version` must report this digest, and --build
-   * stamps it into the sandbox and proxy images as their bundle label (bundleMismatch).
+   * that no unpack is needed. The FUSE backend's binary must report this digest in its `--version`,
+   * and --build stamps it into the sandbox and proxy images as their bundle label (bundleMismatch).
    */
   def bundledSourceId(dir: String, copied: String => Boolean = _ => true): String =
     val entries = bundleIndex()

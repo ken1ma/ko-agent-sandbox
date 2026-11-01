@@ -1,13 +1,14 @@
-# The file rules' contract, checked against the filter's policy (`src/policy.rs`) and against the
+# The file rules' contract, checked against the workspace policy (`src/policy.rs`) and against the
 # Seatbelt profile's rendered rules (the launcher's `SeatbeltProfileTest`).
 #
 # A case lists resolved lines, as the launcher and the guard write them, then paths with their
 # answer: `read-only`, `pinned` (not read-only, but not to be renamed or unlinked) or `free`.
 #
-# `path` rows hold for both enforcement points. `folded` rows spell a name as a filesystem may
-# fold it; the filter folds, and the profile relies on the volume resolving the spelling to the
-# name before Seatbelt matches (doc/run-on-host.md, "The host command's filesystem rules"), so
-# only the filter checks them. The third `folded` row holds an invisible U+200B ZERO WIDTH SPACE.
+# `path` rows hold for both enforcement points. `folded` rows spell a name as a filesystem may fold
+# it; the workspace policy folds, and the profile relies on the volume resolving the spelling to the
+# name before Seatbelt matches (doc/run-on-host.md, "The host command's filesystem rules"), so only
+# the workspace policy checks them. The third `folded` row holds an invisible U+200B ZERO WIDTH
+# SPACE.
 
 case one directory at any depth
 line read-only .vscode

@@ -1639,7 +1639,7 @@ __noinline int judge_position(__u64 hook, __u64 dentry, __u64 slot, __u64 pos_in
 //   enters a gitdir from the workspace (`enters_gitdir`), or when it is in a writable region the
 //   link is not in (`authorize_symlink_target`).
 //
-// A link in git state gets only the syntax rule, as in the filter. The rule state of each level
+// A link in git state gets only the syntax rule, as in the FUSE backend. The rule state of each level
 // comes from `sc->level_partial`: the walk filled it for the link's ancestors, and this function
 // fills it for the target's components.
 __noinline int judge_symlink(__u64 slot, __u64 target)

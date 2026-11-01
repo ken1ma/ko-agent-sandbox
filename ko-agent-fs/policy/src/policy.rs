@@ -14,7 +14,7 @@
 //! that context. Nearly all files in a build are outside any gitdir, so their context is a single
 //! `NotGit` tag, and every operation on them is allowed at once.
 
-/// A filesystem-mutating operation the filter may authorize. Reads are never routed here.
+/// A filesystem-mutating operation the workspace policy may authorize. Reads are never routed here.
 ///
 /// Exactly the operations the FUSE layer passes to [`authorize`].
 ///
@@ -53,9 +53,9 @@ pub enum GitPathClass {
     Protected,
 }
 
-/// The cached position of an inode relative to the state this filter protects. Stored per inode by
-/// the FUSE layer. Git metadata is the bulk of it and `doc/git-metadata.md` the reasoning; the
-/// launcher's own configuration directory is protected here too, for the reason
+/// The cached position of an inode relative to the state the workspace policy protects. Stored per
+/// inode by the FUSE layer. Git metadata is the bulk of it and `doc/git-metadata.md` the reasoning;
+/// the launcher's own configuration directory is protected here too, for the reason
 /// [`is_sandbox_config_name`] gives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GitContext {

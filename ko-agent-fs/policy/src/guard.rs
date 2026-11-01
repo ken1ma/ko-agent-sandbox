@@ -1,5 +1,5 @@
-//! Startup guards: when the filter refuses to mount at all, and what it protects beyond names (the
-//! file rules' anchored paths).
+//! Startup guards: when the workspace policy refuses to serve a tree at all, and what it protects
+//! beyond names (the file rules' anchored paths).
 //!
 //! - The binding rule and the snapshot argument: `doc/git-metadata.md`, "Relocated hook
 //!   directories".
@@ -22,7 +22,8 @@ use crate::policy::{
 /// Symlink hops before resolution refuses as a loop — the kernel's own SYMLOOP_MAX.
 const MAX_SYMLINK_HOPS: usize = 40;
 
-/// Why the filter refused to serve a backing tree. Rendered for the operator, who has to act on it.
+/// Why the workspace policy refused to serve a backing tree. Rendered for the operator, who has to
+/// act on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
     pub reason: String,
@@ -100,7 +101,7 @@ pub fn resolve(
 ) -> Result<Additions, Refusal> {
     let root = backing_root.canonicalize().map_err(|err| Refusal {
         reason: format!("cannot canonicalize the backing directory {backing_root:?}: {err}"),
-        remedy: "The filter will not serve a tree it cannot resolve.".to_string(),
+        remedy: "The workspace policy will not serve a tree it cannot resolve.".to_string(),
     })?;
 
     let mut workspace = Workspace::open(root, host_view.to_vec(), rules.clone())?;
@@ -353,9 +354,10 @@ impl Workspace {
                 "{subject} resolves through {component:?}, outside the workspace and outside the \
                  directories the podman machine shares with the host",
             ),
-            remedy: "The filter runs in the podman machine and cannot tell whether the host \
-                     follows that path back into the workspace. Replace the link or setting with \
-                     a real file or directory, inside the workspace or under a shared directory."
+            remedy: "The workspace policy runs in the podman machine and cannot tell whether the \
+                     host follows that path back into the workspace. Replace the link or setting \
+                     with a real file or directory, inside the workspace or under a shared \
+                     directory."
                 .to_string(),
         }
     }
@@ -538,8 +540,8 @@ impl Workspace {
             .filter(|rel| !rel.is_empty() && !rel.chars().any(char::is_whitespace));
         rel.map(str::to_string).ok_or_else(|| Refusal {
             reason: format!(
-                "{subject} resolves through {path:?}, whose name the filter cannot record as \
-                 read-only",
+                "{subject} resolves through {path:?}, whose name the workspace policy cannot \
+                 record as read-only",
             ),
             remedy: "Rename it on the host without whitespace or non-UTF-8 bytes, then relaunch."
                 .to_string(),
@@ -556,7 +558,8 @@ impl Workspace {
             Err(err) => {
                 return Err(Refusal {
                     reason: format!("cannot read {dotgit:?}: {err}"),
-                    remedy: "The filter will not serve a repository whose gitdir it cannot locate."
+                    remedy: "The workspace policy will not serve a repository whose gitdir it \
+                             cannot locate."
                         .to_string(),
                 });
             }
@@ -581,7 +584,8 @@ impl Workspace {
         // A pointer file: `gitdir: <path>`, absolute or relative to the worktree.
         let text = fs::read_to_string(&dotgit).map_err(|err| Refusal {
             reason: format!("cannot read the .git pointer file {dotgit:?}: {err}"),
-            remedy: "The filter will not serve a repository whose gitdir it cannot locate."
+            remedy: "The workspace policy will not serve a repository whose gitdir it cannot \
+                     locate."
                 .to_string(),
         })?;
         let Some(target) = text
@@ -598,19 +602,22 @@ impl Workspace {
         match self.resolve_checked(&named, &subject)? {
             None => Err(Refusal {
                 reason: format!("{dotgit:?} names a gitdir that does not exist: {named:?}"),
-                remedy: "The filter will not serve a repository whose gitdir it cannot locate."
+                remedy: "The workspace policy will not serve a repository whose gitdir it cannot \
+                         locate."
                     .to_string(),
             }),
             Some(gitdir) => match fs::symlink_metadata(&gitdir) {
                 Ok(metadata) if metadata.is_dir() => Ok(Some(gitdir)),
                 Ok(_) => Err(Refusal {
                     reason: format!("{dotgit:?} names {gitdir:?}, which is not a directory"),
-                    remedy: "The filter will not serve a repository whose gitdir it cannot locate."
+                    remedy: "The workspace policy will not serve a repository whose gitdir it \
+                             cannot locate."
                         .to_string(),
                 }),
                 Err(err) => Err(Refusal {
                     reason: format!("cannot read {gitdir:?}: {err}"),
-                    remedy: "The filter will not serve a repository whose gitdir it cannot locate."
+                    remedy: "The workspace policy will not serve a repository whose gitdir it \
+                             cannot locate."
                         .to_string(),
                 }),
             },
@@ -630,8 +637,8 @@ impl Workspace {
             Err(err) => {
                 return Err(Refusal {
                     reason: format!("cannot read {commondir_path:?}: {err}"),
-                    remedy: "The filter will not serve a repository whose common gitdir it \
-                             cannot locate."
+                    remedy: "The workspace policy will not serve a repository whose common \
+                             gitdir it cannot locate."
                         .to_string(),
                 });
             }
@@ -644,8 +651,8 @@ impl Workspace {
                 reason: format!(
                     "{commondir_path:?} names a directory that does not exist: {named:?}"
                 ),
-                remedy: "The filter will not serve a repository whose common gitdir it cannot \
-                         locate."
+                remedy: "The workspace policy will not serve a repository whose common gitdir it \
+                         cannot locate."
                     .to_string(),
             }),
             Some(common) => match fs::symlink_metadata(&common) {
@@ -654,14 +661,14 @@ impl Workspace {
                     reason: format!(
                         "{commondir_path:?} names {common:?}, which is not a directory"
                     ),
-                    remedy: "The filter will not serve a repository whose common gitdir it \
-                             cannot locate."
+                    remedy: "The workspace policy will not serve a repository whose common \
+                             gitdir it cannot locate."
                         .to_string(),
                 }),
                 Err(err) => Err(Refusal {
                     reason: format!("cannot read {common:?}: {err}"),
-                    remedy: "The filter will not serve a repository whose common gitdir it \
-                             cannot locate."
+                    remedy: "The workspace policy will not serve a repository whose common \
+                             gitdir it cannot locate."
                         .to_string(),
                 }),
             },
@@ -696,8 +703,8 @@ impl Workspace {
                 Err(err) => {
                     return Err(Refusal {
                         reason: format!("cannot read {config_path:?}: {err}"),
-                        remedy: "The filter cannot tell where hooks would run from, so it will \
-                                 not serve this repository."
+                        remedy: "The workspace policy cannot tell where hooks would run from, so \
+                                 it will not serve this repository."
                             .to_string(),
                     });
                 }
@@ -711,8 +718,9 @@ impl Workspace {
                     reason: format!(
                         "{config_path:?} is not valid UTF-8, so its values cannot be read"
                     ),
-                    remedy: "The filter cannot tell where hooks would run from, so it will not \
-                             serve this repository. Re-encode the file, or remove the setting."
+                    remedy: "The workspace policy cannot tell where hooks would run from, so it \
+                             will not serve this repository. Re-encode the file, or remove the \
+                             setting."
                         .to_string(),
                 });
             };
@@ -721,9 +729,9 @@ impl Workspace {
                 HooksPath::Undecidable(what) => {
                     return Err(Refusal {
                         reason: format!("{config_path:?} {what}"),
-                        remedy: "The filter cannot tell where hooks would run from, so it will \
-                                 not serve this repository. Set an explicit core.hooksPath \
-                                 outside the workspace, or remove it."
+                        remedy: "The workspace policy cannot tell where hooks would run from, so \
+                                 it will not serve this repository. Set an explicit \
+                                 core.hooksPath outside the workspace, or remove it."
                             .to_string(),
                     });
                 }
@@ -764,8 +772,8 @@ impl Workspace {
         self.check_object_store(&common)
     }
 
-    /// The common gitdir's `objects`, `objects/info` and its two alternates files. The filter
-    /// protects `alternates` by its name below `objects/info` and pins the two directories
+    /// The common gitdir's `objects`, `objects/info` and its two alternates files. The workspace
+    /// policy protects `alternates` by its name below `objects/info` and pins the two directories
     /// (`policy::classify_within_object_info`). Through a symlink the host made, the sandbox would
     /// write the file under the name the link leads to, which this checks.
     ///
@@ -818,11 +826,11 @@ impl Workspace {
                                      to {:?}",
                                     chain.end
                                 ),
-                                remedy: "The filter protects objects/info/alternates, whose paths \
-                                         your git opens, by its name, and a link into the \
-                                         workspace would let the sandbox write it under another. \
-                                         Point the link outside the workspace, or replace it with \
-                                         the directory or file it names."
+                                remedy: "The workspace policy protects objects/info/alternates, \
+                                         whose paths your git opens, by its name, and a link \
+                                         into the workspace would let the sandbox write it under \
+                                         another. Point the link outside the workspace, or \
+                                         replace it with the directory or file it names."
                                     .to_string(),
                             });
                         }
@@ -838,8 +846,8 @@ impl Workspace {
                 Err(err) => {
                     return Err(Refusal {
                         reason: format!("cannot read {path:?}: {err}"),
-                        remedy: "The filter will not serve a repository whose object store it \
-                                 cannot inspect."
+                        remedy: "The workspace policy will not serve a repository whose object \
+                                 store it cannot inspect."
                             .to_string(),
                     });
                 }
@@ -871,7 +879,8 @@ impl Workspace {
             Err(err) => {
                 return Err(Refusal {
                     reason: format!("cannot list the hook directory {resolved:?}: {err}"),
-                    remedy: "The filter will not serve hooks it cannot inspect.".to_string(),
+                    remedy: "The workspace policy will not serve hooks it cannot inspect."
+                        .to_string(),
                 });
             }
             Ok(entries) => entries,
@@ -879,7 +888,7 @@ impl Workspace {
         for entry in entries {
             let entry = entry.map_err(|err| Refusal {
                 reason: format!("cannot list the hook directory {resolved:?}: {err}"),
-                remedy: "The filter will not serve hooks it cannot inspect.".to_string(),
+                remedy: "The workspace policy will not serve hooks it cannot inspect.".to_string(),
             })?;
             let hook = resolved.join(entry.file_name());
             let subject = format!("the hook {hook:?}");
@@ -954,7 +963,8 @@ impl Workspace {
     ) -> Result<(Option<PathBuf>, bool), Refusal> {
         let metadata = fs::symlink_metadata(path).map_err(|err| Refusal {
             reason: format!("cannot read {subject}: {err}"),
-            remedy: "The filter will not serve an entry it protects without inspecting it."
+            remedy: "The workspace policy will not serve an entry it protects without \
+                     inspecting it."
                 .to_string(),
         })?;
         if !metadata.file_type().is_symlink() {
@@ -967,8 +977,8 @@ impl Workspace {
                     "{subject} resolves to {:?}, which holds the workspace",
                     chain.end,
                 ),
-                remedy: "The host would read workspace files under its name, which the filter \
-                         cannot protect there. Point it at a directory of its own."
+                remedy: "The host would read workspace files under its name, which the workspace \
+                         policy cannot protect there. Point it at a directory of its own."
                     .to_string(),
             });
         }
@@ -1003,7 +1013,8 @@ impl Workspace {
             Err(err) => {
                 return Err(Refusal {
                     reason: format!("cannot list {dir:?}, below a listed entry: {err}"),
-                    remedy: "The filter will not serve an entry it protects without inspecting it."
+                    remedy: "The workspace policy will not serve an entry it protects without \
+                             inspecting it."
                         .to_string(),
                 });
             }
@@ -1013,7 +1024,8 @@ impl Workspace {
         for entry in entries {
             let entry = entry.map_err(|err| Refusal {
                 reason: format!("cannot list {dir:?}, below a listed entry: {err}"),
-                remedy: "The filter will not serve an entry it protects without inspecting it."
+                remedy: "The workspace policy will not serve an entry it protects without \
+                         inspecting it."
                     .to_string(),
             })?;
             listed.push((entry.file_name(), entry.path()));
@@ -1025,7 +1037,7 @@ impl Workspace {
     /// Whether the workspace root is itself laid out as a gitdir: `git init --bare`,
     /// `git clone --bare|--mirror`, or built by hand.
     /// - Host git's upward discovery adopts such a directory. Its config and hooks have ordinary
-    ///   names the filter must keep writable, so the tree is refused.
+    ///   names the workspace policy must keep writable, so the tree is refused.
     /// - The test mirrors git's own `is_git_directory`: a valid `HEAD` (symref or detached hash),
     ///   an `objects` directory and a `refs` directory. Reftable repositories also keep these
     ///   three, precisely so old gits recognize them.
@@ -1037,8 +1049,8 @@ impl Workspace {
             Err(err) => {
                 return Err(Refusal {
                     reason: format!("cannot read {head:?}: {err}"),
-                    remedy: "The filter will not serve a tree whose repository layout it cannot \
-                             decide."
+                    remedy: "The workspace policy will not serve a tree whose repository layout \
+                             it cannot decide."
                         .to_string(),
                 });
             }
@@ -1063,8 +1075,8 @@ impl Workspace {
                 Err(err) => {
                     return Err(Refusal {
                         reason: format!("cannot read {:?}: {err}", self.root.join(name)),
-                        remedy: "The filter will not serve a tree whose repository layout it \
-                                 cannot decide."
+                        remedy: "The workspace policy will not serve a tree whose repository \
+                                 layout it cannot decide."
                             .to_string(),
                     });
                 }
@@ -1078,9 +1090,9 @@ impl Workspace {
                  valid HEAD, objects/ and refs/",
                 self.root
             ),
-            remedy: "Its config and hooks have workspace-root names the filter must keep \
-                     writable, so it cannot be served. Launch from a worktree with a .git entry, \
-                     or move the bare repository elsewhere."
+            remedy: "Its config and hooks have workspace-root names the workspace policy must \
+                     keep writable, so it cannot be served. Launch from a worktree with a .git \
+                     entry, or move the bare repository elsewhere."
                 .to_string(),
         })
     }
@@ -1855,7 +1867,8 @@ mod tests {
 
     #[test]
     fn an_object_store_link_into_the_workspace_is_refused_and_one_leading_out_is_served() {
-        // Each link leads the filter's protected name to an ordinary one the sandbox writes.
+        // Each link leads a name the workspace policy protects to an ordinary one the sandbox
+        // writes.
         for (link, target) in [
             (".git/objects", "../objects"),
             (".git/objects/info", "../../info"),

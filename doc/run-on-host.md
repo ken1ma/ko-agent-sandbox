@@ -199,7 +199,7 @@ The filesystem rules define what a host command can access:
   - each `read-only` line as a deny and each `writable` line as an allow, as a regex anchored
     after the workspace root's path;
   - each directory a line passes through as a deny on the entry itself, at the line's position;
-  - what the filter's guard added by path, after the lines;
+  - what the workspace policy's guard added by path, after the lines;
   - below a directory that a symlink makes part of a listed name, the rest of each `read-only`
     line.
 - **The deny on a directory a line passes through refuses renaming, exchanging and replacing the
@@ -209,18 +209,18 @@ The filesystem rules define what a host command can access:
     `file-write-create`, as it checks `mkdir`. SBPL checks a `RENAME_SWAP` exchange as both, on
     either operand (`src/probe/seatbelt-semantics.sh` E13-E17, macOS 26.4.1).
   - So the deny covers `file-write-create`, `file-write-unlink` and `file-link` on the entry. It
-    leaves the entry's contents, mode and attributes to the other rules, as the filter does.
+    leaves the entry's contents, mode and attributes to the other rules, as the FUSE backend does.
   - The acceptance test's file-rule rows pass on macOS 26.4.1 (2026-09-27). A listed name created
     inside `node_modules` is among them.
   - No rule refuses moving a directory out of one that a `writable` line names while leaving
     npm's renames and `rmdir` inside it. `doc/file-rules.md`, "Under `--run-on-host`", states the
     limit.
-  - The deny is stricter than the filter in one respect: it also refuses the entry's `mkdir`, and
-    the entry's `rmdir` once empty, because SBPL checks those two as it checks a rename's two
-    sides.
+  - The deny is stricter than the FUSE backend in one respect: it also refuses the entry's
+    `mkdir`, and the entry's `rmdir` once empty, because SBPL checks those two as it checks a
+    rename's two sides.
 - **Below the target of a symlink that the rules reach, the profile keeps denying what a
-  `writable` line lifts under the symlink's name**, where the filter allows it. An example target
-  is `shared/claude` for `.claude -> shared/claude`.
+  `writable` line lifts under the symlink's name**, where the FUSE backend allows it. An example
+  target is `shared/claude` for `.claude -> shared/claude`.
   - Rendered as a later allow, the lift would also apply under the target's own name. With
     `.claude -> .vscode/claude`, the lift would open part of `read-only .vscode`.
 - **The `.git` and `.ko-agent-sandbox` denials cover link creation, not only writes.** Without
@@ -229,9 +229,9 @@ The filesystem rules define what a host command can access:
   - Both paths are on the workspace's host filesystem, so a filesystem boundary does not prevent
     this.
 - **Commands can create a bare Git layout from ordinary names in the writable tree.** Neither the
-  Seatbelt profile nor the workspace filter refuses those names.
+  Seatbelt profile nor the workspace policy refuses those names.
   - Running host `git` inside a directory the agent created runs the agent's output. `SECURITY.md`
-    records the same gap for the workspace filter.
+    records the same gap for the workspace policy.
 - **Each command gets a fresh directory, which holds the command's temporary directory under sbt
   and Maven.** A killed command can leave its directory behind. The next command reclaims that
   directory rather than reusing it (`RunOnHostSession.scala`).
@@ -1791,7 +1791,7 @@ To allow artifact downloads beyond Maven Central, add repository hosts to this w
 
 The file inherits the directory's properties:
 
-- the workspace filter freezes it at any depth;
+- the workspace policy freezes it at any depth;
 - the launcher reads it on the host;
 - it is reviewed in a pull request like any other file;
 - `run-on-host/` accepts only recognized configuration entries, as does `.ko-agent-sandbox`. A

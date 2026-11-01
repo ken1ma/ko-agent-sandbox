@@ -1,6 +1,6 @@
 # `ko-agent-fs` architecture
 
-How the filter is built, and the alternatives weighed on the way. This document is the *how*.
+How the FUSE backend is built, and the alternatives weighed on the way. This document is the *how*.
 
 - The *what* it must enforce is `../../policy/doc/git-metadata.md`, plus one rule that is not
   about git: since the host reads this directory too, `symlink` refuses to *create* a link whose
@@ -16,8 +16,8 @@ How the filter is built, and the alternatives weighed on the way. This document 
 
 ## Mediation mechanism: a FUSE view
 
-The filter shows the workspace to the container as a FUSE mount, and enforces the policy on the
-operations the kernel forwards. Three other mechanisms were considered and rejected:
+The FUSE backend shows the workspace to the container as a FUSE mount, and enforces the workspace
+policy on the operations the kernel forwards. Three other mechanisms were considered and rejected:
 
 - **AppArmor on the container** — its path-based rules express the policy naturally: allow normal
   reads and writes on the bind-mounted workspace, deny creating `.git` entries and writing Git hook
@@ -33,7 +33,7 @@ operations the kernel forwards. Three other mechanisms were considered and rejec
   - It does not cleanly express the rule we need most: *refusing to create an entry named `.git`*.
 - **BPF-LSM** — hook `security_inode_create`/`rename`/`link`/`setattr` and deny by name in the
   kernel. Elegant, and at native speed.
-  - Rejected for the filter's design, for the three reasons below.
+  - Rejected for the FUSE backend's design, for the three reasons below.
   - `../../../doc/bpf-lsm-cgroup.md` ("The recorded decisions this answers") has since answered
     each of them:
     - `BPF_LSM_CGROUP` programs attached to the session's own cgroup give the asymmetry in the
@@ -41,22 +41,23 @@ operations the kernel forwards. Three other mechanisms were considered and rejec
     - a probe at every launch answers the configuration risk;
     - the C classifier is compiled for the host and run through the policy package's corpus
       (`../../policy/tests/bpf_equivalence.rs`).
-  - That backend is `--workspace=live,bpf` on the podman machines. The filter stays the default of
-    both modes until the release decision `../../../doc/TODO.md` plans ("The BPF backend as the
-    default").
+  - That backend is `--workspace=live,bpf` on the podman machines. The FUSE backend stays the
+    default of both modes until the release decision `../../../doc/TODO.md` plans ("The BPF backend
+    as the default").
 
-The deciding requirement is the **host/container asymmetry**: the container's view is filtered, and
-the host's direct writes to the same files are not (`../../policy/doc/git-metadata.md`, "What this
-intentionally does *not* protect, and why that is safe").
+The deciding requirement is the **host/container asymmetry**: the workspace policy governs the
+container's view, and not the host's direct writes to the same files
+(`../../policy/doc/git-metadata.md`, "What this intentionally does *not* protect, and why that is
+safe").
 
-- FUSE gives this natively. The filtered view is a *separate mount that only the container
-  binds*. The host reaches the backing tree by another path, which the filter never sees.
+- FUSE gives this natively. The FUSE view is a *separate mount that only the container binds*.
+  The host reaches the backing tree by another path, which the FUSE backend never sees.
 - fanotify and BPF-LSM instead hook the backing objects for every process in the VM. To keep the
   asymmetry, they must leave the host out by cgroup or mount-namespace scoping: code to write for
   a property FUSE gives for free.
-- FUSE also keeps the portability `SECURITY.md` ("The workspace filter") rests the choice on: it
-  "works wherever the VM does".
-- FUSE stays plain, auditable Rust. A BPF policy program needs `CONFIG_BPF_LSM` and the active LSM
+- FUSE also keeps the portability `SECURITY.md` ("The FUSE backend, on the platforms where it is
+  unverified") rests the choice on: it "works wherever the VM does".
+- FUSE stays plain, auditable Rust. A BPF-LSM program needs `CONFIG_BPF_LSM` and the active LSM
   list, and whether those are enabled is itself an environment risk.
 
 So FUSE is the mechanism: chosen against the alternatives, not taken by default.
@@ -72,7 +73,7 @@ Inode { parent: u64, name: OsString, nlookup: u64, git: GitContext, rule: RuleCo
         dev: u64, ino_id: u64 }
 ```
 
-- **Resolution.** To act on an inode, the filter:
+- **Resolution.** To act on an inode, the FUSE backend:
   - walks its parent chain to the root, collecting names (the depth is small: tens at most);
   - opens the parent directory with `openat2(root_fd, relative_path, RESOLVE_IN_ROOT | O_PATH)`;
   - performs the last component's operation with an `*at` call on that parent fd and the name.
@@ -86,8 +87,8 @@ Inode { parent: u64, name: OsString, nlookup: u64, git: GitContext, rule: RuleCo
     & openat2 semantics").
   - `fs.rs`, `open_ino`, states the remaining resolve flags where it sets them, with the bounded
     `EAGAIN` retry that a concurrent rename forces.
-- **Coherency.** The filter resolves against the live backing tree on every operation. So a name
-  resolves as the host's tree has it at the moment of the call, which matches "correctness over
+- **Coherency.** The FUSE backend resolves against the live backing tree on every operation. So a
+  name resolves as the host's tree has it at the moment of the call, which matches "correctness over
   caching".
   - "Coherency: zero-cache is a correctness requirement", below, has the guarantee for attributes
     and data, with its two exceptions.
@@ -188,7 +189,7 @@ So these are fixed, not settings:
 - Writeback caching is **off**: it would let the kernel hold writes the host cannot see.
 - **`AUTO_INVAL_DATA`** is negotiated at `init`. A kernel that cannot offer it gets no mount:
   `init` returns `ENOTSUP`, the daemon dies at the handshake, and the launch fails with the daemon
-  log. The filter never serves a view that can go stale.
+  log. The FUSE backend never serves a view that can go stale.
   - Zero metadata TTL keeps *attributes* fresh. But a file's cached *data* pages could still lag
     behind a host write: a `read` served from the page cache, or an `mmap`.
   - `AUTO_INVAL_DATA` makes the kernel drop cached pages when a `GETATTR` reports a change of size
@@ -269,7 +270,7 @@ The other two modes:
     `doc/TODO.md` keeps the deferred work.
   - This topology is fixed before that work starts all the same. Per-session mounts would make a
     cheap restart expensive, and give collaborating sessions incoherent locks and caches.
-- Read-only mode creates no FUSE mount and runs no filter daemon. With `--run-on-host` it runs
+- Read-only mode creates no FUSE mount and runs no FUSE backend daemon. With `--run-on-host` it runs
   `ko-agent-fs --resolve` once, for the file rules the host commands observe (the launcher's
   `KoAgentFs.koAgentFsResolveScript`).
 
@@ -282,8 +283,8 @@ stock images do not set. The launcher adds it only with the user's consent, neve
 
 Elsewhere:
 
-- The trust rationale is the repository's `SECURITY.md` ("The workspace filter"): what an auditor
-  relies on, and how the identity check closes each link.
+- The trust rationale is the repository's `SECURITY.md` ("The FUSE backend, on the platforms where
+  it is unverified"): what an auditor relies on, and how the identity check closes each link.
 - What a machine admin sees `--build` do, and how to undo it, is its `README.md` ("`--build`").
 
 This section is the build and installation steps:
@@ -302,13 +303,13 @@ This section is the build and installation steps:
        podman build --build-arg KO_AGENT_FS_SOURCE_ID=<digest> \
            -t ko-agent-fs:latest ko-agent-fs
 
-   - One image builds both binaries under that one digest. The filter links the policy package, so
-     a policy edit rebuilds both either way.
+   - One image builds both binaries under that one digest. `ko-agent-fs-fuse` links the policy
+     package, so a policy edit rebuilds both either way.
    - The build checks licenses (`../../deny.toml`) before it produces the binaries.
    - The test suites run in the separately built `ko-agent-self-test` image
      (`../../doc/testing.md`).
 3. **Extract the binaries.** The image's final stage is `scratch`, holding only `/ko-agent-fs`, the
-   policy's, and `/ko-agent-fs-fuse`, the filter's. So nothing else is taken:
+   policy's, and `/ko-agent-fs-fuse`, the FUSE backend's. So nothing else is taken:
 
        podman create --name <tmp> ko-agent-fs:<tag>
        podman cp <tmp>:/ko-agent-fs <install-dir>/ko-agent-fs
@@ -319,9 +320,9 @@ This section is the build and installation steps:
    relative to the home of whoever the daemon runs as. It is relative on purpose, so no
    per-platform absolute path is needed. *Whose* home it is differs by platform, and is the part
    worth understanding:
-   - *native Linux* — there is no VM. The filter runs on the host, so the extraction above writes
+   - *native Linux* — there is no VM. The daemon runs on the host, so the extraction above writes
      straight into the host user's home.
-   - *macOS / Windows* — the filter runs **inside the podman machine**, because the workspace's
+   - *macOS / Windows* — the daemon runs **inside the podman machine**, because the workspace's
      backing filesystem is there. The image is already in the VM's image storage, so the extraction
      runs *there*, through `podman machine ssh`, which writes to the VM user's home, whoever that
      is. A plain `podman cp` on the host would put it on the host.
@@ -335,20 +336,20 @@ code: `LauncherImages.bundleSourceId`.
 `installKoAgentFs`). **The mount lifecycle runs in every `--workspace=live` session**;
 `--workspace=read-only` binds the tree read-only without it.
 
-- Each launch checks the installed filter's identity and self-test.
+- Each launch checks the installed FUSE backend's identity and self-test.
 - It then mounts the workspace through a per-workspace daemon that its sessions share, and binds
   the mountpoint at the workspace root's own path.
-- The lifecycle's design and reasoning are with the code: `KoAgentFs.scala`, "The workspace FUSE
-  filter's mount lifecycle".
+- The lifecycle's design and reasoning are with the code: `KoAgentFs.scala`, "The FUSE backend's
+  mount lifecycle".
 
 The daemon needs no privileges to mount:
 
 - fuser's pure-Rust mode falls back to the setuid `fusermount3` when a direct `mount(2)` is
   refused. An ordinary VM user's mount then appears in their session namespace, exactly where
   rootless podman resolves bind sources.
-- This is also why the filter is installed into the VM, not run as a FUSE sidecar container. Under
-  rootless podman, a mount made *inside* a container does not propagate up to where the sandbox's
-  bind could see it.
+- This is also why the FUSE backend's daemon is installed into the VM, not run as a FUSE sidecar
+  container. Under rootless podman, a mount made *inside* a container does not propagate up to where
+  the sandbox's bind could see it.
 
 
 ## What stays out of the audited core

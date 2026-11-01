@@ -179,7 +179,7 @@ containers/libkrun).
 
 Where the refusals are:
 
-- The filter refuses both (`../ko-agent-fs/fuse/src/fs.rs`, `mknod` and `setattr`;
+- The FUSE backend refuses both (`../ko-agent-fs/fuse/src/fs.rs`, `mknod` and `setattr`;
   `tests/mounted_mutate.rs`, `a_fifo_is_neither_made_nor_retimed_through_the_mount`).
 - The BPF backend's hooks refuse both, and any open of a FIFO. Under the `unix-socket` value of
   `--workspace`, the hooks also refuse a FIFO's descriptor
@@ -190,16 +190,16 @@ Why the refusals cover more than the creation:
 - A session's write through a FIFO makes the guest kernel flush the FIFO's changed times to the
   share itself, with no `utimensat` from any process. Refusing creation alone would leave a FIFO
   the host made as a hang that a session can trigger by writing to it.
-- The filter's daemon receives that flush as a `SETATTR` request and refuses it. The BPF hooks
+- The FUSE backend's daemon receives that flush as a `SETATTR` request and refuses it. The BPF hooks
   never see the flush, so the backend refuses the open instead.
 
 ## One list of launch refusals
 
 - [ ] List every condition that stops a launch, in the launcher (`AgentSandboxLauncher.scala`,
-  `SandboxWorkspace.scala`, `RunOnHostPrereqs.scala`, …) and in the filter's mount-time guard
+  `SandboxWorkspace.scala`, `RunOnHostPrereqs.scala`, …) and in the workspace policy's guard
   (`../ko-agent-fs/policy/src/guard.rs`). No document lists them all:
   - `SECURITY.md` has the guard's refusals;
-  - `../ko-agent-fs/fuse/doc/troubleshooting.md` has some filter messages;
+  - `../ko-agent-fs/fuse/doc/troubleshooting.md` has some of the FUSE backend's messages;
   - `run-on-host.md` has its prerequisites.
 - [ ] Write one list from it in `doc/launch-refusals.md`, linked from `README.md` and
   `SECURITY.md`. Each entry gives the refusal's message, what the user does, and the document that
@@ -307,25 +307,13 @@ refused. A thread and a child process in Python 3.14, Node 24 and Java 25, `git 
         `LD_LIBRARY_PATH` reached. Decide whether the image ships them.
   - `agy`'s Auto mode: `limitations.md` measures it under podman's default profile only.
 
-## The `ko-agent-fs/` tree measured on both machines
-
-The policy, the FUSE filter and the BPF backend share one tree (`../ko-agent-fs/Cargo.toml`). The
-filter's binary is split into `ko-agent-fs`, the policy's `--resolve`, and `ko-agent-fs-fuse`, the
-mount. These checks need the two machines:
-
-- [ ] Rerun the launcher suite on both machines, and record "Launcher on macOS" and "Launcher on
-  WSL" with the suite's new digest. The suite digests `KoAgentBpf.scala` and the BPF backend's
-  Containerfile, whose code names the `ko-agent-fs/` paths. `SourceDigestCheck.scala` fails both
-  sections until the reruns are recorded.
-- [ ] Run `sbt testWithPodman` on both machines.
-
 ## The BPF backend's later versions
 
 The first version of the BPF backend (`bpf-lsm-cgroup.md`) leaves these items to the versions after
 it. Each item waits behind gates the suites name for it (`../ko-agent-fs/bpf/doc/evidence.md`,
-"Suites"). Until then, the backend selector launches those sessions with the filter. On the podman
-machines, the selector launches their `--workspace=read-only` sessions under the no-root policy,
-which denies the whole share and needs none of the routes the first item names.
+"Suites"). Until then, the backend selector launches those sessions with the FUSE backend. On the
+podman machines, the selector launches their `--workspace=read-only` sessions under the no-root
+policy, which denies the whole share and needs none of the routes the first item names.
 
 A quoted section name below without a document refers to one of the BPF backend's three documents,
 whose section names are distinct.
@@ -426,7 +414,7 @@ whose section names are distinct.
 ## A self-test of the BPF backend on the user's kernel
 
 - [ ] Run the policy suite's corpus against the installed policy on the user's machine, as
-  `--self-test` runs the filter's corpus.
+  `--self-test` runs the FUSE backend's corpus.
   - The evidence covers two kernels, 7.2.5 and 6.18.54.1 (`../ko-agent-fs/bpf/doc/evidence.md`),
     and a user's machine runs the kernel its OS or WSL brings.
   - A launch's proof covers one refused operation per hook and one write per rule line, not the
@@ -491,8 +479,8 @@ Decided 2026-10-26: the rule stays for every session, and the routes become valu
 The BPF backend proves its attachment at every launch, restart and recreate, in two parts
 (`../ko-agent-fs/bpf/doc/architecture.md`, "Lifecycle", 3):
 
-- the read-back, 40 to 47 ms on WSL;
-- the fixture's proof, 68 operations the kernel judges: 306 to 386 ms on WSL and 38 to 47 ms on
+- the read-back, 37 to 50 ms on WSL;
+- the fixture's proof, 68 operations the kernel judges: 312 to 397 ms on WSL and 39 to 44 ms on
   macOS ("Lifecycle on WSL", "Lifecycle on macOS", in `../ko-agent-fs/bpf/doc/evidence.md`).
 
 The user, 2026-10-26: 0.4 s on Windows matters. Every launch pays the proof until this item is
@@ -583,7 +571,7 @@ only the container-launching suites on Windows. That document's command returns 
 
 - [ ] Let `read-only` and `writable` lines name Japanese directories and files; `file-rules.md`
   limits names to `a`–`z`, `0`–`9`, `.`, `_`, `-` and `*`.
-  - The filter's name matching rests on names being ASCII
+  - The workspace policy's name matching rests on names being ASCII
     (`../ko-agent-fs/policy/doc/security-research.md`, "Real-filesystem case-folding: APFS and
     NTFS").
   - The run-on-host profile spells each name as a regex (`SeatbeltProfile.fileRuleFilters`).
@@ -650,7 +638,7 @@ Do not blindly allow the batch `POST` endpoint merely because downloads use it.
 
 A launch from a linked worktree binds the main worktree's Git directory read-only (`SECURITY.md`,
 "The host's git executing what the sandbox wrote"). The writable form binds the `.git` of the main
-worktree's filter mount at the same target, so the filter's policy governs that `.git`.
+worktree's FUSE mount at the same target, so the FUSE backend governs that `.git`.
 `worktrees/<name>` is a nested gitdir there. That gitdir's `config`, `hooks/`, `commondir` and
 `gitdir` stay frozen while the session writes its index and refs
 (`../ko-agent-fs/policy/doc/git-metadata.md`, "The immutable set"). Only `.git` crosses; the main
@@ -659,15 +647,15 @@ worktree's working files stay out of the session.
 - The linked session joins the daemon of the main worktree's mount as one of that daemon's
   sessions. The session's marker goes under that mount's directory, so that the reap counts the
   session, and the mount-time guard runs on the main root (`KoAgentFs`).
-- `--reset` in the main worktree unmounts that filter, and every linked session's git then fails
+- `--reset` in the main worktree unmounts that FUSE mount, and every linked session's git then fails
   with `ENOTCONN`. Either record that failure beside the volume's behavior (`SECURITY.md`, "What
-  the persistent volume holds"), or refuse the reset while a linked session mounts the filter, as
+  the persistent volume holds"), or refuse the reset while a linked session uses that mount, as
   podman refuses the volume.
-- Unverified: a bind of a subpath of the FUSE mount keeps the filter's positional classification.
-  Lookups name the parent inode, so the bind should keep it. The mounted suite proves the
-  classification before the bind is offered.
+- Unverified: a bind of a subpath of the FUSE mount keeps the FUSE backend's positional
+  classification. Lookups name the parent inode, so the bind should keep it. The mounted suite
+  proves the classification before the bind is offered.
 - The mount-path probe already asks about the target. The SELinux label question does not arise:
-  the filter's mountpoint needs no relabel.
+  the FUSE backend's mountpoint needs no relabel.
 
 ## Deferred — a linked worktree's absolute pointer on Windows
 
@@ -688,7 +676,8 @@ container's git cannot follow at `/mnt/c/...`, so the read-only bind is skipped 
   - "The workspace root mounted at its own path" has the row that measures the hand-written
     pointer.
 - For an absolute pointer, bind a launcher-written pointer file naming the `/mnt/<drive>` spelling
-  over `<mountPath>/.git`. The bind hides the filter's protected pointer from the container alone.
+  over `<mountPath>/.git`. The bind hides the FUSE backend's protected pointer from the container
+  alone.
   - Setting `GIT_DIR` and `GIT_WORK_TREE` instead would redirect git in every other repository the
     agent uses, such as clones under `~`.
   - `<main>/.git/worktrees/<name>/gitdir` keeps the `C:/` spelling either way. `git worktree list`
@@ -1026,7 +1015,7 @@ Recorded macOS results (2026-09-18):
 
 Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2026-09-19):
 
-- A launch from PowerShell in `C:\Users\<me>\src\app` mounts the filter at
+- A launch from PowerShell in `C:\Users\<me>\src\app` mounts the FUSE backend at
   `/mnt/c/Users/<me>/src/app`, and `bash -c pwd` prints that path.
 - A launch from PowerShell in `\\wsl.localhost\podman-machine-default\home\user\<dir>` is
   refused with `error: cannot map ... into the podman machine`, before any `workspace:` line.
@@ -1164,7 +1153,8 @@ The build:
   - whether an added directory follows the workspace mode or carries its own;
   - where its file rules and egress rules come from, since `.ko-agent-sandbox` is read at the
     workspace root;
-  - whether it may be a repository of its own, and which Git entries the filter then protects;
+  - whether it may be a repository of its own, and which Git entries the workspace policy then
+    protects;
   - whether the launcher refuses the home directory and its credential directories there as it
     does for the workspace root;
   - whether exposing a directory also records it as trusted for each agent and loads its
@@ -1180,16 +1170,16 @@ The build:
 
 ## Before the first release — continuous integration
 
-There is no CI. [development.md](development.md#tests) gives the launcher, proxy and filter
-test commands. `--self-test` runs the filter suites on demand. A user's `--build` instead performs
-the checks whose results depend on that artifact and machine: `cargo deny check licenses bans
-sources`, compilation, binary identity, and the installed filter's mount self-test.
+There is no CI. [development.md](development.md#tests) gives the launcher, proxy and FUSE backend
+test commands. `--self-test` runs the FUSE backend's suites on demand. A user's `--build` instead
+performs the checks whose results depend on that artifact and machine: `cargo deny check licenses
+bans sources`, compilation, binary identity, and the installed FUSE backend's mount self-test.
 
-- [ ] Add CI for the launcher's and proxy's `sbt testFull`, and the filter's pure and binary suites
-  on both shipping architectures. Add `cargo deny check advisories` there: `deny.toml` records why
-  its moving external database must not block installation.
-- [ ] Keep the checks above in `--build`, and keep the mounted filter suites in
-  `--self-test`; CI does not prove the filter on a user's own machine.
+- [ ] Add CI for the launcher's and proxy's `sbt testFull`, and `ko-agent-fs`'s pure and binary
+  suites on both shipping architectures. Add `cargo deny check advisories` there: `deny.toml`
+  records why its moving external database must not block installation.
+- [ ] Keep the checks above in `--build`, and keep the FUSE backend's mounted suites in
+  `--self-test`; CI does not prove the FUSE backend on a user's own machine.
 
 ## Before the first release — the published identity
 

@@ -1,4 +1,4 @@
-# The shared policy (`policy/`) and the FUSE filter (`fuse/`). The BPF backend (`bpf/`) is C and
+# The shared policy (`policy/`) and the FUSE backend (`fuse/`). The BPF backend (`bpf/`) is C and
 # builds in its own image; it takes `policy/include/records.h` and the records `ko-agent-fs` writes.
 [workspace]
 members = ["policy", "fuse"]

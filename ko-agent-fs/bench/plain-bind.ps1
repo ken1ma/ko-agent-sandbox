@@ -1,11 +1,11 @@
-# unfiltered.sh for a Windows host; unfiltered.sh says what this control run is. Run it in
+# plain-bind.sh for a Windows host; plain-bind.sh says what this control run is. Run it in
 # PowerShell, in the scratch workspace the benchmark or probe was copied to:
 #
-#     ...\bench\unfiltered.ps1 python3 entry-cost.py
+#     ...\bench\plain-bind.ps1 python3 entry-cost.py
 #
 # The target is the path where a session has the workspace root (SandboxWorkspace.mountPathOf):
 # the path at which the podman machine serves the drive.
-if ($args.Count -eq 0) { Write-Error "usage: unfiltered.ps1 <command> [args...]"; exit 2 }
+if ($args.Count -eq 0) { Write-Error "usage: plain-bind.ps1 <command> [args...]"; exit 2 }
 
 $workspace = (Get-Location).Path
 $target = "/mnt/" + $workspace.Substring(0, 1).ToLower() + "/" + $workspace.Substring(3).Replace("\", "/")

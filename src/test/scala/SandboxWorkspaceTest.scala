@@ -1,7 +1,7 @@
 // Tests the workspace root as the launcher judges it: identity, the refused directories, and the
 // .ko-agent-sandbox forms. A wrong answer there either exposes the host or lets a session write the
-// configuration that governs the next session. What a session may write under .git is the FUSE
-// filter's policy, which ko-agent-fs/policy and ko-agent-fs/fuse test.
+// configuration that governs the next session. What a session may write under .git is the
+// workspace policy's decision, which ko-agent-fs/policy and ko-agent-fs/fuse test.
 
 package agentsandbox.launcher
 
@@ -299,7 +299,7 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     assertEquals(noGit(absolute), None)
     assertEquals(noGit(absolute, Os.Windows), Some(NoGit.Gitdir(ownGitdir.toString, ownGitdir, None)))
     // A `.git` symlink is the same absence when it leads out of the workspace. A live session never
-    // starts on that form (the filter's guard refuses it, guard.rs), but a read-only session does.
+    // starts on that form (the workspace policy's guard refuses it, guard.rs), but a read-only session does.
     val symlinked = Files.createDirectories(root.resolve("symlinked"))
     Files.createSymbolicLink(symlinked.resolve(".git"), separate)
     assertEquals(noGit(symlinked), Some(NoGit.Gitdir(separate.toString, separate, Some(root))))

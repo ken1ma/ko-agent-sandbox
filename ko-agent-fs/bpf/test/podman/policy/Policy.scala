@@ -410,7 +410,7 @@ object Policy:
       info(s"the logs are in ${out / "policy-inode_rename.log.gz"} and policy-inode_symlink.log.gz")
       Either.cond(within, (), 1)
 
-    /** The tree, and the host-made hard links: to the guarded files, made on the host as the filter's
+    /** The tree, and the host-made hard links: to the guarded files, made on the host as the FUSE backend's
       * test makes them, and to the submodule worktree's pointer file, in another directory. NTFS itself
       * serves `GIT~1` as the pointer file's short name, so the link at that name may be refused there;
       * the name NTFS serves then stands in. */
@@ -572,20 +572,26 @@ object Policy:
       secondShareRow(fixture)
       walkCost(fixture)
 
-    /** The slots, used up by hand. The guard word is set while an already running container sleeps, so
+    /** The slots, used up by hand. The guard word is set while an already running container waits, so
       * no call of the runtime's is in flight. That container's write then reads it back.
       *
       *   - With all four slots marked taken on every CPU, a write on the share is denied and counted.
       *   - With three marked, it runs in the fourth.
-      *   - With all freed, it runs in the first again. */
+      *   - With all freed, it runs in the first again.
+      *
+      * The container waits for a marker that the machine's user makes outside the attach cgroup. It waits
+      * with shell builtins alone, since an exec's opens would meet the taken slots before the write. */
     private def slots(fixture: Fixture): Unit =
+      val go = quoted(s"${fixture.tree}/slot-go")
       def slotWrite(mask: String, name: String): Output =
         detached(fixture, Slot, 1, Seq("sh", "-c",
-          s"sleep 3; (echo x > ${fixture.tree}/apps/$name) 2>&1 && echo SLOT_OK || echo SLOT_REFUSED"))
-        Thread.sleep(1000)
-        vm(sh(s"sudo -n $Controller reset-stats $pinA", s"sudo -n $Controller guard $pinA $mask"))
+          s"echo SLOT_WAITING; i=0; while [ ! -e $go ] && [ $$i -lt 100000000 ]; do i=$$((i + 1)); done; " +
+            s"if [ ! -e $go ]; then echo SLOT_NO_MARKER; " +
+            s"else (echo x > ${fixture.tree}/apps/$name) 2>&1 && echo SLOT_OK || echo SLOT_REFUSED; fi"))
+        within(10)(host(transcript, Seq("podman", "logs", Slot), record = false).text.contains("SLOT_WAITING"))
+        vm(sh(s"sudo -n $Controller reset-stats $pinA", s"sudo -n $Controller guard $pinA $mask", s"touch $go"))
         val logs = collect(Slot)
-        vm(s"sudo -n $Controller guard $pinA 0")
+        vm(sh(s"sudo -n $Controller guard $pinA 0", s"rm -f $go"))
         Output(0, logs)
       def createNested(stats: Output): String =
         lines(stats.text, "hook=inode_create".r).headOption.map(field("nested_max", _)).getOrElse("")
@@ -815,7 +821,8 @@ object Policy:
       def actionResult(answer: Output, action: String): String =
         raw"action=${Regex.quote(action)} result=(\S+)".r.findFirstMatchIn(answer.text).map(_.group(1)).getOrElse("")
       val same = inSession(fixture, 1,
-        s"$Exercise serve /vol/s0 pipe pair ro:$tree/README.md > /tmp/serve.log & sleep 1; " +
+        s"$Exercise serve /vol/s0 pipe pair ro:$tree/README.md > /tmp/serve.log & i=0; " +
+          "until grep -q 'serve listening' /tmp/serve.log || [ $i -ge 100 ]; do sleep 0.1; i=$((i + 1)); done; " +
           s"$Exercise receive /vol/s0; wait; cat /tmp/serve.log")
       check(
         "a pipe, a socket pair's end and a workspace file pass between two processes of one container",

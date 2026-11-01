@@ -44,7 +44,7 @@ object SandboxWorkspace:
    * /System/Volumes/Data, and toRealPath keeps whichever spelling the user typed
    * (withMacDataVolumeAliases explains why). A launch from the alias would therefore:
    * - hash to a second workspace id;
-   * - back the filter and the raw bind by a path the podman machine does not share, since the
+   * - back the FUSE backend and the raw bind by a path the podman machine does not share, since the
    *   machine's default share is the home at the home's own spelling;
    * - mount the workspace root at a path the host does not name.
    *
@@ -61,7 +61,7 @@ object SandboxWorkspace:
    * then needs no translation. design.md records what the sandboxes doing the same ran into
    * ("Prior-art references worth retaining").
    *
-   * This path is also the one host path that reaches the workspace filter's daemon without podman:
+   * This path is also the one host path that reaches the FUSE backend's daemon without podman:
    * - podman's own client translates every `--volume` source, but the backing path travels to the
    *   daemon in the mount script (KoAgentFs);
    * - on Linux, the daemon runs on this host;
@@ -78,7 +78,7 @@ object SandboxWorkspace:
    *   (`mount -t drvfs //server/share /mnt/share`), which the launcher neither arranges nor checks;
    * - a drive letter assigned to the share does not help, since WSL automounts fixed drives only;
    * - supporting shares would need a UNC-to-machine-path mapping, that mount arranged or checked,
-   *   and the filter tested on it.
+   *   and the FUSE backend tested on it.
    *
    * A POSIX path with a `:` refuses the launch too. podman reads `:` in a `--volume` value as the
    * field separator, and the launcher binds the workspace root and its Git directory with that
@@ -400,7 +400,7 @@ object SandboxWorkspace:
    *
    * Nothing is said where host git fails too:
    * - a `.git` naming a gitdir that git rejects ends git's search where it ends this one;
-   * - a `.git` that cannot be read or parsed is another check's to refuse (the filter's own guard,
+   * - a `.git` that cannot be read or parsed is another check's to refuse (the workspace policy's own guard,
    *   `guard.rs`).
    *
    * This check never fails a launch.
@@ -519,7 +519,7 @@ object SandboxWorkspace:
    * main checkout meets four conditions:
    *
    *   - The gitdir that the worktree's `.git` names holds a `commondir`, whose trimmed content
-   *     resolves against the gitdir. `git worktree add` writes `../..`, and the filter's guard reads
+   *     resolves against the gitdir. `git worktree add` writes `../..`, and the workspace policy's guard reads
    *     the file the same way (`common_of` in guard.rs).
    *   - The `commondir` names a directory called `.git`, and the gitdir is one component under that
    *     directory's `worktrees` (ko-agent-fs/policy/doc/git-metadata.md, P1).
@@ -737,7 +737,7 @@ object SandboxWorkspace:
    *
    * linkedGitdirBind returns None where the container could not follow git's two steps to the
    * target, the pointer and then the gitdir's `commondir`:
-   * - a `.git` symlink, a form the filter's guard refuses at mount (guard.rs) and this bind does not
+   * - a `.git` symlink, a form the workspace policy's guard refuses at mount (guard.rs) and this bind does not
    *   serve;
    * - a pointer whose common gitdir is not `main`'s `.git`. The method checks this rather than
    *   taking it from the caller, since source and target must be one directory;

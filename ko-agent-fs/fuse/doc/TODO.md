@@ -73,9 +73,9 @@ Reasoning cannot settle this:
 - The fold tables are per volume on NTFS, and tied to a Unicode version on APFS
   (`../../policy/doc/git-metadata.md`, "The name rule").
 - Reasoning limits the candidate list. Only the filesystem settles it.
-- `probe/apfs-name-rule-probe.py` creates each candidate *through the mount*, inside a filtered
-  session. Its header has the host-side checks, run by hand or by `probe/name-rule-cs-apfs.sh`,
-  and the cleanup.
+- `probe/apfs-name-rule-probe.py` creates each candidate *through the mount*, inside a FUSE backend
+  session. Its header has the host-side checks, run by hand or by `probe/name-rule-cs-apfs.sh`, and
+  the cleanup.
 
 The corpus:
 
@@ -208,8 +208,8 @@ APFS answers all five (`verification-log.md` has the run):
 - a descriptor the session holds blocks no host change.
 
 One answer was never the share's to give. A session cannot see a hard-link relationship at all,
-because the filter assigns an inode per `(parent, name)`. What that costs a stage is for the root
-`doc/plan-staged.md` to settle.
+because the FUSE backend assigns an inode per `(parent, name)`. What that costs a stage is for the
+root `doc/plan-staged.md` to settle.
 
 What is left:
 
@@ -220,7 +220,7 @@ What is left:
 ### A symlink target spelled with Windows separators
 
 On Linux, the symlink targets `..\..\x`, `..\.git` and `C:\Windows` are each one ordinary name. So
-the filter judges each as a name in the link's directory, not as a path:
+the FUSE backend judges each as a name in the link's directory, not as a path:
 
 - `target_has_portable_syntax` (`fs.rs`), which refuses an absolute or climbing target, accepts all
   three;
@@ -257,18 +257,18 @@ privileged rig included.
 
 ## P1 — Performance (the measurements say the target workload would hurt)
 
-The filter enforces the default mode, `--workspace=live`, so its cost is the sandbox's own.
+The FUSE backend enforces the default mode, `--workspace=live`, so its cost is the sandbox's own.
 
 - `../../bench/entry-cost.py` builds its own corpus, so two runs compare across machines. It
   reports the time per entry for each workload.
-- Run it once in a filtered session and once under `../../bench/unfiltered.sh` (`unfiltered.ps1`
-  beside it on Windows). The ratio between the columns is the answer; the control separates the
-  filter's cost from the backing share's.
+- Run it once in a FUSE backend session and once under `../../bench/plain-bind.sh`
+  (`plain-bind.ps1` beside it on Windows). The ratio between the columns is the answer; the control
+  separates the FUSE backend's cost from the backing share's.
 - The runs are in `verification-log.md`, "The cost of a path walk".
 - For the profiling rows below, a daemon started with `--trace` logs each request and the time it
   took (`troubleshooting.md`, "Tracing requests").
 
-The margin over the unfiltered bind mount is **~6–18×**:
+The margin over the plain bind mount is **~6–18×**:
 
 - It is this layer's cost alone: one FUSE round trip through the daemon per path component, which
   TTL 0 makes unavoidable.
@@ -288,8 +288,9 @@ On the real tree, the path-walk term is the 3.8× between the two `lstat` rows
 (`verification-log.md`, "a real tree"). `git status`, which Claude Code runs at startup, is where a
 user meets it.
 
-- [ ] **Run it on Linux.** There, no virtiofs is under the filter, and the ratio should differ in
-  kind, not degree. That number is unknown today, and the filter is mandatory on Linux.
+- [ ] **Run it on Linux.** There, no virtiofs is under the FUSE backend, and the ratio should
+  differ in kind, not degree. That number is unknown today, and the FUSE backend is mandatory on
+  Linux.
 - [ ] **Profile git's untracked walk.** It is 32.7 s of the real tree's 71.5 s `git status`
   (`verification-log.md`, "a real tree"): 4.3 ms per entry, where `find` pays 1.95 ms over the
   same entries. What git asks per directory that `find` does not is unmeasured.
@@ -349,7 +350,7 @@ user meets it.
   - Accepted (2026-09-20), on condition that it is documented: when the host moves a held
     directory *out of* the workspace, the sandbox can still read that subtree through it. Today
     `RESOLVE_IN_ROOT` refuses that.
-    - An unfiltered bind mount behaves the same.
+    - A plain bind mount behaves the same.
     - `..` does not climb from there, since the kernel resolves it.
   - [ ] Docs, in the change that adds the cache. The second acceptance depends on them:
     - `SECURITY.md`, "Not defended": a directory the session holds stays readable after the host
@@ -480,7 +481,7 @@ Expected gain:
 
 ## P2 — Launcher and deployment integration
 
-The filter is the default on every platform ahead of that verification (`SECURITY.md`, "Not
+The FUSE backend is the default on every platform ahead of that verification (`SECURITY.md`, "Not
 defended"). That leaves:
 
 - [ ] After Linux verification, remove the unverified-platform qualification from `SECURITY.md`.
@@ -546,7 +547,7 @@ Timed to the work that needs it, so the findings are fresh when they are used.
   - `setxattrat` arrived in Linux 6.13, and `f*xattr` on an `O_PATH` fd is `EBADF`. So whether a
     fd-relative call exists at all depends on the *daemon's* kernel.
   - This project's Debian 13 and podman floor (the README names it) do not set that kernel. They
-    govern the container userspace, which the filter does not run in.
+    govern the container userspace, which the FUSE backend does not run in.
   - On a podman machine that kernel is Fedora CoreOS's: 7.1 as measured on 2026-08-14, so the call
     is present.
   - On native Linux it is the user's own, and nothing here bounds it. Debian 13 as a *host* is
@@ -579,7 +580,7 @@ Timed to the work that needs it, so the findings are fresh when they are used.
     `.ko-agent-sandbox`. There, a changed answer takes a new number (`fs.rs`, `policy_name`;
     `inode.rs`, `lookup`).
   - The stale-handle tests hold their handle one level below a recreated name. So what they measure
-    is the filter's own `RESOLVE_NO_SYMLINKS` refusal, not a kernel or table artifact
+    is the FUSE backend's own `RESOLVE_NO_SYMLINKS` refusal, not a kernel or table artifact
     (`tests/mounted_mutate.rs`).
   - Reuse for *coherency* is a different question, and it is guarded: `lookup` gives a replaced
     object a new number, so it does not inherit the old one's page cache (`architecture.md`, "Inode

@@ -12,8 +12,8 @@ workspace's code:
 One file names a server instead: git-lfs on your host downloads from the server that `.lfsconfig`
 names when you check out, and uploads to that server when you push.
 
-- In a writable session, the workspace filter keeps these files read-only. Under
-  `--workspace=live,bpf`, the BPF policy keeps them read-only instead (`bpf-lsm-cgroup.md`).
+- In a writable session, the FUSE backend keeps these files read-only. Under
+  `--workspace=live,bpf`, the BPF backend keeps them read-only instead (`bpf-lsm-cgroup.md`).
 - Under `--run-on-host`, the host command's profile also keeps these files read-only.
 - Build files, scripts and `package.json` stay writable: you run those yourself, and you review
   their diff as you review any other diff (`../SECURITY.md`, "The workspace").
@@ -27,7 +27,8 @@ names when you check out, and uploads to that server when you push.
   Containers; mise; and git-lfs.
 - Inside `node_modules`, nothing: npm installs packages that carry these names.
 - A Git hook directory that the repository keeps in the worktree, such as husky's `.husky/_` or a
-  `core.hooksPath` of `githooks`. The filter finds such a directory when the filter mounts.
+  `core.hooksPath` of `githooks`. The workspace policy's guard finds such a directory when a
+  session starts.
 - The target of a symlink inside a listed entry at the workspace root. With
   `.vscode/tasks.json -> ../tasks-data.json`, `tasks-data.json` is read-only too, even when
   `.vscode` itself links to a directory outside the workspace.
@@ -38,7 +39,8 @@ names when you check out, and uploads to that server when you push.
   cannot be renamed or replaced. The session can still create such a directory with `mkdir`, write
   in it, and remove it once it is empty.
 
-When the filter mounts, the launch prints the paths that the filter's guard makes read-only.
+When a session starts, the launch prints the paths that the workspace policy's guard makes
+read-only.
 
 The session's own writes to these paths fail with `Operation not permitted`. The session's agent
 sees the rule lines in `$KO_AGENT_SANDBOX_FILE_RULES`.
@@ -75,8 +77,8 @@ writable NAME      the entry and everything below it are writable
 - `*` matches any run of characters within one component; nothing else is a wildcard. In a
   directory component, `*` pins every entry it matches: `*/hooks.json` leaves no file in the
   workspace creatable, renamable or removable.
-- The characters are `a`–`z`, `0`–`9`, `.`, `_`, `-` and `*`. The filter folds case as the host's
-  filesystem may, so `read-only .vscode` covers `.VSCode`.
+- The characters are `a`–`z`, `0`–`9`, `.`, `_`, `-` and `*`. The workspace policy folds case as
+  the host's filesystem may, so `read-only .vscode` covers `.VSCode`.
 - The last line naming the entry or one of its ancestors decides:
 
 ```text
@@ -87,15 +89,15 @@ writable .vscode/settings.json      settings.json writable, the rest of .vscode 
   In the reverse order `.vscode` decides, and `settings.json` stays read-only.
 
 Below a directory that a `writable` line names, a session can write names that the other lines
-protect. So the filter refuses:
+protect. So the FUSE backend refuses:
 
 - moving a directory or symlink out of that directory, including renaming the directory itself.
   `mv node_modules nm.bak` fails with `Operation not permitted`, while npm's renames inside
   `node_modules` work;
 - a hard link of a symlink out of that directory, and a symlink into it from outside.
 
-No line applies in a Git directory's operational state, such as `.git/objects`. So the filter,
-and the BPF policy under `--workspace=live,bpf`, refuse:
+No line applies in a Git directory's operational state, such as `.git/objects`. So the FUSE
+backend, and the BPF backend under `--workspace=live,bpf`, refuse:
 
 - moving a directory or symlink out of that state into the workspace, and a hard link of a symlink
   out of that state;
@@ -112,7 +114,7 @@ The launch refuses every ambiguity:
 - a leading or trailing `/`, or an empty, `.` or `..` component;
 - a character outside the set above, uppercase included;
 - a `#` inside a token;
-- a `.git` or `.ko-agent-sandbox` component, which the filter's own rules protect.
+- a `.git` or `.ko-agent-sandbox` component, which the workspace policy's own rules protect.
 
 The launcher reads a file that holds only comments and blank lines as no file.
 
@@ -127,7 +129,7 @@ or more joined into `writable: <name>, <name>`; then the other lines.
 ## Under `--run-on-host`
 
 The host command's profile denies writes to the same names, in the same order. The profile has
-one limit, and the profile is stricter than the filter in two respects:
+one limit, and the profile is stricter than the FUSE backend in two respects:
 
 - A host command can move a directory out of `node_modules` over a directory of the workspace,
   together with a listed file that the session or the command wrote in the moved directory. For
@@ -136,13 +138,13 @@ one limit, and the profile is stricter than the filter in two respects:
   a directory that a line names, such as `.vscode/`. A listed file that arrives by such a move
   takes effect when a host program starts in its new directory: an editor opening `apps/web`, a
   Dev Container, mise, or an agent.
-- A session without `--run-on-host` has no such limit: the filter refuses the move.
+- A session without `--run-on-host` has no such limit: the FUSE backend refuses the move.
 - A workspace that wants a listed name read-only inside `node_modules` too repeats the name's line
   in its rule file. The rule file's lines follow the defaults' `writable node_modules`. npm then
   installs a package without that entry, prints `npm warn tar TAR_ENTRY_ERROR` for the entry, and
   exits 0.
-- The profile is stricter than the filter in two respects (`run-on-host.md`, "The host command's
-  filesystem rules"):
+- The profile is stricter than the FUSE backend in two respects (`run-on-host.md`, "The host
+  command's filesystem rules"):
   - a host command cannot `mkdir` a directory that a line passes through, such as `.claude`, or
     `rmdir` that directory once it is empty;
   - a `writable` line lifts nothing below the target of a symlink that the rules reach, such as
@@ -161,7 +163,7 @@ one limit, and the profile is stricter than the filter in two respects:
 
 ## One mount per workspace
 
-Concurrent sessions of a workspace share one filter mount. The mount serves the rules that its
+Concurrent sessions of a workspace share one FUSE backend mount. The mount serves the rules that its
 first session resolved.
 
 Under `--workspace=live,bpf` there is no mount:
@@ -364,9 +366,10 @@ In the image on 2026-09-26:
 - `git switch` to a branch that changes a file the process cannot unlink printed
   `error: unable to unlink old '.vscode/settings.json'`, switched, exited 0, and left the old
   content as a local modification.
-- Through the filter with those names read-only inside `node_modules`, npm 11 installing `fastify`
-  and `sequelize` printed `npm warn tar TAR_ENTRY_ERROR` for each refused entry, exited 0, and left
-  `pino-abstract-transport` without `.husky/pre-commit`, `inflection` without
+- Through the FUSE backend with those names read-only inside `node_modules`, npm 11 installing
+  `fastify` and `sequelize` printed `npm warn tar TAR_ENTRY_ERROR` for each refused entry, exited
+  0, and left `pino-abstract-transport` without `.husky/pre-commit`, `inflection` without
   `.vscode/settings.json`, and `thread-stream/.claude` empty.
-- In a `--workspace=live` session through the filter, writing a listed file, creating a listed name
-  and renaming a directory a listed name passes through failed with `Operation not permitted`.
+- In a `--workspace=live` session through the FUSE backend, writing a listed file, creating a
+  listed name and renaming a directory a listed name passes through failed with `Operation not
+  permitted`.

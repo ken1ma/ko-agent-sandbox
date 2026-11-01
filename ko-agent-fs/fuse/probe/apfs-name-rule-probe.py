@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """The platform-verification probe for the .git and .ko-agent-sandbox name rules (doc/TODO.md,
-"P1 — Platform verification"). It creates each candidate spelling through the mounted filter and
+"P1 — Platform verification"). It creates each candidate spelling through the FUSE mount and
 reports which were denied, with which errno. The corpus in doc/TODO.md has rows this script lacks:
 the Windows 8.3 short names, which mean nothing outside NTFS. Run those by hand on NTFS.
 
-Run INSIDE a filtered sandbox session, from the root of a scratch workspace:
+Run INSIDE a sandbox session under the FUSE backend, from the root of a scratch workspace:
 
     cp .../apfs-name-rule-probe.py <scratch-workspace>/
-    java -jar ko-agent-sandbox.jar bash          # filtered unless you opt out
+    java -jar ko-agent-sandbox.jar bash          # the FUSE backend unless you opt out
     python3 apfs-name-rule-probe.py
 
 Then, on the HOST, run the checks this script cannot do. They test the property itself, on the
@@ -21,7 +21,7 @@ Record the result with `sw_vers` and the volume's File System Personality. After
 
     python3 apfs-name-rule-probe.py clean
 
-The script refuses to run outside the filter. Without the filter the canary .git is created; the
+The script refuses to run outside the FUSE backend. Without it the canary .git is created; the
 script then removes it and aborts, since the run would test nothing.
 """
 
@@ -69,16 +69,16 @@ def main() -> int:
             print(f"abort: this directory already has {guarded} — use a scratch workspace's root")
             return 2
 
-    # The canary is also the base case. Behind the filter it fails with EPERM. Anywhere else it
+    # The canary is also the base case. Under the FUSE backend it fails with EPERM. Anywhere else it
     # succeeds, which means the run tests nothing, so undo it and abort.
     try:
         os.mkdir(".git")
         os.rmdir(".git")
-        print("abort: created .git — this is NOT a filtered session;")
+        print("abort: created .git — this is NOT a FUSE backend session;")
         print("       run it through the launcher, under --workspace=live")
         return 2
     except PermissionError:
-        print("ok denied  '.git' (the canary: this session is filtered)")
+        print("ok denied  '.git' (the canary: this session runs under the FUSE backend)")
 
     failures = 0
     for name in DENIED + DENIED_CONFIG:

@@ -137,8 +137,8 @@ impl Case {
         {
             git = GitContext::SandboxConfig;
         }
-        // The rules at every position; `rule_context_of_path` stops at git state, where the
-        // filter's inode table gives an entry the root's context (`inode.rs`, `child_contexts`).
+        // The rules at every position; `rule_context_of_path` stops at git state, where the FUSE
+        // backend's inode table gives an entry the root's context (`inode.rs`, `child_contexts`).
         let rule =
             path.split('/')
                 .enumerate()
