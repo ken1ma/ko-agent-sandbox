@@ -25,7 +25,7 @@ import KoAgentFs.*
 
 object SelfTestShare:
 
-  /** The mount id lies under the filter's mounts/ root, so `--reset-all` and the unmount-all sweep cover
+  /** The mount id lies under the FUSE backend's mounts/ root, so `--reset-all` and the unmount-all sweep cover
     * a killed run's mount exactly as they cover a session's mount. */
   def shareMountId(suffix: String): String = s"self-test-share-$suffix"
 
@@ -79,9 +79,9 @@ object SelfTestShare:
        |probe = tempfile.mkdtemp(prefix=".stack-", dir=".")
        |try:
        |    os.mkdir(os.path.join(probe, ".git"))
-       |    print("${StackPrefix}unfiltered", flush=True)
+       |    print("${StackPrefix}plain", flush=True)
        |except PermissionError:
-       |    print("${StackPrefix}filtered", flush=True)
+       |    print("${StackPrefix}fuse", flush=True)
        |finally:
        |    shutil.rmtree(probe, ignore_errors=True)
        |""".stripMargin
@@ -125,7 +125,7 @@ object SelfTestShare:
   /** What one probe line means to the orchestrator. Noise is any unrecognized line, printed so that a
     * failed run's transcript is whole. */
   enum ProbeEvent:
-    case Stack(filtered: Boolean)
+    case Stack(fuse: Boolean)
     case ReadySeen
     case ReadSeen(ok: Boolean)
     case MmapSeen(lagMillis: Option[Long])
@@ -133,7 +133,7 @@ object SelfTestShare:
     case Noise(text: String)
 
   def interpret(line: String): ProbeEvent =
-    if line.startsWith(StackPrefix) then ProbeEvent.Stack(line.stripPrefix(StackPrefix) == "filtered")
+    if line.startsWith(StackPrefix) then ProbeEvent.Stack(line.stripPrefix(StackPrefix) == "fuse")
     else if line == Ready then ProbeEvent.ReadySeen
     else if line == ReadVisible then ProbeEvent.ReadSeen(true)
     else if line == s"$ReadVisible never" then ProbeEvent.ReadSeen(false)
@@ -147,7 +147,7 @@ object SelfTestShare:
   /** The machine's own view, for the machine record: its kernel, and what filesystem serves the backing
     * path there. virtiofs is the answer that says the real share is in the path. The script uses findmnt
     * because virtiofs registers under FUSE's own statfs magic: `stat -f` answers "fuse" for virtiofs,
-    * indistinguishable from the filter's mounts. */
+    * indistinguishable from the FUSE backend's mounts. */
   def machineViewScript(backing: String): String =
     withScriptPath(
       s"""backing="$$(${printingCommand(backing)})"
@@ -214,9 +214,9 @@ object SelfTestShare:
         var line = reader.readLine()
         while line != null do
           interpret(line) match
-            case ProbeEvent.Stack(filtered) =>
-              row(filtered, "the guard refuses through the whole stack",
-                if filtered then "" else "mkdir .git succeeded")
+            case ProbeEvent.Stack(fuse) =>
+              row(fuse, "the guard refuses through the whole stack",
+                if fuse then "" else "mkdir .git succeeded")
             case ProbeEvent.ReadySeen =>
               writeAt = System.nanoTime()
               // A refused write is retried within a bound. On Windows, the machine's 9p server opens the

@@ -1,4 +1,4 @@
-// Tests the workspace filter's mount lifecycle and its reference count, against real sessions.
+// Tests the FUSE backend's mount lifecycle and its reference count, against real sessions.
 //
 // The suite runs only under testWithPodman, like the other container-launching suites (WithPodman has the
 // condition):
@@ -12,7 +12,7 @@
 // who would notice the other way.
 //
 // Beyond that sequence, the suite covers the two rules that exist for a *concurrent* reap (`KoAgentFs`,
-// "The workspace FUSE filter's mount lifecycle"). Neither rule needs a launch that can be paused:
+// "The FUSE backend's mount lifecycle"). Neither rule needs a launch that can be paused:
 //
 // - The state that a launch in flight presents to a reap is a marker whose container exists and is not
 //   running. The suite creates that state directly.
@@ -80,7 +80,7 @@ class MountLifecycleTest extends munit.FunSuite:
       val a = launch(workspace.resolve("a.log"))
       val aLog = Files.readString(workspace.resolve("a.log"))
       assert(
-        aLog.contains("ko-agent-fs filter: mounted") && !aLog.contains("joined the existing mount"),
+        aLog.contains("FUSE backend: mounted") && !aLog.contains("joined the existing mount"),
         s"session A did not create the mount — another session of $id already holds one; its output:\n$aLog",
       )
       polling.withMaxRetries(30).eventually(assertEquals(markers(), a, "markers after A"))
@@ -91,7 +91,7 @@ class MountLifecycleTest extends munit.FunSuite:
       assert(
         Files
           .readString(workspace.resolve("b.log"))
-          .contains("ko-agent-fs filter: joined the existing mount for this workspace"),
+          .contains("FUSE backend: joined the existing mount for this workspace"),
         s"session B did not reuse the mount; its output:\n${Files.readString(workspace.resolve("b.log"))}",
       )
       val both = Vector(a, b).sorted.mkString(" ")
@@ -147,7 +147,7 @@ class MountLifecycleTest extends munit.FunSuite:
       assert(
         Files
           .readString(workspace.resolve("c.log"))
-          .contains("ko-agent-fs filter: joined the existing mount for this workspace"),
+          .contains("FUSE backend: joined the existing mount for this workspace"),
         "the surviving mount was not reusable",
       )
 

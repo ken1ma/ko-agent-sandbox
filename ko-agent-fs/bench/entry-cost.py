@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""The metadata cost of the filter, measured by a command rather than reconstructed by hand
-(fuse/doc/TODO.md, "Performance"). It builds its own corpus, so two runs are comparable even on
-different machines. It reports microseconds per entry for the workloads behind the tables in
+"""The metadata cost of the FUSE backend, measured by a command rather than reconstructed by
+hand (fuse/doc/TODO.md, "Performance"). It builds its own corpus, so two runs are comparable even
+on different machines. It reports microseconds per entry for the workloads behind the tables in
 fuse/doc/verification-log.md, "The cost of a path walk".
 
 Run it in a scratch workspace, once per stack, and compare the columns:
 
-- The unfiltered run is the control (unfiltered.sh says what it is).
-- The BPF policy's run is the same command under the attach cgroup, which
+- The plain run is the control (plain-bind.sh says what it is).
+- The BPF backend's run is the same command under the attach cgroup, which
   ko-agent-fs/bpf/test/podman/benchmark/Benchmark.scala drives.
 
 
     cp .../entry-cost.py <scratch-workspace>/ && cd <scratch-workspace>
-    java -jar ko-agent-sandbox.jar python3 entry-cost.py         # filtered
-    .../bench/unfiltered.sh python3 entry-cost.py
+    java -jar ko-agent-sandbox.jar python3 entry-cost.py         # the FUSE backend
+    .../bench/plain-bind.sh python3 entry-cost.py
 
 The control matters more than the absolute numbers. On the measured macOS stack the hypervisor
-answers an uncached guest lookup quickly, while the filter adds a FUSE round trip and full-path
-resolution. So the ratio measures the filter's cost, not the backing share's
+answers an uncached guest lookup quickly, while the FUSE backend adds a FUSE round trip and
+full-path resolution. So the ratio measures the FUSE backend's cost, not the backing share's
 (fuse/doc/architecture.md).
 
 Everything is written under a temporary directory in the workspace, which is the working
@@ -36,24 +36,24 @@ FILES = int(os.environ.get("FILES", "1800"))
 
 
 def stack() -> str:
-    """Which stack, decided by two properties a bind mount does not have: the filter refuses a
-    `.git` directory at any depth, and the BPF policy, which allows the directory
+    """Which stack, decided by two properties a bind mount does not have: the FUSE backend refuses
+    a `.git` directory at any depth, and the BPF backend, which allows the directory
     (doc/bpf-lsm-cgroup.md, "Directories"), refuses a hook file inside it by the name alone."""
     check = tempfile.mkdtemp(prefix=".entry-cost-stack-", dir=".")
     try:
         try:
             os.mkdir(os.path.join(check, ".git"))
         except PermissionError:
-            return "filtered"
+            return "FUSE backend"
         try:
             os.mkdir(os.path.join(check, ".git", "hooks"))
             with open(os.path.join(check, ".git", "hooks", "pre-commit"), "wb"):
                 pass
         except PermissionError:
-            return "BPF policy"
+            return "BPF backend"
     finally:
         shutil.rmtree(check, ignore_errors=True)
-    return "unfiltered bind mount"
+    return "plain bind mount"
 
 
 def build(root: str) -> int:
@@ -104,7 +104,7 @@ def main() -> int:
         shutil.rmtree(work, ignore_errors=True)
 
     print("\nRun this again in the other stack; the ratio between the two columns is the")
-    print('filter\'s own cost (fuse/doc/TODO.md, "Performance").')
+    print('cost that the backend under test adds (fuse/doc/TODO.md, "Performance").')
     return 0
 
 

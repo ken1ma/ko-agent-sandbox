@@ -117,9 +117,9 @@ pub fn compile(rules: &FileRules, guarded: &[GuardedPath]) -> Result<Records, St
     let lines = rules.lines();
     if lines.len() > RULE_LINES {
         return Err(format!(
-            "the resolved file rules hold {} lines and the BPF policy holds at most {RULE_LINES}. \
-             Remove lines from .ko-agent-sandbox/file/rule, or hook directories and symlinks the \
-             filter records as paths.",
+            "the resolved file rules hold {} lines and the BPF backend holds at most \
+             {RULE_LINES}. Remove lines from .ko-agent-sandbox/file/rule, or hook directories and \
+             symlinks the workspace policy records as paths.",
             lines.len(),
         ));
     }
@@ -128,9 +128,9 @@ pub fn compile(rules: &FileRules, guarded: &[GuardedPath]) -> Result<Records, St
     for (line, context) in rules.aliases() {
         if aliases.len() >= ALIASES {
             return Err(format!(
-                "the file rules reach more than {ALIASES} symlinks whose ends the filter records \
-                 as aliases, and the BPF policy holds at most {ALIASES}. Replace some of the \
-                 symlinks the rule lines name with directories.",
+                "the file rules reach more than {ALIASES} symlinks whose ends the workspace policy \
+                 records as aliases, and the BPF backend holds at most {ALIASES}. Replace some of \
+                 the symlinks the rule lines name with directories.",
             ));
         }
         aliases.push(alias_record(context, lines.len())?);
@@ -147,7 +147,7 @@ pub fn compile(rules: &FileRules, guarded: &[GuardedPath]) -> Result<Records, St
         };
         if line.components.is_empty() || line.components.len() > RULE_COMPS {
             return Err(format!(
-                "the file rule line {:?} has {} components and the BPF policy holds at most \
+                "the file rule line {:?} has {} components and the BPF backend holds at most \
                  {RULE_COMPS}. Name a shorter path.",
                 spelled(),
                 line.components.len(),
@@ -156,7 +156,7 @@ pub fn compile(rules: &FileRules, guarded: &[GuardedPath]) -> Result<Records, St
         for component in &line.components {
             if component.is_empty() || component.len() >= COMP_BYTES || component.contains(&0) {
                 return Err(format!(
-                    "the file rule line {:?} has a component of {} bytes and the BPF policy holds \
+                    "the file rule line {:?} has a component of {} bytes and the BPF backend holds \
                      at most {}. Rename it on the host, then relaunch.",
                     spelled(),
                     component.len(),
@@ -178,7 +178,7 @@ pub fn compile(rules: &FileRules, guarded: &[GuardedPath]) -> Result<Records, St
     if guarded.len() > GUARDED_PATHS {
         return Err(format!(
             "the workspace holds {} guarded objects, gitdirs under .git/modules among them, and \
-             the BPF policy records at most {GUARDED_PATHS}. Deinitialize submodules you do not \
+             the BPF backend records at most {GUARDED_PATHS}. Deinitialize submodules you do not \
              work on.",
             guarded.len(),
         ));
@@ -188,7 +188,7 @@ pub fn compile(rules: &FileRules, guarded: &[GuardedPath]) -> Result<Records, St
         .map(|object| {
             if object.path.len() >= PATH_BYTES || object.path.contains(&0) {
                 return Err(format!(
-                    "the guarded object {:?} has a path of {} bytes and the BPF policy records at \
+                    "the guarded object {:?} has a path of {} bytes and the BPF backend records at \
                      most {}. Move it nearer the workspace root.",
                     String::from_utf8_lossy(&object.path),
                     object.path.len(),
@@ -219,8 +219,8 @@ fn alias_record(context: &RuleContext, line_count: usize) -> Result<AliasContext
     // contexts at the mutation instead, two at one position.
     if !context.also().is_empty() {
         return Err(
-            "an alias context standing under another alias has no record in the BPF policy; \
-             this is a defect in the filter's guard, report it."
+            "an alias context standing under another alias has no record in the BPF backend; \
+             this is a defect in the workspace policy's guard, report it."
                 .to_string(),
         );
     }
@@ -229,7 +229,7 @@ fn alias_record(context: &RuleContext, line_count: usize) -> Result<AliasContext
         if line as usize >= line_count || matched == 0 || matched as usize >= RULE_COMPS {
             return Err(format!(
                 "an alias context names line {line} at {matched} components, outside the \
-                 resolved rules; this is a defect in the filter's guard, report it.",
+                 resolved rules; this is a defect in the workspace policy's guard, report it.",
             ));
         }
         partial[line as usize] |= 1 << matched;

@@ -706,8 +706,8 @@ object MicrophoneRelay:
 
   /**
    * Starts the Windows relay for the session from the probe's recorder: the request loop and the
-   * watchdog. Both are daemon threads that end when the sandbox stops. The first wait is bounded like
-   * the reaper's, for a launcher that never reaches the start.
+   * watchdog. Both are daemon threads that end when the sandbox stops, the returned request loop's after the
+   * watchdog's. The first wait is bounded like the reaper's, for a launcher that never reaches the start.
    */
   def startResident(
     kept: Kept,
@@ -734,7 +734,9 @@ object MicrophoneRelay:
   ):
     @volatile private var pump: Option[Pump] = Some(firstPump)
     @volatile private var exec: Option[Process] = None
-    @volatile private var stopped = false
+    /** Released when the sandbox stops. The watchdog waits on it between its checks, so that it wakes and
+      * ends at the stop instead of checking once more a recorder that the stop itself ended. */
+    private val stopped = java.util.concurrent.CountDownLatch(1)
 
     private def running(): Boolean = containerRunning(podman, sandboxContainer)
 
@@ -756,7 +758,10 @@ object MicrophoneRelay:
           case _ =>
             say(log, "refused a request other than start")
             Thread.sleep(1000)
-      stopped = true
+      stopped.countDown()
+      // The thread's end then also ends the relay's log writes. A watchdog check makes no blocking call, so
+      // the bound only covers a log write that hangs.
+      watchdog.join(java.time.Duration.ofSeconds(2))
       pump.foreach(_.process.destroyForcibly())
 
     private def readRequest(): String =
@@ -774,8 +779,7 @@ object MicrophoneRelay:
       * ended or went silent, and ends the forwarding with it; the next request starts a new recorder.
       * Going silent here means delivering no bytes at all, because silent audio is bytes too. */
     private def watch(): Unit =
-      while !stopped do
-        Thread.sleep(1000)
+      while !stopped.await(1, java.util.concurrent.TimeUnit.SECONDS) do
         firstPump.logFirstSound(log)
         pump.foreach: current =>
           val silentFor = (System.nanoTime() - current.lastBytes) / 1_000_000_000L

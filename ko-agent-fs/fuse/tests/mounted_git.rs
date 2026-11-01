@@ -45,12 +45,12 @@ fn succeeds(what: &str, output: Output) -> String {
 fn fails(what: &str, output: Output) {
     assert!(
         !output.status.success(),
-        "{what} SUCCEEDED, but the filter is supposed to block it"
+        "{what} SUCCEEDED, but the FUSE backend is supposed to block it"
     );
 }
 
 /// A host repository with two commits and a side branch, built directly in the backing tree — the
-/// host's own `git`, unfiltered, exactly as a user's checkout arrives.
+/// host's own `git`, not through the mount, exactly as a user's checkout arrives.
 fn host_repository(backing: &Path) {
     succeeds(
         "host git init",
@@ -325,9 +325,9 @@ fn super_with_nested_submodule(backing: &Path) {
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn a_submodule_in_a_subdirectory_works_like_any_other() {
     // A submodule's name defaults to its path, so `libs/foo` puts the gitdir at
-    // `.git/modules/libs/foo`. Reading it never needed anything — the filter checks no read — so
-    // what this checks is the writing: the operational state of a nested-name submodule must be as
-    // writable as a top-level one's, or every ordinary command in it fails on `index`.
+    // `.git/modules/libs/foo`. Reading it never needed anything — the FUSE backend checks no read —
+    // so what this checks is the writing: the operational state of a nested-name submodule must be
+    // as writable as a top-level one's, or every ordinary command in it fails on `index`.
     let mount = TestMount::new(super_with_nested_submodule);
     let submodule = mount.at("libs/foo");
 
@@ -373,8 +373,8 @@ fn a_submodule_in_a_subdirectory_works_like_any_other() {
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn a_hook_the_host_installed_runs_for_the_host() {
-    // The filter freezes hooks against the sandbox; it must not break the host's own hook: the
-    // host-installed hook is protected, not disabled.
+    // The FUSE backend freezes hooks against the sandbox; it must not break the host's own hook:
+    // the host-installed hook is protected, not disabled.
     let mount = TestMount::new(|backing| {
         host_repository(backing);
         let hook = backing.join(".git/hooks/pre-commit");

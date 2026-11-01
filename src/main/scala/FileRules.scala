@@ -1,9 +1,9 @@
 // The file rules as the launcher handles them (doc/file-rules.md):
 // - the defaults and the workspace's .ko-agent-sandbox/file/rule;
 // - their grammar and resolution;
-// - the text that the filter daemon and the run-on-host profile receive.
+// - the text that the FUSE backend's daemon and the run-on-host profile receive.
 //
-// The launcher owns the grammar. The filter reads only the resolved form
+// The launcher owns the grammar. The workspace policy reads only the resolved form
 // (ko-agent-fs/policy/src/rulefile.rs), and the Seatbelt profile renders that form
 // (SeatbeltProfile.fileRuleFilters).
 
@@ -25,7 +25,7 @@ object FileRules:
     def text: String = s"${word.keyword} $name"
 
   /**
-   * What the resolved set holds beyond the rule lines: the paths that the filter's guard found,
+   * What the resolved set holds beyond the rule lines: the paths that the workspace policy's guard found,
    * relative to the workspace root and spelled as the host spells them.
    * - `readOnlyPaths` are directories and files served read-only as a whole.
    * - `pinnedPaths` are components pinned against rename, replacement and removal.
@@ -38,7 +38,7 @@ object FileRules:
       pinnedPaths: Vector[String],
       readOnlyUnder: Vector[(String, String)] = Vector.empty,
   ):
-    /** The resolved text: the form the filter writes back and `--resolve` prints. */
+    /** The resolved text: the form the FUSE backend's mount writes back and `--resolve` prints. */
     def text: String =
       (lines.map(_.text) ++ readOnlyPaths.map(path => s"read-only-path $path") ++
         pinnedPaths.map(path => s"pinned-path $path") ++
@@ -53,7 +53,7 @@ object FileRules:
     catch case ex: java.io.IOException => Left(s"error: cannot read the file rules $file: ${ex.getMessage}")
 
   /**
-   * The lines for `workspaceRoot` without the filter's guard. A host command gets these lines when no
+   * The lines for `workspaceRoot` without the workspace policy's guard. A host command gets these lines when no
    * launch handed it a resolved set, as in the acceptance test's own entry. The guard's paths, a
    * relocated hook directory among them, come only from a launch's mount or `--resolve`.
    */
@@ -61,7 +61,7 @@ object FileRules:
     readRuleFile(SandboxWorkspace.boundaryDirOf(workspaceRoot).resolve("file")).map: file =>
       Resolved(resolve(file.fold(Vector.empty[Line])(_(1))), Vector.empty, Vector.empty)
 
-  /** The names that the filter's own rules govern, which a rule line cannot reach. The host command's
+  /** The names that the workspace policy's own rules govern, which a rule line cannot reach. The host command's
     * profile guards the same names (SeatbeltProfile), and the launcher's walks of the workspace enter
     * neither. */
   val GuardedComponents: Seq[String] = Seq(".git", ".ko-agent-sandbox")
@@ -95,12 +95,12 @@ object FileRules:
       Some("a name has no `.` or `..` component")
     else if !name.forall(ch => (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || "._-*/".contains(ch)) then
       Some(
-        "a name holds only a-z, 0-9, `.`, `_`, `-` and the wildcard `*`; the filter folds case, so " +
+        "a name holds only a-z, 0-9, `.`, `_`, `-` and the wildcard `*`; the workspace policy folds case, so " +
           "write it lowercase",
       )
     else
       components.find(GuardedComponents.contains).map: guarded =>
-        s"`$guarded` is the filter's own to protect, and no file rule reaches it"
+        s"`$guarded` is the workspace policy's own to protect, and no file rule reaches it"
 
   /** The launcher's defaults (`agentsandbox/file-rule-defaults`), before the workspace's lines. */
   lazy val Defaults: Vector[Line] =
@@ -128,7 +128,7 @@ object FileRules:
   def resolve(workspaceLines: Vector[Line]): Vector[Line] = Defaults ++ workspaceLines
 
   /**
-   * The directories whose objects the filter's daemon sees as the host does, for the daemon's guard
+   * The directories whose objects the FUSE backend's daemon sees as the host does, for the daemon's guard
    * (`guard.rs`, `resolve`).
    * - On native Linux, the daemon sees the whole filesystem as the host does.
    * - Elsewhere, the daemon sees the podman machine's shares as the host does (SECURITY.md,
@@ -147,10 +147,10 @@ object FileRules:
     (s"host-view ${hostView.mkString(" ")}" +: lines.map(_.text)).map(_ + "\n").mkString
 
   /**
-   * The resolved set out of the filter's output: `--resolve`'s output, or the mount script's output
-   * after ResolvedMarker. A line of any other form comes from another filter version, and so does a
-   * rule name or rest that the grammar refuses, because the Seatbelt profile writes names and rests
-   * into its regexes.
+   * The resolved set out of the workspace policy's output: `--resolve`'s output, or the mount
+   * script's output after ResolvedMarker. A line of any other form comes from another ko-agent-fs
+   * version, and so does a rule name or rest that the grammar refuses, because the Seatbelt profile
+   * writes names and rests into its regexes.
    */
   def parseResolved(text: String): Either[String, Resolved] =
     val lines = text.linesIterator.filter(_.nonEmpty).toVector
@@ -167,7 +167,7 @@ object FileRules:
     parsed.collectFirst { case Left(line) => line } match
       case Some(line) =>
         Left(
-          s"error: the filter answered a file rule line this launcher cannot read: $line\n" +
+          s"error: ko-agent-fs answered a file rule line this launcher cannot read: $line\n" +
             "An installed ko-agent-fs of another version prints another format; rebuild with --build.",
         )
       case None =>
@@ -193,7 +193,7 @@ object FileRules:
   /** The launch lines about the workspace's rule file (HostCommands.ruleFileReport). A workspace
     * without the file gets no lines, because the defaults are every launch's. The file's `writable`
     * lines, the only kind that can widen, are reported as the widening. What the guard added is printed
-    * once the filter has answered (guardLines). */
+    * once the workspace policy has answered (guardLines). */
   def launchLines(
     workspaceFile: Option[(String, Vector[Line])],
     color: Boolean = HostCommands.colorStderr,
@@ -222,7 +222,8 @@ object FileRules:
   def parseDaemonText(text: String): Either[String, Vector[Line]] =
     parseResolved(text.linesIterator.filterNot(_.startsWith("host-view ")).mkString("\n")).map(_.lines)
 
-  /** What the filter's guard added, once it has answered. */
+  /** What the workspace policy's guard added, once the guard has answered. */
   def guardLines(resolved: Resolved): Vector[String] =
     val paths = resolved.readOnlyPaths ++ resolved.readOnlyUnder.map((path, rest) => s"$path/$rest")
-    Option.when(paths.nonEmpty)(s"file rules: read-only by the filter's guard: ${paths.mkString(", ")}").toVector
+    Option.when(paths.nonEmpty)(s"file rules: read-only by the workspace policy's guard: ${paths.mkString(", ")}")
+      .toVector

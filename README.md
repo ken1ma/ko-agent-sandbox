@@ -248,7 +248,7 @@ credentials another cloud's login produced, and what forwarding costs.
     1. Each `--workspace=live,bpf` session runs under its own policy.
     1. The launcher refuses a new launch while a session that shares the workspace or the
        agent-state volume runs under the other backend or the other `unix-socket` setting.
-       A session that an older launcher started counts as a filter session.
+       A session that an older launcher started counts as a FUSE backend session.
     1. An older launcher refuses nothing, so do not start an older launcher beside a `bpf` or
        `unix-socket` session.
 
@@ -321,12 +321,12 @@ restore permission prompts and set the Claude Code status line.
                          read-only makes the workspace read-only to the
                          sandbox's processes; live (default) lets the agent
                          edit the shared workspace files and the Git state the
-                         filter lists (refs, objects, the index, HEAD and the
-                         like); every other Git entry, such as config and
+                         workspace policy lists (refs, objects, the index, HEAD
+                         and the like); every other Git entry, such as config and
                          hooks, .ko-agent-sandbox and what the file rules
                          protect are frozen at any depth (SECURITY.md).
                          The values after the mode, in any order: the backend
-                         holding those protections, fuse (default), a filter
+                         holding those protections, fuse (default), a FUSE
                          mount of the workspace, or bpf, which mounts the
                          workspace directory itself and has the podman
                          machine's kernel enforce the protections on the
@@ -455,8 +455,9 @@ restore permission prompts and set the Claude Code status line.
     Management actions, each recognized before the command; whatever follows
     belongs to the action:
 
-      --build            build the container images, install the workspace filter and
-                         derive the --nesting=none seccomp profile from podman's default,
+      --build            build the container images, install the FUSE backend and,
+                         on macOS and Windows, the BPF backend, and derive the
+                         --nesting=none seccomp profile from podman's default,
                          always pulling remote base images
       --update           update the agents: rebuild only the sandbox container
                          image, without cache, on the base images --build built, and
@@ -471,7 +472,7 @@ restore permission prompts and set the Claude Code status line.
       --reset [<id>...]  in addition to --reset-run-on-host, remove this workspace's
                          containers (ending any live session), volume (signing its
                          agents out), networks, TLS inspection CA, cached ruleset
-                         resolution, logs and workspace-filter mount;
+                         resolution, logs and FUSE backend mount;
                          images and any shared volume are left untouched. From a
                          linked worktree, the main worktree's volume is left
                          untouched too.
@@ -495,7 +496,7 @@ restore permission prompts and set the Claude Code status line.
                          --tail 50), run podman logs on the running session proxies instead
 
       --self-test [<filter>]
-                         run the workspace filter's own suites; <filter> selects one
+                         run the ko-agent-fs suites; <filter> selects one
                          case or family. Without a filter, also check the host share;
                          its scratch directory in the workspace is removed on success
                          and retained on failure. Removes replaced self-test images
@@ -521,7 +522,7 @@ restore permission prompts and set the Claude Code status line.
 ### `--build`
 
 1. Builds the sandbox and egress-proxy images from the jar; no checkout is needed.
-1. Compiles the workspace filter, `ko-agent-fs-fuse`, and the policy's resolver, `ko-agent-fs`,
+1. Compiles the FUSE backend, `ko-agent-fs-fuse`, and the policy's resolver, `ko-agent-fs`,
    from bundled source. Installs them in `~/.local/share/ko-agent-sandbox/`: inside the podman
    machine on macOS and Windows, and in your home on native Linux.
 
@@ -542,7 +543,7 @@ restore permission prompts and set the Claude Code status line.
 
 1. May ask to add `user_allow_other` to the podman machine's `/etc/fuse.conf`, shown as a diff
    first (SECURITY.md, "Silent changes to what you own"). A native Linux host is never prompted.
-1. For workspace-filter failures, see [troubleshooting.md](ko-agent-fs/fuse/doc/troubleshooting.md).
+1. For FUSE backend failures, see [troubleshooting.md](ko-agent-fs/fuse/doc/troubleshooting.md).
 1. `--build`, `--update` and `--self-test` all end by removing the container images they
    superseded, never a pulled image.
 
@@ -605,7 +606,7 @@ The file's format:
 
 1. The launcher is the sbt project at the repository root.
 2. The egress proxy is its own sbt project under `container/ko-agent-egress-proxy/app`.
-3. The workspace policy and the FUSE filter are the Cargo workspace under `ko-agent-fs`, beside
+3. The workspace policy and the FUSE backend are the Cargo workspace under `ko-agent-fs`, beside
    the BPF backend in `ko-agent-fs/bpf`.
 
 Run the commands below from the repository root.

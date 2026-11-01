@@ -9,8 +9,8 @@
 # - It passes the digest of the bundled source this copies as
 #   KO_AGENT_FS_SOURCE_ID.
 # - It then extracts the binaries from the image and installs them where the
-#   filter runs. On macOS and Windows that is inside the podman machine, not
-#   the host.
+#   workspace policy runs. On macOS and Windows that is inside the podman
+#   machine, not the host.
 #
 #     podman build --target build --build-arg KO_AGENT_FS_SOURCE_ID=<digest> \
 #         -t ko-agent-fs-build:cache ko-agent-fs
@@ -67,7 +67,7 @@ ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 # - The suites run on the developer's machine (`doc/testing.md`) and, on any
 #   machine with podman, in the ko-agent-self-test image that the launcher's
 #   `--self-test` builds.
-# - What differs per machine is checked on each machine: the filter binary's
+# - What differs per machine is checked on each machine: `ko-agent-fs-fuse`'s
 #   own `--self-test` runs at install and before every session that mounts it.
 #
 # The source id is compiled in (`option_env!`). Every change to it invalidates

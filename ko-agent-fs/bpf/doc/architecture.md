@@ -104,7 +104,7 @@ Slots 9 and 10 stay free for the routes `../../../doc/TODO.md` plans as values o
 `inode_create` judges a `mknod` of a regular file; the other types reach `inode_mknod`
 (`fs/namei.c`, `filename_mknodat`).
 
-`inode_symlink` judges the target as the filter does (`fs.rs`, `target_has_portable_syntax`,
+`inode_symlink` judges the target as the FUSE backend does (`fs.rs`, `target_has_portable_syntax`,
 `allow_symlink_target`):
 
 - An absolute target, or one that climbs above the workspace root, is refused on its syntax.
@@ -119,13 +119,13 @@ Slots 9 and 10 stay free for the routes `../../../doc/TODO.md` plans as values o
 ### Attributes, flags and ioctls
 
 No taken slot holds rows 15–18 of "Inventory": extended attributes, ACLs, file flags and
-filesystem ioctls. The filter refuses each of them in the whole workspace, since it does not
-implement the operation ("Inventory", filter column `none`; for xattrs,
+filesystem ioctls. The FUSE backend refuses each of them in the whole workspace, since it does not
+implement the operation ("Inventory", FUSE column `none`; for xattrs,
 `../../fuse/doc/verification-log.md`, "Extended attributes"). The routes, with the hooks that
 would hold them:
 
 - xattrs, row 15: `inode_setxattr` and `inode_removexattr`. The macOS share forwards xattrs:
-  through an unfiltered bind `setxattr` succeeds.
+  through a plain bind `setxattr` succeeds.
 - POSIX ACLs, row 16: `inode_set_acl` and `inode_remove_acl`.
   - `fs/xattr.c`, `do_setxattr` and `removexattr`, route the `system.posix_acl_*` names to
     `do_set_acl` and `vfs_remove_acl` before `vfs_setxattr`'s `security_inode_setxattr`, so the
@@ -192,9 +192,9 @@ What the seccomp rule reaches, and what it misses:
   ("Environment evidence").
 - The rule refuses those calls everywhere in the container, under `~` as well.
   - It answers `ENOTSUP` to the xattr syscalls, so that `cp -a` drops attributes silently, as
-    through the filter.
+    through the FUSE backend.
   - It refuses no ioctl command. The shares answer those with `ENOTTY`, as FUSE answers them for
-    the filter (`fs/fuse/ioctl.c`).
+    the FUSE backend (`fs/fuse/ioctl.c`).
 - overlayfs's own writes to its upper layer reach `inode_setxattr` without those syscalls
   (row 20). Where "Mounts" refuses the overlay mount, none is made. Elsewhere neither a slot nor
   the rule holds those writes, a decision pending for the later version that admits the mount
@@ -339,18 +339,19 @@ Hooks the policy does not need, and the fact that excuses each:
       `inode_mknod`, not by `inode_rename` of one bound elsewhere (each way for an exchange), and
       not by `inode_link`. Each hook judges the inode it holds (`S_ISSOCK` of `old_dentry` for
       the last two).
-      - Why: a filter-backed worktree session reaches the main checkout's gitdir bind with no
-        policy, and the filter admits a socket under `objects`, since it judges only the name and
-        the destination (`fs.rs`, `allow_create`).
+      - Why: a worktree session under the FUSE backend reaches the main checkout's gitdir bind
+        with no policy, and the FUSE backend admits a socket under `objects`, since it judges only
+        the name and the destination (`fs.rs`, `allow_create`).
       - A symlink adds no reach: `connect` follows it (`unix_find_bsd`, `LOOKUP_FOLLOW`) in the
-        connecting container's own mount namespace, where a filter-backed session has no raw host
-        inode but the gitdir bind's and the volumes'.
+        connecting container's own mount namespace, where a session under the FUSE backend has
+        no raw host inode but the gitdir bind's and the volumes'.
       - The rule costs nothing. Git binds one socket in a gitdir, `fsmonitor--daemon.ipc` at its
         root (`compat/fsmonitor/fsm-ipc-unix.c`, `fsmonitor_ipc__get_path`), a name outside the
-        root's allowlist (`policy.rs`, `OPERATIONAL_FILES`) that the filter refuses already.
+        root's allowlist (`policy.rs`, `OPERATIONAL_FILES`) that the FUSE backend refuses already.
       - The hooks see only the moved inode: a directory holding a bound socket, renamed into
         `objects`, carries the socket in. The launch refusal below is what the pairing of a main
-        checkout and a filter-backed worktree rests on; this rule only narrows the direct routes.
+        checkout and a worktree under the FUSE backend rests on; this rule only narrows the
+        direct routes.
     - A second sandbox of the workspace under this backend judges its use of the descriptor by the
       same policy. A sandbox of another workspace allows nothing on the share outside its own
       roots ("The policy"), and receives no writable file of it, so a descriptor into this
@@ -361,15 +362,15 @@ Hooks the policy does not need, and the fact that excuses each:
     the live session's `.git/config` for writing, judged by nothing.
     - So it runs under a policy that records no root ("The policy"), and that is why its launch
       runs the controller as a live launch does.
-    - The filter admits what a passed descriptor widens, since the live session's mount judged the
-      open. Here nothing arrives by default, and under the option `file_receive` refuses the
+    - The FUSE backend admits what a passed descriptor widens, since the live session's mount judged
+      the open. Here nothing arrives by default, and under the option `file_receive` refuses the
       writable file.
     - Where the probe fails, no session of the host has a policy, and the mode keeps the raw `ro`
       bind alone ("Native Linux").
     - The policy suite measures it.
   - The launcher refuses a launch whose backend or option differs from that of a live session it
-    shares a raw mount with, and names that session. The reason: a filter-backed session has no
-    policy over the share, and a session without the option has no `file_receive`.
+    shares a raw mount with, and names that session. The reason: a session under the FUSE backend
+    has no policy over the share, and a session without the option has no `file_receive`.
     - The raw mounts are the volume, the workspace tree and a linked worktree's main gitdir
       (`SandboxWorkspace.linkedGitdirBind`). Sessions share them in several ways:
       - a linked worktree may mount its main checkout's own volume
@@ -395,9 +396,9 @@ Hooks the policy does not need, and the fact that excuses each:
     - The launcher holds one launch lock per machine (`FileHelper.withFileLock`, like the
       per-workspace `.lock` under the TLS state directory) from the listing until its container
       exists. So of two racing launches, one sees the other's container.
-    - A host rename inside that window is the one case the comparison does not see. It is the
-      host's own act, which the trust model leaves to the host ("What the backend must hold"), as
-      the filter leaves it the renames and coherency races it admits ("What is gained and what is
+    - A host rename inside that window is the one case the comparison does not see. It is the host's
+      own act, which the trust model leaves to the host ("What the backend must hold"), as the FUSE
+      backend leaves it the renames and coherency races it admits ("What is gained and what is
       lost").
 
 ### Mounts
@@ -480,7 +481,7 @@ The program classifies by object and position, never by a path string:
     hook's early exit for reads;
   - `inode_setattr` refuses a time change on one, by type and by `ATTR_ATIME` or `ATTR_MTIME` in the
     attribute's `ia_valid` (`include/linux/fs.h`), so that `chmod` and `chown` of one stay as they
-    are, as in the filter.
+    are, as in the FUSE backend.
   - Why: the user's decision of 2026-10-25, taken against documenting the hazard and waiting for
     libkrun. On the macOS machine, a FIFO's times reaching libkrun's passthrough `setattr` block
     the share's one worker thread, and with it every session on the machine
@@ -505,7 +506,7 @@ The program classifies by object and position, never by a path string:
       (`fs/fuse/dir.c`, `fuse_flush_times`).
   - What stays open: the host's own use of a FIFO it made, and a container outside any policy using
     one. No session's hook sees either.
-  - The filter, whose daemon receives the flush as a `SETATTR` request, refuses that request
+  - The FUSE backend, whose daemon receives the flush as a `SETATTR` request, refuses that request
     instead (`fs.rs`, `setattr`), since the kernel opens a FIFO on a FUSE mount without asking the
     daemon.
   - The program holds the four rules (`policy.bpf.c`, `R_FIFO`). Each is a corpus case of
@@ -515,11 +516,11 @@ The program classifies by object and position, never by a path string:
 - A string from `bpf_path_d_path` is not an identity. Where "Mounts" allows them, unprivileged user
   namespaces work inside a session, so a task can bind the workspace at a second path in a mount
   namespace of its own.
-- Inside the root, the walk's names give the position the filter's classifier uses: a `.git`
+- Inside the root, the walk's names give the position the FUSE backend's classifier uses: a `.git`
   component, the entries under it, `modules/<name>` and `worktrees/<name>`, `.ko-agent-sandbox`,
   and a file-rule line. The sandbox's policy also names the proof fixture's root as a second root
   ("Lifecycle"), judged by the same rules.
-  - The line set is the launcher's resolved rules, the same text the filter receives. Before
+  - The line set is the launcher's resolved rules, the same text the FUSE backend receives. Before
     attach, the unprivileged guard (`ko-agent-fs --resolve --bpf-records`, `bpf_records.rs`) folds
     the lines and compiles them into fixed-size map records, in the layout of the C header it
     generates (`../../policy/include/records.h`). The controller loads those records and parses no
@@ -530,14 +531,14 @@ The program classifies by object and position, never by a path string:
       `pinned-path` line names, which every entry below the end also stands as
       (`RuleContext::also`);
     - at most 2 alias contexts live at one position; a third denies the mutation.
-  - The program keeps the alias contexts as the filter does: activated at the line's end, advanced
-    with each name below it, and dropped once they can decide nothing.
+  - The program keeps the alias contexts as the FUSE backend does: activated at the line's end,
+    advanced with each name below it, and dropped once they can decide nothing.
 - The gitdir allowlist (`../../policy/doc/git-metadata.md`, "The classifier") is the policy here
   too.
-  - The filter finds a nested gitdir's root by the `HEAD` it holds, a lookup a program cannot make.
-    So the controller records the roots under `modules/` at launch.
-  - A namespace without a recorded root stays wholly protected, the filter's own strict default.
-    The sandbox cannot add a root, since the `.git` pointer its worktree needs is refused.
+  - The FUSE backend finds a nested gitdir's root by the `HEAD` it holds, a lookup a program cannot
+    make. So the controller records the roots under `modules/` at launch.
+  - A namespace without a recorded root stays wholly protected, the FUSE backend's own strict
+    default. The sandbox cannot add a root, since the `.git` pointer its worktree needs is refused.
   - A denylist of the executable state (`config*`, `hooks`, `commondir`, `gitdir`, `objects/info`,
     the rebase, sequencer and `rr-cache` state) would be smaller, but would fail open on a future
     git file that executes. The allowlist loads within the verifier's budget on both kernels
@@ -546,8 +547,8 @@ The program classifies by object and position, never by a path string:
   applying below a `.git`, and a `.ko-agent-sandbox` protected in git state too. The socket rules
   are above and in "The hooks", `file_receive`.
 - A second name of a guarded entry, such as a hard link to a `.git` pointer file or an NTFS short
-  name, is the same object. The filter recognizes it by comparing every ordinary entry with its
-  guarded siblings on each lookup (`fs.rs`, `policy_name`), a lookup a program cannot make. Here
+  name, is the same object. The FUSE backend recognizes it by comparing every ordinary entry with
+  its guarded siblings on each lookup (`fs.rs`, `policy_name`), a lookup a program cannot make. Here
   two rules replace that:
   - The controller records the identity of:
     - the workspace root's `.git` and `.ko-agent-sandbox`;
@@ -570,7 +571,7 @@ The program classifies by object and position, never by a path string:
     any guarded file after launch. The walk sees it as ordinary data, and a rewrite of the pointer
     through it is within the property.
     - The session cannot make such a link, since `inode_link` refuses a guarded source.
-    - The filter catches only a link beside its target, by comparing siblings.
+    - The FUSE backend catches only a link beside its target, by comparing siblings.
     - A scan of the whole tree at launch would cover the launch-time half, at the cost of a walk of
       the tree per launch, the cost the backend removes. Nothing a program can do covers the
       mid-session half.
@@ -587,9 +588,9 @@ The program classifies by object and position, never by a path string:
 - A mount inside the workspace, say a filesystem the host mounted at `<workspace>/vendor`, has
   dentries whose `d_parent` chain ends at that filesystem's root, never at the workspace root. So a
   walk by dentry alone would allow everything in it. A bind mount of a directory of the workspace's
-  own filesystem has dentries whose chain passes the bind's source, not its mountpoint. The filter
-  crosses such mounts and classifies their contents (`fs.rs`, `open_ino`, no `RESOLVE_NO_XDEV`).
-  Here:
+  own filesystem has dentries whose chain passes the bind's source, not its mountpoint. The FUSE
+  backend crosses such mounts and classifies their contents (`fs.rs`, `open_ino`, no
+  `RESOLVE_NO_XDEV`). Here:
   - The first version refuses the launch when the VM shows a mount under the bind source, and names
     the mount.
     - The session makes none ("Mounts"). The launcher binds nothing under the workspace
@@ -631,7 +632,7 @@ The program classifies by object and position, never by a path string:
   with that sandbox's maps, so a program refers to its own sandbox's records and no other's, which
   is what the read-back in "Lifecycle" compares.
   - The maps are written before attach and never after. A rule change is a relaunch, as with the
-    filter, so no record changes under a running program.
+    FUSE backend, so no record changes under a running program.
   - The controller freezes the four record maps once filled (`BPF_MAP_FREEZE`). The kernel then
     refuses every write to them from user space for their lifetime (`kernel/bpf/syscall.c`,
     `map_get_sys_perms`). This stops a stray write by a tool the machine's root runs; it does not
@@ -667,11 +668,12 @@ The programs enforce; the controller only loads them.
   is the launcher's fixed-size records, made by the unprivileged guard ("The policy"); its output
   is links and maps.
 
-`--build` installs the BPF object and the controller into the machine, as it installs the filter.
-The controller then runs at every launch, restart and recreate, since each attaches to a new cgroup
-and only a privileged caller can attach: one `sudo -n` per launch, in the machine or on the host.
+`--build` installs the BPF object and the controller into the machine, as it installs the FUSE
+backend. The controller then runs at every launch, restart and recreate, since each attaches to a
+new cgroup and only a privileged caller can attach: one `sudo -n` per launch, in the machine or on
+the host.
 
-The verifier checks a sandbox's nine programs within 0.6 s on the macOS machine and 2.0 s on the
+The verifier checks a sandbox's nine programs within 0.7 s on the macOS machine and 2.4 s on the
 WSL one ("Lifecycle on macOS", "Lifecycle on WSL"). A launch waits for that only when no preloaded
 set is ready at its attach:
 
@@ -782,7 +784,7 @@ session:
        `chmod` of a guarded file; a `bind` of a socket in the fixture or, with `unix-socket`, in
        its `.git`; and one operation per hook a decision adds. Then it makes one write per
        rule-line entry, and one write to an ordinary entry.
-     - Each write's expected answer is derived from the whole ordered rule set, as the filter
+     - Each write's expected answer is derived from the whole ordered rule set, as the FUSE backend
        decides it (`../../../doc/file-rules.md`, "The rule file"): refused under a `read-only`
        line, allowed under a `writable` line such as the defaults' `writable node_modules`, and the
        later line's answer where lines overlap. The fixture holds an overlapping pair on purpose.
@@ -896,8 +898,8 @@ How the steps of "Lifecycle" map onto the code:
   (`KoAgentBpf.buildFailures`).
   - The backend's build and install run after the rest. If they fail on a kernel those checks
     cannot tell apart, they warn and leave the rest built.
-  - It installs the binaries beside the filter under `~/.local/share/ko-agent-sandbox/bpf/`,
-    records the tags and prepares the preloaded set.
+  - It installs the binaries beside the FUSE backend's daemon under
+    `~/.local/share/ko-agent-sandbox/bpf/`, records the tags and prepares the preloaded set.
 - A launch runs the probe and the reconcile under the launch lock (`reconcileScript`, the
   controller's `reconcile`; "Lifecycle", 7).
 - `startSandbox` holds the launch lock from the backend's steps 1 to 3 through the listing of the
@@ -908,7 +910,8 @@ How the steps of "Lifecycle" map onto the code:
   - The create's `--cgroup-parent`, `--restart=no` and labels (`labelArguments`) come from those
     steps.
 - A read-only launch runs the same steps with `--no-root` and no records.
-- The session's teardown (`teardownScript`) takes the filter reap's place in the reaper.
+- The session's teardown (`teardownScript`) takes the place of the FUSE backend's reap in the
+  reaper.
 
 ## Inventory
 
@@ -922,7 +925,7 @@ The macOS and WSL columns hold the answer under the attached programs:
 - `none`: the share answers before any hook;
 - `note`: see the row with this row's number in "Every hook on macOS" or "Every hook on WSL".
 
-| #  | syscalls                  | filter            | hooks 7.2.5 calls            | macOS | WSL  |
+| #  | syscalls                  | FUSE              | hooks 7.2.5 calls            | macOS | WSL  |
 | -- | ------------------------- | ----------------- | ---------------------------- | ----- | ---- |
 | 1  | open* O_CREAT, creat      | name              | path_mknod, inode_create     | yes   | yes  |
 | 2  | mknod*, Unix socket bind  | name              | path_mknod, inode_mknod      | yes   | yes  |
@@ -947,7 +950,7 @@ The macOS and WSL columns hold the answer under the attached programs:
 | 21 | a second path             | as by the first   | as by the first              | yes   | yes  |
 | 22 | io_uring_*                | not reached       | not reached                  | none  | none |
 
-The filter column names `fs.rs`'s checks:
+The FUSE column names `fs.rs`'s checks:
 
 - `name`: the new name's classification and the name rule (`allow_create`);
 - `entry`: the existing entry's classification (`allow_child`, `allow_ino`);
@@ -964,11 +967,11 @@ The rows, where the table does not say it all:
 - Row 9: "Directories" has what removing a protected directory allows; read in `policy.rs`.
 - Row 11: `do_dentry_open` calls `security_file_open` before it clears `O_TRUNC` from `f_flags`
   (`fs/open.c`), so `file_open` sees an `O_RDONLY | O_TRUNC` open, which has no `FMODE_WRITE`;
-  `handle_truncate` then reaches `inode_setattr`. The filter counts it as a write.
+  `handle_truncate` then reaches `inode_setattr`. The FUSE backend counts it as a write.
 - Rows 12 and 13: each operation needs a descriptor with `FMODE_WRITE`
   (`fs/{read_write,open,splice,remap_range}.c`, `mm/mmap.c`).
   - Row 12 is `write*`, `copy_file_range`, `splice` and `sendfile` to the file, and a shared
-    writable `mmap`. The filter implements no `copy_file_range`; FUSE then copies through
+    writable `mmap`. The FUSE backend implements no `copy_file_range`; FUSE then copies through
     `splice_copy_file_range`, which writes through the open (`fs/fuse/file.c`).
   - Row 13 is `fallocate`, `FICLONE` and `FICLONERANGE`. FUSE answers a server's `ENOSYS` to
     `fallocate` with `EOPNOTSUPP` and has no `remap_file_range` (`fs/fuse/file.c`).
@@ -1013,8 +1016,8 @@ The rows, where the table does not say it all:
     - `BTRFS_IOC_DEFRAG` changes only the layout, and `BTRFS_IOC_ENCODED_WRITE` needs
       `CAP_SYS_ADMIN` and a writable descriptor.
   - FUSE answers a server's `ENOSYS` with `ENOTTY` (`fs/fuse/ioctl.c`).
-- Row 19: `vfs_tmpfile` calls no hook before the inode exists, and the file has no name until
-  row 5 links it. The filter implements no `tmpfile`, and FUSE answers a server's `ENOSYS` there
+- Row 19: `vfs_tmpfile` calls no hook before the inode exists, and the file has no name until row 5
+  links it. The FUSE backend implements no `tmpfile`, and FUSE answers a server's `ENOSYS` there
   with `EOPNOTSUPP` (`fs/fuse/dir.c`).
 - Row 20: no `path_*` hook runs. Measured in a session on 2026-10-15: after `unshare -Urm`,
   `mount -t overlay` with `userxattr` and layers on `tmpfs` succeeds, and `mkdir merged/.git`
@@ -1024,9 +1027,9 @@ The rows, where the table does not say it all:
     their siblings, `notify_change` and `vfs_setxattr` (`fs/overlayfs/overlayfs.h`), which call
     the `inode_*` hooks only; `fs/namei.c` calls the `path_*` hooks from the syscalls' paths.
   - It opens an upper file through `backing_file_open`, which reaches `file_open`.
-  - It accepts an upper layer whose dentries revalidate, FUSE's and virtiofs's among them, only
-    with `d_type`, `RENAME_WHITEOUT` and xattrs, and one whose dentries do not with a warning for
-    each it lacks (`fs/overlayfs/super.c`, `ovl_make_workdir`). By that reading the filter, which
+  - It accepts an upper layer whose dentries revalidate, FUSE's and virtiofs's among them, only with
+    `d_type`, `RENAME_WHITEOUT` and xattrs, and one whose dentries do not with a warning for each it
+    lacks (`fs/overlayfs/super.c`, `ovl_make_workdir`). By that reading the FUSE backend, which
     implements no xattrs, cannot be one. Measured in the every-hook suite: on virtiofs the mount is
     read-only, since the work directory cannot be created there; on drvfs, whose `cache=0x5` selects
     9p's dentry operations without `d_revalidate` (`fs/9p/vfs_super.c`), it is writable with the

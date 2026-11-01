@@ -489,7 +489,7 @@ object HostCommands:
    *   - `body` must not call `fail` or print. The caller does both with the result, in the launch's own order.
    *   - An exit waits for a started step, through a shutdown hook. Without the hook, a refusal on the main thread would
    *     leave the step's child with nobody reading its pipes, and the child's next write would kill it with SIGPIPE.
-   *     The filter's self-test could then stop between its mount and its unmount.
+   *     The FUSE backend's self-test could then stop between its mount and its unmount.
    *   - A step that a shutdown overtakes does not start, since the JVM ends once the hooks finish, wherever the step
    *     is. A shutdown under way refuses the hook, and a hook run before the start closes `gate`. The returned
    *     function then blocks until the JVM ends, as `fail` does during shutdown.

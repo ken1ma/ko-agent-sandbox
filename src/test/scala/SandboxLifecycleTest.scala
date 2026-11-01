@@ -130,7 +130,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
     assert(ReaperScript.contains("\"$3\" rm --force --time 2 \"$2\""))
     assert(ReaperScript.contains("for net in \"$4\" \"$5\""))
     assert(ReaperScript.contains("\"$3\" network rm \"$net\""))
-    // "none" (an unfiltered run) matches no case.
+    // "none" (a run without the FUSE backend) matches no case.
     assert(ReaperScript.contains("machine) \"$3\" machine ssh \"$7\""))
     assert(ReaperScript.contains("local) /bin/sh -c \"$7\""))
     assert(
@@ -149,6 +149,35 @@ class SandboxLifecycleTest extends munit.FunSuite:
     assert(!ReaperScript.contains("kill $!"), "an unconditional kill of the last background pid")
     // The job must keep the reaper's ignores, because a reset would let a group TERM free the job's pid.
     assert(!ReaperScript.contains("trap -"), "a trap reset inside the reaper")
+
+  test("after the wait the reaper removes the sandbox before its proxy, so a podman restart ends the session"):
+    assume(java.nio.file.Files.isExecutable(java.nio.file.Paths.get("/bin/sh")), "needs /bin/sh")
+    // The fake answers as podman does at a `podman restart`: the wait returns at the stop, and the
+    // sandbox runs again before --rm removes it, so it still exists after the wait.
+    val dir = java.nio.file.Files.createTempDirectory("reaper-restart")
+    val calls = dir.resolve("calls.log")
+    val podman = dir.resolve("podman")
+    java.nio.file.Files.writeString(
+      podman,
+      s"""#!/bin/sh
+         |echo "$$*" >> "$calls"
+         |case "$$1 $$2" in
+         |  "container inspect") echo true ;;
+         |  "network exists") exit 1 ;;
+         |esac
+         |""".stripMargin,
+    )
+    podman.toFile.setExecutable(true)
+    val command = reaperCommand(
+      podman.toString, "sandbox", "proxy", "net-a", "net-b", "none", "", "off", ClipboardRelay.HostBackend(),
+    )
+    val process = ProcessBuilder(command*).redirectErrorStream(true).redirectOutput(dir.resolve("out").toFile).start()
+    assert(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS), "the reaper did not exit within 30 s")
+    val lines = java.nio.file.Files.readAllLines(calls).toArray.toVector.map(_.toString)
+    val waited = lines.indexOf("wait sandbox")
+    val sandboxRemoved = lines.indexOf("rm --force --time 2 sandbox")
+    val proxyRemoved = lines.indexOf("rm --force --time 2 proxy")
+    assert(waited >= 0 && sandboxRemoved > waited && proxyRemoved > sandboxRemoved, lines.mkString("\n"))
 
   /** What one reaper run against the fake podman left to observe. */
   private case class ReaperRun(

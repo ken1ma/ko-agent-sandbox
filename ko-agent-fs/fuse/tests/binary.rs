@@ -81,7 +81,7 @@ fn incomplete_arguments_are_refused_with_usage() {
 fn a_workspace_whose_config_is_aliased_into_it_is_refused_before_mounting() {
     // The startup guard, end to end through the binary: Git configuration reachable through an
     // ordinary worktree path would be writable by the sandbox and read by the host's git, and no
-    // per-operation filtering protects it there (`ko-agent-fs/policy/doc/git-metadata.md`, "The
+    // per-operation check protects it there (`ko-agent-fs/policy/doc/git-metadata.md`, "The
     // binding rule").
     let source = scratch("aliased-source");
     let mount = scratch("aliased-mount");

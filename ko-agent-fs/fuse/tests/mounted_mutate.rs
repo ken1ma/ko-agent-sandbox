@@ -24,8 +24,8 @@ const HOOK: &str = ".git/hooks/pre-commit";
 const HOOK_BODY: &str = "#!/bin/sh\n# the host's own hook\n";
 
 /// `RENAME_EXCHANGE` through the raw syscall, which is what `fs.rs` issues and for the reason stated
-/// there. Going through the syscall here too means the test drives the exact request the filter has
-/// to decide on, on either libc.
+/// there. Going through the syscall here too means the test drives the exact request the FUSE
+/// backend has to decide on, on either libc.
 fn rename_exchange(dirfd: &OwnedFd, old: &str, new: &str) -> nix::Result<()> {
     let old = CString::new(old).expect("an old path without a NUL");
     let new = CString::new(new).expect("a new path without a NUL");
@@ -204,7 +204,7 @@ fn repository(backing: &Path) {
     fs::write(backing.join(".git/HEAD"), b"ref: refs/heads/main\n").unwrap();
     fs::write(backing.join(".git/config"), b"[core]\n\tbare = false\n").unwrap();
     // The submodule's own `HEAD`, which is what makes `.git/modules/sub` a gitdir rather than a
-    // directory named like one — and what the filter asks the tree to tell them apart
+    // directory named like one — and what the FUSE backend asks the tree to tell them apart
     // (`fs.rs`, `is_gitdir_root`). Without it this fixture asserts nothing about a submodule.
     fs::write(
         backing.join(".git/modules/sub/HEAD"),
@@ -270,9 +270,9 @@ fn creating_a_dotgit_entry_is_refused_for_every_entry_type() {
 fn a_fifo_is_neither_made_nor_retimed_through_the_mount() {
     // The one refusal here that is not about git: a FIFO on the macOS machine's share hangs the
     // machine once its times reach libkrun (`doc/upstream-issues.md`, "Setting a FIFO's times
-    // blocks the macOS virtio-fs server"), so the filter makes none and retimes none, on every
-    // platform (`fs.rs`, `mknod` and `setattr`). Other attribute changes stay allowed: the hang is
-    // the time change's open.
+    // blocks the macOS virtio-fs server"), so the FUSE backend makes none and retimes none, on
+    // every platform (`fs.rs`, `mknod` and `setattr`). Other attribute changes stay allowed: the
+    // hang is the time change's open.
     let mount = TestMount::new(|backing| {
         fs::write(backing.join("plain"), b"x").unwrap();
         nix::unistd::mkfifo(&backing.join("host-fifo"), Mode::from_bits_truncate(0o644)).unwrap();
@@ -819,18 +819,18 @@ fn a_handle_held_across_a_rename_cannot_be_re_aimed_at_a_gitdir() {
     //
     // The handle is on `src/hooks`, not on `src` itself, and that choice matters. Planting the
     // symlink reports the old name's inode number again with a new file type, and the kernel then
-    // invalidates that inode. So the kernel, not this filter, would stop a handle on `src`, and the
-    // test would prove nothing about either. A handle one level down has a different inode number,
-    // which that does not touch, and its rebuilt path still runs through the symlink.
+    // invalidates that inode. So the kernel, not the FUSE backend, would stop a handle on `src`,
+    // and the test would prove nothing about either. A handle one level down has a different inode
+    // number, which that does not touch, and its rebuilt path still runs through the symlink.
     let mount = TestMount::new(repository_with_hook_named_directories);
 
     // Taken while `src/hooks` is what its name says.
     let held = File::open(mount.at("src/hooks")).expect("open the source directory");
 
     // Both steps stay allowed, and must: a build renames directories and creates symlinks all day.
-    // Without file rules, the filter does not check a symlink's target *for policy*: the kernel
-    // resolves a symlink itself, and the resolved path is classified by its own names. The one
-    // refusal a target can still get is unrelated to policy and is asserted separately below
+    // Without file rules, the FUSE backend does not check a symlink's target *for policy*: the
+    // kernel resolves a symlink itself, and the resolved path is classified by its own names. The
+    // one refusal a target can still get is unrelated to policy and is asserted separately below
     // (`a_symlink_target_with_nonportable_syntax_is_refused_and_an_ordinary_one_is_not`).
     allowed(
         "rename an ordinary directory",
@@ -1089,7 +1089,7 @@ fn a_symlinked_hooks_entry_cannot_be_re_aimed() {
         fs::remove_file(mount.at(".git/hooks")),
     );
     // A *file*, not a directory: renaming a directory onto a non-directory is refused by the kernel
-    // with ENOTDIR before the request ever reaches the filter, which would test nothing.
+    // with ENOTDIR before the request ever reaches the FUSE backend, which would test nothing.
     allowed(
         "stage a decoy file",
         fs::write(mount.at("decoy"), b"evil\n"),

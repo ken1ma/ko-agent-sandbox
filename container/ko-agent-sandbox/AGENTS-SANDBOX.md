@@ -86,12 +86,11 @@ findings with you.
 
 Read history freely. `add`, `commit`, `checkout`, `switch`, `fetch` and `merge` work.
 
-The workspace's protections, the `ko-agent-fs` filter or the BPF policy the appended section
-names, refuse these operations. Report refusals; do not work around them.
+The workspace's protections refuse these operations. Report refusals; do not work around them.
 
-- Writing `.git` entries other than the state the filter lists (refs, objects, the index, HEAD and
-  the like), in any repository under the workspace: `config`, `hooks/`, `.git` pointer files,
-  `commondir`, `gitdir`, rebase or rerere state, `objects/info/alternates`.
+- Writing `.git` entries other than the state the workspace policy lists (refs, objects, the index,
+  HEAD and the like), in any repository under the workspace: `config`, `hooks/`, `.git` pointer
+  files, `commondir`, `gitdir`, rebase or rerere state, `objects/info/alternates`.
   - `git remote add`, `branch -m` and `--set-upstream-to` write `config`; `branch -m` renames the
     branch, then fails.
 - `git init` and `git clone` under the workspace. Clone under `~`; the unblocked bare forms

@@ -58,7 +58,7 @@ echo "git $(git --version | awk '{print $3}')"
 echo
 # Where the submodule gitdirs actually are. A maxdepth-1 listing would not do: a submodule's name
 # defaults to its path, so `modules/libs/foo` is one gitdir, not two levels of one. A `HEAD` file
-# marks a gitdir root; the filter's FUSE layer asks the tree the same question.
+# marks a gitdir root; the FUSE backend asks the tree the same question.
 module_roots=$(find .git/modules -mindepth 1 -name HEAD -type f 2>/dev/null | sed 's|/HEAD$||' | sort)
 
 echo "# nested gitdir roots git created"

@@ -26,8 +26,8 @@ Preserve scope, ownership and how work is separated for review.
   existing behavior that the request does not name, name it and its consequence, and ask a
   question; act only on its answer.
 - A question the user asks in reply to yours is not its answer.
-- When a boundary blocks the consistent option, ask to cross it and name the cost; never settle for
-  an inconsistent placement or a stale reference.
+- When a boundary blocks the consistent option, say that you should cross it, name the cost, and
+  ask for approval; never settle for an inconsistent placement or a stale reference.
 - Weigh options by everything they gain and cost, not only what the current task or plan needs, and
   report an improvement found beyond it.
 

@@ -1,4 +1,5 @@
-//! `ko-agent-fs-fuse --source <backing> --mount <mountpoint>` mounts the filter in the foreground.
+//! `ko-agent-fs-fuse --source <backing> --mount <mountpoint>` mounts the FUSE backend in the
+//! foreground.
 //!
 //! - The launcher owns the lifecycle (`doc/architecture.md`). This process does not daemonize: it
 //!   runs `fuser::mount` until the filesystem is unmounted, then exits.
@@ -94,7 +95,7 @@ fn resolve_rules(args: &Args) -> Result<FileRules, String> {
 ///
 /// - Everything up to and including the mount belongs to the environment: the scratch tree it
 ///   needs, and the mount itself. A caller can fix it with another machine or more privilege.
-/// - Everything after the mount is this filter's own behavior. Neither fixes it.
+/// - Everything after the mount is the daemon's own behavior. Neither fixes it.
 /// - The stage reached is the whole classification. It says nothing about the cause. The message
 ///   with it has whatever detail there is: sometimes the exact failure, sometimes an error and the
 ///   likely causes. So a caller passes the message on instead of narrowing it into a diagnosis that
@@ -116,7 +117,7 @@ const SELF_TEST_SETUP_EXIT: u8 = 3;
 /// - a host write reaches both a cached read and an existing mapping (`coherency_check`).
 ///
 /// It runs where the daemon will serve, inside the podman machine or on a native Linux host. It
-/// runs at install time and again before every session that mounts the filter
+/// runs at install time and again before every session that mounts the FUSE backend
 /// (`KoAgentFs.installKoAgentFs`, `koAgentFsChecks`), and a failure aborts either. So the exit code
 /// is the contract, and the text is for the person reading the log.
 ///

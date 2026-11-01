@@ -63,9 +63,9 @@ object ImageBuilds:
         contextSourceId(context, "debian-temurin"),
         contextSourceId(context, "debian-coursier"),
       )
-      // The BPF backend builds on the podman machines alone: native Linux keeps the filter (doc/TODO.md,
+      // The BPF backend builds on the podman machines alone: native Linux keeps the FUSE backend (doc/TODO.md,
       // "The BPF backend's later versions"), and the build reads the machine's kernel BTF. A machine that
-      // lacks what the backend needs gets the filter's build without the backend.
+      // lacks what the BPF backend needs gets the FUSE backend's build alone.
       val bpfBackendSourceId = KoAgentBpf.sourceId(context)
       val buildBpfBackend = os != Os.Linux && bpfBuildPossible(os)
       val bpfBackendCommands =
@@ -285,9 +285,10 @@ object ImageBuilds:
       )
 
   /**
-   * The toolchain the filter ships, read from the image build that pins it rather than repeated here.
-   * A second copy of the version would let the self-test image quietly stop exercising the compiler
-   * that ships, and nothing else would notice. `ko-agent-fs/fuse/probe/rig.sh` follows the same rule.
+   * The Rust toolchain that compiles the shipped ko-agent-fs binaries, read from the image build that
+   * pins it rather than repeated here. A second copy of the version would let the self-test image
+   * quietly stop exercising that compiler, and nothing else would notice. `ko-agent-fs/fuse/probe/rig.sh`
+   * follows the same rule.
    */
   def pinnedRustVersion(context: Path): String =
     val containerfile = context.resolve("ko-agent-fs").resolve("Containerfile")
@@ -358,9 +359,9 @@ object ImageBuilds:
   /**
    * The exit code for a self-test that failed before its behavioral checks began, as against one of
    * those checks failing.
-   * - The filter's own `--self-test` decides which, being the only party that knows the stage it
+   * - The FUSE backend's own `--self-test` decides which, being the only party that knows the stage it
    *   reached, and ko-agent-fs-suite passes the verdict up.
-   * - The filter's message says what it can about the cause, and this launcher repeats the message
+   * - The FUSE backend's message says what it can about the cause, and this launcher repeats the message
    *   without adding detail (ko-agent-fs/fuse/src/main.rs, SelfTestFailure).
    * - main.rs spells the code SELF_TEST_SETUP_EXIT, and a test holds the two together.
    */
@@ -457,8 +458,8 @@ object ImageBuilds:
     withFileLock(imageBuildLockFile(os)):
       body(imageCleanupJournal(os))
 
-  /** The lock that every image-producing action holds, and that a mount of the filter holds too, since
-    * the action replaces the filter binary the mount executes (KoAgentFs.mountKoAgentFs). */
+  /** The lock that every image-producing action holds, and that a FUSE backend mount holds too, since
+    * the action replaces the daemon binary that the mount executes (KoAgentFs.mountKoAgentFs). */
   def imageBuildLockFile(os: Os): Path = stateRoot(os).resolve("image-build").resolve("lock")
 
   def imageCleanupJournal(os: Os): Path = stateRoot(os).resolve("image-build").resolve("cleanup.ids")
@@ -467,7 +468,7 @@ object ImageBuilds:
    * `--self-test`: builds the self-test images, then runs the workspace's suites in a container with no
    * host bind mounts (`ko-agent-fs/doc/testing.md`). Unchanged inputs reuse the build cache.
    * - The action pulls nothing. The action's only remote source is the Rust image that --build pulls to compile
-   *   the filter that ships, and verifying against that same image is the point. The test "self-test
+   *   the ko-agent-fs binaries that ship, and verifying against that same image is the point. The test "self-test
    *   builds refresh no remote source of their own" holds that.
    * - A successful run without a case filter also measures the host share through SelfTestShare,
    *   which owns its scratch directory and cleanup.
@@ -478,7 +479,7 @@ object ImageBuilds:
    * the image runs as its `nonroot` user for exactly that reason.
    * - A machine where that route cannot work is retried once as root, so the run reports which of the
    *   two served rather than guessing.
-   * - The filter reports what failed in the setup, and this launcher passes the report on unchanged.
+   * - The FUSE backend reports what failed in the setup, and this launcher passes the report on unchanged.
    *   Only a setup failure reaches the retry, because a failed check exits with its own status.
    */
   def selfTest(os: Os, operands: List[String]): Nothing =
@@ -549,7 +550,7 @@ object ImageBuilds:
     if exit != SelfTestSetupExit then finish(exit)
 
     System.err.println(
-      "note: the filter's self-test failed in its setup rather than at a check; retrying as\n" +
+      "note: the FUSE backend's self-test failed in its setup rather than at a check; retrying as\n" +
         "  root. Its own message above is the report of what failed, and this launcher does not\n" +
         "  narrow it further. If root serves, this machine never exercises the setuid fusermount3\n" +
         "  route a session takes, which is worth recording with its machine\n" +

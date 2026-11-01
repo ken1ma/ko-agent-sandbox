@@ -42,7 +42,7 @@
 // - the cgroup that cannot be removed while the container is in it, and the enforcement that ends
 //   only when root unpins;
 // - the defective controllers, caught before any container exists;
-// - a launch under --unix-socket with the ninth hook and its proof;
+// - a launch under --unix-socket with the ninth hook and its proof, then a restart and an exec;
 // - the pins reused across a rule change and a new build;
 // - the controller's refusals;
 // - the reconcile over its orphans, its kept sessions, its contradictions and its cleanup refusals;
@@ -529,7 +529,8 @@ object Lifecycle:
           count(restarted, "STARTED") == 2 && count(restarted, ".git/config result=EPERM") == 2,
         )
         podman("kill", "s1")
-        Thread.sleep(1000)
+        within(10)(host(transcript, Seq("podman", "inspect", "--format", "{{.State.Status}}", "s1"), record = false)
+          .text.trim == "exited")
         val query = vm(s"sudo -n $Controller query ${s1.cgroup.path}").text
         val link = vm(s"sudo -n $Controller link-info $PinRoot/s1/links/file_open").text
         check(
@@ -567,7 +568,11 @@ object Lifecycle:
         check(s"s2 launched fresh (reached ${fresh.reached.label})", fresh.reached == Reached.Started)
         podman("rm", "-f", "s2")
         remove("s2")
-        val link = vm(s"sudo -n $Controller link-info $PinRoot/s2/links/file_open").text
+        // The kernel detaches a removed cgroup's links from a workqueue once its last reference goes, after
+        // the rmdir returns.
+        val linkInfo = s"sudo -n $Controller link-info $PinRoot/s2/links/file_open"
+        within(30)(field("cgroup_id", vm.unrecorded(linkInfo).text) == "0")
+        val link = vm(linkInfo).text
         check(
           "with its cgroup removed the pinned link is detached, cgroup_id 0, and the pinned programs stay",
           field("cgroup_id", link) == "0" &&
@@ -633,7 +638,7 @@ object Lifecycle:
         remove("d5")
 
       def unixSocketLaunch(): Unit =
-        step("a launch under --unix-socket: nine hooks, the proof's socket in .git and file_receive")
+        step("a launch under --unix-socket: nine hooks, the proof's socket in .git, file_receive, restart and exec")
         val u1 = launch("u1", Mode.Fresh, hooks = Hooks9, unixSocket = true)
         check(
           s"the launch under unix-socket ran every step with nine hooks (reached ${u1.reached.label})",
@@ -643,6 +648,18 @@ object Lifecycle:
           "the proof refused a socket in .git and a directory descriptor from another mount namespace",
           u1.proof.contains("op=bind path=.git/ko+sock expect=EPERM got=EPERM") &&
             u1.proof.contains("op=receive-dir path=. expect=refused got=refused"),
+        )
+        // The runtime passes its own descriptors at a restart and an exec as at the start, and file_receive
+        // judges them. The launcher suite cannot run this row, since its launcher ends a restarted session.
+        podman("restart", "u1")
+        val restarted = waitLogs("u1", "STARTED", 2)
+        check(
+          "after podman restart the unix-socket session's first process runs again and is refused again",
+          count(restarted, "STARTED") == 2 && count(restarted, ".git/config result=EPERM") == 2,
+        )
+        check(
+          "and a podman exec process starts under file_receive and is refused the protected write",
+          execWrite("u1", s"$tree/.git/config").has("result=EPERM"),
         )
         podman("rm", "-f", "u1")
         forgetSession("u1")
@@ -748,11 +765,13 @@ object Lifecycle:
         ).text
         val listed = listing.contains("LISTING_OK")
         val labels = if listed then parseLabels(listing) else Map.empty[String, String]
-        if listed then
-          records.filterNot(record => labels.contains(record.name))
-            .foreach(record => releaseHold(vm, facts.manager, Prefix, record.name))
-        // A stopped hold unit leaves its slice; `populated` reflects that within a second.
-        Thread.sleep(1000)
+        val released = if listed then records.filterNot(record => labels.contains(record.name)) else Seq.empty
+        released.foreach(record => releaseHold(vm, facts.manager, Prefix, record.name))
+        // A stopped hold unit leaves its slice, and the slice's `populated` turns 0 after the stop returns.
+        val stillPopulated =
+          released.map(record => s"grep -qx 'populated 1' ${quoted(s"${record.cgroup}/cgroup.events")}")
+        if stillPopulated.nonEmpty then
+          within(10)(!vm.unrecorded(stillPopulated.mkString(" || ")).ok)
         val arguments =
           Seq("--manager", facts.manager) ++ Option.when(!listed)("--listing-failed") ++
             reconcileArguments(records, labels)
@@ -1010,7 +1029,10 @@ object Lifecycle:
           podman("machine", "start")
           info(s"machine started at ${clock()}")
           awaitMachine()
-          Thread.sleep(15000)
+          // ssh answers before the boot ends. The rows below judge what the boot's units did,
+          // podman-restart.service among them, so they wait until the system and user managers finish starting.
+          info(s"boot finished: ${vm.line("timeout 300 systemctl is-system-running --wait; " +
+            "timeout 300 systemctl --user is-system-running --wait")}")
           mountPseudoFilesystems(vm)
           check(
             s"after the machine restart no pin survives: ${oneLine(vm(s"sudo -n ls $PinRoot 2>&1").text)}",

@@ -82,8 +82,8 @@ Each package's `tests/binary.rs` documents how it finds the compiled binary.
 
 `fuse/tests/common/mod.rs` is their harness:
 
-- It mounts a filter over a temporary backing tree with `fs::mount_config`: the product's options,
-  not a convenient subset.
+- It mounts the FUSE backend over a temporary backing tree with `fs::mount_config`: the product's
+  options, not a convenient subset.
 - It asserts every refusal as `EPERM` specifically, not merely as an error.
 
 The suites that run over it:

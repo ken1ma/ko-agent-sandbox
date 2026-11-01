@@ -1,10 +1,11 @@
-//! `ko-agent-fs --source <backing> --resolve` prints the file rules a filter over the tree would
-//! serve, with the guard's additions, or refuses the tree as the filter would.
+//! `ko-agent-fs --source <backing> --resolve` prints the file rules the workspace policy would
+//! serve over the tree, with the guard's additions, or refuses the tree as the workspace policy
+//! would.
 //!
 //! The launcher builds the `--run-on-host` profile from that output, and the BPF backend takes the
-//! records `--bpf-records` writes (`bpf_records.rs`). The FUSE filter, `ko-agent-fs-fuse`, resolves
-//! the same rules itself when it mounts; this binary keeps the name `ko-agent-fs` so that the
-//! launch scripts' calls outlive the filter.
+//! records `--bpf-records` writes (`bpf_records.rs`). The FUSE backend's daemon,
+//! `ko-agent-fs-fuse`, resolves the same rules itself when it mounts; this binary keeps the name
+//! `ko-agent-fs` so that the launch scripts' calls outlive the FUSE backend.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

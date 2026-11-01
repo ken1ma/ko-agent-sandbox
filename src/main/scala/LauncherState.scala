@@ -246,8 +246,8 @@ object LauncherState:
         System.err.println(cacheRootRefusalLine(refusal, os))
         if named then System.err.println(s"Run --reset $id from a directory the cache root is not inside.")
 
-    // The workspace's filter daemon and mountpoint, where the feature has been used. The step is best effort by design,
-    // because with no machine running, nothing is mounted to tear down.
+    // The workspace's FUSE backend daemon and mountpoint, where the backend has been used. The step is best effort by
+    // design, because with no machine running, nothing is mounted to tear down.
     found |= unmountKoAgentFs(os, koAgentFsUnmountScript(id))
 
     // The record goes last, as in --reset-all, and only after every step succeeded. The record outlives these:
@@ -341,7 +341,7 @@ object LauncherState:
 
     perWorkspaceStateRoots(os).foreach(removeTree)
 
-    // Every workspace's filter mount. The step is best effort, as in the per-workspace reset.
+    // Every workspace's FUSE mount. The step is best effort, as in the per-workspace reset.
     unmountKoAgentFs(os, koAgentFsUnmountAllScript)
 
     removeTree(caches)

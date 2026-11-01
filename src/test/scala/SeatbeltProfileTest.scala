@@ -530,7 +530,8 @@ class SeatbeltProfileTest extends munit.FunSuite:
     val textLines = text.linesIterator.toVector
     val positions = rules.map(rule => textLines.indexOf(rule))
     rules.zip(positions).foreach((rule, position) => assert(position >= 0, s"$rule\n$text"))
-    // SBPL's last matching filter decides, as the filter's last matching line does, so the rules keep the lines' order.
+    // SBPL's last matching filter decides, as the workspace policy's last matching line does, so the rules keep the
+    // lines' order.
     assertEquals(positions, positions.sorted)
     val lastOtherAllow = textLines.lastIndexWhere(line => line.startsWith("(allow") && !line.contains("node_modules"))
     val guard = textLines.indexWhere(_.contains("\\.git(/|$)"))
@@ -576,7 +577,7 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assertEquals(conformanceAnswer(oddFilters, s"$workspace/c++ (x)/claude/skills/new.md"), "read-only")
     assertEquals(conformanceAnswer(oddFilters, s"$workspace/cxx (x)/claude/skills/new.md"), "free")
 
-  test("what the filter prints for a symlinked directory renders as the filter decides it"):
+  test("what the workspace policy prints for a symlinked directory renders as the workspace policy decides it"):
     // The printed text comes from ko-agent-fs/policy/src/rulefile.rs,
     // an_alias_prints_the_read_only_rests_it_carries_and_decides_below_its_path.
     val printed = "read-only .claude/settings.json\nread-only .claude/skills\npinned-path Shared/claude\n" +
@@ -623,9 +624,9 @@ class SeatbeltProfileTest extends munit.FunSuite:
       case _ if matching.filterNot(_ == Protection.Pinned).lastOption.contains(Protection.ReadOnly) => "read-only"
       case _ => "pinned"
 
-  test("the profile answers the file rules' conformance table as the filter does"):
-    // The filter's own test reads the same table (ko-agent-fs/policy/tests/file_rules.rs), so one contract binds both
-    // enforcement points. `folded` rows apply to the filter alone.
+  test("the profile answers the file rules' conformance table as the workspace policy does"):
+    // The workspace policy's own test reads the same table (ko-agent-fs/policy/tests/file_rules.rs), so one contract
+    // binds both enforcement points. `folded` rows apply to the workspace policy alone.
     val text = Files.readString(Paths.get("ko-agent-fs/policy/tests/data/file-rules.conformance"))
     case class Case(name: String, lines: Vector[(String, String)], rows: Vector[(String, String)])
     val cases = text.linesIterator.foldLeft(Vector.empty[Case]): (cases, line) =>

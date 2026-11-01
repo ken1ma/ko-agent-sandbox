@@ -2,9 +2,9 @@
 //! sandbox is resolving through it.
 //!
 //! The property is not "every operation succeeds": under a concurrent rename, a failure is a
-//! correct answer. The property is that the filter never serves the *wrong* object, never panics,
-//! and never leaves the daemon unresponsive. These tests also drive `openat2`'s `EAGAIN` path,
-//! which nothing else reaches.
+//! correct answer. The property is that the FUSE backend never serves the *wrong* object, never
+//! panics, and never leaves the daemon unresponsive. These tests also drive `openat2`'s `EAGAIN`
+//! path, which nothing else reaches.
 
 mod common;
 
@@ -78,7 +78,7 @@ fn a_concurrent_host_rename_never_yields_another_file() {
     assert_eq!(
         fs::read_to_string(mount.at("deep/nested/payload")).unwrap(),
         CORRECT,
-        "the filter did not recover after concurrent renames"
+        "the FUSE backend did not recover after concurrent renames"
     );
     assert!(served > 0, "the reader never observed the file at all");
 }

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""The cost of a path walk through the filter, measured by a command (fuse/doc/verification-log.md,
-"The cost of a path walk"). It times `lstat` by depth, one deep file three ways, every tracked file
-by path and through directory fds, and `find` and `git status` over the tree.
+"""The cost of a path walk through the FUSE backend, measured by a command
+(fuse/doc/verification-log.md, "The cost of a path walk"). It times `lstat` by depth, one deep file
+three ways, every tracked file by path and through directory fds, and `find` and `git status` over
+the tree.
 
-Run it INSIDE a filtered session, at the root of a workspace that is a git repository. It writes
+Run it INSIDE a FUSE backend session, at the root of a workspace that is a git repository. It writes
 nothing; apart from the two commands, it only makes stat calls:
 
     java -jar ko-agent-sandbox.jar python3 ko-agent-fs/bench/walk-cost.py

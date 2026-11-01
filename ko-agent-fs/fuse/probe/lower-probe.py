@@ -12,12 +12,12 @@ Run in a SCRATCH workspace; it creates and deletes files:
 
     cp .../lower-probe.py .../lower-probe-host.py <scratch-workspace>/
     java -jar ko-agent-sandbox.jar python3 lower-probe.py
-    .../bench/unfiltered.sh python3 lower-probe.py      # the control, a second run
+    .../bench/plain-bind.sh python3 lower-probe.py      # the control, a second run
 
     python3 lower-probe-host.py        # in a HOST terminal, same directory
 
-The unfiltered run is the control. It separates this filter's own answer from the share's: an
-inode number the filter assigned per name looks exactly like one a share invented.
+The plain run is the control. It separates the FUSE backend's own answer from the share's: an
+inode number the FUSE backend assigned per name looks exactly like one a share invented.
 
 This half prints the results, with the host's observations merged in. The host half needs python3
 and nothing else. The two halves talk through the share, so a hang most likely means a coherency
@@ -53,17 +53,25 @@ def record(name: str, *observations: str) -> None:
 
 
 def stack() -> str:
-    """Filtered or not, by a property a bind mount does not have: `.git` is refused at any depth —
-    probing inside a fresh subdirectory is what makes that answer in a tree that already has a
-    `.git`."""
+    """Which stack, by two properties a bind mount does not have: the FUSE backend refuses a `.git`
+    directory at any depth, and the BPF backend, which allows the directory (doc/bpf-lsm-cgroup.md,
+    "Directories"), refuses a hook file inside it. Probing inside a fresh subdirectory is what makes
+    that answer in a tree that already has a `.git`."""
     probe = tempfile.mkdtemp(prefix=".lower-probe-stack-", dir=".")
     try:
-        os.mkdir(os.path.join(probe, ".git"))
-    except PermissionError:
-        return "filtered"
+        try:
+            os.mkdir(os.path.join(probe, ".git"))
+        except PermissionError:
+            return "FUSE backend"
+        try:
+            os.mkdir(os.path.join(probe, ".git", "hooks"))
+            with open(os.path.join(probe, ".git", "hooks", "pre-commit"), "wb"):
+                pass
+        except PermissionError:
+            return "BPF backend"
     finally:
         shutil.rmtree(probe, ignore_errors=True)
-    return "unfiltered bind mount"
+    return "plain bind mount"
 
 
 def ask(step: str, **payload) -> dict:

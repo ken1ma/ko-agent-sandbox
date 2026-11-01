@@ -2,7 +2,7 @@
 // runs as the launcher's own process in the attach cgroup. It:
 //
 // - lays out the proof fixture and runs the proof ("Lifecycle", 3), deriving each expected answer
-//   from the whole ordered rule set, as the filter decides it;
+//   from the whole ordered rule set, as the workspace policy decides it;
 // - makes the single syscalls that the lifecycle rows need;
 // - for the suites, writes a records file from a rule file, in place of the guard.
 //

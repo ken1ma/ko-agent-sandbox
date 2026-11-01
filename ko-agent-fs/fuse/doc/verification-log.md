@@ -13,7 +13,7 @@ it.
 
 This is the empirical run `../../policy/doc/security-research.md` calls for. It ran on the default
 macOS volume (File System Personality: APFS, the case-insensitive variant), through the full
-production stack (filtered sandbox session → FUSE filter → virtiofs → APFS), using
+production stack (FUSE backend session → `ko-agent-fs-fuse` → virtiofs → APFS), using
 `probe/apfs-name-rule-probe.py`:
 
 - All 14 denied spellings failed with exactly `EPERM`: `.git` itself, the four ASCII case
@@ -42,8 +42,8 @@ whole run, the checks on the host included:
 
 ### Verified: NTFS (Windows Server 24H2; 2026-08-19)
 
-The corpus ran through the full Windows production stack: filtered session → FUSE filter in the
-WSL2 podman machine → the host's `C:` NTFS volume served at `/mnt/c`.
+The corpus ran through the full Windows production stack: FUSE backend session → `ko-agent-fs-fuse`
+in the WSL2 podman machine → the host's `C:` NTFS volume served at `/mnt/c`.
 
 - Every denied spelling failed with exactly `EPERM`, and every allowed name was created.
 - Afterwards the host's `dir .git` and git discovery found nothing.
@@ -62,15 +62,16 @@ On the workspace's case-insensitive volume, beside an existing `.ko-agent-sandbo
 resolve to it (`src/probe/seatbelt-semantics.sh` E11, the launcher's probe):
 `.<U+212A>o-agent-sandbox` (KELVIN SIGN) and `.ko-agent-<U+017F>andbox` (LONG S).
 
-Through a filtered session whose filter folds neither letter:
+Through a FUSE backend session whose daemon folds neither letter:
 
 - `mkdir` of each spelling succeeds, and `.ko-agent-sandbox` then resolves to the new directory;
 - `.KO-AGENT-SANDBOX` meets `EPERM`.
 
 ### Verified: the `.ko-agent-sandbox` rows, APFS case-insensitive (macOS 26.4.1; 2026-09-19)
 
-`probe/apfs-name-rule-probe.py` ran through the production stack (filtered session → FUSE filter
-→ virtiofs → APFS), in a subdirectory of a workspace, since the rule holds at any depth:
+`probe/apfs-name-rule-probe.py` ran through the production stack (FUSE backend session →
+`ko-agent-fs-fuse` → virtiofs → APFS), in a subdirectory of a workspace, since the rule holds at
+any depth:
 
 - All 21 denied spellings failed with exactly `EPERM`: the 14 `.git` rows, and `.ko-agent-sandbox`
   itself, its two ASCII case variants, the KELVIN SIGN and LONG S spellings, the soft-hyphen form
@@ -82,15 +83,15 @@ Through a filtered session whose filter folds neither letter:
 
 ### Verified: the `.ko-agent-sandbox` rows, NTFS (Windows Server 2025, 10.0.26100.32522; 2026-09-19)
 
-The same probe ran through the Windows production stack: filtered session → FUSE filter in the
-WSL2 podman machine → the host's `C:` NTFS volume served at `/mnt/c`, podman 6.1.0.
+The same probe ran through the Windows production stack: FUSE backend session → `ko-agent-fs-fuse`
+in the WSL2 podman machine → the host's `C:` NTFS volume served at `/mnt/c`, podman 6.1.0.
 
 - All 21 denied spellings failed with exactly `EPERM`, and all seven allowed names were created.
 - Afterwards the host's `dir /a .git` and `dir /a .ko-agent-sandbox` found nothing, and
   `git rev-parse --git-dir` found no repository.
 - NTFS kept the NFC and NFD spellings of `.gít` as two files, as in the `.git` run above.
-- Whether NTFS resolves the KELVIN SIGN or LONG S spelling to the name is not measured. The filter
-  refuses both, so neither reached the volume.
+- Whether NTFS resolves the KELVIN SIGN or LONG S spelling to the name is not measured. The FUSE
+  backend refuses both, so neither reached the volume.
 
 ### Verified: NTFS 8.3 short names (Windows Server 2025, podman 6.1.0; 2026-09-19)
 
@@ -108,7 +109,7 @@ the podman machine, `stat -c '%d:%i'` at `/mnt/c/<workspace>` prints:
 1000 `stat` processes over `.git` and `.ko-agent-sandbox` took 6.7 s where both exist, and 2.6 s
 in a directory with neither.
 
-Inside a filtered session over that workspace (`../../policy/doc/security-research.md`, "Windows
+Inside a FUSE backend session over that workspace (`../../policy/doc/security-research.md`, "Windows
 8.3 short names", has the check):
 
 - `echo x >> GIT~1/config`, `echo x >> KO-AGE~1/egress/rule` and
@@ -122,7 +123,7 @@ Inside a filtered session over that workspace (`../../policy/doc/security-resear
 - Afterwards the host's `Get-Content` shows `.git\config` and `egress\rule` as the host wrote them,
   and `cmd /c dir /x /a .ko-agent-sandbox\egress` lists `rule` alone.
 
-The create side, in a filtered session over a new, empty workspace: `mkdir GIT~1` exits 0. The
+The create side, in a FUSE backend session over a new, empty workspace: `mkdir GIT~1` exits 0. The
 host's `cmd /c dir /x /a` afterwards lists one directory with the long name `GIT~1`, no short name,
 and no `.git`.
 
@@ -130,8 +131,8 @@ and no `.git`.
 
 The volume: `C:` with 8.3 name generation on. In a workspace, the host created
 `.vscode/tasks.json`, `.claude/settings.json` and `node_modules/p`. `cmd /c dir /x /a` shows the
-short names `VSCODE~1`, `CLAUDE~1`, `NODE_M~1` and `GIT~1`. In a filtered session under the default
-file rules:
+short names `VSCODE~1`, `CLAUDE~1`, `NODE_M~1` and `GIT~1`. In a FUSE backend session under the
+default file rules:
 
 - `: >> VSCODE~1/tasks.json`, `: >> VSCODE~1/new.json`, `mv VSCODE~1 moved`,
   `: >> CLAUDE~1/settings.json`, `mv CLAUDE~1 moved2` and `mv NODE_M~1/p apps/p` each fail. A short
@@ -150,17 +151,17 @@ The host follows a symlink the session makes:
 
 ## End-to-end coherency through the host share
 
-### Verified: end-to-end coherency, filtered stack (macOS 26.4.1, podman 6.0.2; 2026-08-22)
+### Verified: end-to-end coherency, FUSE backend stack (macOS 26.4.1, podman 6.0.2; 2026-08-22)
 
 A coherency probe ran by hand, on the same machine and stack as the name-rule run. Its checks are
 `--self-test`'s share rows (the launcher's `SelfTestShare.scala`).
 
-- A write on the host became visible to a fresh `read()` inside the filtered session within the
+- A write on the host became visible to a fresh `read()` inside the FUSE backend session within the
   10 ms polling window.
 - A page **mapped before the write** showed the new bytes 0 ms after `read()` did:
   `AUTO_INVAL_DATA` invalidated the cached page as designed.
 - The direction from sandbox to host holds on the same stack, and the rig suite tests it at the
-  filter's own layer.
+  FUSE backend's own layer.
 
 The virtiofs premise, as observed on the same machine:
 
@@ -188,8 +189,8 @@ Every later rerun follows this procedure.
 
 ### Measured: the virtiofs layer itself (same machine; 2026-08-25)
 
-Polled from inside the machine (`podman machine ssh`), below the filter, while the host wrote to the
-share:
+Polled from inside the machine (`podman machine ssh`), below the FUSE mount, while the host wrote to
+the share:
 
 - A file's creation, its deletion, and an append each became visible within 30 ms, the resolution
   of the host's timestamp. For the append, the file's size was polled continuously, so the guest's
@@ -198,10 +199,10 @@ share:
   against a depth-2 one). That is a hypervisor round trip. A hit in the dentry cache would take
   microseconds.
 - So the guest kernel caches neither virtiofs names nor attributes for any time that matters.
-- The speed of the unfiltered bind mount, which the perf control measures, is the hypervisor
+- The speed of the plain bind mount, which the perf control measures, is the hypervisor
   answering fast.
-- Coherency from host to session rests on the hypervisor's behavior alone. The filter's TTL 0 is the
-  only cache policy in the path.
+- Coherency from host to session rests on the hypervisor's behavior alone. The FUSE backend's TTL 0
+  is the only cache policy in the path.
 
 ### Measured: coherency on Windows — fresh when unheld; a hold refuses some writers (Server 24H2)
 
@@ -215,13 +216,13 @@ measured against what the host observed at every step:
 - A file a session holds open refuses some host writers and not others.
   - The daemon's backing fd reaches NTFS through the machine's 9p server, whose handle follows
     Windows sharing rules.
-  - With `tail -f held.txt` in a filtered session over `C:\work\tmp1` (2026-09-27):
+  - With `tail -f held.txt` in a FUSE backend session over `C:\work\tmp1` (2026-09-27):
     - PowerShell's `Set-Content` fails with "used by another process";
     - .NET's `[IO.File]::WriteAllText` and Notepad's save succeed, and the session's `tail -f`
       prints the new bytes;
     - Java's `Files.write`, the `--self-test` writer, succeeds against a read-only open with a
       read-only `mmap` of the same file.
-- Below the filter, a bare 9p hold (`tail -f` in the machine) refused a host write, whose writer
+- Below the FUSE mount, a bare 9p hold (`tail -f` in the machine) refused a host write, whose writer
   was not recorded. The write succeeded the moment the hold ended. 2026-08-19.
 
 So a host write to a mapped file succeeds on Windows too.
@@ -242,7 +243,7 @@ NTFS 8.3 short names" has the creation, and the short names of an existing `.git
 
 ### Measured: cost per operation and per component (macOS 26.4.1, podman 6.1.1; 2026-09-19)
 
-`../../bench/walk-cost.py` ran from inside a filtered session over this repository's tree, on an
+`../../bench/walk-cost.py` ran from inside a FUSE backend session over this repository's tree, on an
 arm64 Mac (container → FUSE → daemon → virtiofs), warm, 200 iterations per point. `lstat` of a
 file by absolute path, by the file's depth under the mount:
 
@@ -259,24 +260,24 @@ The kernel walks one component in the last two. So the difference is the kernel 
 again for each component. The ~1.9 ms left is one FUSE operation, including the daemon's own
 resolution of the full path.
 
-### Measured: the filter's ratio over a bind mount (macOS 26.4.1, podman 6.1.1; 2026-09-19)
+### Measured: the FUSE backend's ratio over a bind mount (macOS 26.4.1, podman 6.1.1; 2026-09-19)
 
 `../../bench/entry-cost.py`, 2,101 entries of 4 KB files, container → FUSE → daemon → virtiofs,
-against the same corpus over an unfiltered bind mount of the same directory
-(`../../bench/unfiltered.sh`).
+against the same corpus over a plain bind mount of the same directory
+(`../../bench/plain-bind.sh`).
 
-| operation                       | unfiltered | filtered | ratio |
-| ------------------------------- | ---------- | -------- | ----- |
-| `find` (readdir only)           | 73 µs      | 419 µs   | 5.7×  |
-| `find -printf` (readdir + stat) | 147 µs     | 1361 µs  | 9.3×  |
-| `rm -rf`                        | 288 µs     | 2356 µs  | 8.2×  |
-| `cp -r` (create + write)        | 1143 µs    | 8819 µs  | 7.7×  |
-| `ls -lR` (stat + xattr probes)  | 707 µs     | 12712 µs | 18.0× |
+| operation                       | plain   | FUSE backend | ratio |
+| ------------------------------- | ------- | ------------ | ----- |
+| `find` (readdir only)           | 73 µs   | 419 µs       | 5.7×  |
+| `find -printf` (readdir + stat) | 147 µs  | 1361 µs      | 9.3×  |
+| `rm -rf`                        | 288 µs  | 2356 µs      | 8.2×  |
+| `cp -r` (create + write)        | 1143 µs | 8819 µs      | 7.7×  |
+| `ls -lR` (stat + xattr probes)  | 707 µs  | 12712 µs     | 18.0× |
 
 The identity checks (`fs.rs`, `policy_name` and `open_ino`) are in these figures.
 
-- Against a run of a filter without them on the same machine, the filtered column is 29–69 %
-  higher.
+- Against a run of a FUSE backend without them on the same machine, the FUSE backend column is
+  29–69 % higher.
 - It is least higher where directory fds are held (`find`, +32 %), and most where every entry is
   resolved by path (`rm -rf`, +69 %; `ls -lR`, +63 %).
 - This bounds the checks' cost. The two runs do not separate the checks from the daemon's other
@@ -286,26 +287,26 @@ The identity checks (`fs.rs`, `policy_name` and `open_ino`) are in these figures
 per entry. `ls -lR` needs about 4–8 round trips, since each path-based syscall resolves every
 component again.
 
-The unfiltered bind mount is fast because the hypervisor answers a guest lookup in ~56 µs, and the
+The plain bind mount is fast because the hypervisor answers a guest lookup in ~56 µs, and the
 guest caches nothing ("the virtiofs layer itself", above). So the ratio measures this layer's cost
 alone.
 
-### Measured: the filter's ratio on Windows (Server 2025 10.0.26100.32522, podman 6.1.0; 2026-09-19)
+### Measured: the same ratio on Windows (Server 2025 10.0.26100.32522, podman 6.1.0; 2026-09-19)
 
 The same probe ran through the Windows production stack (container → FUSE → daemon in the WSL2
 machine → the machine's drive mount of NTFS), on an EC2 m7i-flex.xlarge, against the same corpus
-over an unfiltered bind mount of the same directory (the command in `../../bench/unfiltered.ps1`):
+over a plain bind mount of the same directory (the command in `../../bench/plain-bind.ps1`):
 
-| operation                       | unfiltered | filtered  | ratio |
-| ------------------------------- | ---------- | --------- | ----- |
-| `find` (readdir only)           | 674 µs     | 3989 µs   | 5.9×  |
-| `find -printf` (readdir + stat) | 1720 µs    | 14454 µs  | 8.4×  |
-| `rm -rf`                        | 1949 µs    | 23145 µs  | 11.9× |
-| `cp -r` (create + write)        | 14694 µs   | 78822 µs  | 5.4×  |
-| `ls -lR` (stat + xattr probes)  | 3382 µs    | 102428 µs | 30.3× |
+| operation                       | plain    | FUSE backend | ratio |
+| ------------------------------- | -------- | ------------ | ----- |
+| `find` (readdir only)           | 674 µs   | 3989 µs      | 5.9×  |
+| `find -printf` (readdir + stat) | 1720 µs  | 14454 µs     | 8.4×  |
+| `rm -rf`                        | 1949 µs  | 23145 µs     | 11.9× |
+| `cp -r` (create + write)        | 14694 µs | 78822 µs     | 5.4×  |
+| `ls -lR` (stat + xattr probes)  | 3382 µs  | 102428 µs    | 30.3× |
 
-- The share itself is 5–13× slower than the macOS machine's virtiofs, and the filter multiplies
-  that: each of its round trips ends in lookups on that share.
+- The share itself is 5–13× slower than the macOS machine's virtiofs, and the FUSE backend
+  multiplies that: each of its round trips ends in lookups on that share.
 - The ratios are within 1.5× of the macOS ones, except `ls -lR`, the workload with the most
   path-based syscalls per entry.
 - The host is of a different class from the macOS rows' host. Compare the columns within this
@@ -339,7 +340,8 @@ clone of sbt/sbt: 4,249 tracked files at mean depth 7.0 among 7,524 entries, war
 
 - macOS: 0.19 s (0.025 ms per entry);
 - the guest over virtiofs: 1.65 s (0.22 ms);
-- the container through the filter: 14.7 s (1.95 ms). The filter is 89 % of the total.
+- the container through the FUSE backend: 14.7 s (1.95 ms). The FUSE backend is 89 % of the
+  total.
 
 ### Measured: an sbt build, by where its output goes (macOS 26.4.1, podman 6.1.1; 2026-09-20)
 
@@ -349,11 +351,11 @@ sbt 2.0.8 compiling 35 main and 41 test sources from nothing, then running one s
 | where sbt runs, and its `rootOutputDirectory`            | from nothing | rerun |
 | -------------------------------------------------------- | ------------ | ----- |
 | the host                                                 | 12 s         | 0 s   |
-| the container, `target/out` through the filter           | 604 s        | —     |
-| the container, `~/.cache/sbt-out` outside the filter     | 28 s         | 21 s  |
+| the container, `target/out` through the FUSE backend     | 604 s        | —     |
+| the container, `~/.cache/sbt-out` outside the FUSE mount | 28 s         | 21 s  |
 
-- The 604 s run also downloaded its dependencies. The same run with the output outside the filter
-  took 43 s with those downloads, and 28 s without them.
+- The 604 s run also downloaded its dependencies. The same run with the output outside the FUSE
+  mount took 43 s with those downloads, and 28 s without them.
 - The image sets the third row's directory
   (`container/ko-agent-sandbox/config/sbt/2/ko-sandbox-output.sbt`).
 - The host rows compile and do not test: that host has no `wcwidth`, so the suite skips its 10
@@ -378,7 +380,7 @@ repeats the first two rows:
 
 - The copy costs 77 ms a file.
 - One run of the script costs 261 ms from the mount, and 177 ms from a copy outside it. So the
-  filter's share of the suite is about a third, and Python's start is the rest.
+  FUSE backend's share of the suite is about a third, and Python's start is the rest.
 - About 18 s of the 23.7 s is operations in the mount.
 - The copy and the script runs issue their operations one after another, so threads in the daemon
   would not shorten their 12 s. A shorter path per operation would (`TODO.md`, "Performance").
@@ -440,7 +442,7 @@ The project: one source, sbt 2.0.8, with its output kept in the workspace.
   is a build-cache hit.
 - It leaves 35 symlinks under `target/` into `~/Library/Caches/sbt/v2/cas`, the 5 class files among
   them. A build that compiles leaves class files as regular files.
-- In a filtered session, all 35 dangle.
+- In a FUSE backend session, all 35 dangle.
 
 `sbt package` there, with the image's `rootOutputDirectory` setting turned off
 (`-Dsbt.global.base=<an empty directory>`, which also gives the run its own cache):
@@ -453,7 +455,7 @@ The project: one source, sbt 2.0.8, with its output kept in the workspace.
 
 - Each run leaves 16 of the 35 dangling.
 - Afterwards the host compiles a changed source over what the session left, and succeeds. The
-  filter refuses the session's own absolute links, so sbt left copies (`fs.rs`, `symlink`).
+  FUSE backend refuses the session's own absolute links, so sbt left copies (`fs.rs`, `symlink`).
 
 The failure is a write through a link whose target *directory* does not exist. Dangling links
 planted by hand in a session show this:
@@ -469,18 +471,19 @@ After `find … -type d -name target -exec find {} -xtype l -delete \;`, the fai
 
 ### Measured: the staged lower on APFS (macOS 26.4.1, podman 6.0.2; 2026-08-22)
 
-`probe/lower-probe.py` and its host half ran in a filtered session over a workspace on
+`probe/lower-probe.py` and its host half ran in a FUSE backend session over a workspace on
 case-insensitive APFS (host Darwin 25.4.0 arm64, machine kernel 7.1.3-200.fc44.aarch64):
 
-- **Hard-link identity does not survive the filter, and the filter alone is the reason.**
+- **Hard-link identity does not survive the FUSE backend, and the FUSE backend alone is the
+  reason.**
   - A pair the host made reads back through the mount as two inode numbers with `st_nlink` 2. A pair
     the session made reads on the host as one inode with `st_nlink` 2.
   - `to_file_attr` replies with the number `InodeTable` allocated per `(parent, name)`
     (`src/fs.rs`, `src/inode.rs`). So two names for one object are two inodes, by how the path
     inode model is built, under any share, not only this one.
-  - The unfiltered control settles the cause rather than leaving it to the code. With the filter
-    out of the path, the same pair the host made reads back as one inode, so virtiofs carries
-    identity end to end.
+  - The plain control run settles the cause rather than leaving it to the code. With the FUSE
+    backend out of the path, the same pair the host made reads back as one inode, so virtiofs
+    carries identity end to end.
   - The lower keeps the relationship, which is the half apply depends on.
 - **Atomic exchange exists on both sides.** `RENAME_EXCHANGE` through the mount and
   `renamex_np(RENAME_SWAP)` on APFS both succeed. `RENAME_NOREPLACE` and `RENAME_EXCL` both refuse a
@@ -493,20 +496,20 @@ case-insensitive APFS (host Darwin 25.4.0 arm64, machine kernel 7.1.3-200.fc44.a
   succeed against a held path, whether it is held for reading or for writing. Windows is where this
   matters.
 
-Filtered and unfiltered runs agree on every row but the first. So on this stack, the filter costs
-nothing in exchange support, symlink round-tripping, case behavior or the reach of a hold.
+FUSE backend and plain runs agree on every row but the first. So on this stack, the FUSE backend
+costs nothing in exchange support, symlink round-tripping, case behavior or the reach of a hold.
 
 ## Extended attributes
 
-### Measured: xattrs through the filter (podman machine, virtiofs over APFS; 2026-08-14)
+### Measured: xattrs through the FUSE backend (podman machine, virtiofs over APFS; 2026-08-14)
 
-`probe/xattr-probe.py` compared the filtered session with an unfiltered bind mount as the control:
+`probe/xattr-probe.py` compared the FUSE backend session with a plain bind mount as the control:
 
-| operation   | unfiltered bind mount (control) | filtered              |
-| ----------- | ------------------------------- | --------------------- |
-| `setxattr`  | OK                              | `ENOTSUP`             |
-| `listxattr` | OK                              | `ENOTSUP`             |
-| `cp -a`     | exit 0, xattr kept              | exit 0, xattr dropped |
+| operation   | plain bind mount (control) | FUSE backend          |
+| ----------- | -------------------------- | --------------------- |
+| `setxattr`  | OK                         | `ENOTSUP`             |
+| `listxattr` | OK                         | `ENOTSUP`             |
+| `cp -a`     | exit 0, xattr kept         | exit 0, xattr dropped |
 
 `cp -a` carries no attribute across and says nothing about it. coreutils reads `ENOTSUP` as "the
 destination does not do xattrs", not as a failure.
@@ -551,14 +554,15 @@ runs as root, where `mount(2)` succeeds directly, and the helper is reached only
 The machine: a podman machine on macOS (machine kernel 7.1.8-200.fc44.aarch64, libkrun, virtiofs
 share).
 
-- A filter built with fuser's `SessionACL::Owner` instead of `SessionACL::All` mounts, and passes
-  every suite `--self-test` runs inside its container, where the daemon and the tests are one uid.
+- A FUSE backend built with fuser's `SessionACL::Owner` instead of `SessionACL::All` mounts, and
+  passes every suite `--self-test` runs inside its container, where the daemon and the tests are one
+  uid.
 - The share probe's container, run with `--userns=keep-id:uid=65532,gid=65532`, fails before the
   probe starts:
 
       crun: cannot stat `self/fd/5`: Permission denied: OCI permission denied
 
-- A session launched on the same filter fails with the same error, at `self/fd/16`.
+- A session launched on the same FUSE backend fails with the same error, at `self/fd/16`.
 
 The kernel refuses the stat:
 

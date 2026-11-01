@@ -70,7 +70,7 @@ class ResetRecordTest extends munit.FunSuite:
     // tree. The stub podman passes the check that every podman action runs first and fails every
     // other command, and the test gives the reset a temporary home. Otherwise a reset that did not
     // refuse would sweep the workstation's containers, volumes and networks. On Linux, the reset
-    // would also unmount every workspace's filter under the real home through /bin/sh, which no
+    // would also unmount every workspace's FUSE mount under the real home through /bin/sh, which no
     // temporary root confines.
     val roots = Files.createTempDirectory("reset-all-nested").toRealPath()
     val bin = Files.createDirectories(roots.resolve("bin"))
@@ -187,7 +187,7 @@ class ResetRecordTest extends munit.FunSuite:
       // Again, with nothing left: the reset reports no removal.
       val (againOk, again) = resetIds(elsewhere, session.id)
       assert(!againOk && again.contains(s"no workspace ${session.id}"), again)
-      assert(!again.contains("+ ") && !again.contains("filter"), s"a removal of nothing was reported:\n$again")
+      assert(!again.contains("+ ") && !again.contains("FUSE backend"), s"a removal of nothing was reported:\n$again")
     finally
       // The same path gives the same id, so after a failure above, the teardown resets the workspace
       // from the recreated directory.

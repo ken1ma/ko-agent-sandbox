@@ -234,7 +234,7 @@ do, or change the times by path (`utimensat` with `AT_SYMLINK_NOFOLLOW`) without
 **This project's guard until the fix** (`TODO.md`, "A FIFO in the workspace hangs the podman
 machine", has the decision):
 
-- The filter refuses `mknod` of a FIFO and a time change on a FIFO
+- The FUSE backend refuses `mknod` of a FIFO and a time change on a FIFO
   (`../ko-agent-fs/fuse/src/fs.rs`).
 - The BPF backend's hooks refuse the same two operations, and any open of a FIFO, by the inode's
   type (`../ko-agent-fs/bpf/doc/architecture.md`, "The policy").

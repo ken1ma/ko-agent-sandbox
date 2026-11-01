@@ -4,9 +4,10 @@ This document answers one question: *which Git administrative state must be immu
 sandbox cannot make a later host `git` command run sandbox-controlled code, or open a path the
 sandbox chose?*
 
-- The policy code implements this document, and that code is the whole git half of the filter.
-- The scope is narrow on purpose. The filter does not protect repository integrity, correctness,
-  or the agent from itself. It defends exactly the property below.
+- The policy code implements this document, and that code is the whole git half of the workspace
+  policy.
+- The scope is narrow on purpose. The workspace policy does not protect repository integrity,
+  correctness, or the agent from itself. It defends exactly the property below.
 - One rule in `policy.rs` comes from elsewhere: `.ko-agent-sandbox` cannot be created or written
   either.
   - It is the launcher's own boundary configuration. It is protected for the reason `SECURITY.md`
@@ -51,7 +52,7 @@ files (`rebase-merge/git-rebase-todo`, `rebase-apply/`, `sequencer/todo`) can co
 - This is the same class as a hook. It is easy to miss, because git writes these paths during
   ordinary operation.
 - Watching what git writes suggests "operational, keep writable". The execution question, "can a
-  write here make host git execute?", says "frozen". The filter protects them against
+  write here make host git execute?", says "frozen". The workspace policy protects them against
   modification.
 
 **Vector:** write a `rebase-merge`, `rebase-apply` or `sequencer` todo that the host later
@@ -110,8 +111,8 @@ A worktree's `.git` need not be a directory. A **file** `.git` containing `gitdi
 
 - *Creation*: a new `.git`, directory or file, anywhere in the tree makes host `git` discover a
   repository the sandbox fully controls.
-  - The sandbox can fill that gitdir's `config` and `hooks` at leisure. To the filter they are
-    ordinary files until a `.git` entry names them.
+  - The sandbox can fill that gitdir's `config` and `hooks` at leisure. To the workspace policy
+    they are ordinary files until a `.git` entry names them.
 - *Rewriting*: editing an existing `.git` pointer file points a real repository's Git metadata at
   a directory the sandbox owns.
 
@@ -178,7 +179,7 @@ refs, `refs/**`, `logs/**`, `objects/**`, `packed-refs`, `COMMIT_EDITMSG`, `MERG
 `rebase` is the deliberate exception: its state is protected (see group 1 and the blocked
 operations).
 
-So inside a gitdir, the filter must keep operational state writable and protect the other
+So inside a gitdir, the workspace policy must keep operational state writable and protect the other
 entries. There are two ways to draw that line, and they fail in opposite directions:
 
 - **Denylist**: deny the known protected paths (`config*`, `hooks/**`, `commondir`) and allow the
@@ -253,8 +254,8 @@ A rule over spellings covers the names a filesystem folds to `.git`. It does not
 name the filesystem gives an existing `.git`: an NTFS 8.3 short name, or a hard link to a pointer
 file.
 
-- The filter recognizes those by the backing object (`security-research.md`, "Windows 8.3 short
-  names").
+- The FUSE backend recognizes those by the backing object (`security-research.md`, "Windows 8.3
+  short names").
 - The BPF backend records the identities of the guarded objects at launch, and judges any name of
   them as the object. Its design states what remains open (`../../bpf/doc/architecture.md`, "The
   policy", the second-name rule).
@@ -293,7 +294,7 @@ Position is derived from names, with one exception worth knowing:
 - Until a root is identified, the answer is the strict one: everything under `modules/` is
   protected.
   - This also stops the sandbox from writing a `HEAD` into a namespace, which would let it choose
-    the answer to the question the filter asks.
+    the answer to the question the workspace policy asks.
 
 
 ## Operations that make these mutations
@@ -343,8 +344,8 @@ worktree path. A write to the worktree path then reaches the frozen inode.
 - Detecting that would need every write to prove its inode is not also reachable under a gitdir.
   That is not feasible per write.
 - It is out of scope as setup the host created. The host is trusted, and Git's default layout
-  creates no hard link between a hook and a worktree path. The filter closes only aliasing the
-  *sandbox* creates.
+  creates no hard link between a hook and a worktree path. The workspace policy closes only aliasing
+  the *sandbox* creates.
 
 
 ## Relocated hook directories — served read-only
@@ -360,8 +361,8 @@ the **worktree** in two ways:
 In both cases, the files host `git` executes are stored at an ordinary worktree path. The `.git`
 name rule classifies that path as ordinary workspace data.
 
-- **So the guard resolves each such directory before the mount** (`guard::resolve`). The filter
-  then serves it as a read-only root.
+- **So the guard resolves each such directory before the mount** (`guard::resolve`). The workspace
+  policy then serves it as a read-only root.
   - Every ordinary component its chain passes through is pinned against rename and replacement.
   - This is a `read-only-path` line of the resolved file rules (`../../../doc/file-rules.md`).
 - The mounted suite's `relocated_hooks_are_served_read_only` checks that the served directory
@@ -515,7 +516,7 @@ The check is also a snapshot, taken before the mount and not repeated.
     may have placed in `.git/lfs/` (`SECURITY.md`, "The workspace").
 - Operational gitdir state (`objects`, `refs`, `logs`, `index`, …): writable, or `git` cannot work.
   None of it is executed, and `alternates` is the one path in it git opens (group 4).
-- Changes on the host side: the host writes the backing store directly, bypassing the filter by
+- Changes on the host side: the host writes the backing store directly, bypassing both backends by
   design. Legitimate host `git` metadata is created outside the sandbox and is not the threat.
 
 
@@ -563,7 +564,7 @@ Existing host repositories keep working for the everyday commands. `status`, `ad
 The rebase family and the commands that write config are the deliberate exceptions above. `bisect`
 is safe for a host git of 2.34 or later; the launcher warns on an older one ("The classifier").
 
-`git filter-repo`, which the image has, runs. Unverified under the filter:
+`git filter-repo`, which the image has, runs. Unverified under the FUSE backend:
 
 - its `filter-repo/` metadata is operational;
 - at the end it runs `git remote rm origin`, whose config write is refused. filter-repo does not
@@ -577,15 +578,15 @@ Git's security advisories list exactly how repository state has become host code
 `security-research.md` has the verdict for each CVE, the watch-list and how to redo the research.
 The two conclusions this policy rests on are below.
 
-**The filter denies the final write of a whole class.**
+**The FUSE backend denies the final write of a whole class.**
 
 - The class of CVE-2024-32002, CVE-2021-21300 and CVE-2014-9390 always ends the same way. Through a
   symlink, case-insensitivity and submodules, git is tricked into a *write* whose path it believes
   is in a worktree, but which resolves into `.git/hooks`.
-- The filter classifies the **resolved destination** of every mutation, following symlinks through
-  its own resolver. So when git on the sandbox side performs that final write, `open` or `create`
-  denies it, however clever the trick that produced the path.
-- git on the host side bypasses the filter by design. There, the mitigation is a patched git, as
+- The FUSE backend classifies the **resolved destination** of every mutation, following symlinks
+  through its own resolver. So when git on the sandbox side performs that final write, `open` or
+  `create` denies it, however clever the trick that produced the path.
+- git on the host side bypasses both backends by design. There, the mitigation is a patched git, as
   for any untrusted clone.
 
 **What `.gitmodules` leaves open.**
@@ -593,8 +594,9 @@ The two conclusions this policy rests on are below.
 - Leaving `.gitmodules` writable rests on P0 and P4 of "Premises". So it assumes git handles a
   hostile `.gitmodules` correctly. CVE-2018-11235, CVE-2024-32002 and CVE-2025-48384 are cases
   where a git bug broke that.
-- This is accepted as "hostile data plus a git bug" (SECURITY.md). On the sandbox side, the filter
-  still denies the final `.git` write. On the host side, the mitigation is keeping git patched.
+- This is accepted as "hostile data plus a git bug" (SECURITY.md). On the sandbox side, the
+  workspace policy still denies the final `.git` write. On the host side, the mitigation is keeping
+  git patched.
 
 
 ## Test list (each vector → a test through the real FUSE mount)
@@ -697,8 +699,8 @@ blind spots worth knowing:
 - a path being written does not make it safe to allow.
 
 Only real git against a real mount exercises the locks. So `../../fuse/tests/mounted_git.rs`
-establishes which git commands work through the filter; the script records the files each command
-leaves.
+establishes which git commands work through the FUSE backend; the script records the files each
+command leaves.
 
 - **P0: command execution is configured only through the config files** (group 2 has the set and
   the argument). The whole design rests on it.

@@ -59,29 +59,29 @@ instructions. Future migrations are separate work.
 lists the places to run the suites. This section says only which place settles which part of the
 staged contract.
 
-| contract item                                      | settled by                  |
-| -------------------------------------------------- | --------------------------- |
-| resume, representation refusal, whiteouts, copy-up | dev rig, any host           |
-| advisory and POSIX locks                           | in situ, in each machine    |
-| shared mmap across a generation switch             | in situ, in each machine    |
-| open-unlinked files and writable handles           | in situ, in each machine    |
-| live lower changes, and copy-up from the share     | in situ, on each share      |
-| baseline revalidation and apply write-back         | in situ, on each share      |
-| hard-link identity                                 | the filter's inode model    |
-| rename and exchange on the lower                   | in situ, on each share      |
-| symlinks: creation, and refusal of an escape       | in situ, on each share      |
-| upper and lower names differing only by case       | in situ, APFS and NTFS      |
-| upper durability and reflink behavior              | in situ, each Linux backing |
+| contract item                                      | settled by                     |
+| -------------------------------------------------- | ------------------------------ |
+| resume, representation refusal, whiteouts, copy-up | dev rig, any host              |
+| advisory and POSIX locks                           | in situ, in each machine       |
+| shared mmap across a generation switch             | in situ, in each machine       |
+| open-unlinked files and writable handles           | in situ, in each machine       |
+| live lower changes, and copy-up from the share     | in situ, on each share         |
+| baseline revalidation and apply write-back         | in situ, on each share         |
+| hard-link identity                                 | the FUSE backend's inode model |
+| rename and exchange on the lower                   | in situ, on each share         |
+| symlinks: creation, and refusal of an escape       | in situ, on each share         |
+| upper and lower names differing only by case       | in situ, APFS and NTFS         |
+| upper durability and reflink behavior              | in situ, each Linux backing    |
 
-A successful `--self-test` stamps the filter's source id and the machine it proved: the podman
+A successful `--self-test` stamps the FUSE backend's source id and the machine it proved: the podman
 version, the machine identity, the kernel and the lower's filesystem.
 
 - A staged launch refuses when the stamp is absent or does not match.
 - That refusal makes "failure aborts staged launch" above a mechanism rather than an intention.
 - The refusal also turns "rerun after a podman or macOS upgrade" from a row someone must remember
   into a refused launch, until `--self-test` runs again.
-- The stamp records that a machine was proved once. Whether the filter can still mount on this
-  machine now is the job of the filter's own `--self-test`, before every session.
+- The stamp records that a machine was proved once. Whether the FUSE backend can still mount on
+  this machine now is the job of the FUSE backend's own `--self-test`, before every session.
 
 Windows has one measured hazard, to settle before the apply state machine is built rather than
 during it:
@@ -159,11 +159,11 @@ is selected and applied as one group.
 
 A link relationship cannot be recovered from what a session observed:
 
-- The filter assigns an inode per `(parent, name)`, so two names for one object are two inodes in
-  the filter (`../ko-agent-fs/fuse/doc/verification-log.md`).
+- The FUSE backend assigns an inode per `(parent, name)`, so two names for one object are two
+  inodes in the FUSE backend (`../ko-agent-fs/fuse/doc/verification-log.md`).
 - So the stage records the relationship at copy-up, from the backing object's identity, and the
   plan records it too.
-- The lower keeps the relationship; only the view through the filter loses it.
+- The lower keeps the relationship; only the view through the FUSE backend loses it.
 
 For each group, trusted code:
 

@@ -27,9 +27,9 @@
 //   "Lifecycle".
 // - It runs the two benchmarks of ko-agent-fs/bench/ over that one tree, in three stacks:
 //
-//   bind     the sandbox image over a writable bind of the workspace, unfiltered.sh's command
+//   bind     the sandbox image over a writable bind of the workspace, plain-bind.sh's command
 //   policy   the same command below the attach cgroup, so the eight hooks judge it
-//   filter   the launcher's session under --workspace=live,fuse, the workspace through the filter
+//   fuse     the launcher's session under --workspace=live,fuse, the workspace through the FUSE backend
 //
 // Before the launch it also runs one round of entry-cost.py on the bind with no program attached to
 // any hook: the `bare` column. The first attach installs a shim on each hook for every task in the VM
@@ -42,7 +42,7 @@
 // - The build is `sbt 'testOnly *SandboxTextWidthTest'` on a clone of this repository made inside the
 //   tree, with its output there, as verification-log.md's "an sbt build, by where its output goes"
 //   ran it. It runs once on the bind and once under the policy, with network for its downloads. It
-//   does not run through the filter; that log holds the filter's 604 s.
+//   does not run through the FUSE backend; that log holds its 604 s.
 // - walk-cost.py runs once per stack.
 //
 // During each run, a sampler in the machine records /proc/stat, /proc/meminfo and the pressure files
@@ -53,14 +53,14 @@
 //
 // Options:
 //
-// - --stacks and --workloads take comma-separated subsets (bind,policy,filter and perf,build,walk),
+// - --stacks and --workloads take comma-separated subsets (bind,policy,fuse and perf,build,walk),
 //   for a partial rerun.
 // - --tree names a repository to clone instead of GitHub's, such as an earlier clone.
 // - --platform makes the driver act as that platform where the detection must be overridden, as in a
 //   dry run against fake commands.
 //
 // At the figures of verification-log.md, "The cost of a path walk", entry-cost.py's five rows through
-// the filter take about 54 s a round on the macOS machine and about 8 minutes on the WSL one.
+// the FUSE backend take about 54 s a round on the macOS machine and about 8 minutes on the WSL one.
 // walk-cost.py's `git status` takes 72 s on macOS. The other stacks are faster, by the ratios given
 // there.
 //
@@ -85,11 +85,11 @@
 // - a podman volume;
 // - pins under /sys/fs/bpf/ko-agent-bpftest-benchmark in the machine;
 // - containers labelled ko-agent-bpftest-benchmark;
-// - through the filter stack's launches, the launcher's own state for the scratch workspace, which the
+// - through the fuse stack's launches, the launcher's own state for the scratch workspace, which the
 //   launcher's --reset removes.
 //
 // If a live sandbox session, under another backend or socket setting, has a workspace that holds that
-// directory, the launcher refuses the filter stack.
+// directory, the launcher refuses the fuse stack.
 
 import scala.util.Using
 import scala.util.matching.Regex
@@ -112,10 +112,10 @@ object Benchmark:
     case Bare   extends Stack("bare")
     case Bind   extends Stack("bind")
     case Policy extends Stack("policy")
-    case Filter extends Stack("filter")
+    case Fuse   extends Stack("fuse")
 
   object Stack:
-    val selectable: Seq[Stack] = Seq(Bind, Policy, Filter)
+    val selectable: Seq[Stack] = Seq(Bind, Policy, Fuse)
 
   enum Workload(val name: String):
     case Perf  extends Workload("perf")
@@ -319,13 +319,13 @@ object Benchmark:
 
   /** What the run leaves besides its containers: the pins, the attach cgroup, the sampler's files, the
     * volume and the scratch directory. */
-  def removeLeftovers(platform: Platform, scratchDir: Path, filterLauncher: Option[Path], transcript: Transcript,
+  def removeLeftovers(platform: Platform, scratchDir: Path, fuseLauncher: Option[Path], transcript: Transcript,
       vm: Vm): Unit =
-    // The launcher names what the filter stack's launches made for the scratch workspace: its volume,
+    // The launcher names what the fuse stack's launches made for the scratch workspace: its volume,
     // networks, inspection CA, ruleset cache and logs. Its --reset, run from that directory, removes
     // them.
     val tree = scratchDir / "sbt"
-    filterLauncher.filter(_ => Files.isDirectory(tree)).foreach: launcher =>
+    fuseLauncher.filter(_ => Files.isDirectory(tree)).foreach: launcher =>
       host(transcript, Seq("java", "-jar", launcher.toString, "--reset"), cwd = tree)
     vm(sh(
       s"[ -x $Controller ] && sudo -n $Controller unpin $Pins >/dev/null 2>&1",
@@ -383,14 +383,14 @@ object Benchmark:
     val transcript = Transcript(out / "transcript.log")
     val vm = Vm(transcript)
     // In the home directory, on the share the machine mounts. Not under the repository: a sandbox session
-    // may hold it, and the launcher would then refuse the filter stack's session under another backend
+    // may hold it, and the launcher would then refuse the fuse stack's session under another backend
     // ("The mechanism"). Not under ~/.cache either, since the launcher refuses a workspace below a
     // directory whose name starts with a dot.
     val scratchDir =
       Path.of(System.getProperty("user.home")) / s"ko-agent-bpftest-benchmark.${ProcessHandle.current().pid()}"
-    val filterLauncher = Option.when(options.stacks.contains(Stack.Filter))(launcherOf(options, repoDir))
+    val fuseLauncher = Option.when(options.stacks.contains(Stack.Fuse))(launcherOf(options, repoDir))
     val cleanup =
-      Cleanup(transcript, Label, () => removeLeftovers(platform, scratchDir, filterLauncher, transcript, vm))
+      Cleanup(transcript, Label, () => removeLeftovers(platform, scratchDir, fuseLauncher, transcript, vm))
     runMeasured(transcript, cleanup):
       Measurement(options, platform, suiteDir, repoDir, out, transcript, vm, scratchDir).measure()
 
@@ -434,7 +434,7 @@ object Benchmark:
         facts <- PodmanTestHelper.readVmFacts(transcript, vm, out, scratchDir, scratchDirVm, PinRoot)
         _ <- refuse(host(transcript, Seq("podman", "image", "exists", SandboxImage)).ok,
           s"no $SandboxImage image; run the launcher's --build first")
-        _ <- refuse(!options.stacks.contains(Stack.Filter) || Files.exists(launcher),
+        _ <- refuse(!options.stacks.contains(Stack.Fuse) || Files.exists(launcher),
           s"no launcher at $launcher; pass --launcher JAR or build it with sbt dist")
       yield facts
 
@@ -547,9 +547,9 @@ object Benchmark:
           )
           Some(cgroup)
 
-    /** A command in a container of the stack: unfiltered.sh's command for the bind; the same command below
+    /** A command in a container of the stack: plain-bind.sh's command for the bind; the same command below
       * the attach cgroup for the policy; the launcher's own session over the same workspace for the
-      * filter. */
+      * fuse stack. */
     def containerOf(workspace: Workspace, cgroup: Option[Cgroup]): Runner =
       val filesEnv =
         if options.files == PerfDefaultFiles then Seq.empty[String] else Seq("--env", s"FILES=${options.files}")
@@ -557,7 +557,7 @@ object Benchmark:
         if options.files == PerfDefaultFiles then Seq.empty[String] else Seq(s"--env=FILES=${options.files}")
       (stack, command) =>
         stack match
-          case Stack.Filter =>
+          case Stack.Fuse =>
             host(
               transcript,
               Seq("java", "-jar", launcher.toString, "--workspace=live,fuse") ++ launcherFilesEnv ++ command.argv,
@@ -577,7 +577,7 @@ object Benchmark:
                 parent ++ filesEnv ++ Seq(SandboxImage) ++ command.argv,
             )
 
-    /** Checks that a hook file is refused under the policy and through the filter, and is made over the
+    /** Checks that a hook file is refused under the policy and through the FUSE backend, and is made over the
       * bare bind. */
     def stacksAreWhatTheyClaim(runOn: Runner): Unit =
       step("the three stacks over one tree: each is what it claims")
@@ -722,7 +722,7 @@ object Benchmark:
         def values(row: String, stack: Stack): Seq[Double] =
           ofWorkload.filter(_.stack == stack).flatMap(_.figures.filter(_.row == row).map(_.value))
         val stacks = Stack.values.toSeq.filter(stack => ofWorkload.exists(_.stack == stack))
-        val ratios = Seq((Stack.Bind, Stack.Bare), (Stack.Policy, Stack.Bind), (Stack.Filter, Stack.Bind))
+        val ratios = Seq((Stack.Bind, Stack.Bare), (Stack.Policy, Stack.Bind), (Stack.Fuse, Stack.Bind))
           .filter((over, base) => stacks.contains(over) && stacks.contains(base))
         val header = Seq(s"${workload.name}, row", "unit") ++ stacks.map(_.name) ++
           ratios.map((over, base) => s"${over.name} / ${base.name}")

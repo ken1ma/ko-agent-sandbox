@@ -64,9 +64,10 @@ here once:
 - **boundary directory** — `.ko-agent-sandbox`. The launcher reads it on the host before launch,
   and it is unwritable in every workspace mode (SECURITY.md, "Why the rules are per workspace, in
   the workspace, and read-only").
-- **workspace filter** — `ko-agent-fs-fuse`, the FUSE mount the workspace is shared through. It
-  refuses the Git entries and links a session must not write
-  (`../ko-agent-fs/fuse/doc/architecture.md`).
+- **FUSE backend** — `ko-agent-fs-fuse`, the FUSE daemon whose mount the workspace is shared
+  through. It refuses the Git entries and links a session must not write
+  (`../ko-agent-fs/fuse/doc/architecture.md`). The other workspace backend is the BPF backend
+  (`bpf-lsm-cgroup.md`).
 - **launch** — one invocation of the launcher for one workspace, from its command line to the
   sandbox's end. The run and the session are its two views.
 - **run** — the launch as the host sees it: the objects created for it.
@@ -219,13 +220,15 @@ decides. The lines carry no path pattern beyond `*` within a component:
 
 - A name matches at any depth, as `.git` does. A line anchored at the root would miss a nested
   folder, which the programs read when you open or enter it.
-- The filter folds the name as it folds `.git`. The filter decides each entry at lookup, from its
-  parent's context and its own name. A richer language would need a path, which no inode stores.
+- The workspace policy folds the name as it folds `.git`. The FUSE backend decides each entry at
+  lookup, from its parent's context and its own name. A richer language would need a path, which no
+  inode stores.
 - An outermost-wins or most-specific-wins order would be a second precedence. The ordered form
   already makes `node_modules` the exception with its last line.
 - The file rules differ from `egress/rule` in two ways (SECURITY.md, "Adding hosts, not patterns"):
   - They carry one bit instead of grant words.
-  - `read-only` may name a path, since the filter, not an origin, decides how a name reads.
+  - `read-only` may name a path, since the workspace policy, not an origin, decides how a name
+    reads.
 
 ### No approve-on-miss prompt for a refused host
 
@@ -269,10 +272,10 @@ launcher does not prevent that: instruction files change no enforcement.
 
 The launcher refuses the launch when any of these is a symlink: `.ko-agent-sandbox`, an entry of it
 (`egress`, `file` or `run-on-host`), or a file inside an entry (`boundaryDirRefusal`,
-`ruleDirectoryRefusal`, `RunOnHostPrereqs.readProgramRules`, tested). The workspace filter refuses
-to mount a workspace whose `.git` is a symlink. The filter serves a `.git/hooks` symlinked to a
-directory inside the workspace read-only instead (`../ko-agent-fs/policy/doc/git-metadata.md`,
-"Relocated hook directories").
+`ruleDirectoryRefusal`, `RunOnHostPrereqs.readProgramRules`, tested). The workspace policy refuses
+to serve a workspace whose `.git` is a symlink. The workspace policy keeps a `.git/hooks`
+symlinked to a directory inside the workspace read-only instead
+(`../ko-agent-fs/policy/doc/git-metadata.md`, "Relocated hook directories").
 
 - The launcher reads the rules on the host. So a repository-controlled link would choose which host
   file the launcher reads as this workspace's rules.
@@ -370,7 +373,7 @@ cancels an earlier `read-only` line of the same name. The strict form closes the
   "Measurements").
 - `writable` lines would hold in one kind of session and not the other: a second meaning of
   `writable` for the reader to keep in mind.
-- A session with `--run-on-host` and a session without it could not share a filter mount, since
+- A session with `--run-on-host` and a session without it could not share a FUSE mount, since
   their rules differ.
 
 Revisit when `../src/probe/seatbelt-semantics.sh` E13-E16 find a rule that refuses a move out of
@@ -390,7 +393,7 @@ protects the path it is mounted at, from the moment of the launch. That leaves t
   - A repository nested deeper, by the host or by the session, has no mounts. A repository the
     session creates mid-session cannot get any.
   - A policy that judges each operation protects every repository's entries at any depth. The
-    filter does this, and so does the backend of `bpf-lsm-cgroup.md`.
+    FUSE backend does this, and so does the backend of `bpf-lsm-cgroup.md`.
 - On an NTFS volume with 8.3 names, `.git` is also `GIT~1`, and `.ko-agent-sandbox` is also
   `KO-AGE~1`. A path through the short name does not pass the mount.
   - Measured on Windows Server 2025 with podman 6.1.0: appends to `.git/config` and
@@ -411,14 +414,14 @@ protects the path it is mounted at, from the moment of the launch. That leaves t
 What serves instead:
 
 - `--workspace=read-only` is the read-only session, with no policy to enforce.
-- The probes that need an unfiltered writable control run one outside the launcher
-  (`../ko-agent-fs/bench/unfiltered.sh`).
-- `../ko-agent-fs/fuse/doc/verification-log.md` measures the filter's cost ("The cost of a path
-  walk").
+- The probes that need a plain bind mount as their writable control run one outside the launcher
+  (`../ko-agent-fs/bench/plain-bind.sh`).
+- `../ko-agent-fs/fuse/doc/verification-log.md` measures the FUSE backend's cost ("The cost of a
+  path walk").
 - `bpf-lsm-cgroup.md` is the backend that mounts the workspace directory itself and judges each
   operation in the kernel instead: `--workspace=live,bpf` on the podman machines.
-- The filter stays the default until the release decision that `TODO.md` plans ("The BPF backend
-  as the default").
+- The FUSE backend stays the default until the release decision that `TODO.md` plans ("The BPF
+  backend as the default").
 
 ### No DLP/entropy/LLM firewall
 
@@ -790,9 +793,9 @@ The process has two limits that the design accepts:
 
 ### No test hook that pauses a launch mid-flight
 
-The workspace filter's reference count has one state worth attacking: a launch between its `podman
+The FUSE mount's reference count has one state worth attacking: a launch between its `podman
 create` and its `podman start`. In that state, the marker and a container that is not running exist
-together, and a reap must count the marker (`KoAgentFs`, "The workspace FUSE filter's mount
+together, and a reap must count the marker (`KoAgentFs`, "The FUSE backend's mount
 lifecycle").
 
 Arranging that interleaving at an arbitrary instant would need the launcher to be pausable from
@@ -801,7 +804,7 @@ outside, through a variable read on the launch path.
 - Such a variable would need to be known, documented in `--help`, and fail closed like every other
   variable.
 - The result would be boundary code that carries a hook existing only for a test, on the path that
-  decides whether the filter is mounted at all.
+  decides whether the FUSE backend is mounted at all.
 
 `MountLifecycleTest` provides the same evidence without the hook; its header has how. The test does
 not cover an interleaving at some other instant, and a pause hook would not enumerate one either.
@@ -812,8 +815,8 @@ not cover an interleaving at some other instant, and a pause hook would not enum
 itself after detecting an upgrade. The enforcement happens at the launch that would rely on the
 answer:
 
-- today, the filter's own self-test before every filtered launch (`KoAgentFs.prepareKoAgentFs`),
-  which refuses the launch when it fails;
+- today, the FUSE backend's own self-test before every launch under it
+  (`KoAgentFs.prepareKoAgentFs`), which refuses the launch when it fails;
 - for the staged engine, the stamp that `plan-staged.md` specifies: source, machine, kernel and
   backing filesystem. A missing or mismatched stamp refuses a staged launch.
 
@@ -900,7 +903,7 @@ Conflating these properties makes verification look larger than it is.
   on whichever host a developer has (`../ko-agent-fs/doc/testing.md`).
 - **The kernel** is not one kernel. Each podman machine runs its own: Fedora CoreOS on macOS, and a
   Microsoft build on Windows. Native Linux runs the user's own kernel.
-  - The filter's mount already depends on what a kernel offers. The filter refuses to mount at all
+  - The FUSE mount already depends on what a kernel offers. The FUSE backend refuses to mount at all
     when `init` cannot negotiate `AUTO_INVAL_DATA` (`../ko-agent-fs/fuse/doc/architecture.md`).
 - **The share**, and the backing under it: the host's workspace as it arrives inside the machine,
   over virtiofs on macOS and over the WSL share on Windows.

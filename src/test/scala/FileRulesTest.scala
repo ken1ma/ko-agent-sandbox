@@ -1,5 +1,5 @@
 // The launcher's side of the file rules: the grammar and its refusals, the defaults, the workspace's
-// file as read, and the text the filter exchanges.
+// file as read, and the text the workspace policy exchanges.
 
 package agentsandbox.launcher
 
@@ -40,8 +40,8 @@ class FileRulesTest extends munit.FunSuite:
     refused("read-only .vs#code\n", "only a-z")
     refused("read-only naïve\n", "only a-z")
     refused("read-only [ab]\n", "only a-z")
-    refused("writable .git/hooks\n", "`.git` is the filter's own")
-    refused("read-only apps/.ko-agent-sandbox\n", "`.ko-agent-sandbox` is the filter's own")
+    refused("writable .git/hooks\n", "`.git` is the workspace policy's own")
+    refused("read-only apps/.ko-agent-sandbox\n", "`.ko-agent-sandbox` is the workspace policy's own")
 
   test("the defaults parse, protect the agents' and editors' files, and end with the dependency directory"):
     val names = Defaults.map(_.name)
@@ -145,7 +145,7 @@ class FileRulesTest extends munit.FunSuite:
     assertEquals(parseResolved(resolved.text), Right(resolved))
     assertEquals(
       guardLines(resolved),
-      Vector("file rules: read-only by the filter's guard: .husky/_, shared/claude/settings.json"),
+      Vector("file rules: read-only by the workspace policy's guard: .husky/_, shared/claude/settings.json"),
     )
 
   test("every file rule example is a complete rule file the launcher accepts"):

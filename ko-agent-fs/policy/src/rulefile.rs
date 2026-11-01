@@ -1,8 +1,8 @@
-//! The file rules as they pass between the launcher and the filter: the lines the launcher resolved
-//! from its defaults and the workspace's `.ko-agent-sandbox/file/rule`, and the lines the guard
-//! adds. The launcher owns the grammar and has already refused every ambiguity. This reads the
-//! resolved form and refuses anything else, so a launcher and a filter of different versions fail
-//! instead of disagreeing.
+//! The file rules as they pass between the launcher and the workspace policy: the lines the
+//! launcher resolved from its defaults and the workspace's `.ko-agent-sandbox/file/rule`, and the
+//! lines the guard adds. The launcher owns the grammar and has already refused every ambiguity.
+//! This reads the resolved form and refuses anything else, so a launcher and a workspace policy of
+//! different versions fail instead of disagreeing.
 //!
 //! One line per rule, words separated by single spaces. What the launcher writes:
 //!
@@ -12,8 +12,8 @@
 //! writable node_modules
 //! ```
 //!
-//! What the filter writes back when mounting and `--resolve` prints: the rule lines, then the
-//! guard's, each naming a workspace-relative path from the root:
+//! What the FUSE backend's daemon writes back when mounting, and what `--resolve` prints: the rule
+//! lines, then the guard's, each naming a workspace-relative path from the root:
 //!
 //! ```text
 //! read-only .vscode
@@ -44,8 +44,8 @@ pub struct RuleFile {
 }
 
 impl RuleFile {
-    /// No rules, and the daemon's own namespace as the host's: a filter started without
-    /// `--file-rules`, as the self-test and the mounted suites start it.
+    /// No rules, and the daemon's own namespace as the host's: a FUSE backend daemon started
+    /// without `--file-rules`, as the self-test and the mounted suites start it.
     pub fn none() -> RuleFile {
         RuleFile {
             rules: FileRules::default(),
@@ -153,7 +153,7 @@ pub fn parse(text: &str) -> Result<RuleFile, String> {
     })
 }
 
-/// The rules a filter over `source` serves, or `--resolve` prints: the launcher's file at
+/// The rules the FUSE backend serves over `source`, or `--resolve` prints: the launcher's file at
 /// `file_rules`, if any, with the guard's additions; their text; and the guarded objects. An error
 /// names what failed, without the program's name.
 pub fn resolve(
