@@ -393,7 +393,7 @@ protects the path it is mounted at, from the moment of the launch. That leaves t
   - A repository nested deeper, by the host or by the session, has no mounts. A repository the
     session creates mid-session cannot get any.
   - A policy that judges each operation protects every repository's entries at any depth. The
-    FUSE backend does this, and so does the backend of `bpf-lsm-cgroup.md`.
+    backend of `bpf-lsm-cgroup.md` does this, and so does the FUSE backend.
 - On an NTFS volume with 8.3 names, `.git` is also `GIT~1`, and `.ko-agent-sandbox` is also
   `KO-AGE~1`. A path through the short name does not pass the mount.
   - Measured on Windows Server 2025 with podman 6.1.0: appends to `.git/config` and
@@ -420,8 +420,7 @@ What serves instead:
   path walk").
 - `bpf-lsm-cgroup.md` is the backend that mounts the workspace directory itself and judges each
   operation in the kernel instead: `--workspace=live,bpf` on the podman machines.
-- The FUSE backend stays the default until the release decision that `TODO.md` plans ("The BPF
-  backend as the default").
+- `bpf` is the default backend (`bpf-lsm-cgroup.md`, "Launches").
 
 ### No DLP/entropy/LLM firewall
 

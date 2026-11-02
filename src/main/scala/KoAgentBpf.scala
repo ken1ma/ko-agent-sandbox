@@ -45,16 +45,35 @@ object KoAgentBpf:
   val ReceiveHook = "file_receive"
   def hooks(unixSocket: Boolean): Vector[String] = if unixSocket then Hooks :+ ReceiveHook else Hooks
 
-  /** Why a launch under the backend is refused for its nesting mode, or None. The first version runs
-    * under `--nesting=none` alone. The other modes keep podman's default profile, under which a
-    * session mounts and creates user namespaces, routes the hooks do not judge yet ("Mounts";
-    * doc/TODO.md, "The BPF backend's later versions"). */
-  def nestingRefusal(settings: WorkspaceSettings, nesting: String): Option[String] =
-    Option.when(settings.bpf && nesting != CommandLine.DefaultNestingMode)(
-      s"error: --workspace=${settings.spelled} needs --nesting=none; under --nesting=$nesting the session can mount " +
-        "and create user namespaces, which the BPF backend does not judge yet, so the FUSE backend holds the " +
-        "workspace's protections there (SECURITY.md, \"The BPF backend\")",
+  /** Why the backend cannot serve a session on this host or under this nesting mode, or None. The first version
+    * serves the podman machines under `--nesting=none` alone (doc/TODO.md, "The BPF backend's later versions"):
+    * - native Linux has no machine;
+    * - the other nesting modes keep podman's default profile, under which a session mounts and creates user
+    *   namespaces, routes the hooks do not judge yet ("Mounts"). */
+  def placementRefusal(settings: WorkspaceSettings, os: Os, nesting: String): Option[String] =
+    val reason =
+      if !settings.bpf then None
+      else if os == Os.Linux then Some("runs on the podman machines of macOS and Windows alone")
+      else if nesting != CommandLine.DefaultNestingMode then
+        Some(
+          s"needs --nesting=none; under --nesting=$nesting the session can mount and create user namespaces, " +
+            "which the BPF backend does not judge yet",
+        )
+      else None
+    reason.map(why =>
+      s"error: --workspace=${settings.spelled} $why (SECURITY.md, \"The BPF backend\"). ${fuseRemedy(settings)}",
     )
+
+  /** Where the backend cannot serve a session: the same mode under the FUSE backend. A `unix-socket` that a source
+    * stated would hold over a bare `fuse` and refuse the launch again (CommandLine.WorkspaceValue.over), so the remedy
+    * then turns it off too. */
+  def fuseRemedy(settings: WorkspaceSettings): String =
+    val noSocket = if settings.unixSocket then s",${CommandLine.NoUnixSocketValue}" else ""
+    s"Launch with --workspace=${settings.mode},fuse$noSocket, or put that option in the options file."
+
+  /** What a machine without the backend still launches, after the build's notes below. */
+  private val FuseMeanwhile = "Launches under the default backend, bpf, are refused meanwhile; " +
+    "--workspace=...,fuse launches."
 
   /** The share types the suites measured. Any other share type refuses the launch ("The launcher's side"). */
   val MeasuredShareTypes: Set[String] = Set("virtiofs", "9p")
@@ -119,7 +138,7 @@ object KoAgentBpf:
     val lines = inspected.linesIterator.toVector.padTo(4, "")
     LiveSession(
       name,
-      Option(lines(0)).filter(_.nonEmpty).flatMap(CommandLine.parseWorkspace(_).toOption),
+      Option(lines(0)).filter(_.nonEmpty).flatMap(CommandLine.parseWorkspace(_).toOption).map(_.settings),
       lines(1),
       lines(2).split(" ").toVector.filter(_.nonEmpty).flatMap(RawMount.decode),
       Option(lines(3)).filter(_.nonEmpty),
@@ -270,7 +289,7 @@ object KoAgentBpf:
     s"BPF backend installed: $tags programs verified; a program set for the next launch loaded in $preloaded ms"
 
   /** Installs the freshly built backend into the machine and preloads a program set. Linux has no machine
-    * and keeps the FUSE backend (doc/TODO.md, "The BPF backend's later versions"), so no caller calls this method
+    * and has only the FUSE backend (doc/TODO.md, "The BPF backend's later versions"), so no caller calls this method
     * on Linux. */
   def installKoAgentBpf(podman: String, os: Os, sourceId: String): Either[String, Unit] =
     val command = koAgentFsScriptCommand(podman, os, installScript(sourceId))
@@ -444,13 +463,14 @@ object KoAgentBpf:
   def buildFailedNote(reason: String, os: Os): String =
     "the BPF backend could not be built on this machine, so `--workspace=...,bpf` is refused until a later " +
       "`--build` succeeds; the rest of the build is complete. The machine's kernel may lack a BPF feature the " +
-      s"policy uses, which is measured on kernels 6.18 and 7.2: ${upgradeRemedy(os)}. The backend's $reason"
+      s"policy uses, which is measured on kernels 6.18 and 7.2: ${upgradeRemedy(os)}. The backend's $reason. " +
+      FuseMeanwhile
 
   /** The build's note when it skipped the backend. */
   def buildSkippedNote(failures: Vector[String]): String =
     val heading = "note: the BPF backend is not built on this machine, so `--workspace=...,bpf` is refused until " +
       "a `--build` after these are resolved:"
-    (heading +: failures.map(reason => s"  - $reason")).mkString("\n")
+    ((heading +: failures.map(reason => s"  - $reason")) :+ FuseMeanwhile).mkString("\n")
 
   // ---------------------------------------------------------------------------
   // The launch: steps 1 to 3, in one script in the machine

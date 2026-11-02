@@ -154,18 +154,16 @@ Alternatively, on the host: copy the worktree
 
        sudo sh -c 'echo user_allow_other >> /etc/fuse.conf'
 
-   Without this, `--build` fails with
-
-       ko-agent-fs-fuse self-test failed in its setup, before any check: mount failed:
-       fusermount3: option allow_other only allowed if 'user_allow_other' is set in /etc/fuse.conf
+   Without this, `--build` skips the FUSE backend's self-test, and a launch is refused with the
+   command above.
 
 1. Build the container images
 
        sbt dist && java -jar target/dist/ko-agent-sandbox.jar --build
 
-1. Run the sandbox
+1. Run the sandbox. Native Linux has only the FUSE backend:
 
-       java -jar target/dist/ko-agent-sandbox.jar bash
+       java -jar target/dist/ko-agent-sandbox.jar --workspace=live,fuse bash
 
 
 ## On Linux x86_64

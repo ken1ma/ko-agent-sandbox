@@ -225,7 +225,7 @@ object WithPodman extends munit.Assertions:
     val prefix = AgentSandboxLauncher.sandboxRunContainer(id, "")
 
     val before = running()
-    val builder = ProcessBuilder((launchCommand ++ options ++ Vector("sleep", Linger))*)
+    val builder = ProcessBuilder((launchCommand ++ onThisHost(options) ++ Vector("sleep", Linger))*)
     extra.foreach((name, value) => builder.environment().put(name, value))
     builder.directory(workspace.toFile)
     builder.redirectErrorStream(true)
@@ -257,7 +257,7 @@ object WithPodman extends munit.Assertions:
   /** Runs a launch from `from` that is expected to end on its own with a refusal, and returns its exit
     * status and output. A launch that ran instead ends with its command, `true`, and answers 0. */
   def launchOutcome(from: Path, log: Path, options: Vector[String] = Vector.empty): (Int, String) =
-    val builder = ProcessBuilder((launchCommand ++ options ++ Vector("--", "true"))*)
+    val builder = ProcessBuilder((launchCommand ++ onThisHost(options) ++ Vector("--", "true"))*)
     builder.directory(from.toFile)
     builder.redirectErrorStream(true)
     builder.redirectOutput(log.toFile)
@@ -285,6 +285,14 @@ object WithPodman extends munit.Assertions:
   /** The launcher as the suites run it: never under the test host's options file, which would give
     * each run the options a user chose for theirs. */
   val launcherCommand: Vector[String] = Vector("java", "-jar", jar.toString, "--no-options-file")
+
+  /** `--workspace=<mode>` under the default backend, or under `fuse` on native Linux, where the BPF backend does not
+    * run. */
+  def workspaceOption(mode: String): String = s"--workspace=$mode" + (if currentOs == Os.Linux then ",fuse" else "")
+
+  /** `options` with workspaceOption("live") when they state no `--workspace`. */
+  private def onThisHost(options: Vector[String]): Vector[String] =
+    if options.exists(_.startsWith("--workspace=")) then options else options :+ workspaceOption("live")
 
   /** A launch that holds nothing: the suites read its lines from the log, and no one answers the prompt. */
   val launchCommand: Vector[String] = launcherCommand :+ "--session-start=immediate"

@@ -211,7 +211,7 @@ class OptionsFileTest extends munit.FunSuite:
 
   test("every option the file holds has a value that returns it to its default for one launch"):
     val everything =
-      """--workspace=read-only
+      """--workspace=read-only,fuse
         |--egress=deny-all
         |--clipboard=paste
         |--audio=mic
@@ -228,9 +228,10 @@ class OptionsFileTest extends munit.FunSuite:
         |--egress-cred=X@a.example
         |--claude-plugin-dir=/mods/band""".stripMargin
     val defaults = Vector(
-      "--workspace=live", "--egress=deny-unless-allowed", "--clipboard=off", "--audio=off", "--nesting=none",
-      "--session-start=pause", "--env-aws-cred=", "--run-on-host=", "--model-provider=", "--persistent-volume=",
-      "--memory=", "--image=", "--proxy-image=", "--env=", "--egress-cred=", "--claude-plugin-dir=",
+      "--workspace=live,bpf,no-unix-socket", "--egress=deny-unless-allowed", "--clipboard=off", "--audio=off",
+      "--nesting=none", "--session-start=pause", "--env-aws-cred=", "--run-on-host=", "--model-provider=",
+      "--persistent-volume=", "--memory=", "--image=", "--proxy-image=", "--env=", "--egress-cred=",
+      "--claude-plugin-dir=",
     )
     // Each option the file can hold has its default value here.
     assertEquals(defaults.map(_.takeWhile(_ != '=')).toSet, FileOptionNames.toSet)
@@ -241,6 +242,9 @@ class OptionsFileTest extends munit.FunSuite:
       ("live", "deny-unless-allowed", "off", false, "none"),
     )
     assertEquals(reset.sessionStartMode, "pause")
+    assertEquals(reset.workspaceSettings, WorkspaceSettings.Default)
+    // The socket setting has its own default value, so the file's unix-socket is undone for one launch too.
+    assertEquals(inForce("--workspace=unix-socket", "--workspace=no-unix-socket").workspaceSettings.unixSocket, false)
     assertEquals(
       (reset.awsCredential, reset.runOnHost, reset.persistentVolume, reset.memory),
       (None, None, None, None),
@@ -299,6 +303,47 @@ class OptionsFileTest extends munit.FunSuite:
     // The action, the command and --no-options-file are the command line's alone.
     assertEquals(inForce("--memory=8g", "--reset", "x").action, Some(("--reset", List("x"))))
 
+  test("--workspace merges by part: the command line's parts replace the file's, and a conflict refuses"):
+    def settings(file: String, args: String*) = inForce(file, args*).workspaceSettings
+    assertEquals(settings("--workspace=fuse", "--workspace=read-only"), WorkspaceSettings("read-only", "fuse", false))
+    // Within one source, several --workspace options join, as their values joined with commas would.
+    assertEquals(
+      settings("--workspace=read-only\n--workspace=fuse", "--workspace=live", "--workspace=no-unix-socket"),
+      WorkspaceSettings("live", "fuse", false),
+    )
+    assert(fileOptions("--workspace=unix-socket\n--workspace=fuse").swap.exists(_.contains(":2: --workspace=fuse,")))
+    assertEquals(
+      settings("--workspace=read-only,fuse", "--workspace=bpf"),
+      WorkspaceSettings("read-only", "bpf", false),
+    )
+    assertEquals(settings("--workspace=fuse", "claude"), WorkspaceSettings("live", "fuse", false))
+    assertEquals(
+      settings("--workspace=unix-socket", "--workspace=read-only"),
+      WorkspaceSettings("read-only", "bpf", true),
+    )
+    // The startup line credits the file with the parts it supplied that the command line left in force.
+    def supplied(file: String, args: String*) = merged(file, args*).fold(fail(_), _._2)
+    val fuseFromFile = Vector(FileSupplied("--workspace", "--workspace=fuse"))
+    assertEquals(supplied("--workspace=read-only,fuse", "--workspace=live"), fuseFromFile)
+    assertEquals(supplied("--workspace=fuse", "--workspace=bpf"), Vector.empty)
+    assertEquals(supplied("--workspace=fuse", "claude"), fuseFromFile)
+    // The FUSE backend cannot honor unix-socket, whichever source states each part. The refusal names both sources.
+    assertEquals(
+      merged("--workspace=bpf,unix-socket", "--workspace=fuse").map(_._1),
+      Left(
+        "error: the options file's --workspace=bpf,unix-socket and the command line's --workspace=fuse merge to " +
+          "live,fuse,unix-socket; unix-socket needs the BPF backend: the FUSE backend cannot allow Unix sockets in " +
+          "the workspace (--workspace=...,bpf or --workspace=...,no-unix-socket)",
+      ),
+    )
+    assert(merged("--workspace=fuse", "--workspace=unix-socket").isLeft)
+    // The BPF backend's refusal names a remedy that the merge then accepts, the file's unix-socket included.
+    val nested = settings("--workspace=unix-socket", "claude")
+    val remedy =
+      "--workspace=[a-z-]+(,[a-z-]+)*".r.findFirstIn(KoAgentBpf.fuseRemedy(nested)).getOrElse(fail("no remedy"))
+    assertEquals(settings("--workspace=unix-socket", remedy).spelled, "live,fuse")
+    assertEquals(settings("--workspace=bpf,unix-socket", "--workspace=fuse,no-unix-socket").spelled, "live,fuse")
+
   test("the file's options are printed once, each naming the file, an --env by its name alone"):
     val (parsed, supplied) =
       merged("--memory=8g\n--env=SECRET=hunter2\n--nesting=same-uid\n--image=i", "--image=j").fold(fail(_), identity)
@@ -306,13 +351,12 @@ class OptionsFileTest extends munit.FunSuite:
     def lines(color: Boolean) =
       options.fileLines(Set("--nesting"), Os.Linux, color).map(_.replace("/home/me/.config", "~/.config"))
     assertEquals(lines(color = false), Vector(s"--memory=8g$FromFile", s"--env=SECRET$FromFile"))
-    // The line tints the value as the user's choice, and shows the source in gray for the reader to
-    // look up, parentheses included.
-    val (chosen, gray, off) = ("\u001b[38;5;207m", "\u001b[38;5;245m", "\u001b[0m")
-    val source = s" $gray(from $Shown)$off"
+    // The line tints the value and the source, parentheses included, in the options file's shade.
+    val (file, off) = ("\u001b[38;5;133m", "\u001b[0m")
+    val source = s" $file(from $Shown)$off"
     assertEquals(
       lines(color = true),
-      Vector(s"--memory=${chosen}8g$off$source", s"--env=${chosen}SECRET$off$source"),
+      Vector(s"--memory=${file}8g$off$source", s"--env=${file}SECRET$off$source"),
     )
     assert(!options.fileLines(os = Os.Linux, color = false).exists(_.contains("hunter2")))
     assertEquals(options.from("--nesting", Os.Linux, color = false).replace("/home/me/.config", "~/.config"), FromFile)

@@ -78,4 +78,9 @@ object SourceDigestCheck:
           if actual == named then println(s"PASS $name: sources $named")
           else println(s"FAIL $name: the section names $named, the sources digest to $actual")
           actual == named
+    if !results.forall(identity) then
+      println(
+        "A changed digest is a pending rerun, not a refused change: list the change in doc/TODO.md, " +
+          s"\"BPF suite reruns\", and rerun before a release ($Evidence)",
+      )
     sys.exit(if results.forall(identity) then 0 else 1)

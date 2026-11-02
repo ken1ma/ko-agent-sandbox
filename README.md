@@ -317,24 +317,30 @@ restore permission prompts and set the Claude Code status line.
     Session options, selected on every launch and never persisted, on the command line or in the
     options file below. An empty value, as in --memory=, returns an option to its default; a closed
     choice such as --clipboard names its default instead:
-      --workspace=read-only|live[,fuse|bpf][,unix-socket]
+      --workspace=read-only|live
                          read-only makes the workspace read-only to the
                          sandbox's processes; live (default) lets the agent
                          edit the shared workspace files and the Git state the
                          workspace policy lists (refs, objects, the index, HEAD
-                         and the like); every other Git entry, such as config and
-                         hooks, .ko-agent-sandbox and what the file rules
-                         protect are frozen at any depth (SECURITY.md).
-                         The values after the mode, in any order: the backend
-                         holding those protections, fuse (default), a FUSE
-                         mount of the workspace, or bpf, which mounts the
-                         workspace directory itself and has the podman
-                         machine's kernel enforce the protections on the
-                         container (SECURITY.md, "The BPF backend"); and
-                         unix-socket, which allows Unix sockets in the
-                         workspace and under the agent-state volume, with bpf
-                         only; on Windows under the volume alone, since the
-                         share refuses a socket bind itself
+                         and the like); every other Git entry, such as config
+                         and hooks, .ko-agent-sandbox and what the file rules
+                         protect are frozen at any depth (SECURITY.md)
+      --workspace=bpf|fuse
+                         the backend holding those protections: bpf (default),
+                         which mounts the workspace directory itself and has
+                         the podman machine's kernel enforce the protections
+                         on the container (SECURITY.md, "The BPF backend"),
+                         or fuse, a FUSE mount of the workspace, which native
+                         Linux and the nesting modes other than none need
+      --workspace=unix-socket|no-unix-socket
+                         unix-socket allows Unix sockets in the workspace and
+                         under the agent-state volume, with bpf only; on
+                         Windows under the volume alone, since the share
+                         refuses a socket bind itself; no-unix-socket (default)
+                         allows none.
+                         Give one value from each pair, in any order, joined
+                         with commas or as separate --workspace options, as in
+                         --workspace=read-only,fuse
       --egress=deny-all|deny-unless-model|deny-unless-allowed
                          which hosts the session reaches; the default,
                          deny-unless-allowed, allows the launcher-owned
@@ -446,8 +452,9 @@ restore permission prompts and set the Claude Code status line.
     ~/.config/ko-agent-sandbox/options (%APPDATA%\ko-agent-sandbox\options on Windows): one
     session or Claude Code option per line, spelled as above; # starts a comment, "..." quotes a
     value, ${NAME} expands a variable of the launcher's environment. Every launch prints each
-    option it supplies. A command-line option replaces the file's; --env and --egress-cred replace
-    the file's entry of the same name, and --model-provider adds its names to the file's. Three
+    option it supplies. A command-line option replaces the file's; --workspace replaces the parts
+    it states, --env and --egress-cred the file's entry of the same name, and --model-provider adds
+    its names to the file's. Three
     actions also read some of the file's options, to match what a launch would do. See README.md
     "Options file"
       --no-options-file  before the command: skip the options file for this launch or action
@@ -455,8 +462,8 @@ restore permission prompts and set the Claude Code status line.
     Management actions, each recognized before the command; whatever follows
     belongs to the action:
 
-      --build            build the container images, install the FUSE backend and,
-                         on macOS and Windows, the BPF backend, and derive the
+      --build            build the container images, install the BPF backend on
+                         macOS and Windows and the FUSE backend, and derive the
                          --nesting=none seccomp profile from podman's default,
                          always pulling remote base images
       --update           update the agents: rebuild only the sandbox container
@@ -541,8 +548,6 @@ restore permission prompts and set the Claude Code status line.
     1. `--update` rebuilds without cache, while `--build` may reuse cached versions.
     1. Agents cannot update themselves inside the sandbox.
 
-1. May ask to add `user_allow_other` to the podman machine's `/etc/fuse.conf`, shown as a diff
-   first (SECURITY.md, "Silent changes to what you own"). A native Linux host is never prompted.
 1. For FUSE backend failures, see [troubleshooting.md](ko-agent-fs/fuse/doc/troubleshooting.md).
 1. `--build`, `--update` and `--self-test` all end by removing the container images they
    superseded, never a pulled image.
@@ -563,10 +568,13 @@ command line:
    `~/.config/ko-agent-sandbox/options`; on Windows, `%APPDATA%\ko-agent-sandbox\options`. An
    absent file supplies nothing.
 1. Every launch prints each option the file supplies, naming the file:
-   `--memory=8g (from ~/.config/ko-agent-sandbox/options)`. A line that already states the option,
+   `--memory=8g (from ~/.config/ko-agent-sandbox/options)`, both in a darker purple than the
+   command line's choices. A line that already states the option,
    such as a grant's orange line or the `egress:` line, names the file instead.
 1. An option on the command line replaces the file's for that launch.
 
+    1. `--workspace` replaces the parts it states: `--workspace=read-only` keeps the file's
+       `fuse`.
     1. `--env` and `--egress-cred` replace the file's entry of the same name;
        `--claude-plugin-dir` loads a directory both spell alike once, and `--model-provider` adds
        its names to the file's.
@@ -606,8 +614,8 @@ The file's format:
 
 1. The launcher is the sbt project at the repository root.
 2. The egress proxy is its own sbt project under `container/ko-agent-egress-proxy/app`.
-3. The workspace policy and the FUSE backend are the Cargo workspace under `ko-agent-fs`, beside
-   the BPF backend in `ko-agent-fs/bpf`.
+3. The BPF backend is in `ko-agent-fs/bpf`, beside the Cargo workspace under `ko-agent-fs` that
+   holds the workspace policy and the FUSE backend.
 
 Run the commands below from the repository root.
 

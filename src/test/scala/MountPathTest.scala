@@ -30,7 +30,7 @@ class MountPathTest extends munit.FunSuite:
     workspaceRoot
 
   private def sessionFrom(from: Path, log: Path, mode: String): Session =
-    launchWith(from, log, Vector(s"--workspace=$mode", "--egress=deny-unless-allowed"))
+    launchWith(from, log, Vector(workspaceOption(mode), "--egress=deny-unless-allowed"))
 
   /** Asserts where the session is, and that the protection holds there too: the launch line names the
     * path, `pwd` answers it, and both protected writes are refused there. Appending nothing to

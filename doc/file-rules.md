@@ -96,8 +96,8 @@ protect. So the FUSE backend refuses:
   `node_modules` work;
 - a hard link of a symlink out of that directory, and a symlink into it from outside.
 
-No line applies in a Git directory's operational state, such as `.git/objects`. So the FUSE
-backend, and the BPF backend under `--workspace=live,bpf`, refuse:
+No line applies in a Git directory's operational state, such as `.git/objects`. So both backends
+refuse:
 
 - moving a directory or symlink out of that state into the workspace, and a hard link of a symlink
   out of that state;

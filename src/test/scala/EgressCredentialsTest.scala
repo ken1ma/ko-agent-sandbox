@@ -48,7 +48,8 @@ class EgressCredentialsTest extends munit.FunSuite:
       List.tabulate(CredentialGrammar.MaxBindings + 1)(index => s"--egress-cred=X$index@a.example") ->
         "error: 257 --egress-cred options; a launch takes at most 256",
       List("--egress-cred", "X@a.example") ->
-        ("error: the launch options are spelled --workspace=<mode>[,<backend>][,unix-socket], --egress=<profile>, " +
+        ("error: the launch options are spelled " +
+          "--workspace=read-only|live|bpf|fuse|unix-socket|no-unix-socket[,...], --egress=<profile>, " +
           "--model-provider=<names>, " +
           "--clipboard=<mode>, --audio=off|<devices>, --nesting=none|user-namespace|same-uid, " +
           "--session-start=pause|immediate, " +
@@ -235,14 +236,21 @@ class EgressCredentialsTest extends munit.FunSuite:
       EgressCredentials.bannerLines(credentials, _ => " (from F)", color = false),
       Vector(s"brokered credential: GH_TOKEN -> api.github.com (Authorization), placeholder ghp_${"P" * 36} (from F)"),
     )
-    // The banner tints the variable and its destination as values the user chose, and leaves the source
-    // untinted.
-    val (on, off) = ("\u001b[38;5;207m", "\u001b[0m")
+    // The banner tints the variable and its destination as values the user chose, in the options file's shade
+    // when the file supplied the binding.
+    val (on, file, off) = ("\u001b[38;5;207m", "\u001b[38;5;133m", "\u001b[0m")
     assertEquals(
       EgressCredentials.bannerLines(credentials, _ => " (from F)", color = true),
       Vector(
-        s"brokered credential: ${on}GH_TOKEN$off -> ${on}api.github.com$off (Authorization), " +
+        s"brokered credential: ${file}GH_TOKEN$off -> ${file}api.github.com$off (Authorization), " +
           s"placeholder ghp_${"P" * 36} (from F)",
+      ),
+    )
+    assertEquals(
+      EgressCredentials.bannerLines(credentials, color = true),
+      Vector(
+        s"brokered credential: ${on}GH_TOKEN$off -> ${on}api.github.com$off (Authorization), " +
+          s"placeholder ghp_${"P" * 36}",
       ),
     )
     // The placeholder changes at each launch. The instructions are cached by their stamp, so they name the

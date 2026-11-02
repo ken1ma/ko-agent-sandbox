@@ -142,11 +142,11 @@ The sections below describe the limits and costs of each.
 and the commands that `.git/config` names, such as `core.hooksPath`, `core.fsmonitor`, filters and
 the pager.
 
-- By default the FUSE backend prevents a session from injecting commands into the user's
-  next host `git` run.
-- Under `--workspace=live,bpf` the BPF backend of `doc/bpf-lsm-cgroup.md` holds the same rules on
-  the workspace directory itself. One exception: an empty directory may be made at a `.git` name,
-  and that directory gains no `HEAD` (`doc/bpf-lsm-cgroup.md`, "Directories").
+- Under `--workspace=live,fuse` the FUSE backend prevents a session from injecting commands into
+  the user's next host `git` run.
+- Under `--workspace=live,bpf`, the default, the BPF backend of `doc/bpf-lsm-cgroup.md` holds the
+  same rules on the workspace directory itself. One exception: an empty directory may be made at a
+  `.git` name, and that directory gains no `HEAD` (`doc/bpf-lsm-cgroup.md`, "Directories").
 - An auditor finds what to trust for the BPF backend under "The BPF backend", below.
 
 What the FUSE backend does:
@@ -333,14 +333,16 @@ does not own. Unannounced changes to host configuration or metadata can invalida
 understanding of what the sandbox can access. These cases need a host change or an explicit notice:
 
 - the podman **machine's** `/etc/fuse.conf` gains `user_allow_other` only after you consent.
-  `--build` first shows the change as a diff of the actual file, plus the exact script.
+  A launch under the FUSE backend first shows the change as a diff of the actual file, plus the
+  exact script.
   - The launcher saves the original to `/etc/fuse.conf.ko-agent-sandbox.orig` first.
-  - If you decline, the launcher prints the script for you to run yourself.
+  - If you decline, the launch is refused, and the launcher prints the script for you to run
+    yourself.
 - a native Linux **host** is never even prompted for sudo. The launcher only hands you the command.
 - the **machine** is started when stopped, but never created or resized: sizing is yours.
 - during **session setup**, the workspace tree stays unchanged:
-  - The FUSE backend denies creating `.git` and `.ko-agent-sandbox` by name, and the BPF backend
-    judges what enters them. So neither name needs a mount target in the workspace.
+  - The BPF backend judges what enters `.git` and `.ko-agent-sandbox`, and the FUSE backend denies
+    creating them by name. So neither name needs a mount target in the workspace.
   - The policy's proof fixture lies under the launcher's state root.
   - `--workspace=read-only` makes the entire tree read-only.
 - **`--self-test` without a case filter** writes to its own scratch directory in the workspace
@@ -658,7 +660,8 @@ What is measured, each item through the whole production stack
   share-lock cost that "The workspace" notes. The `mmap` row has not run on Windows.
 
 The rest is what the README's status line means. On Linux the guarantees are reasoned rather than
-measured. The FUSE backend still enforces every `--workspace=live` session, on every platform.
+measured. The FUSE backend still enforces every `--workspace=live,fuse` session, on every
+platform.
 
 A version mismatch, a failed self-test or a failed mount aborts the launch. None of them falls back
 to a plain bind mount.
@@ -675,8 +678,8 @@ access to the same files.
   gained and what is lost").
 - `ko-agent-fs/bpf/doc/architecture.md` says how the backend keeps those promises.
 - `ko-agent-fs/bpf/doc/evidence.md` says what the suites measured.
-- The backend serves the podman machines of macOS and Windows alone. Native Linux keeps the FUSE
-  backend (`doc/TODO.md`, "The BPF backend's later versions").
+- The backend serves the podman machines of macOS and Windows alone. Native Linux needs
+  `--workspace=...,fuse` (`doc/TODO.md`, "The BPF backend's later versions").
 
 What an auditor trusts, and how each link is checked:
 
@@ -749,8 +752,7 @@ What an auditor trusts, and how each link is checked:
 What is measured: the sections "One hook on macOS" to "Launcher on WSL" of
 `ko-agent-fs/bpf/doc/evidence.md`, including the launcher's own rows. Each section of the policy,
 lifecycle, benchmark and launcher suites binds its figures to the digest of its sources' code.
-`fuse` stays the default of both modes until the release decision that `doc/TODO.md` plans ("The BPF
-backend as the default").
+`bpf` is the default of both modes (`doc/bpf-lsm-cgroup.md`, "Launches").
 
 **What is inside TLS, for the hosts that stay opaque.**
 
@@ -1812,7 +1814,7 @@ commands execute outside the container, so the profile provides their confinemen
   `.git/hooks/post-checkout`, that hook would run on your next `git checkout`, outside every
   sandbox. Two enforcement points prevent that write, both named under "The host's git executing
   what the sandbox wrote", above:
-  - the session's backend, FUSE or BPF, for writes through the workspace mount;
+  - the session's backend, BPF or FUSE, for writes through the workspace mount;
   - this profile's deny rules, for writes by the command.
 - **Cache poisoning stops at the workspace.** The command writes its own per-workspace caches, never
   yours:
@@ -1940,9 +1942,9 @@ The profile:
     is writable through its descriptor before `move_mount` attaches it (measured 2026-10-17);
 - answers the `setxattr` and `removexattr` families, ACLs among them, and `file_setattr` with
   `ENOTSUP` (`SeccompProfile.AttributeSyscalls`):
-  - The FUSE backend refuses these routes by not implementing them, and the BPF backend holds no
-    hook for them (`ko-agent-fs/bpf/doc/architecture.md`, "Attributes, flags and ioctls"). The rule
-    holds them in every `--nesting=none` session, under `~` too.
+  - The BPF backend holds no hook for these routes, and the FUSE backend refuses them by not
+    implementing them (`ko-agent-fs/bpf/doc/architecture.md`, "Attributes, flags and ioctls"). The
+    rule holds them in every `--nesting=none` session, under `~` too.
   - No `ioctl` command is refused. libseccomp clears a syscall's argument rules when an
     unconditional rule for that syscall arrives (`src/db.c`, `_db_rule_add`). So refusing the
     commands that set a file's flags means spelling every allowed command as a masked prefix, some

@@ -128,16 +128,18 @@ object HostCommands:
    *       widening rule and the prompt are grants whole.
    *   - purple: what the user chose, on a line that states no weakened boundary (chosen). Examples are the workspace
    *     root and mode, the egress profile and model providers, an upstream proxy, the forwarded variables, brokered
-   *     credentials and AWS profile, and the value of an option that the options file supplied. Purple is a hue of
-   *     its own, so that it is never read as a severity.
-   *   - gray: what is there to look up, not to read (lookedUp). Examples are the long path of the run's log directory,
-   *     and the options file's `(from …)` after an option it supplied. The reader skips this text on every ordinary
-   *     launch, and the tint teaches the reader to skip it without learning to skip the lines around it.
+   *     credentials and AWS profile. Purple is a hue of its own, so that it is never read as a severity.
+   *     - A value that the options file supplied is a darker purple, and so is the file's `(from …)` after it
+   *       (fromOptionsFile). The shade tells a choice made once for every launch from one made for this launch.
+   *     - A grant's orange stays: only its `(from …)` takes the darker purple.
+   *   - gray: what is there to look up, not to read (lookedUp). An example is the long path of the run's log
+   *     directory. The reader skips this text on every ordinary launch, and the tint teaches the reader to skip it
+   *     without learning to skip the lines around it.
    *   - green, orange and red on a headroom figure: a measurement's scale, outside this ranking (Headroom).
    *
    * A label is tinted alone, as sbt and mill tint `[warn]` and `[error]` and leave the message. A grant is tinted
-   * alike. A span inside a tinted span, such as a gray source among a grant's plugins, reopens the outer color after
-   * it (tinted).
+   * alike. A span inside a tinted span, such as the file's source among a grant's plugins, reopens the outer color
+   * after it (tinted).
    *
    * Color adds nothing the words do not say. These lines are read back from a redirected stream and from a pasted
    * transcript. The workspace and egress lines are also read from the instructions the agent is handed, where an
@@ -186,7 +188,12 @@ object HostCommands:
   /** What the user chose, as the line stating it says it, such as `live` or `deny-unless-allowed`. Purple and orange
     * are not among the theme's sixteen colors: the theme's magenta is as often pink, and its yellow as often olive.
     * Both therefore come from the 256-color cube. */
-  def chosen(text: String, color: Boolean = colorStderr): String = tinted("38;5;207", text, color)
+  def chosen(text: String, color: Boolean = colorStderr, fromFile: Boolean = false): String =
+    if fromFile then fromOptionsFile(text, color) else tinted("38;5;207", text, color)
+
+  /** What the options file supplied, and the file's `(from …)`: a darker purple from the cube, legible on a light and
+    * a dark background alike. */
+  def fromOptionsFile(text: String, color: Boolean = colorStderr): String = tinted("38;5;133", text, color)
 
   /** What is there to look up, not to read. The tint is mid-gray from the cube, legible on a light and a dark
     * background alike. The theme's bright black can be either. */
@@ -227,7 +234,7 @@ object HostCommands:
   private final val Red = "31"
   private final val Orange = "38;5;208"
 
-  /** A span tinted inside `text`, such as a gray source among a grant's plugins, ends with a reset. The color is
+  /** A span tinted inside `text`, such as the file's source among a grant's plugins, ends with a reset. The color is
     * reopened after the span, so the rest of `text` keeps its tint. */
   private def tinted(code: String, text: String, color: Boolean): String =
     val reset = s"$Esc[0m"

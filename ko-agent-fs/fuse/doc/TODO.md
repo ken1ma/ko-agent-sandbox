@@ -257,7 +257,8 @@ privileged rig included.
 
 ## P1 — Performance (the measurements say the target workload would hurt)
 
-The FUSE backend enforces the default mode, `--workspace=live`, so its cost is the sandbox's own.
+The FUSE backend enforces every `--workspace=live,fuse` session, which native Linux and the
+nesting modes need, so its cost is those sessions' own.
 
 - `../../bench/entry-cost.py` builds its own corpus, so two runs compare across machines. It
   reports the time per entry for each workload.
@@ -481,7 +482,7 @@ Expected gain:
 
 ## P2 — Launcher and deployment integration
 
-The FUSE backend is the default on every platform ahead of that verification (`SECURITY.md`, "Not
+The FUSE backend is native Linux's only backend ahead of that verification (`SECURITY.md`, "Not
 defended"). That leaves:
 
 - [ ] After Linux verification, remove the unverified-platform qualification from `SECURITY.md`.

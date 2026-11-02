@@ -190,8 +190,8 @@ Why the refusals cover more than the creation:
 - A session's write through a FIFO makes the guest kernel flush the FIFO's changed times to the
   share itself, with no `utimensat` from any process. Refusing creation alone would leave a FIFO
   the host made as a hang that a session can trigger by writing to it.
-- The FUSE backend's daemon receives that flush as a `SETATTR` request and refuses it. The BPF hooks
-  never see the flush, so the backend refuses the open instead.
+- The BPF hooks never see that flush, so the BPF backend refuses the open instead. The FUSE
+  backend's daemon receives the flush as a `SETATTR` request and refuses it.
 
 ## One list of launch refusals
 
@@ -307,13 +307,21 @@ refused. A thread and a child process in Python 3.14, Node 24 and Java 25, `git 
         `LD_LIBRARY_PATH` reached. Decide whether the image ships them.
   - `agy`'s Auto mode: `limitations.md` measures it under podman's default profile only.
 
+## BPF suite reruns
+
+The suites whose sources changed since their evidence was measured. One rerun of a suite clears
+every change listed under it (`../ko-agent-fs/bpf/doc/evidence.md` has the procedure).
+
+- [ ] Launcher, on macOS and WSL. Changed in `KoAgentBpf.scala`:
+  - the refusal texts and the build's notes, which name `--workspace=...,fuse`;
+  - the settings label's parse, through `CommandLine.parseWorkspace`'s parts.
+
 ## The BPF backend's later versions
 
 The first version of the BPF backend (`bpf-lsm-cgroup.md`) leaves these items to the versions after
 it. Each item waits behind gates the suites name for it (`../ko-agent-fs/bpf/doc/evidence.md`,
-"Suites"). Until then, the backend selector launches those sessions with the FUSE backend. On the
-podman machines, the selector launches their `--workspace=read-only` sessions under the no-root
-policy, which denies the whole share and needs none of the routes the first item names.
+"Suites"). Until then, a `bpf` launch of those sessions is refused, read-only ones included, and
+the refusal names `fuse`.
 
 A quoted section name below without a document refers to one of the BPF backend's three documents,
 whose section names are distinct.
@@ -398,18 +406,6 @@ whose section names are distinct.
     object's CO-RE relocations as libbpf does on both kernels. The demonstration uses a fixture
     whose BTF holds two types of one name, since a loader that picks the wrong type reads the wrong
     field without an error (reported against Aya as its issue 1727, not verified here).
-
-## The BPF backend as the default
-
-`fuse` stays the default of both `--workspace` modes until a release decision.
-
-- [ ] Make `bpf` the default once all of these hold:
-  - the backend holds every promise of `bpf-lsm-cgroup.md` ("What a session can and cannot do",
-    "Launches"), shown on both podman machines (`../ko-agent-fs/bpf/doc/evidence.md`);
-  - a later version ("The BPF backend's later versions") holds the `.git` and protected-entry rows,
-    for the sessions it admits, through an alias the session binds, an overlay mount the session
-    makes and a nested mount the host made;
-  - on native Linux, a later version holds the two refusals of `bpf-lsm-cgroup.md`, "Native Linux".
 
 ## A self-test of the BPF backend on the user's kernel
 

@@ -104,10 +104,15 @@ object EgressRules:
    * @param profileSource what the line adds after the profile when the options file supplied `--egress`
    *   (OptionsInForce.from). `providerSource` is what the line adds after the provider selection when
    *   the options file supplied provider names (OptionsInForce.providersFrom).
-   * @param color tints the profile and the provider selection (HostCommands.chosen).
+   * @param color tints the profile and the provider selection (HostCommands.chosen), in the file's shade for what the
+   *   file supplied: the profile when `profileSource` names the file, and each provider in `providersFromFile`.
    */
   def egressBanner(
-    resolved: String, profileSource: String = "", providerSource: String = "", color: Boolean = colorStderr,
+    resolved: String,
+    profileSource: String = "",
+    providerSource: String = "",
+    color: Boolean = colorStderr,
+    providersFromFile: Set[String] = Set.empty,
   ): Either[String, String] =
     val lines = resolved.linesIterator.toVector
 
@@ -128,11 +133,13 @@ object EgressRules:
       inspected <- counts.get("inspected hosts").toRight(NoSummaryCounts)
       tunnel <- counts.get("tunnel hosts").toRight(NoSummaryCounts)
     yield
+      def named(name: String) = chosen(name, color, providersFromFile(name))
       val selected = provider.map:
         case "none"                       => s"${chosen("no provider", color)} selected"
-        case names if names.contains(",") => s"model providers ${chosen(names.replace(",", ", "), color)}"
-        case name                         => s"model provider ${chosen(name, color)}"
-      (Vector(s"egress: ${chosen(profile, color)}$profileSource") ++ selected.map(_ + providerSource)
+        case names if names.contains(",") => s"model providers ${names.split(",").map(named).mkString(", ")}"
+        case name                         => s"model provider ${named(name)}"
+      val profileLine = s"egress: ${chosen(profile, color, profileSource.nonEmpty)}$profileSource"
+      (Vector(profileLine) ++ selected.map(_ + providerSource)
         :+ s"$inspected inspected, $tunnel tunnel")
         .mkString("; ")
 

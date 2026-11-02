@@ -63,7 +63,7 @@ object ImageBuilds:
         contextSourceId(context, "debian-temurin"),
         contextSourceId(context, "debian-coursier"),
       )
-      // The BPF backend builds on the podman machines alone: native Linux keeps the FUSE backend (doc/TODO.md,
+      // The BPF backend builds on the podman machines alone: native Linux has only the FUSE backend (doc/TODO.md,
       // "The BPF backend's later versions"), and the build reads the machine's kernel BTF. A machine that
       // lacks what the BPF backend needs gets the FUSE backend's build alone.
       val bpfBackendSourceId = KoAgentBpf.sourceId(context)
@@ -87,7 +87,7 @@ object ImageBuilds:
       )
       // The backend builds after the rest, and its failure is not fatal. A kernel that the checks above
       // cannot tell apart, one lacking a BPF feature the program uses, fails the backend's build, and
-      // `fuse`, the default, needs none of it.
+      // `fuse` needs none of it.
       val bpfBuildFailure =
         runBuilds(context, remoteImagePullCommands(podman, remoteImages) ++ commands, optional = bpfBackendCommands)
       verifyBuiltBundleLabels(Seq(
