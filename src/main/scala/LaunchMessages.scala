@@ -40,17 +40,18 @@ object LaunchMessages:
     Vector(programs) ++ shutdown ++ readOnly
 
   /** What the workspace root line says after the root: the workspace mode, and on Windows the mount path. The mount
-    * path is not the root's spelling but the /mnt/<drive> spelling that the agent will print. */
+    * path is not the root's spelling but the /mnt/<drive> spelling that the agent will print. Each part takes the
+    * shade of its source (`sourceOf`, OptionsInForce.workspacePartSource). */
   def workspaceModeClause(
     mode: String,
     source: String,
     mountPath: String,
     os: Os,
     color: Boolean = colorStderr,
-    fromFile: String => Boolean = _ => false,
+    sourceOf: String => ValueSource,
   ): String =
     val mountedAt = if os == Os.Windows then s" at $mountPath" else ""
-    val parts = mode.split(",").map(part => chosen(part, color, fromFile(part))).mkString(",")
+    val parts = mode.split(",").map(part => stated(part, sourceOf(part), color)).mkString(",")
     s" ($parts$mountedAt)$source"
 
   /** The forwarded variables by name, each tinted as what the user chose. `source` follows each variable that the

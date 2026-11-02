@@ -568,9 +568,8 @@ command line:
    `~/.config/ko-agent-sandbox/options`; on Windows, `%APPDATA%\ko-agent-sandbox\options`. An
    absent file supplies nothing.
 1. Every launch prints each option the file supplies, naming the file:
-   `--memory=8g (from ~/.config/ko-agent-sandbox/options)`, both in a darker purple than the
-   command line's choices. A line that already states the option,
-   such as a grant's orange line or the `egress:` line, names the file instead.
+   `--memory=8g (from ~/.config/ko-agent-sandbox/options)`. A line that already states the
+   option, such as the `run-on-host:` or `egress:` line, names the file instead.
 1. An option on the command line replaces the file's for that launch.
 
     1. `--workspace` replaces the parts it states: `--workspace=read-only` keeps the file's

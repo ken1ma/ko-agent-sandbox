@@ -104,8 +104,10 @@ object EgressRules:
    * @param profileSource what the line adds after the profile when the options file supplied `--egress`
    *   (OptionsInForce.from). `providerSource` is what the line adds after the provider selection when
    *   the options file supplied provider names (OptionsInForce.providersFrom).
-   * @param color tints the profile and the provider selection (HostCommands.chosen), in the file's shade for what the
-   *   file supplied: the profile when `profileSource` names the file, and each provider in `providersFromFile`.
+   * @param color tints the profile in the shade of `profileFrom` (HostCommands.stated), and the provider selection as
+   *   chosen, in the file's shade for each provider in `providersFromFile` (HostCommands.chosen). The command's own
+   *   provider counts as the command line's, since the user typed the command. `no provider` is a default: no source
+   *   named one.
    */
   def egressBanner(
     resolved: String,
@@ -113,6 +115,7 @@ object EgressRules:
     providerSource: String = "",
     color: Boolean = colorStderr,
     providersFromFile: Set[String] = Set.empty,
+    profileFrom: ValueSource,
   ): Either[String, String] =
     val lines = resolved.linesIterator.toVector
 
@@ -135,10 +138,10 @@ object EgressRules:
     yield
       def named(name: String) = chosen(name, color, providersFromFile(name))
       val selected = provider.map:
-        case "none"                       => s"${chosen("no provider", color)} selected"
+        case "none"                       => s"${defaulted("no provider", color)} selected"
         case names if names.contains(",") => s"model providers ${names.split(",").map(named).mkString(", ")}"
         case name                         => s"model provider ${named(name)}"
-      val profileLine = s"egress: ${chosen(profile, color, profileSource.nonEmpty)}$profileSource"
+      val profileLine = s"egress: ${stated(profile, profileFrom, color)}$profileSource"
       (Vector(profileLine) ++ selected.map(_ + providerSource)
         :+ s"$inspected inspected, $tunnel tunnel")
         .mkString("; ")

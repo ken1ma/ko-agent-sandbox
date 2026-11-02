@@ -238,7 +238,7 @@ class EgressCredentialsTest extends munit.FunSuite:
     )
     // The banner tints the variable and its destination as values the user chose, in the options file's shade
     // when the file supplied the binding.
-    val (on, file, off) = ("\u001b[38;5;207m", "\u001b[38;5;133m", "\u001b[0m")
+    val (on, file, off) = ("\u001b[38;5;207m", "\u001b[38;5;135m", "\u001b[0m")
     assertEquals(
       EgressCredentials.bannerLines(credentials, _ => " (from F)", color = true),
       Vector(

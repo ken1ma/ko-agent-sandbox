@@ -129,9 +129,13 @@ object HostCommands:
    *   - purple: what the user chose, on a line that states no weakened boundary (chosen). Examples are the workspace
    *     root and mode, the egress profile and model providers, an upstream proxy, the forwarded variables, brokered
    *     credentials and AWS profile. Purple is a hue of its own, so that it is never read as a severity.
-   *     - A value that the options file supplied is a darker purple, and so is the file's `(from …)` after it
-   *       (fromOptionsFile). The shade tells a choice made once for every launch from one made for this launch.
-   *     - A grant's orange stays: only its `(from …)` takes the darker purple.
+   *     - A value that the options file supplied is a bluer purple, and so is the file's `(from …)` after it
+   *       (fromOptionsFile). The hue tells a choice made once for every launch from one made for this launch.
+   *     - A grant's orange stays: only its `(from …)` takes the bluer purple.
+   *   - teal: the launcher's default, on a value that neither the command line nor the options file named (defaulted).
+   *     Examples are `live,bpf` and `deny-unless-allowed` on a launch that states neither. The tint says who decided,
+   *     not what was decided: a command line that spells the default takes purple. A grant has no teal, since a
+   *     default weakens nothing.
    *   - gray: what is there to look up, not to read (lookedUp). An example is the long path of the run's log
    *     directory. The reader skips this text on every ordinary launch, and the tint teaches the reader to skip it
    *     without learning to skip the lines around it.
@@ -185,15 +189,28 @@ object HostCommands:
       else Vector(s"$source, other lines: ${others.mkString("; ")}")
     report ++ rest
 
+  /** Who supplied a value that a launch line states. `Default` stands when neither source names the value. */
+  enum ValueSource:
+    case CommandLine, OptionsFile, Default
+
   /** What the user chose, as the line stating it says it, such as `live` or `deny-unless-allowed`. Purple and orange
     * are not among the theme's sixteen colors: the theme's magenta is as often pink, and its yellow as often olive.
     * Both therefore come from the 256-color cube. */
   def chosen(text: String, color: Boolean = colorStderr, fromFile: Boolean = false): String =
-    if fromFile then fromOptionsFile(text, color) else tinted("38;5;207", text, color)
+    stated(text, if fromFile then ValueSource.OptionsFile else ValueSource.CommandLine, color)
 
-  /** What the options file supplied, and the file's `(from …)`: a darker purple from the cube, legible on a light and
+  /** A value in the shade of its source, for a line whose value can be the default. */
+  def stated(text: String, source: ValueSource, color: Boolean = colorStderr): String = source match
+    case ValueSource.CommandLine => tinted(Purple, text, color)
+    case ValueSource.OptionsFile => fromOptionsFile(text, color)
+    case ValueSource.Default     => defaulted(text, color)
+
+  /** What the options file supplied, and the file's `(from …)`: a bluer purple from the cube, legible on a light and
     * a dark background alike. */
-  def fromOptionsFile(text: String, color: Boolean = colorStderr): String = tinted("38;5;133", text, color)
+  def fromOptionsFile(text: String, color: Boolean = colorStderr): String = tinted(BluerPurple, text, color)
+
+  /** The launcher's default, which no source named: a teal from the cube, a hue of its own beside the two purples. */
+  def defaulted(text: String, color: Boolean = colorStderr): String = tinted(Teal, text, color)
 
   /** What is there to look up, not to read. The tint is mid-gray from the cube, legible on a light and a dark
     * background alike. The theme's bright black can be either. */
@@ -233,6 +250,9 @@ object HostCommands:
   private val Esc = 27.toChar
   private final val Red = "31"
   private final val Orange = "38;5;208"
+  private final val Purple = "38;5;207"
+  private final val BluerPurple = "38;5;135"
+  private final val Teal = "38;5;44"
 
   /** A span tinted inside `text`, such as the file's source among a grant's plugins, ends with a reset. The color is
     * reopened after the span, so the rest of `text` keeps its tint. */

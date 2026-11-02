@@ -239,8 +239,18 @@ case class OptionsInForce(
   def fileValues(option: String): Vector[String] =
     supplied.filter(_.option == option).map(_.spelled.stripPrefix(option + "="))
 
-  /** The `--workspace` parts that the file supplied and the command line left in force. */
-  def workspacePartsFromFile: Set[String] = fileValues("--workspace").flatMap(_.split(",")).toSet
+  /** Who supplied a `--workspace` part in force. The merged value lists the parts a source stated, and the file's
+    * parts among them are `supplied`; a part in neither is the default (CommandLine.WorkspaceValue.settings). */
+  def workspacePartSource(part: String): HostCommands.ValueSource =
+    if fileValues("--workspace").flatMap(_.split(",")).contains(part) then HostCommands.ValueSource.OptionsFile
+    else if parsed.workspace.exists(_.parts.contains(part)) then HostCommands.ValueSource.CommandLine
+    else HostCommands.ValueSource.Default
+
+  /** Who supplied the egress profile in force. The merge leaves `egress` unset when no source names a profile. */
+  def egressProfileSource: HostCommands.ValueSource =
+    if supplied.exists(_.option == "--egress") then HostCommands.ValueSource.OptionsFile
+    else if parsed.egress.isDefined then HostCommands.ValueSource.CommandLine
+    else HostCommands.ValueSource.Default
 
   /** What the egress line adds after the `selected` providers: `from` when the file supplied every selected provider,
     * else the provider names that the file supplied. A provider that the command or the command line added is thus
