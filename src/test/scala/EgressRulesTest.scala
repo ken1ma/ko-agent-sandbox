@@ -159,15 +159,18 @@ class EgressRulesTest extends munit.FunSuite:
       ),
       Right(s"egress: ${on}deny-unless-model$off; model provider ${on}anthropic$off; 0 inspected, 1 tunnel"),
     )
-    // The banner does not tint where an option came from, because the source is not what the user chose.
+    // What the options file supplied takes the file's shade: the profile with its source, and each provider the file
+    // named. The source text is the caller's (OptionsInForce.from).
+    val file = "\u001b[38;5;133m"
     assertEquals(
       egressBanner(
         "egress profile: deny-unless-allowed; model provider: anthropic,openai\n" + summary(9, 2),
-        profileSource = " (from F)", providerSource = " (from G)", color = true,
+        profileSource = " (from F)", providerSource = " (anthropic from G)", color = true,
+        providersFromFile = Set("anthropic"),
       ),
       Right(
-        s"egress: ${on}deny-unless-allowed$off (from F); model providers ${on}anthropic, openai$off (from G); " +
-          "9 inspected, 2 tunnel",
+        s"egress: ${file}deny-unless-allowed$off (from F); model providers ${file}anthropic$off, ${on}openai$off " +
+          "(anthropic from G); 9 inspected, 2 tunnel",
       ),
     )
 

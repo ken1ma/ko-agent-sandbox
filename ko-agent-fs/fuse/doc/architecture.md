@@ -41,9 +41,8 @@ policy on the operations the kernel forwards. Three other mechanisms were consid
     - a probe at every launch answers the configuration risk;
     - the C classifier is compiled for the host and run through the policy package's corpus
       (`../../policy/tests/bpf_equivalence.rs`).
-  - That backend is `--workspace=live,bpf` on the podman machines. The FUSE backend stays the
-    default of both modes until the release decision `../../../doc/TODO.md` plans ("The BPF backend
-    as the default").
+  - That backend is `--workspace=live,bpf` on the podman machines, and the default of both modes
+    (`../../../doc/bpf-lsm-cgroup.md`, "Launches").
 
 The deciding requirement is the **host/container asymmetry**: the workspace policy governs the
 container's view, and not the host's direct writes to the same files
@@ -276,7 +275,8 @@ The other two modes:
 
 `allow_other` from an unprivileged user also needs `user_allow_other` in `/etc/fuse.conf`, which
 stock images do not set. The launcher adds it only with the user's consent, never silently:
-`SECURITY.md`, "Silent changes to what you own", has the rule, and `ensureUserAllowOther` runs it.
+`SECURITY.md`, "Silent changes to what you own", has the rule, and `enableUserAllowOther` runs it
+when a launch's checks find the line missing.
 
 
 ## Build and install
@@ -333,10 +333,10 @@ The digest's construction, and why the algorithm exists only on the launcher sid
 code: `LauncherImages.bundleSourceId`.
 
 **All steps run from `--build`** (`ImageBuilds.buildCommands`, `KoAgentFs.koAgentFsSourceId` and
-`installKoAgentFs`). **The mount lifecycle runs in every `--workspace=live` session**;
+`installKoAgentFs`). **The mount lifecycle runs in every `--workspace=live,fuse` session**;
 `--workspace=read-only` binds the tree read-only without it.
 
-- Each launch checks the installed FUSE backend's identity and self-test.
+- Each launch checks the installed FUSE backend's identity, `user_allow_other` and the self-test.
 - It then mounts the workspace through a per-workspace daemon that its sessions share, and binds
   the mountpoint at the workspace root's own path.
 - The lifecycle's design and reasoning are with the code: `KoAgentFs.scala`, "The FUSE backend's

@@ -1,7 +1,7 @@
 //! `ko-agent-fs` — the policy that keeps a sandbox from planting Git metadata that a later
-//! host-side `git` would turn into code execution, for both backends: the FUSE backend
-//! (`ko-agent-fs/fuse/`) serves it, and the BPF backend (`ko-agent-fs/bpf/`) enforces the records
-//! `bpf_records` compiles from it.
+//! host-side `git` would turn into code execution, for both backends: the BPF backend
+//! (`ko-agent-fs/bpf/`) enforces the records `bpf_records` compiles from it, and the FUSE backend
+//! (`ko-agent-fs/fuse/`) serves it.
 //!
 //! `doc/git-metadata.md` is the security analysis this code transcribes. `policy` alone decides
 //! *whether* an operation is allowed, and imports nothing; `guard` here and the FUSE backend's `fs`

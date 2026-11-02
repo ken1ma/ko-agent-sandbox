@@ -42,17 +42,23 @@ object LaunchMessages:
   /** What the workspace root line says after the root: the workspace mode, and on Windows the mount path. The mount
     * path is not the root's spelling but the /mnt/<drive> spelling that the agent will print. */
   def workspaceModeClause(
-    mode: String, source: String, mountPath: String, os: Os, color: Boolean = colorStderr,
+    mode: String,
+    source: String,
+    mountPath: String,
+    os: Os,
+    color: Boolean = colorStderr,
+    fromFile: String => Boolean = _ => false,
   ): String =
     val mountedAt = if os == Os.Windows then s" at $mountPath" else ""
-    s" (${chosen(mode, color)}$mountedAt)$source"
+    val parts = mode.split(",").map(part => chosen(part, color, fromFile(part))).mkString(",")
+    s" ($parts$mountedAt)$source"
 
   /** The forwarded variables by name, each tinted as what the user chose. `source` follows each variable that the
     * options file supplied (`fromFile`). */
   def forwardedEnvironmentLine(
     names: Seq[String], fromFile: String => Boolean, source: String, color: Boolean = colorStderr,
   ): String =
-    val said = names.map(name => chosen(name, color) + (if fromFile(name) then source else ""))
+    val said = names.map(name => chosen(name, color, fromFile(name)) + (if fromFile(name) then source else ""))
     s"forwarded environment: ${said.mkString(", ")}"
 
   /** The line for the two `--nesting` values that weaken the default's seccomp profile. That profile refuses creating
@@ -66,7 +72,7 @@ object LaunchMessages:
 
   /** The line for the shared agent-state volume, which the launch prints whichever source named the volume. */
   def sharedVolumeLine(volume: String, source: String = "", color: Boolean = colorStderr): String =
-    s"agent state: volume $volume, ${chosen("shared", color)} by --persistent-volume=$volume$source"
+    s"agent state: volume $volume, ${chosen("shared", color, source.nonEmpty)} by --persistent-volume=$volume$source"
 
   def clipboardLine(mode: String, source: String = "", color: Boolean = colorStderr): String =
     weakened(s"clipboard: $mode", color) + s"$source; the agent can read an image you copy" +
@@ -123,7 +129,7 @@ object LaunchMessages:
     brokered: Vector[CredentialBinding] = Vector.empty,
     // Which backend holds a live session's protections (CommandLine.WorkspaceBackends). The text that the agent reads
     // names the backend, and the BPF backend changes two facts in that text.
-    backend: String = CommandLine.DefaultWorkspaceBackend,
+    backend: String,
     // The `unix-socket` value of --workspace (CommandLine.WorkspaceSettings). Under bpf the text tells the agent where
     // a Unix socket can be bound, because the policy answers a bind with a bare EPERM.
     unixSocket: Boolean = false,

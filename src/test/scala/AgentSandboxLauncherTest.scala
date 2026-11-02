@@ -292,7 +292,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         .startsWith("audio: mic; the host microphone is open for the whole session"),
     )
     // The label and what it grants are orange; the source and the explanation stay outside the color.
-    val (orange, gray, off) = ("\u001b[38;5;208m", "\u001b[38;5;245m", "\u001b[0m")
+    val (orange, file, off) = ("\u001b[38;5;208m", "\u001b[38;5;133m", "\u001b[0m")
     for (line, grant) <- Seq(
         nestingLine("same-uid", color = true) -> "nesting: same-uid",
         clipboardLine("paste", color = true) -> "clipboard: paste",
@@ -302,11 +302,11 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assert(line.startsWith(s"$orange$grant$off; "), line)
       assertEquals(line.count(_ == '\u001b'), 2, line)
     assertEquals(
-      clipboardLine("paste", s" ${gray}(from F)$off", color = true),
-      s"${orange}clipboard: paste$off $gray(from F)$off; the agent can read an image you copy",
+      clipboardLine("paste", s" ${file}(from F)$off", color = true),
+      s"${orange}clipboard: paste$off $file(from F)$off; the agent can read an image you copy",
     )
 
-  test("the workspace root line states the mode, and each line tints what the user chose but never its source"):
+  test("the workspace root line states the mode, and each line tints what the user chose, darker from the file"):
     val source = " (from ~/.config/ko-agent-sandbox/options)"
     assertEquals(workspaceModeClause("live", "", "/w", Os.Mac, color = false), " (live)")
     assertEquals(
@@ -314,15 +314,20 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       s" (read-only)$source",
     )
     assertEquals(workspaceModeClause("live", "", "/mnt/c/w", Os.Windows, color = false), " (live at /mnt/c/w)")
-    val (on, off) = ("\u001b[38;5;207m", "\u001b[0m")
-    assertEquals(workspaceModeClause("live", source, "/w", Os.Mac, color = true), s" (${on}live$off)$source")
+    val (on, file, off) = ("\u001b[38;5;207m", "\u001b[38;5;133m", "\u001b[0m")
+    assertEquals(workspaceModeClause("live,bpf", "", "/w", Os.Mac, color = true), s" (${on}live$off,${on}bpf$off)")
+    // Each part takes the shade of its source: here the file supplied the backend and the command line the mode.
+    assertEquals(
+      workspaceModeClause("read-only,fuse", source, "/w", Os.Mac, color = true, fromFile = Set("fuse")),
+      s" (${on}read-only$off,${file}fuse$off)$source",
+    )
     assertEquals(
       forwardedEnvironmentLine(Vector("GH_TOKEN", "TERM"), Set("TERM"), source, color = false),
       s"forwarded environment: GH_TOKEN, TERM$source",
     )
     assertEquals(
       forwardedEnvironmentLine(Vector("GH_TOKEN", "TERM"), Set("TERM"), source, color = true),
-      s"forwarded environment: ${on}GH_TOKEN$off, ${on}TERM$off$source",
+      s"forwarded environment: ${on}GH_TOKEN$off, ${file}TERM$off$source",
     )
 
   test("a program's hosts are an orange report, joined on one line, what a terminal acts on spelled out"):
@@ -669,9 +674,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       documentedActions,
       ManagementActions ++ Set("--egress-check", NoOptionsFileOption) ++ FileOptionNames,
     )
-    val workspaceUsage =
-      s"--workspace=${WorkspaceModes.mkString("|")}[,${WorkspaceBackends.mkString("|")}][,$UnixSocketValue]"
-    assert(UsageText.contains(workspaceUsage), UsageText)
+    Vector(WorkspaceModes, WorkspaceBackends, Vector(UnixSocketValue, NoUnixSocketValue)).foreach: pair =>
+      assert(UsageText.contains(s"--workspace=${pair.mkString("|")}\n"), UsageText)
     assert(UsageText.contains(s"--clipboard=${ClipboardModes.mkString("|")}"), UsageText)
     assert(UsageText.contains(s"--nesting=${NestingModes.mkString("|")}"), UsageText)
     assert(UsageText.contains(s"--session-start=${SessionStartModes.mkString("|")}"), UsageText)
@@ -1672,7 +1676,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
     // ko-agent-fs's doc/ and probe/ directories and its bench/ are deliberately absent (build.sbt's
     // bundling task gives the reason).
-    Vector("doc", "policy/doc", "fuse/doc", "bpf/doc", "policy/probe", "fuse/probe", "bench")
+    Vector("doc", "policy/doc", "bpf/doc", "fuse/doc", "policy/probe", "fuse/probe", "bench")
       .map(dir => s"ko-agent-fs/$dir/")
       .foreach: prefix =>
         assert(!index.exists(_.startsWith(prefix)), s"$prefix leaked into the jar")
@@ -1740,15 +1744,17 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
     // A ruleset with no lines of its own, so every grant word found is the text's own.
     val emptyResolution = "egress profile: deny-all"
-    val section = appendedSection(Mount, "live", emptyResolution)
+    val section = appendedSection(Mount, "live", emptyResolution, backend = "fuse")
     (words + "method=").foreach(word => assert(section.contains(s"`$word`"), s"the section does not teach `$word`"))
     val named = "`([a-z-]+)` is ".r.findAllMatchIn(section).map(_.group(1)).toSet
     assertEquals(named -- words, Set.empty[String], s"the proxy defines only $words")
     // Neither the workspace rule file's metadata nor its hostnames belong in the instructions.
-    val widened = appendedSection(Mount, 
+    val widened = appendedSection(
+      Mount,
       "live",
       emptyResolution + "\nruleset summary: 0 inspected hosts; 0 tunnel hosts; 1 widening lines\n" +
         "widening lines (1): allow https://a.example/ tunnel",
+      backend = "fuse",
     )
     assert(!widened.contains("widening lines") && !widened.contains("ruleset summary"), widened)
     assert(widened.contains("egress profile: deny-all"), widened)
@@ -1777,25 +1783,25 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         mode <- WorkspaceModes
         programs <- Vector(Vector.empty[String], RunOnHostPrograms)
       do
-        val section = appendedSection(Mount, mode, output, programs)
+        val section = appendedSection(Mount, mode, output, programs, backend = "fuse")
         assert(section.contains(lines.head), section)
         assert(section.contains("consult `$KO_AGENT_SANDBOX_EGRESS_RULESET`"), section)
-        assertEquals(section, appendedSection(Mount, mode, lines.head, programs))
+        assertEquals(section, appendedSection(Mount, mode, lines.head, programs, backend = "fuse"))
         assert(!section.linesIterator.exists(_.trim.matches("(?:allow|deny) https://.*")), section)
         assert(!section.contains("ruleset summary:") && !section.contains("widening lines"), section)
         assert(!section.contains("lines below") && !section.contains("allowed below"), section)
 
   test("the appended section directs the agent by workspace mode, never leaves it to probing"):
     val resolution = "egress profile: deny-all"
-    val readOnly = appendedSection(Mount, "read-only", resolution)
+    val readOnly = appendedSection(Mount, "read-only", resolution, backend = "fuse")
     assert(readOnly.contains("read-only"), readOnly)
     assert(readOnly.contains("--workspace=live"), readOnly)
     Vector(Vector.empty[String], RunOnHostPrograms).foreach: programs =>
-      val section = appendedSection(Mount, "read-only", resolution, programs)
+      val section = appendedSection(Mount, "read-only", resolution, programs, backend = "fuse")
       assert(section.contains("temporary work"), section)
       assert(section.contains("return results in the conversation"), section)
       assert(section.contains("--workspace=live"), section)
-    val liveFuse = appendedSection(Mount, "live", resolution)
+    val liveFuse = appendedSection(Mount, "live", resolution, backend = "fuse")
     assert(liveFuse.contains("FUSE backend"), liveFuse)
     assert(liveFuse.contains("at any depth"), liveFuse)
     assert(liveFuse.contains("Symlink targets"), liveFuse)
@@ -1807,7 +1813,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // command, and only the served programs' daemons and listener rules, because the channel refuses
     // the others. Without the option, a macOS session gets one discovery paragraph, because only the
     // launcher knows the platform. Other platforms hear nothing about a command they can never have.
-    val runOnHostSection = appendedSection(Mount, "live", resolution, Vector("sbt", "mill", "gradle", "mvn"))
+    val runOnHostSection =
+      appendedSection(Mount, "live", resolution, Vector("sbt", "mill", "gradle", "mvn"), backend = "fuse")
     assert(runOnHostSection.contains("ko-sandbox-run-on-host sbt"), runOnHostSection)
     assert(runOnHostSection.contains("ko-sandbox-run-on-host mill"), runOnHostSection)
     assert(
@@ -1815,11 +1822,11 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       runOnHostSection,
     )
     assert(runOnHostSection.replace('\n', ' ').contains("Under sbt and mvn the host grants no TCP"), runOnHostSection)
-    val sbtOnly = appendedSection(Mount, "live", resolution, Vector("sbt"))
+    val sbtOnly = appendedSection(Mount, "live", resolution, Vector("sbt"), backend = "fuse")
     assert(sbtOnly.contains("The daemon of sbt stays warm"), sbtOnly)
     assert(sbtOnly.replace('\n', ' ').contains("Under sbt the host grants no TCP"), sbtOnly)
     Vector("mill", "gradle", "mvn").foreach(other => assert(!sbtOnly.contains(other), sbtOnly))
-    val millOnly = appendedSection(Mount, "live", resolution, Vector("mill"))
+    val millOnly = appendedSection(Mount, "live", resolution, Vector("mill"), backend = "fuse")
     assert(millOnly.contains("Under mill a build's processes can bind listeners"), millOnly)
     Vector("sbt", "gradle", "mvn", "Operation not permitted").foreach: other =>
       assert(!millOnly.contains(other), millOnly)
@@ -1840,14 +1847,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(runOnHostSection.contains(RunOnHostChannel.RunOnHostVariable), runOnHostSection)
     assert(!liveFuse.contains("ko-sandbox-run-on-host"), liveFuse)
     val discoverable =
-      appendedSection(Mount, "live", resolution, Vector.empty, hostCommandsAvailable = true)
+      appendedSection(Mount, "live", resolution, Vector.empty, hostCommandsAvailable = true, backend = "fuse")
     assert(discoverable.contains("absent from this session"), discoverable)
     assert(discoverable.contains("--run-on-host=sbt,mill,gradle,mvn"), discoverable)
     assert(!discoverable.contains("ko-sandbox-run-on-host sbt ..."), discoverable)
     assert(!discoverable.contains(RunOnHostChannel.RunOnHostVariable), discoverable)
     // The read-only mode's instruction flips when a host command can write the workspace (the
     // --run-on-host composition), because the blanket "do not attempt writes" would be false.
-    val readOnlyWithHostCommands = appendedSection(Mount, "read-only", resolution, Vector("sbt"))
+    val readOnlyWithHostCommands = appendedSection(Mount, "read-only", resolution, Vector("sbt"), backend = "fuse")
     assert(readOnlyWithHostCommands.contains("session's own writes"), readOnlyWithHostCommands)
     assert(readOnlyWithHostCommands.contains("ko-sandbox-run-on-host"), readOnlyWithHostCommands)
     assert(readOnlyWithHostCommands.contains("--workspace=live"), readOnlyWithHostCommands)
@@ -1856,7 +1863,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // A session without git, or with read-only git: the agent learns this before its first command,
     // in the paragraph that SandboxWorkspace composes (noGitInstruction, readOnlyGitInstruction).
     val paragraph = "Git does not work in this session: `.git` names a gitdir the sandbox does not have."
-    val noGit = appendedSection(Mount, "live", resolution, git = Some(paragraph))
+    val noGit = appendedSection(Mount, "live", resolution, git = Some(paragraph), backend = "fuse")
     assert(noGit.contains(s"\n\n$paragraph\n"), noGit)
     assert(!liveFuse.contains("Git does not work"), liveFuse)
 
@@ -1873,7 +1880,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(windows.contains("the share refuses a bind in the workspace with `ENOTSUP`"), windows)
     assert(!windows.contains("wherever a file can be made"), windows)
     // The FUSE backend has no socket setting, so its text says nothing of sockets.
-    val fuse = appendedSection(Mount, "live", resolution)
+    val fuse = appendedSection(Mount, "live", resolution, backend = "fuse")
     assert(!fuse.contains("Unix socket"), fuse)
 
   test("the mount-path probe tells an image entry, an unreachable ancestor and a free path apart"):
@@ -2050,7 +2057,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       parseCommandLine(List("--workspace=read-only", "--egress=deny-all", "claude", "--workspace=live")),
       Right(
         ParsedCommandLine(
-          Some("read-only,fuse"), Some("deny-all"), None, List("claude", "--workspace=live"),
+          Some(WorkspaceValue(Some("read-only"), None, None)), Some("deny-all"), None,
+          List("claude", "--workspace=live"),
         ),
       ),
     )
@@ -2064,44 +2072,55 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(parseCommandLine(Nil).map(_.workspaceMode), Right("live"))
     assertEquals(parseCommandLine(Nil).map(_.egressProfile), Right("deny-unless-allowed"))
 
-  test("option parsing: workspace modes and egress profiles are a closed set and are selected once"):
+  test("option parsing: workspace values and egress profiles are closed sets; each is selected once"):
     assert(parseCommandLine(List("--workspace=maybe")).swap.exists(_.contains("read-only or live")))
     assert(parseCommandLine(List("--egress=allow-all")).isLeft)
-    assert(parseCommandLine(List("--workspace=live", "--workspace=read-only")).swap.exists(_.contains("twice")))
-    assert(parseCommandLine(List("--workspace", "live")).swap.exists(_.contains("--workspace=<mode>")))
+    assertEquals(
+      parseCommandLine(List("--workspace=live", "--workspace=read-only")),
+      Left("error: --workspace=read-only; an earlier --workspace already states live; give one value from each pair"),
+    )
+    assertEquals(
+      parseCommandLine(List("--workspace=read-only", "--workspace=fuse")).map(_.workspaceSettings),
+      Right(WorkspaceSettings("read-only", "fuse", false)),
+    )
+    assertEquals(
+      parseCommandLine(List("--workspace=unix-socket", "--workspace=fuse")).swap.map(_.takeWhile(_ != ';')),
+      Right("error: --workspace=fuse,unix-socket"),
+    )
+    val workspaceSynopsis = s"--workspace=${ValuedOptions("--workspace")}"
+    assert(parseCommandLine(List("--workspace", "live")).swap.exists(_.contains(workspaceSynopsis)))
     assert(parseCommandLine(List("--frobnicate")).swap.exists(_.contains("unknown option")))
 
-  test("option parsing: --workspace takes the backend and unix-socket in any order, once each, and says one spelling"):
-    def settings(value: String) = parseWorkspace(value)
-    assertEquals(settings("live"), Right(WorkspaceSettings("live", "fuse", unixSocket = false)))
+  test("option parsing: --workspace states any of its parts, in any order, once each, and says one spelling"):
+    def settings(value: String) = parseWorkspace(value).map(_.settings)
+    assertEquals(settings("live"), Right(WorkspaceSettings("live", "bpf", unixSocket = false)))
     assertEquals(settings("bpf,live"), Right(WorkspaceSettings("live", "bpf", unixSocket = false)))
     assertEquals(settings("unix-socket,read-only,bpf"), Right(WorkspaceSettings("read-only", "bpf", unixSocket = true)))
     assertEquals(settings("live,fuse"), Right(WorkspaceSettings("live", "fuse", unixSocket = false)))
-    assertEquals(settings("live,bpf").map(_.spelled), Right("live,bpf"))
+    // A value may state a part alone; the other parts are what no source stated.
+    assertEquals(parseWorkspace("fuse"), Right(WorkspaceValue(None, Some("fuse"), None)))
+    assertEquals(parseWorkspace("no-unix-socket"), Right(WorkspaceValue(None, None, Some(false))))
+    assertEquals(settings("fuse"), Right(WorkspaceSettings("live", "fuse", unixSocket = false)))
+    assertEquals(settings("unix-socket"), Right(WorkspaceSettings("live", "bpf", unixSocket = true)))
+    // The settings spell the backend always, the default included, and the socket setting only when set.
     assertEquals(settings("bpf,unix-socket,live").map(_.spelled), Right("live,bpf,unix-socket"))
-    // The backend is always spelled, the default included.
-    assertEquals(settings("live,fuse").map(_.spelled), Right("live,fuse"))
-    assertEquals(settings("live").map(_.spelled), Right("live,fuse"))
+    assertEquals(settings("live,no-unix-socket").map(_.spelled), Right("live,bpf"))
     // The FUSE backend cannot honor the socket setting, so the setting is a fatal error, not a silent downgrade.
-    assert(settings("live,unix-socket").swap.exists(_.contains("needs the BPF backend")))
     assert(settings("live,fuse,unix-socket").swap.exists(_.contains("needs the BPF backend")))
-    // Each value appears once, with one mode, nothing unknown and nothing empty.
+    assertEquals(settings("fuse,no-unix-socket").map(_.spelled), Right("live,fuse"))
+    // Each part appears once, nothing unknown and nothing empty.
     assert(settings("live,live").isLeft)
     assert(settings("live,read-only").isLeft)
     assert(settings("live,bpf,fuse").isLeft)
-    assert(settings("live,bpf,unix-socket,unix-socket").isLeft)
-    assert(settings("bpf").isLeft)
+    assert(settings("unix-socket,no-unix-socket").isLeft)
     assert(settings("live,").isLeft)
+    assert(settings("").isLeft)
     assert(settings("live,sockets").isLeft)
-    // The command line stores the one spelling, and the settings read back from it.
-    assertEquals(parseCommandLine(List("--workspace=bpf,live", "claude")).map(_.workspace), Right(Some("live,bpf")))
     assertEquals(
       parseCommandLine(List("--workspace=unix-socket,live,bpf")).map(_.workspaceSettings),
       Right(WorkspaceSettings("live", "bpf", unixSocket = true)),
     )
     assertEquals(parseCommandLine(Nil).map(_.workspaceSettings), Right(WorkspaceSettings.Default))
-    assertEquals(parseCommandLine(List("--workspace=live,bpf")).map(_.workspaceMode), Right("live"))
-    assertEquals(parseCommandLine(List("--workspace=live", "claude")).map(_.workspace), Right(Some("live,fuse")))
 
   test("option parsing: --model-provider names providers for the proxy as written, repeatable, each once"):
     def providers(args: String*): Either[String, Vector[String]] = parseCommandLine(args.toList).map(_.modelProviders)

@@ -200,7 +200,7 @@ Compile / resourceGenerators += Def.task {
   def bundlePath(root: File, file: File): Option[String] =
     IO.relativize(root, file).map(_.replace('\\', '/'))
 
-  val unbundled = Seq("doc", "policy/doc", "fuse/doc", "bpf/doc", "policy/probe", "fuse/probe", "bench")
+  val unbundled = Seq("doc", "policy/doc", "bpf/doc", "fuse/doc", "policy/probe", "fuse/probe", "bench")
 
   def included(root: File, file: File): Boolean =
     val relative = bundlePath(root, file).getOrElse("")

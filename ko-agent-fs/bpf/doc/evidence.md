@@ -10,6 +10,10 @@ those sources changes:
 - rerun that suite on both machines;
 - rewrite its sections below from the reruns, naming the new sources digest.
 
+The change need not wait for the rerun, and several changes can wait for one rerun. Until the rerun,
+the check below fails for that suite, and `../../../doc/TODO.md`, "BPF suite reruns", lists the
+suite. Rerun the listed suites before a release.
+
 A comment edit needs no rerun: the digest covers the sources' code, without their comments
 (`../../../src/main/scala/SourceDigest.scala`). Run the check from the repository root:
 
@@ -346,7 +350,7 @@ commit 654586d (`bpf/probe/phase1/`, `bpf/probe/phase2/`).
   - Before the figures are taken, the creation of a hook file in `.git/hooks` shows that each
     stack is what it claims: it is refused under the policy and through the FUSE backend, and made
     over the bare bind.
-  - Gate: the numbers are recorded. The default changes only by a release decision.
+  - Gate: the numbers are recorded.
 - **Launcher** (`../test/podman/launcher/`). It measures the launcher's side ("The launcher's
   side") through the launcher's jar. Its rows need the launcher.
   `../test/podman/launcher/Launcher.scala` runs them by the user's decisions of 2026-10-29:
@@ -469,7 +473,7 @@ The Windows placement needs `%UserProfile%\.wslconfig` holding `[wsl2]` and
 - The setting applies to every WSL2 distribution of that Windows user. The launcher neither writes
   nor removes it; the setup note for Windows names it.
 - Under the setting, the session's limits apply, below the attach cgroup as well: `memory.max`
-  7,105,761,280 and `pids.max` 2048 in a `live,fuse` and a `live,bpf` session on 2026-10-27.
+  7,105,761,280 and `pids.max` 2048 in a `live,bpf` and a `live,fuse` session on 2026-10-27.
   Podman issue 29966 reports no controller for rootless podman on WSL 3.0.3 by default.
 
 References:

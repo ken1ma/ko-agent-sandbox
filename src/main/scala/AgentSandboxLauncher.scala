@@ -1420,7 +1420,8 @@ object AgentSandboxLauncher:
       if missing.isEmpty then Some(facts)
       else if workspaceSettings.live then
         val heading = s"error: --workspace=${workspaceSettings.spelled} cannot run on this podman machine:"
-        fail((heading +: missing.map(line => s"  - $line")).mkString("\n"))
+        val reasons = missing.map(line => s"  - $line")
+        fail(((heading +: reasons) :+ KoAgentBpf.fuseRemedy(workspaceSettings)).mkString("\n"))
       else
         System.err.println(
           ("note: the read-only session runs under podman's `ro` bind alone; the BPF backend needs:" +:
@@ -1432,7 +1433,7 @@ object AgentSandboxLauncher:
     // session beside it is therefore refused, as it would be beside any other FUSE backend session.
     val effectiveSettings =
       if workspaceSettings.bpf && bpfFacts.isEmpty then
-        workspaceSettings.copy(backend = CommandLine.DefaultWorkspaceBackend, unixSocket = false)
+        workspaceSettings.copy(backend = "fuse", unixSocket = false)
       else workspaceSettings
 
     // The launch checks the FUSE backend before any volume is assembled, and mounts the FUSE backend once the
@@ -1492,7 +1493,7 @@ object AgentSandboxLauncher:
     // The launch reads the FUSE backend's checks, started above, and prepares its mountpoint now. The mount itself
     // happens once the sandbox container exists (mountKoAgentFs has the reason), which is after the proxy and the hold.
     val fuseWorkspace = startedKoAgentFsChecks.map: (sourceId, awaitChecks) =>
-      prepareKoAgentFs(podman, os, workspaceId, sourceId, awaitChecks())
+      prepareKoAgentFs(podman, os, workspaceId, sourceId, awaitChecks(), startPrompt(sessionStartMode, terminalReader))
     // The backend's reconcile runs at this launcher's start (ko-agent-fs/bpf/doc/architecture.md, "Lifecycle", step
     // 7), under the launch lock, so the reconcile does not take a launch in flight's pins for an orphan's.
     bpfFacts.foreach: facts =>
@@ -1661,17 +1662,7 @@ object AgentSandboxLauncher:
         forwardRegion = !parsed.env.exists(_.name == AwsCredential.RegionName),
       ).fold(fail(_), identity)
 
-    // The first version of the BPF backend serves only the podman machines under --nesting=none. Native Linux and the
-    // nesting modes keep the FUSE backend (doc/TODO.md, "The BPF backend's later versions"). Under podman's default
-    // profile, a session mounts and creates user namespaces, and the hooks do not judge those routes yet
-    // (ko-agent-fs/bpf/doc/architecture.md, "Mounts").
-    if parsed.workspaceSettings.bpf && os == Os.Linux then
-      fail(
-        s"error: --workspace=${parsed.workspaceSettings.spelled} runs on the podman machines of macOS and Windows; " +
-          "on native Linux the FUSE backend holds the workspace's protections (SECURITY.md, \"The BPF " +
-          "backend\")",
-      )
-    KoAgentBpf.nestingRefusal(parsed.workspaceSettings, parsed.nestingMode).foreach(fail(_))
+    KoAgentBpf.placementRefusal(parsed.workspaceSettings, os, parsed.nestingMode).foreach(fail(_))
 
     // --run-on-host is macOS only (run-on-host.md, "Why only macOS"). Elsewhere there is no Seatbelt backend, and a
     // container build already runs at host speed on host memory.
@@ -1735,7 +1726,10 @@ object AgentSandboxLauncher:
     val mountPath = mountPathOf(os, workspaceRoot).fold(fail(_), identity)
     System.err.println(
       pathLine("workspace root", workspaceRoot, os, tint = chosen(_)) +
-        workspaceModeClause(parsed.workspaceSettings.spelled, settings.options.from("--workspace", os), mountPath, os),
+        workspaceModeClause(
+          parsed.workspaceSettings.spelled, settings.options.from("--workspace", os), mountPath, os,
+          fromFile = settings.options.workspacePartsFromFile,
+        ),
     )
     mainWorktree.foreach(main => System.err.println(pathLine("main git worktree", main, os)))
     sharedVolume.foreach: shared =>
@@ -1773,7 +1767,7 @@ object AgentSandboxLauncher:
       fail(
         s"""error: --workspace=read-only cannot mount $workspaceRoot on this SELinux-enforcing host
            |Reading a plain bind mount here requires relabeling the workspace (:Z), a recursive
-           |host-metadata write that --workspace=read-only never makes. Use --workspace=live, whose FUSE
+           |host-metadata write that --workspace=read-only never makes. Use --workspace=live,fuse, whose FUSE
            |mount needs no relabel, or relabel the workspace yourself
            |(chcon -R -t container_file_t -l s0 <dir>; the level clears any categories a
            |previous :Z assigned to one container) and relaunch.""".stripMargin,
@@ -2002,6 +1996,7 @@ object AgentSandboxLauncher:
     val egressLine = egressBanner(
       rulesetText, settings.options.from("--egress", os),
       settings.options.providersFrom(provider.toVector.flatMap(_.split(",")), os),
+      providersFromFile = settings.options.fileValues(ModelProviderOption).toSet,
     ).fold(fail(_), identity)
 
     // Each binding must reach a proxy that inspects the binding's host: the session's proxy, or a selected program's
@@ -2440,7 +2435,8 @@ object AgentSandboxLauncher:
       val source = options.from("--env", os)
       System.err.println(forwardedEnvironmentLine(parsed.env.map(_.name), fromFile, source))
     awsCredential.foreach: resolved =>
-      System.err.println(AwsCredential.bannerLine(resolved, Instant.now()) + options.from(AwsCredential.OptionName, os))
+      val source = options.from(AwsCredential.OptionName, os)
+      System.err.println(AwsCredential.bannerLine(resolved, Instant.now(), fromFile = source.nonEmpty) + source)
     // The line is loud as a loosening. The plugins are code that runs in the session without a tool call, chosen on
     // the host, which the image's allowManagedHooksOnly otherwise keeps out (SECURITY.md).
     // - A plugin counts as the file's when the file names the plugin's directory.

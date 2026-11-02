@@ -75,7 +75,7 @@ def main() -> int:
         os.mkdir(".git")
         os.rmdir(".git")
         print("abort: created .git — this is NOT a FUSE backend session;")
-        print("       run it through the launcher, under --workspace=live")
+        print("       run it through the launcher, under --workspace=live,fuse")
         return 2
     except PermissionError:
         print("ok denied  '.git' (the canary: this session runs under the FUSE backend)")

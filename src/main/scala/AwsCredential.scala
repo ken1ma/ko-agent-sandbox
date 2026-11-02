@@ -131,7 +131,7 @@ object AwsCredential:
    * secrets. The line also says how long the values serve, and gives the region, which is no secret.
    * The line tints the profile as what the user chose (HostCommands.chosen).
    */
-  def bannerLine(resolved: Resolved, now: Instant, color: Boolean = colorStderr): String =
+  def bannerLine(resolved: Resolved, now: Instant, color: Boolean = colorStderr, fromFile: Boolean = false): String =
     val expires = expiry(resolved.expiration).map(instant => Duration.between(now, instant)).fold(
       s"expire at ${resolved.expiration}",
     ): duration =>
@@ -139,4 +139,4 @@ object AwsCredential:
       if minutes >= 60 then s"expire in ${minutes / 60}h ${minutes % 60}m" else s"expire in ${minutes}m"
     val region = resolved.region.fold(s"; the profile names no region")(value => s"; $RegionName=$value")
     val names = resolved.values.map(_._1).mkString(", ")
-    s"aws credential: $names from profile ${chosen(resolved.profile, color)}, $expires$region"
+    s"aws credential: $names from profile ${chosen(resolved.profile, color, fromFile)}, $expires$region"

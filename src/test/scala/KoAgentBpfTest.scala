@@ -11,7 +11,7 @@ import KoAgentBpf.*
 
 class KoAgentBpfTest extends munit.FunSuite:
 
-  private def settings(value: String): WorkspaceSettings = parseWorkspace(value).fold(fail(_), identity)
+  private def settings(value: String): WorkspaceSettings = parseWorkspace(value).fold(fail(_), _.settings)
 
   test("the hooks are the eight of every session, and the ninth under unix-socket"):
     assertEquals(hooks(unixSocket = false).size, 8)
@@ -110,15 +110,18 @@ class KoAgentBpfTest extends munit.FunSuite:
     val noBtf = parseFacts("sudo=1\nlsm=bpf\ncgroup2=cgroup2fs\nmounted=1\nbtf=0")
     assert(buildFailures(noBtf, Os.Mac).exists(_.contains("/sys/kernel/btf/vmlinux")), buildFailures(noBtf, Os.Mac))
     assert(buildSkippedNote(buildFailures(noBtf, Os.Mac)).contains("refused until"), "the note says what follows")
+    val skipped = buildSkippedNote(buildFailures(noBtf, Os.Mac))
+    assert(skipped.endsWith("--workspace=...,fuse launches."), "and what still runs")
     assert(checksScript("/").contains("btf="), "the probe reports the kernel's BTF")
     // A kernel that passes these checks and still lacks a feature that the program uses fails the
     // backend's own build or install. The build then warns, names the upgrade, and completes the rest.
     val failed = buildFailedNote("build failed: podman build -f ko-agent-fs/bpf/Containerfile ko-agent-fs", Os.Windows)
     assert(failed.contains("rest of the build is complete") && failed.contains("wsl --update"), failed)
     assert(
-      failed.endsWith("The backend's build failed: podman build -f ko-agent-fs/bpf/Containerfile ko-agent-fs"),
+      failed.contains("The backend's build failed: podman build -f ko-agent-fs/bpf/Containerfile ko-agent-fs. "),
       failed,
     )
+    assert(failed.endsWith("--workspace=...,fuse launches."), failed)
 
   test("the probe reads every requirement, and each failure names what to do"):
     val answer =
@@ -384,10 +387,10 @@ class KoAgentBpfTest extends munit.FunSuite:
     val mountsLabel = labels.find(_.startsWith(s"--label=$MountsLabel=")).get.stripPrefix(s"--label=$MountsLabel=")
     assert(!mountsLabel.contains(" Project"), mountsLabel)
     assertEquals(mountsLabel.split(" ").toVector.flatMap(RawMount.decode), mounts)
-    assertEquals(labelArguments(settings("live"), "v", Vector.empty, None).size, 3)
+    assertEquals(labelArguments(settings("live,fuse"), "v", Vector.empty, None).size, 3)
     val inspected = s"live,fuse\nvol-a\n$mountsLabel\n"
     val live = liveSessionOf("ko-agent-sandbox-run-a-0123456789ab-deadbeef", inspected)
-    assertEquals(live.settings, Some(settings("live")))
+    assertEquals(live.settings, Some(settings("live,fuse")))
     assertEquals(live.volume, "vol-a")
     assertEquals(live.mounts, mounts)
     assertEquals(live.cgroup, None)
@@ -399,7 +402,7 @@ class KoAgentBpfTest extends munit.FunSuite:
   test("a launch is refused beside a live session of another backend or socket setting that shares a volume or mount"):
     val tree = RawMount("/Users/me/app", "36:1")
     val gitdir = RawMount("/Users/me/main/.git", "36:2")
-    val fuseLive = LiveSession("s-fuse", Some(settings("live")), "vol-app", Vector(tree), None)
+    val fuseLive = LiveSession("s-fuse", Some(settings("live,fuse")), "vol-app", Vector(tree), None)
     val bpfLive = LiveSession("s-bpf", Some(settings("live,bpf")), "vol-app", Vector(tree), Some("/cg"))
     val socketLive = LiveSession("s-sock", Some(settings("live,bpf,unix-socket")), "vol-app", Vector(tree), Some("/cg"))
     val unlabelled = LiveSession("s-old", None, "", Vector.empty, None)
@@ -409,11 +412,11 @@ class KoAgentBpfTest extends munit.FunSuite:
       refusalBeside(settings(mine), volume, mounts, live.toVector, reread)
     // With the same settings, the launch refuses nothing, whichever session launched first.
     assertEquals(refusal("live,bpf", "vol-app", Vector(tree), bpfLive), None)
-    assertEquals(refusal("live", "vol-app", Vector(tree), fuseLive), None)
+    assertEquals(refusal("live,fuse", "vol-app", Vector(tree), fuseLive), None)
     // The launch is refused when the other backend shares the volume, the tree by identity, or the tree
     // by ancestry.
     assert(refusal("live,bpf", "vol-app", Vector(tree), fuseLive).exists(_.contains("s-fuse")))
-    assert(refusal("live", "vol-app", Vector(tree), bpfLive).exists(_.contains("--workspace=live,bpf")))
+    assert(refusal("live,fuse", "vol-app", Vector(tree), bpfLive).exists(_.contains("--workspace=live,bpf")))
     assert(refusal("live,bpf", "vol-other", Vector(RawMount("/Users/me/app-renamed", "36:1")), fuseLive).isDefined)
     assert(refusal("live,bpf", "vol-other", Vector(RawMount("/Users/me/app/sub", "36:7")), fuseLive).isDefined)
     assert(refusal("live,bpf", "vol-other", Vector(RawMount("/Users/me", "36:8")), fuseLive).isDefined)
@@ -423,7 +426,7 @@ class KoAgentBpfTest extends munit.FunSuite:
     // A linked worktree's main gitdir is a raw mount under the main checkout's root.
     val worktree = Vector(RawMount("/Users/me/wt", "36:5"), gitdir)
     val mainLive =
-      LiveSession("s-main", Some(settings("live")), "vol-main", Vector(RawMount("/Users/me/main", "36:9")), None)
+      LiveSession("s-main", Some(settings("live,fuse")), "vol-main", Vector(RawMount("/Users/me/main", "36:9")), None)
     assert(refusal("live,bpf", "vol-wt", worktree, mainLive).exists(_.contains("s-main")))
     // With nothing shared, another workspace under the other backend is no concern.
     assertEquals(refusal("live,bpf", "vol-other", Vector(RawMount("/Users/me/elsewhere", "36:3")), fuseLive), None)
@@ -432,20 +435,31 @@ class KoAgentBpfTest extends munit.FunSuite:
     // any other backend or setting; a FUSE backend launch beside the session is no concern.
     assert(refusal("live,bpf", "vol-app", Vector(tree), unlabelled).exists(_.contains("earlier launcher")))
     assert(refusal("read-only,bpf,unix-socket", "vol-other", Vector.empty, unlabelled).isDefined)
-    assertEquals(refusal("live", "vol-app", Vector(tree), unlabelled), None)
-    assertEquals(refusal("read-only", "vol-app", Vector(tree), unlabelled), None)
+    assertEquals(refusal("live,fuse", "vol-app", Vector(tree), unlabelled), None)
+    assertEquals(refusal("read-only,fuse", "vol-app", Vector(tree), unlabelled), None)
     // A recorded path that no longer names its identity, because of a host rename in between.
     val renamed: String => Option[String] = path => if path == "/Users/me/app" then Some("36:77") else reread(path)
     val elsewhere = Vector(RawMount("/Users/me/x", "36:4"))
     assert(refusalBeside(settings("live,bpf"), "vol-other", elsewhere, Vector(fuseLive), renamed)
       .exists(_.contains("no longer names")))
-    assertEquals(refusalBeside(settings("live"), "vol-other", elsewhere, Vector(fuseLive), renamed), None)
+    assertEquals(refusalBeside(settings("live,fuse"), "vol-other", elsewhere, Vector(fuseLive), renamed), None)
 
-  test("the BPF backend needs --nesting=none; the other modes keep the FUSE backend"):
-    assertEquals(nestingRefusal(settings("live,bpf"), "none"), None)
-    assertEquals(nestingRefusal(settings("live"), "same-uid"), None)
-    assert(nestingRefusal(settings("live,bpf"), "user-namespace").exists(_.contains("--nesting=user-namespace")))
-    assert(nestingRefusal(settings("read-only,bpf"), "same-uid").exists(_.contains("needs --nesting=none")))
+  test("the BPF backend needs a podman machine and --nesting=none, and its refusal names the FUSE backend"):
+    assertEquals(placementRefusal(settings("live,bpf"), Os.Mac, "none"), None)
+    assertEquals(placementRefusal(settings("live,fuse"), Os.Windows, "same-uid"), None)
+    assertEquals(placementRefusal(settings("live,fuse"), Os.Linux, "none"), None)
+    val nested = placementRefusal(settings("live,bpf"), Os.Mac, "user-namespace")
+    assert(nested.exists(_.contains("--nesting=user-namespace")), nested)
+    // Every refusal names the same mode under the FUSE backend, the default backend's and read-only's included.
+    val readOnly = placementRefusal(settings("read-only,bpf,unix-socket"), Os.Windows, "same-uid")
+    assert(readOnly.exists(_.contains("needs --nesting=none")), readOnly)
+    // A unix-socket would hold over a bare fuse and refuse again, so the remedy turns it off.
+    assert(readOnly.exists(_.contains("--workspace=read-only,fuse,no-unix-socket,")), readOnly)
+    val linux = placementRefusal(settings("live"), Os.Linux, "none")
+    assert(linux.exists(_.contains("macOS and Windows alone")) && linux.exists(_.contains("--workspace=live,fuse,")),
+      linux)
+    // Native Linux is refused first, whatever the nesting mode.
+    assertEquals(placementRefusal(settings("live"), Os.Linux, "same-uid"), linux)
 
   test("the teardown unpins, ends the cgroup under each manager and removes the session's record, step by step"):
     // A dot in a workspace directory's name reaches the container name, and bpffs refuses a dot in a

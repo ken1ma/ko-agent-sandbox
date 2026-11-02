@@ -83,35 +83,51 @@ object KoAgentFs:
 
   /**
    * The FUSE backend mounts with `allow_other`, which fusermount3 refuses for an unprivileged user until
-   * `user_allow_other` is set in the machine's /etc/fuse.conf. That file is the user's
-   * configuration, VM or not, so the launcher never changes it silently:
-   * - `--build` detects the missing line, shows the change *as a diff of the actual file* plus the
-   *   exact script, and asks;
-   * - only a "y" runs the script. Every other path, declined or with no console to ask on, fails
+   * `user_allow_other` is set in /etc/fuse.conf. That file is the user's configuration, VM or not, so the
+   * launcher never changes it silently:
+   * - a launch under the FUSE backend reads the line in its checks (koAgentFsChecksScript). When the line is
+   *   missing, the launch shows the change *as a diff of the actual file* plus the exact script, and asks;
+   * - only a "y" runs the script. Every other path, declined or with no prompt to ask on, refuses the launch
    *   with the same script for the user to run;
    * - the change lasts until the machine is recreated, so the question comes once per machine;
-   * - a native Linux *host* is never offered the change: there, the self-test's message is the
-   *   user's remedy.
+   * - a native Linux *host* is never offered the change: there, the refusal names the command;
+   * - `--build` does not ask, since the default BPF backend mounts nothing with `allow_other`.
    *
-   * The script first saves the original beside the file.
+   * The script first checks for the line again: a concurrent launch may have added it while this launch
+   * waited for its answer. The script then says so and adds nothing.
+   *
+   * The script then saves the original beside the file.
    * - The backup carries the program's name, not `.dist`. `.dist` would claim an as-distributed
    *   pristine state that nobody verified, while the program's name says who saved the file and
    *   when it is safe to delete.
    * - The script saves only if no backup exists yet, so a rerun cannot overwrite the true original
    *   with a modified copy.
    */
-  val KoAgentFsFuseConfBackup = "/etc/fuse.conf.ko-agent-sandbox.orig"
+  val FuseConf = "/etc/fuse.conf"
+
+  val KoAgentFsFuseConfBackup = s"$FuseConf.ko-agent-sandbox.orig"
+
+  /** fusermount3 strips a line's `#` comment and surrounding whitespace before it compares the line with
+    * `user_allow_other` (libfuse's util/fusermount.c, strip_line and parse_line). The check matches the same lines, so
+    * a commented-out line does not count and an indented or annotated one does. */
+  def userAllowOtherCheck(fuseConf: String): String =
+    s"grep -Eq '^[[:space:]]*user_allow_other[[:space:]]*(#.*)?$$' $fuseConf 2>/dev/null"
+
+  /** What KoAgentFsFuseConfEnable prints when the line is already there. */
+  val UserAllowOtherPresent = "user_allow_other is already set"
 
   val KoAgentFsFuseConfEnable: String =
-    s"""test ! -f /etc/fuse.conf || test -e $KoAgentFsFuseConfBackup ||
-       |  sudo cp /etc/fuse.conf $KoAgentFsFuseConfBackup
-       |sudo sh -c 'echo user_allow_other >> /etc/fuse.conf'""".stripMargin
+    s"""if ${userAllowOtherCheck(FuseConf)}; then echo '$UserAllowOtherPresent'; exit 0; fi
+       |test ! -f $FuseConf || test -e $KoAgentFsFuseConfBackup ||
+       |  sudo cp $FuseConf $KoAgentFsFuseConfBackup
+       |sudo sh -c 'echo user_allow_other >> $FuseConf'""".stripMargin
 
-  def koAgentFsFuseConfCheckCommand(podman: String): Vector[String] =
-    Vector(podman, "machine", "ssh", "grep -qx user_allow_other /etc/fuse.conf")
-
-  def koAgentFsFuseConfEnableCommand(podman: String): Vector[String] =
-    Vector(podman, "machine", "ssh", KoAgentFsFuseConfEnable)
+  /** The refusal on a native Linux host, where the file is the host's own and the launcher offers no change. */
+  val NativeLinuxUserAllowOtherRefusal: String =
+    s"""error: the FUSE backend mounts the workspace with allow_other, which fusermount3 refuses until
+       |$FuseConf has the line user_allow_other. Add the line yourself, then launch again:
+       |
+       |  sudo sh -c 'echo user_allow_other >> $FuseConf'""".stripMargin
 
   /**
    * The change as a diff over the file's actual content: every current line as context, and the
@@ -119,17 +135,20 @@ object KoAgentFs:
    */
   def fuseConfDiff(current: String): String =
     val context =
-      if current.isEmpty then Vector("  (/etc/fuse.conf does not exist yet; it will be created)")
+      if current.isEmpty then Vector(s"  ($FuseConf does not exist yet; it will be created)")
       else current.linesIterator.map(line => s"  $line").toVector
     (context :+ "+ user_allow_other").mkString("\n")
 
-  def ensureUserAllowOther(podman: String): Unit =
-    if run(koAgentFsFuseConfCheckCommand(podman)*).ok then return
-    val current = run(podman, "machine", "ssh", "cat /etc/fuse.conf 2>/dev/null || true").text
+  /**
+   * Adds `user_allow_other` to the machine's /etc/fuse.conf once the user consents, or refuses the launch.
+   * `current` is the file's content as the checks read it. `ask` is None where the launch asks nothing.
+   */
+  def enableUserAllowOther(podman: String, os: Os, current: String, ask: Option[AgentSandboxLauncher.Reader]): Unit =
+    if os == Os.Linux then fail(NativeLinuxUserAllowOtherRefusal)
     System.err.println(
       s"""The FUSE backend mounts the workspace with allow_other, which the container runtime needs to bind
          |the mount into the sandbox, and fusermount3 refuses that until user_allow_other is set in the
-         |podman machine's /etc/fuse.conf. Your machine's configuration is not changed without asking.
+         |podman machine's $FuseConf. Your machine's configuration is not changed without asking.
          |The change:
          |
          |${fuseConfDiff(current)}
@@ -141,19 +160,16 @@ object KoAgentFs:
          |It persists until the machine is recreated (podman machine rm + init); to undo, restore
          |the saved original.""".stripMargin,
     )
-    val reader = AgentSandboxLauncher.terminalReader.getOrElse(
-      fail(
-        s"error: no terminal to ask on; run the script above via `podman machine ssh` yourself, " +
-          "then rerun --build",
-      ),
+    val yourself = "run the script above via `podman machine ssh` yourself, then launch again"
+    val reader = ask.getOrElse(
+      fail(s"error: not applied: no terminal to ask on, or --session-start=immediate; $yourself"),
     )
     reader.prompt("Apply it now? [y/N] ")
-    if !consented(reader.readLine()) then
-      fail("error: not applied; run the script above via `podman machine ssh` yourself, then rerun --build")
-    val enable = run(koAgentFsFuseConfEnableCommand(podman)*)
+    if !consented(reader.readLine()) then fail(s"error: not applied; $yourself")
+    val enable = run(koAgentFsScriptCommand(podman, os, KoAgentFsFuseConfEnable)*)
     if !enable.ok then fail(s"error: enabling user_allow_other failed: ${enable.err}", enable.exit)
-    if !run(koAgentFsFuseConfCheckCommand(podman)*).ok then
-      fail("error: user_allow_other still not set after enabling; check the machine's /etc/fuse.conf")
+    if enable.text.linesIterator.contains(UserAllowOtherPresent) then
+      System.err.println("another launch has already added user_allow_other; not adding it again")
 
   private def koAgentFsInvocation(podman: String, os: Os, home: String, binary: String, flag: String): Vector[String] =
     os match
@@ -186,7 +202,6 @@ object KoAgentFs:
   def installKoAgentFs(podman: String, os: Os, expectedId: String): Unit =
     val home = sys.props("user.home")
     if os == Os.Linux then Files.createDirectories(Paths.get(home, KoAgentFsInstallDir))
-    else ensureUserAllowOther(podman)
     koAgentFsInstallCommands(podman, os, home).foreach: command =>
       echoCommand(command)
       val result = run(command*)
@@ -210,6 +225,13 @@ object KoAgentFs:
           fail(s"error: unrecognized $program --version output: ${version.text}")
     // The self-test proves the whole stack where it will run: an unprivileged mount over a scratch
     // tree, with the policy shown to refuse. The self-test's failure text names the environment fix.
+    // The mount needs user_allow_other, which a launch under the FUSE backend asks for (enableUserAllowOther).
+    if !run(koAgentFsScriptCommand(podman, os, userAllowOtherCheck(FuseConf))*).ok then
+      System.err.println(
+        s"note: ko-agent-fs-fuse self-test skipped: $FuseConf lacks user_allow_other, which a " +
+          "--workspace=...,fuse launch needs and says how to add",
+      )
+      return
     val selfTest = run(koAgentFsSelfTestCommand(podman, os, home)*)
     if !selfTest.ok then
       fail(s"error: ko-agent-fs-fuse self-test failed after install:\n${selfTest.err}", selfTest.exit)
@@ -563,10 +585,15 @@ object KoAgentFs:
    *     home is `home`, the JVM's `user.home` as installKoAgentFs uses it; the working directory
    *     there is the workspace root;
    *   - the installed daemon's `--version`;
-   *   - only when that version names `sourceId`, ChecksSelfTestMarker and then the self-test, whose
-   *     status is the script's.
+   *   - only when that version names `sourceId`, and `fuseConf` lacks `user_allow_other`:
+   *     ChecksLacksUserAllowOther, then the file's content for enableUserAllowOther's diff;
+   *   - only when that version names `sourceId`, and `fuseConf` has the line: ChecksSelfTestMarker,
+   *     then the self-test, whose status is the script's.
+   *
+   * `fuseConf` is a parameter for the tests alone. A test runs this script on its own host, whose
+   * /etc/fuse.conf the test neither controls nor may change, so the test passes a scratch file.
    */
-  def koAgentFsChecksScript(home: Option[String], sourceId: String): String =
+  def koAgentFsChecksScript(home: Option[String], sourceId: String, fuseConf: String = FuseConf): String =
     val homeLine = home match
       case Some(path) =>
         s"""home="$$(${printingCommand(path)})""""
@@ -581,12 +608,21 @@ object KoAgentFs:
        |  *" source $sourceId") ;;
        |  *) exit 0 ;;
        |esac
+       |if ! ${userAllowOtherCheck(fuseConf)}; then
+       |  echo "$ChecksLacksUserAllowOther"
+       |  cat $fuseConf 2>/dev/null
+       |  exit 0
+       |fi
        |echo "$ChecksSelfTestMarker"
        |exec "$$home/$KoAgentFsFuseBinary" --self-test""".stripMargin,
     )
 
   /** The line koAgentFsChecksScript prints once the version matched, before the self-test runs. */
   val ChecksSelfTestMarker = "self-test:"
+
+  /** The line koAgentFsChecksScript prints once the version matched, before the content of a fuse.conf that lacks
+    * user_allow_other. */
+  val ChecksLacksUserAllowOther = "lacks user_allow_other:"
 
   /** Runs koAgentFsChecksScript where the daemon runs; on native Linux, with the JVM's home. */
   def koAgentFsChecks(podman: String, os: Os, sourceId: String): HostCommands.Run =
@@ -600,6 +636,8 @@ object KoAgentFs:
    *   - `checks` is koAgentFsChecks's answer, which the caller runs. The answer shows that the
    *     installed daemon is this launcher's build, that the daemon can mount, and that the policy
    *     refuses (self-test).
+   *   - An answer that lacks user_allow_other goes to enableUserAllowOther, which asks on `ask`.
+   *     Once the line is added, the checks run again.
    *   - koAgentFsPrepareScript makes the mountpoint one a `podman create` can bind.
    *
    * mountKoAgentFs makes the mount itself once the sandbox container exists. That method's script
@@ -612,8 +650,18 @@ object KoAgentFs:
     workspaceId: String,
     expected: String,
     checks: HostCommands.Run,
+    ask: Option[AgentSandboxLauncher.Reader],
   ): KoAgentFsPrepared =
-    val home = checkedKoAgentFsHome(checks, expected).fold(fail(_, _), identity)
+    val checked = checkedKoAgentFs(checks, expected) match
+      case KoAgentFsChecked.LacksUserAllowOther(fuseConf) =>
+        enableUserAllowOther(podman, os, fuseConf, ask)
+        checkedKoAgentFs(koAgentFsChecks(podman, os, expected), expected)
+      case answered => answered
+    val home = checked match
+      case KoAgentFsChecked.Ready(home)            => home
+      case KoAgentFsChecked.Refused(message, exit) => fail(message, exit)
+      case KoAgentFsChecked.LacksUserAllowOther(_) =>
+        fail(s"error: user_allow_other still not set after enabling; check the machine's $FuseConf")
     val prepared = run(koAgentFsScriptCommand(podman, os, koAgentFsPrepareScript(workspaceId, expected))*)
     if !prepared.ok then
       fail(
@@ -622,26 +670,33 @@ object KoAgentFs:
       )
     KoAgentFsPrepared(expected, s"$home/${koAgentFsMountDir(workspaceId)}/workspace", runningMountOf(prepared.text))
 
-  /** The home a koAgentFsChecks answer reports, or the refusal and exit status the answer calls for. */
-  def checkedKoAgentFsHome(checks: HostCommands.Run, expected: String): Either[(String, Int), String] =
+  /** What a koAgentFsChecks answer calls for. */
+  enum KoAgentFsChecked:
+    /** The daemon's home, for a build that passed its self-test. */
+    case Ready(home: String)
+    /** The content of the fuse.conf that lacks user_allow_other, for this launcher's build. */
+    case LacksUserAllowOther(fuseConf: String)
+    case Refused(message: String, exit: Int)
+
+  def checkedKoAgentFs(checks: HostCommands.Run, expected: String): KoAgentFsChecked =
     val lines = checks.text.linesIterator.toVector
     val home = lines.headOption.getOrElse("")
-    val marker = lines.indexOf(ChecksSelfTestMarker)
+    val marker = lines.indexWhere(line => line == ChecksSelfTestMarker || line == ChecksLacksUserAllowOther)
     val version = lines.slice(1, if marker < 0 then lines.length else marker).mkString("\n")
-    if home.isEmpty then Left(("error: cannot determine the FUSE backend daemon's home directory", 1))
+    if home.isEmpty then KoAgentFsChecked.Refused("error: cannot determine the FUSE backend daemon's home directory", 1)
     else if marker < 0 || !koAgentFsReportedSourceId(version).contains(expected) then
-      Left(
-        (
-          s"""error: the installed ko-agent-fs-fuse is not this launcher's build
-             |  (${if version.nonEmpty then version else checks.err})
-             |
-             |Run --build first.""".stripMargin,
-          1,
-        ),
+      KoAgentFsChecked.Refused(
+        s"""error: the installed ko-agent-fs-fuse is not this launcher's build
+           |  (${if version.nonEmpty then version else checks.err})
+           |
+           |Run --build first.""".stripMargin,
+        1,
       )
+    else if lines(marker) == ChecksLacksUserAllowOther then
+      KoAgentFsChecked.LacksUserAllowOther(lines.drop(marker + 1).mkString("\n"))
     else if !checks.ok then
-      Left((s"error: ko-agent-fs-fuse self-test failed; not launching:\n${checks.err}", checks.exit))
-    else Right(home)
+      KoAgentFsChecked.Refused(s"error: ko-agent-fs-fuse self-test failed; not launching:\n${checks.err}", checks.exit)
+    else KoAgentFsChecked.Ready(home)
 
   /** What prepareKoAgentFs proved and where: the installed build's source id, the absolute
     * mountpoint to bind at the workspace's mount path, and the live mount there a launch would join. */
@@ -734,7 +789,8 @@ object KoAgentFs:
     sandboxContainer: String,
   ): String =
     val expected = bundledKoAgentFsSourceId()
-    val prepared = prepareKoAgentFs(podman, os, workspaceId, expected, koAgentFsChecks(podman, os, expected))
+    val checks = koAgentFsChecks(podman, os, expected)
+    val prepared = prepareKoAgentFs(podman, os, workspaceId, expected, checks, AgentSandboxLauncher.terminalReader)
     val noRules = FileRules.daemonText(Vector.empty, Vector("/"))
     mountKoAgentFs(podman, os, prepared, workspaceId, backing, sandboxContainer, noRules)
     prepared.mountpoint

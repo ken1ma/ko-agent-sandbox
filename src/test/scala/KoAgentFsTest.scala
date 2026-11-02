@@ -25,7 +25,7 @@ class KoAgentFsTest extends munit.FunSuite:
     Vector("mkdir -p", "podman create --replace", "podman cp", "podman rm").foreach: step =>
       assert(script.contains(step), s"script missing '$step':\n$script")
     // /etc/fuse.conf is the user's configuration, so the install script itself must not touch it.
-    // That change goes through the consent prompt (ensureUserAllowOther), never silently.
+    // That change goes through the consent prompt (enableUserAllowOther), never silently.
     assert(!script.contains("sudo"), script)
     // The host home must not leak into a script that runs in the VM user's home.
     assert(!script.contains("/Users/me"), script)
@@ -59,11 +59,12 @@ class KoAgentFsTest extends munit.FunSuite:
       Vector("podman", "machine", "ssh", s"./$KoAgentFsFuseBinary --self-test"),
     )
 
-  test("a launch's FUSE backend checks are one script: home, version, and the self-test only for this build"):
+  test("a launch's FUSE backend checks are one script: home, version, fuse.conf, then the self-test of this build"):
     assume(!isWindows, "the stub ko-agent-fs-fuse is a /bin/sh script")
     val home = Files.createTempDirectory("ko-agent-fs-checks").toRealPath()
     try
       val selfTested = home.resolve("self-tested")
+      val fuseConf = Files.writeString(home.resolve("fuse.conf"), "# mount_max = 1000\nuser_allow_other\n")
       Files.createDirectories(home.resolve(KoAgentFsFuseBinary).getParent)
       def stub(reported: String, selfTestExit: Int): Unit =
         val binary = Files.writeString(
@@ -79,7 +80,7 @@ class KoAgentFsTest extends munit.FunSuite:
       // The machine's form of the script finds the home as its working directory; native Linux gets the
       // home passed in.
       def checks(knownHome: Option[String]): HostCommands.Run =
-        val script = koAgentFsChecksScript(knownHome, "abc")
+        val script = koAgentFsChecksScript(knownHome, "abc", fuseConf.toString)
         val process = ProcessBuilder(koAgentFsScriptCommand("podman", Os.Linux, script)*)
           .directory(home.toFile)
           .start()
@@ -89,45 +90,84 @@ class KoAgentFsTest extends munit.FunSuite:
 
       stub("ko-agent-fs-fuse 0.1.0 source abc", selfTestExit = 0)
       for knownHome <- Vector(None, Some(home.toString)) do
-        assertEquals(checkedKoAgentFsHome(checks(knownHome), "abc"), Right(home.toString))
+        assertEquals(checkedKoAgentFs(checks(knownHome), "abc"), KoAgentFsChecked.Ready(home.toString))
+      // fusermount3 strips a comment and surrounding whitespace before it compares the line, so the check does too.
+      for accepted <- Vector("  user_allow_other\n", "user_allow_other # enabled\n", "\tuser_allow_other\t\n") do
+        Files.writeString(fuseConf, accepted)
+        assertEquals(checkedKoAgentFs(checks(Some(home.toString)), "abc"), KoAgentFsChecked.Ready(home.toString))
+      for refused <- Vector("user_allow_others\n", "# user_allow_other\n", "mount_max = 1000 user_allow_other\n") do
+        Files.writeString(fuseConf, refused)
+        assertEquals(
+          checkedKoAgentFs(checks(Some(home.toString)), "abc"),
+          KoAgentFsChecked.LacksUserAllowOther(refused.stripLineEnd),
+          refused,
+        )
+      Files.writeString(fuseConf, "user_allow_other\n")
 
       stub("ko-agent-fs-fuse 0.1.0 source abc", selfTestExit = 3)
       assertEquals(
-        checkedKoAgentFsHome(checks(Some(home.toString)), "abc"),
-        Left(("error: ko-agent-fs-fuse self-test failed; not launching:\nself-test failed: no fusermount3", 3)),
+        checkedKoAgentFs(checks(Some(home.toString)), "abc"),
+        KoAgentFsChecked.Refused(
+          "error: ko-agent-fs-fuse self-test failed; not launching:\nself-test failed: no fusermount3",
+          3,
+        ),
       )
 
+      // A commented-out line does not count, and the answer carries the file for the consent prompt's diff.
       Files.delete(selfTested)
+      Files.writeString(fuseConf, "# mount_max = 1000\n#user_allow_other\n")
+      assertEquals(
+        checkedKoAgentFs(checks(Some(home.toString)), "abc"),
+        KoAgentFsChecked.LacksUserAllowOther("# mount_max = 1000\n#user_allow_other"),
+      )
+      Files.delete(fuseConf)
+      assertEquals(checkedKoAgentFs(checks(Some(home.toString)), "abc"), KoAgentFsChecked.LacksUserAllowOther(""))
+      assert(!Files.exists(selfTested), "the self-test must not run without user_allow_other")
+
       stub("ko-agent-fs-fuse 0.1.0 source other", selfTestExit = 0)
-      val foreign = checkedKoAgentFsHome(checks(Some(home.toString)), "abc")
-      val named = "not this launcher's build\n  (ko-agent-fs-fuse 0.1.0 source other)"
-      assert(foreign.swap.exists(_._1.contains(named)), foreign)
-      assert(!Files.exists(selfTested), "another build's self-test must not run")
+      def refusedWith(checked: KoAgentFsChecked, text: String): Boolean = checked match
+        case KoAgentFsChecked.Refused(message, _) => message.contains(text)
+        case _                                     => false
+      val foreign = checkedKoAgentFs(checks(Some(home.toString)), "abc")
+      assert(refusedWith(foreign, "not this launcher's build\n  (ko-agent-fs-fuse 0.1.0 source other)"), foreign)
 
       Files.delete(home.resolve(KoAgentFsFuseBinary))
-      val missing = checkedKoAgentFsHome(checks(Some(home.toString)), "abc")
-      assert(missing.swap.exists(_._1.contains(KoAgentFsFuseBinary)), missing)
+      val missing = checkedKoAgentFs(checks(Some(home.toString)), "abc")
+      assert(refusedWith(missing, KoAgentFsFuseBinary), missing)
       assert(!Files.exists(selfTested))
     finally deleteRecursively(home)
 
-    val unanswered = checkedKoAgentFsHome(HostCommands.Run(255, Array.emptyByteArray, "ssh: connect refused"), "abc")
-    assertEquals(unanswered, Left(("error: cannot determine the FUSE backend daemon's home directory", 1)))
+    val unanswered = checkedKoAgentFs(HostCommands.Run(255, Array.emptyByteArray, "ssh: connect refused"), "abc")
+    assertEquals(
+      unanswered,
+      KoAgentFsChecked.Refused("error: cannot determine the FUSE backend daemon's home directory", 1),
+    )
 
-  test("the fuse.conf consent check is idempotent and enables exactly what it describes"):
-    assertEquals(
-      koAgentFsFuseConfCheckCommand("podman"),
-      Vector("podman", "machine", "ssh", "grep -qx user_allow_other /etc/fuse.conf"),
-    )
-    // The script run on consent is the same text shown to the user, so the user meets no surprise.
-    assertEquals(
-      koAgentFsFuseConfEnableCommand("podman"),
-      Vector("podman", "machine", "ssh", KoAgentFsFuseConfEnable),
-    )
-    assert(KoAgentFsFuseConfEnable.contains("user_allow_other >> /etc/fuse.conf"))
-    assert(KoAgentFsFuseConfEnable.contains(s"test -e $KoAgentFsFuseConfBackup ||"))
-    assert(KoAgentFsFuseConfEnable.contains(s"sudo cp /etc/fuse.conf $KoAgentFsFuseConfBackup"))
-    // A missing fuse.conf must not make the backup step fail the script.
-    assert(KoAgentFsFuseConfEnable.startsWith("test ! -f /etc/fuse.conf ||"))
+  test("the fuse.conf script adds the line once, saves the original first, and says when the line is there"):
+    assume(!isWindows, "the script runs under /bin/sh")
+    val dir = Files.createTempDirectory("ko-agent-fs-fuse-conf").toRealPath()
+    try
+      // The script as the user sees it, with the file moved into a scratch directory and sudo left out.
+      val fuseConf = dir.resolve("fuse.conf")
+      val script = KoAgentFsFuseConfEnable.replace(FuseConf, fuseConf.toString).replace("sudo ", "")
+      def enable(): HostCommands.Run =
+        val process = ProcessBuilder("/bin/sh", "-c", script).start()
+        val out = process.getInputStream.readAllBytes()
+        HostCommands.Run(process.waitFor(), out, String(process.getErrorStream.readAllBytes()))
+      Files.writeString(fuseConf, "# mount_max = 1000\n")
+      assertEquals(enable().text, "")
+      assertEquals(Files.readString(fuseConf), "# mount_max = 1000\nuser_allow_other\n")
+      assertEquals(Files.readString(dir.resolve("fuse.conf.ko-agent-sandbox.orig")), "# mount_max = 1000\n")
+      // A second consent, as from a concurrent launch, adds nothing and says why.
+      val again = enable()
+      assert(again.ok && again.text.linesIterator.contains(UserAllowOtherPresent), again.text)
+      assertEquals(Files.readString(fuseConf), "# mount_max = 1000\nuser_allow_other\n")
+      // A missing fuse.conf must not make the backup step fail the script.
+      Files.delete(fuseConf)
+      Files.delete(dir.resolve("fuse.conf.ko-agent-sandbox.orig"))
+      assert(enable().ok)
+      assertEquals(Files.readString(fuseConf), "user_allow_other\n")
+    finally deleteRecursively(dir)
 
   test("the mount script has the backing path only base64-encoded, and every lifecycle step"):
     val backing = "/Users/some one's ~dir/proj; rm -rf $HOME"

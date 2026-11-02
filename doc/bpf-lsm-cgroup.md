@@ -23,10 +23,9 @@ What the first version covers:
 - A `--workspace=read-only` session there gets a policy that records no root ("The hooks",
   `file_receive`, explains why).
 - `NESTING=same-uid` and `NESTING=user-namespace` sessions (`../SECURITY.md`, "No containers inside
-  the sandbox by default") and native Linux hosts keep the FUSE backend (`TODO.md`, "The BPF
+  the sandbox by default") and native Linux hosts need `fuse` stated (`TODO.md`, "The BPF
   backend's later versions").
-- `fuse` stays the default of both modes until the release decision (`TODO.md`, "The BPF backend as
-  the default").
+- `bpf` is the default of both modes ("Launches").
 - No launch binds the workspace writable unless the policy is attached and verified.
 
 
@@ -185,13 +184,22 @@ What else a session can do with directories, and why each is safe:
 Besides the mode, `--workspace` takes comma-separated values for the backend and for sockets (the
 user's decisions of 2026-10-26):
 
-- The backend is `bpf`, or `fuse` for the FUSE backend. `fuse` is the default of both modes until
-  the release decision.
+- The backend is `bpf`, or `fuse` for the FUSE backend. `bpf` is the default of both modes, by the
+  user's decision of 2026-11-02.
+  - A launch that the backend cannot serve is refused, and the refusal names `fuse`: native Linux,
+    the nesting modes other than `none`, and a live session on a machine that lacks what the
+    backend needs.
+  - The user's reasons: few users run those combinations, and the FUSE backend's overhead on macOS
+    and Windows is unbearable.
 - `unix-socket` allows Unix sockets in the workspace and beneath the persistent volume, at the cost
-  of the ninth hook ("The hooks", `file_receive`). With `fuse` it is a fatal error, since the
-  FUSE backend cannot honor it.
-- The values are accepted in any order. The container label holds one canonical spelling, so the
-  refusal beside a live session compares settings, not spellings.
+  of the ninth hook ("The hooks", `file_receive`). `no-unix-socket`, the default, allows none. With
+  `fuse`, `unix-socket` is a fatal error, since the FUSE backend cannot honor it.
+- The values are accepted in any order, and each part is optional. The command line's parts replace
+  the options file's parts, by the user's decision of 2026-11-02 (`CommandLine.WorkspaceValue`).
+- One source may give the parts in one `--workspace` or across several, each part once, by the
+  user's decision of 2026-11-02, matching `--model-provider` (`CommandLine.joinWorkspace`).
+- The container label holds one canonical spelling, so the refusal beside a live session compares
+  settings, not spellings.
 
 What a launch under `bpf` does and refuses:
 
@@ -223,7 +231,7 @@ What a launch under `bpf` does and refuses:
     a raw mount, a linked worktree's main gitdir included;
   - a live container of an earlier launcher, without the labels, runs beside it;
   - a live container beside it has a recorded root path that no longer names its recorded identity.
-- The sessions the first version does not serve keep the FUSE backend.
+- The sessions the first version does not serve are refused, and the refusal names `fuse`.
 
 
 ## What is gained and what is lost
@@ -401,7 +409,7 @@ reason, and its answer here:
   host unfiltered needs cgroup scoping written by hand. `BPF_LSM_CGROUP` is that scoping, in the
   kernel: a program attached to a cgroup runs only for tasks in that cgroup and its descendants
   ("The mechanism").
-- The FUSE backend runs on any VM, while BPF-LSM depends on how the VM's kernel is built and booted.
+- BPF-LSM depends on how the VM's kernel is built and booted, while the FUSE backend runs on any VM.
   The backend is a capability the launcher probes, and a failed probe binds nothing writable.
   - Both podman machines show the LSM active and the BTF readable as shipped ("Environment
     evidence").

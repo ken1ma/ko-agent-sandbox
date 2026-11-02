@@ -181,7 +181,8 @@ object EgressCredentials:
   ): Vector[String] =
     credentials.toVector.map: credential =>
       val binding = credential.binding
-      s"brokered credential: ${chosen(binding.name, color)} -> ${chosen(binding.target, color)} " +
+      val fromFile = source(credential).nonEmpty
+      s"brokered credential: ${chosen(binding.name, color, fromFile)} -> ${chosen(binding.target, color, fromFile)} " +
         s"(${binding.place.shown}), " +
         s"placeholder ${credential.placeholder}${source(credential)}"
 

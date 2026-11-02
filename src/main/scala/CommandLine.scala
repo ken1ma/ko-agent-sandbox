@@ -25,20 +25,27 @@ object CommandLine:
   val DefaultWorkspaceMode = "live"
 
   /**
-   * `--workspace` takes these values beside the mode, in any order, each at most once:
+   * `--workspace` takes up to three parts, in any order, each at most once per source, in one value or across several
+   * `--workspace` options (joinWorkspace):
+   * - the mode (WorkspaceModes);
    * - the backend that holds the workspace's protections:
-   *   - `fuse`, the FUSE backend, which is the default of both modes until the release decision;
-   *   - `bpf`, the BPF backend of doc/bpf-lsm-cgroup.md ("Launches");
-   * - `unix-socket`, which allows Unix sockets in the workspace and beneath the persistent volume at the cost of the
-   *   BPF backend's ninth hook. `unix-socket` needs `bpf`, because the FUSE backend cannot honor the value.
+   *   - `bpf`, the BPF backend, the default of both modes (doc/bpf-lsm-cgroup.md, "Launches");
+   *   - `fuse`, the FUSE backend;
+   * - the socket setting: `unix-socket` allows Unix sockets in the workspace and beneath the persistent volume at the
+   *   cost of the BPF backend's ninth hook, and `no-unix-socket`, the default, does not. `unix-socket` needs `bpf`,
+   *   because the FUSE backend cannot honor the value.
    *   - On Windows the share itself refuses every socket bind (`ENOTSUP`), so the value reaches only the volume there
    *     (doc/bpf-lsm-cgroup.md, "What is gained and what is lost").
+   *
+   * Each part has a value for every setting, defaults included, so a command line can state any part over the options
+   * file's (WorkspaceValue.over).
    */
-  val WorkspaceBackends = Vector("fuse", "bpf")
-  val DefaultWorkspaceBackend = "fuse"
+  val WorkspaceBackends = Vector("bpf", "fuse")
+  val DefaultWorkspaceBackend = "bpf"
   val UnixSocketValue = "unix-socket"
+  val NoUnixSocketValue = "no-unix-socket"
 
-  /** The settings `--workspace` selects, as parseWorkspace reads them. */
+  /** The settings in force once the sources' `--workspace` values are merged. */
   final case class WorkspaceSettings(mode: String, backend: String, unixSocket: Boolean):
     def bpf: Boolean = backend == "bpf"
     def live: Boolean = mode == "live"
@@ -48,40 +55,102 @@ object CommandLine:
 
     /** The mode, the backend, then `unix-socket` when set. The launch line uses commas without spaces to match the
       * `--workspace` command-line value and the container label (KoAgentBpf.SettingsLabel). The launch line always
-      * spells the backend, so the line reads the same once another backend is the default. */
+      * spells the backend, the default included. */
     def spelled: String = s"$mode,$backend" + (if unixSocket then s",$UnixSocketValue" else "")
 
   object WorkspaceSettings:
-    val Default: WorkspaceSettings =
-      WorkspaceSettings(DefaultWorkspaceMode, DefaultWorkspaceBackend, unixSocket = false)
+    val Default: WorkspaceSettings = WorkspaceValue.Unstated.settings
 
   /**
-   * `--workspace=<mode>[,<backend>][,unix-socket]`, with the values in any order and each value once. An unclear value
+   * The parts that one source's `--workspace` states. A source parses alone, and the merge then puts the command
+   * line's parts over the file's (CommandLine.merge), so the merge knows where each part came from.
+   */
+  final case class WorkspaceValue(mode: Option[String], backend: Option[String], unixSocket: Option[Boolean]):
+    def parts: Vector[String] =
+      mode.toVector ++ backend ++ unixSocket.map(if _ then UnixSocketValue else NoUnixSocketValue)
+    def spelled: String = parts.mkString(",")
+
+    /** This value's parts, with `file`'s for the parts this value does not state. */
+    def over(file: WorkspaceValue): WorkspaceValue =
+      WorkspaceValue(mode.orElse(file.mode), backend.orElse(file.backend), unixSocket.orElse(file.unixSocket))
+
+    /** `file`'s parts that this value does not state, which the startup line credits to the file; None for none. */
+    def leftOf(file: WorkspaceValue): Option[WorkspaceValue] =
+      val left = WorkspaceValue(
+        file.mode.filter(_ => mode.isEmpty),
+        file.backend.filter(_ => backend.isEmpty),
+        file.unixSocket.filter(_ => unixSocket.isEmpty),
+      )
+      Option.when(left.parts.nonEmpty)(left)
+
+    def settings: WorkspaceSettings = WorkspaceSettings(
+      mode.getOrElse(DefaultWorkspaceMode),
+      backend.getOrElse(DefaultWorkspaceBackend),
+      unixSocket.contains(true),
+    )
+
+  object WorkspaceValue:
+    val Unstated: WorkspaceValue = WorkspaceValue(None, None, None)
+
+  /**
+   * One source's `--workspace` value, with the parts in any order and each part once. An unclear value
    * refuses the launch rather than being read as either side of a choice (design.md, "Security configuration must fail
    * closed").
    */
-  def parseWorkspace(value: String): Either[String, WorkspaceSettings] =
+  def parseWorkspace(value: String): Either[String, WorkspaceValue] =
     val values = value.split(",", -1).toVector
     val grammar =
-      s"the values are a mode, ${WorkspaceModes.mkString(" or ")}, a backend, " +
-        s"${WorkspaceBackends.mkString(" or ")}, and $UnixSocketValue, separated by commas, each at most once"
+      s"the parts are a mode, ${WorkspaceModes.mkString(" or ")}, a backend, ${WorkspaceBackends.mkString(" or ")}, " +
+        s"and a socket setting, $UnixSocketValue or $NoUnixSocketValue, separated by commas, each at most once"
+    val sockets = Vector(UnixSocketValue, NoUnixSocketValue)
     val modes = values.filter(WorkspaceModes.contains)
     val backends = values.filter(WorkspaceBackends.contains)
-    val sockets = values.filter(_ == UnixSocketValue)
+    val socketValues = values.filter(sockets.contains)
     val unknown = values.filterNot(value =>
-      WorkspaceModes.contains(value) || WorkspaceBackends.contains(value) || value == UnixSocketValue,
+      WorkspaceModes.contains(value) || WorkspaceBackends.contains(value) || sockets.contains(value),
     )
-    if unknown.nonEmpty || modes.size != 1 || backends.size > 1 || sockets.size > 1 then
+    if unknown.nonEmpty || modes.size > 1 || backends.size > 1 || socketValues.size > 1 then
       Left(s"error: --workspace=$value; $grammar")
     else
-      val settings =
-        WorkspaceSettings(modes.head, backends.headOption.getOrElse(DefaultWorkspaceBackend), sockets.nonEmpty)
-      if settings.unixSocket && !settings.bpf then
-        Left(
-          s"error: --workspace=$value; $UnixSocketValue needs the BPF backend: the FUSE backend cannot allow Unix " +
-            s"sockets in the workspace (--workspace=${settings.mode},bpf,$UnixSocketValue)",
-        )
-      else Right(settings)
+      val unixSocket = socketValues.headOption.map(_ == UnixSocketValue)
+      val parsed = WorkspaceValue(modes.headOption, backends.headOption, unixSocket)
+      unixSocketRefusal(parsed.settings).map(reason => s"error: --workspace=$value; $reason").toLeft(parsed)
+
+  /** Why `settings` cannot hold, or None: the FUSE backend cannot honor `unix-socket`. */
+  def unixSocketRefusal(settings: WorkspaceSettings): Option[String] =
+    Option.when(settings.unixSocket && !settings.bpf)(
+      s"$UnixSocketValue needs the BPF backend: the FUSE backend cannot allow Unix sockets in the workspace " +
+        s"(--workspace=...,bpf or --workspace=...,$NoUnixSocketValue)",
+    )
+
+  /** One source's later `--workspace` value joined to its earlier ones. A part stated twice is refused, as within one
+    * value, and so is a join the FUSE backend cannot honor. */
+  def joinWorkspace(earlier: WorkspaceValue, later: WorkspaceValue): Either[String, WorkspaceValue] =
+    val repeated = WorkspaceValue(
+      earlier.mode.filter(_ => later.mode.isDefined),
+      earlier.backend.filter(_ => later.backend.isDefined),
+      earlier.unixSocket.filter(_ => later.unixSocket.isDefined),
+    )
+    val joined = later.over(earlier)
+    if repeated.parts.nonEmpty then
+      Left(
+        s"error: --workspace=${later.spelled}; an earlier --workspace already states ${repeated.spelled}; " +
+          "give one value from each pair",
+      )
+    else
+      unixSocketRefusal(joined.settings).map(reason => s"error: --workspace=${joined.spelled}; $reason").toLeft(joined)
+
+  /** Why the two sources' `--workspace` values cannot hold together once merged, or None. Each source alone passed
+    * parseWorkspace, so only parts from both sources can conflict. */
+  def workspaceMergeRefusal(file: Option[WorkspaceValue], commandLine: Option[WorkspaceValue]): Option[String] =
+    for
+      fromFile <- file
+      stated <- commandLine
+      merged = stated.over(fromFile).settings
+      reason <- unixSocketRefusal(merged)
+    yield s"error: the options file's --workspace=${fromFile.spelled} and the command line's " +
+      s"--workspace=${stated.spelled} merge to ${merged.spelled}; $reason"
+
   val EgressProfiles = Vector("deny-all", "deny-unless-model", "deny-unless-allowed")
   val DefaultEgressProfile = "deny-unless-allowed"
 
@@ -206,7 +275,7 @@ object CommandLine:
    *   force, where the default replaces an empty value.
    */
   case class ParsedCommandLine(
-    workspace: Option[String],
+    workspace: Option[WorkspaceValue],
     egress: Option[String],
     action: Option[(String, List[String])],
     command: List[String],
@@ -229,11 +298,8 @@ object CommandLine:
     noOptionsFile: Boolean = false,
     dropped: Set[String] = Set.empty,
   ):
-    /** The settings of `workspace`, which parseArguments stored in the one spelling that parseWorkspace gives. */
-    def workspaceSettings: WorkspaceSettings =
-      workspace.fold(WorkspaceSettings.Default)(spelled =>
-        parseWorkspace(spelled).fold(reason => throw IllegalStateException(reason), identity),
-      )
+    /** The settings of `workspace`, with the defaults for the parts no source stated. */
+    def workspaceSettings: WorkspaceSettings = workspace.fold(WorkspaceSettings.Default)(_.settings)
     def workspaceMode: String = workspaceSettings.mode
     def egressProfile: String = egress.getOrElse(DefaultEgressProfile)
     def clipboardMode: String = clipboard.getOrElse(DefaultClipboardMode)
@@ -245,8 +311,11 @@ object CommandLine:
   case class FileSupplied(option: String, spelled: String)
 
   /**
-   * A single-valued option: one value per source, and the command line's value replaces the file's. `empty` is the
-   * value that means the default when the value is in force after the merge. A closed choice has no `empty`.
+   * A single-valued option: one value per source.
+   * - By default the command line's value replaces the file's. An option of parts, `--workspace`, gives `over`, which
+   *   puts the command line's parts over the file's, and `leftOf`, the file's parts that stay in force.
+   * - `empty` is the value that means the default when the value is in force after the merge. A closed choice has no
+   *   `empty`.
    */
   private case class Single[A](
     name: String,
@@ -254,13 +323,21 @@ object CommandLine:
     set: (ParsedCommandLine, Option[A]) => ParsedCommandLine,
     spelled: A => String,
     empty: Option[A] = None,
+    over: (A, A) => A = (stated: A, _: A) => stated,
+    leftOf: (A, A) => Option[A] = (_: A, _: A) => None,
   ):
     def isGiven(parsed: ParsedCommandLine): Boolean = get(parsed).isDefined
     def cleared(parsed: ParsedCommandLine): ParsedCommandLine = set(parsed, None)
     def merged(file: ParsedCommandLine, commandLine: ParsedCommandLine, into: ParsedCommandLine): ParsedCommandLine =
-      set(into, get(commandLine).orElse(get(file)).filterNot(empty.contains))
+      val inForce = (get(commandLine), get(file)) match
+        case (Some(stated), Some(fromFile)) => Some(over(stated, fromFile))
+        case (stated, fromFile)             => stated.orElse(fromFile)
+      set(into, inForce.filterNot(empty.contains))
     def supplied(file: ParsedCommandLine, commandLine: ParsedCommandLine): Vector[FileSupplied] =
-      if isGiven(commandLine) then Vector.empty else get(file).map(value => FileSupplied(name, spelled(value))).toVector
+      val fromFile = (get(commandLine), get(file)) match
+        case (Some(stated), Some(value)) => leftOf(stated, value)
+        case (stated, value)             => value.filter(_ => stated.isEmpty)
+      fromFile.map(value => FileSupplied(name, spelled(value))).toVector
 
   /** A repeatable option, merged by `key`. The command line's entry replaces the file's entry of the same key, and the
     * command line's empty value drops the file's entries. */
@@ -282,7 +359,10 @@ object CommandLine:
       kept(file, commandLine).map(entry => FileSupplied(name, spelled(entry)))
 
   private val Singles: Vector[Single[?]] = Vector(
-    Single[String]("--workspace", _.workspace, (p, v) => p.copy(workspace = v), v => s"--workspace=$v"),
+    Single[WorkspaceValue](
+      "--workspace", _.workspace, (p, v) => p.copy(workspace = v), v => s"--workspace=${v.spelled}",
+      over = _.over(_), leftOf = _.leftOf(_),
+    ),
     Single[String]("--egress", _.egress, (p, v) => p.copy(egress = v), v => s"--egress=$v"),
     Single[String]("--clipboard", _.clipboard, (p, v) => p.copy(clipboard = v), v => s"--clipboard=$v"),
     Single[Vector[String]](
@@ -344,6 +424,8 @@ object CommandLine:
    * The options in force for a launch or an action, and the options that the file supplied, for the startup lines.
    * - The command line's options go over the file's options, as Single and Repeated merge them. The action, the
    *   command and `--no-options-file` come from the command line.
+   * - A `--workspace` part from each source can conflict once merged, which refuses the launch
+   *   (workspaceMergeRefusal).
    * - The checks across options then run on the merged set, so an `--env` and an `--egress-cred` of one name fail
    *   whichever source each option comes from.
    */
@@ -355,7 +437,8 @@ object CommandLine:
     val singles = Singles.foldLeft(base)((into, option) => option.merged(file, commandLine, into))
     val merged = Repeateds.foldLeft(singles)((into, option) => option.merged(file, commandLine, into))
     val supplied = Singles.flatMap(_.supplied(file, commandLine)) ++ Repeateds.flatMap(_.supplied(file, commandLine))
-    checkedAcross(merged).map(_ -> supplied)
+    workspaceMergeRefusal(file.workspace, commandLine.workspace).toLeft(()).flatMap(_ => checkedAcross(merged))
+      .map(_ -> supplied)
 
   val NoOptions: ParsedCommandLine = ParsedCommandLine(None, None, None, Nil)
 
@@ -388,7 +471,8 @@ object CommandLine:
 
   /** The options that take a value, with what the value is. Each option is refused when spelled without its `=`. */
   val ValuedOptions: Map[String, String] = Map(
-    "--workspace" -> "<mode>[,<backend>][,unix-socket]", "--egress" -> "<profile>", ModelProviderOption -> "<names>",
+    "--workspace" -> "read-only|live|bpf|fuse|unix-socket|no-unix-socket[,...]", "--egress" -> "<profile>",
+    ModelProviderOption -> "<names>",
     "--clipboard" -> "<mode>", AudioOption -> "off|<devices>", "--nesting" -> "none|user-namespace|same-uid",
     "--session-start" -> "pause|immediate", "--memory" -> "<size>", PersistentVolumeOption -> "<name>",
     "--image" -> "<reference>", ProxyImageOption -> "<reference>", "--env" -> "<name>[=<value>]",
@@ -411,6 +495,7 @@ object CommandLine:
    * - An option that this launcher does not parse refuses the launch rather than passing through, so a spelling that
    *   is not read never configures authority.
    * - Within one source, a single-valued option is given once, and each entry of a repeatable option is given once.
+   *   `--workspace` may repeat, with each part given once (joinWorkspace).
    *   An empty value of a repeatable option drops the option's entries before that value.
    */
   def parseArguments(args: List[String]): Either[String, ParsedCommandLine] =
@@ -446,9 +531,10 @@ object CommandLine:
         valueOf(name).map(spelled => once(name, current, value(spelled))(set(parsed, _)))
       Vector(
         () =>
-          single("--workspace", parsed.workspace, (p, v) => p.copy(workspace = v))(
-            parseWorkspace(_).map(_.spelled),
-          ),
+          valueOf("--workspace").map: value =>
+            parseWorkspace(value)
+              .flatMap(stated => parsed.workspace.fold(Right(stated))(joinWorkspace(_, stated)))
+              .flatMap(joined => update(parsed.copy(workspace = Some(joined)))),
         () => single("--egress", parsed.egress, (p, v) => p.copy(egress = v))(choose("--egress", _, EgressProfiles)),
         () =>
           single("--clipboard", parsed.clipboard, (p, v) => p.copy(clipboard = v))(

@@ -12,7 +12,7 @@ import java.nio.file.{Files, NoSuchFileException, Path}
 
 import CommandLine.*
 import FileHelper.canonicalizedFuturePath
-import HostCommands.{colorStderr, displayPath, lookedUp, Os}
+import HostCommands.{colorStderr, displayPath, fromOptionsFile, Os}
 import SandboxWorkspace.overlapsInAnySpelling
 
 object OptionsFile:
@@ -75,14 +75,14 @@ object OptionsFile:
 
   def shown(path: Path, os: Os): String = displayPath(path, os)
 
-  /** What a startup line adds after an option that the file supplied: a path to look up, not to read
-    * (HostCommands.lookedUp). */
+  /** What a startup line adds after an option that the file supplied, in the file's shade
+    * (HostCommands.fromOptionsFile). */
   def fromFile(path: Path, os: Os, color: Boolean = colorStderr): String =
-    s" ${lookedUp(s"(from ${shown(path, os)})", color)}"
+    s" ${fromOptionsFile(s"(from ${shown(path, os)})", color)}"
 
   /** fromFile with the values that the file supplied, for a line that also states values from elsewhere. */
   def valuesFromFile(values: Vector[String], path: Path, os: Os, color: Boolean = colorStderr): String =
-    s" ${lookedUp(s"(${values.mkString(", ")} from ${shown(path, os)})", color)}"
+    s" ${fromOptionsFile(s"(${values.mkString(", ")} from ${shown(path, os)})", color)}"
 
   /**
    * The file's options as one source of arguments, or the reason the file fails the launch. The reason names the file
@@ -239,6 +239,9 @@ case class OptionsInForce(
   def fileValues(option: String): Vector[String] =
     supplied.filter(_.option == option).map(_.spelled.stripPrefix(option + "="))
 
+  /** The `--workspace` parts that the file supplied and the command line left in force. */
+  def workspacePartsFromFile: Set[String] = fileValues("--workspace").flatMap(_.split(",")).toSet
+
   /** What the egress line adds after the `selected` providers: `from` when the file supplied every selected provider,
     * else the provider names that the file supplied. A provider that the command or the command line added is thus
     * not credited to the file. */
@@ -251,7 +254,7 @@ case class OptionsInForce(
       else OptionsFile.valuesFromFile(fromFile, path, os, color)
 
   /** The startup line of each option that the file supplied, except the options in `covered`, whose own lines name
-    * the file (from). Each line tints the option's value as what the user chose (HostCommands.chosen). */
+    * the file (from). Each line tints the option's value as the file's choice (HostCommands.chosen). */
   def fileLines(
     covered: Set[String] = Set.empty,
     os: HostCommands.Os = HostCommands.currentOs,
@@ -260,5 +263,6 @@ case class OptionsInForce(
     file.toVector.flatMap: path =>
       supplied.filterNot(entry => covered(entry.option)).map: entry =>
         val (name, value) = entry.spelled.span(_ != '=')
-        val tinted = if value.isEmpty then name else s"$name=${HostCommands.chosen(value.drop(1), color)}"
+        val tinted =
+          if value.isEmpty then name else s"$name=${HostCommands.chosen(value.drop(1), color, fromFile = true)}"
         tinted + OptionsFile.fromFile(path, os, color)
