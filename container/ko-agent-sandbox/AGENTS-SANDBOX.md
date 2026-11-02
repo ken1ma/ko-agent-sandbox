@@ -61,7 +61,7 @@ Build output:
 ## Use what is already installed
 
 VS Code CLI (`code`), Java 25, Scala (`sbt`, `cs`, `scalafmt`, and `scala`, which is Scala CLI),
-Python 3.14 (`uv`, `uvx`), Node 24, Rust stable (`clippy`, `rustfmt`, and the static musl target),
+Python 3.15 (`uv`, `uvx`), Node 24, Rust stable (`clippy`, `rustfmt`, and the static musl target),
 plus `rg`, `jq`, `patch`, `zstd`, `openssl`, `git filter-repo`, `git lfs`, binutils, and the usual
 GNU text and process commands.
 

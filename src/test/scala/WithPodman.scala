@@ -35,8 +35,17 @@ object WithPodman extends munit.Assertions:
     assume(underTestWithPodman, "run `sbt testWithPodman` to run the container-launching suites")
     assert(Files.isRegularFile(jar), s"testWithPodman needs $jar: run `sbt dist` first")
     requireJarCurrent()
+    // Before anything reads `HostCommands.podman`: when podman is missing, that lookup exits the JVM, and these
+    // suites run in sbt's own JVM, so the exit would end the sbt server rather than fail the test.
+    commandMissing("podman", env("PATH").getOrElse("")).foreach(fail(_))
     requireImagesCurrent()
     sweepEarlierRuns()
+
+  /** The failure to report when `pathValue` has no `name`, looked up as the launcher looks it up. */
+  def commandMissing(name: String, pathValue: String): Option[String] =
+    Option.when(findOnPath(name, pathValue, currentOs).isEmpty):
+      s"testWithPodman needs $name on the PATH of the JVM that runs sbt's tests: " +
+        s"run sbt from a shell where `$name --version` works"
 
   /** The distribution jar must contain every class and resource compiled for this test JVM, byte
     * for byte. Otherwise a stale parser or source digest fails only after the launch begins, with the

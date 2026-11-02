@@ -4,4 +4,4 @@
 # provisioned on the host.
 mill-jvm-version: system
 extends: ScalaModule
-scalaVersion: 3.9.0
+scalaVersion: 3.10.0
