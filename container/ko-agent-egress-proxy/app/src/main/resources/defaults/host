@@ -105,9 +105,10 @@ allow https://plugins-artifacts.gradle.org/ read  # https://plugins.gradle.org/d
 # api.adoptium.net, which `cs java` reads to fetch an extra JDK, is not needed: the image bakes in its Temurin
 
 # Java docs / artifact
-allow https://openjdk.org/      read  # JEPs
-allow https://docs.oracle.com/  read  # Java API, JLS, JVMS
-allow https://bugs.openjdk.org/ read  # bugs
+allow https://openjdk.org/           read  # JEPs
+allow https://docs.oracle.com/       read  # Java API, JLS, JVMS
+allow https://bugs.openjdk.org/      read  # bugs
+allow https://packages.adoptium.net/ read  # Temurin: Linux package repository, mac/win binaries are on GitHub
 
 allow https://maven.apache.org/      read  # docs
 allow https://repo.maven.apache.org/ read  # artifacts

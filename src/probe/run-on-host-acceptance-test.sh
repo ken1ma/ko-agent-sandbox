@@ -736,7 +736,7 @@ mill-jvm-index-version: acceptance/' "$mill_workspace/build.mill.yaml" > "$pinne
     # another id, Mill fetches, and the second row fails.
     case "$mill_version" in
         1.1.[0-9]*) mill_default_jvm=zulu:21 ;;
-        1.3.0) mill_default_jvm=zulu:25 ;;
+        1.3.[01]) mill_default_jvm=zulu:25 ;;
         *) mill_default_jvm="" ;;
     esac
     grep -v '^mill-jvm-version: ' "$pinned_workspace/build.mill.yaml" > "$work/unset-build.mill.yaml"

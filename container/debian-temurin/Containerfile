@@ -2,7 +2,11 @@
 ARG DEBIAN_VERSION=13.7
 FROM docker.io/library/debian:${DEBIAN_VERSION}-slim
 
-ARG TEMURIN_VERSION=25.0.4
+# An exact Temurin build rather than a release prefix such as 25.0.5. The build cache keeps the install's layer while
+# this value is unchanged, and --update does not rebuild this image. So a prefix would take an extra release of the same
+# update, such as 25.0.4.1, only when the cache happened to miss, and machines with the same value could hold different
+# builds.
+ARG TEMURIN_VERSION=25.0.5.0.0+8
 
 # Podman 5.2.0+ (Buildah 1.37.0+) populates TARGETARCH.
 ARG TARGETARCH
@@ -45,8 +49,8 @@ RUN set -euxo pipefail; \
         binutils; \
     rm -rf /var/lib/apt/lists/*
 
-# `%%.*` (25.0.4 -> 25) is not in the Dockerfile spec, but podman accepts it since 5.2.0. The closing `test -x` fails
-# the build if podman ever stops accepting it.
+# `%%.*` (25.0.5.0.0+8 -> 25) is not in the Dockerfile spec, but podman accepts it since 5.2.0. The closing `test -x`
+# fails the build if podman ever stops accepting it.
 ENV JAVA_HOME=/usr/lib/jvm/temurin-${TEMURIN_VERSION%%.*}-jdk-${TARGETARCH}
 
 RUN set -euxo pipefail; \
@@ -63,15 +67,20 @@ RUN set -euxo pipefail; \
         > /etc/apt/sources.list.d/adoptium.sources; \
     apt-get update; \
     TEMURIN_DEB_PACKAGE="temurin-${TEMURIN_VERSION%%.*}-jdk"; \
-    # Select the latest Adoptium Debian package for the requested Temurin release.
+    # Select the latest Debian revision of exactly the requested Temurin build.
     # `dpkg --compare-versions` is authoritative, but `sort -V` suffices for Adoptium's version format.
     TEMURIN_DEB_VERSION="$( \
         apt-cache madison "$TEMURIN_DEB_PACKAGE" \
-        | awk -v v="$TEMURIN_VERSION" 'index($3, v ".") == 1 { print $3 }' \
+        | awk -v v="$TEMURIN_VERSION" 'index($3, v "-") == 1 { print $3 }' \
         | sort -V \
         | tail -n 1 \
     )"; \
-    test -n "$TEMURIN_DEB_VERSION"; \
+    if [ -z "$TEMURIN_DEB_VERSION" ]; then \
+        echo "Adoptium has no $TEMURIN_DEB_PACKAGE for Temurin build $TEMURIN_VERSION." \
+            "Set TEMURIN_VERSION to a build these package versions begin with:" >&2; \
+        apt-cache madison "$TEMURIN_DEB_PACKAGE" | awk '{ print "  " $3 }' >&2; \
+        exit 1; \
+    fi; \
     apt-get install -y --no-install-recommends "$TEMURIN_DEB_PACKAGE=$TEMURIN_DEB_VERSION"; \
     rm -rf /var/lib/apt/lists/*; \
     test -x "$JAVA_HOME/bin/java"

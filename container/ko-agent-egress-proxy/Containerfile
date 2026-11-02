@@ -6,16 +6,18 @@ FROM debian-coursier:${IMG_TAG_VER} AS build
 
 # This layer precedes the application COPY, so the named build-stage cache keeps the toolchain when the proxy's
 # sources change. Only the native compilation repeats.
-ARG GRAALVM_RELEASE=graal-25.3.4.1
+# The GraalVM release bundles its own JDK, on which sbt and native-image run, so its JDK version need not match
+# debian-temurin's Temurin. GRAALVM_ARCHIVE_VERSION is the version part of the release's archive names: the GraalVM
+# release (25i4, 25 Innovation 4) and its JDK version.
+ARG GRAALVM_RELEASE=graal-25.4.4.1.1
+ARG GRAALVM_ARCHIVE_VERSION=25i4-25.0.4.1.1
 
-# Coursier cannot install the JDK matching this image. Even its latest unpublished index stops at GraalVM Community
-# 25.0.2, so this command fails:
-#   cs java --jvm graalvm-community:25.0.4.1 --jvm-index \
+# Coursier cannot install this GraalVM release. Even its latest unpublished index stops at GraalVM Community 25.0.2,
+# so this command fails:
+#   cs java --jvm graalvm-community:25.0.4.1.1 --jvm-index \
 #     https://raw.githubusercontent.com/coursier/jvm-index/refs/heads/create-pull-request/patch/index.json
 
 RUN set -euxo pipefail; \
-    . "$JAVA_HOME/release"; \
-    GRAALVM_JAVA_VERSION="$JAVA_VERSION"; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         gcc \
@@ -24,18 +26,18 @@ RUN set -euxo pipefail; \
     case "$(uname -m)" in \
         aarch64) \
             GRAALVM_ARCH=aarch64; \
-            GRAALVM_SHA256=7e8a3fbc2e4c28566107039a298cef690d86a37599a8e50536fc5a65b7f1bd56 \
+            GRAALVM_SHA256=e5f5e2f59643cf96765c741dc00b206f86c69c8c1bf843fe26050c871e0e2dbc \
             ;; \
         x86_64) \
             GRAALVM_ARCH=x64; \
-            GRAALVM_SHA256=b2bc38d0c4141426eb44d0eefa3cc172c96faf92727d703b61541699128b6fc7 \
+            GRAALVM_SHA256=05ccbbe783210b6886ff7b08fcd0b061c5dce4852b05db87284fc0e24abb08e2 \
             ;; \
         *) \
             echo "Unsupported architecture: $(uname -m)" >&2; \
             exit 1 \
             ;; \
     esac; \
-    GRAALVM_ARCHIVE="graalvm-community-jdk-25i3-${GRAALVM_JAVA_VERSION}"; \
+    GRAALVM_ARCHIVE="graalvm-community-jdk-${GRAALVM_ARCHIVE_VERSION}"; \
     GRAALVM_ARCHIVE="${GRAALVM_ARCHIVE}_linux-${GRAALVM_ARCH}_bin.tar.gz"; \
     GRAALVM_BASE_URL="https://github.com/graalvm/graalvm-ce-builds/releases/download/${GRAALVM_RELEASE}"; \
     GRAALVM_URL="${GRAALVM_BASE_URL}/${GRAALVM_ARCHIVE}"; \
