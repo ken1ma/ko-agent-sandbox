@@ -29,6 +29,9 @@
 #   this script then runs them on a copy of the fixture pinned to the last Mill with a daemon. Provision that
 #   launcher on the host first with `MILL_VERSION=1.1.10-jvm ./mill --no-daemon version` in the fixture, which leaves
 #   no daemon behind.
+# - The gradle rows run on the Gradle that the fixture's wrapper names. A second run then runs them on a copy of the
+#   fixture pinned to the last Gradle 8 release. Before that run, the script runs `./gradlew --version` in the copy on
+#   the host, which unpacks that release's distribution when it is missing.
 # - src/probe/deny-fixture exists for the unlisted-host row: its resolution must reach a host that the proxy refuses.
 # - src/probe/ivy-fixture exists for the inter-project row: resolving a dependsOn edge enters Ivy, whose lock file
 #   lives in the Ivy home, and this repository has no such edge.
@@ -64,29 +67,55 @@ safe_path "the checkout path" "$workspace"
 safe_path "HOME" "$HOME"
 safe_path "JAVA_HOME" "${JAVA_HOME:-}"
 safe_path "TMPDIR" "${TMPDIR:-}"
-# The mill rows run once per Mill: first on the fixture's own Mill, then on the last Mill with a daemon
-# (RunOnHostPrereqs.MillDaemonReadsLauncherSince), on a copy at a fixed path, because the run-on-host cache is kept
-# per workspace path. Each Mill gets a run of its own, with its own work directory, traps and totals.
+# The mill and gradle rows run once more on an older release, each on a copy of the fixture at a fixed path, because
+# the run-on-host cache is kept per workspace path. Each run has its own work directory, traps and totals.
+# - mill: the last Mill with a daemon (RunOnHostPrereqs.MillDaemonReadsLauncherSince).
+# - gradle: the last Gradle 8 release (run-on-host.md, "Gradle").
 daemon_mill=1.1.10
 daemon_mill_workspace=$workspace/target/acceptance-mill-$daemon_mill
-if want mill && [ -z "${ACCEPTANCE_MILL_WORKSPACE:-}" ]; then
-    # The next launch's provisioning would meet a build directory left under the workspace.
-    trap 'rm -rf "$daemon_mill_workspace"' EXIT
+older_gradle=8.14.6
+older_gradle_workspace=$workspace/target/acceptance-gradle-$older_gradle
+if { want mill || want gradle; } && [ -z "${ACCEPTANCE_MILL_WORKSPACE:-}${ACCEPTANCE_GRADLE_WORKSPACE:-}" ]; then
+    # The next launch's provisioning would meet a build directory left under the workspace. Each copy is removed only
+    # by the run that selects its program, so a run of the other program leaves it alone.
+    remove_copies() {
+        if want mill; then rm -rf "$daemon_mill_workspace"; fi
+        if want gradle; then rm -rf "$older_gradle_workspace"; fi
+    }
+    trap remove_copies EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    ACCEPTANCE_MILL_WORKSPACE=$workspace/src/probe/mill-fixture sh "$0" "$@"; fixture_status=$?
-    rm -rf "$daemon_mill_workspace"; mkdir -p "$daemon_mill_workspace"
-    fixture=$workspace/src/probe/mill-fixture
-    cp "$fixture/mill" "$fixture/build.mill.yaml" "$daemon_mill_workspace/"
-    cp -R "$fixture/src" "$fixture/test" "$daemon_mill_workspace/"
-    printf '%s\n' "$daemon_mill" > "$daemon_mill_workspace/.mill-version"
-    echo
-    echo "the mill rows on Mill $daemon_mill, in $daemon_mill_workspace"
-    ACCEPTANCE_MILL_WORKSPACE=$daemon_mill_workspace sh "$0" mill "${2:-full}"; daemon_status=$?
-    [ "$fixture_status" -eq 0 ] && [ "$daemon_status" -eq 0 ]
-    exit
+    ACCEPTANCE_MILL_WORKSPACE=$workspace/src/probe/mill-fixture \
+        ACCEPTANCE_GRADLE_WORKSPACE=$workspace/src/probe/gradle-fixture sh "$0" "$@"; status=$?
+    if want mill; then
+        rm -rf "$daemon_mill_workspace"; mkdir -p "$daemon_mill_workspace"
+        fixture=$workspace/src/probe/mill-fixture
+        cp "$fixture/mill" "$fixture/build.mill.yaml" "$daemon_mill_workspace/"
+        cp -R "$fixture/src" "$fixture/test" "$daemon_mill_workspace/"
+        printf '%s\n' "$daemon_mill" > "$daemon_mill_workspace/.mill-version"
+        echo
+        echo "the mill rows on Mill $daemon_mill, in $daemon_mill_workspace"
+        ACCEPTANCE_MILL_WORKSPACE=$daemon_mill_workspace sh "$0" mill "${2:-full}" || status=1
+    fi
+    if want gradle; then
+        rm -rf "$older_gradle_workspace"; mkdir -p "$older_gradle_workspace"
+        fixture=$workspace/src/probe/gradle-fixture
+        cp "$fixture/gradlew" "$fixture/build.gradle" "$fixture/settings.gradle" "$older_gradle_workspace/"
+        cp -R "$fixture/gradle" "$fixture/src" "$older_gradle_workspace/"
+        properties=$older_gradle_workspace/gradle/wrapper/gradle-wrapper.properties
+        sed "s|/gradle-[^/]*-bin\.zip\$|/gradle-$older_gradle-bin.zip|" \
+            "$fixture/gradle/wrapper/gradle-wrapper.properties" > "$properties"
+        echo
+        echo "the gradle rows on Gradle $older_gradle, in $older_gradle_workspace"
+        provision_log=$older_gradle_workspace/provision.log
+        if ( cd "$older_gradle_workspace" && ./gradlew --version ) >"$provision_log" 2>&1
+        then ACCEPTANCE_GRADLE_WORKSPACE=$older_gradle_workspace sh "$0" gradle "${2:-full}" || status=1
+        else echo "./gradlew --version failed in $older_gradle_workspace:"; tail -20 "$provision_log"; status=1; fi
+    fi
+    exit "$status"
 fi
 safe_path "ACCEPTANCE_MILL_WORKSPACE" "${ACCEPTANCE_MILL_WORKSPACE:-}"
+safe_path "ACCEPTANCE_GRADLE_WORKSPACE" "${ACCEPTANCE_GRADLE_WORKSPACE:-}"
 # Every path that this run creates is unique to it (mktemp, not a pid, which is reused), so two acceptance runs do
 # not share logs, and the cleanup removes only what this run made and never a workspace file. The logs go under the
 # workspace's target/acceptance/, which git ignores and which, unlike $TMPDIR, a sandbox session can read. The script
@@ -108,7 +137,7 @@ mill_workspace=${ACCEPTANCE_MILL_WORKSPACE:-$workspace/src/probe/mill-fixture}
 # The pinned-JVM rows build in a workspace of their own at a fixed path. The run-on-host cache is kept per workspace
 # path, so a new path in each run would leave a cache behind each time.
 pinned_workspace=$workspace/target/acceptance-pinned-mill
-gradle_workspace=$workspace/src/probe/gradle-fixture
+gradle_workspace=${ACCEPTANCE_GRADLE_WORKSPACE:-$workspace/src/probe/gradle-fixture}
 mvn_workspace=$workspace/src/probe/mvn-fixture
 workspace_of() {
     case "$1" in
@@ -2442,9 +2471,8 @@ PY
             then report PASS "$planted_row" "$(grep -c bytes "$work/planted.log") connects, no bytes"
             else report FAIL "$planted_row" "exit $status: $(tail -1 "$work/chan-planted.log.err" | cut -c1-60); \
 listener: $(grep bytes "$work/planted.log" | tr '\n' ' ')"; fi
-            # Under a mill without a daemon the mill rows' own skip reports the row.
-            if ! want mill; then report SKIP "$planted_mill_row" "needs mill"
-            elif [ "$mill_daemonless" -eq 0 ]; then
+            # When mill is not selected, or runs without a daemon, the mill rows' own skip reports the row.
+            if want mill && [ "$mill_daemonless" -eq 0 ]; then
                 with_timeout 600 channel_shim chan-planted-mill.log "$mill_workspace" mill version; status=$?
                 channel_settled
                 port_saved=""

@@ -59,17 +59,17 @@ the document or code that specifies or enforces each part:
 | the generated profile | `SeatbeltProfile.scala` |
 | the exit criteria, measured | `src/probe/run-on-host-acceptance-test.sh` |
 
-The full acceptance test (`all`) has these recorded results:
+The acceptance test has these recorded results:
 
-- On macOS 26.6.2 arm64 with Temurin 25.0.4, sbt 2.0.9, Mill 1.3.0, Gradle 9.8.0 and Maven 3.9.16
-  (2026-10-19), the test reports **285 PASS, 0 FAIL, 13 SKIP**. The skips are the rows of Mill's
-  daemon, which Mill 1.3.0 runs without.
-- A second run of the mill rows, on the copy pinned to Mill 1.1.10, reports **101 PASS, 0 FAIL, 16
-  SKIP**. Each skip is a row of a program that the run does not select, or a row of Mill without a
-  daemon.
-- Neither run includes the row on a build through a mill daemon of yours. With that row, the
-  `mill` selection reports **90 PASS, 0 FAIL, 28 SKIP** on Mill 1.3.0 and **101 PASS, 0 FAIL, 17
-  SKIP** on Mill 1.1.10 (2026-10-19).
+- On macOS 26.4.1 arm64 with Temurin 25.0.4, sbt 2.0.12 through the 2.0.11 launcher, Mill 1.3.1,
+  Gradle 9.8.0 and Maven 3.9.16 (2026-11-02), the test reports **286 PASS, 0 FAIL, 13 SKIP**. The
+  skips are the rows of Mill's daemon, which Mill 1.3.1 runs without.
+- A second run of the mill rows, on the copy pinned to Mill 1.1.10, reports **101 PASS, 0 FAIL, 17
+  SKIP**. The skips are rows of the other programs, the lifecycle rows, and the two rows of Mill
+  without a daemon.
+- The `gradle` selection reports **90 PASS, 0 FAIL, 23 SKIP** on Gradle 9.8.2, and the same on the
+  copy pinned to Gradle 8.14.6 (2026-11-03). The skips are rows of the other programs and the
+  lifecycle rows, which need every program; no Gradle row is skipped.
 
 The measurement behind the feature: an `sbt test` of this project takes about 2 GB inside the
 podman machine.
@@ -842,7 +842,7 @@ globally installed `gradle` is not used.
 
 The command runs the distribution's `bin/gradle` in the working directory, not `gradlew`, which
 would download. The supervisor computes the distribution directory exactly as Gradle's wrapper
-does (`RunOnHostPrereqs.gradleDistributionDir`, from Gradle 9.8.0's `PathAssembler`):
+does (`RunOnHostPrereqs.gradleDistributionDir`, from Gradle 9.8.2's `PathAssembler`):
 
 1. `distributionUrl` read as `java.util.Properties` reads the file, a value without a scheme
    resolved as a file against the properties file's directory;
@@ -907,9 +907,17 @@ Three properties on the command line close the toolchain inventory to the launch
 overrides every `gradle.properties`, so a project asking for another toolchain fails naming it,
 rather than meeting a denial.
 
-Gradle 9.8.0 is the release measured, the one that `src/probe/gradle-fixture` pins. Older lines are
-out: 8.14 does not run on the JDK 25 the launcher requires, and Gradle itself refuses a JDK it
-cannot run on.
+`src/probe/gradle-fixture` pins Gradle 9.8.2, and the acceptance test also runs the Gradle rows on
+a copy pinned to the last Gradle 8 release, 8.14.6. The recorded results at the top of this
+document have each release's totals.
+
+- Gradle 8.14 through 8.14.3 fail on JDK 25, the JDK the launcher requires. Each fails compiling
+  the build script with "Unsupported class file major version 69", so releases before 8.14.4 are
+  out.
+- Gradle's compatibility matrix lists Java 25 only from 9.1.0
+  (https://docs.gradle.org/current/userguide/compatibility.html). 8.14.4 supports Java 25 only in
+  part: it moves Groovy to 3.0.25 and ASM to 9.8, and leaves full support out of scope
+  (https://github.com/gradle/gradle/issues/36420).
 
 The acceptance test's Gradle rows (`src/probe/run-on-host-acceptance-test.sh`) measure:
 
@@ -1876,23 +1884,23 @@ How each program reaches its cache:
   - https://github.com/sbt/sbt/blob/v2.0.9/launch/src/main/input_resources/sbt/sbt.boot.properties
   - https://github.com/sbt/sbt/blob/v2.0.9/lm-ivy/src/main/scala/sbt/internal/librarymanagement/Ivy.scala
   - https://repo1.maven.org/maven2/org/scala-sbt/librarymanagement-ivy_2.12/1.12.3/librarymanagement-ivy_2.12-1.12.3-sources.jar
-- Gradle 9.8.0's wrapper — the distribution directory, the properties it reads, the user home:
-  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/PathAssembler.java
-  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/WrapperExecutor.java
-  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/Install.java
-  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/wrapper-main/src/main/java/org/gradle/wrapper/GradleWrapperMain.java
-- Gradle 9.8.0's daemon — its detach at start, the client's fork with its own environment and
+- Gradle 9.8.2's wrapper — the distribution directory, the properties it reads, the user home:
+  - https://github.com/gradle/gradle/blob/v9.8.2/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/PathAssembler.java
+  - https://github.com/gradle/gradle/blob/v9.8.2/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/WrapperExecutor.java
+  - https://github.com/gradle/gradle/blob/v9.8.2/platforms/core-runtime/wrapper-shared/src/main/java/org/gradle/wrapper/Install.java
+  - https://github.com/gradle/gradle/blob/v9.8.2/platforms/core-runtime/wrapper-main/src/main/java/org/gradle/wrapper/GradleWrapperMain.java
+- Gradle 9.8.2's daemon — its detach at start, the client's fork with its own environment and
   the registry option, the compatibility check on the client's immutable properties, the cancel
   on a client's disconnect, `--stop`, and the file lock's UDP socket:
-  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/daemon-server/src/main/java/org/gradle/launcher/daemon/bootstrap/DaemonMain.java
-  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/client-services/src/main/java/org/gradle/launcher/daemon/client/DefaultDaemonStarter.java
-  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/process-services/src/main/java/org/gradle/process/internal/DefaultProcessForkOptions.java
-  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/daemon-protocol/src/main/java/org/gradle/launcher/daemon/context/DaemonCompatibilitySpec.java
-  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/cli/converter/InitialPropertiesConverter.java
-  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/daemon/server/DaemonStateCoordinator.java
-  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/daemon/server/exec/WatchForDisconnection.java
-  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-runtime/client-services/src/main/java/org/gradle/launcher/daemon/client/DaemonStopClient.java
-  - https://github.com/gradle/gradle/blob/v9.8.0/platforms/core-execution/persistent-cache/src/main/java/org/gradle/cache/internal/locklistener/DefaultFileLockCommunicator.java
+  - https://github.com/gradle/gradle/blob/v9.8.2/platforms/core-runtime/daemon-server/src/main/java/org/gradle/launcher/daemon/bootstrap/DaemonMain.java
+  - https://github.com/gradle/gradle/blob/v9.8.2/platforms/core-runtime/client-services/src/main/java/org/gradle/launcher/daemon/client/DefaultDaemonStarter.java
+  - https://github.com/gradle/gradle/blob/v9.8.2/platforms/core-runtime/process-services/src/main/java/org/gradle/process/internal/DefaultProcessForkOptions.java
+  - https://github.com/gradle/gradle/blob/v9.8.2/platforms/core-runtime/daemon-protocol/src/main/java/org/gradle/launcher/daemon/context/DaemonCompatibilitySpec.java
+  - https://github.com/gradle/gradle/blob/v9.8.2/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/cli/converter/InitialPropertiesConverter.java
+  - https://github.com/gradle/gradle/blob/v9.8.2/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/daemon/server/DaemonStateCoordinator.java
+  - https://github.com/gradle/gradle/blob/v9.8.2/platforms/core-runtime/launcher/src/main/java/org/gradle/launcher/daemon/server/exec/WatchForDisconnection.java
+  - https://github.com/gradle/gradle/blob/v9.8.2/platforms/core-runtime/client-services/src/main/java/org/gradle/launcher/daemon/client/DaemonStopClient.java
+  - https://github.com/gradle/gradle/blob/v9.8.2/platforms/core-execution/persistent-cache/src/main/java/org/gradle/cache/internal/locklistener/DefaultFileLockCommunicator.java
 - Gradle toolchains — auto-detection, auto-provisioning and `installations.paths`:
   - https://docs.gradle.org/current/userguide/toolchains.html
 - Gradle's configuration precedence — a `-D` over every `gradle.properties`:

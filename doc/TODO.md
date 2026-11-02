@@ -8,7 +8,7 @@ reason, so that nobody proposes it again.
 ## Credential brokering — `--egress-cred`, then the provider plan
 
 - [ ] Run `sbt "testWithPodman *ProxyContainerTest"` on Linux. The proxy's attached `podman start`
-  is measured, and passes, on macOS (podman 6.1.2, 2026-10-04) and on Windows (f3d413d).
+  is measured, and passes, on macOS (podman 6.1.4, fdf1d04, 2026-11-02) and on Windows (f3d413d).
 - [ ] Check `--egress-cred` under `--run-on-host` against real hosts. `egress-proxy.md`, "Brokered
   credentials", has the GitHub session's measurement. The checks:
   - With `--run-on-host=sbt` and `maven.pkg.github.com` allowed in

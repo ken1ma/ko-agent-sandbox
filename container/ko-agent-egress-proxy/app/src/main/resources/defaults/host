@@ -100,6 +100,7 @@ allow https://mill-build.org/               read
 allow https://get-coursier.io/              read  # cs
 allow https://docs.gradle.org/              read
 allow https://services.gradle.org/          read  # gradle/wrapper distributions
+allow https://downloads.gradle.org/         read  # wrapper jar and checksum
 allow https://plugins.gradle.org/           read  # redirects to plugins-artifacts
 allow https://plugins-artifacts.gradle.org/ read  # https://plugins.gradle.org/docs/mirroring
 # api.adoptium.net, which `cs java` reads to fetch an extra JDK, is not needed: the image bakes in its Temurin
