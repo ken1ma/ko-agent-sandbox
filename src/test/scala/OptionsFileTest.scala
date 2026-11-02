@@ -8,7 +8,7 @@ import java.nio.file.{Files, Path}
 
 import AgentSandboxLauncher.{EgressCheckReads, EgressEffectiveReads, ResetReads}
 import CommandLine.*
-import HostCommands.Os
+import HostCommands.{Os, ValueSource}
 
 class OptionsFileTest extends munit.FunSuite:
 
@@ -344,6 +344,24 @@ class OptionsFileTest extends munit.FunSuite:
     assertEquals(settings("--workspace=unix-socket", remedy).spelled, "live,fuse")
     assertEquals(settings("--workspace=bpf,unix-socket", "--workspace=fuse,no-unix-socket").spelled, "live,fuse")
 
+  test("a workspace part and the egress profile name their source: the command line, the file or the default"):
+    val path = Some(Path.of("/home/me/.config/ko-agent-sandbox/options"))
+    val (parsed, supplied) = merged("--workspace=fuse\n--egress=deny-all", "--workspace=live").fold(fail(_), identity)
+    val options = OptionsInForce(parsed, supplied, path)
+    assertEquals(options.workspacePartSource("live"), ValueSource.CommandLine)
+    assertEquals(options.workspacePartSource("fuse"), ValueSource.OptionsFile)
+    assertEquals(options.egressProfileSource, ValueSource.OptionsFile)
+    // A command line that spells a default is still the command line's; a part or profile neither source names is
+    // the default's.
+    val (spelled, nothing) = merged("", "--egress=deny-unless-allowed", "--workspace=bpf").fold(fail(_), identity)
+    val spelledOptions = OptionsInForce(spelled, nothing, None)
+    assertEquals(spelledOptions.workspacePartSource("bpf"), ValueSource.CommandLine)
+    assertEquals(spelledOptions.workspacePartSource("live"), ValueSource.Default)
+    assertEquals(spelledOptions.egressProfileSource, ValueSource.CommandLine)
+    val (defaults, none) = merged("").fold(fail(_), identity)
+    assertEquals(OptionsInForce(defaults, none, None).workspacePartSource("live"), ValueSource.Default)
+    assertEquals(OptionsInForce(defaults, none, None).egressProfileSource, ValueSource.Default)
+
   test("the file's options are printed once, each naming the file, an --env by its name alone"):
     val (parsed, supplied) =
       merged("--memory=8g\n--env=SECRET=hunter2\n--nesting=same-uid\n--image=i", "--image=j").fold(fail(_), identity)
@@ -352,7 +370,7 @@ class OptionsFileTest extends munit.FunSuite:
       options.fileLines(Set("--nesting"), Os.Linux, color).map(_.replace("/home/me/.config", "~/.config"))
     assertEquals(lines(color = false), Vector(s"--memory=8g$FromFile", s"--env=SECRET$FromFile"))
     // The line tints the value and the source, parentheses included, in the options file's shade.
-    val (file, off) = ("\u001b[38;5;133m", "\u001b[0m")
+    val (file, off) = ("\u001b[38;5;135m", "\u001b[0m")
     val source = s" $file(from $Shown)$off"
     assertEquals(
       lines(color = true),

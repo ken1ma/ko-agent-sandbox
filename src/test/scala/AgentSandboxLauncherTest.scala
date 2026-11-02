@@ -14,7 +14,7 @@ import CommandLine.*
 import ImageBuilds.*
 import LauncherState.*
 import LaunchMessages.*
-import HostCommands.{InvisibleTypes, Os, renderArgument, shown, shownCommand}
+import HostCommands.{InvisibleTypes, Os, renderArgument, shown, shownCommand, ValueSource}
 import SandboxWorkspace.workspaceIdOf
 import ContainerfileSources.*
 import LauncherImages.*
@@ -292,7 +292,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         .startsWith("audio: mic; the host microphone is open for the whole session"),
     )
     // The label and what it grants are orange; the source and the explanation stay outside the color.
-    val (orange, file, off) = ("\u001b[38;5;208m", "\u001b[38;5;133m", "\u001b[0m")
+    val (orange, file, off) = ("\u001b[38;5;208m", "\u001b[38;5;135m", "\u001b[0m")
     for (line, grant) <- Seq(
         nestingLine("same-uid", color = true) -> "nesting: same-uid",
         clipboardLine("paste", color = true) -> "clipboard: paste",
@@ -306,20 +306,38 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       s"${orange}clipboard: paste$off $file(from F)$off; the agent can read an image you copy",
     )
 
-  test("the workspace root line states the mode, and each line tints what the user chose, darker from the file"):
+  test("the workspace root line states the mode, and each line tints a value by its source, a default teal"):
     val source = " (from ~/.config/ko-agent-sandbox/options)"
-    assertEquals(workspaceModeClause("live", "", "/w", Os.Mac, color = false), " (live)")
+    val commandLine = (_: String) => ValueSource.CommandLine
+    assertEquals(workspaceModeClause("live", "", "/w", Os.Mac, color = false, sourceOf = commandLine), " (live)")
     assertEquals(
-      workspaceModeClause("read-only", source, "/w", Os.Linux, color = false),
+      workspaceModeClause("read-only", source, "/w", Os.Linux, color = false, sourceOf = commandLine),
       s" (read-only)$source",
     )
-    assertEquals(workspaceModeClause("live", "", "/mnt/c/w", Os.Windows, color = false), " (live at /mnt/c/w)")
-    val (on, file, off) = ("\u001b[38;5;207m", "\u001b[38;5;133m", "\u001b[0m")
-    assertEquals(workspaceModeClause("live,bpf", "", "/w", Os.Mac, color = true), s" (${on}live$off,${on}bpf$off)")
-    // Each part takes the shade of its source: here the file supplied the backend and the command line the mode.
     assertEquals(
-      workspaceModeClause("read-only,fuse", source, "/w", Os.Mac, color = true, fromFile = Set("fuse")),
+      workspaceModeClause("live", "", "/mnt/c/w", Os.Windows, color = false, sourceOf = commandLine),
+      " (live at /mnt/c/w)",
+    )
+    val (on, file, teal, off) = ("\u001b[38;5;207m", "\u001b[38;5;135m", "\u001b[38;5;44m", "\u001b[0m")
+    // Each part takes the shade of its source: the command line's purple, the default included, the file's bluer
+    // purple, and teal for a part that neither named.
+    assertEquals(
+      workspaceModeClause("live,bpf", "", "/w", Os.Mac, color = true, sourceOf = commandLine),
+      s" (${on}live$off,${on}bpf$off)",
+    )
+    assertEquals(
+      workspaceModeClause("live,bpf", "", "/w", Os.Mac, color = true, sourceOf = _ => ValueSource.Default),
+      s" (${teal}live$off,${teal}bpf$off)",
+    )
+    val sources = Map("read-only" -> ValueSource.CommandLine, "fuse" -> ValueSource.OptionsFile)
+      .withDefaultValue(ValueSource.Default)
+    assertEquals(
+      workspaceModeClause("read-only,fuse", source, "/w", Os.Mac, color = true, sourceOf = sources),
       s" (${on}read-only$off,${file}fuse$off)$source",
+    )
+    assertEquals(
+      workspaceModeClause("read-only,bpf", source, "/w", Os.Mac, color = true, sourceOf = sources),
+      s" (${on}read-only$off,${teal}bpf$off)$source",
     )
     assertEquals(
       forwardedEnvironmentLine(Vector("GH_TOKEN", "TERM"), Set("TERM"), source, color = false),

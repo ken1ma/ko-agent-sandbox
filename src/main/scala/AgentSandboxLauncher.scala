@@ -1728,7 +1728,7 @@ object AgentSandboxLauncher:
       pathLine("workspace root", workspaceRoot, os, tint = chosen(_)) +
         workspaceModeClause(
           parsed.workspaceSettings.spelled, settings.options.from("--workspace", os), mountPath, os,
-          fromFile = settings.options.workspacePartsFromFile,
+          sourceOf = settings.options.workspacePartSource,
         ),
     )
     mainWorktree.foreach(main => System.err.println(pathLine("main git worktree", main, os)))
@@ -1997,6 +1997,7 @@ object AgentSandboxLauncher:
       rulesetText, settings.options.from("--egress", os),
       settings.options.providersFrom(provider.toVector.flatMap(_.split(",")), os),
       providersFromFile = settings.options.fileValues(ModelProviderOption).toSet,
+      profileFrom = settings.options.egressProfileSource,
     ).fold(fail(_), identity)
 
     // Each binding must reach a proxy that inspects the binding's host: the session's proxy, or a selected program's
