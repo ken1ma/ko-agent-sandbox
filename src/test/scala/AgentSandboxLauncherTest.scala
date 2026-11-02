@@ -1700,7 +1700,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         assert(!index.exists(_.startsWith(prefix)), s"$prefix leaked into the jar")
 
   test("ImgTagVersion names the Debian and Temurin major versions debian-temurin installs"):
-    val versionArg = "ARG (DEBIAN|TEMURIN)_VERSION=([0-9]+)\\.[0-9.]+".r
+    val versionArg = "ARG (DEBIAN|TEMURIN)_VERSION=([0-9]+)\\.[0-9.+]+".r
     val majors = BundledBuildContext.resource("debian-temurin/Containerfile").linesIterator.collect:
       case versionArg(name, major) => name -> major
     .toMap
