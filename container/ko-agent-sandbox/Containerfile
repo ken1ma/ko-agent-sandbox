@@ -817,6 +817,14 @@ RUN --mount=type=bind,target=/mnt/context \
     install -d -o nonroot -g nonroot /home/nonroot/.m2; \
     install -o nonroot -g nonroot -m 0644 m2/settings.xml /home/nonroot/.m2/settings.xml; \
     #
+    # git's global ignore file
+    #
+    # Finder and Explorer write .DS_Store and Thumbs.db into the shared workspace, where a repository that does not
+    # ignore them lists them as untracked. git reads ~/.config/git/ignore while core.excludesFile is unset.
+    # nonroot owns the file, so an agent can add a pattern for the session.
+    install -d -o nonroot -g nonroot /home/nonroot/.config/git; \
+    install -o nonroot -g nonroot -m 0644 config/git/ignore /home/nonroot/.config/git/ignore; \
+    #
     # Environment documentation for the agents
     #
     # AGENTS-SANDBOX.md tells the running agent what this container is. The image ships the file as AGENTS.md, the
