@@ -24,7 +24,7 @@
 # so the extraction step takes nothing else.
 
 # Debian 13 (trixie), matching the rest of this project's images.
-ARG RUST_VERSION=1.98.1
+ARG RUST_VERSION=1.99.1
 FROM docker.io/library/rust:${RUST_VERSION}-slim-trixie AS build
 
 RUN set -eux; \

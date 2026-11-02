@@ -1,6 +1,6 @@
 name := "ko-agent-egress-proxy"
 version := "0.1.0"
-scalaVersion := "3.9.0"
+scalaVersion := "3.10.0"
 
 Compile / mainClass := Some("agentsandbox.egress.AgentEgressProxy")
 
