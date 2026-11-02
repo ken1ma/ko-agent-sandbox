@@ -808,7 +808,7 @@ object RunOnHostPrereqs:
     value.nonEmpty && !value.exists(ch => ch == '/' || ch == '\\' || ch.isWhitespace)
 
   /**
-   * The wrapper's distribution as Gradle's wrapper takes it (9.8.0: `WrapperExecutor`,
+   * The wrapper's distribution as Gradle's wrapper takes it (9.8.2: `WrapperExecutor`,
    * `WrapperDistributionUrlConverter`, `GradleWrapperMain`).
    *
    *   - The properties are loaded as `java.util.Properties` loads them, so `https\://` and `https://` are one URL.
