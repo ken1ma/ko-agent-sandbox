@@ -1,7 +1,7 @@
 #!/bin/sh
 # Measures what Mill does under the command profile when a build pins its JVM with `mill-jvm-version: temurin:21`.
-# RunOnHostPrereqs.millRecordedJdk rests on these measurements (doc/run-on-host.md, "A pinned JVM"). Run the script on
-# each new Mill release.
+# RunOnHostPrereqs.millRecordedJdk rests on these measurements (doc/run-on-host-internals.md, "A pinned JVM"). Run the
+# script on each new Mill release.
 #
 # Mill's launcher writes the JDK home that it resolved for the pin to `out/mill-daemon/cache/java-home`, with a key
 # that names the pin. The launcher uses that home while the key matches and the directory exists

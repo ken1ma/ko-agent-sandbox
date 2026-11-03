@@ -43,8 +43,8 @@ here once:
   - Under `--run-on-host`, a host proxy runs beside it for each program and build directory, kept
     across the launch's commands, or for each command under Maven. A host proxy has rules of its
     own: `deny defaults`, the program's Maven Central host, and the file
-    `.ko-agent-sandbox/run-on-host/<program>/egress/rule` (`run-on-host.md`, "The command's egress
-    proxy").
+    `.ko-agent-sandbox/run-on-host/<program>/egress/rule` (`run-on-host-internals.md`, "The
+    command's egress proxy").
   - **rule, ruleset, profile** (`egress-proxy.md`):
     - A rule is a line of the workspace's `.ko-agent-sandbox/egress/rule`.
     - The ruleset is what a launch enforces: the defaults, the profile and the file resolved
@@ -96,15 +96,15 @@ here once:
   - The microphone relay, under `--audio=mic`, forwards the host microphone into the sandbox's audio
     server while a process there records (SECURITY.md, "Microphone"; `microphone.md`).
   - The runner, one per session, dispatches each host command and owns the processes it starts
-    (`run-on-host.md`).
+    (`run-on-host-internals.md`).
 - **shim, supervisor, command** — under `--run-on-host`:
   - The shim is `ko-sandbox-run-on-host` inside the sandbox. The shim sends one command to the
     runner.
   - The supervisor is the launcher process the runner spawns for that command on the host. The
     supervisor runs the program under its Seatbelt profile.
   - A command session is the supervisor's own record of that one invocation. The command session
-    sits beside the runner's session for the launch (`run-on-host.md`, "The command's lifetime and
-    environment").
+    sits beside the runner's session for the launch (`run-on-host-internals.md`, "The command's
+    lifetime and environment").
   - The leader is the process `RunOnHostSession.registeredSpawn` starts for a command, a proxy, an
     sbt server or a mill daemon's starter. The leader leads its own process group, registers the
     group and publishes the exit of what it ran.
@@ -548,7 +548,7 @@ The run-on-host supervisor does send that request, and the request is no query e
   CONNECT. The supervisor reads the refusal itself.
 - After a write to the audit log failed, every refusal is a `403` whose `Proxy-Status` names that
   reason (`SECURITY.md`, "Egress proxy"). The log cannot record the reason, and a program need not
-  print it (`run-on-host.md`, "Refusals").
+  print it (`run-on-host-internals.md`, "Refusals").
 - The supervisor sends no CONNECT, so that a proxy that is still logging records no refused host
   for it.
 - The supervisor sends `Max-Forwards: 0` for a recipient that is not this proxy
@@ -957,7 +957,7 @@ specific issues it rests on; these are the broader sources.
     setup and policy-update costs.
   - The account does not establish protection for guarded directories created during execution.
     That protection is the Windows host-command requirement in
-    ["Why only macOS"](run-on-host.md#why-only-macos).
+    ["Why only macOS"](run-on-host-internals.md#why-only-macos).
 
   https://openai.com/index/building-codex-windows-sandbox/
 - Docker AI sandboxes' upstream-proxy configuration — the comparison point for `HTTPS_PROXY`:

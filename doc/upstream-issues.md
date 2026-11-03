@@ -5,8 +5,8 @@ where this project handles the issue.
 
 ## sbt/sbt
 
-Found while measuring the `--run-on-host` build sandbox. `run-on-host.md` and the code it points
-to say what this project does about each issue.
+Found while measuring the `--run-on-host` build sandbox. `run-on-host-internals.md` and the code it
+points to say what this project does about each issue.
 
 ### Quoted JVM options are copied into arguments
 
@@ -242,8 +242,7 @@ machine", has the decision):
 ## openai/codex, anthropic-experimental/sandbox-runtime, google-gemini/gemini-cli
 
 This entry is one report for each project's macOS Seatbelt profile. This project's own profile
-closes the gap with the rule below (`SeatbeltProfile.ProcessReadRule`; `run-on-host.md`, "The
-Seatbelt profile").
+closes the gap with the rule below (`SeatbeltProfile.ProcessReadRule`; `seatbelt.md`, "Processes").
 
 ### A sandboxed command reads other processes' environment through `KERN_PROCARGS2`
 
@@ -305,7 +304,7 @@ A web search, without GitHub code search, found no public report of the gap for 
 
 Found when the `--run-on-host` acceptance test ran its mill rows on Mill 1.3.0, whose daemon reads
 each launcher's start time (the com-lihaoyi/mill entry below). This project runs Mill 1.2 and later
-without a daemon (`run-on-host.md`, "Mill 1.2 and later: no daemon").
+without a daemon (`run-on-host-internals.md`, "Mill 1.2 and later: no daemon").
 
 ### `ProcessHandle.info()` throws on macOS when `KERN_PROCARGS2` returns `EPERM`
 
@@ -368,7 +367,7 @@ java.lang.RuntimeException: Operation not permitted
 - The stack trace comes from Mill 1.3.0's daemon under this project's command profile, which has
   the same three rules.
 - Allowing `kern.procargs2.<pid>` after those rules makes `info()` of that process succeed
-  (`run-on-host.md`, "The Seatbelt profile", has the measurement).
+  (`seatbelt.md`, "Processes", has the measurement).
 - The source, not a run, shows that the start time survives the fix.
 - A search of bugs.openjdk.org found no report of `EPERM` (searched for `ProcessHandle` with
   `EPERM`, "Operation not permitted" and `KERN_PROCARGS2`, 2026-10-19).

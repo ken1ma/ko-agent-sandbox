@@ -1,4 +1,4 @@
-// The runner's sbt server (run-on-host.md, "sbt"):
+// The runner's sbt server (run-on-host-internals.md, "sbt"):
 //
 // - the server's command line, built from a client request;
 // - the server's start under the server profile;
@@ -288,9 +288,9 @@ object RunOnHostSbtServer:
     *   - The servers of one build directory append to the same file. */
   def serverLog(session: Session, hash: String): Path = session.directory.resolve(s"${serverRecordName(hash)}.log")
 
-  /** Starts the server (run-on-host.md, "sbt") under the server profile. The server's output goes to serverLog, and
-    * the runner's `tmp/` is its temporary and socket directory. The server is up when the build directory's
-    * portfile names a connectable socket under that `tmp/`. */
+  /** Starts the server (run-on-host-internals.md, "sbt") under the server profile. The server's output goes to
+    * serverLog, and the runner's `tmp/` is its temporary and socket directory. The server is up when the build
+    * directory's portfile names a connectable socket under that `tmp/`. */
   private[launcher] def startSbtServer(session: Session, start: RuntimeStart): Either[String, Unit] =
     val assembled = start.assembled
     val output = serverLog(session, start.hash)

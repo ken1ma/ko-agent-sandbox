@@ -1,5 +1,5 @@
 #!/bin/sh
-# Measures whether SBPL still behaves the way the guard depends on. run-on-host.md, "The Seatbelt profile", records
+# Measures whether SBPL still behaves the way the guard depends on. seatbelt.md, "Paths", records
 # the answers, and SeatbeltProfile.scala encodes them. This script measured the answers and re-measures them.
 #
 # Run the script on each new macOS release, and read the rows this way:
@@ -9,7 +9,7 @@
 # - A row of E13-E16 that reads DENIED / ALLOWED / ALLOWED / ALLOWED / ALLOWED is a rule that would let a
 #   --run-on-host session keep node_modules writable.
 # - If E17's narrowed rule reads DENIED / DENIED, the profile's deny on a directory that a line passes through can
-#   narrow to the operations that E13 and E14 measure (run-on-host.md, "The host command's filesystem rules").
+#   narrow to the operations that E13 and E14 measure (run-on-host-internals.md, "The host command's filesystem rules").
 #
 # Each experiment isolates one variable: the profile is `(allow default)` plus the single deny under test, so the
 # shell always runs and only that rule decides the outcome. The real profile denies by default, and matching

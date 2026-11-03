@@ -3,9 +3,10 @@
 # supervisor or the channel changes.
 # - The test has one row per contract claim. Each row runs under the generated profile and reports PASS, FAIL or SKIP
 #   with what it observed.
-# - The other scripts in src/probe/ find out what a profile needs, except machine-memory-return.sh, which measures
-#   the podman machine. This script finds out whether the resulting profile enforces what the contract claims. In
-#   the channel rows, the script also finds out whether the channel carries a command and tears down with its requester.
+# - The other scripts in src/probe/ find out what a profile needs, except PodmanMachineMemoryReclaim.scala, which
+#   measures the podman machine. This script finds out whether the resulting profile enforces what the contract
+#   claims. In the channel rows, the script also finds out whether the channel carries a command and tears down with
+#   its requester.
 #
 #   sh src/probe/run-on-host-acceptance-test.sh [sbt|mill|gradle|mvn|all] [quick]
 #
@@ -70,7 +71,7 @@ safe_path "TMPDIR" "${TMPDIR:-}"
 # The mill and gradle rows run once more on an older release, each on a copy of the fixture at a fixed path, because
 # the run-on-host cache is kept per workspace path. Each run has its own work directory, traps and totals.
 # - mill: the last Mill with a daemon (RunOnHostPrereqs.MillDaemonReadsLauncherSince).
-# - gradle: the last Gradle 8 release (run-on-host.md, "Gradle").
+# - gradle: the last Gradle 8 release (run-on-host-evidence.md, "Gradle releases").
 daemon_mill=1.1.10
 daemon_mill_workspace=$workspace/target/acceptance-mill-$daemon_mill
 older_gradle=8.14.6
@@ -207,8 +208,8 @@ emit() { # program
 #   which takes `java` from PATH. Without the JDK first on PATH, that is /usr/bin/java, the stub that the JVM rule
 #   rejects and the profile denies. mill's `mill-jvm-version: system` takes `java` from PATH the same way.
 # - `env -i`, because the supervisor's environment is a closed set (RunOnHostSandbox.commandEnvironment;
-#   run-on-host.md, "The command's lifetime and environment", has the table). A row that passes on a variable or a
-#   PATH entry that production withholds would invalidate the measurement.
+#   run-on-host-internals.md, "The command's lifetime and environment", has the table). A row that passes on a variable
+#   or a PATH entry that production withholds would invalidate the measurement.
 # - exec, because with_timeout backgrounds this function and kills $!. Without exec, that pid is a subshell, and the
 #   timeout's kill would orphan the command instead of ending it.
 # These rows run without a proxy, with one temporary directory for clients and servers; the network rows measure the
@@ -705,11 +706,11 @@ if want mill; then
     then report PASS "no mill daemon survives its command"
     else report FAIL "no mill daemon survives its command" "$(mill_daemons | tr '\n' ' ')"; fi
 
-    # A pinned mill-jvm-version (doc/run-on-host.md, "A pinned JVM"). `mill-jvm-index-version` makes the key of
-    # Mill's java-home file one that these rows can write; Mill's own default key is its release's. Mill runs whatever
-    # home that file names under the id's key (src/probe/mill-pinned-jvm.sh). So the rows name a JDK that is already
-    # in the Coursier cache, and nothing is fetched. The rows name a JDK other than JAVA_HOME's when the cache holds one
-    # that Mill runs on, so that the grant is a second JDK's.
+    # A pinned mill-jvm-version (doc/run-on-host-internals.md, "A pinned JVM"). `mill-jvm-index-version` makes the key
+    # of Mill's java-home file one that these rows can write; Mill's own default key is its release's. Mill runs
+    # whatever home that file names under the id's key (src/probe/mill-pinned-jvm.sh). So the rows name a JDK that is
+    # already in the Coursier cache, and nothing is fetched. The rows name a JDK other than JAVA_HOME's when the cache
+    # holds one that Mill runs on, so that the grant is a second JDK's.
     pinned_made=1
     rm -rf "$pinned_workspace"; mkdir -p "$pinned_workspace"
     cp "$mill_workspace/mill" "$pinned_workspace/"
@@ -760,9 +761,9 @@ mill-jvm-index-version: acceptance/' "$mill_workspace/build.mill.yaml" > "$pinne
         "$pinned_which; $(grep -v 'Picked up' "$work/mill-pinned.log" | tail -1 | cut -c1-70)"
     fi
 
-    # An unset mill-jvm-version (doc/run-on-host.md, "An unset `mill-jvm-version`"), in the same build directory. The
-    # key that these rows write names the id built into the fixture's Mill, its `default-mill-jvm-version`. Under
-    # another id, Mill fetches, and the second row fails.
+    # An unset mill-jvm-version (doc/run-on-host-internals.md, "An unset `mill-jvm-version`"), in the same build
+    # directory. The key that these rows write names the id built into the fixture's Mill, its
+    # `default-mill-jvm-version`. Under another id, Mill fetches, and the second row fails.
     case "$mill_version" in
         1.1.[0-9]*) mill_default_jvm=zulu:21 ;;
         1.3.[01]) mill_default_jvm=zulu:25 ;;
@@ -839,7 +840,7 @@ unrelated_port=$(sed -n 's/^port //p' "$work/unrelated.log")
 
 # The process-read rows' target is a JDK outside every profile that holds a variable, as the launcher, the runner and
 # a supervisor are JDKs that hold the launch's environment. Apple's own binaries would not do, because the kernel
-# withholds their environment (run-on-host.md, "The Seatbelt profile").
+# withholds their environment (seatbelt.md, "Processes").
 KO_AGENT_PROCARGS_PROBE=1 "$JAVA_HOME/bin/java" "$workspace/src/probe/ProcArgs.java" --hold >/dev/null 2>&1 &
 held_jdk=$!
 
@@ -1072,9 +1073,9 @@ else
     else report FAIL "a PUT to an allowed host is refused, and the supervisor names it" \
         "$(grep -m1 'Int = \|^\[error\]\|^refused\|Exception' "$work/put.log" | cut -c1-70); $work/put.log"; fi
 
-    # Measures which CA bundle variables the curl and git that this macOS ships read (run-on-host.md, "The command's
-    # lifetime and environment"). Each fetches from the allowed host under the command's profile and environment,
-    # first with every variable and then without one variable.
+    # Measures which CA bundle variables the curl and git that this macOS ships read (run-on-host-internals.md, "The
+    # command's lifetime and environment"). Each fetches from the allowed host under the command's profile and
+    # environment, first with every variable and then without one variable.
     # - curl prints the status, 200 when it verified the proxy's leaf.
     # - git asks for a path that is no repository. So "error: 403" is a verified handshake, because the proxy, having
     #   no git-fetch grant, refuses the discovery. An SSL error is an unverified handshake.
@@ -1317,7 +1318,7 @@ fi
 # - the channel: framing, streamed output and the command's own exit code, the working-directory boundary, and
 #   teardown by descriptor lifetime;
 # - the runner's runtime: the proxy and the sbt server or mill daemon that the commands of one build directory
-#   share, and what retires them (doc/run-on-host.md, "sbt" and "mill").
+#   share, and what retires them (doc/run-on-host-internals.md, "sbt" and "mill").
 
 echo
 echo "the channel"
@@ -1637,7 +1638,7 @@ deny alive after root: $deny_after_root, deny reused: $deny_reused"; fi
         else report FAIL "channel: an edited sbt.version takes effect after shutdown" \
             "before: ${before_edit:-none}, after shutdown: ${after_shutdown:-none}"; fi
 
-        # --- two launches on one workspace (doc/run-on-host.md, "The channel and the command") ----
+        # --- two launches on one workspace (doc/run-on-host-internals.md, "The channel and the command") ----
         #
         # A second runner's commands on the same workspace attach to the first runner's server and daemon when they
         # would start one under the same confinement and environment. Otherwise they end the first runner's server
@@ -1882,7 +1883,7 @@ $(tail -1 "$work/chan-share-teardown.log.err" | cut -c1-60)"; fi
             fi
         fi
 
-        # --- mill: the runner's daemon (doc/run-on-host.md, "mill") ------------------------------
+        # --- mill: the runner's daemon (doc/run-on-host-internals.md, "mill") --------------------
         #
         # The daemon that the runner starts in its session serves every mill command of the build directory. Each
         # client runs under a profile that names that daemon's port and no other.
@@ -2165,7 +2166,7 @@ $(tail -1 "$work/chan-mill-bound.log.err" | cut -c1-60)"; fi
         channel_settled
         fi
 
-        # --- gradle: the launch's daemons (doc/run-on-host.md, "Gradle") -------------------------
+        # --- gradle: the launch's daemons (doc/run-on-host-internals.md, "Gradle") ---------------
         #
         # Gradle's own client starts the daemon in the launch's registry under the runner's tmp/, and later clients
         # match the daemon there. The runner records each daemon after every command and ends the records' groups with

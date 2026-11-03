@@ -145,9 +145,21 @@ class ClipboardRelayTest extends munit.FunSuite:
     finally
       // A stopped container would have ended the fake exec's `cat` on the FIFO. That `cat` ignores
       // TERM by design, so the teardown kills it forcibly.
+      // - The relay forks a new reader on every pass of its loop. A reader forked after a snapshot of
+      //   the tree outlives the teardown, and blocks on a FIFO at the path that the next test reuses.
+      //   That reader can take the next test's request, which then gets no answer.
+      // - So the teardown first stops the relay's process group, which setsid made the relay's pid.
+      //   The stopped relay forks nothing, and its tree stays whole for the snapshot, the
+      //   response writers that `timeout` moved into groups of their own included.
+      signalGroup(process, "STOP")
       process.descendants().forEach(_.destroyForcibly())
+      signalGroup(process, "KILL")
       process.destroyForcibly()
       deleteRecursively(FifoDir)
+
+  private def signalGroup(leader: Process, signal: String): Unit =
+    ProcessBuilder("kill", s"-$signal", "--", s"-${leader.pid}").start().waitFor()
+    ()
 
   private def deleteRecursively(path: Path): Unit =
     if Files.exists(path) then

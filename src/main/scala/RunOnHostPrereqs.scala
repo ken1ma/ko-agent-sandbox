@@ -4,7 +4,7 @@
 // - which JDK and sbt are the Coursier-managed ones;
 // - which directory a request from inside the sandbox may name as a working directory.
 //
-// run-on-host.md is the reference. This file is the contract's prerequisite half, and holds no backend.
+// run-on-host-internals.md is the reference. This file is the contract's prerequisite half, and holds no backend.
 //
 // - Everything here except readProgramRules, which reads the workspace's run-on-host/ tree, is pure over (Os,
 //   environment, filesystem layout). The macOS answers are therefore testable from any host, the technique that
@@ -36,8 +36,8 @@ object RunOnHostPrereqs:
     def named(name: String): Option[Program] = values.find(_.name == name)
 
   /**
-   * Why a command cannot run, one case per category (run-on-host.md, "Refusals"). The refusal is a value, not a
-   * message, because the supervisor prints one wording and the channel another.
+   * Why a command cannot run, one case per category (run-on-host-internals.md, "Refusals"). The refusal is a value, not
+   * a message, because the supervisor prints one wording and the channel another.
    */
   enum Refusal:
     case PrereqJvmNotCoursier(found: String)
@@ -243,7 +243,7 @@ object RunOnHostPrereqs:
    * The confined command's `sbt.ivy.home`, which the launcher otherwise derives as `~/.ivy2`, a path the profile
    * denies.
    *
-   *   - run-on-host.md, "sbt", has what sbt writes there, and when the redirect may be retired.
+   *   - run-on-host-internals.md, "sbt", has what sbt writes there, and when the redirect may be retired.
    *   - The Ivy home lies beside the global base, for the same reasons the global base lies where it does.
    */
   def ivyHomeOf(cacheRoot: Path, workspaceId: String): Path =
@@ -315,7 +315,7 @@ object RunOnHostPrereqs:
           Left(Refusal.CacheRootInsideWorkspace(root, workspaceRoot))
         else Right(root)
 
-  /** The user's Coursier cache root, read for the JDK and never granted whole (run-on-host.md, "The JVM",
+  /** The user's Coursier cache root, read for the JDK and never granted whole (run-on-host-internals.md, "The JVM",
     * "The run-on-host cache"). */
   def coursierCacheRoot(os: Os, env: String => Option[String]): Option[Path] =
     env("COURSIER_CACHE").filter(_.nonEmpty).flatMap(parsePath).map(_.normalize()).orElse:
@@ -536,7 +536,7 @@ object RunOnHostPrereqs:
    *
    *   - The bootstrap would run the native image for `<v>`, and that image cannot be the launch's client.
    *   - The native image takes no `_JAVA_OPTIONS`, so the environment's `preferIPv4Stack` never reaches it. The image's
-   *     connect is the dual-stack one that the "localhost" class denies (run-on-host.md, "Network").
+   *     connect is the dual-stack one that the "localhost" class denies (run-on-host-internals.md, "Network").
    *   - `-Djava.net.preferIPv4Stack=true` on the native image's command line changes nothing (measured,
    *     src/probe/run-on-host-runner-session.sh M2).
    *   - A `<v>-native` pin asks for that one launcher by name, and is refused.
@@ -639,7 +639,8 @@ object RunOnHostPrereqs:
   /**
    * Accepts an unset `mill-jvm-version` under a launcher that resolves it as it resolves a pin, to the id built into
    * the launcher. The grant is then millRecordedJdk's. An earlier launcher, and a launcher whose version does not
-   * start with two numbers, is refused. run-on-host.md, "An unset `mill-jvm-version`", has what each launcher does.
+   * start with two numbers, is refused. run-on-host-internals.md, "An unset `mill-jvm-version`", has what each launcher
+   * does.
    */
   def millUnsetJvmAccepted(jvm: MillJvm, launcherVersion: String): Either[Refusal, Unit] =
     def resolvesUnsetAsAPin = launcherVersion match

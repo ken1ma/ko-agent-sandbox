@@ -1,30 +1,27 @@
 # Independent review from Claude Code or Codex
 
-`/ko-review` asks a separate Codex or Claude Code session to review the working tree. The user
-chooses the reviewer.
+`/ko-review` asks a separate Codex or Claude Code session, the reviewer, to review the working
+tree. The user chooses the reviewer.
 
 - The author, the session that made the changes, fixes or disputes each finding on the same
   reviewer thread.
 - The cycle ends when the reviewer approves the exact tree, or when the reviewer asks for a
   decision only the user can make.
-- The reviewer's suggestions are its opinions on the design, and they never block approval. The
-  author adopts or disputes each suggestion, and puts to the user the suggestions that are the
-  user's to decide.
+- The reviewer's suggestions never block approval ("The cycle", step 2).
 
-Each new review has its own reviewer thread.
+Each new review has its own reviewer thread, and so audits the scope independently.
 
-- To start an independent audit of an approved tree, invoke the skill without an existing review
-  id.
 - Before the skill opens a new review, the skill offers to continue an approved review whose
-  approval still covers part of the scope (`coverage`, below).
-  - The skill makes no such offer when the argument asks for instructions, or for a reviewer,
-    model or effort, that a continuation would not keep.
+  approval still covers part of the scope (`approvals`, below).
+- The skill makes no such offer when the argument names instructions, or a reviewer, model or
+  effort, that a continuation would not keep.
+- When such a review already approves the current tree, the skill asks whether to stop or to open
+  a new review, such as one with a stronger model or a higher effort.
 
 Who starts a review, and how:
 
-- The author and the reviewer may use the same product. A Claude session that reviews another
-  Claude session's changes has its own thread and none of the author's context. The same applies
-  to Codex.
+- A Claude session that reviews another Claude session's changes has its own thread and none of
+  the author's context. The same applies to Codex.
 - A review starts only at the user's request: `/ko-review`, `$ko-review` in Codex, or a request in
   words ("ko-review the changes since the last review with Claude"). The sandbox's
   `AGENTS-SANDBOX.md` has the author offer a review after a non-trivial change.
@@ -33,28 +30,20 @@ Who starts a review, and how:
     has.
     - A skill named `review` would have the bare name `/review`, which is a built-in alias of
       `/code-review`.
-    - Codex lists its copy without a plugin prefix, so a Codex user types the skill's name,
-      `$ko-review`.
+    - Codex lists its copy without a plugin prefix, so a Codex user types `$ko-review`.
   - The skill's description tells the author to invoke the skill only on such a request. Nothing
     enforces that rule.
     - Claude Code's `disable-model-invocation` or Codex's `allow_implicit_invocation: false` would
       enforce the rule, but each setting also stops the author from acting on a request in words.
-  - When the author invokes the skill, the skill's argument holds only a reviewer, base, review id,
-    model, effort or instructions that the user named. The author first says that it invoked the
-    skill, and quotes the request.
-  - Codex passes a skill no argument, so the skill takes the text after `$ko-review` in the user's
-    message as its argument.
 - A base commit or branch in the skill's argument becomes `--base` (below).
   - `/ko-review HEAD~1` reviews the last commit and whatever is uncommitted.
   - `/ko-review main` reviews whatever differs from `main`.
 - A reviewer of the author's product uses the sign-in of the author's session. A reviewer of the
   other product needs its own sign-in in this workspace's sandbox (`REVIEWER_AUTH_FAILED`, below).
-- Before a new review, the skill asks three questions: the reviewer, then the model and the effort,
-  offered from `ko-review defaults REVIEWER`. The skill skips each question that the argument
-  answers.
-  - Codex has no question tool outside Plan mode, so a Codex author asks in its reply and waits for
-    the answer. Codex's `default_mode_request_user_input` feature is under development and off in
-    codex-cli 0.162.1.
+- The skill asks the user for the reviewer, the model and the effort, offered from
+  `ko-review defaults REVIEWER`, unless the argument names them.
+  - Codex has no question tool outside Plan mode, so a Codex author asks in its reply. Codex's
+    `default_mode_request_user_input` feature is under development and off in codex-cli 0.162.1.
 
 Where the parts are:
 
@@ -62,7 +51,7 @@ Where the parts are:
   parts:
   - the skill;
   - the helper `ko-review`, whose `start` takes the reviewer's name, so that another reviewer can
-    join as another name;
+    be added under another name;
   - the reviewer prompts and the result schema.
 - The image loads the plugin from `/etc/claude-code/plugins` through `CLAUDE_CODE_PLUGIN_DIRS`
   (Claude Code 2.1.280 or later).
@@ -81,23 +70,20 @@ Where the parts are:
 ## The cycle
 
 1. The author starts the review with a summary of the work.
-   - The author re-reads every changed hunk against `AGENTS.md`, with the unchanged lines around
-     it, and fixes what it finds.
-     - The re-read comes first because the reviewer prompt limits findings to material issues. So
-       conformance to the project's instructions is the author's to check, and a round spent on
-       it would cost reviewer quota.
+   - The author first re-reads every changed hunk against `AGENTS.md`, with the unchanged lines
+     around it, and fixes what it finds.
+     - The reviewer prompt limits findings to material issues. So conformance to the project's
+       instructions is the author's to check, and a round spent on it would cost reviewer quota.
      - Claude Code reads `AGENTS.md` from 2.1.277 on, or through a `CLAUDE.md` import.
-   - The author writes a Markdown summary of the task, its changes and its verification.
-   - The author runs `ko-review start REVIEWER --message-file FILE`, where REVIEWER is `codex` or
-     `claude`. The helper opens a reviewer thread with the reviewer prompt and that summary.
-   - The reviewer reads the repository itself.
+   - `ko-review start REVIEWER --message-file FILE` opens a reviewer thread with the reviewer
+     prompt and the author's summary. The reviewer reads the repository itself.
    - `--base REF` has the reviewer review the changes since that commit or branch, committed or
      not.
      - The helper records the commit id that the ref resolves to at `start`, so a branch that
        moves during the review does not move the scope.
      - Without `--base`, the reviewer reviews the working tree against HEAD, so work committed
        during the session is out of scope.
-     - The skill passes a base only from its argument, for the reason its scope paragraph gives.
+     - The skill passes a base only from its argument, for the reason `SKILL.md` step 1 gives.
      - The reviewer compares the working tree with the base's tree, so commits merged or pulled
        since the base are in scope too.
      - The scope is one diff that ends at the working tree, never a range that ends at an earlier
@@ -117,9 +103,7 @@ Where the parts are:
      precedence over them.
    - `--model` and `--effort` choose the reviewer's model and reasoning effort for every round:
      `codex exec --model` and the `model_reasoning_effort` configuration key, or `claude --model`
-     and `--effort`.
-     - The skill asks the user before every `start`, and offers first what
-       `ko-review defaults REVIEWER` reports ("Defaults", below).
+     and `--effort` ("Defaults", below).
 2. The reviewer answers with a structured result:
    - a `disposition`: `APPROVED`, `CHANGES_REQUESTED` or `USER_DECISION_REQUIRED`;
    - a summary;
@@ -127,31 +111,29 @@ Where the parts are:
    - for a user decision: the issue, the reviewer's position, why evidence cannot decide it, and
      the decision requested.
 
-   A finding is a material issue, and the findings decide the disposition.
-   - A suggestion is an opinion that the reviewer holds beside the findings, with its reason: a
-     design the reviewer prefers, a simpler way, an alternative another project took, or a
-     question about a premise.
-   - `APPROVED` may carry suggestions.
+   A finding is a material issue, and the findings decide the disposition. A suggestion is an
+   opinion beside the findings, with its reason: a design the reviewer prefers, a simpler way, an
+   alternative another project took, or a question about a premise.
    - Findings and suggestions are separate because a finding blocks approval, and an opinion must
-     not block it.
-3. The author fixes the findings it accepts, and disputes the others with evidence. The author
-   adopts or disputes each suggestion the same way, runs the tests, and sends all of it to the same
-   thread with `ko-review continue REVIEW_ID --message-file FILE`.
-   - The user decides an item that turns on what the user owns, the task's scope, ownership of
+     not block it. So `APPROVED` may carry suggestions.
+3. The author fixes the findings it accepts, disputes the others with evidence, and adopts or
+   disputes each suggestion the same way. The author then runs the relevant tests and checks,
+   which the reviewer does not run. `ko-review continue REVIEW_ID --message-file FILE` sends all
+   of it to the same thread.
+   - The user decides an item that depends on what the user owns, the task's scope, ownership of
      the work, a recorded decision (AGENTS.md's boundary rule), a product requirement or a risk
      acceptance, or on a disagreement evidence cannot settle.
-     - `USER_DECISION_REQUIRED` and the author's "put it to the user" apply that one condition.
+     - `USER_DECISION_REQUIRED` and the author's "ask the user to decide" apply that one condition.
        The prompt and the skill state the condition in the same words, and the test suite checks
        them, so that neither side escalates what the other side acts on.
-   - The author acts on every other suggestion, adopting or disputing it, rather than relaying it.
+   - The author adopts or disputes every other suggestion rather than relaying it to the user.
      - The reviewer already judges a suggestion worth attention before raising it, and the next
        round reviews what the author adopted.
    - The author's round report names each adopted suggestion that changes an interface or the
      split into components. So the user learns of a design change made on the reviewer's opinion
      without reading the transcript.
-   - To send instructions that the user gives during a review, add `--instructions-file FILE` to
-     `continue`.
-     - The new instructions replace the standing instructions from that round on.
+   - `continue --instructions-file FILE` sends instructions that the user gives during a review.
+     - The new instructions replace the earlier instructions from that round on.
      - The new instructions invalidate the current approval, since the reviewer has not approved
        the tree under them.
 4. The review repeats until `APPROVED`, or until `maxRounds` completed rounds end it with
@@ -160,27 +142,24 @@ Where the parts are:
    - A request for a user decision ends the review only when the author agrees and runs
      `ko-review escalate REVIEW_ID --message-file FILE`. Otherwise the author argues the point on
      the same thread.
-5. Before the author reports that the reviewer approved the changes, the author runs
-   `ko-review verify REVIEW_ID`. The command succeeds only when the approval covers the current
-   working tree.
+5. Before the author reports an approval, `ko-review check-approval REVIEW_ID` confirms that the
+   approval covers the current working tree ("Approval binds to the exact tree", below).
 
-The skill has the author report these:
+The author reports each round's outcome, and when the review ends, a table of every round and the
+command `ko-review transcript REVIEW_ID`.
 
-- each round's outcome, in a line or two;
-- when the review ends, a table of every round, then the command `ko-review export REVIEW_ID`.
-  - The reader of that report uses at most the transcript, and the transcript's footer lists the
-    other `inspect` lines.
-  - `start` deletes the review eight weeks after its last update ("Where the state is").
-  - The table comes from `ko-review export`, since the session's context may have been summarized
-    by then.
+- The reader of that report needs at most the transcript, whose footer lists the other `inspect`
+  lines. `start` deletes a review eight weeks after its last update ("Where the state is").
+- The table comes from `ko-review transcript`, since the session's context may have been
+  summarized by then.
 
 The author's own model and effort are those of the author's session, set with `/model` or the
-launch options. The skill runs in that session.
+launch options.
 
 
 ## Commands
 
-Every command prints one JSON object, except `export`, which prints Markdown, and `diff`, which
+Every command prints one JSON object, except `transcript`, which prints Markdown, and `diff`, which
 prints git's output. A command exits 1 when its object contains an `error` field.
 
 - Each summary carries the review id, `snapshots`, `inspect` and `reviewer`.
@@ -199,19 +178,19 @@ The commands:
     the type and time of the last event received.
   - The event log's path is known as soon as the round starts.
   - The last event says when the reviewer last wrote, not that the reviewer is still working.
-- `export REVIEW_ID [--round N]`: the transcript as Markdown, one section per round, or the named
-  round's section alone.
+- `transcript REVIEW_ID [--round N]`: the transcript as Markdown, one section per round, or the
+  named round's section alone.
 - `diff REVIEW_ID [--round N] [-- git options]`: the working tree, untracked files included,
   against a round's snapshot. Without `--round`, the round is the approved one, or the last one
   when none is approved.
 - `delete REVIEW_ID`: deletes the review's state and its refs, whatever `schemaVersion` its state
   has. The author runs `delete` on the user's request only.
-  - The tag and tree objects that nothing else points to become eligible for a later garbage
-    collection. By default, that collection keeps recent unreachable objects for two weeks.
+  - Git removes the tag and tree objects that nothing else points to at a later garbage
+    collection.
 - `defaults REVIEWER`: the model and effort that the reviewer's local configuration selects for
   this repository, the models to offer with each model's efforts, and the `recommended` pair
   ("Defaults", below).
-- `coverage [--base REF]`: the approved reviews whose approval still covers part of the scope that
+- `approvals [--base REF]`: the approved reviews whose approval still covers part of the scope that
   a `start` with that base would have, newest approval first.
   - Each entry has `coveredPaths` and `newPaths`, so that the skill can offer to continue a review
     instead of opening a thread.
@@ -239,9 +218,9 @@ working-tree edits like any other, and the user commits them when and as they ch
     - Claude Code: the `system` `init` event's `session_id`, resumed with
       `claude -p --resume <that id>`.
   - The author never chooses a thread, and nothing uses `--last` or `--continue`.
-- **Approval binds to the exact tree.** After any change since the approval, `verify` fails with
-  `NOT_APPROVED` and the `effectiveStatus` `STALE_APPROVAL`. The error's `staleReasons` says what
-  changed, and `continue` obtains a new approval.
+- **Approval binds to the exact tree.** After any change since the approval, `check-approval` fails
+  with `NOT_APPROVED` and the `effectiveStatus` `STALE_APPROVAL`. The error's `staleReasons` says
+  what changed, and `continue` obtains a new approval.
   - The digest covers HEAD, the index and every file's raw content ("The digest", below).
   - When the approved round has a snapshot, staging or committing the approved changes keeps the
     approval, a staged deletion or rename included.
@@ -252,7 +231,7 @@ working-tree edits like any other, and the user commits them when and as they ch
   - Without a snapshot, as in a linked worktree ("Each round's tree and transcript are kept in
     Git", below), a changed HEAD or index makes the approval stale, even when every
     file's content is the approved one.
-  - `staleReasons`, in `show` and in `verify`'s error, gives these reasons:
+  - `staleReasons`, in `show` and in `check-approval`'s error, gives these reasons:
     - "working files changed", with the paths, from the manifest of hashes that the round saved
       beside its snapshot;
     - "unreviewed content staged", with the paths;
@@ -269,25 +248,22 @@ working-tree edits like any other, and the user commits them when and as they ch
   - `git diff` between two rounds' refs shows what the author changed in response to a finding.
   - `ko-review diff` compares the current tree with a round, because `git diff <tree>` alone reads
     the user's index and reports every untracked file as deleted.
-  - `git tag` and `git branch` do not list the refs, since they read only `refs/tags/` and
-    `refs/heads/`. `git log` does not reach the refs either. `git for-each-ref` lists the refs:
+  - `git for-each-ref` lists the refs; `git tag`, `git branch` and `git log` do not:
 
     ```sh
     git for-each-ref --format='%(objecttype) %(objectname:short) %(refname)' refs/ko-review/
     ```
 
-  - A clone or push leaves the refs and their objects behind unless it names them. `--mirror`
-    names every ref: `git push --mirror` sends them to the remote, and `git clone --mirror` copies
-    them.
+  - A clone or push copies the refs only when it names them, as `--mirror` does.
   - A tree holds a submodule or nested repository as a commit id, not as its working tree. The
     snapshot names those paths in `excludes`, and the digest alone covers their contents.
   - In a linked worktree, whose Git directory is read-only, the round records no snapshot, and the
     digest alone binds the round.
   - When the transcript cannot be written, the tree stays on the ref, and the snapshot's
     `transcriptError` holds the diagnostic.
-- **A tree that changes during a turn voids the turn.** The helper takes the digest before and
-  after the reviewer runs. A difference fails with `WORKTREE_CHANGED_DURING_REVIEW`, with the
-  paths, and the helper discards the result.
+- **A change to the tree during a turn discards the turn's result.** The helper takes the digest
+  before and after the reviewer runs. A difference fails with `WORKTREE_CHANGED_DURING_REVIEW`,
+  with the paths.
   - Nothing is reverted.
   - The helper does not say who changed the tree: a host editor, another session or the reviewer
     itself may have.
@@ -334,7 +310,7 @@ working-tree edits like any other, and the user commits them when and as they ch
   - The helper never edits the egress rules or a reviewer's configuration.
 - **One mutation per review at a time.** `start`, `continue`, `escalate` and `delete` take `flock`
   on the review's lock file before reading the state they act on.
-  - A second such command fails at once with `REVIEW_BUSY`, instead of waiting behind a reviewer
+  - A second such command fails at once with `REVIEW_LOCKED`, instead of waiting behind a reviewer
     turn.
   - The helper replaces `state.json` atomically, so `show` and `list` read it without a lock.
 
@@ -515,8 +491,8 @@ Further rules of the review:
 
 - Findings are `F1`, `F2`, …, and suggestions `S1`, `S2`, …. An id stays while its item is
   discussed.
-- A standing suggestion is no ground for `USER_DECISION_REQUIRED`, since the author's report
-  carries the suggestion to the user.
+- A suggestion that the reviewer keeps after the author's dispute is no ground for
+  `USER_DECISION_REQUIRED`, since the author's report shows the suggestion to the user.
 - Every round after the first names two sets of paths:
   - the paths whose content changed since the round the reviewer last answered, from the rounds'
     manifests;
@@ -524,8 +500,8 @@ Further rules of the review:
     round's snapshot tree.
 - That round's prompt says the rest of the tree is as the reviewer read it. So a continued review
   after an approval sends the reviewer to the new work first.
-- The journal records an instruction change in the round it takes effect, and the export shows the
-  change there.
+- The journal records an instruction change in the round it takes effect, and the transcript shows
+  the change there.
 - Both reviewers also read the repository's own instructions, AGENTS.md or CLAUDE.md, as any
   session in the repository would.
 
@@ -558,7 +534,7 @@ Further rules of the review:
   - a `turn.failed` event, in its `error.message`.
 - Measured with codex-cli 0.162.1: `codex exec` run with `CODEX_THREAD_ID` in its environment opens
   a thread of its own. A Codex author's shell sets that variable.
-  - So a Codex author's Codex reviewer never lands on the author's thread.
+  - So a Codex author's Codex reviewer never resumes the author's thread.
   - The helper records the variable as `authorSessionId` only.
 
 ### Claude Code as it is called
@@ -593,7 +569,7 @@ helper keeps Codex's final message.
     one such a block sets, with `REVIEWER_CHOICE_REFUSED`.
 - The reviewer session counts against the usage of this workspace's Claude Code sign-in, as a
   Claude author does.
-- The reviewer's transcript lands in `~/.claude/projects/` like any session's, where
+- The reviewer's transcript is written to `~/.claude/projects/` like any session's, where
   `claude --resume` can open it.
 - Measured with Claude Code 2.1.283 in a session of the image, with a claude.ai sign-in:
   - a nested `claude -p` runs from Claude Code's Bash tool;
@@ -613,7 +589,7 @@ CLI's events.
 
 - The tests cover thread continuity and mismatch, every failure class, the digest over each kind
   of change, the snapshot refs and their absence under a read-only Git directory, the base range,
-  the coverage of an earlier approval and the changed paths each round names, the export, the
+  the coverage of an earlier approval and the changed paths each round names, the transcript, the
   lock, the round limit, escalation, state namespacing, and the deletion of old reviews at `start`.
 - The tests marked `both_reviewers` run against each fake. The rest test the helper's own logic,
   and run against the fake Codex only.
@@ -640,5 +616,5 @@ CLI's events.
   A second invocation opened a new thread.
 - Measured with Codex 0.157.1 as the author and Claude Code 2.1.284 as the reviewer in the
   image: `$ko-review` asked for the reviewer, model and effort in replies, then ran a Claude
-  Fable review at high effort to approval. `verify` confirmed that the approval covered the working
-  tree.
+  Fable review at high effort to approval. `check-approval` confirmed that the approval covered the
+  working tree.

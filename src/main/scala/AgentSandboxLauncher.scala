@@ -195,8 +195,8 @@ object AgentSandboxLauncher:
       ++ Vector("NO_PROXY", "no_proxy").map(_ -> "localhost,127.0.0.1")
 
   /** The variables that name a PEM bundle, set in the sandbox container and in a host command alike (SECURITY.md,
-    * "Who holds the CA key"). run-on-host.md lists which programs read each variable ("The command's lifetime and
-    * environment"). */
+    * "Who holds the CA key"). run-on-host-internals.md lists which programs read each variable ("The command's lifetime
+    * and environment"). */
   val CaBundleVariables: Vector[String] =
     Vector("SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO")
 
@@ -392,7 +392,7 @@ object AgentSandboxLauncher:
     Option.when(refused.nonEmpty)(refused.mkString("\n"))
 
   /** Whether this process runs inside a sandbox session, which the image's `/etc/ko-agent-sandbox` shows. A host does
-    * not have that directory (src/probe/machine-memory-return.sh asks the same). */
+    * not have that directory (src/probe/PodmanMachineMemoryReclaim.scala asks the same). */
   def inSandboxSession(os: Os): Boolean = os == Os.Linux && Files.isDirectory(Paths.get("/etc/ko-agent-sandbox"))
 
   /**
@@ -1664,8 +1664,8 @@ object AgentSandboxLauncher:
 
     KoAgentBpf.placementRefusal(parsed.workspaceSettings, os, parsed.nestingMode).foreach(fail(_))
 
-    // --run-on-host is macOS only (run-on-host.md, "Why only macOS"). Elsewhere there is no Seatbelt backend, and a
-    // container build already runs at host speed on host memory.
+    // --run-on-host is macOS only (run-on-host-internals.md, "Why only macOS"). Elsewhere there is no Seatbelt backend,
+    // and a container build already runs at host speed on host memory.
     val runOnHost = parsed.runOnHost.getOrElse(Vector.empty)
     if runOnHost.nonEmpty && os != Os.Mac then
       fail("error: --run-on-host is available on macOS only; on this host, run those programs in the container")

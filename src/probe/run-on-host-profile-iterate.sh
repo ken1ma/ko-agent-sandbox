@@ -1,5 +1,5 @@
 #!/bin/sh
-# Discovers the profile's system paths (run-on-host.md, "The Seatbelt profile") the only way that the profile
+# Discovers the profile's system paths (seatbelt.md, "System paths") the only way that the profile
 # allows: by running a real build and reading what the build needs, never by listing what the host happens to have.
 # Run the script when a command stops under the profile and nothing names the missing grant.
 #
@@ -561,8 +561,9 @@ mach)
     sbt --jvm-client -batch shutdown >/dev/null 2>&1
     run_bound=${MACH_BOUND:-600}
     # The probe builds a project of its own inside the workspace that the profile grants. This checkout's target/
-    # links into the store of the unconfined sbt that emit ran, and the profile denies that store (run-on-host.md,
-    # "sbt", the paragraph on the server's state). Sweeping those links is the runner's job, not this probe's.
+    # links into the store of the unconfined sbt that emit ran, and the profile denies that store
+    # (run-on-host-internals.md, "sbt", the paragraph on the server's state). Sweeping those links is the runner's job,
+    # not this probe's.
     fixture=$(pwd -P)/target/mach-fixture
     rm -rf "$fixture"; mkdir -p "$fixture/project"
     cp project/build.properties "$fixture/project/"
@@ -674,7 +675,7 @@ allow https://repo1.maven.org/ read' EGRESS_BIND=127.0.0.1:0 \
 procargs)
     # Measures whether a confined command reads the environment of another process of the same user through
     # sysctl(KERN_PROCARGS2), the call behind `ps -E`. Also measures whether the rule that denies the call leaves the
-    # JDK running (run-on-host.md, "The Seatbelt profile", records the answers). ProcArgs.java makes the call: `ps`
+    # JDK running (seatbelt.md, "Processes", records the answers). ProcArgs.java makes the call: `ps`
     # is setuid, which no profile lets a command execute, and a build can make the call itself.
     #
     # Two targets lie outside the sandbox, because the kernel omits the environment of a cs_restricted process

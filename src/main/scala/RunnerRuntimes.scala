@@ -452,7 +452,7 @@ final class RunnerRuntimes(
    * The command then runs against the owner's session, proxy and daemon port, exactly as the owner's own commands do
    * (`Runtime`). This launch records and keeps nothing of the runtime, and the next command asks again.
    *
-   * What the sharer gives up (run-on-host.md, "The channel and the command"):
+   * What the sharer gives up (run-on-host-internals.md, "The channel and the command"):
    *
    *   - A cancel is the program's own, because the server is not this launch's to retire.
    *   - The owner's end takes the runtime, a build of this launch included.

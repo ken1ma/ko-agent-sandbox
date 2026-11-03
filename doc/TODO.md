@@ -91,7 +91,7 @@ reason, so that nobody proposes it again.
 
 ## What a host command reads of other processes
 
-`run-on-host.md`, "The Seatbelt profile", has `SeatbeltProfile.ProcessReadRule` and its
+`seatbelt.md`, "Processes", has `SeatbeltProfile.ProcessReadRule` and its
 measurement.
 
 - [ ] Measure the older `kern.procargs` call under the rule; the probe reads `kern.procargs2`
@@ -114,7 +114,7 @@ measurement.
     the command's sandbox.
   - The probe's `ops` mode measures a family by leaving the family's allow out under
     `(deny default)`. `(deny default)` denies none of these operations, so the mode cannot show
-    that the JDK does without `file-map-executable` (`run-on-host.md`, "The Seatbelt profile") or
+    that the JDK does without `file-map-executable` (`seatbelt.md`, "What the JDK needs") or
     `process-info*`.
 - [ ] Measure under the rendered profile the other routes to another process's arguments,
   environment or memory. The profile grants none of these routes by name:
@@ -261,9 +261,26 @@ once, such as `ProcArgs.java`, `ahp-hostile-host.py` and `seatbelt-semantics.sh`
 cites them for what they measured.
 
 - [ ] Move the acceptance test and its fixtures to a test location named for them, and keep
-  `src/probe/` for the one-off probes. Update `run-on-host.md` and the code comments that cite
-  the moved paths. The BPF backend's suites made the same split
+  `src/probe/` for the one-off probes. Update the `run-on-host*.md` documents, `seatbelt.md` and
+  the code comments that cite the moved paths. The BPF backend's suites made the same split
   (`../ko-agent-fs/bpf/test/podman/`).
+
+## `src/probe/`: the shell probes as Scala CLI scripts
+
+`development.md`, "Probes", says to write a host-side probe as a standalone Scala CLI script.
+Twelve probes in `src/probe/` are shell scripts. Eleven run on the macOS host, and
+`podman-attach-stdin.sh` runs on any host with podman.
+
+- [ ] Rewrite each shell probe as a Scala CLI script, and update the documents and code comments
+  that cite its path.
+  - Start with the one-off probes: `host-layout.sh`, `jvm-proxy-rule.sh`, `loopback-rule.sh`,
+    `mill-pinned-jvm.sh`, `podman-attach-stdin.sh`, `run-on-host-profile-iterate.sh`,
+    `run-on-host-runner-session.sh`, `sbt-exec-chain.sh`, `seatbelt-semantics.sh` and
+    `session-recovery.sh`.
+  - `run-on-host-acceptance-setup.sh` and `run-on-host-acceptance-test.sh` run under sbt
+    (`RunOnHostAcceptanceSetupTest`, `EmitRunOnHostProfile`). Rewrite them together with the move
+    in the entry above.
+  - Rerun each rewritten probe on macOS, and compare its answers with what the documents record.
 
 ## Measure the agents under the `--nesting=none` seccomp profile
 
@@ -869,7 +886,7 @@ global fails fast on podman-less machines and kills the test JVM.
 ## Deferred — read grants a user adds to a host command's profile
 
 The `curl` that macOS ships does not run under a command's profile: LibreSSL stops at
-`fopen('/private/etc/ssl/openssl.cnf')`, `Operation not permitted` (`run-on-host.md`, "The
+`fopen('/private/etc/ssl/openssl.cnf')`, `Operation not permitted` (`run-on-host-internals.md`, "The
 command's lifetime and environment"). The launcher grants a system path only where a build
 measurably needs it (`SeatbeltProfile.SystemPaths.txt`), and no build here runs `curl`.
 
@@ -915,8 +932,8 @@ code, not measured):
     never the host's `PATH`;
   - npm's cache in the workspace's run-on-host cache (`npm_config_cache`), not `~/.npm`;
   - the registry allowed in the sbt program's egress rule. `HTTPS_PROXY` and `NODE_EXTRA_CA_CERTS`
-    already reach Node (`run-on-host.md`, the CA variables' table). npm's use of the proxy and of
-    HTTP/1.1 through the inspecting proxy is still to be measured;
+    already reach Node (`run-on-host-internals.md`, the CA variables' table). npm's use of the proxy
+    and of HTTP/1.1 through the inspecting proxy is still to be measured;
   - what `npm install` then runs on the host: the lifecycle scripts of every package, under the
     command's profile. SECURITY.md's "Run on host" should state that beside the limit that
     `node_modules` already has there.
@@ -924,8 +941,8 @@ code, not measured):
 ## Deferred — a bound on a silent host command
 
 The runner's progress bound limits the start of an sbt server and of a mill daemon
-(`run-on-host.md`, "The channel and the command", "`mill`"). A command that stalls after its
-server or daemon is up, or a Maven command at any point, stays silent until the agent gives up.
+(`run-on-host-internals.md`, "The channel and the command", "`mill`"). A command that stalls after
+its server or daemon is up, or a Maven command at any point, stays silent until the agent gives up.
 Nothing bounds such a command: not the supervisor, not the runner, whose writers die only with
 their requester, and not the shim, which reads output to EOF. One form would bound it, and that
 form waits on a measurement:
@@ -967,7 +984,7 @@ The rules allow the bootstrap's downloads by default, so an agent can run it.
 
 The runner sets no idle bound on its sbt server. The server lives until the launch ends, until
 `ko-sandbox-run-on-host sbt shutdown`, or until sbt's own `serverIdleTimeout` of seven days
-(`run-on-host.md`, the startup-cost paragraph). A terminal user keeps a warm server on purpose, so
+(`run-on-host.md`, "Startup cost"). A terminal user keeps a warm server on purpose, so
 the server's heap is the price chosen. Mill's daemon exits after Mill's own thirty minutes.
 
 The form, if a launch ever wants one:
@@ -1054,7 +1071,8 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
 ## Deferred — the per-command supervisor process under `--run-on-host`
 
 - [ ] Re-evaluate the supervisor, the `--run-command-on-host` process the runner starts for each
-  request (`RunOnHostSandbox.runCommandMain`; `run-on-host.md`, "The channel and the command").
+  request (`RunOnHostSandbox.runCommandMain`; `run-on-host-internals.md`, "The channel and the
+  command").
   - What it buys:
     - the runner's cancel is a SIGTERM to one process, answered by that process's shutdown hook,
       which ends exactly the command's groups and directory;

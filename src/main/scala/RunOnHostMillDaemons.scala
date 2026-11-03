@@ -1,4 +1,4 @@
-// The launch's mill daemon (run-on-host.md, "mill").
+// The launch's mill daemon (run-on-host-internals.md, "mill").
 //
 // - The workspace's stock bootstrap starts the daemon under the daemon profile. The profile denies the starter's
 //   connect, which leaves the daemon behind in the starter's group.
@@ -398,7 +398,7 @@ object RunOnHostMillDaemons:
    *   - A daemon that stays busy past the bound, or whose idleness cannot be observed, gives a refusal that names the
    *     daemon.
    *   - A terminal `./mill` can still connect between the observation and the TERM. That command's build then dies with
-   *     the daemon (run-on-host.md, "mill", states the window).
+   *     the daemon (run-on-host-internals.md, "mill", states the window).
    */
   def endForeign(buildDirectory: Path, processes: Processes, log: String => Unit): Either[String, Unit] =
     val deadline = System.nanoTime + ForeignIdleDeadlineMillis * 1_000_000

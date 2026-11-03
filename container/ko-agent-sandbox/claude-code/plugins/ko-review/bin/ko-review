@@ -4,7 +4,7 @@
 A cycle is one reviewer thread, Codex's or Claude Code's:
 - `start` opens the thread with a fresh review.
 - `continue` sends the author's fixes, or the author's reasons for disagreeing, to the same thread.
-- `verify` confirms that the approval covers the current working tree.
+- `check-approval` confirms that the approval covers the current working tree.
 The state lives in the workspace's persistent volume. doc/ko-review.md describes the design and the command output.
 """
 
@@ -458,7 +458,7 @@ class Review:
         try:
             fcntl.flock(self.lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise ReviewError("REVIEW_BUSY", f"another command holds review {self.id}; retry when it finishes")
+            raise ReviewError("REVIEW_LOCKED", f"another command holds review {self.id}; retry when it finishes")
 
     def journal(self, entry):
         entry = {"seq": self.journal_length() + 1, "at": now(), **entry}
@@ -565,7 +565,7 @@ class Review:
 
     def inspect_lines(self):
         """Returns command lines that show the user how the review went. The skill relays them at the end."""
-        lines = [f"ko-review export {self.id}  # the transcript, one section per round"]
+        lines = [f"ko-review transcript {self.id}  # one section per round"]
         snapshots = [entry for entry in self.state.get("snapshots", []) if entry.get("ref")]
         if snapshots and snapshots[-1].get("tag"):
             last = snapshots[-1]["ref"]
@@ -1355,7 +1355,7 @@ def reviewed_paths(root, base, reviewed):
     return {field.decode("utf-8", "surrogateescape") for field in listed.split(b"\0") if field}
 
 
-def command_coverage(args):
+def command_approvals(args):
     """Returns the approved reviews of this checkout whose approval covers part of the current scope. The author
     can then continue such a review on its thread, where the reviewer reads the new paths with the earlier
     discussion in context, instead of starting anew.
@@ -1470,7 +1470,7 @@ def command_escalate(args):
     return review.summary()
 
 
-def command_verify(args):
+def command_check_approval(args):
     root = repository_root(args.repository)
     review = Review(root, args.review_id).load()
     summary = review.summary()
@@ -1522,7 +1522,7 @@ ATX_HEADING = re.compile(r"( {0,3})(#{1,6})(?=[ \t]|$)")
 
 def shifted(markdown):
     """Shifts the message's ATX headings two levels down, at most to level 6, under the `###` heading that names who
-    wrote the message. The export and the transcript on a round's ref use the result.
+    wrote the message. The `transcript` command and the transcript on a round's ref use the result.
 
     A line that may be code stays as written, so a misreading can leave a heading unshifted but never change code.
     Any line that could open a fence opens one, and only a line that certainly closes the fence closes it. Such a
@@ -1556,7 +1556,7 @@ def shifted(markdown):
 
 
 def render_entries(reviewer, entries, with_round_headings=True):
-    """Renders the journal entries as Markdown: the export's body, and a round's transcript on its ref."""
+    """Renders the journal entries as Markdown: the `transcript` command's body, and a round's transcript on its ref."""
     lines = []
     current_round = None
     for entry in entries:
@@ -1605,7 +1605,7 @@ def render_entries(reviewer, entries, with_round_headings=True):
     return lines
 
 
-def command_export(args):
+def command_transcript(args):
     root = repository_root(args.repository)
     review = Review(root, args.review_id).load()
     if args.round is not None:
@@ -1698,7 +1698,7 @@ def expire_reviews(root):
                 delete_review(review)
                 expired.append(review.id)
         except ReviewError as ex:
-            if ex.code not in ("REVIEW_BUSY", "UNKNOWN_REVIEW"):
+            if ex.code not in ("REVIEW_LOCKED", "UNKNOWN_REVIEW"):
                 failures.append({"reviewId": entry.name, "error": ex.to_json()})
         except FileNotFoundError:
             pass
@@ -2002,8 +2002,8 @@ def build_parser():
     start.add_argument("--base", help="review the changes since this commit or branch, not only the uncommitted ones")
     start.add_argument("--model", help="the reviewer's model for every round (default: its configured model)")
     start.add_argument("--effort", help="the reviewer's reasoning effort for every round (default: its configured one)")
-    export = add("export", command_export, "print the review's transcript as Markdown", review_id=True)
-    export.add_argument("--round", type=int, help="print only this round: the author's message and the reviewer's")
+    transcript = add("transcript", command_transcript, "print the review's transcript as Markdown", review_id=True)
+    transcript.add_argument("--round", type=int, help="print only this round: the author's message and the reviewer's")
     diff = add("diff", command_diff, "git diff of a round's snapshot against the working tree", review_id=True)
     diff.add_argument("--round", type=int, help="the round to compare with (default: the approved one, else the last)")
     diff.add_argument("git_args", nargs="*", help="options for git diff after `--`, such as `-- --stat`")
@@ -2019,7 +2019,10 @@ def build_parser():
         "escalate", command_escalate, "record the author's agreement that the user must decide",
         review_id=True, message=True,
     )
-    add("verify", command_verify, "succeed only if the approval covers the current working tree", review_id=True)
+    add(
+        "check-approval", command_check_approval, "succeed only if the approval covers the current working tree",
+        review_id=True,
+    )
     add("show", command_show, "print the review's state", review_id=True)
     add("list", command_list, "list this checkout's reviews, one short entry each; `show` prints one in full")
     add(
@@ -2027,11 +2030,11 @@ def build_parser():
         "print the model and reasoning effort the reviewer would use, and the models it offers", reviewer=True,
     )
     add("digest", command_digest, "print the working-tree digest")
-    coverage = add(
-        "coverage", command_coverage,
+    approvals = add(
+        "approvals", command_approvals,
         "list the approved reviews whose approval covers part of the current scope, to continue one of them",
     )
-    coverage.add_argument("--base", help="the base the new review would have, as `start --base`")
+    approvals.add_argument("--base", help="the base the new review would have, as `start --base`")
     return parser
 
 
@@ -2055,7 +2058,7 @@ def main(argv):
                 "snapshots": CURRENT_REVIEW.state.get("snapshots", []),  # a transcriptError travels here
             })
         status = 1
-    if output is not None:  # export wrote its Markdown itself
+    if output is not None:  # `transcript` wrote its Markdown itself
         json.dump(output, sys.stdout, indent=2)
         sys.stdout.write("\n")
     return status

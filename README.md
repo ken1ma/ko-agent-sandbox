@@ -122,7 +122,7 @@ Insert these launcher options before the agent command (`claude` above):
 1. Use `--egress=deny-unless-model` to limit network access to the selected model providers,
    dropping the read-only sites.
 1. On macOS, use `--run-on-host=sbt,mill,gradle,mvn`, selecting the programs the agent needs,
-   to build at host speed without consuming the podman machine's memory.
+   to build without consuming the podman machine's memory, and at host speed.
 
 1. Use `--workspace=read-only` to make the workspace read-only inside the sandbox.
 
@@ -406,7 +406,7 @@ restore permission prompts and set the Claude Code status line.
                          On first use there, a daemon you started is shut down after its
                          current build finishes; your new clients then share the session's
                          confined daemon. Gradle's session daemons stay separate from yours.
-                         Linux gains nothing: container builds already use host speed and memory.
+                         Linux gains nothing: container builds already use host memory and speed.
                          Windows needs a different design to enforce the filesystem restrictions.
                          See SECURITY.md "Run on host" and doc/run-on-host.md
                          "Program prerequisites".
