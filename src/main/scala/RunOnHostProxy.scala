@@ -289,7 +289,7 @@ object RunOnHostProxy:
    * field (Refusals.proxyStatus).
    *
    *   - This method asks the proxy, since the log that would say so is what failed. The programs need not print the
-   *     reason; run-on-host.md has what sbt and mill print.
+   *     reason; run-on-host-internals.md has what sbt and mill print.
    *   - `OPTIONS *` is HTTP's request about the server itself, and it is no CONNECT. A proxy that still logs answers
    *     400 and logs `deny - -`, which deniedHosts does not read as a refused host.
    *   - `Max-Forwards: 0` is for a recipient that is not this proxy, in case the proxy died and another program took

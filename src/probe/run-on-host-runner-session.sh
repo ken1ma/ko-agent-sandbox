@@ -1,6 +1,6 @@
 #!/bin/sh
-# Measures what the runner's session rests on (doc/run-on-host.md, "Network", "sbt" and "mill") before the runner
-# encodes any of it. A changed rule or command line calls for a rerun. The rows fall into four groups:
+# Measures what the runner's session rests on (doc/run-on-host-internals.md, "Network", "sbt" and "mill") before the
+# runner encodes any of it. A changed rule or command line calls for a rerun. The rows fall into four groups:
 #
 #   L1-L4  SBPL: a loopback listener on port 0 under (local ip "localhost:*"), its control, and an exact-port
 #          outbound rule that reaches its port and not the neighbor's
@@ -385,7 +385,7 @@ fi
 # - a build's own tests bind where they like.
 # The candidate profile grants any bind and names "localhost" for what arrives and leaves. These rows measure,
 # under the candidate and under the mill daemon's rule, whether that class stops at loopback or covers every address
-# of this host. The mill daemon's rule admits the same binds (run-on-host.md, "Network", records the answer). The LAN
+# of this host. The mill daemon's rule admits the same binds (seatbelt.md, "Network", records the answer). The LAN
 # rows send to this host's own LAN address: the packet's addresses are the LAN's even when the route is local, and
 # the unconfined controls show that the receiver hears the packet that way.
 echo
@@ -771,8 +771,8 @@ SCALA
         # The idle detector for a confined sbt server counts the clients of the server's path-named sockets, as
         # `peers` finds them.
         # - No runner path reads this measurement: the runner shuts the user's server down by protocol after its
-        #   exec, and attaches to or takes over another launch's server (doc/run-on-host.md, "The channel and the
-        #   command").
+        #   exec, and attaches to or takes over another launch's server (doc/run-on-host-internals.md, "The channel and
+        #   the command").
         # - The detector looks at the server JVM, never its group leader, and has no baseline, as a runner that takes
         #   over has none.
         # - The rows measure the detector first on the already-busy server, then after the client is gone, and then with
@@ -1035,7 +1035,7 @@ $(failed "$mp/starter" "$mp/starter.log")"
         profile "$mp/neighbor.sb" "(allow network-outbound (remote ip \"localhost:$((port + 1))\"))"
         # M2: a client confined to the daemon's port. The native launcher is a GraalVM image and takes no _JAVA_OPTIONS.
         # So the environment's preferIPv4Stack never reaches the launcher, and the launcher's connect is dual-stack and
-        # v4-mapped, which the "localhost" class denies (run-on-host.md, "Network"). The row tries three candidates in
+        # v4-mapped, which the "localhost" class denies (seatbelt.md, "Network"). The row tries three candidates in
         # order, and the first that runs is the client of the rows after:
         # - the native launcher as is;
         # - the native launcher with the property on its command line, for the image's runtime to consume;

@@ -119,8 +119,8 @@ object LaunchMessages:
     resolved: String,
     runOnHost: Vector[String] = Vector.empty,
     // Whether this host could serve --run-on-host at all (macOS). The value decides the discovery line
-    // (doc/run-on-host.md, "The channel and the command"). The value is constant per machine, so the agents.md stamp
-    // needs no part of the value.
+    // (doc/run-on-host-internals.md, "The channel and the command"). The value is constant per machine, so the
+    // agents.md stamp needs no part of the value.
     hostCommandsAvailable: Boolean = false,
     // What git cannot do in this session, in the container's words (SandboxWorkspace.noGitInstruction
     // and readOnlyGitInstruction). The agent reads the limits before its first command.

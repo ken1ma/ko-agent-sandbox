@@ -1,5 +1,5 @@
 # The system paths: paths the toolchain needs that are not the prerequisites' own
-# (doc/run-on-host.md, "The Seatbelt profile").
+# (doc/seatbelt.md, "System paths").
 # - One absolute path per line; prefix the path with "x " if it must also be executable.
 # - Entries resolve through realPath, so a symlink entry becomes a grant on its target. List a
 #   symlink's directory instead.

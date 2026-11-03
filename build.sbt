@@ -105,7 +105,7 @@ Compile / unmanagedResourceDirectories +=
 //   (RunOnHostSandbox.CertificateBuilderExports);
 // - the native-image command in doc/TODO.md, for the binary;
 // - .jvmopts, for the tests, which run in sbt's own JVM. A forked test JVM would need sbt's TCP listener to reach it,
-//   and the host command sandbox does not grant that listener (doc/run-on-host.md, "Network").
+//   and the host command sandbox does not grant that listener (doc/run-on-host-internals.md, "Network").
 Compile / run / javaOptions ++= Seq(
   "--enable-native-access=ALL-UNNAMED",
   "--add-exports=java.base/sun.security.x509=ALL-UNNAMED",

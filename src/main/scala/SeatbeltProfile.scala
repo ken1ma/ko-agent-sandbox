@@ -1,4 +1,4 @@
-// The Seatbelt profiles that a host command and the host proxy run under (run-on-host.md, "The Seatbelt profile",
+// The Seatbelt profiles that a host command and the host proxy run under (seatbelt.md; run-on-host-internals.md,
 // "The command's egress proxy"). The code is pure, paths in and SBPL out, so unit tests check the generated SBPL
 // without requiring macOS.
 //
@@ -79,7 +79,7 @@ object SeatbeltProfile:
    *     the profile.
    *   - src/probe/run-on-host-profile-iterate.sh `mach-proxy` and `mach` measured the list. Without this name, the
    *     serving proxy dies of a segmentation fault, while `java -version` and `sbt about` run with no name at all.
-   *   - A command gets the name unmeasured (run-on-host.md, "The Seatbelt profile", has the reason).
+   *   - A command gets the name unmeasured (seatbelt.md, "Mach services", has the reason).
    */
   val MachServices: Seq[String] = Seq("com.apple.system.opendirectoryd.libinfo")
 
@@ -89,8 +89,8 @@ object SeatbeltProfile:
    *   - That call is the one behind `ps -E`, and the kernel answers it for any process of the same user.
    *   - The rule is agent-safehouse's (`profiles/10-system-runtime.sb`).
    *   - pidinfo stays allowed inside the inherited sandbox, where a build inspects its own children.
-   *   - `ProcessHandle.of` still finds a process outside the sandbox, and its `info()` throws (run-on-host.md, "The
-   *     Seatbelt profile").
+   *   - `ProcessHandle.of` still finds a process outside the sandbox, and its `info()` throws (seatbelt.md,
+   *     "Processes").
    */
   val ProcessReadRule: Seq[String] = Seq(
     """(deny sysctl-read (sysctl-name-regex #"procargs"))""",
@@ -288,8 +288,8 @@ object SeatbeltProfile:
             // - The daemon and every JVM the build forks inherit this profile.
             // - The kernel chooses the daemon's port during the starter's own run, so no rule can name it.
             // - The only spelling that would admit a connect to that port is (remote ip "localhost:*"), which reaches
-            //   every service of this host. That spelling is Gradle's grant, and run-on-host.md, "Network", records the
-            //   cost.
+            //   every service of this host. That spelling is Gradle's grant, and run-on-host-internals.md, "Network",
+            //   records the cost.
             // - The starter's own connect is therefore denied, which is what leaves the daemon behind. The runner ends
             //   the starter once the daemon listens, rather than widening the grant (RunOnHostMillDaemons.endStarter).
             lines += ";; The mill daemon: listeners, any port, any address of this host; inherited by what the build" +
@@ -301,7 +301,7 @@ object SeatbeltProfile:
             // Mill's client checks the daemon that holds its lock with ProcessHandle.info(), which reads the daemon's
             // arguments (PidLock.isLockValid). The call throws under ProcessReadRule, because the daemon runs under a
             // sandbox-exec of its own. An allow of the one sysctl name `kern.procargs2.<pid>`, after the rule, opens
-            // that read for the daemon alone (run-on-host.md, "The Seatbelt profile").
+            // that read for the daemon alone (seatbelt.md, "Processes").
             lines += ";; The daemon's arguments, which Mill's client reads to check the daemon holds its lock; the" +
               " runner gave the daemon the client's own environment."
             lines += s"""(allow sysctl-read (sysctl-name "kern.procargs2.$pid"))"""
@@ -333,7 +333,7 @@ object SeatbeltProfile:
         Right(lines.result().mkString("\n") + "\n")
 
   /**
-   * The host proxy's inputs (run-on-host.md, "The command's egress proxy"; RunOnHostProxy.proxyInputs):
+   * The host proxy's inputs (run-on-host-internals.md, "The command's egress proxy"; RunOnHostProxy.proxyInputs):
    *
    *   - what the proxy runs from: the native image, or the JDK of the jar form;
    *   - what the proxy loads: the class-path entries of the jar form;
@@ -452,7 +452,7 @@ object SeatbeltProfile:
    *     interior components of both by `literal`.
    *   - Last comes each `read-only-under` rest, as a regex anchored at its directory, with its interior components
    *     pinned. A `writable` line that lifts part of a rest under the symlink's name stays unlifted here, although
-   *     the workspace policy lifts it (doc/run-on-host.md).
+   *     the workspace policy lifts it (doc/run-on-host-internals.md).
    *
    * An allow grants `file-write*` alone, the workspace's own grant, so it never widens the profile. A hard link to a
    * file that a `writable` line lifts inside a read-only directory stays denied.
@@ -528,7 +528,7 @@ object SeatbeltProfile:
    *     conjoins a literal filter with the name pattern.
    *   - The trailing `(/|$)` is what stops `.gitignore` and `.github` from matching.
    *   - The pattern is lowercase alone. On a case-insensitive volume, it matches the other spellings measured
-   *     (run-on-host.md, "The host command's filesystem rules").
+   *     (seatbelt.md, "Paths").
    */
   private def anyDepth(name: String): String =
     s"""(regex #"/${name.replace(".", "\\.")}(/|$$)")"""

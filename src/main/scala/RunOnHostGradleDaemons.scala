@@ -1,4 +1,4 @@
-// The launch's Gradle daemons (run-on-host.md, "Gradle").
+// The launch's Gradle daemons (run-on-host-internals.md, "Gradle").
 //
 // - Gradle's own client starts each daemon under the command's profile, in the registry that every Gradle command
 //   line names under the runner's `tmp/`.

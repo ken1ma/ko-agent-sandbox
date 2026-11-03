@@ -799,8 +799,8 @@ lifecycle, benchmark and launcher suites binds its figures to the digest of its 
   - `--reset` in the main worktree removes the shared volume and signs every worktree out. While a
     linked worktree's session still mounts the volume, podman refuses the removal, and the reset
     reports that failed step. Run the reset again after that session ends.
-  - A launch that holds no prompt (`--session-start=immediate`, or no terminal) mounts the
-    worktree's own volume and says so.
+  - When the launch holds no prompt (`--session-start=immediate`, or no terminal), the launcher
+    mounts the worktree's own volume and says so.
 - Removing a stored credential does not revoke copies already held elsewhere. Revocation remains the
   provider's operation.
 - Concurrent sessions of a workspace mount the volume read-write. Writes to the same state file can
@@ -876,8 +876,8 @@ podman, the OCI runtime, namespaces, seccomp and the host kernel.
     resumed would lack the lines between, and nothing in the log would say so.
   - A failed write to the stderr copy has no effect.
   - A host-command proxy has no second copy. That proxy's stderr is its log, a file in the run's
-    directory ([doc/run-on-host.md](doc/run-on-host.md)). A failed write to that log has the same
-    effect as a failed write to the file.
+    directory ([doc/run-on-host-internals.md](doc/run-on-host-internals.md)). A failed write to that
+    log has the same effect as a failed write to the file.
   - A proxy whose startup lines fail to be written exits before it accepts a connection.
   - A host-command proxy is not started when its log cannot be created in the run's log directory,
     and its command is refused with the reason (`RunOnHostProxy.keepAuditLog`). A log in the
@@ -1236,7 +1236,7 @@ Programs not covered by the launcher's prepared trust stores need separate handl
   - The image ships a `~/.m2/settings.xml` that names the proxy
     (`container/ko-agent-sandbox/m2/settings.xml`).
   - On the host the supervisor passes the resolver's `aether.connector.http.useSystemProperties`
-    instead (`doc/run-on-host.md`, "Maven").
+    instead (`doc/run-on-host-internals.md`, "Maven").
 - A GraalVM native image, such as the `cs` and `scala` launchers, has no `conf/` and reads no
   variable. So the proxy and CA settings travel as `-D` options in `KO_AGENT_SANDBOX_JAVA_OPTS`,
   which the agent passes by hand.
@@ -1564,16 +1564,16 @@ has these properties:
 `--run-on-host=<programs>` (`sbt`, `mill`, `gradle`, `mvn`) is off by default and available only on
 macOS. The option lets agent-chosen code execute on the host under a Seatbelt profile. These
 commands execute outside the container, so the profile provides their confinement.
-`doc/run-on-host.md` describes the mechanism. The security properties and costs:
+`doc/run-on-host-internals.md` describes the mechanism. The security properties and costs:
 
 - **macOS only, structurally, not by neglect.** The `.git` and `.ko-agent-sandbox` denies below must
   hold at every access, for a directory that the command creates as much as for one present at its
   start. Seatbelt evaluates its path filters at each access. The confinement that Linux and Windows
-  offer is fixed when the command starts. `doc/run-on-host.md`, "Why only macOS", details the
-  alternatives:
+  offer is fixed when the command starts. `doc/run-on-host-internals.md`, "Why only macOS", details
+  the alternatives:
   - Linux: bubblewrap's mounts and a Landlock ruleset cover no `.git` created during the command.
-    A host command also gains nothing on Linux: a container command already runs at host speed on
-    host memory.
+    A host command also gains nothing on Linux: a container command already runs on host memory, at
+    host speed.
   - Windows: AppContainer's ACLs express the grants but not the denies. ACL inheritance has no name
     patterns, so a `.git` created during the command inherits the workspace's allow.
 - **The sandbox asks; the host answers.** A host-side runner uses a FIFO channel like the clipboard
@@ -1595,7 +1595,7 @@ commands execute outside the container, so the profile provides their confinemen
   A command's access:
   - the workspace, read-write, except `.git` and `.ko-agent-sandbox`:
     - those two names are denied at any depth after path resolution, link creation included, with
-      the unmeasured spellings that `doc/run-on-host.md` records;
+      the unmeasured spellings that `doc/run-on-host-internals.md` records;
     - writes and links are also denied to what the launch's file rules make read-only, and to the
       paths that the workspace policy's guard added;
   - the command's own per-workspace run-on-host caches;
@@ -1603,7 +1603,8 @@ commands execute outside the container, so the profile provides their confinemen
     - under `mill`, also the JDK that Mill's launcher resolved for a build directory's pinned or
       unset `mill-jvm-version`, read-only, once a host run provisioned that JDK;
     - a command can write the file that names that JDK. So the command can choose among the JDKs in
-      your Coursier cache, and nothing outside that cache (`doc/run-on-host.md`, "A pinned JVM");
+      your Coursier cache, and nothing outside that cache (`doc/run-on-host-internals.md`, "A pinned
+      JVM");
   - the program's own executable and distribution, read-only:
     - the cs-installed `sbt`, and the distribution it execs in the Coursier archive cache;
     - the one mill launcher that the user provisioned;
@@ -1661,22 +1662,22 @@ commands execute outside the container, so the profile provides their confinemen
       proxy's host commands, and to nothing else.
     - A program that a build starts verifies the proxy only if it reads the JVM's trust store
       property or one of five CA bundle variables. Any other program fails its certificate check on
-      every host. `doc/run-on-host.md` lists the variables and their readers ("The command's
-      lifetime and environment") and the certificates ("The command's egress proxy").
+      every host. `doc/run-on-host-internals.md` lists the variables and their readers ("The
+      command's lifetime and environment") and the certificates ("The command's egress proxy").
   - A launch that selects the program prints the file's hosts. So a host that arrived with the
     repository does not take effect unseen.
   - The proxy reads the file when it starts. A host removed from the file stays reachable from the
-    runner's proxy until that proxy is next created (`doc/run-on-host.md`, "The command's egress
-    proxy").
+    runner's proxy until that proxy is next created (`doc/run-on-host-internals.md`, "The command's
+    egress proxy").
   - The proxy runs under a profile of its own. That profile grants the proxy's executable, the
     system paths and the leaf's directory as reads, and the network, and nothing else of the
     user's: no workspace, no cache, no write anywhere.
 - **The command's environment is a closed set, not the launcher's.** The supervisor constructs the
   environment from its own settings, three pass-through variables, and the variables that `--env`
-  named at launch. `doc/run-on-host.md`, "The command's lifetime and environment", lists those
-  variables. The same forwarded variables reach the sandbox, and `KO_AGENT_SANDBOX_*` is refused on
-  both paths. Inheriting the full host environment would expose unrelated secrets to agent-chosen
-  code, including an upstream proxy credential in the launcher's `HTTPS_PROXY`.
+  named at launch. `doc/run-on-host-internals.md`, "The command's lifetime and environment", lists
+  those variables. The same forwarded variables reach the sandbox, and `KO_AGENT_SANDBOX_*` is
+  refused on both paths. Inheriting the full host environment would expose unrelated secrets to
+  agent-chosen code, including an upstream proxy credential in the launcher's `HTTPS_PROXY`.
   - The supervisor's settings take precedence, so a forwarded `HTTPS_PROXY` cannot redirect the
     command past its proxy.
   - The supervisor supplies its JVM properties through HotSpot's `_JAVA_OPTIONS`, replacing any
@@ -1694,24 +1695,23 @@ commands execute outside the container, so the profile provides their confinemen
     holds a brokered value").
   - The profile denies the command reading other processes' arguments and environments: the
     launcher's, the runner's, a supervisor's and `podman`'s, which carry the launching shell's
-    environment among them (`SeatbeltProfile.ProcessReadRule`; `doc/run-on-host.md`, "The Seatbelt
-    profile").
+    environment among them (`SeatbeltProfile.ProcessReadRule`; `doc/seatbelt.md`, "Processes").
     - The one exception is a mill client reading its own daemon's, whose environment the runner
       built from the same closed set.
 - **A workspace script runs unconfined only on your explicit yes.** Before its start prompt, the
-  launch finds the missing mill launchers, the JDKs that mill's launcher resolves for the builds,
+  launcher finds the missing mill launchers, the JDKs that mill's launcher resolves for the builds,
   and the Gradle and Maven distributions: those without which the launch's commands would be
-  refused. The launch offers the run that downloads each:
+  refused. The launcher offers the run that downloads each:
   - The run is the build directory's own `./mill`, `./gradlew` or `./mvnw`, a workspace file that
     the agent can edit.
-  - The launch shows the run as the full command, with any character that the terminal would act on
-    spelled out.
+  - The launcher shows the run as the full command, with any character that the terminal would act
+    on spelled out.
   - The run executes unconfined and in the launcher's environment, only on a `y` to a prompt that
     says so (`doc/run-on-host.md`, "Program prerequisites").
   - That run is the manual run that the refusal asks of you, with the same authority. The script is
     the workspace's, and what it downloads lands where your own script runs from.
-  - Nothing runs without the answer. A launch without a terminal, or a launch starting immediately,
-    prints the refusal and runs nothing.
+  - Nothing runs without the answer. Without a terminal, or with `--session-start=immediate`, the
+    launcher prints the refusal and runs nothing.
 - **One sbt server, and one mill daemon, per build directory, owned by the launch's runner.** A
   thin sbt client attaches to whatever server the build directory's portfile names. Mill's launcher
   attaches to whatever daemon holds `out/mill-daemon`. Either client then runs with *that
@@ -1730,7 +1730,7 @@ commands execute outside the container, so the profile provides their confinemen
       attaching to that daemon.
   - From Mill 1.2 on, the runner starts no daemon, and each command runs the build in its own
     profile. Mill's daemon reads each launcher's process information, which `ProcessReadRule`
-    refuses across sandboxes (`doc/run-on-host.md`, "Mill 1.2 and later: no daemon").
+    refuses across sandboxes (`doc/run-on-host-internals.md`, "Mill 1.2 and later: no daemon").
 
   The runner keeps one server or daemon per build directory it visits, all warm at once. The runner
   ends them with the launch, or when their proxy is gone. A cancel follows the stock program
@@ -1786,7 +1786,8 @@ commands execute outside the container, so the profile provides their confinemen
     - The owner describes each runtime by a fingerprint of the profile's inputs, the closed
       environment and the proxy's rule lines, the forwarded values included. So a launch that
       forwards a secret never serves a launch that does not, and a launch whose rules differ never
-      resolves through the other's proxy (`doc/run-on-host.md`, "The channel and the command").
+      resolves through the other's proxy (`doc/run-on-host-internals.md`, "The channel and the
+      command").
     - The request's own launcher flags are not in the fingerprint. The flags select settings inside
       a process that the profile confines, where the supervisor's `_JAVA_OPTIONS` overrides them, as
       within a launch. `RunOnHostRuntimeDescriptor.fingerprint` has what the flags can and cannot
@@ -1851,8 +1852,8 @@ commands execute outside the container, so the profile provides their confinemen
   - An interrupted command, a killed shim and a dead sandbox container all close the FIFO, and the
     runner ends the command with SIGTERM. The supervisor's own hook teardown:
     - ends the command's process groups and, under Maven, the command's proxy;
-    - appends the command's proxy audit log to the channel's log on the host (`doc/run-on-host.md`,
-      "The channel and the command");
+    - appends the command's proxy audit log to the channel's log on the host
+      (`doc/run-on-host-internals.md`, "The channel and the command");
     - removes the command's directory.
 
     The runner's server or daemon stays, as above.
@@ -1890,7 +1891,7 @@ This reach is what you accept by naming the program in `--run-on-host`:
 | `gradle` | as `mill` | any port of this host | and every service on this host |
 
 - "Any address" is every address of this host, TCP and UDP, since Seatbelt cannot name loopback
-  alone (the bind bullet above; `doc/run-on-host.md`, "Network").
+  alone (the bind bullet above; `doc/run-on-host-internals.md`, "Network").
 - The table covers IP sockets. UNIX sockets under the launch's directories have separate path
   grants.
 - The `mill` daemon's port is reached by its clients alone.
@@ -1898,7 +1899,7 @@ This reach is what you accept by naming the program in `--run-on-host`:
   address, so the grant reaches, beside the proxy, only a service listening on that port at another
   address.
 - Gradle's daemon, workers and file-lock socket bind ports of the kernel's choosing and connect to
-  each other's ports, so Gradle needs both grants (`doc/run-on-host.md`, "Network").
+  each other's ports, so Gradle needs both grants (`doc/run-on-host-internals.md`, "Network").
 
 ## No containers inside the sandbox by default
 

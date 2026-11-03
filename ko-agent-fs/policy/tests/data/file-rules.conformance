@@ -6,7 +6,7 @@
 #
 # `path` rows hold for both enforcement points. `folded` rows spell a name as a filesystem may fold
 # it; the workspace policy folds, and the profile relies on the volume resolving the spelling to the
-# name before Seatbelt matches (doc/run-on-host.md, "The host command's filesystem rules"), so only
+# name before Seatbelt matches (doc/seatbelt.md, "Paths"), so only
 # the workspace policy checks them. The third `folded` row holds an invisible U+200B ZERO WIDTH
 # SPACE.
 

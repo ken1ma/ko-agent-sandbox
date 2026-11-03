@@ -559,5 +559,5 @@ Not supported yet, each failing closed with a certificate error:
 
 In the proxy container, a loopback endpoint is the container's own loopback, not the host's. So a
 helper such as cntlm that listens on the host's `127.0.0.1` is out of reach. The same variable does
-reach the helper from a `--run-on-host` command's proxy, which runs on the host (`run-on-host.md`,
-"The command's egress proxy").
+reach the helper from a `--run-on-host` command's proxy, which runs on the host
+(`run-on-host-internals.md`, "The command's egress proxy").

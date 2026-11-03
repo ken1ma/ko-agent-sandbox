@@ -35,8 +35,8 @@ case class Refusal(message: String, advice: String, proxyError: String = "http_r
  *
  * - A step never names a way around the ruleset, and never a host that this session's ruleset does not allow.
  *   forRefusedPost checks before naming a host.
- * - A host command's proxy sends these bodies too (doc/run-on-host.md, "The command's egress proxy"). So a step
- *   that is the user's says "outside the sandbox": a refused host command already runs on the host.
+ * - A host command's proxy sends these bodies too (doc/run-on-host-internals.md, "The command's egress proxy"). So a
+ *   step that is the user's says "outside the sandbox": a refused host command already runs on the host.
  * - A body holds fixed text plus what the request itself named, so a body never carries workspace data or a
  *   credential.
  * - This object is the whole table, with one member per refusal. The audit line keeps the short reason alone.

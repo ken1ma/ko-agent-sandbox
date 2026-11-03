@@ -22,8 +22,8 @@ import RunOnHostSandbox.StepRefusal
 
 object RunOnHostProvisioning:
 
-  /** A directory in which a command of the program would run as its own build (run-on-host.md, "`mill`", "Gradle",
-    * "Maven"):
+  /** A directory in which a command of the program would run as its own build (run-on-host-internals.md, "`mill`",
+    * "Gradle", "Maven"):
     *
     *   - for mill, a directory holding a `mill` bootstrap;
     *   - for Gradle, a directory holding a Gradle wrapper's properties file. The supervisor keys a Gradle build

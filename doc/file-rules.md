@@ -143,8 +143,8 @@ one limit, and the profile is stricter than the FUSE backend in two respects:
   in its rule file. The rule file's lines follow the defaults' `writable node_modules`. npm then
   installs a package without that entry, prints `npm warn tar TAR_ENTRY_ERROR` for the entry, and
   exits 0.
-- The profile is stricter than the FUSE backend in two respects (`run-on-host.md`, "The host
-  command's filesystem rules"):
+- The profile is stricter than the FUSE backend in two respects (`run-on-host-internals.md`, "The
+  host command's filesystem rules"):
   - a host command cannot `mkdir` a directory that a line passes through, such as `.claude`, or
     `rmdir` that directory once it is empty;
   - a `writable` line lifts nothing below the target of a symlink that the rules reach, such as

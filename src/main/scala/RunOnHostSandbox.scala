@@ -718,7 +718,7 @@ object RunOnHostSandbox:
     *   - The logs are the proxy audit logs, the sbt servers' logs (RunOnHostSbtServer.serverLog), the mill starters'
     *     output (RunOnHostMillDaemons.starterLog), and the stderr file that a thin client leaves under `tmp/` when it
     *     forked a server of its own. A command has one `proxy.log`, and the runner has one audit log per runtime.
-    *   - run-on-host.md, "The channel and the command", explains why every signal keeps these logs and what a
+    *   - run-on-host-internals.md, "The channel and the command", explains why every signal keeps these logs and what a
     *     server's file holds.
     *   - `condemned` is the session directory at its condemned pathname, with its groups ended
     *     (RunOnHostSession.endSession). No process that the session started can therefore change what is read.
@@ -1216,8 +1216,8 @@ object RunOnHostSandbox:
           Seq("--jvm-client", "-batch", "-java-home", prereqs.jdkHome.toString) ++ commandArgs
       case Program.Mill => millCommand(buildDirectory, assembled, commandArgs)
       case Program.Gradle => gradleCommand(prereqs, tmp) ++ commandArgs
-      // The distribution's own `mvn`, not the workspace's `mvnw` (run-on-host.md, "Maven"). --batch-mode serves as
-      // sbt's -batch does.
+      // The distribution's own `mvn`, not the workspace's `mvnw` (run-on-host-internals.md, "Maven"). --batch-mode
+      // serves as sbt's -batch does.
       case Program.Mvn =>
         Seq(prereqs.executable.toString, "--batch-mode") ++ commandArgs
 
@@ -1246,7 +1246,7 @@ object RunOnHostSandbox:
     catch case ex: IOException => Left(s"starting the command: ${ex.getMessage}")
 
   /**
-   * The distribution's own `gradle`, not the workspace's `gradlew` (run-on-host.md, "Gradle").
+   * The distribution's own `gradle`, not the workspace's `gradlew` (run-on-host-internals.md, "Gradle").
    *
    *   - The settings go on the command line, where a `-D` overrides every gradle.properties.
    *   - The daemon registry is the launch's own, under the runner's `tmp/`, which every Gradle process of the launch
@@ -1303,7 +1303,8 @@ object RunOnHostSandbox:
    * The command's whole environment, a closed set: `PassedThrough`, then what `--env` named, then the supervisor's
    * own settings, which win.
    *
-   *   - doc/run-on-host.md, "The command's lifetime and environment", has the table of what the environment holds.
+   *   - doc/run-on-host-internals.md, "The command's lifetime and environment", has the table of what the environment
+   *     holds.
    *   - SECURITY.md, "Run on host", explains why the environment is closed.
    */
   def commandEnvironment(
@@ -1344,7 +1345,7 @@ object RunOnHostSandbox:
       jvmProperty("sbt.global.base", sbtGlobal.toString),
       jvmProperty("sbt.ivy.home", ivyHome.toString),
       jvmProperty("maven.repo.local", m2Repository.toString),
-      // Maven's resolver ignores the JVM proxy properties unless told to use them (run-on-host.md, "Maven").
+      // Maven's resolver ignores the JVM proxy properties unless told to use them (run-on-host-internals.md, "Maven").
       "-Daether.connector.http.useSystemProperties=true",
     ) ++ JdkTrust.proxyProperties("127.0.0.1", proxyPort).map((name, value) => s"-D$name=$value") ++ Vector(
       // The proxy answers for every host it allows under a leaf of its own CA, so that CA is the whole store. The
