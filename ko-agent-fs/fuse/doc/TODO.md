@@ -43,15 +43,41 @@ can put a second name of a guarded entry there first (`../../policy/doc/security
   - It passed in the first run, and on the macOS rig.
   - A failed suite ends `--self-test` before its share rows, so Windows's `mmap` row waits on this
     item.
-  - Unverified cause: an entry's identity is `(st_dev, st_ino)` (`fs.rs`, `identity`). So a new
-    host `.git` that gets the inode number of the object a lookup recorded for `GIT~1` passes
-    `open_ino`'s check under the ordinary context.
+  - Unverified cause: an entry's identity is `(st_dev, st_ino)` (`fs.rs`, `identity`), and
+    `lookup` reads the entry and its guarded siblings in separate `fstatat` calls (`policy_name`).
+    One inode-number reuse suffices, in this interleaving:
+    1. `lookup`'s `fstatat` of `GIT~1` finds the host's link, inode Y. The host removes `GIT~1`
+       and `.git`. `policy_name`'s `fstatat` of `.git` finds nothing, so the node is recorded as
+       ordinary with identity Y.
+    2. The host writes `.git` again, which gets inode Y back, and links `GIT~1`. The kernel's
+       `OPEN` for the ordinary node opens that name, `open_ino_compared` finds Y equal to Y, and
+       the pointer file is open for writing.
+
+    The test's backing is the container's temporary directory, where a freed number returns at
+    once. Why the macOS rig passes is unmeasured.
   - Next steps:
     - the failure rate, from repeated `--self-test a_create_never_reopens` and
       `probe/rig.sh a_create_never_reopens`;
-    - a debug build that logs a number coming back for a new object;
-    - then a stronger identity (change or birth time beside the number), written up before it
-      changes the core.
+    - the test records the inode number of every `.git` the host writes and of every `GIT~1` the
+      sandbox creates, in shared state that the failing assertion's message prints. A failure
+      without a repeated `.git` number refutes the interleaving above; a failure with one supports
+      it; a pass shows nothing. The identity the daemon recorded is not visible to the test; a
+      debug build that logs it is the step after an inconclusive record;
+    - a check that holds whatever the identity's strength, written up before it changes the core:
+      `open_ino_compared` compares the opened descriptor's identity with the parent's guarded
+      siblings, as `policy_name` does, and answers `ESTALE` on a match, so the kernel's re-walk
+      records the guarded context and `allow_ino` refuses the write. The open descriptor pins its
+      inode, so no later `.git` takes the number during the check. It costs the two `fstatat`
+      calls `lookup` pays, for nodes recorded as ordinary under a parent outside git metadata, and
+      covers `open`, `setattr` and `link`, not the name-based `rename`, `unlink` and `rmdir` above.
+      - Its window: the host removes `GIT~1` and `.git` after the backing open and before the
+        comparison. No sibling matches, and the descriptor still holds the pointer file, which the
+        test's read then detects. The descriptor's `st_nlink` is 0 at that point, so answering
+        `ESTALE` to a descriptor without a name closes the window as far as the test's host goes:
+        that host never leaves the pointer file a name other than `.git` and `GIT~1`. A host that
+        renames `.git` to an ordinary name has made the entry ordinary. Reasoned from `fs.rs` and
+        `tests/mounted_races.rs`, not run;
+    - a stronger identity (change or birth time beside the number), the alternative.
 
 ## P1 — Platform verification (needs real filesystems)
 
@@ -376,9 +402,12 @@ user meets it.
       reopening a cached descriptor through `/proc/self/fd`, which is a magic link.
   - Live mode only, for the reason `FUSE_PASSTHROUGH` below gives.
 - [ ] READDIRPLUS: it batches lookup and getattr for the walk itself.
-  - Expect it to help a walk that only lists entries, not one that stats each entry as `ls -lR`
-    does. Under TTL 0 the attributes it returns expire at once, so follow-up stats per file still
-    make the round trip.
+  - gocryptfs measured it with attribute caching on: a walk that only lists entries ran 6.5× and
+    18.2× slower with it, and a walk that stats each entry, as `ls -lR` does, 1.36× and 1.82×
+    faster (https://github.com/rfjakob/gocryptfs/issues/1026). The per-entry lookup is the cost;
+    the saved `getattr` round trips are the gain.
+  - Under TTL 0 the attributes it returns expire at once, so follow-up stats per file still make
+    the round trip, and the gain is unmeasured here.
   - Measure before and after.
   - It would also align `readdir`'s `d_ino` with the synthetic `st_ino`, since each entry would
     carry a real lookup (Non-TODOs, inode-number reuse).

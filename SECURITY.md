@@ -1923,7 +1923,6 @@ unprivileged process create a user namespace.
 
 - Measured in a default session on 2026-10-17: after `unshare -Urm` the process holds every
   capability (`CapEff` `000001ffffffffff`), and mounts `tmpfs`, a bind and overlayfs.
-- `io_uring_setup` already answers `ENOSYS`, so that interface needs no rule.
 
 The profile:
 
@@ -1952,6 +1951,11 @@ The profile:
     255 rules. The first version does without those rules (`doc/TODO.md`, "Attribute routes as
     `--workspace` values, spending the free hook slots").
   - On the podman machines the shares answer those commands with `ENOTTY` themselves.
+- answers `io_uring_setup`, `io_uring_enter` and `io_uring_register` with `ENOSYS`
+  (`SeccompProfile.IoUringSyscalls`). Podman's default answers them the same way by its default
+  action, and a default from `containers.conf` that allows them would pass into the session without
+  this rule. The attribute rule relies on it, since io_uring has its own setxattr operations, and so
+  does the BPF backend's `file_receive` hook (`ko-agent-fs/bpf/doc/architecture.md`, "The hooks").
 
 `--build` and `--update` derive the profile from the default profile that the podman host has
 installed. So a podman upgrade's changes reach the profile at the next build.

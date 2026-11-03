@@ -14,7 +14,8 @@ class SeccompProfileTest extends munit.FunSuite:
   private def parsed(text: String): Json = JsonText.parse(text).fold(reason => fail(reason), identity)
 
   /** The default's shape: an unconditional refusal, the unconditional allow list that names every
-    * refused syscall, a conditional rule, capability-gated rules, and the format's older `name`. */
+    * refused syscall, a conditional rule, capability-gated rules, and the format's older `name`. Podman's
+    * own default names no io_uring syscall; the allow list here does, as a `containers.conf` default may. */
   private val Default = parsed(
     """{
       |  "defaultAction": "SCMP_ACT_ERRNO",
@@ -25,8 +26,9 @@ class SeccompProfileTest extends munit.FunSuite:
       |    {"names": ["kexec_load", "vm86"], "action": "SCMP_ACT_ERRNO", "errnoRet": 1, "args": [], "comment": "",
       |     "includes": {}, "excludes": {}},
       |    {"names": ["accept", "clone", "clone3", "fsconfig", "fsmount", "fsopen", "fspick", "fsetxattr", "ioctl",
-      |               "lremovexattr", "lsetxattr", "mount", "mount_setattr", "move_mount", "open_tree", "pivot_root",
-      |               "read", "removexattr", "setns", "setxattr", "umount", "umount2", "unshare", "write"],
+      |               "io_uring_enter", "io_uring_register", "io_uring_setup", "lremovexattr", "lsetxattr", "mount",
+      |               "mount_setattr", "move_mount", "open_tree", "pivot_root", "read", "removexattr", "setns",
+      |               "setxattr", "umount", "umount2", "unshare", "write"],
       |     "action": "SCMP_ACT_ALLOW", "args": [], "comment": "", "includes": {}, "excludes": {}},
       |    {"names": ["personality"], "action": "SCMP_ACT_ALLOW",
       |     "args": [{"index": 0, "value": 0, "valueTwo": 0, "op": "SCMP_CMP_EQ"}], "comment": "", "includes": {},
@@ -91,7 +93,7 @@ class SeccompProfileTest extends munit.FunSuite:
 
   test("the added rules refuse the attribute syscalls with ENOTSUP, and name no ioctl command"):
     def rule(index: Int, field: String): Option[Json] = AddedRules(index).field(field)
-    assertEquals(AddedRules.size, 5)
+    assertEquals(AddedRules.size, 6)
     assertEquals(names(AddedRules(4)), AttributeSyscalls)
     assertEquals((rule(4, "action"), rule(4, "errnoRet")), (Some(Str("SCMP_ACT_ERRNO")), Some(Num("95"))))
     assertEquals(rule(4, "args"), Some(Arr(Vector.empty)))
@@ -121,6 +123,17 @@ class SeccompProfileTest extends munit.FunSuite:
     assertEquals((rule(3, "action"), rule(3, "errnoRet")), (Some(Str("SCMP_ACT_ERRNO")), Some(Num("1"))))
     assertEquals(rule(3, "args"), Some(Arr(Vector.empty)))
 
+  test("a default that allows io_uring loses that allowance, and the added rule answers ENOSYS"):
+    def rule(index: Int, field: String): Option[Json] = AddedRules(index).field(field)
+    assertEquals(IoUringSyscalls, Vector("io_uring_setup", "io_uring_enter", "io_uring_register"))
+    assertEquals(names(AddedRules(5)), IoUringSyscalls)
+    assertEquals((rule(5, "action"), rule(5, "errnoRet")), (Some(Str("SCMP_ACT_ERRNO")), Some(Num("38"))))
+    assertEquals(rule(5, "args"), Some(Arr(Vector.empty)))
+    val derived = SeccompProfile.derived(Default).fold(reason => fail(reason), identity)
+    val allowing = rules(derived).filter(rule => rule.field("action") == Some(Str("SCMP_ACT_ALLOW")))
+    assert(allowing.nonEmpty && allowing.exists(rule => names(rule).contains("read")), "the allow list survives")
+    assertEquals(allowing.flatMap(names).filter(IoUringSyscalls.contains), Vector.empty)
+
   test("a profile is stale without this build's rules: a launch refuses it, and the derived one passes"):
     val derived = SeccompProfile.derived(Default).fold(reason => fail(reason), identity)
     assertEquals(staleReason(Some(derived)), None)
@@ -132,6 +145,12 @@ class SeccompProfileTest extends munit.FunSuite:
       case other                    => other
     })
     assert(staleReason(Some(earlier)).exists(_.contains("lacks the rules")))
+    // The build before the io_uring rule.
+    val withoutIoUring = Obj(derived.asInstanceOf[Obj].fields.map {
+      case ("syscalls", Arr(rules)) => "syscalls" -> Arr(rules.filterNot(_ == AddedRules(5)))
+      case other                    => other
+    })
+    assert(staleReason(Some(withoutIoUring)).exists(_.contains("lacks the rules")))
     assert(staleReason(Some(parsed("{\"defaultAction\": \"SCMP_ACT_ERRNO\"}"))).exists(_.contains("syscalls")))
     val dir = Files.createTempDirectory("ko-agent-seccomp-test")
     try

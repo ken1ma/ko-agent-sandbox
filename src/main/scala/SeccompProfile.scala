@@ -3,7 +3,8 @@
 // - creating a user namespace, joining a namespace, and every mount syscall;
 // - the syscalls that change a file's extended attributes, ACLs or flags. The BPF backend holds no hook
 //   for them, and the FUSE backend refuses them by not implementing them (ko-agent-fs/bpf/doc/architecture.md,
-//   "Attributes, flags and ioctls").
+//   "Attributes, flags and ioctls");
+// - the io_uring syscalls, on which the attribute rule and the `file_receive` hook rely (IoUringSyscalls).
 //
 // --build and --update derive the profile from the default that the podman server applies, and keep the
 // profile under the launcher's state root. A launch names the profile to `podman create` by path, which
@@ -66,9 +67,20 @@ object SeccompProfile:
     "file_setattr",
   )
 
+  /** The io_uring syscalls. Two protections rest on a session having no ring:
+    * - `IORING_OP_SETXATTR` and `IORING_OP_FSETXATTR` would set an attribute past the AttributeSyscalls
+    *   rule, which sees syscalls only;
+    * - a descriptor moved into another ring's fixed-file table by `IORING_OP_MSG_RING` was reported to skip
+    *   the BPF backend's `file_receive` hook (ko-agent-fs/bpf/doc/architecture.md, "The hooks", `file_receive`).
+    *
+    * Podman's default profile names none of them, so its default action answers them with `ENOSYS`. The rule
+    * exists because `derived` keeps a default's allow rule unless the name is listed here: a `containers.conf`
+    * default that allows io_uring would otherwise pass into the session unnoticed. */
+  val IoUringSyscalls: Vector[String] = Vector("io_uring_setup", "io_uring_enter", "io_uring_register")
+
   /** Every name that the derived profile decides itself: removed from the default's rules, then ruled
     * below. */
-  val RefusedNames: Vector[String] = NamespaceSyscalls ++ MountSyscalls ++ AttributeSyscalls
+  val RefusedNames: Vector[String] = NamespaceSyscalls ++ MountSyscalls ++ AttributeSyscalls ++ IoUringSyscalls
 
   private def rule(names: Vector[String], action: String, args: Vector[Json], comment: String, errno: Option[Int])
     : Json =
@@ -93,6 +105,8 @@ object SeccompProfile:
     *   holds in no namespace but one it created. `setns` is refused anyway, so that a mistake in the two
     *   rules above reopens nothing.
     * - The attribute syscalls are refused whole.
+    * - The io_uring syscalls are refused with `ENOSYS`, the answer of a kernel built without io_uring, which
+    *   podman's default action gives too.
     * - The filesystem ioctls that change a file have no rule. The ioctls are `FS_IOC_SETFLAGS` and
     *   `FS_IOC_FSSETXATTR` (the row "file_setattr, 2 ioctls"), and the ext4, fscrypt, verity and btrfs
     *   commands (the row "other ioctl commands"), both rows of ko-agent-fs/bpf/doc/architecture.md's
@@ -126,6 +140,11 @@ object SeccompProfile:
       AttributeSyscalls, "SCMP_ACT_ERRNO", Vector.empty,
       "ko-agent-sandbox: no xattr, ACL, flag or fsxattr change in a session (SECURITY.md, the seccomp profile)",
       Some(EOPNOTSUPP),
+    ),
+    rule(
+      IoUringSyscalls, "SCMP_ACT_ERRNO", Vector.empty,
+      "ko-agent-sandbox: no io_uring; the attribute rule and the file_receive hook rely on it (SECURITY.md)",
+      Some(ENOSYS),
     ),
   )
 
