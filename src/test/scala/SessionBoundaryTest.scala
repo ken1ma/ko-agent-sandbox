@@ -133,10 +133,12 @@ class SessionBoundaryTest extends munit.FunSuite:
     assertNotEquals(memoryLimit, "max")
     assertEquals(Files.readString(Paths.get("/sys/fs/cgroup/memory.swap.max")).trim, "0")
 
-  /** Calls each syscall that SeccompProfile decides. Where the kernel has a capability check, the arguments are ones
-    * that the kernel answers before that check.
+  /** Calls syscalls from each rule that SeccompProfile adds. Where the kernel has a capability check, the arguments
+    * are ones that the kernel answers before that check.
     * - The kernel answers `ENOENT`, `EINVAL` or `EBADF`; the filter answers `EPERM` or `ENOSYS`. Measured on the
     *   machine's kernel 7.2.5 under podman's default profile, 2026-10-26.
+    * - `io_uring_setup` with a NULL parameter pointer gets `EPERM`, `EACCES` or `EFAULT` from a kernel with io_uring
+    *   (Linux 7.2, `io_uring/io_uring.c`), so its `ENOSYS` is a filter's.
     * - `fsopen`, `fspick` and `move_mount` check the capability first and answer `EPERM` either way.
     * - The `clone` with `CLONE_NEWUSER` is a fork when the profile allows it, and the child exits at once.
     *
@@ -148,7 +150,7 @@ class SessionBoundaryTest extends munit.FunSuite:
       |nr = {'x86_64': dict(clone=56, unshare=272, setns=308, mount=165, umount2=166, pivot_root=155),
       |      'aarch64': dict(clone=220, unshare=97, setns=268, mount=40, umount2=39, pivot_root=41)}[os.uname().machine]
       |nr.update(clone3=435, open_tree=428, move_mount=429, fsopen=430, fsconfig=431, fsmount=432, fspick=433,
-      |          mount_setattr=442, open_tree_attr=467, file_setattr=468)
+      |          mount_setattr=442, open_tree_attr=467, file_setattr=468, io_uring_setup=425)
       |def answer(name, *args):
       |    ctypes.set_errno(0)
       |    r = libc.syscall(ctypes.c_long(nr[name]), *[ctypes.c_long(a) if isinstance(a, int) else a for a in args])
@@ -187,6 +189,7 @@ class SessionBoundaryTest extends munit.FunSuite:
       |    attr('removexattr', lambda: os.removexattr(f.name, 'user.ko'))
       |    attr('ioctl_fionread', lambda: fcntl.ioctl(f.fileno(), 0x541b, b'\0' * 4))
       |    answer('file_setattr', -1, b'', None, 0, 0)
+      |answer('io_uring_setup', 0, None)
       |threading.Thread(target=lambda: None).start()
       |print('child', subprocess.run(['true']).returncode)
       |""".stripMargin
@@ -226,6 +229,8 @@ class SessionBoundaryTest extends munit.FunSuite:
       assert(answers.contains("ioctl_fionread"), "the ioctl probe ran")
       val fileSetattr = answers.get("file_setattr")
       assert(Set("ENOTSUP", "EOPNOTSUPP", "ENOSYS").exists(fileSetattr.contains), fileSetattr)
+      // Podman's default action answers `ENOSYS` too, so this shows the session has no ring, not which rule refused it.
+      assertEquals(answers.get("io_uring_setup"), Some("ENOSYS"))
       assertEquals(answers.get("child"), Some("0"))
       val thread = Thread(() => ())
       thread.start()

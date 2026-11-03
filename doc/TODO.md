@@ -290,7 +290,8 @@ refused. A thread and a child process in Python 3.14, Node 24 and Java 25, `git 
 `uv run` work. `claude`, `codex`, `kiro-cli`, `copilot`, `opencode` and `agy` start (`--version`).
 
 - [x] In a session launched with the profile, run `sbt testFull` on the podman machine on Windows
-  (x86_64). `SessionBoundaryTest` checks each refused syscall and that processes start.
+  (x86_64). `SessionBoundaryTest` checks syscalls from each rule of the profile and that processes
+  start.
   - `SessionBoundaryTest` passes on macOS (aarch64, podman 6.1.2) and on Windows (2026-10-26).
   - The Windows run's two failures are in other suites: `ClaudeManagedHelpersTest` (its own
     section below) and `KoReviewTest`.

@@ -59,9 +59,11 @@ the item on sleepable programs below, the one difference found; the suites measu
   up `dentry->d_parent` are CO-RE reads.
 - Sleepable programs are where the two kernels differ:
   - 7.2.5 refuses a sleepable `BPF_LSM_CGROUP` program at load (`verifier.c`,
-    `can_be_sleepable`);
-  - Microsoft's 6.18.54.1 lacks that check: it admits every sleepable LSM program by its hook
-    alone, and runs it under the shim's `rcu_read_lock` (`trampoline.c`).
+    `can_be_sleepable`). The check is the fix of CVE-2026-74338, commit `5b038319be44` in
+    7.2-rc1; the CVE record lists 7.1.5, 6.18.57, 6.12.114, 6.6.160 and 6.1.191 as the stable
+    releases carrying it.
+  - Microsoft's 6.18.54.1, from before 6.18.57, lacks that check: it admits every sleepable LSM
+    program by its hook alone, and runs it under the shim's `rcu_read_lock` (`trampoline.c`).
   - The design needs no sleepable program, and the controller never sets `BPF_F_SLEEPABLE`.
     `fs/bpf_fs_kfuncs.c` tags `bpf_path_d_path` without `KF_SLEEPABLE`, and the policy below does
     not call it.
@@ -185,8 +187,9 @@ What holds them instead:
 
 What the seccomp rule reaches, and what it misses:
 
-- Every xattr, ACL and flag change a process requests enters through those syscalls.
-  `io_uring_setup` already answers `ENOSYS` in a session ("Inventory", row 22, io_uring).
+- Every xattr, ACL and flag change a process requests enters through those syscalls, or through
+  io_uring's `IORING_OP_SETXATTR` and `IORING_OP_FSETXATTR`, and the profile answers the io_uring
+  syscalls with `ENOSYS` (`SeccompProfile.IoUringSyscalls`; "Inventory", row 22).
 - Row 18 is a list of commands, not a syscall family, and the rule refuses none of them (above).
   The shares' answers close the row on the machines, and a kernel or share change reopens it
   ("Environment evidence").
@@ -227,9 +230,11 @@ Hooks the policy does not need, and the fact that excuses each:
   - The hook's coverage rests on io_uring staying refused.
     - A transfer into another ring's fixed-file table by `IORING_OP_MSG_RING` was reported to skip
       the hook (a report to the io_uring list of 2026-05-21, not verified here on either kernel).
-    - `io_uring_setup` answers `ENOSYS` under the launcher's profile ("Inventory", row 22,
-      io_uring), which the launcher suite measures under the profile the launcher installs.
-    - A configuration that admits io_uring reopens this hook.
+    - The launcher's profile answers `io_uring_setup`, `io_uring_enter` and `io_uring_register`
+      with `ENOSYS` by a rule of its own, so that a podman default allowing them does not pass
+      through (`SeccompProfile.IoUringSyscalls`). The launcher suite measures `io_uring_setup`
+      under the installed profile.
+    - A session under another profile reopens this hook.
   - `pidfd_getfd` needs a pid visible in the session's pid namespace, which holds only the
     container's processes.
   - A descriptor is judged where it is used, so the receiver's policy over the share is what
