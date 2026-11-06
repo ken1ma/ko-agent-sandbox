@@ -94,7 +94,7 @@ here once:
   - The clipboard relay copies between the host clipboard and the sandbox (SECURITY.md,
     "Clipboard").
   - The microphone relay, under `--audio=mic`, forwards the host microphone into the sandbox's audio
-    server while a process there records (SECURITY.md, "Microphone"; `microphone.md`).
+    server while a process there records (SECURITY.md, "Mic"; `mic.md`).
   - The runner, one per session, dispatches each host command and owns the processes it starts
     (`run-on-host-internals.md`).
 - **shim, supervisor, command** — under `--run-on-host`:

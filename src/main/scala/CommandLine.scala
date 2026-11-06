@@ -160,14 +160,14 @@ object CommandLine:
    * - The clipboard is off by default, and `paste` comes before `bidirectional`, because each step hands the agent
    *   more of the host. `paste` reads what the user last copied, and `bidirectional` also writes what the user will
    *   next paste (ClipboardRelay).
-   * - `--audio=mic` grants the host microphone for the session (MicrophoneRelay).
+   * - `--audio=mic` grants the host microphone for the session (MicRelay).
    */
   val ClipboardModes = Vector("off", "paste", "bidirectional")
   val DefaultClipboardMode = "off"
 
   /**
    * The devices that `--audio` grants, each alone. The microphone and a speaker together would close a loop from the
-   * host's speaker back into the sandbox, so doc/microphone.md leaves the speaker out ("No playback to the host").
+   * host's speaker back into the sandbox, so doc/mic.md leaves the speaker out ("No playback to the host").
    */
   final val AudioOption = "--audio"
   val AudioDevices = Vector("mic")
@@ -305,7 +305,7 @@ object CommandLine:
     def clipboardMode: String = clipboard.getOrElse(DefaultClipboardMode)
     def nestingMode: String = nesting.getOrElse(DefaultNestingMode)
     def sessionStartMode: String = sessionStart.getOrElse(DefaultSessionStartMode)
-    def microphone: Boolean = audio.exists(_.contains("mic"))
+    def mic: Boolean = audio.exists(_.contains("mic"))
 
   /** An option that the options file supplied to a launch or an action, as the startup line spells the option. */
   case class FileSupplied(option: String, spelled: String)

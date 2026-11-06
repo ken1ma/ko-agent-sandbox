@@ -179,7 +179,7 @@ The test stays skipped and the run's totals do not change.
 
 ## containers/libkrun
 
-Found when MicrophoneRelayTest, run in a sandbox session, kept FIFOs in the workspace, which on
+Found when MicRelayTest, run in a sandbox session, kept FIFOs in the workspace, which on
 the macOS podman machine is the `/Users` share. This project keeps the test's FIFOs out of the
 workspace, and refuses a session's FIFO in the workspace ("This project's guard until the fix",
 below).

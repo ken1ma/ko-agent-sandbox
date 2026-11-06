@@ -26,7 +26,7 @@ import time
 import unittest
 
 PROJECT = Path(__file__).resolve().parents[3]
-PROGRAM = PROJECT / "container/ko-agent-sandbox/microphone/ko-sandbox-mic"
+PROGRAM = PROJECT / "container/ko-agent-sandbox/mic/ko-sandbox-mic"
 # The tests load the program as a module without its bytecode cache, which would land in the image's build context.
 sys.dont_write_bytecode = True
 _loader = importlib.machinery.SourceFileLoader("ko_sandbox_mic", str(PROGRAM))
@@ -68,7 +68,7 @@ class MicTest(ReapingTest):
         self.root = Path(self.temporary.name)
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        self.directory = self.root / "microphone"
+        self.directory = self.root / "mic"
         self.directory.mkdir()
         # The stand-in answers each listing from the file `sources` or `outputs`, and appends a client event to
         # `clients`, as the daemon reports a listing's client. `subscribe` waits `subscribe-delay` seconds to register.
@@ -436,7 +436,7 @@ class MicTest(ReapingTest):
 
 
 ENTRYPOINT = PROJECT / "container/ko-agent-sandbox/ko-sandbox-entrypoint"
-CONFIG = PROJECT / "container/ko-agent-sandbox/microphone/microphone.pa"
+CONFIG = PROJECT / "container/ko-agent-sandbox/mic/mic.pa"
 # The daemon passes these values through unchanged, so a capture counts each sequence's samples: EARLIER, which no
 # stream may receive, and LATER, which the stream must receive.
 EARLIER, LATER = 1111, 2222
@@ -473,8 +473,8 @@ class DaemonTest(ReapingTest):
         }
         for name in ("pulse-config", "pulse-state", "pulse-runtime"):
             (self.root / name).mkdir(mode=0o700)
-        script = self.root / "microphone.pa"
-        script.write_text(CONFIG.read_text().replace("/tmp/ko-agent-sandbox/microphone/mic", str(self.fifo)))
+        script = self.root / "mic.pa"
+        script.write_text(CONFIG.read_text().replace("/tmp/ko-agent-sandbox/mic/mic", str(self.fifo)))
         # The entrypoint's command line, with its script swapped for the copy above.
         line = re.search(r"^\s*(pulseaudio -n .*?)>>", ENTRYPOINT.read_text().replace("\\\n", " "), re.M)
         command = [
@@ -594,7 +594,7 @@ class DaemonTest(ReapingTest):
             values = case(delayed)
         finally:
             self.daemon.send_signal(signal.SIGCONT)
-        # A count above zero would be the design's limit to record, not a timing to tune (doc/microphone.md,
+        # A count above zero would be the design's limit to record, not a timing to tune (doc/mic.md,
         # "The daemon").
         self.assertEqual(values.count(EARLIER), 0, f"{case.__name__}, daemon delayed: {delayed}")
         self.assertGreater(values.count(LATER), 15000, f"{case.__name__}, daemon delayed: {delayed}")
@@ -654,9 +654,9 @@ class DaemonTest(ReapingTest):
 CLAUDE = Path("/usr/bin/claude")
 
 
-@unittest.skipUnless(CLAUDE.exists() and Path("/etc/ko-agent-sandbox/microphone.pa").exists(), "needs the image")
+@unittest.skipUnless(CLAUDE.exists() and Path("/etc/ko-agent-sandbox/mic.pa").exists(), "needs the image")
 class ClaudeCodeRecorderContractTest(unittest.TestCase):
-    """What the daemon serves of Claude Code's `/voice` on Linux, read from the image's CLI (doc/microphone.md,
+    """What the daemon serves of Claude Code's `/voice` on Linux, read from the image's CLI (doc/mic.md,
     "Claude Code"). A release that changes that behavior fails here. The CLI's minified names change with every
     build, so the patterns name none of them."""
 

@@ -1517,16 +1517,16 @@ What to choose:
 - To let the terminal answer reads only with your consent, keep the terminal's prompt, and decline
   a prompt you did not expect.
 
-## Microphone
+## Mic
 
 The host microphone is off by default. `--audio=mic`, given on the command line or in the options
 file, lets the agents' voice dictation record the microphone, and the launch prints the setting
-(`MicrophoneRelay`, the image's `ko-sandbox-mic`; `doc/microphone.md` has the design). The channel
+(`MicRelay`, the image's `ko-sandbox-mic`; `doc/mic.md` has the design). The channel
 has these properties:
 
 - **The sandbox asks; the host answers.** The sandbox opens no connection to the host.
   - A PulseAudio daemon inside the sandbox serves the agents. The daemon's microphone is a FIFO
-    under `/tmp/ko-agent-sandbox/microphone`, and the daemon's socket reaches nothing outside the
+    under `/tmp/ko-agent-sandbox/mic`, and the daemon's socket reaches nothing outside the
     container.
   - The relay is a job of the reaper on POSIX, and threads of the resident launcher on Windows. The
     relay reads a `start` request through a `podman exec` on the FIFO `req` in that directory. The

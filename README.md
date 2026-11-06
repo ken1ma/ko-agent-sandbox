@@ -182,7 +182,7 @@ credentials in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#
 1. Ctrl-V pastes no image in any `--clipboard` mode
    ([clipboard plan](doc/plan-clipboard.md)).
 1. `/voice` under `--audio=mic` reports "voice transport could not connect"
-   ([doc/microphone.md](doc/microphone.md#codex)).
+   ([doc/mic.md](doc/mic.md#codex)).
 1. `$ko-review` runs the same review as [`/ko-review`](#claude), with Codex fixing or disputing
    the findings. Codex asks its questions in replies, since it has no question tool outside Plan
    mode. For a Claude reviewer, launch with `--model-provider=anthropic`.
@@ -361,7 +361,7 @@ restore permission prompts and set the Claude Code status line.
                          off (default) keeps the host's audio out; mic lets the agents' voice
                          dictation record the host microphone. The microphone stays open on
                          the host for the whole session, and its audio reaches the sandbox
-                         while any process there records (SECURITY.md "Microphone"). Needs a
+                         while any process there records (SECURITY.md "Mic"). Needs a
                          recorder on the host: rec from sox_ng or sox on macOS (brew install
                          sox_ng); arecord (alsa-utils) or parecord (pulseaudio-utils) on Linux;
                          sox_ng.exe on PATH on Windows. On macOS the terminal needs the

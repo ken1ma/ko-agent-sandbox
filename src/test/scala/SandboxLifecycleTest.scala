@@ -103,22 +103,22 @@ class SandboxLifecycleTest extends munit.FunSuite:
       ),
     )
     // Under --audio=mic: the status file, the log, then each candidate as one argument.
-    val withMicrophone = reaperCommand(
+    val withMic = reaperCommand(
       "/usr/bin/podman", "run-container", "proxy-container", "net-sandbox", "net-egress",
       "machine", "reap-script", "off", ClipboardRelay.HostBackend(ps = "/bin/ps"),
       Some(
-        MicrophoneJob(
-          java.nio.file.Paths.get("/run/status"), java.nio.file.Paths.get("/log/microphone.log"),
+        MicJob(
+          java.nio.file.Paths.get("/run/status"), java.nio.file.Paths.get("/log/mic.log"),
           Vector(
-            MicrophoneRelay.Recorder("arecord", Vector("/usr/bin/aplay", "-C")),
-            MicrophoneRelay.Recorder("parecord", Vector("/usr/bin/pacat", "--record")),
+            MicRelay.Recorder("arecord", Vector("/usr/bin/aplay", "-C")),
+            MicRelay.Recorder("parecord", Vector("/usr/bin/pacat", "--record")),
           ),
         ),
       ),
     )
     assertEquals(
-      withMicrophone.drop(4 + 12),
-      Vector("/run/status", "/log/microphone.log", "/usr/bin/aplay\u001f-C", "/usr/bin/pacat\u001f--record"),
+      withMic.drop(4 + 12),
+      Vector("/run/status", "/log/mic.log", "/usr/bin/aplay\u001f-C", "/usr/bin/pacat\u001f--record"),
     )
     // The names travel as arguments and are never interpolated into the script.
     assert(!ReaperScript.contains("run-container"))

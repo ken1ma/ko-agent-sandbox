@@ -289,7 +289,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(clipboardLine("bidirectional", color = false).endsWith("you copy and set your clipboard"))
     assert(
       micLine(color = false)
-        .startsWith("audio: mic; the host microphone is open for the whole session"),
+        .startsWith("audio: mic; it is open for the session, and any sandbox process can record it"),
     )
     // The label and what it grants are orange; the source and the explanation stay outside the color.
     val (orange, file, off) = ("\u001b[38;5;208m", "\u001b[38;5;135m", "\u001b[0m")
@@ -523,10 +523,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(parseCommandLine(List("claude", "--clipboard=paste")).map(_.clipboard), Right(None))
 
   test("--audio grants each device it names once, off grants none, and fails closed on anything else"):
-    assertEquals(parseCommandLine(List("claude")).map(_.microphone), Right(false))
-    assertEquals(parseCommandLine(List("--audio=mic", "claude")).map(_.microphone), Right(true))
+    assertEquals(parseCommandLine(List("claude")).map(_.mic), Right(false))
+    assertEquals(parseCommandLine(List("--audio=mic", "claude")).map(_.mic), Right(true))
     assertEquals(parseCommandLine(List("--audio=off", "claude")).map(_.audio), Right(Some(Vector.empty)))
-    assertEquals(parseCommandLine(List("--audio=off", "claude")).map(_.microphone), Right(false))
+    assertEquals(parseCommandLine(List("--audio=off", "claude")).map(_.mic), Right(false))
     assertEquals(parseCommandLine(List("--audio=mic,mic")), Left("error: --audio=mic,mic names a device twice"))
     Vector("", "speaker", "on", "MIC", "off,mic", "mic,", " mic").foreach: value =>
       assertEquals(
@@ -536,7 +536,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(parseCommandLine(List("--audio=mic", "--audio=off")).swap.exists(_.contains("twice")))
     assert(parseCommandLine(List("--audio", "mic")).swap.exists(_.contains("--audio=off|<devices>")))
     assert(parseCommandLine(List("--mic")).swap.exists(_.contains("unknown option --mic")))
-    assertEquals(parseCommandLine(List("claude", "--audio=mic")).map(_.microphone), Right(false))
+    assertEquals(parseCommandLine(List("claude", "--audio=mic")).map(_.mic), Right(false))
 
   test("a clipboard mode is refused where the host cannot serve it"):
     import ClipboardRelay.{hostBackend, HostBackend}
@@ -2257,7 +2257,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // no value, which no sandbox receives.
     assertEquals(interpolated, Set("SessionStartVariable", "NestingVariable", "ClipboardVariable", "variable", "name"))
     Vector(
-      SessionStartVariable, NestingVariable, ClipboardVariable, MicrophoneRelay.AudioVariable,
+      SessionStartVariable, NestingVariable, ClipboardVariable, MicRelay.AudioVariable,
       "KO_AGENT_SANDBOX_EGRESS_RULESET", "KO_AGENT_SANDBOX_FILE_RULES",
     ).foreach: name =>
       assert(name.startsWith(RefusedForwardPrefix), name)

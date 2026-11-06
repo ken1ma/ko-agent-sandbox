@@ -494,7 +494,7 @@ class EgressRulesTest extends munit.FunSuite:
       def run(name: String, files: String*) =
         val directory = Files.createDirectory(logDir.resolve(name))
         files.foreach(file => Files.writeString(directory.resolve(file), file))
-      run("run-20261005T080000Z-bbbbbbbb", "proxy.log", "proxy-r2.log", "run-on-host.log", "microphone.log")
+      run("run-20261005T080000Z-bbbbbbbb", "proxy.log", "proxy-r2.log", "run-on-host.log", "mic.log")
       run("run-20261004T120000Z-aaaaaaaa", "proxy-sbt-0a-r1.log", "proxy.log", "proxy-r1-2.log", "proxy-r1.log")
       // These belong to no run: an old layout's flat file and a directory outside the pattern.
       Files.writeString(logDir.resolve("proxy-20261003-120000-cccccccc.log"), "old")

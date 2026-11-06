@@ -238,7 +238,7 @@ class OptionsFileTest extends munit.FunSuite:
     val (reset, supplied) = merged(everything, defaults*).fold(fail(_), identity)
     assertEquals(supplied, Vector.empty)
     assertEquals(
-      (reset.workspaceMode, reset.egressProfile, reset.clipboardMode, reset.microphone, reset.nestingMode),
+      (reset.workspaceMode, reset.egressProfile, reset.clipboardMode, reset.mic, reset.nestingMode),
       ("live", "deny-unless-allowed", "off", false, "none"),
     )
     assertEquals(reset.sessionStartMode, "pause")

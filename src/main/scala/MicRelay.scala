@@ -5,8 +5,8 @@
 // - the POSIX relay's shell, which runs as a job of the reaper (SandboxLifecycle);
 // - the Windows relay, which runs as threads of the resident launcher.
 //
-// The sandbox side is the image's ko-sandbox-mic and its PulseAudio daemon. SECURITY.md, "Microphone", has
-// what the channel grants, and doc/microphone.md has the design.
+// The sandbox side is the image's ko-sandbox-mic and its PulseAudio daemon. SECURITY.md, "Mic", has
+// what the channel grants, and doc/mic.md has the design.
 
 package agentsandbox.launcher
 
@@ -18,25 +18,25 @@ import java.util.concurrent.TimeUnit
 
 import HostCommands.{containerRunning, ExecWithInput, Os, findOnPath, quoteFreeSh, run}
 
-object MicrophoneRelay:
+object MicRelay:
 
   /**
    * The channel's directory under the sandbox's /tmp. The directory holds:
    *
-   * - the daemon's FIFO `mic`, whose name the image's microphone.pa spells;
+   * - the daemon's FIFO `mic`, whose name the image's mic.pa spells;
    * - the request FIFO `req`, which the relay's first exec makes;
    * - the writer's pid file;
    * - the daemon's three configuration directories, with the daemon's socket in `pulse-runtime`.
    */
-  val SandboxDir = "/tmp/ko-agent-sandbox/microphone"
+  val SandboxDir = "/tmp/ko-agent-sandbox/mic"
 
   /** The devices `--audio` granted, as the option spells them: `mic`. */
   val AudioVariable = "KO_AGENT_SANDBOX_AUDIO"
 
   /**
-   * The variables the sandbox gets under --audio=mic. doc/microphone.md, "The daemon", explains why the
+   * The variables the sandbox gets under --audio=mic. doc/mic.md, "The daemon", explains why the
    * sandbox gets the PULSE_* variables. The sandbox gets no SOX_OPTS: the CLI's `rec` overrides its
-   * `--buffer`, and the image's SoX writes 4096 bytes at a time either way (doc/microphone.md, "Latency").
+   * `--buffer`, and the image's SoX writes 4096 bytes at a time either way (doc/mic.md, "Latency").
    */
   def sandboxEnvironment(sandboxDir: String = SandboxDir): Vector[(String, String)] =
     Vector(
@@ -152,13 +152,13 @@ object MicrophoneRelay:
 
   /**
    * The probe's moment, in reads of at most one 20 ms period: about a second. A macOS launch can warn
-   * of exact silence and then dictate, both at ten reads and at fifty (doc/microphone.md, "The launch").
+   * of exact silence and then dictate, both at ten reads and at fifty (doc/mic.md, "The launch").
    */
   val ProbeReads = 50
 
   /**
    * How far into the launch recorder's audio its first sound came. Both relays log this line once, and
-   * the line measures the launches that warn of a silent start and then dictate (doc/microphone.md,
+   * the line measures the launches that warn of a silent start and then dictate (doc/mic.md,
    * "The launch"). The offset is audio time, 32 bytes a millisecond, counted from the recorder's first
    * byte. The watch ends at the bound or at the first request.
    */
@@ -251,7 +251,7 @@ object MicrophoneRelay:
   // -------------------------------------------------------------------------
 
   /**
-   * `microphone_relay <engine> <sandbox> <dir> <status> <log> <candidate>...`, for the reaper to run as
+   * `mic_relay <engine> <sandbox> <dir> <status> <log> <candidate>...`, for the reaper to run as
    * a job from before the sandbox starts to the sandbox's end.
    *
    * - `engine` is the resolved podman.
@@ -280,7 +280,7 @@ object MicrophoneRelay:
    */
   def hostShellFunctions(sandboxDir: String = SandboxDir, probeBound: Option[Int] = None): String =
     """# The host microphone, recorded for the session and forwarded while an agent records.
-      |microphone_relay() {
+      |mic_relay() {
       |  mic_engine=$1
       |  mic_sandbox=$2
       |  mic_dir=$3
@@ -545,10 +545,10 @@ object MicrophoneRelay:
         line => if firstSoundLogged.compareAndSet(false, true) then say(log, line)
     private val probed = java.util.concurrent.CompletableFuture[Boolean]()
 
-    private val stderrReader = Thread(() => readStderr(process.getErrorStream), "ko-agent-sandbox-microphone-stderr")
+    private val stderrReader = Thread(() => readStderr(process.getErrorStream), "ko-agent-sandbox-mic-stderr")
 
     def start(): Unit =
-      val reading = Thread(() => pump(process.getInputStream), "ko-agent-sandbox-microphone-pump")
+      val reading = Thread(() => pump(process.getInputStream), "ko-agent-sandbox-mic-pump")
       reading.setDaemon(true)
       reading.start()
       stderrReader.setDaemon(true)
@@ -648,7 +648,7 @@ object MicrophoneRelay:
     def start(command: Seq[String]): Option[Process] = synchronized {
       try
         if !registered then
-          register(Thread(() => endAll(), "ko-agent-sandbox-microphone-recorders"))
+          register(Thread(() => endAll(), "ko-agent-sandbox-mic-recorders"))
           registered = true
         Option.unless(ended):
           val process = ProcessBuilder(command*).start()
@@ -718,7 +718,7 @@ object MicrophoneRelay:
     stallSeconds: Int = 5,
   ): Thread =
     val relay = Resident(kept.recorder, kept.pump, podman, sandboxContainer, log, sandboxDir, stallSeconds)
-    val thread = Thread(() => relay.serve(), "ko-agent-sandbox-microphone")
+    val thread = Thread(() => relay.serve(), "ko-agent-sandbox-mic")
     thread.setDaemon(true)
     thread.start()
     thread
@@ -741,7 +741,7 @@ object MicrophoneRelay:
     private def running(): Boolean = containerRunning(podman, sandboxContainer)
 
     def serve(): Unit =
-      val watchdog = Thread(() => watch(), "ko-agent-sandbox-microphone-watchdog")
+      val watchdog = Thread(() => watch(), "ko-agent-sandbox-mic-watchdog")
       watchdog.setDaemon(true)
       watchdog.start()
       var waited = 0

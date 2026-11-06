@@ -422,7 +422,7 @@ leaves that default to the reviewer by passing no option.
     in a clone.
     - `low`: 6 commands, 3 web searches, 46 s, approved with no finding.
     - `high`: 12 commands, 9 web searches, 210 s, two material findings the plan had not
-      answered (`microphone.md`, "The controller and the writer", records both).
+      answered (`mic.md`, "The controller and the writer", records both).
     - Neither level found the PulseAudio option that does not exist, which a review outside the
       sandbox found. The five rounds of 2026-10-09 at `low` ran one to four commands each.
 
