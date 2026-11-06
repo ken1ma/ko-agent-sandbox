@@ -143,7 +143,7 @@ measurement.
 
 ## The host microphone for voice dictation
 
-`microphone.md` has the design and what is measured.
+`mic.md` has the design and what is measured.
 
 - [ ] On the latest stable Debian, Fedora and Ubuntu desktops, check:
   - the recorder programs their default installs carry;
@@ -154,7 +154,7 @@ measurement.
 
 ## Codex's `/voice`: WebRTC media through the egress proxy
 
-- [ ] Serve Codex's `/voice` (`microphone.md`, "Codex"). Find what its WebRTC media connection
+- [ ] Serve Codex's `/voice` (`mic.md`, "Codex"). Find what its WebRTC media connection
   needs, either UDP to the host and port the call's setup names, or TCP or TURN on 443. Then give
   the proxy a way to carry that connection.
   - The proxy can read the setup only by inspecting `chatgpt.com`, which its defaults tunnel.
@@ -164,7 +164,7 @@ measurement.
     - whether the helper opens ALSA's `default` through the PulseAudio plugin with no card to
       list, and takes the null sink as its speaker;
     - whether capture and playback run together for minutes (openai/codex#47370's code 37). Try
-      `pipewire-alsa` if alsa-plugins' pulse PCM fails (`microphone.md`, "Decisions");
+      `pipewire-alsa` if alsa-plugins' pulse PCM fails (`mic.md`, "Decisions");
     - whether the reply appears as transcript;
     - whether the helper's feature gate opens for the sign-in.
 
@@ -532,7 +532,7 @@ only the container-launching suites on Windows. That document's command returns 
   - those running `sh`, `/bin/bash` or `/usr/bin/perl` (`RunOnHostAcceptanceSetupTest`,
     `RunOnHostSandboxTest`, `RunOnHostSessionTest`);
   - those setting POSIX permissions or reading the `unix` attribute view
-    (`RunOnHostProvisioningTest`, `MicrophoneRelayTest`, `RunOnHostSessionTest`, and
+    (`RunOnHostProvisioningTest`, `MicRelayTest`, `RunOnHostSessionTest`, and
     `SandboxStatsTest` and `RunOnHostSandboxTest` through `RunOnHostSession.publish`);
   - those calling `com.sun.security.auth.module.UnixSystem`, whose `UnsatisfiedLinkError` munit
     treats as fatal, aborting the rest of `RunOnHostSandboxTest`;
@@ -1129,7 +1129,7 @@ The build:
     AWT only, not for `libjsound`.
   - No issue in oracle/graal reports Java Sound in an image.
   - Nothing in the launcher uses Java Sound; the microphone relay's Windows relay records through
-    `sox_ng` (`microphone.md`, "Decisions").
+    `sox_ng` (`mic.md`, "Decisions").
   - The jar hashes its three bundles in about 30 ms (a fresh JVM in a Linux container,
     2026-09-28), too little to justify an sbt step that precomputes them with the launcher's own
     classes.

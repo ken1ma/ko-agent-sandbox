@@ -5,6 +5,10 @@
 //
 //     sbt "testWithPodman *MountLifecycleTest"
 //
+// The suite's launches need `user_allow_other` in the /etc/fuse.conf where the daemon runs: the podman machine's, or
+// a native Linux host's. These launches have no terminal to ask on, so without the line the launcher refuses, and
+// the failure prints its output, which names the command that adds the line.
+//
 // The suite drives sessions with `sleep` rather than an agent. A session runs whatever command it is
 // given, so the sequence is scriptable with no terminal. The suite asserts the marker set at every step.
 // Asserting the markers, rather than only that the workspace still reads, is the point: the two ways the
@@ -50,7 +54,9 @@ class MountLifecycleTest extends munit.FunSuite:
     var planted = ""
 
     def launch(log: Path): String =
-      val appeared = WithPodman.launch(workspace, log)
+      // The suite tests the FUSE backend, which a launch selects only by name outside native Linux.
+      val appeared =
+        WithPodman.launchWith(workspace, log, Vector("--egress=deny-unless-allowed", "--workspace=live,fuse"))
       started = started :+ appeared
       id = appeared.id
       appeared.container

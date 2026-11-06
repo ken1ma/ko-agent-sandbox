@@ -1,5 +1,5 @@
 #!/usr/local/bin/python3 -I
-"""The sandbox side of the microphone relay under --audio=mic (SECURITY.md, "Microphone"; doc/microphone.md).
+"""The sandbox side of the microphone relay under --audio=mic (SECURITY.md, "Mic"; doc/mic.md).
 The PulseAudio daemon's microphone is a FIFO that the host relay writes, and this program decides when the relay
 writes.
 
@@ -21,8 +21,8 @@ import sys
 import time
 from typing import NamedTuple
 
-DIRECTORY = "/tmp/ko-agent-sandbox/microphone"
-# The pipe source's name in /etc/ko-agent-sandbox/microphone.pa, which is module-pipe-source's default.
+DIRECTORY = "/tmp/ko-agent-sandbox/mic"
+# The pipe source's name in /etc/ko-agent-sandbox/mic.pa, which is module-pipe-source's default.
 SOURCE = "fifo_input"
 # The driver of a client's stream. The loopback's output has module-loopback.c as its driver.
 CLIENT_DRIVER = "protocol-native.c"
@@ -124,7 +124,7 @@ def exited(pidfd):
 def frame_prefix(pending):
     """Returns how many of the pending bytes to write at once: whole 16-bit frames, at most PIPE_BUF, which
     pipe(7) keeps atomic. module-pipe-source posts each read's length as a chunk, and PulseAudio asserts that a
-    chunk is frame-aligned (doc/microphone.md, "The controller and the writer")."""
+    chunk is frame-aligned (doc/mic.md, "The controller and the writer")."""
     whole = len(pending) - len(pending) % 2
     return min(whole, select.PIPE_BUF - select.PIPE_BUF % 2)
 

@@ -1,12 +1,12 @@
 # The PulseAudio daemon's script under --audio=mic. ko-sandbox-entrypoint loads it with `pulseaudio -n --file=`
-# and nothing else (doc/microphone.md, "The daemon"). The FIFO's path is under MicrophoneRelay.SandboxDir.
+# and nothing else (doc/mic.md, "The daemon"). The FIFO's path is under MicRelay.SandboxDir.
 .fail
 
 # The microphone is a FIFO that the host relay's writer fills.
 # - The module makes the FIFO and holds it open read-write. The writer therefore opens the FIFO without waiting,
 #   and the writer's close is not an EOF.
 # - The module's source keeps the default name, fifo_input, which ko-sandbox-mic looks for.
-load-module module-pipe-source file=/tmp/ko-agent-sandbox/microphone/mic format=s16le rate=16000 channels=1
+load-module module-pipe-source file=/tmp/ko-agent-sandbox/mic/mic format=s16le rate=16000 channels=1
 
 # Codex's speaker uses the source's sample spec, so the loopback converts nothing.
 load-module module-null-sink sink_name=speaker format=s16le rate=16000 channels=1

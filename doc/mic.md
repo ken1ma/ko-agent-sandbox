@@ -11,7 +11,7 @@ no `--device`.
 What to read next, and what works:
 
 - README's Reference names what each host needs. SECURITY.md states what the grant allows and
-  when the microphone is open (`../SECURITY.md`, "Microphone").
+  when the microphone is open (`../SECURITY.md`, "Mic").
 - Measured on macOS on 2026-10-13 and 2026-10-14:
   - Claude Code dictates through `/voice` in hold and tap mode. In tap mode, Claude Code sends the
     prompt itself, and stops a silent recording after about 15 s with "No speech detected".
@@ -245,7 +245,7 @@ Read from the image's binaries on 2026-10-09.
     - Sharing the device is not the cause. One launch beside another `--audio=mic` session warned,
       and the next launch did not. A `rec` run from the shell beside that session delivered sound
       in its first piece, at 137 to 141 ms, in three runs.
-    - Each launch's `microphone.log` says how far into the recorder's audio its first sound came,
+    - Each launch's `mic.log` says how far into the recorder's audio its first sound came,
       or that none came in its first 30 s.
 - On Windows, the recorder decides, and two diagnostics explain the decision.
   - In a session without a capture endpoint, and under each permission value that stops the
@@ -278,7 +278,7 @@ Read from the image's binaries on 2026-10-09.
 ## The daemon
 
 Under `--audio=mic`, `ko-sandbox-entrypoint` starts PulseAudio before the agent, from the image's
-`microphone.pa` alone. The comments in `microphone.pa` give each module's reason.
+`mic.pa` alone. The comments in `mic.pa` give each module's reason.
 
 - `-n` skips the default script, and `--disallow-module-loading` applies once the script's
   modules are loaded. The script loads no D-Bus and no TCP module.
@@ -291,7 +291,7 @@ Under `--audio=mic`, `ko-sandbox-entrypoint` starts PulseAudio before the agent,
 
 The script's modules:
 
-- `module-pipe-source` on `/tmp/ko-agent-sandbox/microphone/mic`, the default source.
+- `module-pipe-source` on `/tmp/ko-agent-sandbox/mic/mic`, the default source.
 - `module-null-sink`, the default sink, for Codex's speaker.
 - `module-loopback` from the pipe source to the null sink, with `adjust_time=0`: a permanent
   output that keeps the source running. A running pipe source reads its FIFO as bytes arrive.
@@ -434,7 +434,7 @@ bound. The clipboard's `timeout 10 sh -c "cat > rsp"` fits a reply read whole, n
 
 ## The relay
 
-The channel is `/tmp/ko-agent-sandbox/microphone/req`, which the relay's first exec makes, with
+The channel is `/tmp/ko-agent-sandbox/mic/req`, which the relay's first exec makes, with
 the daemon's FIFO `mic` beside it. The clipboard relay reads its request and its reply each
 whole. A recording is a stream that runs until a stop, so this relay's forwarding is an exec that
 lasts the recording.
@@ -503,7 +503,7 @@ lasts the recording.
 ### The recorder
 
 Every recorder delivers raw signed 16-bit little-endian mono at 16000 Hz.
-`MicrophoneRelay.recorders` holds the candidates'
+`MicRelay.recorders` holds the candidates'
 command lines in probe order, and the reasons for SoX's `--buffer 640` and `-D` ("Windows,
 measured" and "macOS, measured" have the measurements).
 

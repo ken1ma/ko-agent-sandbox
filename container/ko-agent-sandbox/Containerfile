@@ -423,7 +423,7 @@ ENV PATH="/home/nonroot/.local/bin:$PATH"
 # `stable` lags behind it, so the "Update available!" banner would never go away. Updates arrive by rebuilding.
 #
 # The host microphone under --audio=mic: a PulseAudio daemon serves a microphone that is a FIFO the launcher's relay
-# fills. ko-sandbox-entrypoint starts the daemon (doc/microphone.md, "The daemon"). Each client reaches the daemon
+# fills. ko-sandbox-entrypoint starts the daemon (doc/mic.md, "The daemon"). Each client reaches the daemon
 # through its own packages:
 # - libsox-fmt-pulse serves Claude Code's `rec`.
 # - pulseaudio-utils serves agy's `parec`.
@@ -461,7 +461,7 @@ RUN set -euxo pipefail; \
         bubblewrap \
         socat \
         # sox records for Claude Code's `/voice` under --audio=mic, through SoX's PulseAudio backend below
-        # (doc/microphone.md).
+        # (doc/mic.md).
         sox \
         # the host microphone
         pulseaudio \
@@ -606,10 +606,10 @@ RUN --mount=type=bind,target=/mnt/context \
     # The host microphone under --audio=mic
     #
     # pulse-client.conf turns autospawn off, so without --audio=mic no client starts a daemon of its own.
-    install -D -m 0644 microphone/microphone.pa /etc/ko-agent-sandbox/microphone.pa; \
-    install -m 0644 microphone/asound.conf /etc/asound.conf; \
-    install -D -m 0644 microphone/pulse-client.conf /etc/pulse/client.conf.d/99-ko-agent-sandbox.conf; \
-    install -m 0755 microphone/ko-sandbox-mic /usr/local/bin/ko-sandbox-mic; \
+    install -D -m 0644 mic/mic.pa /etc/ko-agent-sandbox/mic.pa; \
+    install -m 0644 mic/asound.conf /etc/asound.conf; \
+    install -D -m 0644 mic/pulse-client.conf /etc/pulse/client.conf.d/99-ko-agent-sandbox.conf; \
+    install -m 0755 mic/ko-sandbox-mic /usr/local/bin/ko-sandbox-mic; \
     #
     # Claude Code settings
     #

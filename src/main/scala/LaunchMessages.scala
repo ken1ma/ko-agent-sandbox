@@ -83,8 +83,7 @@ object LaunchMessages:
     * microphone runs after the hold, before the sandbox starts. */
   def micLine(source: String = "", color: Boolean = colorStderr): String =
     weakened("audio: mic", color) +
-      s"$source; the host microphone is open for the whole session, and its audio reaches the sandbox " +
-      "while any process there records"
+      s"$source; it is open for the session, and any sandbox process can record it"
 
   /** One widening report per program whose rule file names hosts. Each host is a grant beyond the program's Maven
     * Central host (RunOnHostPrereqs.egressRuleText).

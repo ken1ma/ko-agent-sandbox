@@ -185,7 +185,7 @@ object SandboxLifecycle:
    *   the sandbox side.
    *
    * The microphone relay is also a job. The script starts the microphone relay before the wait for the sandbox to
-   * run, since the relay's launch probe precedes the sandbox's start (MicrophoneRelay). The relay's directory holds the
+   * run, since the relay's launch probe precedes the sandbox's start (MicRelay). The relay's directory holds the
    * microphone's audio on its way, and this script makes the directory and removes it after the KILL.
    */
   val ReaperScript: String =
@@ -193,22 +193,22 @@ object SandboxLifecycle:
       "trap '' INT HUP TERM\n\n" +
       """# ${12} is read at top level; inside a function the positionals are the function's.
       |ps_command=${12}
-      |""".stripMargin + TreeFunctions + ClipboardRelay.hostShellFunctions() + MicrophoneRelay.hostShellFunctions() +
+      |""".stripMargin + TreeFunctions + ClipboardRelay.hostShellFunctions() + MicRelay.hostShellFunctions() +
       """# The microphone relay, from before the sandbox starts: its probe is what the launcher
       |# waits on before the start. An `if`, and the job holding its pid, for the clipboard relay's
       |# reasons below.
-      |microphone=
-      |microphone_dir=
+      |mic=
+      |mic_dir=
       |if [ -n "${13}" ]; then
-      |  microphone_dir=$(mktemp -d "${TMPDIR:-/tmp}/ko-agent-sandbox-microphone.XXXXXX") ||
+      |  mic_dir=$(mktemp -d "${TMPDIR:-/tmp}/ko-agent-sandbox-mic.XXXXXX") ||
       |    printf 'failed relay: could not make a directory in %s\nnone\n' "${TMPDIR:-/tmp}" >> "${13}"
       |fi
-      |if [ -n "$microphone_dir" ]; then
+      |if [ -n "$mic_dir" ]; then
       |  ( engine=$3 sandbox=$1 status=${13} log=${14}
       |    shift 14
-      |    microphone_relay "$engine" "$sandbox" "$microphone_dir" "$status" "$log" "$@"
+      |    mic_relay "$engine" "$sandbox" "$mic_dir" "$status" "$log" "$@"
       |    while kill -0 "$$" 2>/dev/null; do sleep 1; done ) &
-      |  microphone=$!
+      |  mic=$!
       |fi
       |
       |# Wait for the sandbox to be running before waiting for it to stop:
@@ -248,10 +248,10 @@ object SandboxLifecycle:
       |  stop_tree "$relay"
       |  end_tree "$relay"
       |fi
-      |if [ -n "$microphone" ]; then
-      |  stop_tree "$microphone"
-      |  end_tree "$microphone"
-      |  rm -rf "$microphone_dir"
+      |if [ -n "$mic" ]; then
+      |  stop_tree "$mic"
+      |  end_tree "$mic"
+      |  rm -rf "$mic_dir"
       |fi
       |
       |# A `podman restart` starts the sandbox again right after the stop that
@@ -289,11 +289,11 @@ object SandboxLifecycle:
       |""".stripMargin,
     )
 
-  /** What the reaper passes the microphone relay, as ${13} onward (MicrophoneRelay.hostShellFunctions). */
-  final case class MicrophoneJob(
+  /** What the reaper passes the microphone relay, as ${13} onward (MicRelay.hostShellFunctions). */
+  final case class MicJob(
     status: java.nio.file.Path,
     log: java.nio.file.Path,
-    recorders: Vector[MicrophoneRelay.Recorder],
+    recorders: Vector[MicRelay.Recorder],
   )
 
   /**
@@ -310,15 +310,15 @@ object SandboxLifecycle:
     teardownScript: String,
     clipboardMode: String,
     clipboard: ClipboardRelay.HostBackend,
-    microphone: Option[MicrophoneJob] = None,
+    mic: Option[MicJob] = None,
   ): Vector[String] =
     Vector(
       "/bin/sh", "-c", ReaperScript,
       "ko-agent-sandbox-reaper", sandboxContainer, proxyContainer, podman,
       sandboxNetwork, egressNetwork, teardownMode, teardownScript, clipboardMode,
       clipboard.xclip, clipboard.wlPaste, clipboard.wlCopy, clipboard.ps,
-      microphone.fold("")(_.status.toString), microphone.fold("")(_.log.toString),
-    ) ++ microphone.toVector.flatMap(_.recorders.map(MicrophoneRelay.encodedCandidate))
+      mic.fold("")(_.status.toString), mic.fold("")(_.log.toString),
+    ) ++ mic.toVector.flatMap(_.recorders.map(MicRelay.encodedCandidate))
 
   /**
    * Starts the reaper detached, with stdio to /dev/null, because the tty belongs to podman, and the reaper must never
@@ -336,13 +336,13 @@ object SandboxLifecycle:
     teardownScript: String,
     clipboardMode: String,
     clipboard: ClipboardRelay.HostBackend,
-    microphone: Option[MicrophoneJob],
+    mic: Option[MicJob],
   ): Boolean =
     try
       val builder = ProcessBuilder(
         reaperCommand(
           podman, sandboxContainer, proxyContainer, sandboxNetwork, egressNetwork,
-          teardownMode, teardownScript, clipboardMode, clipboard, microphone,
+          teardownMode, teardownScript, clipboardMode, clipboard, mic,
         )*
       )
       builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))

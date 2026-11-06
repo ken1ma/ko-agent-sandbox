@@ -314,7 +314,7 @@ directory:
       run-<start>-<run>/           <start> in UTC, as 20261017T022446Z; <run> its containers' suffix
         proxy.log                  the container proxy's audit log
         run-on-host.log            the host command runner's log; only with --run-on-host
-        microphone.log             the relay's log; only with --audio=mic
+        mic.log                    the relay's log; only with --audio=mic
         ko-agent-bpf.log           the BPF backend's launch steps and their times; only under bpf
         <proxy log>-<session>.log  a host program proxy's audit log
 

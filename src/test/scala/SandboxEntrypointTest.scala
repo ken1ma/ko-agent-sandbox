@@ -78,7 +78,7 @@ class SandboxEntrypointTest extends munit.FunSuite:
     builder.environment.put("PATH", entries.map(_.toString).mkString("", ":", ":" + System.getenv("PATH")))
     // A suite run inside a --audio=mic session inherits the session's microphone variables, so this
     // method removes them; a test gives its own.
-    MicrophoneRelay.sandboxEnvironment().foreach((name, _) => builder.environment.remove(name))
+    MicRelay.sandboxEnvironment().foreach((name, _) => builder.environment.remove(name))
     environment.foreach(builder.environment.put(_, _))
     builder.redirectErrorStream(true)
     builder.start()
@@ -546,8 +546,8 @@ class SandboxEntrypointTest extends munit.FunSuite:
       s"#!/bin/sh\necho \"$$*\" >> '${records.resolve("ko-sandbox-mic")}'\n",
     )
     for name <- Vector("pulseaudio", "ko-sandbox-mic") do bin.resolve(name).toFile.setExecutable(true)
-    val microphone = Files.createTempDirectory("ko-sandbox-entrypoint-mic").resolve("microphone")
-    val environment = MicrophoneRelay.sandboxEnvironment(microphone.toString).toMap
+    val mic = Files.createTempDirectory("ko-sandbox-entrypoint-mic").resolve("mic")
+    val environment = MicRelay.sandboxEnvironment(mic.toString).toMap
     val (status, output) = finish(start(seed, home, path = Some(bin), environment = environment))
     assertEquals(status, 0, output)
     assertEquals(output, "a b c ")
@@ -558,21 +558,21 @@ class SandboxEntrypointTest extends munit.FunSuite:
       Files.readString(file).trim
     assertEquals(
       recorded("pulseaudio"),
-      "-n --file=/etc/ko-agent-sandbox/microphone.pa --daemonize=no --disallow-module-loading=yes " +
+      "-n --file=/etc/ko-agent-sandbox/mic.pa --daemonize=no --disallow-module-loading=yes " +
         "--disallow-exit=yes --exit-idle-time=-1 --realtime=no --high-priority=no",
     )
     def runs(): Vector[String] = Files.readAllLines(records.resolve("ko-sandbox-mic")).asScala.toVector
     val deadline = System.nanoTime() + 5_000_000_000L
     while runs().size < 2 && System.nanoTime() < deadline do Thread.sleep(50)
     assert(runs().size >= 2, s"the controller was not started again: ${runs()}")
-    assert(runs().forall(_ == s"control $microphone"), runs().toString)
+    assert(runs().forall(_ == s"control $mic"), runs().toString)
     // Once the daemon is gone, no controller is started again.
     Thread.sleep(4000)
     val settled = runs().size
     Thread.sleep(1500)
     assertEquals(runs().size, settled, "a controller was started after the daemon ended")
     for directory <- Vector("", "pulse-config", "pulse-state", "pulse-runtime") do
-      val made = microphone.resolve(directory)
+      val made = mic.resolve(directory)
       assertEquals(
         java.nio.file.attribute.PosixFilePermissions.toString(Files.getPosixFilePermissions(made)), "rwx------",
         made.toString,
