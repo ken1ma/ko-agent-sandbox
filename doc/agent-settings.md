@@ -33,30 +33,18 @@ work ([design.md](design.md#the-image-carries-no-working-conventions)).
 
 ## Claude Code status line
 
-Show the model and effort level, like Codex, by handing the launcher the format as an environment
-variable, on the launch or in the [options file](../README.md#options-file):
-
-```sh
-java -jar ko-agent-sandbox.jar \
-    --env='KO_CLAUDE_STATUSLINE_FORMAT=${model.display_name} ${effort.level} · context '\
-'${context_window.used_percentage.getOrElse(0)}%' \
-    claude
-```
+Show the model and effort level, like Codex, by setting the format in the
+[options file](../README.md#options-file):
 
 ```text
-# ~/.config/ko-agent-sandbox/options: the quotes enclose the whole value after --env=, and the
-# placeholders are spelled \${...}, since the file expands ${NAME} from the launcher's environment
-# and refuses an unset name. The line runs past this document's width: an option takes one line.
 --env="KO_CLAUDE_STATUSLINE_FORMAT=\${model.display_name} \${effort.level} · context \${context_window.used_percentage.getOrElse(0)}%"
 ```
 
-A repository's `.claude/settings.json` cannot set the variable:
-
-- Claude Code starts a managed hook, such as the status line, without the `env` of the
-  repository's settings. Claude Code 2.1.310 logs this in its debug log: `statusLine is the
-  organization's and starts without the repository settings' env of KO_CLAUDE_STATUSLINE_FORMAT`.
-- A variable that the launch sets belongs to the Claude Code process itself, so it reaches the
-  command.
+1. The option can also be given as a launch argument: a POSIX shell reads this line the same way.
+2. The line runs past this document's width because an option takes one line.
+3. The quotes enclose the whole value after `--env=`.
+4. Each `$` of the format is spelled `\$`, since the file expands `${NAME}` from the launcher's
+   environment and refuses an unset name.
 
 Use `${jsonField}` to insert a value from
 [Available data](https://code.claude.com/docs/en/statusline#available-data),
@@ -96,24 +84,35 @@ stay as-is.
    even when the format is empty or displayed values have not changed.
 4. The command accepts at most 2 MiB of status JSON, runs no external tools or network requests,
    and writes no files.
+5. A repository's `.claude/settings.json` cannot set the variable:
+   - Claude Code starts a managed hook, such as the status line, without the `env` of the
+     repository's settings. Claude Code 2.1.310 logs this in its debug log: `statusLine is the
+     organization's and starts without the repository settings' env of
+     KO_CLAUDE_STATUSLINE_FORMAT`.
+   - A variable that the launch sets belongs to the Claude Code process itself, so it reaches the
+     command.
 
 ## Claude Code plugins and mods
 
 The image's `allowManagedHooksOnly` runs the hooks and the mod of a plugin only when managed
 settings force-enable it from a marketplace directory. A plugin installed in a session, or loaded
 through `--plugin-dir` or `CLAUDE_CODE_PLUGIN_DIRS`, loads with its hooks and mod inert. To run a
-plugin's hooks and mod, name its directory on the launch command line, once per plugin, in the
-order the mods run:
+plugin's hooks and mod, name its directory in the [options file](../README.md#options-file), once
+per plugin, in the order the mods run:
 
-```sh
-java -jar ko-agent-sandbox.jar --claude-plugin-dir=$HOME/src/dotclaude/mods/questions \
-    --claude-plugin-dir=$HOME/src/dotclaude/mods/status-band claude
+```text
+--claude-plugin-dir=${HOME}/src/dotclaude/mods/questions
+--claude-plugin-dir=${HOME}/src/dotclaude/mods/status-band
 ```
+
+The option can also be given as a launch argument. A directory given that way runs after the
+file's directories.
 
 What to expect:
 
-1. The launch prints `claude plugins: questions@host, status-band@host; their hooks and mods run as
-   managed`. The plugin's name is its directory's name.
+1. The launch prints `claude plugins: questions@host (from <options file>), status-band@host (from
+   <options file>); their hooks and mods run as managed`. A plugin that a launch argument names has
+   no `(from ...)`. The plugin's name is its directory's name.
 2. `/plugin` lists them under the marketplace `host`, and `claude --debug` logs each one's
    `hooks module` line with `tier prepend`.
 3. The directory is mounted read-only. Edit it on the host and run `/reload-plugins`.

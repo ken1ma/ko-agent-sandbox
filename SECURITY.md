@@ -47,7 +47,9 @@ The sections below describe the limits and costs of each.
     limit where the credential can be sent, not its authority at an allowed destination
     ("Exfiltration through allowed network traffic", below). Any process in the session can use the
     credential with the authority its issuer granted.
-  - Only the launch command line can specify `--env`. A workspace file cannot choose which host
+  - A workspace cannot supply launch arguments. The launcher refuses an
+    [options file](README.md#options-file) inside the workspace.
+  - Only a launch argument can specify `--env`. A workspace file cannot choose which host
     variables the sandbox receives. The launcher refuses `KO_AGENT_SANDBOX_*` names, which describe
     the launcher's enforcement settings, and prints every forwarded name.
   - A value the host holds reaches the sandbox container by name. Podman copies the value of a
@@ -55,8 +57,8 @@ The sections below describe the limits and costs of each.
     - the value is in no podman argument, and not in the create command that podman records for the
       container;
     - `podman inspect` shows the value in the container's environment, as it shows every variable;
-    - an explicit `--env=NAME=VALUE` is on the launch command line already, and stays in the create
-      command.
+    - an explicit `--env=NAME=VALUE` reaches podman's arguments and the recorded create command,
+      including when supplied by the options file.
   - `--env-aws-cred` forwards the three values that the AWS CLI resolves on the host in the same
     way. The launcher sets each value by name in the create command's own environment, passes it in
     no podman argument, and prints the names with the time left (`AwsCredential.scala`).
@@ -115,10 +117,10 @@ The sections below describe the limits and costs of each.
 - `allowManagedHooksOnly` also restricts `statusLine`, `subagentStatusLine` and `fileSuggestion`
   to managed settings. So refreshing a display or suggesting a file cannot run a command from user
   or project settings.
-- The image's [status-line command](doc/agent-settings.md#claude-code-status-line) lets a workspace
-  customize the display through a template. The command substitutes field values without executing
-  the template or evaluating the inserted values. That section defines the command's input and
-  output limits.
+- The image's [status-line command](doc/agent-settings.md#claude-code-status-line) lets the host
+  user customize the display through a template that the launch sets as an environment variable.
+  The command substitutes field values without executing the template or evaluating the inserted
+  values. That section defines the command's input and output limits.
 
 **A workspace loosening its own confinement.**
 
