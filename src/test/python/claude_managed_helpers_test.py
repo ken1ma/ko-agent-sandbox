@@ -113,7 +113,7 @@ class ManagedHelpersTest(unittest.TestCase):
                 self.assertFalse((self.workspace / "executed").exists())
 
     def test_documented_format_handles_initial_and_reported_context_usage(self):
-        # The format that doc/agent-settings.md's launch line passes with --env.
+        # The format that doc/agent-settings.md's options-file line passes with --env.
         template = "${model.display_name} ${effort.level} · context ${context_window.used_percentage.getOrElse(0)}%"
         data = {"model": {"display_name": "Fable 5.1"}, "effort": {"level": "high"}}
         for value, expected in [(None, "0"), (0, "0"), (4, "4")]:

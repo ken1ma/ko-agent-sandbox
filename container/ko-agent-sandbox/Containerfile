@@ -665,8 +665,8 @@ RUN --mount=type=bind,target=/mnt/context \
         '  }' \
         '}' \
         > /etc/claude-code/managed-settings.json; \
-    # allowManagedHooksOnly also blocks user and project status-line commands. The managed command accepts a
-    # data-only project template, so a project customizes the display without supplying a command.
+    # allowManagedHooksOnly also blocks user and project status-line commands. The managed command reads a data-only
+    # template from the launch's environment, so the host user customizes the display without supplying a command.
     # Usage: doc/agent-settings.md, "Claude Code status line".
     #
     # tui.json keeps Claude Code's classic renderer. doc/plan-clipboard.md reconsiders this choice.

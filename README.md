@@ -558,7 +558,6 @@ restore permission prompts and set the Claude Code status line.
 Put the options you give every launch in the options file, one per line, spelled as on the
 command line:
 
-    # ~/.config/ko-agent-sandbox/options
     --model-provider=anthropic,openai
     --memory=8g
     --clipboard=paste
