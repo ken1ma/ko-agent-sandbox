@@ -197,21 +197,29 @@ class MicRelayTest extends munit.FunSuite:
     // reader that waits on `req` for a writer. endAll therefore ends the owned processes until the relay
     // ends, for at most ten seconds.
     def endAll(): Unit =
-      Files.writeString(host.resolve("stopped"), "")
       val deadline = System.nanoTime() + 10_000_000_000L
-      while alive() && System.nanoTime() < deadline do
+      // A Windows relay that has not yet found the container running takes `stopped` for a sandbox still to start,
+      // and waits out startResident's bound long after the run. The relay's first request reader makes `req`, and
+      // the relay starts that reader only after finding the container running.
+      while relay == Relay.Windows && alive() && !Files.exists(sandbox.resolve("req")) && System.nanoTime() < deadline
+      do Thread.sleep(20)
+      // A process forked as its parent died leaves the tree before the watcher sees it, and the relay waits on a
+      // request reader's `head` that keeps its stdout open. Every process that the scripts start names the run's
+      // directory, or descends from a process that does.
+      def endProcesses(): Unit =
         owned.synchronized(owned.values.foreach(_.destroyForcibly()))
+        ProcessHandle.allProcesses()
+          .filter(_.info.commandLine.toScala.exists(_.contains(root.toString)))
+          .forEach: handle =>
+            handle.descendants().forEach(_.destroyForcibly())
+            handle.destroyForcibly()
+      Files.writeString(host.resolve("stopped"), "")
+      while alive() && System.nanoTime() < deadline do
+        endProcesses()
         Thread.sleep(50)
       ended = true
       watcher.join()
-      owned.synchronized(owned.values.foreach(_.destroyForcibly()))
-      // A subshell forked as its parent died leaves the tree before the watcher sees it. Every process that
-      // the scripts start names the run's directory, or descends from a process that does.
-      ProcessHandle.allProcesses()
-        .filter(_.info.commandLine.toScala.exists(_.contains(root.toString)))
-        .forEach: handle =>
-          handle.descendants().forEach(_.destroyForcibly())
-          handle.destroyForcibly()
+      endProcesses()
     try
       alive = relay match
         case Relay.Posix =>
@@ -242,6 +250,7 @@ class MicRelayTest extends munit.FunSuite:
       check(Harness(relay, host, sandbox, status, log, () => alive()))
       // The run's directory stays after a failure, for its records.
       endAll()
+      assert(!alive(), s"the relay outlived its run${Harness(relay, host, sandbox, status, log, alive).diagnostics}")
       Using.resource(Files.walk(root))(_.iterator().asScala.toVector.reverse.foreach(Files.deleteIfExists))
     finally if !ended then endAll()
 

@@ -244,11 +244,10 @@ object WithPodman extends munit.Assertions:
     // Poll directly rather than through eventually, so a launcher that exits before creating a
     // container reports its refusal immediately.
     var appeared = Vector.empty[String]
-    var polls = 0
-    while appeared.isEmpty && launcher.isAlive && polls < Patience do
-      Thread.sleep(1000)
+    val deadline = System.nanoTime() + Patience * 1_000_000_000L
+    while appeared.isEmpty && launcher.isAlive && System.nanoTime() < deadline do
+      Thread.sleep(200)
       appeared = running().diff(before).filter(_.startsWith(prefix))
-      polls += 1
     val ended = if launcher.isAlive then "" else s" (the launcher exited with ${launcher.exitValue})"
     assert(appeared.nonEmpty, s"a session never started$ended; its output:\n${Files.readString(log)}")
     val container = appeared.head

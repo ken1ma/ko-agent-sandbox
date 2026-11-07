@@ -38,7 +38,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
 
   /** The seconds that the shim copy waits for the runner, in place of the image's bound. A dead runner costs each of
     * the tests below this long. */
-  private val ShimBound = 5
+  private val ShimBound = 3
 
   /** The image's shim with its directory and bound lines rewritten and nothing else.
     * - When the rewrite no longer finds a spelling, the suite fails rather than testing a script that the image does
@@ -234,10 +234,12 @@ class RunOnHostChannelTest extends munit.FunSuite:
     finally
       running.set(false)
       // A handshake that is not a transaction id ends the cycle empty. With running set to false, it also ends the
-      // loop, and it is the one way that this side of the FIFO can end the loop. The write is bounded, because the open
-      // would block forever if the reader were already gone.
+      // loop, and it is the one way that this side of the FIFO can end the loop. A runner between cycles ends without
+      // reading it, and the write's open then blocks forever, so the wait ends with the runner.
       val poison = ProcessBuilder("sh", "-c", s"echo poison > $FifoDir/req").start()
-      if !poison.waitFor(5, java.util.concurrent.TimeUnit.SECONDS) then poison.destroyForcibly()
+      val poisonDeadline = System.nanoTime() + 5_000_000_000L
+      while poison.isAlive && runner.isAlive && System.nanoTime() < poisonDeadline do Thread.sleep(20)
+      if poison.isAlive then poison.destroyForcibly()
       runner.join(10_000)
       deleteRecursively(FifoDir)
       deleteRecursively(dir)
