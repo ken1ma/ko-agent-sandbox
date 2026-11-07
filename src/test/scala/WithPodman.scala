@@ -48,29 +48,21 @@ object WithPodman extends munit.Assertions:
         s"run sbt from a shell where `$name --version` works"
 
   /** The distribution jar must contain every class and resource compiled for this test JVM, byte
-    * for byte. Otherwise a stale parser or source digest fails only after the launch begins, with the
-    * reason at the bottom of the launch's log. The check runs before any session starts. sbt exposes
-    * compiled output either as a directory or as a jar, so the check reads both forms. The check skips
-    * a hidden entry, such as the `.DS_Store` that Finder writes into a directory it opened: sbt
-    * packages no hidden file, so the jar can never hold one. */
+    * for byte: the launcher's and the egress proxy's (CompiledOutput). Otherwise a stale parser or
+    * source digest fails only after the launch begins, with the reason at the bottom of the launch's
+    * log. The check runs before any session starts. The check skips a hidden entry, such as the
+    * `.DS_Store` that Finder writes into a directory it opened: sbt packages no hidden file, so the
+    * jar can never hold one. */
   private def requireJarCurrent(): Unit =
-    val built = Paths.get(AgentSandboxLauncher.getClass.getProtectionDomain.getCodeSource.getLocation.toURI)
     Using.resource(JarFile(jar.toFile)): distJar =>
       def hidden(name: String): Boolean = name.split("/").last.startsWith(".")
-      def missingOrDifferent(name: String, bytes: => Array[Byte]): Boolean =
+      def missingOrDifferent(name: String, bytes: () => Array[Byte]): Boolean =
         !name.startsWith("META-INF/") && !hidden(name) && !Option(distJar.getJarEntry(name)).exists: entry =>
-          java.util.Arrays.equals(Using.resource(distJar.getInputStream(entry))(_.readAllBytes()), bytes)
-      val stale =
-        if Files.isDirectory(built) then
-          Using.resource(Files.walk(built)): files =>
-            files.iterator().asScala.filter(Files.isRegularFile(_)).map(built.relativize).find: path =>
-              missingOrDifferent(path.iterator().asScala.mkString("/"), Files.readAllBytes(built.resolve(path)))
-            .map(_.toString)
-        else
-          Using.resource(JarFile(built.toFile)): own =>
-            own.entries().asScala.filterNot(_.isDirectory).find: entry =>
-              missingOrDifferent(entry.getName, Using.resource(own.getInputStream(entry))(_.readAllBytes()))
-            .map(_.getName)
+          java.util.Arrays.equals(Using.resource(distJar.getInputStream(entry))(_.readAllBytes()), bytes())
+      val compiled = CompiledOutput.allEntries
+      (CompiledOutput.RepresentativeEntries :+ "defaults/host").foreach: entry =>
+        assert(compiled.exists(_._1 == entry), s"$entry is not among the compiled output")
+      val stale = compiled.collectFirst { case (name, bytes) if missingOrDifferent(name, bytes) => name }
       assert(stale.isEmpty, s"$jar differs from the compiled ${stale.get}: run `sbt dist` first")
 
   /** Applies the launch's version lock before any launch. The launcher rejects images that another

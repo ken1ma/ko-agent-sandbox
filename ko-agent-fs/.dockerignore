@@ -12,5 +12,7 @@ bpf/doc
 policy/probe
 fuse/probe
 bench
+policy/examples
+fuse/examples
 bpf/test
 !bpf/test/host

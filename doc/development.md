@@ -29,7 +29,13 @@ Run the commands in this section from the repository root.
 
 ## egress-proxy
 
-    (cd container/ko-agent-egress-proxy/app; sbt testFull)
+The root build's `test` and `testFull` run the proxy's suites before the launcher's;
+`sbt egressProxy/testOnly '*X509HelperTest'` selects among them. The suites fork and bind
+listeners, so under `ko-sandbox-run-on-host` they fail; run them in a session, as the launcher's
+own listening suites. The proxy's directory is also a build of its own, the one the container
+image runs:
+
+    (cd ko-agent-egress-proxy/app; sbt testFull)
 
 ## ko-agent-fs
 

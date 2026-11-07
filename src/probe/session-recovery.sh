@@ -28,8 +28,8 @@ if [ -n "${KO_AGENT_SANDBOX_EGRESS_RULESET:-}" ] || [ -d /etc/ko-agent-sandbox ]
     echo "This looks like a sandbox session. Run the probe on the host instead." >&2
     exit 2
 fi
-if [ ! -f container/ko-agent-egress-proxy/app/build.sbt ]; then
-    echo "Run from the repository root; container/ko-agent-egress-proxy/app is not here." >&2
+if [ ! -f ko-agent-egress-proxy/app/build.sbt ]; then
+    echo "Run from the repository root; ko-agent-egress-proxy/app is not here." >&2
     exit 2
 fi
 
@@ -55,11 +55,11 @@ trap cleanup EXIT INT TERM
 
 # --- M1: the proxy, hosted on macOS ------------------------------------------------------------
 
-dist=container/ko-agent-egress-proxy/app/target/dist/ko-agent-egress-proxy.jar
-proxy_src=container/ko-agent-egress-proxy/app/src/main/scala/AgentEgressProxy.scala
+dist=ko-agent-egress-proxy/app/target/dist/ko-agent-egress-proxy.jar
+proxy_src=ko-agent-egress-proxy/app/src/main/scala/AgentEgressProxy.scala
 if [ ! -f "$dist" ] || [ "$proxy_src" -nt "$dist" ]; then
     echo "building the proxy dist (absent or older than its source)"
-    ( cd container/ko-agent-egress-proxy/app && sbt dist ) >"$work/dist.log" 2>&1 \
+    ( cd ko-agent-egress-proxy/app && sbt dist ) >"$work/dist.log" 2>&1 \
         || { echo "proxy dist build failed:"; tail -20 "$work/dist.log"; exit 1; }
 fi
 

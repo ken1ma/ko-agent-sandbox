@@ -260,7 +260,7 @@ The fields are client-supplied, except the size: the relay forwards no more body
 
 ## Implementation sites
 
-- `container/ko-agent-egress-proxy/app/src/main/resources/defaults/model-provider/<name>`: the
+- `ko-agent-egress-proxy/app/src/main/resources/defaults/model-provider/<name>`: the
   changed lines, each with the measurement's date and the client version beside it.
 - `AgentEgressProxy.scala`: the fields on the inspected `allow` line, built from the parsed head
   before the origin leg connects. The credential index is a map from digest to index, owned by the

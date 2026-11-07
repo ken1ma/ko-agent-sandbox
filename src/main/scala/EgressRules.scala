@@ -8,7 +8,7 @@
 // This file does not start a session's proxy *container*. AgentSandboxLauncher.prepareRunFiles starts the
 // container with a dozen flags, and moving that code here would drag the launch with it.
 //
-// The proxy owns the defaults, the profile equations and the rule resolution (container/ko-agent-egress-proxy).
+// The proxy owns the defaults, the profile equations and the rule resolution (ko-agent-egress-proxy/).
 // Nothing here re-implements any of them, so there is no second opinion about what is allowed.
 
 package agentsandbox.launcher

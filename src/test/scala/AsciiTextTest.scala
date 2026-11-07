@@ -5,29 +5,15 @@
 package agentsandbox.launcher
 
 import scala.jdk.CollectionConverters.*
-import scala.util.Using
 
 import java.lang.classfile.ClassFile
 import java.lang.classfile.constantpool.StringEntry
-import java.nio.file.{Files, Paths}
-import java.util.jar.JarFile
 
 class AsciiTextTest extends munit.FunSuite:
 
-  /** Each class file compiled from the launcher's sources, by name. sbt exposes that output either as
-    * a directory or as a jar. */
+  /** Each class file compiled from the launcher's sources and the proxy's, by name (CompiledOutput). */
   private def compiledClasses(): Vector[(String, Array[Byte])] =
-    val built = Paths.get(AgentSandboxLauncher.getClass.getProtectionDomain.getCodeSource.getLocation.toURI)
-    if Files.isDirectory(built) then
-      Using.resource(Files.walk(built)): files =>
-        files.iterator.asScala.filter(_.toString.endsWith(".class")).map: file =>
-          built.relativize(file).iterator.asScala.mkString("/") -> Files.readAllBytes(file)
-        .toVector
-    else
-      Using.resource(JarFile(built.toFile)): jar =>
-        jar.entries.asScala.filter(_.getName.endsWith(".class")).map: entry =>
-          entry.getName -> Using.resource(jar.getInputStream(entry))(_.readAllBytes())
-        .toVector
+    CompiledOutput.allEntries.collect { case (name, bytes) if name.endsWith(".class") => name -> bytes() }
 
   /** The non-ASCII sequences that a class matches or writes into a script but never prints as text.
     * The check removes them from each constant of that class, the longer sequences first. */
@@ -45,7 +31,8 @@ class AsciiTextTest extends munit.FunSuite:
 
   test("every string constant in the launcher's classes is ASCII"):
     val classes = compiledClasses()
-    assert(classes.exists(_._1 == "agentsandbox/launcher/AgentSandboxLauncher$.class"), classes.map(_._1))
+    CompiledOutput.RepresentativeEntries.foreach: entry =>
+      assert(classes.exists(_._1 == entry), s"$entry is not among ${classes.map(_._1)}")
     val offending =
       for
         (name, bytes) <- classes

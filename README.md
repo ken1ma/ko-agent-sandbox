@@ -611,7 +611,7 @@ The file's format:
 ## Development
 
 1. The launcher is the sbt project at the repository root.
-2. The egress proxy is its own sbt project under `container/ko-agent-egress-proxy/app`.
+2. The egress proxy is its own sbt project under `ko-agent-egress-proxy/app`.
 3. The BPF backend is in `ko-agent-fs/bpf`, beside the Cargo workspace under `ko-agent-fs` that
    holds the workspace policy and the FUSE backend.
 

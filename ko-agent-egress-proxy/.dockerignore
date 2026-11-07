@@ -12,3 +12,5 @@
 **/.metals
 **/metals.sbt
 **/.DS_Store
+# The suites run from a checkout, never in this build (the same task records why).
+app/src/test

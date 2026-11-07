@@ -1436,12 +1436,16 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(unexpected.contains("podman did not remove it"), unexpected)
     assert(unexpected.contains("Error: storage is unavailable"), unexpected)
 
+  /** Every Containerfile the launcher bundles: the launcher's own under container/, and those of the components at
+    * the repository root (build.sbt's bundling task). */
+  private def bundledContainerfiles: Vector[Path] =
+    FileHelper.directoryEntries(Paths.get("container")).map(_.resolve("Containerfile")).filter(Files.isRegularFile(_))
+      ++ Vector(Paths.get("ko-agent-fs/Containerfile"), Paths.get("ko-agent-egress-proxy/Containerfile"))
+
   test("every stage that a final stage copies from has a named cache target"):
     // Without the tag, the stage's superseded image stays in storage (ImageBuilds.sandboxStageTagCommands).
     val containerRoot = Paths.get("container")
-    val containerfiles = FileHelper.directoryEntries(containerRoot)
-      .map(_.resolve("Containerfile")).filter(Files.isRegularFile(_))
-    val allContainerfiles = containerfiles :+ Paths.get("ko-agent-fs/Containerfile")
+    val allContainerfiles = bundledContainerfiles
     val NamedStage = """FROM\s+\S+\s+AS\s+(\S+)""".r
     val StageCopy = """COPY\s.*--from=(\S+)\s.*""".r
     val StageMount = """(?:RUN\s+)?--mount=\S*\bfrom=([^,\s]+).*""".r
@@ -1472,9 +1476,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
   test("every build step with a cache mount locks its caches and expires them before its commands"):
     // ko-agent-fs/Containerfile explains what a cache that a cleanup deletes file by file does to the step.
     val koAgentFsContainerfile = Paths.get("ko-agent-fs/Containerfile")
-    val containerfiles = FileHelper.directoryEntries(Paths.get("container"))
-      .map(_.resolve("Containerfile")).filter(Files.isRegularFile(_)) :+ koAgentFsContainerfile
-    val cachedSteps = containerfiles.flatMap: path =>
+    val cachedSteps = bundledContainerfiles.flatMap: path =>
       // One line per instruction: a comment line between continued lines is not part of the instruction.
       Files.readString(path).linesIterator.filterNot(_.trim.startsWith("#")).mkString("\n")
         .replaceAll("""\\\n\s*""", "")
@@ -1688,16 +1690,28 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     ).foreach: path =>
       assert(index.contains(path), s"INDEX missing $path")
     assert(BundledBuildContext.resource("ko-agent-fs/policy/src/policy.rs").contains("is_dotgit_name"))
+    // The egress proxy's image compiles its build the same way.
+    Vector(
+      "ko-agent-egress-proxy/app/build.sbt", "ko-agent-egress-proxy/app/project/build.properties",
+      "ko-agent-egress-proxy/app/src/main/scala/AgentEgressProxy.scala",
+      "ko-agent-egress-proxy/app/src/main/resources/defaults/host",
+    ).foreach: path =>
+      assert(index.contains(path), s"INDEX missing $path")
 
     // Build output must not end up in the bundle: neither Rust's target/ nor sbt's.
     assert(!index.exists(_.split("/").contains("target")), "target leaked")
 
-    // ko-agent-fs's doc/ and probe/ directories and its bench/ are deliberately absent (build.sbt's
-    // bundling task gives the reason).
-    Vector("doc", "policy/doc", "bpf/doc", "fuse/doc", "policy/probe", "fuse/probe", "bench")
-      .map(dir => s"ko-agent-fs/$dir/")
-      .foreach: prefix =>
-        assert(!index.exists(_.startsWith(prefix)), s"$prefix leaked into the jar")
+    // These directories are deliberately absent (build.sbt's bundling task, `unbundled`, gives the reasons), with
+    // bpf/test/host the one subtree kept.
+    Vector(
+      "ko-agent-fs/doc", "ko-agent-fs/policy/doc", "ko-agent-fs/bpf/doc", "ko-agent-fs/fuse/doc",
+      "ko-agent-fs/policy/probe", "ko-agent-fs/fuse/probe", "ko-agent-fs/bench",
+      "ko-agent-fs/policy/examples", "ko-agent-fs/fuse/examples", "ko-agent-fs/bpf/test",
+      "ko-agent-egress-proxy/app/src/test",
+    ).foreach: directory =>
+      val leaked = index.filter(_.startsWith(s"$directory/")).filterNot(_.startsWith("ko-agent-fs/bpf/test/host/"))
+      assert(leaked.isEmpty, s"$directory leaked into the jar: $leaked")
+    assert(index.exists(_.startsWith("ko-agent-fs/bpf/test/host/")), "bpf/test/host missing")
 
   test("ImgTagVersion names the Debian and Temurin major versions debian-temurin installs"):
     val versionArg = "ARG (DEBIAN|TEMURIN)_VERSION=([0-9]+)\\.[0-9.+]+".r
@@ -1728,7 +1742,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       .collect { case Listed(host) => host }
       .toVector
     val catalog = Files.readString(
-      Paths.get("container/ko-agent-egress-proxy/app/src/main/resources/defaults/host"),
+      Paths.get("ko-agent-egress-proxy/app/src/main/resources/defaults/host"),
     )
     val gitHosts = "(?m)^allow https://(\\S+)/\\s+read git-fetch".r.findAllMatchIn(catalog).map(_.group(1)).toVector
     assertEquals(listed, gitHosts)
@@ -1750,7 +1764,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // up nowhere near the text that caused it. The test scrapes the words from the proxy's source,
     // like the git-host list above, because the launcher holds no copy of the grant words.
     val proxySource = Files.readString(
-      Paths.get("container/ko-agent-egress-proxy/app/src/main/scala/RulesetHelper.scala"),
+      Paths.get("ko-agent-egress-proxy/app/src/main/scala/RulesetHelper.scala"),
     )
     val grantObject = """object Grant:\n([\s\S]*?)\n\n""".r
       .findFirstMatchIn(proxySource)

@@ -29,11 +29,11 @@ public class F {
 }
 EOF
 
-dist=container/ko-agent-egress-proxy/app/target/dist/ko-agent-egress-proxy.jar
-proxy_src=container/ko-agent-egress-proxy/app/src/main/scala/AgentEgressProxy.scala
+dist=ko-agent-egress-proxy/app/target/dist/ko-agent-egress-proxy.jar
+proxy_src=ko-agent-egress-proxy/app/src/main/scala/AgentEgressProxy.scala
 if [ ! -f "$dist" ] || [ "$proxy_src" -nt "$dist" ]; then
     echo "building the proxy dist (sources are newer)"
-    ( cd container/ko-agent-egress-proxy/app && sbt dist ) >/tmp/jvm-proxy-dist.log 2>&1 \
+    ( cd ko-agent-egress-proxy/app && sbt dist ) >/tmp/jvm-proxy-dist.log 2>&1 \
         || { echo "proxy dist build failed:"; tail -20 /tmp/jvm-proxy-dist.log; exit 1; }
 fi
 

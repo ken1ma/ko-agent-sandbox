@@ -6,7 +6,8 @@
 --sun-misc-unsafe-memory-access=allow
 
 # X509Helper uses the JDK's internal certificate builder, which the JVM keeps behind the module boundary. X509Helper
-# belongs to the proxy sources compiled into the launcher, and the tests run in this JVM. build.sbt records why the
-# tests do not fork.
+# belongs to the egress proxy subproject, and the launcher's tests, which issue certificates with it, run in this JVM.
+# build.sbt records why the launcher's tests do not fork; the proxy's own suites do
+# (ko-agent-egress-proxy/app/build.sbt).
 --add-exports=java.base/sun.security.x509=ALL-UNNAMED
 --add-exports=java.base/sun.security.util=ALL-UNNAMED

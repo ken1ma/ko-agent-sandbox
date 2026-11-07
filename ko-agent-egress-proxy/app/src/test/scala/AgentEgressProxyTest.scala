@@ -1672,13 +1672,16 @@ class AgentEgressProxyTest extends munit.FunSuite:
     closeTlsOutput(originTls, origin.transport)
     origin.close()
     val elapsedMillis = (System.nanoTime() - started) / 1_000_000
+    // The answer is read before the close. The blocked upload is still unread in `client`, so its close is an RST
+    // (drainClient), after which a readAllBytes on clientPeer fails with Connection reset on macOS; Linux delivers
+    // the answer first (measured 2026-11-07).
+    val received = String(readHttpHeader(clientPeer.getInputStream, 64 * 1024), StandardCharsets.ISO_8859_1)
     client.close()
     released.countDown()
     served.join()
     sending.join()
 
     assert(elapsedMillis < DrainTimeoutMillis * 3, elapsedMillis)
-    val received = String(clientPeer.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)
     assert(received.startsWith("HTTP/1.1 401 Unauthorized\r\n"), received)
 
   test("a TLS origin that stops reading during an upload neither holds the relay nor the closes"):
@@ -1798,23 +1801,28 @@ class AgentEgressProxyTest extends munit.FunSuite:
     tls.startHandshake()
 
     channel.configureBlocking(false)
-    val filler = java.nio.ByteBuffer.allocate(64 * 1024)
-    def fill(): Long =
+    val chunk = java.nio.ByteBuffer.allocate(64 * 1024)
+    val singleByte = java.nio.ByteBuffer.allocate(1)
+    def fill(buffer: java.nio.ByteBuffer): Long =
       var total = 0L
-      var wrote = channel.write(filler)
+      var wrote = channel.write(buffer)
       while wrote > 0 do
         total += wrote
-        filler.clear()
-        wrote = channel.write(filler)
-      filler.clear()
+        buffer.clear()
+        wrote = channel.write(buffer)
+      buffer.clear()
       total
     // A zero-length write means that this side's send buffer is full, not the peer's window: the kernel keeps
     // draining until both are full. Both are full when a pause frees no room.
-    var filled = fill()
+    // - macOS refuses a non-blocking write that does not fit whole while the room is under the send buffer's
+    //   low-water mark, 2048 bytes by default (XNU, bsd/kern/uipc_socket.c sosend; uipc_socket2.c soreserve). The
+    //   chunks leave a close_notify room there, and the single bytes take it.
+    def fillWhole(): Long = fill(chunk) + fill(singleByte)
+    var filled = fillWhole()
     var settled = false
     while !settled do
       Thread.sleep(100)
-      val more = fill()
+      val more = fillWhole()
       filled += more
       settled = more == 0
     channel.configureBlocking(true)

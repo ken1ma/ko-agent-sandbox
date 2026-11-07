@@ -2,11 +2,6 @@ name := "ko-agent-egress-proxy"
 version := "0.1.0"
 scalaVersion := "3.10.0"
 
-Compile / mainClass := Some("agentsandbox.egress.AgentEgressProxy")
-
-libraryDependencies +=
-  "org.scalameta" %% "munit" % "1.3.6" % Test
-
 scalacOptions ++= Seq(
   "-deprecation",
   "-feature",
@@ -15,8 +10,16 @@ scalacOptions ++= Seq(
   "-Werror",
 )
 
+Compile / mainClass := Some("agentsandbox.egress.AgentEgressProxy")
+
+libraryDependencies +=
+  "org.scalameta" %% "munit" % "1.3.6" % Test
+
 // X509Helper issues leaves with the JDK's internal certificate builder. scalac compiles against the builder unasked,
 // but the JVM keeps the builder behind the module boundary at run time, so the forked tests need these two exports.
+// - The tests fork so that they run in this directory, where AgentEgressProxyTest reads the sources and the defaults
+//   through relative paths, under the repository root's build as well (its build.sbt, "egressProxy"), and so that
+//   the exports reach the test JVM through this file alone, with none in a .jvmopts for sbt's own JVM.
 // - The launcher carries the same two exports for the runner and the supervisor, which issue each host proxy's
 //   certificates (RunOnHostSandbox.CertificateBuilderExports).
 // - The image's native-image takes neither export, because nothing the proxy runs reaches X509Helper. Measured with
