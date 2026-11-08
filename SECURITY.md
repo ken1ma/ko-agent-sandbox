@@ -730,8 +730,8 @@ What an auditor trusts, and how each link is checked:
   - The later launch is the one that refuses. An earlier launcher started beside a `bpf` or
     `unix-socket` session refuses nothing.
 - **The installation and the program set verified ahead.** `--build` installs the binaries at
-  `~/.local/share/ko-agent-sandbox/bpf/` in the machine. To remove them, run
-  `podman machine ssh rm -r .local/share/ko-agent-sandbox/bpf`.
+  `~/.local/share/ko-agent-sandbox/bpf/` in the machine ([README.md](README.md#uninstall) says how
+  to remove them).
   - `--build` records the installed object's tags under the running kernel.
   - `--build` keeps one program set loaded and verified ahead of the next launch. That launch takes
     the program set by renaming the set's pin directory, after the read-back checked the set.

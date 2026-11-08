@@ -326,13 +326,16 @@ object RunOnHostProxy:
   /** Reports the denied hosts, once per refused host, and the refused requests, after the command. The report never
     * adds a rule automatically.
     *
+    *   - Each part starts with an empty line, because the command's last line may lack its line end and nothing here
+    *     sees the command's output: the command writes to the inherited streams directly, and the runner relays
+    *     stdout and stderr to the sandbox separately.
     *   - A program need not print a 403's body, so each request carries what that body said: the reason, and the step
     *     for a refusal that the command answers by changing the request (RefusalAdvice.requestStep).
     *   - The user's step follows only a refusal of a grant, which the rule file cannot give. */
   private[launcher] def reportDenied(proxyLog: Path, from: Long, program: Program, log: String => Unit): Unit =
     val hosts = deniedHosts(proxyLog, from)
     if hosts.nonEmpty then
-      log((("Command requested network access to:" +: hosts.map(host => s"  $host")) :+
+      log((("\nCommand requested network access to:" +: hosts.map(host => s"  $host")) :+
         ("Not permitted by the host command sandbox. If the command should reach it, add an" +
           s" `$ProgramRuleForm` line to ${programRuleFileShown(program.name)}."))
         .mkString("\n"))
@@ -345,4 +348,4 @@ object RunOnHostProxy:
       val ungranted = Option.when(requests.exists(request => RefusalAdvice.grantRefused(request.reason))):
         "Its rules grant `read`, a GET or HEAD without a body, and its rule file takes no other grant. If the" +
           " command should send the requests no grant covers, ask the user to run it themselves, outside the sandbox."
-      log((("Command sent requests the host command sandbox refuses:" +: listed) ++ ungranted).mkString("\n"))
+      log((("\nCommand sent requests the host command sandbox refuses:" +: listed) ++ ungranted).mkString("\n"))

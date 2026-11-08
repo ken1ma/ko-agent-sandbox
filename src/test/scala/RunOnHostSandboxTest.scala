@@ -1940,6 +1940,12 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(RefusalAdvice.requestStep(absolute.reason), Some(RefusalAdvice.originForm))
     assertEquals(RefusalAdvice.requestStep(put.reason), None)
     assert(RefusalAdvice.grantRefused(put.reason) && !RefusalAdvice.grantRefused(framed.reason))
+    // Each part of the report starts on a line of its own, whatever the command's last line ended with.
+    val reported = Vector.newBuilder[String]
+    reportDenied(log, 0, Program.Sbt, reported += _)
+    val parts = reported.result()
+    assertEquals(parts.size, 2)
+    assert(parts.forall(_.startsWith("\nCommand ")), parts.toString)
 
   // --------------------------------------------------------------------------
   // The live server a portfile names

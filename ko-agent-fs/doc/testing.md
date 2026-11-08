@@ -39,6 +39,7 @@ What the launcher does:
   pinned toolchain.
 - It runs both suites, ignored tests included, in a container with `/dev/fuse` and
   `CAP_SYS_ADMIN` and no host bind mounts. The container is removed on exit.
+- It ends the suites' output with a summary: the total counts, then one row per test binary.
 - It keeps the current self-test and compile-cache images, and removes the ones they replace.
 - The image carries the BPF classifier's host build. Its builder stage compiles it, and
   `KO_AGENT_FS_POLICY_HOST` names it to `policy/tests/bpf_equivalence.rs`. The suite therefore

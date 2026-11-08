@@ -529,19 +529,15 @@ restore permission prompts and set the Claude Code status line.
 ### `--build`
 
 1. Builds the sandbox and egress-proxy images from the jar; no checkout is needed.
-1. Compiles the FUSE backend, `ko-agent-fs-fuse`, and the policy's resolver, `ko-agent-fs`,
-   from bundled source. Installs them in `~/.local/share/ko-agent-sandbox/`: inside the podman
-   machine on macOS and Windows, and in your home on native Linux.
-
-    1. To remove them:
-       `podman machine ssh rm .local/share/ko-agent-sandbox/ko-agent-fs
-       .local/share/ko-agent-sandbox/ko-agent-fs-fuse` (plain `rm` on Linux).
-
 1. On macOS and Windows, compiles the BPF backend from bundled source against the machine's
    kernel, and installs it inside the podman machine.
 
     1. Run `--build` again after `podman machine os upgrade` or `wsl --update`. A `bpf` launch
        refuses a backend built under another kernel, and a backend from another launcher build.
+
+1. Compiles the FUSE backend, `ko-agent-fs-fuse`, and the policy's resolver, `ko-agent-fs`,
+   from bundled source. Installs them in `~/.local/share/ko-agent-sandbox/`: inside the podman
+   machine on macOS and Windows, and in your home on native Linux.
 
 1. Use `--update` to install new agent releases.
 
@@ -650,3 +646,43 @@ Run the commands below from the repository root.
 
 [doc/development.md](doc/development.md#tests) gives the test commands and the machines we run
 them on.
+
+
+## Uninstall
+
+1. Remove every workspace's state and logs:
+
+       java -jar "<path-to-jar>/ko-agent-sandbox.jar" --reset-all
+
+    1. Volumes you named with `--persistent-volume` are not removed.
+
+1. Remove the images that `--build` built:
+
+       podman image rm -f $(podman images -q --filter 'reference=ko-agent-*')
+       podman image rm -f $(podman images -q --filter 'reference=debian-temurin')
+       podman image rm -f $(podman images -q --filter 'reference=debian-coursier')
+
+    1. The pulled base images are not removed, since other images may use them: `debian`, `rust`
+       and `distroless/base-debian13`.
+
+1. Remove the BPF and FUSE backends:
+    1. macOS and Windows:
+
+           podman machine ssh rm -r .local/share/ko-agent-sandbox
+           podman machine restart
+
+    1. Linux:
+
+           rm -r ~/.local/share/ko-agent-sandbox
+
+1. Remove the launcher's state, caches and options file on the host:
+    1. macOS and Linux:
+
+           rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/ko-agent-sandbox" \
+               "${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox" \
+               "${XDG_CONFIG_HOME:-$HOME/.config}/ko-agent-sandbox"
+
+    1. Windows, in PowerShell:
+
+           Remove-Item -Recurse -Force -ErrorAction Ignore "$env:LOCALAPPDATA\ko-agent-sandbox"
+           Remove-Item -Recurse -Force -ErrorAction Ignore "$env:APPDATA\ko-agent-sandbox"

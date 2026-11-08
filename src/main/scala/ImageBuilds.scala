@@ -95,13 +95,13 @@ object ImageBuilds:
         ProxyImage -> proxyBundleId,
       ))
       verifyBuiltBundleLabels(Seq(coursierImage(ImgTagVersion) -> baseId), BaseBundleLabel)
-      installKoAgentFs(podman, os, fsSourceId)
       // The profile installs before the backend, because the backend's launches need this build's
       // attribute rules (SeccompProfile.AttributeSyscalls).
       SeccompProfile.install(podman, os, SandboxImage)
       if buildBpfBackend then
         bpfBuildFailure.toLeft(()).flatMap(_ => KoAgentBpf.installKoAgentBpf(podman, os, bpfBackendSourceId))
           .left.foreach(reason => warn(KoAgentBpf.buildFailedNote(reason, os)))
+      installKoAgentFs(podman, os, fsSourceId)
       val (candidates, staleTags) = includeStaleSelfTestCleanup(
         podman,
         journal,

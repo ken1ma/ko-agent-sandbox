@@ -293,12 +293,11 @@ object KoAgentBpf:
     * on Linux. */
   def installKoAgentBpf(podman: String, os: Os, sourceId: String): Either[String, Unit] =
     val command = koAgentFsScriptCommand(podman, os, installScript(sourceId))
-    echoCommand(command)
+    announceScript("installing the BPF backend in the podman machine")
     val installed = run(command*)
     if !installed.ok then Left(s"install failed:\n${installed.err.trim}")
     else
       System.err.println(installedLine(installed.text))
-      System.err.println(s"  to remove it: podman machine ssh rm -r $InstallDir")
       removeRetiredUnit(podman, os)
       Right(())
 

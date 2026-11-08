@@ -353,6 +353,11 @@ object HostCommands:
   def echoCommand(command: Seq[String]): Unit =
     System.err.println(renderCommand(command, announcedPodman))
 
+  /** Says what a command that carries a script does, in place of the command's echo. That echo would show the script
+    * as one long quoted word, in base64 where the script crosses encoded (quoteFreeSh,
+    * KoAgentFs.koAgentFsScriptCommand), and it would tell the user nothing. */
+  def announceScript(doing: String): Unit = System.err.println(doing)
+
   def stepOk(command: String*): Boolean =
     echoCommand(command)
     ProcessBuilder(command*).inheritIO().start().waitFor() == 0

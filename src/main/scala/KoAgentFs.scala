@@ -203,7 +203,8 @@ object KoAgentFs:
     val home = sys.props("user.home")
     if os == Os.Linux then Files.createDirectories(Paths.get(home, KoAgentFsInstallDir))
     koAgentFsInstallCommands(podman, os, home).foreach: command =>
-      echoCommand(command)
+      if os == Os.Linux then echoCommand(command)
+      else announceScript("installing the FUSE backend in the podman machine")
       val result = run(command*)
       if !result.ok then
         fail(s"error: ko-agent-fs install failed: ${shownCommand(command)}\n${result.err}", result.exit)

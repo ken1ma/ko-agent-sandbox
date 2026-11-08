@@ -42,8 +42,42 @@ status=0
 
 # --include-ignored, not --ignored: the image build runs neither half (ko-agent-fs/Containerfile), so this container
 # runs all of the tests.
+# Each binary prints its own counts, so a summary repeats them at the end, where a reader need not scroll for them.
+if [ "$selftest" -eq 0 ]; then verdict=PASS failing=0; else verdict=FAIL failing=1; fi
+summary="  $verdict  ko-agent-fs-fuse --self-test"
+passed=0
+failed=0
+rows=1
+out=$(mktemp)
 for binary in "$suite"/deps/*; do
-    echo "== ${binary##*/}"
-    "$binary" --include-ignored ${filter:+"$filter"} || status=1
+    # The image names each binary <package>:<kind>:<target> (Containerfile).
+    name=$(printf %s "${binary##*/}" | tr : ' ')
+    echo "== $name"
+    # `&& ... ||` keeps set -e from ending the group before it records the status.
+    { "$binary" --include-ignored ${filter:+"$filter"} && echo 0 >"$out.exit" || echo $? >"$out.exit"; } | tee "$out"
+    counts=$(sed -n 's/^test result: [a-zA-Z]*\. \([0-9]*\) passed; \([0-9]*\) failed;.*/\1 \2/p' "$out" | tail -n 1)
+    rows=$((rows + 1))
+    if [ "$(cat "$out.exit")" -eq 0 ] && [ -n "$counts" ]; then
+        verdict=PASS
+    else
+        verdict=FAIL
+        status=1
+        failing=$((failing + 1))
+    fi
+    if [ -n "$counts" ]; then
+        passed=$((passed + ${counts% *}))
+        failed=$((failed + ${counts#* }))
+        detail="${counts% *} passed, ${counts#* } failed"
+    else
+        detail="exit $(cat "$out.exit") without a result line"
+    fi
+    summary="$summary
+$(printf '  %s  %-44s %s' "$verdict" "$name" "$detail")"
 done
+rm -f "$out" "$out.exit"
+
+echo
+# The rows count beside the tests, because a binary that crashes and a failed --self-test add no failed test.
+echo "suite summary: $passed tests passed, $failed failed; $failing of $rows rows failed"
+echo "$summary"
 exit $status

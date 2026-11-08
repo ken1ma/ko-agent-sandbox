@@ -264,7 +264,7 @@ object SeccompProfile:
     val reported = run(podman, "info", "--format", ReportedPathFormat)
     if !reported.ok then fail(s"error: podman info did not answer the default seccomp profile's path\n${reported.err}")
     val command = readDefaultCommand(podman, image, candidatePaths(reported.text))
-    echoCommand(command)
+    announceScript("reading podman's default seccomp profile")
     val read = run(command*)
     if !read.ok then fail(s"error: could not read podman's default seccomp profile\n${read.err}", read.exit)
     def refused(reason: String): Nothing = fail(s"error: podman's default seccomp profile: $reason")

@@ -38,6 +38,9 @@ ENV KO_AGENT_FS_SOURCE_ID=${KO_AGENT_FS_SOURCE_ID}
 #   flattened: <dir>/deps/<test> beside <dir>/ko-agent-fs and <dir>/ko-agent-fs-fuse.
 # - `--message-format=json` names each executable. Guessing at hash-suffixed filenames would silently miss a test
 #   target added later.
+# - Each test executable is installed as <package>:<kind>:<target>, the name ko-agent-fs-suite reports it by. Cargo's
+#   own names drop the package and the kind, so the two packages' tests/binary.rs, and a package's lib and bin unit
+#   tests, would look alike. The count check catches a JSON line the parse misses.
 # - A cache mount is not a layer, so the RUN lifts the artifacts out of the mount.
 # - The mounts are the ones that ko-agent-fs/Containerfile's build step uses, and that file says what the locks and
 #   expire-build-cache.sh are for.
@@ -51,15 +54,18 @@ RUN --mount=type=cache,target=/build/target \
     triple="$(uname -m)-unknown-linux-musl"; \
     mkdir -p /suite/deps; \
     cargo test --locked --no-run --target "${triple}" --message-format=json > /tmp/artifacts.json; \
-    grep -o '"executable":"[^"]*"' /tmp/artifacts.json \
-        | sed 's/^"executable":"//; s/"$//' \
-        | while read -r artifact; do \
-            case "${artifact}" in \
-                */deps/*) install -m 0755 "${artifact}" /suite/deps/ ;; \
-                *) install -m 0755 "${artifact}" /suite/ ;; \
-            esac; \
-        done; \
-    # The pipeline above runs its loop in a subshell, so these tests are what actually fail the build.
+    package_field='"package_id":"[^#"]*#\([^@"]*\)@[^"]*"'; \
+    target_field='"target":{"kind":\["\([^"]*\)"\][^}]*"name":"\([^"]*\)"'; \
+    executable_field='"executable":"\([^"]*\)"'; \
+    sed -n "s/.*${package_field}.*${target_field}.*${executable_field}.*/\\1 \\2 \\3 \\4/p" \
+        /tmp/artifacts.json > /tmp/executables; \
+    test "$(grep -c '"executable":"' /tmp/artifacts.json)" -eq "$(wc -l < /tmp/executables)"; \
+    while read -r package kind target artifact; do \
+        case "${artifact}" in \
+            */deps/*) install -m 0755 "${artifact}" "/suite/deps/${package}:${kind}:${target}" ;; \
+            *) install -m 0755 "${artifact}" /suite/ ;; \
+        esac; \
+    done < /tmp/executables; \
     test -x /suite/ko-agent-fs; \
     test -x /suite/ko-agent-fs-fuse; \
     test -n "$(ls /suite/deps)"
