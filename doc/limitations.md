@@ -52,7 +52,7 @@ namespace that `agy`'s sandbox creates first.
 
 A program that reads a child's output only after the child exits can hang in a session. The child
 blocks once it has written more than the pipe holds, and a session's pipe can hold 8 KiB instead
-of Linux's 64 KiB.
+of the kernel's default 64 KiB.
 
 1. In code, read a child's output while the child runs, or send the output to a file, as
    `KoReviewTest.runIn` does. Either change fixes the hang at any pipe size, while the steps below

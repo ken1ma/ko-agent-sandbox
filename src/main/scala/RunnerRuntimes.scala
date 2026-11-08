@@ -454,7 +454,7 @@ final class RunnerRuntimes(
    *
    * What the sharer gives up (run-on-host-internals.md, "The channel and the command"):
    *
-   *   - A cancel is the program's own, because the server is not this launch's to retire.
+   *   - A cancel is the program's own, because the server or daemon is not this launch's to retire.
    *   - The owner's end takes the runtime, a build of this launch included.
    *   - This launch's audit lines land in the owner's proxy log.
    */

@@ -249,8 +249,8 @@ object WithPodman extends munit.Assertions:
   def stop(session: Session): Unit =
     run(podman, "stop", "--time", "2", session.container)
     // On Windows, the launcher keeps running after the container exits, while it removes the run's
-    // resources. The launcher holds session.log open meanwhile, which on Windows makes the discard's
-    // delete a sharing violation. On POSIX, the exec'd podman exits with the container, and the wait is
+    // resources. The launcher holds session.log open meanwhile, which makes the discard's delete a
+    // sharing violation. On POSIX, the exec'd podman exits with the container, and the wait is
     // instant.
     session.launcher.waitFor(Patience, java.util.concurrent.TimeUnit.SECONDS): Unit
 

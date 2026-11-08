@@ -56,7 +56,7 @@ cp "$here/apfs-name-rule-probe.py" "$workspace/"
 # mounted volume. `podman machine ssh ls "$workspace"` shows what the VM sees.
 (
     cd "$workspace"
-    java -jar "$jar" --no-options-file --session-start=immediate python3 apfs-name-rule-probe.py
+    java -jar "$jar" --no-options-file --workspace=live,fuse --session-start=immediate python3 apfs-name-rule-probe.py
 )
 
 # The property itself, checked on the host against the real fold table.

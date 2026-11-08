@@ -7,7 +7,7 @@
 //! One line per rule, words separated by single spaces. What the launcher writes:
 //!
 //! ```text
-//! host-view /Users /private /var/folders   directories whose objects the daemon sees as the host does
+//! host-view /Users /private /var/folders   directories whose objects the guard sees as the host does
 //! read-only .vscode                         a rule line: a name at any depth, `*` within a component
 //! writable node_modules
 //! ```
@@ -36,7 +36,7 @@ use crate::policy::{FileRules, RuleContext, RuleLine, RuleWord, fold};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleFile {
     pub rules: FileRules,
-    /// Absolute directories whose objects the daemon sees as the host does. A chain leaving
+    /// Absolute directories whose objects the guard sees as the host does. A chain leaving
     /// them is one the guard cannot verify (`guard.rs`, `resolve`).
     pub host_view: Vec<PathBuf>,
     /// The rule lines as written, for the resolved output.
@@ -269,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn without_a_host_view_line_the_daemon_sees_the_host_namespace() {
+    fn without_a_host_view_line_the_guard_sees_the_host_namespace() {
         assert_eq!(
             parse("read-only .idea\n").unwrap().host_view,
             vec![PathBuf::from("/")],

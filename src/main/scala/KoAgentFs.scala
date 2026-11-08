@@ -296,7 +296,7 @@ object KoAgentFs:
    * - A non-empty mountpoint is refused, because a vanished mount must expose nothing.
    * - The statfs check matches `fuse*`, because stat versions differ in naming fuse and fuseblk.
    *
-   * The file rules (FileRules.daemonText) belong to the mount, as its source id does. A launch joins
+   * The file rules (FileRules.ruleFileText) belong to the mount, as its source id does. A launch joins
    * a live mount only under the same rules, since every session on one mount runs under the set its
    * first launch resolved.
    * - A launch after an edit passes the running mount's rules that the start prompt showed
@@ -538,7 +538,7 @@ object KoAgentFs:
   val RunningRulesMarker = "running mount's file rules:"
 
   /** A live mount of the workspace a launch would join: the sessions holding it, as their containers
-    * are named, and the file rules it serves, as FileRules.daemonText wrote them. */
+    * are named, and the file rules it serves, as FileRules.ruleFileText wrote them. */
   final case class RunningMount(sessions: Vector[String], rules: String)
 
   def runningMountOf(output: String): Option[RunningMount] =
@@ -792,6 +792,6 @@ object KoAgentFs:
     val expected = bundledKoAgentFsSourceId()
     val checks = koAgentFsChecks(podman, os, expected)
     val prepared = prepareKoAgentFs(podman, os, workspaceId, expected, checks, AgentSandboxLauncher.terminalReader)
-    val noRules = FileRules.daemonText(Vector.empty, Vector("/"))
+    val noRules = FileRules.ruleFileText(Vector.empty, Vector("/"))
     mountKoAgentFs(podman, os, prepared, workspaceId, backing, sandboxContainer, noRules)
     prepared.mountpoint

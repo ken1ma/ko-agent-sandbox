@@ -126,8 +126,9 @@ implement the operation ("Inventory", FUSE column `none`; for xattrs,
 `../../fuse/doc/verification-log.md`, "Extended attributes"). The routes, with the hooks that
 would hold them:
 
-- xattrs, row 15: `inode_setxattr` and `inode_removexattr`. The macOS share forwards xattrs:
-  through a plain bind `setxattr` succeeds.
+- xattrs, row 15: `inode_setxattr` and `inode_removexattr`. Both machines' shares store `user.`
+  xattrs: through a plain bind `setxattr` succeeds (`evidence.md`, "Every hook on macOS", "Every
+  hook on WSL").
 - POSIX ACLs, row 16: `inode_set_acl` and `inode_remove_acl`.
   - `fs/xattr.c`, `do_setxattr` and `removexattr`, route the `system.posix_acl_*` names to
     `do_set_acl` and `vfs_remove_acl` before `vfs_setxattr`'s `security_inode_setxattr`, so the
@@ -567,8 +568,8 @@ The program classifies by object and position, never by a path string:
     launcher's directory, at whatever depth and name.
   - On Windows, a mutation whose ancestry holds a component of NTFS's generated short-name form
     (uppercase, a tilde and a digit within the 8.3 lengths) is denied whatever the component is.
-    This covers a `.git` the host creates mid-session. The cost: no session write through a name of
-    that form on Windows, a form no project is known to use. On a real NTFS volume a write through
+    This covers a `.git` the host creates mid-session. The cost: a session cannot write through a
+    name of that form, which no project is known to use. On a real NTFS volume a write through
     `VSCODE~1` is refused ("Policy on WSL", short name).
   - What neither rule covers is a residual, recorded here beside
     `../../policy/doc/git-metadata.md`'s for host-made hard links to protected inodes: a hard link

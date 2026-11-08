@@ -89,7 +89,7 @@ writable .vscode/settings.json      settings.json writable, the rest of .vscode 
   In the reverse order `.vscode` decides, and `settings.json` stays read-only.
 
 Below a directory that a `writable` line names, a session can write names that the other lines
-protect. So the FUSE backend refuses:
+protect. So both backends refuse:
 
 - moving a directory or symlink out of that directory, including renaming the directory itself.
   `mv node_modules nm.bak` fails with `Operation not permitted`, while npm's renames inside
@@ -129,7 +129,7 @@ or more joined into `writable: <name>, <name>`; then the other lines.
 ## Under `--run-on-host`
 
 The host command's profile denies writes to the same names, in the same order. The profile has
-one limit, and the profile is stricter than the FUSE backend in two respects:
+one limit and two stricter rules:
 
 - A host command can move a directory out of `node_modules` over a directory of the workspace,
   together with a listed file that the session or the command wrote in the moved directory. For
@@ -138,17 +138,16 @@ one limit, and the profile is stricter than the FUSE backend in two respects:
   a directory that a line names, such as `.vscode/`. A listed file that arrives by such a move
   takes effect when a host program starts in its new directory: an editor opening `apps/web`, a
   Dev Container, mise, or an agent.
-- A session without `--run-on-host` has no such limit: the FUSE backend refuses the move.
+- A session without `--run-on-host` has no such limit: either backend refuses the move.
 - A workspace that wants a listed name read-only inside `node_modules` too repeats the name's line
   in its rule file. The rule file's lines follow the defaults' `writable node_modules`. npm then
   installs a package without that entry, prints `npm warn tar TAR_ENTRY_ERROR` for the entry, and
   exits 0.
-- The profile is stricter than the FUSE backend in two respects (`run-on-host-internals.md`, "The
-  host command's filesystem rules"):
+- Two rules are stricter (`run-on-host-internals.md`, "The host command's filesystem rules"):
   - a host command cannot `mkdir` a directory that a line passes through, such as `.claude`, or
-    `rmdir` that directory once it is empty;
+    `rmdir` that directory once it is empty, where either backend allows both;
   - a `writable` line lifts nothing below the target of a symlink that the rules reach, such as
-    `shared/claude` for `.claude -> shared/claude`.
+    `shared/claude` for `.claude -> shared/claude`, where the FUSE backend lifts it.
 
 ### Why a limit
 

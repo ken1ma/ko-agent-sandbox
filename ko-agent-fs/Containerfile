@@ -19,9 +19,9 @@
 #
 # The binaries are compiled from source on the user's own machine, not shipped
 # prebuilt, so what runs is what the user can read. They are *static* musl
-# executables because they are installed into a VM, and we cannot assume which
-# libc that VM has. The final stage is `scratch` and holds only the binaries,
-# so the extraction step takes nothing else.
+# executables because they run in a podman machine or on a native Linux host,
+# and we cannot assume either's libc. The final stage is `scratch` and holds
+# only the binaries, so the extraction step takes nothing else.
 
 # Debian 13 (trixie), matching the rest of this project's images.
 ARG RUST_VERSION=1.99.1
@@ -123,8 +123,8 @@ RUN --mount=type=cache,target=/build/target \
     mkdir /out; \
     for bin in ko-agent-fs ko-agent-fs-fuse; do \
         install -m 0755 "target/${triple}/release/${bin}" "/out/${bin}"; \
-        # A dynamically linked binary here would fail in the VM rather than in
-        # the build, which is the wrong place to find out.
+        # A dynamically linked binary here would fail where it runs rather than
+        # in the build, which is the wrong place to find out.
         ldd "/out/${bin}" 2>&1 | grep -q "statically linked\|not a dynamic executable"; \
     done
 

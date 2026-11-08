@@ -92,7 +92,7 @@ pub enum GuardedKind {
 
 /// Refuse the tree, or say what the mount protects beyond names: the relocated hook directories
 /// and the ends of symlinks at or below the entries `rules` make read-only or pin. `host_view`
-/// names the directories whose objects the daemon sees as the host does; a chain leaving them
+/// names the directories whose objects the guard sees as the host does; a chain leaving them
 /// refuses.
 pub fn resolve(
     backing_root: &Path,
@@ -362,7 +362,7 @@ impl Workspace {
         }
     }
 
-    /// Whether the daemon sees `path`, outside the workspace, as the host does: under a
+    /// Whether the guard sees `path`, outside the workspace, as the host does: under a
     /// `host_view` directory, or an ancestor of one that the chain only passes through.
     fn verifiable(&self, path: &Path, passing_through: bool) -> bool {
         self.host_view
@@ -384,7 +384,7 @@ impl Workspace {
     ///   missing operational name.
     /// - Under [`OnOrdinary::Record`], an ordinary workspace component is recorded instead, for
     ///   the caller to protect. A gitdir's writable state still refuses.
-    /// - A component outside the workspace must be one the daemon sees as the host does
+    /// - A component outside the workspace must be one the guard sees as the host does
     ///   ([`Self::verifiable`]).
     ///
     /// `subject` names what is being resolved, for the refusal an operator reads.
@@ -471,7 +471,7 @@ impl Workspace {
             }
         }
         // The loop lets a chain pass through an ancestor of a shared directory; one ending there,
-        // `/var/..` say, ends where the daemon's objects are not the host's.
+        // `/var/..` say, ends where the guard's objects are not the host's.
         if !current.starts_with(&self.root) && !self.verifiable(&current, false) {
             return Err(self.refuse_unverifiable(subject, &current));
         }
@@ -2355,7 +2355,7 @@ mod tests {
 
     #[test]
     fn a_chain_leaving_the_shares_refuses_and_one_staying_in_them_is_followed() {
-        // Through a podman machine the daemon sees the host's objects only in the shared
+        // Through a podman machine the guard sees the host's objects only in the shared
         // directories; outside them the host may follow a path back into the workspace unseen.
         let root = scratch("shares");
         let outside = scratch("shares-outside");

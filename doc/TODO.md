@@ -524,7 +524,7 @@ built.
 
 `sbt testWithPodman` typed in PowerShell runs `testFull` in the Windows JVM, and the ordinary
 suites assume a Unix JVM. Until those suites are fixed, `development.md` ("On Windows x64") runs
-only the container-launching suites on Windows. That document's command returns to
+only the container-launching suites. That document's command returns to
 `sbt testWithPodman` once the suites are fixed. The failures below are from Codex's run of
 2026-10-27 on the EC2 machine, and a run of 2026-10-28 fails the same suites.
 
@@ -544,9 +544,8 @@ only the container-launching suites on Windows. That document's command returns 
   and in path cases of `OptionsFileTest`, `AwsCredentialTest`, `AgentSandboxLauncherTest`,
   `EgressRulesTest`, `SandboxStatsTest`, `SandboxWorkspaceTest`, `ClaudePluginsTest` and
   `SandboxLifecycleTest`.
-- [ ] `ClaudePluginsTest`'s directory-symlink fixture loses `elsewhere/sbt-global` on Windows. The
-  fixture makes the link before the link's target, and which link type Windows then makes is
-  unchecked.
+- [ ] `ClaudePluginsTest`'s directory-symlink fixture loses `elsewhere/sbt-global`. The fixture
+  makes the link before the link's target, and which link type Windows then makes is unchecked.
 
 ## Capabilities a `NESTING=none` session could keep
 
@@ -1023,7 +1022,7 @@ Recorded macOS results (2026-09-18):
 
 - `MountPathTest`, `MountLifecycleTest` and the run-on-host acceptance test pass.
 - `sbt testFull` inside a session passes in every suite except `ClipboardRelayTest` and
-  `SandboxLifecycleTest`; those two pass when run alone on Linux.
+  `SandboxLifecycleTest`; those two pass when run alone.
 - The four agents start without a trust prompt on fresh and used volumes.
 - A host build's error reports a path accessible inside the session.
 

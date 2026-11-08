@@ -839,8 +839,9 @@ launching in an unfamiliar workspace, as you would its build scripts.
   line; "Reading without being able to write", below). Where a project enables the audit, its
   warnings do not stop installation.
 
-**Container, runtime and kernel escape.** On Linux the boundary ultimately depends on rootless
-podman, the OCI runtime, namespaces, seccomp and the host kernel.
+**Container, runtime and kernel escape.** The boundary ultimately depends on rootless podman, the
+OCI runtime, namespaces, seccomp and the kernel that runs the containers: the host's on Linux, the
+podman machine's elsewhere.
 
 - This design is not built to contain a working kernel or container-runtime exploit. If such an
   exploit enters the threat model, the answer is a stronger isolation layer (gVisor, a microVM), at
@@ -1574,8 +1575,8 @@ commands execute outside the container, so the profile provides their confinemen
   offer is fixed when the command starts. `doc/run-on-host-internals.md`, "Why only macOS", details
   the alternatives:
   - Linux: bubblewrap's mounts and a Landlock ruleset cover no `.git` created during the command.
-    A host command also gains nothing on Linux: a container command already runs on host memory, at
-    host speed.
+    A host command also gains nothing: a container command already runs on host memory, at host
+    speed.
   - Windows: AppContainer's ACLs express the grants but not the denies. ACL inheritance has no name
     patterns, so a `.git` created during the command inherits the workspace's allow.
 - **The sandbox asks; the host answers.** A host-side runner uses a FIFO channel like the clipboard

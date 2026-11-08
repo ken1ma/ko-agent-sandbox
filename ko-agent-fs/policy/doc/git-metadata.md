@@ -421,7 +421,7 @@ policy classifies as writable.
   can create.
   - Only NotFound means absent. An unreadable step, or a config that is not UTF-8, refuses the
     mount.
-  - Absent in the daemon's view means absent on the host only where the daemon sees the host's
+  - Absent in the guard's view means absent on the host only where the guard sees the host's
     objects. So a step outside them refuses too (below).
 
 The rule also makes the mount-time snapshot last:
@@ -443,10 +443,10 @@ The read-only root is added only when the hook directory resolves **inside** the
 
 - Hooks kept outside it cannot be reached through the mount (`RESOLVE_IN_ROOT` clamps the
   resolution). There is nothing to protect, and those repositories are served normally.
-- That holds where the daemon sees the host's own objects: all of them on native Linux, and through
+- That holds where the guard sees the host's own objects: all of them on native Linux, and through
   a podman machine only the directories the machine shares.
 - A chain leaving those directories refuses the mount, since the host could follow it back into the
-  workspace without the daemon seeing it.
+  workspace without the backend seeing it.
 
 The scanner skips section headers without reading their names. So it cannot tell `core.hooksPath`
 from a `hooksPath` under a section git never consults for hooks.
@@ -471,7 +471,7 @@ is the one hooks run from:
 When in doubt, the scanner refuses rather than guesses. In each case below it would otherwise
 compare a spelling other than the one hooks run from, or miss a `hooksPath` git reads:
 
-- a `~`: expanding it needs the host's home directory, which the daemon does not have;
+- a `~`: expanding it needs the host's home directory, which the guard does not have;
 - a backslash: git decodes escapes the scanner does not;
 - an unterminated quote;
 - a section header left open on its line;
@@ -578,14 +578,15 @@ Git's security advisories list exactly how repository state has become host code
 `security-research.md` has the verdict for each CVE, the watch-list and how to redo the research.
 The two conclusions this policy rests on are below.
 
-**The FUSE backend denies the final write of a whole class.**
+**Both backends deny the final write of a whole class.**
 
 - The class of CVE-2024-32002, CVE-2021-21300 and CVE-2014-9390 always ends the same way. Through a
   symlink, case-insensitivity and submodules, git is tricked into a *write* whose path it believes
   is in a worktree, but which resolves into `.git/hooks`.
-- The FUSE backend classifies the **resolved destination** of every mutation, following symlinks
-  through its own resolver. So when git on the sandbox side performs that final write, `open` or
-  `create` denies it, however clever the trick that produced the path.
+- Each backend classifies the **resolved destination** of every mutation: the FUSE backend follows
+  symlinks through its own resolver, and the BPF backend's hooks judge the dentry the kernel
+  resolved. So when git on the sandbox side performs that final write, the backend denies it,
+  however clever the trick that produced the path.
 - git on the host side bypasses both backends by design. There, the mitigation is a patched git, as
   for any untrusted clone.
 

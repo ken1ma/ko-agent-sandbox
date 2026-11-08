@@ -9,7 +9,7 @@ plain run, and compare. The plain run is the control, as the plain bind mount co
 performance table:
 
     cp .../xattr-probe.py <scratch-workspace>/
-    java -jar ko-agent-sandbox.jar python3 xattr-probe.py
+    java -jar ko-agent-sandbox.jar --workspace=live,fuse python3 xattr-probe.py
     .../bench/plain-bind.sh python3 xattr-probe.py      # the control
 
 Rows that differ between the two runs show what implementing xattrs would enable. Rows that fail

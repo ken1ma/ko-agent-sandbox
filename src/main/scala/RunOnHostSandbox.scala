@@ -44,7 +44,7 @@ object RunOnHostSandbox:
       *   - Each path is created and granted for the program that reads it (`sbtCachesGranted`,
       *     `gradleUserHomeGranted`, `m2RepositoryGranted`).
       *   - For the other programs, nothing reads the path. The path is named all the same, so that the environment has
-      *     the same variable names for every program, as `millDownloads` is for sbt. */
+      *     the same variable names for every program, as `millDownloads` is for every program but mill. */
     sbtGlobal: Path,
     ivyHome: Path,
     gradleUserHome: Path,
@@ -1039,7 +1039,7 @@ object RunOnHostSandbox:
       )
       _ = assembled.millLauncherVersion.filter(_ => assembled.millWithoutDaemon).foreach: version =>
         log(
-          s"mill $version runs the build without a daemon (--no-daemon): the JDK on macOS fails its daemon's " +
+          s"mill $version runs the build without a daemon (--no-daemon): the JDK fails its daemon's " +
             "read of each launcher under the sandbox, so each command starts its own JVM",
         )
       _ <- if assembled.millWithoutDaemon then awaitMillOutLock(buildDirectory, log) else Right(())
@@ -1374,9 +1374,9 @@ object RunOnHostSandbox:
       "USER" -> userName,
       "LOGNAME" -> userName,
     ) ++
-      // Set for every program, not mill alone: sbt ignores it, and one unconditional setting is simpler than a
-      // conditional one. Mill's bootstrap otherwise derives the folder from HOME and XDG_CACHE_HOME. This variable
-      // sets it to the folder that holds the executable the command is granted.
+      // Set for every program, not mill alone: the other programs ignore it, and one unconditional setting is
+      // simpler than a conditional one. Mill's bootstrap otherwise derives the folder from HOME and XDG_CACHE_HOME.
+      // This variable sets it to the folder that holds the executable the command is granted.
       millDownloads.map(dir => "MILL_FINAL_DOWNLOAD_FOLDER" -> dir.toString) ++
       // The bootstrap's own override, set to the JVM launcher of the pinned version. For a bare pin, the bootstrap
       // would run the native image (RunOnHostPrereqs.millLauncherVersion).
@@ -1401,8 +1401,9 @@ object RunOnHostSandbox:
   /**
    * The cost of switching where a build runs, paid before each sbt server starts (RunnerRuntimes.sweepTargetLinks).
    *
-   *   - sbt 2 leaves `target/` outputs as symlinks into its global base's content-addressed store. A tree that the
-   *     user's own sbt built therefore links into a store this profile cannot reach.
+   *   - sbt 2 leaves `target/` outputs as symlinks into its content-addressed store, which lies under the global base
+   *     only when `sbt.global.base` is set (run-on-host-internals.md, "sbt"). A tree that the user's own sbt built
+   *     therefore links into a store this profile cannot reach.
    *   - zinc treats the unreadable state as an error, not as a cold start (measured: `previousCompile` fails on
    *     `inc_compile_3.zip`).
    *   - This method removes every symlink under a `target/` directory that does not resolve inside a granted root,

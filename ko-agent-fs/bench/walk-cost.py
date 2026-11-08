@@ -7,7 +7,7 @@ the tree.
 Run it INSIDE a FUSE backend session, at the root of a workspace that is a git repository. It writes
 nothing; apart from the two commands, it only makes stat calls:
 
-    java -jar ko-agent-sandbox.jar python3 ko-agent-fs/bench/walk-cost.py
+    java -jar ko-agent-sandbox.jar --workspace=live,fuse python3 ko-agent-fs/bench/walk-cost.py
 
 Depth counts path components under the mount. Every figure is warm: each path is visited once
 before it is timed, and the two commands run once before their timed run.

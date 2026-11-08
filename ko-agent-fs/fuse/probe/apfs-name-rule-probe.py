@@ -7,7 +7,7 @@ the Windows 8.3 short names, which mean nothing outside NTFS. Run those by hand 
 Run INSIDE a sandbox session under the FUSE backend, from the root of a scratch workspace:
 
     cp .../apfs-name-rule-probe.py <scratch-workspace>/
-    java -jar ko-agent-sandbox.jar bash          # the FUSE backend unless you opt out
+    java -jar ko-agent-sandbox.jar --workspace=live,fuse bash   # the FUSE backend
     python3 apfs-name-rule-probe.py
 
 Then, on the HOST, run the checks this script cannot do. They test the property itself, on the

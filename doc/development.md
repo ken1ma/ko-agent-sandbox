@@ -198,7 +198,7 @@ Alternatively, on the host: copy the worktree
    [Windows 11 Enterprise 25H2 x64 Evaluation](https://www.microsoft.com/en-us/evalcenter/evaluate-windows-11-enterprise)
    itself runs for 90 days without a product key.
 1. In an Administrator PowerShell, allow the podman machine to reach TCP port 58036, where
-   `ProxyContainerTest`'s upstream proxy listens on Windows:
+   `ProxyContainerTest`'s upstream proxy listens:
 
    ```powershell
    New-NetFirewallRule -DisplayName 'ko-agent-sandbox upstream proxy test' -Direction Inbound `

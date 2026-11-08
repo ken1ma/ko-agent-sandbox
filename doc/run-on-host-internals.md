@@ -117,7 +117,7 @@ The filesystem rules define what a host command can access:
   - No rule can refuse moving a directory out of one that a `writable` line names, and still allow
     npm's renames and `rmdir` inside it. `doc/file-rules.md`, "Under `--run-on-host`", states the
     limit.
-  - The deny is stricter than the FUSE backend in one respect: it also refuses the entry's
+  - The deny is stricter than either backend in one respect: it also refuses the entry's
     `mkdir`, and the entry's `rmdir` once empty, because SBPL checks those two as it checks a
     rename's two sides.
 - **Below the target of a symlink that the rules reach, the profile keeps denying what a
@@ -290,8 +290,8 @@ The executable is the `sbt` that `cs install sbt` produced ([run-on-host.md](run
 "sbt").
 
 - The supervisor verifies that the executable belongs to the Coursier application-install
-  directory. On macOS that directory is `~/Library/Application Support/Coursier/bin`, whose space
-  makes correct shell quoting necessary.
+  directory. That directory is `~/Library/Application Support/Coursier/bin`, whose space makes
+  correct shell quoting necessary.
 - That `sbt` is two files. The 1.2 KB script on `PATH` execs a second `sbt` inside an unpacked
   distribution in the archive cache.
   - The profile grants the distribution's *home*, because the distribution's `sbt` reads
@@ -300,8 +300,8 @@ The executable is the `sbt` that `cs install sbt` produced ([run-on-host.md](run
     Running the script to ask would execute, on the host and unconfined, what the profile exists to
     contain.
 
-sbt 2 always runs a client against a server, and has no one-shot mode. So the runner starts the
-server, and each command's client attaches to it. The server runs:
+The runner runs every sbt version as a client against a server, because sbt 2 has no one-shot
+mode. So the runner starts the server, and each command's client attaches to it. The server runs:
 
 - inside the server profile, with the build directory as its working directory;
 - with the runner's own `tmp/` as its temporary and socket directory;
@@ -323,12 +323,15 @@ must not inherit:
 The server's state follows `-Dsbt.global.base` into the workspace's run-on-host cache.
 
 - The base must persist across commands. sbt 2 leaves `target/` outputs as symlinks into its
-  content-addressed store, so removing the base when the command ends would leave the build's own
-  outputs dangling.
-- The same fact causes the opposite problem: a tree that the user's unconfined sbt built links
-  into a store the profile denies.
-  - So the runner sweeps the `target/` symlinks that resolve outside the granted roots before it
-    starts an sbt server.
+  content-addressed store, and the store lies under the base's `cache/v2` when `sbt.global.base`
+  is set and `sbt.global.localcache` is not. So removing the base when the command ends would
+  leave the build's own outputs dangling.
+- Without `sbt.global.localcache`, `sbt.global.base` or `SBT_LOCAL_CACHE`, the user's unconfined
+  sbt keeps its store in the OS cache directory, `~/Library/Caches/sbt/v2`
+  (`SysProp.globalLocalCache`, sbt 2.0.12). So a tree that the user's sbt built links into a store
+  the profile denies.
+  - The runner therefore sweeps the `target/` symlinks that resolve outside the granted roots
+    before it starts an sbt server.
   - The sweep runs after any foreign server for the directory is shut down, with that server's
     build finished, so a sweep never runs during the user's own build.
 - `~/.sbt/boot` is not granted, and nothing needs it. With the global base redirected, sbt boots
@@ -567,7 +570,7 @@ From Mill 1.2.0-RC1 on, the supervisor runs `./mill --no-daemon <args>`, and the
 daemon. The build directory's only runtime is its proxy (`RunOnHostPrereqs.millRunsWithoutDaemon`).
 
 - Mill's daemon reads each launcher's start time with `ProcessHandle.info()`
-  (`LauncherOutFilesRecordStore.write`, com-lihaoyi/mill#6955). On macOS the JDK throws when the
+  (`LauncherOutFilesRecordStore.write`, com-lihaoyi/mill#6955). The JDK throws when the
   profile refuses `kern.procargs2.<pid>`, and every command fails with "Mill launcher failed"
   (`upstream-issues.md`, openjdk/jdk and com-lihaoyi/mill).
 - The daemon's profile cannot allow that read. The profile is fixed when the daemon starts, before

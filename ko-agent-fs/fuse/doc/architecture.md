@@ -41,7 +41,7 @@ policy on the operations the kernel forwards. Three other mechanisms were consid
     - a probe at every launch answers the configuration risk;
     - the C classifier is compiled for the host and run through the policy package's corpus
       (`../../policy/tests/bpf_equivalence.rs`).
-  - That backend is `--workspace=live,bpf` on the podman machines, and the default of both modes
+  - That backend is `--workspace=bpf`, the default on the podman machines in both modes
     (`../../../doc/bpf-lsm-cgroup.md`, "Launches").
 
 The deciding requirement is the **host/container asymmetry**: the workspace policy governs the
@@ -188,7 +188,7 @@ So these are fixed, not settings:
 - Writeback caching is **off**: it would let the kernel hold writes the host cannot see.
 - **`AUTO_INVAL_DATA`** is negotiated at `init`. A kernel that cannot offer it gets no mount:
   `init` returns `ENOTSUP`, the daemon dies at the handshake, and the launch fails with the daemon
-  log. The FUSE backend never serves a view that can go stale.
+  log. So no FUSE backend mount runs without that invalidation.
   - Zero metadata TTL keeps *attributes* fresh. But a file's cached *data* pages could still lag
     behind a host write: a `read` served from the page cache, or an `mmap`.
   - `AUTO_INVAL_DATA` makes the kernel drop cached pages when a `GETATTR` reports a change of size
@@ -220,11 +220,11 @@ the measurements, and `TODO.md`, "Performance", the open rows. In place:
   `fstat` on the live backing, the one the identity comparison makes (`fs.rs`, `open_ino`). The
   cached Git and rule contexts keep a mutation's policy check free of a path scan.
 
-The layer beneath matters too. The backing tree is itself the host share (virtiofs on a podman
-machine).
+The layer beneath matters too. The backing tree is itself the host share: virtiofs on the macOS
+machine, 9p on the WSL one.
 
 - TTL 0 makes *our* view read the backing again on every access. Coherency end to end also needs
-  that backing to show host writes promptly: that is the virtiofs mount's own cache mode.
+  that backing to show host writes promptly: that is the share's own cache mode.
 - TTL 0 is necessary. On macOS it is also the only cache policy in the path: the guest kernel
   caches nothing over virtiofs (`verification-log.md`, "the virtiofs layer itself").
 - That is a measurement of one hypervisor, to repeat after a podman or macOS upgrade, not a
@@ -345,9 +345,9 @@ code: `LauncherImages.bundleSourceId`.
 The daemon needs no privileges to mount:
 
 - fuser's pure-Rust mode falls back to the setuid `fusermount3` when a direct `mount(2)` is
-  refused. An ordinary VM user's mount then appears in their session namespace, exactly where
+  refused. An ordinary user's mount then appears in their session namespace, exactly where
   rootless podman resolves bind sources.
-- This is also why the FUSE backend's daemon is installed into the VM, not run as a FUSE sidecar
+- This is also why the FUSE backend's daemon is installed beside podman, not run as a FUSE sidecar
   container. Under rootless podman, a mount made *inside* a container does not propagate up to where
   the sandbox's bind could see it.
 

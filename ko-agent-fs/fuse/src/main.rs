@@ -267,7 +267,7 @@ fn self_test_mounted(backing: &PathBuf, mountpoint: &PathBuf) -> Result<(), Self
 ///   seconds, the kernel has nothing to notice within one second. Reporting that as an incoherent
 ///   kernel would abort every launch because of a true fact about the clock.
 /// - This runs on the local scratch tree, so it proves what the *kernel* does. The launcher's
-///   `--self-test` share rows measure the virtiofs share under a real session, per `doc/TODO.md`.
+///   `--self-test` share rows measure the host share under a real session, per `doc/TODO.md`.
 fn coherency_check(backing: &Path, mountpoint: &Path) -> Result<(), String> {
     use std::io::Write;
     use std::os::fd::AsRawFd;

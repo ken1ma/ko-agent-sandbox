@@ -49,8 +49,8 @@ This document tells you how to set up and use host commands. Other documents cov
 On macOS, the podman machine limits a build's memory, and keeps the memory that the build used:
 
 - An `sbt test` of this project takes about 2 GB inside the podman machine.
-- A session gets the machine's memory minus 1 GiB (README, `--memory`). podman's default macOS
-  machine has 2 GiB, which leaves the session about 1 GiB.
+- A session gets the machine's memory minus 1 GiB (README, `--memory`). podman's default machine
+  has 2 GiB, which leaves the session about 1 GiB.
 - containers.conf (`[machine]` `memory`) or `--memory` sets the machine's memory when the machine
   is created.
 - The machine keeps the memory that a build grew until macOS runs short of memory

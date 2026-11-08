@@ -1842,7 +1842,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       assert(section.contains(".ko-agent-sandbox/egress/rule"), section)
       assert(section.contains("deny-unless-allowed"), section)
     // --run-on-host adds the run-on-host instruction. The instruction names each served program's
-    // command, and only the served programs' daemons and listener rules, because the channel refuses
+    // command, and only the served programs' servers, daemons and listener rules, because the channel refuses
     // the others. Without the option, a macOS session gets one discovery paragraph, because only the
     // launcher knows the platform. Other platforms hear nothing about a command they can never have.
     val runOnHostSection =
@@ -1850,14 +1850,16 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(runOnHostSection.contains("ko-sandbox-run-on-host sbt"), runOnHostSection)
     assert(runOnHostSection.contains("ko-sandbox-run-on-host mill"), runOnHostSection)
     assert(
-      runOnHostSection.contains("The daemons of sbt, mill and gradle stay warm across invocations"),
+      runOnHostSection.contains("The sbt server and the mill and gradle daemons stay warm across invocations"),
       runOnHostSection,
     )
     assert(runOnHostSection.replace('\n', ' ').contains("Under sbt and mvn the host grants no TCP"), runOnHostSection)
     val sbtOnly = appendedSection(Mount, "live", resolution, Vector("sbt"), backend = "fuse")
-    assert(sbtOnly.contains("The daemon of sbt stays warm"), sbtOnly)
+    assert(sbtOnly.contains("The sbt server stays warm"), sbtOnly)
     assert(sbtOnly.replace('\n', ' ').contains("Under sbt the host grants no TCP"), sbtOnly)
     Vector("mill", "gradle", "mvn").foreach(other => assert(!sbtOnly.contains(other), sbtOnly))
+    val daemonsOnly = appendedSection(Mount, "live", resolution, Vector("mill", "gradle"), backend = "fuse")
+    assert(daemonsOnly.contains("The mill and gradle daemons stay warm across invocations"), daemonsOnly)
     val millOnly = appendedSection(Mount, "live", resolution, Vector("mill"), backend = "fuse")
     assert(millOnly.contains("Under mill a build's processes can bind listeners"), millOnly)
     Vector("sbt", "gradle", "mvn", "Operation not permitted").foreach: other =>

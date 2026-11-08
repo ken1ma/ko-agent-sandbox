@@ -195,11 +195,16 @@ object LaunchMessages:
           case Vector(one)     => one
           case init :+ last    => s"${init.mkString(", ")} and $last"
           case _               => ""
-        val withDaemon = selected("sbt", "mill", "gradle")
-        val daemons = withDaemon match
-          case Vector()    => ""
-          case Vector(one) => s"\nThe daemon of $one stays warm across invocations."
-          case many        => s"\nThe daemons of ${listed(many)} stay warm across invocations."
+        val warmDaemons = selected("mill", "gradle") match
+          case Vector()    => None
+          case Vector(one) => Some(s"the $one daemon")
+          case many        => Some(s"the ${listed(many)} daemons")
+        val verb = if selected("sbt", "mill", "gradle").size == 1 then "stays" else "stay"
+        val daemons = (selected("sbt").map(_ => "the sbt server") ++ warmDaemons) match
+          case Vector()          => ""
+          case Vector(one)       => s"\n${one.capitalize} $verb warm across invocations."
+          case Vector(one, more) => s"\n${one.capitalize} and $more stay warm across invocations."
+          case _                 => ""
         val sbtUsage =
           if runOnHost.contains("sbt") then
             """ To run several

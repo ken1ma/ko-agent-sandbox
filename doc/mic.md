@@ -629,8 +629,8 @@ Measured on 2026-10-11 on an Apple silicon Mac (Homebrew's `arm64_tahoe` bottles
 14.8.1 from Homebrew and the Mac's microphone, speaking.
 
 - `brew install sox_ng` installs the `rec` and `sox` names, with `coreaudio` as the one audio device
-  driver. Claude Code's own `/voice` on the Mac dictates with the `sox` formula uninstalled. That
-  result says nothing about sox_ng: on macOS, the CLI records with its built-in module.
+  driver. Claude Code's own `/voice` dictates with the `sox` formula uninstalled. That result says
+  nothing about sox_ng: the CLI records with its built-in module ("Claude Code", above).
 - The first `rec` run from a shell raised macOS's microphone permission prompt, naming the terminal
   application.
 - With the permission denied, in a newly installed terminal whose prompt was answered "Don't
@@ -658,8 +658,8 @@ Measured on 2026-10-11 on an Apple silicon Mac (Homebrew's `arm64_tahoe` bottles
       microphone permission check for the new process. The driver queries the device and tries to
       set its format, creates the I/O proc, starts the device and fills the first buffer.
     - The resampler adds up to 150 ms, and the output buffer adds the rest.
-- `podman exec <sandbox> true` on the Mac's podman machine takes 100 to 120 ms, which is the relay's
-  round trip before the writer starts.
+- `podman exec <sandbox> true` on the podman machine takes 100 to 120 ms, which is the relay's round
+  trip before the writer starts.
 
 ## Excluded
 

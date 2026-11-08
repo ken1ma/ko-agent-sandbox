@@ -494,7 +494,7 @@ object RunOnHostChannel:
       pumps.foreach(_.join())
       try service.ended(request.program)
       catch case NonFatal(ex) => log(s"after the command: ${ex.getClass.getSimpleName}: ${ex.getMessage}")
-      // Nothing is retired here on a cancel. The runner follows each program, and the two programs differ:
+      // Nothing is retired here on a cancel. The runner follows each program, and sbt and Mill differ:
       //
       // - Stock sbt's server survives a client's disconnect. The disconnect cancels the exec
       //   (CommandExchange.removeChannel, force=false), and the warm server serves the next command.

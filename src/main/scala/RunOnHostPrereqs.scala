@@ -1,7 +1,7 @@
 // What a host command is allowed to touch, decided before any of it runs:
 //
 // - where this workspace's disposable run-on-host caches are stored;
-// - which JDK and sbt are the Coursier-managed ones;
+// - which JDK, executable and distribution a command of each program runs from;
 // - which directory a request from inside the sandbox may name as a working directory.
 //
 // run-on-host-internals.md is the reference. This file is the contract's prerequisite half, and holds no backend.
@@ -341,7 +341,7 @@ object RunOnHostPrereqs:
   /**
    * The JDK the command runs on, from JAVA_HOME alone.
    *
-   *   - `java` on PATH is not a second source. On macOS it is `/usr/bin/java`, a stub that resolves through JAVA_HOME
+   *   - `java` on PATH is not a second source. It is `/usr/bin/java`, a stub that resolves through JAVA_HOME
    *     or java_home, and so reports the right JVM at the wrong path. Validating the binary establishes nothing about
    *     what it redirects to.
    *   - The answer is one canonical home, never a root holding JDKs. A current Coursier unpacks a JDK into its archive
@@ -662,7 +662,7 @@ object RunOnHostPrereqs:
    *
    *   - The build runs without a daemon under a launcher whose daemon reads each launcher's start time with
    *     `ProcessHandle.info()`.
-   *   - That call throws on macOS when the profile refuses `kern.procargs2.<pid>` (doc/upstream-issues.md,
+   *   - That call throws when the profile refuses `kern.procargs2.<pid>` (doc/upstream-issues.md,
    *     openjdk/jdk). The daemon's profile cannot name a launcher's pid, which is unknown when the daemon starts.
    *   - Without a daemon, the build runs as the launcher's child, inside the launcher's own sandbox, where the read is
    *     allowed.
@@ -1011,8 +1011,9 @@ object RunOnHostPrereqs:
    *   - A macOS UNIX-domain socket allows a 104-byte `sun_path`, NUL included.
    *   - The server side refuses a longer path with a message. The client's JNI connect has no such check, and dies in
    *     memcpy with `Trace/BPT trap: 5`. Measured: 52 runs, 56 traps.
-   *   - The supervisor points `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` and `java.io.tmpdir` at this one directory,
-   *     so this is the budget for all three.
+   *   - The supervisor points `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` and `java.io.tmpdir` at a session's `tmp/`,
+   *     the command's or the runner's (RunOnHostSandbox.temporaryDirectories), so every session's `tmp/` is held to
+   *     this budget.
    */
   val SessionTmpMaxLength: Int = 104 - 1 - "/.sbt/sbt-socket".length - "-9223372036854775808".length -
     "/sbt-load.sock".length

@@ -266,10 +266,11 @@ object SeatbeltProfile:
         // all of this).
         lines += s"""(allow network-outbound (remote ip "localhost:${inputs.proxyPort}"))"""
         // Seatbelt treats a UNIX-domain socket as network. Without this rule, sbt's server gets EPERM from bind() on
-        // its boot socket, and the client waits for it forever. The rule is confined to the command's temporary
-        // directory, where the command's environment points XDG_RUNTIME_DIR and SBT_GLOBAL_SERVER_DIR. A socket
-        // outside the subpath stays denied (measured).
-        lines += ";; sbt's boot and server sockets, inside the command's temporary directory."
+        // its boot socket, and the client waits for it forever. The rule is confined to the process's own `tmp/`,
+        // where XDG_RUNTIME_DIR and SBT_GLOBAL_SERVER_DIR point for every profile but the sbt client's. The client's
+        // point at the runner's `tmp/`, which Network.SbtClient grants. A socket outside the subpaths stays denied
+        // (measured).
+        lines += ";; sbt's boot and server sockets, inside the process's own tmp/."
         lines += "(allow network-bind network-inbound network-outbound " +
           s"(local unix-socket ${subpath(inputs.sessionTmp)}) (remote unix-socket ${subpath(inputs.sessionTmp)}))"
         // The client attaches to the server socket that the runner's server bound under the runner's tmp/,

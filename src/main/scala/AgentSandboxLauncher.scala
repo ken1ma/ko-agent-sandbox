@@ -1511,7 +1511,7 @@ object AgentSandboxLauncher:
       prompted = startPrompt(sessionStartMode, terminalReader).nonEmpty,
     ).fold(fail(_), identity)
     val (sessionRuleLines, sessionRulesText) = joinedRules match
-      case Some(running) => (FileRules.parseDaemonText(running.rules).fold(fail(_), identity), running.rules)
+      case Some(running) => (FileRules.parseRuleFileText(running.rules).fold(fail(_), identity), running.rules)
       case None          => (fileRuleLines, fileRulesText)
 
     // -----------------------------------------------------------------------
@@ -1919,18 +1919,18 @@ object AgentSandboxLauncher:
     //
     // The launch reads the workspace's egress/ here on the host, and hands the rules to the proxy at startup.
     // readRuleFiles has the forms, and SECURITY.md has the reason. The workspace mode itself keeps a session from
-    // writing the next session's rules: the read-only mode's `ro` bind of the raw tree, or the live mode's FUSE
-    // reserved-name rule.
+    // writing the next session's rules: the read-only mode's `ro` bind of the raw tree, or the live mode's backend,
+    // which refuses writes under `.ko-agent-sandbox`.
     val ruleFiles = readRuleFiles(boundaryDir.resolve("egress")).fold(fail(_), identity)
 
     // The workspace files that a host program executes on an event (FileRules). The launch reads them as it reads the
     // egress rules, and resolves them to what the workspace policy and the Seatbelt profile enforce. The workspace
-    // policy's guard adds to the rules at the mount. Under --workspace=read-only with --run-on-host, where no daemon
-    // runs, `ko-agent-fs --resolve` adds to them.
+    // policy's guard adds to the rules at the FUSE backend's mount, or in the BPF backend's launch script. Under
+    // --workspace=read-only with --run-on-host, where no daemon runs, `ko-agent-fs --resolve` adds to them.
     val workspaceFileRules = FileRules.readRuleFile(boundaryDir.resolve("file")).fold(fail(_), identity)
     val fileRuleLines = FileRules.resolve(workspaceFileRules.fold(Vector.empty[FileRules.Line])(_(1)))
     val fileRulesInForce = workspaceMode == "live" || runOnHost.nonEmpty
-    val fileRulesText = FileRules.daemonText(fileRuleLines, FileRules.hostView(os, mountPath))
+    val fileRulesText = FileRules.ruleFileText(fileRuleLines, FileRules.hostView(os, mountPath))
     val readOnlyFileRules = Option.when(workspaceMode == "read-only" && runOnHost.nonEmpty)(
       resolveFileRules(podman, os, workspaceId, mountPath, fileRulesText),
     )
@@ -2502,7 +2502,8 @@ object AgentSandboxLauncher:
     ) ++ sandboxFiles
 
     // The rule lines that the session's writes are held to, for the agent to consult on a refusal. What the workspace
-    // policy's guard adds at the mount comes after the container exists, and is not among these lines.
+    // policy's guard adds comes later, at the FUSE backend's mount or in the BPF backend's launch script, and is not
+    // among these lines.
     val fileRuleArgs = Option.when(fileRulesInForce)(
       s"--env=KO_AGENT_SANDBOX_FILE_RULES=${sessionRuleLines.map(_.text).mkString("\n")}",
     ).toVector

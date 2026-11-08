@@ -154,7 +154,7 @@ The `.git` rows in the recorded runs pass on APFS (both variants, macOS 26.4.1) 
 
 ### End-to-end coherency through the real host share
 
-TTL 0 covers our layer only. End to end, the virtiofs share beneath must also show host writes
+TTL 0 covers our layer only. End to end, the host share beneath must also show host writes
 promptly (`architecture.md`).
 
 - The launcher's `--self-test` share rows measure both paths a write can take, `read()` and an

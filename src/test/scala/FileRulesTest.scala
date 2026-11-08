@@ -76,8 +76,8 @@ class FileRulesTest extends munit.FunSuite:
 
   test("a joined mount's rules are described beyond the defaults, and read back from the daemon's text"):
     val extra = lines("writable .claude/skills\nread-only .envrc\n")
-    val text = daemonText(Defaults ++ extra, Vector("/"))
-    assertEquals(parseDaemonText(text), Right(Defaults ++ extra))
+    val text = ruleFileText(Defaults ++ extra, Vector("/"))
+    assertEquals(parseRuleFileText(text), Right(Defaults ++ extra))
     assertEquals(
       runningLaunchLines(Defaults ++ extra, color = false),
       Vector(
@@ -96,7 +96,7 @@ class FileRulesTest extends munit.FunSuite:
       runningLaunchLines(otherDefaults, color = false),
       Vector("the running mount's file rules: read-only .vscode"),
     )
-    assert(parseDaemonText("host-view /\nallow .vscode\n").swap.exists(_.contains("allow .vscode")))
+    assert(parseRuleFileText("host-view /\nallow .vscode\n").swap.exists(_.contains("allow .vscode")))
 
   test("a command without a launch's set reads the workspace's lines, and a launch's set reads back from its file"):
     val dir = Files.createTempDirectory("file-rules-workspace")
@@ -131,7 +131,7 @@ class FileRulesTest extends munit.FunSuite:
 
   test("the daemon's text leads with the host view, and the resolved set reads back"):
     assertEquals(
-      daemonText(Vector(Line(Word.ReadOnly, ".vscode")), hostView(HostCommands.Os.Mac, "/Users/u/p")),
+      ruleFileText(Vector(Line(Word.ReadOnly, ".vscode")), hostView(HostCommands.Os.Mac, "/Users/u/p")),
       "host-view /Users /private /var/folders\nread-only .vscode\n",
     )
     assertEquals(hostView(HostCommands.Os.Linux, "/home/u/p"), Vector("/"))

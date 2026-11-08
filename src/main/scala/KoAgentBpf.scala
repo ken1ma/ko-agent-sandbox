@@ -449,8 +449,8 @@ object KoAgentBpf:
   /**
    * What keeps `--build` from building the backend on this machine: the kernel prerequisites and the
    * kernel's BTF, which the compile reads.
-   * - On any failure, the build skips the BPF backend and the FUSE backend's build goes on, since `fuse` is the
-   *   default.
+   * - On any failure, the build skips the BPF backend and the FUSE backend's build goes on, since a `fuse` launch
+   *   needs nothing of the BPF backend.
    * - On none, the build tries the backend. A failure of the backend's build or install warns
    *   (buildFailedNote) and does not fail the rest of the build.
    */
@@ -912,6 +912,6 @@ object KoAgentBpf:
     * the attach cgroup needs a WSL setting ("Environment evidence"). */
   def createFailureNote(os: Os, error: String): Option[String] =
     Option.when(os == Os.Windows && (error.contains("controller pids") || error.contains("cgroup")))(
-      "The podman machine on Windows places a container below the attach cgroup only with " +
+      "The podman machine places a container below the attach cgroup only with " +
         "`isolateDistroCgroup=false` under `[wsl2]` in %UserProfile%\\.wslconfig, after `wsl --shutdown`.",
     )

@@ -142,8 +142,8 @@ object FileRules:
       case Os.Mac     => Vector("/Users", "/private", "/var/folders")
       case Os.Windows => Vector(mountPath.split("/").take(3).mkString("/"))
 
-  /** What the daemon reads: the host-view line, then the lines. */
-  def daemonText(lines: Vector[Line], hostView: Vector[String]): String =
+  /** What the guard reads: the host-view line, then the lines. */
+  def ruleFileText(lines: Vector[Line], hostView: Vector[String]): String =
     (s"host-view ${hostView.mkString(" ")}" +: lines.map(_.text)).map(_ + "\n").mkString
 
   /**
@@ -218,8 +218,8 @@ object FileRules:
     val names = rules.map(_.stripPrefix(s"${Word.Writable.keyword} ")).distinct
     if names.size < 2 then rules.distinct else Vector(s"${Word.Writable.keyword}: ${names.mkString(", ")}")
 
-  /** The rule lines of a text daemonText wrote, as a running mount serves them. */
-  def parseDaemonText(text: String): Either[String, Vector[Line]] =
+  /** The rule lines of a text ruleFileText wrote, as a running mount serves them. */
+  def parseRuleFileText(text: String): Either[String, Vector[Line]] =
     parseResolved(text.linesIterator.filterNot(_.startsWith("host-view ")).mkString("\n")).map(_.lines)
 
   /** What the workspace policy's guard added, once the guard has answered. */

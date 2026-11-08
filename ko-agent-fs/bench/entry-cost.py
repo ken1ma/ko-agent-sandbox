@@ -12,7 +12,7 @@ Run it in a scratch workspace, once per stack, and compare the columns:
 
 
     cp .../entry-cost.py <scratch-workspace>/ && cd <scratch-workspace>
-    java -jar ko-agent-sandbox.jar python3 entry-cost.py         # the FUSE backend
+    java -jar ko-agent-sandbox.jar --workspace=live,fuse python3 entry-cost.py   # the FUSE backend
     .../bench/plain-bind.sh python3 entry-cost.py
 
 The control matters more than the absolute numbers. On the measured macOS stack the hypervisor
