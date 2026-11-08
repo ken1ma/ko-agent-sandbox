@@ -89,11 +89,8 @@ object HostCommands:
       home.filter(directory => directory.isAbsolute && path.startsWith(directory)).map: directory =>
         val relative = directory.relativize(path).toString
         // Quoting ~ would suppress home expansion when the path is pasted into a shell.
-        if relative.isEmpty then "~" else s"~/${posixPathArgument(relative)}"
-      .getOrElse(posixPathArgument(path.toString))
-
-  private def posixPathArgument(path: String): String =
-    if BareWord.matches(path) then path else "'" + path.replace("'", "'\\''") + "'"
+        if relative.isEmpty then "~" else s"~/${renderArgument(relative)}"
+      .getOrElse(renderArgument(path.toString))
 
   private val WindowsBarePath = """[A-Za-z0-9_:\\./-]+""".r
 
@@ -488,6 +485,11 @@ object HostCommands:
 
   def run(command: String*): Run = runProcess(ProcessBuilder(command*))
 
+  /** The names a listing such as `podman ps --format {{.Names}}` prints one per line, or its stderr when it fails. */
+  def listedNames(command: String*): Either[String, Vector[String]] =
+    val listing = run(command*)
+    Either.cond(listing.ok, listing.text.linesIterator.map(_.trim).filter(_.nonEmpty).toVector, listing.err)
+
   /** `run`, with `environment` set in the child's own environment. A value-less `--env=NAME` of `podman create` reads
     * from there. */
   def runWithEnvironment(environment: Map[String, String], command: String*): Run =
@@ -653,6 +655,35 @@ object HostCommands:
   def containerRunning(podman: String, container: String): Boolean =
     try run(podman, "container", "inspect", "--format", "{{.State.Running}}", container).text.trim == "true"
     catch case _: IOException => false
+
+  /**
+   * A Windows relay's loop, which is the POSIX relay's `while` in Java: waits for the sandbox to run, then calls
+   * `serveOnce` while the sandbox runs, and pauses a second after a call that served nothing or failed. The first
+   * wait is bounded like the reaper's, for a launcher that never reaches the start.
+   */
+  def serveWhileRunning(podman: String, sandboxContainer: String)(serveOnce: () => Boolean): Unit =
+    def running(): Boolean = containerRunning(podman, sandboxContainer)
+    var waited = 0
+    while !running() && waited < 600 do
+      Thread.sleep(1000)
+      waited += 1
+    while running() do
+      val served =
+        try serveOnce()
+        catch case _: IOException => false
+      if !served then Thread.sleep(1000)
+
+  /** What a relay's request reader in the sandbox prints, up to `maxBytes`. A reader that reaches the cap is cut
+    * there and ended. */
+  def relayRequest(command: Seq[String], maxBytes: Int): Array[Byte] =
+    val reader = ProcessBuilder(command*)
+      .redirectError(ProcessBuilder.Redirect.DISCARD)
+      .start()
+    reader.getOutputStream.close()
+    val bytes = reader.getInputStream.readNBytes(maxBytes)
+    if bytes.length == maxBytes then reader.destroy()
+    reader.waitFor()
+    bytes
 
   private lazy val podmanResolution: (String, Option[Run]) =
     val found = findOnPath("podman", currentOs)

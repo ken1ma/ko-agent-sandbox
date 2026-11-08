@@ -54,7 +54,7 @@ object RefusalAdvice:
   def hostNotAllowed(host: String, profile: String): String =
     val default = RulesetHelper.DefaultProfile
     val defaults = RulesetHelper.DefaultHosts.contains(host)
-    val addition = s"'allow https://$host/ read' in .ko-agent-sandbox/egress/rule"
+    val addition = s"'${RulesetHelper.hostReadLine(host)}' in ${RulesetHelper.WorkspaceRuleFile}"
     if profile == default then
       if defaults then
         "This workspace's rule file starts from deny defaults and does not allow it. Ask the user; do not look " +
@@ -108,6 +108,8 @@ object RefusalAdvice:
 
   val hostHeader = "The Host header must name the host the tunnel was opened to."
 
+  /** The agent instructions state the same RulePath checks in shorter words (LaunchMessages.appendedSection, "Egress");
+    * a change to RulePath changes both texts. */
   val ambiguousPath =
     "Spell the path in printable ASCII without dot segments, backslashes, semicolons, # or empty segments. " +
       "Percent-encode only non-ASCII text and spaces, and nothing at all in a POST, PUT, PATCH or DELETE."

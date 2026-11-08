@@ -1,6 +1,6 @@
 // The certificates of TLS inspection: the CA that the launcher creates for a workspace, and the leaf that the
 // launcher issues for the inspected hosts. One builder makes both, so every chain has one profile. The launcher
-// compiles this file in, and the launcher's CertificateHelper.scala calls it.
+// compiles this file in and calls it. CertificateHelper.scala parses and checks what this file builds.
 //
 // The builder is the JDK's own internal one, the classes that keytool and CertificateFactory run. JCA has no public
 // certificate builder, and every library that has one is a dependency that neither program carries:
@@ -36,7 +36,9 @@ object X509Helper:
 
   private val SignatureAlgorithm = "SHA256withECDSA"
 
-  case class IssuedCertificate(certificate: X509Certificate, privateKey: PrivateKey)
+  case class IssuedCertificate(certificate: X509Certificate, privateKey: PrivateKey):
+    def certificatePem: String = CertificateHelper.toPem("CERTIFICATE", certificate.getEncoded)
+    def privateKeyPem: String = CertificateHelper.toPem("PRIVATE KEY", privateKey.getEncoded)
 
   /** A self-signed P-256 CA that signs certificates and CRLs and nothing else, with no CA below it (path length 0).
     * A leaf's Authority Key Identifier points at the CA's Subject Key Identifier; issueLeaf records why. */

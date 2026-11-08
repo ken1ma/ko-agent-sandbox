@@ -8,7 +8,7 @@
 
 package agentsandbox.launcher
 
-import agentsandbox.egress.{CredentialBinding, CredentialGrammar}
+import agentsandbox.egress.{CredentialBinding, CredentialGrammar, RulesetHelper}
 
 import AgentSandboxLauncher.*
 
@@ -150,9 +150,6 @@ object CommandLine:
       reason <- unixSocketRefusal(merged)
     yield s"error: the options file's --workspace=${fromFile.spelled} and the command line's " +
       s"--workspace=${stated.spelled} merge to ${merged.spelled}; $reason"
-
-  val EgressProfiles = Vector("deny-all", "deny-unless-model", "deny-unless-allowed")
-  val DefaultEgressProfile = "deny-unless-allowed"
 
   /**
    * Each grant of a host resource comes from a launcher option, on the command line or in the options file. A grant
@@ -301,7 +298,7 @@ object CommandLine:
     /** The settings of `workspace`, with the defaults for the parts no source stated. */
     def workspaceSettings: WorkspaceSettings = workspace.fold(WorkspaceSettings.Default)(_.settings)
     def workspaceMode: String = workspaceSettings.mode
-    def egressProfile: String = egress.getOrElse(DefaultEgressProfile)
+    def egressProfile: String = egress.getOrElse(RulesetHelper.DefaultProfile)
     def clipboardMode: String = clipboard.getOrElse(DefaultClipboardMode)
     def nestingMode: String = nesting.getOrElse(DefaultNestingMode)
     def sessionStartMode: String = sessionStart.getOrElse(DefaultSessionStartMode)
@@ -535,7 +532,10 @@ object CommandLine:
             parseWorkspace(value)
               .flatMap(stated => parsed.workspace.fold(Right(stated))(joinWorkspace(_, stated)))
               .flatMap(joined => update(parsed.copy(workspace = Some(joined)))),
-        () => single("--egress", parsed.egress, (p, v) => p.copy(egress = v))(choose("--egress", _, EgressProfiles)),
+        () =>
+          single("--egress", parsed.egress, (p, v) => p.copy(egress = v))(
+            choose("--egress", _, RulesetHelper.Profiles),
+          ),
         () =>
           single("--clipboard", parsed.clipboard, (p, v) => p.copy(clipboard = v))(
             choose("--clipboard", _, ClipboardModes),
@@ -568,7 +568,7 @@ object CommandLine:
             case value =>
               EgressCredentials.parseOption(value, RefusedForwardPrefix).flatMap: binding =>
                 if parsed.credentialBindings.exists(_.name == binding.name) then
-                  Left(s"error: --egress-cred=${binding.spelled}; ${binding.name} is bound twice; one name, one host")
+                  Left(s"error: --egress-cred=${binding.spelled}; ${CredentialGrammar.boundTwice(binding.name)}")
                 else update(parsed.copy(credentialBindings = parsed.credentialBindings :+ binding))
           },
         // The parser keeps the paths as spelled. ClaudePlugins.resolve reads the paths against the host at launch.
@@ -598,7 +598,7 @@ object CommandLine:
             case spelled =>
               val (name, value) = spelled.span(_ != '=')
               if !CredentialGrammar.environmentName(name) then
-                Left(s"error: --env=$name; a variable is named [A-Za-z_][A-Za-z0-9_]*")
+                Left(s"error: --env=$name; a variable name is ${CredentialGrammar.EnvironmentNameForm}")
               else if parsed.env.exists(_.name == name) then Left(s"error: --env=$name is given twice")
               else update(parsed.copy(env = parsed.env :+ EnvForward(name, Option.when(value.nonEmpty)(value.drop(1)))))
           },

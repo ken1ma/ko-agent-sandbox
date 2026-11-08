@@ -15,7 +15,7 @@ package agentsandbox.launcher
 
 import java.nio.file.{Files, Path}
 
-import agentsandbox.egress.{CredentialBinding, RulesetHelper}
+import agentsandbox.egress.{AgentEgressProxy, CredentialBinding, RulesetHelper}
 
 import AgentSandboxLauncher.*
 import HostCommands.*
@@ -60,7 +60,7 @@ object EgressRules:
     resolved.linesIterator.find(_.startsWith(RulesetHelper.WideningLineHead)).toVector.flatMap: line =>
       line.drop(line.indexOf("):") + 2).trim.split("; ").toVector.filter(_.nonEmpty)
 
-  private val WholeHostRule = """allow https://([^/ ]+)/ (.+)""".r
+  private val WholeHostRule = s"${java.util.regex.Pattern.quote(RulesetHelper.AllowLineHead)}([^/ ]+)/ (.+)".r
 
   /** Joins whole-host rules (`allow https://<host>/ <words>`) that share their grant words into one
     * line, `allow <words>: <host>, <host>`, at the first rule's place. A report that lists many hosts
@@ -132,9 +132,9 @@ object EgressRules:
       head <- lines.headOption.filter(_.startsWith(RulesetHelper.ProfileLineHead)).toRight(NoProfileLine)
       profile = head.stripPrefix(RulesetHelper.ProfileLineHead).takeWhile(_ != ';')
       provider = head.split(RulesetHelper.ModelProviderLabel, 2).lift(1).map(_.trim).filter(_.nonEmpty)
-      _ <- Either.cond(profile == "deny-all" || provider.nonEmpty, (), noProviderField(profile))
-      inspected <- counts.get("inspected hosts").toRight(NoSummaryCounts)
-      tunnel <- counts.get("tunnel hosts").toRight(NoSummaryCounts)
+      _ <- Either.cond(profile == RulesetHelper.DenyAll || provider.nonEmpty, (), noProviderField(profile))
+      inspected <- counts.get(RulesetHelper.InspectedHostsField).toRight(NoSummaryCounts)
+      tunnel <- counts.get(RulesetHelper.TunnelHostsField).toRight(NoSummaryCounts)
     yield
       def named(name: String) = chosen(name, color, providersFromFile(name))
       val selected = provider.map:
@@ -225,13 +225,15 @@ object EgressRules:
     profile: String,
   ): Either[String, Option[String]] =
     val name = commandName(command)
-    if profile == "deny-all" && named.nonEmpty then
-      Left(s"error: ${CommandLine.ModelProviderOption} selects no host under --egress=deny-all; drop it")
+    if profile == RulesetHelper.DenyAll && named.nonEmpty then
+      Left(
+        s"error: ${CommandLine.ModelProviderOption} selects no host under --egress=${RulesetHelper.DenyAll}; drop it",
+      )
     else
       val own = commandProvider(command)
       val selected = own.toVector ++ named.filterNot(own.contains)
       Option.when(selected.nonEmpty)(selected.mkString(",")) match
-        case None if profile != "deny-all" && name.exists(ProviderlessAgents) =>
+        case None if profile != RulesetHelper.DenyAll && name.exists(ProviderlessAgents) =>
           Left(
             s"error: ${name.get} has no fixed model provider; name the session's providers with " +
               s"${CommandLine.ModelProviderOption}=<names>, separated by commas",
@@ -242,10 +244,10 @@ object EgressRules:
     * proxy never sees the command or the option, so the warning cannot come from the proxy's resolution.
     * `command` is the command's first word; a launch without a command runs the image's default. */
   def noProviderLine(command: Option[String], profile: String): Option[String] =
-    Option.when(profile != "deny-all"):
+    Option.when(profile != RulesetHelper.DenyAll):
       val subject = command.fold("no command is given")(name => s"'$name' is not a recognized agent command")
       val effect =
-        if profile == "deny-unless-model" then "allows no host"
+        if profile == RulesetHelper.DenyUnlessModel then "allows no host"
         else "starts from the catalog alone; the workspace's rule file applies after it"
       s"$subject and no ${CommandLine.ModelProviderOption} is given, so $profile selects no model provider and $effect"
 
@@ -277,8 +279,8 @@ object EgressRules:
     run(
       (Vector(podman, "run", "--rm", "--pull=never", "--network=none")
         ++ rulesetEnvArgs(profile, provider, ruleFiles)
-        ++ Vector(proxyImage, "--print-ruleset")
-        ++ Option.when(provenance)("--provenance"))*
+        ++ Vector(proxyImage, AgentEgressProxy.PrintRulesetFlag)
+        ++ Option.when(provenance)(AgentEgressProxy.ProvenanceFlag))*
     )
 
   /**
@@ -297,7 +299,7 @@ object EgressRules:
   /** The proxy's transport line from its log, without the instant stamp. The proxy writes the line
     * before the ready line (AgentEgressProxy.serve), so the line is there once the launch is. */
   def transportLineOf(log: String): Option[String] =
-    log.linesIterator.map(_.dropWhile(_ != ' ').drop(1))
+    log.linesIterator.flatMap(agentsandbox.egress.LogHelper.unstamped)
       .find(_.startsWith(agentsandbox.egress.TransportHelper.TransportLineHead))
 
   /** The --env arguments that pass the selected profile, provider and rule files to the proxy. The dry
@@ -367,8 +369,10 @@ object EgressRules:
 
   private def allowedHostsOf(dryRunOutput: String, tunnel: Boolean): Vector[String] =
     rulesetLinesOf(dryRunOutput).linesIterator
-      .filter(line => line.startsWith("allow https://") && line.endsWith(" tunnel") == tunnel)
-      .map(_.stripPrefix("allow https://").takeWhile(_ != '/'))
+      .filter(line =>
+        line.startsWith(RulesetHelper.AllowLineHead) && line.endsWith(" " + RulesetHelper.Grant.Tunnel) == tunnel,
+      )
+      .map(_.stripPrefix(RulesetHelper.AllowLineHead).takeWhile(_ != '/'))
       .toVector
       .distinct
       .sorted
@@ -395,11 +399,9 @@ object EgressRules:
       sys.exit(0)
     else
       requirePodman(os)
-      val running = run(podman, "ps", "--format", "{{.Names}}")
-      if !running.ok then
-        fail(s"error: could not list the running containers\n${running.err}")
-      val proxies = running.text.linesIterator
-        .map(_.trim)
+      val running = listedNames(podman, "ps", "--format", "{{.Names}}")
+        .fold(err => fail(s"error: could not list the running containers\n$err"), identity)
+      val proxies = running
         .filter(isRunNamed(proxyRunContainer, id))
         .toList
       if proxies.isEmpty then
@@ -454,7 +456,7 @@ object EgressRules:
 
     (workspaceId, proxyImageId, ruleFiles, provider)
 
-  private def ruleFileSource(name: String): String = s".ko-agent-sandbox/egress/$name"
+  private def ruleFileSource(name: String): String = s"${RulesetHelper.WorkspaceRuleDirectory}/$name"
 
   /** Prints the workspace's rule file as written, on one line. The egress actions print this line and
     * report no widening on stderr; a launch prints launchLines instead. */
@@ -531,7 +533,7 @@ object EgressRules:
         run(
           (Vector(podman, "run", "--rm", "--pull=never", s"--network=$network")
             ++ rulesetEnvArgs(profile, provider, ruleFiles) ++ upstreamProxyArgs(env)
-            ++ Vector(proxyImageId, "--check-host", host))*
+            ++ Vector(proxyImageId, AgentEgressProxy.CheckHostFlag, host))*
         )
       finally
         if !runOk(podman, "network", "rm", network) then

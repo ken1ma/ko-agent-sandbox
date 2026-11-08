@@ -68,6 +68,7 @@ object RunOnHostPrereqs:
     case WorkingDirectoryOutsideWorkspace(requested: String)
     case SessionTmpTooLong(path: Path, max: Int)
     case RuleOutsideProgramGrammar(line: String)
+    case RuleRefusedByProxy(reason: String)
 
   /**
    * The refusal as the blocked reader sees it: what stopped the command, and what to do next.
@@ -139,6 +140,7 @@ object RunOnHostPrereqs:
       s"the command's temporary directory ${shown(path)} is longer than $max characters, sbt's socket path budget"
     case Refusal.RuleOutsideProgramGrammar(line) =>
       s"'$line' is outside the program's rule grammar: one `$ProgramRuleForm` per line"
+    case Refusal.RuleRefusedByProxy(reason) => RunOnHostInspection.proxyRulesRefusal(reason)
 
   /** Everything settled before a command is asked for. Every path is canonical. */
   case class CommandPrereqs(
@@ -1033,8 +1035,12 @@ object RunOnHostPrereqs:
     case Program.Gradle | Program.Mvn => "repo.maven.apache.org"
 
   def programRulePath(workspaceRoot: Path, program: Program): Path =
-    SandboxWorkspace.boundaryDirOf(workspaceRoot)
-      .resolve("run-on-host").resolve(program.name).resolve("egress").resolve("rule")
+    SandboxWorkspace.boundaryDirOf(workspaceRoot).resolve(programRuleFile(program.name))
+
+  /** The program's rule file relative to the boundary directory, joined with `/` as messages name it. */
+  def programRuleFile(program: String): String = s"run-on-host/$program/egress/rule"
+
+  def programRuleFileShown(program: String): String = s"${SandboxWorkspace.BoundaryDirName}/${programRuleFile(program)}"
 
   /**
    * The hosts of the program's rule file, validated to the program's rule grammar (run-on-host.md, "Configuration").
@@ -1095,11 +1101,8 @@ object RunOnHostPrereqs:
           s"error: ${stray.mkString(", ")}: not configuration this launcher reads (a typo, or a newer " +
             "launcher's file); check the spelling or update the launcher"
 
-  /** The one line form the program's rule file holds, for `host`. */
-  def programRuleLine(host: String): String = s"allow https://$host/ read"
-
-  /** The line form as the refusal spells it. */
-  val ProgramRuleForm = programRuleLine("<host>")
+  /** The one line form the program's rule file holds, as the refusal spells it. */
+  val ProgramRuleForm = agentsandbox.egress.RulesetHelper.hostReadLine("<host>")
 
   /**
    * The program's rule file grammar: `allow https://<host>/ read` lines and `#` comments, and nothing else. The
@@ -1108,23 +1111,28 @@ object RunOnHostPrereqs:
    *   - The proxy's full grammar would let one `allow model-provider` line expand into endpoints that are no artifact
    *     repository. A `tunnel` or `method=` word would let a host command write to a host.
    *   - Anything outside the subset is refused here, never passed through for the proxy to interpret.
-   *   - The words are the proxy's own (RulesetHelper.ruleTokens), and a `#` inside a word is refused. A line read here
-   *     is therefore the line the proxy would read, and `read#typo` is not `read`.
-   *   - The proxy's own parser normalizes and vets the host.
+   *   - The proxy's parser reads each line, so the hosts come back in the proxy's spelling, and two spellings of one
+   *     host count once. A line of the form whose URL the proxy refuses, such as one with a port or an IP literal, is
+   *     refused with the proxy's reason.
    */
   def programRuleHosts(text: String): Either[Refusal, Vector[String]] =
-    val lines = text.linesIterator
-      .map(agentsandbox.egress.RulesetHelper.ruleTokens)
-      .filter(_.nonEmpty)
-      .toVector
-    def hostOf(tokens: Vector[String]): Option[String] = tokens match
-      case Vector("allow", url, "read") if url.startsWith("https://") && url.endsWith("/") && !url.contains('#') =>
-        val host = url.drop("https://".length).dropRight(1)
-        Option.when(host.nonEmpty && !host.contains('/') && !host.startsWith("*"))(host)
-      case _ => None
-    lines.find(hostOf(_).isEmpty) match
-      case Some(outside) => Left(Refusal.RuleOutsideProgramGrammar(outside.mkString(" ")))
-      case None          => Right(lines.flatMap(hostOf).distinct)
+    import agentsandbox.egress.{RulePath, RulesetHelper}
+    import RulesetHelper.{Grant, Rule}
+    def hostOf(tokens: Vector[String]): Either[Refusal, String] =
+      val line = tokens.mkString(" ")
+      val programForm = tokens.size == 3 && line.startsWith(RulesetHelper.AllowLineHead) && tokens(2) == Grant.Read
+      try
+        RulesetHelper.parseRules(RulesetHelper.RuleFile, line).map(_.rule) match
+          case Vector(Rule.Allow(host, RulePath.Root, grants)) if grants == Set(Grant.Read) => Right(host)
+          case _ => Left(Refusal.RuleOutsideProgramGrammar(line))
+      catch
+        case ex: IllegalArgumentException =>
+          Left(
+            if programForm then Refusal.RuleRefusedByProxy(ex.getMessage) else Refusal.RuleOutsideProgramGrammar(line),
+          )
+    text.linesIterator.map(RulesetHelper.ruleTokens).filter(_.nonEmpty).toVector
+      .foldLeft[Either[Refusal, Vector[String]]](Right(Vector.empty)): (hosts, tokens) =>
+        hosts.flatMap(found => hostOf(tokens).map(host => if found.contains(host) then found else found :+ host))
 
   /**
    * The proxy's rule input for a command: `deny defaults`, then the program's Maven Central host, then the file's
@@ -1135,7 +1143,8 @@ object RunOnHostPrereqs:
    *     command.
    */
   def egressRuleText(program: Program, fileHosts: Vector[String]): String =
-    ("deny defaults" +: programHosts(program, fileHosts).map(programRuleLine)).mkString("\n")
+    val lines = programHosts(program, fileHosts).map(agentsandbox.egress.RulesetHelper.hostReadLine)
+    ("deny defaults" +: lines).mkString("\n")
 
   /** The hosts that a program's proxy allows, every one of them inspected (egressRuleText): its Maven Central host,
     * then the rule file's hosts as the file spells them. A brokered credential's host is compared with the proxy's

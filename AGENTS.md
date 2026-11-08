@@ -107,6 +107,9 @@ correction; do not explain the grammar unless asked.
 
 # Coding style
 
+Before writing code, search the workspace for code that already does the same, constants and
+formats included; call, extend or move that code. A deliberate copy says why in a comment.
+
 Documents are at most 100 characters wide; code, a config file included, 120, including
 indentation. Never split a URL or hide it behind a reference to fit; its line may run over.
 
@@ -125,9 +128,9 @@ Do not use one-letter names, except for
 Record what helps other agents, as a rule for a class of cases, in a project document,
 `container/ko-agent-sandbox/AGENTS-SANDBOX.md` or this file. Both prompt files are in every
 prompt: add a sentence only when most agents reading it act differently because of it, and defend
-every word; a sentence only some of them act on belongs in the document those readers open. When
-a rule was not followed, identify what was missing, ambiguous or conflicting, or what prevented
-following it, and revise it; add a rule only when none covers the case.
+every word when presenting it; a sentence only some of them act on belongs in the document those
+readers open. When a rule was not followed, identify what was missing, ambiguous or conflicting,
+or what prevented following it, and revise it; add a rule only when none covers the case.
 
 
 # git

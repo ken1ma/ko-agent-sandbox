@@ -7,6 +7,8 @@ import java.security.cert.X509Certificate
 
 import scala.jdk.CollectionConverters.*
 
+import agentsandbox.egress.CertificateHelper.{keyMatchesCertificate, parseCertificate, signedBy}
+
 class RunOnHostInspectionTest extends munit.FunSuite:
 
   test("create leaves a leaf naming the hosts, its key, and the CA alone in both trust formats"):
@@ -19,17 +21,17 @@ class RunOnHostInspectionTest extends munit.FunSuite:
     val trust = RunOnHostInspection.trustDirectory(proxyLog)
     val caPem = Files.readString(RunOnHostInspection.caBundle(trust), UTF_8)
     val names =
-      CertificateHelper.parseCertificate(leafPem).getSubjectAlternativeNames.asScala.map(_.get(1).toString).toSet
+      parseCertificate(leafPem).getSubjectAlternativeNames.asScala.map(_.get(1).toString).toSet
     assertEquals(names, hosts.toSet)
-    assert(CertificateHelper.keyMatchesCertificate(leafPem, keyPem))
-    assert(CertificateHelper.signedBy(leafPem, caPem))
+    assert(keyMatchesCertificate(leafPem, keyPem))
+    assert(signedBy(leafPem, caPem))
 
     val store = KeyStore.getInstance("PKCS12")
     val in = Files.newInputStream(RunOnHostInspection.trustStore(trust))
     try store.load(in, RunOnHostInspection.TrustStorePassword.toCharArray)
     finally in.close()
     val trusted = store.aliases.asScala.toVector.map(store.getCertificate(_).asInstanceOf[X509Certificate])
-    assertEquals(trusted, Vector(CertificateHelper.parseCertificate(caPem)))
+    assertEquals(trusted, Vector(parseCertificate(caPem)))
 
     // The proxy's profile grants the leaf's directory, and the command's profile grants the trust directory. Neither
     // directory holds the other's files, and neither directory holds the CA's key.

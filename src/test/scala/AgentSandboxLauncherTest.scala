@@ -697,7 +697,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(UsageText.contains(s"--clipboard=${ClipboardModes.mkString("|")}"), UsageText)
     assert(UsageText.contains(s"--nesting=${NestingModes.mkString("|")}"), UsageText)
     assert(UsageText.contains(s"--session-start=${SessionStartModes.mkString("|")}"), UsageText)
-    assert(UsageText.contains(s"--egress=${EgressProfiles.mkString("|")}"), UsageText)
+    assert(UsageText.contains(s"--egress=${agentsandbox.egress.RulesetHelper.Profiles.mkString("|")}"), UsageText)
     assert(UsageText.contains(RunOnHostPrograms.mkString(" / ")), UsageText)
 
   test("the proxy address is read for the right network only"):
@@ -1803,7 +1803,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         "allow https://model.example/ tunnel\n" +
         "deny https://**.blocked.example/"
     for
-      profile <- EgressProfiles
+      profile <- agentsandbox.egress.RulesetHelper.Profiles
       provider <- Vector(None, Some("openai"), Some("anthropic,google"))
       ruleFile <- Vector(None, Some(workspaceRules))
     do
@@ -2203,7 +2203,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       Right(Vector(EnvForward("SBT_OPTS", None), EnvForward("FOO", Some("a=b")), EnvForward("EMPTY", Some("")))),
     )
     assert(parseCommandLine(List("--env=SBT_OPTS", "--env=SBT_OPTS=x")).swap.exists(_.contains("twice")))
-    assert(parseCommandLine(List("--env=1BAD")).swap.exists(_.contains("[A-Za-z_]")))
+    val nameForm = agentsandbox.egress.CredentialGrammar.EnvironmentNameForm
+    assert(parseCommandLine(List("--env=1BAD")).swap.exists(_.contains(nameForm)))
     // The empty value drops the entries before it, and the later entries still add.
     assertEquals(
       parseCommandLine(List("--env=A", "--env=", "--env=FOO")).map(_.env),

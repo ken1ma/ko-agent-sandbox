@@ -3,7 +3,7 @@
 
 package agentsandbox.launcher
 
-import agentsandbox.egress.CredentialBinding
+import agentsandbox.egress.{CredentialBinding, RulesetHelper}
 import agentsandbox.egress.LogHelper.sha256Hex
 
 import HostCommands.*
@@ -96,8 +96,8 @@ object LaunchMessages:
   ): Vector[String] =
     programHosts.toVector.flatMap:
       case (program, hosts) if hosts.nonEmpty =>
-        val grants = hosts.map(host => shown(RunOnHostPrereqs.programRuleLine(host)))
-        val file = s".ko-agent-sandbox/run-on-host/$program/egress/rule"
+        val grants = hosts.map(host => shown(RulesetHelper.hostReadLine(host)))
+        val file = RunOnHostPrereqs.programRuleFileShown(program)
         wideningReport(file, grants, color, EgressRules.groupedByHost)
       case _ => Vector.empty
 
@@ -242,10 +242,10 @@ object LaunchMessages:
            |""".stripMargin
       else ""
     val refused =
-      """If a package registry or clone host you need is not allowed, do not look for another
-        |route: name the host to the user, who adds `allow https://<host>/ read` to
-        |`.ko-agent-sandbox/egress/rule` on the host and relaunches (under the default
-        |deny-unless-allowed profile, if this session's profile ignores the file's allow
+      s"""If a package registry or clone host you need is not allowed, do not look for another
+        |route: name the host to the user, who adds `${RulesetHelper.hostReadLine("<host>")}` to
+        |`${RulesetHelper.WorkspaceRuleFile}` on the host and relaunches (under the default
+        |${RulesetHelper.DefaultProfile} profile, if this session's profile ignores the file's allow
         |lines).""".stripMargin
     s"""
        |

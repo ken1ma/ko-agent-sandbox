@@ -4,15 +4,12 @@ import java.io.{ByteArrayInputStream, ByteArrayOutputStream, EOFException, Input
 import java.net.Socket
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
-import java.security.{KeyFactory, KeyStore, PrivateKey}
-import java.security.cert.{CertificateFactory, X509Certificate}
-import java.security.spec.PKCS8EncodedKeySpec
-import java.util.{Base64, Locale}
+import java.security.{KeyStore, PrivateKey}
+import java.security.cert.X509Certificate
 import javax.net.ssl.{KeyManagerFactory, SNIHostName, SNIServerName, SSLContext, SSLSocket}
 import scala.annotation.tailrec
-import scala.jdk.CollectionConverters.*
-import scala.util.control.NonFatal
 
+import CertificateHelper.{inspectedNamesError, parseCertificateChain, parsePrivateKey, subjectAlternativeNames}
 import IPAddrHelper.normalizeHost
 
 object TLSHelper:
@@ -104,8 +101,8 @@ object TLSHelper:
       privateKey: Path,
       hosts: Set[String],
     ): TlsInspection =
-      val chain = readCertificateChain(certificate)
-      val key = readPrivateKey(privateKey)
+      val chain = parseCertificateChain(Files.readAllBytes(certificate), certificate.toString)
+      val key = parsePrivateKey(Files.readString(privateKey, StandardCharsets.US_ASCII), privateKey.toString)
 
       // A leaf that misses a host or names an extra one does not match this ruleset (SECURITY.md, "Who holds the CA
       // key").
@@ -129,80 +126,6 @@ object TLSHelper:
       val context = SSLContext.getInstance("TLS")
       context.init(keyManagers.getKeyManagers, null, null)
       context
-
-    def inspectedNamesError(covered: Set[String], required: Set[String]): Option[String] =
-      if covered == required then None
-      else
-        val missing = (required -- covered).toVector.sorted
-        val extra = (covered -- required).toVector.sorted
-        val reasons =
-          Option.when(missing.nonEmpty)(s"does not cover ${missing.mkString(" ")}") ++
-            Option.when(extra.nonEmpty)(
-              s"names ${extra.mkString(" ")}, which this proxy does not inspect",
-            )
-        Some(s"must name exactly the hosts this ruleset inspects; it ${reasons.mkString(", and ")}")
-
-    def readCertificateChain(path: Path): Vector[X509Certificate] =
-      val stream = Files.newInputStream(path)
-
-      val certificates =
-        try
-          CertificateFactory
-            .getInstance("X.509")
-            .generateCertificates(stream)
-            .asScala
-            .toVector
-            .collect { case certificate: X509Certificate => certificate }
-        finally stream.close()
-
-      if certificates.isEmpty then
-        throw IllegalArgumentException(s"$path holds no X.509 certificate")
-
-      certificates
-
-    /**
-     * PKCS#8 PEM, which is what the launcher's JCA `getEncoded` produces. The PEM header does not name the
-     * algorithm, so the candidates are tried in turn rather than guessed from the file.
-     */
-    def readPrivateKey(path: Path): PrivateKey =
-      val text = Files.readString(path, StandardCharsets.US_ASCII)
-
-      val begin = "-----BEGIN PRIVATE KEY-----"
-      val end = "-----END PRIVATE KEY-----"
-
-      val start = text.indexOf(begin)
-      val stop = text.indexOf(end)
-
-      if start < 0 || stop < start then
-        throw IllegalArgumentException(
-          s"$path is not an unencrypted PKCS#8 private key",
-        )
-
-      val encoded =
-        Base64.getMimeDecoder.decode(text.substring(start + begin.length, stop))
-
-      val spec = PKCS8EncodedKeySpec(encoded)
-
-      Vector("EC", "RSA", "Ed25519")
-        .flatMap: algorithm =>
-          try Some(KeyFactory.getInstance(algorithm).generatePrivate(spec))
-          catch case NonFatal(_) => None
-        .headOption
-        .getOrElse(
-          throw IllegalArgumentException(s"$path holds an unsupported key type"),
-        )
-
-    def subjectAlternativeNames(certificate: X509Certificate): Set[String] =
-      val DnsName = 2
-
-      Option(certificate.getSubjectAlternativeNames) match
-        case None => Set.empty
-        case Some(names) =>
-          names.asScala.toVector
-            .collect:
-              case entry if entry.size == 2 && entry.get(0) == DnsName =>
-                entry.get(1).toString.toLowerCase(Locale.ROOT)
-            .toSet
 
   case class TlsClientHello(
     wireBytes: Array[Byte],

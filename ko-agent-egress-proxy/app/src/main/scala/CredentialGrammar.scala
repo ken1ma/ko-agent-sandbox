@@ -88,6 +88,11 @@ object CredentialGrammar:
   /** The launcher's one test of a variable name, for `--env` as for a binding. */
   def environmentName(name: String): Boolean = name.matches("[A-Za-z_][A-Za-z0-9_]*")
 
+  /** environmentName's rule, as a refusal states it. */
+  val EnvironmentNameForm = "a letter or _, then letters, digits and _"
+
+  def boundTwice(name: String): String = s"$name is bound twice; one name, one host"
+
   /** A parameter frames nothing, so its name is free within the value grammar. The exceptions are the characters
     * that would split or end the query, and `+`, which a form parser reads as a space: the origin would read `a+b`
     * as `a b`. */
@@ -114,7 +119,7 @@ object CredentialGrammar:
             "a credential's value is not given on the command line; set the variable for the launch and pass NAME@HOST",
           )
         else if !environmentName(name) then
-          Left(s"'$name' is not an environment variable name: a letter or _, then letters, digits and _")
+          Left(s"'$name' is not an environment variable name: $EnvironmentNameForm")
         else
           val rest = spelled.drop(at + 1)
           val hostEnd = rest.indexWhere(char => char == '/' || char == ':' || char == '?') match
@@ -230,6 +235,6 @@ object CredentialGrammar:
     val names = credentials.map(_.binding.name)
     val placeholders = credentials.map(_.placeholder)
     names.diff(names.distinct).headOption match
-      case Some(duplicate) => Left(s"$duplicate is bound twice; one name, one host")
+      case Some(duplicate) => Left(boundTwice(duplicate))
       case None if placeholders.distinct.size != placeholders.size => Left("two bindings share a placeholder")
       case None => Right(credentials)

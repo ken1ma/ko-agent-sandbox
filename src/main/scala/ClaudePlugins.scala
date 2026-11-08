@@ -267,10 +267,4 @@ object ClaudePlugins:
     val ids = plugins.map(plugin => plugin.id + source(plugin))
     weakened(s"claude plugins: ${ids.mkString(", ")}", color) + "; their hooks and mods run as managed"
 
-  private def quoted(text: String): String =
-    val escaped = text.flatMap:
-      case '"'            => "\\\""
-      case '\\'           => "\\\\"
-      case ch if ch < ' ' => f"\\u${ch.toInt}%04x"
-      case ch             => ch.toString
-    "\"" + escaped + "\""
+  private def quoted(text: String): String = JsonText.stringLiteral(text)

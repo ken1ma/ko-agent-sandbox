@@ -302,7 +302,7 @@ object LauncherImages:
     expectedBundleId: String,
   ): Vector[TaggedImage] =
     selfTestCleanupOrder(existing).filter: image =>
-      val inspected = run(podman, "image", "inspect", "--format", BundleLabelTemplate, image.id)
+      val inspected = imageLabel(podman, image.id, BundleLabel)
       if !inspected.ok then fail(s"error: could not inspect ${image.tag} before the build\n${inspected.err}")
       inspected.text.trim != expectedBundleId
 

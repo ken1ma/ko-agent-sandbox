@@ -32,13 +32,8 @@ object RunOnHostSbtServer:
    *     sandbox. The probe only connects and closes, and writes nothing to what it reaches.
    */
   def livePortfileServer(buildDirectory: Path): Option[Path] =
-    val portfile = buildDirectory.resolve("project").resolve("target").resolve("active.json")
-    if !Files.isRegularFile(portfile) then None
-    else
-      try
-        RunOnHostSession.portfileSocket(Files.readString(portfile, UTF_8)).filter: socket =>
-          Files.exists(socket) && connectable(socket)
-      catch case _: IOException => None
+    FileHelper.readIfReadable(RunOnHostSession.sbtPortfile(buildDirectory)).flatMap(RunOnHostSession.portfileSocket)
+      .filter(socket => Files.exists(socket) && connectable(socket))
 
   private def connectable(socket: Path): Boolean =
     try
@@ -75,7 +70,7 @@ object RunOnHostSbtServer:
     extension (parent: java.io.File) def /(child: String) = java.io.File(parent, child)
     def trimmed(name: String): Option[java.io.File] =
       env(name).filter(_.nonEmpty).map(value => file(value.trim))
-    val uri = buildDirectory.resolve("project").resolve("target").resolve("active.json").toUri.toString
+    val uri = RunOnHostSession.sbtPortfile(buildDirectory).toUri.toString
     val digest = java.security.MessageDigest.getInstance("SHA-1").digest(uri.getBytes(UTF_8))
     val hash = java.util.HexFormat.of().formatHex(digest).take(20)
     val globalBase =

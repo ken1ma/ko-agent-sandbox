@@ -23,7 +23,7 @@
 //   KoAgentBpf.scala            the BPF cgroup-LSM backend of --workspace=...,bpf: build, install, the
 //                               probe, the launch's attach and proof, the teardown and the reconcile
 //   SandboxWorkspace.scala      the workspace root: real path, refusals, identity, mount guards
-//   CertificateHelper.scala     certificates as PEM: creating, parsing, checking
+//   InspectionCa.scala          the CAs the launcher creates; the proxy's CertificateHelper checks them
 //   JdkTrust.scala              making the image's JVM reach the proxy: locate, prepare, mount
 //   FFMHelper.scala             the downcalls into libc and kernel32
 //   FileRules.scala             the file rules: defaults, the workspace's rule file, grammar, resolution
@@ -106,10 +106,10 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, Paths, StandardCopyOption}
 import java.time.{Instant, ZoneId, ZoneOffset}
 import java.time.format.DateTimeFormatter
-import agentsandbox.egress.{AgentEgressProxy, BrokeredCredential, CredentialGrammar}
+import agentsandbox.egress.{AgentEgressProxy, BrokeredCredential, CredentialGrammar, X509Helper}
+import agentsandbox.egress.CertificateHelper.*
 import agentsandbox.egress.LogHelper.sha256Hex
 
-import CertificateHelper.*
 import CommandLine.*
 import JdkTrust.*
 import EgressRules.*
@@ -200,9 +200,7 @@ object AgentSandboxLauncher:
   val CaBundleVariables: Vector[String] =
     Vector("SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO")
 
-  /** The proxy stamps every line it writes with an instant and a space, and the ready line's spelling follows. */
-  def isProxyReadyLine(line: String): Boolean =
-    line == AgentEgressProxy.ReadyLine || line.endsWith(" " + AgentEgressProxy.ReadyLine)
+  def isProxyReadyLine(line: String): Boolean = AgentEgressProxy.readyPort(line).contains(AgentEgressProxy.ListenPort)
 
   /** The bound covers a JVM start on a loaded machine. The launch fails a proxy that stays silent past the bound,
     * rather than waiting for it. */
@@ -224,8 +222,7 @@ object AgentSandboxLauncher:
    */
   def awaitProxyReady(podman: String, container: String, log: Path, bound: java.time.Duration): Either[String, String] =
     val deadline = System.nanoTime() + bound.toNanos
-    def said: String =
-      try Files.readString(log, StandardCharsets.UTF_8) catch case _: IOException => ""
+    def said: String = readIfReadable(log).getOrElse("")
     def ready: Boolean = said.linesIterator.exists(isProxyReadyLine)
     var networks: Option[String] = None
     def inspected: Boolean =
@@ -1988,8 +1985,8 @@ object AgentSandboxLauncher:
           writeStamped(resolvedWarningsFile, rulesetStamp, warnings)
           (resolved.text, warnings)
 
-    // The leaf's names, from the dry run (inspectedHostsOf). A ruleset change reissues the leaf through leaf.sans
-    // below. An empty list means no leaf and no inspection material.
+    // The leaf's names, from the dry run (inspectedHostsOf). A ruleset change reissues the leaf (prepareRunFiles). An
+    // empty list means no leaf and no inspection material.
     val inspectedHosts = inspectedHostsOf(rulesetText).fold(fail(_), identity)
     // The launch builds the banner now, so a dry run that the banner cannot state fails the launch before its proxy
     // starts.
@@ -2100,11 +2097,9 @@ object AgentSandboxLauncher:
     val caKeyFile = tlsDir.resolve("ca.key")
     val leafCertFile = tlsDir.resolve("leaf.crt")
     val leafKeyFile = tlsDir.resolve("leaf.key")
-    val leafSansFile = tlsDir.resolve("leaf.sans")
     val bundleFile = tlsDir.resolve("sandbox-ca-bundle.crt")
     val bundleStampFile = tlsDir.resolve("bundle.stamp")
 
-    val sanList = inspectedHosts.map("DNS:" + _).mkString(",")
     val reissueDeadline = Instant.now().plusSeconds(ReissueMarginSeconds)
 
     // The session-specific instructions point to the ruleset environment variable rather than embed the host list in
@@ -2131,14 +2126,11 @@ object AgentSandboxLauncher:
       // - A run is live while either of its containers exists. The proxy writes the run's logs, and so do the runner
       //   and the relay, which serve the sandbox container. The mount copies serve both containers. A run whose proxy
       //   crashed while its sandbox lives on must keep its files.
-      val containers = run(podman, "ps", "--all", "--format", "{{.Names}}")
-      val containerNames: Option[Vector[String]] =
-        Option.when(containers.ok)(containers.text.linesIterator.map(_.trim).toVector)
-      val liveRuns = liveRunsOf(workspaceId, containerNames)
-      if containerNames.isEmpty then
+      val containers = listedNames(podman, "ps", "--all", "--format", "{{.Names}}")
+      val liveRuns = liveRunsOf(workspaceId, containers.toOption)
+      containers.left.foreach: err =>
         System.err.println(
-          "note: could not list this workspace's containers; keeping every retained log and run file\n"
-            + containers.err,
+          "note: could not list this workspace's containers; keeping every retained log and run file\n" + err,
         )
 
       // A run's log directory names its run in the same suffix as its containers.
@@ -2157,22 +2149,17 @@ object AgentSandboxLauncher:
       createPrivateDirectories(runLogs)
       writePrivate(hostLogFile, "")
 
-      // The checks test coherence, not just expiry. A launch that died between writing the key and the certificate
-      // leaves a pair that is unexpired, non-empty and useless: every handshake fails while both files look fine. Only
-      // a correspondence test re-issues such a pair.
-      def coherentPair(certFile: Path, keyFile: Path): Boolean =
-        (readIfPresent(certFile), readIfPresent(keyFile)) match
-          case (Some(cert), Some(key)) => keyMatchesCertificate(cert, key)
-          case _                       => false
-
       // This run's directory comes first, because the copies below are written into it.
       createPrivateDirectories(runFiles)
 
-      if !certificateExpiresAfter(readIfPresent(caCertFile), reissueDeadline)
-        || !coherentPair(caCertFile, caKeyFile)
-      then
+      // The CA check tests coherence, not just expiry (CertificateHelper.keyMatchesCertificate).
+      val caServes = (readIfPresent(caCertFile), readIfPresent(caKeyFile)) match
+        case (Some(cert), Some(key)) =>
+          certificateExpiresAfter(Some(cert), reissueDeadline) && keyMatchesCertificate(cert, key)
+        case _ => false
+      if !caServes then
         try
-          val ca = createCa(workspaceSlug)
+          val ca = InspectionCa.create(workspaceSlug)
           // The launch retires the leaf that this CA no longer signs by emptying the leaf, not by deleting it.
           // - The names stay stable for the copies below and for anything still reading the files
           //   (FileHelper.writeWithMode).
@@ -2180,32 +2167,28 @@ object AgentSandboxLauncher:
           // - The launch empties the leaf before writing the CA. A launch that dies here leaves a leaf that the next
           //   launch reissues, rather than a leaf silently signed by the old CA.
           Seq(leafCertFile, leafKeyFile).foreach(writePrivate(_, ""))
-          writeReadable(leafSansFile, "")
           writePrivate(caKeyFile, ca.privateKeyPem)
           writePrivate(caCertFile, ca.certificatePem)
         catch
           case ex: Exception =>
             fail(s"error: could not create this workspace's inspection CA in $tlsDir\n$ex")
 
-      // The leaf is reissued when the CA is reissued (the leaf is emptied just above), when the list of inspected names
-      // changes, and before the leaf expires. A ruleset that inspects nothing gets no leaf at all. The test checks the
-      // leaf's own coherence, plus the chain to this CA: a leaf that another launch issued under a CA since replaced is
-      // internally consistent and still fails every handshake.
+      // The leaf is reissued when the CA is reissued (the leaf is emptied just above), and whenever the leaf stops
+      // serving the inspected names (CertificateHelper.leafServes). A ruleset that inspects nothing gets no leaf.
       if inspectedHosts.nonEmpty
-        && (!certificateExpiresAfter(readIfPresent(leafCertFile), reissueDeadline)
-          || firstLine(leafSansFile) != sanList
-          || !coherentPair(leafCertFile, leafKeyFile)
-          || !readIfPresent(leafCertFile).exists(signedBy(_, Files.readString(caCertFile))))
+        && !leafServes(
+          readIfPresent(leafCertFile), readIfPresent(leafKeyFile), inspectedHosts.toSet, Files.readString(caCertFile),
+          reissueDeadline,
+        )
       then
         try
-          val leaf = issueLeaf(
-            Files.readString(caCertFile),
-            Files.readString(caKeyFile),
+          val leaf = X509Helper.issueLeaf(
             inspectedHosts,
+            parseCertificate(Files.readString(caCertFile)),
+            parsePrivateKey(Files.readString(caKeyFile), caKeyFile.toString),
           )
           writePrivate(leafKeyFile, leaf.privateKeyPem)
           writePrivate(leafCertFile, leaf.certificatePem)
-          writeReadable(leafSansFile, sanList + "\n")
         catch
           case ex: Exception =>
             fail(s"error: could not issue this workspace's inspection certificate\n$ex")
@@ -2213,7 +2196,7 @@ object AgentSandboxLauncher:
       // The sandbox's trust is the image's own CA bundle, plus the CA that this run trusts. The workstation's bundle is
       // a different set entirely. The launch re-reads the image's bundle when the image or the CA changes, and the
       // stamp records both (imageId comes from the sandbox image's inspect).
-      val caFingerprint = certificateFingerprint(pemBody(Files.readString(caCertFile)))
+      val caFingerprint = certificateFingerprint(parseCertificate(Files.readString(caCertFile)))
       val bundleStamp = s"$imageId $caFingerprint"
 
       // The image's files from which both caches below are made. The launch reads both files in one run of the image
@@ -2674,10 +2657,12 @@ object AgentSandboxLauncher:
       return (None, runWithEnvironment(environment, createCommand.withOptions(labels)*))
     withFileLock(KoAgentBpf.launchLockFile(stateRoot(os))):
       val launched = prepare()
-      val listed = run(podman, "ps", "--all", "--filter", "name=ko-agent-sandbox-run-", "--format", "{{.Names}}")
-      if !listed.ok then
-        fail(s"error: could not list the live sessions, which the backend's launch compares with\n${listed.err}")
-      val live = listed.text.linesIterator.map(_.trim).filter(_.nonEmpty).toVector.map: name =>
+      val names = listedNames(podman, "ps", "--all", "--filter", "name=ko-agent-sandbox-run-", "--format", "{{.Names}}")
+        .fold(
+          err => fail(s"error: could not list the live sessions, which the backend's launch compares with\n$err"),
+          identity,
+        )
+      val live = names.map: name =>
         val inspected = run(podman, "inspect", "--format", KoAgentBpf.LabelsFormat, name)
         if !inspected.ok then fail(s"error: could not read the labels of the live session $name\n${inspected.err}")
         KoAgentBpf.liveSessionOf(name, inspected.text)

@@ -53,8 +53,14 @@ object AgentEgressProxy:
   private val ReadyText = "ko-agent-egress-proxy listening on :"
   val ReadyLine = readyLine(ListenPort)
 
-  /** The port out of a ready line, stamped or not (RunOnHostProxy.awaitProxyPort). */
-  val ReadyPort: scala.util.matching.Regex = s".*${java.util.regex.Pattern.quote(ReadyText)}(\\d+).*".r
+  private val ReadyPort = s"${java.util.regex.Pattern.quote(ReadyText)}(\\d+)".r
+
+  /** The port out of a ready line, stamped or not (RunOnHostProxy.awaitProxyPort,
+    * AgentSandboxLauncher.isProxyReadyLine). */
+  def readyPort(line: String): Option[Int] =
+    LogHelper.unstamped(line).getOrElse(line) match
+      case ReadyPort(port) => port.toIntOption
+      case _               => None
 
   val ConnectTimeoutMillis = 10_000
   val HandshakeTimeoutMillis = 10_000
@@ -86,16 +92,20 @@ object AgentEgressProxy:
   val executor = Executors.newVirtualThreadPerTaskExecutor()
   val connectionSlots = Semaphore(MaxConcurrentConnections)
 
+  val PrintRulesetFlag = "--print-ruleset"
+  val ProvenanceFlag = "--provenance"
+  val CheckHostFlag = "--check-host"
+
   def main(args: Array[String]): Unit =
     args.toList match
       case Nil                                       => serve()
-      case "--print-ruleset" :: Nil                   => printRuleset(provenance = false)
-      case "--print-ruleset" :: "--provenance" :: Nil => printRuleset(provenance = true)
-      case "--check-host" :: host :: Nil             => checkHost(host)
+      case PrintRulesetFlag :: Nil                   => printRuleset(provenance = false)
+      case PrintRulesetFlag :: ProvenanceFlag :: Nil => printRuleset(provenance = true)
+      case CheckHostFlag :: host :: Nil              => checkHost(host)
       case _ =>
         System.err.println(
-          "ko-agent-egress-proxy takes no arguments, --print-ruleset [--provenance] to " +
-            "resolve the ruleset, print it, and exit, or --check-host <host> to report " +
+          s"ko-agent-egress-proxy takes no arguments, $PrintRulesetFlag [$ProvenanceFlag] to " +
+            s"resolve the ruleset, print it, and exit, or $CheckHostFlag <host> to report " +
             "one host's ruleset decision and current DNS resolution",
         )
         sys.exit(2)

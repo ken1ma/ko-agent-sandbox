@@ -1207,3 +1207,26 @@ bans sources`, compilation, binary identity, and the installed FUSE backend's mo
     accident).
 
   Until then a changed key ends in the "rebuild with --build" refusal, so the exposure is bounded.
+
+## Deferred — the egress proxy as a published image and a standalone gateway
+
+The goal is a proxy that runs on a gateway between the internet and the agents' subnet, deployed
+apart from the launcher. A registry image fits that deployment better than a binary in the
+launcher jar. `--build` builds every image locally from the jar's bundle.
+
+- [ ] Decide how a gateway holds its CA key. design.md ("No profile that allows hosts no rule
+  names") keeps the key out of the proxy, the process facing the internet.
+  - One shape keeps the serving process keyless: a startup step issues the leaf and drops the
+    key, as `RunOnHostInspection.create` does.
+- [ ] Publish the proxy image from CI, built on each shipping architecture ("Before the first
+  release — continuous integration").
+  - The image's registry name belongs to the published identity's decision (above).
+  - Check which CPU features native-image's default `-march` requires: a published binary runs on
+    CPUs other than the build machine's.
+- [ ] Decide whether `--build` pulls the published image or keeps building the proxy locally.
+  - Pulling replaces the check that locks the default-named image to the jar that bundled its
+    sources (`LauncherImages.bundleMismatch`).
+  - ko-agent-fs faces the same choice: `--build` compiles it from source and checks the result on
+    the user's machine.
+- [ ] Check whether `--proxy-image` already runs a pulled image. Launches pass `--pull=never`, so
+  the user pulls the image first.

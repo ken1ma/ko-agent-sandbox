@@ -12,7 +12,7 @@ package agentsandbox.launcher
 
 import java.security.SecureRandom
 
-import agentsandbox.egress.{BrokeredCredential, CredentialBinding, CredentialGrammar}
+import agentsandbox.egress.{BrokeredCredential, CredentialBinding, CredentialGrammar, RulesetHelper}
 
 import HostCommands.{chosen, colorStderr}
 
@@ -158,11 +158,11 @@ object EgressCredentials:
         )
       else
         val programFiles = programHosts.keys.toVector.sorted
-          .map(program => s" or to .ko-agent-sandbox/run-on-host/$program/egress/rule")
+          .map(program => s" or to ${RunOnHostPrereqs.programRuleFileShown(program)}")
           .mkString
         Some(
           s"error: --egress-cred=${binding.spelled}; no proxy of this launch allows $host; add " +
-            s"`allow https://$host/ read` to .ko-agent-sandbox/egress/rule$programFiles",
+            s"`${RulesetHelper.hostReadLine(host)}` to ${RulesetHelper.WorkspaceRuleFile}$programFiles",
         ),
     )).toLeft(())
 

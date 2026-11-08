@@ -8,8 +8,8 @@ package agentsandbox.launcher
 import java.io.{ByteArrayOutputStream, IOException}
 import java.nio.file.{Files, Path}
 import java.security.KeyStore
+import agentsandbox.egress.X509Helper
 
-import CertificateHelper.{createCa, issueLeaf, parseCertificate}
 import FileHelper.{writePrivate, writeReadable}
 
 object RunOnHostInspection:
@@ -54,7 +54,10 @@ object RunOnHostInspection:
       agentsandbox.egress.RulesetHelper.RuleVariable -> ruleText,
     )
     try Right(agentsandbox.egress.AgentEgressProxy.configuredRuleset(environment.get).inspected.toVector.sorted)
-    catch case ex: IllegalArgumentException => Left(s"the proxy's rules: ${ex.getMessage}")
+    catch case ex: IllegalArgumentException => Left(proxyRulesRefusal(ex.getMessage))
+
+  /** A refusal of the proxy's rule parser, as the launcher's messages give it. */
+  def proxyRulesRefusal(reason: String): String = s"the proxy's rules: $reason"
 
   /**
    * Creates a CA for this proxy alone, the leaf the CA signs for `hosts`, and the CA's certificate in both trust
@@ -68,8 +71,8 @@ object RunOnHostInspection:
    */
   def create(proxyLog: Path, hosts: Seq[String]): Either[String, Unit] =
     try
-      val ca = createCa("run-on-host", days = agentsandbox.egress.X509Helper.LeafValidityDays)
-      val leaf = issueLeaf(ca.certificatePem, ca.privateKeyPem, hosts)
+      val ca = InspectionCa.create("run-on-host", days = X509Helper.LeafValidityDays)
+      val leaf = X509Helper.issueLeaf(hosts, ca.certificate, ca.privateKey)
       val trust = trustDirectory(proxyLog)
       Seq(leafDirectory(proxyLog), trust).foreach(Files.createDirectories(_))
       writePrivate(leafKey(proxyLog), leaf.privateKeyPem)
@@ -77,7 +80,7 @@ object RunOnHostInspection:
       writeReadable(caBundle(trust), ca.certificatePem)
       val store = KeyStore.getInstance("PKCS12")
       store.load(null, null)
-      store.setCertificateEntry("ko-agent-sandbox-run-on-host", parseCertificate(ca.certificatePem))
+      store.setCertificateEntry("ko-agent-sandbox-run-on-host", ca.certificate)
       val bytes = ByteArrayOutputStream()
       store.store(bytes, TrustStorePassword.toCharArray)
       writeReadable(trustStore(trust), bytes.toByteArray)

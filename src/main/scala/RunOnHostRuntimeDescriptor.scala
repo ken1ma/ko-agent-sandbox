@@ -17,8 +17,7 @@
 package agentsandbox.launcher
 
 import java.io.IOException
-import java.nio.charset.StandardCharsets.UTF_8
-import java.nio.file.{Files, Path}
+import java.nio.file.Path
 
 import agentsandbox.egress.LogHelper.sha256Hex
 
@@ -94,8 +93,7 @@ object RunOnHostRuntimeDescriptor:
 
   /** None when absent, unreadable or not this launcher's format. */
   def read(file: Path): Option[RunOnHostRuntimeDescriptor] =
-    try Option.when(Files.isRegularFile(file))(Files.readString(file, UTF_8)).flatMap(parse)
-    catch case _: IOException => None
+    FileHelper.readIfReadable(file).flatMap(parse)
 
   /** The hex SHA-256 of two inputs:
     *

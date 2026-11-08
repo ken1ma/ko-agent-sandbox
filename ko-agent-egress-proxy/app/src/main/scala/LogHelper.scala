@@ -46,10 +46,19 @@ object LogHelper:
 
   /** None for a line without a stamp, action, host and method. */
   def auditFields(line: String): Option[AuditFields] =
-    line.split(" ", 5) match
-      case Array(_, action, host, method, rest) => Some(AuditFields(action, host, method, rest))
-      case Array(_, action, host, method)       => Some(AuditFields(action, host, method, ""))
-      case _                                    => None
+    unstamped(line).flatMap:
+      _.split(" ", 4) match
+        case Array(action, host, method, rest) => Some(AuditFields(action, host, method, rest))
+        case Array(action, host, method)       => Some(AuditFields(action, host, method, ""))
+        case _                                 => None
+
+  private val Stamped = """\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z (.*)""".r
+
+  /** A line that stampLines wrote, without its stamp. None for a line another writer put in the same file, such as
+    * a host proxy's sandbox-exec. */
+  def unstamped(line: String): Option[String] = line match
+    case Stamped(rest) => Some(rest)
+    case _             => None
 
   /** @return the content between the quotes of a Java/Scala string literal whose value is `text`.
     * The result's `\u` escapes never stand for a quote, a backslash or a line break, which Java translates

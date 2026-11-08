@@ -248,7 +248,7 @@ object RunOnHostMillDaemons:
 
   /** The port candidate in `out/mill-daemon/socketPort`: an integer in port range, nothing more. */
   private def portCandidate(buildDirectory: Path): Option[Int] =
-    (try Some(Files.readString(portFile(buildDirectory), UTF_8).trim) catch case _: IOException => None)
+    FileHelper.readIfReadable(portFile(buildDirectory)).map(_.trim)
       .flatMap(agentsandbox.egress.HTTPHelper.parseDecimal).filter(port => port >= 1 && port <= 65535).map(_.toInt)
 
   /** The candidate, once the pid listens on it. A client's one-port grant rests on this predicate, and so does the
@@ -289,11 +289,9 @@ object RunOnHostMillDaemons:
    */
   private def idle(pid: Long): Option[Boolean] =
     try
-      val process = ProcessBuilder(Lsof, "-a", "-p", pid.toString, "-iTCP", "-nP", "-FT").start()
-      val output = String(process.getInputStream.readAllBytes(), UTF_8)
-      val errors = String(process.getErrorStream.readAllBytes(), UTF_8)
-      val states = output.linesIterator.filter(_.startsWith("TST=")).map(_.drop(4)).toVector
-      if process.waitFor() != 0 || errors.nonEmpty || states.isEmpty then None
+      val lsof = HostCommands.run(Lsof, "-a", "-p", pid.toString, "-iTCP", "-nP", "-FT")
+      val states = lsof.text.linesIterator.filter(_.startsWith("TST=")).map(_.drop(4)).toVector
+      if !lsof.ok || lsof.err.nonEmpty || states.isEmpty then None
       else Some(!states.contains("ESTABLISHED"))
     catch case _: IOException => None
 
@@ -315,10 +313,8 @@ object RunOnHostMillDaemons:
   def confined(profileFile: Path): Confined =
     def run(command: String*): Option[String] =
       try
-        val process = ProcessBuilder(RunOnHostSandbox.sandboxExec(profileFile, command)*)
-          .redirectError(ProcessBuilder.Redirect.DISCARD).start()
-        val output = String(process.getInputStream.readAllBytes(), UTF_8)
-        Option.when(process.waitFor() == 0)(output)
+        val confined = HostCommands.run(RunOnHostSandbox.sandboxExec(profileFile, command)*)
+        Option.when(confined.ok)(String(confined.out, UTF_8))
       catch case _: IOException => None
     Confined(
       read = file => run("/bin/cat", "--", file.toString),

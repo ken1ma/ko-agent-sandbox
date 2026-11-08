@@ -12,7 +12,7 @@ import java.io.IOException
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Path
 
-import HostCommands.{containerRunning, ExecWithInput, Os, findOnPath, quoteFreeSh, run}
+import HostCommands.{ExecWithInput, Os, findOnPath, quoteFreeSh, relayRequest, run, serveWhileRunning}
 
 object ClipboardRelay:
 
@@ -266,23 +266,8 @@ object ClipboardRelay:
       thread.setDaemon(true)
       thread.start()
 
-  /**
-   * The Windows relay's loop, which is the POSIX relay's `while` in Java. The loop waits for the
-   * sandbox to run, then runs one exec at a time while the sandbox runs. After a stream with no request
-   * in it, the loop pauses for a second. The first wait is bounded like the reaper's, for a launcher
-   * that never reaches the start.
-   */
   private def serve(powershell: Path, podman: String, sandboxContainer: String, mode: String): Unit =
-    def running(): Boolean = containerRunning(podman, sandboxContainer)
-    var waited = 0
-    while !running() && waited < 600 do
-      Thread.sleep(1000)
-      waited += 1
-    while running() do
-      val served =
-        try serveOnce(powershell, podman, sandboxContainer, mode)
-        catch case _: IOException => false
-      if !served then Thread.sleep(1000)
+    serveWhileRunning(podman, sandboxContainer)(() => serveOnce(powershell, podman, sandboxContainer, mode))
 
   /** What one request asks. */
   enum Request:
@@ -330,13 +315,7 @@ object ClipboardRelay:
     * A stream that reaches the cap is cut there, and the method ends the exec under it. */
   private def serveOnce(powershell: Path, podman: String, sandboxContainer: String, mode: String): Boolean =
     val command = (podman +: ExecWithInput :+ sandboxContainer) ++ quoteFreeSh(sandboxRequestReader())
-    val reader = ProcessBuilder(command*)
-      .redirectError(ProcessBuilder.Redirect.DISCARD)
-      .start()
-    reader.getOutputStream.close()
-    val stream = reader.getInputStream.readNBytes(MaxRequestBytes)
-    if stream.length == MaxRequestBytes then reader.destroy()
-    val found = requests(stream)
+    val found = requests(relayRequest(command, MaxRequestBytes))
     found.foreach:
       case Request.Set(body) =>
         val copied = mode != "bidirectional" || host(powershell, Copy, body)._2 == 0

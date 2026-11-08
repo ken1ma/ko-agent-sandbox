@@ -17,6 +17,15 @@ import SandboxWorkspace.*
 
 object LauncherState:
 
+  /** A reset's listing: the names, or nothing after printing why the listing failed and counting the failure. */
+  private def listedCountingFailure(failed: () => Unit)(command: Seq[String]): Vector[String] =
+    listedNames(command*) match
+      case Right(names) => names
+      case Left(err) =>
+        failed()
+        System.err.println(err)
+        Vector.empty
+
   // Every launcher-made name ends with a generated tail: the folded directory slug, the twelve-hex path hash
   // (SandboxWorkspace.workspaceIdOf), and, for per-run resources, the eight-hex run suffix.
   // - `--reset-all` matches whole names against these patterns rather than bare prefixes. The reset force-removes what
@@ -168,12 +177,8 @@ object LauncherState:
 
     // The reset removes everything that this workspace's launches created, stray or live. Removing a running session's
     // containers ends that session, which is what "reset" means.
-    val containers = run(podman, "ps", "--all", "--format", "{{.Names}}")
-    if !containers.ok then
-      failures += 1
-      System.err.println(containers.err)
-    containers.text.linesIterator
-      .map(_.trim)
+    val listed = listedCountingFailure(() => failures += 1)
+    listed(Seq(podman, "ps", "--all", "--format", "{{.Names}}"))
       .filter: name =>
         isRunNamed(proxyRunContainer, id)(name) || isRunNamed(sandboxRunContainer, id)(name)
       .foreach: name =>
@@ -210,11 +215,7 @@ object LauncherState:
         System.err.println(mainWorktreeVolumeNote(main, os))
 
     // This workspace's per-run networks. The containers went first above, so nothing still holds the networks.
-    val networks = run(podman, "network", "ls", "--format", "{{.Name}}")
-    if !networks.ok then
-      failures += 1
-      System.err.println(networks.err)
-    workspaceNetworks(networks.text.linesIterator.map(_.trim).toSeq, id)
+    workspaceNetworks(listed(Seq(podman, "network", "ls", "--format", "{{.Name}}")), id)
       .foreach: network =>
         found = true
         remove("network", network)
@@ -318,13 +319,10 @@ object LauncherState:
         repairImageCleanupJournal(cleanupJournal)
     var failures = 0
 
+    val listedCounted = listedCountingFailure(() => failures += 1)
     def listed(command: String*): Vector[String] =
       echoCommand(command)
-      val result = run(command*)
-      if !result.ok then
-        failures += 1
-        System.err.println(result.err)
-      result.text.linesIterator.map(_.trim).filter(_.nonEmpty).toVector
+      listedCounted(command)
 
     def remove(kind: String, name: String): Unit = if !resetRemoved(podman, kind, name) then failures += 1
 

@@ -29,7 +29,20 @@ case "$(basename "$0")${*:+ $*}" in
                                               request=set ;;
   "wl-copy --type text/plain"|"wl-copy --type text/html")  # copilot's /copy
                                               request=set ;;
-  *) echo "$0: unsupported arguments: $*" >&2; exit 64 ;;
+  *)
+    # The forms each name answers, as the patterns above spell them.
+    case "$(basename "$0")" in
+      xclip)
+        accepted="'xclip -selection clipboard -t TARGETS -o', 'xclip -selection clipboard -t image/<type> -o' and"
+        accepted="$accepted 'xclip -selection clipboard [-i]'; it reads no text, so paste text through the terminal" ;;
+      wl-paste)
+        accepted="'wl-paste -l' and 'wl-paste --type image/<type>'"
+        accepted="$accepted; it reads no text, so paste text through the terminal" ;;
+      xsel) accepted="'xsel --clipboard --input'" ;;
+      *) accepted="'wl-copy', 'wl-copy --primary' and 'wl-copy --type text/plain' or 'text/html'" ;;
+    esac
+    echo "$0: unsupported arguments: '$*'; this clipboard shim answers $accepted" >&2
+    exit 64 ;;
 esac
 
 exec 9> "$dir/lock"

@@ -32,22 +32,26 @@ object JsonText:
       if parser.at < text.length then Left(parser.error("text after the value")) else Right(value)
     catch case ex: Malformed => Left(ex.getMessage)
 
+  /** `value` as a JSON string literal, quotes included. */
+  def stringLiteral(value: String): String =
+    val out = StringBuilder("\"")
+    value.foreach:
+      case '"'                => out ++= "\\\""
+      case '\\'               => out ++= "\\\\"
+      case '\n'               => out ++= "\\n"
+      case '\r'               => out ++= "\\r"
+      case '\t'               => out ++= "\\t"
+      case char if char < ' ' => out ++= f"\\u${char.toInt}%04x"
+      case char               => out += char
+    out += '"'
+    out.toString
+
   /** The value as JSON text. Each object field and array item goes on a line of its own. A nested value
     * is indented two spaces further, and an empty object or array stays on one line. A number keeps the
     * text it was read as. */
   def render(json: Json): String =
     val out = StringBuilder()
-    def quoted(value: String): Unit =
-      out += '"'
-      value.foreach:
-        case '"'                => out ++= "\\\""
-        case '\\'               => out ++= "\\\\"
-        case '\n'               => out ++= "\\n"
-        case '\r'               => out ++= "\\r"
-        case '\t'               => out ++= "\\t"
-        case char if char < ' ' => out ++= f"\\u${char.toInt}%04x"
-        case char               => out += char
-      out += '"'
+    def quoted(value: String): Unit = out ++= stringLiteral(value)
     def write(value: Json, depth: Int): Unit =
       val inner = "  " * (depth + 1)
       val outer = "  " * depth

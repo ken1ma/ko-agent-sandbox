@@ -26,7 +26,6 @@ object RunOnHostProxy:
     *   - `ended` says how the proxy ended, once it has. A proxy that refuses at start is then reported at once, with
     *     its log, instead of after the deadline. A proxy gone after its ready line gives no port. */
   def awaitProxyPort(log: Path, deadlineMillis: Long, ended: () => Option[String] = () => None): Either[String, Int] =
-    val Ready = agentsandbox.egress.AgentEgressProxy.ReadyPort
     val deadline = System.nanoTime + deadlineMillis * 1_000_000
     // Decoded leniently, because the log carries what the proxy's clients asked for.
     def text = if Files.exists(log) then String(Files.readAllBytes(log), UTF_8) else ""
@@ -35,7 +34,7 @@ object RunOnHostProxy:
       else "(no log was written)"
     var outcome: Option[Either[String, Int]] = None
     while outcome.isEmpty && System.nanoTime < deadline do
-      val port = text.linesIterator.collectFirst { case Ready(port) => port.toInt }
+      val port = text.linesIterator.flatMap(agentsandbox.egress.AgentEgressProxy.readyPort).nextOption()
       // Asked after reading the log, so a proxy that ends right after its ready line reads as ended, not ready.
       ended() match
         case Some(how) =>
@@ -335,7 +334,7 @@ object RunOnHostProxy:
     if hosts.nonEmpty then
       log((("Command requested network access to:" +: hosts.map(host => s"  $host")) :+
         ("Not permitted by the host command sandbox. If the command should reach it, add an" +
-          s" `$ProgramRuleForm` line to .ko-agent-sandbox/run-on-host/${program.name}/egress/rule."))
+          s" `$ProgramRuleForm` line to ${programRuleFileShown(program.name)}."))
         .mkString("\n"))
     val requests = refusedRequests(proxyLog, from)
     if requests.nonEmpty then

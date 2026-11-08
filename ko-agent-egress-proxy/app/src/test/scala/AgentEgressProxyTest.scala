@@ -2189,18 +2189,18 @@ class AgentEgressProxyTest extends munit.FunSuite:
   test("the leaf must name exactly the inspected hosts, in either direction"):
     val required = Set("github.com", "gitlab.com")
 
-    assertEquals(TlsInspection.inspectedNamesError(required, required), None)
+    assertEquals(CertificateHelper.inspectedNamesError(required, required), None)
 
     // Under-coverage would fail later anyway, as a certificate error inside the sandbox; the refusal names it here.
-    val missing = TlsInspection.inspectedNamesError(Set("github.com"), required)
+    val missing = CertificateHelper.inspectedNamesError(Set("github.com"), required)
     assert(missing.exists(_.contains("does not cover gitlab.com")), missing.toString)
 
     // Over-coverage is the fail-open direction: a launcher that issues a leaf for a name this proxy does not inspect
     // believes that host is inspected, while the host tunnels opaquely and is writable.
-    val extra = TlsInspection.inspectedNamesError(required + "gist.github.com", required)
+    val extra = CertificateHelper.inspectedNamesError(required + "gist.github.com", required)
     assert(extra.exists(_.contains("gist.github.com")), extra.toString)
 
-    val both = TlsInspection.inspectedNamesError(Set("github.com", "gist.github.com"), required)
+    val both = CertificateHelper.inspectedNamesError(Set("github.com", "gist.github.com"), required)
     assert(both.exists(r => r.contains("gitlab.com") && r.contains("gist.github.com")), both.toString)
 
 
@@ -2946,7 +2946,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(process.exitValue, 2, said)
     assert(said.contains("not starting"), said)
     assert(said.contains("ruleset digest: "), said)
-    assert(!said.linesIterator.exists(ReadyPort.matches), said)
+    assert(!said.linesIterator.exists(readyPort(_).isDefined), said)
 
   test("acceptForever pauses after a failed accept, and ends with the listener closed"):
     val failures = java.util.concurrent.atomic.AtomicInteger(3)

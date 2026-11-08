@@ -739,12 +739,8 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
         "allow https://repo.example.org/ method=POST",
         "allow https://repo.example.org/",
         "allow https://repo.example.org/maven2/ read",
-        "allow https://repo.example.org read",
-        "allow https://**.example.org/ read",
         "allow https://repo.example.org/ read#typo",
-        "allow https://repo.example.org/#x read",
         "allow#x https://repo.example.org/ read",
-        "allow https:///read read",
         "deny https://repo.example.org/",
         "+host repo.example.org",
         "repo.example.org",
@@ -754,6 +750,28 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       programRuleHosts(line) match
         case Left(Refusal.RuleOutsideProgramGrammar(seen)) => assertEquals(seen, line)
         case other => fail(s"'$line' -> $other")
+
+  test("a line of the file's form whose URL the proxy refuses gets the proxy's reason"):
+    for (line, reason) <- Seq(
+        "allow https://repo.example.org read" -> "has no / after its host",
+        "allow https://**.example.org/ read" -> "names a pattern",
+        "allow https://repo.example.org/#x read" -> "a token with '#' inside it",
+        "allow https:///read read" -> "names no host",
+        "allow https://repo.example.org:8443/ read" -> "carries a port",
+        "allow https://192.0.2.1/ read" -> "IP literal",
+      )
+    do
+      programRuleHosts(line) match
+        case Left(refusal @ Refusal.RuleRefusedByProxy(said)) =>
+          assert(said.contains(reason), said)
+          assert(wording(refusal).startsWith("the proxy's rules: "), wording(refusal))
+        case other => fail(s"'$line' -> $other")
+
+  test("hosts come back in the proxy's spelling, and two spellings of one host count once"):
+    assertEquals(
+      programRuleHosts("allow https://Repo.Example.org./ read\nallow https://repo.example.org/ read\n"),
+      Right(Vector("repo.example.org")),
+    )
 
   test("a refused line names itself even after a comment is stripped"):
     assertEquals(
@@ -983,7 +1001,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       Refusal.CacheRootUnusable("HOME is not set"), Refusal.CacheRootInsideWorkspace(workspace, workspace),
       Refusal.CachePathOverlapsStateRoot(workspace, workspace),
       Refusal.WorkingDirectoryOutsideWorkspace("/elsewhere"), Refusal.SessionTmpTooLong(workspace, 60),
-      Refusal.RuleOutsideProgramGrammar("allow x tunnel"),
+      Refusal.RuleOutsideProgramGrammar("allow x tunnel"), Refusal.RuleRefusedByProxy("rule: 'x' names no host"),
     )
     for refusal <- cases do
       assert(!clue(wording(refusal)).contains("Prereq") && !wording(refusal).contains("Refusal"), refusal.toString)
@@ -1068,9 +1086,9 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       assertEquals(
         readProgramRules(workspace, Program.Mill), Right(Vector.empty), "mill's proxy does not read this file",
       )
-    // The reader keeps a spelling that the proxy resolves as the file spells it.
+    // The reader gives a host in the proxy's spelling.
     Files.writeString(rule, "allow https://Repo.Example.ORG./ read\n")
-    assertEquals(readProgramRules(workspace, Program.Sbt), Right(Vector("Repo.Example.ORG.")))
+    assertEquals(readProgramRules(workspace, Program.Sbt), Right(Vector("repo.example.org")))
 
   test("a stray name at any level refuses another program's command too, naming itself; metadata does not"):
     for

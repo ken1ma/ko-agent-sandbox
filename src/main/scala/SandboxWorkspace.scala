@@ -842,7 +842,9 @@ object SandboxWorkspace:
   val BoundaryDirEntries: Set[String] = Set("egress", "file", "run-on-host")
 
   /** The workspace's boundary configuration directory, whose entries are BoundaryDirEntries. */
-  def boundaryDirOf(workspaceRoot: Path): Path = workspaceRoot.resolve(".ko-agent-sandbox")
+  def boundaryDirOf(workspaceRoot: Path): Path = workspaceRoot.resolve(BoundaryDirName)
+
+  val BoundaryDirName = ".ko-agent-sandbox"
 
   /**
    * One boundary configuration directory's rule files, as (name, normalized text) in `names`

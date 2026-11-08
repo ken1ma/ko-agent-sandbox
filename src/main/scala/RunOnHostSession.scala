@@ -87,8 +87,7 @@ object RunOnHostSession:
 
   /** The record in `file`, or None when it is absent, unreadable or not a record. */
   def readRecord(file: Path): Option[Record] =
-    try parseRecord(Files.readString(file, UTF_8))
-    catch case _: IOException => None
+    FileHelper.readIfReadable(file).flatMap(parseRecord)
 
   /** What the scavenger observes and does about processes, injected because the tests exercise the decision
     * protocol and a real implementation runs only on macOS. */
@@ -417,10 +416,8 @@ object RunOnHostSession:
   def buildDirectories(sessionDirectory: Path): Vector[(String, Path)] =
     listDirectory(sessionDirectory).flatMap: file =>
       val name = file.getFileName.toString
-      if !name.startsWith(BuildFilePrefix) || name.endsWith(PendingSuffix) || !Files.isRegularFile(file) then None
-      else
-        try Some(name.stripPrefix(BuildFilePrefix) -> Path.of(Files.readString(file, UTF_8).trim))
-        catch case _: IOException => None
+      if !name.startsWith(BuildFilePrefix) || name.endsWith(PendingSuffix) then None
+      else FileHelper.readIfReadable(file).map(text => name.stripPrefix(BuildFilePrefix) -> Path.of(text.trim))
 
   /** The other live runners' sessions under the root: those published under the runner prefix and locked. A runner
     * attaches to another launch's runtime only from one of these sessions (RunnerRuntimes.attached). */
@@ -799,17 +796,14 @@ object RunOnHostSession:
     val workspaceFile = condemned.resolve(WorkspaceFile)
     val directories =
       if builds.nonEmpty then builds
-      else if !Files.isRegularFile(workspaceFile) then Vector.empty
-      else
-        try Vector(Path.of(Files.readString(workspaceFile, UTF_8).trim))
-        catch case _: IOException => Vector.empty
+      else FileHelper.readIfReadable(workspaceFile).map(text => Path.of(text.trim)).toVector
     if directories.isEmpty then Vector(Collected.ServerSkipped("no recorded workspace root"))
     else directories.map(collectServer(root.resolve(condemned.getFileName), condemned, _, shutdown))
 
   private def collectServer(
     original: Path, condemned: Path, buildDirectory: Path, shutdown: Path => ServerAnswer,
   ): Collected =
-    val portfile = buildDirectory.resolve("project").resolve("target").resolve("active.json")
+    val portfile = sbtPortfile(buildDirectory)
     if !Files.isRegularFile(portfile) then Collected.ServerSkipped(s"no portfile in $buildDirectory")
     else
       try
@@ -839,6 +833,10 @@ object RunOnHostSession:
       val real = socket.toRealPath()
       Option.when(real.startsWith(container.toRealPath()))(real)
     catch case _: IOException => None
+
+  /** The file where a running sbt server names its socket. */
+  def sbtPortfile(buildDirectory: Path): Path =
+    buildDirectory.resolve("project").resolve("target").resolve("active.json")
 
   /** The portfile's `{"uri":"local://<path>"}`. Nothing else is for this code to shut down, such as TCP mode or a
     * format that a newer sbt writes. */
@@ -980,29 +978,14 @@ object RunOnHostSession:
 
     /** The trimmed, non-empty lines a host command prints; nothing when it cannot run. */
     private[launcher] def lines(command: String*): Vector[String] =
-      try
-        val process =
-          java.lang.ProcessBuilder(command*).redirectError(java.lang.ProcessBuilder.Redirect.DISCARD).start()
-        val output = String(process.getInputStream.readAllBytes(), UTF_8)
-        process.waitFor()
-        output.linesIterator.map(_.trim).filter(_.nonEmpty).toVector
+      try HostCommands.run(command*).text.linesIterator.map(_.trim).filter(_.nonEmpty).toVector
       catch case _: IOException => Vector.empty
 
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
-  private def withRootLock[A](root: Path)(body: => A): A =
-    val channel = FileChannel.open(
-      root.resolve(RootLockFile),
-      StandardOpenOption.CREATE,
-      StandardOpenOption.WRITE,
-    )
-    try
-      val lock = channel.lock()
-      try body
-      finally lock.release()
-    finally channel.close()
+  private def withRootLock[A](root: Path)(body: => A): A = FileHelper.withFileLock(root.resolve(RootLockFile))(body)
 
   /** What a collector's claim on a condemned entry came to. */
   private enum Claim:

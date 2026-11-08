@@ -340,4 +340,19 @@ class ClipboardRelayTest extends munit.FunSuite:
     try
       ProcessBuilder("mkfifo", FifoDir.resolve("req").toString).start().waitFor()
       assertEquals(sandboxCall(sandboxBin, Array.empty, "xclip", "-o")._1, 64)
+      // The refusal names the forms the called name answers, and how to paste text instead.
+      for name <- Seq("wl-paste", "xsel", "wl-copy") do Files.createSymbolicLink(sandboxBin.resolve(name), Shim)
+      def refusal(command: String*): String =
+        val process = ProcessBuilder((sandboxBin.resolve(command.head).toString +: command.tail)*).start()
+        process.getOutputStream.close()
+        val said = String(process.getErrorStream.readAllBytes(), UTF_8)
+        assertEquals(process.waitFor(), 64, said)
+        said
+      val bare = refusal("wl-paste")
+      assert(bare.contains("unsupported arguments: ''"), bare)
+      assert(bare.contains("'wl-paste -l' and 'wl-paste --type image/<type>'"), bare)
+      assert(bare.contains("paste text through the terminal"), bare)
+      assert(refusal("xclip", "-o").contains("'xclip -selection clipboard -t TARGETS -o'"))
+      assert(refusal("xsel", "-o").contains("'xsel --clipboard --input'"))
+      assert(refusal("wl-copy", "--paste-once").contains("'wl-copy --primary'"))
     finally deleteRecursively(FifoDir)

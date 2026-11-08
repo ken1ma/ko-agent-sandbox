@@ -16,7 +16,7 @@ import java.nio.file.{Files, Path, StandardOpenOption}
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 
-import HostCommands.{containerRunning, ExecWithInput, Os, findOnPath, quoteFreeSh, run}
+import HostCommands.{ExecWithInput, Os, findOnPath, quoteFreeSh, relayRequest, run, serveWhileRunning}
 
 object MicRelay:
 
@@ -738,26 +738,19 @@ object MicRelay:
       * ends at the stop instead of checking once more a recorder that the stop itself ended. */
     private val stopped = java.util.concurrent.CountDownLatch(1)
 
-    private def running(): Boolean = containerRunning(podman, sandboxContainer)
-
     def serve(): Unit =
       val watchdog = Thread(() => watch(), "ko-agent-sandbox-mic-watchdog")
       watchdog.setDaemon(true)
       watchdog.start()
-      var waited = 0
-      while !running() && waited < 600 do
-        Thread.sleep(1000)
-        waited += 1
-      while running() do
-        val request =
-          try readRequest()
-          catch case _: IOException => ""
-        request match
-          case "start\n" | "start" => forward()
-          case ""                  => Thread.sleep(1000)
+      serveWhileRunning(podman, sandboxContainer): () =>
+        readRequest() match
+          case "start\n" | "start" =>
+            forward()
+            true
+          case "" => false
           case _ =>
             say(log, "refused a request other than start")
-            Thread.sleep(1000)
+            false
       stopped.countDown()
       // The thread's end then also ends the relay's log writes. A watchdog check makes no blocking call, so
       // the bound only covers a log write that hangs.
@@ -766,14 +759,7 @@ object MicRelay:
 
     private def readRequest(): String =
       val command = Seq(podman, "exec", sandboxContainer) ++ quoteFreeSh(sandboxRequestReader(sandboxDir))
-      val reader = ProcessBuilder(command*)
-        .redirectError(ProcessBuilder.Redirect.DISCARD)
-        .start()
-      reader.getOutputStream.close()
-      val bytes = reader.getInputStream.readNBytes(MaxRequestBytes)
-      if bytes.length == MaxRequestBytes then reader.destroy()
-      reader.waitFor()
-      String(bytes, UTF_8)
+      String(relayRequest(command, MaxRequestBytes), UTF_8)
 
     /** Logs, once, where the launch recorder's first sound came. The watchdog also ends a recorder that
       * ended or went silent, and ends the forwarding with it; the next request starts a new recorder.

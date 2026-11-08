@@ -92,6 +92,19 @@ object RulesetHelper:
     def spelled: String = s"$file: $text"
 
   val RuleFile = "rule"
+
+  /** The workspace's rule directory and file, relative to the workspace root, as messages name them. */
+  val WorkspaceRuleDirectory = ".ko-agent-sandbox/egress"
+  val WorkspaceRuleFile = s"$WorkspaceRuleDirectory/$RuleFile"
+
+  /** How every allow line of a URL begins, as the parser reads it and the ruleset lines print it. */
+  val AllowLineHead = "allow https://"
+
+  def allowLine(host: String, path: String, grants: String): String = s"$AllowLineHead$host$path $grants"
+
+  /** The line that grants a whole host for reading: the form every refusal and launch message suggests. */
+  def hostReadLine(host: String): String = allowLine(host, RulePath.Root, Grant.Read)
+
   val RuleVariable = "EGRESS_RULE"
 
   val ProfileVariable = "EGRESS_PROFILE"
@@ -100,8 +113,11 @@ object RulesetHelper:
   /** The egress profiles, narrowest to widest. An unset EGRESS_PROFILE means deny-unless-allowed: the
     * launcher-owned defaults, where every line is inspected or names a model provider's own endpoints. So the
     * default is useful without opening the open internet. */
-  val Profiles = Vector("deny-all", "deny-unless-model", "deny-unless-allowed")
-  val DefaultProfile = "deny-unless-allowed"
+  val DenyAll = "deny-all"
+  val DenyUnlessModel = "deny-unless-model"
+  val DenyUnlessAllowed = "deny-unless-allowed"
+  val Profiles = Vector(DenyAll, DenyUnlessModel, DenyUnlessAllowed)
+  val DefaultProfile = DenyUnlessAllowed
 
   val ModelProviders: Vector[String] = Vector("anthropic", "openai", "google", "aws", "github")
 
@@ -615,11 +631,11 @@ object RulesetHelper:
 
     val starting = if clearsDefaults then Vector.empty else launchDefaults(selected)
     val (initial, consult) = profile match
-      case "deny-all"            => (Vector.empty[Contribution], (_: Rule) => false)
-      case "deny-unless-model"   => (selected.flatMap(providerContributions(_, None)), isDeny)
-      case "deny-unless-allowed" => (starting, (_: Rule) => true)
+      case DenyAll           => (Vector.empty[Contribution], (_: Rule) => false)
+      case DenyUnlessModel   => (selected.flatMap(providerContributions(_, None)), isDeny)
+      case DenyUnlessAllowed => (starting, (_: Rule) => true)
     val enforced =
-      if profile == "deny-all" then State()
+      if profile == DenyAll then State()
       else lines.foldLeft(start(initial))((state, line) => step(state, line, consult, check = false))
 
     val hosts = hostsOf(enforced)
@@ -634,7 +650,7 @@ object RulesetHelper:
         .map((pattern, sources) => pattern -> sources.distinct)
         .sortBy(_(0).spelled)
 
-    val ruleset = Ruleset(profile, Option.when(profile != "deny-all")(provider).flatten, hosts)
+    val ruleset = Ruleset(profile, Option.when(profile != DenyAll)(provider).flatten, hosts)
 
     val scopes = hosts.toVector.flatMap: (host, treatment) =>
       val own = enforced.contributions.filter(_.host == host)
@@ -655,7 +671,7 @@ object RulesetHelper:
     // did not select is a new recipient for this session, however familiar its host.
     val launchHosts = hostsOf(start(launchDefaults(selected)))
     val widening =
-      if profile != "deny-unless-allowed" then Vector.empty
+      if profile != DenyUnlessAllowed then Vector.empty
       else
         lines.filter: line =>
           line.rule match
@@ -694,9 +710,9 @@ object RulesetHelper:
 
   /** One host's treatment as rule lines, one per scope: the form --check-host and the ruleset lines share. */
   def ruleLines(host: String, treatment: Treatment): Vector[String] = treatment match
-    case Treatment.Tunnel => Vector(s"allow https://$host/ ${Grant.Tunnel}")
+    case Treatment.Tunnel => Vector(allowLine(host, RulePath.Root, Grant.Tunnel))
     case Treatment.Inspected(scopes) =>
-      scopes.toVector.sortBy(_(0)).map((path, grants) => s"allow https://$host$path ${Grant.spelled(grants)}")
+      scopes.toVector.sortBy(_(0)).map((path, grants) => allowLine(host, path, Grant.spelled(grants)))
 
   /**
    * The ruleset, one line each, in the rule grammar, so a reader learns one grammar.
@@ -711,8 +727,8 @@ object RulesetHelper:
    */
   def rulesetLines(resolved: ResolvedEgress): Vector[String] =
     val profileLine = resolved.profile match
-      case "deny-all" => s"${ProfileLineHead}deny-all"
-      case other      => s"$ProfileLineHead$other; $ModelProviderLabel${resolved.provider.getOrElse("none")}"
+      case DenyAll => s"$ProfileLineHead$DenyAll"
+      case other   => s"$ProfileLineHead$other; $ModelProviderLabel${resolved.provider.getOrElse("none")}"
     profileLine +: resolved.hosts.toVector.sortBy(_(0)).flatMap(ruleLines)
 
   /** The fixed text the launcher matches in what rulesetLines and metadataLines print
@@ -720,6 +736,8 @@ object RulesetHelper:
   val ProfileLineHead = "egress profile: "
   val ModelProviderLabel = "model provider: "
   val SummaryLineHead = "ruleset summary:"
+  val InspectedHostsField = "inspected hosts"
+  val TunnelHostsField = "tunnel hosts"
   val WideningLineHead = "widening lines ("
 
   /** The lines after the ruleset lines, outside the digest. They describe the ruleset's size and how the file
@@ -727,7 +745,8 @@ object RulesetHelper:
     * (EgressRules.MetadataPrefixes). */
   def metadataLines(resolved: ResolvedEgress): Vector[String] =
     val summary =
-      s"$SummaryLineHead ${resolved.inspected.size} inspected hosts; ${resolved.tunnelHosts.size} tunnel hosts; " +
+      s"$SummaryLineHead ${resolved.inspected.size} $InspectedHostsField; " +
+        s"${resolved.tunnelHosts.size} $TunnelHostsField; " +
         s"${resolved.provenance.widening.size} widening lines"
     summary +: wideningLine(resolved).toVector
 
@@ -756,7 +775,7 @@ object RulesetHelper:
         val grantLines = (Vector(Grant.Read, Grant.GitFetch) ++ Grant.Methods ++ Vector(Grant.Tunnel))
           .filter(grants)
           .map(grant => s"  $grant: ${scope.grants.getOrElse(grant, Vector.empty).mkString("; ")}")
-        Vector(s"allow https://$host$path ${Grant.spelled(grants)}", s"  boundary: ${scope.boundary.mkString("; ")}")
+        Vector(allowLine(host, path, Grant.spelled(grants)), s"  boundary: ${scope.boundary.mkString("; ")}")
           ++ grantLines
     val deniedHosts =
       provenance.patterns.collect { case (HostPattern.Exact(host), sources) if !resolved.hosts.contains(host) =>

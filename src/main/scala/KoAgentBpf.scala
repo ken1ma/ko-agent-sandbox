@@ -721,13 +721,7 @@ object KoAgentBpf:
   def parseLaunched(output: String): Either[String, Launched] =
     val lines = output.linesIterator.toVector
     val cgroupLine = lines.find(_.startsWith("cgroup path=")).toRight("the launch script printed no cgroup line")
-    val identities = lines.filter(_.startsWith(IdentMarker)).flatMap { line =>
-      line.stripPrefix(IdentMarker).split(" ", 2) match
-        case Array(identity, encoded) =>
-          try Some(String(Base64.getDecoder.decode(encoded.trim), StandardCharsets.UTF_8) -> identity)
-          catch case _: IllegalArgumentException => None
-        case _ => None
-    }.toMap
+    val identities = parseIdentities(output)
     val marker = lines.indexOf(FileRules.ResolvedMarker)
     for
       cgroup <- cgroupLine

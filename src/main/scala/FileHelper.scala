@@ -15,6 +15,11 @@ object FileHelper:
   def readIfPresent(path: Path): Option[String] =
     if Files.isRegularFile(path) then Some(Files.readString(path)) else None
 
+  /** readIfPresent, with an unreadable file answering None, for a file that another process may remove or replace at
+    * any moment. */
+  def readIfReadable(path: Path): Option[String] =
+    try readIfPresent(path) catch case _: IOException => None
+
   /**
    * The real path that a possibly-not-yet-created `path` will occupy: the deepest existing ancestor is
    * canonicalized, and the missing tail is re-appended.

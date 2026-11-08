@@ -6,7 +6,6 @@ import java.security.{KeyStore, PrivateKey}
 import java.security.cert.{CertificateFactory, X509Certificate}
 import java.time.Instant
 import java.time.temporal.ChronoUnit
-import java.util.Base64
 import javax.net.ssl.{SNIHostName, SNIServerName, SSLContext, SSLSocket, TrustManagerFactory, X509TrustManager}
 import scala.jdk.CollectionConverters.*
 
@@ -22,10 +21,9 @@ object X509HelperTest:
 
   /** The two files as the launcher writes them: PEM, the key PKCS#8. */
   def writePem(directory: Path, name: String, certificate: X509Certificate, key: PrivateKey): (Path, Path) =
-    def pem(label: String, der: Array[Byte]): String =
-      s"-----BEGIN $label-----\n${Base64.getMimeEncoder(64, "\n".getBytes).encodeToString(der)}\n-----END $label-----\n"
-    val certificateFile = Files.writeString(directory.resolve(s"$name.crt"), pem("CERTIFICATE", certificate.getEncoded))
-    val keyFile = Files.writeString(directory.resolve(s"$name.key"), pem("PRIVATE KEY", key.getEncoded))
+    val issued = IssuedCertificate(certificate, key)
+    val certificateFile = Files.writeString(directory.resolve(s"$name.crt"), issued.certificatePem)
+    val keyFile = Files.writeString(directory.resolve(s"$name.key"), issued.privateKeyPem)
     (certificateFile, keyFile)
 
   /** A client's trust in `ca` alone. */
@@ -59,7 +57,7 @@ class X509HelperTest extends munit.FunSuite:
     val issued = issueLeaf(Vector("docs.example"), ca, caKey, now)
     val leaf = reparsed(issued.certificate)
 
-    assertEquals(TLSHelper.TlsInspection.subjectAlternativeNames(leaf), Set("docs.example"))
+    assertEquals(CertificateHelper.subjectAlternativeNames(leaf), Set("docs.example"))
     assertEquals(leaf.getBasicConstraints, -1)
     assertEquals(leaf.getExtendedKeyUsage.asScala.toVector, Vector("1.3.6.1.5.5.7.3.1"))
     assertEquals(leaf.getIssuerX500Principal, ca.getSubjectX500Principal)
@@ -69,15 +67,7 @@ class X509HelperTest extends munit.FunSuite:
     intercept[java.security.cert.CertificateException](serverTrustedBy(testCa(now, days = 825)(0), leaf))
 
     // The key is the leaf's own, and matches the certificate.
-    val probe = Array.tabulate[Byte](32)(_.toByte)
-    val signer = java.security.Signature.getInstance("SHA256withECDSA")
-    signer.initSign(issued.privateKey)
-    signer.update(probe)
-    val signature = signer.sign()
-    val verifier = java.security.Signature.getInstance("SHA256withECDSA")
-    verifier.initVerify(leaf.getPublicKey)
-    verifier.update(probe)
-    assert(verifier.verify(signature))
+    assert(CertificateHelper.keyMatchesCertificate(issued.certificatePem, issued.privateKeyPem))
     assertNotEquals(leaf.getPublicKey, ca.getPublicKey)
 
   test("the CA signs certificates and CRLs only, with no CA below it, under a name RFC 5280 admits"):
@@ -167,7 +157,7 @@ class X509HelperTest extends munit.FunSuite:
           tls.getSession.getPeerCertificates.head.asInstanceOf[X509Certificate]
         finally tls.close()
       val first = presented()
-      assertEquals(TlsInspection.subjectAlternativeNames(first), Set("docs.example"))
+      assertEquals(CertificateHelper.subjectAlternativeNames(first), Set("docs.example"))
       assertEquals(first.getEncoded.toVector, leaf.certificate.getEncoded.toVector)
       assertEquals(presented().getEncoded.toVector, first.getEncoded.toVector)
       serving.join()
