@@ -61,9 +61,17 @@ Build output:
 ## Use what is already installed
 
 VS Code CLI (`code`), Java 25, Scala (`sbt`, `cs`, `scalafmt`, and `scala`, which is Scala CLI),
-Python 3.15 (`uv`, `uvx`), Node 24, Rust stable (`clippy`, `rustfmt`, and the static musl target),
+Python 3.15 (`uv`, `uvx`), Node 26, Rust stable (`clippy`, `rustfmt`, and the static musl target),
 plus `rg`, `jq`, `patch`, `zstd`, `openssl`, `git filter-repo`, `git lfs`, binutils, and the usual
 GNU text and process commands.
+
+`rustup target add` and `rustup component add` fail on the preinstalled Rust toolchain, which
+`~/.rustup` links read-only. Replace the link with a copy first:
+
+```sh
+t=$(rustup default | cut -d' ' -f1)
+rm ~/.rustup/toolchains/$t && cp -a /opt/rust/rustup/toolchains/$t ~/.rustup/toolchains/
+```
 
 Absent: `make`, `g++`, `mvn`, `gradle`, `ssh`, `rsync`, `wget`, `zip`, `shellcheck`, and the
 `sqlite3` CLI — use `python3 -c "import sqlite3; ..."`.

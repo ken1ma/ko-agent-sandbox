@@ -1,5 +1,5 @@
 # Opt into npm's audit service, at the endpoint that the image's npm POSTs to at install time.
-# - The endpoint is measured on Node 24.19.0 with npm 11.17.0, not guessed. The proxy refuses and
+# - The endpoint is measured on Node 26.13.0 with npm 11.20.0, not guessed. The proxy refuses and
 #   logs an older npm's /-/npm/v1/security/audits/quick, which npm treats as non-fatal.
 # - npm sends a package/version inventory to the public registry. The inventory may include
 #   private-registry and git dependency names.

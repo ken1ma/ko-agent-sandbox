@@ -21,7 +21,7 @@ under "Decisions". Nothing else is measured yet, and "Tests" lists each check.
 ### Program
 
 - The npm package `@earendil-works/pi-coding-agent` installs the `pi` command
-  (`dist/bundle/cli.js`). The package requires Node.js 22.19.0 or newer, and the image has Node 24.
+  (`dist/bundle/cli.js`). The package requires Node.js 22.19.0 or newer, and the image has Node 26.
 - pi's own container example installs pi with `npm install -g --ignore-scripts`.
   - The 1.3.0 tarball on the registry carries no `npm-shrinkwrap.json` (the tarball's file list,
     and the registry's `_hasShrinkwrap` flag). So that install resolves every dependency range from

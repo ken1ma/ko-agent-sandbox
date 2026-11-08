@@ -160,11 +160,12 @@ allow https://pypi.org/               read  # project pages and the simple/ inde
 allow https://files.pythonhosted.org/ read  # wheels and sdists
 
 # Rust
-allow https://doc.rust-lang.org/ read  # std, the book, the reference
-allow https://docs.rs/           read  # every crate's API
-allow https://crates.io/         read  # package pages and cargo search
-allow https://index.crates.io/   read  # cargo's sparse registry index
-allow https://static.crates.io/  read  # crate downloads
+allow https://static.rust-lang.org/ read  # rustup downloads
+allow https://static.crates.io/     read  # crate downloads
+allow https://doc.rust-lang.org/    read  # std, the book, the reference
+allow https://docs.rs/              read  # every crate's API
+allow https://crates.io/            read  # package pages and cargo search
+allow https://index.crates.io/      read  # cargo's sparse registry index
 
 # Go
 allow https://go.dev/     read  # the toolchain download redirects to dl.google.com, which is absent

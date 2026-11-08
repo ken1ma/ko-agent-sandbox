@@ -49,7 +49,7 @@ ENV PAGER=cat
 # Each program that installs from its own release archive downloads in a stage of its own. The final stage copies
 # the stage's result. The launcher builds the stages at once, then tags each one
 # (ImageBuilds.sandboxStageTagCommands).
-# - A smoke test in a stage runs against `tools`, whose libraries the final image also has.
+# - The final stage runs each program's smoke test after the copy, so the test loads the final image's libraries.
 # - A stage installs a program for /usr/local/bin into /out, so the copy brings that stage's programs alone.
 # - A stage installs a tree under /opt at its final path, and the final stage copies the tree to the same path.
 
@@ -60,8 +60,9 @@ ENV PAGER=cat
 #
 # Rust tracks stable and moves on rebuild, like the agents.
 #
-# RUSTUP_HOME holds the toolchain in the image. CARGO_HOME stays unset in the image on purpose, so cargo writes its
-# registry caches to ~/.cargo, which the session discards like every other cache.
+# The toolchain lives in /opt/rust/rustup. A session's RUSTUP_HOME is ~/.rustup, which links the toolchain (the final
+# stage, "rustup's home"). CARGO_HOME stays unset in the image on purpose, so cargo writes its registry caches to
+# ~/.cargo, which the session discards like every other cache.
 
 FROM tools AS rust
 
@@ -79,8 +80,12 @@ RUN set -euxo pipefail; \
         --profile minimal --default-toolchain stable \
         --component rustfmt --component clippy; \
     # ko-agent-fs ships for this triple, so a session can run its tests against the shipped libc
-    # (ko-agent-fs/doc/testing.md). The build adds the target here, because RUSTUP_HOME is read-only in a session.
+    # (ko-agent-fs/doc/testing.md). The build adds the target here, because a session cannot add a target to the
+    # image's toolchain.
     /opt/rust/cargo/bin/rustup target add "$(uname -m)-unknown-linux-musl"; \
+    # After a toolchain install or update, rustup updates itself in the read-only /opt/rust/cargo/bin and exits 1,
+    # although the toolchain installed. A rebuild updates rustup instead.
+    /opt/rust/cargo/bin/rustup set auto-self-update disable; \
     rm rustup-init
 
 
@@ -101,7 +106,7 @@ RUN set -euxo pipefail; \
 
 FROM tools AS node
 
-ARG NODE_VERSION=24.22.2
+ARG NODE_VERSION=26.13.0
 
 RUN set -euxo pipefail; \
     case "$(uname -m)" in \
@@ -123,8 +128,7 @@ RUN set -euxo pipefail; \
         /opt/node/include \
         /opt/node/share \
         /opt/node/CHANGELOG.md \
-        /opt/node/README.md; \
-    /opt/node/bin/node --version
+        /opt/node/README.md
 
 # The builtin config file is npm's lowest-precedence layer, so a project's `.npmrc` overrides it.
 # SECURITY.md says what the seven days defend against, what they let through, and why uv gets no counterpart
@@ -190,7 +194,6 @@ RUN set -euxo pipefail; \
 # check and skips the script's shell-profile editing.
 # agy updates itself only where its binary is writable. /usr/local/bin is read-only, so agy updates on rebuild like
 # the others.
-# The smoke test gets a throwaway HOME, because agy writes state on every invocation and this RUN runs as root.
 
 FROM tools AS agy
 
@@ -204,9 +207,7 @@ RUN set -euxo pipefail; \
     tar -xzf /tmp/agy.tar.gz -C /tmp antigravity; \
     install -d -m 0755 /out; \
     install -m 0755 /tmp/antigravity /out/agy; \
-    rm /tmp/agy.tar.gz /tmp/antigravity; \
-    HOME=/tmp/agy-smoke /out/agy --version >/dev/null; \
-    rm -rf /tmp/agy-smoke
+    rm /tmp/agy.tar.gz /tmp/antigravity
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +219,6 @@ RUN set -euxo pipefail; \
 # .sha256 file published beside it.
 # - The build installs all of bin/, because kiro-cli execs kiro-cli-chat for the chat and agent commands.
 # - The build takes `latest`, as for the other agents, and the glibc build, not the musl one, as for OpenCode.
-# The smoke test gets a throwaway HOME, because kiro-cli writes state on every invocation and this RUN runs as root.
 
 FROM tools AS kiro
 
@@ -230,9 +230,7 @@ RUN set -euxo pipefail; \
     unzip -q /tmp/kirocli.zip -d /tmp; \
     install -d -m 0755 /out; \
     install -m 0755 /tmp/kirocli/bin/* /out/; \
-    rm -r /tmp/kirocli.zip /tmp/kirocli; \
-    HOME=/tmp/kiro-smoke /out/kiro-cli --version >/dev/null; \
-    rm -rf /tmp/kiro-smoke
+    rm -r /tmp/kirocli.zip /tmp/kirocli
 
 
 # ---------------------------------------------------------------------------
@@ -244,8 +242,6 @@ RUN set -euxo pipefail; \
 # binary.
 # The build reads `releases/latest` as for Codex. A release published between the two fetches therefore fails the
 # checksum and the build, and never installs a mismatched binary.
-# The smoke test gets a throwaway HOME, because copilot writes a package cache on every invocation and this RUN runs
-# as root.
 
 FROM tools AS copilot
 
@@ -260,9 +256,7 @@ RUN set -euxo pipefail; \
     tar -xzf /tmp/copilot.tar.gz -C /tmp copilot; \
     install -d -m 0755 /out; \
     install -m 0755 /tmp/copilot /out/copilot; \
-    rm /tmp/copilot.tar.gz /tmp/copilot; \
-    HOME=/tmp/copilot-smoke /out/copilot --version >/dev/null; \
-    rm -rf /tmp/copilot-smoke
+    rm /tmp/copilot.tar.gz /tmp/copilot
 
 
 # ---------------------------------------------------------------------------
@@ -275,8 +269,6 @@ RUN set -euxo pipefail; \
 # The x64 build needs AVX2. The CPU that builds the image is the CPU that runs it, the podman machine's or the Linux
 # host's, so the building CPU's flag decides.
 # The build takes the glibc build, not the musl one, because Debian has glibc.
-# The smoke test gets a throwaway HOME, because OpenCode creates its XDG directories on every start and this RUN
-# runs as root.
 
 FROM tools AS opencode
 
@@ -298,9 +290,7 @@ RUN set -euxo pipefail; \
     tar -xzf /tmp/opencode.tar.gz -C /tmp opencode; \
     install -d -m 0755 /out; \
     install -m 0755 /tmp/opencode /out/opencode; \
-    rm /tmp/opencode.tar.gz /tmp/opencode; \
-    HOME=/tmp/opencode-smoke /out/opencode --version >/dev/null; \
-    rm -rf /tmp/opencode-smoke
+    rm /tmp/opencode.tar.gz /tmp/opencode
 
 
 # ---------------------------------------------------------------------------
@@ -321,8 +311,7 @@ RUN set -euxo pipefail; \
     curl -fsSL "${LYCHEE_RELEASE}/${LYCHEE_ASSET}.sha256" | sha256sum -c -; \
     install -d -m 0755 /out; \
     tar -xzf "$LYCHEE_ASSET" --strip-components=1 -C /out "${LYCHEE_ASSET%.tar.gz}/lychee"; \
-    rm "$LYCHEE_ASSET"; \
-    /out/lychee --version
+    rm "$LYCHEE_ASSET"
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +330,7 @@ RUN set -euxo pipefail; \
 
 FROM tools AS uv
 
-ARG UV_VERSION=0.13.6
+ARG UV_VERSION=0.13.7
 
 RUN set -euxo pipefail; \
     UV_ASSET="uv-$(uname -m)-unknown-linux-gnu.tar.gz"; \
@@ -351,8 +340,7 @@ RUN set -euxo pipefail; \
     curl -fsSL "${UV_RELEASE}/${UV_ASSET}.sha256" | sha256sum -c -; \
     install -d -m 0755 /out; \
     tar -xzf "$UV_ASSET" --strip-components=1 -C /out "${UV_ASSET%.tar.gz}/uv" "${UV_ASSET%.tar.gz}/uvx"; \
-    rm "$UV_ASSET"; \
-    /out/uv --version
+    rm "$UV_ASSET"
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +437,9 @@ RUN set -euxo pipefail; \
         gcc \
         libc6-dev \
         musl-tools \
+        # Node's official build links libatomic.so.1 (measured with 26.13.0 on aarch64). gcc pulls the package in as
+        # well, but Node must not depend on Rust's linker.
+        libatomic1 \
         claude-code \
         # bubblewrap and socat run Claude Code's own sandbox for Bash commands, which the managed settings below
         # turn off. The image carries them because an organization's server-managed settings override that file
@@ -491,7 +482,20 @@ RUN --mount=type=bind,from=rust,source=/opt/rust,target=/mnt/rust \
     cp -a /mnt/rust /opt/rust; \
     cp -a /mnt/node /opt/node; \
     cp -a /mnt/codex /opt/codex; \
-    for stage in vscode agy kiro copilot opencode lychee; do cp -a /mnt/$stage/* /usr/local/bin/; done
+    for stage in vscode agy kiro copilot opencode lychee; do cp -a /mnt/$stage/* /usr/local/bin/; done; \
+    # The smoke tests. uv's smoke test is `uv python install` above.
+    # - cargo reads the image's rustup home, because the session's ~/.rustup is built below.
+    # - The agents get a throwaway HOME, because this RUN runs as root. agy, kiro-cli and codex write state on every
+    #   invocation, copilot writes a package cache, and OpenCode creates its XDG directories.
+    for program in /opt/node/bin/node /usr/local/bin/lychee /usr/local/bin/code /opt/rust/cargo/bin/cargo; do \
+        RUSTUP_HOME=/opt/rust/rustup "$program" --version; \
+    done; \
+    smoke_home=$(mktemp -d); \
+    for program in agy kiro-cli copilot opencode; do \
+        HOME=$smoke_home /usr/local/bin/$program --version >/dev/null; \
+    done; \
+    HOME=$smoke_home /opt/codex/bin/codex --version >/dev/null; \
+    rm -rf "$smoke_home"
 
 # `npm` and `npx` are `#!/usr/bin/env node` scripts, so they run only with node on PATH.
 ENV PATH="/opt/node/bin:$PATH"
@@ -501,7 +505,10 @@ ENV PATH="/opt/node/bin:$PATH"
 # the next repository.
 ENV npm_config_prefix=/home/nonroot/.local
 
-ENV RUSTUP_HOME=/opt/rust/rustup
+# Node's http, https and fetch ignore HTTPS_PROXY unless this variable is set. npm reads the proxy variables itself.
+ENV NODE_USE_ENV_PROXY=1
+
+ENV RUSTUP_HOME=/home/nonroot/.rustup
 ENV PATH="/opt/rust/cargo/bin:$PATH"
 
 # Codex runs from the package directory, not through a symlink in /usr/local/bin. Nothing then depends on how the
@@ -824,6 +831,22 @@ RUN --mount=type=bind,target=/mnt/context \
     # nonroot owns the file, so an agent can add a pattern for the session.
     install -d -o nonroot -g nonroot /home/nonroot/.config/git; \
     install -o nonroot -g nonroot -m 0644 config/git/ignore /home/nonroot/.config/git/ignore; \
+    #
+    # rustup's home
+    #
+    # rustup installs the toolchain that a project's rust-toolchain.toml pins before cargo runs. The read-only root
+    # refuses that install under /opt/rust/rustup, so RUSTUP_HOME is ~/.rustup, which the session discards.
+    # - ~/.rustup links the image's toolchain rather than copying its 670 MB into every session's volume.
+    # - rustc finds its sysroot through its resolved path, which is the read-only original. So a target or component
+    #   cannot be added to the linked toolchain. AGENTS-SANDBOX.md tells agents to replace the link with a copy first.
+    install -d -o nonroot -g nonroot \
+        /home/nonroot/.rustup /home/nonroot/.rustup/toolchains /home/nonroot/.rustup/update-hashes; \
+    install -o nonroot -g nonroot -m 0644 /opt/rust/rustup/settings.toml /home/nonroot/.rustup/; \
+    install -o nonroot -g nonroot -m 0644 /opt/rust/rustup/update-hashes/* /home/nonroot/.rustup/update-hashes/; \
+    for toolchain in /opt/rust/rustup/toolchains/*; do \
+        ln -s "$toolchain" /home/nonroot/.rustup/toolchains/; \
+        chown -h nonroot:nonroot "/home/nonroot/.rustup/toolchains/${toolchain##*/}"; \
+    done; \
     #
     # Environment documentation for the agents
     #

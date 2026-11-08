@@ -251,11 +251,11 @@ class SessionBoundaryTest extends munit.FunSuite:
       "the proxy is not named in /etc/hosts, so it is being learned from a resolver",
     )
 
-    // NO_PROXY names exemptions rather than a proxy. Every other variable that names a proxy must name this run's
-    // proxy.
+    // NO_PROXY names exemptions, and NODE_USE_ENV_PROXY switches Node to the other variables; neither names a proxy.
+    // Every other variable that names a proxy must name this run's proxy.
     val foreign = System.getenv().asScala.toMap
       .filter((name, _) => name.toLowerCase.endsWith("proxy"))
-      .filterNot((name, _) => name.equalsIgnoreCase("NO_PROXY"))
+      .filterNot((name, _) => name.equalsIgnoreCase("NO_PROXY") || name == "NODE_USE_ENV_PROXY")
       .filterNot((_, value) => value.contains("egress-proxy:3128"))
     assertEquals(foreign, Map.empty[String, String])
 
@@ -439,6 +439,37 @@ class SessionBoundaryTest extends munit.FunSuite:
         s"the proxy arrived as a system property, which prints a banner on every JVM: ${answer.text}",
       )
     finally deleteRecursively(probe)
+
+  test("Node's fetch and https module reach an allowed host through the proxy"):
+    inSession()
+    // MCP servers that `npx` starts call these APIs directly. The Containerfile records why they need
+    // NODE_USE_ENV_PROXY.
+    val target = "https://repo1.maven.org/maven2/"
+    // The signals end a stalled request within the JVM probe's timeouts, rather than at the proxy's idle timeout.
+    val probe =
+      s"""fetch("$target", { signal: AbortSignal.timeout(20000) })
+         |  .then(r => console.log("fetch=" + r.status), ex => console.log("fetch=" + (ex.cause?.code ?? ex.name)));
+         |require("https").get("$target", { signal: AbortSignal.timeout(20000) }, r => {
+         |  console.log("https=" + r.statusCode);
+         |  r.resume();
+         |}).on("error", ex => console.log("https=" + (ex.code ?? ex.name)));
+         |""".stripMargin
+    val answer = run("node", "-e", probe)
+    assert(answer.ok, s"the probe did not run: ${answer.err}")
+    assert(answer.text.contains("fetch=200"), s"fetch could not reach the host: ${answer.text}")
+    assert(answer.text.contains("https=200"), s"the https module could not reach the host: ${answer.text}")
+
+  test("rustup checks the image's toolchain against its channel from a writable home"):
+    inSession()
+    // The check writes its download to the home's tmp/ and reads static.rust-lang.org, which a pinned toolchain's
+    // install needs as well (the Containerfile, "rustup's home").
+    val check = run("rustup", "check")
+    // rustup check exits 100 when an update is available, which a stable toolchain fixed at build time often has.
+    assert(Set(0, 100).contains(check.exit), s"rustup could not check its toolchains: ${check.err}")
+    assert(check.text.contains("stable-"), s"the image's toolchain is not in the home: ${check.text}")
+    // The Containerfile's rust stage says why rustup must not update itself.
+    val settings = Files.readString(Paths.get(env("RUSTUP_HOME").get, "settings.toml"))
+    assert(settings.contains("auto_self_update = \"disable\""), settings)
 
   test("the image JDK's trust store holds this workspace's CA beside every root it shipped"):
     inSession()

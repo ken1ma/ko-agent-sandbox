@@ -23,7 +23,8 @@ This runs:
 - both binaries' tests for argument handling and startup refusal.
 
 It needs no mount privileges. It runs in CI or inside a `ko-agent-sandbox` session, where the musl
-target is preinstalled. The rustup home is read-only there, so a session cannot add targets.
+target is preinstalled. A session cannot add a target to the image's toolchain
+(`container/ko-agent-sandbox/Containerfile`, "rustup's home").
 
 
 ## Both suites, anywhere podman runs — `--self-test`
