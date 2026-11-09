@@ -587,9 +587,13 @@ object AgentSandboxLauncher:
   def machineKernel(os: Os, answer: HostCommands.Run, color: Boolean = colorStderr): Option[String] =
     val label = if os == Os.Linux then "Linux kernel" else "podman machine kernel"
     Option.when(answer.ok)(answer.text.trim).filter(_.nonEmpty).map: release =>
-      val versionEnd = KernelReleaseSuffix.findFirstMatchIn(release).fold(release.length)(_.start)
-      val suffix = release.drop(versionEnd)
-      s"$label ${release.take(versionEnd)}${if suffix.isEmpty then "" else lookedUp(suffix, color)}"
+      val version = kernelVersion(release)
+      val suffix = release.drop(version.length)
+      s"$label $version${if suffix.isEmpty then "" else lookedUp(suffix, color)}"
+
+  /** The release before the suffix that machineKernel grays: `6.18.54.1` of `6.18.54.1-microsoft-standard-WSL2`. */
+  def kernelVersion(release: String): String =
+    release.take(KernelReleaseSuffix.findFirstMatchIn(release).fold(release.length)(_.start))
 
   private val KernelReleaseSuffix = "[.-][A-Za-z].*$".r
 

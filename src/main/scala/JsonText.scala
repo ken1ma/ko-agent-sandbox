@@ -1,6 +1,6 @@
 // The launcher has no JSON library, so this file holds its JSON reader and writer.
 //
-// - The reader parses the JSON files the launcher reads, such as a plugin manifest.
+// - The reader parses the JSON the launcher reads, such as a plugin manifest and podman's answers.
 // - The writer renders the one JSON file the launcher derives from a file it read: the seccomp profile
 //   (SeccompProfile). The launcher writes its other output as literal text.
 

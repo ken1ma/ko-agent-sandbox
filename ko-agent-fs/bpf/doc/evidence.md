@@ -473,6 +473,10 @@ WSL 3.0.1.0 ran kernel 6.18.40.1, whose published `CONFIG_LSM` lacks `bpf`. 3.0.
 for its kernel; it has been a release since 2026-10-09, and 3.0.4 of 2026-10-20 is the
 pre-release (https://github.com/microsoft/WSL/releases).
 
+The launcher's `--build` notes a WSL kernel older than the WSL row's, which
+`KoAgentBpf.MeasuredWslKernel` copies. Change both together: `KoAgentBpfTest` fails until they
+agree.
+
 The placement under the systemd manager was measured on both machines on 2026-10-10 and
 2026-10-11, macOS on its earlier kernel 7.1.8. After
 `systemd-run --user --unit=ko-agent-probe-hold --slice=ko-agent-probe.slice /usr/bin/sleep 180`,

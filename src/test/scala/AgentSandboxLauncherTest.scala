@@ -163,6 +163,51 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(machineKernel(Os.Mac, podmanInfoField(unanswered, 2), color = false), None)
     assert(rootfulRefusal(Os.Linux, podmanInfoField(unanswered, 0)).exists(_.contains("not running")))
 
+  test("--build notes a podman machine OS update: in band, or to the host's podman major.minor"):
+    def answer(hostVersion: String, machineVersion: String, inBand: Boolean) =
+      HostCommands.Run(
+        0,
+        (s"""{"host":{"version":"$hostVersion"},"machine":{"current_hash":"sha256:aa","new_hash":"sha256:bb",""" +
+          s""""version":"$machineVersion","inband_update_available":$inBand}}\r\n""").getBytes,
+        "Pseudo-terminal will not be allocated because stdin is not a terminal.",
+      )
+    // The answer measured on macOS, podman 6.1.4, 2026-11-10.
+    assertEquals(machineOsUpdateNote(answer("6.1.4", "6.1.4", inBand = false)), None)
+    assertEquals(machineOsUpdateNote(answer("6.1.4", "6.1.2", inBand = false)), None)
+    val upgrade = Some(
+      "note: the podman machine's OS has an update. To install it once no sandbox session runs: " +
+        "`podman machine os upgrade --restart`",
+    )
+    assertEquals(machineOsUpdateNote(answer("6.1.4", "6.1.4", inBand = true)), upgrade)
+    assertEquals(machineOsUpdateNote(answer("6.0.2", "6.1.4", inBand = false)), upgrade)
+    val failed = machineOsUpdateNote(HostCommands.Run(125, Array.emptyByteArray, "Error: no route to quay.io"))
+    assertEquals(
+      failed,
+      Some("note: could not check the podman machine's OS for an update\nError: no route to quay.io"),
+    )
+    val malformed = machineOsUpdateNote(HostCommands.Run(0, """{"host":{}}""".getBytes, ""))
+    assert(malformed.exists(_.endsWith("an answer without the expected fields: {\"host\":{}}")), malformed)
+    val silent = machineOsUpdateNote(HostCommands.Run(0, Array.emptyByteArray, ""))
+    assert(silent.exists(_.endsWith(": no JSON in its answer")), silent)
+
+  test("--build on Windows notes a WSL kernel older than the one the BPF evidence measured"):
+    def note(release: String, exit: Int = 0) = wslKernelNote(HostCommands.Run(exit, s"$release\n".getBytes, ""))
+    val measured = KoAgentBpf.MeasuredWslKernel
+    assertEquals(note(s"$measured-microsoft-standard-WSL2"), None)
+    assertEquals(note(s"$measured.1-microsoft-standard-WSL2"), None)
+    assertEquals(note("99.0-microsoft-standard-WSL2"), None)
+    assertEquals(
+      note("6.18.40.1-microsoft-standard-WSL2"),
+      Some(
+        s"note: the podman machine's kernel 6.18.40.1 is older than $measured, which the BPF backend's evidence " +
+          "measured. Once no sandbox session runs, update WSL, whose kernel the podman machine runs: `wsl --update`, " +
+          "then `wsl --shutdown`",
+      ),
+    )
+    assertEquals(note("0.1", exit = 125), None)
+    assertEquals(note("custom"), None)
+    assertEquals(note(""), None)
+
   test("podman actions refuse a service that is rootful or does not say, with the fix for the OS"):
     assertEquals(rootfulRefusal(Os.Linux, HostCommands.Run(0, "true\n".getBytes, "")), None)
     val linux = rootfulRefusal(Os.Linux, HostCommands.Run(0, "false\n".getBytes, ""))

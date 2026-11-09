@@ -205,36 +205,6 @@ Why the refusals cover more than the creation:
   `SECURITY.md`. Each entry gives the refusal's message, what the user does, and the document that
   records the refusal's reason. The reason stays where it was decided.
 
-## A stale podman machine OS
-
-A podman machine keeps the OS image `podman machine init` gave it until the user runs
-`podman machine os upgrade --restart`, which the launcher prints and never runs (`SECURITY.md`,
-"Silent changes to what you own"). Measured 2026-10-19: the machine of the BPF backend's evidence
-(`../ko-agent-fs/bpf/doc/evidence.md`) ran an August image with kernel 7.1.8, while September's
-image carried 7.2.5.
-
-- [ ] At `--build`, print a notice when the machine's OS has an update. The dry run
-  `podman machine os upgrade -n -f json` prints a boolean for that
-  (https://docs.podman.io/en/latest/markdown/podman-machine-os-upgrade.1.html).
-  - The dry run queries the registry, so it runs at `--build`, not at every launch.
-  - The WSL provider does not support the command; `wsl --update` brings that provider's kernel
-    (`README.md`). On WSL, the notice prints the WSL kernel version beside the one that evidence
-    names.
-
-## The sandbox image's download stages on the host
-
-The sandbox image builds its download stages at once, then tags each stage with a `--target`
-build (`ImageBuilds.sandboxStageTagCommands`). On macOS, `--build` and two `--update` runs
-succeeded, and every tag build was a cache hit. Windows has not run it.
-
-- [ ] Start a session and check that every agent answers `--version`, and that the context RUN
-  gave `/usr/local/bin`, `/etc/claude-code`, `/etc/codex` and `/home/nonroot/.m2` their former
-  modes and owners.
-- [ ] Run `sbt "testWithPodman *StageCacheTagTest"` on macOS and Windows. The suite checks the
-  cache hits and the cleanup that the stage tags rely on, on a small fixture.
-- [ ] Run `--update` twice on macOS and Windows. Check that `podman images -a` then holds no stage
-  image from the first run.
-
 ## `src/probe/`: the shell probes as Scala CLI scripts
 
 `development.md`, "Probes", says to write a host-side probe as a standalone Scala CLI script.
@@ -967,8 +937,6 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
 - [ ] Inside a session launched with the probe (`src/test/claude-plugins/managed-probe/README.md`),
   run `sbt testFull`. `SessionBoundaryTest`'s plugin-mount test runs only there, and has not run
   yet.
-- [ ] Run `claude plugin test src/test/claude-plugins/managed-probe` on the host. The command has
-  not run, since the sandbox turns the test kit off under `allowManagedHooksOnly`.
 
 ## Deferred — readable session directory names under `--run-on-host`
 

@@ -20,3 +20,8 @@ to expect, and explains the mechanism.
 
 `claude plugin test` on `tests/` runs on the host only. Inside the sandbox,
 `allowManagedHooksOnly` turns the test kit off.
+
+- On the host, `claude plugin test src/test/claude-plugins/managed-probe` passes its one test
+  (Claude Code 2.1.321, logged in, 2026-11-10).
+- A logged-out Claude Code 2.1.296 refused the run with `hooks modules are turned off in this
+  process`. Update and log in to `claude`, then run the tests again.

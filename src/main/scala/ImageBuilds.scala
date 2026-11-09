@@ -120,6 +120,12 @@ object ImageBuilds:
         staleTags,
       )
       writeImageCleanupJournal(journal, remaining)
+      // The notes come before the backend's failure, which a newer kernel may remove.
+      os match
+        case Os.Mac => machineOsUpdateNote(run(machineOsUpdateCommand(podman)*)).foreach(System.err.println)
+        case Os.Windows =>
+          wslKernelNote(run(podman, "info", "--format", "{{.Host.Kernel}}")).foreach(System.err.println)
+        case Os.Linux => ()
       bpfFailure.foreach(reason => fail(KoAgentBpf.buildFailedError(reason, os)))
     sys.exit(0)
 
@@ -132,6 +138,62 @@ object ImageBuilds:
     if !probed.ok then fail(s"error: the machine did not answer the BPF backend's checks\n${probed.err}")
     val failures = KoAgentBpf.buildFailures(KoAgentBpf.parseFacts(probed.text), os)
     if failures.nonEmpty then fail(KoAgentBpf.buildRefusal(failures))
+
+  /**
+   * The dry run that asks the podman machine whether its OS has an update. The dry run queries the OS image's
+   * registry, so --build runs it, and a launch never does. podman's WSL provider has no `podman machine os`, and
+   * native Linux has no machine.
+   */
+  def machineOsUpdateCommand(podman: String): Vector[String] =
+    Vector(podman, "machine", "os", "upgrade", "--dry-run", "--format", "json")
+
+  /**
+   * The note for the dry run's answer, or None when the machine's OS is current.
+   * - A machine whose podman differs from the host's in major.minor has an update that `inband_update_available`
+   *   leaves false: the upgrade switches the OS to the host's version (podman's pkg/machine/os/ostree.go, `Upgrade`).
+   *   The dry run fails on a machine newer than the host.
+   * - The answer arrives through `podman machine ssh`, so the JSON is the line that starts with `{`.
+   */
+  def machineOsUpdateNote(answer: Run): Option[String] =
+    import JsonText.Json
+    def majorMinor(json: Json, part: String): Option[String] =
+      json.field(part).flatMap(_.field("version")).collect { case Json.Str(version) =>
+        version.split('.').take(2).mkString(".")
+      }
+    val parsed = answer.text.linesIterator.map(_.trim).find(_.startsWith("{")).toRight("no JSON in its answer")
+      .flatMap(JsonText.parse)
+    val updateAvailable = parsed.flatMap: json =>
+      val inBand = json.field("machine").flatMap(_.field("inband_update_available"))
+      (inBand, majorMinor(json, "host"), majorMinor(json, "machine")) match
+        case (Some(Json.Bool(flag)), Some(hostSide), Some(machineSide)) => Right(flag || hostSide != machineSide)
+        case _ => Left(s"an answer without the expected fields: ${answer.text.trim}")
+    if !answer.ok then Some(s"note: could not check the podman machine's OS for an update\n${answer.err}")
+    else updateAvailable match
+      case Left(reason) => Some(s"note: could not check the podman machine's OS for an update: $reason")
+      case Right(false) => None
+      case Right(true) =>
+        Some(
+          "note: the podman machine's OS has an update. To install it once no sandbox session runs: " +
+            s"`${KoAgentBpf.MachineOsUpgrade}`",
+        )
+
+  /**
+   * The note for a WSL kernel older than the one the BPF backend's evidence measured (KoAgentBpf.MeasuredWslKernel),
+   * or None. podman's WSL provider has no `podman machine os`, so the kernel's version is the one sign of a stale WSL.
+   * A release whose version does not parse gets no note; the `using:` line prints the release.
+   */
+  def wslKernelNote(answer: Run): Option[String] =
+    import scala.math.Ordering.Implicits.{infixOrderingOps, seqOrdering}
+    def numbers(version: String): Option[Vector[Int]] =
+      val parsed = version.split('.').toVector.map(_.toIntOption)
+      Option.when(parsed.forall(_.isDefined))(parsed.flatten)
+    val running = kernelVersion(answer.text.trim)
+    val measured = KoAgentBpf.MeasuredWslKernel
+    val older = answer.ok && numbers(running).zip(numbers(measured)).exists(_ < _)
+    Option.when(older)(
+      s"note: the podman machine's kernel $running is older than $measured, which the BPF backend's evidence " +
+        s"measured. Once no sandbox session runs, ${KoAgentBpf.upgradeRemedy(Os.Windows)}",
+    )
 
   /** `--update` (README.md has what it rebuilds). */
   def update(os: Os): Nothing =
@@ -277,7 +339,8 @@ object ImageBuilds:
    * - The builds pass no --label either: buildah appends a --label to the target stage as an
    *   instruction, which would commit a new image instead of tagging the cached one.
    *
-   * StageCacheTagTest checks the cache hits and the cleanup on a fixture.
+   * StageCacheTagTest checks the cache hits and the cleanup on a fixture. The commands treat every stage alike, so the
+   * fixture stands for the sandbox image's stages, and no test checks storage after real --update runs.
    */
   def sandboxStageTagCommands(podman: String, version: String): Vector[Vector[String]] =
     SandboxDownloadStages.map: stage =>

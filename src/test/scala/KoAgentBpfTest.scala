@@ -13,6 +13,11 @@ class KoAgentBpfTest extends munit.FunSuite:
 
   private def settings(value: String): WorkspaceSettings = parseWorkspace(value).fold(fail(_), _.settings)
 
+  test("MeasuredWslKernel is the kernel of the evidence's WSL row"):
+    val evidence = Files.readString(java.nio.file.Paths.get("ko-agent-fs/bpf/doc/evidence.md"))
+    val row = "(?m)^\\| WSL +\\|.*kernel ([0-9.]+)".r
+    assertEquals(row.findAllMatchIn(evidence).map(_.group(1)).toVector, Vector(MeasuredWslKernel))
+
   test("the hooks are the eight of every session, and the ninth under unix-socket"):
     assertEquals(hooks(unixSocket = false).size, 8)
     assertEquals(hooks(unixSocket = true), Hooks :+ "file_receive")

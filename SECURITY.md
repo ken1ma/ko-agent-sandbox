@@ -341,7 +341,8 @@ understanding of what the sandbox can access. These cases need a host change or 
   - If you decline, the launch is refused, and the launcher prints the script for you to run
     yourself.
 - a native Linux **host** is never even prompted for sudo. The launcher only hands you the command.
-- the **machine** is started when stopped, but never created or resized: sizing is yours.
+- the **machine** is started when stopped, but never created, resized or upgraded: sizing and OS
+  updates are yours.
 - during **session setup**, the workspace tree stays unchanged:
   - The BPF backend judges what enters `.git` and `.ko-agent-sandbox`, and the FUSE backend denies
     creating them by name. So neither name needs a mount target in the workspace.

@@ -219,7 +219,7 @@ Alternatively, on the host: copy the worktree
    ```powershell
    $suites = '*RunTopologyTest *MountLifecycleTest *MountPathTest ' +
      '*EgressSessionTest *ProxyContainerTest *BundleLockTest ' +
-     '*ResetRecordTest *WithPodmanTest *SandboxMarkdownLinkCheckTest'
+     '*ResetRecordTest *WithPodmanTest *SandboxMarkdownLinkCheckTest *StageCacheTagTest'
    sbt "testWithPodman $suites"
    ```
 1. When a run aborts with `ZipFile invalid LOC header`, or the server fails to start with
