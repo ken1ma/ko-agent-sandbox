@@ -22,8 +22,8 @@
 #   sh src/probe/run-on-host-profile-iterate.sh mach-proxy [native-image]   # ... and the host proxy, in either form?
 #   sh src/probe/run-on-host-profile-iterate.sh procargs   # can a command read another process's environment?
 #
-# Whether the current grant set builds is the question of src/probe/run-on-host-acceptance-test.sh, not of this
-# script.
+# Whether the current grant set builds is the question of the run-on-host checks (src/test/run-on-host/), not of
+# this script.
 #
 # System paths accumulate in src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt, which you edit by
 # hand. A line added because a command failed once is a grant that outlives every later command, so a path belongs
@@ -232,7 +232,7 @@ EOF
     sed 's/^/  /' "$needed"
     echo
     echo "A name is listed because the measured command fails without it. A lookup whose denial the"
-    echo "command survives is not listed, so the acceptance test decides whether a build under these names behaves."
+    echo "command survives is not listed, so the run-on-host checks decide whether a build under these names behaves."
 }
 
 case "$mode" in
@@ -464,12 +464,13 @@ checks)
     check "the JDK"                                       "$JAVA_HOME/bin/java" -version
     check "the sbt script, no build"                     sbt -java-home "$JAVA_HOME" --script-version
     echo
-    echo "every check passed; the acceptance test is next: sh src/probe/run-on-host-acceptance-test.sh all quick"
+    echo "every check passed; the run-on-host checks are next: SeatbeltCheck.scala, then BuildsCheck.scala"
+    echo "  in src/test/run-on-host/"
     ;;
 narrow)
     emit "$system_paths" || exit 1
     if ! run_command "$work/base.log"; then
-        echo "the current grant set does not run the command; fix that with the acceptance test before narrowing." >&2
+        echo "the current grant set does not run the command; fix that with the run-on-host checks first." >&2
         exit 1
     fi
     echo "the baseline runs the command. Removing one grant at a time."
@@ -557,7 +558,7 @@ mach-route)
 mach)
     emit "$system_paths" || exit 1
     . "$work/command.env"
-    # End emit's own sbt server, which holds this project's portfile; the acceptance test ends it for the same reason.
+    # End emit's own sbt server, which holds this project's portfile; the run-on-host checks end it for the same reason.
     sbt --jvm-client -batch shutdown >/dev/null 2>&1
     run_bound=${MACH_BOUND:-600}
     # The probe builds a project of its own inside the workspace that the profile grants. This checkout's target/
@@ -701,8 +702,8 @@ procargs)
     # The first four profiles are `(allow default)` plus the rule under test, isolated as seatbelt-semantics.sh
     # isolates its rules. Then come the rendered command profile without the rule, with it, and with it and a mill
     # client's one-name exception. No build runs here: the JDK starting under the rendered profile is the row itself,
-    # and whether every program starts under that profile is the acceptance test's question. Run this mode on each new
-    # macOS release.
+    # and whether every program starts under that profile is the run-on-host checks' question. Run this mode on each
+    # new macOS release.
     : "${JAVA_HOME:?set JAVA_HOME to the JDK the profile grants}"
     probe_source=$(pwd -P)/src/probe/ProcArgs.java
     KO_AGENT_PROCARGS_PROBE=1 "$JAVA_HOME/bin/java" "$probe_source" --hold >/dev/null 2>&1 &
@@ -766,7 +767,7 @@ procargs)
     echo
     echo "ENVIRONMENT READ of the held JDK without the rule is what a host command would reach"
     echo "(SECURITY.md, \"Run on host\"). DENIED (EPERM) under the rendered profile, with the JDK running and"
-    echo "listing its processes, is SeatbeltProfile.ProcessReadRule; the acceptance test runs every program."
+    echo "listing its processes, is SeatbeltProfile.ProcessReadRule; SeatbeltCheck runs every program."
     ;;
 *)
     echo "usage: $0 [checks|ops|paths|narrow|mach-route|mach|mach-proxy|procargs] [command|native-image]" >&2; exit 2 ;;

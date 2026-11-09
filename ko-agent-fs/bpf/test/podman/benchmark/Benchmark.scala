@@ -2,6 +2,7 @@
 //> using scala 3.10.0
 //> using file ../PodmanTestHelper.scala
 //> using file ../../../../../src/main/scala/SourceDigest.scala
+//> using file ../../../../../src/test/scala/HostDriver.scala
 
 // The benchmark suite of ko-agent-fs/bpf/doc/evidence.md ("Suites", benchmark), in one run, on the
 // podman machine of either host. Run it on the HOST, from the repository root, with the default
@@ -103,6 +104,7 @@ import java.nio.file.{Files, Path, StandardCopyOption}
 import java.util.Base64
 import java.util.concurrent.TimeUnit
 
+import agentsandbox.launcher.HostDriver.*
 import PodmanTestHelper.*
 
 @main def suite(args: String*): Unit = Benchmark.run(args)

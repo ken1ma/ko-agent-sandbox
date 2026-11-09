@@ -237,38 +237,10 @@ succeeded, and every tag build was a cache hit. Windows has not run it.
 - [ ] Run `--update` twice on macOS and Windows. Check that `podman images -a` then holds no stage
   image from the first run.
 
-## The run-on-host acceptance test's host prerequisites
-
-The test names one fixture's missing host run at a time, after `emit` fails on that fixture. A
-launch on this repository offers the runs of the nested mill and Gradle fixtures alone. Maven runs
-from the workspace root's `mvnw` (`run-on-host.md`, "Maven"), and the mvn fixture and the Mill
-1.1.10 copy are workspaces that only the test uses.
-
-- [ ] Check every selected fixture before the first `emit`, print every missing host run at once,
-  and exit. The check uses the launch's own findings (`RunOnHostProvisioning.finding`) through the
-  test classpath, so that its wording is the refusals' wording.
-- [ ] If that check is not built, list each fixture's host run in the script's header:
-  `./mvnw --version` in `mvn-fixture`, `./gradlew --version` in `gradle-fixture`, and
-  `MILL_VERSION=1.1.10-jvm ./mill --no-daemon version` in `mill-fixture`. The header holds the mill
-  line.
-
-## `src/probe/`: the rerun acceptance test apart from the one-off probes
-
-`src/probe/` holds two kinds of file under one name. sbt runs some on every test run:
-`run-on-host-acceptance-setup.sh` and `run-on-host-acceptance-test.sh` with the `*-fixture`
-directories (`RunOnHostAcceptanceSetupTest`, `EmitRunOnHostProfile`). The rest measured something
-once, such as `ProcArgs.java`, `ahp-hostile-host.py` and `seatbelt-semantics.sh`, and the code
-cites them for what they measured.
-
-- [ ] Move the acceptance test and its fixtures to a test location named for them, and keep
-  `src/probe/` for the one-off probes. Update the `run-on-host*.md` documents, `seatbelt.md` and
-  the code comments that cite the moved paths. The BPF backend's suites made the same split
-  (`../ko-agent-fs/bpf/test/podman/`).
-
 ## `src/probe/`: the shell probes as Scala CLI scripts
 
 `development.md`, "Probes", says to write a host-side probe as a standalone Scala CLI script.
-Twelve probes in `src/probe/` are shell scripts. Eleven run on the macOS host, and
+Ten probes in `src/probe/` are shell scripts. Nine run on the macOS host, and
 `podman-attach-stdin.sh` runs on any host with podman.
 
 - [ ] Rewrite each shell probe as a Scala CLI script, and update the documents and code comments
@@ -277,9 +249,10 @@ Twelve probes in `src/probe/` are shell scripts. Eleven run on the macOS host, a
     `mill-pinned-jvm.sh`, `podman-attach-stdin.sh`, `run-on-host-profile-iterate.sh`,
     `run-on-host-runner-session.sh`, `sbt-exec-chain.sh`, `seatbelt-semantics.sh` and
     `session-recovery.sh`.
-  - `run-on-host-acceptance-setup.sh` and `run-on-host-acceptance-test.sh` run under sbt
-    (`RunOnHostAcceptanceSetupTest`, `EmitRunOnHostProfile`). Rewrite them together with the move
-    in the entry above.
+  - `mill-pinned-jvm.sh` and `run-on-host-profile-iterate.sh` source
+    `run-on-host-acceptance-setup.sh` for its idle check alone. Port them onto `RunOnHostIdle`,
+    the run-on-host checks' copy of that check, then delete the setup file and
+    `RunOnHostAcceptanceSetupTest`.
   - Rerun each rewritten probe on macOS, and compare its answers with what the documents record.
 
 ## Open questions under the `--nesting=none` seccomp profile
@@ -849,8 +822,8 @@ measurably needs it (`SeatbeltProfile.SystemPaths.txt`), and no build here runs 
     path under the user's home is refused: what a host command cannot read there is its
     confinement.
   - Before choosing the form, measure that `curl` fetches from an allowed host with that one file
-    granted. The acceptance test's "CA bundle variables" rows print what `curl` does, and whether
-    `curl` then reads `CURL_CA_BUNDLE` or `SSL_CERT_FILE`.
+    granted. `BuildsCheck`'s "CA bundle variables" rows print what `curl` does, and whether `curl`
+    then reads `CURL_CA_BUNDLE` or `SSL_CERT_FILE`.
 
 ## Deferred — Node for ScalablyTyped and scalajs-bundler under `--run-on-host`
 
@@ -1027,14 +1000,14 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
       which ends exactly the command's groups and directory;
     - a command's death, however it dies, is confined to its own process and never takes the
       runner and its warm servers with it;
-    - the acceptance test drives one command's whole lifecycle as `RunOnHost` with no runner, which
-      is how the supervisor rows measure the profile.
+    - the run-on-host checks drive one command's whole lifecycle as `RunOnHost` with no runner,
+      which is how `BuildsCheck` and `CommandLifecycleCheck` measure the supervisor.
   - What it costs:
     - one more JVM start per command, about a third of a second in the jar form and tens of
       milliseconds as the native image;
     - a second code path for the command's runtime, the supervisor's own under Maven.
   - The alternative is the same work in a runner thread, with cancellation done by hand. Decide
-    with the measured cost per command, and with what the acceptance test would drive instead.
+    with the measured cost per command, and with what the run-on-host checks would drive instead.
 
 ## Deferred — the native-image launcher
 

@@ -2,6 +2,7 @@
 //> using scala 3.10.0
 //> using file ../PodmanTestHelper.scala
 //> using file ../../../../../src/main/scala/SourceDigest.scala
+//> using file ../../../../../src/test/scala/HostDriver.scala
 //> using file ../../../../../src/main/scala/BpfCorpus.scala
 
 // The policy suite of ko-agent-fs/bpf/doc/evidence.md ("Suites", policy), in one run, on the podman
@@ -80,6 +81,7 @@ import java.util.Base64
 
 import agentsandbox.launcher.BpfCorpus
 
+import agentsandbox.launcher.HostDriver.*
 import PodmanTestHelper.*
 
 @main def suite(args: String*): Unit = Policy.run(args)

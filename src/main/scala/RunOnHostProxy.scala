@@ -70,8 +70,8 @@ object RunOnHostProxy:
    *   - The executable itself is checked first, in both forms (RunOnHostSandbox.selfPresent).
    *   - Any other entry that does not exist is skipped, as the JVM skips it.
    *   - A relative or empty entry is resolved as RunOnHostSandbox.selfClassPath spells it.
-   *   - The JDK and class path are parameters for the acceptance test's emitter. The emitter renders the profile
-   *     from inside sbt's JVM, for the java that runs the test's rows.
+   *   - The JDK and class path are parameters for the run-on-host checks' emitter. The emitter renders the profile
+   *     from inside sbt's JVM, for the java that runs the checks' rows.
    */
   def proxyInputs(
     systemPaths: SeatbeltProfile.SystemPaths,
@@ -201,7 +201,7 @@ object RunOnHostProxy:
       Files.writeString(profileFile, profile, UTF_8)
       // The command's environment sets the same property (RunOnHostSandbox.commandEnvironment). The proxy gets it on
       // the command line, since the proxy's environment is closed. A dual-stack JVM binds ::ffff:127.0.0.1, which the
-      // profile's "localhost" class does not cover (measured by the acceptance test's proxy rows).
+      // profile's "localhost" class does not cover (measured by the run-on-host checks' proxy rows).
       val invocation = selfInvocation("--serve-proxy-on-host")
       val command = RunOnHostSession.registeredSpawn(
         record,

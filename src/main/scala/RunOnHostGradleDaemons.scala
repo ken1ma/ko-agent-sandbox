@@ -22,8 +22,8 @@
 //   - A daemon so hidden stays unrecorded. So does a daemon started under a runner that died during the command.
 //   - Either daemon is confined, holds nothing, and exits on Gradle's idle timeout (SECURITY.md, "Run on host").
 // - The daemons are observed on macOS only, like the supervisor, because the observations are pgrep and ps.
-//   RunnerRuntimes therefore takes `gradleDaemons` as a parameter that tests replace, and the acceptance test
-//   measures it.
+//   RunnerRuntimes therefore takes `gradleDaemons` as a parameter that tests replace, and ChannelCheck
+//   (src/test/run-on-host/) measures it.
 
 package agentsandbox.launcher
 
@@ -71,7 +71,7 @@ object RunOnHostGradleDaemons:
       catch case _: IOException => tmp
     HostProcesses.lines(HostProcesses.Pgrep, "-f", "--", DaemonMain).flatMap(_.toLongOption).flatMap: pid =>
       processes.startOf(pid).filter: start =>
-        val ours = HostProcesses.lines(HostProcesses.Ps, "-wwE", "-o", "command=", "-p", pid.toString)
+        val ours = HostProcesses.ps("-wwE", "-o", "command=", "-p", pid.toString)
           .exists(carriesTmp(_, real))
         ours && processes.startOf(pid).contains(start)
       .map(pid -> _)

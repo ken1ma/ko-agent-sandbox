@@ -41,7 +41,7 @@ import RunOnHostSession.{daemonRecordName, proxyRecordName, serverRecordName, Se
  *   - A mill launcher that runs its build without a daemon (Assembled.millWithoutDaemon) has a runtime that is its
  *     proxy, as Gradle's is.
  *   - Maven is never here: Maven runs once and exits, and its proxy ends with the command.
- *   - The acceptance test's entry holds one of these objects over the command's own session for its one command. The
+ *   - The run-on-host checks' entry holds one of these objects over the command's own session for its one command. The
  *     one lifecycle thus has two callers and no second owner.
  *
  * Another launch may own the build directory's server or daemon (SECURITY.md, "Run on host").
@@ -352,7 +352,8 @@ final class RunnerRuntimes(
     * server starts, after any foreign server for the directory is shut down. */
   private def sweepTargetLinks(assembled: Assembled): Unit =
     val workspaceRoot = assembled.prereqs.workspaceRoot
-    val swept = cleanForeignTargetLinks(workspaceRoot, workspaceRoot +: assembled.sbtCachesGranted)
+    val swept =
+      cleanForeignTargetLinks(workspaceRoot, workspaceRoot +: assembled.sbtCachesGranted, assembled.sbtCachesGranted)
     if swept.nonEmpty then
       log(s"removed ${swept.size} target/ links resolving outside the command's roots (first: ${swept.head})")
 

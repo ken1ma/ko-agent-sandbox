@@ -64,7 +64,7 @@ object RunOnHostSession:
 
   /** One registered process group: the leader's pgid (== its pid) and the leader's start time.
     *
-    *   - The start time is spelled exactly as `ps -o lstart=` prints it.
+    *   - The start time is spelled exactly as `ps -o lstart=` prints it in the C locale (HostProcesses.ps).
     *   - The start time is compared as a string, never parsed, because only equality with a later observation
     *     matters. */
   case class Record(pgid: Long, leaderStart: String)
@@ -321,7 +321,7 @@ object RunOnHostSession:
    *     the file is closed. scavenge has the same caveat for the session lock.
    *   - A waiter's channel closed on its timeout would therefore end another thread's exclusion against other
    *     processes. So would a holder's channel still open when the next thread has locked a fresh one.
-   *   - Two threads do contend. The acceptance test's entry prepares its runtime on the main thread and tears the
+   *   - Two threads do contend. The run-on-host checks' entry prepares its runtime on the main thread and tears the
    *     session down from the shutdown hook (RunOnHostSandbox.ownRuntime). The runner's monitor covers neither the
    *     supervisor nor the tests.
    *
@@ -887,7 +887,7 @@ object RunOnHostSession:
   val RegistrationScript: String =
     """setpgrp(0, 0) or exit 71;
       |my ($record, @command) = @ARGV;
-      |my $start = `/bin/ps -o lstart= -p $$`;
+      |my $start = do { local $ENV{LC_ALL} = 'C'; `/bin/ps -o lstart= -p $$` };
       |chomp $start;
       |exit 71 unless $start;
       |open(my $fh, '>', "$record.pending") or exit 71;
@@ -945,19 +945,19 @@ object RunOnHostSession:
   object HostProcesses extends Processes:
     /** macOS's own programs, by absolute path like `/bin/kill`. A bare name would be found through the runner's
       * inherited `PATH` (design.md, "No repository-controlled host executable resolution"). */
-    val Ps = "/bin/ps"
+    private val Ps = "/bin/ps"
     val Pgrep = "/usr/bin/pgrep"
     val Lsof = "/usr/sbin/lsof"
 
     private def self: Long = ProcessHandle.current.pid
 
     def startOf(pid: Long): Option[String] =
-      startFrom(lines(Ps, "-o", "pid=,lstart=", "-p", s"$self,$pid"), self, pid)
+      startFrom(ps("-o", "pid=,lstart=", "-p", s"$self,$pid"), self, pid)
 
     def endGroup(pgid: Long): Boolean = termThenKill(groupEmpty(pgid), kill(_, s"-$pgid"))
 
     def groupEmpty(pgid: Long): Boolean =
-      groupEmptyFrom(lines(Ps, "-o", "pid=", "-p", self.toString, "-g", pgid.toString), self)
+      groupEmptyFrom(ps("-o", "pid=", "-p", self.toString, "-g", pgid.toString), self)
 
     /** The pid's start from `pid lstart` rows, or None when the pid is not listed. Throws IOException when `self` is
       * not listed either, because then the listing did not happen. */
@@ -977,8 +977,15 @@ object RunOnHostSession:
       java.lang.ProcessBuilder("/bin/kill", s"-$name", "--", target).start().waitFor()
 
     /** The trimmed, non-empty lines a host command prints; nothing when it cannot run. */
-    private[launcher] def lines(command: String*): Vector[String] =
-      try HostCommands.run(command*).text.linesIterator.map(_.trim).filter(_.nonEmpty).toVector
+    private[launcher] def lines(command: String*): Vector[String] = linesOf(HostCommands.run(command*))
+
+    /** `lines` of `ps` in the C locale. macOS's ps spells `lstart` in the locale's date order, and a record's writer
+      * and its reader inherit different environments: the proxy's is empty (RunOnHostProxy.startProxyUnder). */
+    private[launcher] def ps(arguments: String*): Vector[String] =
+      linesOf(HostCommands.runWithEnvironment(Map("LC_ALL" -> "C"), (Ps +: arguments)*))
+
+    private def linesOf(run: => HostCommands.Run): Vector[String] =
+      try run.text.linesIterator.map(_.trim).filter(_.nonEmpty).toVector
       catch case _: IOException => Vector.empty
 
   // ---------------------------------------------------------------------------

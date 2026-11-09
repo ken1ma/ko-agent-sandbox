@@ -525,7 +525,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     Files.createDirectories(classpathFile.getParent)
     def written(paths: String*): Unit =
       Files.writeString(classpathFile, paths.map(path => s"\"$path\"").mkString("[\"1.1.9 |\",[", ",", "]]"))
-    // The acceptance test measures the profile. Here the read and the delete are the plain ones.
+    // ChannelCheck measures the profile. Here the read and the delete are the plain ones.
     val direct = RunOnHostMillDaemons.Confined(
       read = file => Option.when(Files.isRegularFile(file))(Files.readString(file, UTF_8)),
       delete = file => Files.deleteIfExists(file),
@@ -685,7 +685,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(awaitProxyPort(log, deadlineMillis = 1_000, ended = () => None), Right(51234))
 
   test("the relaunch classpath walked from the loaders includes these classes and their deps"):
-    // EmitRunOnHostProfile prints this classpath for the acceptance test. Inside sbt's layered loaders,
+    // EmitRunOnHostProfile copies this classpath for the run-on-host checks. Inside sbt's layered loaders,
     // java.class.path is sbt's own, so the walk has to find the test classes and munit.
     val classpath = EmitRunOnHostProfile.classpathForRelaunch.split(java.io.File.pathSeparator).toVector
     assert(classpath.exists(_.contains("munit")), classpath.take(5).toString)
@@ -1331,7 +1331,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       assert(table.alive.contains(leaderA), "one live server behind the record")
     finally session.close()
 
-  test("the acceptance test's entry: its teardown waits on the lock its own preparation holds, and keeps the record"):
+  test("the checks' entry: its teardown waits on the lock its own preparation holds, and keeps the record"):
     // One JVM runs two threads with no shared monitor: prepare on the main thread, and endSession from the shutdown
     // hook (ownRuntime). The teardown's bounded wait must neither signal nor release the holder's lock. The teardown
     // keeps the session for the next collection.
@@ -1976,30 +1976,35 @@ class RunOnHostSandboxTest extends munit.FunSuite:
   // The target/ link sweep
   // --------------------------------------------------------------------------
 
-  test("foreign and dangling target links are swept; granted, intra-workspace and non-target stay"):
+  test("foreign and dangling target links are swept with the store's links beside them; others stay"):
     val workspace = Files.createTempDirectory("sweep")
     val foreignStore = Files.createTempDirectory("foreign-store")
     val sbtGlobal = Files.createTempDirectory("sbt-global")
     val target = Files.createDirectories(workspace.resolve("sub/target/out"))
-    val kept = Files.writeString(sbtGlobal.resolve("kept"), "")
+    val clean = Files.createDirectories(workspace.resolve("other/target/out"))
+    val ours = Files.writeString(sbtGlobal.resolve("ours"), "")
     val foreign = Files.writeString(foreignStore.resolve("theirs"), "")
     val source = Files.writeString(workspace.resolve("source"), "")
 
     Files.createSymbolicLink(target.resolve("foreign.zip"), foreign)
     Files.createSymbolicLink(target.resolve("dangling.zip"), foreignStore.resolve("gone"))
-    Files.createSymbolicLink(target.resolve("ours.zip"), kept)
+    // A class file that sbt restored into the command's own store, beside the foreign links: a compile without the
+    // swept analysis would write through it (sbt/sbt#9968).
+    Files.createSymbolicLink(Files.createDirectories(target.resolve("classes")).resolve("A.class"), ours)
     Files.createSymbolicLink(target.resolve("intra"), source)
+    // A tree with no foreign link keeps its store links: its analysis stays.
+    Files.createSymbolicLink(clean.resolve("B.class"), ours)
     Files.createSymbolicLink(workspace.resolve("outside-target"), foreign)
     val git = Files.createDirectories(workspace.resolve(".git/target"))
     Files.createSymbolicLink(git.resolve("untouchable"), foreign)
 
-    val removed = cleanForeignTargetLinks(workspace, Seq(workspace, sbtGlobal))
+    val removed = cleanForeignTargetLinks(workspace, Seq(workspace, sbtGlobal), Seq(sbtGlobal))
     assertEquals(
       removed.map(_.getFileName.toString).sorted,
-      Vector("dangling.zip", "foreign.zip"),
+      Vector("A.class", "dangling.zip", "foreign.zip"),
     )
-    assert(Files.isSymbolicLink(target.resolve("ours.zip")))
     assert(Files.isSymbolicLink(target.resolve("intra")))
+    assert(Files.isSymbolicLink(clean.resolve("B.class")))
     assert(Files.isSymbolicLink(workspace.resolve("outside-target")))
     assert(Files.isSymbolicLink(git.resolve("untouchable")))
 

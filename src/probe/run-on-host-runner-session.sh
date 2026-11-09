@@ -46,7 +46,7 @@
 # sbt documents for the denial, never on a bare failure.
 #
 # The confined rows use (allow default) profiles that deny network* and then allow one rule, so each row measures
-# the network rule alone. Measuring the filesystem rules is the acceptance test's job, and a deny-default profile
+# the network rule alone. Measuring the filesystem rules is SeatbeltCheck's job, and a deny-default profile
 # here would chase grants that the question is not about.
 
 set -u
@@ -59,8 +59,8 @@ if [ -n "${KO_AGENT_SANDBOX_EGRESS_RULESET:-}" ] || [ -d /etc/ko-agent-sandbox ]
     echo "This looks like a sandbox session. Run the probe on the host instead." >&2
     exit 2
 fi
-if [ ! -f src/probe/mill-fixture/mill ]; then
-    echo "Run from the repository root; src/probe/mill-fixture/mill is not here." >&2
+if [ ! -f src/test/run-on-host/fixtures/mill/mill ]; then
+    echo "Run from the repository root; src/test/run-on-host/fixtures/mill/mill is not here." >&2
     exit 2
 fi
 case "${1:-all}" in
@@ -189,7 +189,7 @@ gone() { ! kill -0 "$1" 2>/dev/null; }
 has_line() { grep -q -- "$1" "$2" 2>/dev/null; }
 
 # Prints the processes that match a command-line pattern and whose cwd is a directory or lies under it. This is the
-# acceptance test's own test, with one lsof for every process rather than one per candidate.
+# run-on-host checks' own test (CheckRun.withCwd), with one lsof for every process rather than one per candidate.
 with_cwd() { # pattern dir
     lsof -d cwd -Fpn 2>/dev/null | awk -v dir="$2" '
         /^p/ { pid = substr($0, 2) }
@@ -931,7 +931,7 @@ echo
 echo "M: Mill 1.1.9"
 mp=$work/mill
 mkdir -p "$mp/app/src" "$mp/tmp"
-cp src/probe/mill-fixture/mill "$mp/mill" && chmod +x "$mp/mill"
+cp src/test/run-on-host/fixtures/mill/mill "$mp/mill" && chmod +x "$mp/mill"
 cat > "$mp/build.mill" <<'MILL'
 //| mill-version: 1.1.9
 //| mill-jvm-version: system

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The security acceptance test runs its mvn rows in this Maven project. The project has one module and one test.
-     Keep it limited to what the acceptance test's rows exercise.
+<!-- The run-on-host checks run their mvn rows in this Maven project. The project has one module and one test.
+     Keep it limited to what the checks' rows exercise.
      - The wrapper is of the only-script type.
      - The build's mvn is the Maven that the wrapper downloaded (RunOnHostPrereqs.mvnDistributionDir). -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"

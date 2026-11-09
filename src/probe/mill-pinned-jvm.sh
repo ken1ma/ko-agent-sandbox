@@ -31,7 +31,7 @@ case "$pin" in
         echo "usage: $0 [pin]   a Coursier JVM id other than system, such as temurin:21" >&2; exit 2 ;;
 esac
 workspace=$(pwd -P)
-source_fixture=$workspace/src/probe/mill-fixture
+source_fixture=$workspace/src/test/run-on-host/fixtures/mill
 [ -x "$source_fixture/mill" ] || { echo "Run this from the repository root." >&2; exit 2; }
 jdk_home=$(cd "${JAVA_HOME:-/nonexistent}" 2>/dev/null && pwd -P) && [ -x "$jdk_home/bin/java" ] ||
     { echo "JAVA_HOME must name the granted JDK." >&2; exit 2; }
@@ -109,7 +109,7 @@ with_timeout() { # seconds command...
     kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
     return $status
 }
-# Runs the launcher file itself, as the acceptance test's row "read and execute the mill launcher" runs it.
+# Runs the launcher file itself, as BuildsCheck's row "read and execute the mill launcher" runs it.
 run_mill() { # profile log
     ( cd "$fixture" && with_timeout 300 closed_env \
         /usr/bin/sandbox-exec -f "$1" "$mill_executable" --no-daemon --version ) >"$2" 2>&1

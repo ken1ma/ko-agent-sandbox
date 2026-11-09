@@ -2,6 +2,7 @@
 //> using scala 3.10.0
 //> using file ../PodmanTestHelper.scala
 //> using file ../../../../../src/main/scala/SourceDigest.scala
+//> using file ../../../../../src/test/scala/HostDriver.scala
 
 // The lifecycle suite of ko-agent-fs/bpf/doc/evidence.md ("Suites", lifecycle), in one run, on the
 // podman machine of either host. Run it on the HOST, from the repository root, with the default
@@ -84,6 +85,7 @@ import java.nio.file.{Files, Path}
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
+import agentsandbox.launcher.HostDriver.*
 import PodmanTestHelper.*
 
 @main def suite(args: String*): Unit = Lifecycle.run(args)

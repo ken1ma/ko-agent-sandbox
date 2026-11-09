@@ -2,6 +2,7 @@
 //> using scala 3.10.0
 //> using file ../PodmanTestHelper.scala
 //> using file ../../../../../src/main/scala/SourceDigest.scala
+//> using file ../../../../../src/test/scala/HostDriver.scala
 
 // The launcher suite of ko-agent-fs/bpf/doc/evidence.md ("Suites", launcher), in one run, on the
 // podman machine of either host: the rows that need the launcher itself. Run it on the HOST, from the
@@ -54,6 +55,7 @@ import scala.util.matching.Regex
 import java.nio.file.{Files, Path}
 import java.util.concurrent.TimeUnit
 
+import agentsandbox.launcher.HostDriver.*
 import PodmanTestHelper.*
 
 @main def suite(args: String*): Unit = Launcher.run(args)

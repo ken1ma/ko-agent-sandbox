@@ -822,8 +822,8 @@ object RunOnHostSandbox:
         //
         // - The runner owns scavenging, at its startup and before each runtime it prepares.
         // - A dispatched command that scavenges the root could condemn the live runner's own session.
-        // - channelLog is set exactly when the runner dispatched this command. The acceptance test's own entry has
-        //   no channelLog and still scavenges.
+        // - channelLog is set exactly when the runner dispatched this command. The run-on-host checks' entry has no
+        //   channelLog and still scavenges.
         _ =
           if channelLog.isEmpty then
             RunOnHostSession
@@ -891,7 +891,7 @@ object RunOnHostSandbox:
     *
     *   - the runner's session, for the launch's sbt, mill and gradle commands;
     *   - another launch's runner's session, when this launch attaches to that runtime (RunnerRuntimes);
-    *   - the command's own session, for Maven and for the acceptance test's entry. */
+    *   - the command's own session, for Maven and for the run-on-host checks' entry. */
   case class Runtime(
     session: Path,
     proxyPort: Int,
@@ -1057,7 +1057,8 @@ object RunOnHostSandbox:
       if exit != 0 && assembled.millWithoutDaemon then reportMillOutLockTaken(buildDirectory, log)
       exit
 
-  /** The runtime for a command without the runner's runtime: the acceptance test's entry, and Maven under the runner.
+  /** The runtime for a command without the runner's runtime: the run-on-host checks' entry, and Maven under the
+    * runner.
     *
     *   - The runtime is created in the command's own session, and ends with the session.
     *   - For the programs whose runtime the runner holds, the runner's functions create it.
@@ -1409,29 +1410,52 @@ object RunOnHostSandbox:
    *   - This method removes every symlink under a `target/` directory that does not resolve inside a granted root,
    *     dangling links included. The artifacts a link named still exist in the store of the sbt that made them,
    *     which relinks them on its own next run.
+   *   - A `target/` tree that held such a link also loses its links into `stores`, the command's own sbt stores.
+   *     The removal took the build's analysis with it, and sbt 2.0.12 compiles without an analysis by writing through
+   *     the links it restored, into the store's read-only files, which fails with AccessDeniedException
+   *     (sbt/sbt#9968, fixed in 2.1.0-RC2).
+   *   - That removal ignores the build's sbt version on purpose. Each build directory pins its own sbt, so one launch
+   *     can serve a build with the fix beside one without it, and no release date retires the removal. On a fixed
+   *     sbt, the removal costs nothing: the tree recompiles anyway without its analysis, and sbt 2.1.0-RC3
+   *     (2026-11) deletes the class directory's links itself before such a compile
+   *     (`Compiler.dropProductsWithoutAnalysis`). A version check would parse every build's `sbt.version`,
+   *     pre-releases included, to save that nothing. If a later sbt stops recompiling without the analysis, or starts
+   *     relying on those links, weigh this removal again.
    *   - The roots are compared resolved, as the links are. A root reached through a symlink, such as macOS's `/var`,
    *     would otherwise match nothing, and the sweep would take every link.
    */
-  def cleanForeignTargetLinks(workspaceRoot: Path, granted: Seq[Path]): Vector[Path] =
+  def cleanForeignTargetLinks(workspaceRoot: Path, granted: Seq[Path], stores: Seq[Path]): Vector[Path] =
     val roots = granted.flatMap(realPath)
+    val storeRoots = stores.flatMap(realPath)
+    def resolvesInside(link: Path, inside: Seq[Path]): Boolean =
+      try inside.exists(link.toRealPath().startsWith)
+      catch case _: IOException => false
     val removed = Vector.newBuilder[Path]
-    def walk(dir: Path, inTarget: Boolean): Unit =
+    def links(dir: Path): Vector[Path] =
+      val entries =
+        try directoryEntries(dir)
+        catch case _: IOException => return Vector.empty
+      entries.flatMap: entry =>
+        if Files.isSymbolicLink(entry) then Vector(entry)
+        else if Files.isDirectory(entry) && !FileRules.GuardedComponents.contains(entry.getFileName.toString) then
+          links(entry)
+        else Vector.empty
+    def sweep(target: Path): Unit =
+      val found = links(target)
+      val foreign = found.filterNot(resolvesInside(_, roots))
+      val doomed = if foreign.isEmpty then Vector.empty else foreign ++ found.filter(resolvesInside(_, storeRoots))
+      doomed.foreach: link =>
+        try
+          Files.delete(link)
+          removed += link
+        catch case _: IOException => ()
+    def walk(dir: Path): Unit =
       val entries =
         try directoryEntries(dir)
         catch case _: IOException => return
       entries.foreach: entry =>
         val name = entry.getFileName.toString
-        if Files.isSymbolicLink(entry) then
-          if inTarget then
-            val resolvesInside =
-              try roots.exists(entry.toRealPath().startsWith)
-              catch case _: IOException => false
-            if !resolvesInside then
-              try
-                Files.delete(entry)
-                removed += entry
-              catch case _: IOException => ()
-        else if Files.isDirectory(entry) && !FileRules.GuardedComponents.contains(name) then
-          walk(entry, inTarget || name == "target")
-    walk(workspaceRoot, inTarget = false)
+        if !Files.isSymbolicLink(entry) && Files.isDirectory(entry) && !FileRules.GuardedComponents.contains(name) then
+          if name == "target" then sweep(entry) else walk(entry)
+    walk(workspaceRoot)
     removed.result()

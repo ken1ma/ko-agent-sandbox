@@ -1,14 +1,14 @@
 // What the host-side drivers of the suites of ko-agent-fs/bpf/doc/evidence.md ("Suites") share. This is
 // not a program of its own. Each driver pulls it in with `//> using file ../PodmanTestHelper.scala`,
-// and also pulls in src/main/scala/SourceDigest.scala, which this file calls, because Scala CLI does
-// not follow a `using file` from a file that was itself pulled in.
+// and also pulls in src/main/scala/SourceDigest.scala and src/test/scala/HostDriver.scala, which this
+// file calls, because Scala CLI does not follow a `using file` from a file that was itself pulled in.
+// HostDriver.scala holds the transcript and the host commands, which the run-on-host suites share.
 //
 // It holds:
 //
 // - the hosts whose machines the drivers measure, and the path at which the machine serves a host
 //   path;
-// - the transcript, to which every row is printed and appended;
-// - running a command on the host, and in the machine over `podman machine ssh`;
+// - running a command in the machine over `podman machine ssh`;
 // - the readers of the binaries' `key=value` lines;
 // - the run with its cleanup, and the environment and build steps;
 // - the attach cgroup and the proof of "Lifecycle", steps 1 and 3.
@@ -17,27 +17,21 @@
 // cleanup removes.
 
 import agentsandbox.launcher.SourceDigest
+import agentsandbox.launcher.HostDriver.*
 
-import scala.jdk.CollectionConverters.*
 import scala.util.Properties
 import scala.util.matching.Regex
 import scala.util.Using
 
 import java.lang.ProcessBuilder.Redirect
 import java.nio.charset.StandardCharsets.UTF_8
-import java.nio.file.{Files, Path, StandardCopyOption, StandardOpenOption}
+import java.nio.file.{Files, Path, StandardCopyOption}
 import java.security.MessageDigest
 import java.util.Comparator
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.jar.JarFile
 
 object PodmanTestHelper:
-
-  extension (path: Path)
-    def /(child: String): Path = path.resolve(child)
-    def /(child: Path): Path = path.resolve(child)
-
-  def workingDir: Path = Path.of("").toAbsolutePath
 
   /** Where the suites lie, from the repository root. */
   val SuitesPath = "ko-agent-fs/bpf/test/podman"
@@ -125,53 +119,6 @@ object PodmanTestHelper:
 
   // --- The run ---------------------------------------------------------------------------------------------
 
-  /** The value, or else the message on stderr and exit status 2: a refusal before the transcript exists. */
-  def orExit[A](either: Either[String, A]): A = either match
-    case Right(value) => value
-    case Left(message) =>
-      System.err.println(message)
-      sys.exit(2)
-
-  /** The working directory, when it holds every path given. Scala CLI gives a script no path of its own,
-    * so a driver runs from the repository root and refuses to run elsewhere. */
-  def repositoryRoot(required: String*): Either[String, Path] =
-    val root = workingDir
-    Either.cond(required.forall(path => Files.exists(root.resolve(path))), root,
-      s"$root is not the repository root; run this from it")
-
-  /** Prints every line and appends it to the file, and counts the PASS and FAIL rows. It also gives the
-    * two ways a suite's step ends early, as `Either` for the chain of steps: `refuse` says why and gives
-    * exit status 2 before any row is measured; `gate` records a FAIL and gives 1. */
-  class Transcript(val path: Path):
-    var passed = 0
-    var failed = 0
-    Files.writeString(path, "")
-    def record(text: String): Unit =
-      Files.writeString(path, text.stripLineEnd + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND)
-    def log(text: String): Unit =
-      println(text)
-      record(text)
-    def info(text: String): Unit = log("INFO " + text)
-    def pass(text: String): Unit =
-      passed += 1
-      log("PASS " + text)
-    def fail(text: String): Unit =
-      failed += 1
-      log("FAIL " + text)
-    def check(description: String, ok: Boolean): Boolean =
-      if ok then pass(description) else fail(description)
-      ok
-    def step(text: String): Unit =
-      log("")
-      log("== " + text)
-    def indent(text: String): Unit = text.linesIterator.filter(_.nonEmpty).foreach(line => log("  " + line))
-    def refuse(ok: Boolean, message: String): Either[Int, Unit] =
-      if ok then Right(())
-      else
-        log(message)
-        Left(2)
-    def gate(description: String, ok: Boolean): Either[Int, Unit] = Either.cond(check(description, ok), (), 1)
-
   /** Cleans up what a run leaves on the host and in the machine. It is closed once, by the `Using` block
     * of `runMeasured` or by the shutdown hook. It then removes the containers labelled `label`, then what
     * `removeRest` removes, and prints the tally. */
@@ -187,51 +134,6 @@ object PodmanTestHelper:
       transcript.log("")
       transcript.log(s"passed=${transcript.passed} failed=${transcript.failed} transcript=${transcript.path}")
 
-  /** Runs the measurement and exits with its status. The cleanup runs however the run ends. An exception
-    * counts as a FAIL row and gives status 2. */
-  def runMeasured(transcript: Transcript, cleanup: Cleanup)(measure: => Int): Nothing =
-    Runtime.getRuntime.addShutdownHook(Thread(() => cleanup.close()))
-    val status = Using.resource(cleanup): _ =>
-      try measure
-      catch
-        case ex: Exception =>
-          transcript.fail(s"the driver failed: ${ex.getMessage}")
-          2
-    sys.exit(status)
-
-  /** What a command printed, both streams merged, and its exit status. */
-  case class Output(status: Int, text: String):
-    def ok: Boolean = status == 0
-    def has(needle: String): Boolean = text.contains(needle)
-
-  /** A command on the host. Its output is recorded unless it is polled; both streams are merged, and
-    * stdin is closed unless inherited. With `timeoutSeconds`, a command still running at the timeout is
-    * killed and answers status -1. */
-  def host(transcript: Transcript, command: Seq[String], cwd: Path = workingDir, inheritStdin: Boolean = false,
-      record: Boolean = true, timeoutSeconds: Option[Int] = None): Output =
-    val builder = ProcessBuilder(command*).directory(cwd.toFile).redirectErrorStream(true)
-    if inheritStdin then builder.redirectInput(Redirect.INHERIT)
-    // With a timeout, the output goes to a file: a pipe's reader would block past the deadline.
-    val captured = timeoutSeconds.map(_ => Files.createTempFile("suite-host", ".out"))
-    captured.foreach(file => builder.redirectOutput(file.toFile))
-    val process = builder.start()
-    if !inheritStdin then process.getOutputStream.close()
-    val (status, text) = (captured, timeoutSeconds) match
-      case (Some(file), Some(seconds)) =>
-        val finished = process.waitFor(seconds.toLong, java.util.concurrent.TimeUnit.SECONDS)
-        if !finished then
-          process.destroyForcibly()
-          process.waitFor()
-        val output = String(Files.readAllBytes(file), UTF_8)
-        Files.delete(file)
-        if finished then (process.exitValue, output)
-        else (-1, s"$output\n(${command.mkString(" ")} killed after $seconds s)")
-      case _ =>
-        val output = String(process.getInputStream.readAllBytes(), UTF_8)
-        (process.waitFor(), output)
-    if record then transcript.record(text)
-    Output(status, text)
-
   /** The longest a driver's podman command may take. A machine whose container storage had become
     * read-only did not answer a `podman rm` within hours. */
   val PodmanSeconds = 120
@@ -239,22 +141,6 @@ object PodmanTestHelper:
   def podman(transcript: Transcript, arguments: Seq[String], record: Boolean = true,
       seconds: Int = PodmanSeconds): Output =
     host(transcript, "podman" +: arguments, record = record, timeoutSeconds = Some(seconds.max(1)))
-
-  /** Whether `condition` holds within `seconds`, tested every `intervalMillis`. A row whose state changes
-    * after the causing command returns waits with this for the state itself, never for a fixed time.
-    * A test that answers true only after the deadline counts as false: a slow command must not stretch the bound
-    * that the row reports. */
-  def within(seconds: Int, intervalMillis: Int = 250)(condition: => Boolean): Boolean =
-    val deadline = System.nanoTime() + seconds * 1_000_000_000L
-    @scala.annotation.tailrec def poll(): Boolean =
-      val held = condition
-      val remainingNanos = deadline - System.nanoTime()
-      if remainingNanos < 0 then false
-      else if held then true
-      else
-        Thread.sleep(math.min(intervalMillis.toLong, remainingNanos / 1_000_000L + 1))
-        poll()
-    poll()
 
   /** One shell command of several statements, for `Vm`. */
   def sh(statements: String*): String = statements.mkString("; ")

@@ -41,7 +41,8 @@ object SeatbeltProfile:
    *   - Measured: with only the deep grants, `java -version` dies in the loader. With the chain present,
    *     `java -version` runs. A coarse `/Users` grant would stand in for the chain.
    *   - The chain grants metadata and not `file-read*`, because on a directory `file-read*` is its listing.
-   *     src/probe/run-on-host-acceptance-test.sh showed a chain granted that way listing all of `~/Library/Caches`.
+   *     A chain granted that way listed all of `~/Library/Caches` (SeatbeltCheck's row "list an ancestor of a granted
+   *     path").
    *     Only the root entry needs the wider read.
    *
    * Apple spells the same rule with a built-in, `(apply path-ancestors …)` paired with `file-test-existence`
@@ -367,8 +368,8 @@ object SeatbeltProfile:
         ancestorLiterals(everyPath ++ DevicePaths :+ ResolverSocket)
           .foreach(path => lines += s"(allow file-read-metadata file-test-existence ${literal(path)})")
         // The resolver's client spells its socket /var/run/mDNSResponder, and the root link is not in the canonical
-        // chain above. Without this rule, every lookup fails with "nodename nor servname provided". The acceptance
-        // test's proxy fetch rows measured this, and /var alone suffices.
+        // chain above. Without this rule, every lookup fails with "nodename nor servname provided". The run-on-host
+        // checks' proxy fetch rows measured this, and /var alone suffices.
         lines += ";; The root link the resolver's socket path goes through."
         lines += s"(allow file-read-metadata file-test-existence ${literal(ResolverSocketLink)})"
         lines += ""

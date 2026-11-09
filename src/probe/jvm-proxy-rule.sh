@@ -1,25 +1,27 @@
 #!/bin/sh
 # Measures whether a JVM under the generated profile reaches the build proxy through the standard proxy properties.
-# Three rows separate the failures that the acceptance test cannot tell apart:
+# Three rows separate the failures that the run-on-host checks cannot tell apart:
 # - with the properties and a live proxy, the JVM must fetch;
 # - without the properties, the profile must deny the direct path;
 # - with the properties and no proxy, connect must fail with "connection refused", which proves that the profile
 #   allows the port and that nothing listened.
 # A fourth row adds java.net.preferIPv4Stack; its comment below gives the reason.
 #
-#   sh src/probe/jvm-proxy-rule.sh <emitted acceptance-sbt.sb from an acceptance-test run>
+#   sh src/probe/jvm-proxy-rule.sh <the sbt.sb that SeatbeltCheck emits>
+#
+# SeatbeltCheck emits it into src/test/run-on-host/out-macos/seatbelt/emitted/.
 #
 # The emitted profile grants port 51234 (EmitRunOnHostProfile's constant), so the script binds the proxy there.
 # Run the script on macOS from the repository root on each new macOS or JDK release, because either release can change
 # the JVM's path to the proxy under the profile.
 set -u
-profile=${1:?usage: sh src/probe/jvm-proxy-rule.sh <acceptance-sbt.sb>}
+profile=${1:?usage: sh src/probe/jvm-proxy-rule.sh <sbt.sb>}
 [ -f "$profile" ] || { echo "$profile does not exist" >&2; exit 2; }
 JAVA="${JAVA_HOME:?JAVA_HOME must name the granted JDK}/bin/java"
 
 # Work under the workspace, not /tmp: the profile grants reads here, and the JVM must read F.java through the
 # profile. The java launcher silently treats an unreadable source path as a class name.
-mkdir -p target/acceptance && work=$(mktemp -d target/acceptance/jvm-proxy.XXXXXX)
+mkdir -p target/jvm-proxy-rule && work=$(mktemp -d target/jvm-proxy-rule/run.XXXXXX)
 cat > "$work/F.java" <<'EOF'
 public class F {
     public static void main(String[] args) throws Exception {

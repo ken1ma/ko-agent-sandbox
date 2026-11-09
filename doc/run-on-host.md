@@ -41,8 +41,8 @@ This document tells you how to set up and use host commands. Other documents cov
 - `SECURITY.md` "Run on host" states the security properties and their costs.
 - [run-on-host-internals.md](run-on-host-internals.md) describes how host commands work.
 - [seatbelt.md](seatbelt.md) records the Seatbelt behavior that the profiles depend on.
-- [run-on-host-evidence.md](run-on-host-evidence.md) has the acceptance test's recorded results
-  and the other measurements that a new release can change.
+- [run-on-host-evidence.md](run-on-host-evidence.md) has the run-on-host checks' recorded
+  results and the other measurements that a new release can change.
 
 ## Why use it
 
@@ -343,11 +343,11 @@ operability, since the caller is not interactive. A quoted section name in this 
     `ko-sandbox-run-on-host sbt new` in an empty directory, as it refuses any directory with no
     build.
   - `--allow-empty` starts the server there, as the stock client's flag would.
-  - The acceptance test does not measure whether `new` then writes its template through that
+  - The run-on-host checks do not measure whether `new` then writes its template through that
     server.
 - **The runner uses the JVM client, never `sbtn` — operability.** sbt 2 runs its native client by
   default. Under the profile, that client prints that it is starting the server and returns with no
-  build run. The supervisor passes `--jvm-client`, and an acceptance-test row keeps measuring `sbtn`
+  build run. The supervisor passes `--jvm-client`, and a `BuildsCheck` row keeps measuring `sbtn`
   ("sbt").
 - **The runner sweeps `target/` links into a denied store before a server starts —
   confinement.** A tree that the user's unconfined sbt built links into a store the profile denies

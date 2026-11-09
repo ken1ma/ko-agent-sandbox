@@ -182,7 +182,7 @@ object RunOnHostChannel:
   // ---------------------------------------------------------------------------
 
   /**
-   * How the runner reaches the sandbox. The transport is data, so that the acceptance test and the tests can
+   * How the runner reaches the sandbox. The transport is data, so that ChannelCheck and the tests can
    * substitute a local shell for `podman exec` (HostCommands.ExecWithInput). The tests stub the transport, never the
    * protocol.
    */
@@ -630,8 +630,8 @@ object RunOnHostChannel:
     * [--env=<name>...] [--file-rules=<file>] [--credentials-on-stdin] <mount>`.
     *
     *   - The launcher spawns the runner before it hands over to podman, detached like the reaper.
-    *   - The trailing mount is the path at which the workspace root is mounted inside the container. The acceptance
-    *     test's shim also passes the root's own path. */
+    *   - The trailing mount is the path at which the workspace root is mounted inside the container. ChannelCheck
+    *     passes the root's own path. */
   def serveMain(args: Seq[String]): Unit =
     def isOption(arg: String) =
       arg.startsWith(RunOnHostSandbox.EnvOption) || arg.startsWith(RunOnHostSandbox.FileRulesOption)

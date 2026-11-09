@@ -1,0 +1,7 @@
+# The run-on-host checks' Mill fixture has one module and one test class. Keep it limited to what the checks
+# exercise.
+# `system` is the JVM that the supervisor puts first on PATH, so the checks' mill rows need no JDK provisioned on the
+# host.
+mill-jvm-version: system
+extends: ScalaModule
+scalaVersion: 3.10.0

@@ -1,7 +1,7 @@
-// The security acceptance test's Gradle fixture has one module and one test class. Keep it limited to what the
-// acceptance test exercises.
+// The run-on-host checks' Gradle fixture has one module and one test class. Keep it limited to what the checks
+// exercise.
 // - The build uses the Gradle distribution that its wrapper downloaded (RunOnHostPrereqs.gradleDistributionDir).
-// - The property `acceptanceToolchain` asks for a toolchain that the launch does not grant; the toolchain row sends
+// - The property `checkToolchain` asks for a toolchain that the launch does not grant; the toolchain row sends
 //   this request.
 // - `run` prints the temporary directory that the forked JVM sees. With the argument `sleep`, `run` stays up for
 //   the cancel and teardown rows.
@@ -20,8 +20,8 @@ dependencies {
 }
 
 java {
-    if (project.hasProperty('acceptanceToolchain')) {
-        toolchain.languageVersion = JavaLanguageVersion.of(project.property('acceptanceToolchain') as int)
+    if (project.hasProperty('checkToolchain')) {
+        toolchain.languageVersion = JavaLanguageVersion.of(project.property('checkToolchain') as int)
     }
 }
 

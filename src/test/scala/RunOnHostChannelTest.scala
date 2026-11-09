@@ -11,7 +11,7 @@
 // - teardown by descriptor lifetime: a dead shim ends the running command, a handshake whose requester died expires
 //   with no command started, and a competing shim waits its turn rather than attaching to a predecessor's streams.
 //
-// The acceptance test reruns the protocol against real sbt. The rows of this suite hold everywhere.
+// ChannelCheck (src/test/run-on-host/) reruns the protocol against real sbt. The rows of this suite hold everywhere.
 
 package agentsandbox.launcher
 

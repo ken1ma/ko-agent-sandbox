@@ -40,7 +40,7 @@ acceptance_require_idle() (
 )
 
 # Ends a process only when no live runner claims its working directory. A session can start after the preflight, so
-# a process whose directory matches a workspace can belong to that session rather than to the acceptance test.
+# a process whose directory matches a workspace can belong to that session rather than to the probe.
 acceptance_end_unclaimed_process() (
     acceptance_root=$1; acceptance_pid=$2
     acceptance_start=$(ps -o lstart= -p "$acceptance_pid" 2>/dev/null)
@@ -52,18 +52,4 @@ acceptance_end_unclaimed_process() (
     fi
     [ "$(ps -o lstart= -p "$acceptance_pid" 2>/dev/null)" = "$acceptance_start" ] || return 1
     kill "$acceptance_pid"
-)
-
-# Waits for the check to pass while the requester process lives. Startup output alone does not suffice, because the
-# requester must still be alive when the row cancels it.
-acceptance_wait_started() (
-    acceptance_pid=$1; acceptance_limit=$2; shift 2
-    acceptance_tries=0
-    while kill -0 "$acceptance_pid" 2>/dev/null; do
-        "$@" && return 0
-        [ "$acceptance_tries" -lt "$acceptance_limit" ] || return 1
-        acceptance_tries=$((acceptance_tries + 1))
-        sleep 0.5
-    done
-    return 1
 )

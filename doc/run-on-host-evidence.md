@@ -4,20 +4,23 @@ This document records the measurements that a new release of a program, of macOS
 change. [run-on-host-internals.md](run-on-host-internals.md) keeps each measurement that a
 mechanism depends on beside that mechanism.
 
-## The acceptance test
+## The run-on-host checks
 
-`src/probe/run-on-host-acceptance-test.sh` measures the exit criteria, and has these recorded
-results:
+The four checks under `src/test/run-on-host/` measure the exit criteria. On macOS 27.2 arm64 with
+Temurin 25.0.4, sbt 2.0.12, Mill 1.3.1 and 1.1.10, Gradle 9.8.2 and 8.14.6, Maven 3.9.16 and
+podman 6.1.4 on libkrun (2026-11-09), every row passes and none is skipped:
 
-- On macOS 26.4.1 arm64 with Temurin 25.0.4, sbt 2.0.12 through the 2.0.11 launcher, Mill 1.3.1,
-  Gradle 9.8.0 and Maven 3.9.16 (2026-11-02), the test reports **286 PASS, 0 FAIL, 13 SKIP**. The
-  skips are the rows of Mill's daemon, which Mill 1.3.1 runs without.
-- A second run of the mill rows, on the copy pinned to Mill 1.1.10, reports **101 PASS, 0 FAIL, 17
-  SKIP**. The skips are rows of the other programs, the lifecycle rows, and the two rows of Mill
-  without a daemon.
-- The `gradle` selection reports **90 PASS, 0 FAIL, 23 SKIP** on Gradle 9.8.2, and the same on the
-  copy pinned to Gradle 8.14.6 (2026-11-03). The skips are rows of the other programs and the
-  lifecycle rows, which need every program; no Gradle row is skipped.
+| Check | Rows | Time |
+|---|---|---|
+| `SeatbeltCheck.scala` | 346 | 24 s |
+| `BuildsCheck.scala` | 40 | 55 s |
+| `CommandLifecycleCheck.scala` | 6 | 42 s |
+| `ChannelCheck.scala` | 45 | 6 min |
+
+- Each time runs from the machine block to the totals, the setup's emitting included. Scala CLI's
+  compile of the driver comes before it.
+- In `ChannelCheck`, the mill 1.1.10 group is the longest: Mill's bound for a busy daemon of
+  yours (`RunOnHostMillDaemons.ForeignIdleDeadlineMillis`) holds one of its rows for two minutes.
 
 ## Memory
 
@@ -74,8 +77,8 @@ does, with a handshake per request:
 |---|---|---|
 | sbt 2.0.9 | `spark-sql` 3.5.1, `update`, empty Coursier cache | 1960 files, 240 MB, 36 s |
 | mill 1.0.6, JVM launcher | the same, `app.resolvedMvnDeps`, its own runtime included | 4040 files, 336 MB, 55 s |
-| Gradle 9.7.1 | `src/probe/gradle-fixture`, `test`, the distribution present | 32 files, 6 s |
-| Maven 3.9.16 | `src/probe/mvn-fixture`, `test`, the distribution's download included | 418 files, 14 MB, 37 s |
+| Gradle 9.7.1 | `src/test/run-on-host/fixtures/gradle`, `test`, the distribution present | 32 files, 6 s |
+| Maven 3.9.16 | `src/test/run-on-host/fixtures/mvn`, `test`, the distribution's download included | 418 files, 14 MB, 37 s |
 
 ## Mill without a daemon
 
@@ -85,9 +88,9 @@ and a `__.compile` with nothing to compile 5.8 s. A warm daemon's times are unme
 
 ## Gradle releases
 
-`src/probe/gradle-fixture` pins Gradle 9.8.2, and the acceptance test also runs the Gradle rows on
-a copy pinned to the last Gradle 8 release, 8.14.6. "The acceptance test" above has each release's
-totals.
+`src/test/run-on-host/fixtures/gradle` pins Gradle 9.8.2, and the run-on-host checks also run the
+Gradle rows on a copy pinned to the last Gradle 8 release, 8.14.6. "The run-on-host checks" above
+has the totals.
 
 - Gradle 8.14 through 8.14.3 fail on JDK 25, the JDK the launcher requires. Each fails compiling
   the build script with "Unsupported class file major version 69", so releases before 8.14.4 are

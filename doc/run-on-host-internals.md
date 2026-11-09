@@ -9,7 +9,7 @@ part:
 | setup, configuration and the differences from the stock programs | [run-on-host.md](run-on-host.md) |
 | the security properties and their costs | `SECURITY.md` "Run on host" |
 | the Seatbelt behavior that the profiles depend on, measured | [seatbelt.md](seatbelt.md) |
-| the acceptance test's recorded results and other measurements | [run-on-host-evidence.md](run-on-host-evidence.md) |
+| the run-on-host checks' recorded results and other measurements | [run-on-host-evidence.md](run-on-host-evidence.md) |
 | option syntax and write access | [README.md](../README.md#reference), `--run-on-host` |
 | the channel protocol and its teardown | `RunOnHostChannel.scala`, `ko-sandbox-run-on-host` |
 | the command lifecycle: publish, lock, scavenge | `RunOnHostSession.scala` |
@@ -25,7 +25,7 @@ part:
 | sbt's local-socket shutdown | `RunOnHostSbtServerShutdown.scala` |
 | a proxy's CA and leaf, and what a command trusts | `RunOnHostInspection.scala` |
 | the generated profile | `SeatbeltProfile.scala` |
-| the exit criteria, measured | `src/probe/run-on-host-acceptance-test.sh` |
+| the exit criteria, measured | the run-on-host checks, `src/test/run-on-host/*Check.scala` |
 
 ## Why only macOS
 
@@ -93,7 +93,7 @@ The filesystem rules define what a host command can access:
 - **Seatbelt matches the path after resolving it, and on a case-insensitive volume the lowercase
   patterns for `.git` and `.ko-agent-sandbox` match the other spellings measured**
   ([seatbelt.md](seatbelt.md), "Paths").
-  - The acceptance test creates the measured spellings, `.GIT` and `.KO-AGENT-SANDBOX` under each
+  - `SeatbeltCheck` creates the measured spellings, `.GIT` and `.KO-AGENT-SANDBOX` under each
     command profile, and each creation is denied.
   - A spelling that the volume resolves to the name and that no row creates is unmeasured.
 - **The profile denies writes to what the file rules protect by the resolved path too, in the
@@ -112,8 +112,8 @@ The filesystem rules define what a host command can access:
     `file-write-create`, `file-write-unlink` and `file-link` on the entry.
   - The deny leaves the entry's contents, mode and attributes to the other rules, as the FUSE
     backend does.
-  - The acceptance test's file-rule rows pass on macOS 26.4.1 (2026-09-27). A listed name created
-    inside `node_modules` is among them.
+  - `SeatbeltCheck`'s file-rule rows pass on macOS 27.2 (2026-11-09). A listed name created inside
+    `node_modules` is among them.
   - No rule can refuse moving a directory out of one that a `writable` line names, and still allow
     npm's renames and `rmdir` inside it. `doc/file-rules.md`, "Under `--run-on-host`", states the
     limit.
@@ -200,7 +200,7 @@ These grants depend on how Seatbelt matches network rules, which [seatbelt.md](s
     booting, and waits without bound.
 
 The proxy settings handed to the JVM are a convenience, not the boundary. Seatbelt prevents bypass
-through direct sockets, and the acceptance test's bypass rows measure that.
+through direct sockets, and `SeatbeltCheck`'s bypass rows measure that.
 
 Every command's proxy allows one host without a rule line: the program's Maven Central
 (`RunOnHostPrereqs.centralHost`).
@@ -332,6 +332,11 @@ The server's state follows `-Dsbt.global.base` into the workspace's run-on-host 
   the profile denies.
   - The runner therefore sweeps the `target/` symlinks that resolve outside the granted roots
     before it starts an sbt server.
+  - A `target/` tree that held such a link also loses its links into the launch's own store. The
+    sweep took the build's analysis, and sbt 2.0.12 compiles without one by writing through the
+    links it restored, into the store's read-only files: `AccessDeniedException` (sbt/sbt#9968,
+    fixed in 2.1.0-RC2). `RunOnHostSandbox.cleanForeignTargetLinks` says why that removal ignores
+    the build's sbt version.
   - The sweep runs after any foreign server for the directory is shut down, with that server's
     build finished, so a sweep never runs during the user's own build.
 - `~/.sbt/boot` is not granted, and nothing needs it. With the global base redirected, sbt boots
@@ -353,9 +358,9 @@ granted. sbt uses that home for three things, read from the sources of sbt 1.13.
 Without the redirect, an sbt 1.12.13 `packageBin` of a build with a `dependsOn` edge dies under
 the profile, while canonicalizing the denied `~/.ivy2` for that lock.
 
-- This repository's own build has no such edge, so the acceptance test's sbt rows never reach that
-  path.
-- `src/probe/ivy-fixture` is such a build, on sbt 1.
+- This repository's own build has no such edge, so `BuildsCheck`'s rows in this repository never
+  reach that path.
+- `src/test/run-on-host/fixtures/ivy` is such a build, on sbt 1.
 
 sbt 2.0.9 keeps the Ivy library and the lock. sbt 1.13.0 and 2.0.9 name the lock file by the same
 steps, so the sbt 1 row measures the redirect for both, and the fixture has no sbt 2 copy:
@@ -372,13 +377,13 @@ sbt 2.1.0-M1 has no Ivy library (sbt/sbt#9615, merged into `develop` 2026-08-24)
 - sbt 2.1.0-M1 still takes `local` and the excludes file from `sbt.ivy.home`, so the redirect and
   its grant stay after the lock is gone.
 - Retire the redirect and its grant only when a released sbt stops deriving those two paths.
-  Check that by reading `Defaults.scala` again, not by an acceptance-test run.
+  Check that by reading `Defaults.scala` again, not by a `BuildsCheck` run.
 
 Two more settings concern how sbt starts:
 
 - The supervisor passes `--jvm-client`. sbt 2 defaults to `sbtn`, which under the profile prints
   that it is starting the server and returns with no build run.
-  - An acceptance-test row keeps measuring `sbtn`. If that row starts passing, the supervisor can
+  - A `BuildsCheck` row keeps measuring `sbtn`. If that row starts passing, the supervisor can
     reconsider requiring `--jvm-client`.
 - The distribution's `sbt` resolves `java` from `PATH`, so the environment puts the granted JDK's
   `bin` first. The runner starts the server by running the script, and `-java-home` reaches the
@@ -744,7 +749,7 @@ Three properties on the command line limit Gradle's toolchains to the launch's J
 overrides every `gradle.properties`, so a project asking for another toolchain fails naming it,
 rather than meeting a denial.
 
-The acceptance test's Gradle rows (`src/probe/run-on-host-acceptance-test.sh`) measure:
+The Gradle rows of the run-on-host checks (`src/test/run-on-host/`) measure:
 
 - the distribution's grant;
 - the build through the proxy;
@@ -790,8 +795,8 @@ How Maven behaves under the profile:
   every download that it uses the JVM properties. That property belongs to resolver 1.9, which
   Maven 3.9 ships.
 - Both behaviors are measured on Maven 3.9.16, the latest release, by building
-  `src/probe/mvn-fixture` through a proxy inside the container. The acceptance test's mvn rows
-  measure them under the profile.
+  `src/test/run-on-host/fixtures/mvn` through a proxy inside the container. The run-on-host
+  checks' mvn rows measure them under the profile.
 - `.mvn/maven.config`, `jvm.config` and `extensions.xml` are workspace files that the agent already
   controls, like `sbt 'set …'`.
 
@@ -842,9 +847,9 @@ The supervisor constructs the command's environment from the variables listed be
 (`RunOnHostSandbox.commandEnvironment`), rather than inheriting the launcher's environment.
 SECURITY.md, "Run on host", explains why.
 
-- The acceptance test supplies the same closed environment.
-- The test's `command_env` documents its deviations, for rows without a proxy and with one
-  temporary directory for clients and servers.
+- `SeatbeltCheck` and `BuildsCheck` supply the same closed environment.
+- `CheckRun.commandEnvironment` (`src/test/scala/RunOnHostChecks.scala`) documents its deviations,
+  for rows without a proxy and with one temporary directory for clients and servers.
 
 What the supervisor supplies:
 
@@ -919,8 +924,8 @@ Which program reads each variable, by each program's documentation:
   keychain alone, a binary with its roots compiled in, and a JVM client whose code names its own
   trust store.
 - The `curl` and `git` that macOS ships fail under a command's profile before they verify any
-  certificate, whatever the variables (macOS 26.4.1, the acceptance test's "CA bundle variables"
-  rows). The table is for a program the build brings.
+  certificate, whatever the variables (macOS 27.2, `BuildsCheck`'s "CA bundle variables" rows).
+  The table is for a program the build brings.
   - `/usr/bin/curl` stops at LibreSSL's `fopen('/private/etc/ssl/openssl.cnf')`, `Operation not
     permitted`, printed as `Auto configuration failed`. The file is not among the profile's system
     paths (`SeatbeltProfile.SystemPaths.txt`; `doc/TODO.md`, "read grants a user adds").
@@ -1155,8 +1160,8 @@ The proxy is a process from the same codebase as the container's proxy.
   stray entry under `run-on-host/` (`SandboxWorkspace.boundaryDirRefusal`,
   `RunOnHostPrereqs.readProgramRules`).
 - Under Maven, the command owns the proxy. The supervisor starts it in the command's session and
-  ends it with the session, as every program's proxy is under the acceptance test's entry
-  (`RunOnHost`).
+  ends it with the session, as every program's proxy is under the run-on-host checks' entry
+  without a runner (`RunOnHost`).
 
 The sandbox session's proxy runs on a network created `--internal`, inside the podman machine.
 There is no host route to it, and a route would cost either of two things:
@@ -1296,10 +1301,10 @@ What the starter creates:
   that runtime's `tmp/` and proxy port, so its commands trust the proxy they use
   (`RunnerRuntimes`, the attachment).
 
-Measured by the acceptance test ([run-on-host-evidence.md](run-on-host-evidence.md) has the
+Measured by the run-on-host checks ([run-on-host-evidence.md](run-on-host-evidence.md) has the
 recorded runs):
 
-- The test's supervisor and channel rows start each proxy under a profile that reads the leaf's
+- The checks' supervisor and channel rows start each proxy under a profile that reads the leaf's
   directory, and each command under a profile that reads the two trust files. "fetch allowed Maven
   artifact via proxy" passes only through both.
 - A `PUT` to `repo1.maven.org` gets `403`, and the supervisor names the request.

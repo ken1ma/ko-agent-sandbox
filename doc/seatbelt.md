@@ -87,7 +87,7 @@ for its caller outside the profile.
 - `open` started nothing from under the command profile while `mach-lookup` was unfiltered
   (`mach-route`). `open -a` found no application, and no application claimed a `.command` file
   the command wrote.
-- Under the named service, the acceptance test has rows for `open -a`, for a JVM asking the
+- Under the named service, `SeatbeltCheck` has rows for `open -a`, for a JVM asking the
   resolver, and for a lookup of an internet name, which must fail (SECURITY.md, "DNS").
 
 ## What the JDK needs
@@ -120,16 +120,16 @@ The profile denies a command reading another process's arguments and environment
 - `ProcessHandle.info()` of a process outside throws "Operation not permitted". The JDK reads the
   process's arguments for it, and throws on any error but `EINVAL` and `EIO`
   (`ProcessHandleImpl_macosx.c`).
-  - Mill 1.1.10's client checks its daemon that way (`PidLock`), and the acceptance test's mill
-    rows fail under the rule without the exception below (2026-10-04).
+  - Mill 1.1.10's client checks its daemon that way (`PidLock`), and the mill channel rows fail
+    under the rule without the exception below (2026-10-04).
 - `(allow sysctl-read (sysctl-name "kern.procargs2.<pid>"))` after the rule opens the read, and
   `info()`, for that one process. Every other target stays denied (the probe's last row,
   2026-10-04).
 - A mill client's profile allows that name for its daemon (`SeatbeltProfile.Network.MillClient`).
   The runner gave the daemon the client's own environment, so the read exposes nothing the client
   lacks.
-- The acceptance test's process rows read a JDK outside the profile and a child inside it, under
-  every program's profile.
+- `SeatbeltCheck`'s process rows read a JDK outside the profile and a child inside it, under every
+  program's profile.
 
 ## System paths
 
@@ -142,8 +142,8 @@ system:
   entries.
 - The measured set is one file, a resource of the launcher's own artifact
   (`src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt`). What the production
-  supervisor grants is what the probes measured, and the acceptance test and host commands use that
-  same set of grants.
+  supervisor grants is what the probes measured, and the run-on-host checks and host commands use
+  that same set of grants.
 - Do not pre-authorize broad paths (`/System/**`, `/usr/**`, `/opt/homebrew/**`). Add the narrowest
   rule that testing justifies.
 

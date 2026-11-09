@@ -92,24 +92,6 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
       assert(output.contains("end that sandbox session"), clue = output)
       assert(!output.contains("podman stop"), clue = output)
 
-  test("cancellation requires both a running requester and a startup marker"):
-    for
-      alive <- Seq("yes", "no")
-      started <- Seq("yes", "no")
-    do
-      val process = ProcessBuilder(
-        "sh", "-c",
-        """. "$1"
-          |alive=$2; started=$3
-          |kill() { test "$alive" = yes; }
-          |acceptance_wait_started 1234 0 test "$started" = yes
-          |""".stripMargin,
-        "acceptance-test", setup, alive, started,
-      ).redirectErrorStream(true).start()
-      val output = String(process.getInputStream.readAllBytes(), UTF_8)
-      assertEquals(process.waitFor(), if alive == "yes" && started == "yes" then 0 else 1,
-        clue = (alive, started, output))
-
   test("cleanup leaves live runner claims, unknown directories and reused pids alone"):
     for
       kind <- Seq("sbt", "mill", "gradle", "proxy")
@@ -141,73 +123,3 @@ class RunOnHostAcceptanceSetupTest extends munit.FunSuite:
       val permitted = state == "ended" || state == "unrelated"
       assertEquals(output.contains("SIGNALLED 123"), permitted, clue = (kind, state, output))
       assertEquals(status, if permitted then 0 else 1, clue = (kind, state, output))
-
-  test("failed supervisor setup skips cache-dependent sbt rows but retains the failure"):
-    val script = Files.readString(Path.of("src/probe/run-on-host-acceptance-test.sh"))
-    val start = script.indexOf("if want sbt; then", script.indexOf("echo \"positive rows\""))
-    val rows = script.substring(start, script.indexOf("\nif want mill; then", start))
-    val work = Files.createTempDirectory("acceptance-setup-failure")
-    Files.createDirectories(work.resolve("project"))
-    Files.writeString(work.resolve("project/build.properties"), "sbt.version=2.0.8\n")
-    for failedCommand <- Seq("compile", "test") do
-      val process = ProcessBuilder(
-        "sh", "-c",
-        """work=$1; workspace=$work; ivy_workspace=$work/.; quick=0; JAVA_HOME=/jdk; failed_command=$2
-          |want() { return 0; }
-          |use_profile() { :; }
-          |supervisor() {
-          |    if [ "$2" = "$workspace" ] && [ "$3" = "$failed_command" ]; then
-          |        echo 'refused: setup failed'; return 2
-          |    fi
-          |    echo '[success] built'
-          |}
-          |run_sbt() {
-          |    case "$*" in
-          |        *--version*) echo 'sbt runner version: stub' ;;
-          |        *) echo "UNEXPECTED direct client: $*" >&2; return 99 ;;
-          |    esac
-          |}
-          |report() { printf '%s|%s|%s\n' "$1" "$2" "${3:-}"; }
-          |""".stripMargin + rows,
-        "acceptance-test", work.toString, failedCommand,
-      ).redirectErrorStream(true).start()
-      val output = String(process.getInputStream.readAllBytes(), UTF_8)
-      assertEquals(process.waitFor(), 0, clue = output)
-      assert(output.contains(s"FAIL|sbt $failedCommand (supervisor)|refused: setup failed"), clue = output)
-      assertEquals(output.linesIterator.count(_.startsWith("SKIP|")), 4, clue = output)
-      assert(!output.contains("UNEXPECTED"), clue = output)
-
-  test("a run removes only the older-release copies of the programs it selects"):
-    val script = Files.readString(Path.of("src/probe/run-on-host-acceptance-test.sh"))
-    val start = script.indexOf("daemon_mill=")
-    val dispatch = script.substring(start, script.indexOf("safe_path \"ACCEPTANCE_MILL_WORKSPACE\"", start))
-    for program <- Seq("mill", "gradle", "all") do
-      val workspace = Files.createTempDirectory("acceptance-copies")
-      val mill = Files.createDirectories(workspace.resolve("src/probe/mill-fixture"))
-      for name <- Seq("mill", "build.mill.yaml") do Files.writeString(mill.resolve(name), "")
-      for name <- Seq("src", "test") do Files.createDirectories(mill.resolve(name))
-      val gradle = Files.createDirectories(workspace.resolve("src/probe/gradle-fixture"))
-      for name <- Seq("build.gradle", "settings.gradle") do Files.writeString(gradle.resolve(name), "")
-      Files.writeString(gradle.resolve("gradlew"), "#!/bin/sh\n")
-      gradle.resolve("gradlew").toFile.setExecutable(true)
-      Files.createDirectories(gradle.resolve("src"))
-      Files.writeString(
-        Files.createDirectories(gradle.resolve("gradle/wrapper")).resolve("gradle-wrapper.properties"),
-        "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.8.2-bin.zip\n",
-      )
-      // A copy that another run made, which this run must leave alone unless it selects that copy's program.
-      val millCopy = Files.createDirectories(workspace.resolve("target/acceptance-mill-1.1.10"))
-      val gradleCopy = Files.createDirectories(workspace.resolve("target/acceptance-gradle-8.14.6"))
-      val child = Files.writeString(workspace.resolve("child.sh"), "exit 0\n")
-      val process = ProcessBuilder(
-        "sh", "-c",
-        "workspace=$WORKSPACE\nwant() { [ \"$1\" = \"$PROGRAM\" ] || [ \"$PROGRAM\" = all ]; }\n" + dispatch,
-        child.toString, program,
-      ).redirectErrorStream(true)
-      process.environment.put("WORKSPACE", workspace.toString)
-      process.environment.put("PROGRAM", program)
-      val started = process.start()
-      val output = String(started.getInputStream.readAllBytes(), UTF_8)
-      assertEquals(started.waitFor(), 0, clue = (program, output))
-      assertEquals(Files.exists(millCopy), program == "gradle", clue = (program, output))
-      assertEquals(Files.exists(gradleCopy), program == "mill", clue = (program, output))

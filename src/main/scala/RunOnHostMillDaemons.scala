@@ -17,7 +17,7 @@
 // - Before the runner's daemon starts, the runner ends the user's own daemon for the build directory, once that
 //   daemon is idle and after its start-time check. The user's sbt server is likewise shut down by protocol.
 // - The daemon is observed on macOS only, like the supervisor, because the observations are ps, pgrep and lsof.
-//   RunnerRuntimes therefore takes `start` as a parameter that tests replace, and the acceptance test measures it.
+//   RunnerRuntimes therefore takes `start` as a parameter that tests replace, and ChannelCheck measures it.
 
 package agentsandbox.launcher
 
@@ -27,7 +27,7 @@ import java.nio.file.{Files, LinkOption, Path}
 
 import RunOnHostSandbox.{RuntimeStart, ServerStartSilenceMillis}
 import RunOnHostSession.{daemonRecordName, Processes, Record, Session}
-import RunOnHostSession.HostProcesses.{lines, Lsof, Pgrep, Ps}
+import RunOnHostSession.HostProcesses.{lines, Lsof, Pgrep, ps}
 
 object RunOnHostMillDaemons:
 
@@ -218,7 +218,7 @@ object RunOnHostMillDaemons:
           Member(pid, ppid, rest.take(width), rest.drop(width + 1))
 
   private def groupMembers(leader: Record): Vector[Member] =
-    parseMembers(lines(Ps, "-ww", "-o", "pid=,ppid=,lstart=,command=", "-g", leader.pgid.toString), leader)
+    parseMembers(ps("-ww", "-o", "pid=,ppid=,lstart=,command=", "-g", leader.pgid.toString), leader)
 
   /**
    * The daemon and the launcher that spawned it, from the group's listing.

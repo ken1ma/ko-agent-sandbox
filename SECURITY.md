@@ -1450,8 +1450,8 @@ absent default route underlying both, and which names the network's resolver ans
 A run-on-host command's own lookup of an internet name fails too, although the command's profile
 grants the Mach service that the system's resolver library asks (`SeatbeltProfile.MachServices`).
 Under the sbt profile, `InetAddress.getAllByName("example.com")` answers
-`nodename nor servname provided` (2026-09-29). The acceptance test's row "DNS resolution (the
-system's resolver) fails" checks this failure.
+`nodename nor servname provided` (2026-09-29). `SeatbeltCheck`'s row "DNS resolution (the system's
+resolver) fails" checks this failure.
 
 ## Clipboard
 

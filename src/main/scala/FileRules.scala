@@ -54,7 +54,7 @@ object FileRules:
 
   /**
    * The lines for `workspaceRoot` without the workspace policy's guard. A host command gets these lines when no
-   * launch handed it a resolved set, as in the acceptance test's own entry. The guard's paths, a
+   * launch handed it a resolved set, as in the run-on-host checks' entry. The guard's paths, a
    * relocated hook directory among them, come only from a launch's mount or `--resolve`.
    */
   def ofWorkspace(workspaceRoot: Path): Either[String, Resolved] =

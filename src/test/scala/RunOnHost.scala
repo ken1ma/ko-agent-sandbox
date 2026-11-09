@@ -1,18 +1,18 @@
-// The acceptance test's supervisor driver, a sibling of EmitRunOnHostProfile. The driver runs the RunOnHostSandbox
-// supervisor and takes the system-paths file as an argument. The durable front end, the launcher's
-// --run-command-on-host action behind the channel, reads the bundled copy of that file instead.
-// src/probe/run-on-host-acceptance-test.sh calls this driver.
+// The run-on-host checks' supervisor driver, a sibling of EmitRunOnHostProfile: their entry without a runner. The
+// driver runs the RunOnHostSandbox supervisor and takes the system-paths file as an argument. The durable front end,
+// the launcher's --run-command-on-host action behind the channel, reads the bundled copy of that file instead.
+// BuildsCheck and CommandLifecycleCheck (src/test/run-on-host/) call this driver through CheckRun.supervisor.
 //
-//   java -cp <the classpath EmitRunOnHostProfile prints> \
+//   java -cp <the classpath EmitRunOnHostProfile copies> \
 //     agentsandbox.launcher.RunOnHost <program> <workspace> [system-paths-file] -- <args...>
 //
-// The acceptance test runs that command through perl's exec, under the build lock that the runner's lock holder takes
+// The checks run that command through perl's exec, under the build lock that the runner's lock holder takes
 // (RunOnHostSession.lockedSpawn). The pid that the kill rows signal is therefore the supervisor's.
-// The acceptance test composes that command from two outputs of this driver:
+// The checks compose that command from two outputs of this driver:
 // - `--lock-script` prints the perl script.
 // - `--build-lock <program> <workspace>` prints the lock file.
 //
-// The acceptance test runs plain java, never `sbt Test/runMain`, for two reasons:
+// The checks run plain java, never `sbt Test/runMain`, for two reasons:
 // - runMain would host the supervisor in the build's own JVM. That JVM's server holds the target workspace's portfile,
 //   and the supervisor would end that server, since a build directory has one server.
 // - The driver's sys.exit would exit the build's JVM.

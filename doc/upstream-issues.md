@@ -302,7 +302,7 @@ A web search, without GitHub code search, found no public report of the gap for 
 
 ## openjdk/jdk
 
-Found when the `--run-on-host` acceptance test ran its mill rows on Mill 1.3.0, whose daemon reads
+Found when the `--run-on-host` mill rows ran on Mill 1.3.0, whose daemon reads
 each launcher's start time (the com-lihaoyi/mill entry below). This project runs Mill 1.2 and later
 without a daemon (`run-on-host-internals.md`, "Mill 1.2 and later: no daemon").
 
@@ -420,7 +420,7 @@ record without one already is.
 
 **Not verified:** the reproducer was not run.
 
-- The failure comes from the `--run-on-host` acceptance test, where the daemon and each launcher
+- The failure comes from the `--run-on-host` mill rows, where the daemon and each launcher
   run under separate `sandbox-exec` profiles with the rule (2026-10-19).
 - A search of Mill's issues found no report (searched for `LauncherOutFilesRecordStore`, `info0`
   and "Operation not permitted", 2026-10-19).

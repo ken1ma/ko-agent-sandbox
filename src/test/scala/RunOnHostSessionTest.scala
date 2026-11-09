@@ -11,9 +11,9 @@ import scala.collection.mutable.ListBuffer
 import RunOnHostSession.*
 
 object RunOnHostSessionTest:
-  /** True exactly where the acceptance test runs the suites as a confined command. The leader is the supervisor's own
-    * process and runs outside the profile by construction. Under the profile, perl dies before registering, so the
-    * tests that spawn a leader skip. */
+  /** True exactly where the suites run as a confined run-on-host command, as `ko-sandbox-run-on-host sbt` runs
+    * them. The leader is the supervisor's own process and runs outside the profile by construction. Under the
+    * profile, perl dies before registering, so the tests that spawn a leader skip. */
   val underRunOnHostProfile: Boolean =
     sys.env.get("SBT_GLOBAL_SERVER_DIR").exists(_.startsWith("/private/tmp/ko-agent-"))
 
@@ -120,7 +120,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     // probing would unlock a live session.
     // - In one JVM the release is invisible, because the lock reads as held either way. This test therefore asserts
     //   only that scavenge leaves the own session out of the scan and its results.
-    // - The acceptance test covers the release across processes.
+    // - The run-on-host checks cover the release across processes.
     val root = freshRoot()
     val own = publish(root, Path.of("/p"), Kind.Runner).toOption.get
     val other = die(publish(root, Path.of("/p")).toOption.get)
@@ -954,7 +954,7 @@ class RunOnHostSessionTest extends munit.FunSuite:
     said
 
   test("two threads of one process: the waiter's timeout leaves the holder's lock and signal intact"):
-    // The acceptance test's entry prepares on its main thread and tears down from the shutdown hook, in one JVM. The
+    // The run-on-host checks' entry prepares on its main thread and tears down from the shutdown hook, in one JVM. The
     // waiter must open no second descriptor to the lock file, because closing that descriptor would drop the holder's
     // fcntl lock for the whole process. Only another process can observe that drop.
     val root = freshRoot()
@@ -1048,6 +1048,27 @@ class RunOnHostSessionTest extends munit.FunSuite:
       assert(parsed.isDefined, "the record was published")
       assertEquals(parsed.get.pgid, process.pid, "the leader is the group leader it registers")
       assertEquals(HostProcesses.startOf(process.pid), Some(parsed.get.leaderStart))
+    finally process.destroyForcibly().waitFor()
+
+  test("a record's start time is the C locale's, whatever locale the leader inherits"):
+    notUnderRunOnHostProfile()
+    def lstartIn(locale: String, pid: Long): String =
+      val builder = java.lang.ProcessBuilder("/bin/ps", "-o", "lstart=", "-p", pid.toString)
+      builder.environment.put("LC_ALL", locale)
+      String(builder.start().getInputStream.readAllBytes(), UTF_8).trim
+    val self = ProcessHandle.current.pid
+    val unlikeC = Seq("fr_FR.UTF-8", "de_DE.UTF-8", "ja_JP.UTF-8").find(lstartIn(_, self) != lstartIn("C", self))
+    assume(unlikeC.isDefined, "no installed locale spells ps's lstart unlike the C locale")
+    val record = Files.createTempDirectory("leader").resolve("record")
+    val builder = java.lang.ProcessBuilder(registeredSpawn(record, Seq("/bin/sleep", "30"))*)
+    builder.environment.put("LC_ALL", unlikeC.get)
+    val process = builder.start()
+    try
+      val deadline = System.nanoTime + 10_000_000_000L
+      while !Files.exists(record) && System.nanoTime < deadline do Thread.sleep(20)
+      val recorded = parseRecord(Files.readString(record, UTF_8)).map(_.leaderStart)
+      assertEquals(recorded, Some(lstartIn("C", process.pid)), s"the leader ran under ${unlikeC.get}")
+      assertEquals(HostProcesses.startOf(process.pid), recorded)
     finally process.destroyForcibly().waitFor()
 
   test("the command's exit status is published beside the record, and the leader stays"):
