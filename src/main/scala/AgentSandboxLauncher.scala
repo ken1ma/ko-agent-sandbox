@@ -555,7 +555,7 @@ object AgentSandboxLauncher:
       s"the machine has ${humanBytes(bytes)} of memory available; a cold image build peaks near 3.3G\n" +
         "  exit running sandbox sessions, or raise it with `podman machine set --memory` (machine stopped)"
 
-  /** After requirePodman's check, every podman action prints the machine's headroom once, beside the `using:` line.
+  /** After requirePodman's check, every podman action prints the machine's headroom once, below the `using:` line.
     * - The figure is what the memory limit and the build's memory check act on, and the line shows the figure before
     *   they act.
     * - The line tints the figure on the action's scale (launchMemoryHeadroom, buildMemoryHeadroom).
@@ -578,6 +578,20 @@ object AgentSandboxLauncher:
       "available",
       gauged(_, scale(availableBytes), color),
     )
+
+  /** The kernel release that the containers run on, as the `using:` line's tail, so that a pasted launch says which
+    * kernel a report is about. On Windows the podman machine runs WSL's kernel. None when `podman info` gave no
+    * release.
+    * - The release's version stays plain, since the user upgrades by it. The suffix from the first `.` or `-` that a
+    *   letter follows is gray (lookedUp): `.fc44.aarch64`, `-microsoft-standard-WSL2`, Debian's `-arm64`. */
+  def machineKernel(os: Os, answer: HostCommands.Run, color: Boolean = colorStderr): Option[String] =
+    val label = if os == Os.Linux then "Linux kernel" else "podman machine kernel"
+    Option.when(answer.ok)(answer.text.trim).filter(_.nonEmpty).map: release =>
+      val versionEnd = KernelReleaseSuffix.findFirstMatchIn(release).fold(release.length)(_.start)
+      val suffix = release.drop(versionEnd)
+      s"$label ${release.take(versionEnd)}${if suffix.isEmpty then "" else lookedUp(suffix, color)}"
+
+  private val KernelReleaseSuffix = "[.-][A-Za-z].*$".r
 
   /**
    * MemAvailable of the machine that the image builds run on: this host on native Linux, and elsewhere the VM through
@@ -704,12 +718,15 @@ object AgentSandboxLauncher:
    *     (`podman machine set --memory`) needs the machine stopped.
    *   - The check asks for the available memory beside `podman info`. On macOS and Windows the question goes through
    *     `podman machine ssh`, a second round trip to the machine. The check asks a machine that it starts again.
+   *   - The check prints the `using:` line once `podman info` has said the kernel (machineKernel), and without the
+   *     kernel before a failure that `podman info` causes.
    */
   def requirePodman(
     os: Os,
     memoryScale: Long => Headroom = launchMemoryHeadroom,
     refuseRootful: Boolean = true,
   ): Option[Long] =
+    val podman = unannouncedPodman
     if !podmanRuns then
       fail(
         s"""error: $podman does not run
@@ -724,6 +741,7 @@ object AgentSandboxLauncher:
       else
         os match
           case Os.Linux =>
+            announcePodman(None)
             fail(
               "error: podman is not usable.\nOn Linux, run rootless podman as your normal user, without sudo.",
             )
@@ -734,6 +752,7 @@ object AgentSandboxLauncher:
             System.err.println("the podman machine is not running; starting it")
             val started = run(podman, "machine", "start")
             if !started.ok then
+              announcePodman(None)
               fail(
                 s"""error: podman machine could not be started.
                    |${started.err}
@@ -742,13 +761,15 @@ object AgentSandboxLauncher:
                    |  podman machine init""".stripMargin,
               )
             (run(podman, "info", "--format", PodmanInfoFormat), probedMachineAvailable(os, podman))
+    announcePodman(machineKernel(os, podmanInfoField(info, 2)))
     if refuseRootful then rootfulRefusal(os, podmanInfoField(info, 0)).foreach(fail(_))
     val total = memoryTotal(podmanInfoField(info, 1))
     machineMemoryLine(os, total, available, scale = memoryScale).foreach(System.err.println)
     total
 
-  /** What requirePodman asks `podman info`, in one call: rootlessness, then MemTotal, one line each. */
-  val PodmanInfoFormat = "{{.Host.Security.Rootless}}{{println}}{{.Host.MemTotal}}"
+  /** What requirePodman asks `podman info`, in one call: rootlessness, MemTotal, then the kernel release, one line
+    * each. */
+  val PodmanInfoFormat = "{{.Host.Security.Rootless}}{{println}}{{.Host.MemTotal}}{{println}}{{.Host.Kernel}}"
 
   /** Line `index` of a PodmanInfoFormat answer, as the answer that a format of that field alone would give. */
   def podmanInfoField(answer: HostCommands.Run, index: Int): HostCommands.Run =
@@ -1738,8 +1759,10 @@ object AgentSandboxLauncher:
     // (SandboxWorkspace.mountPathOf). Once the image is known, below, the launch asks what the image has at that path,
     // or reads the cache of an earlier answer, still before any per-workspace resource exists.
     val mountPath = mountPathOf(os, workspaceRoot).fold(fail(_), identity)
+    // The label says workspace while the path is the root: the root is the whole workspace until `--add-dir`
+    // (TODO.md) adds directories beside it.
     System.err.println(
-      pathLine("workspace root", workspaceRoot, os, tint = chosen(_)) +
+      pathLine("workspace", workspaceRoot, os, tint = chosen(_)) +
         workspaceModeClause(
           parsed.workspaceSettings.spelled, settings.options.from("--workspace", os), mountPath, os,
           sourceOf = settings.options.workspacePartSource,
@@ -2392,15 +2415,14 @@ object AgentSandboxLauncher:
     }
     import mount.{joinedRules, sessionRuleLines}
     import git.{gitdirBindRefusal, mountedGitdir, noGit}
-    // Every launch prints the egress profile with its relevant state, as the workspace root line prints the workspace
-    // mode.
+    // Every launch prints the egress profile with its relevant state, as the workspace line prints the workspace mode.
     // - First come the dry run's counts, which are the proxy's own answers to exactly what is enforced.
     // - Then come the lines of the egress rule file, each once (HostCommands.ruleFileReport), so rules that arrived
     //   with the repository never take effect unseen.
     // - Each line tints what the user chose. A line that states a boundary weaker than the default tints its grant
     //   instead (HostCommands.weakened).
     val options = settings.options
-    // The git warning qualifies the workspace root line's mode: the mount is sound, and git either is not there, or
+    // The git warning qualifies the workspace line's mode: the mount is sound, and git either is not there, or
     // reads the main worktree's Git directory and writes nothing. The warning applies to every mode, since what git
     // needs is absent from the container under each mode.
     mountedGitdir match

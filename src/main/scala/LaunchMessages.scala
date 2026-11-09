@@ -15,7 +15,8 @@ object LaunchMessages:
   /** The launch's host-command lines:
     * - the chosen programs, which hold authority that a container session alone does not have, so the line shows a
     *   weakened boundary's grant (HostCommands.weakened);
-    * - what running the programs on the host costs the user;
+    * - what running the programs on the host costs the user, in gray: the orange line above is the warning, and this
+    *   line is what the reader looks up about it;
     * - under `--workspace=read-only`, an extra line under the same label. The boundary is weaker than the option
     *   says: a host command writes the workspace as its program does, while the session's own writes are refused
     *   (SECURITY.md, "Run on host"). */
@@ -30,7 +31,7 @@ object LaunchMessages:
       case "sbt" => "sbt server"
       case "mill" => "mill daemon"
     val shutdown = Option.when(displaced.nonEmpty)(
-      s"  stops your own ${displaced.mkString(" or ")} in the build directory when used",
+      "  " + lookedUp(s"stops your own ${displaced.mkString(" or ")} in each build it runs", color),
     )
     val readOnly = Option.when(workspaceMode == "read-only")(
       weakened("run-on-host:", color) +
@@ -39,7 +40,7 @@ object LaunchMessages:
     )
     Vector(programs) ++ shutdown ++ readOnly
 
-  /** What the workspace root line says after the root: the workspace mode, and on Windows the mount path. The mount
+  /** What the workspace line says after the root: the workspace mode, and on Windows the mount path. The mount
     * path is not the root's spelling but the /mnt/<drive> spelling that the agent will print. Each part takes the
     * shade of its source (`sourceOf`, OptionsInForce.workspacePartSource). */
   def workspaceModeClause(

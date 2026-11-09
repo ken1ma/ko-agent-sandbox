@@ -647,8 +647,15 @@ object HostCommands:
    *
    *   - The reaper receives this same path as an argument, so its invocations are the launcher's decision too.
    *   - The value is lazy, so `--help` needs no podman at all.
+   *   - The first use prints the `using:` line (announcePodman), unless requirePodman printed it first.
    */
-  lazy val podman: String = podmanResolution._1
+  lazy val podman: String =
+    announcePodman(None)
+    podmanResolution._1
+
+  /** The path of `podman`, without printing the `using:` line: requirePodman prints that line itself, once `podman
+    * info` has said the kernel. */
+  def unannouncedPodman: String = podmanResolution._1
 
   def podmanRuns: Boolean = podmanResolution._2.exists(_.ok)
 
@@ -707,15 +714,34 @@ object HostCommands:
     val version =
       try Some(run(found, "--version"))
       catch case _: IOException => None
-    // Said once, here, so that every echoed command can then say just `podman` (echoCommand).
-    System.err.println(podmanUsingLine(found, version))
-    announcedPodman = Some(found)
     (found, version)
 
-  def podmanUsingLine(path: String, result: Option[Run]): String =
+  /** Prints the `using:` line once, so that every echoed command can then say just `podman` (echoCommand). `kernel`
+    * is the line's tail that AgentSandboxLauncher.machineKernel gives. */
+  def announcePodman(kernel: Option[String]): Unit = synchronized:
+    if announcedPodman.isEmpty then
+      val (found, version) = podmanResolution
+      System.err.println(podmanUsingLine(found, version, kernel))
+      announcedPodman = Some(found)
+
+  /** The line grays the path's directory (lookedUp), which a reader consults only when the launcher found an
+    * unexpected podman. The version and kernel stay plain, since a reader upgrades podman and the machine by them. */
+  def podmanUsingLine(
+    path: String,
+    result: Option[Run],
+    kernel: Option[String] = None,
+    os: Os = currentOs,
+    environment: String => Option[String] = env,
+    color: Boolean = colorStderr,
+  ): String =
     val version = result.filter(_.ok).map(_.text.trim).collect:
-      case PodmanVersion(value) => s" (v$value)"
-    s"using: $path${version.getOrElse("")}"
+      case PodmanVersion(value) => s" ($value)"
+    val separators = if os == Os.Windows then "/\\" else "/"
+    def grayDirectory(shown: String): String =
+      val nameStart = shown.lastIndexWhere(separators.contains(_)) + 1
+      if nameStart == 0 then shown else lookedUp(shown.take(nameStart), color) + shown.drop(nameStart)
+    val using = pathLine("using", Paths.get(path), os, environment, tint = grayDirectory)
+    s"$using${version.getOrElse("")}${kernel.fold("")(", " + _)}"
 
   private val PodmanVersion = "podman version ([0-9][A-Za-z0-9.+-]*)".r
 

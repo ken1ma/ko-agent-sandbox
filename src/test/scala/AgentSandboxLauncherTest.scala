@@ -154,11 +154,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(memoryTotal(HostCommands.Run(0, "8589934592\n".getBytes, "")), Some(8589934592L))
     assertEquals(memoryTotal(HostCommands.Run(0, "0".getBytes, "")), None)
     assertEquals(memoryTotal(HostCommands.Run(1, "".getBytes, "not running")), None)
-    val info = HostCommands.Run(0, "true\n8589934592\n".getBytes, "")
+    val info = HostCommands.Run(0, "true\n8589934592\n7.2.5-200.fc44.aarch64\n".getBytes, "")
     assertEquals(podmanInfoField(info, 0).text, "true")
     assertEquals(memoryTotal(podmanInfoField(info, 1)), Some(8589934592L))
+    assertEquals(podmanInfoField(info, 2).text, "7.2.5-200.fc44.aarch64")
     val unanswered = HostCommands.Run(125, "".getBytes, "not running")
     assertEquals(memoryTotal(podmanInfoField(unanswered, 1)), None)
+    assertEquals(machineKernel(Os.Mac, podmanInfoField(unanswered, 2), color = false), None)
     assert(rootfulRefusal(Os.Linux, podmanInfoField(unanswered, 0)).exists(_.contains("not running")))
 
   test("podman actions refuse a service that is rootful or does not say, with the fix for the OS"):
@@ -211,6 +213,30 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(machineMemoryLine(Os.Windows, None, Some(1L << 30), color = false), None)
     assertEquals(machineMemoryLine(Os.Mac, Some(8L << 30), None, color = false), None)
 
+  test("every podman action says the kernel that the containers run on, when podman says it"):
+    val release = HostCommands.Run(0, "7.2.5-200.fc44.aarch64".getBytes, "")
+    val path = "/opt/podman/bin/podman"
+    val version = Some(HostCommands.Run(0, "podman version 6.1.4".getBytes, ""))
+    assertEquals(
+      HostCommands.podmanUsingLine(
+        path, version, machineKernel(Os.Mac, release, color = false), Os.Mac, _ => None, color = false,
+      ),
+      s"using: $path (6.1.4), podman machine kernel 7.2.5-200.fc44.aarch64",
+    )
+    assertEquals(machineKernel(Os.Linux, release, color = false), Some("Linux kernel 7.2.5-200.fc44.aarch64"))
+    assertEquals(machineKernel(Os.Windows, HostCommands.Run(0, "".getBytes, ""), color = false), None)
+
+  test("the kernel release's version is plain, and its suffix from the first letter after `.` or `-` gray"):
+    val (gray, off) = ("\u001b[38;5;245m", "\u001b[0m")
+    def shown(release: String) = machineKernel(Os.Linux, HostCommands.Run(0, release.getBytes, ""), color = true)
+    assertEquals(shown("7.2.5-200.fc44.aarch64"), Some(s"Linux kernel 7.2.5-200$gray.fc44.aarch64$off"))
+    assertEquals(
+      shown("6.18.54.1-microsoft-standard-WSL2"),
+      Some(s"Linux kernel 6.18.54.1$gray-microsoft-standard-WSL2$off"),
+    )
+    assertEquals(shown("6.12.0-1-arm64"), Some(s"Linux kernel 6.12.0-1$gray-arm64$off"))
+    assertEquals(shown("6.12.0"), Some("Linux kernel 6.12.0"))
+
   test("a host git older than 2.34 gets the bisect warning in every live workspace, a later one none"):
     assertEquals(
       oldGitBisectWarning("live", Some("git version 2.33.1")),
@@ -232,8 +258,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val live = runOnHostLines(Seq("sbt", "mill"), "live", color = false)
     assertEquals(live, Vector(
       "run-on-host: sbt, mill",
-      "  stops your own sbt server or mill daemon in the build directory when used",
+      "  stops your own sbt server or mill daemon in each build it runs",
     ))
+    assertEquals(
+      runOnHostLines(Seq("sbt"), "live", color = true)(1),
+      "  \u001b[38;5;245mstops your own sbt server in each build it runs\u001b[0m",
+    )
     for
       selected <- Seq(Seq("sbt"), Seq("mill"), Seq("sbt", "gradle"), Seq("mill", "mvn"), Seq("gradle", "mvn"))
       workspaceMode <- Seq("live", "read-only")
@@ -306,7 +336,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       s"${orange}clipboard: paste$off $file(from F)$off; the agent can read an image you copy",
     )
 
-  test("the workspace root line states the mode, and each line tints a value by its source, a default teal"):
+  test("the workspace line states the mode, and each line tints a value by its source, a default teal"):
     val source = " (from ~/.config/ko-agent-sandbox/options)"
     val commandLine = (_: String) => ValueSource.CommandLine
     assertEquals(workspaceModeClause("live", "", "/w", Os.Mac, color = false, sourceOf = commandLine), " (live)")

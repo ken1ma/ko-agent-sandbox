@@ -220,8 +220,6 @@ image carried 7.2.5.
   - The WSL provider does not support the command; `wsl --update` brings that provider's kernel
     (`README.md`). On WSL, the notice prints the WSL kernel version beside the one that evidence
     names.
-- [ ] Print the machine's kernel version in the launch line, so that a report says which kernel a
-  session ran on. `podman info` has the version as `host.kernel`.
 
 ## The sandbox image's download stages on the host
 

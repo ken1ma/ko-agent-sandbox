@@ -136,12 +136,16 @@ class HostCommandsTest extends munit.FunSuite:
       assertEquals(pathLine(label, path, Os.Windows, tint = text => s"<$text>"), s"$label (PowerShell): <$expected>")
 
   test("the Podman announcement includes the client version without depending on a running service"):
+    val noHome: String => Option[String] = _ => None
     for
-      path <- Seq("/opt/podman/bin/podman", "C:\\Program Files\\Podman\\podman.exe")
+      (path, os) <- Seq("/opt/podman/bin/podman" -> Os.Mac, "C:\\Podman\\podman.exe" -> Os.Windows)
       version <- Seq("6.1.1", "6.2.0-dev", "6.1.1+vendor.1")
     do
       val result = Run(0, s"podman version $version\r\n".getBytes, "")
-      assertEquals(podmanUsingLine(path, Some(result)), s"using: $path (v$version)")
+      assertEquals(
+        podmanUsingLine(path, Some(result), os = os, environment = noHome, color = false),
+        s"using: $path ($version)",
+      )
 
     val path = "/usr/bin/podman"
     for result <- Seq(
@@ -150,9 +154,21 @@ class HostCommandsTest extends munit.FunSuite:
         Some(Run(0, Array.emptyByteArray, "")),
         Some(Run(0, "unexpected output\nsecond line".getBytes, "")),
       )
-    do assertEquals(podmanUsingLine(path, result), s"using: $path")
+    do assertEquals(podmanUsingLine(path, result, os = Os.Linux, environment = noHome, color = false), s"using: $path")
 
-  test("the Podman announcement, availability check, and machine record share one version probe"):
+  test("the Podman announcement shows the path as the log dir line does, with the directory grayed"):
+    val (gray, off) = ("\u001b[38;5;245m", "\u001b[0m")
+    val home: String => Option[String] = Map("HOME" -> "/Users/me").get
+    assertEquals(
+      podmanUsingLine("/Users/me/homebrew/bin/podman", None, os = Os.Mac, environment = home, color = true),
+      s"using: $gray~/homebrew/bin/${off}podman",
+    )
+    assertEquals(
+      podmanUsingLine("C:\\Program Files\\Podman\\podman.exe", None, os = Os.Windows, color = true),
+      s"using: $gray\"C:\\Program Files\\Podman\\${off}podman.exe\"",
+    )
+
+  test("the Podman announcement, availability check, and machine record share one version probe and one announcement"):
     assume(!isWindows, "the fake executable is a POSIX shell script")
     val directory = Files.createTempDirectory("podman-version").toRealPath()
     val executable = directory.resolve("podman")
@@ -163,14 +179,19 @@ class HostCommandsTest extends munit.FunSuite:
     ).map(location).distinct.mkString(java.io.File.pathSeparator)
     val jvm = Paths.get(sys.props("java.home"), "bin", "java").toString
     try
-      for status <- Seq(0, 1) do
+      for
+        status <- Seq(0, 1)
+        kernel <- Seq(None, Some("podman machine kernel 7.2.5-200.fc44.aarch64"))
+      do
         Files.writeString(
           executable,
           "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$0.calls\"\nprintf 'podman version 6.1.1\\n'\n" +
             s"exit $status\n",
         )
         executable.toFile.setExecutable(true)
-        val builder = ProcessBuilder(jvm, "-cp", classpath, "agentsandbox.launcher.PodmanResolutionProbe")
+        val builder = ProcessBuilder(
+          (Vector(jvm, "-cp", classpath, "agentsandbox.launcher.PodmanResolutionProbe") ++ kernel)*,
+        )
         builder.environment().put("PATH", directory.toString)
         val process = builder.start()
         process.getOutputStream.close()
@@ -182,8 +203,12 @@ class HostCommandsTest extends munit.FunSuite:
           output.linesIterator.toVector,
           Vector(s"${status == 0}", version, executable.toString, s"${status == 0}", version),
         )
-        val suffix = if status == 0 then " (v6.1.1)" else ""
-        assertEquals(error.linesIterator.filter(_.startsWith("using:")).toVector, Vector(s"using: $executable$suffix"))
+        val suffix = if status == 0 then " (6.1.1)" else ""
+        val tail = kernel.fold("")(", " + _)
+        assertEquals(
+          error.linesIterator.filter(_.startsWith("using:")).toVector,
+          Vector(s"using: $executable$suffix$tail"),
+        )
         assertEquals(Files.readString(calls), "--version\n")
         Files.delete(calls)
     finally deleteRecursively(directory)
@@ -433,9 +458,13 @@ class HostCommandsTest extends munit.FunSuite:
     )
 
 object PodmanResolutionProbe:
+  /** An argument is announced as the kernel before the first use of `podman`, as requirePodman announces it. The
+    * later announcePodman call must print nothing. */
   def main(args: Array[String]): Unit =
     println(podmanRuns)
     println(podmanVersion())
+    args.headOption.foreach(kernel => announcePodman(Some(kernel)))
     println(podman)
+    announcePodman(None)
     println(podmanRuns)
     println(podmanVersion())
