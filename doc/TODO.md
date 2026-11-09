@@ -282,48 +282,13 @@ Twelve probes in `src/probe/` are shell scripts. Eleven run on the macOS host, a
     in the entry above.
   - Rerun each rewritten probe on macOS, and compare its answers with what the documents record.
 
-## Measure the agents under the `--nesting=none` seccomp profile
+## Open questions under the `--nesting=none` seccomp profile
 
-The profile (`SECURITY.md`, "No containers inside the sandbox by default") is measured with its
-rules installed by hand on one shell (2026-10-17). `unshare -Ur` and `bwrap --unshare-user` are
-refused. A thread and a child process in Python 3.14, Node 24 and Java 25, `git status`, `rg` and
-`uv run` work. `claude`, `codex`, `kiro-cli`, `copilot`, `opencode` and `agy` start (`--version`).
-
-- [x] In a session launched with the profile, run `sbt testFull` on the podman machine on Windows
-  (x86_64). `SessionBoundaryTest` checks syscalls from each rule of the profile and that processes
-  start.
-  - `SessionBoundaryTest` passes on macOS (aarch64, podman 6.1.2) and on Windows (2026-10-26).
-  - The Windows run's two failures are in other suites: `ClaudeManagedHelpersTest` (its own
-    section below) and `KoReviewTest`.
-  - `KoReviewTest`'s review cycle against the fake codex and claude exceeded its 300 s timeout on
-    the `/mnt/c` workspace. Whether the profile or the share's speed caused the timeout is
-    unmeasured.
-- [x] Measure each installed agent, as the image configures it, running a command in such a
-  session, and report one that fails to the user.
-  - Each of the six runs a shell command without a prompt, in the session's own user, pid, mount,
-    net and cgroup namespaces: the command's `/proc/self/ns/*` inodes equal the session shell's.
-  - The agents measured: `claude -p` 2.1.310, `codex exec` 0.164.0, `agy -p` 1.4.7,
-    `opencode run` 1.19.4, `kiro-cli chat --no-interactive` 2.34.0 and `copilot -p` 1.0.103.
-  - The measurements ran on 2026-10-26 and 2026-10-27 in `--workspace=live,bpf,unix-socket`
-    sessions on macOS. Each agent was signed in interactively first, and the launch's
-    `--model-provider` named the agent's provider (`google`, `openai`, `aws`, `github`). Without
-    that option, the agent's first request is refused.
-  - Kiro rejected the seeded agent file, which lacked `name`. The Containerfile seed has the field.
-    A volume seeded earlier needs the field edited into `~/.kiro/agents/ko-agent-sandbox.json`, or
-    `--reset`.
-  - [x] Playwright 1.64.1's Chromium 156 starts and renders a page under Playwright's default
-    launch, which passes `--no-sandbox` (measured 2026-10-26, `chromium.launch()` with the
-    headless shell and with the full browser).
-    - With `chromiumSandbox: true`, Chromium dies with `No usable sandbox!`, since it needs the
-      user namespace that the profile refuses.
-    - Chromium has two needs beyond the image:
-      - the download, `npx playwright install chromium`, reads `cdn.playwright.dev`, which
-        redirects to `storage.googleapis.com`; both hosts need `read` rule lines;
-      - ten shared libraries that the image lacks (`libnspr4`, `libnss3`, `libatk1.0-0`,
-        `libatk-bridge2.0-0`, `libxcomposite1`, `libxdamage1`, `libxrandr2`, `libgbm1`,
-        `libxkbcommon0`, `libatspi2.0-0`), which `ko-sandbox-apt-get` unpacked and
-        `LD_LIBRARY_PATH` reached. Decide whether the image ships them.
-  - `agy`'s Auto mode: `limitations.md` measures it under podman's default profile only.
+- [ ] Measure `agy`'s Auto mode under `--nesting=none`. `limitations.md` measures it under podman's
+  default profile only.
+- [ ] Find what made `KoReviewTest`'s review cycle against the fake codex and claude exceed its
+  300 s timeout in a `--nesting=none` session on Windows, in a `/mnt/c` workspace (2026-10-26):
+  the profile or the share's speed.
 
 ## BPF suite reruns
 

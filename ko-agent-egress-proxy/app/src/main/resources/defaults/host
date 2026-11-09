@@ -201,6 +201,16 @@ allow https://api.pulumi.com/api/cli/version read
 allow https://registry.terraform.io/   read
 allow https://developer.hashicorp.com/ read
 
+# Playwright
+# `npx playwright install` requests the browsers and FFmpeg from this host, which redirects each request to one of
+# the hosts below.
+allow https://cdn.playwright.dev/                               read
+# Chromium and its headless shell: Google's Chrome for Testing bucket.
+allow https://storage.googleapis.com/chrome-for-testing-public/ read
+# Firefox, WebKit and FFmpeg. Without this host they install through a later fallback on cdn.playwright.dev, after
+# two refused requests each.
+allow https://playwright.download.prss.microsoft.com/           read
+
 # container-image pulls, for nested sessions (--nesting=same-uid). The CDN hosts are convention, not contract: when a
 # provider moves a CDN host, pulls stall and the log names the successor.
 allow https://registry-1.docker.io/             read  # Docker Hub API

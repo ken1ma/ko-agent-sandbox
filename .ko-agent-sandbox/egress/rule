@@ -1,8 +1,3 @@
-# Playwright
-allow https://cdn.playwright.dev/       read
-allow https://playwright.azureedge.net/ read
-allow https://storage.googleapis.com/   read
-
 # IDEs
 allow https://www.jetbrains.com/ read
 allow https://cursor.com/        read

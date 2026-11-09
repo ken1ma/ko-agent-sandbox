@@ -48,6 +48,30 @@ namespace that `agy`'s sandbox creates first.
    `--mode auto is unavailable (rollout flag off)` appears before print mode signs in and loads its
    experiments.
 
+## Chromium under Playwright
+
+Playwright's Chromium runs in a session only without Chromium's own sandbox, and needs shared
+libraries that the image lacks. The default egress rules allow its download.
+
+1. Keep Playwright's default launch, which passes `--no-sandbox`. With `chromiumSandbox: true`,
+   Chromium exits with `No usable sandbox!`: its sandbox needs a user namespace, which the default
+   `--nesting=none` refuses.
+1. Unpack the shared libraries that Chromium loads, and point `LD_LIBRARY_PATH` at them for the
+   Playwright command alone, such as `npx playwright test`. An exported value would let them
+   shadow libraries for every later command, which `ko-sandbox-apt-get` avoids for its own
+   wrappers.
+
+   ```sh
+   ko-sandbox-apt-get update
+   ko-sandbox-apt-get install libnspr4 libnss3 libatk1.0-0 libatk-bridge2.0-0 libxcomposite1 \
+       libxdamage1 libxrandr2 libgbm1 libxkbcommon0 libatspi2.0-0
+   libs=$HOME/.local/deb/usr/lib/$(uname -m)-linux-gnu
+   LD_LIBRARY_PATH=$libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} npx playwright test
+   ```
+
+Measured on 2026-10-26 with Playwright 1.64.1 and Chromium 156: `chromium.launch()` started the
+headless shell and the full browser, and each rendered a page.
+
 ## Pipes as small as 8 KiB
 
 A program that reads a child's output only after the child exits can hang in a session. The child

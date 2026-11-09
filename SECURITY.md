@@ -1985,6 +1985,12 @@ workspace's own `unshare -Ur` step fails with `Operation not permitted`.
 - Claude Code's Bash-command sandbox is off in the managed settings, and Codex runs
   `danger-full-access` (`container/ko-agent-sandbox/Containerfile` has the reasons). So neither
   agent calls bubblewrap as configured.
+- Each of the image's six agents runs a shell command without a prompt, in the session's own user,
+  pid, mount, net and cgroup namespaces: the command's `/proc/self/ns/*` inodes equal the session
+  shell's.
+  - Measured on 2026-10-26 and 2026-10-27 in `--workspace=live,bpf,unix-socket` sessions on macOS,
+    with `claude -p` 2.1.310, `codex exec` 0.164.0, `agy -p` 1.4.7, `opencode run` 1.19.4,
+    `kiro-cli chat --no-interactive` 2.34.0 and `copilot -p` 1.0.103.
 - `setfattr`, `setfacl` and `chattr` fail everywhere in the session, `~` included. `cp -a` and `tar`
   drop extended attributes and ACLs silently, as they do on a filesystem without them.
 
