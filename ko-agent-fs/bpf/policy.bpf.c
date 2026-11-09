@@ -1,6 +1,5 @@
 // The policy program of ko-agent-fs/bpf/doc/architecture.md, measured by the policy suite. It is the
-// every-hook suite's representative program (bpf/probe/phase2/classify.bpf.c, commit 654586d) plus
-// what that suite left to this one ("The policy"):
+// every-hook suite's representative program plus what that suite left to this one ("The policy"):
 //
 // - the identities of guarded objects as second names;
 // - the guard's alias contexts (policy.rs, `RuleContext::also`);
@@ -25,23 +24,25 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
+// The records the controller fills the maps with, in the guard's layout: the rule lines, the alias
+// contexts and the root kinds (../policy/include/records.h).
+#include "records.h"
+
 char LICENSE[] SEC("license") = "GPL";
 
 #define WALK_BOUND 64         // components a walk reads before it denies; above any measured depth
 #define RETRY_BOUND 8         // walks discarded for a move of a dentry seen in flight, then denied
 #define NAME_BYTES 256        // a dentry name is at most 255 bytes and NUL-terminated
-#define RULE_LINES 128
-#define RULE_COMPS 7          // bit k of a partial byte: the line's first k components matched
-#define COMP_BYTES 64
 #define FS_TYPE_BYTES 16
 #define ALIAS_SLOTS 2         // alias contexts live at one position; the guard refuses a deeper nesting
-#define ALIASES 16            // alias contexts the guard records
 #define SCRATCH_SLOTS 4       // tasks judged at once on one CPU; a fifth is denied (reentry)
 #define TARGET_BYTES 1024     // a symlink target longer than this is denied
 #define TARGET_COMPS 64
 
 // policy_config.flags
-#define FLAG_SHORT_NAMES 1u   // deny a mutation whose ancestry, or a symlink target, holds an NTFS short-name form
+// FLAG_SHORT_NAMES denies a mutation whose ancestry holds an NTFS short-name form; a symlink target of
+// that form is refused whatever the flag.
+#define FLAG_SHORT_NAMES 1u
 #define FLAG_UNIX_SOCKETS 2u  // allow a socket inode beneath a root outside a gitdir; file_receive judges arrivals
 
 // An index masked to its array size, written so the compiler cannot drop the mask as redundant. On
@@ -113,40 +114,9 @@ struct ident {
 	__u64 i_ino;
 };
 
-enum root_kind {
-	ROOT_WORKSPACE = 1,   // a workspace root, or the proof fixture's: the walk's position is NotGit
-	ROOT_GITDIR = 2,      // a gitdir the guard resolved under `modules/`: the position is InGit([])
-	ROOT_VOLUME = 3,      // the persistent volume's root: the socket rule alone
-	ROOT_GUARDED_GIT = 4,     // the root's `.git` object: any name of it is the gitdir entry
-	ROOT_GUARDED_SANDBOX = 5, // the root's `.ko-agent-sandbox` object: any name of it is the launcher's directory
-};
-
 struct root {
 	__u32 kind;
 	__u32 pad;
-};
-
-// One resolved rule line, folded by the guard. `alias` names the alias context (1-based) that the
-// line's end carries; this is for an anchored `pinned-path` line at the end of a symlink the guard
-// followed. 0 means none.
-struct rule_line {
-	__u8 word;            // 1 read-only, 2 writable, 3 pinned-path
-	__u8 anchored;
-	__u8 ncomp;
-	__u8 alias;
-	char comp[RULE_COMPS][COMP_BYTES];
-};
-
-#define WORD_READ_ONLY 1
-#define WORD_WRITABLE 2
-#define WORD_PINNED 3
-
-// The rule context of the symlink whose end a `pinned-path` line names. Every entry below that end
-// is also judged in this context (policy.rs, `FileRules::push_alias`).
-struct alias_context {
-	__u8 partial[RULE_LINES];
-	__s32 deciding;
-	__u32 pinned_path;
 };
 
 struct policy_config {
@@ -271,8 +241,10 @@ struct loop_state {
 // Where an entry stands under the rules, for the main context and each live alias context
 // (policy.rs, `RuleContext`): the lines that the entry's ancestors partially matched, the line that
 // decides, and whether a pinned-path line names the entry.
+// The partial arrays are 8-byte aligned, so that __builtin_memcpy copies them in 16 moves of 8 bytes.
+// Bit k of a partial byte: the line's first k components match this entry's ancestors.
 struct rule_state {
-	__u8 partial[RULE_LINES];     // bit k: the line's first k components match this entry's ancestors
+	__u8 partial[RULE_LINES] __attribute__((aligned(8)));
 	__s32 deciding;
 	__u8 pinned_path;
 	__u8 any_partial;
@@ -293,7 +265,8 @@ struct scratch {
 	char comp[NAME_BYTES];        // judge_symlink: the target component being judged
 	struct rule_state ctx[1 + ALIAS_SLOTS];
 	__u8 partial_next[RULE_LINES];
-	__u8 level_partial[WALK_BOUND][RULE_LINES];   // the main context after each level below the root
+	// The main context after each level below the root.
+	__u8 level_partial[WALK_BOUND][RULE_LINES] __attribute__((aligned(8)));
 	__s32 level_deciding[WALK_BOUND];
 	__u8 tgt_special[WALK_BOUND];                 // judge_symlink: 1 a `.git`, 2 a `.ko-agent-sandbox`, per level
 	char target[TARGET_BYTES];
@@ -309,7 +282,7 @@ struct cpu_guard {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 64);
+	__uint(max_entries, ROOTS);
 	__type(key, struct ident);
 	__type(value, struct root);
 } roots SEC(".maps");
@@ -1037,8 +1010,7 @@ __noinline int alias_activate(__u64 slot, __u64 mask)
 			struct rule_state *st = &sc->ctx[BOUNDED(1 + free_slot, 4)];
 			int k;
 
-			bpf_for(k, 0, RULE_LINES)
-				st->partial[BOUNDED(k, RULE_LINES)] = alias->partial[BOUNDED(k, RULE_LINES)];
+			__builtin_memcpy(st->partial, alias->partial, RULE_LINES);
 			st->deciding = alias->deciding;
 			st->pinned_path = alias->pinned_path != 0;
 			st->any_partial = 0;
@@ -1252,13 +1224,11 @@ static __always_inline int classify_in_gitdir(struct scratch *sc, struct positio
 // Returns 0 on an alias overflow or an error.
 static __always_inline int rules_at_level(struct scratch *sc, __u64 slot, __u32 level, int anchored_ok)
 {
-	int mask = rule_child(slot, 0, anchored_ok), a, k;
+	int mask = rule_child(slot, 0, anchored_ok), a;
 
 	if (mask < 0)
 		return 0;
-	bpf_for(k, 0, RULE_LINES)
-		sc->level_partial[BOUNDED(level, WALK_BOUND)][BOUNDED(k, RULE_LINES)] =
-			sc->ctx[0].partial[BOUNDED(k, RULE_LINES)];
+	__builtin_memcpy(sc->level_partial[BOUNDED(level, WALK_BOUND)], sc->ctx[0].partial, RULE_LINES);
 	sc->level_deciding[BOUNDED(level, WALK_BOUND)] = sc->ctx[0].deciding;
 	bpf_for(a, 0, ALIAS_SLOTS) {
 		struct rule_state *st = &sc->ctx[BOUNDED(1 + a, 4)];
@@ -1287,7 +1257,7 @@ static __always_inline int locate(struct scratch *sc, __u64 slot, const struct p
 	__u32 git_kind;
 	__s32 rel_start;
 	__u32 rel_len;
-	int i, k, a;
+	int i, a;
 
 	pos->depth = w->depth;
 	pos->root_kind = w->root_kind;
@@ -1315,18 +1285,12 @@ static __always_inline int locate(struct scratch *sc, __u64 slot, const struct p
 		// The object itself, or a name below the guarded `.ko-agent-sandbox`.
 		ls->git_kind = GIT_SANDBOX;
 	}
-	for (a = 0; a < 1 + ALIAS_SLOTS; a++) {
-		struct rule_state *st = &sc->ctx[a];
-
-		bpf_for(k, 0, RULE_LINES)
-			st->partial[BOUNDED(k, RULE_LINES)] = 0;
-		st->deciding = -1;
-		st->pinned_path = 0;
-		st->any_partial = 0;
-		st->live = a == 0;
-	}
-	bpf_for(k, 0, RULE_LINES)
-		sc->level_partial[0][BOUNDED(k, RULE_LINES)] = 0;
+	__builtin_memset(sc->ctx, 0, sizeof(sc->ctx));
+	sc->ctx[0].deciding = -1;
+	sc->ctx[1].deciding = -1;
+	sc->ctx[2].deciding = -1;
+	sc->ctx[0].live = 1;
+	__builtin_memset(sc->level_partial[0], 0, RULE_LINES);
 	sc->level_deciding[0] = -1;
 	bpf_for(i, 0, WALK_BOUND) {
 		__u32 index = w->depth - 1 - i;
@@ -1365,8 +1329,8 @@ static __always_inline int locate(struct scratch *sc, __u64 slot, const struct p
 		case GIT_SANDBOX:
 			break;
 		case GIT_MODULE_NS:
-			// A recorded gitdir root ends the walk before this point, so what remains is the
-			// namespace.
+			// A directory under `modules` that is a recorded gitdir root is re-rooted at the
+			// walk's mark below; any other is the namespace.
 			if (FOLD_IS(sc, ".ko-agent-sandbox"))
 				ls->git_kind = GIT_SANDBOX;
 			break;
@@ -1608,8 +1572,8 @@ static __always_inline int finish(enum hook hook, __u32 reason, const struct pos
 //
 // - The verifier checks a global function once per program, but an inlined or static one at each
 //   call. With the walk checked twice, the two-walk hooks exceed its budget on Linux 6.18
-//   (measured, "Every hook on WSL": 640,000 to 790,000 instructions for one walk there, against
-//   14,500 on 7.2).
+//   (measured, "Every hook on WSL": 638,813 to 793,033 instructions for a single-walk hook there,
+//   against 14,458 to 43,504 on 7.2).
 // - The dentry arrives as a scalar; the walk's probe reads accept a scalar as they accept a
 //   pointer. The verifier passes a pointer to a global function only as a declared trusted
 //   argument (measured on 7.2: "R2 is not a scalar" for a hook's dentry), and `file_open`'s
@@ -1665,8 +1629,7 @@ __noinline int judge_symlink(__u64 slot, __u64 target)
 		return R_SYMLINK_SYNTAX;
 	parent_level = pos->depth - 1;
 	judge_paths = cfg->rule_count && pos->git_kind == GIT_NOT;
-	bpf_for(k, 0, WALK_BOUND)
-		sc->tgt_special[BOUNDED(k, WALK_BOUND)] = 0;
+	__builtin_memset(sc->tgt_special, 0, sizeof(sc->tgt_special));
 	ls->tgt_pos = 0;
 	ls->tgt_level = parent_level;
 	bpf_for(i, 0, TARGET_COMPS + 1) {
@@ -1731,15 +1694,11 @@ __noinline int judge_symlink(__u64 slot, __u64 target)
 			continue;	// in `.ko-agent-sandbox` state: no rule decides
 		// The rule state at this level, from the level below. Only the main context decides a
 		// region (policy.rs, `RuleContext::region`).
-		bpf_for(k, 0, RULE_LINES)
-			sc->ctx[0].partial[BOUNDED(k, RULE_LINES)] =
-				sc->level_partial[BOUNDED(level - 1, WALK_BOUND)][BOUNDED(k, RULE_LINES)];
+		__builtin_memcpy(sc->ctx[0].partial, sc->level_partial[BOUNDED(level - 1, WALK_BOUND)], RULE_LINES);
 		sc->ctx[0].deciding = sc->level_deciding[BOUNDED(level - 1, WALK_BOUND)];
 		if (rule_child(slot, 0, level == 1 && pos->root_kind == ROOT_WORKSPACE) < 0)
 			return R_INTERNAL;
-		bpf_for(k, 0, RULE_LINES)
-			sc->level_partial[BOUNDED(level, WALK_BOUND)][BOUNDED(k, RULE_LINES)] =
-				sc->ctx[0].partial[BOUNDED(k, RULE_LINES)];
+		__builtin_memcpy(sc->level_partial[BOUNDED(level, WALK_BOUND)], sc->ctx[0].partial, RULE_LINES);
 		sc->level_deciding[BOUNDED(level, WALK_BOUND)] = sc->ctx[0].deciding;
 		if (rule_word(sc->ctx[0].deciding) == WORD_WRITABLE && pos->deciding != sc->ctx[0].deciding)
 			return R_SYMLINK_REGION;
@@ -1757,14 +1716,11 @@ static __always_inline __u64 as_scalar(const void *ptr)
 	return value;
 }
 
-// The common prologue: the superblock check, the walk and the position. Returns the reason that
-// ends the call, or R_ALLOW to go on. `sb` is the object's superblock, or the parent's for a name
-// that does not exist yet. `judge_any_type` skips the type check, for the socket rule.
-static __always_inline __u32 prologue(enum hook hook, struct dentry *dentry, struct super_block *sb,
-				      const struct policy_config *cfg, int slot, int pos_index, int judge_any_type)
+// The common prologue: the walk and the position. Returns the reason that ends the call, or R_ALLOW
+// to go on. ENTER has checked the superblock's type, or skipped it for the socket rule, which judges
+// any type.
+static __always_inline __u32 prologue(enum hook hook, struct dentry *dentry, int slot, int pos_index)
 {
-	if (!judge_any_type && !on_root_type(sb, cfg))
-		return R_OUTSIDE;
 	return judge_position(hook, as_scalar(dentry), slot, pos_index);
 }
 
@@ -1830,7 +1786,7 @@ int BPF_PROG(file_open, struct file *file)
 	if (!(f_mode & FMODE_WRITE) && !(f_flags & O_TRUNC_FLAG))
 		return 1;
 	ENTER(HOOK_FILE_OPEN, cfg, sc, slot, start, sb_of_inode(inode));
-	reason = prologue(HOOK_FILE_OPEN, dentry, sb_of_inode(inode), cfg, slot, 0, 0);
+	reason = prologue(HOOK_FILE_OPEN, dentry, slot, 0);
 	if (reason == R_ALLOW)
 		reason = decide_modify(&sc->pos[0]);
 	return finish(HOOK_FILE_OPEN, reason, &sc->pos[0], sc, start, slot);
@@ -1854,7 +1810,7 @@ int BPF_PROG(inode_setattr, struct mnt_idmap *idmap, struct dentry *dentry, stru
 	ENTER(HOOK_INODE_SETATTR, cfg, sc, slot, start, sb_of_inode(inode));
 	if ((mode & S_IFMT) == S_IFIFO && (valid & (ATTR_ATIME | ATTR_MTIME)))
 		return finish(HOOK_INODE_SETATTR, R_FIFO, note_dentry(sc, dentry), sc, start, slot);
-	reason = prologue(HOOK_INODE_SETATTR, dentry, sb_of_inode(inode), cfg, slot, 0, 0);
+	reason = prologue(HOOK_INODE_SETATTR, dentry, slot, 0);
 	if (reason == R_ALLOW)
 		reason = decide_modify(&sc->pos[0]);
 	return finish(HOOK_INODE_SETATTR, reason, &sc->pos[0], sc, start, slot);
@@ -1870,7 +1826,7 @@ int BPF_PROG(inode_unlink, struct inode *dir, struct dentry *dentry)
 	int slot;
 
 	ENTER(HOOK_INODE_UNLINK, cfg, sc, slot, start, sb_of_inode(dir));
-	reason = prologue(HOOK_INODE_UNLINK, dentry, sb_of_inode(dir), cfg, slot, 0, 0);
+	reason = prologue(HOOK_INODE_UNLINK, dentry, slot, 0);
 	if (reason == R_ALLOW)
 		reason = decide_remove(&sc->pos[0]);
 	return finish(HOOK_INODE_UNLINK, reason, &sc->pos[0], sc, start, slot);
@@ -1917,7 +1873,7 @@ static __always_inline int new_name(enum hook hook, struct inode *dir, struct de
 	pos = &sc->pos[0];
 	if (is_fifo)
 		return finish(hook, R_FIFO, note_dentry(sc, dentry), sc, start, slot);
-	reason = prologue(hook, dentry, sb_of_inode(dir), cfg, slot, 0, is_socket);
+	reason = prologue(hook, dentry, slot, 0);
 	if (is_socket)
 		return finish(hook, decide_socket(cfg, sb_of_inode(dir), reason, pos), pos, sc, start, slot);
 	if (reason == R_ALLOW) {
@@ -1969,21 +1925,21 @@ static __always_inline int two_names(enum hook hook, struct dentry *old_dentry, 
 	to = &sc->pos[1];
 	if ((old_mode & S_IFMT) == S_IFSOCK && !(cfg->flags & FLAG_UNIX_SOCKETS)) {
 		// The socket rule on the destination, beneath any recorded root.
-		reason = prologue(hook, new_dentry, sb_of_inode(new_dir), cfg, slot, 1, 1);
+		reason = prologue(hook, new_dentry, slot, 1);
 		return finish(hook, decide_socket(cfg, sb_of_inode(new_dir), reason, to), to, sc, start, slot);
 	}
-	reason = prologue(hook, old_dentry, sb_of_inode(old_inode), cfg, slot, 0, 0);
-	if (reason == R_OUTSIDE)
+	// ENTER skipped the type check for a socket source, which moves under the flag as any other
+	// object: one of another type is outside the policy.
+	if ((old_mode & S_IFMT) == S_IFSOCK && !on_root_type(sb_of_inode(old_inode), cfg))
 		return finish(hook, R_OUTSIDE, NULL, NULL, start, slot);
+	reason = prologue(hook, old_dentry, slot, 0);
 	if (reason == R_ALLOW)
 		reason = hook == HOOK_INODE_RENAME ? decide_remove(from) : decide_modify(from);
 	if (reason != R_ALLOW)
 		return finish(hook, reason, from, sc, start, slot);
-	reason = prologue(hook, new_dentry, sb_of_inode(new_dir), cfg, slot, 1, 0);
-	if (reason == R_OUTSIDE) {
-		// A rename across superblocks is EXDEV before any hook; a link too. Not reached.
-		return finish(hook, R_OUTSIDE, NULL, NULL, start, slot);
-	}
+	// A rename or link across superblocks is EXDEV before any hook, so the destination's
+	// superblock is the source's, whose type is checked.
+	reason = prologue(hook, new_dentry, slot, 1);
 	if (reason == R_ALLOW) {
 		reason = decide_create(to);
 		if (reason == R_ALLOW && new_inode) {
@@ -2124,7 +2080,7 @@ int BPF_PROG(file_receive, struct file *file)
 	struct policy_config *cfg;
 	struct scratch *sc;
 	__u32 reason;
-	int slot;
+	int slot, on_share;
 
 	if (ns == mine || (unsigned long)ns >= (unsigned long)-MAX_ERRNO)
 		return 1;
@@ -2136,9 +2092,10 @@ int BPF_PROG(file_receive, struct file *file)
 		return finish(HOOK_FILE_RECEIVE, R_RECEIVE_DIR, note_dentry(sc, dentry), sc, start, slot);
 	// A FIFO of the share, in any mode. A container outside any policy can open one and pass the
 	// descriptor, and a write through it would flush the FIFO's times ("The policy").
-	if ((mode & S_IFMT) == S_IFIFO && sb_type_is(sb, cfg->fs_type))
+	on_share = sb_type_is(sb, cfg->fs_type);
+	if ((mode & S_IFMT) == S_IFIFO && on_share)
 		return finish(HOOK_FILE_RECEIVE, R_FIFO, note_dentry(sc, dentry), sc, start, slot);
-	if (sb_type_is(sb, cfg->fs_type)) {
+	if (on_share) {
 		reason = judge_position(HOOK_FILE_RECEIVE, as_scalar(dentry), slot, 0);
 		if (reason == R_WALK_NOROOT)
 			reason = R_RECEIVE_NS;

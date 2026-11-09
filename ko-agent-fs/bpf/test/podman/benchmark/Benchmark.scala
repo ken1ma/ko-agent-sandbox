@@ -25,11 +25,12 @@
 //   (sbt/sbt, shallow) into a scratch workspace on the share.
 // - It launches the policy over it as the lifecycle suite's driver does, with steps 1 to 3 of
 //   "Lifecycle".
-// - It runs the two benchmarks of ko-agent-fs/bench/ over that one tree, in three stacks:
+// - It runs the two benchmarks of ko-agent-fs/bench/ over that one tree, in the stacks --stacks names:
 //
 //   bind     the sandbox image over a writable bind of the workspace, plain-bind.sh's command
 //   policy   the same command below the attach cgroup, so the eight hooks judge it
-//   fuse     the launcher's session under --workspace=live,fuse, the workspace through the FUSE backend
+//   fuse     the launcher's session under --workspace=live,fuse, the workspace through the FUSE backend,
+//            only when --stacks names it
 //
 // Before the launch it also runs one round of entry-cost.py on the bind with no program attached to
 // any hook: the `bare` column. The first attach installs a shim on each hook for every task in the VM
@@ -53,8 +54,10 @@
 //
 // Options:
 //
-// - --stacks and --workloads take comma-separated subsets (bind,policy,fuse and perf,build,walk),
-//   for a partial rerun.
+// - --stacks takes a comma-separated subset of bind,policy,fuse, by default bind,policy. The fuse stack
+//   repeats verification-log.md's "The cost of a path walk", which no change of the BPF sources moves,
+//   and took 108 of the 138 minutes of a WSL run; name it to refresh that comparison.
+// - --workloads takes a comma-separated subset of perf,build,walk, for a partial rerun.
 // - --tree names a repository to clone instead of GitHub's, such as an earlier clone.
 // - --platform makes the driver act as that platform where the detection must be overridden, as in a
 //   dry run against fake commands.
@@ -116,6 +119,7 @@ object Benchmark:
 
   object Stack:
     val selectable: Seq[Stack] = Seq(Bind, Policy, Fuse)
+    val default: Seq[Stack] = Seq(Bind, Policy)
 
   enum Workload(val name: String):
     case Perf  extends Workload("perf")
@@ -133,7 +137,7 @@ object Benchmark:
       tree: String = "https://github.com/sbt/sbt.git",
       rounds: Int = 3,
       files: Int = 1800,
-      stacks: Seq[Stack] = Stack.selectable,
+      stacks: Seq[Stack] = Stack.default,
       workloads: Seq[Workload] = Workload.values.toSeq,
       platform: Option[Platform] = None,
   )
@@ -578,9 +582,9 @@ object Benchmark:
             )
 
     /** Checks that a hook file is refused under the policy and through the FUSE backend, and is made over the
-      * bare bind. */
+      * bind, on each stack that runs. */
     def stacksAreWhatTheyClaim(runOn: Runner): Unit =
-      step("the three stacks over one tree: each is what it claims")
+      step("the stacks over one tree: each is what it claims")
       val hookWrite = Command(Seq(
         "sh", "-c", s"echo x > .git/hooks/$Label && rm .git/hooks/$Label && echo WROTE || echo REFUSED",
       ))

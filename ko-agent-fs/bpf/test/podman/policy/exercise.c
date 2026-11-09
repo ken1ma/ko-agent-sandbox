@@ -59,6 +59,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#define PROGRAM_NAME "exercise"
+#include "backend.h"
+
 #define V9FS_MAGIC 0x01021997
 
 #ifndef RENAME_EXCHANGE
@@ -97,18 +100,6 @@ static int is_9p(const char *path)
 	struct statfs sfs;
 
 	return statfs(path, &sfs) == 0 && sfs.f_type == V9FS_MAGIC;
-}
-
-static void die(const char *format, ...)
-{
-	va_list args;
-
-	va_start(args, format);
-	fprintf(stderr, "exercise: ");
-	vfprintf(stderr, format, args);
-	fprintf(stderr, "\n");
-	va_end(args);
-	exit(2);
 }
 
 static const char *errname(int err)
@@ -192,9 +183,9 @@ static const char *tree_path(const char *rel)
 
 		while (*rest >= '0' && *rest <= '9')
 			rest++;
-		snprintf(out, 8192, "%s/%.*s%s%s", tree, (int)(deep - rel), rel, deep_path(depth), rest);
+		format_or_die(out, 8192, "%s/%.*s%s%s", tree, (int)(deep - rel), rel, deep_path(depth), rest);
 	} else {
-		snprintf(out, 8192, "%s/%s", tree, rel);
+		format_or_die(out, 8192, "%s/%s", tree, rel);
 	}
 	return out;
 }
@@ -204,7 +195,7 @@ static void tree_dirs(const char *rel)
 	char path[8192];
 	char *slash;
 
-	snprintf(path, sizeof(path), "%s/%s", tree, rel);
+	format_or_die(path, sizeof(path), "%s/%s", tree, rel);
 	for (slash = path + strlen(tree) + 1; *slash; slash++)
 		if (*slash == '/') {
 			*slash = 0;
@@ -222,8 +213,8 @@ static void tree_file(const char *rel, const char *content)
 	char *slash;
 	int fd;
 
-	snprintf(path, sizeof(path), "%s/%s", tree, rel);
-	snprintf(parent, sizeof(parent), "%s", rel);
+	format_or_die(path, sizeof(path), "%s/%s", tree, rel);
+	format_or_die(parent, sizeof(parent), "%s", rel);
 	slash = strrchr(parent, '/');
 	if (slash) {
 		*slash = 0;
@@ -241,7 +232,7 @@ static void tree_symlink(const char *rel, const char *target)
 {
 	char path[8192];
 
-	snprintf(path, sizeof(path), "%s/%s", tree, rel);
+	format_or_die(path, sizeof(path), "%s/%s", tree, rel);
 	if (symlink(target, path) && errno != EEXIST)
 		die("symlink %s: %s", path, strerror(errno));
 }
@@ -375,7 +366,7 @@ static int cmd_make_tree(void)
 		static char ptr[8192];
 		const char *main_tree = tree;
 
-		snprintf(ptr, sizeof(ptr), "%s-ptr", main_tree);
+		format_or_die(ptr, sizeof(ptr), "%s-ptr", main_tree);
 		tree = ptr;
 		if (mkdir(tree, 0755) && errno != EEXIST)
 			die("mkdir %s: %s", tree, strerror(errno));
@@ -423,6 +414,12 @@ enum expect {
 	E_FAIL,               // any error: the operation cannot succeed, the share's answer decides which
 	E_ALLOW_POSIX,        // allowed; skipped on a 9p share, whose host cannot hold the name
 };
+
+#define DOT_COMPONENTS_5 "./././././"
+#define DOT_COMPONENTS_65 \
+	DOT_COMPONENTS_5 DOT_COMPONENTS_5 DOT_COMPONENTS_5 DOT_COMPONENTS_5 DOT_COMPONENTS_5 DOT_COMPONENTS_5 \
+	DOT_COMPONENTS_5 DOT_COMPONENTS_5 DOT_COMPONENTS_5 DOT_COMPONENTS_5 DOT_COMPONENTS_5 DOT_COMPONENTS_5 \
+	DOT_COMPONENTS_5
 
 struct corpus_case {
 	const char *group;
@@ -562,6 +559,9 @@ static const struct corpus_case corpus[] = {
 	{"operational", "symlink-into-gitdir", A_SYMLINK, "apps/objs", "../.git/objects/x", E_DENY},
 	{"operational", "symlink-to-config", A_SYMLINK, "apps/cfg", "../.git/config", E_DENY},
 	{"operational", "symlink-to-dotgit", A_SYMLINK, "apps/gitlink", "../.git", E_DENY},
+	// the BPF policy's stricter answers, which policy.rs does not give ("What is gained and what is lost")
+	{"operational", "creat-commit-graphs-lock", A_CREAT, ".git/objects/info/commit-graphs.lock", NULL, E_DENY},
+	{"operational", "creat-doubled-lock", A_CREAT, ".git/HEAD.lock.lock", NULL, E_DENY},
 	// the file rules (a_listed_file_cannot_be_written_created_or_replaced, ...)
 	{"rules", "write-listed-file", A_WRITE, ".vscode/tasks.json", NULL, E_DENY},
 	{"rules", "creat-under-read-only-line", A_CREAT, ".vscode/tasks2.json", NULL, E_DENY},
@@ -649,6 +649,8 @@ static const struct corpus_case corpus[] = {
 	{"symlink", "symlink-tilde-target", A_SYMLINK, "src/backup", "../tilde/notes.md~", E_ALLOW},
 	{"symlink", "symlink-into-gitdir-then-out", A_SYMLINK, "src/weird", "../.git/../README.md", E_DENY},
 	{"symlink", "symlink-into-sandbox-dir", A_SYMLINK, "src/sb", "../.ko-agent-sandbox/file", E_ALLOW},
+	// 65 `.` components and a name: past TARGET_COMPS, as policy.rs, which drops `.`, does not count it
+	{"symlink", "symlink-dot-components-past-bound", A_SYMLINK, "src/dots", DOT_COMPONENTS_65 "README.md", E_DENY},
 	// the walk's bound and the deep chain
 	{"walk", "creat-beyond-walk-bound", A_CREAT, "deep/DEEP70/f", NULL, E_DENY},
 	{"walk", "creat-at-depth-60", A_CREAT, "deep/DEEP58/f", NULL, E_ALLOW},
@@ -693,7 +695,7 @@ static const struct corpus_case corpus[] = {
 	{"short", "creat-short-name", A_CREAT, "apps/AB12CD~1", NULL, E_DENY},
 	{"short", "rename-short-name-dir", A_RENAME, "VSCODE~1", "vscode-long", E_DENY},
 	{"short", "creat-ordinary-under-flag", A_CREAT, "apps/plain", NULL, E_ALLOW},
-	// sockets under --unix-sockets (the `unix` group runs with the flag set)
+	// sockets under unix-socket (the `unix` group runs with the flag set)
 	// A 9p share refuses the bind after the hook, so the cases on the bound socket are POSIX-only.
 	{"unix", "bind-socket-in-workspace-allowed", A_BIND, "apps/s2", NULL, E_ALLOW_POSIX},
 	{"unix", "bind-socket-in-gitdir-refused", A_BIND, ".git/objects/s2", NULL, E_DENY},
@@ -743,7 +745,7 @@ static int bind_at(const char *path)
 	char *slash;
 	int sock, rc, saved;
 
-	snprintf(dir, sizeof(dir), "%s", path);
+	format_or_die(dir, sizeof(dir), "%s", path);
 	slash = strrchr(dir, '/');
 	if (!slash)
 		die("bind: %s has no directory", path);
@@ -759,7 +761,7 @@ static int bind_at(const char *path)
 		errno = saved;
 		return -1;
 	}
-	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", base);
+	format_or_die(addr.sun_path, sizeof(addr.sun_path), "%s", base);
 	rc = bind(sock, (struct sockaddr *)&addr, sizeof(addr));
 	saved = errno;
 	if (chdir(cwd))
@@ -782,7 +784,7 @@ static const char *symlink_target(const char *target)
 
 	if (strncmp(target, "/ABS/", 5))
 		return target;
-	snprintf(path, sizeof(path), "%s/%s", tree, target + 5);
+	format_or_die(path, sizeof(path), "%s/%s", tree, target + 5);
 	return path;
 }
 
@@ -886,10 +888,11 @@ static int present(const char *path);
 // Compares each case's answer with its expectation. `allow` and `deny` (EPERM) must match; `fail`
 // accepts any error.
 //
-// - An answer the share gives instead of the hook is counted separately, whatever the expectation:
-//   a FIFO's EACCES on virtiofs or EOPNOTSUPP on 9p, before any hook ("Every hook on macOS",
-//   FIFO); and, after the hook has allowed, a socket's EOPNOTSUPP and an exchange's EINVAL on 9p
-//   ("Every hook on WSL", share).
+// - An answer the share gives before any hook is counted separately, whatever the expectation: a
+//   FIFO's EACCES on virtiofs ("Every hook on macOS", FIFO).
+// - An answer 9p gives after the hook has allowed is counted separately only for a case that expects
+//   the operation allowed: a FIFO's or a socket's EOPNOTSUPP, and an exchange's EINVAL ("Every hook on
+//   WSL", share). For a case that expects a refusal, that answer means the hook allowed, a mismatch.
 // - A POSIX-only case is skipped on 9p, and so is a refused case whose operand a skipped case would
 //   have made.
 // - The `ptr` group runs on TREE-ptr.
@@ -899,11 +902,11 @@ static int cmd_corpus(const char *group)
 	const char *main_tree = tree;
 	int mismatches = 0, unsupported = 0, run = 0, skipped = 0;
 
-	snprintf(ptr, sizeof(ptr), "%s-ptr", main_tree);
+	format_or_die(ptr, sizeof(ptr), "%s-ptr", main_tree);
 	on_9p = is_9p(main_tree);
 	for (size_t i = 0; i < CORPUS; i++) {
 		const struct corpus_case *item = &corpus[i];
-		int rc, err, allowed, decided, unsupported_here, match, expect_allow;
+		int rc, err, allowed, decided, unsupported_here, match, expect_allow, before_hook, after_hook;
 		const char *got, *verdict;
 
 		if (group && strcmp(group, item->group))
@@ -916,21 +919,21 @@ static int cmd_corpus(const char *group)
 			skipped++;
 			continue;
 		}
+		tree = !strcmp(item->group, "ptr") ? ptr : main_tree;
 		if (!strcmp(item->group, "fifo") && !present(tree_path(item->a))) {
 			printf("case=%s/%s SKIPPED without the host FIFO\n", item->group, item->label);
 			skipped++;
 			continue;
 		}
-		tree = !strcmp(item->group, "ptr") ? ptr : main_tree;
 		expect_allow = item->expect == E_ALLOW || item->expect == E_ALLOW_POSIX;
 		rc = run_action(item->action, item->a, item->b);
 		err = errno;
 		allowed = rc >= 0;
 		decided = allowed || err == EPERM;
-		unsupported_here = !allowed && err != EPERM &&
-				   ((item->action == A_MKFIFO && (err == EACCES || err == EOPNOTSUPP)) ||
-				    (on_9p && item->action == A_BIND && err == EOPNOTSUPP) ||
-				    (on_9p && item->action == A_EXCHANGE && err == EINVAL));
+		before_hook = !on_9p && item->action == A_MKFIFO && (err == EACCES || err == EOPNOTSUPP);
+		after_hook = on_9p && (((item->action == A_MKFIFO || item->action == A_BIND) && err == EOPNOTSUPP) ||
+				       (item->action == A_EXCHANGE && err == EINVAL));
+		unsupported_here = !allowed && err != EPERM && (before_hook || (after_hook && expect_allow));
 		got = allowed ? "allow" : err == EPERM ? "deny" : "error";
 		match = item->expect == E_FAIL ? !allowed : decided && allowed == expect_allow;
 		verdict = match ? "MATCH" : unsupported_here ? "UNSUPPORTED" : "MISMATCH";
@@ -963,7 +966,7 @@ static int parent_present(const char *rel)
 	char parent[8192];
 	char *slash;
 
-	snprintf(parent, sizeof(parent), "%s", tree_path(rel));
+	format_or_die(parent, sizeof(parent), "%s", tree_path(rel));
 	slash = strrchr(parent, '/');
 	if (slash)
 		*slash = 0;
@@ -980,7 +983,7 @@ static int cmd_check(void)
 	const char *main_tree = tree;
 	int gaps = 0, no_fifo = 0;
 
-	snprintf(ptr, sizeof(ptr), "%s-ptr", main_tree);
+	format_or_die(ptr, sizeof(ptr), "%s-ptr", main_tree);
 	on_9p = is_9p(main_tree);
 	for (size_t i = 0; i < CORPUS; i++) {
 		const struct corpus_case *item = &corpus[i];
@@ -999,8 +1002,6 @@ static int cmd_check(void)
 			ok = rc >= 0 || (item->action == A_MKFIFO && (errno == EACCES || errno == EOPNOTSUPP)) ||
 			     (on_9p && ((item->action == A_BIND && errno == EOPNOTSUPP) ||
 					(item->action == A_EXCHANGE && errno == EINVAL)));
-			if (rc >= 0 && item->action == A_BIND)
-				close(rc);
 			if (!ok)
 				printf("check case=%s/%s allowed-case-failed=%s\n", item->group, item->label,
 				       result(-1));
@@ -1061,6 +1062,8 @@ static int cmd_groups(void)
 // Every real position protects `.vscode`. Only a torn name (`node_modules` taken from either pair)
 // or a chain built from two moments would unprotect it. Every write must be refused: EPERM, or
 // ENOENT when the name is moved away. It prints the counts, and `succeeded`, which must be 0.
+// `flips` counts the times a path's answer changed between refused and absent, which only a move of
+// its names causes: it shows that the race ran.
 //
 // On a 9p share no descriptor is held, because a directory with an open handle below it cannot be
 // moved there. Each renamer prints the first error it met, so a share that refuses a move shows
@@ -1114,7 +1117,8 @@ static int cmd_race(int seconds)
 	static const char *const outers[2] = {"outerAAAA", "BBBBouter"};
 	static const char *const inners[2] = {"node_modAAAA", "BBBBBBBBules"};
 	long deadline = ns_now() + seconds * 1000000000L;
-	long writes = 0, refused = 0, absent = 0, succeeded = 0, other = 0;
+	long writes = 0, refused = 0, absent = 0, succeeded = 0, other = 0, flips = 0;
+	int last_answer[4] = {0};
 	pid_t renamers[2];
 	int held[2] = {-1, -1}, status;
 
@@ -1122,7 +1126,7 @@ static int cmd_race(int seconds)
 	for (int k = 0; k < 2 && !on_9p; k++) {
 		char dir[8192];
 
-		snprintf(dir, sizeof(dir), "%s/race/outerAAAA/%s/.vscode", tree, inners[k]);
+		format_or_die(dir, sizeof(dir), "%s/race/outerAAAA/%s/.vscode", tree, inners[k]);
 		held[k] = open(dir, O_RDONLY | O_DIRECTORY);
 		if (held[k] < 0)
 			die("open %s: %s", dir, strerror(errno));
@@ -1141,9 +1145,12 @@ static int cmd_race(int seconds)
 				if (which == 0) {
 					// The inner pair, under whichever outer name holds them now.
 					for (int o = 0; o < 2; o++) {
-						snprintf(a, sizeof(a), "%s/race/%s/%s", tree, outers[o], inners[0]);
-						snprintf(b, sizeof(b), "%s/race/%s/%s", tree, outers[o], inners[1]);
-						snprintf(parked, sizeof(parked), "%s/race/%s/parked", tree, outers[o]);
+						format_or_die(a, sizeof(a), "%s/race/%s/%s", tree, outers[o],
+							      inners[0]);
+						format_or_die(b, sizeof(b), "%s/race/%s/%s", tree, outers[o],
+							      inners[1]);
+						format_or_die(parked, sizeof(parked), "%s/race/%s/parked", tree,
+							      outers[o]);
 						if (!rename(a, parked))
 							count++;
 						else if (!first_error && errno != ENOENT)
@@ -1157,15 +1164,18 @@ static int cmd_race(int seconds)
 					}
 				} else {
 					// The outer directory, by rename over its empty placeholder and back,
-					// and by exchange where the share has it.
-					snprintf(a, sizeof(a), "%s/race/%s", tree, outers[0]);
-					snprintf(b, sizeof(b), "%s/race/%s", tree, outers[1]);
+					// and by exchange with the placeholder where the share has it. The
+					// rename back leaves no placeholder, so it is made again first.
+					format_or_die(a, sizeof(a), "%s/race/%s", tree, outers[0]);
+					format_or_die(b, sizeof(b), "%s/race/%s", tree, outers[1]);
 					if (!rename(a, b))
 						count++;
 					else if (!first_error && errno != ENOENT)
 						first_error = errno;
 					if (!rename(b, a))
 						count++;
+					if (mkdir(b, 0755) && errno != EEXIST && !first_error)
+						first_error = errno;
 					if (!exchange(a, b))
 						exchanges++;
 					if (!exchange(a, b))
@@ -1183,10 +1193,18 @@ static int cmd_race(int seconds)
 			for (int i = 0; i < 2; i++) {
 				char path[8192];
 
-				snprintf(path, sizeof(path), "%s/race/%s/%s/.vscode/tasks.json", tree, outers[o],
+				format_or_die(path, sizeof(path), "%s/race/%s/%s/.vscode/tasks.json", tree, outers[o],
 					 inners[i]);
-				race_write(path, 0, &writes, &refused, &absent, &succeeded, &other);
-				snprintf(path, sizeof(path), "%s/race/%s/%s/.vscode/new.json", tree, outers[o],
+				if (!race_write(path, 0, &writes, &refused, &absent, &succeeded, &other)) {
+					int answer = errno == EPERM ? 1 : errno == ENOENT || errno == ESTALE ? 2 : 0;
+					int *last = &last_answer[o * 2 + i];
+
+					if (answer && *last && answer != *last)
+						flips++;
+					if (answer)
+						*last = answer;
+				}
+				format_or_die(path, sizeof(path), "%s/race/%s/%s/.vscode/new.json", tree, outers[o],
 					 inners[i]);
 				race_write(path, 1, &writes, &refused, &absent, &succeeded, &other);
 			}
@@ -1197,14 +1215,27 @@ static int cmd_race(int seconds)
 	}
 	for (int which = 0; which < 2; which++)
 		waitpid(renamers[which], &status, 0);
-	printf("race writes=%ld refused=%ld absent=%ld other=%ld succeeded=%ld\n", writes, refused, absent, other,
-	       succeeded);
+	printf("race writes=%ld refused=%ld absent=%ld other=%ld succeeded=%ld flips=%ld\n", writes, refused, absent,
+	       other, succeeded, flips);
 	return succeeded ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------------------------
 // The concurrency storm
 // ---------------------------------------------------------------------------------------------
+
+// Whether an open that must be refused was: EPERM. An open that succeeds is closed, so the storm's
+// loop leaks no descriptor.
+static int refused_open(const char *path, int flags)
+{
+	int fd = open(path, flags, 0644);
+
+	if (fd >= 0) {
+		close(fd);
+		return 1;
+	}
+	return errno != EPERM;
+}
 
 // Each process loops over operations whose answer is fixed: permitted ones in its own directory
 // under `storm/`, and refused ones on the guarded names. It prints, per process, the decisions and
@@ -1215,19 +1246,19 @@ static int storm_process(int id, long deadline)
 	char deny1[8192], deny2[8192], deny3[8192], deny4[8192], deny5[8192];
 	long decisions = 0, wrong = 0;
 
-	snprintf(own, sizeof(own), "%s/storm/p%d", tree, id);
+	format_or_die(own, sizeof(own), "%s/storm/p%d", tree, id);
 	if (mkdir(own, 0755) && errno != EEXIST)
 		die("mkdir %s: %s", own, strerror(errno));
-	snprintf(f1, sizeof(f1), "%s/f1", own);
-	snprintf(f2, sizeof(f2), "%s/f2", own);
-	snprintf(d1, sizeof(d1), "%s/d1", own);
-	snprintf(l1, sizeof(l1), "%s/l1", own);
-	snprintf(s1, sizeof(s1), "%s/s1", own);
-	snprintf(deny1, sizeof(deny1), "%s/.git/hooks/storm%d", tree, id);
-	snprintf(deny2, sizeof(deny2), "%s/.vscode/storm%d.json", tree, id);
-	snprintf(deny3, sizeof(deny3), "%s/storm/p%d/.git", tree, id);
-	snprintf(deny4, sizeof(deny4), "%s/.git/config", tree);
-	snprintf(deny5, sizeof(deny5), "%s/.git/hooks/pre-commit", tree);
+	format_or_die(f1, sizeof(f1), "%s/f1", own);
+	format_or_die(f2, sizeof(f2), "%s/f2", own);
+	format_or_die(d1, sizeof(d1), "%s/d1", own);
+	format_or_die(l1, sizeof(l1), "%s/l1", own);
+	format_or_die(s1, sizeof(s1), "%s/s1", own);
+	format_or_die(deny1, sizeof(deny1), "%s/.git/hooks/storm%d", tree, id);
+	format_or_die(deny2, sizeof(deny2), "%s/.vscode/storm%d.json", tree, id);
+	format_or_die(deny3, sizeof(deny3), "%s/storm/p%d/.git", tree, id);
+	format_or_die(deny4, sizeof(deny4), "%s/.git/config", tree);
+	format_or_die(deny5, sizeof(deny5), "%s/.git/hooks/pre-commit", tree);
 	while (ns_now() < deadline) {
 		int fd;
 
@@ -1253,21 +1284,22 @@ static int storm_process(int id, long deadline)
 		decisions++;
 		if (chmod(f2, 0600))
 			wrong++;
-		decisions++;
-		if (unlink(l1) || unlink(s1) || unlink(f2) || rmdir(d1))
-			wrong++;
+		// Each removal runs whatever the one before answered, so a failure does not carry into the
+		// next iteration's creations.
+		decisions += 4;
+		wrong += !!unlink(l1) + !!unlink(s1) + !!unlink(f2) + !!rmdir(d1);
 		// Refused, each must answer EPERM.
 		decisions++;
-		if (open(deny1, O_CREAT | O_WRONLY, 0644) >= 0 || errno != EPERM)
+		if (refused_open(deny1, O_CREAT | O_WRONLY))
 			wrong++;
 		decisions++;
-		if (open(deny2, O_CREAT | O_WRONLY, 0644) >= 0 || errno != EPERM)
+		if (refused_open(deny2, O_CREAT | O_WRONLY))
 			wrong++;
 		decisions++;
-		if (open(deny3, O_CREAT | O_WRONLY, 0644) >= 0 || errno != EPERM)
+		if (refused_open(deny3, O_CREAT | O_WRONLY))
 			wrong++;
 		decisions++;
-		if (open(deny4, O_WRONLY) >= 0 || errno != EPERM)
+		if (refused_open(deny4, O_WRONLY))
 			wrong++;
 		decisions++;
 		if (link(deny5, f1) == 0 || errno != EPERM)
@@ -1337,7 +1369,7 @@ static int connect_at(const char *path)
 	char *slash;
 	int sock, rc, saved;
 
-	snprintf(dir, sizeof(dir), "%s", path);
+	format_or_die(dir, sizeof(dir), "%s", path);
 	slash = strrchr(dir, '/');
 	if (!slash)
 		die("connect: %s has no directory", path);
@@ -1352,7 +1384,7 @@ static int connect_at(const char *path)
 		errno = saved;
 		return -1;
 	}
-	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", base);
+	format_or_die(addr.sun_path, sizeof(addr.sun_path), "%s", base);
 	rc = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
 	saved = errno;
 	if (chdir(cwd))
@@ -1516,20 +1548,20 @@ static int cmd_receive(const char *sock_path, int argc, char **argv)
 		char action[256], name[256];
 		int index = -1, rc = -1, fd;
 
-		snprintf(action, sizeof(action), "%s", argv[i]);
+		format_or_die(action, sizeof(action), "%s", argv[i]);
 		name[0] = 0;
-		if (sscanf(action, "write:%d", &index) == 1 && index < count) {
+		if (sscanf(action, "write:%d", &index) == 1 && index >= 0 && index < count) {
 			rc = write(received[index], "x", 1);
-		} else if (sscanf(action, "openat:%d:%255s", &index, name) == 2 && index < count) {
+		} else if (sscanf(action, "openat:%d:%255s", &index, name) == 2 && index >= 0 && index < count) {
 			fd = openat(received[index], name, O_CREAT | O_WRONLY, 0644);
 			rc = fd;
 			if (fd >= 0)
 				close(fd);
-		} else if (sscanf(action, "unlinkat:%d:%255s", &index, name) == 2 && index < count) {
+		} else if (sscanf(action, "unlinkat:%d:%255s", &index, name) == 2 && index >= 0 && index < count) {
 			rc = unlinkat(received[index], name, 0);
-		} else if (sscanf(action, "mkdirat:%d:%255s", &index, name) == 2 && index < count) {
+		} else if (sscanf(action, "mkdirat:%d:%255s", &index, name) == 2 && index >= 0 && index < count) {
 			rc = mkdirat(received[index], name, 0755);
-		} else if (sscanf(action, "reopen:%d", &index) == 1 && index < count) {
+		} else if (sscanf(action, "reopen:%d", &index) == 1 && index >= 0 && index < count) {
 			char proc[64];
 
 			snprintf(proc, sizeof(proc), "/proc/self/fd/%d", received[index]);
@@ -1648,6 +1680,8 @@ static int cmd_walk_cost(const char *path, int count)
 	struct stat st;
 	int failed = 0;
 
+	if (count <= 0)
+		die("walk-cost: the count is %d", count);
 	start = ns_now();
 	for (int i = 0; i < count; i++) {
 		int fd = open(path, O_RDWR);

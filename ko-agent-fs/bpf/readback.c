@@ -8,7 +8,8 @@
 //
 // It also records the installed object's tags, once per installation and kernel; checks pinned
 // programs before a restart reuses them ("Lifecycle", 5); and checks the preloaded set before a
-// launch takes it. Exit status 1 is a difference; 2 is a failure.
+// launch takes it. Exit status 1 is a difference; 2 is a failure; 3 is a refusal (`refused
+// reason=...`), as of a cgroup outside the user's slice.
 //
 //   readback tags OBJ OUT             load OBJ, beside this binary, and write each program's name,
 //                                     hook and tag, and the read-only data map's bytes, to OUT, under
@@ -39,6 +40,7 @@
 
 #define PROGRAM_NAME "readback"
 #include "backend.h"
+#include "loader.h"
 
 #define MAX_MAPS 32
 
@@ -60,9 +62,12 @@ struct tags {
 	unsigned char rodata[RODATA_MAX];
 };
 
+// The object's read-only data map. The type matters beyond the name: a lookup in a per-CPU map
+// copies one value per possible CPU, more than read_rodata's buffer holds.
 static bool is_rodata(const struct bpf_map_info *info)
 {
-	return strstr(info->name, "rodata") && (info->map_flags & BPF_F_RDONLY_PROG);
+	return info->type == BPF_MAP_TYPE_ARRAY && strstr(info->name, "rodata") &&
+	       (info->map_flags & BPF_F_RDONLY_PROG);
 }
 
 // Reads the single value of a read-only data map into `out`, and returns its size.
@@ -86,18 +91,6 @@ static const char *kernel_release(void)
 	return uts.release;
 }
 
-static struct btf *vmlinux_btf(void)
-{
-	static struct btf *btf;
-
-	if (!btf) {
-		btf = btf__load_vmlinux_btf();
-		if (!btf)
-			die("vmlinux BTF: %s", strerror(errno));
-	}
-	return btf;
-}
-
 // The BTF id of a hook's attach point, `bpf_lsm_<hook>`, which is what a program's attach_btf_id
 // names.
 static __u32 hook_btf_id(const char *hook)
@@ -105,7 +98,7 @@ static __u32 hook_btf_id(const char *hook)
 	char name[128];
 	__s32 id;
 
-	snprintf(name, sizeof(name), "bpf_lsm_%s", hook);
+	format_or_die(name, sizeof(name), "bpf_lsm_%s", hook);
 	id = btf__find_by_name_kind(vmlinux_btf(), name, BTF_KIND_FUNC);
 	if (id < 0)
 		die("no %s in the kernel's BTF", name);
@@ -114,32 +107,29 @@ static __u32 hook_btf_id(const char *hook)
 
 // --- tags -----------------------------------------------------------------------------------------
 
+// The tags go to a new file beside OUT, renamed onto it once whole: a launch that reads OUT meanwhile
+// finds the old tags or the new ones, and a failed write leaves the old ones.
 static int cmd_tags(const char *name, const char *out_path)
 {
-	char exe[PATH_MAX], path[PATH_MAX];
-	ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+	char path[PATH_MAX], staging[PATH_MAX];
 	struct bpf_object *obj;
 	struct bpf_program *prog;
 	struct bpf_map *map;
 	FILE *out;
 	double start;
-	int count = 0, rodata_maps = 0;
+	int count = 0, rodata_maps = 0, staging_fd;
 
-	if (len < 0)
-		die("readlink /proc/self/exe: %s", strerror(errno));
-	exe[len] = 0;
-	if (strchr(name, '/'))
-		die("the object is named, not pathed: %s", name);
-	snprintf(path, sizeof(path), "%s/%s", dirname(exe), name);
+	object_path(name, path, sizeof(path));
 	obj = bpf_object__open_file(path, NULL);
 	if (!obj)
 		die("open %s: %s", path, strerror(errno));
 	start = now_ms();
 	if (bpf_object__load(obj))
 		die("load %s: %s", path, strerror(errno));
-	out = fopen(out_path, "w");
-	if (!out)
-		die("open %s: %s", out_path, strerror(errno));
+	format_or_die(staging, sizeof(staging), "%s.%d", out_path, getpid());
+	staging_fd = open(staging, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
+	if (staging_fd < 0 || !(out = fdopen(staging_fd, "w")))
+		die("open %s: %s", staging, strerror(errno));
 	fprintf(out, "kernel=%s object=%s\n", kernel_release(), name);
 	bpf_object__for_each_map(map, obj) {
 		struct bpf_map_info info = {};
@@ -171,7 +161,10 @@ static int cmd_tags(const char *name, const char *out_path)
 		fprintf(out, "\n");
 		count++;
 	}
-	fclose(out);
+	if (fflush(out) || ferror(out) || fsync(staging_fd) || fclose(out))
+		die("write %s: %s", staging, strerror(errno));
+	if (rename(staging, out_path))
+		die("rename %s to %s: %s", staging, out_path, strerror(errno));
 	printf("tags object=%s programs=%d kernel=%s out=%s ms=%.1f\n", name, count, kernel_release(), out_path,
 	       now_ms() - start);
 	return 0;
@@ -193,21 +186,22 @@ static void read_tags(const char *path, struct tags *tags)
 		if (sscanf(line, "kernel=%127s", tags->kernel) == 1)
 			continue;
 		if (!strncmp(line, "rodata size=", 12)) {
-			const char *hex = strstr(line, "hex=");
+			const char *digits_at = strstr(line, "hex=");
 			size_t digits;
 
-			if (sscanf(line, "rodata size=%u", &tags->rodata_size) != 1 || !hex ||
+			if (sscanf(line, "rodata size=%u", &tags->rodata_size) != 1 || !digits_at ||
 			    tags->rodata_size > RODATA_MAX)
 				die("%s: unexpected line %s", path, line);
-			hex += 4;
-			digits = strspn(hex, "0123456789abcdef");
-			if (digits != 2 * (size_t)tags->rodata_size || (hex[digits] != '\n' && hex[digits] != 0))
+			digits_at += 4;
+			digits = strspn(digits_at, "0123456789abcdef");
+			if (digits != 2 * (size_t)tags->rodata_size ||
+			    (digits_at[digits] != '\n' && digits_at[digits] != 0))
 				die("%s: the read-only data holds %zu hex digits, not %u", path, digits,
 				    2 * tags->rodata_size);
 			for (__u32 i = 0; i < tags->rodata_size; i++) {
 				unsigned byte;
 
-				if (sscanf(hex + 2 * i, "%2x", &byte) != 1)
+				if (sscanf(digits_at + 2 * i, "%2x", &byte) != 1)
 					die("%s: the read-only data is not hex", path);
 				tags->rodata[i] = byte;
 			}
@@ -216,7 +210,8 @@ static void read_tags(const char *path, struct tags *tags)
 		if (tags->count >= (int)POLICY_HOOKS)
 			die("%s: more than %zu programs", path, POLICY_HOOKS);
 		entry = &tags->entries[tags->count];
-		if (sscanf(line, "prog=%63s attach_btf_id=%u tag=%16s", entry->name, &entry->attach_btf_id, hex) != 3)
+		if (sscanf(line, "prog=%63s attach_btf_id=%u tag=%16s", entry->name, &entry->attach_btf_id, hex) != 3 ||
+		    strlen(hex) != 2 * BPF_TAG_SIZE)
 			die("%s: unexpected line %s", path, line);
 		for (int i = 0; i < BPF_TAG_SIZE; i++) {
 			unsigned byte;
@@ -235,7 +230,7 @@ static void read_tags(const char *path, struct tags *tags)
 // --- verify -----------------------------------------------------------------------------------------
 
 // Prints a difference, and returns the verdict.
-static int differ(const char *what, const char *format, ...)
+__attribute__((format(printf, 2, 3))) static int differ(const char *what, const char *format, ...)
 {
 	va_list args;
 
@@ -505,8 +500,7 @@ static int verify_programs(int *prog_fds, int count, const struct expectation *e
 
 static int cmd_verify(int argc, char **argv)
 {
-	LIBBPF_OPTS(bpf_prog_query_opts, opts);
-	__u32 ids[64], flags[64];
+	__u32 ids[64], count;
 	int prog_fds[64];
 	struct expectation exp;
 	struct policy policy;
@@ -522,23 +516,13 @@ static int cmd_verify(int argc, char **argv)
 	read_tags(exp.tags_path, &tags);
 	expect_policy(&policy, exp.records, exp.workspace, exp.fixture, exp.volume, exp.flags, exp.no_root);
 	cgroup_fd = open_cgroup(argv[0]);
-	// BPF_PROG_QUERY on the attach cgroup with BPF_LSM_CGROUP lists the programs of all hooks
-	// together. Asking for the ids also needs the attach-flags buffer (kernel/bpf/cgroup.c,
-	// __cgroup_bpf_query).
-	if (bpf_prog_query_opts(cgroup_fd, BPF_LSM_CGROUP, &opts))
-		die("prog query: %s", strerror(errno));
-	if (opts.prog_cnt > 64)
-		die("more than 64 programs");
-	opts.prog_ids = ids;
-	opts.prog_attach_flags = flags;
-	if (opts.prog_cnt && bpf_prog_query_opts(cgroup_fd, BPF_LSM_CGROUP, &opts))
-		die("prog query: %s", strerror(errno));
-	for (__u32 i = 0; i < opts.prog_cnt; i++) {
+	count = attached_programs(cgroup_fd, ids, 64);
+	for (__u32 i = 0; i < count; i++) {
 		prog_fds[i] = bpf_prog_get_fd_by_id(ids[i]);
 		if (prog_fds[i] < 0)
 			die("prog %u: %s", ids[i], strerror(errno));
 	}
-	result = verify_programs(prog_fds, opts.prog_cnt, &exp, &policy, &tags, true, "verify", start);
+	result = verify_programs(prog_fds, count, &exp, &policy, &tags, true, "verify", start);
 	return result ? 1 : 0;
 }
 
@@ -555,14 +539,13 @@ static int cmd_check_pins(int argc, char **argv)
 	parse_expectation(argc - 1, argv + 1, &exp, "check-pins");
 	if (!exp.tags_path || !exp.workspace)
 		die("check-pins: --tags and --workspace are required");
-	if (!relative_beneath(PIN_FS, argv[0]))
-		die("pindir %s is not under %s", argv[0], PIN_FS);
+	require_pin_dir(argv[0]);
 	read_tags(exp.tags_path, &tags);
 	expect_policy(&policy, exp.records, exp.workspace, exp.fixture, exp.volume, exp.flags, exp.no_root);
 	for (int i = 0; i < exp.hook_count; i++) {
 		char pin[PATH_MAX];
 
-		snprintf(pin, sizeof(pin), "%s/progs/%s", argv[0], exp.hooks[i]);
+		format_or_die(pin, sizeof(pin), "%s/progs/%s", argv[0], exp.hooks[i]);
 		prog_fds[i] = bpf_obj_get(pin);
 		if (prog_fds[i] < 0) {
 			printf("check-pins ok=0 reason=missing-pin pin=%s error=%s\n", pin, strerror(errno));
@@ -587,14 +570,13 @@ static int cmd_check_preloaded(int argc, char **argv)
 	parse_expectation(argc - 1, argv + 1, &exp, "check-preloaded");
 	if (!exp.tags_path)
 		die("check-preloaded: --tags is required");
-	if (!relative_beneath(PIN_FS, argv[0]))
-		die("pindir %s is not under %s", argv[0], PIN_FS);
+	require_pin_dir(argv[0]);
 	read_tags(exp.tags_path, &tags);
 	memset(&policy, 0, sizeof(policy));
 	for (int i = 0; i < exp.hook_count; i++) {
 		char pin[PATH_MAX];
 
-		snprintf(pin, sizeof(pin), "%s/progs/%s", argv[0], exp.hooks[i]);
+		format_or_die(pin, sizeof(pin), "%s/progs/%s", argv[0], exp.hooks[i]);
 		prog_fds[i] = bpf_obj_get(pin);
 		if (prog_fds[i] < 0) {
 			printf("check-preloaded ok=0 reason=missing-pin pin=%s error=%s\n", pin, strerror(errno));

@@ -112,8 +112,8 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
         ),
       // ko-agent-fs holds the workspace policy and the FUSE backend, which --build compiles
       // (ko-agent-fs/Containerfile), and the BPF backend (ko-agent-fs/bpf/Containerfile). The self-test image compiles
-      // the suites and the BPF classifier's host build for policy/tests/bpf_equivalence.rs
-      // (ko-agent-self-test/Containerfile).
+      // the suites, the BPF classifier's host build for policy/tests/bpf_equivalence.rs and the BPF policy suite's
+      // exerciser (ko-agent-self-test/Containerfile).
       // ko-agent-egress-proxy holds the proxy's build (the egressProxy subproject) and the Containerfile that compiles
       // it to a native image.
       baseDirectory.value -> Seq("ko-agent-fs", "ko-agent-egress-proxy"),
@@ -139,7 +139,7 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
     // - ko-agent-fs's examples: `cargo test --no-run` in the self-test image compiles them and nothing runs them. The
     //   probes are their only users.
     // - bpf/test, the suites that measure the BPF backend; the self-test image's id digests the whole bpf/ directory.
-    //   bpf/test/host stays, because the self-test image compiles that host build.
+    //   bpf/test/host and the policy suite's exerciser stay, because the self-test image compiles them.
     // - The egress proxy's tests: the proxy's Containerfile runs `sbt dist`, which packages the main sources alone,
     //   and no image runs the suites. They run from a checkout (doc/development.md, "egress-proxy").
     //
@@ -161,7 +161,8 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
       val parts = relative.split("/").toSet
       file.isFile &&
         !unbundled.exists(directory => relative.startsWith(s"$directory/")) &&
-        !(relative.startsWith("ko-agent-fs/bpf/test/") && !relative.startsWith("ko-agent-fs/bpf/test/host/")) &&
+        !(relative.startsWith("ko-agent-fs/bpf/test/") && !relative.startsWith("ko-agent-fs/bpf/test/host/") &&
+          relative != "ko-agent-fs/bpf/test/podman/policy/exercise.c") &&
         !parts.contains("target") &&
         !parts.contains(".scala-build") &&
         !parts.contains(".bsp") &&

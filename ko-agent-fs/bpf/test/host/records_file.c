@@ -17,13 +17,15 @@ typedef int32_t __s32;
 
 static struct records_root roots[ROOTS];
 
+// Reads like backend.h's read_records, which the controller uses, with the error returned rather than
+// fatal and the memory kept for the caller.
 int records_file_read(const char *path, struct records_file *out, char *error, size_t error_bytes)
 {
 	struct records_header header;
 	FILE *file = fopen(path, "rb");
 	size_t rule_bytes, alias_bytes;
-	void *rules, *aliases;
-	struct guarded_path *guarded;
+	void *rules = NULL, *aliases = NULL;
+	struct guarded_path *guarded = NULL;
 
 	if (!file) {
 		snprintf(error, error_bytes, "%s: %s", path, strerror(errno));
@@ -31,17 +33,17 @@ int records_file_read(const char *path, struct records_file *out, char *error, s
 	}
 	if (fread(&header, sizeof(header), 1, file) != 1 || memcmp(header.magic, RECORDS_MAGIC, 8) != 0) {
 		snprintf(error, error_bytes, "%s: not a records file", path);
-		return -1;
+		goto fail;
 	}
 	if (header.layout != RECORDS_LAYOUT) {
 		snprintf(error, error_bytes, "%s: layout %08x, this build reads %08x", path, header.layout,
 			 RECORDS_LAYOUT);
-		return -1;
+		goto fail;
 	}
-	if (header.rule_count > RULE_LINES || header.alias_count > ALIASES || header.root_count > ROOTS) {
+	if (header.rule_count > RULE_LINES || header.alias_count > ALIASES || header.root_count > GUARDED_PATHS) {
 		snprintf(error, error_bytes, "%s: counts %u/%u/%u exceed the policy's bounds", path,
 			 header.rule_count, header.alias_count, header.root_count);
-		return -1;
+		goto fail;
 	}
 	rule_bytes = (size_t)header.rule_count * sizeof(struct rule_line);
 	alias_bytes = (size_t)header.alias_count * sizeof(struct alias_context);
@@ -50,29 +52,33 @@ int records_file_read(const char *path, struct records_file *out, char *error, s
 	guarded = calloc(header.root_count + 1, sizeof(*guarded));
 	if (!rules || !aliases || !guarded) {
 		snprintf(error, error_bytes, "out of memory");
-		return -1;
+		goto fail;
 	}
 	if (fread(rules, 1, rule_bytes, file) != rule_bytes || fread(aliases, 1, alias_bytes, file) != alias_bytes ||
 	    fread(guarded, sizeof(*guarded), header.root_count, file) != header.root_count || fgetc(file) != EOF) {
 		snprintf(error, error_bytes, "%s: its size does not match its counts", path);
-		return -1;
+		goto fail;
 	}
-	fclose(file);
 	for (unsigned i = 0; i < header.root_count; i++) {
 		if (guarded[i].len >= PATH_BYTES || guarded[i].path[guarded[i].len] != 0) {
 			snprintf(error, error_bytes, "%s: guarded path %u is not terminated", path, i);
-			return -1;
+			goto fail;
 		}
 		roots[i].kind = guarded[i].kind;
 		roots[i].path = guarded[i].path;
 	}
+	fclose(file);
 	out->rule_count = header.rule_count;
 	out->alias_count = header.alias_count;
 	out->root_count = header.root_count;
-	out->rule_bytes = sizeof(struct rule_line);
-	out->alias_bytes = sizeof(struct alias_context);
 	out->rules = rules;
 	out->aliases = aliases;
 	out->roots = roots;
 	return 0;
+fail:
+	fclose(file);
+	free(rules);
+	free(aliases);
+	free(guarded);
+	return -1;
 }

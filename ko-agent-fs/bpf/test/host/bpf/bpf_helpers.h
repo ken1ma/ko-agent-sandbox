@@ -11,10 +11,11 @@
 #define __noinline __attribute__((noinline))
 #define barrier_var(var) asm volatile("" : "+r"(var))
 
-/* As in libbpf: `i` takes each value from `start` to `end` - 1 and keeps the last one. So a loop
- * that runs to the end leaves `i` at `end` - 1, not `end`. */
+/* As in libbpf: `i` takes each value from `start` to `end` - 1 and keeps the last one, and the step
+ * checks `i` against the bounds. So a loop that runs to the end leaves `i` at `end` - 1, not `end`. */
 #define bpf_for(i, start, end) \
-	for (int bpf_for_k_ = (int)(start); bpf_for_k_ < (int)(end) && (((i) = bpf_for_k_), 1); bpf_for_k_++)
+	for (int bpf_for_k_ = (int)(start); \
+	     bpf_for_k_ < (int)(end) && ((i) = bpf_for_k_, (i) >= (start) && (i) < (end)); bpf_for_k_++)
 
 void *bpf_map_lookup_elem(const void *map, const void *key);
 long bpf_probe_read_kernel(void *dst, __u32 size, const void *src);

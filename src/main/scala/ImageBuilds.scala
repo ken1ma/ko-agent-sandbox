@@ -49,9 +49,15 @@ object ImageBuilds:
     System.err.println(s"build context: $root")
     root
 
-  /** `--build` (README.md has what it builds and removes). */
-  def build(os: Os): Nothing =
+  /** `--build` (README.md has what it builds and removes). `noBpf` is KoAgentBpf.NoBpfOption, given. */
+  def build(os: Os, noBpf: Boolean): Nothing =
     withImageBuildLock(os): journal =>
+      // The BPF backend builds on the podman machines alone: native Linux has only the FUSE backend (doc/TODO.md,
+      // "The BPF backend's later versions"), and the build reads the machine's kernel BTF. The checks run before
+      // the context is unpacked, so a refusal leaves nothing behind.
+      val buildBpfBackend = os != Os.Linux && !noBpf
+      if buildBpfBackend then requireBpfBuildPossible(os)
+      if noBpf then System.err.println(KoAgentBpf.NoBpfNote)
       val context = unpackBuildContext()
       val fsSourceId = koAgentFsSourceId(context)
       val selfTestSourceId = contextSourceId(context, "ko-agent-self-test")
@@ -63,11 +69,7 @@ object ImageBuilds:
         contextSourceId(context, "debian-temurin"),
         contextSourceId(context, "debian-coursier"),
       )
-      // The BPF backend builds on the podman machines alone: native Linux has only the FUSE backend (doc/TODO.md,
-      // "The BPF backend's later versions"), and the build reads the machine's kernel BTF. A machine that
-      // lacks what the BPF backend needs gets the FUSE backend's build alone.
       val bpfBackendSourceId = KoAgentBpf.sourceId(context)
-      val buildBpfBackend = os != Os.Linux && bpfBuildPossible(os)
       val bpfBackendCommands =
         if !buildBpfBackend then Vector.empty
         else KoAgentBpf.buildCommands(podman, KoAgentBpf.machineKernel(podman), bpfBackendSourceId)
@@ -85,9 +87,9 @@ object ImageBuilds:
         imageIdsForTags(existingTags, images),
         staleBaseTags,
       )
-      // The backend builds after the rest, and its failure is not fatal. A kernel that the checks above
-      // cannot tell apart, one lacking a BPF feature the program uses, fails the backend's build, and
-      // `fuse` needs none of it.
+      // The backend builds after the rest, and its failure ends the build only once the rest is installed. A kernel
+      // that the checks above cannot tell apart, one lacking a BPF feature the program uses, fails the backend's
+      // build, and `fuse` needs none of it.
       val bpfBuildFailure =
         runBuilds(context, remoteImagePullCommands(podman, remoteImages) ++ commands, optional = bpfBackendCommands)
       verifyBuiltBundleLabels(Seq(
@@ -98,9 +100,9 @@ object ImageBuilds:
       // The profile installs before the backend, because the backend's launches need this build's
       // attribute rules (SeccompProfile.AttributeSyscalls).
       SeccompProfile.install(podman, os, SandboxImage)
-      if buildBpfBackend then
-        bpfBuildFailure.toLeft(()).flatMap(_ => KoAgentBpf.installKoAgentBpf(podman, os, bpfBackendSourceId))
-          .left.foreach(reason => warn(KoAgentBpf.buildFailedNote(reason, os)))
+      val bpfFailure = Option.when(buildBpfBackend)(
+        bpfBuildFailure.toLeft(()).flatMap(_ => KoAgentBpf.installKoAgentBpf(podman, os, bpfBackendSourceId)),
+      ).flatMap(_.left.toOption)
       installKoAgentFs(podman, os, fsSourceId)
       val (candidates, staleTags) = includeStaleSelfTestCleanup(
         podman,
@@ -118,18 +120,18 @@ object ImageBuilds:
         staleTags,
       )
       writeImageCleanupJournal(journal, remaining)
+      bpfFailure.foreach(reason => fail(KoAgentBpf.buildFailedError(reason, os)))
     sys.exit(0)
 
   /**
-   * Whether the machine can build the BPF backend, saying why not when it cannot. A probe that does not
-   * answer fails the build, which needs the machine anyway.
+   * Refuses the build where the machine cannot build the BPF backend, saying why. A probe that does not answer fails
+   * the build, which needs the machine anyway.
    */
-  private def bpfBuildPossible(os: Os): Boolean =
+  private def requireBpfBuildPossible(os: Os): Unit =
     val probed = run(koAgentFsScriptCommand(podman, os, KoAgentBpf.checksScript("/"))*)
     if !probed.ok then fail(s"error: the machine did not answer the BPF backend's checks\n${probed.err}")
     val failures = KoAgentBpf.buildFailures(KoAgentBpf.parseFacts(probed.text), os)
-    if failures.nonEmpty then System.err.println(KoAgentBpf.buildSkippedNote(failures))
-    failures.isEmpty
+    if failures.nonEmpty then fail(KoAgentBpf.buildRefusal(failures))
 
   /** `--update` (README.md has what it rebuilds). */
   def update(os: Os): Nothing =
@@ -349,12 +351,11 @@ object ImageBuilds:
    *
    * `--network=none`, because no case reaches a host and nothing is fetched at this point.
    */
-  def selfTestRunCommand(podman: String, filter: Option[String], asRoot: Boolean): Vector[String] =
+  def selfTestRunCommand(podman: String, asRoot: Boolean): Vector[String] =
     Vector(podman, "run", "--rm", "--pull=never", "--network=none", "--device", "/dev/fuse",
       "--cap-add", "SYS_ADMIN")
       ++ (if asRoot then Vector("--user", "0") else Vector.empty)
       ++ Vector(SelfTestImage)
-      ++ filter.toVector
 
   /**
    * The exit code for a self-test that failed before its behavioral checks began, as against one of
@@ -366,6 +367,14 @@ object ImageBuilds:
    * - main.rs spells the code SELF_TEST_SETUP_EXIT, and a test holds the two together.
    */
   val SelfTestSetupExit = 3
+
+  /**
+   * One row of `--self-test`'s summary, in the columns of the suite script's rows
+   * (ko-agent-self-test/ko-agent-fs-suite, `summary`), so the BPF corpus rows and the share rows line up below them.
+   * The label column holds the longest label, the corpus's under `short-names,unix-socket`.
+   */
+  def selfTestRow(verdict: String, label: String, detail: String): Unit =
+    System.err.println(f"  $verdict%-4s  $label%-58s $detail")
 
   /**
    * `--no-cache`, because new agent releases arrive through RUN steps whose inputs look unchanged to
@@ -470,10 +479,17 @@ object ImageBuilds:
    * - The action pulls nothing. The action's only remote source is the Rust image that --build pulls to compile
    *   the ko-agent-fs binaries that ship, and verifying against that same image is the point. The test "self-test
    *   builds refresh no remote source of their own" holds that.
-   * - A successful run without a case filter also measures the host share through SelfTestShare,
-   *   which owns its scratch directory and cleanup.
+   * - After the suites, the action runs the BPF backend's corpus on macOS and Windows (BpfSelfTest), whatever
+   *   the suites' result, since the corpus uses nothing of the FUSE backend. It then measures the host share
+   *   through SelfTestShare, once the suites passed, since the share rows mount the FUSE backend. Each part owns
+   *   its scratch directory and cleanup, and the action fails when any part fails.
+   * - Without `noBpf` (KoAgentBpf.NoBpfOption), the action first checks the installed BPF backend, so a
+   *   machine without one fails before the image builds rather than after the suites.
    * - The sandbox image is a precondition rather than an artifact to build here: verifying is not the
    *   command that decides which agent image a user runs.
+   * - Unlike the builds, the action echoes none of the containers it runs, since each part reports its rows. What
+   *   a killed run leaves is removed without the commands: each container has `--rm`, the share probe's name is in
+   *   --reset-all's sweep, and the BPF corpus's next run or the next launch's reconcile removes its policy.
    *
    * An unprivileged uid mounting through the setuid `fusermount3` is the route a session takes, and
    * the image runs as its `nonroot` user for exactly that reason.
@@ -482,10 +498,8 @@ object ImageBuilds:
    * - The FUSE backend reports what failed in the setup, and this launcher passes the report on unchanged.
    *   Only a setup failure reaches the retry, because a failed check exits with its own status.
    */
-  def selfTest(os: Os, operands: List[String]): Nothing =
-    if operands.sizeIs > 1 then
-      fail("error: --self-test takes at most one operand, a test-name filter")
-    val filter = operands.headOption.filter(_.nonEmpty)
+  def selfTest(os: Os, noBpf: Boolean): Nothing =
+    val runsBpfCorpus = os != Os.Linux
 
     if !runOk(podman, "image", "exists", SandboxImage) then
       fail(
@@ -493,6 +507,7 @@ object ImageBuilds:
           |
           |Run --build first; --self-test then layers its suites on top of it.""".stripMargin,
     )
+    if runsBpfCorpus && !noBpf then BpfSelfTest.requireInstalled(podman, os)
 
     withImageBuildLock(os): journal =>
       val context = unpackBuildContext()
@@ -538,14 +553,14 @@ object ImageBuilds:
       writeImageCleanupJournal(journal, remaining)
 
     System.err.println(s"machine: ${os.toString.toLowerCase(java.util.Locale.ROOT)}, ${podmanVersion()}")
-    // After the container suites come the share rows, which those suites cannot reach (SelfTestShare).
-    // A filter skips the share rows: the filter selects crate cases, and the one-case loop stays fast.
+    // After the container suites come the BPF backend's corpus and the share rows, which those suites cannot reach
+    // (BpfSelfTest, SelfTestShare).
     def finish(suiteExit: Int): Nothing =
-      if suiteExit != 0 || filter.isDefined then sys.exit(suiteExit)
-      sys.exit(SelfTestShare.shareRows(podman, os, resolveWorkspaceRoot(os)))
+      val corpusExit = if runsBpfCorpus then BpfSelfTest.corpusRows(podman, os, noBpf) else 0
+      val shareExit = if suiteExit == 0 then SelfTestShare.shareRows(podman, os, resolveWorkspaceRoot(os)) else 0
+      sys.exit(Vector(suiteExit, corpusExit, shareExit).find(_ != 0).getOrElse(0))
 
-    val unprivileged = selfTestRunCommand(podman, filter, asRoot = false)
-    echoCommand(unprivileged)
+    val unprivileged = selfTestRunCommand(podman, asRoot = false)
     val exit = ProcessBuilder(unprivileged*).inheritIO().start().waitFor()
     if exit != SelfTestSetupExit then finish(exit)
 
@@ -556,6 +571,5 @@ object ImageBuilds:
         "  route a session takes, which is worth recording with its machine\n" +
         "  (ko-agent-fs/fuse/doc/verification-log.md).",
     )
-    val privileged = selfTestRunCommand(podman, filter, asRoot = true)
-    echoCommand(privileged)
+    val privileged = selfTestRunCommand(podman, asRoot = true)
     finish(ProcessBuilder(privileged*).inheritIO().start().waitFor())

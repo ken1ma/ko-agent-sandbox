@@ -6,6 +6,10 @@
 # as the other suites' drivers do. The same image is the container the rows run in, because the rows
 # need git.
 #
+# The policy is attached by the shipped controller, from records the shipped fixture writes, and read
+# back by the shipped read-back, so the corpus runs against maps filled as a launch fills them. They
+# take the hardening of ko-agent-fs/bpf/Containerfile. inspect reads the program's own maps.
+#
 # vmlinux.h is generated from the kernel this build runs on: the machine's kernel, which the
 # programs attach to. The CO-RE relocations in the object would also let the programs load on the
 # other machine's kernel. The controller and the exerciser are static, and they run both in the
@@ -21,7 +25,7 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY policy.bpf.c controller.c exercise.c ./
+COPY policy.bpf.c records.h backend.h loader.h controller.c readback.c fixture.c inspect.c exercise.c ./
 
 # The step below reads the kernel's BTF, which podman does not see as a build input. A cached layer
 # would then outlive a kernel upgrade, so the driver passes the machine's `uname -r` here as part of
@@ -38,9 +42,18 @@ RUN set -eux; \
         -c policy.bpf.c -o /out/policy.bpf.o; \
     llvm-objdump-19 -d --no-show-raw-insn /out/policy.bpf.o > /out/policy.bpf.asm; \
     sha256sum /out/policy.bpf.o >> /out/objects.sha256; \
-    clang-19 -O2 -Wall -Werror -static -o /out/controller controller.c -lbpf -lelf -lz -lzstd; \
-    clang-19 -O2 -Wall -Werror -static -o /out/exercise exercise.c; \
-    for bin in controller exercise; do \
+    case "$(uname -m)" in \
+        aarch64) branch=-mbranch-protection=standard ;; \
+        x86_64) branch=-fcf-protection ;; \
+        *) echo "no branch protection flag for $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    hardening="-D_FORTIFY_SOURCE=3 -fstack-protector-strong -fstack-clash-protection $branch -static-pie"; \
+    clang-19 -O2 -Wall -Werror $hardening -I. -o /out/controller controller.c -lbpf -lelf -lz -lzstd; \
+    clang-19 -O2 -Wall -Werror $hardening -I. -o /out/readback readback.c -lbpf -lelf -lz -lzstd; \
+    clang-19 -O2 -Wall -Werror $hardening -I. -o /out/fixture fixture.c; \
+    clang-19 -O2 -Wall -Werror -static -I. -o /out/inspect inspect.c -lbpf -lelf -lz -lzstd; \
+    clang-19 -O2 -Wall -Werror -static -I. -o /out/exercise exercise.c; \
+    for bin in controller readback fixture inspect exercise; do \
         ldd /out/$bin 2>&1 | grep -q "statically linked\|not a dynamic executable"; \
     done; \
     uname -r > /out/build-kernel.txt

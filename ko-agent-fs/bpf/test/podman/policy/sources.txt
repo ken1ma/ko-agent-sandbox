@@ -1,4 +1,10 @@
 ../../../policy.bpf.c
-controller.c
+../../../../policy/include/records.h
+../../../backend.h
+../../../loader.h
+../../../controller.c
+../../../readback.c
+../../../fixture.c
+inspect.c
 exercise.c
 Containerfile

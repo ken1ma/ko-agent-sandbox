@@ -2,8 +2,8 @@
 # Build ko-agent-self-test
 # ---------------------------------------------------------------------------
 #
-# The launcher's `--self-test` runs the ko-agent-fs workspace's suites in this container
-# (`ko-agent-fs/doc/testing.md`).
+# The launcher's `--self-test` runs the ko-agent-fs workspace's suites in this container, and the BPF backend's corpus
+# in containers of this image (`ko-agent-fs/doc/testing.md`).
 # - The suites' mounted half needs /dev/fuse and CAP_SYS_ADMIN, which no image build has, so the suites compile here
 #   and run later. `--no-run` in the builder means that verification compiles nothing and fetches nothing.
 # - The launcher's `--self-test` also builds the image (ImageBuilds.selfTestBuildCommands).
@@ -74,9 +74,16 @@ RUN --mount=type=cache,target=/build/target \
 # and the sources are. KO_AGENT_FS_POLICY_HOST below names it to the test, since the test's own build looks for the
 # sources beside the package, and the runtime image lacks them.
 RUN set -eux; \
-    cc -std=gnu17 -O1 -Wall -I /build/bpf/test/host -I /build/policy/include -o /suite/policy-host \
+    cc -std=gnu17 -O1 -Wall -Werror -I /build/bpf/test/host -I /build/policy/include -o /suite/policy-host \
         /build/bpf/test/host/policy_host.c /build/bpf/test/host/records_file.c; \
     test -x /suite/policy-host
+
+# The policy suite's exerciser, which runs the BPF backend's corpus (ImageBuilds.selfTest, BpfSelfTest.scala). It is
+# static, as the suite builds it, so the container's libc plays no part in a syscall's answer.
+RUN set -eux; \
+    cc -std=gnu17 -O2 -Wall -Werror -static -I /build/bpf -I /build/policy/include -o /suite/exercise \
+        /build/bpf/test/podman/policy/exercise.c; \
+    /suite/exercise groups > /dev/null
 
 
 # The base is the sandbox image for two reasons beyond convenience: it is already on the user's machine, so verifying

@@ -1,7 +1,7 @@
 // The benchmark suite of ko-agent-fs/bpf/doc/evidence.md: the program's own counters, read from the
 // stats map that the session's programs share. The counters are zeroed before each measured
 // workload and read after it, so each workload's figure comes with the number of calls each hook
-// judged and the time the program took in them. The policy suite's controller has the same two
+// judged and the time the program took in them. The policy suite's inspect.c has the same two
 // commands. The launcher's controller (ko-agent-fs/bpf/controller.c) does not, since no launch
 // reads the counters.
 //

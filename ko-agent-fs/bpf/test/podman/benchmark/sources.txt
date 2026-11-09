@@ -1,6 +1,7 @@
 ../../../policy.bpf.c
 ../../../../policy/include/records.h
 ../../../backend.h
+../../../loader.h
 ../../../controller.c
 ../../../readback.c
 ../../../fixture.c

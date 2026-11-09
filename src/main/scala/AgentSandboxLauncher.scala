@@ -1033,6 +1033,22 @@ object AgentSandboxLauncher:
   val EgressEffectiveReads: Set[String] = Set("--egress", ModelProviderOption, "--egress-cred", ProxyImageOption)
   val EgressCheckReads: Set[String] = EgressEffectiveReads - "--egress-cred"
 
+  /**
+   * Whether KoAgentBpf.NoBpfOption is among an action's operands, which take nothing else. Native Linux refuses the
+   * option, since it has only the FUSE backend and the option would select nothing.
+   */
+  def noBpfOperand(action: String, operands: List[String], os: Os): Either[String, Boolean] =
+    val (stated, others) = operands.partition(_ == KoAgentBpf.NoBpfOption)
+    if stated.sizeIs > 1 then Left(s"error: $action: ${KoAgentBpf.NoBpfOption} is given twice")
+    else if stated.nonEmpty && os == Os.Linux then
+      Left(
+        s"error: $action: native Linux has only the FUSE backend, so ${KoAgentBpf.NoBpfOption} selects nothing; " +
+          "drop it",
+      )
+    else if others.nonEmpty && os == Os.Linux then Left(s"error: $action takes no argument")
+    else if others.nonEmpty then Left(s"error: $action takes no argument other than ${KoAgentBpf.NoBpfOption}")
+    else Right(stated.nonEmpty)
+
   private def launcherMain(args: Array[String]): Unit =
     replacedVariablesRefusal(name => Option(System.getenv(name)), inSandboxSession(currentOs)).foreach(fail(_))
 
@@ -1061,10 +1077,10 @@ object AgentSandboxLauncher:
 
       case Some(("--build", rest)) =>
         noSessionOptions("--build")
-        if rest.nonEmpty then fail("error: --build takes no further arguments")
+        val noBpf = noBpfOperand("--build", rest, currentOs).fold(fail(_), identity)
         requirePodman(currentOs, buildMemoryHeadroom)
         confirmMemoryForBuilds(currentOs)
-        build(currentOs)
+        build(currentOs, noBpf)
 
       case Some(("--update", rest)) =>
         noSessionOptions("--update")
@@ -1112,8 +1128,9 @@ object AgentSandboxLauncher:
 
       case Some(("--self-test", rest)) =>
         noSessionOptions("--self-test")
+        val noBpf = noBpfOperand("--self-test", rest, currentOs).fold(fail(_), identity)
         requirePodman(currentOs, buildMemoryHeadroom)
-        selfTest(currentOs, rest)
+        selfTest(currentOs, noBpf)
 
       case Some(("--egress-effective", rest)) =>
         refuseGiven("--egress-effective", EgressEffectiveReads)

@@ -101,7 +101,7 @@ class KoAgentBpfTest extends munit.FunSuite:
       )
     finally FileHelper.deleteRecursively(dir)
 
-  test("a build skips the backend on a machine without its kernel prerequisites, and builds it otherwise"):
+  test("a build refuses a machine without the backend's kernel prerequisites unless --no-bpf, and builds it otherwise"):
     val capable = parseFacts("sudo=1\nlsm=lockdown,capability,bpf\ncgroup2=cgroup2fs\nmounted=1\nbtf=1")
     // The build does not require what a launch needs beyond the kernel, the install included.
     assertEquals(buildFailures(capable, Os.Mac), Vector.empty)
@@ -109,19 +109,22 @@ class KoAgentBpfTest extends munit.FunSuite:
     assert(buildFailures(noLsm, Os.Windows).exists(_.contains("wsl --update")), buildFailures(noLsm, Os.Windows))
     val noBtf = parseFacts("sudo=1\nlsm=bpf\ncgroup2=cgroup2fs\nmounted=1\nbtf=0")
     assert(buildFailures(noBtf, Os.Mac).exists(_.contains("/sys/kernel/btf/vmlinux")), buildFailures(noBtf, Os.Mac))
-    assert(buildSkippedNote(buildFailures(noBtf, Os.Mac)).contains("refused until"), "the note says what follows")
-    val skipped = buildSkippedNote(buildFailures(noBtf, Os.Mac))
-    assert(skipped.endsWith("--workspace=...,fuse launches."), "and what still runs")
+    val refusal = buildRefusal(buildFailures(noBtf, Os.Mac))
+    assert(refusal.startsWith("error: ") && refusal.contains("/sys/kernel/btf/vmlinux"), refusal)
+    assert(refusal.endsWith(s"run --build $NoBpfOption."), "the refusal names the consent")
     assert(checksScript("/").contains("btf="), "the probe reports the kernel's BTF")
     // A kernel that passes these checks and still lacks a feature that the program uses fails the
-    // backend's own build or install. The build then warns, names the upgrade, and completes the rest.
-    val failed = buildFailedNote("build failed: podman build -f ko-agent-fs/bpf/Containerfile ko-agent-fs", Os.Windows)
-    assert(failed.contains("rest of the build is complete") && failed.contains("wsl --update"), failed)
+    // backend's own build or install. The build then completes the rest and fails, naming the upgrade.
+    val failed = buildFailedError("build failed: podman build -f ko-agent-fs/bpf/Containerfile ko-agent-fs", Os.Windows)
+    assert(failed.startsWith("error: ") && failed.contains("rest of the build is complete"), failed)
+    assert(failed.contains("wsl --update"), failed)
     assert(
       failed.contains("The backend's build failed: podman build -f ko-agent-fs/bpf/Containerfile ko-agent-fs. "),
       failed,
     )
-    assert(failed.endsWith("--workspace=...,fuse launches."), failed)
+    assert(failed.contains("--workspace=...,fuse sessions can."), failed)
+    assert(failed.endsWith(s"run --build $NoBpfOption."), failed)
+    assert(NoBpfNote.contains("--workspace=...,fuse session starts"), NoBpfNote)
 
   test("the probe reads every requirement, and each failure names what to do"):
     val answer =

@@ -94,7 +94,6 @@ static const char *result(int rc)
 struct rules {
 	struct rule_line lines[RULE_LINES];
 	struct alias_context aliases[ALIASES];
-	char alias_paths[ALIASES][1024];
 	__u32 count;
 	__u32 alias_count;
 };
@@ -106,7 +105,9 @@ static void fold_ascii(char *text)
 			*at += 'a' - 'A';
 }
 
-// policy.rs, `component_matches`: the iterative glob with one backtrack point.
+// policy.rs, `component_matches`: the iterative glob with one backtrack point. The suites write
+// records in place of the guard, so this and child_rule_context compute in C what the guard computes
+// in Rust (../policy/src/bpf_records.rs).
 static bool glob_matches(const char *pattern, const char *name)
 {
 	size_t p = 0, n = 0, star_p = 0, star_n = 0;
@@ -135,10 +136,11 @@ static bool glob_matches(const char *pattern, const char *name)
 	return p == plen;
 }
 
-// policy.rs, `child_rule_context`, as the policy suite's controller computes it: the alias context
-// of a symlink's position, over the lines above it, by their own indices.
+// policy.rs, `child_rule_context`: the alias context of a symlink's position, over the lines above
+// it, by their own indices. The guard's own anchored lines never match here, since the FUSE backend
+// computes a symlink's context without them.
 static void child_rule_context(const struct rule_line *lines, __u32 count, struct alias_context *ctx,
-			       bool parent_is_root, const char *folded)
+			       const char *folded)
 {
 	__u8 next[RULE_LINES] = {};
 	__s32 deciding = ctx->deciding;
@@ -151,16 +153,9 @@ static void child_rule_context(const struct rule_line *lines, __u32 count, struc
 
 		if (rule->anchored)
 			continue;
-		for (int k = 0; k < rule->ncomp; k++) {
-			bool can_start = k == 0 ? (!rule->anchored || parent_is_root) : (was >> k) & 1;
-			bool matched;
-
-			if (!can_start)
-				continue;
-			matched = rule->anchored ? !strcmp(rule->comp[k], folded) : glob_matches(rule->comp[k], folded);
-			if (matched)
+		for (int k = 0; k < rule->ncomp; k++)
+			if ((k == 0 || ((was >> k) & 1)) && glob_matches(rule->comp[k], folded))
 				reached |= 1u << (k + 1);
-		}
 		if (reached & (1u << rule->ncomp)) {
 			if (rule->word == WORD_PINNED)
 				pinned = 1;
@@ -204,8 +199,7 @@ static bool read_records_as_rules(const char *path, struct rules *rules)
 }
 
 // A rule file: `word comp/comp[/comp...] [anchored] [alias=PATH]` per line, ignoring `#` comments
-// and blank lines, as the policy suite reads one (its controller.c, read_rules). Or the guard's
-// records file.
+// and blank lines, as the suites write one (BpfCorpus.scala). Or the guard's records file.
 static void read_rules(const char *path, struct rules *rules)
 {
 	FILE *file;
@@ -262,7 +256,6 @@ static void read_rules(const char *path, struct rules *rules)
 		if (alias_path) {
 			struct alias_context *ctx;
 			char spelled[1024];
-			bool first = true;
 
 			if (rule->word != WORD_PINNED || !anchored)
 				die("%s: alias= belongs to an anchored pinned-path line", path);
@@ -270,13 +263,10 @@ static void read_rules(const char *path, struct rules *rules)
 				die("%s: more than %d aliases", path, ALIASES);
 			ctx = &rules->aliases[rules->alias_count];
 			ctx->deciding = -1;
-			snprintf(rules->alias_paths[rules->alias_count], 1024, "%s", alias_path);
-			snprintf(spelled, sizeof(spelled), "%s", alias_path);
+			format_or_die(spelled, sizeof(spelled), "%s", alias_path);
 			fold_ascii(spelled);
-			for (comp = strtok_r(spelled, "/", &save); comp; comp = strtok_r(NULL, "/", &save)) {
-				child_rule_context(rules->lines, rules->count, ctx, first, comp);
-				first = false;
-			}
+			for (comp = strtok_r(spelled, "/", &save); comp; comp = strtok_r(NULL, "/", &save))
+				child_rule_context(rules->lines, rules->count, ctx, comp);
 			rule->alias = ++rules->alias_count;
 		}
 		rules->count++;
@@ -332,9 +322,23 @@ static int cmd_records(int argc, char **argv)
 	    fwrite(rules.aliases, sizeof(struct alias_context), rules.alias_count, out) != rules.alias_count ||
 	    fwrite(guarded, sizeof(struct guarded_path), guarded_count, out) != guarded_count)
 		die("write %s: %s", argv[1], strerror(errno));
-	fclose(out);
+	if (fclose(out))
+		die("write %s: %s", argv[1], strerror(errno));
 	printf("records out=%s rule_count=%u aliases=%u guarded=%u layout=%08x\n", argv[1], rules.count,
 	       rules.alias_count, guarded_count, RECORDS_LAYOUT);
+	// Each alias context's partial lines, by index, which the policy suite checks against the rule file.
+	for (__u32 a = 0; a < rules.alias_count; a++) {
+		const char *separator = "";
+
+		printf("alias index=%u deciding=%d pinned_path=%u partial_lines=", a + 1, rules.aliases[a].deciding,
+		       rules.aliases[a].pinned_path);
+		for (__u32 line = 0; line < rules.count; line++)
+			if (rules.aliases[a].partial[line]) {
+				printf("%s%u", separator, line);
+				separator = ",";
+			}
+		printf("\n");
+	}
 	return 0;
 }
 
@@ -350,7 +354,7 @@ static const char *at(const char *rel)
 	static int turn;
 	char *path = paths[turn++ % 4];
 
-	snprintf(path, sizeof(paths[0]), "%s/%s", root, rel);
+	format_or_die(path, sizeof(paths[0]), "%s/%s", root, rel);
 	return path;
 }
 
@@ -380,7 +384,7 @@ static void make_dirs(const char *rel)
 {
 	char copy[REL_BYTES];
 
-	snprintf(copy, sizeof(copy), "%s", rel);
+	format_or_die(copy, sizeof(copy), "%s", rel);
 	for (char *slash = copy; *slash; slash++) {
 		if (*slash != '/')
 			continue;
@@ -398,7 +402,7 @@ static void make_file(const char *rel, const char *content)
 	FILE *file;
 	struct stat st;
 
-	snprintf(copy, sizeof(copy), "%s", rel);
+	format_or_die(copy, sizeof(copy), "%s", rel);
 	slash = strrchr(copy, '/');
 	if (slash) {
 		*slash = 0;
@@ -419,11 +423,11 @@ static void concrete_path(const struct rule_line *line, char *out, size_t size)
 	for (int k = 0; k < line->ncomp; k++) {
 		char comp[COMP_BYTES];
 
-		snprintf(comp, sizeof(comp), "%s", line->comp[k]);
+		format_or_die(comp, sizeof(comp), "%s", line->comp[k]);
 		for (char *star = comp; *star; star++)
 			if (*star == '*')
 				*star = 'x';
-		snprintf(out + strlen(out), size - strlen(out), "%s%s", k ? "/" : "", comp);
+		format_or_die(out + strlen(out), size - strlen(out), "%s%s", k ? "/" : "", comp);
 	}
 }
 
@@ -475,9 +479,9 @@ static void pick_name(const struct rules *rules, const char *base, char *out, si
 {
 	for (int n = 0;; n++) {
 		if (n == 0)
-			snprintf(out, size, "%s", base);
+			format_or_die(out, size, "%s", base);
 		else
-			snprintf(out, size, "%s.%d", base, n);
+			format_or_die(out, size, "%s.%d", base, n);
 		if (!record_at_or_below(rules, out))
 			return;
 		if (n == 999)
@@ -492,8 +496,8 @@ static void pick_names(const struct rules *rules, struct names *names)
 	// The directory holding an ordinary file and the `.git` that the per-hook operations try to
 	// make. No record lies below it, so its own entries are free.
 	pick_name(rules, "ko+sub", names->sub, sizeof(names->sub));
-	snprintf(names->sub_ordinary, sizeof(names->sub_ordinary), "%s/ko+ordinary", names->sub);
-	snprintf(names->sub_git, sizeof(names->sub_git), "%s/.git", names->sub);
+	format_or_die(names->sub_ordinary, sizeof(names->sub_ordinary), "%s/ko+ordinary", names->sub);
+	format_or_die(names->sub_git, sizeof(names->sub_git), "%s/.git", names->sub);
 	pick_name(rules, "ko+fifo", names->fifo, sizeof(names->fifo));
 	pick_name(rules, "ko+sock", names->sock, sizeof(names->sock));
 	pick_name(rules, ".git/ko+new", names->git_new, sizeof(names->git_new));
@@ -540,11 +544,11 @@ static int split(const char *rel, char comps[][COMP_BYTES])
 	char copy[REL_BYTES], *save = NULL, *comp;
 	int count = 0;
 
-	snprintf(copy, sizeof(copy), "%s", rel);
+	format_or_die(copy, sizeof(copy), "%s", rel);
 	for (comp = strtok_r(copy, "/", &save); comp; comp = strtok_r(NULL, "/", &save)) {
 		if (count >= MAX_COMPS)
 			die("more than %d components: %s", MAX_COMPS, rel);
-		snprintf(comps[count++], COMP_BYTES, "%s", comp);
+		format_or_die(comps[count++], COMP_BYTES, "%s", comp);
 	}
 	return count;
 }
@@ -651,7 +655,7 @@ static int bind_at(const char *path)
 	char *slash;
 	int sock, rc, saved;
 
-	snprintf(dir, sizeof(dir), "%s", path);
+	format_or_die(dir, sizeof(dir), "%s", path);
 	slash = strrchr(dir, '/');
 	if (!slash)
 		die("bind: %s has no directory", path);
@@ -667,7 +671,7 @@ static int bind_at(const char *path)
 		errno = saved;
 		return -1;
 	}
-	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", base);
+	format_or_die(addr.sun_path, sizeof(addr.sun_path), "%s", base);
 	rc = bind(sock, (struct sockaddr *)&addr, sizeof(addr));
 	saved = errno;
 	if (chdir(cwd))
@@ -811,7 +815,7 @@ static int cmd_run(const char *rules_path, bool unix_socket, bool no_root)
 
 		concrete_path(&rules.lines[i], path, sizeof(path));
 		if (rules.lines[i].word == WORD_PINNED) {
-			snprintf(target, sizeof(target), "%s.moved", path);
+			format_or_die(target, sizeof(target), "%s.moved", path);
 			rc = rename(at(path), at(target));
 			record("rename-pinned", path, "EPERM", result(rc));
 			continue;
@@ -819,10 +823,10 @@ static int cmd_run(const char *rules_path, bool unix_socket, bool no_root)
 		if (has_entry_below(&rules, &names, i, path)) {
 			char probe[REL_BYTES];
 
-			snprintf(probe, sizeof(probe), "%s/ko+probe", path);
+			format_or_die(probe, sizeof(probe), "%s/ko+probe", path);
 			pick_name(&rules, probe, target, sizeof(target));
 		} else {
-			snprintf(target, sizeof(target), "%s", path);
+			format_or_die(target, sizeof(target), "%s", path);
 		}
 		word = decide(&rules, target);
 		try_write(target, word == WORD_WRITABLE ? allowed : "EPERM");
@@ -848,7 +852,7 @@ static int cmd_join(int argc, char **argv)
 
 	if (argc < 2)
 		die("usage: join CGROUP CMD...");
-	snprintf(path, sizeof(path), "%s/cgroup.procs", argv[0]);
+	format_or_die(path, sizeof(path), "%s/cgroup.procs", argv[0]);
 	fd = open(path, O_WRONLY);
 	if (fd < 0)
 		die("open %s: %s", path, strerror(errno));
@@ -899,7 +903,7 @@ int main(int argc, char **argv)
 	if ((!strcmp(argv[1], "make") || !strcmp(argv[1], "run")) && argc >= 4) {
 		bool unix_socket = false, no_root = false, known = true;
 
-		snprintf(root, sizeof(root), "%s", argv[2]);
+		format_or_die(root, sizeof(root), "%s", argv[2]);
 		if (!strcmp(argv[1], "make") && argc == 4)
 			return cmd_make(argv[3]);
 		for (int i = 4; i < argc; i++) {

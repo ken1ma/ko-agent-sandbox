@@ -1,10 +1,8 @@
 #!/bin/sh
 # The launcher's `--self-test` runs this script inside the self-test image (ko-agent-fs/doc/testing.md).
-# The script takes one optional argument, a test-name filter that it hands to every suite.
 set -eu
 
 suite=/opt/ko-agent-fs-suite
-filter=${1:-}
 
 echo "machine: $(uname -srm), uid $(id -u)"
 
@@ -18,22 +16,6 @@ echo "machine: $(uname -srm), uid $(id -u)"
 selftest=0
 "$suite/ko-agent-fs-fuse" --self-test || selftest=$?
 [ "$selftest" -ne 3 ] || exit 3
-
-# Otherwise a filter that names nothing would report success without running a single test: a rust harness exits 0
-# when its filter matches none, saying only "N filtered out". `--list` counts what would run. `--list` lists ignored
-# tests too, so the count needs no --include-ignored of its own.
-if [ -n "$filter" ]; then
-    matched=0
-    for binary in "$suite"/deps/*; do
-        found=$("$binary" --list "$filter" | grep -c ': test$') || found=0
-        matched=$((matched + found))
-    done
-    if [ "$matched" -eq 0 ]; then
-        echo "no test matches '$filter'; nothing would run" >&2
-        exit 4
-    fi
-    echo "filter '$filter' selects $matched tests"
-fi
 
 # Past the mount, the self-test is a check like any other: the policy refusing a .git entry, and a host write
 # reaching both a cached read and an established mapping.
@@ -54,7 +36,7 @@ for binary in "$suite"/deps/*; do
     name=$(printf %s "${binary##*/}" | tr : ' ')
     echo "== $name"
     # `&& ... ||` keeps set -e from ending the group before it records the status.
-    { "$binary" --include-ignored ${filter:+"$filter"} && echo 0 >"$out.exit" || echo $? >"$out.exit"; } | tee "$out"
+    { "$binary" --include-ignored && echo 0 >"$out.exit" || echo $? >"$out.exit"; } | tee "$out"
     counts=$(sed -n 's/^test result: [a-zA-Z]*\. \([0-9]*\) passed; \([0-9]*\) failed;.*/\1 \2/p' "$out" | tail -n 1)
     rows=$((rows + 1))
     if [ "$(cat "$out.exit")" -eq 0 ] && [ -n "$counts" ]; then
@@ -72,7 +54,7 @@ for binary in "$suite"/deps/*; do
         detail="exit $(cat "$out.exit") without a result line"
     fi
     summary="$summary
-$(printf '  %s  %-44s %s' "$verdict" "$name" "$detail")"
+$(printf '  %s  %-58s %s' "$verdict" "$name" "$detail")"
 done
 rm -f "$out" "$out.exit"
 

@@ -35,7 +35,7 @@
 static struct {
 	struct ident key;
 	struct root value;
-} root_entries[64];
+} root_entries[ROOTS];
 static int root_entry_count;
 static struct rule_line rule_values[RULE_LINES];
 static struct alias_context alias_values[ALIASES];
@@ -224,10 +224,6 @@ static void load_records(const char *path)
 
 	if (records_file_read(path, &file, error, sizeof(error)) < 0) {
 		fprintf(stderr, "policy-host: %s\n", error);
-		exit(2);
-	}
-	if (file.rule_bytes != sizeof(struct rule_line) || file.alias_bytes != sizeof(struct alias_context)) {
-		fprintf(stderr, "policy-host: records.h and policy.bpf.c lay a record out differently\n");
 		exit(2);
 	}
 	memcpy(rule_values, file.rules, file.rule_count * sizeof(struct rule_line));

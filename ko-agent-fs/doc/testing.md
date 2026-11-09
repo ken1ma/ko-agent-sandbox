@@ -32,7 +32,6 @@ target is preinstalled. A session cannot add a target to the image's toolchain
 Run `--build` first. It provides the sandbox image and pulls the Rust image. Then:
 
     java -jar target/dist/ko-agent-sandbox.jar --self-test
-    java -jar target/dist/ko-agent-sandbox.jar --self-test a_handle_held
 
 What the launcher does:
 
@@ -46,8 +45,28 @@ What the launcher does:
   `KO_AGENT_FS_POLICY_HOST` names it to `policy/tests/bpf_equivalence.rs`. The suite therefore
   needs neither a C compiler nor the sources in the container.
 
-Without a case filter, it also checks whether host writes reach the session through the real
-share:
+On macOS and Windows, whatever the suites' result, it makes the policy suite's corpus of
+operations under the BPF backend that `--build` installed, on the machine's own kernel, and compares
+each answer with the expected one (`../../src/main/scala/BpfSelfTest.scala`):
+
+- It loads the policies that launches load: `short-names` on Windows alone, then `unix-socket` off
+  and on. Under each policy it runs the groups whose answers the policy suite measured under that
+  policy (`../bpf/doc/evidence.md`, "Suites").
+- The corpus runs in containers of the self-test image, under the attach cgroup, on a scratch
+  directory under the launcher's state root. A failed run keeps the directory until the next run.
+- Without an installed backend from this launcher's build, the self-test fails before it builds
+  its image. On a machine whose kernel lacks what the backend needs, `--self-test --no-bpf` skips
+  the corpus and shows the skipped row.
+- The whole `--self-test` took, on 2026-11-09 with its images already built, the corpus rows
+  included:
+  - 16 s on macOS (kernel 7.2.7-200.fc44, virtiofs);
+  - 53 s on Windows (WSL2 kernel 6.18.54.1, 9p), in a run whose failed suite left out the share
+    rows.
+- The corpus rows passed on both machines on 2026-11-09, 0 mismatches. The skipped cases are the
+  policy suite's on each share: the `fifo` group's where the share refuses the host FIFO, and on
+  9p the two names NTFS cannot hold and the `unix` cases that need a bound socket.
+
+Once the suites pass, it also checks whether host writes reach the session through the real share:
 
 - The check creates a scratch directory in the workspace (`SelfTestShare.scala`).
 - It removes the directory on success, and reports the kept path on failure.

@@ -300,9 +300,11 @@ object PodmanTestHelper:
   val SandboxImage = "ko-agent-sandbox:latest"
 
   /** Where a bundled build context's entry lies in the checkout: build.sbt stores each relative to its
-    * context root, container/ for the images and the root for ko-agent-fs/. */
+    * context's parent, the root for ko-agent-fs/ and ko-agent-egress-proxy/ and container/ for the images. The
+    * context's directory at the root decides, so that moving a context needs no change here. */
   def checkoutFile(repoDir: Path, bundled: String): Path =
-    if bundled.startsWith("ko-agent-fs/") then repoDir / bundled
+    val context = bundled.takeWhile(_ != '/')
+    if Files.isDirectory(repoDir / context) then repoDir / bundled
     else repoDir / "container" / bundled
 
   /** Compares the jar's bundled build context with the checkout. Returns the first file in the bundle's

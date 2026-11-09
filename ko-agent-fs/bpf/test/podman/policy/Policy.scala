@@ -2,6 +2,7 @@
 //> using scala 3.10.0
 //> using file ../PodmanTestHelper.scala
 //> using file ../../../../../src/main/scala/SourceDigest.scala
+//> using file ../../../../../src/main/scala/BpfCorpus.scala
 
 // The policy suite of ko-agent-fs/bpf/doc/evidence.md ("Suites", policy), in one run, on the podman
 // machine of either host. Run it on the HOST, from the repository root, with the default machine
@@ -18,7 +19,10 @@
 // What it does:
 //
 // - It builds the suite image (Containerfile) from a context assembled out of the files sources.txt
-//   lists, among them the policy program of ko-agent-fs/bpf/.
+//   lists, among them the policy program, the controller, the read-back and the fixture of
+//   ko-agent-fs/bpf/. The shipped controller attaches each session's policy from records the fixture
+//   writes, and the read-back verifies it, so the corpus runs against maps filled as a launch fills
+//   them; inspect.c reads the program's own maps.
 // - It extracts /out into the machine under ~/.local/share/ko-agent-sandbox/bpftest-policy.
 // - It runs the suite's rows through `podman machine ssh` and the machine's sudo, and prints each as
 //   PASS, FAIL or INFO.
@@ -40,7 +44,7 @@
 // - host git in a `.git` the session made, without HEAD;
 // - the walk's cost in pairs beside a bare container, and the jited barrier;
 // - the NTFS short-name form under its flag, and on Windows the short name NTFS serves;
-// - under `--unix-sockets`, the socket corpus, and descriptors passed between four sandboxes: a live
+// - under `unix-socket`, the socket corpus, and descriptors passed between four sandboxes: a live
 //   session, a second session of the workspace under a later rule file, a session of another
 //   workspace and a read-only session;
 // - the namespaces and mounts that a generated seccomp profile refuses.
@@ -74,6 +78,8 @@ import scala.util.matching.Regex
 import java.nio.file.{Files, Path}
 import java.util.Base64
 
+import agentsandbox.launcher.BpfCorpus
+
 import PodmanTestHelper.*
 
 @main def suite(args: String*): Unit = Policy.run(args)
@@ -104,7 +110,7 @@ object Policy:
 
   // --- The pure parts: what the transcript's figures are read with -----------------------------------------
 
-  /** KEY's value in every line holding it, as the controller prints one `stats` line per CPU. */
+  /** KEY's value in every line holding it, as `inspect stats` prints one line per hook. */
   def numbers(key: String, text: String): Seq[Long] =
     raw"(?m)(?:^|(?<=\s))${Regex.quote(key)}=(-?\d+)".r.findAllMatchIn(text).map(_.group(1).toLong).toSeq
 
@@ -114,28 +120,6 @@ object Policy:
 
   /** A text's last line, which is where a binary prints its summary. */
   def lastLine(text: String): String = text.linesIterator.toSeq.lastOption.getOrElse("")
-
-  /** The two rule files. A holds, in order:
-    *
-    *   - the launcher's defaults;
-    *   - a workspace line freeing one file;
-    *   - filler lines up to the map's capacity;
-    *   - the guard's anchored lines: first a relocated hook directory, ahead of every floating line, so
-    *     that an alias context computed with the wrong indices names the wrong lines, which the alias
-    *     cases catch; last, the traversed component and the end of the `.claude` symlink, with its
-    *     alias context.
-    *
-    * B has a workspace line in place of the last filler, as a later rule file would, and also has 128
-    * lines. */
-  def ruleFiles(defaults: String): (Seq[String], Seq[String]) =
-    val freed = stripRules(defaults) :+ "writable .vscode/settings.json"
-    val filled = freed ++ (freed.length until 124).map(i => s"read-only zz-filler-$i")
-    val first = Seq("read-only githooks anchored")
-    val anchored = Seq("pinned-path shared anchored", "pinned-path shared/claude anchored alias=.claude")
-    (
-      first ++ filled ++ Seq("read-only zz-filler-last") ++ anchored,
-      first ++ filled ++ Seq("read-only README.md") ++ anchored,
-    )
 
   /** The deepest tracked path of `git ls-files`' output, by its count of components. */
   def deepestOf(lsFiles: String): Option[String] =
@@ -189,13 +173,19 @@ object Policy:
       |json.dump(profile, open(sys.argv[2], "w"))
       |""".stripMargin
 
-  val RefusedByProfile = Seq("unshare_newuser", "unshare_newns", "mount", "fsopen", "open_tree", "move_mount",
-    "fsmount", "fspick", "mount_setattr", "umount2", "pivot_root")
+  /** The `exercise namespaces` rows the profile itself refuses. `unshare_newns` is not among them: the
+    * profile admits `unshare` without CLONE_NEWUSER, and only a missing CAP_SYS_ADMIN refuses it. */
+  val RefusedByProfile = Seq("unshare_newuser", "mount", "fsopen", "open_tree", "move_mount", "fsmount", "fspick",
+    "mount_setattr", "umount2", "pivot_root")
 
   // --- The run ---------------------------------------------------------------------------------------------
 
   val VmDir = ".local/share/ko-agent-sandbox/bpftest-policy"
   val Controller = s"./$VmDir/controller"
+  val Readback = s"./$VmDir/readback"
+  val FixtureBin = s"./$VmDir/fixture"
+  val Inspect = s"./$VmDir/inspect"
+  val TagsFile = s"$VmDir/tags.txt"
   val Exercise = "/out/exercise"
   val PinRoot = "/sys/fs/bpf/ko-agent-bpftest-policy"
   val SuiteImage = "ko-agent-bpftest:policy"
@@ -234,7 +224,10 @@ object Policy:
   /** The fixture on the share:
     *
     *   - the machine paths of the tree laid out as a workspace, of the tree whose `.git` is a pointer
-    *     file, of the clone of this repository, and of the two rule files;
+    *     file, of the clone of this repository, and of the scratch directory that holds them, which is
+    *     the policies' workspace;
+    *   - the records the fixture wrote: A and B over every root, under the two rule files; C over the
+    *     clone alone, under A's rules;
     *   - the clone's deepest tracked file;
     *   - the four attach cgroups, one per session;
     *   - the volume that the policy records as a root, on its superblock's type;
@@ -244,8 +237,10 @@ object Policy:
       tree: String,
       pointerTree: String,
       repoClone: String,
-      rulesA: String,
-      rulesB: String,
+      workspace: String,
+      recordsA: String,
+      recordsB: String,
+      recordsC: String,
       deepest: String,
       deepestDepth: Int,
       cgroups: Map[Int, Cgroup],
@@ -253,16 +248,15 @@ object Policy:
       volumeFsType: String,
       hostFifo: Boolean,
   ):
-    /** The guarded objects: the pointer files and the `.git` directories of the fixture and the clone.
-      * So the gitdir cases run under a recorded `.git` directory, with the workspace's rules and depth
-      * kept above it. */
-    def rootsA: String =
-      s"--root workspace=$tree --root workspace=$pointerTree --root workspace=$repoClone " +
-        s"--root gitdir=$tree/.git/modules/sub --root guarded-git=$pointerTree/.git " +
-        s"--root guarded-git=$tree/submod/.git --root guarded-git=$tree/.git --root guarded-git=$repoClone/.git " +
-        s"--root guarded-sandbox=$pointerTree/.ko-agent-sandbox --root guarded-sandbox=$tree/.ko-agent-sandbox " +
-        s"--root volume=$volumeMountpoint --vol-fs-type $volumeFsType"
     def hostFifoPath: String = s"$tree/apps/host-fifo"
+
+  /** The guarded paths of records A and B, below the scratch directory: the corpus's roots, then the clone
+    * as a workspace with its guarded `.git`. */
+  val GuardedA: Seq[(String, String)] =
+    BpfCorpus.Roots ++ Seq("workspace" -> "repo", "guarded-git" -> "repo/.git")
+
+  /** A link the controller pinned for SESSION's policy, which `inspect` reads the program's maps through. */
+  def linkPin(session: String, hook: String): String = s"$PinRoot/$session/links/$hook"
 
   def run(args: Seq[String]): Unit =
     val options = orExit(parseOptions(args))
@@ -297,9 +291,9 @@ object Policy:
     import transcript.{check, gate, info, log, refuse, step}
     private val scratchDirVm = vmPath(platform, scratchDir.toString)
     private val repoDirVm = vmPath(platform, repoDir.toString)
-    private val treeDir = scratchDir / "tree"
-    private val pointerTreeDir = scratchDir / "tree-ptr"
-    private val pinA = s"$PinRoot/a/file_open"
+    private val treeDir = scratchDir / BpfCorpus.Tree
+    private val pointerTreeDir = scratchDir / BpfCorpus.PointerTree
+    private val pinA = linkPin("a", "file_open")
 
     def measure(): Int =
       val outcome =
@@ -376,13 +370,17 @@ object Policy:
       step("build and install the suite")
       for builtDigest <- buildSuiteImage(transcript, suiteDir, scratchDir, SuiteImage, facts.kernel)
       yield
-        check("suite installed in the machine", installSuite(vm, SuiteImage, VmDir, Label, Seq("controller")).ok)
+        check(
+          "suite installed in the machine",
+          installSuite(vm, SuiteImage, VmDir, Label, Seq("controller", "readback", "fixture", "inspect")).ok,
+        )
         recordBuild(transcript, vm, out, VmDir, Seq(s"sources digest=$builtDigest"))
+        recordTags(transcript, vm, Readback, TagsFile)
         Files.writeString(out / "policy.bpf.asm", vm(s"cat $VmDir/policy.bpf.asm").text)
 
     def verifier(): Either[Int, Unit] =
       step("verifier: the policy program's nine hooks")
-      val load = vm(s"sudo -n $Controller load policy.bpf.o")
+      val load = vm(s"sudo -n $Inspect load policy.bpf.o")
       Files.writeString(out / "verifier-policy.txt", load.text)
       transcript.indent(lines(load.text, "^(load|verifier|prog) ".r).mkString("\n"))
       check(
@@ -401,7 +399,7 @@ object Policy:
         mostInsns.exists(_ <= 500000),
       )
       Seq("inode_rename", "inode_symlink").foreach: program =>
-        val logged = vm(s"sudo -n $Controller verifier-log policy.bpf.o $program /tmp/$program.log")
+        val logged = vm(s"sudo -n $Inspect verifier-log policy.bpf.o $program /tmp/$program.log")
         lines(logged.text, "^verifier ".r).foreach(log)
         val encoded = vm(s"gzip -c /tmp/$program.log | base64 -w0")
         scala.util.Try(Base64.getDecoder.decode(encoded.text.trim)) match
@@ -416,10 +414,11 @@ object Policy:
       * the name NTFS serves then stands in. */
     private def makeFixture(tree: String): Output =
       val made = outside(s"$Exercise make-tree $tree")
-      Seq((".git", "GIT~1"), (".ko-agent-sandbox", "KO-AGE~1")).foreach: (target, link) =>
-        try Files.createLink(pointerTreeDir / link, pointerTreeDir / target)
+      BpfCorpus.ShortNameLinks.foreach: (link, target) =>
+        try Files.createLink(scratchDir.resolve(link), scratchDir.resolve(target))
         catch case ex: Exception => info(s"hard link $link: ${ex.getMessage}; the name NTFS serves stands in")
-      Files.createLink(treeDir / "apps" / "submod-pointer", treeDir / "submod" / ".git")
+      BpfCorpus.RequiredLinks.foreach: (link, target) =>
+        Files.createLink(scratchDir.resolve(link), scratchDir.resolve(target))
       made
 
     def prepareFixture(facts: VmFacts): Either[Int, Fixture] =
@@ -438,8 +437,8 @@ object Policy:
         val volumeMountpoint = vm.line(s"podman volume inspect --format '{{.Mountpoint}}' $Volume")
         val volumeFsType = vm.line(s"findmnt -T ${quoted(volumeMountpoint)} -n -o FSTYPE")
         info(s"the volume's mountpoint in the machine: $volumeMountpoint, on $volumeFsType")
-        val tree = s"$scratchDirVm/tree"
-        val pointerTree = s"$scratchDirVm/tree-ptr"
+        val tree = s"$scratchDirVm/${BpfCorpus.Tree}"
+        val pointerTree = s"$scratchDirVm/${BpfCorpus.PointerTree}"
         val repoClone = s"$scratchDirVm/repo"
         makeFixture(tree)
         val inodes = vm(s"stat -c %i ${quoted(s"$pointerTree/.git")} ${quoted(s"$pointerTree/GIT~1")}").text
@@ -474,39 +473,82 @@ object Policy:
         else info(s"the share refused the host FIFO: $fifoLine; its rows are skipped")
         val deepest = deepestOf(outside(s"cd $repoClone && git ls-files").text).getOrElse("")
         val deepestDepth = deepest.count(_ == '/') + 1
-        val (rulesA, rulesB) = ruleFiles(Files.readString(repoDir / RuleDefaults))
+        val (rulesA, rulesB) = BpfCorpus.ruleFiles(stripRules(Files.readString(repoDir / RuleDefaults)))
         Files.writeString(scratchDir / "rules-a.txt", rulesA.mkString("", "\n", "\n"))
         Files.writeString(scratchDir / "rules-b.txt", rulesB.mkString("", "\n", "\n"))
         info(s"rule lines: ${rulesA.length} in A, ${rulesB.length} in B")
-        Fixture(facts.fsType, tree, pointerTree, repoClone, s"$scratchDirVm/rules-a.txt", s"$scratchDirVm/rules-b.txt",
+        // The records, as the guard would write them for these trees: the fixture's stand-in, which a
+        // launch's proof reads too.
+        def records(name: String, rules: String, guarded: Seq[(String, String)]): String =
+          val path = s"$scratchDirVm/records-$name.bin"
+          val written = vm(s"$FixtureBin records $scratchDirVm/$rules $path " +
+            guarded.map((kind, rel) => s"--guarded $kind=$rel").mkString(" "))
+          transcript.indent(lines(written.text, "^(records|alias) ".r).mkString("\n"))
+          if name == "a" then
+            val partialLines = lines(written.text, "^alias ".r).mkString.split("partial_lines=").lift(1).getOrElse("")
+            check(
+              "records A: 128 rules, and the alias context of .claude holds the five .claude lines as partial matches",
+              field("rule_count", written.text) == "128" && partialLines.count(_ == ',') >= 4,
+            )
+          path
+        Fixture(facts.fsType, tree, pointerTree, repoClone, scratchDirVm,
+          records("a", "rules-a.txt", GuardedA), records("b", "rules-b.txt", GuardedA),
+          records("c", "rules-a.txt", Seq("workspace" -> "repo")),
           deepest, deepestDepth, cgroups, volumeMountpoint, volumeFsType, hostFifo)
 
-    /** The live session's policy on cgroup 1, under FLAGS when given, pinned at `a`. */
+    /** A session's policy on cgroup SESSION, pinned at PIN, as a launch attaches it: the controller loads the
+      * records RECORDS (none for a read-only session's), and the read-back verifies what the kernel then
+      * holds. The output is the attach's and the verify's lines. */
+    private def attach(fixture: Fixture, session: Int, pin: String, records: Option[String], flags: Option[String],
+        hooks: Seq[String]): Output =
+      vm(s"sudo -n $Controller unpin $PinRoot/$pin")
+      val expectation = Seq(
+        records.fold("--no-root")(path => s"--records $path"),
+        s"--workspace ${fixture.workspace}",
+        s"--volume ${fixture.volumeMountpoint}",
+        flags.fold("")(value => s"--flags $value"),
+        hooks.mkString(" "),
+      ).filter(_.nonEmpty).mkString(" ")
+      val cgroup = fixture.cgroups(session).path
+      val attached = vm(s"sudo -n $Controller attach $cgroup $PinRoot/$pin $expectation")
+      val verified = vm(s"sudo -n $Readback verify $cgroup --tags $TagsFile $expectation")
+      val both = Output(if attached.ok && verified.ok then 0 else 1, attached.text + "\n" + verified.text)
+      transcript.indent(lines(both.text, "^(root|attach|verify|refused|preloaded) ".r).mkString("\n"))
+      both
+
+    /** Whether ATTACHED holds HOOKS programs over RULES rules under FLAGS (the config word), read back alike. */
+    private def attachedAs(attached: Output, hooks: Int, rules: Int, flags: Int): Boolean =
+      attached.ok && field("hooks", attached.text) == hooks.toString &&
+        field("rule_count", attached.text) == rules.toString && field("flags", attached.text) == flags.toString &&
+        attached.has("verify ok=1")
+
     private def attachA(fixture: Fixture, flags: Option[String], hooks: Seq[String]): Output =
-      vm(s"sudo -n $Controller unpin $PinRoot/a")
-      val flagOption = flags.fold("")(value => s"--flags $value")
-      val attach = vm(
-        s"sudo -n $Controller attach policy.bpf.o ${fixture.cgroups(1).path} $PinRoot/a --fs-type ${fixture.fsType} " +
-          s"--rules ${fixture.rulesA} $flagOption ${fixture.rootsA} ${hooks.mkString(" ")}",
-      )
-      transcript.indent(lines(attach.text, "^(root|alias|policy|attached) ".r).mkString("\n"))
-      attach
+      attach(fixture, 1, "a", Some(fixture.recordsA), flags, hooks)
 
     def attachLiveSession(fixture: Fixture): Either[Int, Unit] =
-      val attach = attachA(fixture, None, Hooks8)
-      for _ <- gate(
-          "the live session's policy attached with 128 rules, one alias and eleven roots",
-          field("count", attach.text) == "8" && field("rule_count", attach.text) == "128",
-        )
-      yield
-        val partialLines = lines(attach.text, "^alias ".r).mkString.split("partial_lines=").lift(1).getOrElse("")
-        check(
-          "the alias context of .claude holds the five .claude lines as partial matches",
-          partialLines.count(_ == ',') >= 5,
-        )
+      val attached = attachA(fixture, None, Hooks8)
+      gate(
+        "the live session's policy attached and read back, with 128 rules, one alias and eleven roots",
+        attachedAs(attached, 8, 128, 0) && field("roots", attached.text) == "11",
+      )
 
-    private def statsOf(pin: String): Output = vm(s"sudo -n $Controller stats $pin")
-    private def resetStats(pin: String): Unit = vm(s"sudo -n $Controller reset-stats $pin")
+    private def statsOf(pin: String): Output = vm(s"sudo -n $Inspect stats $pin")
+    private def resetStats(pin: String): Unit = vm(s"sudo -n $Inspect reset-stats $pin")
+
+    /** Runs a corpus group under session 1's policy, and checks that every refusal it saw came from the
+      * program: a case's EPERM may come from elsewhere, so the program's denials over the run must number
+      * at least the refusals the cases saw. */
+    private def corpusOfProgram(fixture: Fixture, label: String, arguments: String): Unit =
+      resetStats(pinA)
+      val corpus = inSession(fixture, 1, s"$Exercise corpus ${fixture.tree} $arguments".trim)
+      corpusMismatches(corpus)
+      check(s"$label: ${corpusLine(corpus)}", field("mismatches", corpus.text) == "0")
+      val refusals = corpus.text.linesIterator.count(_.contains(" got=deny"))
+      val denials = numbers("denied", statsOf(pinA).text).sum
+      check(
+        s"$label: the program denied $denials calls over the run, at least the $refusals refusals the cases saw",
+        denials >= refusals,
+      )
     private def corpusMismatches(corpus: Output): Unit =
       transcript.indent(lines(corpus.text, "MISMATCH|UNSUPPORTED".r).mkString("\n"))
     private def corpusLine(corpus: Output): String = lines(corpus.text, "^corpus ".r).mkString(" ")
@@ -515,10 +557,8 @@ object Policy:
       step("the corpus, git in the clone, the race, the storm, sockets, a second share")
       val tree = fixture.tree
       val repoClone = fixture.repoClone
-      val corpus = inSession(fixture, 1, s"$Exercise corpus $tree")
-      corpusMismatches(corpus)
-      check(s"the corpus: ${corpusLine(corpus)}", field("mismatches", corpus.text) == "0")
-      info(vm.line(s"sudo -n $Controller last-decision $pinA"))
+      corpusOfProgram(fixture, "the corpus", "")
+      info(vm.line(s"sudo -n $Inspect last-decision $pinA"))
       val gitOk = inSession(fixture, 1,
         s"cd $repoClone && git status --short > /dev/null && git add -A && " +
           "git -c user.name=suite -c user.email=suite@example.invalid commit -q --allow-empty -m suite && " +
@@ -546,14 +586,14 @@ object Policy:
         s"the race: ${lines(race.text, "^race ".r).mkString(" ")}",
         field("succeeded", race.text) == "0" && numbers("gave_up", raceStats.text).sum == 0,
       )
-      // The race ran if both renamers moved and the writer met both names: refused under one, absent
-      // under the other. The torn reads that the walk caught (its retries) are for information. Each
-      // dentry is validated over the read of its own name, a window that a run hits 0 to 15 times
-      // ("Policy on macOS").
+      // The race ran if both renamers moved and a path the writer wrote changed its answer between
+      // refused and absent, which only a move of its names causes. The torn reads that the walk caught
+      // (its retries) are for information. Each dentry is validated over the read of its own name, a
+      // window that a run hits 0 to 12 times ("Policy on macOS").
       check(
-        "the race ran: both renamers moved, and the writer saw refusals and absences",
+        "the race ran: both renamers moved, and paths the writer wrote changed between refused and absent",
         numbers("renames", race.text).forall(_ > 0) && numbers("renames", race.text).nonEmpty &&
-          number("refused", race.text) > 0 && number("absent", race.text) > 0,
+          number("flips", race.text) > 0,
       )
       info(s"walks that read a torn name and were made again: ${numbers("retries", raceStats.text).sum}")
       // The storm: every decision is counted, none is wrong, and no call is denied for lack of a slot.
@@ -589,9 +629,9 @@ object Policy:
             s"if [ ! -e $go ]; then echo SLOT_NO_MARKER; " +
             s"else (echo x > ${fixture.tree}/apps/$name) 2>&1 && echo SLOT_OK || echo SLOT_REFUSED; fi"))
         within(10)(host(transcript, Seq("podman", "logs", Slot), record = false).text.contains("SLOT_WAITING"))
-        vm(sh(s"sudo -n $Controller reset-stats $pinA", s"sudo -n $Controller guard $pinA $mask", s"touch $go"))
+        vm(sh(s"sudo -n $Inspect reset-stats $pinA", s"sudo -n $Inspect guard $pinA $mask", s"touch $go"))
         val logs = collect(Slot)
-        vm(sh(s"sudo -n $Controller guard $pinA 0", s"rm -f $go"))
+        vm(sh(s"sudo -n $Inspect guard $pinA 0", s"rm -f $go"))
         Output(0, logs)
       def createNested(stats: Output): String =
         lines(stats.text, "hook=inode_create".r).headOption.map(field("nested_max", _)).getOrElse("")
@@ -691,7 +731,7 @@ object Policy:
           s"${pairs.map(_.bareRdwr).max} ns; failed=${pairs.map(_.failed).sum}",
       )
       info(s"in program over the pairs: ${lines(statsOf(pinA).text, "^stats hook=file_open ".r).mkString(" ")}")
-      val jited = vm(s"sudo -n $Controller jited $pinA /tmp/file_open.jited").text.trim
+      val jited = vm(s"sudo -n $Inspect jited $pinA /tmp/file_open.jited").text.trim
       info(jited)
       val fetchAdd = field("fetch_add_insns", jited)
       check(
@@ -702,14 +742,11 @@ object Policy:
 
     def shortNames(fixture: Fixture): Unit =
       step("the NTFS short-name form, under its flag, and the generated short name of .vscode")
-      val attach = attachA(fixture, Some("short-names"), Hooks8)
       check(
-        "the policy attached again with the short-names flag",
-        field("count", attach.text) == "8" && field("flags", attach.text) == "1",
+        "the policy attached again with the short-names flag, and read back",
+        attachedAs(attachA(fixture, Some("short-names"), Hooks8), 8, 128, 1),
       )
-      val corpus = inSession(fixture, 1, s"$Exercise corpus ${fixture.tree} short")
-      corpusMismatches(corpus)
-      check(s"the short-name corpus: ${corpusLine(corpus)}", field("mismatches", corpus.text) == "0")
+      corpusOfProgram(fixture, "the short-name corpus", "short")
       // The short name NTFS serves for `.vscode`, read by `dir /x` on the Windows host. Under the flag, a
       // write through it is refused, and the host sees no file in `.vscode`.
       if platform == Platform.Windows then
@@ -740,19 +777,18 @@ object Policy:
       *   - C, a session of another workspace, the clone (cgroup 3);
       *   - D, a --workspace=read-only session, a policy with no root (cgroup 4). */
     def unixSockets(fixture: Fixture): Unit =
-      step("--unix-sockets: four sandboxes, the socket corpus and descriptors between them")
+      step("unix-socket: four sandboxes, the socket corpus and descriptors between them")
       val tree = fixture.tree
-      val attachedA = attachA(fixture, Some("unix-sockets"), Hooks9)
       check(
-        "A attached with nine hooks under unix-sockets",
-        field("count", attachedA.text) == "9" && field("flags", attachedA.text) == "2",
+        "A attached with nine hooks under unix-socket, and read back",
+        attachedAs(attachA(fixture, Some("unix-socket"), Hooks9), 9, 128, 2),
       )
       // What the runtime passes into a starting container reaches file_receive first. So start a
       // container that does nothing, then read the hook's last decision and counts.
       val started = inSession(fixture, 1, "echo STARTED")
       check("a container starts under A with file_receive attached", started.has("STARTED"))
-      info(vm.line(s"sudo -n $Controller last-decision $PinRoot/a/file_receive"))
-      info(lines(statsOf(s"$PinRoot/a/file_receive").text, "hook=file_receive".r).mkString(" "))
+      info(vm.line(s"sudo -n $Inspect last-decision ${linkPin("a", "file_receive")}"))
+      info(lines(statsOf(linkPin("a", "file_receive")).text, "hook=file_receive".r).mkString(" "))
       // What the runtime leaves open: the first process, and a process of the container's own, hold no
       // descriptor beyond the standard three.
       val fds = inSession(fixture, 1, s"$Exercise fds")
@@ -760,32 +796,23 @@ object Policy:
         s"the container's first process holds no descriptor of the runtime's: ${lastLine(fds.text)}",
         field("beyond_standard", fds.text) == "0",
       )
-      val hooks9 = Hooks9.mkString(" ")
-      val attachedB = vm(
-        s"sudo -n $Controller attach policy.bpf.o ${fixture.cgroups(2).path} $PinRoot/b --fs-type ${fixture.fsType} " +
-          s"--rules ${fixture.rulesB} --flags unix-sockets ${fixture.rootsA} $hooks9",
+      val unixSocket = Some("unix-socket")
+      check(
+        "B attached with nine hooks and the later rule file, and read back",
+        attachedAs(attach(fixture, 2, "b", Some(fixture.recordsB), unixSocket, Hooks9), 9, 128, 2),
       )
       check(
-        "B attached with nine hooks and the later rule file",
-        field("count", attachedB.text) == "9" && field("rule_count", attachedB.text) == "128",
+        "C, another workspace's session, attached and read back",
+        attachedAs(attach(fixture, 3, "c", Some(fixture.recordsC), unixSocket, Hooks9), 9, 128, 2),
       )
-      val attachedC = vm(
-        s"sudo -n $Controller attach policy.bpf.o ${fixture.cgroups(3).path} $PinRoot/c --fs-type ${fixture.fsType} " +
-          s"--rules ${fixture.rulesA} --flags unix-sockets --root workspace=${fixture.repoClone} " +
-          s"--root volume=${fixture.volumeMountpoint} --vol-fs-type ${fixture.volumeFsType} $hooks9",
+      check(
+        "D, a read-only session's policy with no root, attached and read back",
+        attachedAs(attach(fixture, 4, "d", None, unixSocket, Hooks9), 9, 0, 2),
       )
-      check("C, another workspace's session, attached", field("count", attachedC.text) == "9")
-      val attachedD = vm(
-        s"sudo -n $Controller attach policy.bpf.o ${fixture.cgroups(4).path} $PinRoot/d --fs-type ${fixture.fsType} " +
-          s"--flags unix-sockets $hooks9",
-      )
-      check("D, a read-only session's policy with no root, attached", field("count", attachedD.text) == "9")
       val query = vm(s"sudo -n $Controller query ${fixture.cgroups(1).path}")
       info(lines(query.text, "^slots ".r).mkString(" "))
       check("four sandboxes hold nine hooks of the ten slots", field("hooks_in_use", query.text) == "9")
-      val corpus = inSession(fixture, 1, s"$Exercise corpus $tree unix")
-      corpusMismatches(corpus)
-      check(s"the socket corpus under unix-sockets: ${corpusLine(corpus)}", field("mismatches", corpus.text) == "0")
+      corpusOfProgram(fixture, "the socket corpus under unix-socket", "unix")
       // A and B differ in policy: README.md is writable to A and not to B.
       val readmeA = inSession(fixture, 1, s"(echo x >> $tree/README.md) 2>&1 && echo A_OK || echo A_REFUSED")
       val readmeB = inSession(fixture, 2, s"(echo x >> $tree/README.md) 2>&1 && echo B_OK || echo B_REFUSED")
@@ -883,7 +910,7 @@ object Policy:
         vm(s"touch ${fixture.volumeMountpoint}/${sock.split('/').last}.gone")
         Output(0, collect(Receiver))
       val afterExit = passFdsAfterExit("/vol/s8", Seq(s"rw:$tree/README.md", s"dir:$tree", s"ro:$tree/ordinary"))
-      val last = vm.line(s"sudo -n $Controller last-decision $PinRoot/b/file_receive")
+      val last = vm.line(s"sudo -n $Inspect last-decision ${linkPin("b", "file_receive")}")
       info(last)
       check(
         "B, receiving after A's container ended, gets neither the writable README.md nor the directory",
@@ -897,19 +924,32 @@ object Policy:
         "B, receiving after A's container ended, gets a read-only share file its policy allows",
         received(passFdsAfterExit("/vol/s9", Seq(s"ro:$tree/ordinary")), 1, 0),
       )
-      info(lines(statsOf(s"$PinRoot/b/file_receive").text, "hook=file_receive".r).mkString(" "))
+      info(lines(statsOf(linkPin("b", "file_receive")).text, "hook=file_receive".r).mkString(" "))
 
     def seccompProfile(fixture: Fixture): Unit =
       step("the namespaces and mounts a generated seccomp profile refuses")
       Files.writeString(scratchDir / "seccomp-gen.py", SeccompGenerator)
       vm(s"python3 ${quoted(s"$scratchDirVm/seccomp-gen.py")} /usr/share/containers/seccomp.json " +
         quoted(s"$scratchDirVm/seccomp.json"))
-      val namespaces = host(transcript, Seq("podman", "run", "--rm", s"--cgroup-parent=${fixture.cgroups(1).parent}",
-        "--userns=keep-id", "--security-opt", s"seccomp=${scratchDir / "seccomp.json"}", s"--label=$Label=1",
-        s"--volume=$scratchDir:$scratchDirVm", SuiteImage, "sh", "-c", s"$Exercise namespaces; echo CHILD_RAN"))
-      // Every syscall the profile refuses must answer EPERM, except clone3, which answers ENOSYS.
-      val refused = RefusedByProfile.forall(call => field(call, namespaces.text) == "EPERM")
+      // Both runs are root with CAP_SYS_ADMIN in the container, so that a missing capability cannot answer
+      // EPERM in the profile's place: each row the profile refuses must answer otherwise without it.
+      def namespacesUnder(seccomp: String): Output =
+        host(transcript, Seq("podman", "run", "--rm", s"--cgroup-parent=${fixture.cgroups(1).parent}",
+          "--user", "0", "--cap-add", "SYS_ADMIN", "--security-opt", s"seccomp=$seccomp", s"--label=$Label=1",
+          s"--volume=$scratchDir:$scratchDirVm", SuiteImage, "sh", "-c", s"$Exercise namespaces; echo CHILD_RAN"))
+      val baseline = namespacesUnder("unconfined")
+      val profiled = namespacesUnder((scratchDir / "seccomp.json").toString)
+      def answers(output: Output): String =
+        RefusedByProfile.map(call => s"$call=${field(call, output.text)}").mkString(" ")
+      check(
+        s"without the profile, as root with CAP_SYS_ADMIN, none of these answers EPERM: ${answers(baseline)}",
+        RefusedByProfile.forall(call => field(call, baseline.text).nonEmpty && field(call, baseline.text) != "EPERM"),
+      )
       check(
         "under the generated profile a user namespace and every mount syscall answer EPERM, and a child still runs",
-        refused && namespaces.has("CHILD_RAN"),
+        RefusedByProfile.forall(call => field(call, profiled.text) == "EPERM") && profiled.has("CHILD_RAN"),
+      )
+      info(
+        s"unshare(CLONE_NEWNS), which the profile admits: ${field("unshare_newns", baseline.text)} without it, " +
+          s"${field("unshare_newns", profiled.text)} under it",
       )

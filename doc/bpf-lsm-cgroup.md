@@ -254,13 +254,14 @@ Gained:
   - The `sbt` row's direct-bind and bpf figures keep the build output in the workspace, as the
     fuse figure does. The 43 s of "an sbt build, by where its output goes" had it outside.
   - "Benchmark on macOS" and "Benchmark on WSL" measure the policy's own cost over the direct bind:
-    - `entry-cost.py`'s rounds overlap the bind's in every row on both machines but one: `rm -rf`
-      on macOS runs 1.19 times the bind's and `cp -r` on WSL 1.06 times, above it in each round;
-    - the single runs of the walk and the build lie within 7 % of the bind's on the per-file rows,
-      `find`, `git status` and the build;
-    - on the depth rows, 200 `lstat` calls of 0.1 to 1 ms each, they scatter up to 1.2 times either
-      way;
-    - the program itself takes 13 to 16 µs per judged call on either kernel, and 38 to 78 µs at
+    - `entry-cost.py`'s rounds overlap the bind's in three rows on each machine. On macOS `cp -r`
+      runs 1.09 times the bind's and `rm -rf` 1.07 times, above it in each round; on WSL `find`
+      and `ls -lR` run 1.08 times, and the program judges neither;
+    - the single runs of the walk and the build lie within 5 % of the bind's on macOS, on the
+      per-file rows, `find`, `git status` and the build, and within 15 % either way on WSL;
+    - on the depth rows, 200 `lstat` calls of 0.08 to 12 ms each, the policy runs 1.00 to 1.15
+      times the bind;
+    - the program itself takes 10 to 13 µs per judged call on either kernel, and 33 to 83 µs at
       the build's depth of 20.
   - The program runs on mutations and opens, never on `lookup` or `getattr`, the operations that
     dominate those columns.
@@ -351,7 +352,8 @@ Lost, stated as what becomes possible that the FUSE backend does not allow:
     reads and its bounds. An LSM program has no `BPF_PROG_TEST_RUN` (`kernel/bpf/bpf_lsm.c`,
     `lsm_prog_ops` is empty).
   - A wrong bound or read there lets a write to a protected entry through, until the policy suite's
-    corpus, run through real syscalls against the attached program, catches it.
+    corpus, run through real syscalls against the attached program, catches it. `--self-test` runs
+    that corpus on the user's machine, whose kernel the suite may not have measured.
 - **No writable session on a kernel without the LSM.** The probe fails, and the launch binds
   nothing writable and says what the host lacks. The session is lost, never weakened.
 - **No session write through an NTFS short name on Windows.** The policy refuses that form of name
@@ -387,6 +389,15 @@ Lost, stated as what becomes possible that the FUSE backend does not allow:
 - **No socket inode inside a gitdir under `unix-socket`, by creation, rename or link.** Git binds
   its one socket there at the root, under a name the FUSE backend already refuses. No protection is
   weakened.
+- **Three answers stricter than `policy.rs`'s.** The BPF backend is meant to replace the FUSE
+  backend, so its policy may refuse more, by the user's decision of 2026-11-09. No protection is
+  weakened, and git writes none of these names:
+  - a `.lock` name in a gitdir's `objects/info` other than `commit-graph.lock` and `packs.lock`, and
+    a doubled `.lock` suffix such as `HEAD.lock.lock`, which `policy.rs` classifies by recursion;
+  - an alias context that would make a third at one position, where `policy.rs` merges two that
+    became equal; the program refuses it as an alias overflow;
+  - a symlink target of more than 64 components when its `.` and empty components count, which
+    `Path::components` drops.
 - **A directory at any name, `.git` and `.ko-agent-sandbox` included.** The session can create and
   remove empty directories at a guarded name or position, which the FUSE backend refuses.
   "Directories" has the rules that keep this from weakening any protection.

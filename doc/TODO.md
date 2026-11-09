@@ -330,10 +330,6 @@ refused. A thread and a child process in Python 3.14, Node 24 and Java 25, `git 
 The suites whose sources changed since their evidence was measured. One rerun of a suite clears
 every change listed under it (`../ko-agent-fs/bpf/doc/evidence.md` has the procedure).
 
-- [ ] Launcher, on macOS and WSL. Changed in `KoAgentBpf.scala`:
-  - the refusal texts and the build's notes, which name `--workspace=...,fuse`;
-  - the settings label's parse, through `CommandLine.parseWorkspace`'s parts.
-
 ## The BPF backend's later versions
 
 The first version of the BPF backend (`bpf-lsm-cgroup.md`) leaves these items to the versions after
@@ -410,7 +406,9 @@ whose section names are distinct.
   - the controller's two refusals, and the mount under the bind source there with a nested mount
     holding a `.git`. The lifecycle suite measures these in the machines;
   - the host's own mount topology under the workspace (`../ko-agent-fs/bpf/doc/architecture.md`,
-    "Mounts").
+    "Mounts");
+  - `--self-test`'s BPF corpus rows there, which run on the podman machines alone
+    (`../src/main/scala/BpfSelfTest.scala`).
 - [ ] The classifier in Rust, once `rustc` emits the CO-RE field relocations that the walk's reads
   need (https://github.com/aya-rs/aya/issues/349).
   - The user: "Rust should give us fewer vulnerabilities and fewer things to harden with great
@@ -424,20 +422,6 @@ whose section names are distinct.
     object's CO-RE relocations as libbpf does on both kernels. The demonstration uses a fixture
     whose BTF holds two types of one name, since a loader that picks the wrong type reads the wrong
     field without an error (reported against Aya as its issue 1727, not verified here).
-
-## A self-test of the BPF backend on the user's kernel
-
-- [ ] Run the policy suite's corpus against the installed policy on the user's machine, as
-  `--self-test` runs the FUSE backend's corpus.
-  - The evidence covers two kernels, 7.2.5 and 6.18.54.1 (`../ko-agent-fs/bpf/doc/evidence.md`),
-    and a user's machine runs the kernel its OS or WSL brings.
-  - A launch's proof covers one refused operation per hook and one write per rule line, not the
-    corpus's 252 cases.
-  - One corpus, two runners: `exercise.c` moves into the bundled `ko-agent-fs/bpf/`, beside
-    `fixture.c`, since `--build` builds only what the jar bundles and `test/` is excluded. The
-    policy suite builds `exercise.c` from there and keeps its other rows: the race, the storm, the
-    descriptors across sandboxes and the verifier figures.
-  - Measure the self-test on both machines before it ships.
 
 ## Attribute routes as `--workspace` values, spending the free hook slots
 
@@ -493,8 +477,8 @@ Decided 2026-10-26: the rule stays for every session, and the routes become valu
 The BPF backend proves its attachment at every launch, restart and recreate, in two parts
 (`../ko-agent-fs/bpf/doc/architecture.md`, "Lifecycle", 3):
 
-- the read-back, 37 to 50 ms on WSL;
-- the fixture's proof, 68 operations the kernel judges: 312 to 397 ms on WSL and 39 to 44 ms on
+- the read-back, 25 to 48 ms on WSL;
+- the fixture's proof, 68 operations the kernel judges: 354 to 388 ms on WSL and 35 to 46 ms on
   macOS ("Lifecycle on WSL", "Lifecycle on macOS", in `../ko-agent-fs/bpf/doc/evidence.md`).
 
 The user, 2026-10-26: 0.4 s on Windows matters. Every launch pays the proof until this item is

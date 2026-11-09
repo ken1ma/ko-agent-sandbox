@@ -45,7 +45,9 @@
 //                                        (--named) and whose identity no label contradicts (--hold),
 //                                        remove its pins and its cgroup, if the cgroup's identity is
 //                                        ID, it reads populated 0, and every pin names it. Check all
-//                                        of them before removing any. Refuse anything else.
+//                                        of them before removing any. A session whose cgroup is gone
+//                                        is removed with its pins once every link reads detached.
+//                                        Refuse anything else.
 #define _GNU_SOURCE
 #include <ctype.h>
 #include <dirent.h>
@@ -59,23 +61,16 @@
 
 #define PROGRAM_NAME "controller"
 #include "backend.h"
+#include "loader.h"
 
 #define MAX_SESSIONS 64
 
-// The object is found beside the binary (/proc/self/exe), never taken from a given path ("Native
-// Linux"). NAME is its file name.
 static struct bpf_object *open_object(const char *name)
 {
-	char exe[PATH_MAX], path[PATH_MAX];
-	ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+	char path[PATH_MAX];
 	struct bpf_object *obj;
 
-	if (len < 0)
-		die("readlink /proc/self/exe: %s", strerror(errno));
-	exe[len] = 0;
-	if (strchr(name, '/'))
-		refuse("object-path", "object=%s", name);
-	snprintf(path, sizeof(path), "%s/%s", dirname(exe), name);
+	object_path(name, path, sizeof(path));
 	obj = bpf_object__open_file(path, NULL);
 	if (!obj)
 		die("open %s: %s", path, strerror(errno));
@@ -89,19 +84,6 @@ static int map_fd_by_name(struct bpf_object *obj, const char *name)
 	if (fd < 0)
 		die("no map %s in the object", name);
 	return fd;
-}
-
-// bpffs refuses a name containing a `.` with EPERM at the lookup, since it reserves such names for
-// its own special files (kernel/bpf/inode.c, bpf_lookup). So a pin path below the mount must not
-// contain one.
-static void require_pin_dir(const char *pindir)
-{
-	const char *rel = relative_beneath(PIN_FS, pindir);
-
-	if (!rel)
-		refuse("pindir-outside-bpffs", "pindir=%s", pindir);
-	if (strchr(rel, '.'))
-		refuse("pindir-dotted", "pindir=%s", pindir);
 }
 
 static void print_link(const char *hook, int link_fd)
@@ -122,7 +104,7 @@ static void make_pin_dirs(const char *pindir)
 	char path[PATH_MAX], parent[PATH_MAX];
 	char *slash;
 
-	snprintf(parent, sizeof(parent), "%s", pindir);
+	format_or_die(parent, sizeof(parent), "%s", pindir);
 	slash = strrchr(parent, '/');
 	if (slash && slash != parent) {
 		*slash = 0;
@@ -131,10 +113,10 @@ static void make_pin_dirs(const char *pindir)
 	}
 	if (mkdir(pindir, 0700) && errno != EEXIST)
 		die("mkdir %s: %s", pindir, strerror(errno));
-	snprintf(path, sizeof(path), "%s/links", pindir);
+	format_or_die(path, sizeof(path), "%s/links", pindir);
 	if (mkdir(path, 0700) && errno != EEXIST)
 		die("mkdir %s: %s", path, strerror(errno));
-	snprintf(path, sizeof(path), "%s/progs", pindir);
+	format_or_die(path, sizeof(path), "%s/progs", pindir);
 	if (mkdir(path, 0700) && errno != EEXIST)
 		die("mkdir %s: %s", path, strerror(errno));
 }
@@ -187,7 +169,7 @@ static void pin_link(struct bpf_link *link, const char *pindir, const char *hook
 {
 	char pin[PATH_MAX];
 
-	snprintf(pin, sizeof(pin), "%s/links/%s", pindir, hook);
+	format_or_die(pin, sizeof(pin), "%s/links/%s", pindir, hook);
 	if (bpf_link__pin(link, pin))
 		die("pin %s: %s", pin, strerror(errno));
 	print_link(hook, bpf_link__fd(link));
@@ -279,7 +261,7 @@ static int cmd_attach(int argc, char **argv)
 		char pin[PATH_MAX];
 		int prog_fd;
 
-		snprintf(pin, sizeof(pin), "%s/progs/%s", pindir, exp.hooks[0]);
+		format_or_die(pin, sizeof(pin), "%s/progs/%s", pindir, exp.hooks[0]);
 		prog_fd = bpf_obj_get(pin);
 		if (prog_fd < 0)
 			die("no pinned program %s in the preloaded set: %s", pin, strerror(errno));
@@ -318,14 +300,14 @@ static int cmd_attach(int argc, char **argv)
 		if (from_preloaded) {
 			int prog_fd, link_fd;
 
-			snprintf(pin, sizeof(pin), "%s/progs/%s", pindir, exp.hooks[i]);
+			format_or_die(pin, sizeof(pin), "%s/progs/%s", pindir, exp.hooks[i]);
 			prog_fd = bpf_obj_get(pin);
 			if (prog_fd < 0)
 				die("no pinned program %s in the preloaded set: %s", pin, strerror(errno));
 			link_fd = bpf_link_create(prog_fd, cgroup_fd, BPF_LSM_CGROUP, NULL);
 			if (link_fd < 0)
 				die("attach %s: %s", exp.hooks[i], strerror(errno));
-			snprintf(pin, sizeof(pin), "%s/links/%s", pindir, exp.hooks[i]);
+			format_or_die(pin, sizeof(pin), "%s/links/%s", pindir, exp.hooks[i]);
 			if (bpf_obj_pin(link_fd, pin))
 				die("pin %s: %s", pin, strerror(errno));
 			print_link(exp.hooks[i], link_fd);
@@ -337,7 +319,7 @@ static int cmd_attach(int argc, char **argv)
 		link = bpf_program__attach_cgroup(prog, cgroup_fd);
 		if (!link)
 			die("attach %s: %s", exp.hooks[i], strerror(errno));
-		snprintf(pin, sizeof(pin), "%s/progs/%s", pindir, exp.hooks[i]);
+		format_or_die(pin, sizeof(pin), "%s/progs/%s", pindir, exp.hooks[i]);
 		if (bpf_program__pin(prog, pin))
 			die("pin %s: %s", pin, strerror(errno));
 		pin_link(link, pindir, exp.hooks[i]);
@@ -373,7 +355,7 @@ static int cmd_preload(const char *pindir)
 	require_pin_dir(pindir);
 	if (!lstat(pindir, &st))
 		refuse("preloaded-present", "pindir=%s", pindir);
-	snprintf(staging, sizeof(staging), "%s-%d", pindir, getpid());
+	format_or_die(staging, sizeof(staging), "%s-%d", pindir, getpid());
 	obj = open_object("policy.bpf.o");
 	if (bpf_object__load(obj))
 		die("load: %s", strerror(errno));
@@ -381,7 +363,7 @@ static int cmd_preload(const char *pindir)
 	bpf_object__for_each_program(prog, obj) {
 		char pin[PATH_MAX];
 
-		snprintf(pin, sizeof(pin), "%s/progs/%s", staging, bpf_program__name(prog));
+		format_or_die(pin, sizeof(pin), "%s/progs/%s", staging, bpf_program__name(prog));
 		if (bpf_program__pin(prog, pin))
 			die("pin %s: %s", pin, strerror(errno));
 		count++;
@@ -420,14 +402,14 @@ static int cmd_attach_pinned(int argc, char **argv)
 		char pin[PATH_MAX];
 		int prog_fd, link_fd;
 
-		snprintf(pin, sizeof(pin), "%s/progs/%s", pindir, argv[i]);
+		format_or_die(pin, sizeof(pin), "%s/progs/%s", pindir, argv[i]);
 		prog_fd = bpf_obj_get(pin);
 		if (prog_fd < 0)
 			die("no pinned program %s: %s", pin, strerror(errno));
 		link_fd = bpf_link_create(prog_fd, cgroup_fd, BPF_LSM_CGROUP, NULL);
 		if (link_fd < 0)
 			die("attach pinned %s: %s", argv[i], strerror(errno));
-		snprintf(pin, sizeof(pin), "%s/links/%s", pindir, argv[i]);
+		format_or_die(pin, sizeof(pin), "%s/links/%s", pindir, argv[i]);
 		if (unlink(pin) && errno != ENOENT)
 			die("unlink %s: %s", pin, strerror(errno));
 		if (bpf_obj_pin(link_fd, pin))
@@ -438,18 +420,6 @@ static int cmd_attach_pinned(int argc, char **argv)
 	}
 	printf("attach-pinned cgroup=%s pindir=%s hooks=%d ms=%.1f\n", cgroup, pindir, argc - 2, now_ms() - start);
 	return 0;
-}
-
-static struct btf *vmlinux_btf(void)
-{
-	static struct btf *btf;
-
-	if (!btf) {
-		btf = btf__load_vmlinux_btf();
-		if (!btf)
-			die("vmlinux BTF: %s", strerror(errno));
-	}
-	return btf;
 }
 
 static const char *btf_func_name(__u32 id)
@@ -515,24 +485,14 @@ static void print_all_lsm_cgroup_links(void)
 
 static int cmd_query(const char *cgroup)
 {
-	LIBBPF_OPTS(bpf_prog_query_opts, opts);
-	__u32 ids[64], flags[64];
+	__u32 ids[64], count;
 	int cgroup_fd = open(cgroup, O_RDONLY | O_DIRECTORY);
 
 	if (cgroup_fd < 0)
 		die("open cgroup %s: %s", cgroup, strerror(errno));
-	if (bpf_prog_query_opts(cgroup_fd, BPF_LSM_CGROUP, &opts))
-		die("prog query: %s", strerror(errno));
-	printf("query cgroup=%s prog_cnt=%u\n", cgroup, opts.prog_cnt);
-	if (opts.prog_cnt > 64)
-		die("more than 64 programs");
-	// A BPF_LSM_CGROUP query that asks for ids must also pass the attach flags, or it fails with
-	// EINVAL (kernel/bpf/cgroup.c, __cgroup_bpf_query).
-	opts.prog_ids = ids;
-	opts.prog_attach_flags = flags;
-	if (opts.prog_cnt && bpf_prog_query_opts(cgroup_fd, BPF_LSM_CGROUP, &opts))
-		die("prog query: %s", strerror(errno));
-	for (__u32 i = 0; i < opts.prog_cnt; i++)
+	count = attached_programs(cgroup_fd, ids, 64);
+	printf("query cgroup=%s prog_cnt=%u\n", cgroup, count);
+	for (__u32 i = 0; i < count; i++)
 		print_prog_by_id(ids[i], "attached");
 	print_all_lsm_cgroup_links();
 	return 0;
@@ -570,34 +530,82 @@ static int cmd_statx(const char *path)
 	return 0;
 }
 
-static int cmd_unpin(const char *pindir)
+// Empties the directory open at `dir_fd`, whose path is `path`, through descriptors alone: an entry
+// swapped for a symlink is unlinked as itself, never followed.
+static void unpin_below(int dir_fd, const char *path)
 {
-	DIR *dir = opendir(pindir);
+	DIR *stream;
 	struct dirent *entry;
+	int listed = dup(dir_fd);
 
-	if (!dir) {
-		if (errno == ENOENT)
-			return 0;
-		die("opendir %s: %s", pindir, strerror(errno));
-	}
-	while ((entry = readdir(dir))) {
-		char path[PATH_MAX];
+	if (listed < 0 || !(stream = fdopendir(listed)))
+		die("list %s: %s", path, strerror(errno));
+	while ((entry = readdir(stream))) {
+		char child[PATH_MAX];
 		struct stat st;
 
-		if (entry->d_name[0] == '.')
+		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
 			continue;
-		snprintf(path, sizeof(path), "%s/%s", pindir, entry->d_name);
-		if (!lstat(path, &st) && S_ISDIR(st.st_mode)) {
-			cmd_unpin(path);
+		format_or_die(child, sizeof(child), "%s/%s", path, entry->d_name);
+		if (fstatat(dir_fd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW))
+			die("stat %s: %s", child, strerror(errno));
+		if (S_ISDIR(st.st_mode)) {
+			int child_fd = openat(dir_fd, entry->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+
+			if (child_fd < 0)
+				die("open %s: %s", child, strerror(errno));
+			unpin_below(child_fd, child);
+			close(child_fd);
+			if (unlinkat(dir_fd, entry->d_name, AT_REMOVEDIR))
+				die("rmdir %s: %s", child, strerror(errno));
 			continue;
 		}
-		if (unlink(path))
-			die("unlink %s: %s", path, strerror(errno));
-		printf("unpinned %s\n", path);
+		if (unlinkat(dir_fd, entry->d_name, 0))
+			die("unlink %s: %s", child, strerror(errno));
+		printf("unpinned %s\n", child);
 	}
-	closedir(dir);
-	if (rmdir(pindir))
+	closedir(stream);
+}
+
+// Removes a pin directory and everything below it, as root, so it takes only a path below the pin
+// filesystem (require_pin_dir) and walks it without following a symlink.
+static int cmd_unpin(const char *pindir)
+{
+	const char *rel, *name;
+	char parent_rel[PATH_MAX];
+	int bpffs_fd, parent_fd, dir_fd;
+
+	require_pin_dir(pindir);
+	rel = relative_beneath(PIN_FS, pindir);
+	bpffs_fd = open(PIN_FS, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (bpffs_fd < 0)
+		die("open %s: %s", PIN_FS, strerror(errno));
+	name = strrchr(rel, '/');
+	if (name) {
+		format_or_die(parent_rel, sizeof(parent_rel), "%.*s", (int)(name - rel), rel);
+		name++;
+		parent_fd = open_beneath(bpffs_fd, parent_rel, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	} else {
+		name = rel;
+		parent_fd = dup(bpffs_fd);
+	}
+	if (parent_fd < 0) {
+		if (errno == ENOENT)
+			return 0;
+		die("open the parent of %s: %s", pindir, strerror(errno));
+	}
+	dir_fd = openat(parent_fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+	if (dir_fd < 0) {
+		if (errno == ENOENT)
+			return 0;
+		die("open %s: %s", pindir, strerror(errno));
+	}
+	unpin_below(dir_fd, pindir);
+	close(dir_fd);
+	if (unlinkat(parent_fd, name, AT_REMOVEDIR))
 		die("rmdir %s: %s", pindir, strerror(errno));
+	close(parent_fd);
+	close(bpffs_fd);
 	return 0;
 }
 
@@ -615,7 +623,7 @@ struct session {
 // name.
 static void pin_name(const char *session, char *out, size_t size)
 {
-	snprintf(out, size, "%s", session);
+	format_or_die(out, size, "%s", session);
 	for (char *at = out; *at; at++)
 		if (*at == '.')
 			*at = '_';
@@ -643,8 +651,8 @@ struct pin_dir {
 };
 
 // Opens one directory of the session's pins (`links` or `progs`) through the pins directory's own
-// descriptor, and checks every entry, each link against the session's cgroup. Removes nothing.
-// Returns 0, or -1 after printing the refusal.
+// descriptor, and checks every entry, each link against the session's cgroup: `cgroup_id`, or 0 for
+// a cgroup that is gone. Removes nothing. Returns 0, or -1 after printing the refusal.
 static int check_pins(int pins_fd, const char *sub, unsigned long long cgroup_id, const char *name,
 		      struct pin_dir *dir)
 {
@@ -660,9 +668,12 @@ static int check_pins(int pins_fd, const char *sub, unsigned long long cgroup_id
 		       strerror(errno));
 		return -1;
 	}
-	stream = fdopendir(dup(dir->fd));
-	if (!stream)
-		die("fdopendir: %s", strerror(errno));
+	{
+		int listed = dup(dir->fd);
+
+		if (listed < 0 || !(stream = fdopendir(listed)))
+			die("list %s: %s", sub, strerror(errno));
+	}
 	while ((entry = readdir(stream))) {
 		LIBBPF_OPTS(bpf_obj_get_opts, opts, .path_fd = dir->fd, .file_flags = BPF_F_PATH_FD);
 		int fd;
@@ -685,13 +696,25 @@ static int check_pins(int pins_fd, const char *sub, unsigned long long cgroup_id
 			struct bpf_link_info info = {};
 			__u32 len = sizeof(info);
 
-			if (bpf_link_get_info_by_fd(fd, &info, &len))
-				die("link info: %s", strerror(errno));
-			// A detached link reads cgroup_id 0: its cgroup is already gone.
+			if (bpf_link_get_info_by_fd(fd, &info, &len)) {
+				printf("reconcile session=%s action=refused reason=pin-info path=%s/%s error=%s\n",
+				       name, sub, entry->d_name, strerror(errno));
+				close(fd);
+				closedir(stream);
+				return -1;
+			}
+			// A detached link reads cgroup_id 0: its cgroup is already gone. With `cgroup_id` 0, the
+			// session's cgroup is gone, and every link must read so.
 			if (info.cgroup.cgroup_id && info.cgroup.cgroup_id != cgroup_id) {
-				printf("reconcile session=%s action=refused reason=pin-names-another-cgroup path=%s/%s "
-				       "pin_cgroup_id=%llu recorded=%llu\n",
-				       name, sub, entry->d_name, (unsigned long long)info.cgroup.cgroup_id, cgroup_id);
+				if (cgroup_id)
+					printf("reconcile session=%s action=refused reason=pin-names-another-cgroup "
+					       "path=%s/%s pin_cgroup_id=%llu recorded=%llu\n",
+					       name, sub, entry->d_name, (unsigned long long)info.cgroup.cgroup_id,
+					       cgroup_id);
+				else
+					printf("reconcile session=%s action=refused reason=pin-attached path=%s/%s "
+					       "pin_cgroup_id=%llu\n",
+					       name, sub, entry->d_name, (unsigned long long)info.cgroup.cgroup_id);
 				close(fd);
 				closedir(stream);
 				return -1;
@@ -736,16 +759,28 @@ static int cmd_reconcile(int argc, char **argv)
 		} else if (!strcmp(argv[i], "--listing-failed")) {
 			listing_failed = true;
 			i++;
-		} else if (!strcmp(argv[i], "--named") && i + 1 < argc && named_count < MAX_SESSIONS) {
+		} else if (!strcmp(argv[i], "--named") && i + 1 < argc) {
+			if (named_count >= MAX_SESSIONS)
+				die("reconcile: more than %d --named", MAX_SESSIONS);
 			named[named_count++] = argv[i + 1];
 			i += 2;
-		} else if (!strcmp(argv[i], "--hold") && i + 1 < argc && hold_count < MAX_SESSIONS) {
+		} else if (!strcmp(argv[i], "--hold") && i + 1 < argc) {
+			if (hold_count >= MAX_SESSIONS)
+				die("reconcile: more than %d --hold", MAX_SESSIONS);
 			hold[hold_count++] = argv[i + 1];
 			i += 2;
-		} else if (!strcmp(argv[i], "--session") && i + 3 < argc && session_count < MAX_SESSIONS) {
+		} else if (!strcmp(argv[i], "--session") && i + 3 < argc) {
+			char *end;
+
+			if (session_count >= MAX_SESSIONS)
+				die("reconcile: more than %d --session", MAX_SESSIONS);
 			sessions[session_count].name = argv[i + 1];
 			sessions[session_count].cgroup = argv[i + 2];
-			sessions[session_count].cgroup_id = strtoull(argv[i + 3], NULL, 10);
+			errno = 0;
+			sessions[session_count].cgroup_id = strtoull(argv[i + 3], &end, 10);
+			if (errno || end == argv[i + 3] || *end)
+				die("reconcile: --session %s: the cgroup id %s is not a number", argv[i + 1],
+				    argv[i + 3]);
 			session_count++;
 			i += 4;
 		} else {
@@ -773,6 +808,7 @@ static int cmd_reconcile(int argc, char **argv)
 		const struct session *session = &sessions[i];
 		const char *cgroup_rel;
 		int pinroot_fd, cgroup_fd, pins_fd, links, progs;
+		bool cgroup_gone;
 		struct stat st;
 		char events[256] = {}, pins_rel[PATH_MAX];
 		int events_fd;
@@ -800,35 +836,41 @@ static int cmd_reconcile(int argc, char **argv)
 			refused++;
 			continue;
 		}
+		// A cgroup that is gone with its pins in place is what a reconcile killed between the two
+		// removals below leaves. The kernel detached its links at the removal, so the pins alone are
+		// judged: every link must read detached.
 		cgroup_fd = open_beneath(slice_fd, cgroup_rel, O_RDONLY | O_DIRECTORY);
-		if (cgroup_fd < 0) {
+		cgroup_gone = cgroup_fd < 0 && errno == ENOENT;
+		if (cgroup_fd < 0 && !cgroup_gone) {
 			printf("reconcile session=%s action=refused reason=cgroup-open cgroup=%s error=%s\n",
 			       session->name, session->cgroup, strerror(errno));
 			refused++;
 			continue;
 		}
-		if (fstat(cgroup_fd, &st))
-			die("fstat: %s", strerror(errno));
-		// The cgroup's identity is its inode number, the id its links carry.
-		if ((unsigned long long)st.st_ino != session->cgroup_id) {
-			printf("reconcile session=%s action=refused reason=cgroup-identity cgroup=%s recorded=%llu "
-			       "found=%llu\n", session->name, session->cgroup, session->cgroup_id,
-			       (unsigned long long)st.st_ino);
-			refused++;
-			close(cgroup_fd);
-			continue;
-		}
-		events_fd = openat(cgroup_fd, "cgroup.events", O_RDONLY);
-		if (events_fd < 0)
-			die("open cgroup.events: %s", strerror(errno));
-		got = read(events_fd, events, sizeof(events) - 1);
-		close(events_fd);
-		if (got <= 0 || !strstr(events, "populated 0")) {
-			printf("reconcile session=%s action=kept reason=populated cgroup=%s\n", session->name,
-			       session->cgroup);
-			kept++;
-			close(cgroup_fd);
-			continue;
+		if (!cgroup_gone) {
+			if (fstat(cgroup_fd, &st))
+				die("fstat: %s", strerror(errno));
+			// The cgroup's identity is its inode number, the id its links carry.
+			if ((unsigned long long)st.st_ino != session->cgroup_id) {
+				printf("reconcile session=%s action=refused reason=cgroup-identity cgroup=%s "
+				       "recorded=%llu found=%llu\n", session->name, session->cgroup, session->cgroup_id,
+				       (unsigned long long)st.st_ino);
+				refused++;
+				close(cgroup_fd);
+				continue;
+			}
+			events_fd = openat(cgroup_fd, "cgroup.events", O_RDONLY);
+			if (events_fd < 0)
+				die("open cgroup.events: %s", strerror(errno));
+			got = read(events_fd, events, sizeof(events) - 1);
+			close(events_fd);
+			if (got <= 0 || !strstr(events, "populated 0")) {
+				printf("reconcile session=%s action=kept reason=populated cgroup=%s\n", session->name,
+				       session->cgroup);
+				kept++;
+				close(cgroup_fd);
+				continue;
+			}
 		}
 		// No pin root at all, as after a machine boot. The session has no pins, and only its
 		// cgroup is judged below.
@@ -841,50 +883,64 @@ static int cmd_reconcile(int argc, char **argv)
 			printf("reconcile session=%s action=refused reason=pins-open path=%s/%s error=%s\n",
 			       session->name, pinroot, pins_rel, strerror(errno));
 			refused++;
-			close(cgroup_fd);
+			if (!cgroup_gone)
+				close(cgroup_fd);
 			close(pinroot_fd);
 			continue;
 		}
 		links = progs = 0;
-		if (pins_fd >= 0) {
-			struct pin_dir link_dir = {.fd = -1}, prog_dir = {.fd = -1};
-			bool checked = !check_pins(pins_fd, "links", session->cgroup_id, session->name, &link_dir) &&
-				       !check_pins(pins_fd, "progs", session->cgroup_id, session->name, &prog_dir);
+		struct pin_dir link_dir = {.fd = -1}, prog_dir = {.fd = -1};
+		unsigned long long expected_id = cgroup_gone ? 0 : session->cgroup_id;
+		bool checked = pins_fd < 0 || (!check_pins(pins_fd, "links", expected_id, session->name, &link_dir) &&
+					       !check_pins(pins_fd, "progs", expected_id, session->name, &prog_dir));
+		// Under cgroupfs the directory goes first, through the slice root's descriptor: `rmdir`
+		// fails with EBUSY on a cgroup a task entered since the check above, and the pins then stay
+		// with it. Under systemd the launcher stops the slice unit after this runs.
+		bool cgroup_kept = false;
 
-			if (checked) {
-				delete_pins(pins_fd, "links", &link_dir);
-				delete_pins(pins_fd, "progs", &prog_dir);
-				links = link_dir.count;
-				progs = prog_dir.count;
-			}
-			if (link_dir.fd >= 0)
-				close(link_dir.fd);
-			if (prog_dir.fd >= 0)
-				close(prog_dir.fd);
-			close(pins_fd);
-			if (!checked) {
-				refused++;
-				close(cgroup_fd);
-				close(pinroot_fd);
-				continue;
-			}
+		if (checked && !cgroup_gone && !strcmp(manager, "cgroupfs") &&
+		    unlinkat(slice_fd, cgroup_rel, AT_REMOVEDIR)) {
+			if (errno != EBUSY)
+				die("rmdir %s: %s", session->cgroup, strerror(errno));
+			cgroup_kept = true;
+		}
+		if (checked && !cgroup_kept && pins_fd >= 0) {
+			delete_pins(pins_fd, "links", &link_dir);
+			delete_pins(pins_fd, "progs", &prog_dir);
+			links = link_dir.count;
+			progs = prog_dir.count;
 			if (unlinkat(pinroot_fd, pins_rel, AT_REMOVEDIR))
 				die("rmdir %s/%s: %s", pinroot, pins_rel, strerror(errno));
 		}
+		if (link_dir.fd >= 0)
+			close(link_dir.fd);
+		if (prog_dir.fd >= 0)
+			close(prog_dir.fd);
+		if (pins_fd >= 0)
+			close(pins_fd);
 		if (pinroot_fd >= 0)
 			close(pinroot_fd);
-		close(cgroup_fd);
-		// Under systemd the launcher stops the slice unit, which removes the cgroup; under
-		// cgroupfs the directory is removed here, through the slice root's descriptor.
-		if (!strcmp(manager, "cgroupfs")) {
-			if (unlinkat(slice_fd, cgroup_rel, AT_REMOVEDIR))
-				die("rmdir %s: %s", session->cgroup, strerror(errno));
+		if (!cgroup_gone)
+			close(cgroup_fd);
+		if (!checked) {
+			refused++;
+			continue;
+		}
+		if (cgroup_kept) {
+			printf("reconcile session=%s action=kept reason=populated cgroup=%s\n", session->name,
+			       session->cgroup);
+			kept++;
+			continue;
+		}
+		if (cgroup_gone)
+			printf("reconcile session=%s action=removed links=%d progs=%d cgroup=gone\n", session->name,
+			       links, progs);
+		else if (!strcmp(manager, "cgroupfs"))
 			printf("reconcile session=%s action=removed links=%d progs=%d cgroup=removed\n", session->name,
 			       links, progs);
-		} else {
+		else
 			printf("reconcile session=%s action=removed links=%d progs=%d cgroup=stop-slice slice=%s\n",
 			       session->name, links, progs, strrchr(session->cgroup, '/') + 1);
-		}
 		removed++;
 	}
 	printf("reconcile sessions=%d removed=%d kept=%d refused=%d\n", session_count, removed, kept, refused);

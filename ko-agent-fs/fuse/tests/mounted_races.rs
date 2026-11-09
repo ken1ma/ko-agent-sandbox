@@ -8,11 +8,13 @@
 
 mod common;
 
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -140,6 +142,73 @@ fn a_concurrent_rename_cannot_smuggle_a_write_into_a_frozen_tree() {
     );
 }
 
+/// The backing inode numbers of the host's `.git` writes and the sandbox's `GIT~1` creations, in
+/// the order they happened, for the failure message of the test below. The suspected cause needs a
+/// `.git` that takes back a number an earlier `.git` had (`../doc/TODO.md`, "A second name arriving
+/// during a name-based mutation"): a failure without a repeated `.git` number refutes it, and a
+/// pass shows nothing.
+#[derive(Default)]
+struct InodeRecord {
+    events: Vec<(&'static str, u64)>,
+}
+
+impl InodeRecord {
+    fn report(&self) -> String {
+        let mut pointer_counts: HashMap<u64, usize> = HashMap::new();
+        for (name, ino) in &self.events {
+            if *name == ".git" {
+                *pointer_counts.entry(*ino).or_default() += 1;
+            }
+        }
+        let mut repeated: Vec<(u64, usize)> = pointer_counts
+            .iter()
+            .filter(|(_, count)| **count > 1)
+            .map(|(ino, count)| (*ino, *count))
+            .collect();
+        repeated.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(&right.0)));
+        let creations: Vec<u64> = self
+            .events
+            .iter()
+            .filter(|(name, _)| *name == "GIT~1")
+            .map(|(_, ino)| *ino)
+            .collect();
+        let creations_on_pointer_numbers = creations
+            .iter()
+            .filter(|ino| pointer_counts.contains_key(ino))
+            .count();
+        let recent = &self.events[self.events.len().saturating_sub(12)..];
+        format!(
+            "{} .git writes under {} inode numbers; repeated numbers (number, writes), at most 20: \
+             {:?}; {} GIT~1 creations, {} under a number a .git had; the last events: {:?}",
+            pointer_counts.values().sum::<usize>(),
+            pointer_counts.len(),
+            &repeated[..repeated.len().min(20)],
+            creations.len(),
+            creations_on_pointer_numbers,
+            recent,
+        )
+    }
+}
+
+#[test]
+fn the_inode_record_reports_repeated_git_numbers_and_creations_on_them() {
+    let record = InodeRecord {
+        events: vec![
+            (".git", 7),
+            ("GIT~1", 9),
+            (".git", 8),
+            (".git", 7),
+            ("GIT~1", 8),
+        ],
+    };
+    assert_eq!(
+        record.report(),
+        "3 .git writes under 2 inode numbers; repeated numbers (number, writes), at most 20: \
+         [(7, 2)]; 2 GIT~1 creations, 1 under a number a .git had; the last events: \
+         [(\".git\", 7), (\"GIT~1\", 9), (\".git\", 8), (\".git\", 7), (\"GIT~1\", 8)]",
+    );
+}
+
 #[test]
 #[ignore = "needs /dev/fuse and CAP_SYS_ADMIN; run in the privileged dev rig"]
 fn a_create_never_reopens_a_guarded_entry_that_arrives_under_a_second_name() {
@@ -150,15 +219,21 @@ fn a_create_never_reopens_a_guarded_entry_that_arrives_under_a_second_name() {
     const POINTER: &str = "gitdir: /host/real/.git\n";
     let mount = TestMount::new(|_| {});
     let stop = Arc::new(AtomicBool::new(false));
+    let record = Arc::new(Mutex::new(InodeRecord::default()));
 
     let churn = {
         let stop = Arc::clone(&stop);
+        let record = Arc::clone(&record);
         let backing = mount.backing.clone();
         thread::spawn(move || {
             let pointer = backing.join(".git");
             let second_name = backing.join("GIT~1");
             while !stop.load(Ordering::Relaxed) {
                 fs::write(&pointer, POINTER).unwrap();
+                if let Ok(meta) = fs::symlink_metadata(&pointer) {
+                    let mut record = record.lock().unwrap_or_else(PoisonError::into_inner);
+                    record.events.push((".git", meta.ino()));
+                }
                 // Fails while the sandbox's own `GIT~1` holds the name.
                 let linked = fs::hard_link(&pointer, &second_name).is_ok();
                 assert_eq!(
@@ -191,11 +266,23 @@ fn a_create_never_reopens_a_guarded_entry_that_arrives_under_a_second_name() {
                 let mut content = String::new();
                 let _ = file.read_to_string(&mut content);
                 assert_ne!(
-                    content, POINTER,
-                    "SECURITY: a create opened the host's pointer file"
+                    content,
+                    POINTER,
+                    "SECURITY: a create opened the host's pointer file; {}",
+                    record
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .report(),
                 );
                 let _ = file.write_all(b"evil");
                 created += 1;
+                // The handle's `fstat` reports the mount's inode number, so the backing name's
+                // `lstat` stands in. It is the sandbox's own file, since the host's link fails
+                // while that file holds the name.
+                if let Ok(meta) = fs::symlink_metadata(mount.backing_at("GIT~1")) {
+                    let mut record = record.lock().unwrap_or_else(PoisonError::into_inner);
+                    record.events.push(("GIT~1", meta.ino()));
+                }
                 let _ = fs::remove_file(mount.at("GIT~1"));
             }
             Err(err) if err.raw_os_error() == Some(libc::EPERM) => {}

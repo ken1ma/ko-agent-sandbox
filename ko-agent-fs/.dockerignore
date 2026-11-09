@@ -16,3 +16,4 @@ policy/examples
 fuse/examples
 bpf/test
 !bpf/test/host
+!bpf/test/podman/policy/exercise.c

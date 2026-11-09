@@ -462,10 +462,12 @@ restore permission prompts and set the Claude Code status line.
     Management actions, each recognized before the command; whatever follows
     belongs to the action:
 
-      --build            build the container images, install the BPF backend on
+      --build [--no-bpf] build the container images, install the BPF backend on
                          macOS and Windows and the FUSE backend, and derive the
                          --nesting=none seccomp profile from podman's default,
-                         always pulling remote base images
+                         always pulling remote base images. If the BPF backend
+                         cannot be built, the build fails. --no-bpf builds without
+                         it; then only --workspace=...,fuse sessions can start
       --update           update the agents: rebuild only the sandbox container
                          image, without cache, on the base images --build built, and
                          derive the seccomp profile again
@@ -502,11 +504,9 @@ restore permission prompts and set the Claude Code status line.
                          run-on-host proxies' included; with extra args (-f,
                          --tail 50), run podman logs on the running session proxies instead
 
-      --self-test [<filter>]
-                         run the ko-agent-fs suites; <filter> selects one
-                         case or family. Without a filter, also check the host share;
-                         its scratch directory in the workspace is removed on success
-                         and retained on failure. Removes replaced self-test images
+      --self-test [--no-bpf]
+                         test the file protections on this machine; --no-bpf skips
+                         the BPF backend's corpus. Removes replaced self-test images
                          (ko-agent-fs/doc/testing.md)
 
       --help             this text

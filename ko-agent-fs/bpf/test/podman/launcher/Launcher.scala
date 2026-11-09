@@ -33,8 +33,7 @@
 // - on macOS, a FIFO the host made;
 // - the refusals beside a live session of the other backend or socket setting, in each pairing and
 //   both orders;
-// - the kernel's memory for one, four and eight program sets, and after their removal;
-// - the `codex exec` row, which needs a signed-in Codex, so the user runs it by hand.
+// - the kernel's memory for one, four and eight program sets, and after their removal.
 //
 // It creates the following, and removes all of it on exit (the sessions' state with `--reset`):
 //
@@ -370,7 +369,6 @@ object Launcher:
         hostFifo()
         if alone("before the refusals") then refusals()
         if alone("before the memory row") then memory()
-        codexExec()
         step("alone on the machine at the end")
         if alone("at the end") then transcript.pass("nothing foreign appeared during the run")
 
@@ -902,8 +900,3 @@ object Launcher:
             bytes.zip(bytes.tail).forall(_ < _) && removed < bytes.last)
         removeCgroup(vm, facts.manager, facts.uid, Prefix, "mem")
         registry.memoryCgroup = false
-
-      def codexExec(): Unit =
-        step("codex exec with its daemon directory unwritable: the user's row")
-        info("run by hand in a live,bpf session with a signed-in Codex: `codex exec 'print hello'` must answer " +
-          "while ~/.codex holds no socket the policy refuses (\"The hooks\", file_receive)")

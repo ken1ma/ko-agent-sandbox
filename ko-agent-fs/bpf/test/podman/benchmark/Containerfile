@@ -21,13 +21,15 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY policy.bpf.c records.h backend.h controller.c readback.c fixture.c stats.c ./
+COPY policy.bpf.c records.h backend.h loader.h controller.c readback.c fixture.c stats.c ./
 
 # The step below reads the kernel's BTF, which podman does not see as a build input. A cached layer
 # would then outlive a kernel upgrade, so the driver passes the machine's `uname -r` here as part of
 # the cache key.
 ARG BUILD_KERNEL=unknown
 
+# The user-space binaries take the hardening of ko-agent-fs/bpf/Containerfile, so the suite runs them
+# as they ship.
 RUN set -eux; \
     mkdir -p /out; \
     test "$(uname -r)" = "$BUILD_KERNEL"; \
@@ -37,10 +39,16 @@ RUN set -eux; \
     clang-19 -O2 -g -target bpf -mcpu=v3 -Wall -Wno-missing-declarations -Werror \
         -c policy.bpf.c -o /out/policy.bpf.o; \
     sha256sum /out/policy.bpf.o >> /out/objects.sha256; \
-    clang-19 -O2 -Wall -Werror -static -I. -o /out/controller controller.c -lbpf -lelf -lz -lzstd; \
-    clang-19 -O2 -Wall -Werror -static -I. -o /out/readback readback.c -lbpf -lelf -lz -lzstd; \
-    clang-19 -O2 -Wall -Werror -static -I. -o /out/fixture fixture.c; \
-    clang-19 -O2 -Wall -Werror -static -I. -o /out/stats stats.c -lbpf -lelf -lz -lzstd; \
+    case "$(uname -m)" in \
+        aarch64) branch=-mbranch-protection=standard ;; \
+        x86_64) branch=-fcf-protection ;; \
+        *) echo "no branch protection flag for $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    hardening="-D_FORTIFY_SOURCE=3 -fstack-protector-strong -fstack-clash-protection $branch -static-pie"; \
+    clang-19 -O2 -Wall -Werror $hardening -I. -o /out/controller controller.c -lbpf -lelf -lz -lzstd; \
+    clang-19 -O2 -Wall -Werror $hardening -I. -o /out/readback readback.c -lbpf -lelf -lz -lzstd; \
+    clang-19 -O2 -Wall -Werror $hardening -I. -o /out/fixture fixture.c; \
+    clang-19 -O2 -Wall -Werror $hardening -I. -o /out/stats stats.c -lbpf -lelf -lz -lzstd; \
     for bin in controller readback fixture stats; do \
         ldd /out/$bin 2>&1 | grep -q "statically linked\|not a dynamic executable"; \
     done; \

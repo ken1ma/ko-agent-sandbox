@@ -1702,16 +1702,19 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(!index.exists(_.split("/").contains("target")), "target leaked")
 
     // These directories are deliberately absent (build.sbt's bundling task, `unbundled`, gives the reasons), with
-    // bpf/test/host the one subtree kept.
+    // bpf/test/host and the policy suite's exerciser kept for the self-test image.
+    val exerciser = "ko-agent-fs/bpf/test/podman/policy/exercise.c"
     Vector(
       "ko-agent-fs/doc", "ko-agent-fs/policy/doc", "ko-agent-fs/bpf/doc", "ko-agent-fs/fuse/doc",
       "ko-agent-fs/policy/probe", "ko-agent-fs/fuse/probe", "ko-agent-fs/bench",
       "ko-agent-fs/policy/examples", "ko-agent-fs/fuse/examples", "ko-agent-fs/bpf/test",
       "ko-agent-egress-proxy/app/src/test",
     ).foreach: directory =>
-      val leaked = index.filter(_.startsWith(s"$directory/")).filterNot(_.startsWith("ko-agent-fs/bpf/test/host/"))
+      val leaked = index.filter(_.startsWith(s"$directory/"))
+        .filterNot(entry => entry.startsWith("ko-agent-fs/bpf/test/host/") || entry == exerciser)
       assert(leaked.isEmpty, s"$directory leaked into the jar: $leaked")
     assert(index.exists(_.startsWith("ko-agent-fs/bpf/test/host/")), "bpf/test/host missing")
+    assert(index.contains(exerciser), s"$exerciser missing")
 
   test("ImgTagVersion names the Debian and Temurin major versions debian-temurin installs"):
     val versionArg = "ARG (DEBIAN|TEMURIN)_VERSION=([0-9]+)\\.[0-9.+]+".r
@@ -2282,16 +2285,29 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // workspace's rule file and stays with the terminal (EgressRules.rulesetLinesOf).
     assert(sources.exists(_.contains("\"--env=KO_AGENT_SANDBOX_EGRESS_RULESET=${rulesetLinesOf(")))
 
+  test("--build and --self-test take --no-bpf once, anywhere among their operands, on the platforms with the backend"):
+    assertEquals(noBpfOperand("--build", Nil, Os.Mac), Right(false))
+    assertEquals(noBpfOperand("--self-test", List("--no-bpf"), Os.Windows), Right(true))
+    assertEquals(noBpfOperand("--build", List("--no-bpf"), Os.Mac), Right(true))
+    assert(noBpfOperand("--build", List("--no-bpf", "--no-bpf"), Os.Mac).left.exists(_.contains("given twice")))
+    assert(noBpfOperand("--build", List("--no-bpf"), Os.Linux).left.exists(_.contains("only the FUSE backend")))
+    // Another operand is refused; the refusal names --no-bpf only where the platform takes it.
+    assertEquals(
+      noBpfOperand("--self-test", List("extra", "--no-bpf"), Os.Mac),
+      Left("error: --self-test takes no argument other than --no-bpf"),
+    )
+    assertEquals(noBpfOperand("--self-test", List("extra"), Os.Linux), Left("error: --self-test takes no argument"))
+
   test("--self-test's container leaves nothing behind and has what the mount needs"):
     // A measurement that changes its subject is worth nothing, so the run binds no host path and
     // keeps no container.
-    val command = selfTestRunCommand("podman", Some("a_handle_held"), asRoot = false)
+    val command = selfTestRunCommand("podman", asRoot = false)
     assert(command.contains("--rm"), command.mkString(" "))
     assert(command.containsSlice(Seq("--device", "/dev/fuse")), command.mkString(" "))
     assert(command.containsSlice(Seq("--cap-add", "SYS_ADMIN")), command.mkString(" "))
     assert(command.contains("--network=none"), command.mkString(" "))
     assert(command.contains("--pull=never"), command.mkString(" "))
-    assert(command.endsWith(Seq("ko-agent-self-test:latest", "a_handle_held")), command.mkString(" "))
+    assertEquals(command.last, "ko-agent-self-test:latest")
     assert(
       !command.exists(argument => argument == "-v" || argument.startsWith("--volume")),
       s"--self-test binds a host path into the container: ${command.mkString(" ")}",
@@ -2302,8 +2318,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     // The root retry exists to measure the bounding-set question, not to be the default.
     assert(!command.containsSlice(Seq("--user", "0")), command.mkString(" "))
-    assert(selfTestRunCommand("podman", None, asRoot = true).containsSlice(Seq("--user", "0")))
-    assertEquals(selfTestRunCommand("podman", None, asRoot = false).last, "ko-agent-self-test:latest")
+    assert(selfTestRunCommand("podman", asRoot = true).containsSlice(Seq("--user", "0")))
 
   test("--self-test builds its image from the bundle root against the pinned toolchain"):
     val commands = selfTestBuildCommands("podman", "1.2.3", "fsdigest", "selftestdigest")
@@ -2346,8 +2361,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       Right(ParsedCommandLine(None, None, Some(("--egress-check", List("pypi.org", "claude"))), Nil)),
     )
     assertEquals(
-      parseCommandLine(List("--self-test", "a_handle_held")),
-      Right(ParsedCommandLine(None, None, Some(("--self-test", List("a_handle_held"))), Nil)),
+      parseCommandLine(List("--self-test", "--no-bpf")),
+      Right(ParsedCommandLine(None, None, Some(("--self-test", List("--no-bpf"))), Nil)),
     )
 
   test("--reset takes workspace ids as --stats prints them, each once"):

@@ -1,14 +1,14 @@
 // The BPF cgroup-LSM backend of ko-agent-fs/bpf/doc/architecture.md: what the controller, the
 // read-back and the fixture share. That is the formats, and the readings each side takes for itself.
 //
-// - policy.bpf.c defines its map records itself, because a BPF program includes vmlinux.h and
-//   records.h follows it. The layouts here must equal the program's, and the read-back compares the
-//   kernel's map info with this table.
+// - policy.bpf.c takes the records' layout from records.h, as this file does, and defines the other
+//   map values the controller fills itself: struct ident, root and policy_config. Those layouts here
+//   must equal the program's, and the read-back compares the kernel's map info with this table.
 // - No action of the controller's is here: the read-back learns what is attached from the kernel
-//   alone.
+//   alone. loader.h holds what the programs that call libbpf share.
 // - The launcher installs the three binaries built from this directory (Containerfile) into the
-//   podman machine (KoAgentBpf.scala). The lifecycle and benchmark suites build the same sources
-//   (their sources.txt).
+//   podman machine (KoAgentBpf.scala). The policy, lifecycle and benchmark suites build the same
+//   sources (their sources.txt).
 #ifndef BACKEND_H
 #define BACKEND_H
 
@@ -32,8 +32,9 @@
 #include "records.h"
 
 // Debian trixie's libelf-dev ships libelf.a without libeu.a, but libelf.a calls four tree helpers
-// from libeu.a (elfutils, lib/eu-search.c). These stand in for them in the static link of the two
-// privileged binaries. Each binary is single-threaded, so the lock the originals take is left out.
+// from libeu.a (elfutils, lib/eu-search.c). These stand in for them in the static link of the binaries
+// that link libelf; the others compile them unused. Each binary is single-threaded, so the lock the
+// originals take is left out.
 #include <search.h>
 struct eu_search_tree {
 	void *root;
@@ -125,7 +126,7 @@ static const struct map_shape policy_maps[] = {
 };
 #define POLICY_MAPS (sizeof(policy_maps) / sizeof(policy_maps[0]))
 
-static inline void die(const char *format, ...)
+__attribute__((noreturn, format(printf, 1, 2))) static inline void die(const char *format, ...)
 {
 	va_list args;
 
@@ -137,9 +138,27 @@ static inline void die(const char *format, ...)
 	exit(2);
 }
 
+// snprintf that ends the run where the text does not fit `size`: a path cut to fit names another file,
+// which the controller would pin, open or record as a root. A path buffer is PATH_MAX, 4096 bytes: the
+// kernel refuses a path argument of 4096 bytes or more with ENAMETOOLONG, so a larger buffer would only
+// move the failure to the syscall.
+__attribute__((format(printf, 3, 4))) static inline void format_or_die(char *out, size_t size, const char *format,
+								 ...)
+{
+	va_list args;
+	int len;
+
+	va_start(args, format);
+	len = vsnprintf(out, size, format, args);
+	va_end(args);
+	if (len < 0 || (size_t)len >= size)
+		die("%d bytes do not fit in %zu: %s...", len, size, out);
+}
+
 // A refusal of the launch, kept distinct from a failure. The launcher prints the reason and binds
 // nothing writable.
-static inline void refuse(const char *reason, const char *format, ...)
+__attribute__((noreturn, format(printf, 2, 3))) static inline void refuse(const char *reason, const char *format,
+									   ...)
 {
 	va_list args;
 
@@ -183,7 +202,7 @@ static inline __u32 mnt_ns_inum(const char *pid)
 	ssize_t len;
 	unsigned long inum;
 
-	snprintf(path, sizeof(path), "/proc/%s/ns/mnt", pid);
+	format_or_die(path, sizeof(path), "/proc/%s/ns/mnt", pid);
 	len = readlink(path, link, sizeof(link) - 1);
 	if (len < 0)
 		die("readlink %s: %s", path, strerror(errno));
@@ -223,7 +242,8 @@ static inline int read_mounts(struct mount_entry **out)
 	static struct mount_entry *mounts;
 	static int count = -1;
 	FILE *file;
-	char line[8192];
+	char *line = NULL;
+	size_t capacity = 0;
 
 	if (count >= 0) {
 		*out = mounts;
@@ -233,7 +253,9 @@ static inline int read_mounts(struct mount_entry **out)
 	if (!file)
 		die("open /proc/self/mountinfo: %s", strerror(errno));
 	count = 0;
-	while (fgets(line, sizeof(line), file)) {
+	// getline reads each line whole: a mountpoint escaped to four bytes per character outgrows any fixed
+	// line, and a cut line would be read as a mount of its own.
+	while (getline(&line, &capacity, file) >= 0) {
 		char *save = NULL, *field, *dash;
 		int index = 0;
 		struct mount_entry entry = {};
@@ -243,19 +265,21 @@ static inline int read_mounts(struct mount_entry **out)
 			continue;
 		*dash = 0;
 		for (field = strtok_r(line, " ", &save); field; field = strtok_r(NULL, " ", &save), index++)
-			if (index == 4)
-				snprintf(entry.mountpoint, sizeof(entry.mountpoint), "%s", field);
+			if (index == 4) {
+				unescape(field);
+				format_or_die(entry.mountpoint, sizeof(entry.mountpoint), "%s", field);
+			}
 		save = NULL;
 		field = strtok_r(dash + 3, " ", &save);
 		if (!field || !entry.mountpoint[0])
 			continue;
-		snprintf(entry.fstype, sizeof(entry.fstype), "%s", field);
-		unescape(entry.mountpoint);
+		format_or_die(entry.fstype, sizeof(entry.fstype), "%s", field);
 		mounts = realloc(mounts, (count + 1) * sizeof(*mounts));
 		if (!mounts)
 			die("out of memory");
 		mounts[count++] = entry;
 	}
+	free(line);
 	fclose(file);
 	*out = mounts;
 	return count;
@@ -305,7 +329,7 @@ static inline int mounts_below(const char *path, char *first, size_t size)
 	for (int i = 0; i < count; i++)
 		if (strcmp(mounts[i].mountpoint, resolved) && is_beneath(resolved, mounts[i].mountpoint)) {
 			if (!below)
-				snprintf(first, size, "%s", mounts[i].mountpoint);
+				format_or_die(first, size, "%s", mounts[i].mountpoint);
 			below++;
 		}
 	return below;
@@ -313,31 +337,37 @@ static inline int mounts_below(const char *path, char *first, size_t size)
 
 // --- Paths the controller and the read-back open ----------------------------------------------
 
-// `path` below `root` as a relative path. NULL when it is not below `root`, or when it has an
-// empty, `.` or `..` component.
-static const char *relative_beneath(const char *root, const char *path)
+// Whether `rel` is a non-empty relative path of plain components: no leading `/`, and no empty, `.` or
+// `..` component.
+static inline bool plain_relative(const char *rel)
 {
-	size_t len = strlen(root);
-	const char *rel, *at;
-
-	if (strncmp(root, path, len) || path[len] != '/')
-		return NULL;
-	rel = path + len + 1;
 	if (!*rel)
-		return NULL;
-	for (at = rel; *at;) {
+		return false;
+	for (const char *at = rel; *at;) {
 		const char *end = strchr(at, '/');
 		size_t clen = end ? (size_t)(end - at) : strlen(at);
 
 		if (clen == 0 || (clen == 1 && at[0] == '.') || (clen == 2 && at[0] == '.' && at[1] == '.'))
-			return NULL;
+			return false;
 		at += clen + (end ? 1 : 0);
 	}
-	return rel;
+	return true;
 }
 
-// Opens `rel` below `root_fd` without following a symlink, crossing a mount or climbing. A symlink
-// in place of a directory fails with ELOOP, a mount on one with EXDEV, and `..` with EXDEV too.
+// `path` below `root` as a relative path. NULL when it is not below `root`, or not plain_relative.
+static const char *relative_beneath(const char *root, const char *path)
+{
+	size_t len = strlen(root);
+
+	if (strncmp(root, path, len) || path[len] != '/' || !plain_relative(path + len + 1))
+		return NULL;
+	return path + len + 1;
+}
+
+// Opens `rel` below `root_fd` without following a symlink, crossing a mount or climbing above
+// `root_fd`. A symlink in place of a directory fails with ELOOP, a mount on one with EXDEV, and a `..`
+// that climbs out with EXDEV too. With O_PATH | O_NOFOLLOW, a symlink as the last component opens as
+// itself.
 static inline int open_beneath(int root_fd, const char *rel, int flags)
 {
 	struct open_how how = {
@@ -357,8 +387,24 @@ static const char *slice_root(void)
 
 	if (!uid || !*uid)
 		die("SUDO_UID is unset: run under sudo");
-	snprintf(root, sizeof(root), "/sys/fs/cgroup/user.slice/user-%s.slice", uid);
+	// A value such as `0.slice/..` would move the root, and the reconcile removes cgroups below it.
+	if (strspn(uid, "0123456789") != strlen(uid))
+		die("SUDO_UID is not a number: %s", uid);
+	format_or_die(root, sizeof(root), "/sys/fs/cgroup/user.slice/user-%s.slice", uid);
 	return root;
+}
+
+// bpffs refuses a name containing a `.` with EPERM at the lookup, since it reserves such names for
+// its own special files (kernel/bpf/inode.c, bpf_lookup). So a pin path below the mount must not
+// contain one.
+static inline void require_pin_dir(const char *pindir)
+{
+	const char *rel = relative_beneath(PIN_FS, pindir);
+
+	if (!rel)
+		refuse("pindir-outside-bpffs", "pindir=%s", pindir);
+	if (strchr(rel, '.'))
+		refuse("pindir-dotted", "pindir=%s", pindir);
 }
 
 // Opens an attach cgroup below the user's slice, refusing any other.
@@ -411,9 +457,13 @@ static inline void read_records(const char *path, struct records *out)
 	    fgetc(file) != EOF)
 		die("%s: its size does not match its counts", path);
 	fclose(file);
+	// The volume's root is the controller's own (`--volume`), never a record's. A path is the
+	// workspace root itself, or plain components below it.
 	for (__u32 i = 0; i < out->header.root_count; i++)
 		if (out->guarded[i].len >= PATH_BYTES || out->guarded[i].path[out->guarded[i].len] != 0 ||
-		    out->guarded[i].kind == 0 || out->guarded[i].kind >= ROOT_KINDS)
+		    out->guarded[i].kind == 0 || out->guarded[i].kind >= ROOT_KINDS ||
+		    out->guarded[i].kind == ROOT_VOLUME ||
+		    (out->guarded[i].len && !plain_relative(out->guarded[i].path)))
 			die("%s: guarded path %u is malformed", path, i);
 }
 
@@ -434,19 +484,54 @@ struct policy {
 	struct policy_config cfg;
 };
 
-static inline void add_root(struct policy *policy, __u32 kind, const char *path)
+// Records a root whose identity is in `policy->idents[policy->root_count]` already.
+static inline void add_root_ident(struct policy *policy, __u32 kind, const char *path)
 {
 	int index = policy->root_count;
 
-	if (index >= ROOTS)
-		die("more than %d roots", ROOTS);
-	ident_of(path, &policy->idents[index]);
 	for (int i = 0; i < index; i++)
 		if (same_ident(&policy->idents[i], &policy->idents[index]))
 			die("two roots share an identity: %s and %s", policy->root_paths[i], path);
 	policy->roots[index].kind = kind;
-	snprintf(policy->root_paths[index], PATH_MAX, "%s", path);
+	format_or_die(policy->root_paths[index], PATH_MAX, "%s", path);
 	policy->root_count++;
+}
+
+// A root the launcher names by path: the fixture's or the volume's.
+static inline void add_root(struct policy *policy, __u32 kind, const char *path)
+{
+	if (policy->root_count >= ROOTS)
+		die("more than %d roots", ROOTS);
+	ident_of(path, &policy->idents[policy->root_count]);
+	add_root_ident(policy, kind, path);
+}
+
+// A guarded object of the records, resolved below the workspace's descriptor rather than by path: the
+// workspace is shared live, and a directory swapped for a symlink between the guard's resolve and this
+// one would otherwise record another object's identity. Any symlink or mount on the way refuses the
+// launch; the last component is taken as itself, as statx's AT_SYMLINK_NOFOLLOW takes it.
+static inline void add_guarded_root(struct policy *policy, int workspace_fd, const char *workspace,
+				    const struct guarded_path *guarded)
+{
+	struct statx stx;
+	char path[PATH_MAX];
+	int fd = workspace_fd;
+
+	if (policy->root_count >= ROOTS)
+		die("more than %d roots", ROOTS);
+	format_or_die(path, sizeof(path), "%s%s%s", workspace, guarded->len ? "/" : "", guarded->path);
+	if (guarded->len) {
+		fd = open_beneath(workspace_fd, guarded->path, O_PATH | O_NOFOLLOW | O_CLOEXEC);
+		if (fd < 0)
+			refuse("guarded-path", "path=%s error=%s", path, strerror(errno));
+	}
+	if (statx(fd, "", AT_EMPTY_PATH, STATX_INO, &stx))
+		die("statx %s: %s", path, strerror(errno));
+	if (fd != workspace_fd)
+		close(fd);
+	policy->idents[policy->root_count].s_dev = ((__u64)stx.stx_dev_major << 20) | stx.stx_dev_minor;
+	policy->idents[policy->root_count].i_ino = stx.stx_ino;
+	add_root_ident(policy, guarded->kind, path);
 }
 
 static inline void expect_policy(struct policy *policy, const char *records, const char *workspace, const char *fixture,
@@ -457,14 +542,14 @@ static inline void expect_policy(struct policy *policy, const char *records, con
 		read_records(records, &policy->rec);
 	else if (!no_root)
 		die("a policy with roots needs the records file");
-	for (__u32 i = 0; !no_root && i < policy->rec.header.root_count; i++) {
-		char path[PATH_MAX];
+	if (!no_root && policy->rec.header.root_count) {
+		int workspace_fd = open(workspace, O_PATH | O_DIRECTORY | O_CLOEXEC);
 
-		if (policy->rec.guarded[i].len)
-			snprintf(path, sizeof(path), "%s/%s", workspace, policy->rec.guarded[i].path);
-		else
-			snprintf(path, sizeof(path), "%s", workspace);
-		add_root(policy, policy->rec.guarded[i].kind, path);
+		if (workspace_fd < 0)
+			die("open %s: %s", workspace, strerror(errno));
+		for (__u32 i = 0; i < policy->rec.header.root_count; i++)
+			add_guarded_root(policy, workspace_fd, workspace, &policy->rec.guarded[i]);
+		close(workspace_fd);
 	}
 	fs_type_of(workspace, policy->cfg.fs_type, sizeof(policy->cfg.fs_type));
 	if (fixture) {
@@ -494,7 +579,7 @@ static inline __u32 parse_flags(const char *text)
 	char copy[256], *save = NULL, *token;
 	__u32 flags = 0;
 
-	snprintf(copy, sizeof(copy), "%s", text);
+	format_or_die(copy, sizeof(copy), "%s", text);
 	for (token = strtok_r(copy, ",", &save); token; token = strtok_r(NULL, ",", &save)) {
 		if (!strcmp(token, "short-names"))
 			flags |= FLAG_SHORT_NAMES;
@@ -565,8 +650,15 @@ static inline void parse_expectation(int argc, char **argv, struct expectation *
 		die("%s: no hook named", usage);
 	exp->hooks = (const char **)argv + first;
 	exp->hook_count = argc - first;
-	for (int i = 0; i < exp->hook_count; i++)
+	// The callers size their arrays by the hook table, and a hook named twice would attach twice.
+	if (exp->hook_count > (int)POLICY_HOOKS)
+		die("%s: %d hooks named, the policy has %zu", usage, exp->hook_count, POLICY_HOOKS);
+	for (int i = 0; i < exp->hook_count; i++) {
 		hook_index(exp->hooks[i]);
+		for (int k = 0; k < i; k++)
+			if (!strcmp(exp->hooks[k], exp->hooks[i]))
+				die("%s: hook %s named twice", usage, exp->hooks[i]);
+	}
 }
 
 static inline int hook_index(const char *name)
@@ -575,7 +667,6 @@ static inline int hook_index(const char *name)
 		if (!strcmp(policy_hooks[i], name))
 			return i;
 	die("no hook %s in the policy", name);
-	return -1;
 }
 
 static inline void print_tag(const __u8 *tag)

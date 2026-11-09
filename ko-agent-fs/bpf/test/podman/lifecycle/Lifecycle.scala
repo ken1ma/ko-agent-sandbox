@@ -272,6 +272,7 @@ object Lifecycle:
           facts <- readVmFacts(transcript, vm, out, scratchDir, scratchDirVm, PinRoot)
           tags <- buildAndInstall(facts)
         yield
+          otherLinks()
           Lifecycle(facts, prepareWorkspace(), tags).rows()
           if transcript.failed == 0 then 0 else 1
       outcome.merge
@@ -296,6 +297,19 @@ object Lifecycle:
         if leftover.nonEmpty then info(s"pins left by an earlier run, removed: ${leftover.mkString(" ")}")
         recordBuild(transcript, vm, out, VmDir, Seq(s"sources digest=$builtDigest", s"procedure sha256=$procedure"))
         recordTags(transcript, vm, Readback, Tags)
+
+    /** Notes the cgroup-LSM links of other runs, a launcher session's or another suite's, after the build has
+      * unpinned this suite's leftovers. Beside one, the first attach finds the kernel's shim installed, so the
+      * attaches below do not measure its cost. No row's verdict depends on them. */
+    def otherLinks(): Unit =
+      step("other runs' links on the machine")
+      val listed = vm(s"sudo -n $Controller query /sys/fs/cgroup")
+      val cgroups = listed.text.linesIterator.filter(_.startsWith("link id=")).map(field("cgroup_id", _)).toSet
+      val links = field("links", listed.text)
+      if !listed.ok then info(s"the machine's cgroup-LSM links could not be listed: ${listed.text.trim}")
+      else if links == "0" then info("no other run's cgroup-LSM link is attached: the first attach installs the shim")
+      else info(s"$links cgroup-LSM links of ${cgroups.size} other cgroups are attached: the attaches below find " +
+        "the kernel's shim installed and do not measure its cost")
 
     def prepareWorkspace(): Workspace =
       step("the workspace fixture, the proof fixture, the records and the volume")
@@ -846,6 +860,7 @@ object Lifecycle:
         contradictions()
         refusalsRemoveNothing()
         cleanupRefusals()
+        interruptedCleanup()
 
       /** c1: a container whose labels name another session's cgroup. c2: a cgroup whose identity changed
         * since the record. c4: a pin directory whose links name another cgroup. */
@@ -978,6 +993,37 @@ object Lifecycle:
             vm.line(s"test -d ${r1.path} && echo PRESENT") == "PRESENT",
         )
         remove("r1")
+
+      /** A reconcile killed between a cgroup's removal and its pins' (controller.c, `cmd_reconcile`): i1 keeps
+        * every pin, i2 one link pin fewer. The removal detached the links, and the next reconcile removes both
+        * sessions with their pins. */
+      private def interruptedCleanup(): Unit =
+        val i1 = attach("i1")
+        attachController("i1", i1)
+        recordSession("i1", i1)
+        val i2 = attach("i2")
+        attachController("i2", i2)
+        recordSession("i2", i2)
+        remove("i1")
+        remove("i2")
+        vm(s"sudo -n rm $PinRoot/i2/links/inode_unlink")
+        // The kernel detaches a removed cgroup's links from a work queue, shortly after the removal.
+        val detached = within(10):
+          Seq("i1", "i2").forall: name =>
+            val info = vm.unrecorded(s"sudo -n $Controller link-info $PinRoot/$name/links/file_open").text
+            field("cgroup_id", info) == "0"
+        check("the removed cgroups' links read detached, cgroup_id 0", detached)
+        val reconciled = reconcile()
+        check(
+          s"a session whose cgroup is gone is removed with its pins, one link pin fewer too: " +
+            lines(reconciled, "^reconcile session=i[12] ".r).mkString(" "),
+          reconciled.contains("session=i1 action=removed links=8 progs=8 cgroup=gone") &&
+            reconciled.contains("session=i2 action=removed links=7 progs=8 cgroup=gone"),
+        )
+        check(
+          "and no pin of theirs remains",
+          vm.line(s"sudo -n ls -d $PinRoot/i1 $PinRoot/i2 2>/dev/null | wc -l | tr -d ' '") == "0",
+        )
 
       def costs(first: Launched, recreated: Launched): Unit =
         step("the costs of the launch's steps")

@@ -71,9 +71,17 @@ object KoAgentBpf:
     val noSocket = if settings.unixSocket then s",${CommandLine.NoUnixSocketValue}" else ""
     s"Launch with --workspace=${settings.mode},fuse$noSocket, or put that option in the options file."
 
-  /** What a machine without the backend still launches, after the build's notes below. */
-  private val FuseMeanwhile = "Launches under the default backend, bpf, are refused meanwhile; " +
-    "--workspace=...,fuse launches."
+  /** What a machine without the backend still starts, after the build's error below. */
+  private val FuseMeanwhile = "Until a --build succeeds, sessions under the default backend, bpf, cannot start; " +
+    "--workspace=...,fuse sessions can."
+
+  /**
+   * The option of `--build` and `--self-test` by which the user accepts a machine without the BPF backend, for one
+   * run. Without it, a build that cannot build or install the backend fails, and the self-test fails without an
+   * installed backend: `bpf` is the default backend, and a run that left it out unasked would report success for
+   * a machine whose default launches are refused.
+   */
+  val NoBpfOption = "--no-bpf"
 
   /** The share types the suites measured. Any other share type refuses the launch ("The launcher's side"). */
   val MeasuredShareTypes: Set[String] = Set("virtiofs", "9p")
@@ -449,27 +457,33 @@ object KoAgentBpf:
   /**
    * What keeps `--build` from building the backend on this machine: the kernel prerequisites and the
    * kernel's BTF, which the compile reads.
-   * - On any failure, the build skips the BPF backend and the FUSE backend's build goes on, since a `fuse` launch
-   *   needs nothing of the BPF backend.
-   * - On none, the build tries the backend. A failure of the backend's build or install warns
-   *   (buildFailedNote) and does not fail the rest of the build.
+   * - On any failure, the build refuses before building anything (buildRefusal), unless NoBpfOption is given.
+   * - On none, the build tries the backend after the rest. A failure of the backend's build or install fails the
+   *   build once the rest is built and installed (buildFailedError).
    */
   def buildFailures(facts: Facts, os: Os): Vector[String] =
     (kernelChecks(facts, os) :+ (facts("btf") == "1", s"the machine's kernel has no BTF (/sys/kernel/btf/vmlinux), " +
       s"which the policy is compiled against; ${upgradeRemedy(os)}")).collect { case (false, reason) => reason }
 
-  /** The build's warning when the backend's build or install failed on a machine that passed the checks. */
-  def buildFailedNote(reason: String, os: Os): String =
-    "the BPF backend could not be built on this machine, so `--workspace=...,bpf` is refused until a later " +
-      "`--build` succeeds; the rest of the build is complete. The machine's kernel may lack a BPF feature the " +
-      s"policy uses, which is measured on kernels 6.18 and 7.2: ${upgradeRemedy(os)}. The backend's $reason. " +
-      FuseMeanwhile
+  private val WithoutBpf =
+    s"To build without the BPF backend and start only --workspace=...,fuse sessions, run --build $NoBpfOption."
 
-  /** The build's note when it skipped the backend. */
-  def buildSkippedNote(failures: Vector[String]): String =
-    val heading = "note: the BPF backend is not built on this machine, so `--workspace=...,bpf` is refused until " +
-      "a `--build` after these are resolved:"
-    ((heading +: failures.map(reason => s"  - $reason")) :+ FuseMeanwhile).mkString("\n")
+  /** The build's refusal on a machine that fails buildFailures. */
+  def buildRefusal(failures: Vector[String]): String =
+    val heading = "error: the BPF backend, which launches use by default, cannot be built on this machine:"
+    ((heading +: failures.map(reason => s"  - $reason")) :+
+      s"Resolve these and run --build again. $WithoutBpf").mkString("\n")
+
+  /** The build's error when the backend's build or install failed on a machine that passed the checks. */
+  def buildFailedError(reason: String, os: Os): String =
+    "error: the BPF backend could not be built on this machine; the rest of the build is complete. The machine's " +
+      "kernel may lack a BPF feature the policy uses, which is measured on kernels 6.18 and 7.2: " +
+      s"${upgradeRemedy(os)}. The backend's $reason. $FuseMeanwhile $WithoutBpf"
+
+  /** The build's note under NoBpfOption, which leaves the backend out. */
+  val NoBpfNote: String =
+    s"note: $NoBpfOption: this build skips the BPF backend. A session under the default backend, bpf, starts only " +
+      s"if a --build of this launcher installed that backend; a --workspace=...,fuse session starts without it."
 
   // ---------------------------------------------------------------------------
   // The launch: steps 1 to 3, in one script in the machine
@@ -495,6 +509,25 @@ object KoAgentBpf:
 
   val StepMarker = "step="
   val IdentMarker = "ident "
+
+  /**
+   * Step 1 of "Lifecycle" as script lines: the session's attach cgroup made under the manager, its path in `$cg`,
+   * and its record at `$sess/cgroup`, which the teardown and the reconcile read. The caller's script sets `sess`.
+   */
+  def attachCgroupStep(facts: Facts, session: String): String =
+    val made =
+      if facts.manager == "systemd" then
+        s"""systemctl --user stop ${holdUnit(session)} >/dev/null 2>&1 || true
+           |systemctl --user reset-failed >/dev/null 2>&1 || true
+           |systemd-run --user --unit=${holdUnit(session)} --slice=${slice(session)} \\
+           |  /usr/bin/sleep infinity >/dev/null 2>&1
+           |cg="$$(find /sys/fs/cgroup/user.slice -type d -name ${slice(session)} 2>/dev/null | head -1)"
+           |[ -n "$$cg" ] || { echo "the attach slice ${slice(session)} was not created" >&2; exit 1; }""".stripMargin
+      else
+        s"""cg=/sys/fs/cgroup${cgroupParent(facts, session)}
+           |mkdir -p "$$cg\"""".stripMargin
+    s"""$made
+       |echo "cgroup=$$cg cgroup_id=$$(stat -c %i "$$cg")" > "$$sess/cgroup\"""".stripMargin
 
   /**
    * Steps 1 to 3 of "Lifecycle" for one session, and the readings the labels need.
@@ -539,17 +572,6 @@ object KoAgentBpf:
     // file lays out the fixture's fixed entries alone.
     val proofRules = if noRoot then "\"$sess/proof-rules\"" else "\"$sess/records.bin\""
     val parent = cgroupParent(facts, session)
-    val cgroupStep =
-      if facts.manager == "systemd" then
-        s"""systemctl --user stop ${holdUnit(session)} >/dev/null 2>&1 || true
-           |systemctl --user reset-failed >/dev/null 2>&1 || true
-           |systemd-run --user --unit=${holdUnit(session)} --slice=${slice(session)} \\
-           |  /usr/bin/sleep infinity >/dev/null 2>&1
-           |cg="$$(find /sys/fs/cgroup/user.slice -type d -name ${slice(session)} 2>/dev/null | head -1)"
-           |[ -n "$$cg" ] || { echo "the attach slice ${slice(session)} was not created" >&2; exit 1; }""".stripMargin
-      else
-        s"""cg=/sys/fs/cgroup$parent
-           |mkdir -p "$$cg\"""".stripMargin
     val proofStep =
       if facts.manager == "systemd" then
         s"""systemd-run --user --scope --slice=$parent -q "$$dir/fixture" run "$$fixture" $proofRules $proofFlags"""
@@ -588,8 +610,7 @@ object KoAgentBpf:
          |  printf %s "$$stamp" > "$$fixture/.laid"
          |fi
          |echo "${StepMarker}cgroup"
-         |$cgroupStep
-         |echo "cgroup=$$cg cgroup_id=$$(stat -c %i "$$cg")" > "$$sess/cgroup"
+         |${attachCgroupStep(facts, session)}
          |echo "cgroup path=$$cg id=$$(stat -c %i "$$cg") parent=$parent"
          |echo "${StepMarker}attach"
          |pins=${pinDir(session)}
@@ -835,7 +856,7 @@ object KoAgentBpf:
          |  named="$$(printf '%s\\n' "$$labels" \\
          |    | awk -v n="$$name" -v m="/$$name" '$$1 == n || $$1 == m { print $$2 }')"
          |  # A session the machine no longer has, as after a restart cut it off: no container, no cgroup
-         |  # and no pins leave nothing to judge but the record, which the controller cannot open.
+         |  # and no pins leave nothing to judge but the record, so the controller is not run for it.
          |  if [ -z "$$named" ] && [ "$$listing_failed" = no ] && [ -n "$$cg" ] && [ ! -e "$$cg" ] \\
          |      && ! sudo -n test -e "$PinRoot/$$(printf %s "$$name" | tr . _)"; then
          |    rm -rf "$$dir/sessions/$$name"

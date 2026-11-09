@@ -430,7 +430,7 @@ pub fn c_header() -> String {
          \tROOT_WORKSPACE = {ROOT_WORKSPACE},\n\
          \t/* a gitdir the guard found under .git/modules: the position is InGit([]) */\n\
          \tROOT_GITDIR = {ROOT_GITDIR},\n\
-         \t/* the persistent volume's root, the controller's own: the socket rule alone */\n\
+         \t/* the persistent volume's root, the controller's own: only sockets are judged beneath it */\n\
          \tROOT_VOLUME = {ROOT_VOLUME},\n\
          \t/* a .git object, the root's or a submodule worktree's pointer file: any name is the gitdir entry */\n\
          \tROOT_GUARDED_GIT = {ROOT_GUARDED_GIT},\n\

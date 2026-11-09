@@ -227,8 +227,7 @@ measured against what the host observed at every step:
 
 So a host write to a mapped file succeeds on Windows too.
 
-- Whether the mapping shows the write is `--self-test`'s `mmap` row, which has not run there
-  (`TODO.md`, "End-to-end coherency through the real host share").
+- The mapping shows the write ("Verified: the same coherency on Windows", below).
 - The lock costs co-editing with the writers it refuses. SECURITY.md ("The workspace") records
   this.
 
@@ -237,6 +236,16 @@ assumed. It is not there as evidence of a gap in git: the 8.3 part of CVE-2014-9
 **Mercurial's**, not git's. The Windows Server 24H2 run met `EEXIST` creating `GIT~1`. "Verified:
 NTFS 8.3 short names" has the creation, and the short names of an existing `.git` and
 `.ko-agent-sandbox`.
+
+
+### Verified: the same coherency on Windows (Server 24H2, podman 6.1.4, WSL2 6.18.54.1; 2026-11-09)
+
+`--self-test`'s share rows, over NTFS through the machine's 9p share, in the two runs whose suites
+passed:
+
+- the guard's refusal held through the whole stack;
+- the host write was visible to `read()` 6 ms and 7 ms after it was written;
+- the established mmap showed it 0 ms behind `read()`.
 
 
 ## The cost of a path walk

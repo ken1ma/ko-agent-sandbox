@@ -30,11 +30,14 @@ RUN set -eux; \
 
 WORKDIR /build
 COPY bpf/policy.bpf.c policy/include/records.h ./
-COPY bpf/backend.h bpf/controller.c bpf/readback.c bpf/fixture.c ./
+COPY bpf/backend.h bpf/loader.h bpf/controller.c bpf/readback.c bpf/fixture.c ./
 
 ARG BUILD_KERNEL=unknown
 ARG KO_AGENT_BPF_SOURCE_ID=unstamped
 
+# The controller and the read-back run as root. Neither compiler enables these by default here, and a
+# plain -static link drops the default PIE, so the binaries would load at a fixed address. The branch
+# protection flag is the architecture's own.
 RUN set -eux; \
     mkdir -p /out; \
     test "$(uname -r)" = "$BUILD_KERNEL"; \
@@ -44,9 +47,15 @@ RUN set -eux; \
     clang-19 -O2 -g -target bpf -mcpu=v3 -Wall -Wno-missing-declarations -Werror \
         -c policy.bpf.c -o /out/policy.bpf.o; \
     sha256sum /out/policy.bpf.o >> /out/objects.sha256; \
-    clang-19 -O2 -Wall -Werror -static -I. -o /out/controller controller.c -lbpf -lelf -lz -lzstd; \
-    clang-19 -O2 -Wall -Werror -static -I. -o /out/readback readback.c -lbpf -lelf -lz -lzstd; \
-    clang-19 -O2 -Wall -Werror -static -I. -o /out/fixture fixture.c; \
+    case "$(uname -m)" in \
+        aarch64) branch=-mbranch-protection=standard ;; \
+        x86_64) branch=-fcf-protection ;; \
+        *) echo "no branch protection flag for $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    hardening="-D_FORTIFY_SOURCE=3 -fstack-protector-strong -fstack-clash-protection $branch -static-pie"; \
+    clang-19 -O2 -Wall -Werror $hardening -I. -o /out/controller controller.c -lbpf -lelf -lz -lzstd; \
+    clang-19 -O2 -Wall -Werror $hardening -I. -o /out/readback readback.c -lbpf -lelf -lz -lzstd; \
+    clang-19 -O2 -Wall -Werror $hardening -I. -o /out/fixture fixture.c; \
     for bin in controller readback fixture; do \
         ldd /out/$bin 2>&1 | grep -q "statically linked\|not a dynamic executable"; \
     done; \

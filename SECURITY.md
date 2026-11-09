@@ -347,7 +347,7 @@ understanding of what the sandbox can access. These cases need a host change or 
     creating them by name. So neither name needs a mount target in the workspace.
   - The policy's proof fixture lies under the launcher's state root.
   - `--workspace=read-only` makes the entire tree read-only.
-- **`--self-test` without a case filter** writes to its own scratch directory in the workspace
+- **`--self-test`** writes to its own scratch directory in the workspace
   ([testing.md](ko-agent-fs/doc/testing.md)).
 - the **workspace's SELinux labels** are never changed. On an enforcing host a container reads an
   plain bind mount only under `:Z`, which relabels the directory recursively. No launch passes
@@ -658,8 +658,8 @@ What is measured, each item through the whole production stack
 (`ko-agent-fs/fuse/doc/verification-log.md` has the runs):
 
 - the name rule, on macOS against both APFS variants and on Windows against a real NTFS volume;
-- coherency, on macOS for `read()` and an established `mmap`, and on Windows for `read()`, with the
-  share-lock cost that "The workspace" notes. The `mmap` row has not run on Windows.
+- coherency, on macOS and Windows for `read()` and an established `mmap`, with the share-lock cost
+  on Windows that "The workspace" notes.
 
 The rest is what the README's status line means. On Linux the guarantees are reasoned rather than
 measured. The FUSE backend still enforces every `--workspace=live,fuse` session, on every
@@ -691,13 +691,17 @@ What an auditor trusts, and how each link is checked:
     proves. So a memory fault of the C kind is a failed launch, never a running program.
   - The classifier is compiled a second time for the host and run through the workspace policy's
     corpus (`ko-agent-fs/policy/tests/bpf_equivalence.rs`), so the two classifiers decide alike.
-- **The controller is privileged and parses nothing of the workspace.** The controller runs once
-  per launch under the machine's `sudo -n`. The session has no path to the controller. The
-  controller:
+  - `--self-test` makes the policy suite's corpus of operations under the installed program on the
+    machine's kernel, and compares each answer with the expected one
+    (`src/main/scala/BpfSelfTest.scala`). So a kernel that the evidence did not measure is tested
+    where it runs.
+- **The controller is privileged and parses nothing of the workspace.** The controller runs under
+  the machine's `sudo -n`, once per launch and once per policy that `--self-test`'s corpus loads.
+  The session has no path to the controller. The controller:
   - loads the object from beside itself;
-  - fills the maps from records that the unprivileged guard compiled
-    (`ko-agent-fs --resolve --bpf-records`), and from the identities that the controller reads for
-    itself;
+  - fills the maps from records that an unprivileged program wrote: the guard at a launch
+    (`ko-agent-fs --resolve --bpf-records`), `fixture records` for `--self-test`'s corpus. It also
+    fills them from the identities that the controller reads for itself;
   - attaches below the invoking user's slice alone, and pins;
   - exits before the container exists.
 - **No container process runs before the policy is proven.**

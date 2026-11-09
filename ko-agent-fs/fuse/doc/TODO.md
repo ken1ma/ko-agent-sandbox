@@ -39,13 +39,13 @@ can put a second name of a guarded entry there first (`../../policy/doc/security
 - [ ] `a_create_never_reopens_a_guarded_entry_that_arrives_under_a_second_name`
   (`tests/mounted_races.rs`) failed in two of three `--self-test` runs on Windows Server 24H2
   (x86_64, WSL2 kernel 6.18.33.2; 2026-09-27), the second at `ac405d2`: "SECURITY: a create opened
-  the host's pointer file".
-  - It passed in the first run, and on the macOS rig.
-  - A failed suite ends `--self-test` before its share rows, so Windows's `mmap` row waits on this
-    item.
-  - Unverified cause: an entry's identity is `(st_dev, st_ino)` (`fs.rs`, `identity`), and
-    `lookup` reads the entry and its guarded siblings in separate `fstatat` calls (`policy_name`).
-    One inode-number reuse suffices, in this interleaving:
+  the host's pointer file". It failed again in four of six runs on 2026-11-09 (WSL2 kernel
+  6.18.54.1), with the same message.
+  - It passed in the first run of each day, on the macOS rig, and in `--self-test` on macOS.
+  - Suspected cause, which a failing run's inode record supports (below): an entry's identity is
+    `(st_dev, st_ino)` (`fs.rs`, `identity`), and `lookup` reads the entry and its guarded siblings
+    in separate `fstatat` calls (`policy_name`). One inode-number reuse suffices, in this
+    interleaving:
     1. `lookup`'s `fstatat` of `GIT~1` finds the host's link, inode Y. The host removes `GIT~1`
        and `.git`. `policy_name`'s `fstatat` of `.git` finds nothing, so the node is recorded as
        ordinary with identity Y.
@@ -53,16 +53,16 @@ can put a second name of a guarded entry there first (`../../policy/doc/security
        `OPEN` for the ordinary node opens that name, `open_ino_compared` finds Y equal to Y, and
        the pointer file is open for writing.
 
-    The test's backing is the container's temporary directory, where a freed number returns at
-    once. Why the macOS rig passes is unmeasured.
+    The test's backing is the container's temporary directory. Why the macOS rig passes is
+    unmeasured.
+  - The failing run's inode record (2026-11-09, `InodeRecord` in `tests/mounted_races.rs`): 9,529
+    `.git` writes took 5 inode numbers, and all 705 of the sandbox's `GIT~1` files took a number a
+    `.git` had. On that backing a freed number returns at once, as step 2 needs. How fast a real
+    share (9p over NTFS, virtiofs over APFS) returns one is unmeasured.
+    - Step 1 is not visible to the test: a debug build that logs the identity the daemon recorded
+      would show it.
   - Next steps:
-    - the failure rate, from repeated `--self-test a_create_never_reopens` and
-      `probe/rig.sh a_create_never_reopens`;
-    - the test records the inode number of every `.git` the host writes and of every `GIT~1` the
-      sandbox creates, in shared state that the failing assertion's message prints. A failure
-      without a repeated `.git` number refutes the interleaving above; a failure with one supports
-      it; a pass shows nothing. The identity the daemon recorded is not visible to the test; a
-      debug build that logs it is the step after an inconclusive record;
+    - the failure rate on the macOS rig, from repeated `probe/rig.sh a_create_never_reopens`;
     - a check that holds whatever the identity's strength, written up before it changes the core:
       `open_ino_compared` compares the opened descriptor's identity with the parent's guarded
       siblings, as `policy_name` does, and answers `ESTALE` on a match, so the kernel's re-walk
@@ -161,13 +161,11 @@ promptly (`architecture.md`).
   established `mmap`, across the whole stack. The launcher drives them, and the machine is
   recorded.
 - macOS 26.4.1 passes.
-- Windows measures fresh while the file is not held. A file the session holds refuses some host
-  writers and not others.
+- Windows passes, `mmap` included. A file the session holds refuses some host writers and not
+  others.
 - `verification-log.md` records both, and why the premise is about behavior, not about what a
   setting declares.
 
-- [ ] Run `--self-test` on Windows for its first `mmap` row: whether a host write reaches a mapping
-  the session holds. Git's mapped `.git/index` and packfiles depend on it.
 - [ ] Run `--self-test` on Linux, and after a podman or macOS upgrade. The measurement, not the
   mount table, is what notices a changed hypervisor default.
 
@@ -268,7 +266,6 @@ the FUSE backend judges each as a name in the link's directory, not as a path:
 On Windows, the name rule, coherency and performance rows are measured (`verification-log.md`):
 
 - fold tables are per volume, so the name-rule run verifies the volume it ran on;
-- coherency's `mmap` row waits on the run above;
 - `ls -lR` costs ~100 ms per entry ("Performance", below).
 
 

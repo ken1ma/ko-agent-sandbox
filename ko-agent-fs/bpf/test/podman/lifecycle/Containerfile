@@ -23,7 +23,7 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY policy.bpf.c records.h backend.h controller.c readback.c fixture.c rewrite.c ./
+COPY policy.bpf.c records.h backend.h loader.h controller.c readback.c fixture.c rewrite.c ./
 
 # The step below reads the kernel's BTF, which podman does not see as a build input. A cached layer
 # would then outlive a kernel upgrade, so the driver passes the machine's `uname -r` here as part of
@@ -42,6 +42,9 @@ ARG BUILD_KERNEL=unknown
 # - controller-unfrozen is the controller without the freeze of the record maps. Only the
 #   read-back's frozen check tells it apart. The cast keeps the unused function from failing
 #   -Werror.
+#
+# The user-space binaries take the hardening of ko-agent-fs/bpf/Containerfile, so the suite runs them
+# as they ship.
 RUN set -eux; \
     mkdir -p /out; \
     test "$(uname -r)" = "$BUILD_KERNEL"; \
@@ -61,15 +64,21 @@ RUN set -eux; \
     clang-19 -O2 -g -target bpf -mcpu=v3 -Wall -Wno-missing-declarations -Werror \
         -c other-data.bpf.c -o /out/other-data.bpf.o; \
     sha256sum /out/policy.bpf.o /out/other.bpf.o /out/other-data.bpf.o >> /out/objects.sha256; \
-    clang-19 -O2 -Wall -Werror -static -I. -o /out/controller controller.c -lbpf -lelf -lz -lzstd; \
+    case "$(uname -m)" in \
+        aarch64) branch=-mbranch-protection=standard ;; \
+        x86_64) branch=-fcf-protection ;; \
+        *) echo "no branch protection flag for $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    hardening="-D_FORTIFY_SOURCE=3 -fstack-protector-strong -fstack-clash-protection $branch -static-pie"; \
+    clang-19 -O2 -Wall -Werror $hardening -I. -o /out/controller controller.c -lbpf -lelf -lz -lzstd; \
     grep -q 'freeze_records(&maps);' controller.c; \
     sed 's/^\tfreeze_records(&maps);$/\t(void)freeze_records;/' controller.c > controller-unfrozen.c; \
     cmp -s controller.c controller-unfrozen.c && exit 1; \
-    clang-19 -O2 -Wall -Werror -static -I. -o /out/controller-unfrozen controller-unfrozen.c \
+    clang-19 -O2 -Wall -Werror $hardening -I. -o /out/controller-unfrozen controller-unfrozen.c \
         -lbpf -lelf -lz -lzstd; \
-    clang-19 -O2 -Wall -Werror -static -I. -o /out/readback readback.c -lbpf -lelf -lz -lzstd; \
-    clang-19 -O2 -Wall -Werror -static -I. -o /out/fixture fixture.c; \
-    clang-19 -O2 -Wall -Werror -static -I. -o /out/rewrite rewrite.c -lbpf -lelf -lz -lzstd; \
+    clang-19 -O2 -Wall -Werror $hardening -I. -o /out/readback readback.c -lbpf -lelf -lz -lzstd; \
+    clang-19 -O2 -Wall -Werror $hardening -I. -o /out/fixture fixture.c; \
+    clang-19 -O2 -Wall -Werror $hardening -I. -o /out/rewrite rewrite.c -lbpf -lelf -lz -lzstd; \
     for bin in controller controller-unfrozen readback fixture rewrite; do \
         ldd /out/$bin 2>&1 | grep -q "statically linked\|not a dynamic executable"; \
     done; \

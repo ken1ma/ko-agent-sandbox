@@ -42,7 +42,8 @@ image runs:
     java -jar target/dist/ko-agent-sandbox.jar --self-test
 
 1. `--self-test` runs two suites on any machine with podman: the suite that needs no mount, and the
-   suite that mounts the real FUSE backend in a privileged container.
+   suite that mounts the real FUSE backend in a privileged container. On macOS and Windows it then
+   runs the BPF backend's corpus against the installed backend.
 1. [testing.md](../ko-agent-fs/doc/testing.md) documents how to run either suite directly.
 
 

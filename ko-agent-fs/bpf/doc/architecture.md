@@ -13,7 +13,8 @@ a quoted section name without a document refers to whichever of the three holds 
 
 The code:
 
-- `../../../src/main/scala/KoAgentBpf.scala`, the launcher's side ("The launcher's side");
+- `../../../src/main/scala/KoAgentBpf.scala`, the launcher's side ("The launcher's side"), and
+  `../../../src/main/scala/BpfSelfTest.scala`, `--self-test`'s run of the policy suite's corpus;
 - this directory: the policy program `../policy.bpf.c`, the controller, the read-back and the proof
   fixture, with the classifier's host build under `../test/host/`;
 - the guard, which compiles the policy's records (`../../policy/src/bpf_records.rs`).
@@ -274,7 +275,7 @@ Hooks the policy does not need, and the fact that excuses each:
     - Sockets under `/tmp` and the rest of `~`, each container's own, stay allowed.
     - "Environment evidence" measures what binds where. The one program with a socket on shared
       storage is Codex's app-server daemon, under `~/.codex`, and `codex exec` works without it
-      ("Launcher on macOS", "Launcher on WSL").
+      ("Environment evidence").
   - `unix-socket` lifts that refusal and attaches `file_receive` as a ninth hook. The hook runs on
     the receiver's cgroup, since its argument is a file (`kernel/bpf/bpf_lsm.c`,
     `bpf_lsm_find_cgroup_shim`).
@@ -480,6 +481,10 @@ The program classifies by object and position, never by a path string:
   - A version that binds another mount into the container reopens this.
   - `unix-socket` lifts the rule, and keeps a socket out of a gitdir by the same three hooks ("The
     hooks", `file_receive`, has the channel each closes).
+  - Beneath the volume's root, a socket under `unix-socket` meets the workspace's rules and gitdir
+    states as anywhere: one at a `read-only` line's name, or in a gitdir there, is refused. No host
+    program reads the volume, so this protects nothing there; it is kept as the stricter reading, by
+    the user's decision of 2026-11-09.
 - On every platform, no FIFO comes to be on a superblock of the root's type beneath a recorded
   root, none there is opened, and none has its times changed:
   - `inode_mknod` refuses the creation by type;
@@ -556,7 +561,8 @@ The program classifies by object and position, never by a path string:
   name, is the same object. The FUSE backend recognizes it by comparing every ordinary entry with
   its guarded siblings on each lookup (`fs.rs`, `policy_name`), a lookup a program cannot make. Here
   two rules replace that:
-  - The controller records the identity of:
+  - The controller records the identity of these, each resolved below the workspace's descriptor,
+    so that a symlink or a mount on the way refuses the launch (`../backend.h`, `add_guarded_root`):
     - the workspace root's `.git` and `.ko-agent-sandbox`;
     - every gitdir the guard finds under `.git/modules`;
     - each submodule worktree's `.git` pointer file, which the guard finds through that gitdir's
@@ -679,7 +685,7 @@ backend. The controller then runs at every launch, restart and recreate, since e
 new cgroup and only a privileged caller can attach: one `sudo -n` per launch, in the machine or on
 the host.
 
-The verifier checks a sandbox's nine programs within 0.7 s on the macOS machine and 2.4 s on the
+The verifier checks a sandbox's nine programs within 0.5 s on the macOS machine and 1.3 s on the
 WSL one ("Lifecycle on macOS", "Lifecycle on WSL"). A launch waits for that only when no preloaded
 set is ready at its attach:
 
@@ -777,10 +783,10 @@ session:
        walk ("The policy"), so a fixture there would fail every expected refusal. The controller
        records the fixture root's filesystem type as it records the workspace root's, and refuses
        the launch when the two differ.
-     - The guard writes a tree laid out as a workspace: a `.git` holding `config` and a hook, a
-       `.ko-agent-sandbox`, and one entry per resolved rule line. The sandbox's policy records that
-       tree's root as a second root.
-     - The guard writes the tree once. It lays the entries out again, keeping the root's identity,
+     - `fixture make` writes a tree laid out as a workspace: a `.git` holding `config` and a hook, a
+       `.ko-agent-sandbox`, and one entry per line of the guard's records. The sandbox's policy
+       records that tree's root as a second root.
+     - The launch writes the tree once. It lays the entries out again, keeping the root's identity,
        only after a failed proof or when the resolved rules changed. A passed proof changes nothing
        in the tree but the writable entries' content, and each entry costs a round trip of the
        share.
@@ -799,10 +805,10 @@ session:
    - Together the parts catch a controller that attached nothing, attached a subset, attached
      another build, loaded the wrong records, or whose program uses another map. They do not catch
      a defect the program shares with the fixture's expectations; the policy suite's corpus is for
-     that.
+     that, and `--self-test` runs it on the user's kernel (`BpfSelfTest.scala`).
    - The proof runs at every launch, by the user's decision of 2026-10-26. The controller keeps the
      two parts separable for the skip rule `../../../doc/TODO.md` plans ("The proof fixture skipped
-     on an unchanged launch"), since every launch pays the proof's 306 to 386 ms on WSL
+     on an unchanged launch"), since every launch pays the proof's 354 to 388 ms on WSL
      ("Lifecycle on WSL").
 4. Create and start the container. Its scope, or its directory under cgroupfs, lands below the
    proven cgroup.
@@ -870,9 +876,14 @@ session:
      Under systemd the hold unit is stopped first, once the cgroup has no container, so that it
      does not count.
    - A stopped container keeps its pins (step 5), so an empty cgroup alone is no orphan.
+   - Under cgroupfs the controller removes the cgroup before the pins: an `rmdir` that fails with
+     `EBUSY` names a cgroup a task entered since the check, and that cgroup keeps its pins. A
+     session whose cgroup is gone with its pins in place, as a reconcile killed between the two
+     removals leaves, is removed with its pins once every link reads detached (`cgroup_id` 0,
+     which the kernel sets at the cgroup's removal); a link still attached refuses it.
    - A record whose session has no container, no attach cgroup and no pins, as a machine restart
-     leaves a live session, is dropped by the launcher's reconcile script before the controller
-     runs, since the controller could not open its cgroup (`KoAgentBpf.reconcileScript`).
+     leaves a live session, is dropped by the launcher's reconcile script without running the
+     controller (`KoAgentBpf.reconcileScript`).
    - A listing or a label that cannot be read leaves every pin in place and is reported, each
      named.
    - The reconcile removes only cgroups below the user's slice and pins below the controller's own
@@ -900,10 +911,11 @@ What a failed probe leaves: `../../../doc/bpf-lsm-cgroup.md`, "Launches".
 How the steps of "Lifecycle" map onto the code:
 
 - `--build` builds the backend's sources in the machine, against its kernel, where the probe's
-  kernel checks and the kernel's BTF pass. Otherwise it names what is missing and builds the rest
-  (`KoAgentBpf.buildFailures`).
+  kernel checks and the kernel's BTF pass. Otherwise it names what is missing and builds nothing
+  (`KoAgentBpf.buildFailures`). `--build --no-bpf` leaves the backend out instead, for a machine
+  that launches under `fuse` alone.
   - The backend's build and install run after the rest. If they fail on a kernel those checks
-    cannot tell apart, they warn and leave the rest built.
+    cannot tell apart, the build completes the rest and then fails.
   - It installs the binaries beside the FUSE backend's daemon under
     `~/.local/share/ko-agent-sandbox/bpf/`, records the tags and prepares the preloaded set.
 - A launch runs the probe and the reconcile under the launch lock (`reconcileScript`, the
@@ -918,12 +930,17 @@ How the steps of "Lifecycle" map onto the code:
 - A read-only launch runs the same steps with `--no-root` and no records.
 - The session's teardown (`teardownScript`) takes the place of the FUSE backend's reap in the
   reaper.
+- `--self-test` attaches the policies that launches load to a session of its own, under the launch
+  lock, and runs the policy suite's corpus below it (`BpfSelfTest.scala`). Its records come from
+  `fixture records`; its cgroup step is a launch's (`attachCgroupStep`).
 
 ## Inventory
 
-The policy transcribes `fuse/ko-agent-fs` at commit `0fe166a159c1f3cc75dd966a8b0e2d4faae5aa31`, the
-last to change `src/{policy,fs,guard,rulefile}.rs`. A later change to those files reopens the rows
-it touches.
+The inventory compares the program with `fuse/ko-agent-fs` at commit
+`0fe166a159c1f3cc75dd966a8b0e2d4faae5aa31`, the last to change `src/{policy,fs,guard,rulefile}.rs`.
+A later change to those files reopens the rows it touches. The program may refuse more than the FUSE
+backend, which it is meant to replace (`../../../doc/bpf-lsm-cgroup.md`, "What is gained and what
+is lost").
 
 The macOS and WSL columns hold the answer under the attached programs:
 
@@ -1059,19 +1076,6 @@ Both kernels' BTF lists every hook named in the table:
   `file_receive` and `file_permission`;
 - the WSL kernel's through `podman machine ssh` on 2026-10-16, with a `grep -aoE` for the table's
   24 names.
-
-Sockets, measured in a sandbox session on 2026-10-21 with Codex 0.163.0, from `/proc/net/unix` and
-a `find -type s` over the container:
-
-- the one pathname socket bound was Claude Code's, under `/tmp`;
-- the one socket file on shared storage was Codex's app-server daemon's,
-  `~/.codex/app-server-daemon/daemon-updater.sock` on the persistent volume, its daemon not
-  running;
-- none was in the workspace;
-- sbt 2's server socket is under `~/.config/sbt/2/server` (`project/target/active.json`); Mill's
-  daemon listens on the TCP port it writes to `out/mill-daemon/socketPort`, and Gradle's daemon and
-  workers on TCP ports (`../../../SECURITY.md`);
-- `~` and the persistent volume are two mounts of one xfs superblock, `/dev/vda4`.
 
 
 ## Sources

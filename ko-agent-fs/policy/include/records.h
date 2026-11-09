@@ -28,7 +28,7 @@ enum root_kind {
 	ROOT_WORKSPACE = 1,
 	/* a gitdir the guard found under .git/modules: the position is InGit([]) */
 	ROOT_GITDIR = 2,
-	/* the persistent volume's root, the controller's own: the socket rule alone */
+	/* the persistent volume's root, the controller's own: only sockets are judged beneath it */
 	ROOT_VOLUME = 3,
 	/* a .git object, the root's or a submodule worktree's pointer file: any name is the gitdir entry */
 	ROOT_GUARDED_GIT = 4,

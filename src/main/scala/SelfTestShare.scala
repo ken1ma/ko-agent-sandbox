@@ -167,7 +167,7 @@ object SelfTestShare:
     var failed = false
     def row(ok: Boolean, label: String, detail: String): Unit =
       if !ok then failed = true
-      System.err.println(f"  ${if ok then "PASS" else "FAIL"}%-4s  $label%-46s $detail")
+      ImageBuilds.selfTestRow(if ok then "PASS" else "FAIL", label, detail)
 
     System.err.println("share rows: host filesystem -> share -> ko-agent-fs -> container")
     val scratch = Files.createTempDirectory(baseDir, "self-test-share.")
@@ -196,7 +196,6 @@ object SelfTestShare:
       val mountpoint = ensureKoAgentFsMounted(podman, os, mountId, backing, container)
       try
         val command = probeRunCommand(podman, mountpoint, container)
-        echoCommand(command)
         val process = ProcessBuilder(command*).redirectErrorStream(true).start()
         // The hard bound over both 120 s probe waits plus the container's start. The kill ends an
         // unresponsive probe. The rows already printed remain, and the non-zero exit below adds a failure

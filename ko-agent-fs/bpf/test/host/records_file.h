@@ -1,6 +1,6 @@
-/* Reads the guard's records file (ko-agent-fs/policy/include/records.h) for the host build. It is a
- * translation unit of its own, because policy.bpf.c defines the record structs itself and so cannot
- * include the header. */
+/* Reads the guard's records file (ko-agent-fs/policy/include/records.h) for the host build, in a
+ * translation unit of its own: policy_host.c compiles policy.bpf.c against the stand-in headers beside
+ * it, and this file takes the kernel's type names from the C library instead. */
 #ifndef RECORDS_FILE_H
 #define RECORDS_FILE_H
 
@@ -15,8 +15,6 @@ struct records_file {
 	unsigned rule_count;
 	unsigned alias_count;
 	unsigned root_count;
-	size_t rule_bytes;      /* sizeof one rule_line record, for the reader to compare with its own */
-	size_t alias_bytes;
 	const void *rules;      /* rule_count records, contiguous */
 	const void *aliases;
 	const struct records_root *roots;
