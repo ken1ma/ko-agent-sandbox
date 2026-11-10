@@ -225,8 +225,6 @@ Ten probes in `src/probe/` are shell scripts. Nine run on the macOS host, and
 
 ## Open questions under the `--nesting=none` seccomp profile
 
-- [ ] Measure `agy`'s Auto mode under `--nesting=none`. `limitations.md` measures it under podman's
-  default profile only.
 - [ ] Find what made `KoReviewTest`'s review cycle against the fake codex and claude exceed its
   300 s timeout in a `--nesting=none` session on Windows, in a `/mnt/c` workspace (2026-10-26):
   the profile or the share's speed.

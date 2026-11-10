@@ -23,17 +23,20 @@ allow rule in the managed settings removes the prompt.
 Rely on the egress rules to limit where `agy` sends data.
 
 The items below were measured with `agy` 1.4.5 on 2026-10-23, under podman's default seccomp
-profile, which `--nesting=user-namespace` keeps. The default `--nesting=none` refuses the user
-namespace that `agy`'s sandbox creates first.
+profile, which `--nesting=user-namespace` keeps. Items 1 to 3 were measured again with `agy` 1.5.3
+on 2026-11-10 under the default `--nesting=none`, which refuses the user namespace that `agy`'s
+sandbox creates first.
 
-1. Each command `agy` runs in its sandbox fails with `connecting to sandbox server: ... connection
-   reset by peer`. `agy`'s log names the failing step: `sbox: mount proc: permission denied`.
-   Under `--nesting=same-uid`, which unmasks `/proc`, the log names
-   `sbox: sethostname: operation not permitted`.
-1. `agy` offers Auto mode anyway. Google documents that `agy` withholds Auto where the sandbox is
-   unavailable, and names hosts and containers that block unprivileged user namespaces
-   (https://antigravity.google/docs/cli/modes). The measured session allowed unprivileged user
-   namespaces.
+1. Each command `agy` runs in its sandbox fails, at a step that depends on `--nesting`:
+   - `none`: the command fails with `fork/exec /usr/local/bin/agy: operation not permitted`, and
+     `agy`'s log has no `sbox:` line.
+   - `user-namespace`: the command fails with `connecting to sandbox server: ... connection reset
+     by peer`, and `agy`'s log names the failing step: `sbox: mount proc: permission denied`.
+   - `same-uid`, which unmasks `/proc`: the log names `sbox: sethostname: operation not permitted`.
+1. `agy` offers Auto mode anyway, even under `--nesting=none`, which refuses unprivileged user
+   namespaces. Google documents that `agy` withholds Auto where the sandbox is unavailable, and
+   names hosts and containers that block unprivileged user namespaces
+   (https://antigravity.google/docs/cli/modes).
 1. With Tool Permission `request-review`, the model reissues each failed command with
    `"BypassSandbox": true`. `agy`'s safety check then decides whether the command runs without a
    prompt.
