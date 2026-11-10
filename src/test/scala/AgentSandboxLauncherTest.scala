@@ -154,10 +154,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(memoryTotal(HostCommands.Run(0, "8589934592\n".getBytes, "")), Some(8589934592L))
     assertEquals(memoryTotal(HostCommands.Run(0, "0".getBytes, "")), None)
     assertEquals(memoryTotal(HostCommands.Run(1, "".getBytes, "not running")), None)
-    val info = HostCommands.Run(0, "true\n8589934592\n7.2.5-200.fc44.aarch64\n".getBytes, "")
+    val info = HostCommands.Run(0, "true\n8589934592\n7.2.5-200.fc44.aarch64\n[cpu io memory pids]\n".getBytes, "")
     assertEquals(podmanInfoField(info, 0).text, "true")
     assertEquals(memoryTotal(podmanInfoField(info, 1)), Some(8589934592L))
     assertEquals(podmanInfoField(info, 2).text, "7.2.5-200.fc44.aarch64")
+    assertEquals(podmanInfoField(info, 3).text, "[cpu io memory pids]")
+    assertEquals(limitControllerRefusal(Os.Windows, podmanInfoField(info, 3)), None)
+    val wslDefault = HostCommands.Run(0, "true\n2063597568\n6.18.54.1-microsoft-standard-WSL2\n[]\n".getBytes, "")
+    assert(limitControllerRefusal(Os.Windows, podmanInfoField(wslDefault, 3)).nonEmpty)
     val unanswered = HostCommands.Run(125, "".getBytes, "not running")
     assertEquals(memoryTotal(podmanInfoField(unanswered, 1)), None)
     assertEquals(machineKernel(Os.Mac, podmanInfoField(unanswered, 2), color = false), None)
@@ -220,6 +224,22 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(unanswered.exists(_.startsWith(unansweredLine)), unanswered)
     val unknown = rootfulRefusal(Os.Linux, HostCommands.Run(0, "<no value>".getBytes, ""))
     assert(unknown.exists(_.contains("did not say")), unknown)
+
+  test("a launch on Windows refuses a machine without the memory or pids controller, naming the WSL setting"):
+    def answer(controllers: String) = HostCommands.Run(0, s"$controllers\n".getBytes, "")
+    // The lists that `podman info --format '{{.Host.CgroupControllers}}'` printed on WSL 3.0.3 without and with
+    // isolateDistroCgroup=false.
+    val empty = limitControllerRefusal(Os.Windows, answer("[]"))
+    assert(empty.exists(_.startsWith("error: the podman machine has no memory or pids cgroup controller")), empty)
+    assert(empty.exists(_.contains("isolateDistroCgroup=false")), empty)
+    assert(empty.exists(_.contains("%UserProfile%\\.wslconfig, then run `wsl --shutdown`")), empty)
+    assertEquals(limitControllerRefusal(Os.Windows, answer("[cpu io memory pids]")), None)
+    val noPids = limitControllerRefusal(Os.Windows, answer("[cpu io memory]"))
+    assert(noPids.exists(_.startsWith("error: the podman machine has no pids cgroup controller")), noPids)
+    assertEquals(limitControllerRefusal(Os.Mac, answer("[]")), None)
+    assertEquals(limitControllerRefusal(Os.Linux, answer("[]")), None)
+    assertEquals(limitControllerRefusal(Os.Windows, answer("<no value>")), None)
+    assertEquals(limitControllerRefusal(Os.Windows, HostCommands.Run(125, "".getBytes, "template: bad")), None)
 
   test("build actions ask first only below what a default machine idles at, read from the machine's own meminfo"):
     assertEquals(buildMemoryWarning(None), None)

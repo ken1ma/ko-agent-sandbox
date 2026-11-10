@@ -712,7 +712,8 @@ object AgentSandboxLauncher:
 
   /**
    * The check that every podman-talking action runs first: a client that runs, and a service that answers and, where
-   * `refuseRootful`, runs rootless (rootfulRefusal).
+   * `refuseRootful`, runs rootless (rootfulRefusal). Where `requireLimits`, the service can also apply the session's
+   * limits (limitControllerRefusal).
    *
    *   - On macOS and Windows the service is the podman machine. This check starts a stopped machine but never creates
    *     or resizes one, which is the boundary that SECURITY.md draws ("Silent changes to what you own"). `machine
@@ -729,6 +730,7 @@ object AgentSandboxLauncher:
     os: Os,
     memoryScale: Long => Headroom = launchMemoryHeadroom,
     refuseRootful: Boolean = true,
+    requireLimits: Boolean = false,
   ): Option[Long] =
     val podman = unannouncedPodman
     if !podmanRuns then
@@ -767,13 +769,16 @@ object AgentSandboxLauncher:
             (run(podman, "info", "--format", PodmanInfoFormat), probedMachineAvailable(os, podman))
     announcePodman(machineKernel(os, podmanInfoField(info, 2)))
     if refuseRootful then rootfulRefusal(os, podmanInfoField(info, 0)).foreach(fail(_))
+    if requireLimits then limitControllerRefusal(os, podmanInfoField(info, 3)).foreach(fail(_))
     val total = memoryTotal(podmanInfoField(info, 1))
     machineMemoryLine(os, total, available, scale = memoryScale).foreach(System.err.println)
     total
 
-  /** What requirePodman asks `podman info`, in one call: rootlessness, MemTotal, then the kernel release, one line
-    * each. */
-  val PodmanInfoFormat = "{{.Host.Security.Rootless}}{{println}}{{.Host.MemTotal}}{{println}}{{.Host.Kernel}}"
+  /** What requirePodman asks `podman info`, in one call: rootlessness, MemTotal, the kernel release, then the cgroup
+    * controllers, one line each. */
+  val PodmanInfoFormat =
+    "{{.Host.Security.Rootless}}{{println}}{{.Host.MemTotal}}{{println}}{{.Host.Kernel}}{{println}}" +
+      "{{.Host.CgroupControllers}}"
 
   /** Line `index` of a PodmanInfoFormat answer, as the answer that a format of that field alone would give. */
   def podmanInfoField(answer: HostCommands.Run, index: Int): HostCommands.Run =
@@ -801,6 +806,27 @@ object AgentSandboxLauncher:
           "Switch the machine to rootless; what root's podman holds stays in its separate store:\n" +
             "  podman machine set --rootful=false"
       s"error: $what\nThe sandbox needs rootless podman (SECURITY.md). $fix"
+
+  /**
+   * A launch's refusal of a podman machine on Windows whose answer lists no `memory` or `pids` controller, which the
+   * proxy's and the sandbox's `--memory` and `--pids-limit` need.
+   * - WSL 3's default `isolateDistroCgroup=true` gives rootless podman no controllers, and podman then fails the
+   *   proxy's start with `crun: open memory.max for writing` (podman issue 29966). That error names no fix.
+   * - Only Windows refuses: no other OS has shown the empty list.
+   * - An answer that is not a `[...]` list refuses nothing; the container's own error then shows.
+   */
+  def limitControllerRefusal(os: Os, answer: HostCommands.Run): Option[String] =
+    val listed = Option.when(answer.ok)(answer.text.trim).filter(text => text.startsWith("[") && text.endsWith("]"))
+    val controllers = listed.map(_.drop(1).dropRight(1).split("\\s+").filter(_.nonEmpty).toSet)
+    val missing = controllers.toVector.flatMap(present => Vector("memory", "pids").filterNot(present))
+    Option.when(os == Os.Windows && missing.nonEmpty):
+      s"error: the podman machine has no ${missing.mkString(" or ")} cgroup controller, so podman cannot apply the " +
+        s"session's limits.\n$WslCgroupSetting"
+
+  /** The WSL setting that gives rootless podman in the machine its cgroup controllers (README.md, "Prerequisites"). */
+  val WslCgroupSetting: String =
+    """Add `isolateDistroCgroup=false` under `[wsl2]` in %UserProfile%\.wslconfig, then run `wsl --shutdown`.
+      |The setting applies to every WSL 2 distribution of the Windows user.""".stripMargin
 
   def probedMachineAvailable(os: Os, podman: String): Option[Long] =
     machineMemoryAvailable(
@@ -1398,7 +1424,7 @@ object AgentSandboxLauncher:
     import settings.{workspaceRoot, runOnHost, sessionStartMode}
     import workspace.{mountPath, workspaceId}
     val workspaceSettings = parsed.workspaceSettings
-    val machineMemory = requirePodman(os)
+    val machineMemory = requirePodman(os, requireLimits = true)
 
     // One suffix ties this run's containers, networks and log directory together in podman output and the retained
     // logs.

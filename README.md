@@ -87,6 +87,11 @@ other.
         1. `wsl --version` shows the versions if WSL is installed.
             1. Update WSL with `wsl --update`, then `wsl --shutdown`.
         1. No Linux distribution is needed; `wsl --install --no-distribution` is enough.
+        1. Put these lines in `%UserProfile%\.wslconfig`, then run `wsl --shutdown`, to avoid
+           [podman#29966](https://github.com/podman-container-tools/podman/issues/29966):
+
+               [wsl2]
+               isolateDistroCgroup=false
         1. AWS EC2: before `podman machine init`, shut down the instance, then
             1. Actions → Instance settings → Change CPU options: Enable Nested virtualization
 

@@ -495,7 +495,13 @@ The Windows placement needs `%UserProfile%\.wslconfig` holding `[wsl2]` and
   `--cgroups=disabled` makes it run, but places the container in no cgroup of its own, which this
   backend cannot use.
 - The setting applies to every WSL2 distribution of that Windows user. The launcher neither writes
-  nor removes it; the setup note for Windows names it.
+  nor removes it; README's Windows prerequisite names it (`../../../README.md`, "Prerequisites").
+- Every launch on Windows needs the setting, under either backend: the proxy and the sandbox run
+  with `--memory` and `--pids-limit`. A launch refuses a machine whose `podman info` lists no
+  `memory` or `pids` controller (`AgentSandboxLauncher.limitControllerRefusal`).
+  - A second Windows machine, podman 6.1.4 on WSL 3.0.3, listed `[]` without the setting and failed
+    the egress proxy's start with `crun: open memory.max for writing`, under `live,fuse`. With the
+    setting, the machine listed `[cpu io memory pids]` and launched.
 - Under the setting, the session's limits apply, below the attach cgroup as well: `memory.max`
   7,105,761,280 and `pids.max` 2048 in a `live,bpf` and a `live,fuse` session on 2026-10-27.
   Podman issue 29966 reports no controller for rootless podman on WSL 3.0.3 by default.

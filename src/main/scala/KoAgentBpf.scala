@@ -940,6 +940,6 @@ object KoAgentBpf:
     * the attach cgroup needs a WSL setting ("Environment evidence"). */
   def createFailureNote(os: Os, error: String): Option[String] =
     Option.when(os == Os.Windows && (error.contains("controller pids") || error.contains("cgroup")))(
-      "The podman machine places a container below the attach cgroup only with " +
-        "`isolateDistroCgroup=false` under `[wsl2]` in %UserProfile%\\.wslconfig, after `wsl --shutdown`.",
+      "The podman machine places a container below the attach cgroup only with this WSL setting.\n" +
+        AgentSandboxLauncher.WslCgroupSetting,
     )
