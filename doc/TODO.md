@@ -60,23 +60,25 @@ reason, so that nobody proposes it again.
   - A workspace that tests against the provider with its own key selects no credential for that
     host, or accepts the refusal. Every other host keeps the rule that the proxy forwards a token
     that is not a placeholder (`egress-proxy.md`, "Where the value goes").
-  - Measure first, with the model host inspected at the root:
-    - the hosts and paths the installed `claude` calls, login and refresh included;
-    - that a long server-sent-event stream survives the one-request-per-connection relay;
-    - that `claude` trusts `NODE_EXTRA_CA_CERTS` on every connection to the provider.
+  - Measure first, with the model host inspected at the root (`plan-tls-inspect-agents.md`,
+    "Measurement").
   - Rejected: exact-path grants on the model host without brokering (`/v1/messages` alone).
     - The path list is the per-release contract with the CLI that brokering declines.
     - A retrievable-storage behavior added at an allowed endpoint reopens the attack.
     - The cost of the rejection: a subscription session gets no path-based protection before
       step 6, since exact-path grants refuse the storage endpoints whatever credential is sent.
-  - Codex: taking the property to the OpenAI hosts needs these steps, each read from
-    `--egress-log` (`design.md`, "Credential brokering at the egress proxy", has what is
-    measured):
-    - one `codex` turn that succeeds with those hosts inspected;
-    - a second turn in the same session, to learn whether the refused upgrades recur per turn;
-    - if the upgrades recur, a measurement of whether a custom `[model_providers.NAME]` with
-      `supports_websockets = false` accepts the ChatGPT login. The built-in provider cannot be
-      overridden (`design.md`, "No WebSocket on an inspected connection").
+  - Codex: taking the property to the OpenAI hosts waits for Codex's measurement
+    (`plan-tls-inspect-agents.md`, "The agents, in order").
+
+## TLS inspection of the agents' model traffic
+
+- [ ] Carry out `plan-tls-inspect-agents.md`:
+  - add the request size, client and credential-index fields to the audit line;
+  - add the `upgrade=websocket` grant, which Claude Code's `/voice` needs on an inspected host;
+  - inspect each agent's model hosts by default, one agent at a time after its measurement.
+- [ ] Note at `--build` when an installed client's version differs from the measured version
+  beside its lines in `defaults/model-provider/<name>`, as `--build` notes a podman machine that
+  is behind. The build still succeeds: the image then runs that client over inspection unmeasured.
 
 ## Host process observations without helper processes
 
@@ -502,6 +504,23 @@ SECURITY.md, "The supply chain", has npm's seven-day window and why uv gets none
   and leave a package unusable because the installation skipped a required script
   (https://docs.npmjs.com/cli/v11/using-npm/config/#ignore-scripts). An explicit `npm run` still
   runs its script.
+
+## Deferred — Claude Code's hint headers on the audit line
+
+- [ ] Print Claude Code's hint headers as fields of the inspected `allow` line, only if a reader of
+  the log needs to attribute a model request to a prompt or a subagent, and a measurement shows
+  that the headers arrive through the proxy.
+  - The headers are `x-claude-code-` followed by `session-id`, `prompt-id`, `request-class`,
+    `agent-type`, `agent-id`, `parent-agent-id`, `compaction` and `context-compacted`
+    (https://code.claude.com/docs/en/llm-gateway-protocol, "Gateway hint headers").
+  - That page says Claude Code sends them by default on a direct connection, and not by default
+    under a custom base URL. A launch sets `HTTPS_PROXY`, not `ANTHROPIC_BASE_URL`, and which of
+    the two cases that is has not been measured.
+  - The values are the client's free text. So each field needs the rule that `client=` has: the
+    line prints a value's start, as far as its characters are in a fixed set
+    (`plan-tls-inspect-agents.md`, "Audit line additions").
+  - `x-claude-code-prev-tool-durations` stays out: it is up to 4 KB of timing data.
+  - The proxy would hold a list of a client's header names, which each release can change.
 
 ## Deferred — GREASE ECH on inspected hosts
 
@@ -1084,6 +1103,14 @@ bans sources`, compilation, binary identity, and the installed FUSE backend's mo
   records why its moving external database must not block installation.
 - [ ] Keep the checks above in `--build`, and keep the FUSE backend's mounted suites in
   `--self-test`; CI does not prove the FUSE backend on a user's own machine.
+- [ ] Repeat, on the image CI builds, the measurement of each agent whose model hosts the defaults
+  inspect (`plan-tls-inspect-agents.md`, "Measurement"), signed in to that agent with a test
+  account.
+  - CI fails when a turn does not complete, or on a log line that the measurement does not accept.
+    A clean log alone does not show that a turn completed.
+  - A run that passes at another client version is the evidence for recording that version beside
+    the agent's lines in `defaults/model-provider/<name>`.
+  - CI runs no `/voice`, which needs a microphone. `/voice` is measured by hand.
 
 ## Before the first release — the published identity
 
